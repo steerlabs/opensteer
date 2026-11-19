@@ -2375,11 +2375,14 @@ export function TranscriptMessage({
   message,
   reveal,
   joinedRun = false,
+  onOpenChange,
   queued = false,
   viewerUserId,
 }: {
   message: MessageEntry;
   reveal: { readonly id: string } | null;
+  /** Hears whether another's message is unfolded on screen, whole. */
+  onOpenChange?: ((open: boolean) => void) | undefined;
   /** It joined the turn under way, which a task says because the person chose to. */
   joinedRun?: boolean;
   queued?: boolean;
@@ -2432,6 +2435,7 @@ export function TranscriptMessage({
   return (
     <InputMessage
       message={message}
+      onOpenChange={onOpenChange}
       queued={queued}
       reveal={reveal}
       steered={steered}
@@ -2833,12 +2837,14 @@ function updateSource(author: UpdateAuthor): {
  */
 function InputMessage({
   message: previewMessage,
+  onOpenChange,
   queued,
   reveal,
   steered,
   viewerUserId,
 }: {
   message: MessageEntry;
+  onOpenChange?: ((open: boolean) => void) | undefined;
   reveal: { readonly id: string } | null;
   queued: boolean;
   steered: boolean;
@@ -2851,6 +2857,7 @@ function InputMessage({
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
+  useLayoutEffect(() => onOpenChange?.(open), [onOpenChange, open]);
   const message = useTranscriptMessage(client, threadId, previewMessage, open);
   const preview = useMemo(() => incomingMessagePreview(message), [message]);
   const body = preview.truncated && !open ? preview.text : message.body;

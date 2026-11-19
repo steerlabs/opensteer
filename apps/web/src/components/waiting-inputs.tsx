@@ -526,7 +526,11 @@ function WaitingRow({
     ask && body.status === "complete" && message.previewTruncated
       ? { ...message, body: body.text, previewTruncated: false }
       : message;
-  const seen = edit.draft ? !edit.draft.loading : !ask || body.status === "complete";
+  // An ask is shown unfolded, and Answer waits while the person has folded it away again.
+  const asking = ask !== null;
+  const askReveal = useMemo(() => (asking ? { id: message.id } : null), [asking, message.id]);
+  const [askOpen, setAskOpen] = useState(false);
+  const seen = edit.draft ? !edit.draft.loading : !ask || (body.status === "complete" && askOpen);
 
   const startEditing = () => {
     if (editable && !blocked) edit.open();
@@ -621,8 +625,9 @@ function WaitingRow({
       ) : (
         <TranscriptMessage
           message={shown}
+          onOpenChange={asking ? setAskOpen : undefined}
           queued={input !== null || message.queuePending === true}
-          reveal={null}
+          reveal={askReveal}
           viewerUserId={viewerUserId}
         />
       )}

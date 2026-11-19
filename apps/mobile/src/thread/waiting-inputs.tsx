@@ -31,6 +31,7 @@ import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { EditedMark } from "./edited-mark.js";
 import type { LinkAction } from "./link-context.js";
 import { Message } from "./transcript.js";
+import { useShowAsk } from "./ask-shown.js";
 import type { WaitingEdit, WaitingEditController } from "./waiting-edit.js";
 import { failureWords } from "../ui/client-feedback.js";
 
@@ -298,12 +299,14 @@ function WaitingBubble(props: {
   readonly onOpenThread: React.ComponentProps<typeof Message>["onOpenThread"];
   readonly viewerUserId: string | null;
 }): ReactNode {
-  const [open, setOpen] = useState(!props.queued);
+  // An ask opens unfolded: the dock's Answer approves only an ask shown whole.
+  const [open, setOpen] = useState(!props.queued || props.ask !== null);
   const body = useWaitingBody(props.hostClient, props.ask);
   const message =
     props.ask && body.status === "complete" && props.message.previewTruncated
       ? { ...props.message, body: body.text, previewTruncated: false }
       : props.message;
+  useShowAsk(props.ask?.messageId ?? null, body.status === "complete" && open);
   return (
     <Message
       queued={props.queued}

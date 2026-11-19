@@ -133,9 +133,8 @@ function fakeEditor(
     cancel: vi.fn(async () => undefined),
     content: typeof body === "string" ? [{ text: body, type: "text" }] : body,
     leaseId: "lease",
-    read: vi.fn(
-      async (): Promise<readonly ContentPart[]> =>
-        typeof body === "string" ? [{ text: body, type: "text" }] : body,
+    read: vi.fn(async (): Promise<readonly ContentPart[]> =>
+      typeof body === "string" ? [{ text: body, type: "text" }] : body,
     ),
     revision: 0,
     save: vi.fn(async () => ({ editedAt: "2026-10-31T12:01:00.000Z", revision: 1 })),
@@ -664,8 +663,31 @@ describe("WaitingInputs", () => {
       }),
     );
     expect(container.textContent).toContain("page the on-call");
+    expect(button(container, "Answer").disabled).toBe(false);
     await act(async () => button(container, "Answer").click());
     expect(decideTeamAsk).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 0 }));
+  });
+
+  it("Answer on a loaded ask waits while the person has folded it away again", async () => {
+    const whole = "Revert the last three merges, then page the on-call. ".repeat(20);
+    // The ask runs past its fold: twenty lines of 20px words in a fold of fewer lines.
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
+    const style = window.getComputedStyle.bind(window);
+    vi.spyOn(window, "getComputedStyle").mockImplementation((element) =>
+      element instanceof HTMLElement && element.classList.contains("message-fold")
+        ? ({ lineHeight: "20px" } as CSSStyleDeclaration)
+        : style(element),
+    );
+    const decideTeamAsk = vi.fn(async () => undefined);
+    const client = { decideTeamAsk } as unknown as HostClient;
+    const container = mount(render(client, inputsOf([ask("asked", whole)])));
+    // The whole ask is here and shown unfolded.
+    expect(button(container, "Show less")).not.toBeNull();
+    expect(button(container, "Answer").disabled).toBe(false);
+    await act(async () => button(container, "Show less").click());
+    expect(button(container, "Answer").disabled, "Answer approved a folded ask").toBe(true);
+    await act(async () => button(container, "Show more").click());
+    expect(button(container, "Answer").disabled).toBe(false);
   });
 
   it("binds an open edit to the version it shows: untouched words follow a save made elsewhere", async () => {

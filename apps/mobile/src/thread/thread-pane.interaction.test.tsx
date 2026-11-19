@@ -267,7 +267,11 @@ vi.mock("react-native", async () => {
         aria-expanded={props.accessibilityState?.expanded}
         aria-label={props.accessibilityLabel}
         disabled={props.disabled}
-        onClick={props.onPress}
+        // As on a phone, the innermost Pressable takes the touch; one around it does not.
+        onClick={(event) => {
+          event.stopPropagation();
+          props.onPress?.();
+        }}
       >
         {typeof props.children === "function" ? props.children({ pressed: false }) : props.children}
       </button>
@@ -4150,6 +4154,23 @@ describe("a task", () => {
     expect(host.decideTeamAsk).toHaveBeenCalledWith(
       expect.objectContaining({ decision: "approve", expectedRevision: 0 }),
     );
+  });
+
+  it("answers a long ask only while it stands unfolded in its bubble", async () => {
+    const whole = `@My agent ${"revert the last three merges and page the on-call, ".repeat(20)}`;
+    const ask = teammateAsk(whole);
+    const host = fakeHost(
+      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
+    );
+    const { container } = await mount(host, workId);
+    await settle();
+    // The whole ask is read and shown unfolded.
+    expect(hasButton(container, "Show less")).toBe(true);
+    expect(button(container, "Answer").disabled).toBe(false);
+    await press(container, "Show less");
+    expect(button(container, "Answer").disabled, "Answer approved a folded ask").toBe(true);
+    await press(container, "Show more");
+    expect(button(container, "Answer").disabled).toBe(false);
   });
 
   it("ignores a decision tapped as the ask docks, then declines it", async () => {
