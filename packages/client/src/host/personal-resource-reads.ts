@@ -28,6 +28,8 @@ export interface PersonalResourceReadOptions {
   canRead(): boolean;
   /** The watched kinds changed. */
   watchChanged(): void;
+  /** A kind's first complete read for this viewer landed. */
+  loaded?(kind: PersonalResourceKind): void;
   /** The Host moved past what this client installed; its next read is coming. */
   behind?(kind: PersonalResourceKind): void;
 }
@@ -168,7 +170,9 @@ export class PersonalResourceReads implements PersonalResourcePort {
         if (!current()) return;
         this.#reads.delete(kind);
         if (revision !== undefined) {
+          const first = !this.#installed.has(kind);
           this.#installed.set(kind, revision);
+          if (first) this.#options.loaded?.(kind);
           // Read after the push it answers, so it is at least as new as anything pushed before.
           if (!request.stale) this.#known.set(kind, revision);
         }

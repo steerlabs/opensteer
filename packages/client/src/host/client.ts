@@ -835,6 +835,11 @@ export interface HostSnapshot {
    * a sidebar row and the questions above a conversation all read this.
    */
   waitingRequests: readonly WaitingRequest[];
+  /**
+   * The resource kinds whose first read has landed for this viewer. Until a kind is here, its
+   * fields are unknown rather than empty: a surface says it is loading, never "none".
+   */
+  loadedResources: readonly import("@opensteer/protocol/resources").PersonalResourceKind[];
   runQueue: RunQueueEntry[];
   browserAvailable: boolean;
   browserPlacements: BrowserPlacementSummary[];

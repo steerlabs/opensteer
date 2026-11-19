@@ -188,6 +188,7 @@ function NewTask(props: {
   const { placements, selection } = execution;
   const blocker = firstMessageBlocker({
     attachmentsReady: staged.items.every((item) => draftAttachmentPart(item) !== null),
+    accountsKnown: snapshot.loadedResources.includes("harness"),
     execution,
   });
 
@@ -773,7 +774,8 @@ function sameNewTaskSnapshot(previous: HostSnapshot, next: HostSnapshot): boolea
   return (
     sameStableHostSnapshot(previous, next) &&
     previous.executionPreferences === next.executionPreferences &&
-    previous.personalSettings === next.personalSettings
+    previous.personalSettings === next.personalSettings &&
+    previous.loadedResources === next.loadedResources
   );
 }
 

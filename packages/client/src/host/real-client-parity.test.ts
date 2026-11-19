@@ -306,3 +306,30 @@ it("says a queued task's account is getting ready in the task list, from its she
     ).toBe(accountGettingReady(harness.name)),
   );
 });
+
+it("says accounts are unknown, not absent, until the first accounts read lands", async () => {
+  const host = new MockPersonalHost(new MockHostClient({ latencyMs: 0 }));
+  const held = Promise.withResolvers<void>();
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (
+        url.pathname.endsWith("/resources.detail.get") &&
+        JSON.parse(url.searchParams.get("input")!).kind === "harness"
+      )
+        await held.promise;
+      return host.fetch(input, init);
+    },
+    webSocketFactory: host.connect,
+    capabilities: [],
+  });
+  open.push({ client, host });
+  await client.load();
+  // Home reads the accounts as it mounts.
+  expect(client.getSnapshot().harnesses).toEqual([]);
+  expect(client.getSnapshot().loadedResources).not.toContain("harness");
+  held.resolve();
+  await vi.waitFor(() => expect(client.getSnapshot().loadedResources).toContain("harness"));
+  expect(client.getSnapshot().harnesses.length).toBeGreaterThan(0);
+});

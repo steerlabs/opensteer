@@ -665,6 +665,13 @@ export class HttpHostClient {
       watchChanged: () => this.#stream.watchResources(),
       // Rows stay on screen; the inventory is only no longer known to be complete.
       behind: (kind) => kind === "tab" && this.#tabs.markInventoryStale(),
+      loaded: (kind) => {
+        if (this.#snapshot.loadedResources.includes(kind)) return;
+        this.#update({
+          ...this.#snapshot,
+          loadedResources: [...this.#snapshot.loadedResources, kind],
+        });
+      },
     });
     this.#stream = new ScopedPersonalStream(
       options.streamCache,
@@ -4395,6 +4402,7 @@ function emptySnapshot(tabs: TabStore): HostSnapshot {
     assignments: {},
     threadAutomations: {},
     waitingRequests: [],
+    loadedResources: [],
     runQueue: [],
 
     browserAvailable: false,
