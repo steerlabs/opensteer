@@ -1181,8 +1181,11 @@ export class ChannelStore {
   }
 
   // Ingress times are the Host's: stamped and claimed with it, so "due now" is the Host's now.
-  async nextIngressDeadline(): Promise<Date | null> {
-    const now = new Date();
+  // A drain pass gives the one time it claimed at, so "due" means the same thing
+  // to the claim and to this answer: an exhausted row nobody could take is due
+  // exactly at that time, never a moment later because this read ran later.
+  async nextIngressDeadline(asOf: Date): Promise<Date | null> {
+    const now = asOf;
     const row = await this.#database
       .selectFrom("channelIngressEvents as claimable")
       .select(
@@ -1205,8 +1208,13 @@ export class ChannelStore {
     return row.deadline;
   }
 
-  async claimIngress(workerId: string, leaseMs = 30_000): Promise<ClaimedIngress | null> {
-    const now = new Date();
+  async claimIngress(
+    workerId: string,
+    asOf: Date = new Date(),
+    leaseMs = 30_000,
+  ): Promise<ClaimedIngress | null> {
+    // Eligibility is judged at the caller's time; a lease starts when it is taken.
+    const now = asOf;
     const candidate = await this.#database
       .selectFrom("channelIngressEvents as claimable")
       .select("id")
@@ -1226,7 +1234,6 @@ export class ChannelStore {
       .executeTakeFirst();
     if (!candidate) return null;
     await commitPersonalMutation(this.#database, async (transaction) => {
-      const now = new Date();
       const maintenance = await transaction
         .selectFrom("channelIngressEvents")
         .select("id")
@@ -1287,7 +1294,7 @@ export class ChannelStore {
       }
     });
     return commitPersonalMutation(this.#database, async (transaction) => {
-      const now = new Date();
+      const leasedAt = new Date();
       // One conversation is one lane: the oldest pending event in it, and only
       // while nothing else in that lane is in flight. Two messages a person
       // sent in order must reach their Thread in that order, and a global
@@ -1310,11 +1317,11 @@ export class ChannelStore {
         .updateTable("channelIngressEvents")
         .set({
           attempts: sql<number>`attempts + 1`,
-          claimExpiresAt: new Date(now.getTime() + leaseMs),
+          claimExpiresAt: new Date(leasedAt.getTime() + leaseMs),
           claimOwner: workerId,
           claimTokenHash: digest(claimToken),
           status: "leased",
-          updatedAt: now,
+          updatedAt: leasedAt,
         })
         .where("id", "=", row.id)
         .executeTakeFirstOrThrow();
