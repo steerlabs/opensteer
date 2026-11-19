@@ -82,23 +82,6 @@ func (m *Manager) installedApps(ctx context.Context, p *wire.AppsParams) (interf
 		if phone.binding != p.BindingToken || phone.epoch != p.NativeEpoch || ctx.Err() != nil {
 			return nil, wire.Fail(wire.StaleEpoch)
 		}
-		current := map[string]bool{}
-		for _, app := range apps {
-			current[app.AppID] = true
-		}
-		allowed := map[string]bool{}
-		if phone.appsEpoch == p.NativeEpoch {
-			for id := range phone.apps {
-				if current[id] {
-					allowed[id] = true
-				}
-			}
-		}
-		for _, app := range result.Apps {
-			allowed[app.AppID] = true
-		}
-		phone.apps = allowed
-		phone.appsEpoch = p.NativeEpoch
 		return result, nil
 	})
 }
@@ -111,22 +94,16 @@ func (m *Manager) screenOperation(ctx context.Context, params interface{}) (inte
 	case *wire.PerformParams:
 		return m.screenCall(ctx, p.ScreenRef, true, func(ctx context.Context, s *screenSession, guard func() error) (interface{}, error) {
 			m.mu.Lock()
-			phone := m.findBinding(p.BindingToken)
-			apps := map[string]bool{}
-			if phone != nil && phone.appsEpoch == p.NativeEpoch {
-				for id := range phone.apps {
-					apps[id] = true
-				}
-			}
 			var nativeSession *Session
-			if phone != nil {
+			if phone := m.findBinding(p.BindingToken); phone != nil {
 				nativeSession = phone.session
 			}
 			m.mu.Unlock()
 			if nativeSession == nil {
 				return nil, wire.Fail(wire.NoSession)
 			}
-
+			// Any app installed right now may be launched; the agent needn't have listed it first.
+			installed := map[string]bool{}
 			for _, action := range p.Actions {
 				if action.Kind != "launch" {
 					continue
@@ -135,19 +112,13 @@ func (m *Manager) screenOperation(ctx context.Context, params interface{}) (inte
 				if err != nil {
 					return nil, err
 				}
-				current := map[string]bool{}
 				for _, app := range inventory {
-					current[app.AppID] = true
-				}
-				for id := range apps {
-					if !current[id] {
-						delete(apps, id)
-					}
+					installed[app.AppID] = true
 				}
 				break
 			}
 			s.mu.Lock()
-			s.apps = apps
+			s.apps = installed
 			s.mu.Unlock()
 			return s.perform(ctx, p, guard, waitDuration)
 		})

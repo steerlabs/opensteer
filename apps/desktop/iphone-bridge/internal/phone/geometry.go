@@ -79,14 +79,6 @@ func (g Geometry) Normalize(p wire.Point) (wire.Point, error) {
 }
 func finite(f float64) bool { return !math.IsInf(f, 0) && !math.IsNaN(f) }
 
-func captureMatches(data []byte, g Geometry) bool {
-	if len(data) > 32<<20 {
-		return false
-	}
-	cfg, e := png.DecodeConfig(bytes.NewReader(data))
-	return e == nil && cfg.Width == g.CaptureWidth && cfg.Height == g.CaptureHeight
-}
-
 type affine struct{ A, B, C, D, TX, TY float64 }
 
 func (t affine) point(p wire.Point) (wire.Point, error) {

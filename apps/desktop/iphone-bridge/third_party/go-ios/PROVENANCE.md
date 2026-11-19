@@ -22,11 +22,10 @@ Opensteer patches:
   every mounter refused compatibility; network or uncertain mount failures stop.
 - The bridge's independent Instruments foreground reader follows MIT upstream
   `ios/instruments/helper.go`, `instruments_deviceinfo.go` and DTX channel negotiation
-  over `com.apple.instruments.dtservicehub`. It requires an explicit
-  `foregroundRunning=true` and an exact executable-to-installed-app mapping;
-  missing or ambiguous flags never imply foreground. CoreDevice `appservice.ListProcesses`
-  only exposes PIDs and paths, so it cannot establish foreground by itself. The pinned
-  upstream maps no foreground field; current iOS flag availability remains unqualified.
+  over `com.apple.instruments.dtservicehub`. iOS 27 flags SpringBoard, system UI
+  services and the visible app as `foregroundRunning` together, so the reader names
+  an app only when exactly one flagged executable maps to an installed app, and the
+  Home Screen when none does. The result is a label for the agent, never a gate.
   No additional upstream packages or GPL source/tests are copied.
 - Context-owned usbmux/lockdown connections, typed pairing/session errors, fixed
   system usbmux socket, and explicit transfer of a service connection from setup
@@ -66,8 +65,10 @@ are not distributed by this module. Dependencies resolve through go.mod/go.sum w
 THIRD_PARTY_NOTICES.md lists every module linked into the bridge.
 
 - N2 carries the upstream DTX encoder, message and primitive dictionary subset.
-  A supplied-net.Conn raw constructor bounds frame/fragment/message/aggregate
-  sizes and rejects compressed packets (compression is negotiated off). The AX
+  A supplied-net.Conn raw reader decodes like upstream and adds only an allocation
+  bound per message; header fields Apple sizes freely (the auxiliary buffer capacity,
+  flags, primitive types) are read, never required to match what the encoder writes.
+  Compressed packets are refused because compression is negotiated off. The AX
   archive subset resolves unknown classes as inert dictionaries, limits object
   counts/depth/UID cycles, and encodes only primitives, arrays and dictionaries.
   There are no Objective-C factories, audit fallback or device fixtures.

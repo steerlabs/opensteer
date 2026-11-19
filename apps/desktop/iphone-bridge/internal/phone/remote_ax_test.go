@@ -138,6 +138,31 @@ func TestRawDTXRejectsLengthsBeforeAllocation(t *testing.T) {
 	}
 }
 
+func TestRawDTXBoundsTheAuxiliarySection(t *testing.T) {
+	payload, e := nskeyedarchiver.ArchiveBin("fixture-selector")
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, size := range []int{64 << 10, 1<<20 + 1} {
+		aux := dtx.NewPrimitiveDictionary()
+		aux.AddBytes(make([]byte, size))
+		packet, e := dtx.Encode(1, 0, 0, false, dtx.Methodinvocation, payload, aux)
+		if e != nil {
+			t.Fatal(e)
+		}
+		// Apple sizes this capacity field to the message; it is not always 496.
+		binary.LittleEndian.PutUint32(packet[48:], uint32(size+512))
+		a, b := net.Pipe()
+		go func() { _, _ = b.Write(packet); b.Close() }()
+		_ = a.SetDeadline(time.Now().Add(time.Second))
+		_, err := dtx.NewRawConnection(a).Read()
+		a.Close()
+		if (err == nil) != (size < 1<<20) {
+			t.Fatalf("auxiliary of %d bytes: %v", size, err)
+		}
+	}
+}
+
 func TestRawDTXReassemblesOnlyMatchingBoundedFragments(t *testing.T) {
 	payload, e := nskeyedarchiver.ArchiveBin("fixture-selector")
 	if e != nil {

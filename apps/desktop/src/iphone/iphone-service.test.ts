@@ -516,16 +516,17 @@ it("qualifies first observe with runtime's content protection", async () => {
   const f = await fixture();
   cleanups.push(f.cleanup);
   const record = await f.service.reserve(ownerA, "candidate", crypto.randomUUID());
-  for (const foreground of [null, { appId: "com.opensteer.opensteer", label: "Opensteer" }]) {
+  f.native.foreground = { appId: "com.opensteer.opensteer", label: "Opensteer" };
+  await expect(f.service.firstObserve(record, new AbortController().signal)).rejects.toMatchObject({
+    code: "screenshot-failed",
+  });
+  // iOS 27 can't always name the front app; an unlocked, lit screen still passes.
+  for (const foreground of [null, { appId: "example.app", label: "Example" }]) {
     f.native.foreground = foreground;
     await expect(
       f.service.firstObserve(record, new AbortController().signal),
-    ).rejects.toMatchObject({ code: "screenshot-failed" });
+    ).resolves.toBeUndefined();
   }
-  f.native.foreground = { appId: "example.app", label: "Example" };
-  await expect(
-    f.service.firstObserve(record, new AbortController().signal),
-  ).resolves.toBeUndefined();
 });
 
 it("tries the next image only after a known compatibility refusal", async () => {

@@ -24,7 +24,9 @@ Procedures for a Mac driving an iPhone's screen.
 
 ## Build and test
 
-Every test here is synthetic and never discovers a phone.
+Every test here is synthetic and never discovers a phone. The bridge writes scrubbed
+diagnostics to stderr, which desktop keeps in `logs/iphone-bridge.log` in its data directory;
+read it first when a phone step fails.
 
 ```sh
 go -C apps/desktop/iphone-bridge test ./...
@@ -80,10 +82,9 @@ transport and each capability probe, never identifiers.
    alerts, edges and corners: screenshot pixels land where they point.
 5. **Lock and sleep.** Screen off, locked, unknown lock state, reboot, Mac sleep, Developer Mode
    off and an iOS update. Hidden content never leaks; control returns only after a fresh observe.
-   With AX unavailable, verify Instruments returns an explicit `foregroundRunning` process and
-   its executable resolves to the installed app. Check Home Screen, an ordinary app and Opensteer;
-   unknown foreground stays protected and cannot pass setup. The flag's availability on iOS 27+
-   needs hardware qualification; a running process list alone does not establish foreground.
+   The front app is a label: check it names an ordinary app, that the Home Screen and other
+   unnamed screens still show their screenshot, and that the Opensteer app's own screen stays
+   hidden.
 6. **Wi‑Fi.** After USB setup, unplug and drive the phone over the same Wi‑Fi for over ten
    minutes. Cover Local Network permission denied then granted, Wi‑Fi off and on, an access point
    change, two phones with the same name and Mac sleep.
