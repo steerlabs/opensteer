@@ -3305,6 +3305,7 @@ export async function createHostRuntime(
         ];
         return !local || (stored && stored <= local) ? stored : local;
       },
+      progressMark: () => syncHead,
       settle: async (now) => {
         await passwordSignIns.settleDeadlines();
         await store.requests.expirePasswordSignIns(now);
