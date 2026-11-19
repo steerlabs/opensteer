@@ -46,6 +46,9 @@ it("keeps the pinned pre-conversion copy past normal retention until the first h
   const listed = () => readdir(path.join(deploymentRoot, "snapshots"));
   expect(await listed()).toContain(pinned);
   expect(await pinnedSnapshotSourceVersion(deploymentRoot)).toBe("0.1.700");
+  // Even if a later pin were ever written, the pre-conversion one is named.
+  await take(6, "0.1.799", true);
+  expect(await pinnedSnapshotSourceVersion(deploymentRoot)).toBe("0.1.700");
 
   await markPersonalStateConverted(deploymentRoot);
   await take(5, "0.1.705");

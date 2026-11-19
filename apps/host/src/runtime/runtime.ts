@@ -56,7 +56,8 @@ import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import { runAllowsPersonalContext } from "@opensteer/database";
 import { resolveTeamTaskExecution } from "./team-task-execution.js";
-import { DeadlineDrain, retryWithBackoff } from "./deadline-drain.js";
+import { DeadlineDrain } from "./deadline-drain.js";
+import { assignmentReturnPass } from "./assignment-return-pass.js";
 import { executionLeaseDrain } from "./execution-leases.js";
 import { TeamRunEvents } from "./team-run-events.js";
 import { initializePersonalState } from "./personal-state.js";
@@ -176,7 +177,7 @@ import { ContinuationService } from "../agents/continuation-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
 import {
   harnessInspectionDefinition,
-  inspectAndRecordInvalidatedHarnessCatalog,
+  recaptureInvalidatedHarnessCatalog,
   inspectHarnessCatalogsAfterUsageLimit,
   reconcileAndRecordHarnessCatalogs,
   reconcileHarnessCatalogs,
@@ -1622,13 +1623,11 @@ export async function createHostRuntime(
     assignmentReturns = new DeadlineDrain({
       ...(options.executionClock ? { clock: options.executionClock } : {}),
       onError: reportMutationFailure,
-      drain: async () => {
-        const returns = await store.drainPendingAssignmentReturns();
-        for (const { assignmentId, error } of returns.failures) {
-          reportAssignmentReturnError(assignmentId, error);
-        }
-        return returns.failures.length > 0 || returns.waiting > 0 ? retryWithBackoff : null;
-      },
+      drain: () =>
+        assignmentReturnPass(
+          (limit) => store.drainPendingAssignmentReturns(limit),
+          (assignmentId, error) => reportAssignmentReturnError(assignmentId, error),
+        ),
     });
     store.onAssignmentReturnReady(() => assignmentReturns?.wake());
     store.onPersonMessageReady((message) => notificationDispatcher?.dispatch(message));
@@ -2208,30 +2207,21 @@ export async function createHostRuntime(
         ),
         onRunDispatchAvailable: () => wakeExecutionCoordinator(),
         onHarnessInstallation: async () => runnerChanged(),
-        onHarnessCatalogInvalidated: async (identity, invalidation) => {
-          try {
-            const harness = await store.getHarnessInstance(invalidation.harnessInstanceId);
-            if (
-              !harness ||
-              !harness.enabled ||
-              harness.removedAt !== null ||
-              !identity.environmentIds.includes(harness.environmentId)
-            ) {
-              return;
-            }
-            await store.discardHarnessCatalog(harness.environmentId, harness.id);
-            const captured = await inspectAndRecordInvalidatedHarnessCatalog({
-              catalogs: harnessCatalogs,
-              environmentId: harness.environmentId,
-              harnesses: [harnessInspectionDefinition(harness)],
-              runners,
-              signal: AbortSignal.timeout(harnessCatalogCaptureTimeoutMs),
-            });
-            observeRunnerCatalogs(identity, harness.environmentId, captured);
-          } catch (error) {
-            reportHarnessCatalogInvalidationError(invalidation.harnessInstanceId, error);
-          }
-        },
+        onHarnessCatalogInvalidated: (identity, invalidation) =>
+          recaptureInvalidatedHarnessCatalog({
+            catalogs: harnessCatalogs,
+            environmentIds: identity.environmentIds,
+            harnessInstanceId: invalidation.harnessInstanceId,
+            runners,
+            signal: AbortSignal.timeout(harnessCatalogCaptureTimeoutMs),
+            store,
+            onCaptured: (environmentId, captured) =>
+              observeRunnerCatalogs(identity, environmentId, captured),
+            onFailed: (error) => {
+              reportHarnessCatalogInvalidationError(invalidation.harnessInstanceId, error);
+              catalogConvergence?.wake();
+            },
+          }),
         onRegistered: runnerRegistrationHook(
           (identity: RunnerIdentity) => {
             registeringRunners.delete(identity.connectionId);
@@ -3233,9 +3223,10 @@ export async function createHostRuntime(
         store: accountDirectoryStore,
       });
     }
-    await memoryPasses.reconcileMissing();
+    memoryPasses.wake();
+    await memoryPasses.idle();
     reconcileMemoryPasses = () => {
-      if (!memoryPasses.settled) void memoryPasses.reconcileMissing();
+      if (!memoryPasses.settled) memoryPasses.wake();
     };
     void naming.reconcile().catch(reportThreadNamingError);
     await taskQuestions.reconcile();
@@ -3416,6 +3407,7 @@ export async function createHostRuntime(
         await step("admission", () => admission.close());
         await step("Run finishes", () => finishLoop?.close());
         await step("task result returns", () => assignmentReturns?.close());
+        await step("memory passes", () => memoryPasses.close());
         await step("Request deadlines", () => deadlines?.close());
         removeMutationHooks?.();
         await step("plugin change notices", () => notices.close());

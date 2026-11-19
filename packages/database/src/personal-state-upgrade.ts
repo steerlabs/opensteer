@@ -751,7 +751,12 @@ async function deriveAttentionLinks(tx: Tx, source: Source, cursor: UpgradeCurso
 async function verifyConversion(tx: Tx, source: Source, cursor: UpgradeCursor) {
   const {
     rows: [page],
-  } = await sql<{ lastId: string | null; ids: string[]; badText: boolean }>`
+  } = await sql<{
+    lastId: string | null;
+    ids: string[];
+    badReasoning: boolean;
+    badNodeText: boolean;
+  }>`
     with page as materialized (
       select id,kind,view,position,case
         when kind='message' then id=message_id and id collate "C" ~* ${messageIdPattern}
@@ -776,14 +781,22 @@ async function verifyConversion(tx: Tx, source: Source, cursor: UpgradeCursor) {
         select 1 from page p join transcript_items i on i.id=p.id
         left join deployment_events e on e.deployment_id=${source.id}
           and e.sequence=p.position-${cursor.reserved}::bigint
-        where p.kind in ('reasoning','node-message')
-          and i.body is distinct from e.data->'text'
+        where p.kind='reasoning' and i.body is distinct from e.data->'text'
         limit 1
-      ) as "badText"
+      ) as "badReasoning",
+      exists (
+        select 1 from page p join transcript_items i on i.id=p.id
+        left join deployment_events e on e.deployment_id=${source.id}
+          and e.sequence=p.position-${cursor.reserved}::bigint
+        where p.kind='node-message' and i.body is distinct from e.data->'text'
+        limit 1
+      ) as "badNodeText"
   `.execute(tx.withoutPlugins());
-  // Imported reasoning and subagent text is display-only: a mismatch is
-  // reported and the conversion goes on.
-  if (page?.badText) reportDisplayDrift({ check: "imported-text", afterKey: cursor.key });
+  // Subagent messages are what an agent reads back as a node's history: fatal.
+  if (page?.badNodeText) throw new Error("Personal conversion subagent text parity check failed");
+  // Reasoning is shown to the person and never read back by an agent or a file
+  // reference: a mismatch is reported and the conversion goes on.
+  if (page?.badReasoning) reportDisplayDrift({ check: "reasoning-text", afterKey: cursor.key });
   const cards = page!.ids.length
     ? await tx
         .selectFrom("transcriptItems")
@@ -877,22 +890,28 @@ async function verifyConversion(tx: Tx, source: Source, cursor: UpgradeCursor) {
         or exists(select 1 from runner_event_receipts limit 1)) as invalid
   `.execute(tx)
   ).rows[0]!;
-  // Authority parity stays fatal: every canonical card, Request, Run, delegation,
-  // delivery and command state must match, or the converted state is not used.
-  if (parity.invalid || parity.canonical !== cursor.reserved) {
+  // Fatal: every canonical card, Request, Run, delegation, delivery and command
+  // state, and every imported row an agent reads back or a file reference
+  // resolves (tool calls and their cards, tool images, subagent messages). A
+  // missing or mislinked one is data loss; the pinned pre-update copy is the way back.
+  if (
+    parity.invalid ||
+    parity.canonical !== cursor.reserved ||
+    Number(parity.tools) !== cursor.counts.tools ||
+    parity.tools !== parity.toolCards ||
+    Number(parity.images) !== cursor.counts.images ||
+    Number(parity.nodeMessages) !== cursor.counts.nodeMessages
+  ) {
     throw new Error("Personal conversion parity check failed");
   }
-  // Counts of imported tool, image, reasoning and subagent rows only change
-  // what history shows, so a difference is reported and the conversion goes on.
-  const counts = {
-    tools: [Number(parity.tools), cursor.counts.tools],
-    toolCards: [Number(parity.toolCards), Number(parity.tools)],
-    images: [Number(parity.images), cursor.counts.images],
-    reasoning: [Number(parity.reasoning), cursor.counts.reasoning],
-    nodeMessages: [Number(parity.nodeMessages), cursor.counts.nodeMessages],
-  } as const;
-  for (const [check, [found, expected]] of Object.entries(counts))
-    if (found !== expected) reportDisplayDrift({ check, found, expected });
+  // Display-only: the number of imported reasoning rows. Reasoning is shown to
+  // the person and read by no agent, history tool or file reference.
+  if (Number(parity.reasoning) !== cursor.counts.reasoning)
+    reportDisplayDrift({
+      check: "reasoning",
+      found: Number(parity.reasoning),
+      expected: cursor.counts.reasoning,
+    });
   return stage(cursor, "index");
 }
 

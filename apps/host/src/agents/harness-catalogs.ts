@@ -121,6 +121,50 @@ export async function inspectAndRecordHarnessCatalogs(options: {
   });
 }
 
+/**
+ * A Runner said a profile's catalog changed: drop the stored answer and ask
+ * again. If that fails, convergence is woken, because nothing else would ask
+ * for a profile whose stored catalog is now gone.
+ */
+export async function recaptureInvalidatedHarnessCatalog(options: {
+  readonly harnessInstanceId: HarnessInstanceId;
+  readonly environmentIds: readonly EnvironmentId[];
+  readonly store: {
+    getHarnessInstance(id: HarnessInstanceId): Promise<HarnessInstanceRecord | null | undefined>;
+    discardHarnessCatalog(environmentId: EnvironmentId, id: HarnessInstanceId): Promise<unknown>;
+  };
+  readonly catalogs: HarnessCatalogRecorder;
+  readonly runners: HarnessCatalogInspector;
+  readonly signal: AbortSignal;
+  readonly onCaptured: (
+    environmentId: EnvironmentId,
+    catalogs: readonly HarnessInstanceCatalog[],
+  ) => void;
+  readonly onFailed: (error: unknown) => void;
+}): Promise<void> {
+  try {
+    const harness = await options.store.getHarnessInstance(options.harnessInstanceId);
+    if (
+      !harness ||
+      !harness.enabled ||
+      harness.removedAt !== null ||
+      !options.environmentIds.includes(harness.environmentId)
+    )
+      return;
+    await options.store.discardHarnessCatalog(harness.environmentId, harness.id);
+    const captured = await inspectAndRecordInvalidatedHarnessCatalog({
+      catalogs: options.catalogs,
+      environmentId: harness.environmentId,
+      harnesses: [harnessInspectionDefinition(harness)],
+      runners: options.runners,
+      signal: options.signal,
+    });
+    options.onCaptured(harness.environmentId, captured);
+  } catch (error) {
+    options.onFailed(error);
+  }
+}
+
 /** An invalidation may race the inspection it prompted; recapture only that stale read. */
 export async function inspectAndRecordInvalidatedHarnessCatalog(options: {
   readonly catalogs: HarnessCatalogRecorder;
