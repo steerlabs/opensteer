@@ -654,6 +654,7 @@ export const OAuthSetupFailed = UserFacingError.define({
       "resource_mismatch",
       "client_not_approved",
       "client_registration_required",
+      "client_secret_required",
       "client_metadata_rejected",
       "registration_rejected",
       "incompatible_response",
@@ -748,6 +749,19 @@ export const OAuthSetupFailed = UserFacingError.define({
                 "Create an OAuth app there with this redirect URL, then enter its client ID and secret.",
               instructions:
                 "The service’s dynamic client registration endpoint requires authorization, such as an RFC 7591 initial access token, which PluginEngine does not have. Explain how to create an OAuth client in the service’s developer settings with PluginEngine’s callback URL, then enter its client ID and secret in PluginEngine. Do not repeatedly register clients or ask for the service’s registration credentials." +
+                callback,
+            },
+            agentFixable: false,
+          },
+          client_secret_required: {
+            title: "This sign-in needs an OAuth app with its secret",
+            description:
+              "This service signs in without PKCE, which only an OAuth app whose client secret is kept here can do safely.",
+            recovery: {
+              action:
+                "Create an OAuth app in the service’s developer settings with this redirect URL, then enter its client ID and client secret.",
+              instructions:
+                "The app’s provider declares `pkce: false`, so the code exchange relies on the client secret alone. A client without a secret, such as a public client or a client metadata document, cannot sign in this way. Explain how to create an OAuth client in the service’s developer settings with the callback URL, then enter its client ID and secret. Do not remove `pkce: false` unless the service documents PKCE support for its confidential clients." +
                 callback,
             },
             agentFixable: false,
@@ -1584,6 +1598,8 @@ export const OAuthAttempt = Schema.Struct({
   /** Token request encoding and nested grant location, as the provider declared them. */
   tokenRequestFormat: Schema.optional(OAuthTokenRequestFormat),
   tokenResponse: Schema.optional(OAuthTokenResponse),
+  /** The provider signs in without PKCE, with a client that authenticates with its secret. */
+  pkce: Schema.optional(Schema.Literal(false)),
 });
 /**
  * An attempt that signs in with the operator's client named by `firstParty`. It keeps no server or

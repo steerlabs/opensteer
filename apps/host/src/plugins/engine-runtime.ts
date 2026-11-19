@@ -47,6 +47,7 @@ import {
   OAuthClientId,
   OAuthAttemptId,
   OAuthClientChoice,
+  OAuthSetupFailed,
   OAuthClientInputs,
   OAuthBrokerFailed,
   OAuthAttemptRecord,
@@ -1149,15 +1150,31 @@ export async function startEngine(
                 ),
               );
             yield* accountAdapter.reviewedConnection(input.connection, input.consent);
-            const result = yield* engine.accountConnections.startOAuth({
-              connection: AccountConnectionId.make(input.connection),
-              owner,
-              method: input.method,
-              redirectUri: input.redirectUri,
-              ...(input.client
-                ? { client: Schema.decodeUnknownSync(OAuthClientChoice)(input.client) }
-                : {}),
-            });
+            const result = yield* engine.accountConnections
+              .startOAuth({
+                connection: AccountConnectionId.make(input.connection),
+                owner,
+                method: input.method,
+                redirectUri: input.redirectUri,
+                ...(input.client
+                  ? { client: Schema.decodeUnknownSync(OAuthClientChoice)(input.client) }
+                  : {}),
+              })
+              .pipe(
+                // The person can act on this one: the service needs their own app's secret.
+                Effect.catchIf(
+                  (error) =>
+                    Schema.is(OAuthSetupFailed)(error) && error.reason === "client_secret_required",
+                  () =>
+                    Effect.fail(
+                      new PluginServiceError(
+                        "invalid",
+                        "This service signs in without PKCE, so it needs your own OAuth app with its client secret. Create an app in the service's developer settings with this callback, then enter its client ID and client secret.",
+                        "OAuthSetupFailed",
+                      ),
+                    ),
+                ),
+              );
             if (result.status !== "redirect" || result.brokerAttemptId) return result;
             const rows = yield* engineOAuthAttempt(composed.sql, input.connection);
             const row = rows[0];

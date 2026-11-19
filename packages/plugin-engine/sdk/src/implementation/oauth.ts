@@ -1083,6 +1083,8 @@ export const makeOAuth = (
     Effect.gen(function* () {
       if (discovered.tokenEndpointAuthMethod === "none" && entered.clientSecret !== undefined)
         return yield* new OAuthSetupFailed({ reason: "invalid_client" });
+      if ("pkce" in discovered && discovered.pkce === false && entered.clientSecret === undefined)
+        return yield* new OAuthSetupFailed({ reason: "client_secret_required" });
       return yield* Schema.decodeUnknownEffect(OAuthRegistration)({
         client_id: entered.clientId,
         token_endpoint_auth_method:
@@ -1917,6 +1919,17 @@ export const makeOAuth = (
       }
       if (redirect === undefined)
         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
+      // Without PKCE the code is bound to the client only by its secret, so a client without one,
+      // such as a public or metadata-document client, never signs in this way.
+      if (
+        "pkce" in discovered &&
+        discovered.pkce === false &&
+        registered.token_endpoint_auth_method === "none"
+      )
+        return yield* new OAuthSetupFailed({
+          reason: "client_secret_required",
+          callbackUrl: HttpUrl.make(redirect.href),
+        });
       const authorization = yield* protocol
         .authorize({ ...discovered, client: registered, redirectUri: redirect.href })
         .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "unsupported" })));
