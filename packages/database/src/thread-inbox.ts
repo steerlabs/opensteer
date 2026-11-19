@@ -297,6 +297,22 @@ export async function readThreadInputQueue(
         .execute()
     : [];
   const byId = new Map(messages.map((message) => [message.id, message]));
+  const seeding = new Set(
+    rows.length && !request.authority
+      ? (
+          await transaction
+            .selectFrom("runs")
+            .select("seedInputId")
+            .where(
+              "seedInputId",
+              "in",
+              rows.map(({ messageId }) => messageId),
+            )
+            .where("status", "in", nonTerminalRunStatuses)
+            .execute()
+        ).map(({ seedInputId }) => seedInputId)
+      : [],
+  );
   const items: WaitingInputView[] = [];
   for (const row of rows) {
     const message = byId.get(row.messageId);
@@ -339,7 +355,14 @@ export async function readThreadInputQueue(
           : null,
       canEdit:
         !request.authority &&
-        (await inputEditEligibility(transaction, thread, row, message, request.requestedBy)),
+        (await inputEditEligibility(
+          transaction,
+          thread,
+          row,
+          message,
+          request.requestedBy,
+          seeding.has(row.messageId),
+        )),
       lease,
       canCancel: own && thread.status !== "archived",
       canMove: own && thread.status !== "archived",

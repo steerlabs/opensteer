@@ -308,6 +308,7 @@ const retainedStateDdl = `
     add column runner_safety_terminal boolean not null default false,
     add column execute_claim_state text not null default 'not-created'
       check (execute_claim_state in ('not-created','unclaimed','claimed')),
+    add column last_runner_digest bytea check (octet_length(last_runner_digest) = 32),
     add column finish_intent jsonb check (jsonb_typeof(finish_intent) = 'object' and octet_length(finish_intent::text) <= 8192),
     add constraint runs_terminal_reply_fkey foreign key (terminal_reply_message_id,id,thread_id)
       references messages(id,run_id,thread_id) deferrable initially deferred,

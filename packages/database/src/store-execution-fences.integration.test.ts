@@ -2452,6 +2452,17 @@ describeStore("PostgreSQL store", (it) => {
         replayed: true,
         throughOrdinal: ordinal - 1,
       });
+    // Without receipts a replay must still come from the Run's binding and, for its last
+    // statement, be that statement.
+    await expect(
+      store.commitRunnerEvent({ ...reply, runnerBootId: "another-boot" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await expect(
+      store.commitRunnerEvent({
+        ...completed,
+        event: { ...completed.event, emittedAt: new Date(Date.now() + 60_000).toISOString() },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
     expect(
       await store.commitRunnerEvent(
         report("run.usage", { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 }),
