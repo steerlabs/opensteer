@@ -1583,23 +1583,15 @@ export class HttpHostClient {
 
   /**
    * Another viewer, session or history. Everything held for the one before goes in this one step,
-   * together with what says it was read (the resource reader's installed revisions, the waiting
-   * Requests' signature, attention), so nothing cleared can look already read. It is the only place
-   * held data is cleared for a viewer.
+   * together with what says it was read (the resource reader's installed revisions and loaded
+   * flags, the tab store's confirmed layout and command overlay, the waiting Requests' stamp,
+   * attention), so nothing cleared can look already read. A new history of the same viewer (a
+   * restored or re-created Host) is cleared exactly like another viewer: its state is not the
+   * old one's. Only the viewer's durable drafts and outbox, which live outside this client's
+   * view state, survive it. This is the only place held data is cleared for a viewer.
    */
-  #forgetViewer(keep: Partial<HostSnapshot>, sameViewer = false) {
+  #forgetViewer(keep: Partial<HostSnapshot>) {
     this.#viewerGeneration++;
-    // The same person under a new history (a rollback, a restored Host): what they were shown stays
-    // on screen while all of it is read again, so nothing they have open is torn down. Only what
-    // says it was read is forgotten.
-    const held: Partial<HostSnapshot> = sameViewer
-      ? Object.fromEntries(
-          [...Object.keys(resourceBackedFields), ...sameViewerFields].map((field) => [
-            field,
-            this.#snapshot[field as keyof HostSnapshot],
-          ]),
-        )
-      : {};
     clearRunPageViews(this);
     clearRunPlacePictures(this);
     this.#runPlaces.clear();
@@ -1609,12 +1601,11 @@ export class HttpHostClient {
     this.#ownerViews.clear();
     this.#pageSessions.clear();
     this.#viewers.clear();
-    if (sameViewer) this.#tabs.markInventoryStale();
-    else this.#tabs.clear();
+    this.#tabs.clear();
     this.#threadState.clear();
     this.#threadRenames.clear();
     this.#threadIcons.clear();
-    if (!sameViewer) this.#environmentCatalogs.clear();
+    this.#environmentCatalogs.clear();
     this.#bodies.clear();
     this.#clearAttachmentReads();
     this.#threadDeployment.clear();
@@ -1624,7 +1615,7 @@ export class HttpHostClient {
     this.#waitingRequestStamp = "";
     this.#answeredRequests.clear();
     this.#resources.reset();
-    this.#update({ ...emptySnapshot(this.#tabs), ...held, ...keep });
+    this.#update({ ...emptySnapshot(this.#tabs), ...keep });
   }
 
   watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
@@ -1815,14 +1806,8 @@ export class HttpHostClient {
           (shellAuthority.session &&
             this.#snapshot.sessionId !== shellAuthority.session.sessionId)))
     ) {
-      const { connection, connectionInterrupted, network, user, deploymentId } = this.#snapshot;
-      const sameViewer =
-        user !== null &&
-        shellAuthority !== undefined &&
-        shellAuthority !== null &&
-        user.id === shellAuthority.viewerId &&
-        deploymentId === shellAuthority.deploymentId;
-      this.#forgetViewer({ connection, connectionInterrupted, network }, sameViewer);
+      const { connection, connectionInterrupted, network } = this.#snapshot;
+      this.#forgetViewer({ connection, connectionInterrupted, network });
       forgot = true;
     }
     const shell = state.snapshot;
@@ -5078,18 +5063,6 @@ function createsBrowserProfile(command: ClientCommandInput): boolean {
   const value = command.response.value as Record<string, unknown> | null | undefined;
   return value?.["decision"] === "fulfilled" && value["createProfile"] !== undefined;
 }
-
-/** Who the viewer is, kept with their resources through a new history of the same viewer. */
-const sameViewerFields = [
-  "loadedResources",
-  "user",
-  "deploymentId",
-  "deploymentShape",
-  "session",
-  "sessionId",
-  "sessionSurface",
-  "can",
-] as const satisfies readonly (keyof HostSnapshot)[];
 
 function resourceKindsOf(field: PropertyKey): readonly PersonalResourceKind[] | undefined {
   return typeof field === "string" && Object.hasOwn(resourceBackedFields, field)
