@@ -33,6 +33,7 @@ export * from "./waiting-requests.js";
 export * from "./thread-placement.js";
 export * from "./waiting-inputs.js";
 export * from "./waiting-draft.js";
+export * from "./unsent-edits.js";
 export * from "./transcript.js";
 export * from "./usage-notice.js";
 export * from "./browser-presentation.js";
