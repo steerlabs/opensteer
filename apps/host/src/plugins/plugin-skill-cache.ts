@@ -32,7 +32,15 @@ export class PluginSkillCache {
     this.#root = join(dataDirectory, "plugins", "active");
     this.#packages = join(dataDirectory, "plugins", "data", "packages");
   }
-  async record(bundle: PluginOutput<"skillFiles">) {
+  /**
+   * Record a version's skills as the plugin's entry, only while it is still the active version
+   * (`active`, read again just before the entry is replaced): a refresh that read a version a later
+   * change replaced writes nothing. Returns whether it wrote the entry.
+   */
+  async record(
+    bundle: PluginOutput<"skillFiles">,
+    active: () => Promise<string | undefined>,
+  ): Promise<boolean> {
     const pluginId = entrySchema.shape.pluginId.parse(bundle.plugin);
     const files = bundle.files.map((file) => {
       if (
@@ -72,14 +80,21 @@ export class PluginSkillCache {
           throw error;
         await readVerifiedPluginSnapshot(target, digest);
       }
+      if ((await active()) !== entry.version) return false;
       await mkdir(this.#root, { recursive: true, mode: 0o700 });
       await replacePrivateFileAtomically(
         join(this.#root, pluginId + ".json"),
         JSON.stringify(entry),
       );
+      return true;
     } finally {
       await rm(stage, { recursive: true, force: true });
     }
+  }
+  /** The plugin's entry, only while it names `version`, the plugin's active version. */
+  async current(plugin: string, version: string | null) {
+    const entry = version === null ? undefined : await this.get(plugin);
+    return entry?.version === version ? entry : undefined;
   }
   async get(plugin: string) {
     if (!/^app_[0-9a-f-]{36}$/u.test(plugin)) return undefined;

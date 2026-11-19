@@ -682,20 +682,48 @@ export class PluginService {
    * for every plugin (without `plugins`). A plugin whose refresh fails keeps its entry until then.
    */
   async reconcileSkills(plugins?: readonly string[], signal?: AbortSignal) {
-    const active = await engineActiveVersions(this.#options.databaseUrl);
-    const targets = plugins ?? [
-      ...new Set([...active.keys(), ...(await this.skillCache.plugins())]),
-    ];
-    for (const plugin of targets) {
+    const targets =
+      plugins ??
+      (await Promise.resolve().then(async () => [
+        ...new Set([
+          ...(await engineActiveVersions(this.#options.databaseUrl)).keys(),
+          ...(await this.skillCache.plugins()),
+        ]),
+      ]));
+    await Promise.all(targets.map((plugin) => this.#refreshSkills(plugin, signal)));
+  }
+  /** The plugin's skill record, only while it names the active version; never wakes the engine. */
+  async activeEntry(plugin: string) {
+    const version = (await engineActiveVersions(this.#options.databaseUrl)).get(plugin) ?? null;
+    return this.skillCache.current(plugin, version);
+  }
+  /** One refresh at a time per plugin, each reading the active version when it starts. */
+  readonly #skillRefreshes = new Map<string, Promise<void>>();
+  #refreshSkills(plugin: string, signal?: AbortSignal): Promise<void> {
+    const previous = this.#skillRefreshes.get(plugin) ?? Promise.resolve();
+    const next = previous.then(async () => {
       try {
-        const version = active.get(plugin);
+        const active = async () =>
+          (await engineActiveVersions(this.#options.databaseUrl)).get(plugin);
+        const version = await active();
         if (version === undefined) await this.skillCache.remove(plugin);
-        else if ((await this.skillCache.get(plugin))?.version !== version)
-          await this.#cacheVersion(plugin, signal);
+        else if ((await this.skillCache.get(plugin))?.version !== version) {
+          const context: PluginCaller = { caller: this.#options.owner, mode: "automatic" };
+          // Written only while the version it read is still the active one.
+          await this.skillCache.record(
+            await this.skillFiles({ plugin }, context, signal),
+            active,
+          );
+        }
       } catch {
         this.#options.onDiagnostic?.("skill-record-refresh-failed");
       }
-    }
+    });
+    this.#skillRefreshes.set(plugin, next);
+    void next.finally(() => {
+      if (this.#skillRefreshes.get(plugin) === next) this.#skillRefreshes.delete(plugin);
+    });
+    return next;
   }
   resourcesRead = (
     input: PluginInput<"resourcesRead">,
@@ -755,7 +783,7 @@ export class PluginService {
       const plugins = await Promise.all(
         operations.list.output.parse(parsed).map(async (plugin) => ({
           ...plugin,
-          ...((await this.skillCache.get(plugin.id))?.hasPage
+          ...((await this.skillCache.current(plugin.id, plugin.activeVersion))?.hasPage
             ? { page: { kind: "plugin" as const, pluginId: plugin.id } }
             : {}),
         })),
@@ -763,10 +791,6 @@ export class PluginService {
       return operations.list.output.parse(plugins) as PluginOutput<K>;
     }
     return parsed;
-  }
-  async #cacheVersion(plugin: string, signal?: AbortSignal) {
-    const context: PluginCaller = { caller: this.#options.owner, mode: "automatic" };
-    await this.skillCache.record(await this.skillFiles({ plugin }, context, signal));
   }
   discardStream(id: string): void {
     if (this.#child) this.#send(this.#child, { type: "cancel", id });
