@@ -2843,7 +2843,13 @@ test("reads handle frames through the stream its host.live named, repairs a gap 
 /** Open or Done tasks as `tasks.page` lists them: the full Thread view of each. */
 function taskPageResponse(
   host: ReturnType<typeof scriptedHost>,
-  rows: readonly { id: string; askedAt: string; doneAt?: string | null; title?: string }[],
+  rows: readonly {
+    id: string;
+    askedAt: string;
+    doneAt?: string | null;
+    title?: string;
+    status?: "idle" | "running";
+  }[],
   window: { nextBefore: string | null; totalItems: number },
 ) {
   const environmentId = new MockHostClient({ latencyMs: 0 }).getSnapshot().threads[0]!
@@ -2858,7 +2864,7 @@ function taskPageResponse(
             ...task,
             id: row.id as typeof task.id,
             title: row.title ?? "Older",
-            status: "idle",
+            status: row.status ?? "idle",
             doneAt: (row.doneAt ?? null) as null,
           }).thread,
           askedAt: row.askedAt,
@@ -2922,6 +2928,39 @@ describe("task lists from the shell and its pages", () => {
       await vi.waitFor(() => expect(pages, "the settled list was never refilled").toHaveLength(1));
       expect(pages[0]).toEqual({ before: "settled-cursor", limit: 50 });
       await vi.waitFor(() => expect(client.getSnapshot().tasks?.entries).toHaveLength(50));
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("lists every running task, paging those past the shell's active window", async () => {
+    const shown = Array.from({ length: 2 }, (_, index) => ({
+      ...task,
+      id: createId("thread"),
+      askedAt: minutesBefore(index),
+    }));
+    const host = scriptedHost({
+      tasks: shown,
+      lists: { activeTaskIds: shown.map(({ id }) => id), activeNextBefore: "active-0" },
+    });
+    const pages: unknown[] = [];
+    const more = Array.from({ length: 3 }, (_, index) => ({
+      id: createId("thread"),
+      askedAt: minutesBefore(10 + index),
+      status: "running" as const,
+    }));
+    const client = scriptedClient(host, async (input) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+      pages.push(JSON.parse(url.searchParams.get("input") ?? "{}"));
+      return taskPageResponse(host, more, { nextBefore: null, totalItems: 5 });
+    });
+    try {
+      await client.load();
+      await vi.waitFor(() =>
+        expect(client.getSnapshot().activeTasks, "the active page never arrived").toHaveLength(5),
+      );
+      expect(pages).toEqual([{ active: true, before: "active-0", limit: 50 }]);
     } finally {
       client.dispose();
     }

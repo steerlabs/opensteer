@@ -310,6 +310,9 @@ export class HttpHostClient {
   readonly #doneMoves = new Map<string, { readonly done: boolean; readonly at: bigint }>();
   /** How many settled rows the person had loaded when a shell repair replaced the lists. */
   #taskDepth = 0;
+  /** Where running and waiting tasks past the shell's active window continue; null when all are held. */
+  #activeCursor: string | null = null;
+  #activeRead: Promise<void> | undefined;
   #publishedShell: ReturnType<ScopedPersonalStream["shell"]["getSnapshot"]> | undefined;
   #syncedAttachment: number | undefined;
   readonly #fetch: Fetch;
@@ -1671,6 +1674,7 @@ export class HttpHostClient {
         this.#taskDepth = Math.max(this.#taskDepth, settledEntries(this.#snapshot.tasks).length);
       this.#taskWindow = undefined;
       this.#removedTasks.clear();
+      this.#activeCursor = shell.activeNextBefore;
     }
     const tasksChanged = replaced || old?.tasks !== state.tasks;
     const visitsChanged = old?.visits !== state.visits;
@@ -1820,7 +1824,10 @@ export class HttpHostClient {
         taskChanges,
       );
     }
-    if (state.synchronized && (tasksChanged || !old?.synchronized)) this.#refillTasks();
+    if (state.synchronized && (tasksChanged || !old?.synchronized)) {
+      this.#refillTasks();
+      this.#readActiveTasks();
+    }
     if (attached) {
       this.#connectionAdmit?.();
       this.#finishLoad();
@@ -3383,6 +3390,23 @@ export class HttpHostClient {
     return this.#loadEarlier(null);
   }
 
+  /** Every running and waiting task is listed: those past the shell's window are paged in. */
+  #readActiveTasks() {
+    if (this.#activeCursor === null || this.#activeRead) return;
+    const viewer = this.#viewerGeneration;
+    const read = this.#readTaskPage(null, this.#activeCursor, true)
+      .then(
+        () => {
+          if (viewer === this.#viewerGeneration) this.#readActiveTasks();
+        },
+        () => undefined,
+      )
+      .finally(() => {
+        if (this.#activeRead === read) this.#activeRead = undefined;
+      });
+    this.#activeRead = read;
+  }
+
   /**
    * Reads earlier open tasks until the settled list holds its window (the shell's 25, or the depth
    * the person had loaded before a repair), one page at a time, while the Host has more.
@@ -3446,12 +3470,17 @@ export class HttpHostClient {
       : { ...reconciled, pendingRequests: thread.pendingRequests };
   }
 
-  async #readTaskPage(scope: string | null, before: string | null): Promise<boolean> {
+  async #readTaskPage(
+    scope: string | null,
+    before: string | null,
+    active = false,
+  ): Promise<boolean> {
     const cut = this.#stream.shell.getSnapshot();
     const viewer = this.#viewerGeneration;
     const page = unwrapRpcResult(
       await this.rpc["tasks.page"]({
         ...(scope ? { done: true } : {}),
+        ...(active ? { active: true } : {}),
         ...(before ? { before } : {}),
         limit: 50,
       }),
@@ -3482,7 +3511,14 @@ export class HttpHostClient {
     });
     const held = this.#heldTasks(scope);
     // Loaded pages are not evicted: they are what the person asked to see, in the order shown.
-    let merged = mergeTasks(before ? held : null, { entries, window: page.window });
+    // Active pages join the open list; its settled window and cursor stay as they are.
+    let merged = active
+      ? {
+          entries: mergeTaskEntries(held?.entries ?? [], entries),
+          window: held?.window ?? page.window,
+        }
+      : mergeTasks(before ? held : null, { entries, window: page.window });
+    if (active) this.#activeCursor = page.window.hasMore ? page.window.nextBefore : null;
     if (scope) {
       // Done membership pushed after this page's cut wins over the page, held list or not.
       let entries = merged.entries;
@@ -3506,12 +3542,20 @@ export class HttpHostClient {
       }
       merged = { ...merged, entries };
     }
-    if (!scope)
+    if (!scope && !active)
       this.#taskWindow = { nextBefore: page.window.nextBefore, hasMore: page.window.hasMore };
     this.#update(
       scope
         ? { ...this.#snapshot, doneTasks: { [mainDoneTasks]: merged } }
-        : { ...this.#snapshot, tasks: merged },
+        : {
+            ...this.#snapshot,
+            tasks: merged,
+            activeTasks: merged.entries.filter(
+              ({ thread }) =>
+                thread.doneAt === null &&
+                (thread.status === "running" || thread.status === "waiting"),
+            ),
+          },
     );
     return true;
   }
