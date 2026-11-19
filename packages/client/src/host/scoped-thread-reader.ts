@@ -27,6 +27,11 @@ export interface ThreadViewState {
   readonly generation?: number;
   /** Counts the Host's repairs of this scope: each replaced what the reader holds. */
   readonly repairs?: number;
+  /**
+   * Every waiting message's id, in order, as the Host's queue lists them; `inputQueue` holds only
+   * those whose entries are read. Absent until the scope is synchronized.
+   */
+  readonly queueInputs?: readonly string[];
   readonly pendingRequestIds?: readonly string[];
   readonly inputQueueError?: unknown;
   readonly moreTools?: boolean;
@@ -219,6 +224,7 @@ export class ScopedThreadReader implements ThreadViewSource {
         }) ?? [];
     }
     const inputQueue = state.inputQueue;
+    const queueInputs = state.synchronized ? state.snapshot?.queue?.inputs : undefined;
     const hasMore = state.snapshot?.nextBefore != null;
     const hasNewer = state.snapshot?.nextAfter != null;
     const moreRequests = state.synchronized && state.snapshot?.overlayCursors?.requests != null;
@@ -276,6 +282,7 @@ export class ScopedThreadReader implements ThreadViewSource {
       requestChanged ||
       state.generation !== this.#view.generation ||
       state.repairs !== this.#view.repairs ||
+      queueInputs !== this.#view.queueInputs ||
       inputQueueError !== this.#view.inputQueueError ||
       inputQueue !== this.#view.inputQueue ||
       state.synchronized !== this.#view.synchronized
@@ -296,6 +303,7 @@ export class ScopedThreadReader implements ThreadViewSource {
             : (this.#view.pendingRequestIds ?? []),
         generation: state.generation,
         repairs: state.repairs,
+        ...(queueInputs ? { queueInputs } : {}),
         inputQueueError,
         synchronized: state.synchronized,
       });

@@ -85,6 +85,7 @@ import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { Icon } from "./icon.js";
 import type { ComposerQuote } from "./composer.js";
 import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
+import { heldEditScope, returnGoneWaitingEdits } from "./held-waiting-edits.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
 import { useVoiceOn } from "@opensteer/client/react";
 import { VoiceStart } from "./voice.js";
@@ -180,6 +181,7 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
           runQueue={transcript.runQueue}
           detailCurrent={transcript.synchronized}
           repairs={transcript.repairs ?? 0}
+          queueInputs={transcript.queueInputs}
         />
       ) : null}
     </Gated>
@@ -200,6 +202,8 @@ interface ThreadViewProps {
   detailCurrent?: boolean;
   /** Counts the Host's repairs of this conversation: each replaced the rows on screen. */
   repairs?: number;
+  /** Every waiting message's id, as the Host's queue lists them, once the conversation is current. */
+  queueInputs?: readonly string[] | undefined;
   runQueue?: readonly import("@opensteer/client/host").RunQueueEntry[];
   environmentStatus: EnvironmentStatus;
   executionPlacements: ThreadPlacementOption[];
@@ -234,6 +238,7 @@ function ThreadView({
   runQueue = noRuns,
   detailCurrent = true,
   repairs = 0,
+  queueInputs,
   thread,
 }: ThreadViewProps) {
   const teamSource = useTaskSourceView(thread.teamOrigin);
@@ -1027,6 +1032,27 @@ function ThreadView({
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
+
+  /* ---- Words held across a view that went away ---- */
+
+  // An edit held while this view was away, whose message is no longer waiting now the conversation
+  // is current again: its words come back to the composer as a draft instead of being lost.
+  const waitingIds = useMemo(
+    () =>
+      detailCurrent ? (queueInputs ?? inputQueue?.items.map((item) => item.message.id)) : undefined,
+    [detailCurrent, inputQueue, queueInputs],
+  );
+  useEffect(() => {
+    const scope = heldEditScope(hostClient);
+    const key = composerDraftKeyFor(snapshot.deploymentId, snapshot.user?.id, {
+      kind: "thread",
+      threadId: thread.id,
+    });
+    if (!waitingIds || !scope || !key) return;
+    returnGoneWaitingEdits(scope, thread.id, waitingIds, (returned) => {
+      void composerDrafts.handBack(key, returned).catch(reportActionError);
+    });
+  }, [waitingIds, hostClient, snapshot.deploymentId, snapshot.user?.id, thread.id]);
 
   /* ---- Quoting a reply ---- */
 

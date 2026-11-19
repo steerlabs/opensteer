@@ -9,6 +9,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetHeldWaitingEditsForTests } from "./held-waiting-edits.js";
 import {
   HostClientRequestError,
   HttpHostClient,
@@ -30,6 +31,7 @@ let root: Root | null = null;
 afterEach(() => {
   if (root) act(() => root?.unmount());
   root = null;
+  resetHeldWaitingEditsForTests();
   document.body.replaceChildren();
   vi.restoreAllMocks();
 });
@@ -807,6 +809,43 @@ describe("WaitingInputs", () => {
     } finally {
       client.dispose();
     }
+  });
+
+  it("keeps typed words and their lease when the view goes away short of sign-out, and takes them up on return", async () => {
+    const editor = fakeEditor("Old words");
+    const client = {
+      editWaitingMessage: vi.fn(async () => editor),
+      getSnapshot: () => ({ session: "authenticated" }),
+      subscribe: () => () => undefined,
+    } as unknown as HostClient;
+    const inputs = inputsOf([item("mine", "Old words", { canEdit: true })]);
+    const container = mount(render(client, inputs));
+    await clickWords(container, "mine");
+    await write(field(container)!, "Words I have not saved");
+    // A same-viewer history rollback unmounts the whole workspace while it reloads settings.
+    act(() => root?.render(<></>));
+    expect(editor.cancel, "the lease was let go with the words").not.toHaveBeenCalled();
+    await act(async () => root?.render(render(client, inputs)));
+    expect(field(container)?.value).toBe("Words I have not saved");
+    expect(client.editWaitingMessage).toHaveBeenCalledOnce();
+    await press(field(container)!, "Enter");
+    expect(editor.save).toHaveBeenCalledWith([{ text: "Words I have not saved", type: "text" }], 0);
+  });
+
+  it("lets an untouched edit's lease go when its view goes away", async () => {
+    const editor = fakeEditor("Old words");
+    const client = {
+      editWaitingMessage: vi.fn(async () => editor),
+      getSnapshot: () => ({ session: "authenticated" }),
+      subscribe: () => () => undefined,
+    } as unknown as HostClient;
+    const inputs = inputsOf([item("mine", "Old words", { canEdit: true })]);
+    const container = mount(render(client, inputs));
+    await clickWords(container, "mine");
+    await act(async () => root?.render(<></>));
+    expect(editor.cancel).toHaveBeenCalledOnce();
+    await act(async () => root?.render(render(client, inputs)));
+    expect(field(container)).toBeNull();
   });
 
   it("hands an edit to the app outbox before closing its editor", async () => {

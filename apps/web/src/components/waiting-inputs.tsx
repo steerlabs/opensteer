@@ -1,4 +1,8 @@
-import { classifyClientFailure, type ClientScope } from "@opensteer/client/connections";
+import {
+  classifyClientFailure,
+  clientScopeKey,
+  type ClientScope,
+} from "@opensteer/client/connections";
 import { hostMessageOutbox } from "@opensteer/client/host";
 import {
   memo,
@@ -33,6 +37,7 @@ import {
   type WaitingMessageEditor,
 } from "@opensteer/client/host";
 import { useWaitingBody } from "@opensteer/client/react";
+import { heldEditScope, holdWaitingEdit, takeWaitingEdit } from "./held-waiting-edits.js";
 import { TranscriptMessage } from "./agent-activity.js";
 import { ComposerEditor, type ComposerEditorControl } from "./composer-editor.js";
 import { personalReferenceCandidates, useReferencePicker } from "./composer-reference-picker.js";
@@ -260,16 +265,44 @@ function useInPlaceEdit(
         })
       : kept;
 
-  useEffect(
-    () => () => {
+  // The words typed here outlive this view: a view that goes away (a same-viewer history rollback
+  // unmounts the workspace) holds them and their lease for its return, short of sign-out.
+  const words = useRef<WaitingDraft | null>(null);
+  words.current = draft;
+  const message = useRef(input);
+  if (input) message.current = input;
+  useEffect(() => {
+    const target = message.current;
+    const scope = heldEditScope(client);
+    const adopted =
+      target && scope
+        ? takeWaitingEdit<EditSession, WaitingDraft>(scope, target.threadId, target.messageId)
+        : undefined;
+    if (adopted && !session.current) {
+      adopted.session.closed = false;
+      session.current = adopted.session;
+      setKept(adopted.draft);
+      onOpenChange(true);
+    } else adopted?.release();
+    return () => {
       const held = session.current;
       session.current = null;
       if (!held) return;
+      const unsent = words.current;
+      const at = message.current;
+      const scope = heldEditScope(client) ?? clientScopeKey(held.scope);
+      if (!held.saving && unsent?.dirty && at && scope) {
+        holdWaitingEdit(client, scope, at.threadId, at.messageId, {
+          draft: unsent,
+          release: () => release(held),
+          session: held,
+        });
+        return;
+      }
       held.closed = true;
       if (!held.saving) release(held);
-    },
-    [],
-  );
+    };
+  }, []);
   // A newer version locks the field until its full body is read under the lease.
   const awaited = draft ? waitingDraftAwaits(draft) : null;
   useEffect(() => {
