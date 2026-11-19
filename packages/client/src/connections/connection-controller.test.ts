@@ -132,6 +132,51 @@ describe("session recovery owner", () => {
     connection.dispose();
     expect(vi.getTimerCount()).toBe(0);
   });
+  it("keeps a slow socket that delivers frames while its pong is late, and ends a probe in background", async () => {
+    vi.useFakeTimers();
+    const life = lifecycle();
+    let connects = 0,
+      probes = 0,
+      progressAt = 0;
+    const connection = createConnectionController({
+      lifecycle: life.port,
+      liveness: { idleMs: 25_000, deadlineMs: 10_000 },
+      random: () => 0,
+      driver: {
+        async connect() {
+          connects++;
+          progressAt = Date.now();
+          // A slow cellular link: frames arrive, the pong never does in time.
+          return {
+            ...lease(),
+            lastProgressAt: () => progressAt,
+            probe: () => {
+              probes++;
+              return new Promise<void>(() => {});
+            },
+          };
+        },
+      },
+    });
+    connection.start();
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(probes).toBe(1);
+    // Data arrives while the ping is outstanding.
+    await vi.advanceTimersByTimeAsync(4_000);
+    progressAt = Date.now();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(connects).toBe(1);
+    expect(connection.getSnapshot().phase).toBe("ready");
+    // The next quiet stretch probes again; the app goes to the background mid-probe.
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(probes).toBe(2);
+    life.background();
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(connects).toBe(1);
+    expect(connection.getSnapshot().phase).toBe("ready");
+    connection.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it("has one automatic 5 s clock, resets in background, and exposes explicit failure immediately", async () => {
     vi.useFakeTimers();
     const life = lifecycle();
