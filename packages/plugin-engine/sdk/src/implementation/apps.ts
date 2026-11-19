@@ -332,10 +332,16 @@ export const makeApps = (
         return;
       }
       yield* runtime.migrate({ app: app.id, build }).pipe(
+        // Only the migration step's own answer says the version does not fit. A build that could
+        // not be loaded or reached says nothing about its migrations.
         Effect.mapError((error) =>
-          refused(
-            `its migrations are not the ones this app's database has applied${error.message.length === 0 ? "." : `: ${error.message}`}`,
-          ),
+          error._tag === "RuntimeBuildUnavailable" ||
+          error._tag === "RuntimeProtocolFailed" ||
+          error._tag === "RuntimeProtocolUnsupported"
+            ? new StorageError()
+            : refused(
+                `its migrations are not the ones this app's database has applied${error.message.length === 0 ? "." : `: ${error.message}`}`,
+              ),
         ),
         Effect.withSpan("sdk.apps.migrate"),
       );
@@ -614,7 +620,9 @@ export const makeApps = (
       yield* hold(appId);
       if (before !== null) {
         const current = yield* storedApp(db, { app: before.id, owner: input.owner });
-        if (current.activatedSequence !== before.activatedSequence)
+        // The code identity too: a removed app's id can be taken by another app, whose
+        // activations count from one again.
+        if (current.code !== before.code || current.activatedSequence !== before.activatedSequence)
           return yield* new AppVersionChanged({
             app: before.id,
             expected: before.activeVersion,
