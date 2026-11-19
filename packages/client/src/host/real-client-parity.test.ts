@@ -6,6 +6,8 @@ import type { ScopedClientMessage } from "@opensteer/protocol/personal-sync";
 import { memoryCheckpointStorage } from "../test-support/memory-checkpoint-storage.js";
 import { HttpHostClient } from "./host-session-client.js";
 import { createPersonalStreamCache } from "./personal-stream-cache.js";
+import { taskList } from "./task-list.js";
+import { accountGettingReady } from "./thread-placement.js";
 
 /*
  * The real client over the scoped wire: every value comes from protocol frames and Host reads,
@@ -274,5 +276,33 @@ it("a warm start from cache claims no resource it does not hold, reads each once
     expect(warm.reads.sort()).toEqual([...kinds]);
   } finally {
     for (const release of warm.releases) release();
+  }
+});
+
+it("says a queued task's account is getting ready in the task list, from its shell row", async () => {
+  const seed = new MockHostClient({ latencyMs: 0, places: "absent" });
+  await seed.load();
+  const base = seed.getSnapshot();
+  const thread = base.threads.find(
+    ({ id, listed, harnessInstanceId }) =>
+      listed &&
+      base.harnesses.some((harness) => harness.id === harnessInstanceId) &&
+      !Object.values(base.assignments).some(({ parentThreadId }) => parentThreadId === id) &&
+      !base.waitingRequests.some(({ request }) => request.originatingThreadId === id),
+  )!;
+  const harness = base.harnesses.find(({ id }) => id === thread.harnessInstanceId)!;
+  const { client, host } = await connect(seed);
+  const releases = (["environment", "harness", "harness-catalog"] as const).map((kind) =>
+    client.watchPersonalResource(kind, () => undefined),
+  );
+  try {
+    host.client.mockAccountPreparing(thread.id);
+    await vi.waitFor(() =>
+      expect(
+        taskList(client.getSnapshot()).working.find((row) => row.threadId === thread.id)?.line,
+      ).toBe(accountGettingReady(harness.name)),
+    );
+  } finally {
+    for (const release of releases) release();
   }
 });

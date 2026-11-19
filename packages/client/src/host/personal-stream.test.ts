@@ -59,6 +59,9 @@ const task = {
   lastReplyPreview: null,
   failurePreview: null,
   latestRunCompletedAt: null,
+  environmentId: createId("environment"),
+  harnessInstanceId: createId("harnessInstance"),
+  runQueued: false,
 } as const;
 const item = {
   id: messageId,

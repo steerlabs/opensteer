@@ -306,6 +306,9 @@ test("a commit too large for one frame is repaired inline by a snapshot on the s
         lastReplyPreview: "\u0001".repeat(1050),
         failurePreview: null,
         latestRunCompletedAt: null,
+        environmentId: createId("environment"),
+        harnessInstanceId: createId("harnessInstance"),
+        runQueued: false,
       },
     };
   });

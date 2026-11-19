@@ -1417,3 +1417,39 @@ it("keeps a reply that says nothing out of the transcript, and a file-only reply
   ).toEqual([file.messageId]);
   expect(await sequence()).toBe(before + 1);
 });
+
+it("says on the shell task row whether a Run waits to start with none executing", async () => {
+  const f = await fixture();
+  const task = await f.task("Queued work");
+  const queued = await enqueueThreadInput(f.database, {
+    threadId: task.id,
+    requestedBy: f.userId,
+    source: { kind: "human" },
+    policy: "queue",
+    content: [{ type: "text", text: "Start when the account is ready" }],
+    idempotencyKey: "queued-row",
+  });
+  const { readPersonalShellSnapshot } = await import("./snapshot-store.js");
+  const row = async () => {
+    const cut = await readPersonalShellSnapshot(f.database, { viewerId: f.userId });
+    if (cut.kind !== "snapshot") throw new Error("Expected a shell snapshot");
+    return cut.snapshot.tasks.find(({ id }) => id === task.id);
+  };
+  expect(await row()).toMatchObject({
+    runQueued: true,
+    environmentId: task.environmentId,
+    harnessInstanceId: task.harnessInstanceId,
+  });
+  await f.start(queued.run!.id);
+  expect((await row())?.runQueued).toBe(false);
+  // The change reached viewers as the task row's value, not only in a new snapshot.
+  const published = await f.database
+    .selectFrom("clientChanges")
+    .select("payload")
+    .where("scopeKey", "=", "shell")
+    .where("entityKind", "=", "task")
+    .where("entityId", "=", task.id)
+    .orderBy("sequence", "desc")
+    .executeTakeFirstOrThrow();
+  expect(published.payload).toMatchObject({ runQueued: false });
+});

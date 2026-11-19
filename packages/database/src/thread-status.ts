@@ -17,7 +17,7 @@ import { activePersonalMutation, commitPersonalMutation } from "./personal-mutat
 import { isOfflineSettlement } from "./personal-transaction.js";
 import { refreshLatestRunCompletion, unreadTaskContribution } from "./personal-attention-store.js";
 import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
-import { readTaskPageThreads } from "./personal-task-store.js";
+import { readTaskPageThreads, threadRunQueued } from "./personal-task-store.js";
 import { publishThreadQueues } from "./personal-queue-view.js";
 
 type Tx = Transaction<DatabaseSchema>;
@@ -64,6 +64,9 @@ export async function writeThreadSummary(
         "listed",
         "removedAt",
         "createdBy",
+        "environmentId",
+        "harnessInstanceId",
+        threadRunQueued.as("runQueued"),
       ])
       .executeTakeFirstOrThrow();
     const threadScope = `thread:${threadId}` as const;
@@ -80,6 +83,9 @@ export async function writeThreadSummary(
       lastReplyPreview: row.lastReplyPreview,
       failurePreview: row.failurePreview,
       latestRunCompletedAt: row.latestRunCompletedAt?.toISOString() ?? null,
+      environmentId: row.environmentId,
+      harnessInstanceId: row.harnessInstanceId,
+      runQueued: row.runQueued,
     };
     const thread = row.removedAt
       ? undefined

@@ -39,6 +39,9 @@ export function taskView(task: Task) {
     lastReplyPreview: task.lastReplyPreview,
     failurePreview: task.failurePreview,
     latestRunCompletedAt: task.latestRunCompletedAt?.toISOString() ?? null,
+    environmentId: task.environmentId,
+    harnessInstanceId: task.harnessInstanceId,
+    runQueued: task.runQueued,
   };
 }
 

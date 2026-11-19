@@ -35,12 +35,18 @@ const taskFields = [
   "lastReplyPreview",
   "failurePreview",
   "latestRunCompletedAt",
+  "environmentId",
+  "harnessInstanceId",
 ] as const;
+
+/** A Run of this thread waits to start and none is executing (the task row's `runQueued`). */
+export const threadRunQueued = sql<boolean>`(exists (select 1 from runs where runs.thread_id = threads.id and runs.status = 'queued') and not exists (select 1 from runs where runs.thread_id = threads.id and runs.status in ('starting','running','waiting')))`;
 
 export function currentTasks(tx: PersonalMutationTransaction, viewerId: UserId) {
   return tx
     .selectFrom("threads")
     .select(taskFields)
+    .select(threadRunQueued.as("runQueued"))
     .where("createdBy", "=", viewerId)
     .where("removedAt", "is", null);
 }

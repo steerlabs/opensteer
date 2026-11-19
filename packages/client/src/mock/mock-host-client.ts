@@ -4998,6 +4998,11 @@ export class MockHostClient implements HostClient {
     });
   }
 
+  /** Scripted: a task's next Run waits while its AI account is still getting ready. */
+  mockAccountPreparing(threadId: string): void {
+    this.#state.queueBehindPreparingAccount(threadId);
+  }
+
   /** Scripted: a teammate mentions the person's agent, and the Host admits the ask into a task. */
   mockTeamAsk(entry: import("@opensteer/protocol").NeedsYouTeamAskEntry): void {
     this.#state.receiveTeamAsk(entry);
@@ -7650,6 +7655,56 @@ class MockHostState {
    * task for that team thread, or in a new task named for the asker, gated
    * until the person answers. An ask the Host could not admit keeps no task.
    */
+  queueBehindPreparingAccount(threadId: string): void {
+    const snapshot = this.snapshot;
+    const thread = snapshot.threads.find(({ id }) => id === threadId);
+    const harness = snapshot.harnesses.find(({ id }) => id === thread?.harnessInstanceId);
+    if (!thread || !harness) throw new Error("The mock task needs an account.");
+    const waiting = { ...thread, status: "waiting" as const, inputQueuePaused: false };
+    const preparing = HarnessInstanceCatalogSchema.parse({
+      detail: `Preparing ${harness.name}…`,
+      driverKind: harness.driverKind,
+      harnessInstanceId: harness.id,
+      models: [],
+      status: "preparing",
+    });
+    this.update({
+      ...snapshot,
+      revision: snapshot.revision + 1,
+      threads: snapshot.threads.map((candidate) =>
+        candidate.id === threadId ? waiting : candidate,
+      ),
+      activeTasks: [
+        ...snapshot.activeTasks.filter((entry) => entry.thread.id !== threadId),
+        { thread: waiting, lastReply: null, failure: null },
+      ],
+      runQueue: [
+        ...snapshot.runQueue.filter((run) => run.threadId !== threadId),
+        {
+          id: createId("run"),
+          threadId,
+          status: "queued",
+          createdAt: this.now().toISOString(),
+          runOrdinal: 1,
+        },
+      ],
+      environments: snapshot.environments.map((environment) =>
+        environment.id === harness.environmentId
+          ? {
+              ...environment,
+              connected: true,
+              harnessCatalogs: [
+                ...environment.harnessCatalogs.filter(
+                  ({ harnessInstanceId }) => harnessInstanceId !== harness.id,
+                ),
+                preparing,
+              ],
+            }
+          : environment,
+      ),
+    });
+  }
+
   receiveTeamAsk(entry: import("@opensteer/protocol").NeedsYouTeamAskEntry): void {
     this.update(this.withTeamAsk(this.snapshot, entry));
   }

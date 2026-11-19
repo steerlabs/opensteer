@@ -221,6 +221,8 @@ export interface ThreadSummary {
   environmentId: string;
   harnessInstanceId: string;
   harnessLabel: string;
+  /** A Run waits to start and none is executing, as the shell's task row says. */
+  runQueued?: boolean;
   id: string;
   inputQueuePaused: boolean;
   /** One of the person's tasks in navigation lists; see the Host's `Thread.listed`. */

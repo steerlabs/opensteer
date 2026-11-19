@@ -2,7 +2,9 @@ import {
   AssignmentSummarySchema,
   AuthSessionIdSchema,
   DeploymentIdSchema,
+  EnvironmentIdSchema,
   ExecutionNodeIdSchema,
+  HarnessInstanceIdSchema,
   MessageIdSchema,
   RequestIdSchema,
   RunAttemptIdSchema,
@@ -164,6 +166,11 @@ const task = z.object({
   lastReplyPreview: z.string().max(1120).nullable(),
   failurePreview: z.string().max(1120).nullable(),
   latestRunCompletedAt: z.iso.datetime().nullable(),
+  /** Where it runs and on which account: a task list says when that account is getting ready. */
+  environmentId: EnvironmentIdSchema,
+  harnessInstanceId: HarnessInstanceIdSchema,
+  /** A Run waits to start and none is executing. */
+  runQueued: z.boolean(),
 });
 /** A task row plus the full Thread detail view, return hint included. */
 export const PersonalDetailThreadSchema = task.extend({ thread: ThreadViewSchema });

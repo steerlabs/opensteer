@@ -49,7 +49,9 @@ export function mockScopedTask(
   revision: string,
   lastReplyPreview: string | null,
   failurePreview: string | null,
+  runs: readonly { readonly threadId: string; readonly status: string }[] = [],
 ) {
+  const own = runs.filter(({ threadId }) => threadId === thread.id);
   return {
     title: thread.title,
     id: thread.id,
@@ -63,6 +65,11 @@ export function mockScopedTask(
     lastReplyPreview: lastReplyPreview?.slice(0, 500) ?? null,
     failurePreview: failurePreview?.slice(0, 500) ?? null,
     latestRunCompletedAt: thread.latestRunCompletedAt,
+    environmentId: thread.environmentId,
+    harnessInstanceId: thread.harnessInstanceId,
+    runQueued:
+      own.some(({ status }) => status === "queued") &&
+      !own.some(({ status }) => status !== "queued"),
   };
 }
 
@@ -82,7 +89,7 @@ export function mockScopedShell(
   const tasks = [...threads.values()]
     .slice(0, 256)
     .map(({ thread, lastReply, failure }) =>
-      mockScopedTask(toThread(thread), revision, lastReply, failure),
+      mockScopedTask(toThread(thread), revision, lastReply, failure, snapshot.runQueue),
     );
   const listed = new Set<string>(tasks.map(({ id }) => id));
   const activeIds = active.map(({ thread }) => thread.id).filter((id) => listed.has(id));
@@ -402,7 +409,10 @@ export function mockScopedDetail(
   const start = Math.max(0, end - 50);
   const items = all.slice(start, end);
   return PersonalDetailSnapshotSchema.parse({
-    thread: { ...mockScopedTask(toThread(thread), revision, null, null), thread: toThread(thread) },
+    thread: {
+      ...mockScopedTask(toThread(thread), revision, null, null, snapshot.runQueue),
+      thread: toThread(thread),
+    },
     ...(anchor ? { anchorItemId: anchorIndex === -1 ? null : anchor } : {}),
     items,
     activeItems: [...tools, ...nodes].slice(0, 20),
