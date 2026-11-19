@@ -413,6 +413,8 @@ integration.sequential("thread input queue promotion", () => {
       .select("sequence")
       .executeTakeFirstOrThrow();
     expect(queue.revision).toBe(head.sequence);
+    // The read says which cut it saw, so a reader can drop it after a newer repair.
+    expect(queue.asOfSequence).toBe(head.sequence);
   });
 
   it("exposes stored personal send keys only to the person who sent them", async ({
