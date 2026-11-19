@@ -1308,7 +1308,7 @@ export function drainPendingAssignmentReturns(
 export function drainAssignmentReturn(
   database: Kysely<DatabaseSchema>,
   assignmentId: AssignmentId,
-): Promise<"settled" | "waiting"> {
+): Promise<"settled" | "waiting" | "held"> {
   return drainAssignmentReturnInStore(database, assignmentId);
 }
 export async function updateThreadExecutionSelection(

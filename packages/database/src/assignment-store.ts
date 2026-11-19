@@ -121,6 +121,21 @@ export function installAssignmentReturnWake(
   };
 }
 
+/**
+ * Wakes the return owner when this commit lands, for a finished Assignment
+ * whose result is still pending: the moment something that held it lets go.
+ */
+export function wakeAssignmentReturnOnCommit(
+  tx: Transaction<DatabaseSchema>,
+  mutation: { reaction(callback: () => void | Promise<void>): void },
+  row: Pick<Selectable<DelegationTable>, "id" | "status" | "resultStatus">,
+): void {
+  if (row.status === "open" || row.resultStatus !== "pending") return;
+  const database = personalTransactionDatabase(tx);
+  const wake = database && assignmentReturnWakes.get(database);
+  if (wake) mutation.reaction(() => wake(row.id));
+}
+
 export async function publishAssignmentSummaries(
   tx: Transaction<DatabaseSchema>,
   row: Selectable<DelegationTable>,

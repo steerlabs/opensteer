@@ -1180,9 +1180,10 @@ integration("personal task delegation lifecycle", () => {
       store.drainAssignmentReturn(task.delegationId),
     ]);
     expect(deliveries[1].failures).toEqual([]);
-    await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
+    await expect(store.drainPendingAssignmentReturns()).resolves.toMatchObject({
       failures: [],
       waiting: 0,
+      held: 0,
       more: false,
     });
     const returned = await returnMessages(fixture.parentThreadId);
@@ -1411,9 +1412,10 @@ integration("personal task delegation lifecycle", () => {
       resultText: null,
       status: "open",
     });
-    await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
+    await expect(store.drainPendingAssignmentReturns()).resolves.toMatchObject({
       failures: [],
       waiting: 0,
+      held: 0,
       more: false,
     });
     const waiting = await store.listThreadAssignmentsForOwner({
@@ -1752,9 +1754,10 @@ integration("personal task delegation lifecycle", () => {
       resultText: null,
       status: "open",
     });
-    await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
+    await expect(store.drainPendingAssignmentReturns()).resolves.toMatchObject({
       failures: [],
       waiting: 0,
+      held: 0,
       more: false,
     });
     const nudge = await commands.enqueueThreadInput({
@@ -2358,9 +2361,10 @@ integration("personal task delegation lifecycle", () => {
         .where("childThreadId", "=", thread.id)
         .execute(),
     ).resolves.toEqual([]);
-    await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
+    await expect(store.drainPendingAssignmentReturns()).resolves.toMatchObject({
       failures: [],
       waiting: 0,
+      held: 0,
       more: false,
     });
     acceptanceEvidence.push({

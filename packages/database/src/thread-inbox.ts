@@ -176,7 +176,11 @@ import {
 } from "./channel-execution.js";
 import { resolveMessageQuote } from "./message-quotes.js";
 import { describeTranscriptMessage, transcriptMessageTextBytes } from "./transcript-store.js";
-import { publishAssignmentSummaries, assignmentSummaryInTransaction } from "./assignment-store.js";
+import {
+  assignmentSummaryInTransaction,
+  publishAssignmentSummaries,
+  wakeAssignmentReturnOnCommit,
+} from "./assignment-store.js";
 import {
   assertThreadCaller,
   lockThreadCaller,
@@ -4568,7 +4572,7 @@ async function withdrawAssignmentReturn(
 async function deliverAssignmentReturnTransaction(
   transaction: Transaction<DatabaseSchema>,
   assignmentId: AssignmentId,
-): Promise<void> {
+): Promise<void | "held"> {
   const locked = await lockAssignmentReturn(transaction, assignmentId);
   if (!locked) return;
   const { assignment } = locked;
@@ -4662,7 +4666,8 @@ async function deliverAssignmentReturnTransaction(
         })
         .where("id", "=", assignment.id)
         .execute();
-      return;
+      // A caller is still waiting to read this result itself; it stays pending.
+      return "held";
     } catch (error) {
       if (!(error instanceof OpensteerError && error.code === "forbidden")) throw error;
     }
@@ -4902,7 +4907,7 @@ export async function endAssignmentResultWait(
 ): Promise<void> {
   await commitPersonalMutation(
     database,
-    async (transaction) => {
+    async (transaction, mutation) => {
       const locked = await lockAssignmentReturn(transaction, input.assignmentId);
       if (!locked) return;
       await transaction
@@ -4914,6 +4919,8 @@ export async function endAssignmentResultWait(
         })
         .where("id", "=", input.assignmentId)
         .execute();
+      // The wait held the return back; its owner delivers it if the attempt below fails.
+      wakeAssignmentReturnOnCommit(transaction, mutation, locked.assignment);
     },
     (error) => error instanceof TransactionScopeChanged,
   );
@@ -5012,19 +5019,20 @@ export function readAssignmentResult(
 /**
  * Delivers one Assignment's return if it is still pending. A failed attempt is
  * recorded so the row waits behind the others; a full parent inbox is an
- * ordinary wait (`"waiting"`), anything else also surfaces to the caller.
+ * ordinary wait (`"waiting"`), a live synchronous reader holds it (`"held"`),
+ * anything else also surfaces to the caller.
  */
 export async function drainAssignmentReturn(
   database: Kysely<DatabaseSchema>,
   assignmentId: AssignmentId,
-): Promise<"settled" | "waiting"> {
+): Promise<"settled" | "waiting" | "held"> {
   try {
-    await commitPersonalMutation(
+    const outcome = await commitPersonalMutation(
       database,
       (transaction) => deliverAssignmentReturnTransaction(transaction, assignmentId),
       (error) => error instanceof TransactionScopeChanged,
     );
-    return "settled";
+    return outcome === "held" ? "held" : "settled";
   } catch (error) {
     await database
       .updateTable("delegations")
@@ -5045,6 +5053,11 @@ export interface AssignmentReturnDrain {
   }[];
   /** Returns still pending behind a full parent inbox. */
   readonly waiting: number;
+  /** Returns a live synchronous reader holds, and when the first such hold ends. */
+  readonly held: number;
+  readonly heldUntil: Date | null;
+  /** Returns that left the pending set in this pass. */
+  readonly settled: number;
   /** The batch was full: more pending returns may be behind it. */
   readonly more: boolean;
 }
@@ -5068,10 +5081,15 @@ export async function drainPendingAssignmentReturns(
     readonly assignmentId: AssignmentId;
     readonly error: unknown;
   }[] = [];
-  let waiting = 0;
+  let waiting = 0,
+    settled = 0;
+  const held: AssignmentId[] = [];
   for (const candidate of candidates) {
     try {
-      if ((await drainAssignmentReturn(database, candidate.id)) === "waiting") waiting++;
+      const outcome = await drainAssignmentReturn(database, candidate.id);
+      if (outcome === "waiting") waiting++;
+      else if (outcome === "held") held.push(candidate.id);
+      else settled++;
     } catch (error) {
       failures.push({
         assignmentId: candidate.id,
@@ -5079,7 +5097,28 @@ export async function drainPendingAssignmentReturns(
       });
     }
   }
-  return { failures, waiting, more: candidates.length === Math.max(1, Math.min(limit, 1_000)) };
+  return {
+    failures,
+    waiting,
+    held: held.length,
+    heldUntil: held.length ? await earliestResultWaitExpiry(database, held) : null,
+    settled,
+    more: candidates.length === Math.max(1, Math.min(limit, 1_000)),
+  };
+}
+
+/** When the first live result wait on these returns ends, releasing them. */
+async function earliestResultWaitExpiry(
+  database: Kysely<DatabaseSchema>,
+  ids: readonly AssignmentId[],
+): Promise<Date | null> {
+  const row = await sql<{ until: string | null }>`
+    select min((wait->>'expiresAt')::bigint)::text as until
+    from delegations, jsonb_array_elements(result_waits) as wait
+    where id = any(${ids}::text[]) and (wait->>'expiresAt')::bigint > ${Date.now()}
+  `.execute(database);
+  const until = row.rows[0]?.until;
+  return until ? new Date(Number(until)) : null;
 }
 function canonicalDelegateThreadRequest(
   input: DelegateThreadRequest,

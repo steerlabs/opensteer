@@ -404,7 +404,11 @@ describeStore("Assignment result delivery", (it) => {
     const waitId = (await s.begin(task.assignment.id))!;
     const otherId = (await s.begin(task.assignment.id))!;
     await task.settle("Waited result");
-    await s.store.drainAssignmentReturn(task.assignment.id);
+    // Held, not settled: the return owner must stay armed until the wait ends.
+    await expect(s.store.drainAssignmentReturn(task.assignment.id)).resolves.toBe("held");
+    const drained = await s.store.drainPendingAssignmentReturns();
+    expect(drained).toMatchObject({ held: 1, settled: 0, failures: [], waiting: 0 });
+    expect(drained.heldUntil!.getTime()).toBeGreaterThan(Date.now());
     expect(await s.returns()).toEqual([]);
     await endAssignmentResultWait(s.database, {
       assignmentId: task.assignment.id,
