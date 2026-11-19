@@ -505,7 +505,7 @@ describe("run labels", () => {
       createdAt: "2026-11-01T10:00:00.000Z",
     };
     expect(pluginWorkflowRunLabel({ ...workflow, failure: "stale" })).toBe(
-      "Not run because the plugin changed after this was started; start it again.",
+      "Stopped because the plugin changed after this was started. Steps it had already finished stay done; check them, then start it again.",
     );
     expect(pluginWorkflowRunLabel({ ...workflow, failure: "execution" })).toBe("Failed: execution");
     const scheduled = {

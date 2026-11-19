@@ -8,12 +8,15 @@
  * with `retain: false`, compile and declaration inside workerd), never executed here. Builds link
  * the framework bundled with the Host, so the framework is never fetched; other declared packages
  * come from the npm registry as in a real install. Results append to `results.jsonl` in the report
- * directory, which must be outside this repository; a rerun skips documents already recorded.
+ * directory, which must be outside this repository; a rerun skips documents already recorded, and
+ * is refused when the folder's results came from another framework, catalog or rewrite setting.
  * `report.json` and `report.md` summarize them. `--rewrite` first rewrites each document with the
  * one rewriter of upstream's names (`rewriteUpstreamSource`), as the catalog will serve it.
  */
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Effect, Result as Outcome, Schema } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Digest, SecureRandom } from "effect/crypto";
@@ -102,6 +105,21 @@ const index = Schema.decodeUnknownSync(Index)(
 );
 const sources = [...new Set(index.apps.map((entry) => entry.source))].sort();
 await mkdir(reportDirectory, { recursive: true });
+// What the folder's results are results of. A result built by another framework, from another
+// index or with another rewrite setting says nothing about this run.
+const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
+const identity = JSON.stringify({
+  framework: sha256(await readFile(fileURLToPath(import.meta.resolve("apps/runtime.json")))),
+  index: sha256(await readFile(join(catalog, "index.json"))),
+  rewrite,
+});
+const identityFile = join(reportDirectory, "run.json");
+const recorded = await readFile(identityFile, "utf8").catch(() => undefined);
+if (recorded === undefined) await writeFile(identityFile, identity);
+else if (recorded !== identity)
+  throw new Error(
+    `${reportDirectory} holds results for another framework, catalog or rewrite setting. Use a new report directory.`,
+  );
 const resultsFile = join(reportDirectory, "results.jsonl");
 const done = new Map<string, Result>();
 for (const line of (await readFile(resultsFile, "utf8").catch(() => "")).split("\n"))
@@ -171,8 +189,22 @@ await Effect.runPromise(
                 `${completed}/${pending.length} ${source} ${result.ok ? "ok" : `${result.cause}: ${result.message?.split("\n")[0]}`}`,
               );
           }).pipe(
+            // A document that cannot be read or decoded fails like any other: it is recorded.
             Effect.catchCause((cause) =>
-              Effect.sync(() => console.error(`${source} could not be read`, cause)),
+              Effect.promise(async () => {
+                const result: Result = {
+                  source,
+                  framework: "none",
+                  ms: 0,
+                  ok: false,
+                  cause: "source",
+                  stage: "source",
+                  message: `Could not be read: ${String(cause).slice(0, 1900)}`,
+                };
+                await appendFile(resultsFile, JSON.stringify(result) + "\n");
+                done.set(source, result);
+                console.log(`${source} ${result.message?.split("\n")[0]}`);
+              }),
             ),
           ),
         { concurrency, discard: true },
@@ -185,7 +217,13 @@ await Effect.runPromise(
 );
 const wallMs = Math.round(performance.now() - started);
 
-const results = [...done.values()];
+const unaccounted = sources.filter((source) => !done.has(source));
+if (unaccounted.length > 0)
+  throw new Error(
+    `${unaccounted.length} listed documents have no result: ${unaccounted.slice(0, 8).join(", ")}`,
+  );
+// Only what this index lists: a result for a document it no longer lists is not part of the report.
+const results = sources.map((source) => done.get(source)!);
 const percentile = (values: number[], p: number) =>
   values.length === 0 ? 0 : values[Math.min(values.length - 1, Math.floor(values.length * p))]!;
 const summarize = (subset: Result[]) => {

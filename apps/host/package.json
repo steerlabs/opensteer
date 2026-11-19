@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "tsup && tsx ../../scripts/plugin-engine/prepare-host.ts dist/plugin-engine-bridge.json",
-    "dev": "tsx ../../scripts/plugin-engine/prepare-host.ts node_modules/.cache/plugin-engine-bridge.json && tsx watch src/main.ts",
+    "dev": "pnpm --filter apps build && pnpm build:plugin-bridge && tsx watch src/main.ts",
     "start": "node dist/main.js",
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit",
