@@ -24,6 +24,29 @@ type nativeScreen struct {
 	open channelOpener
 	dial ServiceDialer
 	lock func(context.Context) string
+	apps *appCache
+}
+
+// appCache keeps the installed-app list for front-app labels; it rarely
+// changes, and reading it costs about half a second per call.
+type appCache struct {
+	mu   sync.Mutex
+	apps []InstalledApp
+	at   time.Time
+}
+
+func (c *appCache) read(ctx context.Context, dial ServiceDialer) ([]InstalledApp, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.apps != nil && time.Since(c.at) < time.Minute {
+		return c.apps, nil
+	}
+	apps, err := readInstalledApps(ctx, dial)
+	if err != nil {
+		return nil, err
+	}
+	c.apps, c.at = apps, time.Now()
+	return apps, nil
 }
 
 func (n nativeScreen) State(ctx context.Context) (DeviceState, error) {
@@ -45,7 +68,7 @@ func (n nativeScreen) Capture(ctx context.Context, display string) ([]byte, erro
 	return data, nil
 }
 func (n nativeScreen) Foreground(ctx context.Context) (*Foreground, error) {
-	return readForeground(ctx, n.dial)
+	return readForeground(ctx, n.dial, n.apps.read)
 }
 func (n nativeScreen) AX(ctx context.Context) (AXSnapshot, error) {
 	return collectRemoteAX(ctx, n.dial)
@@ -96,7 +119,7 @@ func (s *Session) screenState() *screenSession {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.screen == nil {
-		s.screen = &screenSession{backend: nativeScreen{open: func(ctx context.Context, name string) (xpcChannel, error) { return s.OpenXPC(ctx, name) }, dial: s, lock: s.readLockState}, apps: map[string]bool{}, closed: s.closed}
+		s.screen = &screenSession{backend: nativeScreen{open: func(ctx context.Context, name string) (xpcChannel, error) { return s.OpenXPC(ctx, name) }, dial: s, lock: s.readLockState, apps: &appCache{}}, apps: map[string]bool{}, closed: s.closed}
 	}
 	return s.screen
 }

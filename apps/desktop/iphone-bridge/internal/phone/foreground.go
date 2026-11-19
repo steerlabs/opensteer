@@ -157,7 +157,7 @@ func resolveForeground(executable string, apps []InstalledApp) *Foreground {
 // readForeground names the front app only when exactly one flagged executable
 // is an installed app. Anything else, including SpringBoard under an overlay,
 // is unknown (nil); callers treat the result as a label, never as a gate.
-func readForeground(ctx context.Context, dial ServiceDialer) (*Foreground, error) {
+func readForeground(ctx context.Context, dial ServiceDialer, installed func(context.Context, ServiceDialer) ([]InstalledApp, error)) (*Foreground, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	processes, err := runningProcesses(ctx, dial)
@@ -168,7 +168,7 @@ func readForeground(ctx context.Context, dial ServiceDialer) (*Foreground, error
 	if len(executables) == 0 {
 		return nil, nil
 	}
-	apps, err := readInstalledApps(ctx, dial)
+	apps, err := installed(ctx, dial)
 	if err != nil {
 		return nil, err
 	}
