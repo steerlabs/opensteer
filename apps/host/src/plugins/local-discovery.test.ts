@@ -110,6 +110,8 @@ function fixture(input: {
   readonly providers: readonly PluginHostProvider[];
   readonly grants?: Readonly<Record<string, "all" | "read-only" | "off">>;
   readonly direct?: boolean;
+  /** A provider whose tools ask the person something before they answer. */
+  readonly asking?: string;
 }) {
   const engine = {
     apps: {
@@ -166,12 +168,24 @@ function fixture(input: {
       authorize: () => Effect.succeed({ allowed: true, grants: { ...input.grants } }),
       providers: () => Effect.succeed([...input.providers]),
       // As LocalProviders answers: what keeps the provider, or what the device said at the call.
-      call: ({ plugin, tool: name }) =>
-        Effect.sync((): HostToolResult => {
-          calls.push({ plugin, tool: name });
-          const local = input.providers.find(({ id }) => id === plugin)!;
-          return { kind: "blocked", blocked: local.blocked ?? offline };
-        }),
+      call: ({ plugin, tool: name }, elicitation) =>
+        plugin === input.asking && elicitation
+          ? elicitation(
+              {
+                mode: "form",
+                message: "Go on?",
+                requestedSchema: { type: "object", properties: {} },
+              },
+              AbortSignal.timeout(10_000),
+            ).pipe(
+              Effect.map((): HostToolResult => ({ kind: "value", value: "asked" })),
+              Effect.orDie,
+            )
+          : Effect.sync((): HostToolResult => {
+              calls.push({ plugin, tool: name });
+              const local = input.providers.find(({ id }) => id === plugin)!;
+              return { kind: "blocked", blocked: local.blocked ?? offline };
+            }),
     },
     input.direct,
   );
@@ -198,6 +212,33 @@ function fixture(input: {
         }),
       ),
     );
+  /** A program that stops for the person's answer, and its resume once `between` has run. */
+  const paused = (code: string, between: () => void) =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const manager = yield* makeExecutions({
+            timeoutMs: 10_000,
+            maxToolCalls: 10,
+            interactionTtlMs: 60_000,
+          });
+          const started = yield* manager.execute(
+            "fixture",
+            backend,
+            executeProgram(code),
+            "result",
+            "client",
+          );
+          if (started.status !== "input-required")
+            throw new Error(`The program did not stop for input: ${JSON.stringify(started)}`);
+          between();
+          return yield* manager.resume("fixture", backend, {
+            requestId: started.requestId,
+            response: { action: "accept", content: {} },
+          });
+        }),
+      ),
+    );
   const call = (app: string, name: string, kind: "query" | "mutation" = "query") =>
     Effect.runPromise(
       backend
@@ -207,7 +248,7 @@ function fixture(input: {
           Effect.match({ onFailure: (failed) => ({ failed }), onSuccess: (value) => ({ value }) }),
         ),
     );
-  return { search, describe, program, call, calls };
+  return { search, describe, program, paused, call, calls };
 }
 
 const occurrences = (value: unknown, text: string) => JSON.stringify(value).split(text).length - 1;
@@ -369,6 +410,53 @@ describe("local apps an agent cannot use now", () => {
     expect(value.mac.namespaces).toEqual(outside.mac.namespaces);
     expect(value.calendar.namespaces).toEqual(outside.calendar.namespaces);
     expect(value.described.items).toEqual(outside.described.items);
+  });
+
+  it("show a resumed program what the caller may see now, not what it saw before it stopped", async () => {
+    const asker = provider("app_server_asker", "Asker", [tool("confirm", "Ask the person")]);
+    const grants: Record<string, "all" | "read-only" | "off"> = { [offlineMac.id]: "read-only" };
+    const { paused } = fixture({ providers: [offlineMac, asker], grants, asking: asker.id });
+    const read = `${namespaceOf(offlineMac)}.list_events`;
+    const write = `${namespaceOf(offlineMac)}.create_event`;
+    const look = `({
+      found: await tools.search({ namespace: ${JSON.stringify(offlineMac.slug)} }),
+      described: await tools.search.describe({ paths: ${JSON.stringify([read, write])} }),
+    })`;
+    const result = await paused(
+      `const before = ${look};
+      await ${namespaceOf(asker)}.confirm({});
+      return { before, after: ${look} };`,
+      // The person switches the app Off while the program waits for their answer.
+      () => {
+        grants[offlineMac.id] = "off";
+      },
+    );
+    expect(result).toMatchObject({ status: "completed", execution: { ok: true } });
+    type Look = {
+      found: { items: object[]; namespaces: object[] };
+      described: { items: object[]; namespaces: object[] };
+    };
+    const { before, after } = (
+      result as unknown as { execution: { value: { before: Look; after: Look } } }
+    ).execution.value;
+    const readOnly = expect.objectContaining({ message: "This plugin is set to Read-only." });
+    expect(before.found.items).toEqual([
+      expect.objectContaining({ path: read, input: expect.any(String) }),
+      { path: write, description: "Create a calendar event", blocked: readOnly },
+    ]);
+    expect(before.described.items).toEqual([
+      expect.objectContaining({ path: read, signature: expect.any(String) }),
+      { path: write, description: "Create a calendar event", blocked: readOnly },
+    ]);
+    // Off now: said once on the namespace, and no tool shows its types or its old blocker.
+    const off = expect.objectContaining({ message: "This plugin is Off for agents." });
+    for (const now of [after.found, after.described]) {
+      expect(now.items).toEqual([
+        { path: read, description: "List calendar events" },
+        { path: write, description: "Create a calendar event" },
+      ]);
+      expect(now.namespaces).toEqual([expect.objectContaining({ blocked: off })]);
+    }
   });
 
   it("fail a program's refused call with the Host's code, message and next step", async () => {

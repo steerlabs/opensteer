@@ -924,6 +924,35 @@ function catalog(
       "pluginEngine.discovery.apps": apps.length,
       "pluginEngine.discovery.concurrency": concurrency,
     });
+    /**
+     * What keeps the caller from each app, as last listed. Places carry it only as discovery
+     * hands them out (see `current`), never from when the app was loaded.
+     */
+    const appBlockers = new Map<AppId, McpBlocked>();
+    const keepBlockers = (listing: ReadonlyArray<McpApp>) => {
+      for (const app of listing)
+        if (app.blocked === undefined) appBlockers.delete(app.id);
+        else appBlockers.set(app.id, app.blocked);
+    };
+    keepBlockers(apps);
+    /** A place with what keeps the caller from its app now. */
+    const current = <P extends Place>({ blocked: _kept, ...place }: P): P => {
+      const blocked = appBlockers.get(place.id);
+      return (blocked === undefined ? place : { ...place, blocked }) as P;
+    };
+    /**
+     * While a program runs, what the caller may see can change: it can wait for approval for as
+     * long as the person takes, and the person can switch an app Off or Read-only meanwhile. Each
+     * search or describe in a program lists the apps again first; discovery before the program
+     * starts has just listed them.
+     */
+    const refreshApps = Effect.suspend(() =>
+      progress.phase === "program"
+        ? backend
+            .listApps({ toolsOnly: true })
+            .pipe(Effect.map(keepBlockers), withOperationSpan("mcp.discovery.apps"))
+        : Effect.void,
+    );
     const counts = new Map<string, number>();
     for (const app of apps) counts.set(app.slug, (counts.get(app.slug) ?? 0) + 1);
     const unique = (app: ListedApp) => Schema.is(AppSlug)(app.slug) && counts.get(app.slug) === 1;
@@ -960,9 +989,10 @@ function catalog(
     // An app the caller is kept from says so with each entry, as its namespace does.
     const unavailableApps = () =>
       apps.flatMap((app) =>
-        unavailableOf(app.id).map((entry) =>
-          app.blocked === undefined ? entry : { ...entry, blocked: app.blocked },
-        ),
+        unavailableOf(app.id).map((entry) => {
+          const blocked = appBlockers.get(app.id);
+          return blocked === undefined ? entry : { ...entry, blocked };
+        }),
       );
     /**
      * Report an app that exposes no tools, such as one that needs an account, once a search or
@@ -1109,7 +1139,6 @@ function catalog(
         path: app.slug,
         app: app.name,
         ...(accounts === "" ? {} : { accounts }),
-        ...(app.blocked === undefined ? {} : { blocked: app.blocked }),
       };
     };
     const routerFailures = (
@@ -1244,15 +1273,15 @@ function catalog(
     });
     // Each app is discovered at most once, by whichever of the program or a describe needs it
     // first, and made searchable at most once, by the first search that reaches it.
+    const listApp = (app: ListedApp) =>
+      discoverApp(app, "mcp.discovery.tools", (accounts) =>
+        listTools(backend, app.id, accounts, settled),
+      ).pipe(
+        Effect.flatMap((result) => project(app, result)),
+        Effect.andThen(reported),
+      );
     const discovered = yield* Effect.forEach(apps, (app) =>
-      Effect.cached(
-        discoverApp(app, "mcp.discovery.tools", (accounts) =>
-          listTools(backend, app.id, accounts, settled),
-        ).pipe(
-          Effect.flatMap((result) => project(app, result)),
-          Effect.andThen(reported),
-        ),
-      ).pipe(Effect.map((load) => ({ app, load }))),
+      Effect.cached(listApp(app)).pipe(Effect.map((load) => ({ app, load }))),
     );
     /**
      * The batch each app is made searchable in: the apps the first search that reached it reached
@@ -1352,10 +1381,27 @@ function catalog(
     const described = (names: ReadonlyArray<string> | "all") =>
       Effect.gen(function* () {
         const selected = named(discovered, names);
+        // In a program, an app listed before is listed again, so its tools' blockers and schemas
+        // are the ones the caller has now (see `refreshApps`).
+        const again =
+          progress.phase === "program"
+            ? selected
+                .filter(({ app }) => listed.has(app.slug))
+                .map(({ app }) => ({ app, load: listApp(app) }))
+            : [];
+        yield* refreshApps;
         yield* load(selected);
+        yield* load(again);
         if (names !== "all") yield* revealNamed(selected);
         const entries = selected
-          .flatMap(({ app }) => (unique(app) ? (listed.get(app.slug) ?? []) : []))
+          .flatMap(({ app }) =>
+            unique(app)
+              ? (listed.get(app.slug) ?? []).map((entry) => ({
+                  ...entry,
+                  target: current(entry.target),
+                }))
+              : [],
+          )
           .sort(byPath);
         yield* Effect.annotateCurrentSpan({
           "pluginEngine.discovery.apps": selected.length,
@@ -1400,10 +1446,12 @@ function catalog(
       Effect.gen(function* () {
         const selected = named(searchedApps, names);
         yield* claimSearchBatch(selected);
+        yield* refreshApps;
         yield* load(selected);
         if (names !== "all") yield* revealNamed(selected);
+        // Search ranks in the backend, which lists each tool with what keeps it now.
         const targets = selected
-          .flatMap(({ app }) => (unique(app) ? (indexed.get(app.slug) ?? []) : []))
+          .flatMap(({ app }) => (unique(app) ? (indexed.get(app.slug) ?? []).map(current) : []))
           .sort(byPath);
         yield* Effect.annotateCurrentSpan({
           "pluginEngine.discovery.apps": selected.length,
