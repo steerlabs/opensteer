@@ -1641,12 +1641,20 @@ describeStore("PostgreSQL store", (it) => {
         .where("id", "=", fixture.run.id)
         .executeTakeFirstOrThrow(),
     ).toEqual({ status: "completed" });
-    const receipt = await database
-      .selectFrom("runnerEventReceipts")
-      .select("disposition")
-      .where("runId", "=", fixture.run.id)
-      .where("ordinal", "=", 1)
-      .executeTakeFirstOrThrow();
-    expect(receipt.disposition).toBe("applied");
+    // The completed Run admitted ordinal 1 and, being terminal, keeps no receipts.
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("nextRunnerOrdinal")
+        .where("id", "=", fixture.run.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ nextRunnerOrdinal: 2 });
+    expect(
+      await database
+        .selectFrom("runnerEventReceipts")
+        .select("ordinal")
+        .where("runId", "=", fixture.run.id)
+        .execute(),
+    ).toEqual([]);
   });
 });
