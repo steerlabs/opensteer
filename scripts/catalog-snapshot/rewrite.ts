@@ -1,25 +1,20 @@
 /**
- * Scoped rewrite rules for a catalog snapshot. A rule file is JSON data, never code:
+ * The catalog's own rewrite rules, applied on top of the engine's shared rewrite
+ * (`rewriteUpstreamSource`), which alone renames what a build or a run reads: package names,
+ * `package.json`'s key, reserved identifiers. These rules edit prose, comments and one-off
+ * strings such as a User-Agent. A rule file is JSON data, never code:
  *
  *   {
  *     "version": 1,
  *     "variables": { "contact": "value" },     // optional; `{{contact}}` in a rule's `to` is the value
  *     "names": ["word"],                       // every remaining case-insensitive occurrence must be
  *                                              // preserved below or inside base64 data
- *     "engine": [{ "id", "scope", "from", "to" }],   // `package` and `manifest-key` rules only
  *     "rules": [{ "id", "scope", "from", "to", "documents"?, "files"? }],
  *     "preserve": [{ "text", "reason", "documents"? }]
  *   }
  *
- * `engine` holds the names the engine itself reads (the package scope, the `package.json` key), apart
- * from the rest, so it can later come from the engine's own rule file. Those scopes appear nowhere
- * else; engine rules apply before the others.
- *
  * Each rule applies only where its scope says; everything else is left as it is:
  *
- * - `package`: the index entry's `package`, the document's `package` and `package.json`'s `name`,
- *   which must stay equal.
- * - `manifest-key`: a top-level key of `package.json`, renamed in place.
  * - `markdown`: prose in `.md` files, outside fenced code blocks and inline code spans.
  * - `comments`: comments in JavaScript and TypeScript files (found by the TypeScript compiler), and
  *   full-line comments in Python files.
@@ -28,7 +23,7 @@
  * Text matching a `preserve` entry, a data URI or a long base64 run is never rewritten, and SQL under
  * a `migrations/` path is never touched. A `comments` or `markdown` rule that changes anything
  * outside its scope (for scripts, the non-comment token stream) is a problem. After rewriting,
- * `rewriteProblems` checks that what must not change did not.
+ * `rewriteProblems` checks, against the shared rewrite's output, that what must not change did not.
  */
 import { createRequire } from "node:module";
 import { isDeepStrictEqual } from "node:util";
@@ -37,7 +32,7 @@ import type * as TypeScript from "typescript-5";
 
 const ts = createRequire(import.meta.url)("typescript-5") as typeof TypeScript;
 
-export type RuleScope = "package" | "manifest-key" | "markdown" | "comments" | "text";
+export type RuleScope = "markdown" | "comments" | "text";
 export interface RewriteRule {
   readonly id: string;
   readonly scope: RuleScope;
@@ -63,19 +58,16 @@ export interface RewriteRules {
 const strings = Schema.Array(Schema.NonEmptyString);
 const Rule = Schema.Struct({
   id: Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]*$/u)),
-  scope: Schema.Literals(["package", "manifest-key", "markdown", "comments", "text"]),
+  scope: Schema.Literals(["markdown", "comments", "text"]),
   from: Schema.NonEmptyString,
   to: Schema.String,
   documents: Schema.optionalKey(strings),
   files: Schema.optionalKey(strings),
 });
-/** The scopes of the names the engine reads, which only the `engine` section holds. */
-const engineScopes: readonly RuleScope[] = ["package", "manifest-key"];
 const RulesFile = Schema.Struct({
   version: Schema.Literal(1),
   variables: Schema.optionalKey(Schema.Record(Schema.String, Schema.NonEmptyString)),
   names: strings,
-  engine: Schema.optionalKey(Schema.Array(Rule)),
   rules: Schema.Array(Rule),
   preserve: Schema.Array(
     Schema.Struct({
@@ -94,7 +86,7 @@ export function parseRules(text: string): RewriteRules {
     throw new Error(`Not a rewrite rule file: ${decoded.failure.message}`);
   const value = JSON.parse(text) as Record<string, unknown>;
   const allowed = {
-    top: ["version", "variables", "names", "engine", "rules", "preserve"],
+    top: ["version", "variables", "names", "rules", "preserve"],
     rule: ["id", "scope", "from", "to", "documents", "files"],
     preserve: ["text", "reason", "documents"],
   };
@@ -102,24 +94,14 @@ export function parseRules(text: string): RewriteRules {
     Object.keys(item).find((k) => !keys.includes(k));
   const extra =
     unknown(value, allowed.top) ??
-    [...((value.engine as object[] | undefined) ?? []), ...(value.rules as object[])]
-      .map((rule) => unknown(rule, allowed.rule))
-      .find(Boolean) ??
+    (value.rules as object[]).map((rule) => unknown(rule, allowed.rule)).find(Boolean) ??
     (value.preserve as object[]).map((item) => unknown(item, allowed.preserve)).find(Boolean);
   if (extra !== undefined) throw new Error(`Not a rewrite rule file: unknown key ${extra}`);
-  const { variables = {}, engine = [], ...rest } = decoded.success;
-  for (const rule of engine)
-    if (!engineScopes.includes(rule.scope) || rule.documents !== undefined)
-      throw new Error(
-        `Rule ${rule.id}: the engine section holds only package and manifest-key rules, for every document`,
-      );
-  for (const rule of rest.rules)
-    if (engineScopes.includes(rule.scope))
-      throw new Error(`Rule ${rule.id}: ${rule.scope} rules belong in the engine section`);
+  const { variables = {}, ...rest } = decoded.success;
   // A rule's `to` may name a variable, so one value (a contact address) is set in one place.
   const rules: RewriteRules = {
     ...rest,
-    rules: [...engine, ...rest.rules].map((rule) => ({
+    rules: rest.rules.map((rule) => ({
       ...rule,
       to: rule.to.replace(/\{\{([A-Za-z0-9_-]+)\}\}/gu, (_, name: string) => {
         if (!Object.hasOwn(variables, name))
@@ -312,7 +294,10 @@ const commentRanges = (path: string, text: string): Range[] =>
 /** How many line terminators each comment holds. */
 const commentBreaks = (path: string, text: string) =>
   commentRanges(path, text).map(([from, to]) => lineBreaks(text.slice(from, to)).length);
-/** SQL migrations: the engine records each one's hash, so no rule may touch them. */
+/**
+ * SQL migrations: the engine records each one's hash, and keeps its history only when the shared
+ * rewrite alone renamed it, so the catalog's rules never touch one.
+ */
 const migration = /(?:^|\/)migrations\/.*\.sql$/iu;
 
 /** Text outside `ranges`, each range marked, for checking that only those ranges changed. */
@@ -332,55 +317,6 @@ function onlyScopeChanged(path: string, scope: "comments" | "markdown", was: str
   if (scriptFile.test(path))
     return isDeepStrictEqual(scriptTokens(path, was).tokens, scriptTokens(path, now).tokens);
   return outside(was, commentRanges(path, was)) === outside(now, commentRanges(path, now));
-}
-
-/** A top-level member of a JSON object's text: its key, and where its key and value are. */
-interface Member {
-  readonly key: string;
-  readonly keyRange: Range;
-  readonly valueRange: Range;
-}
-/**
- * The top-level members of a JSON object's text, by position, tracking depth and strings so a
- * nested key is never taken for a top-level one. The text must already parse as a JSON object.
- */
-export function topLevelMembers(text: string): Member[] {
-  const members: Member[] = [];
-  let depth = 0;
-  let key: { key: string; range: Range } | undefined;
-  let valueStart = -1;
-  let valueEnd = -1;
-  const end = () => {
-    if (key !== undefined)
-      members.push({ key: key.key, keyRange: key.range, valueRange: [valueStart, valueEnd] });
-    key = undefined;
-    valueStart = -1;
-  };
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i]!;
-    if (/\s/u.test(c) || c === ":") continue;
-    const start = i;
-    if (c === '"') for (i++; text[i] !== '"'; i++) if (text[i] === "\\") i++;
-    if (depth === 1 && c === ",") {
-      end();
-      continue;
-    }
-    if (c === "}" || c === "]") {
-      depth--;
-      if (depth === 0) {
-        end();
-        continue;
-      }
-    }
-    if (depth === 1 && c === '"' && key === undefined)
-      key = { key: JSON.parse(text.slice(start, i + 1)) as string, range: [start, i + 1] };
-    else {
-      if (depth === 1 && valueStart === -1) valueStart = start;
-      valueEnd = i + 1;
-    }
-    if (c === "{" || c === "[") depth++;
-  }
-  return members;
 }
 
 /* ---- Applying rules ---- */
@@ -409,7 +345,7 @@ export interface Occurrence {
 const isText = (file: SourceFile) =>
   typeof file.content === "string" && file.encoding === undefined;
 
-/** Applies a rule set and accounts for every remaining name. */
+/** Applies the catalog's rules to shared-rewritten source and accounts for every remaining name. */
 export class Rewriter {
   readonly rules: RewriteRules;
   readonly counts = new Map<string, number>();
@@ -419,11 +355,6 @@ export class Rewriter {
     for (const rule of rules.rules) this.counts.set(rule.id, 0);
   }
 
-  #applies(rule: RewriteRule, document: string, scope: RuleScope) {
-    return (
-      rule.scope === scope && (rule.documents === undefined || rule.documents.includes(document))
-    );
-  }
   #protected(text: string, document: string): Range[] {
     return [
       ...encodedRanges(text),
@@ -449,18 +380,10 @@ export class Rewriter {
     this.counts.set(rule.id, this.counts.get(rule.id)! + count);
     return output + text.slice(last);
   }
-  #packageName(name: string, document: string): string {
-    return this.rules.rules
-      .filter((rule) => this.#applies(rule, document, "package"))
-      .reduce((value, rule) => this.#replace(value, rule, document, [[0, value.length]]), name);
-  }
-
-  /** An index entry: only its `package` changes. */
-  entry<T extends { id: string; package: string }>(entry: T): T {
-    return { ...entry, package: this.#packageName(entry.package, entry.id) };
-  }
-
-  /** A source document. Problems are edits that could not be made exactly. */
+  /**
+   * A source document the shared rewrite has already rewritten; its package is left as it is.
+   * Problems are edits that could not be made exactly.
+   */
   document(id: string, source: Source): { source: Source; problems: string[] } {
     const problems: string[] = [];
     const files = source.files.map((file): SourceFile => {
@@ -488,61 +411,9 @@ export class Rewriter {
         )
           problems.push(`${file.path}: rule ${rule.id} changed the line breaks in a comment`);
       }
-      if (file.path === "package.json") {
-        const edited = this.#manifest(id, content);
-        if (typeof edited === "string") content = edited;
-        else problems.push(edited.problem);
-      }
       return content === file.content ? file : { ...file, content };
     });
-    return {
-      source: { ...source, package: this.#packageName(source.package, id), files },
-      problems,
-    };
-  }
-
-  /** `package.json`: its name and renamed top-level keys, edited in place. */
-  #manifest(id: string, text: string): string | { problem: string } {
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      return text;
-    }
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return text;
-    let output = text;
-    const expected = { ...parsed };
-    if (typeof parsed.name === "string") {
-      const name = this.#packageName(parsed.name, id);
-      if (name !== parsed.name) {
-        const found = topLevelMembers(output).filter((member) => member.key === "name");
-        if (found.length !== 1)
-          return { problem: "package.json's name could not be edited in place" };
-        const [start, end] = found[0]!.valueRange;
-        output = output.slice(0, start) + JSON.stringify(name) + output.slice(end);
-        expected.name = name;
-      }
-    }
-    for (const rule of this.rules.rules) {
-      if (!this.#applies(rule, id, "manifest-key") || !Object.hasOwn(parsed, rule.from)) continue;
-      const found = topLevelMembers(output).filter((member) => member.key === rule.from);
-      if (found.length !== 1 || Object.hasOwn(parsed, rule.to))
-        return { problem: `package.json's key for rule ${rule.id} could not be renamed in place` };
-      const [start, end] = found[0]!.keyRange;
-      output = output.slice(0, start) + JSON.stringify(rule.to) + output.slice(end);
-      expected[rule.to] = expected[rule.from];
-      delete expected[rule.from];
-      this.counts.set(rule.id, this.counts.get(rule.id)! + 1);
-    }
-    let result: unknown;
-    try {
-      result = JSON.parse(output);
-    } catch {
-      return { problem: "package.json does not parse after rewriting" };
-    }
-    return isDeepStrictEqual(result, expected)
-      ? output
-      : { problem: "package.json changed beyond its name and renamed keys" };
+    return { source: { ...source, files }, problems };
   }
 
   /** Record every remaining name in one string, and why it stays. */
@@ -602,8 +473,10 @@ export function resolvesIn(paths: ReadonlySet<string>, from: string, specifier: 
 }
 
 /**
- * What changed that a rewrite must never change: the file list, non-text files, data URIs and
- * base64 runs, JSON that parsed, and relative imports, each of which must still name a file.
+ * What the catalog's rules changed that they must never change, comparing `original` (the shared
+ * rewrite's output, so exactly what it renamed, migrations included, is allowed) with `output`:
+ * the file list, non-text files, migrations, data URIs and base64 runs, JSON that parsed, and
+ * relative imports, each of which must still name a file.
  */
 export function rewriteProblems(original: Source, output: Source): string[] {
   const problems: string[] = [];

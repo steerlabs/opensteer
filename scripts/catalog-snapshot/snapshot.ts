@@ -12,8 +12,9 @@
  * Output, cache and staging are resolved through symlinks and must lie outside the repository and
  * apart from each other. The snapshot is built in a new directory beside `<out>`, checked as
  * written, and only then swapped in; an earlier snapshot stays until the swap has succeeded.
- * `--rules` is a JSON rule file (see rewrite.ts); its detailed report goes to `<out>.rewrites.json`,
- * beside the snapshot and never in it.
+ * Every document goes through the engine's shared rewrite (`rewriteUpstreamSource`), then
+ * `--rules`, a JSON rule file of the catalog's own edits (see rewrite.ts); the detailed report goes
+ * to `<out>.rewrites.json`, beside the snapshot and never in it.
  *
  * Everything downloaded is data: it is parsed as JSON or stored as bytes, never executed.
  */

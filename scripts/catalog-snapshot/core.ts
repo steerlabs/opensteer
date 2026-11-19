@@ -14,6 +14,7 @@
  */
 import { createHash } from "node:crypto";
 import { Schema } from "effect";
+import { rewriteUpstreamPackage, rewriteUpstreamSource } from "@opensteer/plugin-engine-catalog";
 import { CatalogFeed, CatalogFeedSource } from "@opensteer/plugin-engine-catalog/contracts";
 import { PackageName } from "@opensteer/plugin-engine-sdk";
 import {
@@ -59,12 +60,18 @@ export interface SnapshotInput {
   readonly readSource: (id: string) => Promise<string | undefined>;
   /** A relative icon's bytes, or undefined when the feed has none. */
   readonly readIcon: (path: string) => Promise<Uint8Array | undefined>;
-  /** Parsed rules, and the SHA-256 of the file they came from. */
+  /** The catalog's own rules, and the SHA-256 of the file they came from. */
   readonly rules?: { readonly rules: RewriteRules; readonly sha256: string };
 }
 
-/** The private account of a rewrite: counts per rule and every remaining name with its reason. */
+/**
+ * The private account of a rewrite: what the engine's shared rewrite changed (index entries' and
+ * documents' package names, and files), how many files the catalog's rules then changed, counts
+ * per rule, and every remaining name with its reason.
+ */
 export interface RewriteReport {
+  readonly shared: { readonly packages: number; readonly files: number };
+  readonly ruleFiles: number;
   readonly rules: ReadonlyArray<{ id: string; scope: string; count: number }>;
   readonly remaining: readonly Occurrence[];
 }
@@ -188,8 +195,10 @@ const encoder = new TextEncoder();
 type Entry = { id: string; package: string; icons: { src: string }[]; [key: string]: unknown };
 
 /**
- * Rewrite, validate, lay out and hash a feed. Every problem is collected rather than thrown, so
- * one run lists them all; the caller decides whether the result is usable.
+ * Rewrite, validate, lay out and hash a feed. Every package name and source file goes through the
+ * engine's shared rewrite first, as the Host rewrites what it installs, then the catalog's own
+ * rules; each document is hashed last, over its final bytes. Every problem is collected rather
+ * than thrown, so one run lists them all; the caller decides whether the result is usable.
  */
 export async function buildSnapshot(input: SnapshotInput): Promise<SnapshotResult> {
   const rewriter = new Rewriter(
@@ -197,6 +206,13 @@ export async function buildSnapshot(input: SnapshotInput): Promise<SnapshotResul
   );
   const failures: Problem[] = [];
   const files = new Map<string, Uint8Array>();
+  const shared = { packages: 0, files: 0 };
+  let ruleFiles = 0;
+  const renamed = (name: string) => {
+    const to = rewriteUpstreamPackage(name);
+    if (to !== name) shared.packages++;
+    return to;
+  };
 
   const raw = parse(input.feed);
   const feed = decodeFeed(raw);
@@ -256,7 +272,7 @@ export async function buildSnapshot(input: SnapshotInput): Promise<SnapshotResul
       failures.push({ document: at, reason: `id ${JSON.stringify(entry.id)} cannot name a file` });
       continue;
     }
-    const output = rewriter.entry(entry);
+    const output: Entry = { ...entry, package: renamed(entry.package) };
     output.icons = [];
     for (const icon of entry.icons)
       output.icons.push({ ...icon, src: await iconFor(icon.src, at) });
@@ -276,10 +292,21 @@ export async function buildSnapshot(input: SnapshotInput): Promise<SnapshotResul
       });
       continue;
     }
-    const rewritten = rewriter.document(entry.id, source as Source);
+    const original = source as Source;
+    const upstream = rewriteUpstreamSource(original.files);
+    const sharedOutput: Source = {
+      ...original,
+      package: renamed(original.package),
+      files: upstream.files,
+    };
+    const rewritten = rewriter.document(entry.id, sharedOutput);
+    shared.files += upstream.files.filter((file, at) => file !== original.files[at]).length;
+    ruleFiles += rewritten.source.files.filter((file, at) => file !== upstream.files[at]).length;
+    // The catalog's rules are audited against the shared rewrite's output: what it renamed stands.
     for (const reason of [
+      ...upstream.problems,
       ...rewritten.problems,
-      ...rewriteProblems(source as Source, rewritten.source),
+      ...rewriteProblems(sharedOutput, rewritten.source),
       sourceProblem(rewritten.source, output.package) ?? [],
     ].flat())
       failures.push({ document, reason });
@@ -327,6 +354,8 @@ export async function buildSnapshot(input: SnapshotInput): Promise<SnapshotResul
     manifest,
     failures,
     report: {
+      shared,
+      ruleFiles,
       rules: (input.rules?.rules.rules ?? []).map((rule) => ({
         id: rule.id,
         scope: rule.scope,
