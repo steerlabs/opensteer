@@ -94,6 +94,8 @@ function stageAttention(
 /**
  * A pending Request's asker presentation (its node's title and the node it sits within) is read
  * with the Request list; when those change, its attention row moves forward so readers reread.
+ * The move is stored on the attention row, so a repair reads the same revision as the feed.
+ * Driven from pending Requests, so a node's history is never scanned.
  */
 export async function republishAskerAttention(
   tx: Tx,
@@ -102,25 +104,27 @@ export async function republishAskerAttention(
   /** The node's title changed, which its children's Requests show as where they sit. */
   childrenToo: boolean,
 ) {
-  const asking = await tx
-    .selectFrom("requests")
-    .select(["id", "originatingThreadId"])
-    .select(sql<string | null>`left(presentation->>'title',192)`.as("title"))
-    .where("status", "=", "pending")
-    .where((eb) =>
-      childrenToo
-        ? eb.or([
-            eb("originatingNodeId", "=", nodeId),
-            eb(
-              "originatingNodeId",
-              "in",
-              eb
-                .selectFrom("executionNodes as child")
-                .select("child.id")
-                .where("child.parentNodeId", "=", nodeId),
-            ),
-          ])
-        : eb("originatingNodeId", "=", nodeId),
+  const sits = childrenToo ? sql`or node.parent_node_id=${nodeId}` : sql``;
+  const asking = (
+    await sql<{ id: RequestId; originatingThreadId: ThreadId | null; title: string | null }>`
+    with pending as materialized (
+      select id,originating_node_id,originating_thread_id,presentation from requests
+      where status='pending' and originating_node_id is not null
+    )
+    select pending.id,pending.originating_thread_id as "originatingThreadId",
+      left(pending.presentation->>'title',192) as title
+    from pending join execution_nodes node on node.id=pending.originating_node_id
+    where node.id=${nodeId} ${sits}
+  `.execute(tx)
+  ).rows;
+  if (!asking.length) return;
+  await tx
+    .updateTable("personalAttention")
+    .set({ revision: mutation.sequence })
+    .where(
+      "id",
+      "in",
+      asking.map((request) => `request:${request.id}`),
     )
     .execute();
   for (const request of asking)
@@ -188,7 +192,8 @@ export async function refreshRequestAttention(
         ? {
             kind: "request",
             threadId: source.originatingThreadId,
-            revision: source.revision,
+            // The staged attention row's revision, which a snapshot reads back.
+            revision: mutation.sequence,
             title: source.title,
           }
         : null,
@@ -398,7 +403,7 @@ export async function readAttentionKeys(
     )
     select selected.id,selected.kind,selected.request_id,selected.team_deployment_id,selected.team_request_id,
       to_char(selected.sort_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at,
-      attention.thread_id,coalesce(request.revision,attention.revision) as revision,
+      attention.thread_id,greatest(request.revision,attention.revision)::text as revision,
       left(coalesce(request.presentation->>'title',mirror.presentation->>'title'),192) as title,
       left(mirror.blocked_reason,160) as blocked_reason
     from selected join personal_attention attention on attention.id=selected.id
