@@ -207,6 +207,38 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     expect((await store.requests.get(opened.request.id))?.status).toBe("cancelled");
   });
 
+  it("reads every installation into the discovery inventory, however many there are", async ({
+    storeFixture,
+  }) => {
+    const { database, platform, store } = storeFixture;
+    const fixture = await runningRunFixture(store, "inventory-pages");
+    const installationId = createIntegrationId("installation");
+    await platform.install({
+      actorUserId: fixture.userId,
+      installation: localServerInstallation(installationId),
+      requestId: "install-inventory-pages",
+      servers: [],
+    });
+    // A thousand more like it: past one page of the inventory read.
+    await sql`
+      insert into integration_installations
+      select (jsonb_populate_record(
+        null::integration_installations,
+        to_jsonb(installation) || jsonb_build_object(
+          'id', 'iin_' || gen_random_uuid(),
+          'name', 'plugin-' || gen_random_uuid()
+        )
+      )).*
+      from integration_installations installation, generate_series(1, 1000)
+      where installation.id = ${installationId}
+    `.execute(database);
+    const inventory = await platform.listDiscoveryInventory({ ownerUserId: fixture.userId });
+    const ids = inventory.map(({ installation }) => installation.id);
+    expect(ids).toHaveLength(1001);
+    expect(new Set(ids).size).toBe(1001);
+    expect(ids).toContain(installationId);
+  });
+
   it("cancels pending access Requests and detaches resolved ones", async ({ storeFixture }) => {
     const { store, platform, database } = storeFixture;
     const fixture = await runningRunFixture(store, "uninstall-requests");

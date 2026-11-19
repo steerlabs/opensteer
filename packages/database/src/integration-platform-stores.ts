@@ -142,6 +142,9 @@ export type IntegrationDiscoveryRequester = IntegrationRequester & {
     { readonly serverId: IntegrationServerId } | { readonly connectionId: IntegrationConnectionId };
 };
 
+/** Installations one read of the discovery inventory takes at a time. */
+const discoveryInventoryPage = 1_000;
+
 export interface DiscoveredIntegrationServer {
   readonly connectionRequirement: IntegrationServer["connectionRequirement"];
   readonly id: IntegrationServerId;
@@ -1217,10 +1220,11 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     }[]
   > {
     const provider = input.provider;
-    const [installations, authority, grants] = await Promise.all([
+    const page = (after: IntegrationInstallationId | null) =>
       this.database
         .selectFrom("integrationInstallations")
         .selectAll()
+        .$if(after !== null, (query) => query.where("id", ">", after!))
         .$if(provider !== undefined, (query) =>
           query.where(({ exists, selectFrom }) => {
             let server = selectFrom("integrationServers")
@@ -1239,9 +1243,20 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
             return exists(server);
           }),
         )
-        .orderBy("title", "asc")
-        .limit(1_000)
-        .execute(),
+        .orderBy("id", "asc")
+        .limit(discoveryInventoryPage)
+        .execute();
+    // Every installation, a page at a time by its id, so none is left out however many there are.
+    const allInstallations = async () => {
+      const rows: Awaited<ReturnType<typeof page>> = [];
+      for (;;) {
+        const next = await page(rows.at(-1)?.id ?? null);
+        rows.push(...next);
+        if (next.length < discoveryInventoryPage) return rows;
+      }
+    };
+    const [installations, authority, grants] = await Promise.all([
+      allInstallations(),
       this.authoritySnapshot(input.ownerUserId),
       this.activeGrants({ ownerUserId: input.ownerUserId }),
     ]);

@@ -66,15 +66,16 @@ export class PluginToolHandlers {
     ]);
     const access = (id: string) => settings.find((s) => s.pluginId === id)?.access ?? "all";
     const entries = [
-      ...plugins.map((plugin) => ({ kind: "plugin" as const, id: plugin.id, slug: plugin.slug })),
+      ...plugins.map((plugin) => ({ kind: "plugin" as const, id: plugin.id })),
       ...local
         .filter(({ id }) => access(id) !== "off")
-        .map((provider) => ({ kind: "local" as const, id: provider.id, slug: provider.slug })),
+        .map((provider) => ({ kind: "local" as const, id: provider.id })),
     ];
     const page = c.input.pluginId
       ? { items: entries.filter(({ id }) => id === c.input.pluginId), cursor: null }
-      : keysetPage(entries, (entry) => `${entry.slug}\u0000${entry.id}`, {
-          scope: "agent-plugins",
+      : // By id, which never changes: a device renamed between pages moves its slug, not its place.
+        keysetPage(entries, (entry) => entry.id, {
+          scope: "agent-plugins/id",
           cursor: c.input.cursor,
           max: 25,
         });
