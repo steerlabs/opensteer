@@ -365,7 +365,7 @@ import {
   type MockTriggerRecord,
 } from "./mock-automations.js";
 import { MockChromeSignIns } from "./mock-chrome-sign-ins.js";
-import { mockComputerUseTurn } from "./mock-computer-use-transcript.js";
+import { mockComputerUseMessageId, mockComputerUseTurn } from "./mock-computer-use-transcript.js";
 import { MockComputerViews } from "./mock-computer-views.js";
 import {
   createInitialIntegrationState,
@@ -13363,7 +13363,7 @@ function mockComputerUseThreadTranscript(
       author: mockHumanAuthor(),
       body: "Ok can you click on the opensteer org in slack for me",
       createdAt: "2026-08-06T23:28:03.000Z",
-      id: `msg_cu_${runId}_input`,
+      id: mockComputerUseMessageId(runId, "input"),
       kind: "message",
       messageKind: "input",
       runId: null,

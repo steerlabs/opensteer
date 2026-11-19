@@ -84,7 +84,10 @@ it("fills every snapshot field the UI reads while a task works, asks and queues"
   const thread = host.client
     .getSnapshot()
     .threads.find(({ id }) => id === handedOut.parentThreadId)!;
-  releases.push(client.observeThread(thread.id));
+  const [toolThreadId] = Object.entries(host.client.getSnapshot().transcripts).find(([, entries]) =>
+    entries.some((entry) => entry.kind === "tool"),
+  )!;
+  releases.push(client.observeThread(thread.id), client.observeThread(toolThreadId));
   await client.dispatch({
     type: "thread.sendMessage",
     threadId: thread.id,
@@ -112,6 +115,10 @@ it("fills every snapshot field the UI reads while a task works, asks and queues"
         harnesses: snapshot.harnesses.length > 0,
         subagents: view.entries.some((entry) => entry.kind === "node"),
         assignment: snapshot.assignments[handedOut.id] !== undefined,
+        tool: client
+          .getThreadTranscript(toolThreadId)!
+          .getSnapshot()
+          .entries.some((entry) => entry.kind === "tool"),
         requests: view.requests.length > 0,
         runs: view.runQueue.some((run) => run.threadId === thread.id),
         queued: view.inputQueue?.items.some((item) =>
@@ -133,6 +140,7 @@ it("fills every snapshot field the UI reads while a task works, asks and queues"
         harnesses: true,
         subagents: true,
         assignment: true,
+        tool: true,
         requests: true,
         runs: true,
         queued: true,
