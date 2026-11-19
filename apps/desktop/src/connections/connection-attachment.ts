@@ -197,11 +197,14 @@ export class ConnectionAttachment {
     this.#publish();
     void (
       closeFirst
-        ? this.#close().then(() => this.#establish(this.#deploymentId))
+        ? this.#close().then(() =>
+            operationId === this.#operationId ? this.#establish(this.#deploymentId) : null,
+          )
         : this.#establish(this.#deploymentId)
     ).then(
       (observation) => {
         if (
+          observation === null ||
           operationId !== this.#operationId ||
           observation.attachmentKey !== this.#attachmentKey
         ) {

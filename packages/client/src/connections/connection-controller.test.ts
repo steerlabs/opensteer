@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConnectionController, type ConnectionLease } from "./connection-controller.js";
+import { connectionNotice } from "./connection-notice.js";
 import { classifyClientFailure, ClientOperationError } from "./operation-error.js";
 import { HostTransportError } from "./host-transport-error.js";
 import type {
@@ -311,4 +312,71 @@ it("keeps a confirmed refusal visible after backgrounding and returning", async 
     issue: { code: "sign-in" },
   });
   connection.dispose();
+});
+
+it("carries route and stays reconnecting past the 5 s hold while an initial attempt is still pending", async () => {
+  vi.useFakeTimers();
+  const life = lifecycle();
+  const pending = Promise.withResolvers<ConnectionLease>();
+  let aborted = false;
+  let attempts = 0;
+  const connection = createConnectionController({
+    lifecycle: life.port,
+    presentation: { name: "This Mac", target: "computer", route: "same-computer" },
+    driver: {
+      connect({ signal }) {
+        attempts += 1;
+        if (attempts === 1) {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+          });
+          return pending.promise;
+        }
+        return Promise.reject(new HostTransportError("unreachable"));
+      },
+    },
+  });
+  connection.start();
+  await vi.advanceTimersByTimeAsync(5000);
+  const slow = connection.getSnapshot();
+  expect(slow).toMatchObject({
+    phase: "connecting",
+    showInterruption: true,
+    trying: true,
+    route: "same-computer",
+    issue: { code: "connection", reason: "reconnecting", route: "same-computer" },
+  });
+  expect(connectionNotice(slow)).toMatchObject({
+    code: "connection",
+    reason: "reconnecting",
+    name: "This Mac",
+    route: "same-computer",
+    target: "computer",
+  });
+  expect(aborted).toBe(false);
+
+  const firstClosed = Promise.withResolvers<ReturnType<typeof classifyClientFailure>>();
+  pending.resolve({ closed: firstClosed.promise, probe: async () => {}, close: () => {} });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(connection.getSnapshot()).toMatchObject({
+    phase: "ready",
+    readyRevision: 1,
+    showInterruption: false,
+  });
+
+  // A real transport failure transitions to unreachable while preserving route.
+  firstClosed.resolve(classifyClientFailure(new HostTransportError("unreachable")));
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(connection.getSnapshot().issue).toMatchObject({
+    code: "connection",
+    reason: "unreachable",
+    route: "same-computer",
+  });
+  expect(connectionNotice(connection.getSnapshot())).toMatchObject({
+    code: "connection",
+    reason: "unreachable",
+    route: "same-computer",
+  });
+  connection.dispose();
+  expect(vi.getTimerCount()).toBe(0);
 });

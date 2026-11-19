@@ -80,6 +80,7 @@ const autoOidcAttemptKey = "opensteer.oidc.auto-attempt";
 const autoOidcAttemptWindowMs = 2 * 60 * 1_000;
 
 export function App({
+  connectionGateSecondary = null,
   mcpAuthorizationRequestId = null,
   onMcpAuthorizationClosed,
   deploymentAccess = null,
@@ -92,6 +93,10 @@ export function App({
   openSetup = false,
   preview = null,
 }: {
+  readonly connectionGateSecondary?: {
+    readonly label: string;
+    readonly onPress: () => void;
+  } | null;
   readonly mcpAuthorizationRequestId?: string | null;
   readonly onMcpAuthorizationClosed?: (() => void) | undefined;
   /** The Desktop's single guarded access snapshot, or null in a browser. */
@@ -152,6 +157,7 @@ export function App({
   const appGate = useConnectionGate(hostClient.connection, {
     scope: "app",
     ready: snapshot.session !== "checking" && !interrupted,
+    secondary: connectionGateSecondary,
     onSignIn: () => void hostClient.refresh().catch(() => undefined),
     onUpdate: desktopBridge?.updates
       ? () => void desktopBridge.updates?.download().catch(() => undefined)

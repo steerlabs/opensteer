@@ -352,6 +352,120 @@ it("opens this computer's Host only once main has attached it", async () => {
   }
 });
 
+it("keeps a verified local owner client connecting while the browser reports offline, unlike a remote place", async () => {
+  await import("../app.js");
+  vi.useFakeTimers();
+  const onLineDescriptor = Object.getOwnPropertyDescriptor(Navigator.prototype, "onLine");
+  Object.defineProperty(Navigator.prototype, "onLine", { configurable: true, get: () => false });
+
+  const localId = createId("deployment");
+  const remoteId = createId("deployment");
+  const otherId = createId("deployment");
+  const otherPlace = { ...accessDeployment("idle"), id: otherId, name: "Studio" };
+  const makeBridge = (access: DeploymentAccessSnapshot) =>
+    ({
+      cancel: async () => undefined,
+      cancelHostRequest: async () => undefined,
+      checkDeployments: async () => undefined,
+      retry: async () => undefined,
+      getDeploymentAccessSnapshot: async () => access,
+      getLocalExecutionStatus: async ({ deploymentId }: { readonly deploymentId: string }) => ({
+        deploymentId,
+        runner: { enrolled: false, runnerId: null },
+      }),
+      onHostWebSocketEvent: () => () => undefined,
+      onDeploymentAccessSnapshotChanged: () => () => undefined,
+      onNotificationActivated: () => () => undefined,
+      onLocalExecutionStatusChanged: () => () => undefined,
+    }) as unknown as OpensteerDesktopBridge;
+
+  const placeListReads = ["/v1/rpc/attention.get", "/v1/rpc/teams.links.list"];
+  const hostRequests: string[] = [];
+  const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = input instanceof Request ? input.url : String(input);
+    const path = url.startsWith("app://opensteer/host/") ? new URL(url).pathname : null;
+    if (path && !placeListReads.some((read) => path.endsWith(read))) hostRequests.push(path);
+    return new Promise<Response>(() => undefined);
+  });
+
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    // Verified local owner route ignores navigator.onLine === false and external offline events,
+    // stays honestly connecting past the 5 s hold, and keeps Other computers reachable.
+    const localAccess = snapshot({
+      deployments: [
+        {
+          ...accessDeployment("connected"),
+          ...personalSummary(localId),
+          access: "owner",
+          attachmentKey: "owner",
+        },
+        otherPlace,
+      ],
+      personalSetup: personalStatus({ deploymentId: localId, state: "ready", step: null }),
+      revision: 1,
+      selectedDeploymentId: localId,
+    });
+    await act(async () => {
+      root.render(<DesktopApp bridge={makeBridge(localAccess)} />);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(hostRequests.some((path) => path.startsWith(`/host/${localId}/`))).toBe(true);
+    await act(async () => {
+      window.dispatchEvent(new Event("offline"));
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(container.textContent).toContain("Connecting to Workshop…");
+    expect(container.textContent).toContain(
+      "Opensteer on this computer is taking longer than usual to respond.",
+    );
+    expect(container.textContent).not.toContain("You're offline");
+    expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual([
+      "Other computers",
+    ]);
+
+    // Remote Connect place respects navigator.onLine === false: sends nothing, shows offline
+    // after the 5 s hold, omits Try again, and still keeps Other computers reachable.
+    await act(async () => root.unmount());
+    hostRequests.length = 0;
+    const remoteRoot = createRoot(container);
+    try {
+      const remoteAccess = snapshot({
+        deployments: [
+          {
+            ...accessDeployment("connected"),
+            id: remoteId,
+            access: "connect",
+            attachmentKey: "connect",
+            onThisComputer: false,
+          },
+          otherPlace,
+        ],
+        revision: 1,
+        selectedDeploymentId: remoteId,
+      });
+      await act(async () => {
+        remoteRoot.render(<DesktopApp bridge={makeBridge(remoteAccess)} />);
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(hostRequests.filter((path) => path.startsWith(`/host/${remoteId}/`))).toEqual([]);
+      expect(container.textContent).toContain("You're offline");
+      expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual([
+        "Other computers",
+      ]);
+    } finally {
+      await act(async () => remoteRoot.unmount());
+    }
+  } finally {
+    container.remove();
+    fetch.mockRestore();
+    if (onLineDescriptor) Object.defineProperty(Navigator.prototype, "onLine", onLineDescriptor);
+    vi.useRealTimers();
+  }
+});
+
 it.each([
   ["listed", () => ({ deployments: [{ ...accessDeployment("idle"), name: "Studio" }] })],
   [

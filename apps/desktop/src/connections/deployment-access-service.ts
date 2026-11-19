@@ -173,7 +173,15 @@ export class DeploymentAccessService {
   #operationId = 0;
   #interactiveAttachment = false;
   #pendingAttachmentDeploymentId: string | null = null;
+  #selectingDeploymentId: string | null = null;
   #personal: DesktopPersonalDeploymentStatus | null = null;
+  /**
+   * Supervisor `ready` held back until the catalog reload that resumes a
+   * pending local attachment, so no snapshot exposes `(ready, idle)`.
+   */
+  #stagedPersonal: DesktopPersonalDeploymentStatus | null = null;
+  #publishingSuspended = false;
+  #publishPending = false;
   #personalLink: DesktopPersonalAccountLinkStatus = unavailablePersonalAccountLink();
   readonly #probes = new Map<
     string,
@@ -186,6 +194,7 @@ export class DeploymentAccessService {
   #revision = 0;
   /** The newest catalog read: an older one finishing later must not undo it. */
   #catalogRead = 0;
+  #catalogAppliedRead = 0;
   /** A selection moved elsewhere, owed to whichever read applies next. */
   #externalSelection = false;
   #attachment: ConnectionAttachment | null = null;
@@ -223,8 +232,16 @@ export class DeploymentAccessService {
         this.#attachment?.observe(observation);
       }),
       ports.personal.subscribe((status) => {
-        this.#personal = status;
-        this.#publish();
+        if (this.#shouldStagePersonalReady(status)) {
+          if (this.#operation?.kind === "create-personal" && status.deploymentId !== null) {
+            this.#pendingAttachmentDeploymentId = status.deploymentId;
+          }
+          this.#stagedPersonal = status;
+        } else {
+          this.#stagedPersonal = null;
+          this.#personal = status;
+          this.#publish();
+        }
         void this.#reloadCatalog(false);
         if (status.state === "ready") {
           void ports.personalAccount.status().then(
@@ -246,6 +263,7 @@ export class DeploymentAccessService {
 
   async initialize(): Promise<void> {
     this.#assertActive();
+    const initialCatalogRead = ++this.#catalogRead;
     const [account, catalogResult, personalLink] = await Promise.all([
       this.#ports.account.currentState().catch((error: unknown): DesktopAccountAuthState => ({
         account: {
@@ -271,15 +289,26 @@ export class DeploymentAccessService {
       this.#reloadJoined(),
     ]);
     this.#account = accountState(account);
-    this.#catalog = catalogResult.catalog;
-    this.#catalogFailure = catalogResult.failure?.detail ?? null;
+    if (initialCatalogRead > this.#catalogAppliedRead) {
+      this.#catalogAppliedRead = initialCatalogRead;
+      this.#catalog = catalogResult.catalog;
+      this.#catalogFailure = catalogResult.failure?.detail ?? null;
+    }
+    this.#stagedPersonal = null;
     this.#personal = this.#ports.personal.status;
     this.#personalLink = personalLink;
     this.#initialized = true;
-    this.#reconcileAttachment();
-    this.#publish();
+    this.#batchPublish(() => {
+      this.#reconcileAttachment();
+      if (this.#selectedDeployment()?.source !== "account") {
+        this.#attachSelectedReturningDeployment();
+      }
+      this.#publish();
+    });
     if (this.#account.status === "signed-in") await this.#refreshDirectory("required", "startup");
-    this.#attachSelectedReturningDeployment();
+    if (this.#selectedDeployment()?.source === "account") {
+      this.#attachSelectedReturningDeployment();
+    }
   }
 
   snapshot(): DeploymentAccessSnapshot {
@@ -332,6 +361,8 @@ export class DeploymentAccessService {
     this.#assertActive();
     if (this.#account.status === "authorizing") {
       this.#pendingAttachmentDeploymentId = null;
+      this.#selectingDeploymentId = null;
+      this.#commitStagedPersonal();
       await this.#accountOperation("sign-out-of-app", () => this.#ports.account.signOut());
       return;
     }
@@ -340,17 +371,21 @@ export class DeploymentAccessService {
       throw operationUnavailable("cancel");
     }
     const abandoning = attachment?.canCancel() ?? false;
-    this.#pendingAttachmentDeploymentId = null;
-    this.#operationId += 1;
-    this.#operation = null;
-    // Cancelling abandons the attempt and its in-flight establishment, and
-    // returns the row to plain "not attached" — never to a failure a person
-    // then has to clear before they can try again.
-    attachment?.cancel();
-    if (attachment && abandoning) {
-      this.#ports.hostSession.abandonAuthorization(attachment.deploymentId);
-    }
-    this.#publish();
+    this.#batchPublish(() => {
+      this.#pendingAttachmentDeploymentId = null;
+      this.#selectingDeploymentId = null;
+      this.#commitStagedPersonal();
+      this.#operationId += 1;
+      this.#operation = null;
+      // Cancelling abandons the attempt and its in-flight establishment, and
+      // returns the row to plain "not attached" — never to a failure a person
+      // then has to clear before they can try again.
+      attachment?.cancel();
+      if (attachment && abandoning) {
+        this.#ports.hostSession.abandonAuthorization(attachment.deploymentId);
+      }
+      this.#publish();
+    });
   }
 
   async connectPrivate(input: DesktopConnectPrivateDeploymentInput): Promise<void> {
@@ -374,7 +409,18 @@ export class DeploymentAccessService {
       "create-personal",
       () => this.#ports.personal.start(input),
       (status) => {
-        this.#personal = status;
+        if (
+          status.state === "ready" &&
+          status.deploymentId !== null &&
+          (this.#attachment?.deploymentId !== status.deploymentId || !this.#attachment.attached)
+        ) {
+          this.#pendingAttachmentDeploymentId = status.deploymentId;
+          this.#stagedPersonal = status;
+          void this.#reloadCatalog(false);
+        } else {
+          this.#stagedPersonal = null;
+          this.#personal = status;
+        }
       },
     );
   }
@@ -596,9 +642,23 @@ export class DeploymentAccessService {
       throw operationUnavailable("select");
     }
     this.#pendingAttachmentDeploymentId = null;
+    this.#selectingDeploymentId = deploymentId;
+    if (this.#stagedPersonal?.deploymentId !== deploymentId) {
+      this.#commitStagedPersonal();
+    }
     this.#selectedAttachment()?.deactivate();
-    await this.#ports.hostSession.closeCurrent();
-    await this.#catalogMutation("open-deployment", () => this.#ports.catalog.select(deploymentId));
+    try {
+      await this.#ports.hostSession.closeCurrent();
+      await this.#catalogMutation("open-deployment", () => this.#ports.catalog.select(deploymentId));
+    } finally {
+      if (this.#selectingDeploymentId === deploymentId) {
+        this.#selectingDeploymentId = null;
+        if (this.#stagedPersonal?.deploymentId === deploymentId) {
+          this.#commitStagedPersonal();
+          this.#publish();
+        }
+      }
+    }
   }
 
   async #catalogMutation(
@@ -609,12 +669,16 @@ export class DeploymentAccessService {
     try {
       const catalog = await operation();
       if (operationId !== this.#operationId) return;
-      this.#catalogRead += 1;
+      const read = ++this.#catalogRead;
+      this.#catalogAppliedRead = read;
       this.#catalog = catalog;
-      this.#reconcileAttachment();
-      this.#operation = null;
-      this.#publish();
-      this.#requestSelectedAttachment();
+      this.#batchPublish(() => {
+        this.#commitStagedPersonal();
+        this.#reconcileAttachment();
+        this.#operation = null;
+        this.#publish();
+        this.#requestSelectedAttachment();
+      });
     } catch (error) {
       this.#failOperation(operationId);
       throw error;
@@ -717,25 +781,31 @@ export class DeploymentAccessService {
     try {
       const catalog = await this.#ports.catalog.read();
       if (read !== this.#catalogRead || this.#disposed) return;
+      this.#catalogAppliedRead = read;
       this.#catalog = catalog;
       this.#catalogFailure = null;
     } catch (error) {
       if (read !== this.#catalogRead || this.#disposed) return;
+      this.#catalogAppliedRead = read;
+      this.#commitStagedPersonal();
       this.#catalogFailure = classifyPortFailure("catalog", error).detail;
       this.#publish();
       return;
     }
     const external = this.#externalSelection;
     this.#externalSelection = false;
-    this.#reconcileAttachment();
-    this.#publish();
-    this.#resumePendingAttachment();
-    // A rotated route re-attaches through the selected attachment. Only a
-    // selection somebody else moved is reopened here, and only under the same
-    // rule that reopens one at startup: it has to be a place already used.
-    if (external && this.#catalog.selectedDeploymentId !== selectedBefore) {
-      this.#attachSelectedReturningDeployment();
-    }
+    this.#batchPublish(() => {
+      this.#commitStagedPersonal();
+      this.#reconcileAttachment();
+      this.#publish();
+      this.#resumePendingAttachment();
+      // A rotated route re-attaches through the selected attachment. Only a
+      // selection somebody else moved is reopened here, and only under the same
+      // rule that reopens one at startup: it has to be a place already used.
+      if (external && this.#catalog.selectedDeploymentId !== selectedBefore) {
+        this.#attachSelectedReturningDeployment();
+      }
+    });
   }
 
   /**
@@ -1057,8 +1127,44 @@ export class DeploymentAccessService {
     this.#directoryFailure = null;
   }
 
+  #shouldStagePersonalReady(status: DesktopPersonalDeploymentStatus): boolean {
+    if (status.state !== "ready" || status.deploymentId === null) return false;
+    return (
+      this.#pendingAttachmentDeploymentId === status.deploymentId ||
+      this.#selectingDeploymentId === status.deploymentId ||
+      this.#operation?.kind === "create-personal"
+    );
+  }
+
+  #commitStagedPersonal(): void {
+    if (this.#stagedPersonal === null) return;
+    this.#personal = this.#stagedPersonal;
+    this.#stagedPersonal = null;
+  }
+
+  #batchPublish(work: () => void): void {
+    if (this.#publishingSuspended) {
+      work();
+      return;
+    }
+    this.#publishingSuspended = true;
+    this.#publishPending = false;
+    try {
+      work();
+    } finally {
+      this.#publishingSuspended = false;
+      const shouldPublish = this.#publishPending;
+      this.#publishPending = false;
+      if (shouldPublish) this.#publish();
+    }
+  }
+
   #publish(): void {
     if (this.#disposed || !this.#initialized) return;
+    if (this.#publishingSuspended) {
+      this.#publishPending = true;
+      return;
+    }
     this.#revision += 1;
     const snapshot = this.snapshot();
     for (const listener of this.#listeners) listener(snapshot);

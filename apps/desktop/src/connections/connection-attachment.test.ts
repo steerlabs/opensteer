@@ -216,6 +216,37 @@ describe("ConnectionAttachment", () => {
     expect(supervisor.snapshot()).toMatchObject({ failure: null, status: "idle" });
     expect(supervisor.canRetry()).toBe(true);
   });
+
+  it("does not call establish when cancelled while closing a rotated route", async () => {
+    const deploymentId = createId("deployment");
+    const closeGate = Promise.withResolvers<void>();
+    const establish = vi.fn(async () => ({
+      attachmentKey: "route:1",
+      deploymentId,
+      outcome: "ready" as const,
+    }));
+    const supervisor = new ConnectionAttachment({
+      attachmentKey: "route:1",
+      close: () => closeGate.promise,
+      deploymentId,
+      establish,
+    });
+
+    supervisor.attach();
+    await settle();
+    expect(establish).toHaveBeenCalledOnce();
+
+    supervisor.reconfigure({ attachmentKey: "route:2" });
+    expect(supervisor.snapshot().status).toBe("connecting");
+    supervisor.cancel();
+    expect(supervisor.snapshot().status).toBe("idle");
+
+    closeGate.resolve();
+    await settle();
+
+    expect(establish).toHaveBeenCalledOnce();
+    expect(supervisor.snapshot()).toMatchObject({ failure: null, status: "idle" });
+  });
 });
 
 interface Observation {

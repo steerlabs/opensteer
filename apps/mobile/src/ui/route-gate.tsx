@@ -3,6 +3,7 @@ import {
   clientIssueActions,
   presentConnectionGate,
   type ClientIssue,
+  type ClientIssuePresentation,
 } from "@opensteer/client/feedback";
 import { useCallback, useSyncExternalStore, type ReactNode } from "react";
 import { Linking } from "react-native";
@@ -66,9 +67,9 @@ export function ConnectionRouteGate(props: {
   return (
     <ConnectionGate
       detail={props.line ?? words.detail ?? ""}
-      primary={primaryButton(issue, connection, state.trying, props.signIn ?? null)}
+      primary={primaryButton(issue, words.action, connection, state.trying, props.signIn ?? null)}
       secondary={props.secondary ?? null}
-      stateKey={connectionIssueKey(issue)}
+      stateKey={`${state.phase}:${connectionIssueKey(issue)}`}
       symbol={gateSymbol(issue)}
       title={words.title}
     />
@@ -84,19 +85,15 @@ function gateSymbol(issue: ClientIssue): ConnectionGateSymbol {
 
 function primaryButton(
   issue: ClientIssue,
+  action: ClientIssuePresentation["action"],
   connection: ClientConnection | null,
   trying: boolean,
   signIn: ConnectionGateButton | null,
 ): ConnectionGateButton | null {
-  if (issue.code === "sign-in") return signIn;
-  if (issue.code === "update-app")
+  if (action === "sign-in") return signIn;
+  if (action === "update")
     return { label: clientIssueActions.update, onPress: () => void Linking.openURL(downloadPage) };
-  if (
-    (issue.code === "connection" ||
-      issue.code === "open-failed" ||
-      issue.code === "update-server") &&
-    connection !== null
-  )
+  if ((action === "retry" || issue.code === "update-server") && connection !== null)
     return {
       busy: trying,
       label: clientIssueActions.tryAgain,

@@ -255,6 +255,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   const hostClient = useMemo(() => {
     if (!selected || passkeyMode === null || admittedIdentity !== hostTransportIdentity)
       return null;
+    const sameComputerOwner = selected.onThisComputer && selected.access === "owner";
     return createBrowserHostClient({
       desktopMedia: true,
       ...(selectedConnection?.authorityKey
@@ -263,7 +264,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       presentation: {
         name: selected.name,
         target: "computer",
-        route: selected.onThisComputer
+        route: sameComputerOwner
           ? "same-computer"
           : selected.access === "connect"
             ? "connect"
@@ -282,7 +283,10 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       fetch: createDesktopHostFetch(bridge, selected.canonicalOrigin, selected.id),
       pacedUploads: true,
       // Desktop main holds the sockets; hiding or covering the window never closes them.
-      lifecycle: browserClientLifecycle({ socketTrustWindowMs: Number.POSITIVE_INFINITY }),
+      lifecycle: browserClientLifecycle({
+        ignoreNetwork: sameComputerOwner,
+        socketTrustWindowMs: Number.POSITIVE_INFINITY,
+      }),
       webSocketFactory: createDesktopHostWebSocketFactory(
         bridge,
         selected.canonicalOrigin,
@@ -643,6 +647,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     return (
       <Suspense fallback={opening ?? <DesktopLoadingScreen />}>
         <SignedInApp
+          connectionGateSecondary={otherComputers}
           mcpAuthorizationRequestId={
             mcpAuthorization?.deploymentId === selected.id ? mcpAuthorization.requestId : null
           }

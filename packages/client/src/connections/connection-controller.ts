@@ -395,6 +395,7 @@ class SessionConnectionController implements ConnectionController {
             ? "unreachable"
             : "reconnecting",
       ...(this.#state.name ? { name: this.#state.name } : {}),
+      ...(this.#state.route ? { route: this.#state.route } : {}),
       target: this.#state.target,
     };
   }
