@@ -1001,12 +1001,10 @@ export class HttpHostClient {
     command: ClientCommandInput,
     options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
   ): Promise<HostApiCommandOutput> {
-    // A new browser profile's home is kept only once this client knows the Host's homes.
-    if (
-      command.type === "browser.profile.create" ||
-      (command.type === "request.respond" && command.response.kind === "external")
-    )
-      await this.#resources.firstRead("browser-home");
+    // Only a command that creates a browser profile needs the Host's homes, to keep its chosen
+    // home; it waits a bounded time for them. Every other command goes straight out.
+    if (createsBrowserProfile(command))
+      await this.#resources.current("browser-home", commandResourceBoundMs);
     const parsedCommand = clientCommandSchema.parse(
       options?.preserveOrigin
         ? browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)
@@ -5060,6 +5058,17 @@ function updateRequired(): HostClientRequestError {
     retryable: false,
     status: 426,
   });
+}
+
+/** How long a command waits for a resource it needs before failing with a clear error. */
+const commandResourceBoundMs = 10_000;
+
+/** Whether a command creates a browser profile, directly or by approving a Request that asks to. */
+function createsBrowserProfile(command: ClientCommandInput): boolean {
+  if (command.type === "browser.profile.create") return true;
+  if (command.type !== "request.respond" || command.response.kind !== "external") return false;
+  const value = command.response.value as Record<string, unknown> | null | undefined;
+  return value?.["decision"] === "fulfilled" && value["createProfile"] !== undefined;
 }
 
 /** Who the viewer is, kept with their resources through a new history of the same viewer. */

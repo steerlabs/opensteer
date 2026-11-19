@@ -273,13 +273,39 @@ export class PersonalResourceReads implements PersonalResourcePort {
   }
 
   /**
-   * For a command that needs a kind's value: settles once the kind holds a read for this viewer,
-   * or its read gave up (a Host without the kind), or none can run now (the app is behind).
+   * For a command that needs a kind's current value: settles once the kind holds the newest
+   * revision this client has heard of. A read that cannot finish within `boundMs` (failing,
+   * retrying, or the app behind) rejects, so the command fails with a clear error instead of
+   * waiting on the resource owner. Commands that need no kind never call this.
    */
-  async firstRead(kind: PersonalResourceKind) {
+  async current(kind: PersonalResourceKind, boundMs: number) {
     this.lease(kind);
-    if (this.#installed.has(kind)) return;
-    await this.#inFlight.get(kind);
+    const ready = () => {
+      const installed = this.#installed.get(kind);
+      const known = this.#known.get(kind);
+      return installed !== undefined && (known === undefined || known === installed);
+    };
+    const deadline = Date.now() + boundMs;
+    while (!ready()) {
+      this.#read(kind);
+      const flying = this.#inFlight.get(kind);
+      const left = deadline - Date.now();
+      if (!flying || left <= 0) break;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        flying,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, left);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (Date.now() >= deadline) break;
+    }
+    if (!ready())
+      throw Object.assign(
+        new Error("Opensteer couldn't read this information from your computer. Try again."),
+        { code: "unavailable" as const },
+      );
   }
 
   /** Every page of one kind, installed together and only while nothing newer has arrived. */
