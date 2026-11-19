@@ -1,4 +1,10 @@
 import {
+  environmentInventoryEntry,
+  machineInventoryEntry,
+  type HostBootstrapEnvironment,
+  type MachineSummary,
+} from "@opensteer/protocol";
+import {
   MessageIdSchema,
   ExecutionNodeViewSchema,
   RunAttemptIdSchema,
@@ -609,7 +615,12 @@ export function mockScopedResource(
     case "owner-profile":
       return { kind, ownerProfile: bootstrap.ownerProfile ?? null };
     case "environment":
-      return { kind, environments: bootstrap.environments };
+      return {
+        kind,
+        environments: (bootstrap.environments as readonly HostBootstrapEnvironment[]).map(
+          (environment) => environmentInventoryEntry(environment),
+        ),
+      };
     case "harness-catalog":
       return {
         kind,
@@ -621,7 +632,12 @@ export function mockScopedResource(
     case "harness":
       return { kind, harnesses: bootstrap.harnesses };
     case "machine":
-      return { kind, machines: bootstrap.machines };
+      return {
+        kind,
+        machines: (bootstrap.machines as readonly MachineSummary[]).map((machine) =>
+          machineInventoryEntry(machine),
+        ),
+      };
     case "tab":
     case "tab-layout":
       return { kind, tabs: bootstrap.tabs };

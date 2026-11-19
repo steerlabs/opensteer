@@ -1,5 +1,6 @@
 import { OpensteerError, type EnvironmentId, type HarnessInstanceId } from "@opensteer/core";
 import type { HarnessInstanceCatalog } from "@opensteer/protocol";
+import { personalMachineLimit } from "@opensteer/protocol";
 import { personalInventoryBound } from "@opensteer/protocol/resources";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -15,7 +16,7 @@ export const personalInventoryLimits = {
    * Computers and devices, enrolled or waiting to enroll. Every Runner, and so every environment,
    * comes from one of these, so this also bounds environments.
    */
-  machines: 64,
+  machines: personalMachineLimit,
   /** Harness accounts across every environment (each environment also allows at most 100). */
   harnessInstances: 256,
   /**

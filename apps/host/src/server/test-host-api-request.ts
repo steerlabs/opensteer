@@ -147,24 +147,55 @@ export function injectTestResource<Kind extends ResourceDetail["kind"]>(
   );
 }
 
+type EnvironmentReads = Pick<HostApiClient, "resources.detail.get" | "environment.detail.get">;
+
+/** The two reads an environment is built from, over HTTP to a listening Host. */
+export function testEnvironmentReads(
+  origin: string | URL,
+  init: Omit<RequestInit, "body" | "method"> = {},
+): EnvironmentReads {
+  return {
+    "resources.detail.get": async (input) => ({
+      ok: true,
+      data: await testRpcData(origin, "resources.detail.get", input, init),
+    }),
+    "environment.detail.get": async (input) => ({
+      ok: true,
+      data: await testRpcData(origin, "environment.detail.get", input, init),
+    }),
+  } as EnvironmentReads;
+}
+
+/** The same reads injected into a Fastify instance. */
+export function injectEnvironmentReads(
+  app: FastifyInstance,
+  headers: Readonly<Record<string, string>> = {},
+): EnvironmentReads {
+  return {
+    "resources.detail.get": async (input) =>
+      (await injectRpcRequest(app, "resources.detail.get", input, headers)).json(),
+    "environment.detail.get": async (input) =>
+      (await injectRpcRequest(app, "environment.detail.get", input, headers)).json(),
+  } as EnvironmentReads;
+}
+
 /**
- * Each environment as the client holds it: its detail from the `environment` resource with its
- * account catalogs from `harness-catalog`, which names environments by id only.
+ * Each environment as the client holds it: its summary from the `environment` resource, its
+ * engines from `environment.detail.get`, and its account catalogs from `harness-catalog`.
  */
-export async function joinEnvironmentCatalogs(
-  read: <Kind extends "environment" | "harness-catalog">(
-    kind: Kind,
-  ) => ReturnType<typeof readTestResource<Kind>>,
-) {
+export async function joinEnvironmentCatalogs(api: EnvironmentReads) {
   const [{ environments }, catalogs] = await Promise.all([
-    read("environment"),
-    read("harness-catalog"),
+    readTestResource(api, "environment"),
+    readTestResource(api, "harness-catalog"),
   ]);
   const byId = new Map(
     catalogs.environments.map(({ id, harnessCatalogs }) => [id, harnessCatalogs]),
   );
-  return environments.map((environment) => ({
-    ...environment,
-    harnessCatalogs: byId.get(environment.id) ?? [],
-  }));
+  return Promise.all(
+    environments.map(async ({ id }) => {
+      const detail = await api["environment.detail.get"]({ environmentId: id });
+      if (!detail.ok) throw new Error(detail.error.message);
+      return { ...detail.data.environment, harnessCatalogs: byId.get(id) ?? [] };
+    }),
+  );
 }

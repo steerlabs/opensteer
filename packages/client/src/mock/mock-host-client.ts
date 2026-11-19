@@ -2634,6 +2634,22 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       ),
     // The preview keeps no durable session history to page back through.
     "machine.access.history": async () => rpcSuccess({ nextCursor: null, sessions: [] }),
+    // One work location whole, engines included, as the preview holds it.
+    "environment.detail.get": async ({ environmentId }) => {
+      const environment = client
+        .getSnapshot()
+        .environments.find(({ id }) => id === environmentId);
+      if (!environment) return rpcNotFound("This work location is not here.");
+      return rpcSuccess(
+        hostApi["environment.detail.get"].success.parse({ revision: "1", environment }),
+      );
+    },
+    // One computer whole, as the preview holds it.
+    "machine.detail.get": async ({ machineId }) => {
+      const machine = (await client.loadMachines()).find(({ id }) => id === machineId);
+      if (!machine) return rpcNotFound("This computer is not here.");
+      return rpcSuccess({ revision: "1", machine });
+    },
     // A computer's placed tasks are counted in this read, from the tasks the preview holds.
     "machines.list": async () => {
       const snapshot = client.getSnapshot();

@@ -1,4 +1,8 @@
-import { readTestResource, joinEnvironmentCatalogs } from "../server/test-host-api-request.js";
+import {
+  readTestResource,
+  joinEnvironmentCatalogs,
+  testEnvironmentReads,
+} from "../server/test-host-api-request.js";
 import { testResourceData } from "../server/test-host-api-request.js";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -94,8 +98,8 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
         },
       );
     const read = async () => {
-      const environments = await joinEnvironmentCatalogs((kind) =>
-        testResourceData(active.hostOrigin, kind, { headers }),
+      const environments = await joinEnvironmentCatalogs(
+        testEnvironmentReads(active.hostOrigin, { headers }),
       );
       const catalog = environments
         .flatMap((environment) => environment.harnessCatalogs)
@@ -244,9 +248,7 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
           timeout: 45_000,
         })
         .toBe("ready");
-      const environments = await joinEnvironmentCatalogs((kind) =>
-        readTestResource(active.api, kind),
-      );
+      const environments = await joinEnvironmentCatalogs(active.api);
       const { harnesses } = await readTestResource(active.api, "harness");
       const placement = threadPlacementOptions(environments, harnesses).find(
         (candidate) => candidate.harnessInstanceId === active.harnessInstanceId,

@@ -23,6 +23,9 @@ import {
 import type { PersonalMutationTransaction } from "@opensteer/database/personal-mutation";
 import { authorizedSyncState, withPersonalSyncRead } from "@opensteer/database/personal-sync-store";
 import {
+  environmentInventoryEntry,
+  type HostBootstrapEnvironment,
+  machineInventoryEntry,
   maxHarnessModelsPerCatalog,
   rpcSuccess,
   type MachineListSummary,
@@ -37,7 +40,7 @@ import { harnessView } from "../administration/authority.js";
 import type { HostServerDependencies } from "../server.js";
 
 type Detail = z.infer<typeof PersonalResourceDetailSchema>["data"];
-type DetailEnvironment = Extract<Detail, { kind: "environment" }>["environments"][number];
+type DetailEnvironment = HostBootstrapEnvironment;
 type MachinePage = {
   readonly tx: PersonalMutationTransaction;
   readonly deviceIds: readonly string[];
@@ -107,6 +110,47 @@ export class PersonalResources {
           (await found) || isEligibleBrowserRunner(tx, ownerId, runnerId),
         Promise.resolve(false),
       );
+  }
+
+  /** One environment whole, engines included, authorized as its inventory row is. */
+  async environmentDetail(session: AuthenticatedSession, environmentId: string) {
+    const revision = this.#dependencies.resourceRevisions.get("environment");
+    return withPersonalSyncRead(this.#dependencies.store.database, async (tx) => {
+      await authorizedSyncState(tx, session.user.id);
+      const [environment] = await this.#environments(new OpensteerStore(tx), session.user.id, {
+        id: EnvironmentIdSchema.parse(environmentId),
+        limit: 1,
+      });
+      if (!environment || environment.id !== environmentId)
+        throw new OpensteerError({ code: "not_found", message: "This work location is not here." });
+      return { revision, environment };
+    });
+  }
+
+  /** One computer whole, for its own page, authorized exactly as the inventory row is. */
+  async machineDetail(session: AuthenticatedSession, machineId: string) {
+    const revision = this.#dependencies.resourceRevisions.get("machine");
+    return withPersonalSyncRead(this.#dependencies.store.database, async (tx) => {
+      await authorizedSyncState(tx, session.user.id);
+      const asOf = new Date();
+      const [row] = await readMachineResourceKeys(tx, session.user.id, {
+        id: machineId,
+        asOf,
+        limit: 1,
+      });
+      if (!row || row.id !== machineId)
+        throw new OpensteerError({ code: "not_found", message: "This computer is not here." });
+      const [machine] = await this.#machines(session, {
+        tx,
+        asOf,
+        deviceIds: row.source === "device" ? [row.id] : [],
+        pendingIds: row.source === "pending" ? [row.id] : [],
+      });
+      if (!machine)
+        throw new OpensteerError({ code: "not_found", message: "This computer is not here." });
+      const { pinnedThreads: _placed, ...held } = machine;
+      return { revision, machine: held };
+    });
   }
 
   async detail(session: AuthenticatedSession, input: ResourceInput) {
@@ -218,12 +262,11 @@ export class PersonalResources {
         const byId = new Map(values.map((machine) => [machine.id, machine]));
         return page(rows, (selected) => ({
           kind,
-          // The placed-task count is read only by `machines.list`; nothing here could keep it true.
+          // Bounded summaries; the placed-task count is only `machines.list`'s and the heavy
+          // sections only `machine.detail.get`'s.
           machines: selected.flatMap(({ id }) => {
             const machine = byId.get(id);
-            if (!machine) return [];
-            const { pinnedThreads: _placed, ...held } = machine;
-            return [held];
+            return machine ? [machineInventoryEntry(machine)] : [];
           }),
         }));
       }
@@ -413,7 +456,10 @@ export class PersonalResources {
         ...(input.id ? { id: EnvironmentIdSchema.parse(input.id) } : {}),
         limit: maxRows + 1,
       });
-      return page(environments, (rows) => ({ kind, environments: rows }));
+      return page(environments, (rows) => ({
+        kind,
+        environments: rows.map((row) => environmentInventoryEntry(row)),
+      }));
     });
   }
   async #environments(
