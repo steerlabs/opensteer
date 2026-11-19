@@ -227,18 +227,20 @@ const nextCursor = (more: boolean, last: { id: string; at: string } | undefined,
     : undefined;
 
 /**
- * Rebuilds after an upgrade: a per-plugin claim that one engine process holds at a time (a
- * session advisory lock on a connection of its own, taken before any row lock), and the
- * diagnostic of a rebuild that failed for good, kept with the version that failed.
+ * A plugin's version changes: the fence one deploy, activation, removal or rebuild of it holds at
+ * a time across engine processes (a session advisory lock on a connection of its own, taken before
+ * any row lock), and the diagnostic of a rebuild that failed for good, kept with the version that
+ * failed in the Host's own table.
  */
-export const rebuildStore = (sql: SqlClient.SqlClient) => ({
-  claim: <A, E>(app: string, work: Effect.Effect<A, E>) =>
-    sql.reserve.pipe(
+export const versionStore = (sql: SqlClient.SqlClient, fences: SqlClient.SqlClient) => ({
+  // `fences` is a pool of its own, so work under a fence always finds a connection in `sql`.
+  fence: <A, E>(app: string, work: Effect.Effect<A, E>) =>
+    fences.reserve.pipe(
       Effect.flatMap((connection) =>
         Effect.acquireUseRelease(
           connection.execute(
             "SELECT pg_advisory_lock(hashtextextended($1, 0))",
-            [`plugin-rebuild:${app}`],
+            [`plugin-version:${app}`],
             undefined,
           ),
           () => work,
@@ -246,7 +248,7 @@ export const rebuildStore = (sql: SqlClient.SqlClient) => ({
             connection
               .execute(
                 "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
-                [`plugin-rebuild:${app}`],
+                [`plugin-version:${app}`],
                 undefined,
               )
               .pipe(Effect.orDie),
@@ -255,18 +257,18 @@ export const rebuildStore = (sql: SqlClient.SqlClient) => ({
       Effect.scoped,
     ),
   failed: (app: string, failure: { readonly version: string; readonly message: string }) =>
-    sql`INSERT INTO opensteer_plugin_rebuild_failures (app, version, message)
+    sql`INSERT INTO public.plugin_rebuild_failures (plugin_id, version, message)
       VALUES (${app}, ${failure.version}, ${failure.message.slice(0, 4_000)})
-      ON CONFLICT (app) DO UPDATE SET version = EXCLUDED.version, message = EXCLUDED.message,
-        failed_at = clock_timestamp()`.pipe(Effect.asVoid),
+      ON CONFLICT (plugin_id) DO UPDATE SET version = EXCLUDED.version,
+        message = EXCLUDED.message, failed_at = clock_timestamp()`.pipe(Effect.asVoid),
   cleared: (app: string) =>
-    sql`DELETE FROM opensteer_plugin_rebuild_failures WHERE app = ${app}`.pipe(Effect.asVoid),
+    sql`DELETE FROM public.plugin_rebuild_failures WHERE plugin_id = ${app}`.pipe(Effect.asVoid),
 });
 
 /** Why a plugin's rebuild failed for good, with the version that failed, if it did. */
 export const readRebuildFailure = (sql: SqlClient.SqlClient, app: string) =>
   sql<{ version: string; message: string }>`
-    SELECT version, message FROM opensteer_plugin_rebuild_failures WHERE app = ${app}`.pipe(
+    SELECT version, message FROM public.plugin_rebuild_failures WHERE plugin_id = ${app}`.pipe(
     Effect.map((rows) => rows[0] ?? null),
   );
 
@@ -287,14 +289,6 @@ export const migrateEngineProduct = (sql: SqlClient.SqlClient) =>
         sql.unsafe(
           `CREATE TABLE IF NOT EXISTS opensteer_resource_creations (owner text NOT NULL, key text NOT NULL, kind text NOT NULL, result jsonb NOT NULL, PRIMARY KEY (owner, key, kind))`,
         ),
-      ),
-      Effect.andThen(
-        sql.unsafe(`
-  CREATE TABLE IF NOT EXISTS opensteer_plugin_rebuild_failures (
-    app text PRIMARY KEY REFERENCES plugin_engine_apps(id) ON DELETE CASCADE,
-    version text NOT NULL, message text NOT NULL,
-    failed_at timestamptz NOT NULL DEFAULT clock_timestamp()
-  )`),
       ),
       Effect.andThen(
         sql.unsafe(`

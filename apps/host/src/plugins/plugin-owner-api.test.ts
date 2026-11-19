@@ -293,7 +293,6 @@ function setup(
         });
       },
     ),
-    recordActivation: vi.fn(async () => {}),
   };
   const accountLinked = vi.fn(async () => {});
   const changed = vi.fn();
@@ -772,7 +771,7 @@ describe("the person's plugin API", () => {
     ]);
     await run(api, { type: "plugins.version.activate", pluginId: "p0", versionId: "p0-v1" });
     expect(service.activate).toHaveBeenCalledWith({ plugin: "p0", version: "p0-v1" }, owner);
-    expect(store.recordActivation).toHaveBeenCalledWith(ownerId, "p0", "p0-v1");
+    // The engine publishes the version that became active, with its provenance, itself.
     expect(changed).toHaveBeenCalledTimes(3);
   });
 

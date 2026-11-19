@@ -214,6 +214,20 @@ update integration_request_details set manifest = manifest #- '{definition,apiKe
 update requests set payload = payload #- '{manifest,definition,apiKey}'
   where payload->'manifest'->'definition' ? 'apiKey';
 `;
+/**
+ * Why an installed plugin's rebuild for the Host's framework failed for good, with the version that
+ * failed, kept until another version of it becomes active or it is removed. Plugins live in the
+ * plugin engine's own schema, so the row names its plugin without a reference to it.
+ */
+export const pluginRebuildFailuresMigrationName = "0038_plugin_rebuild_failures";
+const PLUGIN_REBUILD_FAILURES_SQL = `
+create table plugin_rebuild_failures (
+  plugin_id text primary key,
+  version text not null,
+  message text not null check (length(message) <= 4000),
+  failed_at timestamptz not null default clock_timestamp()
+);
+`;
 export const unifyLocalPluginAccessMigrationName = "0034_unify_local_plugin_access_contract";
 const UNIFY_LOCAL_PLUGIN_ACCESS_SQL = `
 insert into plugin_agent_settings (owner_user_id, plugin_id, access, author)
@@ -518,6 +532,11 @@ export function migrationProvider(): MigrationProvider {
         [dropStoredDefinitionApiKeyMigrationName]: {
           async up(database) {
             await sql.raw(DROP_STORED_DEFINITION_API_KEY_SQL).execute(database);
+          },
+        },
+        [pluginRebuildFailuresMigrationName]: {
+          async up(database) {
+            await sql.raw(PLUGIN_REBUILD_FAILURES_SQL).execute(database);
           },
         },
       };

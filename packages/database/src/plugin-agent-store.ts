@@ -78,14 +78,25 @@ export class PluginAgentStore {
       )
       .execute();
   }
-  async recordActivation(owner: UserId, plugin: string, version: string) {
-    const authors = await this.versionAuthors(owner, [{ pluginId: plugin, version }]);
-    await this.recordInstall(
-      owner,
-      plugin,
-      version,
-      authors.get(`${plugin}\u0000${version}`) ?? "agent",
-    );
+  /**
+   * A version became the plugin's active one. It was written by whoever wrote the version it was
+   * rebuilt from (`from`), else by whoever wrote it, else by the plugin's author, who it becomes.
+   * A plugin with no settings yet records nothing: its install records its author.
+   */
+  async recordPublished(owner: UserId, plugin: string, version: string, from: string | null) {
+    await requirePersonalOwner(this.database, owner);
+    const author = sql<
+      "catalog" | "agent"
+    >`coalesce(plugin_agent_settings.version_authors ->> ${from ?? version}, plugin_agent_settings.author)`;
+    await this.database
+      .updateTable("pluginAgentSettings")
+      .set({
+        author,
+        versionAuthors: sql`plugin_agent_settings.version_authors || jsonb_build_object(${version}::text, ${author})`,
+      })
+      .where("ownerUserId", "=", owner)
+      .where("pluginId", "=", plugin)
+      .execute();
   }
   execution(id: string) {
     return this.database

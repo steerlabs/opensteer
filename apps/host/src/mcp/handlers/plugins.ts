@@ -489,7 +489,6 @@ export class PluginToolHandlers {
           o.authority.admit(c.caller),
           c.signal,
         );
-        await o.settings.recordActivation(c.caller.userId, c.input.pluginId, c.input.versionId);
         o.changed?.(c.caller.userId);
         return { ok: true };
       },

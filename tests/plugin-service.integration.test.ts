@@ -270,7 +270,7 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
 
 async function outputFixture(
   context: import("vitest").TestContext,
-  options: Pick<PluginServiceOptions, "providers" | "authorize"> = {},
+  options: Pick<PluginServiceOptions, "providers" | "authorize" | "onVersionPublished"> = {},
 ) {
   const clone = await cloneTestDatabase("host");
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-output-"));
@@ -294,17 +294,21 @@ async function outputFixture(
   return { service, databaseUrl: clone.url };
 }
 
-test("a version change of one plugin waits only for that plugin's earlier changes", async (context) => {
-  const authorized: string[] = [];
+test("a version change of one plugin waits only for that plugin's change in progress", async (context) => {
+  // Each version that becomes active is published under its plugin's version fence; holding one
+  // publication holds that plugin's fence.
+  const events: string[] = [];
   const reached = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<boolean>();
-  let hold = false;
+  const release = Promise.withResolvers<void>();
+  let hold: { plugin: string; version: string } | undefined;
   const { service } = await outputFixture(context, {
-    authorize: async (input) => {
-      authorized.push(`${input.operation}:${input.plugin ?? ""}`);
-      if (!hold || input.operation !== "install") return { allowed: true };
-      reached.resolve();
-      return { allowed: await release.promise };
+    onVersionPublished: async ({ plugin, version }) => {
+      events.push(`start:${version}`);
+      if (plugin === hold?.plugin && version !== hold.version) {
+        reached.resolve();
+        await release.promise;
+      }
+      events.push(`end:${version}`);
     },
   });
   const installed = await Promise.all(
@@ -316,29 +320,29 @@ test("a version change of one plugin waits only for that plugin's earlier change
     if (result.status !== "installed") throw new Error("Fixture did not install");
     return { plugin: result.plugin.id, version: result.version.id };
   });
-  hold = true;
+  // The next version of the first plugin is held while it is published.
+  hold = a!;
   const held = service.install(
     { kind: "files", plugin: a!.plugin, files: pluginFixtureFiles(2) },
     caller,
   );
-  const heldOutcome = expect(held).rejects.toMatchObject({ code: "forbidden" });
-  await deadline(reached.promise, "The held install never reached authorization");
+  void held.catch(() => {});
+  await deadline(reached.promise, "The held install was never published");
   const queued = service.activate(a!, caller);
-  await deadline(
-    service.activate(b!, caller),
-    "Another plugin's activation waited behind an install",
+  // Another plugin's changes do not wait for it.
+  await deadline(service.activate(b!, caller), "Another plugin's activation waited");
+  await deadline(service.remove({ plugin: b!.plugin }, caller), "Another plugin's removal waited");
+  release.resolve();
+  const second = await deadline(held, "The held install never finished");
+  if (second.status !== "installed") throw new Error("The second version did not install");
+  await deadline(queued, "The same plugin's activation never ran");
+  // The first plugin's activation started only after its install was published.
+  expect(events.lastIndexOf(`start:${a!.version}`)).toBeGreaterThan(
+    events.indexOf(`end:${second.version.id}`),
   );
-  await deadline(
-    service.remove({ plugin: b!.plugin }, caller),
-    "Another plugin's removal waited behind an install",
-  );
-  expect(authorized).not.toContain(`activate:${a!.plugin}`);
-  release.resolve(false);
-  await heldOutcome;
-  await deadline(queued, "The same plugin's queued activation never ran");
-  expect(authorized.slice(authorized.indexOf(`install:${a!.plugin}`))).toContain(
-    `activate:${a!.plugin}`,
-  );
+  expect((await service.installed({ plugins: [a!.plugin] }, caller))[0]).toMatchObject({
+    plugin: { activeVersion: a!.version },
+  });
 });
 
 test("reads installed metadata without decoding unrequested plugins", async (context) => {

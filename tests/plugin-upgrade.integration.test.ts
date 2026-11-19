@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { sql } from "kysely";
 import { expect, test, vi } from "vitest";
+import { Schema } from "effect";
+import { UiUpdating } from "apps/ui/contracts";
 import { PluginService } from "../apps/host/src/plugins/plugin-service.js";
 import { createDatabase, PluginAgentStore } from "../packages/database/src/index.js";
 import { seedPersonalFixture } from "../packages/database/src/personal-fixture.test-support.js";
@@ -48,16 +50,24 @@ const source = (framework: string, dependency: string) => [
   {
     path: "index.ts",
     content: `
-import { defineApp, defineProvider, secrets, object, string, query, mutation, router, userInterval } from "apps";
+import { defineApp, defineProvider, secrets, object, string, query, mutation, router, userInterval, workflow } from "apps";
+import { always } from "apps/operations/approval";
 import { label } from "${dependency}";
 const service = defineProvider({ name: "Upgrade fixture", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
 const add = mutation({ input: object({ body: string() }) }, async (ctx, { body }) => {
   ctx.sql.exec("INSERT INTO notes (body) VALUES (?)", body);
   return body;
 });
+const reviewed = mutation({ input: object({ body: string() }), approval: always() }, async (ctx, { body }) => {
+  ctx.sql.exec("INSERT INTO notes (body) VALUES (?)", body);
+  return body;
+});
+const count = query({ input: object({}) }, async (ctx) => ctx.sql.exec("SELECT count(*) AS total FROM notes").one().total);
 export default defineApp({ user: { accounts: { service } } }, {
   tools: router({
     add,
+    reviewed,
+    count,
     notes: query({ input: object({}) }, async (ctx) => ({
       notes: ctx.sql.exec("SELECT body FROM notes ORDER BY rowid").toArray().map((row) => row.body),
       applied: ctx.sql.exec("SELECT count(*) AS applied FROM ${old("reserved-table", "_migrations")}").one().applied,
@@ -65,7 +75,11 @@ export default defineApp({ user: { accounts: { service } } }, {
       label,
     })),
   }),
-  schedules: { tick: userInterval({ minutes: 60 }, add, { body: "schedule" }) },
+  schedules: {
+    tick: userInterval({ minutes: 60 }, add, { body: "schedule" }),
+    approved: userInterval({ minutes: 60 }, reviewed, { body: "approved" }),
+  },
+  workflows: { counted: workflow({ input: object({}) }, async (ctx) => ctx.step.runQuery("count", count, {})) },
   webhooks: { incoming: { account: { user: "service" }, config: object({}), state: object({}),
     setup: { instructions: "Paste the callback and signing secret at the provider.", signingSecret: ${JSON.stringify(old("signing-secret"))} },
     handle: async () => new Response("ok"),
@@ -87,6 +101,8 @@ const driver = `
 import { readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
+import { sql } from "kysely";
+import { createDatabase } from "./packages/database/src/index.ts";
 import { PluginService } from "./apps/host/src/plugins/plugin-service.ts";
 import { pluginFixtureRegistry } from "./scripts/plugin-engine/fixture.ts";
 const [databaseUrl, dataDirectory, registryDirectory, workDirectory, resultFile] = process.argv.slice(2);
@@ -112,7 +128,14 @@ const service = new PluginService({
   databaseUrl, dataDirectory, owner: "owner", credentialKey: new Uint8Array(32).fill(1),
   origin: "https://fixture.invalid", webhookOrigin: async () => "https://hooks.fixture.invalid",
   npmRegistry: registry.origin, catalogUrl: registry.origin + "/catalog", idleMs: 0,
+  // While \`queueing\`, background work is refused its standing authority, so a started workflow
+  // run is saved and stays queued, never handed to the workflow engine.
+  authorize: async (input) => ({
+    allowed: (input.caller === "owner" || input.caller.startsWith("owner:")) && !(queueing && input.operation === "background"),
+  }),
 });
+let queueing = false;
+const db = createDatabase({ connectionString: databaseUrl });
 try {
   await service.start();
   const install = async (name, file) => {
@@ -138,11 +161,26 @@ try {
   if (!webhook) throw new Error("The manual webhook never needed setup");
   const setup = await service.manage({ operation: "webhookSetup.read", input: { app: plugin, subscription: webhook.id } }, caller);
   await service.manage({ operation: "webhookSetup.complete", input: { app: plugin, subscription: webhook.id, revision: setup.revision, state: {} } }, caller);
+  // A scheduled call waiting for approval, answered only after the upgrade.
+  await service.manage({ operation: "schedules.configure", input: { app: plugin, name: "approved", enabled: true, approvalMode: "browser", key: "approved-schedule" } }, caller);
+  await sql.raw("UPDATE plugin_engine.plugin_engine_schedules SET next_at = now() - interval '1 second' WHERE name = 'approved'").execute(db);
+  let approval;
+  for (let attempt = 0; attempt < 150 && !approval; attempt++) {
+    approval = (await service.manage({ operation: "schedules.runs", input: { app: plugin, pending: true } }, caller))[0];
+    if (!approval) await sleep(100);
+  }
+  if (!approval) throw new Error("The schedule never asked for approval");
+  // A workflow run saved and not yet started, as one whose dispatch waits.
+  queueing = true;
+  await service.manage({ operation: "workflowRuns.start", input: { app: plugin, workflow: "counted", input: {}, key: "before-upgrade" } }, caller).catch(() => undefined);
+  const queued = (await sql.raw("SELECT id FROM plugin_engine.plugin_engine_workflow_runs WHERE status = 'queued'").execute(db)).rows[0];
+  if (!queued) throw new Error("No queued workflow run");
   const detail = await service.detail({ plugin }, caller);
-  await writeFile(resultFile, JSON.stringify({ plugin, version: installed.version.id, broken: broken.plugin.id, account: account.id, added, webhook: webhook.id, setup, detail }));
+  await writeFile(resultFile, JSON.stringify({ plugin, version: installed.version.id, broken: broken.plugin.id, account: account.id, added, webhook: webhook.id, setup, detail, approval: approval.id, queued: queued.id }));
 } finally {
   await service.close();
   await registry.close();
+  await db.destroy();
 }
 `;
 
@@ -245,10 +283,36 @@ test(
     expect(before.added.result).toMatchObject({ execution: { value: { ok: true } } });
     expect(before.detail.webhooks).toMatchObject([{ id: before.webhook, status: "active" }]);
     const plugin = before.plugin as string;
-    // The person's access settings live with the Host, beside the engine's own store.
+    const queued = async () =>
+      (
+        await sql<{
+          status: string;
+          failure: string | null;
+          deployment: string;
+        }>`select status, failure, deployment from plugin_engine.plugin_engine_workflow_runs where id = ${before.queued}`.execute(
+          database,
+        )
+      ).rows[0];
+    expect(await queued()).toMatchObject({ status: "queued", deployment: before.version });
+    const approvalState = async () =>
+      (
+        await sql<{
+          status: string;
+        }>`select status from plugin_engine.plugin_engine_scheduled_runs where id = ${before.approval}`.execute(
+          database,
+        )
+      ).rows[0];
+    expect(await approvalState()).toMatchObject({ status: "awaiting-approval" });
+    // The person's access settings live with the Host, beside the engine's own store, with who
+    // wrote each version.
     const personal = await seedPersonalFixture(database, work);
     const settings = new PluginAgentStore(database);
     await settings.setAccess(personal.userId, plugin, "read-only");
+    await settings.recordInstall(personal.userId, plugin, before.version, "catalog");
+    const authorOf = async (version: string) =>
+      (await settings.versionAuthors(personal.userId, [{ pluginId: plugin, version }])).get(
+        `${plugin}\u0000${version}`,
+      );
 
     // The upgraded Host: the same database and plugin store, and a registry that is down at first.
     let outage = true;
@@ -294,6 +358,8 @@ test(
         npmRegistry: registry.origin,
         catalogUrl: registry.origin + "/catalog",
         idleMs: 0,
+        onVersionPublished: ({ plugin, version, from }) =>
+          settings.recordPublished(personal.userId, plugin, version, from),
       });
       await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));
       context.onTestFinished(() => service.close());
@@ -316,7 +382,7 @@ test(
         (
           await sql<{
             count: string;
-          }>`select count(*) as count from plugin_engine.plugin_engine_scheduled_runs where app = ${plugin}`.execute(
+          }>`select count(*) as count from plugin_engine.plugin_engine_scheduled_runs where app = ${plugin} and name = 'tick'`.execute(
             database,
           )
         ).rows[0]!.count,
@@ -336,6 +402,31 @@ test(
     );
     expect((await installed(first, plugin)).plugin.activeVersion).toBe(before.version);
     expect(JSON.stringify((await notes(first)).result)).toContain("plugin_updating");
+    // The person answers the scheduled call meanwhile; it waits, answered, for the rebuild.
+    await first.manage(
+      { operation: "schedules.answer", input: { run: before.approval, action: "accept" } },
+      caller,
+    );
+    expect(await approvalState()).toMatchObject({ status: "ready" });
+    // A new workflow run is refused as a call is: typed, unsent, and to be tried again.
+    await expect(
+      first.manage(
+        {
+          operation: "workflowRuns.start",
+          input: { app: plugin, workflow: "counted", input: {}, key: "during-upgrade" },
+        },
+        caller,
+      ),
+    ).rejects.toMatchObject({ tag: "PluginUpdating", code: "unavailable" });
+    expect(
+      await first.resourcesUpdate(
+        {
+          pluginId: plugin,
+          change: { action: "workflow.start", workflow: "counted", input: {}, key: "agent" },
+        },
+        caller,
+      ),
+    ).toMatchObject({ kind: "blocked", blocked: { code: "plugin_updating" } });
     const page = await first.page(
       {
         plugin,
@@ -359,11 +450,16 @@ test(
       },
       caller,
     );
-    if (api.stream) first.discardStream(api.stream);
     expect([api.status, api.headers["content-type"]]).toEqual([503, "application/json"]);
+    // Its body is the page contract's own answer for an app that is updating.
+    const body: Uint8Array[] = [];
+    if (api.stream) for await (const chunk of first.readStream(api.stream)) body.push(chunk);
+    expect(
+      Schema.decodeUnknownSync(UiUpdating)(JSON.parse(Buffer.concat(body).toString())),
+    ).toMatchObject({ _tag: "UiUpdating", message: expect.stringContaining("tried again") });
     // An occurrence that comes due meanwhile is neither run nor dropped.
     const ran = await runs();
-    await sql`update plugin_engine.plugin_engine_schedules set next_at = now() - interval '1 second' where app = ${plugin}`.execute(
+    await sql`update plugin_engine.plugin_engine_schedules set next_at = now() - interval '1 second' where app = ${plugin} and name = 'tick'`.execute(
       database,
     );
     // The scheduler ticks every second; by the engines' next rebuild attempt, five seconds on,
@@ -378,12 +474,13 @@ test(
       (
         await sql<{
           due: boolean;
-        }>`select next_at <= now() as due from plugin_engine.plugin_engine_schedules where app = ${plugin}`.execute(
+        }>`select next_at <= now() as due from plugin_engine.plugin_engine_schedules where app = ${plugin} and name = 'tick'`.execute(
           database,
         )
       ).rows,
     ).toEqual([{ due: true }]);
     expect(await first.versions({ plugin }, caller)).toHaveLength(1);
+    expect(await queued()).toMatchObject({ status: "queued", deployment: before.version });
 
     // The registry recovers: each plugin is rebuilt once across both engines.
     outage = false;
@@ -394,6 +491,27 @@ test(
     expect(await installed(second, plugin)).toMatchObject({
       plugin: { activeVersion: rebuilt },
     });
+    // The rebuilt version is published as an install is: the Host's skill record names it, and
+    // it keeps the author of the version it was rebuilt from.
+    expect(await first.skillCache.get(plugin)).toMatchObject({ version: rebuilt });
+    expect(await authorOf(rebuilt)).toBe("catalog");
+    // Work saved on the old build never runs on it: the queued run moves to the rebuilt version,
+    // which takes its workflow and input, and runs there, as does the answered scheduled call.
+    await vi.waitFor(
+      async () =>
+        expect(
+          await first.manage(
+            { operation: "workflowRuns.get", input: { app: plugin, run: before.queued } },
+            caller,
+          ),
+        ).toMatchObject({ status: "complete" }),
+      { timeout: 30_000, interval: 250 },
+    );
+    expect(await queued()).toMatchObject({ status: "complete", deployment: rebuilt });
+    await vi.waitFor(
+      async () => expect(await approvalState()).toMatchObject({ status: "succeeded" }),
+      { timeout: 30_000, interval: 250 },
+    );
     // The due occurrence ran on the rebuilt version, and the account, its link, the plugin's rows
     // and its renamed migration history all survived.
     await vi.waitFor(async () => expect(await runs()).toBe(ran + 1), {
@@ -405,7 +523,7 @@ test(
         value: {
           ok: true,
           value: {
-            notes: ["before", "schedule"],
+            notes: expect.arrayContaining(["before", "approved", "schedule"]),
             applied: 1,
             token: "synthetic",
             label: "from the registry",
@@ -423,7 +541,14 @@ test(
       { pluginId: plugin, access: "read-only" },
     ]);
     const detail = await first.detail({ plugin }, caller);
-    expect(detail.schedules).toMatchObject([{ name: "tick", settings: { enabled: true } }]);
+    expect(detail.schedules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "tick",
+          settings: expect.objectContaining({ enabled: true }),
+        }),
+      ]),
+    );
 
     // The plugin whose source no longer builds is left with no active version, and its owner reads
     // the build's own diagnostic.
@@ -434,6 +559,10 @@ test(
     expect(await first.detail({ plugin: before.broken }, caller)).toMatchObject({
       buildFailure: { message: expect.stringContaining("No matching export") },
     });
+    // Its source exports from the version whose build failed, as its detail shows.
+    expect(await first.export({ plugin: before.broken }, caller)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: "index.ts" })]),
+    );
 
     // A manual setup completed before the upgrade is set up again, not carried: the person sees a
     // subscription that needs setup at the service, with a new callback URL and signing secret.
@@ -467,14 +596,23 @@ test(
       value: expect.anything(),
     });
 
-    // Rolling back to the version from before the upgrade rebuilds its source first.
-    await first.activate({ plugin, version: before.version }, caller);
+    // Rolling back to the version from before the upgrade rebuilds its source first, and the
+    // version that becomes active is the one published, with that version's author.
+    const activated = await first.activate({ plugin, version: before.version }, caller);
     const rolled = await first.versions({ plugin }, caller);
     expect(rolled).toHaveLength(3);
     const active = (await installed(first, plugin)).plugin.activeVersion;
     expect([before.version, rebuilt]).not.toContain(active);
+    expect(activated).toMatchObject({ activeVersion: active });
+    expect(await first.skillCache.get(plugin)).toMatchObject({ version: active });
+    expect(await authorOf(active!)).toBe("catalog");
     expect((await notes(first)).result).toMatchObject({
-      execution: { value: { ok: true, value: { notes: ["before", "schedule"], applied: 1 } } },
+      execution: {
+        value: {
+          ok: true,
+          value: { notes: expect.arrayContaining(["before", "approved", "schedule"]), applied: 1 },
+        },
+      },
     });
 
     // A later start finds every plugin built for this framework, or not built, and builds nothing.

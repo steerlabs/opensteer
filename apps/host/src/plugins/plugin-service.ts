@@ -1,11 +1,9 @@
 import { pluginEngineEntry, pluginEngineUnavailableReason } from "./engine-resources.js";
 import { PluginSkillCache } from "./plugin-skill-cache.js";
-import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { fork, type ChildProcess } from "node:child_process";
 import { hkdfSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { z } from "zod";
 import { stopProcessGroup } from "@opensteer/shared/processGroup";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { engineDemand } from "./engine-storage.js";
@@ -90,6 +88,15 @@ export interface PluginServiceOptions {
     categories: import("@opensteer/protocol").PluginResourceCategory[],
   ) => void;
   readonly onExecution?: (execution: PluginExecution) => void;
+  /**
+   * A version became a plugin's active one: by an install, an activation or a rebuild after an
+   * upgrade. `from` is the stored version it was rebuilt from. Records who wrote it.
+   */
+  readonly onVersionPublished?: (version: {
+    readonly plugin: string;
+    readonly version: string;
+    readonly from: string | null;
+  }) => Promise<void>;
   readonly onDiagnostic?: (phase: string) => void;
   readonly onState?: (state: PluginServiceState) => void;
 }
@@ -107,7 +114,6 @@ const idleCheckMs = 60_000;
 const keepForMs = 120_000;
 /** A stopped engine starts this long before its next saved background work is due. */
 const wakeLeadMs = 15_000;
-const versionTarget = z.object({ plugin: z.string().optional(), key: z.string().optional() });
 const liveExecution = new Set(["running", "waiting", "answered"]);
 // Agent programs run in the engine process. An explicit heap bound stops a runaway one at 1 GiB
 // instead of V8's machine-sized default; the supervisor then restarts the lost process.
@@ -122,7 +128,6 @@ interface Pending {
 /** Host-owned Promise boundary. Its callbacks are the only route back to Host authority and tools. */
 export class PluginService {
   readonly skillCache: PluginSkillCache;
-  readonly #versionChanges = new KeyedMutationQueue();
   readonly #config: EngineInit;
   readonly #options: PluginServiceOptions;
   readonly #pending = new Map<string, Pending>();
@@ -605,7 +610,12 @@ export class PluginService {
             };
       } else if (message.operation === "webhookOrigin")
         result = (await this.webhookOrigin()) ?? null;
-      else if (message.operation === "providers")
+      else if (message.operation === "versionPublished") {
+        const published = callbackOperations.versionPublished.input.parse(message.input);
+        await this.#cacheVersion(published.plugin, controller.signal);
+        await this.#options.onVersionPublished?.(published);
+        result = {};
+      } else if (message.operation === "providers")
         result =
           (await this.#options.providers?.(
             callbackOperations.providers.input.parse(message.input),
@@ -646,33 +656,18 @@ export class PluginService {
       this.#touch();
     }
   }
-  request<K extends PluginOperation>(
+  async request<K extends PluginOperation>(
     operation: K,
     input: PluginInput<K>,
     context: PluginCaller,
     signal?: AbortSignal,
   ): Promise<PluginOutput<K>> {
-    if (operation !== "install" && operation !== "activate" && operation !== "remove")
-      return this.#request(operation, input, context, signal);
-    // A new install is keyed by its creation identity: nothing else can name its plugin yet.
-    const { plugin, key } = versionTarget.parse(input);
-    return this.#versionChanges.run(plugin ?? `new:${key ?? randomUUID()}`, async () => {
-      const result = await this.#request(operation, input, context, signal);
-      if (operation === "install") {
-        const installed = operations.install.output.parse(result);
-        if (installed.status === "installed") {
-          const id = installed.plugin.id;
-          const publish = () => this.#cacheVersion(id, signal);
-          if (plugin === undefined) await this.#versionChanges.run(id, publish);
-          else await publish();
-        }
-      } else if (operation === "activate") {
-        await this.#cacheVersion(operations.activate.input.parse(input).plugin, signal);
-      } else {
-        await this.skillCache.remove(operations.remove.input.parse(input).plugin);
-      }
-      return result;
-    });
+    // A version the engine activates is published to the Host before the change is answered
+    // (see the versionPublished callback), under the plugin's version fence.
+    if (operation !== "remove") return this.#request(operation, input, context, signal);
+    const result = await this.#request(operation, input, context, signal);
+    await this.skillCache.remove(operations.remove.input.parse(input).plugin);
+    return result;
   }
   resourcesRead = (
     input: PluginInput<"resourcesRead">,

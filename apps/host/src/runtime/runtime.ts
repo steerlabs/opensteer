@@ -1200,6 +1200,13 @@ export async function createHostRuntime(
           .catch(() => undefined);
       },
       onExecution: (execution) => pluginExecutions?.report(execution),
+      onVersionPublished: async ({ plugin, version, from }) =>
+        pluginAgentStore.recordPublished(
+          (await personalSettings(database)).ownerId,
+          plugin,
+          version,
+          from,
+        ),
       onState: (state) => {
         const engine = pluginEngineStateView(state);
         if (engine.status !== lastEngineStatus) {

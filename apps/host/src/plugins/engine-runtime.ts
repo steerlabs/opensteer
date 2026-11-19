@@ -13,12 +13,14 @@ import {
   workflowRunPage,
 } from "./engine-storage.js";
 import { pluginNamespace } from "./provider-names.js";
+import { pluginUpdatingBlocked } from "./target-blocked.js";
 import { folderSkills } from "apps/skills";
 import { oauthReviewDigest } from "./oauth-review.js";
 import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as PgClient from "@effect/sql-pg/PgClient";
+import * as Reactivity from "effect/reactivity/Reactivity";
 import {
   Option,
   Result,
@@ -84,9 +86,9 @@ import {
   linkedFramework,
   workerdApps,
 } from "@opensteer/plugin-engine-sdk/node";
-import { pluginRebuilds, type Updating } from "./plugin-rebuild.js";
-import { reservedSegment } from "apps/ui/contracts";
-import { readRebuildFailure, rebuildStore } from "./engine-storage.js";
+import { pluginVersions, type Updating } from "./plugin-versions.js";
+import { reservedSegment, UiUpdating } from "apps/ui/contracts";
+import { readRebuildFailure, versionStore } from "./engine-storage.js";
 import { filesystemRepositories } from "@opensteer/plugin-source";
 import { markdownRefusals } from "@opensteer/plugin-engine-sdk/markdown";
 import { memoryRegistry } from "@opensteer/plugin-engine-sdk/testing";
@@ -167,7 +169,7 @@ const packagedSkills = (files: Schema.Schema.Type<typeof SourceFiles>) =>
 
 /**
  * What a page of a plugin that waits for its rebuild answers: 503 with Retry-After, as a page that
- * reloads itself for a document and as the framework's failure shape for its API.
+ * reloads itself for a document and as the page contract's `UiUpdating` for its API.
  */
 const updatingPage = (raw: unknown, reason: string) => {
   const request = operations.page.input.parse(raw).request;
@@ -177,10 +179,10 @@ const updatingPage = (raw: unknown, reason: string) => {
       `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="10"><title>Updating</title><p>This plugin is updating for this version of Opensteer. This page reloads when it is ready.</p><p>${reason.replace(/[&<>"]/gu, (char) => `&#${char.charCodeAt(0)};`)}</p>`,
       { status: 503, headers: { ...headers, "content-type": "text/html; charset=utf-8" } },
     );
-  return Response.json(
-    { _tag: "UiFailed", reason: "updating", message: reason },
-    { status: 503, headers },
-  );
+  return Response.json(Schema.encodeSync(UiUpdating)(new UiUpdating({ message: reason })), {
+    status: 503,
+    headers,
+  });
 };
 
 type Callback = <K extends PluginCallback>(
@@ -559,13 +561,21 @@ export async function startEngine(
         yield* Effect.forkScoped(backgroundResourceChanges(database, changed));
         // Before anything is served: each installed plugin built for another framework waits for
         // its rebuild, which runs once the engine is ready.
-        const rebuilds = pluginRebuilds({
+        // A pool of its own for version fences, which each hold a connection while their work
+        // runs on the engine's.
+        const fences = yield* PgClient.make({
+          url: Redacted.make(config.databaseUrl),
+          maxConnections: 4,
+        }).pipe(Effect.provide(Reactivity.layer));
+        const rebuilds = pluginVersions({
           engine,
           owner,
           framework: local.framework,
           linkedFramework: (build) =>
             linkedFramework(build).pipe(Effect.provideService(BlobStore, blobs)),
-          store: rebuildStore(sql),
+          store: versionStore(sql, fences),
+          // The Host refreshes what it keeps beside the active version: skills and provenance.
+          published: (version) => callback("versionPublished", version).pipe(Effect.asVoid),
         });
         yield* rebuilds.scan;
         updatingOf = rebuilds.updating;
@@ -584,13 +594,15 @@ export async function startEngine(
             Effect.repeat(Schedule.spaced("5 seconds")),
           ),
         );
-        // An occurrence that comes due while its plugin is updating is refused without being
-        // consumed, so it stays due and runs on the first tick after the rebuild.
+        // Work of a plugin that is updating is not picked at all: it stays due, runs on the first
+        // tick after the rebuild, and takes none of the worker's slots from other plugins. One
+        // picked just before its plugin began updating is refused without being consumed.
         const scheduler = yield* startScheduleWorker(
           engine,
           ({ app }) =>
             notUpdating(app).pipe(Effect.andThen(standing(app, () => new ScheduleAccessRevoked()))),
           { runner: "host", concurrency: 2, pollMilliseconds: 1000 },
+          () => rebuilds.held(),
         );
         yield* Effect.forkScoped(deliverEvents(engine));
         // Off the request path, one plugin at a time; the service stays up while any waits.
@@ -676,6 +688,18 @@ export async function startEngine(
           ...(updating === undefined ? {} : { updating: { reason: updating.reason } }),
           ...(failure === null ? {} : { buildFailure: failure }),
         };
+      });
+    /**
+     * The version whose source a plugin shows and exports by default: the active one, else the
+     * one whose rebuild failed, else the newest. None for a plugin with no version.
+     */
+    const shownVersion = (plugin: { readonly id: AppId; readonly activeVersion: string | null }) =>
+      Effect.gen(function* () {
+        if (plugin.activeVersion !== null) return VersionId.make(plugin.activeVersion);
+        const failure = yield* readRebuildFailure(composed.sql, plugin.id);
+        if (failure !== null) return VersionId.make(failure.version);
+        const versions = yield* engine.apps.versions({ app: plugin.id, owner });
+        return versions[0]?.id ?? null;
       });
     const startupMs = performance.now() - started;
     const authorize = (
@@ -985,7 +1009,8 @@ export async function startEngine(
                               ),
                           ),
                         );
-                return yield* deployed.pipe(
+                // Into an installed plugin under its version fence; published once active.
+                return yield* rebuilds.install(deployed, app).pipe(
                   Effect.map((result) => ({
                     status: "installed" as const,
                     plugin: result.app,
@@ -1005,7 +1030,6 @@ export async function startEngine(
               input.kind,
             );
             const result = operations.install.output.parse(JSON.parse(JSON.stringify(installed)));
-            if (result.status === "installed") yield* rebuilds.changed(result.plugin.id);
             return result.status === "installed"
               ? {
                   ...result,
@@ -1021,17 +1045,11 @@ export async function startEngine(
               effect.pipe(Effect.catch(() => Effect.succeed(null)));
             const rebuild = yield* rebuildState(plugin);
             const versions = yield* engine.apps.versions({ app, owner });
-            // Without an active version, the version whose build failed, else the newest.
-            const shown =
-              plugin.activeVersion ?? rebuild.buildFailure?.version ?? versions[0]?.id ?? null;
+            const shown = yield* shownVersion(plugin);
             const { files } =
               shown === null
                 ? { files: [] }
-                : yield* engine.apps.source({
-                    app: plugin.id,
-                    owner,
-                    version: VersionId.make(shown),
-                  });
+                : yield* engine.apps.source({ app: plugin.id, owner, version: shown });
             const notices = files.find((file) => file.path === openapiNoticesFile);
             const warnings =
               notices &&
@@ -1096,10 +1114,15 @@ export async function startEngine(
           }
           case "export": {
             const input = operations.export.input.parse(raw);
+            const app = AppId.make(input.plugin);
+            const version =
+              input.version === undefined
+                ? yield* shownVersion(yield* engine.apps.get({ app, owner }))
+                : VersionId.make(input.version);
             const source = yield* engine.apps.source({
-              app: AppId.make(input.plugin),
+              app,
               owner,
-              ...(input.version === undefined ? {} : { version: VersionId.make(input.version) }),
+              ...(version === null ? {} : { version }),
             });
             const size = source.files.reduce(
               (total, file) =>
@@ -1161,17 +1184,10 @@ export async function startEngine(
                       : new Error("Plugin activation failed"),
                 ),
               );
-            yield* rebuilds.changed(input.plugin);
             return activated;
           }
-          case "remove": {
-            const removed = yield* engine.apps.remove({
-              app: AppId.make(operations.remove.input.parse(raw).plugin),
-              owner,
-            });
-            yield* rebuilds.changed(removed.app);
-            return removed;
-          }
+          case "remove":
+            return yield* rebuilds.remove(AppId.make(operations.remove.input.parse(raw).plugin));
           case "accounts":
             return yield* engine.accounts.list({ owner });
           case "createApiKeyAccount": {
@@ -1646,7 +1662,13 @@ export async function startEngine(
                     input: { app, name: input.schedule, copy: input.scheduleId },
                   }),
                 );
-              case "workflow.start":
+              case "workflow.start": {
+                // Answered as a call to a plugin that waits for its rebuild is: unsent.
+                const updating = pluginUpdatingBlocked(
+                  (yield* engine.apps.get({ app: AppId.make(app), owner })).name,
+                  rebuilds.updating(app)?.reason,
+                );
+                if (updating) return { kind: "blocked", blocked: updating };
                 return yield* manage({
                   operation: "workflowRuns.start",
                   input: {
@@ -1658,6 +1680,7 @@ export async function startEngine(
                       .digest("hex"),
                   },
                 });
+              }
               case "workflow.stop":
                 return yield* manage({
                   operation: "workflowRuns.stop",
@@ -1804,8 +1827,19 @@ export async function startEngine(
           return decode(ScheduleInputs.answer).pipe(Effect.flatMap(engine.schedules.answer));
         case "workflows.list":
           return linked(WorkflowApp, engine.apps.workflows.list);
-        case "workflowRuns.start":
-          return linked(StartWorkflow, engine.apps.workflowRuns.start);
+        case "workflowRuns.start": {
+          // Nothing of a plugin that waits for its rebuild runs, a new run included.
+          const updating = rebuilds.updating(String(input.input.app));
+          return updating === undefined
+            ? linked(StartWorkflow, engine.apps.workflowRuns.start)
+            : Effect.fail(
+                new PluginServiceError(
+                  "unavailable",
+                  `This plugin is updating for this version of Opensteer, so the workflow was not started. ${updating.reason} Try again in a minute.`,
+                  "PluginUpdating",
+                ),
+              );
+        }
         case "workflowRuns.list":
           return Effect.gen(function* () {
             const app = AppId.make(String(input.input.app));

@@ -638,6 +638,15 @@ export const callbackOperations = {
     output: HostToolResultSchema,
   },
   webhookOrigin: { input: z.strictObject({}), output: z.url().nullable() },
+  /**
+   * A version became a plugin's active one, whoever activated it; `from` is the stored version it
+   * was rebuilt from. The Host refreshes what it keeps beside the active version before the
+   * change is answered.
+   */
+  versionPublished: {
+    input: z.strictObject({ plugin: id, version: id, from: id.nullable() }),
+    output: z.strictObject({}),
+  },
 } as const;
 export type PluginCallback = keyof typeof callbackOperations;
 export const EngineErrorSchema = z.strictObject({

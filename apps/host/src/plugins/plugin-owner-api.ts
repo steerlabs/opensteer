@@ -85,7 +85,7 @@ export interface PluginOwnerApiOptions {
   };
   readonly settings: Pick<
     PluginAgentStore,
-    "settings" | "versionAuthors" | "setAccess" | "recordInstall" | "recordActivation"
+    "settings" | "versionAuthors" | "setAccess" | "recordInstall"
   >;
   /** Fulfils Requests waiting on this link; called after a person-reviewed link commits. */
   readonly accountLinked: (input: {
@@ -1087,7 +1087,6 @@ export class PluginOwnerApi {
         await this.#call(
           service.activate({ plugin: command.pluginId, version: command.versionId }, owner),
         );
-        await settings.recordActivation(userId, command.pluginId, command.versionId);
         changed();
         return { type: command.type };
       case "plugins.remove":
