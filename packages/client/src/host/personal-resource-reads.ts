@@ -91,6 +91,8 @@ export class PersonalResourceReads implements PersonalResourcePort {
   >();
   readonly #timers = new Set<ReturnType<typeof setTimeout>>();
   readonly #unreadableKinds = new Set<PersonalResourceKind>();
+  /** Each kind's last read that ended in a failure no retry can mend, until another read starts. */
+  readonly #failures = new Map<PersonalResourceKind, unknown>();
   /** Each kind's read in flight, settled once it installs or gives up. */
   readonly #inFlight = new Map<PersonalResourceKind, Promise<void>>();
   /** A Runner kind's pending reread, from its first push within the settle window. */
@@ -148,25 +150,26 @@ export class PersonalResourceReads implements PersonalResourcePort {
         runnerKinds.has(kind) &&
         installed !== undefined &&
         sameBoot(installed, revision) &&
-        Date.now() >= this.#attachAnswerUntil
+        !this.#attachReplyPending
       )
         this.#settle(kind);
       else this.#read(kind);
       for (const listener of this.#listeners.get(kind) ?? []) listener();
     }
-    // The revisions the Host sends in answer to an attach come in one frame.
-    this.#attachAnswerUntil = 0;
+    // The Host answers an attach with one frame of every revision that moved meanwhile.
+    this.#attachReplyPending = false;
   }
 
   /** Read every watched kind that is behind, as after attaching or returning to the front. */
   resume(attached = false) {
-    // The Host answers an attach with every revision that moved meanwhile; that answer is read at
-    // once, never held in the settle window. Bounded, in case nothing moved and no answer comes.
-    if (attached) this.#attachAnswerUntil = Date.now() + runnerSettleMs;
+    // The first revision frame after this client's attach is the Host's answer to it, however late
+    // it comes: read at once, never held in the settle window. When nothing moved the Host sends
+    // none, and the next live push is then read at once too: sooner, never later.
+    if (attached) this.#attachReplyPending = true;
     for (const kind of this.#listeners.keys()) this.#read(kind);
   }
 
-  #attachAnswerUntil = 0;
+  #attachReplyPending = false;
 
   abort() {
     for (const kind of personalResourceKinds) this.#reads.stop(kind);
@@ -271,6 +274,9 @@ export class PersonalResourceReads implements PersonalResourcePort {
     this.#known.clear();
     this.#installed.clear();
     this.#behind.clear();
+    // The next viewer or history reports its own failures.
+    this.#unreadableKinds.clear();
+    this.#failures.clear();
   }
 
   #read(kind: PersonalResourceKind) {
@@ -295,9 +301,17 @@ export class PersonalResourceReads implements PersonalResourcePort {
     )
       return;
     const observed = () => this.#listeners.has(kind) && this.#options.canRead();
+    this.#failures.delete(kind);
     const flying: Promise<void> = this.#reads
       .request(kind, (read) => this.#job(kind, read), { observed })
-      .catch(() => undefined)
+      // Only a failure no retry can mend settles the request with an error: kept for a command
+      // waiting on the kind, which then stops at once rather than asking again.
+      .catch((error: unknown) => {
+        this.#failures.set(kind, error);
+        // Whatever the cause (too large, malformed, refused by the Host), the screens that read
+        // this kind say they could not, instead of showing the last inventory as if current.
+        this.#markUnreadable(kind);
+      })
       .finally(() => {
         if (this.#inFlight.get(kind) === flying) this.#inFlight.delete(kind);
       });
@@ -331,6 +345,8 @@ export class PersonalResourceReads implements PersonalResourcePort {
         }),
       ]);
       clearTimeout(timer);
+      // The read ended in a failure no retry can mend: the command fails with it, now.
+      if (this.#failures.has(kind)) throw this.#failures.get(kind);
       if (Date.now() >= deadline) break;
     }
     if (!ready())
@@ -341,11 +357,20 @@ export class PersonalResourceReads implements PersonalResourcePort {
   }
 
   /** A Host answer no retry can mend: reported, and read again on the kind's next revision. */
+  #markUnreadable(kind: PersonalResourceKind) {
+    if (this.#unreadableKinds.has(kind)) return;
+    this.#unreadableKinds.add(kind);
+    this.#options.unreadable?.(kind, true);
+  }
+
+  /** Try again, from a screen that said it could not load the kind. */
+  retry(kind: PersonalResourceKind) {
+    this.#failures.delete(kind);
+    this.#read(kind);
+  }
+
   #unreadable(kind: PersonalResourceKind, detail: string) {
-    if (!this.#unreadableKinds.has(kind)) {
-      this.#unreadableKinds.add(kind);
-      this.#options.unreadable?.(kind, true);
-    }
+    this.#markUnreadable(kind);
     return Object.assign(new Error(`The Host's ${kind} inventory ${detail}.`), {
       code: "invalid-response",
     });

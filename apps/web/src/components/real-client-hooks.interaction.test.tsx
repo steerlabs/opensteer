@@ -2,7 +2,7 @@
 
 import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import { MockHostClient, MockPersonalHost } from "@opensteer/client/mock";
-import { useHostSelector, useRequestAsker } from "@opensteer/client/react";
+import { useHostSelector, useRequestAsker, useUnreadableResources } from "@opensteer/client/react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
@@ -108,4 +108,50 @@ it("watches what a mounted screen reads, through re-renders, and lets go after i
   await vi.waitFor(() => expect(watched()).not.toContain("machine"));
   roots.push(mount());
   await vi.waitFor(() => expect(watched()).toContain("machine"));
+});
+
+it("says a screen's list could not be loaded, and Try again reads it", async () => {
+  const host = new MockPersonalHost(new MockHostClient({ latencyMs: 0 }));
+  let refuse = true;
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (
+        refuse &&
+        url.pathname.endsWith("/resources.detail.get") &&
+        JSON.parse(url.searchParams.get("input")!).kind === "machine"
+      )
+        return Response.json({
+          ok: false,
+          error: { code: "resource_exhausted", message: "Too large", retryable: false },
+        });
+      return host.fetch(input, init);
+    },
+    webSocketFactory: host.connect,
+    capabilities: [],
+  });
+  disposals.push(() => {
+    client.dispose();
+    host.dispose();
+  });
+  await client.load();
+  function Devices() {
+    const count = useHostSelector(client, (snapshot) => snapshot.machines.length);
+    const { retry, unreadable } = useUnreadableResources(client, ["machine"]);
+    return unreadable ? (
+      <button onClick={retry} type="button">
+        Couldn't load your devices. Try again
+      </button>
+    ) : (
+      <p>{`${count} devices`}</p>
+    );
+  }
+  const root = createRoot(document.body.appendChild(document.createElement("div")));
+  roots.push(root);
+  act(() => root.render(<Devices />));
+  await vi.waitFor(() => expect(document.body.textContent).toContain("Couldn't load your devices"));
+  refuse = false;
+  act(() => document.querySelector("button")!.click());
+  await vi.waitFor(() => expect(document.body.textContent).toMatch(/[1-9]\d* devices/));
 });

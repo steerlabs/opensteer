@@ -8,6 +8,7 @@ import {
   useTabDeviceChoice,
   useTabFilterMatches,
   useTabsSyncing,
+  useUnreadableResources,
 } from "@opensteer/client/react";
 import type { TabId } from "@opensteer/core";
 import {
@@ -35,7 +36,7 @@ import { Gated } from "../ui/connection-gate.js";
 import { useConnectionReady } from "../ui/connection-live.js";
 import { useScreenAction } from "../ui/client-feedback.js";
 import { PlaceholderRows } from "../ui/placeholder.js";
-import { AppText, SecondaryButton } from "../ui/primitives.js";
+import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
 import { ConnectionRouteGate } from "../ui/route-gate.js";
 import { tabActionKey, tabActionSpecs } from "../tabs/tab-actions.js";
 import { Symbol } from "../ui/symbol.js";
@@ -66,6 +67,8 @@ export function TabsScreen(props: TabsScreenProps): ReactNode {
 const selectReader = (snapshot: HostSnapshot) =>
   snapshot.session === "authenticated" ? (snapshot.user?.id ?? null) : null;
 
+const tabKinds = ["tab", "tab-layout"] as const;
+
 function AttachedTabs(props: {
   readonly deploymentId: string;
   readonly hostClient: HostClient;
@@ -76,9 +79,21 @@ function AttachedTabs(props: {
   // Tabs never listed and no connection to list them: the gate is the one explanation.
   const syncing = useTabsSyncing(hostClient);
   const ready = useConnectionReady(hostClient.connection);
+  const tabsRead = useUnreadableResources(hostClient, tabKinds);
   useEffect(() => {
     void hostClient.load().catch(() => undefined);
   }, [hostClient]);
+  // Tabs that could not be read are said so, with Try again, never listed empty or stale.
+  if (reader !== null && tabsRead.unreadable)
+    return (
+      <Screen>
+        <Notice
+          action={{ label: "Try again", onPress: tabsRead.retry }}
+          detail="Your computer sent a tab list this phone couldn't read."
+          title="Couldn't load your tabs."
+        />
+      </Screen>
+    );
   const gate =
     reader === null || (syncing && !ready) ? (
       <ConnectionRouteGate connection={hostClient.connection} />

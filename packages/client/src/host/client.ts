@@ -1283,6 +1283,10 @@ export interface HostClient extends TabsClient {
   messageOrigin?(): import("@opensteer/core").MessageOrigin | undefined;
   dispose(): void;
   getSnapshot(): HostSnapshot;
+  /** Reads these resource kinds again, for a screen that said it could not load them. */
+  retryResources?(
+    kinds: readonly import("@opensteer/protocol/resources").PersonalResourceKind[],
+  ): void;
   /** A reader of its own (see `SnapshotReader`), for a client whose fields are read on demand. */
   readonly snapshotReader?: () => import("./host-snapshot-store.js").SnapshotReader;
   load(): Promise<void>;

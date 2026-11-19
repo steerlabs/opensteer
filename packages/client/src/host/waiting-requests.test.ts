@@ -32,7 +32,13 @@ async function harness() {
   }));
   const personal = new MockPersonalHost(seed);
   const lists: { release: () => void }[] = [];
-  const control = { holdLists: false, failLists: 0, listCalls: 0, dispatched: [] as unknown[] };
+  const control = {
+    holdLists: false,
+    failLists: 0,
+    listCalls: 0,
+    pageSize: undefined as number | undefined,
+    dispatched: [] as unknown[],
+  };
   let foreground = () => {};
   let background = () => {};
   const lifecycle: ClientLifecycle = {
@@ -75,9 +81,25 @@ async function harness() {
       }
       // The answer is what the Host listed when the read reached it.
       const answer = (await (await personal.fetch(input, init)).json()) as {
-        data: { requests: unknown[] };
+        data: {
+          requests: unknown[];
+          window: { hasMore: boolean; nextBefore?: string | null };
+        };
       };
       answer.data.requests = [...host.pending];
+      if (control.pageSize !== undefined) {
+        // The Host pages the list: `before` is the index the next page starts at.
+        const before = JSON.parse(url.searchParams.get("input") ?? "{}").before as
+          string | undefined;
+        const start = before ? Number(before) : 0;
+        const end = start + control.pageSize;
+        answer.data.requests = host.pending.slice(start, end);
+        answer.data.window = {
+          ...answer.data.window,
+          hasMore: end < host.pending.length,
+          nextBefore: end < host.pending.length ? String(end) : null,
+        };
+      }
       if (!control.holdLists) return Response.json(answer);
       const held = Promise.withResolvers<void>();
       lists.push({ release: held.resolve });
@@ -228,4 +250,17 @@ it("reads the list again when a listed Request changes but the count does not", 
         ?.subagent?.title,
     ).toBe("Renamed"),
   );
+});
+
+it("lists every pending Request however many pages the Host serves them in", async () => {
+  const f = await harness();
+  // 2,001 pending Requests, 100 to a page: twenty-one pages.
+  f.host.pending = Array.from({ length: 2_001 }, () => ({
+    ...f.all[0]!,
+    request: { ...f.all[0]!.request, id: `req_${crypto.randomUUID()}` as never },
+  }));
+  f.control.pageSize = 100;
+  await f.client.load();
+  await vi.waitFor(() => expect(f.ids()).toHaveLength(2_001), { timeout: 3_000 });
+  expect(f.control.listCalls).toBe(21);
 });

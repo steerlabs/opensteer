@@ -432,3 +432,95 @@ test("a new reader or an attach reads a Runner kind at once and takes over a set
     vi.useRealTimers();
   }
 });
+
+test("a command waiting on a kind whose read fails for good fails with that error at once", async () => {
+  let calls = 0;
+  const reads = new PersonalResourceReads({
+    read: async (kind) => {
+      calls++;
+      // A repeated cursor: no retry can mend it.
+      return { ok: true, data: { revision: "1", next: "again", data: { kind } as never } };
+    },
+    apply: () => undefined,
+    canRead: () => true,
+    watchChanged: () => undefined,
+  });
+  const started = Date.now();
+  await expect(reads.current("browser-home", 10_000)).rejects.toThrow("repeats a cursor");
+  expect(Date.now() - started).toBeLessThan(1_000);
+  // One read: its two pages, the second repeating the cursor.
+  expect(calls).toBe(2);
+  reads.dispose();
+});
+
+test("any read that fails for good marks its kind unreadable, and a reset forgets it for the next history", async () => {
+  let refuse = true;
+  const unreadable: [PersonalResourceKind, boolean][] = [];
+  const reads = new PersonalResourceReads({
+    read: async (kind) =>
+      refuse
+        ? // A single row too large for the Host's page: refused before any byte reaches here.
+          { ok: false, error: { code: "resource_exhausted", message: "Too large" } }
+        : { ok: true, data: { revision: "1", next: null, data: { kind } as never } },
+    apply: () => undefined,
+    canRead: () => true,
+    watchChanged: () => undefined,
+    unreadable: (kind, value) => unreadable.push([kind, value]),
+  });
+  const release = reads.watch("environment", () => {});
+  await vi.waitFor(() => expect(unreadable).toEqual([["environment", true]]));
+  // A new history: the same failure there is reported again, not suppressed.
+  reads.reset();
+  reads.resume();
+  await vi.waitFor(() =>
+    expect(unreadable).toEqual([
+      ["environment", true],
+      ["environment", true],
+    ]),
+  );
+  // Try again, once the Host can answer.
+  refuse = false;
+  reads.retry("environment");
+  await vi.waitFor(() => expect(unreadable.at(-1)).toEqual(["environment", false]));
+  release();
+});
+
+test("the Host's answer to an attach is read at once however late it comes, and a live push after it settles", async () => {
+  vi.useFakeTimers();
+  try {
+    const asked: string[] = [];
+    const reads = new PersonalResourceReads({
+      read: async (kind) => {
+        asked.push(reads.revision(kind) ?? "first");
+        return {
+          ok: true,
+          data: {
+            revision: reads.revision(kind) ?? "1.0123456789abcdef.1",
+            next: null,
+            data: { kind } as never,
+          },
+        };
+      },
+      apply: () => undefined,
+      canRead: () => true,
+      watchChanged: () => undefined,
+    });
+    const release = reads.watch("machine", () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    // Reattach after missing a push; the answer is held on a weak link well past two seconds.
+    reads.resume(true);
+    await vi.advanceTimersByTimeAsync(runnerSettleMs * 3);
+    reads.changed({ machine: "1.0123456789abcdef.4" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toEqual(["first", "1.0123456789abcdef.4"]);
+    // The live flap after it waits its window as usual.
+    reads.changed({ machine: "1.0123456789abcdef.5" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(runnerSettleMs);
+    expect(asked).toHaveLength(3);
+    release();
+  } finally {
+    vi.useRealTimers();
+  }
+});
