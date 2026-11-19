@@ -56,6 +56,8 @@ function harness(seed = new MockHostClient({ latencyMs: 0 })) {
     /** Rewrites the shell cut the client receives, as another viewer's or history's would read. */
     rewriteShell: undefined as
       ((snapshot: Record<string, unknown>) => Record<string, unknown>) | undefined,
+    /** The tab layout revision the Host answers with, as a restored history's would be lower. */
+    layoutRevision: undefined as number | undefined,
   };
   const client = new HttpHostClient({
     baseUrl: "http://scoped-host",
@@ -66,6 +68,13 @@ function harness(seed = new MockHostClient({ latencyMs: 0 })) {
       reads.set(kind, (reads.get(kind) ?? 0) + 1);
       if (control.readsHeld) await new Promise<void>((resolve) => control.heldReads.push(resolve));
       const response = await host.fetch(input, init);
+      if (kind === "tab-layout" && control.layoutRevision !== undefined) {
+        const body = (await response.json()) as {
+          data: { data: { tabs: { layout: { revision: number } } } };
+        };
+        body.data.data.tabs.layout.revision = control.layoutRevision;
+        return Response.json(body);
+      }
       if (kind !== "tab") return response;
       const body = (await response.json()) as { data: { data: { tabs: { tabs: unknown[] } } } };
       body.data.data.tabs.tabs = [listed];
@@ -212,49 +221,62 @@ it("reads resources and waiting Requests again after a new history for the same 
     for (const kind of kinds) expect(reads.get(kind), kind).toBe(2);
   });
   await vi.waitFor(() => {
-    // Every value is the same as before; the machine counter tells its readers they were reread.
-    const { machineRevision, ...after } = shown(client.getSnapshot());
-    const { machineRevision: earlier, ...held } = before;
-    expect(after).toEqual(held);
-    expect(machineRevision).toBeGreaterThan(earlier as number);
+    expect(shown(client.getSnapshot())).toEqual(before);
     expect(client.getSnapshot().waitingRequests.map(({ request }) => request.id)).toEqual(waiting);
   });
 });
 
-it("keeps showing the same viewer's settings, accounts and tabs while a new history is read", async () => {
+it("a reset to an older history shows nothing of the old one, installs its layout, and shows a tab opened after", async () => {
   const { host, client, control, releaseAttach } = harness();
+  control.layoutRevision = 20;
   releaseAttach();
   void shown(client.getSnapshot());
   await client.load();
   await vi.waitFor(() =>
     expect([...client.getSnapshot().loadedResources].sort()).toEqual([...kinds].sort()),
   );
-  const shownDuring: { session: string; settings: boolean; harnesses: number; tabs: number }[] = [];
+  expect(client.getSnapshot().tabs.layout.revision).toBe(20);
+  const seen: {
+    loaded: number;
+    settings: boolean;
+    harnesses: number;
+    tabs: number;
+    layout: number;
+  }[] = [];
   disposals.push(
     client.subscribe(() => {
       const snapshot = client.getSnapshot();
-      shownDuring.push({
-        session: snapshot.session,
+      // From the reset on, while the new history's reads are held.
+      if (!control.readsHeld || (seen.length === 0 && snapshot.loadedResources.length > 0)) return;
+      seen.push({
+        loaded: snapshot.loadedResources.length,
         settings: snapshot.personalSettings !== null,
         harnesses: snapshot.harnesses.length,
         tabs: snapshot.tabs.rows.size,
+        layout: snapshot.tabs.layout.revision,
       });
     }),
   );
-  // Reads held: what is on screen meanwhile is what the person keeps working in.
+  // The Host was restored to an older history: same viewer, a lower tab layout revision.
   control.readsHeld = true;
+  control.layoutRevision = 1;
   const epoch = crypto.randomUUID();
   control.rewriteShell = (snapshot) => ({ ...snapshot, epoch });
   host.repairShell();
   await vi.waitFor(() => expect(control.heldReads.length).toBeGreaterThan(0));
+  expect(seen.length).toBeGreaterThan(0);
+  for (const snapshot of seen)
+    expect(snapshot).toEqual({ loaded: 0, settings: false, harnesses: 0, tabs: 0, layout: 0 });
   control.readsHeld = false;
   for (const resolve of control.heldReads.splice(0)) resolve();
-  await client.rpc["auth.config"]({});
-  expect(shownDuring.length).toBeGreaterThan(0);
-  for (const seen of shownDuring) {
-    expect(seen.session).toBe("authenticated");
-    expect(seen.settings).toBe(true);
-    expect(seen.harnesses).toBeGreaterThan(0);
-    expect(seen.tabs).toBeGreaterThan(0);
-  }
+  await vi.waitFor(() =>
+    expect([...client.getSnapshot().loadedResources].sort()).toEqual([...kinds].sort()),
+  );
+  expect(client.getSnapshot().tabs.layout.revision).toBe(1);
+  const app = (await client.listApps()).find(
+    (candidate) =>
+      ![...client.getSnapshot().tabs.rows.values()].some((tab) => tab.appId === candidate.appId),
+  )!;
+  const opened = await client.openTab({ kind: "app", appId: app.appId });
+  expect(client.getSnapshot().tabs.get(opened.tabId)).toBeDefined();
 });

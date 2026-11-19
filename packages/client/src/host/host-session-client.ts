@@ -699,6 +699,14 @@ export class HttpHostClient {
       watchChanged: () => this.#stream.watchResources(),
       // Rows stay on screen; the inventory is only no longer known to be complete.
       behind: (kind) => kind === "tab" && this.#tabs.markInventoryStale(),
+      unreadable: (kind, unreadable) => {
+        const held = this.#snapshot.unreadableResources ?? [];
+        if (held.includes(kind) === unreadable) return;
+        this.#update({
+          ...this.#snapshot,
+          unreadableResources: unreadable ? [...held, kind] : held.filter((each) => each !== kind),
+        });
+      },
       loaded: (kind) => {
         if (this.#snapshot.loadedResources.includes(kind)) return;
         this.#update({
@@ -1001,12 +1009,10 @@ export class HttpHostClient {
     command: ClientCommandInput,
     options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
   ): Promise<HostApiCommandOutput> {
-    // A new browser profile's home is kept only once this client knows the Host's homes.
-    if (
-      command.type === "browser.profile.create" ||
-      (command.type === "request.respond" && command.response.kind === "external")
-    )
-      await this.#resources.firstRead("browser-home");
+    // Only a command that creates a browser profile needs the Host's homes, to keep its chosen
+    // home; it waits a bounded time for them. Every other command goes straight out.
+    if (createsBrowserProfile(command))
+      await this.#resources.current("browser-home", commandResourceBoundMs);
     const parsedCommand = clientCommandSchema.parse(
       options?.preserveOrigin
         ? browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)
@@ -1577,23 +1583,15 @@ export class HttpHostClient {
 
   /**
    * Another viewer, session or history. Everything held for the one before goes in this one step,
-   * together with what says it was read (the resource reader's installed revisions, the waiting
-   * Requests' signature, attention), so nothing cleared can look already read. It is the only place
-   * held data is cleared for a viewer.
+   * together with what says it was read (the resource reader's installed revisions and loaded
+   * flags, the tab store's confirmed layout and command overlay, the waiting Requests' stamp,
+   * attention), so nothing cleared can look already read. A new history of the same viewer (a
+   * restored or re-created Host) is cleared exactly like another viewer: its state is not the
+   * old one's. Only the viewer's durable drafts and outbox, which live outside this client's
+   * view state, survive it. This is the only place held data is cleared for a viewer.
    */
-  #forgetViewer(keep: Partial<HostSnapshot>, sameViewer = false) {
+  #forgetViewer(keep: Partial<HostSnapshot>) {
     this.#viewerGeneration++;
-    // The same person under a new history (a rollback, a restored Host): what they were shown stays
-    // on screen while all of it is read again, so nothing they have open is torn down. Only what
-    // says it was read is forgotten.
-    const held: Partial<HostSnapshot> = sameViewer
-      ? Object.fromEntries(
-          [...Object.keys(resourceBackedFields), ...sameViewerFields].map((field) => [
-            field,
-            this.#snapshot[field as keyof HostSnapshot],
-          ]),
-        )
-      : {};
     clearRunPageViews(this);
     clearRunPlacePictures(this);
     this.#runPlaces.clear();
@@ -1603,22 +1601,21 @@ export class HttpHostClient {
     this.#ownerViews.clear();
     this.#pageSessions.clear();
     this.#viewers.clear();
-    if (sameViewer) this.#tabs.markInventoryStale();
-    else this.#tabs.clear();
+    this.#tabs.clear();
     this.#threadState.clear();
     this.#threadRenames.clear();
     this.#threadIcons.clear();
-    if (!sameViewer) this.#environmentCatalogs.clear();
+    this.#environmentCatalogs.clear();
     this.#bodies.clear();
     this.#clearAttachmentReads();
     this.#threadDeployment.clear();
     this.#clearViewerReads();
     this.#invalidateAttention();
     this.#waitingRequestReads.stop("waiting-requests");
-    this.#waitingRequestStamp = "";
+    this.#waitingRequestWanted = "";
     this.#answeredRequests.clear();
     this.#resources.reset();
-    this.#update({ ...emptySnapshot(this.#tabs), ...held, ...keep });
+    this.#update({ ...emptySnapshot(this.#tabs), ...keep });
   }
 
   watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
@@ -1809,14 +1806,8 @@ export class HttpHostClient {
           (shellAuthority.session &&
             this.#snapshot.sessionId !== shellAuthority.session.sessionId)))
     ) {
-      const { connection, connectionInterrupted, network, user, deploymentId } = this.#snapshot;
-      const sameViewer =
-        user !== null &&
-        shellAuthority !== undefined &&
-        shellAuthority !== null &&
-        user.id === shellAuthority.viewerId &&
-        deploymentId === shellAuthority.deploymentId;
-      this.#forgetViewer({ connection, connectionInterrupted, network }, sameViewer);
+      const { connection, connectionInterrupted, network } = this.#snapshot;
+      this.#forgetViewer({ connection, connectionInterrupted, network });
       forgot = true;
     }
     const shell = state.snapshot;
@@ -1947,7 +1938,7 @@ export class HttpHostClient {
       this.references.reconnect();
       this.#invalidatePersonalRemoteAccess();
       this.#reverifyCapabilities();
-      this.#resources.resume();
+      this.#resources.resume(true);
       if (reattached) this.#noticesMissed();
     } else if (forgot) this.#resources.resume();
     if (
@@ -1971,33 +1962,33 @@ export class HttpHostClient {
   }
 
   /**
-   * Brings `waitingRequests` to what the Host states now. The list is current only for the stamp
-   * it was read at; any other stamp reads it again, and a read in flight that is overtaken
-   * installs nothing. A count of zero needs no read. Called on every shell change, on attach,
-   * on returning to the front and after a local answer.
+   * Brings `waitingRequests` to what the Host states now. There is one wanted stamp: a read is
+   * asked for only when the stamp differs from the one last asked for, or on attach, a return to
+   * the front or a local answer. A change while a read flies marks it to run once more when it
+   * lands; it never adds another waiter. Unrelated shell frames leave the stamp, and the read,
+   * alone. A count of zero needs no read.
    */
   #syncWaitingRequests(force = false) {
     const stamp = this.#requestStamp();
     if (stamp === undefined || this.#disposed) return;
+    const key = "waiting-requests";
     if (stamp.startsWith("0|")) {
-      this.#waitingRequestReads.stop("waiting-requests");
-      this.#waitingRequestStamp = stamp;
+      this.#waitingRequestReads.stop(key);
+      this.#waitingRequestWanted = stamp;
       if (this.#snapshot.waitingRequests.length)
         this.#update({ ...this.#snapshot, waitingRequests: [] });
       return;
     }
-    if (
-      !force &&
-      stamp === this.#waitingRequestStamp &&
-      !this.#waitingRequestReads.busy("waiting-requests")
-    )
-      return;
+    if (!force && stamp === this.#waitingRequestWanted) return;
+    // Behind, nothing is read; the return to the front asks again.
     if (this.#visibility === "background") return;
-    this.#readWaitingRequests();
+    this.#waitingRequestWanted = stamp;
+    if (this.#waitingRequestReads.busy(key)) this.#waitingRequestReads.changed(key);
+    else this.#readWaitingRequests();
   }
 
-  /** The stamp the installed `waitingRequests` were read at. */
-  #waitingRequestStamp = "";
+  /** The stamp the list was last asked to match; each run reads it as it starts. */
+  #waitingRequestWanted = "";
   /** Each run of the list read, counted, so an answer confirmed after a run began outlives it. */
   #waitingRequestRuns = 0;
   /** Requests answered here: hidden from any list read that began before the answer was confirmed. */
@@ -2035,7 +2026,6 @@ export class HttpHostClient {
       .request(
         "waiting-requests",
         async (read) => {
-          const stamp = this.#requestStamp();
           const run = ++this.#waitingRequestRuns;
           const read_: HostSnapshot["waitingRequests"][number][] = [];
           let before: string | null = null;
@@ -2054,7 +2044,7 @@ export class HttpHostClient {
             before = page.window.hasMore ? page.window.nextBefore : null;
             if (!before) break;
           }
-          if (!read.current() || stamp === undefined) return;
+          if (!read.current()) return;
           // An answer confirmed before this run began is the Host's truth now: a Request it still
           // lists was asked again. One confirmed later, or not yet, stays hidden from this answer.
           for (const [id, { confirmedAfterRun }] of this.#answeredRequests)
@@ -2063,10 +2053,7 @@ export class HttpHostClient {
           const waitingRequests = read_.filter(
             ({ request }) => !this.#answeredRequests.has(request.id),
           );
-          this.#waitingRequestStamp = stamp;
           this.#update({ ...this.#snapshot, waitingRequests });
-          // The shell moved while this flew without overtaking it (a row outside the bound).
-          if (this.#requestStamp() !== stamp) queueMicrotask(() => this.#syncWaitingRequests());
         },
         { observed: () => !this.#disposed && this.#visibility !== "background" },
       )
@@ -5062,17 +5049,16 @@ function updateRequired(): HostClientRequestError {
   });
 }
 
-/** Who the viewer is, kept with their resources through a new history of the same viewer. */
-const sameViewerFields = [
-  "loadedResources",
-  "user",
-  "deploymentId",
-  "deploymentShape",
-  "session",
-  "sessionId",
-  "sessionSurface",
-  "can",
-] as const satisfies readonly (keyof HostSnapshot)[];
+/** How long a command waits for a resource it needs before failing with a clear error. */
+const commandResourceBoundMs = 10_000;
+
+/** Whether a command creates a browser profile, directly or by approving a Request that asks to. */
+function createsBrowserProfile(command: ClientCommandInput): boolean {
+  if (command.type === "browser.profile.create") return true;
+  if (command.type !== "request.respond" || command.response.kind !== "external") return false;
+  const value = command.response.value as Record<string, unknown> | null | undefined;
+  return value?.["decision"] === "fulfilled" && value["createProfile"] !== undefined;
+}
 
 function resourceKindsOf(field: PropertyKey): readonly PersonalResourceKind[] | undefined {
   return typeof field === "string" && Object.hasOwn(resourceBackedFields, field)

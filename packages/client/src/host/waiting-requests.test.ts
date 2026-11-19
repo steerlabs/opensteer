@@ -31,7 +31,7 @@ async function harness() {
   }));
   const personal = new MockPersonalHost(seed);
   const lists: { release: () => void }[] = [];
-  const control = { holdLists: false, failLists: 0, dispatched: [] as unknown[] };
+  const control = { holdLists: false, failLists: 0, listCalls: 0, dispatched: [] as unknown[] };
   let foreground = () => {};
   let background = () => {};
   const lifecycle: ClientLifecycle = {
@@ -64,6 +64,7 @@ async function harness() {
         }
       }
       if (!url.pathname.endsWith("/requests.list")) return personal.fetch(input, init);
+      control.listCalls++;
       if (control.failLists > 0) {
         control.failLists--;
         return Response.json({
@@ -164,4 +165,25 @@ it("drops a Request answered here at once, and an older list read never brings i
   await f.roundTrip();
   expect(f.ids()).not.toContain(answered);
   expect(shown.some((ids) => ids.includes(answered))).toBe(false);
+});
+
+it("lets unrelated shell activity leave a list read in flight alone, and installs its answer", async () => {
+  const f = await harness();
+  f.control.holdLists = true;
+  await f.client.load();
+  await vi.waitFor(() => expect(f.lists).toHaveLength(1));
+  // Other work keeps publishing shell frames; the pending Requests do not change.
+  for (let frame = 0; frame < 5; frame++) {
+    f.personal.repairShell();
+    await f.roundTrip();
+  }
+  expect(f.lists).toHaveLength(1);
+  f.control.holdLists = false;
+  for (const list of f.lists.splice(0)) list.release();
+  await vi.waitFor(() =>
+    expect(f.ids().sort()).toEqual(f.all.map(({ request }) => request.id).sort()),
+  );
+  await f.roundTrip();
+  // One read answered it: the frames neither displaced it nor queued reruns behind it.
+  expect(f.control.listCalls).toBe(1);
 });

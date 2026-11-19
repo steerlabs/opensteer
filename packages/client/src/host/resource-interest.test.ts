@@ -158,3 +158,54 @@ it("keeps a new browser profile's home when the command comes before any read of
     home,
   );
 });
+
+it("never holds a command that needs no resource behind a failing read, and bounds one that does", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const host = new MockPersonalHost(new MockHostClient({ latencyMs: 0 }));
+  const sent: string[] = [];
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    capabilities: [],
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (
+        url.pathname.endsWith("/resources.detail.get") &&
+        JSON.parse(url.searchParams.get("input")!).kind === "browser-home"
+      )
+        return Response.json({
+          ok: false,
+          error: { code: "timeout", message: "Host busy", retryable: true },
+        });
+      if (url.pathname.endsWith("/commands.dispatch")) {
+        sent.push((JSON.parse(String(init?.body)) as { type: string }).type);
+        return Response.json({ ok: true, data: { type: "request.respond", wasDuplicate: false } });
+      }
+      return host.fetch(input, init);
+    },
+    webSocketFactory: host.connect,
+  });
+  disposals.push(() => {
+    client.dispose();
+    host.dispose();
+  });
+  await client.load();
+  // Declining an external Request creates nothing: it goes out at once.
+  await client.dispatch({
+    type: "request.respond",
+    idempotencyKey: "decline:test",
+    expectedRevision: "1",
+    requestId: "req_00000000-0000-4000-8000-000000000001" as never,
+    response: { kind: "external", value: { decision: "declined" } },
+  });
+  expect(sent).toEqual(["request.respond"]);
+  // Creating a profile needs the homes; when they cannot be read it fails, clearly and in time.
+  const creating = client.dispatch({
+    type: "browser.profile.create",
+    idempotencyKey: "profile:create:unreadable",
+    input: { name: "Work", homeRunnerId: createId("runner") },
+  });
+  const failed = expect(creating).rejects.toThrow("couldn't read");
+  await vi.advanceTimersByTimeAsync(11_000);
+  await failed;
+  expect(sent).toEqual(["request.respond"]);
+});
