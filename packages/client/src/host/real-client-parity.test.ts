@@ -151,3 +151,47 @@ it("fills every snapshot field the UI reads while a task works, asks and queues"
     for (const release of releases) release();
   }
 });
+
+it("reads watched resources beside the socket's attach on a cold start, and once", async () => {
+  const host = new MockPersonalHost(new MockHostClient({ latencyMs: 0 }));
+  const reads: string[] = [];
+  let readsAtAttach: string[] | undefined;
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname.endsWith("/resources.detail.get"))
+        reads.push(JSON.parse(url.searchParams.get("input")!).kind);
+      return host.fetch(input, init);
+    },
+    webSocketFactory: () => {
+      const socket = host.connect();
+      const send = socket.send.bind(socket);
+      socket.send = (data: string) => {
+        if (JSON.parse(data).type === "client.attach") readsAtAttach ??= [...reads];
+        send(data);
+      };
+      return socket;
+    },
+    capabilities: [],
+  });
+  open.push({ client, host });
+  const kinds = ["environment", "identity", "settings"] as const;
+  const releases = kinds.map((kind) => client.watchPersonalResource(kind, () => undefined));
+  try {
+    await client.load();
+    // Main painted these from the same read as the shell; they must not wait for the push.
+    expect(readsAtAttach?.sort()).toEqual([...kinds]);
+    await vi.waitFor(() => {
+      const shown = client.getSnapshot();
+      expect(shown.personalSettings).not.toBeNull();
+      expect(shown.identityConfig).not.toBeNull();
+      expect(shown.environments.length).toBeGreaterThan(0);
+    });
+    // The Host's revision push matches what was read, so nothing is read twice.
+    await client.refresh();
+    expect(reads.sort()).toEqual([...kinds]);
+  } finally {
+    for (const release of releases) release();
+  }
+});

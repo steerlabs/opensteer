@@ -650,7 +650,7 @@ export class HttpHostClient {
       read: (kind, cursor, signal) =>
         this.rpc["resources.detail.get"]({ kind, ...(cursor ? { cursor } : {}) }, { signal }),
       apply: (data, append, hasMore) => this.#applyResource(data, append, hasMore),
-      canRead: () => this.#stream.ready && this.#visibility !== "background",
+      canRead: () => this.#visibility !== "background",
       watchChanged: () => this.#stream.watchResources(),
       // Rows stay on screen; the inventory is only no longer known to be complete.
       behind: (kind) => kind === "tab" && this.#tabs.markInventoryStale(),

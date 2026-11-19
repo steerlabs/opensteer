@@ -23,7 +23,7 @@ export interface PersonalResourceReadOptions {
   read(kind: PersonalResourceKind, cursor: string | undefined, signal: AbortSignal): Promise<Page>;
   /** Install one page; a later page of the same read appends. */
   apply(data: Detail["data"], append: boolean, hasMore: boolean): void;
-  /** The socket is attached and the app is in front. */
+  /** The app is in front; a background app reads nothing. */
   canRead(): boolean;
   /** The watched kinds changed. */
   watchChanged(): void;
@@ -119,10 +119,12 @@ export class PersonalResourceReads implements PersonalResourcePort {
 
   #read(kind: PersonalResourceKind) {
     const known = this.#known.get(kind);
+    const installed = this.#installed.get(kind);
+    // A kind not read yet is read at once, beside the socket's attach, so a cold start paints it
+    // with the shell; the Host's revision push then matches and reads nothing more.
     if (
       signalKinds.has(kind) ||
-      known === undefined ||
-      this.#installed.get(kind) === known ||
+      (installed !== undefined && installed === known) ||
       !this.#listeners.has(kind) ||
       this.#reads.has(kind) ||
       !this.#options.canRead()
