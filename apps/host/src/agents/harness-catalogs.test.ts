@@ -15,6 +15,7 @@ import {
   inspectHarnessCatalogsAfterUsageLimit,
   reconcileHarnessCatalogs,
   recaptureInvalidatedHarnessCatalog,
+  createHarnessCatalogConvergence,
   type HarnessCatalogConvergenceStore,
   type HarnessCatalogInspector,
 } from "./harness-catalogs.js";
@@ -213,6 +214,91 @@ describe("harness catalog convergence", () => {
       signal: AbortSignal.timeout(1_000),
     });
     expect(after.inspectHarnesses).toHaveBeenCalledTimes(1);
+  });
+  describe("the convergence owner after an invalidation", () => {
+    function manual() {
+      let now = Date.now();
+      const timers = new Set<{ at: number; run: () => void }>();
+      return {
+        clock: {
+          now: () => now,
+          schedule(run: () => void, milliseconds: number) {
+            const timer = { at: now + milliseconds, run };
+            timers.add(timer);
+            return () => timers.delete(timer);
+          },
+        },
+        armed: () => [...timers].map((timer) => timer.at - now),
+        advance(milliseconds: number) {
+          now += milliseconds;
+          for (const timer of [...timers].filter((t) => t.at <= now)) {
+            timers.delete(timer);
+            timer.run();
+          }
+        },
+      };
+    }
+    const signIn = {
+      ...errorCatalog(),
+      status: "authentication-required" as const,
+      detail: "Sign in to use this engine",
+    };
+    it("owes a recapture when the invalidation fails before its discard", async () => {
+      const time = manual();
+      const stored = convergence({ stored: signIn });
+      const owner = createHarnessCatalogConvergence({
+        catalogs: stored.catalogs,
+        runners: { inspectHarnesses: stored.inspectHarnesses },
+        captureTimeoutMs: 1_000,
+        connectedEnvironmentIds: async () => [harnessEnvironmentId],
+        onCommitted: vi.fn(),
+        onError: vi.fn(),
+        clock: time.clock,
+      });
+      await recaptureInvalidatedHarnessCatalog({
+        catalogs: stored.catalogs,
+        environmentIds: [harnessEnvironmentId],
+        harnessInstanceId,
+        runners: { inspectHarnesses: stored.inspectHarnesses },
+        signal: AbortSignal.timeout(1_000),
+        store: {
+          getHarnessInstance: async () => {
+            throw new Error("database connection lost");
+          },
+          discardHarnessCatalog: vi.fn(),
+        },
+        onCaptured: vi.fn(),
+        onFailed: () => owner.owe(harnessInstanceId),
+      });
+      await owner.settled();
+      // The stored answer still says sign-in required, but the invalidation is honoured.
+      expect(stored.inspectHarnesses).toHaveBeenCalledTimes(1);
+      await owner.close();
+    });
+    it("arms a deadline after a recapture that comes back unsettled", async () => {
+      const time = manual();
+      const stored = convergence({
+        capturedAt: new Date(time.clock.now()),
+        stored: { ...errorCatalog(), status: "preparing", detail: "Preparing Codex…" },
+      });
+      const owner = createHarnessCatalogConvergence({
+        catalogs: stored.catalogs,
+        runners: { inspectHarnesses: stored.inspectHarnesses },
+        captureTimeoutMs: 1_000,
+        connectedEnvironmentIds: async () => [harnessEnvironmentId],
+        onCommitted: vi.fn(),
+        onError: vi.fn(),
+        clock: time.clock,
+      });
+      // What the invalidation's capture callback does with the preparing answer it recorded.
+      owner.wake();
+      await owner.settled();
+      expect(time.armed()).toEqual([harnessCatalogRetryMs]);
+      time.advance(harnessCatalogRetryMs);
+      await owner.settled();
+      expect(stored.inspectHarnesses).toHaveBeenCalledTimes(1);
+      await owner.close();
+    });
   });
   it("re-inspects a stored error once its retry time has passed, and not right after it was recorded", async () => {
     const now = Date.now();

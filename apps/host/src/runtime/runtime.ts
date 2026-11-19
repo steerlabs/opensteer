@@ -102,6 +102,7 @@ import { TaskQuestionNotices } from "../threads/task-question-notices.js";
 import {
   harnessDriverLabel,
   HarnessIdSchema,
+  HarnessInstanceIdSchema,
   OpensteerError,
   sameStringSet,
   type AssignmentId,
@@ -178,9 +179,9 @@ import { HostCommandDispatcher } from "../agents/dispatcher.js";
 import {
   harnessInspectionDefinition,
   recaptureInvalidatedHarnessCatalog,
+  createHarnessCatalogConvergence,
   inspectHarnessCatalogsAfterUsageLimit,
   reconcileAndRecordHarnessCatalogs,
-  reconcileHarnessCatalogs,
 } from "../agents/harness-catalogs.js";
 import { RunCapabilityTokenService } from "../agents/run-capability.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
@@ -529,7 +530,7 @@ export async function createHostRuntime(
   let assignmentReturns: DeadlineDrain | undefined;
   let reconcileMemoryPasses: (() => void) | undefined;
   let wakeTriggerSchedules: (() => void) | undefined;
-  let catalogConvergence: DeadlineDrain | undefined;
+  let catalogConvergence: ReturnType<typeof createHarnessCatalogConvergence> | undefined;
   let taskQuestions: TaskQuestionNotices | undefined;
   let pluginService: PluginService | undefined;
   let pluginOAuth: PluginOAuthService | undefined;
@@ -2214,11 +2215,16 @@ export async function createHostRuntime(
             runners,
             signal: AbortSignal.timeout(harnessCatalogCaptureTimeoutMs),
             store,
-            onCaptured: (environmentId, captured) =>
-              observeRunnerCatalogs(identity, environmentId, captured),
+            onCaptured: (environmentId, captured) => {
+              observeRunnerCatalogs(identity, environmentId, captured);
+              // An unsettled answer (preparing, unavailable, error) is looked at again at its deadline.
+              catalogConvergence?.wake();
+            },
             onFailed: (error) => {
               reportHarnessCatalogInvalidationError(invalidation.harnessInstanceId, error);
-              catalogConvergence?.wake();
+              catalogConvergence?.owe(
+                HarnessInstanceIdSchema.parse(invalidation.harnessInstanceId),
+              );
             },
           }),
         onRegistered: runnerRegistrationHook(
@@ -2343,31 +2349,20 @@ export async function createHostRuntime(
     }
     // A capture that failed on connect, an answer still preparing and a ready
     // catalog older than thirty minutes are looked at again at a deadline.
-    catalogConvergence = new DeadlineDrain({
+    catalogConvergence = createHarnessCatalogConvergence({
       ...(options.executionClock ? { clock: options.executionClock } : {}),
-      onError: (error) => reportHarnessCatalogConvergenceError(error),
-      drain: async () => {
-        const connected = (await store.listEnvironments())
+      catalogs: harnessCatalogs,
+      runners,
+      captureTimeoutMs: harnessCatalogCaptureTimeoutMs,
+      connectedEnvironmentIds: async () =>
+        (await store.listEnvironments())
           .map((environment) => environment.id)
-          .filter((environmentId) => runners.isAvailable(environmentId));
-        const identities = new Map(
-          connected.flatMap((environmentId) => {
-            const identity = runners.identityForEnvironment(environmentId);
-            return identity ? [[environmentId, identity] as const] : [];
-          }),
-        );
-        const convergence = await reconcileHarnessCatalogs({
-          catalogs: harnessCatalogs,
-          connectedEnvironmentIds: connected,
-          runners,
-          signal: AbortSignal.timeout(harnessCatalogCaptureTimeoutMs),
-          onCommitted: (environmentId, catalogs) => {
-            const identity = identities.get(environmentId);
-            if (identity) observeRunnerCatalogs(identity, environmentId, catalogs);
-          },
-        });
-        return convergence.staleAt;
+          .filter((environmentId) => runners.isAvailable(environmentId)),
+      onCommitted: (environmentId, catalogs) => {
+        const identity = runners.identityForEnvironment(environmentId);
+        if (identity) observeRunnerCatalogs(identity, environmentId, catalogs);
       },
+      onError: (error) => reportHarnessCatalogConvergenceError(error),
     });
     runnerRegistry = runners;
     const egress = new EgressService({

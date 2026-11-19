@@ -1,3 +1,5 @@
+import type { Clock } from "@opensteer/shared/clock";
+import { DeadlineDrain } from "../runtime/deadline-drain.js";
 import {
   OpensteerError,
   harnessUsageLimitFailureCode,
@@ -122,9 +124,60 @@ export async function inspectAndRecordHarnessCatalogs(options: {
 }
 
 /**
+ * The owner that keeps every connected profile's catalog converged. It runs
+ * after each Runner registration and invalidation, and at the earliest
+ * deadline a pass reports (a ready catalog at 30 minutes, an unsettled one at
+ * 30 seconds); a failed pass backs off. A profile a Runner invalidated is owed
+ * a fresh capture, whatever its stored answer says, until a pass records one.
+ */
+export function createHarnessCatalogConvergence(options: {
+  readonly connectedEnvironmentIds: () => Promise<readonly EnvironmentId[]>;
+  readonly catalogs: HarnessCatalogConvergenceStore;
+  readonly runners: HarnessCatalogInspector;
+  readonly captureTimeoutMs: number;
+  readonly onCommitted: (
+    environmentId: EnvironmentId,
+    catalogs: readonly HarnessInstanceCatalog[],
+  ) => void;
+  readonly onError: (error: unknown) => void;
+  readonly clock?: Clock;
+}) {
+  const owed = new Set<HarnessInstanceId>();
+  const drain = new DeadlineDrain({
+    ...(options.clock ? { clock: options.clock } : {}),
+    onError: options.onError,
+    drain: async () => {
+      const reinspect = new Set(owed);
+      const convergence = await reconcileHarnessCatalogs({
+        catalogs: options.catalogs,
+        connectedEnvironmentIds: await options.connectedEnvironmentIds(),
+        reinspect,
+        runners: options.runners,
+        signal: AbortSignal.timeout(options.captureTimeoutMs),
+        ...(options.clock ? { now: options.clock.now() } : {}),
+        onCommitted: options.onCommitted,
+      });
+      for (const id of reinspect) owed.delete(id);
+      return convergence.staleAt;
+    },
+  });
+  return {
+    wake: () => drain.wake(),
+    /** A recapture after invalidation failed: the next pass asks for it regardless. */
+    owe(harnessInstanceId: HarnessInstanceId) {
+      owed.add(harnessInstanceId);
+      drain.wake();
+    },
+    settled: () => drain.settled(),
+    close: () => drain.close(),
+  };
+}
+
+/**
  * A Runner said a profile's catalog changed: drop the stored answer and ask
- * again. If that fails, convergence is woken, because nothing else would ask
- * for a profile whose stored catalog is now gone.
+ * again. Every exit leaves convergence armed: a failure (before or after the
+ * discard) owes the profile a fresh capture, and a captured answer wakes it so
+ * an unsettled one is looked at again at its deadline.
  */
 export async function recaptureInvalidatedHarnessCatalog(options: {
   readonly harnessInstanceId: HarnessInstanceId;
@@ -384,6 +437,8 @@ export async function reconcileHarnessCatalogs(options: {
   readonly runners: HarnessCatalogInspector;
   readonly signal: AbortSignal;
   readonly now?: number;
+  /** Profiles a Runner invalidated whose recapture is still owed, whatever is stored. */
+  readonly reinspect?: ReadonlySet<HarnessInstanceId>;
   readonly onCommitted?: (
     environmentId: EnvironmentId,
     catalogs: readonly HarnessInstanceCatalog[],
@@ -413,6 +468,7 @@ export async function reconcileHarnessCatalogs(options: {
     const record = captured.get(harness.id);
     const age = record ? now - record.capturedAt.getTime() : 0;
     if (
+      !options.reinspect?.has(harness.id) &&
       record?.environmentId === harness.environmentId &&
       (record.catalog.status === "authentication-required" ||
         (age >= 0 &&
