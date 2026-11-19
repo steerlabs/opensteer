@@ -970,6 +970,7 @@ async function render(
             load: async () => undefined,
             refresh: options.refresh ?? (async () => undefined),
             subscribe: () => () => undefined,
+            getThreadTranscript: () => undefined,
             getSnapshot: () => snapshot,
             updateMachineAccess: async (input: {
               deviceId: string;
