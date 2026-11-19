@@ -698,7 +698,7 @@ describeStore("PostgreSQL store", (it) => {
     ).resolves.toEqual({
       resultStatus: "delivered",
     });
-    await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toBeUndefined();
+    await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toBe("settled");
   });
   it.for(["failed", "interrupted"] as const)(
     "settles the Assignment from how its child Run ended: %s",
@@ -768,7 +768,7 @@ describeStore("PostgreSQL store", (it) => {
           status: "open",
         });
       }
-      await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toBeUndefined();
+      await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toBe("settled");
     },
   );
   it.for(["archived-thread", "disabled-owner"] as const)(
@@ -862,7 +862,7 @@ describeStore("PostgreSQL store", (it) => {
           .where("status", "=", "queued")
           .executeTakeFirst(),
       ).toBeUndefined();
-      await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toBeUndefined();
+      await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toBe("settled");
     },
   );
   it("charges delegation fan-out once per causal root and not per lifetime Thread", async ({
