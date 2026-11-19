@@ -42,6 +42,7 @@ import {
 } from "../host/device-commands.js";
 import { deviceDriverKey } from "../host/device-projection.js";
 import { mockDeviceMachine } from "./mock-device-machine.js";
+import { mockPendingRequestsRevision } from "./mock-scoped-personal.js";
 import {
   mockIphoneScreenDevice,
   mockIphoneScreenSession,
@@ -1610,7 +1611,6 @@ const mockMachines: readonly MachineSummary[] = [
     name: "Mac mini",
     ownership: "deployment",
 
-    pinnedThreads: 3,
     revocable: false,
     status: "online",
     runtimeVersion: null,
@@ -1692,7 +1692,6 @@ const mockMachines: readonly MachineSummary[] = [
     name: "Alex's MacBook Pro",
     ownership: "mine",
 
-    pinnedThreads: 0,
     revocable: true,
     status: "online",
     runtimeVersion: null,
@@ -1726,7 +1725,6 @@ const mockMachines: readonly MachineSummary[] = [
     name: "Studio iMac",
     ownership: "mine",
 
-    pinnedThreads: 0,
     revocable: true,
     status: "offline",
     runtimeVersion: null,
@@ -1780,7 +1778,6 @@ const mockMachines: readonly MachineSummary[] = [
     name: "Pixel 7",
     ownership: "mine",
 
-    pinnedThreads: 0,
     revocable: true,
     status: "online",
     runtimeVersion: "0.1.117",
@@ -1808,7 +1805,6 @@ const mockMachines: readonly MachineSummary[] = [
     name: "Slack runtime",
     ownership: "deployment",
 
-    pinnedThreads: 0,
     revocable: true,
     status: "offline",
     runtimeVersion: null,
@@ -2638,7 +2634,27 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       ),
     // The preview keeps no durable session history to page back through.
     "machine.access.history": async () => rpcSuccess({ nextCursor: null, sessions: [] }),
-    "machines.list": async () => rpcSuccess({ machines: await client.loadMachines() }),
+    // A computer's placed tasks are counted in this read, from the tasks the preview holds.
+    "machines.list": async () => {
+      const snapshot = client.getSnapshot();
+      const tasks = snapshot.tasks?.entries ?? [];
+      return rpcSuccess({
+        machines: (await client.loadMachines()).map((machine) => {
+          const environments = new Set<string>(
+            (snapshot.environments ?? [])
+              .filter(({ runnerId }) => runnerId !== null && runnerId === machine.selfRunnerId)
+              .map(({ id }) => id),
+          );
+          return {
+            ...machine,
+            pinnedThreads: tasks.filter(
+              ({ thread }) =>
+                thread.status !== "archived" && environments.has(thread.environmentId),
+            ).length,
+          };
+        }),
+      });
+    },
     // The preview holds every task, so a page is a slice of what it holds.
     "tasks.list": async (input) => {
       const snapshot = client.getSnapshot();
@@ -2681,16 +2697,16 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       );
     },
     "requests.list": async (input) => {
-      const waitingRequests = client
-        .getSnapshot()
-        .waitingRequests.filter(
-          ({ request }) =>
-            input.deviceAccessRequests === "include" || request.kind !== "device.access",
-        );
+      const all = client.getSnapshot().waitingRequests;
+      const waitingRequests = all.filter(
+        ({ request }) =>
+          input.deviceAccessRequests === "include" || request.kind !== "device.access",
+      );
       return rpcSuccess(
         hostApi["requests.list"].success.parse({
           requests: waitingRequests,
           window: mockWindow(waitingRequests.length),
+          pendingRequestsRevision: mockPendingRequestsRevision(all),
         }),
       );
     },
@@ -10567,7 +10583,6 @@ class MockHostState {
           name,
           ownership: "mine",
 
-          pinnedThreads: 0,
           revocable: false,
           status: "pending",
           runtimeVersion: null,
@@ -10792,7 +10807,6 @@ class MockHostState {
           name,
           ownership: "mine",
 
-          pinnedThreads: 0,
           revocable: false,
           status: "pending",
           runtimeVersion: null,

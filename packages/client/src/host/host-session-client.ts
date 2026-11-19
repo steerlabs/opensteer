@@ -1951,14 +1951,16 @@ export class HttpHostClient {
   }
 
   /** The Host's pending Requests as the shell states them: their count and each row's revision. */
+  /**
+   * The pending count and the Host's `pendingRequestsRevision`, which moves exactly when the set
+   * of pending Requests or what their list shows changes; `requests.list` returns the same
+   * revision for the cut it read.
+   */
   #requestStamp(): string | undefined {
     const state = this.#stream.shell.getSnapshot();
     if (!state.synchronized || !state.snapshot) return undefined;
-    const rows = [...state.attention.values()]
-      .filter(({ kind }) => kind === "request")
-      .map(({ id, revision }) => `${id}@${revision}`)
-      .join(",");
-    return `${state.snapshot.counts.pendingRequestCount}|${rows}`;
+    const { pendingRequestCount, pendingRequestsRevision } = state.snapshot.counts;
+    return `${pendingRequestCount}|${pendingRequestsRevision}`;
   }
 
   /**
@@ -2028,11 +2030,13 @@ export class HttpHostClient {
         async (read) => {
           const run = ++this.#waitingRequestRuns;
           const read_: HostSnapshot["waitingRequests"][number][] = [];
+          const revisions = new Set<string>();
           let before: string | null = null;
           for (let pages = 0; pages < 20; pages++) {
             const page: {
               requests: HostSnapshot["waitingRequests"];
               window: import("@opensteer/protocol").DurableWindow;
+              pendingRequestsRevision: string;
             } = unwrapRpcResult(
               await this.rpc["requests.list"](
                 { ...(before ? { before } : {}), limit: 100, deviceAccessRequests: "include" },
@@ -2041,10 +2045,16 @@ export class HttpHostClient {
             );
             if (!read.current()) return;
             read_.push(...page.requests);
+            revisions.add(page.pendingRequestsRevision);
             before = page.window.hasMore ? page.window.nextBefore : null;
             if (!before) break;
           }
           if (!read.current()) return;
+          // Pages read at different revisions are not one list: read it whole again.
+          if (revisions.size !== 1) {
+            queueMicrotask(() => this.#syncWaitingRequests(true));
+            return;
+          }
           // An answer confirmed before this run began is the Host's truth now: a Request it still
           // lists was asked again. One confirmed later, or not yet, stays hidden from this answer.
           for (const [id, { confirmedAfterRun }] of this.#answeredRequests)

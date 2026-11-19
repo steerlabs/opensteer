@@ -477,7 +477,6 @@ export function seedMockPlaces(
     name: "Alex's iPhone",
     ownership: "mine",
 
-    pinnedThreads: 0,
     revocable: true,
     status: "online",
     runtimeVersion: null,

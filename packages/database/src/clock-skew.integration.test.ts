@@ -1,6 +1,6 @@
 import { createId, TeamMessageIdSchema, type RequestId } from "@opensteer/core";
 import { sql } from "kysely";
-import { expect, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AutomationFailureStore } from "./automation-failure-store.js";
 import { refreshTeamAskAttention } from "./personal-attention-store.js";
 import { buildPersonalShellSnapshot } from "./personal-snapshot-store.js";
@@ -8,6 +8,10 @@ import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { expiredPersonalSignInRequests, nextPersonalRequestDeadline } from "./request-deadlines.js";
 import { TriggerStore } from "./trigger-store.js";
+import { TeamAccessStore } from "./team-access-store.js";
+import { TeamChatStore } from "./team-chat-store.js";
+import { createTeamKnowledgeFixture } from "./team-knowledge.test-support.js";
+import { TeamRequestsStore } from "./team-requests-store.js";
 import {
   describeStore,
   testMessagingRunnerId,
@@ -479,6 +483,65 @@ describeStore("Host and PostgreSQL clocks 30 s apart", (it) => {
           requestId,
         ]);
       });
+    });
+  }
+});
+
+describe("Team server with its clock 30 s from its PostgreSQL", () => {
+  for (const offset of [30_000, -30_000]) {
+    const side = offset > 0 ? "Host ahead" : "Host behind";
+    it(`a working request's expiry is decided on PostgreSQL's clock (${side})`, async () => {
+      const fixture = await createTeamKnowledgeFixture();
+      try {
+        const access = new TeamAccessStore(fixture.database);
+        await access.initialize();
+        const chat = new TeamChatStore(access, { teamId: fixture.deploymentId, teamName: "Acme" });
+        const requests = new TeamRequestsStore(access, chat);
+        const asker = { kind: "human" as const, userId: fixture.userId };
+        const targetId = await fixture.member("Alex");
+        const { channelId } = await fixture.channel({
+          name: "asks",
+          kind: "private",
+          access: [
+            { userId: asker.userId, level: "post", manage: true },
+            { userId: targetId, level: "post" },
+          ],
+        });
+        const link = await fixture.link(targetId);
+        await chat.send(asker, {
+          channelId,
+          threadRootId: null,
+          clientMessageId: crypto.randomUUID(),
+          bodyMarkdown: "@alex-agent help",
+          mentions: [],
+          attachmentIds: [],
+        });
+        const ask = (await requests.pending(link))[0]!;
+        await requests.accept(link, ask.request.id, "approve");
+        // Accepted seven days before the expiry, as the store stamps both on PostgreSQL's clock.
+        const expireAt = (deltaSeconds: number) =>
+          sql`update team_agent_requests
+            set accepted_at = statement_timestamp() + ${deltaSeconds} * interval '1 second'
+              - interval '7 days',
+              expires_at = statement_timestamp() + ${deltaSeconds} * interval '1 second'
+            where id = ${ask.request.id}`.execute(fixture.database);
+        await withHostClockOffset(offset, async () => {
+          // Five seconds left on PostgreSQL's clock: still working, whatever Node says.
+          await expireAt(5);
+          expect((await requests.authorize(link, ask.request.id, "post")).state).toBe("working");
+          await requests.status(link, ask.request.id, { state: "needs_you", steps: [] });
+          // Five seconds past on PostgreSQL's clock: refused, also by a check with no sweep first.
+          await expireAt(-5);
+          await expect(
+            requests.status(link, ask.request.id, { state: "working", steps: [] }),
+          ).rejects.toMatchObject({ code: "forbidden" });
+          await expect(requests.authorize(link, ask.request.id, "post")).rejects.toMatchObject({
+            code: "forbidden",
+          });
+        });
+      } finally {
+        await fixture.close();
+      }
     });
   }
 });

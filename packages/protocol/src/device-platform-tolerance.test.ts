@@ -35,6 +35,8 @@ import { RunnerDescriptorSchema } from "./runner.js";
  * - platform tolerance hides malformed fields, operations or sibling entries;
  * - catalog summaries fail to use the same platform reader as presentations.
  */
+/** `machines.list` adds the placed-task count it reads. */
+const listed = <Machine extends object>(machine: Machine) => ({ ...machine, pinnedThreads: 0 });
 const knownMachine = MachineSummarySchema.parse({
   access: null,
   allowedModules: ["integrations"],
@@ -47,7 +49,6 @@ const knownMachine = MachineSummarySchema.parse({
   modules: {},
   name: "Existing Mac",
   ownership: "mine",
-  pinnedThreads: 0,
   revocable: true,
   status: "offline",
   unlinkedLocalFolders: 0,
@@ -119,7 +120,7 @@ describe("device platform presentation compatibility", () => {
     });
     expect(RunnerDescriptorSchema.parse(descriptor)).toMatchObject({ device: knownMachine.device });
     expect(
-      hostApi["machines.list"].success.parse({ machines: [{ ...knownMachine, device }] })
+      hostApi["machines.list"].success.parse({ machines: [listed({ ...knownMachine, device })] })
         .machines[0]?.device,
     ).toEqual(device);
     expect(
@@ -140,9 +141,9 @@ describe("device platform presentation compatibility", () => {
 
   it("keeps a later computers refresh readable beside a future platform", () => {
     const result = hostApi["machines.list"].success.parse({
-      machines: [knownMachine, futureMachine],
+      machines: [listed(knownMachine), listed(futureMachine)],
     });
-    expect(result.machines[0]).toEqual(knownMachine);
+    expect(result.machines[0]).toEqual(listed(knownMachine));
     expect(result.machines[1]).toMatchObject({ id: futureMachine.id, revocable: true });
   });
 
@@ -204,9 +205,11 @@ describe("device platform presentation compatibility", () => {
           machine,
         ]);
         expect(
-          hostApi["machines.list"].success.parse({ machines: [knownMachine, machine] }),
+          hostApi["machines.list"].success.parse({
+            machines: [listed(knownMachine), listed(machine)],
+          }),
         ).toEqual({
-          machines: [knownMachine, machine],
+          machines: [listed(knownMachine), listed(machine)],
         });
       }
     },

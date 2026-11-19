@@ -143,7 +143,6 @@ export function mockIphoneScreenDevice(
     runtimeVersion: null,
     status: kind === "not-connected" || kind === "driver-offline" ? "offline" : "online",
     ownership: "mine",
-    pinnedThreads: 0,
     revocable: true,
     lastSeenAt: null,
   });

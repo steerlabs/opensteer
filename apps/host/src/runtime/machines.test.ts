@@ -1,6 +1,6 @@
 import { createId, DeviceIdSchema } from "@opensteer/core";
 import {
-  MachineSummarySchema,
+  MachineListSummarySchema,
   DeviceMachineSummarySchema,
   machineAccessPolicyDefault,
   mintComputerUseSessionId,
@@ -747,7 +747,7 @@ describe("Machines projection", () => {
       });
       expect(projected.ownership).toBe("deployment");
       expect(project(null, session).computerUse).toBeNull();
-      expect(MachineSummarySchema.parse(projected)).toEqual(projected);
+      expect(MachineListSummarySchema.parse(projected)).toEqual(projected);
     });
   });
 
@@ -769,7 +769,7 @@ describe("Machines projection", () => {
       threadsByEnvironment: new Map(),
       runners: [runner()],
     })) {
-      expect(MachineSummarySchema.parse(machine)).toEqual(machine);
+      expect(MachineListSummarySchema.parse(machine)).toEqual(machine);
     }
   });
 });
@@ -815,7 +815,6 @@ it("projects a detached screen Device without borrowing its Mac's modules or rea
     selfRunnerId: null,
     allowedModules: [],
     modules: {},
-    pinnedThreads: 0,
     capabilities: { browser: { supported: false }, files: { supported: false } },
     phoneDisplay: {
       definitionId: "iphone-screen",

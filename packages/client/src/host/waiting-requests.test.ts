@@ -1,3 +1,4 @@
+import { createId } from "@opensteer/core";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
@@ -186,4 +187,42 @@ it("lets unrelated shell activity leave a list read in flight alone, and install
   await f.roundTrip();
   // One read answered it: the frames neither displaced it nor queued reruns behind it.
   expect(f.control.listCalls).toBe(1);
+});
+
+it("lets a list read finish while unrelated shell activity keeps arriving", async () => {
+  const f = await harness();
+  f.control.holdLists = true;
+  await f.client.load();
+  await vi.waitFor(() => expect(f.lists).toHaveLength(1));
+  // Other tasks move: the shell advances, its pending-Requests revision does not.
+  for (let through = 1; through <= 5; through++) {
+    f.personal.publish(String(1_000 + through));
+    await f.roundTrip();
+  }
+  expect(f.lists).toHaveLength(1);
+  f.lists.splice(0)[0]!.release();
+  await vi.waitFor(() =>
+    expect(f.ids().sort()).toEqual(f.all.map(({ request }) => request.id).sort()),
+  );
+  f.personal.publish("2000");
+  await f.roundTrip();
+  expect(f.lists).toHaveLength(0);
+});
+
+it("reads the list again when a listed Request changes but the count does not", async () => {
+  const f = await harness();
+  await f.client.load();
+  await vi.waitFor(() => expect(f.ids()).toHaveLength(f.all.length));
+  // The same Requests, one of them now asked from a renamed place: the count and the bounded
+  // attention preview are unchanged; only the Host's pending-Requests revision moves.
+  const [first, ...rest] = f.all;
+  const renamed = { ...first!, subagent: { id: createId("executionNode"), title: "Renamed", within: null } };
+  f.host.pending = [renamed, ...rest] as typeof f.all;
+  f.personal.repairShell();
+  await vi.waitFor(() =>
+    expect(
+      f.client.getSnapshot().waitingRequests.find(({ request }) => request.id === first!.request.id)
+        ?.subagent?.title,
+    ).toBe("Renamed"),
+  );
 });

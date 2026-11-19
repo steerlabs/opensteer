@@ -259,6 +259,13 @@ export const PersonalDetailSnapshotSchema = z.object({
 });
 const counts = z.object({
   pendingRequestCount: z.int().nonnegative(),
+  /**
+   * The commit that last changed the set of pending Requests or anything `requests.list` shows
+   * for one (a Request opening, updating, resolving, cancelling or expiring, device access
+   * included; its asker's name or place; the title or listing of a task it sits in). Equal to the
+   * `pendingRequestsRevision` of a `requests.list` page read at or after that commit.
+   */
+  pendingRequestsRevision: PersonalRevisionSchema,
   needsYouCount: z.int().nonnegative(),
   unreadTaskCount: z.int().nonnegative(),
 });

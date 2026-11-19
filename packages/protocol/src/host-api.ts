@@ -24,7 +24,7 @@ import {
 } from "./plugin-oauth.js";
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
 import { DeviceIdSchema, DeviceDriverGenerationSchema } from "@opensteer/core";
-import { MachineSummarySchema } from "./machines.js";
+import { MachineListSummarySchema } from "./machines.js";
 import { OwnerWindowInfoSchema } from "./computer-use.js";
 import {
   TabCommandSchema,
@@ -2041,6 +2041,8 @@ const hostApiGroup4 = defineRpc({
     z.object({
       requests: readableRequestList(WaitingRequestViewSchema, 100),
       window: DurableWindowSchema,
+      /** The shell's `counts.pendingRequestsRevision` in the cut this page was read from. */
+      pendingRequestsRevision: PersonalRevisionSchema,
     }),
   ),
   "tasks.list": declaration(
@@ -2323,7 +2325,7 @@ const workspaceHostApi = defineRpc({
   "machines.list": declaration(
     "GET",
     emptyInputSchema,
-    z.object({ machines: z.array(MachineSummarySchema).max(400) }),
+    z.object({ machines: z.array(MachineListSummarySchema).max(400) }),
   ),
   "computer.app.windows": declaration(
     "POST",

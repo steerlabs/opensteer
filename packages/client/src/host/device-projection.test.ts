@@ -22,7 +22,6 @@ const legacy = MachineSummarySchema.parse({
   lastSeenAt: null,
   modules: {},
   ownership: "mine",
-  pinnedThreads: 0,
   revocable: true,
   status: "offline",
   unlinkedLocalFolders: 0,
@@ -48,9 +47,10 @@ describe("scoped device facts", () => {
   it("reads the typed target from the shared setup request", () => {
     expect(computerTargetId({ deviceId: runner })).toBe(runner);
     expect(computerTargetId({ runnerId: runner })).toBe(runner);
-    expect(hostApi["machines.list"].success.parse({ machines: [legacy] }).machines[0]?.id).toBe(
-      runner,
-    );
+    expect(
+      hostApi["machines.list"].success.parse({ machines: [{ ...legacy, pinnedThreads: 0 }] })
+        .machines[0]?.id,
+    ).toBe(runner);
   });
 });
 

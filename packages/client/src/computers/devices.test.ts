@@ -85,7 +85,6 @@ const machine = (id: string, kind: "home" | "computer") =>
     enrollmentId: null,
     expiresAt: null,
     lastSeenAt: null,
-    pinnedThreads: 0,
     revocable: kind !== "home",
     status: "online",
   });

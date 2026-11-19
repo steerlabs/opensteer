@@ -52,7 +52,6 @@ export function previewPersonalHost(
     modules: { agents: { checkedAt: previewDate, detail: null, readiness: "ready" } },
     name: "Preview MacBook",
     ownership: "deployment",
-    pinnedThreads: 1,
     revocable: false,
     status: "online",
   };
@@ -123,7 +122,12 @@ export function previewPersonalHost(
     visits: [],
     attention: [],
     attentionHasMore: false,
-    counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
+    counts: {
+      pendingRequestCount: 0,
+      pendingRequestsRevision: "0",
+      needsYouCount: 0,
+      unreadTaskCount: 0,
+    },
   });
   return {
     shell,

@@ -729,7 +729,11 @@ export class RequestStore {
     readonly deviceAccessRequests?: "include";
     readonly limit: number;
     readonly userId: UserId;
-  }): Promise<{ readonly requests: readonly WaitingRequest[]; readonly window: DurableWindow }> {
+  }): Promise<{
+    readonly requests: readonly WaitingRequest[];
+    readonly window: DurableWindow;
+    readonly pendingRequestsRevision: string;
+  }> {
     const limit = clampLimit(input.limit);
     const scope = `waiting:${input.userId}`;
     const anchor = input.before ? decodeRequestCursor(input.before, scope) : null;
@@ -737,6 +741,11 @@ export class RequestStore {
       this.#database,
       async (transaction) => {
         await requirePersonalOwner(transaction, input.userId);
+        // Read first, in this snapshot: the page is at least as new as the revision it reports.
+        const { pendingRequestsRevision } = await transaction
+          .selectFrom("clientSyncState")
+          .select("pendingRequestsRevision")
+          .executeTakeFirstOrThrow();
         const addressed = transaction
           .selectFrom("requests")
           .where("status", "=", "pending")
@@ -802,6 +811,7 @@ export class RequestStore {
               : null,
           })),
           window,
+          pendingRequestsRevision,
         };
       },
       "repeatable read",

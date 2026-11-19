@@ -84,6 +84,8 @@ export interface ClientSyncStateTable {
   pendingDeviceAccessRequestCount: Generated<number>;
   needsYouCount: Generated<number>;
   unreadTaskCount: Generated<number>;
+  /** The commit that last changed the pending Requests or what their list shows. */
+  pendingRequestsRevision: Generated<string>;
 }
 
 export interface ClientChangesTable {
@@ -250,6 +252,8 @@ const retainedStateDdl = `
       check (pending_device_access_request_count between 0 and pending_request_count),
     add column needs_you_count integer not null default 0 check (needs_you_count >= pending_request_count),
     add column unread_task_count integer not null default 0 check (unread_task_count >= 0),
+    add column pending_requests_revision bigint not null default 0
+      check (pending_requests_revision between 0 and sequence),
     add column upgrade_cursor jsonb,
     add check (jsonb_typeof(resource_revisions) = 'object'
       and resource_revisions ?& ${revisionKeys}

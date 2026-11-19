@@ -109,6 +109,7 @@ import {
   messagesFromRows,
 } from "./thread-row-mappers.js";
 import { boundedSerializedPrefix } from "./message-window.js";
+import { republishPendingRequestsShowing } from "./personal-attention-store.js";
 import {
   assignmentSummaryInTransaction,
   refreshAssignmentWorkerSummaries,
@@ -1777,6 +1778,7 @@ export async function renameThread(
       if (thread.title !== title) {
         await publishThreadSummary(transaction, row.id);
         await refreshAssignmentWorkerSummaries(transaction, row.id);
+        await republishPendingRequestsShowing(transaction, row.id);
       }
       const actorPrincipalId = await principalIdForUser(transaction, input.requestedBy);
       await transaction
@@ -2010,6 +2012,7 @@ export async function applyGeneratedThreadName(
         .executeTakeFirstOrThrow();
       await publishThreadSummary(transaction, row.id);
       await refreshAssignmentWorkerSummaries(transaction, row.id);
+      if (renamed) await republishPendingRequestsShowing(transaction, row.id);
       return row.id;
     },
     (error) => error instanceof TransactionScopeChanged,

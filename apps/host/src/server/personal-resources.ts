@@ -22,7 +22,11 @@ import {
 } from "@opensteer/database";
 import type { PersonalMutationTransaction } from "@opensteer/database/personal-mutation";
 import { authorizedSyncState, withPersonalSyncRead } from "@opensteer/database/personal-sync-store";
-import { maxHarnessModelsPerCatalog, rpcSuccess, type MachineSummary } from "@opensteer/protocol";
+import {
+  maxHarnessModelsPerCatalog,
+  rpcSuccess,
+  type MachineListSummary,
+} from "@opensteer/protocol";
 import {
   pluginChangeResources,
   PersonalResourceDetailSchema,
@@ -73,14 +77,14 @@ export class PersonalResources {
   readonly #machines: (
     session: AuthenticatedSession,
     page: MachinePage,
-  ) => Promise<readonly MachineSummary[]>;
+  ) => Promise<readonly MachineListSummary[]>;
 
   constructor(
     dependencies: HostServerDependencies,
     machines: (
       session: AuthenticatedSession,
       page: MachinePage,
-    ) => Promise<readonly MachineSummary[]>,
+    ) => Promise<readonly MachineListSummary[]>,
   ) {
     this.#dependencies = dependencies;
     this.#machines = machines;
@@ -214,9 +218,12 @@ export class PersonalResources {
         const byId = new Map(values.map((machine) => [machine.id, machine]));
         return page(rows, (selected) => ({
           kind,
+          // The placed-task count is read only by `machines.list`; nothing here could keep it true.
           machines: selected.flatMap(({ id }) => {
             const machine = byId.get(id);
-            return machine ? [machine] : [];
+            if (!machine) return [];
+            const { pinnedThreads: _placed, ...held } = machine;
+            return [held];
           }),
         }));
       }

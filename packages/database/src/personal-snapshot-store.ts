@@ -67,7 +67,7 @@ export async function buildPersonalShellSnapshot(
     ...(selectedThreadId ? { selectedThreadId } : {}),
   });
   const attention = await readPendingAttention(tx);
-  const { pendingRequestCount, needsYouCount, unreadTaskCount } = state;
+  const { pendingRequestCount, pendingRequestsRevision, needsYouCount, unreadTaskCount } = state;
   return PersonalShellSnapshotSchema.parse({
     deploymentId: state.deploymentId,
     viewerId,
@@ -85,7 +85,7 @@ export async function buildPersonalShellSnapshot(
     })),
     attention: attention.items,
     attentionHasMore: attention.hasMore,
-    counts: { pendingRequestCount, needsYouCount, unreadTaskCount },
+    counts: { pendingRequestCount, pendingRequestsRevision, needsYouCount, unreadTaskCount },
   });
 }
 

@@ -248,6 +248,7 @@ class Mutation {
     needsYouCount: 0,
     unreadTaskCount: 0,
   };
+  #pendingRequestsChanged = false;
   #scopeChanges = 0;
   #scopeBytes = 0;
   #privacyPurge = false;
@@ -261,7 +262,11 @@ class Mutation {
 
   get hasVisibleChange() {
     return (
-      this.#reset || this.#privacyPurge || this.#scopeChanges > 0 || this.resourceKinds.size > 0
+      this.#reset ||
+      this.#privacyPurge ||
+      this.#pendingRequestsChanged ||
+      this.#scopeChanges > 0 ||
+      this.resourceKinds.size > 0
     );
   }
 
@@ -381,6 +386,14 @@ class Mutation {
   count(counter: Counter, delta: number) {
     if (!Number.isInteger(delta)) throw new Error("Invalid personal counter delta");
     this.#counters[counter] += delta;
+  }
+
+  /**
+   * The set of pending Requests, or something the Waiting Requests list shows for one, changed:
+   * the shell's `pendingRequestsRevision` takes this commit's sequence.
+   */
+  pendingRequestsChanged() {
+    this.#pendingRequestsChanged = true;
   }
 
   purge(scope: ScopeAuthority) {
@@ -521,7 +534,8 @@ class Mutation {
       this.hasVisibleChange ||
       count !== state.retainedChangeCount ||
       floor !== state.prunedThroughSequence ||
-      Object.values(this.#counters).some(Boolean)
+      Object.values(this.#counters).some(Boolean) ||
+      this.#pendingRequestsChanged
     ) {
       const revisions = { ...state.resourceRevisions };
       for (const kind of this.resourceKinds) revisions[kind] = head;
@@ -538,6 +552,7 @@ class Mutation {
             state.pendingDeviceAccessRequestCount + this.#counters.pendingDeviceAccessRequestCount,
           needsYouCount: state.needsYouCount + this.#counters.needsYouCount,
           unreadTaskCount: state.unreadTaskCount + this.#counters.unreadTaskCount,
+          ...(this.#pendingRequestsChanged ? { pendingRequestsRevision: head } : {}),
         })
         .where("deploymentId", "=", deploymentId)
         .execute();
@@ -549,7 +564,9 @@ class Mutation {
       resourceKinds: this.resourceKinds,
       changedScopes: new Set([
         ...this.#scopes.keys(),
-        ...(Object.values(this.#counters).some(Boolean) ? ["shell"] : []),
+        ...(Object.values(this.#counters).some(Boolean) || this.#pendingRequestsChanged
+          ? ["shell"]
+          : []),
         ...this.authorityScopes,
         ...(this.authorityScopes.size ? ["authority"] : []),
         ...(this.#reset || this.#privacyPurge ? ["deployment"] : []),
@@ -581,6 +598,7 @@ export type PersonalMutation = Pick<
   | "change"
   | "resetScope"
   | "count"
+  | "pendingRequestsChanged"
   | "bumpResource"
   | "purge"
   | "fence"

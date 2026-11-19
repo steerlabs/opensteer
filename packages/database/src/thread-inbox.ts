@@ -2,7 +2,10 @@ import type { PersonalInputQueue } from "@opensteer/protocol";
 import type { AuthSessionId } from "@opensteer/core";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import { writeExecutionItem } from "./execution-changes.js";
-import { unreadTaskContribution } from "./personal-attention-store.js";
+import {
+  republishPendingRequestsShowing,
+  unreadTaskContribution,
+} from "./personal-attention-store.js";
 import {
   commitPersonalMutation,
   wakeExecutionCommands,
@@ -5810,13 +5813,15 @@ export async function delegateThreadInTransaction(
     providerSessionId: selectedSession.id,
     pendingRequests: threadRow.pendingRequestCount,
   });
-  if (listedNow)
+  if (listedNow) {
     await commitPersonalMutation(transaction, async (tx, mutation) => {
       mutation.count(
         "unreadTaskCount",
         (await unreadTaskContribution(tx, threadId)) - unreadBeforeListing,
       );
     });
+    await republishPendingRequestsShowing(transaction, threadId);
+  }
   if (reusedRow === null || listedNow) {
     await publishThreadSummary(transaction, threadId);
   }

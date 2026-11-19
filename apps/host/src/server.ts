@@ -995,7 +995,10 @@ export async function createHostServer(
     const environmentIds = [
       ...new Set(active.flatMap((runner) => runner.moduleDescriptors.agents?.environmentIds ?? [])),
     ];
-    const threadsByEnvironment = await store.countLiveThreadsByEnvironment(environmentIds);
+    // Counted only for `machines.list`, in the read that returns it; the resource leaves it out.
+    const threadsByEnvironment = page
+      ? new Map<EnvironmentId, number>()
+      : await store.countLiveThreadsByEnvironment(environmentIds);
     // Access is read only for the machines this viewer manages and only for the
     // ones that can have any: reach is not disclosed to anyone else, and a
     // machine that does not advertise `shell` — an older Runner, a Windows one,
