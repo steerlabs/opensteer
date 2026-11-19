@@ -148,7 +148,12 @@ export interface DiscoveredIntegrationServer {
   readonly name: string;
   readonly status: "active" | "disabled" | "needs-attention";
   readonly statusDetail: string | null;
-  readonly catalog: IntegrationToolCatalog;
+  /**
+   * Its tools, or null when they are not known yet: a server waiting for its launch's approval.
+   * An existing server keeps the tools its last approved launch listed, still not callable, so a
+   * path an agent holds says why it waits rather than that it is gone.
+   */
+  readonly catalog: IntegrationToolCatalog | null;
   readonly transport: IntegrationServer["transport"];
 }
 
@@ -1008,11 +1013,12 @@ export async function installIntegrationInTransaction(
           .returningAll()
           .executeTakeFirstOrThrow();
     retainedServerIds.push(server.id);
-    await replaceServerToolsInTransaction(transaction, {
-      now,
-      serverId: server.id,
-      catalog: discovered.catalog,
-    });
+    if (discovered.catalog)
+      await replaceServerToolsInTransaction(transaction, {
+        now,
+        serverId: server.id,
+        catalog: discovered.catalog,
+      });
   }
   if (retainedServerIds.length === 0) {
     await transaction
@@ -1380,7 +1386,8 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       .innerJoin("integrationServers", "integrationServers.id", "integrationTools.serverId")
       .select(integrationToolListingColumns)
       .where("integrationServers.installationId", "=", installationId)
-      .where("integrationServers.status", "=", "active")
+      // A server that cannot be called now still lists its tools; readiness says why.
+      .where("integrationServers.status", "!=", "disabled")
       .where("integrationTools.status", "=", "active")
       .$if(ownerUserId !== undefined, (builder) =>
         builder.where(
@@ -1763,7 +1770,7 @@ function validateInstallation(input: {
     ) {
       throw invalidAdapterInstallation("A computer server must match its installation definition");
     }
-    if (server.catalog.tools.length !== 0) {
+    if (server.catalog?.tools.length) {
       throw invalidAdapterInstallation("A computer server cannot carry server-level tools");
     }
   }

@@ -43,7 +43,6 @@ import {
   McpClientPool,
   answeredMcpError,
   connectMcpClient,
-  emptyToolCatalog,
   listTools,
   localToolBlocked,
   type LocalToolResponse,
@@ -747,7 +746,7 @@ export function pendingLocalServer(
 ): PendingLocalServer {
   return {
     authorizationRequired: false,
-    catalog: emptyToolCatalog,
+    catalog: null,
     connectionRequirement: { kind: "none" },
     id: createIntegrationId("server"),
     name: server.name,

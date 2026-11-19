@@ -389,13 +389,25 @@ integration("MCP servers on a computer", () => {
           { headers: host.ownerHeaders },
         );
         expect(review.request.reason).toMatch(expected);
-        const refused = await call("echo", { text: "unapproved" });
-        expect(refused.isError).toBe(true);
+        // The tools its approved launch listed stay listed, and the path an agent holds is
+        // refused with why it waits, not as unknown.
+        const waiting = {
+          code: "setup_required",
+          message: "Waiting for approval on the computer that runs it.",
+          next: "Wait for the person to review it on the computer that runs it.",
+        };
+        const echo = `tools[${JSON.stringify(namespace)}].echo`;
+        expect(await gateway.call("plugin_search", { namespace })).toMatchObject({
+          items: expect.arrayContaining([expect.objectContaining({ path: echo })]),
+          namespaces: [expect.objectContaining({ blocked: waiting })],
+        });
+        const refused = await pluginCall(gateway, echo, { text: "unapproved" });
+        expect(refused.raw).toMatchObject({ isError: true, structuredContent: { error: waiting } });
         expect(
           (await computer.answer(asked.id, { setupRequestId: asked.id, kind: "allow" })).kind,
         ).toBe("allowed");
         await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
-        return { launch: changed.launch, review: review.request.reason, refused: said(refused) };
+        return { launch: changed.launch, review: review.request.reason, refused: refused.failure };
       };
       const previous = Number(said(await call("pid", {})));
       expect(alive(previous)).toBe(true);
