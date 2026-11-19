@@ -2446,12 +2446,23 @@ describeStore("PostgreSQL store", (it) => {
     const completed = report("run.completed", { status: "completed" });
     expect(await store.commitRunnerEvent(completed)).toMatchObject({ replayed: false });
     expect(await receipts()).toEqual([]);
-    // A lost acknowledgement replays both statements after the Run ended.
-    for (const replay of [reply, completed])
-      expect(await store.commitRunnerEvent(replay)).toMatchObject({
-        replayed: true,
-        throughOrdinal: ordinal - 1,
-      });
+    // A lost acknowledgement of the last statement is answered from the retained digest.
+    expect(await store.commitRunnerEvent(completed)).toMatchObject({
+      replayed: true,
+      throughOrdinal: ordinal - 1,
+    });
+    // Nothing proves an earlier statement once the receipts are gone, so even its genuine replay
+    // is refused; the ended Run is unchanged.
+    await expect(store.commitRunnerEvent(reply)).rejects.toMatchObject({ code: "conflict" });
+    await expect(
+      store.commitRunnerEvent({
+        ...reply,
+        event: {
+          ...reply.event,
+          data: { messageId: createId("message"), content: [{ type: "text", text: "Other" }] },
+        } as PendingAgentEvent,
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
     // Without receipts a replay must still come from the Run's binding and, for its last
     // statement, be that statement.
     await expect(

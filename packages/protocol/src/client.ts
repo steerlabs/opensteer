@@ -197,13 +197,19 @@ export const TaskEntryViewSchema = z.object({
   failure: z.string().max(taskLineMaxLength).nullable(),
   lastReply: z.string().max(taskLineMaxLength).nullable(),
   thread: ThreadViewSchema,
+  /** A Run waits to start and none is executing, as on the shell's task row. */
+  runQueued: z.boolean().optional(),
 });
 export type TaskEntryView = z.infer<typeof TaskEntryViewSchema>;
 
 export const TaskPageSchema = z.object({
   asOfSequence: SequenceSchema,
   tasks: z.array(TaskEntryViewSchema).max(threadPageMaxItems),
-  window: DurableWindowSchema,
+  /**
+   * `totalItems` is the list's length, counted on its first page only (bounded at 10,000; draw
+   * more as "10,000+"); a continuation omits it and the reader keeps the first page's count.
+   */
+  window: DurableWindowSchema.extend({ totalItems: z.number().int().nonnegative().optional() }),
 });
 export type TaskPage = z.infer<typeof TaskPageSchema>;
 

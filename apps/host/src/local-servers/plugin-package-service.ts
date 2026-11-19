@@ -7,7 +7,7 @@ import type { IntegrationServerId } from "@opensteer/integration-core/ids";
 import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import { SignedTokenClaimsSchema, type SignedTokenService } from "../identity/host-keys.js";
 import { join } from "node:path";
-import { pluginSnapshotDigest, readPluginSnapshot } from "@opensteer/agent-plugins";
+import { readVerifiedPluginSnapshot } from "@opensteer/agent-plugins";
 import { OpensteerError } from "@opensteer/core";
 import type { RunCapabilityTokenService } from "../agents/run-capability.js";
 
@@ -71,8 +71,7 @@ export class PluginPackageService {
     return this.#files(digest);
   }
   async #files(digest: string) {
-    const files = await readPluginSnapshot(join(this.#directory, digest));
-    if (pluginSnapshotDigest(files) !== digest) throw new Error("Plugin snapshot digest mismatch");
+    const files = await readVerifiedPluginSnapshot(join(this.#directory, digest), digest);
     return files.map(({ path, mode, bytes }) => ({
       path,
       mode,

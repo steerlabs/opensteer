@@ -1026,6 +1026,8 @@ it("reads fifty tasks with their continuation and return details within a fixed 
     expect(page.ok).toBe(true);
     if (!page.ok) throw new Error("Task page did not succeed");
     expect(page.data.tasks).toHaveLength(50);
+    // A continued page carries each row's queued bit, as the shell's rows do.
+    expect(page.data.tasks.every(({ runQueued }) => runQueued === false)).toBe(true);
     expect(page.data.window).toMatchObject({ hasMore: true, nextBefore: expect.any(String) });
     expect(page.data.tasks.find(({ thread }) => thread.id === pageTask.id)?.thread).toMatchObject({
       providerSessionId: selected!.providerSessionId,

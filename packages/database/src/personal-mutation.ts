@@ -5,6 +5,7 @@ import type {
   DeploymentId,
   EnvironmentId,
   ExecutionNodeId,
+  MessageId,
   RequestId,
   RunAttemptId,
   RunId,
@@ -33,6 +34,8 @@ import type {
 } from "./personal-state-schema.js";
 import type { RevokedRunGrant } from "./run-grants.js";
 import { publishThreadSummary, writeThreadSummary } from "./thread-status.js";
+import { writeThreadQueues } from "./personal-queue-view.js";
+
 import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
 
 const retainedRows = 4_096;
@@ -237,6 +240,8 @@ class Mutation {
   readonly #receipts: ((head: string) => Promise<void>)[] = [];
   readonly touchedThreads = new Set<ThreadId>();
   readonly #summaries = new Set<ThreadId>();
+  readonly #queues = new Map<ThreadId, Set<MessageId>>();
+  readonly #inputQueues = new Set<ThreadId>();
   readonly #counters = {
     pendingRequestCount: 0,
     pendingDeviceAccessRequestCount: 0,
@@ -402,6 +407,22 @@ class Mutation {
     this.#receipts.push(write);
   }
   /** A Request or approval-gated input of this task changed; its pending count is recounted. */
+  deferQueue(threadId: ThreadId, left: readonly MessageId[]) {
+    const staged = this.#queues.get(threadId);
+    if (staged) for (const id of left) staged.add(id);
+    else this.#queues.set(threadId, new Set(left));
+  }
+  /** True the first time this commit changes the task's input queue. */
+  firstInputQueueChange(threadId: ThreadId) {
+    if (this.#inputQueues.has(threadId)) return false;
+    this.#inputQueues.add(threadId);
+    return true;
+  }
+  takeQueues() {
+    const queues = [...this.#queues].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    this.#queues.clear();
+    return queues;
+  }
   deferSummary(threadId: ThreadId) {
     this.#summaries.add(threadId);
   }
@@ -566,6 +587,8 @@ export type PersonalMutation = Pick<
   | "receipt"
   | "touchThread"
   | "deferSummary"
+  | "deferQueue"
+  | "firstInputQueueChange"
   | "summaryPending"
   | "summaryWritten"
   | "reaction"
@@ -615,7 +638,14 @@ export async function commitPersonalMutation<Result>(
         await publishThreadSummary(tx, id);
         await refreshAssignmentWorkerSummaries(tx, id);
       }
-    for (const id of mutation.takeSummaries()) await writeThreadSummary(tx, id);
+    // Each task's queue and summary are published once, from the commit's final rows.
+    for (;;) {
+      const queues = mutation.takeQueues();
+      for (const [id, left] of queues) await writeThreadQueues(tx, id, [...left]);
+      const summaries = mutation.takeSummaries();
+      for (const id of summaries) await writeThreadSummary(tx, id);
+      if (!queues.length && !summaries.length) break;
+    }
     const notice = await mutation.write(tx);
     if (mutation.authorityScopes.size) {
       if (!listener?.suspend) throw new Error("Personal authority mutation has no dispatch fence");

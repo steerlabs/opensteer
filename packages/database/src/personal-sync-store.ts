@@ -218,8 +218,13 @@ export async function readPersonalScopeCut<Snapshot>(
     if (previous !== state.sequence)
       commits.push({ fromSequence: previous, throughSequence: state.sequence, changes: [] });
     const derived = await input.resume?.(tx, state, cursor.afterSequence);
-    if (derived) {
-      const final = commits.at(-1)!;
+    const final = commits.at(-1)!;
+    if (
+      derived &&
+      !final.changes.some(
+        (row) => row.entityKind === derived.entityKind && row.entityId === derived.entityId,
+      )
+    ) {
       const ordinal = (final.changes.at(-1)?.ordinal ?? -1) + 1;
       if (ordinal > replayMaxRows - 1) return snapshot();
       commits[commits.length - 1] = {

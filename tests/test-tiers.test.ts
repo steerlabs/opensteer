@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { configDefaults } from "vitest/config";
 import {
   darwinOnlyTests,
+  fileBoundIntegrationTests,
   optInIntegrationBenchmarks,
   realBrowserTests,
   windowsTestInclude,
@@ -110,12 +111,12 @@ describe("test tiers", () => {
     expect(ambiguous).toEqual([]);
   });
 
-  it("reserves the integration suffix for database-gated journeys", () => {
+  it("reserves the integration suffix for database-gated journeys and the listed file-bound proofs", () => {
     const ungated = files.filter((file) => {
       if (!/\.integration\.test\.tsx?$/u.test(file)) return false;
       return !databaseGated(resolve(root, file), new Set());
     });
-    expect(ungated).toEqual([]);
+    expect(ungated).toEqual(fileBoundIntegrationTests);
   });
 
   it("keeps real AppKit fixture launches out of non-GUI files", () => {

@@ -1038,18 +1038,15 @@ integration.sequential("iPhone integrations Host contract", () => {
       ),
     );
     await phone.disconnectStream();
-    expect(await gateway.call("plugin_search", { namespace: phoneNamespace })).toMatchObject({
-      unavailableApps: [
-        {
-          blocked: {
-            code: "unavailable",
-            message:
-              "apple-calendar is unavailable: Apps aren’t connected. Reopen Opensteer on Test iPhone.",
-            next: "Continue without it and tell the person what the message says.",
-          },
-        },
-      ],
+    // Unreachable, its tools stay listed as they are; the call says why.
+    const away = await gateway.call("plugin_search", { namespace: phoneNamespace });
+    expect(away).toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ path: `${phoneCalendar}.list_calendars` }),
+      ]),
+      unavailableApps: [],
     });
+    expect(JSON.stringify(away)).not.toContain("blocked");
     await phone.reconnect();
     // Give the other Mac signed write approval and a live Workspace grant.
     // Losing the phone still cannot route to it.
@@ -1114,8 +1111,9 @@ integration.sequential("iPhone integrations Host contract", () => {
     );
     expect(macCalls).toHaveLength(0);
     await phone.disconnectStream();
+    // Its tools stay listed while Opensteer is closed on it; the call says what to do.
     expect((await pluginCall(gateway, `${phoneCalendar}.list_calendars`, {})).failure).toBe(
-      "apple-calendar is unavailable: Apps aren’t connected. Reopen Opensteer on Test iPhone.",
+      "Test iPhone is an iPhone, and agents can use its apps only while Opensteer is open on it. Ask the person to open Opensteer on Test iPhone, then try again; don't retry in a loop.",
     );
     await phone.close();
     await waitForCondition(

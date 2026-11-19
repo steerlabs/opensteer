@@ -146,7 +146,7 @@ export function republishThreads(
       for (const nodeId of value ? nodes : [])
         mutation.change(
           { scopeKey: `node:${nodeId}`, entityKind: "thread", entityId: id, operation: "upsert" },
-          () => value!,
+          () => ({ ...value!, revision: mutation.sequence }),
         );
     }
   });
@@ -181,6 +181,8 @@ export async function publishRunQueue(tx: Tx, threadId: ThreadId, runId?: RunId)
         .where("threadId", "=", threadId)
         .execute();
     await publishThreadQueues(tx, threadId);
+    // A Run phase change can flip the shell row's `runQueued` without moving the task status.
+    mutation.deferSummary(threadId);
   });
 }
 

@@ -2175,7 +2175,11 @@ export async function getThreadInputQueue(
       threadId: input.threadId,
       readOnly: true,
     });
-    return readThreadInputQueue(transaction, input);
+    const head = await transaction
+      .selectFrom("clientSyncState")
+      .select("sequence")
+      .executeTakeFirstOrThrow();
+    return { ...(await readThreadInputQueue(transaction, input)), asOfSequence: head.sequence };
   });
 }
 export async function enqueueAdmittedThreadInput(

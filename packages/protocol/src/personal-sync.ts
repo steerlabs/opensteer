@@ -42,6 +42,8 @@ export const personalLiveFrameMaxBytes = 16 * 1024;
 export const personalShellFrameMaxBytes = 128 * 1024;
 export const personalDetailFrameMaxBytes = 128 * 1024;
 export const personalControlFrameMaxBytes = 4 * 1024;
+/** The open streams one live reset can name; the Host keeps no more per scope. */
+export const personalLiveResetMaxStreams = 16;
 
 /** A frame's encoded size limit; senders and receivers measure the encoded bytes against it. */
 export function personalHostFrameMaxBytes(frame: {
@@ -57,6 +59,7 @@ export function personalHostFrameMaxBytes(frame: {
       return personalChangesFrameMaxBytes;
     case "host.live":
     case "host.text":
+    case "host.live-reset":
       return personalLiveFrameMaxBytes;
     default:
       return personalControlFrameMaxBytes;
@@ -284,6 +287,7 @@ export const PersonalShellSnapshotSchema = z.object({
   /** The newest settled open tasks; `nextBefore` pages the rest with `tasks.page`. */
   recentTaskIds: z.array(ThreadIdSchema).max(personalShellSettledTasks),
   nextBefore: z.string().max(4096).nullable(),
+  /** Bounded counts: each window counts at most 10,000 (draw more as "10,000+"). */
   taskCounts: z.object({ active: z.int().nonnegative(), open: z.int().nonnegative() }),
 });
 
@@ -432,6 +436,19 @@ export const ScopedHostMessageSchema = z
       ]),
     }),
     liveTextFrame,
+    /**
+     * This scope's queued live state was dropped. Clear every live stream and provisional item of
+     * the scope except those in `open`; each of those is named again by a `host.live` replace.
+     */
+    z.strictObject({
+      type: z.literal("host.live-reset"),
+      subscriptionId: detailId,
+      generation: address.generation,
+      scope: detailScope,
+      open: z
+        .array(z.strictObject({ runId: RunIdSchema, streamId: z.string().min(1).max(600) }))
+        .max(personalLiveResetMaxStreams),
+    }),
   ])
   .refine((frame) => {
     if (frame.type === "host.resource" || frame.type === "host.text") return true;

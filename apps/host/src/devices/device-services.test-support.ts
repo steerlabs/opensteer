@@ -16,15 +16,14 @@ type LocalServerOptions = ConstructorParameters<typeof LocalServerService>[0];
 export type DeviceServicesTestOptions = Omit<
   DeviceOptions,
   "computerApps" | "definitions" | "localServers" | "store"
-> &
-  Pick<LocalServerOptions, "personal"> & {
-    readonly computerApps: DeviceOptions["computerApps"] & LocalServerOptions["computerApps"];
-    readonly dataDirectory: string;
-    readonly definitions?: DeviceOptions["definitions"];
-    readonly isRunnerConnected: (runnerId: RunnerId) => boolean;
-    readonly secretVault: Pick<AesGcmSecretVault, "open" | "seal">;
-    readonly store: IntegrationPlatformStore;
-  };
+> & {
+  readonly computerApps: DeviceOptions["computerApps"] & LocalServerOptions["computerApps"];
+  readonly dataDirectory: string;
+  readonly definitions?: DeviceOptions["definitions"];
+  readonly isRunnerConnected: (runnerId: RunnerId) => boolean;
+  readonly secretVault: Pick<AesGcmSecretVault, "open" | "seal">;
+  readonly store: IntegrationPlatformStore;
+};
 
 /** The device and local-server services as the Host wires them, with one call path for tests. */
 export interface DeviceServicesTestHarness {
@@ -61,7 +60,6 @@ export function createDeviceServices(
     isRunnerConnected: options.isRunnerConnected,
     onConnectionsChanged: options.onConnectionsChanged,
     onSettingsChanged,
-    ...(options.personal === undefined ? {} : { personal: options.personal }),
     secretVault: options.secretVault,
     store: options.store,
   });
