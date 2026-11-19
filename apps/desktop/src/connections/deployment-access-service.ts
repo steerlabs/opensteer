@@ -223,7 +223,7 @@ export class DeploymentAccessService {
       ports.personal.subscribe((status) => {
         this.#personal = status;
         this.#publish();
-        void this.#reloadCatalog(false).then(() => this.#resumePendingAttachment());
+        void this.#reloadCatalog(false);
         if (status.state === "ready") {
           void ports.personalAccount.status().then(
             (link) => {
@@ -505,18 +505,14 @@ export class DeploymentAccessService {
       throw operationUnavailable("retry");
     }
     if (localRestart) {
-      // A Cancel while the stack starts is the newer wish.
-      const operationId = this.#operationId;
-      const status = await this.#ports.personal.start();
-      if (
-        this.#disposed ||
-        operationId !== this.#operationId ||
-        this.#catalog.selectedDeploymentId !== selected?.id
-      )
-        return;
-      this.#personal = status;
-      if (status.state !== "ready") return;
-    } else if (!this.#selectedAttachmentIsReady()) {
+      // The supervisor's ready attaches it, once, through the pending
+      // attachment; a Cancel meanwhile clears that intent.
+      this.#pendingAttachmentDeploymentId = selected!.id;
+      this.#interactiveAttachment = true;
+      await this.#ports.personal.start();
+      return;
+    }
+    if (!this.#selectedAttachmentIsReady()) {
       throw operationUnavailable("retry");
     }
     if (attachment.canCancel()) {
@@ -728,6 +724,7 @@ export class DeploymentAccessService {
     }
     this.#reconcileAttachment();
     this.#publish();
+    this.#resumePendingAttachment();
     // A rotated route re-attaches through the selected attachment. Only a
     // selection somebody else moved is reopened here, and only under the same
     // rule that reopens one at startup: it has to be a place already used.
@@ -752,12 +749,28 @@ export class DeploymentAccessService {
       this.#pendingAttachmentDeploymentId = null;
     }
     if (this.#attachment && this.#attachment.deploymentId === selected.id) {
-      // A restarting local Host gets a new key before it can own a session
-      // again, so a live attachment waits for the supervisor's ready instead.
-      const establish = this.#selectedAttachmentIsReady();
+      // This computer's Host isn't serving: the attachment waits for the
+      // supervisor's ready, or leaves the row to say why it isn't coming back.
+      // A Host still serving under a degraded stack keeps its live connection.
+      if (
+        this.#attachment.attached &&
+        !this.#selectedAttachmentIsReady() &&
+        (selected.access !== "owner" || this.#attachment.held)
+      ) {
+        if (this.#localHostComingBack(selected.id)) {
+          this.#pendingAttachmentDeploymentId = selected.id;
+          this.#attachment.hold(selected.key);
+        } else {
+          this.#pendingAttachmentDeploymentId = null;
+          this.#attachment.deactivate();
+          this.#attachment.reconfigure({ attachmentKey: selected.key });
+        }
+        return;
+      }
+      // A new key re-establishes here, so a held attachment isn't also resumed.
       if (this.#attachment.attached && selected.key !== this.#attachment.key)
-        this.#pendingAttachmentDeploymentId = establish ? null : selected.id;
-      this.#attachment.reconfigure({ attachmentKey: selected.key, establish });
+        this.#pendingAttachmentDeploymentId = null;
+      this.#attachment.reconfigure({ attachmentKey: selected.key });
       return;
     }
     this.#disposeAttachment();
@@ -830,18 +843,14 @@ export class DeploymentAccessService {
   #resumePendingAttachment(): void {
     if (this.#disposed) return;
     if (this.#pendingAttachmentDeploymentId !== this.#catalog.selectedDeploymentId) return;
-    if (!this.#selectedAttachmentIsReady()) {
-      // A local Host that stopped coming back leaves its row to say why, rather
-      // than a held attachment connecting forever.
-      const state =
-        this.#personal?.deploymentId === this.#pendingAttachmentDeploymentId
-          ? this.#personal.state
-          : null;
-      if (state !== null && !["checking", "starting", "degraded"].includes(state))
-        this.#attachment?.deactivate();
-      return;
-    }
+    if (!this.#selectedAttachmentIsReady()) return;
     this.#requestSelectedAttachment(this.#interactiveAttachment);
+  }
+
+  /** Whether this computer's supervisor is still bringing that Host up. */
+  #localHostComingBack(deploymentId: string): boolean {
+    if (this.#personal?.deploymentId !== deploymentId) return true;
+    return ["checking", "starting", "degraded"].includes(this.#personal.state);
   }
 
   #selectedAttachmentIsReady(): boolean {

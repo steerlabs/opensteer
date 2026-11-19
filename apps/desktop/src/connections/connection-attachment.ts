@@ -47,6 +47,7 @@ export class ConnectionAttachment {
   readonly #listeners = new Set<(snapshot: ConnectionAttachmentSnapshot) => void>();
   #attachment: AttachmentObservation | null = null;
   #attachmentKey: string | null;
+  #held = false;
   #operationId = 0;
 
   constructor(options: {
@@ -121,15 +122,7 @@ export class ConnectionAttachment {
     this.#listeners.clear();
   }
 
-  /**
-   * `establish: false` keeps an attachment that was live waiting as
-   * `connecting` instead of establishing now: the Host behind the new key is
-   * not ready to own a session yet, and `attach()` continues it when it is.
-   */
-  reconfigure(options: {
-    readonly attachmentKey: string | null;
-    readonly establish?: boolean;
-  }): void {
+  reconfigure(options: { readonly attachmentKey: string | null }): void {
     if (this.#attachmentKey === options.attachmentKey) return;
     const wasAttached = this.#attachment !== null;
     this.#operationId += 1;
@@ -139,12 +132,6 @@ export class ConnectionAttachment {
     // and verified against the new identity rather than parked on a key that
     // nobody will ever answer for.
     if (wasAttached && options.attachmentKey !== null) {
-      if (options.establish === false) {
-        this.#attachment = { failure: null, status: "connecting" };
-        this.#publish();
-        void this.#close().catch(() => undefined);
-        return;
-      }
       this.#run(this.#operationId, true);
       return;
     }
@@ -161,6 +148,27 @@ export class ConnectionAttachment {
     return this.#attachmentKey;
   }
 
+  get held(): boolean {
+    return this.#held;
+  }
+
+  /**
+   * Keeps a live or wanted attachment `connecting` without establishing it:
+   * its Host is restarting and can't own a session yet. `attach()` resumes it,
+   * and the Host's old connections are closed once, when the hold begins.
+   */
+  hold(attachmentKey: string | null): void {
+    if (this.#attachment === null) return;
+    const holding = this.#held;
+    if (holding && this.#attachmentKey === attachmentKey) return;
+    this.#operationId += 1;
+    this.#attachmentKey = attachmentKey;
+    this.#held = true;
+    this.#attachment = { failure: null, status: "connecting" };
+    this.#publish();
+    if (!holding) void this.#close().catch(() => undefined);
+  }
+
   observe(observation: HostSessionObservation): void {
     if (
       this.#attachment === null ||
@@ -173,6 +181,7 @@ export class ConnectionAttachment {
   }
 
   #detach(): void {
+    this.#held = false;
     this.#operationId += 1;
     if (this.#attachment === null) return;
     this.#attachment = null;
@@ -180,6 +189,7 @@ export class ConnectionAttachment {
   }
 
   #run(operationId: number, closeFirst: boolean): void {
+    this.#held = false;
     this.#attachment = { failure: null, status: "connecting" };
     this.#publish();
     void (

@@ -276,7 +276,9 @@ it("opens this computer's Host only once main has attached it", async () => {
   let access = local("idle", "loopback", "starting", 1);
   const listeners = new Set<(next: DeploymentAccessSnapshot) => void>();
   const retry = vi.fn(async () => undefined);
+  const cancel = vi.fn(async () => undefined);
   const bridge = {
+    cancel,
     cancelHostRequest: async () => undefined,
     checkDeployments: async () => undefined,
     retry,
@@ -330,10 +332,18 @@ it("opens this computer's Host only once main has attached it", async () => {
     );
     await act(async () => tryAgain!.click());
     expect(retry).toHaveBeenCalledOnce();
-    await emit(local("connecting", "owner", "degraded", 6));
-    await emit(local("connecting", "owner", "ready", 7));
+    // Back stops waiting; a row main no longer holds goes back to the places.
+    const back = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Back",
+    );
+    await act(async () => back!.click());
+    expect(cancel).toHaveBeenCalledOnce();
+    await emit(local("idle", "loopback", "degraded", 6));
+    expect(container.textContent).not.toContain("Restarting Host in 2 seconds.");
+    await emit(local("connecting", "owner", "degraded", 7));
+    await emit(local("connecting", "owner", "ready", 8));
     expect(hostRequests.length).toBe(beforeRestart);
-    await emit(local("connected", "owner", "ready", 8));
+    await emit(local("connected", "owner", "ready", 9));
     await vi.waitFor(() => expect(hostRequests.length).toBeGreaterThan(beforeRestart));
   } finally {
     await act(async () => root.unmount());
