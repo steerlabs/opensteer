@@ -1,7 +1,4 @@
-import {
-  catalogWithinBudget,
-  requireHarnessRoom,
-} from "./personal-inventory-limits.js";
+import { catalogWithinBudget, requireHarnessRoom } from "./personal-inventory-limits.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,

@@ -216,7 +216,10 @@ it("reads the list again when a listed Request changes but the count does not", 
   // The same Requests, one of them now asked from a renamed place: the count and the bounded
   // attention preview are unchanged; only the Host's pending-Requests revision moves.
   const [first, ...rest] = f.all;
-  const renamed = { ...first!, subagent: { id: createId("executionNode"), title: "Renamed", within: null } };
+  const renamed = {
+    ...first!,
+    subagent: { id: createId("executionNode"), title: "Renamed", within: null },
+  };
   f.host.pending = [renamed, ...rest] as typeof f.all;
   f.personal.repairShell();
   await vi.waitFor(() =>
