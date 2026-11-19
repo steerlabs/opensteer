@@ -25,6 +25,11 @@ export interface FencedReadsOptions {
   /** The first retry waits this long, doubling to `maxBackoffMs`. */
   readonly minBackoffMs?: number;
   readonly maxBackoffMs?: number;
+  /**
+   * A key superseded twice running waits until it has been this long without a change before it
+   * runs again (the trailing edge of the churn), and never longer than `maxBackoffMs` in all.
+   */
+  readonly quietMs?: number;
 }
 
 /** How a request runs: whether a retryable failure tries again by itself. */
@@ -45,6 +50,13 @@ interface Slot {
   /** Something changed, or a newer request came, while it flew: run again when it lands. */
   dirty: boolean;
   attempt: number;
+  /** Runs in a row that landed already superseded by a change. */
+  superseded: number;
+  /** A newer request came while it flew: a need someone waits on, which runs at once. */
+  asked: boolean;
+  /** When the key last changed, and when its current wait for quiet began. */
+  changedAt: number;
+  waitingSince: number;
   timer: ReturnType<typeof setTimeout> | null;
   waiters: { resolve(): void; reject(error: unknown): void }[];
 }
@@ -63,7 +75,7 @@ export class FencedReads {
   #disposed = false;
 
   constructor(options: FencedReadsOptions) {
-    this.#options = { minBackoffMs: 1_000, maxBackoffMs: 30_000, ...options };
+    this.#options = { minBackoffMs: 1_000, maxBackoffMs: 30_000, quietMs: 250, ...options };
   }
 
   /**
@@ -86,6 +98,7 @@ export class FencedReads {
         if (slot.controller) {
           this.#bump(key);
           slot.dirty = true;
+          slot.asked = true;
         } else if (slot.timer) {
           clearTimeout(slot.timer);
           slot.timer = null;
@@ -100,6 +113,10 @@ export class FencedReads {
         controller: null,
         dirty: false,
         attempt: 0,
+        superseded: 0,
+        asked: false,
+        changedAt: 0,
+        waitingSince: 0,
         timer: null,
         waiters: [{ resolve, reject }],
       };
@@ -113,6 +130,7 @@ export class FencedReads {
   changed(key: string) {
     this.#bump(key);
     const slot = this.#slots.get(key);
+    if (slot) slot.changedAt = Date.now();
     if (slot?.controller) slot.dirty = true;
   }
 
@@ -177,14 +195,17 @@ export class FencedReads {
         if (this.#slots.get(key) !== slot || slot.controller !== controller) return;
         slot.controller = null;
         slot.attempt = 0;
-        if (stale() && slot.observed()) this.#start(key, slot);
-        else this.#settle(key, slot);
+        if (stale() && slot.observed()) this.#rerun(key, slot);
+        else {
+          slot.superseded = 0;
+          this.#settle(key, slot);
+        }
       },
       (error: unknown) => {
         if (this.#slots.get(key) !== slot || slot.controller !== controller) return;
         slot.controller = null;
         if (!slot.observed()) return this.#settle(key, slot);
-        if (stale()) return this.#start(key, slot);
+        if (stale()) return this.#rerun(key, slot);
         if (!slot.retry || !classifyClientFailure(error).retryable)
           return this.#settle(key, slot, error);
         const delay = Math.min(
@@ -199,6 +220,36 @@ export class FencedReads {
         }, delay);
       },
     );
+  }
+
+  /**
+   * Runs a superseded key again. Under churn (superseded twice running) it waits for the trailing
+   * edge, a quiet moment, so a read is not restarted by every change and still lands; the wait is
+   * bounded by `maxBackoffMs`.
+   */
+  #rerun(key: string, slot: Slot) {
+    if (slot.asked) {
+      slot.asked = false;
+      slot.superseded = 0;
+      return this.#start(key, slot);
+    }
+    slot.superseded++;
+    if (slot.superseded < 2) return this.#start(key, slot);
+    slot.waitingSince = Date.now();
+    const wait = () => {
+      const now = Date.now();
+      const quietAt = slot.changedAt + this.#options.quietMs;
+      const latest = slot.waitingSince + this.#options.maxBackoffMs;
+      if (now >= quietAt || now >= latest) {
+        slot.timer = null;
+        if (this.#slots.get(key) !== slot) return;
+        if (slot.observed()) this.#start(key, slot);
+        else this.#settle(key, slot);
+        return;
+      }
+      slot.timer = setTimeout(wait, Math.min(quietAt, latest) - now);
+    };
+    wait();
   }
 
   #settle(key: string, slot: Slot, error?: unknown) {

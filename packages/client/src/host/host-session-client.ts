@@ -330,7 +330,20 @@ export class HttpHostClient {
   #openDepth: number = personalShellSettledTasks;
   #doneDepth = 0;
   /** Counts pushes that may move Done membership: a Done read from before one is read again. */
-  #doneChanges = 0;
+  #doneCountTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The held open and active lists, as last built, and what they were built from. */
+  #openCache:
+    | {
+        readonly tasks: ReadonlyMap<string, unknown>;
+        readonly openPages: unknown;
+        readonly activePages: readonly TaskEntry[];
+        readonly byId: Map<string, TaskEntry>;
+        readonly open: readonly TaskEntry[];
+        readonly active: readonly TaskEntry[];
+      }
+    | undefined;
+  /** Counts the times a person opened Done; each reads it again from its first page. */
+  #doneOpens = 0;
   /** Tasks the shell removed in this cut: a page read before cannot bring one back. */
   readonly #removedTasks = new Set<string>();
   #publishedShell: ReturnType<ScopedPersonalStream["shell"]["getSnapshot"]> | undefined;
@@ -341,6 +354,11 @@ export class HttpHostClient {
   /** A task's assignment reads, fenced by the viewer; and the tasks whose list is read. */
   readonly #assignmentReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
   readonly #assignmentsRead = new Set<string>();
+  /** When each assignment was last pushed, by a counter a read notes as it begins. */
+  readonly #assignmentPushes = new Map<string, number>();
+  /** Every task whose assignments were asked for under this viewer. */
+  readonly #assignmentKeys = new Set<string>();
+  #assignmentPushCount = 0;
   readonly #automationReads = new Map<string, { again: boolean }>();
   readonly #readAutomations = new Set<string>();
   /**
@@ -1322,20 +1340,20 @@ export class HttpHostClient {
     await this.#reader(threadId)?.loadMoreOverlays(kind);
   }
 
-  loadEarlierTranscript(threadId: string) {
-    return this.#reader(threadId)?.history("earlier") ?? Promise.resolve();
+  async loadEarlierTranscript(threadId: string): Promise<void> {
+    await this.#reader(threadId)?.history("earlier");
   }
 
-  loadNewerTranscript(threadId: string) {
-    return this.#reader(threadId)?.history("newer") ?? Promise.resolve();
+  async loadNewerTranscript(threadId: string): Promise<void> {
+    await this.#reader(threadId)?.history("newer");
   }
 
-  loadTranscriptAround(threadId: string, messageId: string) {
-    return this.#reader(threadId)?.history("around", messageId) ?? Promise.resolve();
+  loadTranscriptAround(threadId: string, messageId: string): Promise<boolean> {
+    return this.#reader(threadId)?.history("around", messageId) ?? Promise.resolve(true);
   }
 
-  loadLatestTranscript(threadId: string) {
-    return this.#reader(threadId)?.history("latest") ?? Promise.resolve();
+  loadLatestTranscript(threadId: string): Promise<boolean> {
+    return this.#reader(threadId)?.history("latest") ?? Promise.resolve(true);
   }
 
   loadThreadInputQueue(threadId: string) {
@@ -1408,6 +1426,8 @@ export class HttpHostClient {
         );
         previousAssignments = state.assignments;
         if (changed.length) {
+          // Each pushed assignment is stamped, so a read begun before it never prunes it.
+          for (const [id] of changed) this.#assignmentPushes.set(id, ++this.#assignmentPushCount);
           const assignments = mergeAssignments(
             this.#snapshot.assignments,
             changed.flatMap(([, value]) => value ?? []),
@@ -1436,6 +1456,12 @@ export class HttpHostClient {
         subscribedGeneration = state.generation;
         subscribedRepairs = state.repairs;
         readsDue = true;
+        // A new subscription (a reconnect, a resubscribe) may have skipped the change that ended
+        // an assignment: the task's assignments are read again, as after a repair.
+        if (reread) {
+          this.#assignmentsRead.delete(threadId);
+          this.#assignmentReads.changed(`assignments:${threadId}`);
+        }
       } else if (state.repairs !== subscribedRepairs) {
         // A repair replaced the scope: its assignments are read again, as on a new subscription.
         subscribedRepairs = state.repairs;
@@ -1524,9 +1550,12 @@ export class HttpHostClient {
   }
 
   #clearViewerReads() {
-    for (const threadId of this.#assignmentsRead)
+    // Every task's read stops, those still in flight as well as those that installed.
+    for (const threadId of this.#assignmentKeys)
       this.#assignmentReads.stop(`assignments:${threadId}`);
+    this.#assignmentKeys.clear();
     this.#assignmentsRead.clear();
+    this.#assignmentPushes.clear();
     this.#automationReads.clear();
     this.#readAutomations.clear();
     this.#browserUsageRead.clear();
@@ -1534,7 +1563,9 @@ export class HttpHostClient {
     this.#browserUsageRunSources.clear();
     this.#browserUses.clear();
     this.#deniedAssignments.clear();
-    for (const key of ["open", "active", "done"]) this.#taskReads.stop(key);
+    for (const key of ["open", "active", "done", "done-count"]) this.#taskReads.stop(key);
+    if (this.#doneCountTimer) clearTimeout(this.#doneCountTimer);
+    this.#doneCountTimer = undefined;
     this.#openPages = undefined;
     this.#activePages = [];
     this.#activeCursor = null;
@@ -1810,13 +1841,23 @@ export class HttpHostClient {
     const tasksChanged = replaced || old?.tasks !== state.tasks;
     const visitsChanged = old?.visits !== state.visits;
     const taskChanges = state.taskChanges.length > 0 && old?.taskChanges !== state.taskChanges;
-    let doneMoved = false;
+    const doneMoves: DoneMove[] = [];
     if (taskChanges) {
       for (const row of state.taskChanges) {
         const held = heldThread(this.#snapshot, row.id);
-        const doneListed = this.#donePages?.entries.some(({ thread }) => thread.id === row.id);
-        // A change that may move Done membership makes any Done read from before it stale.
-        if (doneListed || (!("removed" in row) && row.doneAt !== null)) doneMoved = true;
+        if (this.#donePages || this.#taskReads.busy("done")) {
+          // What this client knew of the task's Done membership before the push, if anything.
+          const prior = old?.tasks.get(row.id);
+          const listed = this.#donePages?.entries.some(({ thread }) => thread.id === row.id);
+          const was = listed
+            ? true
+            : held
+              ? isDoneTask(held)
+              : prior
+                ? isDoneTask(prior)
+                : undefined;
+          doneMoves.push({ row, was, now: !("removed" in row) && isDoneTask(row) });
+        }
         if ("removed" in row) {
           this.#removedTasks.add(row.id);
           continue;
@@ -1839,10 +1880,7 @@ export class HttpHostClient {
           );
       }
     }
-    if (doneMoved && this.#doneDepth > 0) {
-      this.#doneChanges++;
-      this.#taskReads.changed("done");
-    }
+    if (doneMoves.length) this.#moveDone(doneMoves);
     if (
       session &&
       (this.#snapshot.user?.id !== session.user.id ||
@@ -1870,7 +1908,13 @@ export class HttpHostClient {
       attentionChanged ||
       connection !== this.#snapshot.connection
     ) {
-      const taskLists = tasksChanged || taskChanges ? this.#taskLists(state) : undefined;
+      const taskLists =
+        tasksChanged || taskChanges
+          ? this.#taskLists(
+              state,
+              replaced ? undefined : { tasks: old?.tasks, changes: state.taskChanges },
+            )
+          : undefined;
       if (state.synchronized) this.#savedViewReadiness = { tasksReady: true };
       this.#update(
         {
@@ -2278,6 +2322,7 @@ export class HttpHostClient {
     if (this.#disposed || this.#snapshot.session !== "authenticated") return;
     const key = `assignments:${threadId}`;
     if (this.#assignmentsRead.has(threadId) || this.#assignmentReads.busy(key)) return;
+    this.#assignmentKeys.add(threadId);
     void this.#assignmentReads
       .request(key, (read) => this.#readAssignments(threadId, read), {
         observed: () => !this.#disposed && this.#showsThread(threadId),
@@ -2353,6 +2398,7 @@ export class HttpHostClient {
    * has finished, even when the feed's update for it was skipped by a repair.
    */
   async #readAssignments(threadId: string, read: FencedRead): Promise<void> {
+    const startedAt = this.#assignmentPushCount;
     const list = async (open: boolean, before: string | null) => {
       try {
         const response = unwrapRpcResult(
@@ -2390,8 +2436,16 @@ export class HttpHostClient {
     if (complete) {
       const returned = new Set<string>(found.map(({ id }) => id));
       for (const [id, held] of Object.entries(assignments))
-        if (held.parentThreadId === threadId && held.status === "open" && !returned.has(id))
+        if (
+          held.parentThreadId === threadId &&
+          held.status === "open" &&
+          !returned.has(id) &&
+          // Pushed after this read began: newer than what the read could have returned.
+          (this.#assignmentPushes.get(id) ?? 0) <= startedAt
+        ) {
           delete assignments[id];
+          this.#assignmentPushes.delete(id);
+        }
     }
     this.#assignmentsRead.add(threadId);
     this.#update({ ...this.#snapshot, assignments });
@@ -3330,6 +3384,11 @@ export class HttpHostClient {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    if (this.#doneCountTimer) clearTimeout(this.#doneCountTimer);
+    // Their retries are gated on observation already; this also lets their timers go now.
+    this.#taskReads.dispose();
+    this.#assignmentReads.dispose();
+    this.#waitingRequestReads.dispose();
     disposeMessageOutbox(this);
     if (this.#ownsConnection) this.connection.dispose();
     this.#closeSocket();
@@ -3453,8 +3512,10 @@ export class HttpHostClient {
     return reviewed;
   }
 
+  /** Opens Done: a person opening it sees it read again from its first page. */
   loadDoneTasks(): Promise<void> {
     this.#doneDepth = Math.max(this.#doneDepth, taskPageSize);
+    this.#doneOpens++;
     return this.#requestDone();
   }
 
@@ -3547,6 +3608,78 @@ export class HttpHostClient {
     });
   }
 
+  /**
+   * Follows pushed moves in and out of Done in the held Done list and its count, whether or not the
+   * task's row is loaded. A move the client can classify (it knew the task, or the held list is
+   * the whole of Done, or the task's `doneAt` is newer than the oldest one held) is applied here
+   * with no read. One it cannot (an off-page task reopened or archived, which the row alone does
+   * not distinguish from an ordinary change to an open task) reads the count again, once the
+   * pushes rest. A Done read in flight from before a move runs again.
+   */
+  #moveDone(moves: readonly DoneMove[]) {
+    // A Done read in flight from before a push that can touch Done (into it, out of it, or a task
+    // this client could not place) is read again; churn on tasks known to be open leaves it be.
+    if (this.#taskReads.busy("done") && moves.some(({ was, now }) => now || was !== false))
+      this.#taskReads.changed("done");
+    const pages = this.#donePages;
+    if (!pages) return;
+    let entries = pages.entries;
+    let count = pages.window.totalItems ?? 0;
+    let moved = false;
+    let unclassified = false;
+    const oldest = entries.at(-1)?.thread.doneAt ?? null;
+    for (const { row, was, now } of moves) {
+      let before = was;
+      if (before === undefined) {
+        if (!pages.window.hasMore) before = false;
+        else if (now && "doneAt" in row && oldest !== null && row.doneAt! > oldest) before = false;
+        else {
+          unclassified = true;
+          continue;
+        }
+      }
+      if (before === now) continue;
+      moved = true;
+      entries = entries.filter(({ thread }) => thread.id !== row.id);
+      if (now && !("removed" in row)) entries = [...entries, this.#shellEntry(row)];
+      count = Math.max(0, count + (now ? 1 : -1));
+    }
+    if (moved) {
+      this.#donePages = {
+        ...pages,
+        entries: [...entries].sort((left, right) => compareDoneOrder(left.thread, right.thread)),
+        window: { ...pages.window, totalItems: count },
+      };
+      // A count answered before these moves would undo them: it runs again.
+      if (this.#taskReads.busy("done-count")) this.#taskReads.changed("done-count");
+    }
+    if (unclassified) this.#countDoneSoon();
+  }
+
+  /** Reads Done's count again once pushes have rested, so a burst of them costs one read. */
+  #countDoneSoon() {
+    if (this.#doneCountTimer) clearTimeout(this.#doneCountTimer);
+    this.#doneCountTimer = setTimeout(() => {
+      this.#doneCountTimer = undefined;
+      if (!this.#donePages) return;
+      void this.#taskReads
+        .request("done-count", (read) => this.#readDoneCount(read), {
+          observed: this.#tasksObserved,
+        })
+        .catch(() => undefined);
+    }, doneCountRestMs);
+  }
+
+  async #readDoneCount(read: FencedRead) {
+    const page = unwrapRpcResult(
+      await this.rpc["tasks.page"]({ done: true, limit: 1 }, { signal: read.signal }),
+    );
+    const pages = this.#donePages;
+    if (!read.current() || !pages || page.window.totalItems === undefined) return;
+    this.#donePages = { ...pages, window: { ...pages.window, totalItems: page.window.totalItems } };
+    this.#publishTasks();
+  }
+
   #requestDone() {
     return this.#taskReads.request("done", (read) => this.#readDone(read), {
       observed: this.#tasksObserved,
@@ -3554,7 +3687,7 @@ export class HttpHostClient {
   }
 
   #doneStamp() {
-    return `${this.#viewerGeneration}:${this.#shellCut}:${this.#doneChanges}`;
+    return `${this.#viewerGeneration}:${this.#shellCut}:${this.#doneOpens}`;
   }
 
   /** Reads open tasks past the shell's settled window until `#openDepth` settled rows, or the end. */
@@ -3628,7 +3761,9 @@ export class HttpHostClient {
       if (!read.current()) return;
       held = {
         stamp,
-        entries: mergeTaskEntries(held?.entries ?? [], page.entries),
+        entries: mergeTaskEntries(held?.entries ?? [], page.entries).sort((left, right) =>
+          compareDoneOrder(left.thread, right.thread),
+        ),
         // Only a list's first page counts it; a continuation keeps that count.
         window: {
           ...page.window,
@@ -3648,17 +3783,25 @@ export class HttpHostClient {
     const page = unwrapRpcResult(
       await this.rpc["tasks.page"]({ ...input, limit: taskPageSize }, { signal: read.signal }),
     );
+    // A page from a cut since replaced touches nothing, the shared thread state included.
+    if (!read.current()) return { entries: [], window: page.window };
     const rows = this.#stream.shell.getSnapshot().tasks;
     const asOf = BigInt(page.asOfSequence);
     const entries = page.tasks.flatMap((entry): TaskEntry[] => {
       if (this.#removedTasks.has(entry.thread.id)) return [];
       const row = rows.get(entry.thread.id);
       if (row && BigInt(row.revision) > asOf) return [this.#shellEntry(row)];
+      const thread = toThreadSummary(
+        entry.thread,
+        this.#snapshot.environments,
+        this.#snapshot.harnesses,
+      );
       return [
         {
           ...entry,
           thread: this.#reconcilePageThread(
-            toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
+            // The queued-account reason rides beside the Thread on the page, as on the shell row.
+            entry.runQueued === undefined ? thread : { ...thread, runQueued: entry.runQueued },
             page.asOfSequence,
           ),
         },
@@ -3681,22 +3824,13 @@ export class HttpHostClient {
    */
   #taskLists(
     state: ReturnType<PersonalShellStore["getSnapshot"]>,
+    delta?: {
+      readonly tasks: ReadonlyMap<string, unknown> | undefined;
+      readonly changes: readonly { readonly id: string }[];
+    },
   ): Pick<HostSnapshot, "tasks" | "activeTasks" | "doneTasks"> {
     const shell = state.snapshot!;
-    const paged = (entries: readonly TaskEntry[]) =>
-      entries.filter(
-        ({ thread }) => !state.tasks.has(thread.id) && !this.#removedTasks.has(thread.id),
-      );
-    const byId = new Map<string, TaskEntry>();
-    for (const entry of [
-      ...[...state.tasks.values()].map((row) => this.#shellEntry(row)),
-      ...paged(this.#openPages?.entries ?? []),
-      ...paged(this.#activePages),
-    ])
-      if (!byId.has(entry.thread.id)) byId.set(entry.thread.id, entry);
-    const open = [...byId.values()]
-      .filter(({ thread }) => thread.doneAt === null && thread.status !== "archived")
-      .sort((left, right) => compareTaskOrder(left.thread, right.thread));
+    const { open, active } = this.#openLists(state, delta);
     const window =
       this.#openPages?.cut === this.#shellCut
         ? this.#openPages.window
@@ -3707,9 +3841,7 @@ export class HttpHostClient {
         entries: open,
         window: { ...window, totalItems: open.length, byteCount: 0, itemCount: open.length },
       },
-      activeTasks: open.filter(
-        ({ thread }) => thread.status === "running" || thread.status === "waiting",
-      ),
+      activeTasks: active,
       doneTasks: done
         ? {
             [mainDoneTasks]: {
@@ -3723,6 +3855,81 @@ export class HttpHostClient {
           }
         : {},
     };
+  }
+
+  /**
+   * The open and active lists, sorted. A publish that only changed some task rows (no page, no
+   * shell replacement, no row the shell let go of on its own) moves just those rows, by binary
+   * search, instead of rebuilding and re-sorting every held task.
+   */
+  #openLists(
+    state: ReturnType<PersonalShellStore["getSnapshot"]>,
+    delta?: {
+      readonly tasks: ReadonlyMap<string, unknown> | undefined;
+      readonly changes: readonly { readonly id: string }[];
+    },
+  ) {
+    const cache = this.#openCache;
+    const ids = delta ? new Set(delta.changes.map(({ id }) => id)) : undefined;
+    let size = delta?.tasks?.size ?? -1;
+    for (const id of ids ?? []) size += Number(state.tasks.has(id)) - Number(delta!.tasks!.has(id));
+    if (
+      cache &&
+      ids &&
+      delta!.tasks === cache.tasks &&
+      cache.openPages === this.#openPages &&
+      cache.activePages === this.#activePages &&
+      size === state.tasks.size
+    ) {
+      const open = [...cache.open];
+      const active = [...cache.active];
+      for (const id of ids) {
+        const before = cache.byId.get(id);
+        if (before) {
+          remove(open, before);
+          remove(active, before);
+          cache.byId.delete(id);
+        }
+        const row = state.tasks.get(id);
+        const entry = row
+          ? this.#shellEntry(row)
+          : this.#removedTasks.has(id)
+            ? undefined
+            : [...(this.#openPages?.entries ?? []), ...this.#activePages].find(
+                ({ thread }) => thread.id === id,
+              );
+        if (!entry) continue;
+        cache.byId.set(id, entry);
+        if (isOpenTask(entry)) insert(open, entry);
+        if (isActiveTask(entry)) insert(active, entry);
+      }
+      this.#openCache = { ...cache, tasks: state.tasks, open, active };
+      return { open, active };
+    }
+    const paged = (entries: readonly TaskEntry[]) =>
+      entries.filter(
+        ({ thread }) => !state.tasks.has(thread.id) && !this.#removedTasks.has(thread.id),
+      );
+    const byId = new Map<string, TaskEntry>();
+    for (const entry of [
+      ...[...state.tasks.values()].map((row) => this.#shellEntry(row)),
+      ...paged(this.#openPages?.entries ?? []),
+      ...paged(this.#activePages),
+    ])
+      if (!byId.has(entry.thread.id)) byId.set(entry.thread.id, entry);
+    const open = [...byId.values()]
+      .filter(isOpenTask)
+      .sort((left, right) => compareTaskOrder(left.thread, right.thread));
+    const active = open.filter(isActiveTask);
+    this.#openCache = {
+      tasks: state.tasks,
+      openPages: this.#openPages,
+      activePages: this.#activePages,
+      byId,
+      open,
+      active,
+    };
+    return { open, active };
   }
 
   #reconcilePageThread(
@@ -4733,6 +4940,59 @@ function settledEntries(list: TaskListState | null) {
 
 /** Rows a task page asks for: the Host's page size, within its response budget. */
 const taskPageSize = 50;
+function isOpenTask({ thread }: TaskEntry) {
+  return thread.doneAt === null && thread.status !== "archived";
+}
+
+function isActiveTask(entry: TaskEntry) {
+  return (
+    isOpenTask(entry) && (entry.thread.status === "running" || entry.thread.status === "waiting")
+  );
+}
+
+/** Where `entry` belongs in a list sorted by task order. */
+function taskIndex(list: readonly TaskEntry[], entry: TaskEntry) {
+  let low = 0;
+  let high = list.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (compareTaskOrder(list[middle]!.thread, entry.thread) < 0) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function insert(list: TaskEntry[], entry: TaskEntry) {
+  list.splice(taskIndex(list, entry), 0, entry);
+}
+
+function remove(list: TaskEntry[], entry: TaskEntry) {
+  const at = taskIndex(list, entry);
+  if (list[at]?.thread.id === entry.thread.id) list.splice(at, 1);
+}
+
+/** How long pushes must rest before Done's count is read again for moves the client cannot see. */
+const doneCountRestMs = 1_000;
+
+interface DoneMove {
+  readonly row: ReturnType<PersonalShellStore["getSnapshot"]>["taskChanges"][number];
+  /** In Done before the push: unknown when this client held nothing of the task. */
+  readonly was: boolean | undefined;
+  readonly now: boolean;
+}
+
+/** In Done, as the Host's Done list counts it: settled with a `doneAt`, and not archived. */
+function isDoneTask(task: { readonly doneAt: string | null; readonly status: string }) {
+  return task.doneAt !== null && task.status !== "archived";
+}
+
+/** Done's own order, as the Host pages it: most recently done first. */
+function compareDoneOrder(
+  left: { readonly doneAt: string | null; readonly id: string },
+  right: { readonly doneAt: string | null; readonly id: string },
+) {
+  return (right.doneAt ?? "").localeCompare(left.doneAt ?? "") || right.id.localeCompare(left.id);
+}
 
 function modelLabel(
   selection: Thread["modelSelection"],

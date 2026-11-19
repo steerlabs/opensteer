@@ -85,13 +85,19 @@ import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { Icon } from "./icon.js";
 import type { ComposerQuote } from "./composer.js";
 import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
+import { heldEditScope, returnGoneWaitingEdits } from "./held-waiting-edits.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
 import { useVoiceOn } from "@opensteer/client/react";
 import { VoiceStart } from "./voice.js";
 import { WaitingInputs } from "./waiting-inputs.js";
 import { setThreadReading } from "./thread-reading.js";
 import { ThreadFind } from "./thread-find.js";
-import { anchorCorrection, readingAnchor, type ReadingAnchor } from "./reading-position.js";
+import {
+  anchorCorrection,
+  findReadingAnchor,
+  readingAnchor,
+  type ReadingAnchor,
+} from "./reading-position.js";
 import { BrandMark } from "./brand.js";
 import { useVisualViewportKeyboardInset } from "./visual-viewport-keyboard.js";
 import { ConversationHeader } from "./workspace/conversation-header.js";
@@ -180,6 +186,7 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
           runQueue={transcript.runQueue}
           detailCurrent={transcript.synchronized}
           repairs={transcript.repairs ?? 0}
+          queueInputs={transcript.queueInputs}
         />
       ) : null}
     </Gated>
@@ -200,6 +207,8 @@ interface ThreadViewProps {
   detailCurrent?: boolean;
   /** Counts the Host's repairs of this conversation: each replaced the rows on screen. */
   repairs?: number;
+  /** Every waiting message's id, as the Host's queue lists them, once the conversation is current. */
+  queueInputs?: readonly string[] | undefined;
   runQueue?: readonly import("@opensteer/client/host").RunQueueEntry[];
   environmentStatus: EnvironmentStatus;
   executionPlacements: ThreadPlacementOption[];
@@ -234,6 +243,7 @@ function ThreadView({
   runQueue = noRuns,
   detailCurrent = true,
   repairs = 0,
+  queueInputs,
   thread,
 }: ThreadViewProps) {
   const teamSource = useTaskSourceView(thread.teamOrigin);
@@ -618,11 +628,13 @@ function ThreadView({
       viewport: scroller.clientHeight,
     };
     if (follows !== previous.follows) setFollows(follows);
+    return own;
   };
   const keepTailInView = () => readScroller(false);
   const handleScroll = () => {
-    readScroller(true);
-    if (readingFrame.current === null) readingFrame.current = requestAnimationFrame(measureReading);
+    // Only the reader's own scroll is a move of theirs; layout and a jump's own scrolling are not.
+    if (readScroller(true) && readingFrame.current === null)
+      readingFrame.current = requestAnimationFrame(measureReading);
   };
 
   /* ---- Reading position: the row in view ---- */
@@ -661,23 +673,20 @@ function ThreadView({
     const scroller = currentScroller();
     // A position being put back is not where the reader chose to be until it is in place.
     if (!scroller || restoring.current) return;
-    const top = scroller.getBoundingClientRect().top;
-    let anchor: ReadingAnchor | null = null;
-    for (const row of scroller.querySelectorAll<HTMLElement>("[data-transcript-row]:not(:empty)")) {
-      const box = row.getBoundingClientRect();
-      anchor = readingAnchor(
-        [{ key: row.dataset.transcriptRow!, top: box.top, bottom: box.bottom }],
-        top,
-      );
-      if (anchor) break;
-    }
-    reading.current = anchor;
-    if (tailRef.current.follows && !historicalRef.current)
+    // Following the latest, there is no row to name and nothing to measure.
+    if (tailRef.current.follows && !historicalRef.current) {
+      reading.current = null;
       hostClient.setTranscriptAnchor(thread.id, undefined);
-    else {
-      const itemId = anchor && rowItems().get(anchor.key);
-      if (itemId) hostClient.setTranscriptAnchor(thread.id, itemId);
+      return;
     }
+    const anchor = findReadingAnchor(
+      scroller.getElementsByClassName("transcript__row"),
+      scroller.getBoundingClientRect().top,
+      (row) => (row as HTMLElement).dataset.transcriptRow,
+    );
+    reading.current = anchor;
+    const itemId = anchor && rowItems().get(anchor.key);
+    if (itemId) hostClient.setTranscriptAnchor(thread.id, itemId);
   };
   // A repair replaces the rows on screen: the reader's row is put back where it stood, as soon as
   // it is there again, and the reader stays where they were rather than at the foot.
@@ -886,11 +895,15 @@ function ThreadView({
       await returnToLatest().catch(() => undefined);
       return false;
     };
+    let landed: boolean;
     try {
-      await hostClient.loadTranscriptAround(thread.id, messageId);
+      landed = await hostClient.loadTranscriptAround(thread.id, messageId);
     } catch (error) {
       return missing(!notFound(error));
     }
+    // A newer move of the reader's (another jump, Return to latest, a scroll) took over: this jump
+    // says nothing about its message and leaves the reader where that move put them.
+    if (!landed) return false;
     const anchored = hostClient
       .getThreadTranscript(thread.id)
       ?.getSnapshot()
@@ -968,7 +981,8 @@ function ThreadView({
   /** Puts the live conversation back and returns the reader to its foot. */
   const returnToLatest = async () => {
     abandonEarlier();
-    await hostClient.loadLatestTranscript(thread.id);
+    // A newer move superseded this one: it owns the reader's position and the address.
+    if (!(await hostClient.loadLatestTranscript(thread.id))) return;
     // The anchor is spent. Releasing it from the address as well is what lets
     // the same update be opened again later as a fresh jump.
     anchored.current = null;
@@ -1027,6 +1041,27 @@ function ThreadView({
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
+
+  /* ---- Words held across a view that went away ---- */
+
+  // An edit held while this view was away, whose message is no longer waiting now the conversation
+  // is current again: its words come back to the composer as a draft instead of being lost.
+  const waitingIds = useMemo(
+    () =>
+      detailCurrent ? (queueInputs ?? inputQueue?.items.map((item) => item.message.id)) : undefined,
+    [detailCurrent, inputQueue, queueInputs],
+  );
+  useEffect(() => {
+    const scope = heldEditScope(hostClient);
+    const key = composerDraftKeyFor(snapshot.deploymentId, snapshot.user?.id, {
+      kind: "thread",
+      threadId: thread.id,
+    });
+    if (!waitingIds || !scope || !key) return;
+    returnGoneWaitingEdits(scope, thread.id, waitingIds, (returned) => {
+      void composerDrafts.handBack(key, returned).catch(reportActionError);
+    });
+  }, [waitingIds, hostClient, snapshot.deploymentId, snapshot.user?.id, thread.id]);
 
   /* ---- Quoting a reply ---- */
 

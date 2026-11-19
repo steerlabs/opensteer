@@ -8,6 +8,7 @@ import {
   removeWaitingDraftPart,
   setWaitingDraftText,
   waitingDraftAwaits,
+  waitingDraftOutgoing,
   waitingDraftSave,
   type WaitingDraft,
   type WaitingDraftSource,
@@ -150,6 +151,35 @@ describe("waiting draft", () => {
           expect(draft.text).toBe(`full ${draft.baseRevision}`);
       }
     }
+  });
+
+  it("gives nothing to send or save from any locked draft; a loaded one gives its full body at its revision", () => {
+    const preview = openWaitingDraft({ content: words("Ship the fi", photo), revision: 2 });
+    const loaded = hydrateWaitingDraft(preview, full(2, words("Ship the fix", photo)));
+    const followed = followWaitingDraft(loaded, { content: words("Newer, cli"), revision: 3 });
+    const reloaded = reloadWaitingDraft(
+      followWaitingDraft(setWaitingDraftText(loaded, "Mine"), {
+        content: words("Newer"),
+        revision: 3,
+      }),
+    );
+    // Every action that sends or saves goes through these two: Save and saving before an answer
+    // (`waitingDraftSave`), Send as new and a move to the composer (`waitingDraftOutgoing`).
+    for (const [name, locked] of [
+      ["opened from a preview", preview],
+      ["followed to a newer preview", followed],
+      ["reloaded onto a newer preview", reloaded],
+    ] as const) {
+      expect(locked.loading, name).toBe(true);
+      expect(waitingDraftSave(locked), name).toBeNull();
+      expect(waitingDraftOutgoing(locked), name).toBeNull();
+    }
+    expect(waitingDraftOutgoing(setWaitingDraftText(loaded, "Ship the fix today"))).toEqual({
+      content: words("Ship the fix today", photo),
+      parts: [photo],
+      revision: 2,
+      text: "Ship the fix today",
+    });
   });
 
   it("saves trimmed words and the parts kept against the base version; nothing left saves nothing", () => {

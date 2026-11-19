@@ -470,6 +470,32 @@ describe("answering a question", () => {
     expect(sent()).toEqual([{ kind: "form", answers: { q: ["Batches"] } }]);
   });
 
+  it("keeps a half-typed answer when its view goes away and comes back, and when the Request is read again", async () => {
+    const asked = question([field("q", { multiSelect: true })]);
+    let node = mount([asked]);
+    type(answerField(node), "Run 2023 f");
+    // Away (another task, or a same-viewer history reset) and back.
+    act(() => root.unmount());
+    node.remove();
+    node = mount([asked]);
+    expect(answerField(node).value).toBe("Run 2023 f");
+    // The Request reread after a reset is a new object for the same Request.
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <InputSurface
+            disabled={false}
+            placeholder="Reply…"
+            requests={[{ ...asked }]}
+            running={false}
+            threadId="thread"
+          />
+        </MemoryRouter>,
+      ),
+    );
+    expect(answerField(node).value).toBe("Run 2023 f");
+  });
+
   it("sends what the person typed instead of an option, and unchooses it", async () => {
     const node = mount([question([field("q", { multiSelect: true })])]);
     await act(async () => option(node, "Batches").click());

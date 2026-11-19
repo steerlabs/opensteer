@@ -473,11 +473,18 @@ function ThreadPaneForUser(
   const waiting = useWaitingInputs(hostClient, threadId, false);
   // A waiting message is held for editing only while its task is in front of
   // the reader: under another screen, out of view or in the background, it goes on.
+  const keepUnsent = useRef<
+    (
+      target: string,
+      words: { readonly parts: readonly ContentPart[]; readonly text: string },
+    ) => Promise<boolean>
+  >(async () => false);
   const editing = useWaitingEdit(
     hostClient,
     threadId,
     waiting,
     navigationFocused && inView && appForeground,
+    (target, words) => keepUnsent.current(target, words),
   );
   const askDecisions = useAskDecisions(hostClient);
   const [focusDraft, setFocusDraft] = useState(0);
@@ -485,14 +492,17 @@ function ThreadPaneForUser(
   const waitingEdit = editing.edit;
   const editingReply = waitingEdit !== null && waitingEdit.messageId === replyEditMessage;
   const drafts = client.drafts;
-  const sendAsNew = useCallback(
-    async (words: { readonly parts: readonly ContentPart[]; readonly text: string }) => {
+  const sendAsNewTo = useCallback(
+    async (
+      target: string,
+      words: { readonly parts: readonly ContentPart[]; readonly text: string },
+    ) => {
       if (viewerUserId === null) return false;
       // Files go with it by reference; a page or app it named was this edit's alone.
       const attachments = words.parts.filter(
         (part): part is ArtifactContentPart => part.type === "artifact",
       );
-      const complete = drafts.reserveEdit(deploymentId, viewerUserId, threadId);
+      const complete = drafts.reserveEdit(deploymentId, viewerUserId, target);
       const kept = await complete((draft) => {
         const held = draft?.attachments ?? [];
         return {
@@ -514,11 +524,17 @@ function ThreadPaneForUser(
           ],
         };
       });
-      if (kept) setFocusDraft((value) => value + 1);
+      if (kept && target === threadId) setFocusDraft((value) => value + 1);
       return kept;
     },
     [deploymentId, drafts, threadId, viewerUserId],
   );
+  const sendAsNew = useCallback(
+    (words: { readonly parts: readonly ContentPart[]; readonly text: string }) =>
+      sendAsNewTo(threadId, words),
+    [sendAsNewTo, threadId],
+  );
+  keepUnsent.current = sendAsNewTo;
 
   const thread = snapshot.thread;
   const canRespond = threadDetail.synchronized && canRespondToRequests(snapshot);

@@ -4230,6 +4230,58 @@ describe("a task", () => {
     );
   });
 
+  it("keeps typed words through a same-viewer history reset that empties and refills the queue", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const initial = snapshotFor({
+      entries: [...task.entries, waiting],
+      queue: [waitingInput(waiting, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Card fees, FX and the wire charge");
+    // The reset forgets what was read; the queue is read again a moment later.
+    await act(async () =>
+      host.move(
+        snapshotFor({
+          entries: task.entries,
+          queue: [],
+          run: { id: task.runId, status: "running" },
+          threadId: workId,
+        }),
+      ),
+    );
+    await act(async () => host.move(initial));
+    expect(editField(container)?.value).toBe("Card fees, FX and the wire charge");
+    expect(host.editor.cancel).not.toHaveBeenCalled();
+  });
+
+  it("hands words typed into a waiting message to the task's draft when the person leaves the task", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, waiting],
+        queue: [waitingInput(waiting, workId)],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    const { container, drafts, root } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Card fees, FX and the wire charge");
+    // Away from the task: the message goes on to the agent, and the words stay the person's.
+    await act(async () => root.unmount());
+    await settle();
+    expect(host.editor.cancel).toHaveBeenCalled();
+    expect(drafts.readDraft(deploymentId, userId, workId)?.text).toBe(
+      "Card fees, FX and the wire charge",
+    );
+  });
+
   it("follows a version saved elsewhere until words are typed, then offers them as a new message", async () => {
     const task = taskAtWork();
     const waiting = said("Include the card fees", null);

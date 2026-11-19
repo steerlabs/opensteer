@@ -704,6 +704,228 @@ test("a live reset keeps only the streams it names: every other stream's text an
   expect(f.detail.text.get("node:c"), "a held frame of a closed stream applied").toBeUndefined();
 });
 
+test("a history page the store refused (its change journal overflowed) is read again, not reported done", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const linked = { ...item, id: "linked", messageId: createId("message"), position: "0" };
+  const answers: ((value: unknown) => void)[] = [];
+  const read = vi.fn(() => new Promise((resolve) => answers.push(resolve)));
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  const page = {
+    ok: true,
+    data: {
+      kind: "page",
+      threadId,
+      nodeId: null,
+      revision: "1",
+      hasMore: false,
+      nextBefore: null,
+      nextAfter: null,
+      items: [linked, item],
+    },
+  };
+  let settled = false;
+  const jump = reader.history("around", linked.messageId).then(() => (settled = true));
+  await vi.waitFor(() => expect(answers).toHaveLength(1));
+  // More changes land while the page flies than the store keeps for it.
+  for (let frame = 0; frame < 16; frame++) {
+    const accepted = f.stream.receive({
+      ...f.address,
+      type: "host.changes",
+      fromSequence: String(1 + frame),
+      throughSequence: String(2 + frame),
+      changes: Array.from({ length: 128 }, (_, index) => ({
+        entityKind: "item",
+        entityId: `busy:${frame}:${index}`,
+        operation: "upsert",
+        sequence: String(2 + frame),
+        ordinal: index,
+        value: {
+          ...item,
+          id: `busy:${frame}:${index}`,
+          messageId: createId("message"),
+          position: String(10 + frame * 128 + index),
+        },
+      })),
+    } as never);
+    expect(accepted).toBe(true);
+  }
+  answers[0]!(page);
+  await vi.waitFor(() => expect(answers, "the refused page was never read again").toHaveLength(2));
+  expect(settled).toBe(false);
+  answers[1]!(page);
+  await jump;
+  expect(f.detail.transcript.getSnapshot().items.has(linked.id)).toBe(true);
+  reader.dispose();
+});
+
+describe("the reader's intended position", () => {
+  /** A synced detail and a reader whose page reads the test answers by hand, in any order. */
+  function positioned() {
+    const f = fixture();
+    f.syncShell();
+    f.syncDetail();
+    const targets = Array.from({ length: 4 }, (_, index) => ({
+      ...item,
+      id: `target-${index}`,
+      messageId: createId("message"),
+      position: String(index - 10),
+    }));
+    // Each target's page holds only it and the latest row, so a page for one omits the others.
+    const pending: {
+      query: { aroundMessageId?: string; anchorItemId?: string };
+      answer: () => void;
+    }[] = [];
+    const read = vi.fn(
+      (query: { aroundMessageId?: string; anchorItemId?: string }) =>
+        new Promise((resolve) => {
+          const target = targets.find(
+            ({ messageId, id }) => messageId === query.aroundMessageId || id === query.anchorItemId,
+          );
+          const items = target ? [target, item] : [item];
+          pending.push({
+            query,
+            answer: () =>
+              resolve({
+                ok: true,
+                data: {
+                  kind: "page",
+                  threadId,
+                  nodeId: null,
+                  revision: "1",
+                  hasMore: false,
+                  nextBefore: null,
+                  nextAfter: null,
+                  items,
+                },
+              }),
+          });
+        }),
+    );
+    const reader = new ScopedThreadReader(
+      f.detail,
+      { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+      new TranscriptBodies(),
+    );
+    const settle = async () => {
+      for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    };
+    return { f, targets, pending, reader, settle };
+  }
+
+  it("a jump overtaken by a newer one lands nothing and says so, so no route reports it missing", async () => {
+    const { f, targets, pending, reader, settle } = positioned();
+    const first = reader.history("around", targets[0]!.messageId);
+    const second = reader.history("around", targets[1]!.messageId);
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    // The older page answers first: it is for a move the reader no longer wants.
+    pending[0]!.answer();
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]!.answer();
+    await expect(first).resolves.toBe(false);
+    await expect(second).resolves.toBe(true);
+    await settle();
+    expect(f.detail.anchor).toBe(targets[1]!.id);
+    expect(f.detail.transcript.getSnapshot().items.has(targets[0]!.id)).toBe(false);
+    reader.dispose();
+  });
+
+  it("a resubscription's first cut does not erase a scroll made after it subscribed", async () => {
+    const { f, targets, reader } = positioned();
+    // Back from the background: a subscription that asked for no anchor.
+    f.stream.setBackground(true);
+    f.stream.setBackground(false);
+    const subscribe = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+    expect(subscribe.anchorItemId).toBeUndefined();
+    // The reader scrolls up on the rows still on screen while that cut is in flight.
+    reader.setAnchor(targets[2]!.id);
+    const address = {
+      scope: subscribe.scope,
+      subscriptionId: subscribe.subscriptionId,
+      generation: subscribe.generation,
+    };
+    const cut = f.detailSnapshot();
+    f.stream.receive({ ...cut, ...address, snapshot: { ...cut.snapshot, anchorItemId: null } });
+    expect(f.detail.anchor, "the cut erased the newer scroll").toBe(targets[2]!.id);
+    reader.dispose();
+  });
+
+  it("under any interleaving of jumps, scrolls, repairs and resubscribes, only the latest move lands", async () => {
+    let seed = 11;
+    const next = (limit: number) => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed % limit;
+    };
+    for (let run = 0; run < 60; run++) {
+      const { f, targets, pending, reader, settle } = positioned();
+      const jumps: { promise: Promise<boolean>; target: number; move: number }[] = [];
+      let moves = 0;
+      let last: { kind: "jump" | "scroll"; target: number } | null = null;
+      for (let step = 0; step < 12; step++) {
+        const action = next(6);
+        if (action <= 1) {
+          const target = next(targets.length);
+          moves++;
+          last = { kind: "jump", target };
+          jumps.push({
+            promise: reader.history("around", targets[target]!.messageId),
+            target,
+            move: moves,
+          });
+        } else if (action === 2) {
+          const target = next(targets.length);
+          moves++;
+          last = { kind: "scroll", target };
+          reader.setAnchor(targets[target]!.id);
+        } else if (action === 3) {
+          f.stream.receive(f.detailSnapshot());
+        } else if (action === 4) {
+          f.stream.setBackground(true);
+          f.stream.setBackground(false);
+          const subscribe = f.sent.at(-1) as Extract<
+            ScopedClientMessage,
+            { type: "client.subscribe" }
+          >;
+          const address = {
+            scope: subscribe.scope,
+            subscriptionId: subscribe.subscriptionId,
+            generation: subscribe.generation,
+          };
+          const cut = f.detailSnapshot();
+          f.stream.receive({
+            ...cut,
+            ...address,
+            snapshot: { ...cut.snapshot, anchorItemId: subscribe.anchorItemId ?? null },
+          });
+          f.stream.receive({ ...address, type: "host.synchronized", throughSequence: "1" });
+        } else if (pending.length) {
+          pending.splice(next(pending.length), 1)[0]!.answer();
+        }
+        await settle();
+      }
+      // Everything still asked for is answered.
+      for (let guard = 0; guard < 50 && pending.length; guard++) {
+        pending.shift()!.answer();
+        await settle();
+      }
+      const outcomes = await Promise.all(jumps.map(({ promise }) => promise));
+      const label = `run ${run}`;
+      for (const [index, jump] of jumps.entries())
+        expect(outcomes[index], `${label}: jump ${index}`).toBe(
+          last?.kind === "jump" && jump.move === moves,
+        );
+      if (last?.kind === "jump") expect(f.detail.anchor, label).toBe(targets[last.target]!.id);
+      if (last?.kind === "scroll") expect(f.detail.anchor, label).toBe(targets[last.target]!.id);
+      reader.dispose();
+    }
+  });
+});
+
 test("bounds explicitly loaded bodies", () => {
   const bodies = new TranscriptBodies();
   const big = {
@@ -2492,6 +2714,159 @@ test("a repaired task drops an open assignment its reread no longer returns, and
   }
 });
 
+test("a resubscribed task reads its assignments again; one pushed while that read flies is kept though the read omits it", async () => {
+  const seed = Object.values(new MockHostClient({ latencyMs: 0 }).getSnapshot().assignments)[0]!;
+  const finished = {
+    ...seed,
+    id: createId("delegation"),
+    parentThreadId: threadId,
+    status: "open" as const,
+  };
+  const fresh = {
+    ...seed,
+    id: createId("delegation"),
+    parentThreadId: threadId,
+    status: "open" as const,
+    revision: 5,
+  };
+  const lists: ((assignments: (typeof seed)[]) => void)[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    const name = new URL(String(input)).pathname.slice("/v1/rpc/".length);
+    if (name === "thread.assignments.list") {
+      const assignments = await new Promise<(typeof seed)[]>((resolve) => lists.push(resolve));
+      return Response.json({
+        ok: true,
+        data: {
+          assignments,
+          threadId,
+          window: {
+            byteCount: 0,
+            hasMore: false,
+            itemCount: assignments.length,
+            nextBefore: null,
+            totalItems: assignments.length,
+          },
+        },
+      });
+    }
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+  let socket: MockPersonalSocket;
+  let detail: Extract<ScopedClientMessage, { type: "client.subscribe" }> | undefined;
+  const deliverDetail = () => {
+    const address = {
+      scope: detail!.scope,
+      subscriptionId: detail!.subscriptionId,
+      generation: detail!.generation,
+      throughSequence: "1",
+    };
+    socket.deliver({
+      ...address,
+      type: "host.snapshot",
+      snapshot: {
+        thread: detailThread(task),
+        items: [item],
+        activeItems: [],
+        pendingRequests: [],
+        nextBefore: null,
+      },
+    } as never);
+    socket.deliver({ ...address, type: "host.synchronized" } as never);
+  };
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      queueMicrotask(() => {
+        if (message.type === "client.ping")
+          socket.deliver({ type: "host.pong", nonce: message.nonce } as never);
+        if (message.type === "client.subscribe") {
+          detail = message;
+          deliverDetail();
+        }
+        if (message.type !== "client.attach") return;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: "1",
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [task],
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+      });
+    }));
+  let foreground = () => {};
+  let background = () => {};
+  const lifecycle: ClientLifecycle = {
+    getSnapshot: () => ({ network: "online", visibility: "foreground" }),
+    onForeground: (listener) => ((foreground = listener), () => {}),
+    onBackground: (listener) => ((background = listener), () => {}),
+    onNetworkChange: () => () => {},
+  };
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    lifecycle,
+    webSocketFactory: connect,
+  });
+  const held = () => Object.keys(client.getSnapshot().assignments).sort();
+  try {
+    await client.load();
+    client.activateThread(threadId);
+    await vi.waitFor(() => expect(lists).toHaveLength(1));
+    lists[0]!([finished]);
+    await vi.waitFor(() => expect(held()).toEqual([finished.id]));
+    // The app goes away and comes back: a new subscription, which may have skipped the change
+    // that finished the assignment.
+    background();
+    foreground();
+    await vi.waitFor(() =>
+      expect(lists, "the new subscription never read assignments").toHaveLength(2),
+    );
+    // While that read flies, another assignment is handed out and pushed.
+    socket!.deliver({
+      scope: detail!.scope,
+      subscriptionId: detail!.subscriptionId,
+      generation: detail!.generation,
+      type: "host.changes",
+      fromSequence: "1",
+      throughSequence: "2",
+      changes: [
+        {
+          entityKind: "assignment",
+          entityId: fresh.id,
+          operation: "upsert",
+          sequence: "2",
+          ordinal: 0,
+          value: fresh,
+        },
+      ],
+    } as never);
+    await vi.waitFor(() => expect(held()).toEqual([finished.id, fresh.id].sort()));
+    // The read's answer is from before that push: the finished one goes, the new one stays.
+    lists[1]!([]);
+    await vi.waitFor(() => expect(held()).toEqual([fresh.id]));
+  } finally {
+    client.dispose();
+  }
+});
+
 test("a subagent progress tick notifies only that row's text subscriber, not the task view", () => {
   const f = fixture();
   f.syncShell();
@@ -2613,6 +2988,7 @@ function taskPageResponse(
     title?: string;
     status?: "idle" | "running";
     doneReason?: "quiet";
+    runQueued?: boolean;
   }[],
   window: { nextBefore: string | null; totalItems?: number },
 ) {
@@ -2637,6 +3013,7 @@ function taskPageResponse(
         },
         lastReply: null,
         failure: null,
+        ...(row.runQueued === undefined ? {} : { runQueued: row.runQueued }),
       })),
       window: {
         nextBefore: window.nextBefore,
@@ -2797,6 +3174,8 @@ describe("task lists from the shell and its pages", () => {
           id: createId("thread"),
           askedAt: minutesBefore(10 + page * 3 + index),
           status: "running" as const,
+          // A Run waits on its account getting ready: the page says so beside the Thread.
+          runQueued: index === 0,
         })),
         { nextBefore: page < 2 ? `active-${page + 1}` : null, totalItems: 10 },
       );
@@ -2807,6 +3186,134 @@ describe("task lists from the shell and its pages", () => {
         expect(client.getSnapshot().activeTasks, "the active pages stopped early").toHaveLength(10),
       );
       expect(reads).toEqual(["active-0", "active-1", "active-2"]);
+      expect(
+        client.getSnapshot().activeTasks.filter(({ thread }) => thread.runQueued),
+        "a continued task lost its queued-account reason",
+      ).toHaveLength(3);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("keeps the open and active lists right as pushed rows change, move and leave, one at a time", async () => {
+    const rows = Array.from({ length: 20 }, (_, index) => ({
+      ...task,
+      id: createId("thread"),
+      status: (index % 3 === 0 ? "running" : "idle") as "running" | "idle",
+      askedAt: minutesBefore(index * 2),
+    }));
+    const lists = {
+      recentTaskIds: rows.filter(({ status }) => status !== "running").map(({ id }) => id),
+      activeTaskIds: rows.filter(({ status }) => status === "running").map(({ id }) => id),
+    };
+    const host = scriptedHost({ tasks: rows, lists });
+    const client = scriptedClient(host);
+    let seed = 5;
+    const next = (limit: number) => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed % limit;
+    };
+    const statuses = ["running", "waiting", "idle", "failed"] as const;
+    type Row = Omit<(typeof rows)[number], "status" | "doneAt" | "revision"> & {
+      readonly status: string;
+      readonly doneAt: string | null;
+      readonly revision: string;
+    };
+    const current = new Map<string, Row>(rows.map((row) => [row.id, row]));
+    try {
+      await client.load();
+      for (let step = 0; step < 150; step++) {
+        const id = [...current.keys()][next(current.size)]!;
+        const row = current.get(id)!;
+        if (current.size > 5 && next(8) === 0) {
+          // Archived or deleted: the Host removes the row.
+          current.delete(id);
+          host.commit([{ entityKind: "task", entityId: id, operation: "remove" } as never]);
+          continue;
+        }
+        const revision = String(10 + step);
+        const status = statuses[next(statuses.length)]!;
+        const changed = {
+          ...row,
+          revision,
+          status,
+          // Some changes move the task in the order, as a new ask would.
+          askedAt: next(4) === 0 ? minutesBefore(next(200)) : row.askedAt,
+          // Only a settled task can be Done.
+          doneAt: (status === "idle" || status === "failed") && next(4) === 0 ? time : null,
+        };
+        current.set(id, changed);
+        host.commit([upsert("task", id, changed)]);
+        const snapshot = client.getSnapshot();
+        const open = snapshot.tasks!.entries.map(({ thread }) => thread);
+        const label = `step ${step}`;
+        // Sorted in task order, with no task twice.
+        for (let index = 1; index < open.length; index++)
+          expect(
+            open[index - 1]!.askedAt > open[index]!.askedAt ||
+              (open[index - 1]!.askedAt === open[index]!.askedAt &&
+                open[index - 1]!.id > open[index]!.id),
+            label,
+          ).toBe(true);
+        // Exactly the open tasks the client holds.
+        const expected = [...current.values()]
+          .filter(({ doneAt }) => doneAt === null)
+          .map(({ id: task }) => task)
+          .sort();
+        expect(open.map(({ id: task }) => task).sort(), label).toEqual(expected);
+        expect(
+          snapshot.activeTasks.map(({ thread }) => thread.id),
+          label,
+        ).toEqual(
+          open
+            .filter(({ status }) => status === "running" || status === "waiting")
+            .map(({ id: task }) => task),
+        );
+      }
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("a task page dropped for a newer cut leaves no trace in the task's state", async () => {
+    const settled = Array.from({ length: 25 }, (_, index) => ({
+      ...task,
+      id: createId("thread"),
+      status: "idle" as const,
+      askedAt: minutesBefore(index),
+    }));
+    const lists = { recentTaskIds: settled.map(({ id }) => id), nextBefore: "page-0" };
+    const host = scriptedHost({ tasks: settled, lists });
+    const older = createId("thread");
+    const answers: ((response: Response) => void)[] = [];
+    const client = scriptedClient(host, async (input) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+      return new Promise<Response>((resolve) => answers.push(resolve));
+    });
+    /** The page, answered as of `asOf`: the older task at work, or settled. */
+    const page = async (asOf: string, status: "running" | "idle") => {
+      const response = taskPageResponse(
+        host,
+        [{ id: older, askedAt: minutesBefore(1_000), status }],
+        { nextBefore: null, totalItems: 1 },
+      );
+      const body = (await response.json()) as { data: { asOfSequence: string } };
+      body.data.asOfSequence = asOf;
+      return Response.json(body);
+    };
+    try {
+      await client.load();
+      const loading = client.loadEarlierTasks();
+      await vi.waitFor(() => expect(answers).toHaveLength(1));
+      host.repairShell(settled, lists);
+      // An answer read against the replaced cut, far ahead of the next: it must not be recorded.
+      answers[0]!(await page("900", "running"));
+      await vi.waitFor(() => expect(answers).toHaveLength(2));
+      answers[1]!(await page(host.head(), "idle"));
+      await loading;
+      const shown = client.getSnapshot().tasks?.entries.find(({ thread }) => thread.id === older);
+      expect(shown?.thread.status, "a dropped page's state outranked the current one").toBe("idle");
     } finally {
       client.dispose();
     }
@@ -2893,7 +3400,7 @@ describe("task lists from the shell and its pages", () => {
       );
       expect(done()!.window.totalItems).toBe(2);
 
-      // An edit to a Done task leaves the count to the Host, which still says two.
+      // An edit to a Done task moves nothing: no read, and the count stays the Host's two.
       host.commit([
         upsert("task", older.id, {
           ...task,
@@ -2905,19 +3412,79 @@ describe("task lists from the shell and its pages", () => {
           title: "Renamed",
         }),
       ]);
-      await vi.waitFor(() => expect(answers).toHaveLength(3));
-      answers[2]!(taskPageResponse(host, current, { nextBefore: null, totalItems: 2 }));
-      await vi.waitFor(() => expect(done()!.window.totalItems).toBe(2));
-      // Reopened, it leaves Done at once; the Host's count follows on the next read.
+      expect(done()!.window.totalItems).toBe(2);
+      // Reopened, a task this client holds leaves Done at once, and the count with it.
       host.commit([upsert("task", quiet.id, { ...quiet, revision: "4", doneAt: null })]);
       expect(done()!.entries.some(({ thread }) => thread.id === quiet.id)).toBe(false);
-      await vi.waitFor(() => expect(answers).toHaveLength(4));
-      answers[3]!(taskPageResponse(host, [older], { nextBefore: null, totalItems: 1 }));
-      await vi.waitFor(() => expect(done()!.window.totalItems).toBe(1));
+      expect(done()!.window.totalItems).toBe(1);
+      expect(answers, "a move the client could place read Done again").toHaveLength(2);
     } finally {
       client.dispose();
     }
   });
+  it("follows off-page moves in and out of Done in its count, reading the count once the pushes rest", async () => {
+    const held = Array.from({ length: 50 }, (_, index) => ({
+      id: createId("thread"),
+      askedAt: minutesBefore(500 + index),
+      doneAt: minutesBefore(400 + index),
+    }));
+    // Done tasks this client never loaded: one past the held page, one open the Host never sent.
+    const offPage = { ...task, id: createId("thread"), status: "idle" as const };
+    const host = scriptedHost({ tasks: [task], lists: { recentTaskIds: [task.id] } });
+    const reads: { input: { limit?: number }; resolve: (response: Response) => void }[] = [];
+    const client = scriptedClient(host, async (input) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+      const query = JSON.parse(url.searchParams.get("input") ?? "{}") as { limit?: number };
+      return new Promise<Response>((resolve) => reads.push({ input: query, resolve }));
+    });
+    const done = () => Object.values(client.getSnapshot().doneTasks)[0];
+    try {
+      await client.load();
+      const opening = client.loadDoneTasks();
+      await vi.waitFor(() => expect(reads).toHaveLength(1));
+      reads[0]!.resolve(taskPageResponse(host, held, { nextBefore: "done-1", totalItems: 60 }));
+      await opening;
+      expect(done()!.window.totalItems).toBe(60);
+      vi.useFakeTimers();
+
+      // Reopened elsewhere, a Done task past the held page: the row alone does not say it was Done.
+      host.commit([upsert("task", offPage.id, { ...offPage, revision: "2", doneAt: null })]);
+      // Archived elsewhere, another one: an id-only remove.
+      host.commit([
+        { entityKind: "task", entityId: createId("thread"), operation: "remove" } as never,
+      ]);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(reads, "the count was read before the pushes rested").toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reads).toHaveLength(2);
+      expect(reads[1]!.input.limit).toBe(1);
+      reads[1]!.resolve(
+        taskPageResponse(host, held.slice(0, 1), { nextBefore: "x", totalItems: 58 }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(done()!.window.totalItems, "an off-page reopen and archive left the badge stale").toBe(
+        58,
+      );
+
+      // Done just now: newer than every held Done task, so it was not Done before. Counted at once.
+      host.commit([
+        upsert("task", offPage.id, {
+          ...offPage,
+          revision: "3",
+          doneAt: time,
+          doneReason: "quiet",
+        }),
+      ]);
+      expect(done()!.window.totalItems).toBe(59);
+      expect(done()!.entries[0]!.thread.id).toBe(offPage.id);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(reads, "a move the client could place read Done again").toHaveLength(2);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("keeps Done's count from its first page; a continuation does not carry one", async () => {
     const host = scriptedHost({ tasks: [task], lists: { recentTaskIds: [task.id] } });
     const rows = Array.from({ length: 3 }, (_, index) => ({
@@ -3240,6 +3807,46 @@ describe("reads that race a repair", () => {
       queue.answers[1]!(answer("2"));
       await vi.advanceTimersByTimeAsync(0);
       expect(reader.getSnapshot().inputQueue?.items.at(-1)?.message.preview).toBe("as of 2");
+    } finally {
+      reader.dispose();
+    }
+  });
+
+  it("two queue reads each overtaken by a repair install nothing; the third, current, fills the tail", async () => {
+    const head = createId("message");
+    const tail = createId("message");
+    const f = racing([head, tail], [head]);
+    const queue = held<unknown>();
+    const reader = new ScopedThreadReader(
+      f.detail,
+      { "thread.inputQueue.get": queue.fn } as never,
+      new TranscriptBodies(),
+    );
+    const answer = (preview: string, revision: string) => ({
+      ok: true,
+      data: {
+        threadId,
+        revision,
+        asOfSequence: revision,
+        paused: true,
+        steerRunId: null,
+        items: [waitingEntry(head, preview), waitingEntry(tail, preview)],
+      },
+    });
+    try {
+      await vi.waitFor(() => expect(queue.fn).toHaveBeenCalledTimes(1));
+      f.stream.receive(f.cut("2"));
+      queue.answers[0]!(answer("first", "1"));
+      await vi.waitFor(() => expect(queue.fn).toHaveBeenCalledTimes(2));
+      // Overtaken again before it answers.
+      f.stream.receive(f.cut("3"));
+      queue.answers[1]!(answer("second", "2"));
+      await vi.waitFor(() => expect(queue.fn).toHaveBeenCalledTimes(3));
+      expect(f.detail.transcript.getSnapshot().queueEntries.has(tail)).toBe(false);
+      queue.answers[2]!(answer("third", "3"));
+      await vi.waitFor(() =>
+        expect(reader.getSnapshot().inputQueue?.items.at(-1)?.message.preview).toBe("third"),
+      );
     } finally {
       reader.dispose();
     }

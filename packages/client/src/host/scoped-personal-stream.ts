@@ -62,6 +62,16 @@ export interface ObservedDetail {
    * jump tells it at once; ordinary scrolling (`settled`) once the reader has stopped moving.
    */
   anchorTo(itemId: string | undefined, settled?: boolean): void;
+  /**
+   * The reader's intended position, numbered: each move a person makes (a jump, Return to latest,
+   * a scroll report) takes the next number. A jump's page, a repair's reread and a subscription's
+   * first cut act only for the intent they began under; anything older is ignored.
+   */
+  intent: number;
+  /** Takes the next intent number, for a move the reader is about to make. */
+  intend(): number;
+  /** The intent current when this scope last subscribed: its first cut answers that one. */
+  subscribedIntent: number;
   /** The anchor the Host was last told on this subscription, and a scroll's pending report. */
   sentAnchor?: string | null;
   anchorTimer?: ReturnType<typeof setTimeout> | undefined;
@@ -177,6 +187,9 @@ export class ScopedPersonalStream {
       revision: 0,
       subscriptions: 0,
       anchorTo: (itemId, settled) => this.#anchorTo(detail, itemId, settled),
+      intent: 0,
+      intend: () => ++detail.intent,
+      subscribedIntent: 0,
     };
     this.#details.set(key, detail);
     return detail;
@@ -680,7 +693,9 @@ export class ScopedPersonalStream {
       "items" in frame.snapshot &&
       detail.anchor &&
       frame.snapshot.anchorItemId === null &&
-      !detail.transcript.getSnapshot().synchronized
+      !detail.transcript.getSnapshot().synchronized &&
+      // Only the anchor this subscription asked for: the reader may have moved since.
+      detail.intent === detail.subscribedIntent
     )
       delete detail.anchor;
     // A snapshot after `host.synchronized` is the Host's inline repair and applies in place.
@@ -789,6 +804,8 @@ export class ScopedPersonalStream {
   }
 
   #anchorTo(detail: ObservedDetail, itemId: string | undefined, settled = false) {
+    // A scroll report is the reader's own move; the reader's bookkeeping for a move under way is not.
+    if (settled) detail.intent++;
     // Reads go by the newest anchor at once; only the report to the Host waits for scrolling to stop.
     if (itemId === undefined) delete detail.anchor;
     else detail.anchor = itemId;
@@ -980,6 +997,7 @@ export class ScopedPersonalStream {
       ...(detail.anchor ? { anchorItemId: detail.anchor } : {}),
     } satisfies Omit<Subscribe, "type">;
     detail.sentAnchor = detail.anchor ?? null;
+    detail.subscribedIntent = detail.intent;
     if (!attaching) this.#send?.({ type: "client.subscribe", ...subscription });
     return subscription;
   }

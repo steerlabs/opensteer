@@ -5087,14 +5087,16 @@ export class MockHostClient implements HostClient {
     return result.data;
   }
 
-  async loadTranscriptAround(threadId: string, messageId: string): Promise<void> {
+  async loadTranscriptAround(threadId: string, messageId: string): Promise<boolean> {
     await this.#readMockHistory(threadId, { aroundMessageId: messageId });
+    return true;
   }
 
-  async loadLatestTranscript(threadId: string): Promise<void> {
+  async loadLatestTranscript(threadId: string): Promise<boolean> {
     if (!this.#state.getSnapshot().threads.some((thread) => thread.id === threadId))
       throw new Error("Thread not found.");
     await this.#readMockHistory(threadId, {});
+    return true;
   }
 
   async #readMockHistory(

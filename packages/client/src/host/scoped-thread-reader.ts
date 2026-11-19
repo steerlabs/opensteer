@@ -27,6 +27,11 @@ export interface ThreadViewState {
   readonly generation?: number;
   /** Counts the Host's repairs of this scope: each replaced what the reader holds. */
   readonly repairs?: number;
+  /**
+   * Every waiting message's id, in order, as the Host's queue lists them; `inputQueue` holds only
+   * those whose entries are read. Absent until the scope is synchronized.
+   */
+  readonly queueInputs?: readonly string[];
   readonly pendingRequestIds?: readonly string[];
   readonly inputQueueError?: unknown;
   readonly moreTools?: boolean;
@@ -219,6 +224,7 @@ export class ScopedThreadReader implements ThreadViewSource {
         }) ?? [];
     }
     const inputQueue = state.inputQueue;
+    const queueInputs = state.synchronized ? state.snapshot?.queue?.inputs : undefined;
     const hasMore = state.snapshot?.nextBefore != null;
     const hasNewer = state.snapshot?.nextAfter != null;
     const moreRequests = state.synchronized && state.snapshot?.overlayCursors?.requests != null;
@@ -276,6 +282,7 @@ export class ScopedThreadReader implements ThreadViewSource {
       requestChanged ||
       state.generation !== this.#view.generation ||
       state.repairs !== this.#view.repairs ||
+      queueInputs !== this.#view.queueInputs ||
       inputQueueError !== this.#view.inputQueueError ||
       inputQueue !== this.#view.inputQueue ||
       state.synchronized !== this.#view.synchronized
@@ -296,6 +303,7 @@ export class ScopedThreadReader implements ThreadViewSource {
             : (this.#view.pendingRequestIds ?? []),
         generation: state.generation,
         repairs: state.repairs,
+        ...(queueInputs ? { queueInputs } : {}),
         inputQueueError,
         synchronized: state.synchronized,
       });
@@ -447,20 +455,31 @@ export class ScopedThreadReader implements ThreadViewSource {
    * Reads history for the reader. A newer request supersedes one in flight; one overtaken by a
    * repair runs again in the new cut, so a jump lands even when a repair arrived first.
    */
-  history(mode: "earlier" | "newer" | "around" | "latest", aroundMessageId?: string) {
-    if (this.#disposed) return Promise.resolve();
+  history(
+    mode: "earlier" | "newer" | "around" | "latest",
+    aroundMessageId?: string,
+  ): Promise<boolean> {
+    if (this.#disposed) return Promise.resolve(false);
+    // A jump or Return to latest is a move of the reader's: it takes the next intent number, and
+    // only that intent's page may land. Paging earlier or newer moves no one.
+    const intent = mode === "around" || mode === "latest" ? this.#detail.intend() : undefined;
     // The person waits on this read: a failure is theirs to see and retry. One asked for while the
     // scope resubscribes waits for its cut rather than finding nothing, so a valid link still lands.
-    return this.#reads.request(
-      "history",
-      async (read) => {
-        if (!this.#ready() && (!(await this.#untilObserved(read.signal)) || !read.current()))
-          return;
-        await this.#readHistory(read, { mode, aroundMessageId });
-      },
-      { observed: () => !this.#disposed, retry: false },
-    );
+    return this.#reads
+      .request(
+        "history",
+        async (read) => {
+          if (!this.#ready() && (!(await this.#untilObserved(read.signal)) || !read.current()))
+            return;
+          await this.#readHistory(read, { mode, aroundMessageId, intent });
+        },
+        { observed: () => !this.#disposed, retry: false },
+      )
+      .then(() => intent === undefined || this.#landed === intent);
   }
+
+  /** The intent whose page last landed. */
+  #landed = 0;
 
   #ready() {
     return this.#observed() && this.#detail.transcript.getSnapshot().snapshot !== null;
@@ -486,15 +505,21 @@ export class ScopedThreadReader implements ThreadViewSource {
 
   async #readHistory(
     read: FencedRead,
-    intent: {
+    ask: {
       readonly mode: "earlier" | "newer" | "around" | "latest" | "anchor";
       readonly aroundMessageId?: string | undefined;
+      /** The reader's move this read is for; a newer move makes it land nothing. */
+      readonly intent?: number | undefined;
     },
   ) {
+    // A repair's reread is for the intent current as it starts; a move since makes it moot.
+    const intent = ask.mode === "anchor" ? this.#detail.intent : ask.intent;
+    const current = () =>
+      read.current() && (intent === undefined || this.#detail.intent === intent);
     const state = this.#detail.transcript.getSnapshot();
     const snapshot = state.snapshot;
     if (!snapshot) return;
-    const { mode, aroundMessageId } = intent;
+    const { mode, aroundMessageId } = ask;
     const transcript = this.#detail.transcript;
     const token = transcript.beginRead();
     try {
@@ -503,9 +528,9 @@ export class ScopedThreadReader implements ThreadViewSource {
         if (anchor !== undefined && !state.items.has(anchor)) {
           const page = await this.#page(read.signal, null, undefined, anchor);
           // The reader scrolled on to a row this client holds: that is where they are now.
-          if (!read.current() || this.#detail.anchor !== anchor) return;
+          if (!current()) return;
           if (page.kind === "page" && page.items.some(({ id }) => id === anchor)) {
-            this.#installPage([page, state.generation, "around", token], undefined);
+            this.#installPage([page, state.generation, "around", token], undefined, intent);
             return;
           }
           // The Host no longer has the reader's row: the reader follows the latest messages.
@@ -513,8 +538,8 @@ export class ScopedThreadReader implements ThreadViewSource {
         }
         if (this.#detail.anchor !== undefined || transcript.getSnapshot().newest) return;
         const latest = await this.#page(read.signal, null);
-        if (read.current() && latest.kind === "page")
-          this.#installPage([latest, state.generation, "latest", token], undefined);
+        if (current() && latest.kind === "page")
+          this.#installPage([latest, state.generation, "latest", token], undefined, intent);
         return;
       }
       const before = mode === "earlier" ? snapshot.nextBefore : null;
@@ -527,7 +552,7 @@ export class ScopedThreadReader implements ThreadViewSource {
         undefined,
         after ?? undefined,
       );
-      if (!read.current()) return;
+      if (!current()) return;
       if (page.kind === "page") {
         if (
           aroundMessageId &&
@@ -538,12 +563,12 @@ export class ScopedThreadReader implements ThreadViewSource {
             message: "The requested message is unavailable.",
             status: 404,
           });
-        this.#installPage([page, state.generation, mode, token], aroundMessageId);
+        this.#installPage([page, state.generation, mode, token], aroundMessageId, intent);
         return;
       }
       const anchor = this.#detail.anchor ?? before?.beforeId ?? after?.beforeId;
       let reset = await this.#page(read.signal, null, aroundMessageId, anchor);
-      if (!read.current()) return;
+      if (!current()) return;
       if (anchor && (reset.kind !== "page" || !reset.items.some(({ id }) => id === anchor))) {
         if (
           !(reset.kind === "history-reset" && reset.anchorUnavailable) &&
@@ -553,7 +578,7 @@ export class ScopedThreadReader implements ThreadViewSource {
         this.#detail.anchorTo(undefined);
         reset = await this.#page(read.signal, null, aroundMessageId);
       }
-      if (read.current() && reset.kind === "page")
+      if (current() && reset.kind === "page")
         this.#installPage(
           [
             reset,
@@ -564,6 +589,7 @@ export class ScopedThreadReader implements ThreadViewSource {
             token,
           ],
           aroundMessageId,
+          intent,
         );
     } finally {
       transcript.endRead(token);
@@ -573,8 +599,12 @@ export class ScopedThreadReader implements ThreadViewSource {
   #installPage(
     args: Parameters<ThreadTranscriptStore["installPage"]>,
     aroundMessageId: string | undefined,
+    intent?: number,
   ) {
-    if (!this.#detail.transcript.installPage(...args)) return;
+    // The store refused it (its change journal overflowed, or the cut moved): the read is not done
+    // and runs again, rather than reporting a page that never landed.
+    if (!this.#detail.transcript.installPage(...args)) return this.#reads.changed("history");
+    if (intent !== undefined) this.#landed = intent;
     const state = this.#detail.transcript.getSnapshot();
     for (const item of args[0].items) {
       const current = state.items.get(item.id);
@@ -709,7 +739,9 @@ export class ScopedThreadReader implements ThreadViewSource {
           (page.next !== null && (page.next === cursor || page.entries.length === 0))
         )
           throw new Error("The Host returned an overlay page for the wrong scope or cut.");
-        if (!this.#detail.transcript.installOverlays(kind, page, state.generation, token)) return;
+        // A refused install leaves the depth unread: the key runs again rather than settling.
+        if (!this.#detail.transcript.installOverlays(kind, page, state.generation, token))
+          return this.#reads.changed(`overlay:${kind}`);
         this.#overlayLoaded.set(kind, { epoch, pages: pages + 1 });
       } finally {
         this.#detail.transcript.endRead(token);

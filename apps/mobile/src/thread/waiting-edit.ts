@@ -8,6 +8,7 @@ import {
   removeWaitingDraftPart,
   setWaitingDraftText,
   waitingDraftAwaits,
+  waitingDraftOutgoing,
   waitingDraftSave,
   type HostClient,
   type WaitingDraft,
@@ -101,7 +102,14 @@ export function useWaitingEdit(
   threadId: string,
   items: readonly WaitingInput[] | null,
   active: boolean,
+  /** Where typed words go when the edit ends because the person left the task: the composer. */
+  keepUnsent?: (
+    threadId: string,
+    words: { readonly text: string; readonly parts: readonly ContentPart[] },
+  ) => Promise<boolean>,
 ): WaitingEditController {
+  const keep = useRef(keepUnsent);
+  keep.current = keepUnsent;
   const [kept, setKept] = useState<WaitingEdit | null>(null);
   const lease = useRef<Lease | null>(null);
   const moving = useRef(false);
@@ -233,8 +241,18 @@ export function useWaitingEdit(
     setKept(null);
   }, [letGo]);
 
-  // Leaving the task lets the message go on to the agent.
-  useEffect(() => close, [close, hostClient, threadId]);
+  // Leaving the task lets the message go on to the agent; words typed into it stay the person's,
+  // in the task's composer, rather than going with the view.
+  useEffect(
+    () => () => {
+      const shown = editRef.current;
+      const words = shown?.draft.dirty ? waitingDraftOutgoing(shown.draft) : null;
+      if (words && lease.current?.saving !== true)
+        void keep.current?.(threadId, { parts: words.parts, text: words.text }).catch(() => false);
+      close();
+    },
+    [close, hostClient, threadId],
+  );
 
   // Out of sight, the message goes on without this phone's hold; back in
   // front, the hold is taken again. A save under way finishes either way.
@@ -405,10 +423,13 @@ export function useWaitingEdit(
         const shown = editRef.current;
         if (flushed?.composing || shown?.messageId !== opened.messageId) return;
         const draft = flushed ? setWaitingDraftText(shown.draft, flushed.text) : shown.draft;
+        // Only words built on the full body leave: never the queue's clipped preview.
+        const outgoing = waitingDraftOutgoing(draft);
+        if (outgoing === null) return;
         setKept({ ...shown, draft, failure: null, phase: "saving", replyFull: false });
         let issue = null;
         try {
-          if (await keep({ parts: draft.parts, text: draft.text.trim() })) {
+          if (await keep({ parts: outgoing.parts, text: outgoing.text })) {
             if (editRef.current?.messageId === shown.messageId) close();
             return;
           }

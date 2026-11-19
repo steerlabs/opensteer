@@ -171,7 +171,7 @@ describe("a cold message link on the web", () => {
         };
       },
     });
-    const around = vi.spyOn(client, "loadTranscriptAround").mockResolvedValue(undefined);
+    const around = vi.spyOn(client, "loadTranscriptAround").mockResolvedValue(true);
     const messageId = "msg_00000000-0000-4000-8000-0000000000aa";
     const node = document.createElement("div");
     document.body.append(node);
