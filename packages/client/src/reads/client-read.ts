@@ -292,7 +292,7 @@ class RetainedClientRead<T> implements ClientRead<T> {
               data: this.#value!,
               refreshing: false,
               stale: true,
-              issue: this.#explicit ? this.#state.issue : null,
+              issue: this.#state.status === "ready" ? this.#state.issue : null,
             }
           : waiting,
       );
@@ -368,6 +368,13 @@ class RetainedClientRead<T> implements ClientRead<T> {
             operation: this.#accepted ? "refresh" : "read",
             label: this.#spec.label,
           });
+          // An automatic refresh that fails keeps the data quietly while the
+          // failure is the link's (retried, and shown by the connection). A
+          // final answer from the Host is neither, so it is shown.
+          const final =
+            failure.provenance === "host" &&
+            !failure.retryable &&
+            ["service", "rejection"].includes(failure.kind);
           this.#publish(
             this.#accepted
               ? {
@@ -375,7 +382,7 @@ class RetainedClientRead<T> implements ClientRead<T> {
                   data: this.#value!,
                   refreshing: false,
                   stale: true,
-                  issue: this.#explicit && !this.#retry ? issue : null,
+                  issue: (this.#explicit || final) && !this.#retry ? issue : null,
                 }
               : this.#retry || !issue
                 ? waiting

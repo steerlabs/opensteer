@@ -700,10 +700,11 @@ export async function startEngine(
             return { pid: process.pid, rss: process.memoryUsage().rss, startupMs };
           case "catalogList": {
             const listing = yield* catalog.list;
-            return {
-              ...catalogPage(listing.apps, operations.catalogList.input.parse(raw)),
-              feed: listing.feed,
-            };
+            const input = operations.catalogList.input.parse(raw);
+            // An unread feed has no pages: a cursor from before it failed cannot continue.
+            if (listing.feed.status !== "listed")
+              return { items: [], cursor: null, feed: { status: listing.feed.status } };
+            return { ...catalogPage(listing.apps, input), feed: { status: "listed" } };
           }
           case "catalogDetail": {
             const input = operations.catalogDetail.input.parse(raw);

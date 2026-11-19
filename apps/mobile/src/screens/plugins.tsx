@@ -2,6 +2,7 @@ import {
   installPlugin,
   pluginAccessChoices,
   pluginCatalogInstalled,
+  pluginCatalogListView,
   pluginCatalogReader,
   pluginEngineNotice,
   pluginInstalledGroups,
@@ -29,7 +30,7 @@ import {
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useRef, useState, type ReactNode } from "react";
 import { Alert } from "react-native";
-import { presentClientIssue } from "@opensteer/client/feedback";
+import { clientIssueActions, presentClientIssue } from "@opensteer/client/feedback";
 import { settingsFooter, useScreenAction } from "../ui/client-feedback.js";
 import type { ActionLineValue } from "../ui/action-line.js";
 import { confirm } from "./confirm.js";
@@ -412,64 +413,58 @@ function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClien
   const sections: NativeSettingsSection[] = [];
   const notice = list.loading ? engineSection(engine) : null;
   if (notice) sections.push(notice);
-  if (action.error || list.error)
+  if (action.error)
     sections.push({
       key: "error",
       title: "Catalog",
-      rows: [
-        {
-          key: "error",
-          kind: "status",
-          tone: "bad",
-          label:
-            action.error ??
-            (list.error
-              ? presentClientIssue({ ...list.error, resource: "the catalog" }).title
-              : ""),
-        },
-      ],
+      rows: [{ key: "error", kind: "status", tone: "bad", label: action.error }],
     });
+  const view = pluginCatalogListView(list, search);
+  // A failed read is said under the list, with Try again; entries already shown stay.
+  const issue = view.kind === "failed" ? view : view.kind === "entries" ? view.issue : null;
   sections.push({
     key: "catalog",
     title: search ? `Matching “${search}”` : "Catalog",
-    rows: list.loading
-      ? [{ key: "loading", kind: "text", label: "Loading the catalog…" }]
-      : list.items.length === 0
-        ? [
-            {
-              key: "empty",
-              kind: "text",
-              label: search ? `Nothing matches “${search}”.` : "The catalog is empty.",
-            },
-          ]
-        : [
-            ...list.items.map((entry): NativeSettingsRow => {
-              const already = pluginCatalogInstalled(entry, installed.data?.plugins ?? []);
-              return {
-                key: entry.id,
-                kind: "button",
-                label: entry.name,
-                detail: already ? `Installed · ${entry.description}` : entry.description,
-                mark: { definitionId: entry.id, name: entry.name },
-                disabled: already || action.pending !== null,
-                onPress: () => install(entry),
-              };
-            }),
-            ...(list.nextCursor
-              ? [
-                  {
-                    key: "more",
-                    kind: "button" as const,
-                    label: list.loadingMore ? "Loading…" : "Show more",
-                    disabled: list.loadingMore,
-                    onPress: list.more,
-                  },
-                ]
-              : []),
-          ],
-    footer: {
-      text: "Plugins reviewed for the catalog. Each runs sandboxed until you connect an account.",
-    },
+    rows:
+      view.kind === "loading"
+        ? [{ key: "loading", kind: "text", label: "Loading the catalog…" }]
+        : view.kind === "failed"
+          ? []
+          : view.kind === "empty"
+            ? [{ key: "empty", kind: "text", label: view.text }]
+            : [
+                ...list.items.map((entry): NativeSettingsRow => {
+                  const already = pluginCatalogInstalled(entry, installed.data?.plugins ?? []);
+                  return {
+                    key: entry.id,
+                    kind: "button",
+                    label: entry.name,
+                    detail: already ? `Installed · ${entry.description}` : entry.description,
+                    mark: { definitionId: entry.id, name: entry.name },
+                    disabled: already || action.pending !== null,
+                    onPress: () => install(entry),
+                  };
+                }),
+                ...(list.nextCursor
+                  ? [
+                      {
+                        key: "more",
+                        kind: "button" as const,
+                        label: list.loadingMore ? "Loading…" : "Show more",
+                        disabled: list.loadingMore,
+                        onPress: list.more,
+                      },
+                    ]
+                  : []),
+              ],
+    footer: issue
+      ? {
+          text: issue.text,
+          link: issue.retry ? { label: clientIssueActions.tryAgain, onPress: list.reload } : null,
+        }
+      : {
+          text: "Plugins reviewed for the catalog. Each runs sandboxed until you connect an account.",
+        },
   });
   return (
     <NativeSettingsPage

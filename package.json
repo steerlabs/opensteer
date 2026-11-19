@@ -53,7 +53,10 @@
     "dev:team": "tsx scripts/dev.ts team",
     "verify:team-deployment": "node scripts/verify-team-deployment.mjs",
     "measure:plugin-engine": "pnpm --filter @opensteer/host build && tsx scripts/plugin-engine/measure-service.ts",
-    "check:plugin-engine-names": "node scripts/plugin-engine/names.mjs"
+    "check:plugin-engine-names": "node scripts/plugin-engine/names.mjs",
+    "catalog:snapshot": "tsx scripts/catalog-snapshot/snapshot.ts",
+    "catalog:verify": "tsx scripts/catalog-snapshot/verify.ts",
+    "catalog:publish": "tsx scripts/catalog-snapshot/publish.ts"
   },
   "devDependencies": {
     "@babel/parser": "7.29.8",
@@ -71,6 +74,7 @@
     "tsup": "catalog:",
     "tsx": "4.23.11",
     "typescript": "7.0.2",
+    "typescript-5": "npm:typescript@5.9.3",
     "vite": "catalog:",
     "vitest": "4.1.10",
     "ws": "catalog:",

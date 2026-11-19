@@ -13,5 +13,10 @@
     "noEmit": true,
     "types": ["node", "vite/client"]
   },
-  "include": ["tests/**/*.ts", "tests/**/*.tsx", "scripts/public-download/**/*.ts"]
+  "include": [
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
+    "scripts/public-download/**/*.ts",
+    "scripts/catalog-snapshot/**/*.ts"
+  ]
 }

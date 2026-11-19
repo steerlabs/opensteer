@@ -96,7 +96,8 @@ export const CatalogPageInputSchema = z.strictObject({
 export const CatalogPageSchema = z.strictObject({
   items: z.array(CatalogEntrySchema),
   cursor: z.string().nullable(),
-  feed: object,
+  /** `unavailable`: the feed could not be read, and the page is empty. */
+  feed: z.object({ status: z.enum(["listed", "unavailable", "off"]) }),
 });
 export const PluginSummarySchema = z.object({
   id,
