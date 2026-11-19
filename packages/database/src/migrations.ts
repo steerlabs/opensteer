@@ -248,16 +248,40 @@ update trigger_revisions set program = jsonb_set(program, '{toolContractVersion}
 `;
 /**
  * One plugin per person and name. Two first registrations of one name at once could each create a
- * plugin; the later of any such pair keeps its rows under its name with the end of its id added.
+ * plugin; the later of any such pair keeps its rows under its name with the end of its id added,
+ * and a number after that when the person already has that name. Every name it gives stays a
+ * valid server name (at most 63 characters), so the person can remove it by name.
  */
 export const onePluginPerOwnerNameMigrationName = "0036_one_plugin_per_owner_name";
 const ONE_PLUGIN_PER_OWNER_NAME_SQL = `
-update plugins set name = rtrim(left(plugins.name, 55), '-.') || '-' || right(plugins.id, 8)
-  from (
-    select id, row_number() over (partition by installed_by, name order by created_at, id) as rank
-    from plugins
-  ) duplicate
-  where plugins.id = duplicate.id and duplicate.rank > 1;
+do $$
+declare
+  duplicate record;
+  candidate text;
+  attempt integer;
+begin
+  for duplicate in
+    select id, installed_by, name from (
+      select id, installed_by, name, created_at,
+        row_number() over (partition by installed_by, name order by created_at, id) as rank
+      from plugins
+    ) ranked
+    where rank > 1
+    order by created_at, id
+  loop
+    attempt := 1;
+    loop
+      candidate := rtrim(left(duplicate.name, 50), '-.') || '-' || right(duplicate.id, 8)
+        || case when attempt = 1 then '' else '-' || attempt end;
+      exit when not exists (
+        select 1 from plugins
+        where installed_by is not distinct from duplicate.installed_by and name = candidate
+      );
+      attempt := attempt + 1;
+    end loop;
+    update plugins set name = candidate where id = duplicate.id;
+  end loop;
+end $$;
 create unique index plugins_owner_name on plugins(installed_by, name);
 `;
 export function migrationProvider(): MigrationProvider {

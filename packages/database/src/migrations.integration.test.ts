@@ -771,12 +771,12 @@ describe("fresh personal/team lineage", () => {
     ).toEqual([]);
     expect(await database.selectFrom("agentHomeSettings").selectAll().execute()).toEqual([]);
   });
-  it("keeps both plugins a person registered under one name, the later under a numbered name", async () => {
+  it("keeps every plugin a person registered under one name, each later one under a free name", async () => {
     await migrateToLatest(database, migrationsBefore(onePluginPerOwnerNameMigrationName));
     const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
-    const plugin = (id: string, createdAt: string) => ({
+    const plugin = (id: string, name: string, createdAt: string) => ({
       id,
-      name: "office-light",
+      name,
       scope: "deployment" as const,
       source: jsonValue({}),
       installedBy: userId,
@@ -787,8 +787,16 @@ describe("fresh personal/team lineage", () => {
     await database
       .insertInto("plugins")
       .values([
-        plugin("iin_00000000-0000-4000-8000-0000000000aa", "2026-11-01T00:00:00Z"),
-        plugin("iin_00000000-0000-4000-8000-0000000000bb", "2026-11-01T00:00:01Z"),
+        plugin("iin_00000000-0000-4000-8000-0000000000aa", "office-light", "2026-11-01T00:00:00Z"),
+        plugin("iin_00000000-0000-4000-8000-0000000000bb", "office-light", "2026-11-01T00:00:01Z"),
+        // Already holds the name the duplicate above would first be given.
+        plugin(
+          "iin_00000000-0000-4000-8000-0000000000cc",
+          "office-light-000000bb",
+          "2026-11-01T00:00:02Z",
+        ),
+        // Ends like the second, so its first two choices are taken, one by this migration.
+        plugin("iin_00000000-0000-4000-8000-1000000000bb", "office-light", "2026-11-01T00:00:03Z"),
       ])
       .execute();
     await migrateToLatest(database);
@@ -796,14 +804,26 @@ describe("fresh personal/team lineage", () => {
       await database.selectFrom("plugins").select(["id", "name"]).orderBy("id").execute(),
     ).toEqual([
       { id: "iin_00000000-0000-4000-8000-0000000000aa", name: "office-light" },
-      { id: "iin_00000000-0000-4000-8000-0000000000bb", name: "office-light-000000bb" },
+      { id: "iin_00000000-0000-4000-8000-0000000000bb", name: "office-light-000000bb-2" },
+      { id: "iin_00000000-0000-4000-8000-0000000000cc", name: "office-light-000000bb" },
+      { id: "iin_00000000-0000-4000-8000-1000000000bb", name: "office-light-000000bb-3" },
     ]);
     await expect(
       database
         .insertInto("plugins")
-        .values(plugin("iin_00000000-0000-4000-8000-0000000000cc", "2026-11-02T00:00:00Z"))
+        .values(
+          plugin(
+            "iin_00000000-0000-4000-8000-0000000000dd",
+            "office-light",
+            "2026-11-02T00:00:00Z",
+          ),
+        )
         .execute(),
     ).rejects.toThrow(/plugins_owner_name/u);
+    const upgraded = await catalog();
+    await sql`drop schema public cascade; create schema public`.execute(database);
+    await migrateToLatest(database);
+    expect(await catalog()).toEqual(upgraded);
   });
   it("drops specialist storage and settings from databases made before specialists were removed", async () => {
     await migrateToLatest(database, migrationsBefore(dropSpecialistsMigrationName));

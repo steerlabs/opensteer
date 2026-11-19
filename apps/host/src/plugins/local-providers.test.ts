@@ -474,6 +474,7 @@ it("lists a server awaiting its approved launch as blocked, and refuses its call
             runnerName: "Studio Mac",
             statusDetail: "Waiting for approval on the computer that runs it.",
             installationTitle: "Living Room TV",
+            pluginName: "living-room-tv",
           },
         ],
       }),

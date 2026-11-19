@@ -260,6 +260,48 @@ integration("local servers as plugin tools", () => {
     });
   }, 60_000);
 
+  it("names a renamed duplicate by its plugin's name wherever an agent finds it", async () => {
+    const host = await startMachineAccessWireHost(databaseUrl, {
+      remoteAccess: true,
+      manualRunner: true,
+    });
+    closers.unshift(() => host.close());
+    const caller = await connectCallerMachine(host, {
+      name: "Caller",
+      token: host.hostingRunnerEnrollmentToken,
+    });
+    closers.unshift(() => caller.close());
+    const computer = await connectComputerAppMachine(host, []);
+    closers.unshift(() => computer.close());
+    const run = await dispatchCallerRun(host, caller, { key: "twins", title: "Two of a name" });
+    closers.unshift(() => run.complete());
+    const gateway = await integrationGateway(run.integrationTools);
+    closers.unshift(() => gateway.close());
+    const add = (url: string) =>
+      gateway.call("local_server_add", { name: "twin", computerId: computer.runnerId, url });
+    await add("http://127.0.0.1:12351/mcp");
+    // What migration 0036 leaves when one person had two plugins of one name: the later is
+    // renamed, while its package manifest still says the old name.
+    await host.store.database
+      .updateTable("plugins")
+      .set({ name: "twin-000000bb" })
+      .where("name", "=", "twin")
+      .execute();
+    await add("http://127.0.0.1:12352/mcp");
+    const { servers } = (await gateway.call("local_server_list", {})) as {
+      servers: { name: string; path: string }[];
+    };
+    expect(servers.map(({ name }) => name).toSorted()).toEqual(["twin", "twin-000000bb"]);
+    const { local } = (await gateway.call("opensteer_plugin_list", {})) as {
+      local: { id: string; slug: string }[];
+    };
+    for (const server of await host.runtime.localServers.options.store.localMcp.list()) {
+      const listed = servers.find(({ name }) => name === server.pluginName);
+      const found = local.find(({ id }) => id === `app_server_${server.id}`);
+      expect(listed?.path).toContain(`"${found?.slug}"`);
+    }
+  }, 60_000);
+
   it("is registered by an agent, approved by the owner, asks each caller its own question and is removed with its data", async () => {
     const work = await mkdtemp(join(tmpdir(), "opensteer-local-server-tools-"));
     closers.push(() => rm(work, { recursive: true, force: true }));

@@ -13,7 +13,6 @@ import type { IntegrationPlatformStore, IntegrationRequester } from "@opensteer/
 import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { integrationToolEffect } from "@opensteer/integration-core/effect";
-import type { IntegrationInstallation } from "@opensteer/integration-core";
 import {
   IntegrationConnectionIdSchema,
   IntegrationServerIdSchema,
@@ -484,12 +483,14 @@ export class LocalProviders {
           );
           const runnerId = server.transport.runnerId;
           const localServer = localServers.find(({ id }) => id === server.id);
+          // The registered plugin's name, the one name access requests and removal look up.
+          const serverName = localServer?.pluginName ?? entry.installation.title;
           const launchStatus = localServer ? localServerStatus(localServer) : undefined;
           located.push(
             provider({
               id: providerId,
               kind: "local-server",
-              base: serverName(entry.installation),
+              base: serverName,
               computer:
                 localServer?.deviceId && localServer.runnerName
                   ? { id: localServer.deviceId, name: localServer.runnerName }
@@ -501,7 +502,7 @@ export class LocalProviders {
               serverId: server.id,
               connectionId: null,
               transport: "runner",
-              requestName: serverName(entry.installation),
+              requestName: serverName,
               ...(launchStatus?.state === "waiting"
                 ? { waitingForLaunchApproval: true as const }
                 : {}),
@@ -511,7 +512,7 @@ export class LocalProviders {
                   state,
                   entry.installation.title,
                   {
-                    server: serverName(entry.installation),
+                    server: serverName,
                   },
                   canAsk,
                 ) ??
@@ -632,12 +633,6 @@ function skillReference(description: string): string {
     "reference in opensteer:integrations",
     "reference in opensteer:plugins",
   );
-}
-
-/** A registered server's own name, which registration keeps unique per person. */
-function serverName(installation: IntegrationInstallation): string {
-  const name = installation.manifest.name;
-  return typeof name === "string" ? name : installation.title;
 }
 
 function failure(message: string) {
