@@ -25,7 +25,6 @@ import {
   goTo,
   history,
   mount,
-  settle,
   element,
   click,
   placeParams,
