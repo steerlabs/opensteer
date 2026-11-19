@@ -494,6 +494,11 @@ export {
   firstTaskId,
 };
 
+/** The outbox records this page has saved, as stored: a reload reads exactly these. */
+export function storedMessageRecords(): readonly string[] {
+  return [...messageRecords.values()];
+}
+
 export function setRoot(value: Root | null) {
   root = value;
 }
