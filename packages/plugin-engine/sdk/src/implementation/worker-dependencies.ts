@@ -12,6 +12,14 @@ const Package = Schema.Struct({
   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 
+/** A registry version, range or tag, or a tarball URL that carries its integrity. */
+const registryOrPinned = (version: string) =>
+  /^https?:\/\//u.test(version)
+    ? /#(?:sha512|sha384|sha256)-[A-Za-z0-9+/]+={0,2}$/u.test(version)
+    : !/^(?:git\+|git:|github:|gitlab:|bitbucket:|file:|link:|npm:|workspace:)|^[./~]|^[^\s@/]+\/[^\s/]+$/u.test(
+        version,
+      );
+
 /**
  * The framework is the Host's own (see `WorkerHost`); direct npm imports retain their authored
  * declarations and dependency graphs. `registry` replaces the public npm registry when the host
@@ -30,6 +38,18 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
         ? {}
         : ((yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Package))(manifest))
             .dependencies ?? {});
+    // A dependency installs from the registry, whose digests are checked, or from a tarball URL
+    // whose fragment gives its integrity. Git, file and aliased dependencies have no digest to
+    // check. The framework's declaration is only a presence check: it is never fetched.
+    for (const [name, version] of Object.entries(dependencies))
+      if (name !== "apps" && !registryOrPinned(version))
+        return yield* new RuntimeBuildFailed({
+          stage: "source",
+          location: { file: "package.json" },
+          message: boundBuildMessage(
+            `The dependency ${name} is ${JSON.stringify(version)}. A plugin build installs packages from the npm registry by version or range, or from an https tarball URL whose fragment is its integrity, such as #sha512-…`,
+          ),
+        });
     const installLock = yield* Semaphore.make(1);
     const { context } = yield* captureTelemetry;
     const install = (name: string, version: string, transitive = true) =>

@@ -30,13 +30,13 @@ async function archive(directory: string, name: string, content: string) {
   return readFile(file);
 }
 
-const source = (apps: string, dependency: string) => [
+const source = (apps: string, dependency: string, version = "1.0.0") => [
   {
     path: "package.json",
     content: JSON.stringify({
       name: "framework-fixture",
       type: "module",
-      dependencies: { apps, [dependency]: "1.0.0" },
+      dependencies: { apps, [dependency]: version },
     }),
   },
   {
@@ -58,12 +58,26 @@ test("builds every plugin against the Host's framework and checks other packages
   const forged = await archive(directory, "fixture-forged", 'export const label = "forged";');
   const integrity = (bytes: Buffer) =>
     "sha512-" + createHash("sha512").update(bytes).digest("base64");
-  const packages: Record<string, { tarball: Buffer; integrity: string }> = {
+  const wrapper = await archive(
+    directory,
+    "fixture-wrapper",
+    'export { label } from "fixture-label";',
+  );
+  let origin = "";
+  const packages: Record<
+    string,
+    { tarball: Buffer; integrity: string; dependencies?: () => Record<string, string> }
+  > = {
     "fixture-label": { tarball: good, integrity: integrity(good) },
     // The registry publishes one digest and serves other bytes.
     "fixture-forged": { tarball: forged, integrity: integrity(good) },
+    // A registry package that depends on a tarball named by URL, with no integrity.
+    "fixture-wrapper": {
+      tarball: wrapper,
+      integrity: integrity(wrapper),
+      dependencies: () => ({ "fixture-label": `${origin}/fixture-label.tgz` }),
+    },
   };
-  let origin = "";
   const registry = await pluginFixtureRegistry(undefined, undefined, (request, response) => {
     const name = request.url?.slice(1).replace(/\.tgz$/u, "") ?? "";
     const entry = packages[name];
@@ -79,6 +93,7 @@ test("builds every plugin against the Host's framework and checks other packages
               name,
               version: "1.0.0",
               dist: { tarball: `${origin}/${name}.tgz`, integrity: entry.integrity },
+              ...(entry.dependencies ? { dependencies: entry.dependencies() } : {}),
             },
           },
         }),
@@ -135,5 +150,43 @@ test("builds every plugin against the Host's framework and checks other packages
       // Each build installs its declared packages afresh.
       ...Array.from({ length: 3 }, () => ["/fixture-label", "/fixture-label.tgz"]).flat(),
     ].sort(),
+  );
+
+  // A package named by a tarball URL installs only with its integrity, checked like the registry's.
+  registry.requests.length = 0;
+  let installs = 0;
+  const install = (dependency: string, version: string) =>
+    service.install(
+      {
+        kind: "files",
+        name: `Pinned ${(installs += 1)}`,
+        files: source(framework.version, dependency, version),
+      },
+      caller,
+    );
+  const tarball = `${registry.origin}/fixture-label.tgz`;
+  const unpinned = await install("fixture-label", tarball);
+  expect(unpinned).toMatchObject({ status: "build-error" });
+  expect(JSON.stringify(unpinned)).toContain("fragment is its integrity");
+  expect(await install("fixture-label", `${tarball}#${integrity(good)}`)).toMatchObject({
+    status: "installed",
+  });
+  expect(
+    JSON.stringify(await install("fixture-label", `${tarball}#${integrity(forged)}`)),
+  ).toContain("does not match its published sha512 integrity");
+  // The same holds for a package's own dependencies, and Git or file packages are never fetched.
+  expect(JSON.stringify(await install("fixture-wrapper", "1.0.0"))).toContain(
+    "is a tarball URL with no integrity",
+  );
+  for (const version of [
+    "github:example/label",
+    "git+https://example.invalid/label.git",
+    "file:../label",
+  ])
+    expect(JSON.stringify(await install("fixture-label", version)), version).toContain(
+      "A plugin build installs packages from the npm registry",
+    );
+  expect(registry.requests.map((request) => request.slice(host.length)).sort()).toEqual(
+    ["/fixture-label.tgz", "/fixture-label.tgz", "/fixture-wrapper", "/fixture-wrapper.tgz"].sort(),
   );
 });

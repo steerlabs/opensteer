@@ -1,5 +1,5 @@
 diff --git a/dist/file-system-ZXKe_fv7.d.ts b/dist/file-system-ZXKe_fv7.d.ts
-index fa55910..aa562a8 100644
+index fa559109c179700e47dd94029abea7d76a00fb50..aa562a81a15e168b321e063ce668d85f582ca1bf 100644
 --- a/dist/file-system-ZXKe_fv7.d.ts
 +++ b/dist/file-system-ZXKe_fv7.d.ts
 @@ -37,6 +37,8 @@ interface FileSystem {
@@ -21,7 +21,7 @@ index fa55910..aa562a8 100644
    list(prefix?: string): string[];
    flush(): Promise<void>;
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 53dd55f..f2ef7c5 100644
+index 53dd55f4cd0292a11050505c4824afe0cac15d33..f2ef7c5e31a0561eedcd59d11abe74fb43b68fd8 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -331,6 +331,8 @@ declare function handleAssetRequest(
@@ -43,7 +43,7 @@ index 53dd55f..f2ef7c5 100644
     * Include devDependencies (default: false)
     */
 diff --git a/dist/index.js b/dist/index.js
-index 9ddcbac..2f26670 100644
+index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d32413719983c2e98d 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -78,7 +78,7 @@ function resolvePackage(specifier, files, conditions, extensions) {
@@ -117,7 +117,7 @@ index 9ddcbac..2f26670 100644
  		installWarnings.push(...installResult.warnings);
  	}
 diff --git a/dist/installer-DDvaMqav.js b/dist/installer-DDvaMqav.js
-index 5ed55da..acd5009 100644
+index 5ed55da1726ab87d1c11932262f972cf39c3dd45..9353e437ba3f42139f123c53a05dc3b60b7040e4 100644
 --- a/dist/installer-DDvaMqav.js
 +++ b/dist/installer-DDvaMqav.js
 @@ -381,7 +381,7 @@ const NPM_REGISTRY = "https://registry.npmjs.org";
@@ -148,14 +148,19 @@ index 5ed55da..acd5009 100644
  	if (installedPackages.has(name)) return;
  	if (fileSystem.read(`node_modules/${name}/package.json`) !== null) {
  		installedPackages.add(name);
-@@ -424,6 +426,19 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
+@@ -424,6 +426,27 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
  	if (existing) return existing;
  	const installPromise = (async () => {
  		try {
-+			// npm permits HTTP tarballs, including pinned framework dependencies.
-+			// Read their manifest from the archive; do not execute package scripts.
++			// A tarball named by URL installs only with the integrity its URL's fragment gives
++			// (`#sha512-…`), checked as a registry tarball's digest is. Read its manifest from the
++			// archive; do not execute package scripts.
 +			if (/^https?:\/\//.test(versionRange)) {
-+				const packageFiles = await extract(name, { dist: { tarball: versionRange } });
++				const url = new URL(versionRange);
++				const integrity = decodeURIComponent(url.hash.slice(1));
++				if (!/^(sha512|sha384|sha256)-[A-Za-z0-9+/]+={0,2}$/.test(integrity)) throw new Error(`${name} is a tarball URL with no integrity; give it as the URL's fragment, such as #sha512-…`);
++				url.hash = "";
++				const packageFiles = await extract(name, { version: url.href, dist: { tarball: url.href, integrity } });
 +				const manifest = JSON.parse(packageFiles["package.json"]);
 +				if (manifest.name !== name || typeof manifest.version !== "string")
 +					throw new Error("Tarball package identity does not match its dependency");
@@ -165,10 +170,13 @@ index 5ed55da..acd5009 100644
 +				if (transitive) await Promise.all(Object.entries(manifest.dependencies ?? {}).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive, extract)));
 +				return;
 +			}
++			// Only the registry and integrity-pinned tarballs are installed: a Git, file or aliased
++			// dependency has no digest to check.
++			if (/^(?:git\+|git:|github:|gitlab:|bitbucket:|file:|link:|npm:|workspace:)|^[.\/~]|^[^\s@\/]+\/[^\s\/]+$/.test(versionRange)) throw new Error(`${name}@${versionRange} is not a registry package; a plugin build installs packages from the registry, or from a tarball URL with its integrity`);
  			const metadata = await fetchPackageMetadata(name, registry);
  			const version = resolveVersion(versionRange, metadata);
  			if (!version) {
-@@ -437,10 +452,10 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
+@@ -437,10 +460,10 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
  			}
  			installedPackages.add(name);
  			result.installed.push(`${name}@${version}`);
@@ -181,7 +189,7 @@ index 5ed55da..acd5009 100644
  		} catch (error) {
  			const message = error instanceof Error ? error.message : String(error);
  			result.warnings.push(`Failed to install ${name}: ${message}`);
-@@ -475,82 +490,113 @@ function resolveVersion(range, metadata) {
+@@ -475,82 +498,111 @@ function resolveVersion(range, metadata) {
  	const versions = Object.keys(metadata.versions);
  	return semver.maxSatisfying(versions, range) ?? void 0;
  }
@@ -218,8 +226,6 @@ index 5ed55da..acd5009 100644
 -	return extractTarball(new Uint8Array(buffer));
 +	if (response.body === null) throw new Error(`Tarball for ${name}@${metadata.version} has no body (${tarballUrl})`);
 +	const keep = options.buildInputsOnly === true ? isBuildInput : isTextFile;
-+	// A tarball named by URL in package.json has no published digest; a registry version does.
-+	if (metadata.version === void 0) return extractTarball(response.body, keep);
 +	const archive = new Uint8Array(await response.arrayBuffer());
 +	await verifyTarball(name, metadata, archive);
 +	return extractTarball(new Response(archive).body, keep);
@@ -351,7 +357,7 @@ index 5ed55da..acd5009 100644
  	}
  	const archiveRoot = findSharedTarRootDirectory(regularFilePaths);
  	const files = {};
-@@ -560,6 +606,70 @@ function parseTar(data) {
+@@ -560,6 +612,70 @@ function parseTar(data) {
  	}
  	return files;
  }
