@@ -30,7 +30,7 @@ import {
 import { pluginCategoryResources, type PersonalResourceKind } from "@opensteer/protocol/resources";
 import type { PersonalShellStore } from "./personal-shell-store.js";
 import { PersonalResourceReads } from "./personal-resource-reads.js";
-import { ScopedPersonalStream } from "./scoped-personal-stream.js";
+import { savedStartWaitMs, ScopedPersonalStream } from "./scoped-personal-stream.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { HostClient } from "./client.js";
 import {
@@ -249,9 +249,6 @@ type AttachmentRead = {
   readonly promise: Promise<Blob>;
   callers: number;
 };
-
-/** How long an opened socket waits for the saved start before attaching without it. */
-const savedStartWaitMs = 150;
 
 export class HttpHostClient {
   readonly browserPasskeys: BrowserPasskeys;
