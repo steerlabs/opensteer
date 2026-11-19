@@ -508,7 +508,12 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
       rows: data.webhooks.map((entry) => ({
         key: entry.id,
         kind: "button",
-        label: entry.status === "setup-required" ? `Finish setting up ${entry.name}` : entry.name,
+        label:
+          entry.status === "setup-required"
+            ? `Finish setting up ${entry.name}`
+            : entry.status === "stopping" || entry.status === "disabled"
+              ? `Finish removing ${entry.name}`
+              : entry.name,
         detail: pluginWebhookStatusText(entry),
         opens: true,
         onPress: () => setWebhook(entry.id),

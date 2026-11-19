@@ -871,14 +871,16 @@ function WebhooksSection({
             title={webhook.name}
             detail={pluginWebhookStatusText(webhook)}
             action={
-              webhook.status === "setup-required" || webhook.status === "stopping" ? (
+              webhook.status === "setup-required" ||
+              webhook.status === "stopping" ||
+              webhook.status === "disabled" ? (
                 <button
-                  aria-label={`${webhook.status === "stopping" ? "Finish removing" : "Finish setting up"} ${webhook.name}`}
+                  aria-label={`${webhook.status === "setup-required" ? "Finish setting up" : "Finish removing"} ${webhook.name}`}
                   className="btn btn--small btn--primary"
                   onClick={() => setSetup(webhook.id)}
                   type="button"
                 >
-                  {webhook.status === "stopping" ? "Finish removal" : "Finish setup"}
+                  {webhook.status === "setup-required" ? "Finish setup" : "Finish removal"}
                 </button>
               ) : (
                 <button

@@ -34,6 +34,7 @@ import {
   pluginWorkflowRunLabel,
   type PluginCatalogEntryView,
   type PluginsHost,
+  pluginWebhookStatusText,
 } from "./index.js";
 import type { PluginWorkflowRunView } from "@opensteer/protocol";
 
@@ -727,4 +728,20 @@ it("uses the original account creation receipt to recover a lost answer", async 
   expect(dispatch.mock.calls[5]?.[0].idempotencyKey).not.toBe(
     dispatch.mock.calls[4]?.[0].idempotencyKey,
   );
+});
+
+describe("pluginWebhookStatusText", () => {
+  const webhook = {
+    id: "subscription",
+    name: "incoming",
+    failure: null,
+    account: "account",
+    createdAt: null,
+  } as const;
+  it("says a disabled webhook waits for its removal at the service, and why", () => {
+    expect(pluginWebhookStatusText({ ...webhook, status: "disabled" })).toBe(
+      "Waiting for you to remove it at the service: Opensteer can't remove it there itself",
+    );
+    expect(pluginWebhookStatusText({ ...webhook, status: "stopped" })).toBe("Stopped");
+  });
 });
