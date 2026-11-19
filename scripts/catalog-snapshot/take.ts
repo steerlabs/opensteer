@@ -3,11 +3,13 @@
  * in-process. Everything downloaded is data: it is parsed as JSON or stored as bytes, never
  * executed.
  */
-import { lstat, readFile, rename, rm, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { lstat, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { officialCatalogUrl } from "@opensteer/plugin-engine-catalog/contracts";
 import { buildSnapshot, iconPath, legacySourcePath, servableId, sha256 } from "./core.ts";
 import {
+  holdLock,
+  lockOf,
   readSnapshot,
   recoverBeside,
   refuseLinks,
@@ -54,6 +56,24 @@ export async function takeSnapshot(
     },
     repository,
   );
+  // One run at a time per output: recovery below would otherwise take another run's staging
+  // directory or set-aside snapshot for leftovers.
+  await mkdir(dirname(places.out), { recursive: true });
+  const release = await holdLock(lockOf(places.out), `--out ${places.out}`, log);
+  try {
+    await build(values, places, repository, log);
+  } finally {
+    await release();
+  }
+}
+
+/** The run itself, under the output's lock. */
+async function build(
+  values: SnapshotOptions,
+  places: Record<"out" | "cache" | "report" | "nextReport" | "failedReport", string>,
+  repository: string,
+  log: (line: string) => void,
+) {
   const { out, cache } = places;
   const concurrency = Number(values.concurrency ?? "8");
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 32)

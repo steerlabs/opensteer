@@ -4,6 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import {
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -79,6 +80,88 @@ export async function writeFileAtomic(path: string, bytes: Uint8Array) {
   }
 }
 
+/** Whether process `pid` is running (one owned by another user counts). */
+function running(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Hold `path` as an exclusive lock for `what` until the returned release is called. The lock file
+ * holds this process's PID, its start time and a token; it is written whole to a unique file and
+ * then linked to `path`, which fails if `path` exists, so a reader never sees half of one. A lock
+ * whose process is running is refused, naming it. One whose process has ended is taken over, and
+ * `log` says so: it is renamed away, then checked to be the lock that was judged stale before it is
+ * removed, so two runs taking over the same stale lock cannot both succeed.
+ */
+export async function holdLock(
+  path: string,
+  what: string,
+  log: (line: string) => void,
+): Promise<() => Promise<void>> {
+  const mine = JSON.stringify({
+    pid: process.pid,
+    started: new Date().toISOString(),
+    token: randomUUID(),
+  });
+  const part = `${path}.${randomUUID()}.part`;
+  await writeFile(part, mine, { flag: "wx" });
+  try {
+    for (;;) {
+      try {
+        await link(part, path);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      let held: string;
+      try {
+        held = await readFile(path, "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; // released meanwhile
+        throw error;
+      }
+      let holder: { pid?: unknown; started?: unknown } = {};
+      try {
+        holder = JSON.parse(held) as typeof holder;
+      } catch {
+        // Not a lock this tool wrote.
+      }
+      if (typeof holder.pid !== "number" || running(holder.pid))
+        throw new Error(
+          `${what} is in use by process ${String(holder.pid)}, started ${String(holder.started)} (lock ${path}). ` +
+            `Wait for it to finish; if no such run is going, remove ${path}.`,
+        );
+      const stale = `${path}.${randomUUID()}.stale`;
+      try {
+        await rename(path, stale);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      if ((await readFile(stale, "utf8")) !== held) {
+        // Another run took the lock over first; give its lock back and refuse.
+        await link(stale, path).catch(() => {});
+        await rm(stale, { force: true });
+        throw new Error(`${what} is in use by another run (lock ${path})`);
+      }
+      await rm(stale, { force: true });
+      log(
+        `took over the lock ${path} from process ${holder.pid} (started ${String(holder.started)}), which is no longer running`,
+      );
+    }
+  } finally {
+    await rm(part, { force: true });
+  }
+  return async () => {
+    if ((await readFile(path, "utf8").catch(() => undefined)) === mine) await rm(path);
+  };
+}
+
 /** Refuse a directory that holds a symlink or anything else that is not a file or directory. */
 export async function refuseLinks(directory: string) {
   const refused: string[] = [];
@@ -137,6 +220,8 @@ export async function writeTree(directory: string, files: ReadonlyMap<string, Ui
 const stagingPrefix = (target: string) => `.${basename(target)}.staging-`;
 /** Where an earlier `target` waits while its replacement is renamed into place. */
 export const asideOf = (target: string) => join(dirname(target), `.${basename(target)}.previous`);
+/** The lock a run writing `target` holds from before `recoverBeside` until after its swap. */
+export const lockOf = (target: string) => join(dirname(target), `.${basename(target)}.lock`);
 
 /** A new, empty directory of its own beside `target`, for building its replacement. */
 export const stagingBeside = (target: string) =>
@@ -147,7 +232,8 @@ export const stagingBeside = (target: string) =>
  * finish an interrupted replacement. When `target` is missing and an earlier one waits aside, the
  * swap stopped between its two renames, so the earlier one is put back; one left aside beside a
  * present `target` is the end of a swap that completed. Staging directories from a stopped run are
- * removed. Returns what it did, to say.
+ * removed. Returns what it did, to say. Call it only while holding `lockOf(target)`: otherwise the
+ * staging directory and set-aside snapshot of a run still going would look like leftovers.
  */
 export async function recoverBeside(target: string): Promise<string[]> {
   const done: string[] = [];

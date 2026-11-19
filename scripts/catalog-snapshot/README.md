@@ -33,6 +33,11 @@ pnpm catalog:snapshot --out ~/catalog/2026-11-18 [--rules <rules.json>] [--feed 
   put right by the next run: with `<out>` missing and `.<out>.previous` present, the earlier
   snapshot is put back, and the run says so. Staging directories left by a stopped run are
   removed. Two builds from the same cache are byte-identical.
+- One run at a time writes a given `<out>`: a run holds the lock file `.<out>.lock` (created
+  exclusively, holding its PID and start time) from before that recovery until after its swap, so
+  recovery never takes a running build or its set-aside snapshot for leftovers. A second run
+  refuses, naming the holder. A lock whose process is no longer running is taken over, and the run
+  says so.
 - `--feed` defaults to the engine's `officialCatalogUrl`, where the copy is taken from.
 
 ### Layout

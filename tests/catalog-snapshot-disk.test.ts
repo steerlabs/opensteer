@@ -9,10 +9,11 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   buildSnapshot,
@@ -28,6 +29,8 @@ import { liveManifest } from "../scripts/catalog-snapshot/served.ts";
 import { takeSnapshot } from "../scripts/catalog-snapshot/take.ts";
 import {
   asideOf,
+  holdLock,
+  lockOf,
   readTree,
   recoverBeside,
   refuseLinks,
@@ -296,6 +299,36 @@ describe("the snapshot tool", () => {
     expect(output).toContain(".out.staging-stale, left by an interrupted run");
     expect(await readFile(join(out, "manifest.json"))).not.toEqual(manifest);
     expect(await readdir(join(root, "nested"))).toEqual(["out"]);
+  });
+
+  test("lets one run at a time write an output, so recovery never removes a running build", async () => {
+    const out = join(root, "out");
+    await run({ out, cache: await cache("old") });
+    const manifest = await readFile(join(out, "manifest.json"));
+    // A first run still going: it holds the lock, and its build and the earlier snapshot it set
+    // aside look like what a stopped run leaves.
+    const release = await holdLock(lockOf(out), "--out", () => {});
+    const building = await stagingBeside(out);
+    await rename(out, asideOf(out));
+    await expect(run({ out, cache: await cache("new") })).rejects.toThrow(
+      `is in use by process ${process.pid}`,
+    );
+    expect((await readdir(root)).sort()).toEqual(
+      [".out.lock", ".out.previous", basename(building), "cache"].sort(),
+    );
+    await rename(asideOf(out), out);
+    await rm(building, { recursive: true });
+    await release();
+    expect(await readdir(root)).not.toContain(".out.lock");
+
+    // A lock left by a run that is no longer going is taken over, and the run says so.
+    const ended = spawn(process.execPath, ["-e", ""]);
+    await new Promise((done) => ended.on("exit", done));
+    await writeFile(lockOf(out), JSON.stringify({ pid: ended.pid, started: "then" }));
+    const output = await run({ out, cache: await cache("new") });
+    expect(output).toContain(`took over the lock ${lockOf(out)} from process ${ended.pid}`);
+    expect(await readFile(join(out, "manifest.json"))).not.toEqual(manifest);
+    expect((await readdir(root)).sort()).toEqual(["cache", "out"]);
   });
 
   test("refuses a cache holding a symlink", async () => {
