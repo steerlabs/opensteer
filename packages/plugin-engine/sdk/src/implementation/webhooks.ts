@@ -1,4 +1,5 @@
 import { engineSigningSecret } from "apps/contracts";
+import upstreamNames from "../../../upstream-names.json" with { type: "json" };
 import { ProviderError } from "apps/contracts";
 import { appProviderFailure } from "./provider-error.ts";
 import { AppProviderFailed, mayHaveWritten } from "../contracts/tools.ts";
@@ -163,6 +164,17 @@ const PrivateState = Schema.Struct({
   secret: Schema.String,
   state: Schema.Json,
   setup: Schema.optional(ManualWebhookDescriptor),
+});
+/**
+ * A manual setup saved by a framework from before the rename, with its earlier signing-secret
+ * source (from the rules data). After an upgrade the person sets it up again at the service.
+ */
+const EarlierManualSetup = Schema.Struct({
+  setup: Schema.Struct({
+    signingSecret: Schema.Literals(
+      upstreamNames.rules.filter((rule) => rule.scope === "signing-secret").map(({ from }) => from),
+    ),
+  }),
 });
 type Json = typeof Schema.Json.Type;
 const isList = (value: Json): value is ReadonlyArray<Json> => Array.isArray(value);
@@ -391,13 +403,18 @@ export const makeWebhooks = (
       Effect.mapError(() => new StorageError()),
     );
   /**
-   * The saved state, or none when it decrypts but this engine cannot read it, such as a manual
-   * setup saved with a signing-secret source this engine no longer declares.
+   * The saved state, or none for a manual setup completed before the framework renamed its
+   * signing-secret source (`EarlierManualSetup`). Any other state this engine cannot read fails.
    */
   const readable = (row: typeof StoredWebhook.Type) =>
     credentials.decrypt(row.id, row.encrypted).pipe(
       Effect.mapError(() => new StorageError()),
-      Effect.map((value) => Schema.decodeUnknownOption(PrivateState)(Redacted.value(value))),
+      Effect.flatMap((value) => {
+        const saved = Schema.decodeUnknownOption(PrivateState)(Redacted.value(value));
+        return Option.isSome(saved) || Schema.is(EarlierManualSetup)(Redacted.value(value))
+          ? Effect.succeed(saved)
+          : Effect.fail(new StorageError());
+      }),
     );
   /** The subscription's pinned version and source, with the actor's accounts for the rest. */
   const subscriptionState = (row: typeof StoredWebhook.Type) =>
@@ -600,8 +617,9 @@ export const makeWebhooks = (
           continue;
         const stored = yield* readable(row);
         if (Option.isNone(stored)) {
-          // Nothing a person set up from it can be read or carried: they set the new one up
-          // again, and this one, which has no registration to remove, stops.
+          // A setup completed before the rename is set up again, not carried: the new
+          // subscription needs setup at the service with its own callback URL and secret, and
+          // this one, which has no registration to remove, stops.
           yield* query(() =>
             db.updateMany("webhooks", {
               where: (b) => b.and(b("id", "=", row.id), b("revision", "=", row.revision)),
