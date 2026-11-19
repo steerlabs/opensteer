@@ -7,6 +7,7 @@ import {
   accessPlan,
   collapsedAccountRows,
   computerAccessUpgrade,
+  computerAppSetupRequested,
   connectCard,
   effectiveIntegrationAccess,
   integrationRequestStillPending,
@@ -354,9 +355,7 @@ export function ThreadIntegrationAction({
       if (result.type !== "integration.computer.setup.request") {
         throw new Error("Integration computer command mismatch.");
       }
-      setComputerSetupNotice(
-        `Setup requested. On ${computerName}, open Opensteer → Settings → Devices to approve ${plan.definition.name}.`,
-      );
+      setComputerSetupNotice(computerAppSetupRequested(plan.definition.name, computerName));
       setPickerOpen(false);
     });
 

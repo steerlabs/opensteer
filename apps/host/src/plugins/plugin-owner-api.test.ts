@@ -208,7 +208,10 @@ function setup(
           package: "@x/linear",
           name: "Linear",
           description: "d",
-          icons: [],
+          icons: [
+            { src: "https://catalog.example/icons/dark.svg", theme: "dark" },
+            { src: "https://catalog.example/icons/light.svg", theme: "light" },
+          ],
           auth: [{ method: "key", kind: "secrets" }],
         },
       ],
@@ -216,6 +219,9 @@ function setup(
       feed: { status: "listed" },
     })),
     catalogDetail: vi.fn(),
+    icons: vi.fn(async ({ refs }: { refs: string[] }) => ({
+      icons: refs.map((ref) => ({ ref, image: "data:image/webp;base64,UklGRg==" })),
+    })),
     install: vi.fn(async (input: { kind: string }, _context: unknown) => ({
       status: "installed" as const,
       plugin: plugin("new"),
@@ -667,12 +673,30 @@ describe("the person's plugin API", () => {
           id: "linear",
           name: "Linear",
           description: "d",
+          // The tile is light in both themes, so the light variant is the one drawn.
           icon: null,
+          iconRef: createHash("sha256")
+            .update("catalog\nhttps://catalog.example/icons/light.svg")
+            .digest("base64url"),
           auth: [{ method: "key", kind: "secrets", label: "API key" }],
         },
       ],
       cursor: "next-page",
       catalog: "listed",
+    });
+  });
+
+  it("reads icons from the engine for the person alone", async () => {
+    const { api, service } = setup();
+    const ref = "a".repeat(43);
+    await expect(
+      api.reads()["plugins.icons.get"]({ refs: [ref] }, context(strangerId)),
+    ).rejects.toThrow("Owner only");
+    expect(service.icons).not.toHaveBeenCalled();
+    const result = await api.reads()["plugins.icons.get"]({ refs: [ref] }, context(ownerId));
+    expect(service.icons).toHaveBeenCalledWith({ refs: [ref] }, owner);
+    expect(result.ok && hostApi["plugins.icons.get"].success.parse(result.data)).toEqual({
+      icons: [{ ref, image: "data:image/webp;base64,UklGRg==" }],
     });
   });
 

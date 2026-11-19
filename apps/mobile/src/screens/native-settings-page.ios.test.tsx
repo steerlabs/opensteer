@@ -87,7 +87,9 @@ vi.mock("@expo/ui/swift-ui/modifiers", () => ({
   },
 }));
 vi.mock("../ui/integration-icon.js", () => ({
-  IntegrationIcon: ({ definitionId }: { definitionId: string }) => <i data-mark={definitionId} />,
+  RowMarkIcon: ({ mark }: { mark: { definitionId: string } }) => (
+    <i data-mark={mark.definitionId} />
+  ),
 }));
 const { NativeSettingsPage } = await import("./native-settings-page.ios.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });

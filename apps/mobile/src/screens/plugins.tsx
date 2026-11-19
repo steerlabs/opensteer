@@ -27,9 +27,15 @@ import {
   unwrapRpcResult,
   type HostClient,
 } from "@opensteer/client/host";
+import {
+  computerAppCatalogMatches,
+  computerAppPlatformRequirementLabel,
+  type IntegrationDefinitionSummaryView,
+} from "@opensteer/client/integrations";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useRef, useState, type ReactNode } from "react";
 import { Alert } from "react-native";
+import { DeviceAppSetupSheet } from "./device-app-setup-sheet.js";
 import { clientIssueActions, presentClientIssue } from "@opensteer/client/feedback";
 import { settingsFooter, useScreenAction } from "../ui/client-feedback.js";
 import type { ActionLineValue } from "../ui/action-line.js";
@@ -190,7 +196,11 @@ function Plugins({ deploymentId, host }: { deploymentId: string; host: HostClien
           detail:
             plugin.author === "agent" ? `${status.label} · Written by an agent` : status.label,
           opens: true,
-          mark: { definitionId: plugin.slug, name: plugin.name },
+          mark: {
+            definitionId: plugin.slug,
+            name: plugin.name,
+            plugin: { hostClient: host, iconRef: plugin.iconRef },
+          },
           onPress: () => navigation.navigate("PluginDetail", { deploymentId, pluginId: plugin.id }),
         } satisfies NativeSettingsRow;
       }),
@@ -393,6 +403,21 @@ function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClien
   const engine = usePluginEngine(host, installed.data?.engine ?? null);
   const list = usePagedList(pluginCatalogReader(host, search), `catalog:${search}`, host);
   const action = usePluginAction(host, "catalog", "install this plugin", "installed");
+  const apps = usePluginRead(
+    host,
+    () =>
+      Promise.all([
+        host.rpc["integrations.get"]({}).then(unwrapRpcResult),
+        host.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
+      ]).then(([dashboard, platform]) => ({
+        connections: dashboard.connections,
+        definitions: platform.catalog.map(({ definition }) => definition),
+      })),
+    "device-apps",
+    "apps on your devices",
+  );
+  const deviceApps = apps.data ? computerAppCatalogMatches(apps.data.definitions, search) : [];
+  const [settingUp, setSettingUp] = useState<IntegrationDefinitionSummaryView | null>(null);
   const install = (entry: PluginCatalogEntryView) =>
     confirm({
       title: `Install ${entry.name}?`,
@@ -419,7 +444,24 @@ function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClien
       title: "Catalog",
       rows: [{ key: "error", kind: "status", tone: "bad", label: action.error }],
     });
-  const view = pluginCatalogListView(list, search);
+  const devicesFooter = apps.data ? undefined : settingsFooter(apps.line);
+  if (deviceApps.length || devicesFooter)
+    sections.push({
+      key: "devices",
+      title: "On your devices",
+      rows: deviceApps.map((definition): NativeSettingsRow => ({
+        key: definition.id,
+        kind: "button",
+        label: definition.name,
+        detail: [computerAppPlatformRequirementLabel(definition), definition.description]
+          .filter(Boolean)
+          .join(" · "),
+        mark: { definitionId: definition.id, name: definition.name },
+        onPress: () => setSettingUp(definition),
+      })),
+      ...(devicesFooter ? { footer: devicesFooter } : {}),
+    });
+  const view = pluginCatalogListView(list, search, deviceApps.length);
   // A failed read is said under the list, with Try again; entries already shown stay.
   const issue = view.kind === "failed" ? view : view.kind === "entries" ? view.issue : null;
   sections.push({
@@ -431,7 +473,9 @@ function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClien
         : view.kind === "failed"
           ? []
           : view.kind === "empty"
-            ? [{ key: "empty", kind: "text", label: view.text }]
+            ? view.text
+              ? [{ key: "empty", kind: "text", label: view.text }]
+              : []
             : [
                 ...list.items.map((entry): NativeSettingsRow => {
                   const already = pluginCatalogInstalled(entry, installed.data?.plugins ?? []);
@@ -440,7 +484,11 @@ function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClien
                     kind: "button",
                     label: entry.name,
                     detail: already ? `Installed · ${entry.description}` : entry.description,
-                    mark: { definitionId: entry.id, name: entry.name },
+                    mark: {
+                      definitionId: entry.id,
+                      name: entry.name,
+                      plugin: { hostClient: host, iconRef: entry.iconRef },
+                    },
                     disabled: already || action.pending !== null,
                     onPress: () => install(entry),
                   };
@@ -467,10 +515,29 @@ function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClien
         },
   });
   return (
-    <NativeSettingsPage
-      search={{ value: query, onChange: setQuery, prompt: "Search the catalog", title: "Catalog" }}
-      sections={sections}
-    />
+    <>
+      <NativeSettingsPage
+        search={{
+          value: query,
+          onChange: setQuery,
+          prompt: "Search the catalog",
+          title: "Catalog",
+        }}
+        sections={sections}
+      />
+      {settingUp && apps.data ? (
+        <DeviceAppSetupSheet
+          connections={apps.data.connections}
+          definition={settingUp}
+          deploymentId={deploymentId}
+          host={host}
+          onClose={() => {
+            setSettingUp(null);
+            apps.reload();
+          }}
+        />
+      ) : null}
+    </>
   );
 }
 

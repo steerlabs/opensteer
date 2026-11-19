@@ -4,6 +4,7 @@ import type { MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import { mockDeviceMachine } from "../mock/mock-device-machine.js";
 import {
+  computerAppCatalogMatches,
   computerAppConnectionLabel,
   computerAppPermissionNotice,
   computerAppPlatformName,
@@ -380,6 +381,23 @@ describe("computer app targets", () => {
         machines: [machine({ apps: [appStatus()] })],
       }),
     ).toEqual({ kind: "ready" });
+  });
+});
+
+describe("device apps in the plugin catalog", () => {
+  const ids = (search: string) =>
+    computerAppCatalogMatches([display(), messages()], search).map(({ id }) => id);
+
+  it("finds an app by what people call it, by its device or by its own words", () => {
+    expect(ids("")).toEqual(["apple-messages"]);
+    expect(ids(" iMessage ")).toEqual(["apple-messages"]);
+    expect(ids("mac")).toEqual(["apple-messages"]);
+    expect(ids("send")).toEqual(["apple-messages"]);
+    expect(ids("gmail")).toEqual([]);
+  });
+
+  it("leaves out a phone screen, which is set up on its own page", () => {
+    expect(ids("android")).toEqual([]);
   });
 });
 

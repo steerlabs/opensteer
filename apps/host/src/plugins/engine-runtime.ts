@@ -103,7 +103,11 @@ import {
   openapiNotices,
   openapiNoticesFile,
 } from "./openapi-import.js";
-import { defaultUrlPolicy, parseDestination } from "@opensteer/plugin-engine-utils/url-policy";
+import {
+  defaultUrlPolicy,
+  httpsOnlyUrlPolicy,
+  parseDestination,
+} from "@opensteer/plugin-engine-utils/url-policy";
 import {
   makeExecutions,
   executeProgram,
@@ -119,6 +123,8 @@ import {
 import { engineAccounts, InstallAuthor, migrateEngineProduct } from "./engine-accounts.js";
 import { compositeBackend, type EngineHostCallbacks } from "./engine-backend.js";
 import { catalogPage } from "./catalog-page.js";
+import { pluginIconReader, readPluginIcons } from "./plugin-icon-reader.js";
+import { pluginIconSources } from "./plugin-icons.js";
 import { enginePages } from "./engine-pages.js";
 import {
   operations,
@@ -530,6 +536,11 @@ export async function startEngine(
         yield* Effect.forkScoped(deliverEvents(engine));
         phase("catalog");
         const catalog = createCatalog({ egress, feedUrl: config.catalogUrl ?? officialCatalogUrl });
+        const readIcon = yield* pluginIconReader({
+          catalog: egress,
+          // A plugin names its own icon, so the Host reads it only from a public HTTPS address.
+          plugin: { policy: httpsOnlyUrlPolicy, client: yield* safeHttpClient(httpsOnlyUrlPolicy) },
+        });
         const executions = new Map<
           string,
           {
@@ -577,6 +588,7 @@ export async function startEngine(
           accountAdapter,
           scheduler,
           catalog,
+          readIcon,
           manager,
           executions,
           pages,
@@ -584,7 +596,14 @@ export async function startEngine(
         };
       }),
     );
-    const { engine, owner, accountAdapter, catalog, manager, executions, blobs } = composed;
+    const { engine, owner, accountAdapter, catalog, readIcon, manager, executions, blobs } =
+      composed;
+    /** The icons of the catalog as last read, so reading them never reads the feed again. */
+    let catalogIcons: readonly unknown[] | undefined;
+    const listedCatalog = (listing: Effect.Success<typeof catalog.list>) => {
+      if (listing.feed.status === "listed") catalogIcons = listing.apps.map((entry) => entry.icons);
+      return listing;
+    };
     const startupMs = performance.now() - started;
     /**
      * The version whose source a plugin shows and exports by default: the active one, else the
@@ -722,7 +741,7 @@ export async function startEngine(
           case "health":
             return { pid: process.pid, rss: process.memoryUsage().rss, startupMs };
           case "catalogList": {
-            const listing = yield* catalog.list;
+            const listing = listedCatalog(yield* catalog.list);
             const input = operations.catalogList.input.parse(raw);
             // An unread feed has no pages: a cursor from before it failed cannot continue.
             if (listing.feed.status !== "listed")
@@ -731,12 +750,28 @@ export async function startEngine(
           }
           case "catalogDetail": {
             const input = operations.catalogDetail.input.parse(raw);
-            const entry = (yield* catalog.list).apps.find((entry) => entry.id === input.id);
+            const entry = listedCatalog(yield* catalog.list).apps.find(
+              (entry) => entry.id === input.id,
+            );
             if (!entry)
               return yield* Effect.fail(
                 new PluginServiceError("invalid", "Catalog entry not found"),
               );
             return entry;
+          }
+          case "icons": {
+            const { refs } = operations.icons.input.parse(raw);
+            const installed = yield* engine.apps.list({ owner });
+            const sources = pluginIconSources(
+              refs,
+              installed.map((app) => app.requirements.icons),
+              "plugin",
+            );
+            if (sources.size < new Set(refs).size) {
+              if (catalogIcons === undefined) listedCatalog(yield* catalog.list);
+              pluginIconSources(refs, catalogIcons ?? [], "catalog", sources);
+            }
+            return { icons: yield* readPluginIcons(readIcon, sources) };
           }
           case "list": {
             const permission = yield* callback("authorize", { ...context, operation: "list" });

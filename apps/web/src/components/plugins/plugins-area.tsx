@@ -16,19 +16,23 @@ import {
   type PluginEngineStateView,
   type PluginSummaryView,
 } from "@opensteer/client/plugins";
+import { computerAppCatalogMatches } from "@opensteer/client/integrations";
+import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core";
 import {
   useDebouncedValue,
   usePagedList,
   usePluginEngine as usePluginEngineState,
 } from "@opensteer/client/react";
 import { useShell } from "../app-shell.js";
+import { useComputerAppData } from "../computer-apps/computer-apps-section.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
-import { IntegrationIcon } from "../integration-icon.js";
+import { PluginIcon } from "../integration-icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import { SectionHeader, SettingsError, SettingsSegmented } from "../settings/primitives.js";
 import { useSettingsRead } from "../settings/use-settings-read.js";
 import { AgentHomeSkills } from "./agent-home-skills.js";
+import { DeviceAppRows, SetUpDeviceApp } from "./device-app-catalog.js";
 import { LocalTools, LocalToolPage } from "./local-tools.js";
 import { PluginAccounts } from "./plugin-accounts.js";
 import { PluginPage } from "./plugin-page.js";
@@ -239,7 +243,7 @@ function InstalledRow({ plugin }: { readonly plugin: PluginSummaryView }) {
   const status = pluginStatusView(plugin);
   return (
     <Link className="card__row plugins-row" role="listitem" to={pluginPath(plugin.id)}>
-      <IntegrationIcon icon={plugin.icon ?? undefined} id={plugin.slug} name={plugin.name} />
+      <PluginIcon iconRef={plugin.iconRef} id={plugin.slug} name={plugin.name} />
       <span className="card__row-body">
         <span className="card__row-title">{plugin.name}</span>
         <span className="card__row-detail">
@@ -259,7 +263,7 @@ function InstalledRow({ plugin }: { readonly plugin: PluginSummaryView }) {
 }
 
 function PluginCatalog() {
-  const { hostClient } = useShell();
+  const { hostClient, snapshot } = useShell();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   // Each pause in typing is one read of the Host, not each keystroke.
@@ -275,8 +279,11 @@ function PluginCatalog() {
     `catalog:${search}`,
     hostClient,
   );
-  const view = pluginCatalogListView(list, search);
+  const apps = useComputerAppData(hostClient, snapshot.machineRevision);
+  const deviceApps = apps.data ? computerAppCatalogMatches(apps.data.definitions, search) : [];
+  const view = pluginCatalogListView(list, search, deviceApps.length);
   const [adding, setAdding] = useState<PluginCatalogEntryView | null>(null);
+  const [settingUp, setSettingUp] = useState<IntegrationDefinitionSummaryView | null>(null);
   return (
     <div className="plugins-area">
       <Link className="plugins-back" to={pluginsPath}>
@@ -285,7 +292,7 @@ function PluginCatalog() {
       </Link>
       <SectionHeader
         title="Plugin catalog"
-        lead="Plugins reviewed for the catalog. Each runs sandboxed until you connect an account."
+        lead="Apps that run on your own devices, and plugins reviewed for the catalog. Each plugin runs sandboxed until you connect an account."
       />
       <label className="settings-plugin-search">
         <Icon name="search" />
@@ -299,6 +306,17 @@ function PluginCatalog() {
         />
       </label>
       <EngineNotice engine={list.loading ? engine : null} />
+      <SettingsError message={apps.data ? null : apps.error} />
+      {!apps.data && apps.error ? (
+        <button
+          className="btn plugins-retry"
+          onClick={() => void apps.reload().catch(() => undefined)}
+          type="button"
+        >
+          Try again
+        </button>
+      ) : null}
+      {deviceApps.length ? <DeviceAppRows apps={deviceApps} onSetUp={setSettingUp} /> : null}
       <SettingsError
         message={
           view.kind === "failed"
@@ -323,14 +341,16 @@ function PluginCatalog() {
           </button>
         ) : null
       ) : view.kind === "empty" ? (
-        <p className="settings-catalog__empty">{view.text}</p>
+        view.text ? (
+          <p className="settings-catalog__empty">{view.text}</p>
+        ) : null
       ) : (
         <div className="card plugins-catalog" role="list">
           {list.items.map((entry) => {
             const already = pluginCatalogInstalled(entry, installed.data?.plugins ?? []);
             return (
               <div className="card__row plugins-catalog__row" key={entry.id} role="listitem">
-                <IntegrationIcon icon={entry.icon ?? undefined} id={entry.id} name={entry.name} />
+                <PluginIcon iconRef={entry.iconRef} id={entry.id} name={entry.name} />
                 <span className="card__row-body">
                   <span className="card__row-title">{entry.name}</span>
                   <span className="card__row-detail plugins-catalog__description">
@@ -363,6 +383,13 @@ function PluginCatalog() {
         <button className="btn" onClick={list.reload} type="button">
           Start the list again
         </button>
+      ) : null}
+      {settingUp && apps.data ? (
+        <SetUpDeviceApp
+          connections={apps.data.connections}
+          definition={settingUp}
+          onClose={() => setSettingUp(null)}
+        />
       ) : null}
       {adding ? (
         <InstallCatalogEntry
@@ -430,12 +457,7 @@ function InstallCatalogEntry({
     >
       <div className="plugins-install">
         <div className="settings-add-hero">
-          <IntegrationIcon
-            icon={entry.icon ?? undefined}
-            id={entry.id}
-            name={entry.name}
-            size="lg"
-          />
+          <PluginIcon iconRef={entry.iconRef} id={entry.id} name={entry.name} size="lg" />
           <p>{entry.description}</p>
         </div>
         <p className="settings-footnote">

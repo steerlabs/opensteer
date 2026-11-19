@@ -1,5 +1,8 @@
+import type { HostClient } from "@opensteer/client/host";
 import { integrationMark, type BundledIntegrationIconId } from "@opensteer/client/integrations";
-import type { ReactNode } from "react";
+import { usePluginIcon } from "@opensteer/client/react";
+import { Image as ExpoImage } from "expo-image";
+import { useState, type ReactNode } from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import { color, radius } from "../theme.js";
@@ -108,6 +111,65 @@ export function IntegrationIcon(props: {
             />
           )}
         </Svg>
+      )}
+    </View>
+  );
+}
+
+/** What leads a row: an integration's mark, or a plugin's own icon read from its Host. */
+export interface RowMark {
+  readonly definitionId: string;
+  readonly name: string;
+  readonly plugin?: {
+    readonly hostClient: HostClient;
+    readonly iconRef: string | null | undefined;
+  };
+}
+
+export function RowMarkIcon(props: { readonly mark: RowMark; readonly size?: number }): ReactNode {
+  const { plugin, ...mark } = props.mark;
+  return plugin ? (
+    <PluginIcon {...mark} {...plugin} {...(props.size ? { size: props.size } : {})} />
+  ) : (
+    <IntegrationIcon {...mark} {...(props.size ? { size: props.size } : {})} />
+  );
+}
+
+/**
+ * A plugin's own icon, read from its Host and drawn on a light tile in both
+ * themes, as web draws it. An empty tile holds its place while it is read; a
+ * plugin with none, or one this device can't draw, wears its integration mark
+ * or initials.
+ */
+export function PluginIcon(props: {
+  readonly hostClient: HostClient;
+  readonly iconRef: string | null | undefined;
+  readonly definitionId: string;
+  readonly name: string;
+  readonly size?: number;
+}): ReactNode {
+  const image = usePluginIcon(props.hostClient, props.iconRef);
+  const [broken, setBroken] = useState<string | null>(null);
+  const size = props.size ?? 32;
+  if (image === null || image === broken)
+    return <IntegrationIcon definitionId={props.definitionId} name={props.name} size={size} />;
+  return (
+    <View
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={[
+        styles.tile,
+        { height: size, width: size },
+        image === undefined ? styles.initialsTile : styles.markTile,
+      ]}
+    >
+      {image === undefined ? null : (
+        <ExpoImage
+          contentFit="contain"
+          onError={() => setBroken(image)}
+          source={{ uri: image }}
+          style={styles.logo}
+        />
       )}
     </View>
   );

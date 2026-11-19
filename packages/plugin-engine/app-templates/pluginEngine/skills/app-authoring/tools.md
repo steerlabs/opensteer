@@ -40,10 +40,12 @@ and parses a JSON response.
 
 ## Give the app an icon
 
-Declare `icons` beside the account requirements. The dashboard shows them on the app's card
-and page, choosing the `light` or `dark` variant for the color scheme; an icon
-without `theme` suits both. The build records them, so they show without
-evaluating the app or listing its tools:
+Declare `icons` beside the account requirements. Opensteer draws the app's icon on a light tile
+in both color schemes, so it shows the `light` variant, else an icon without `theme`; a `dark`
+variant alone is not shown. The build records them, so they show without evaluating the app or
+listing its tools. An `https:` icon is read once by the person's computer, without following
+redirects, and shows only if it is an SVG, PNG, WebP or JPEG image of at most 32 KiB. It is kept
+by its address, so changed artwork needs a new URL:
 
 ```ts
 export default defineApp(

@@ -53,6 +53,7 @@ export * from "./use-reference.js";
 
 export * from "./use-transcript-message.js";
 export * from "./use-plugin-engine.js";
+export * from "./use-plugin-icon.js";
 export * from "./use-plugin-section.js";
 export * from "./use-plugin-sign-in.js";
 export * from "./use-plugin-workflow-runs.js";

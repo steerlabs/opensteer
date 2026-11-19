@@ -49,7 +49,7 @@ import { useShell } from "../app-shell.js";
 import { CopyBlock } from "../copy-block.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
-import { IntegrationIcon } from "../integration-icon.js";
+import { PluginIcon } from "../integration-icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import {
   SectionHeader,
@@ -145,12 +145,7 @@ function PluginContent({
   return (
     <>
       <div className="settings-add-hero">
-        <IntegrationIcon
-          icon={plugin.icon ?? undefined}
-          id={plugin.slug}
-          name={plugin.name}
-          size="lg"
-        />
+        <PluginIcon iconRef={plugin.iconRef} id={plugin.slug} name={plugin.name} size="lg" />
         <SectionHeader
           title={plugin.name}
           lead={[
