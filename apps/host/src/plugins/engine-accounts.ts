@@ -37,6 +37,14 @@ type CreationKind =
 const Creation = Context.Reference<
   { key: string; kind: CreationKind; origin?: string | undefined } | undefined
 >("opensteer/PluginCreation", { defaultValue: () => undefined });
+/**
+ * Who wrote the source an install deploys: reviewed catalog source, or source an agent or person
+ * gave. Recorded as the version's author when it becomes active (`appDeployed`).
+ */
+export const InstallAuthor = Context.Reference<"catalog" | "agent" | undefined>(
+  "opensteer/PluginInstallAuthor",
+  { defaultValue: () => undefined },
+);
 const RemovingAccount = Context.Reference<string[] | undefined>("opensteer/RemovingAccount", {
   defaultValue: () => undefined,
 });
@@ -79,6 +87,35 @@ export function engineAccounts(options: {
           sql`insert into opensteer_resource_creations (owner, key, kind, result) values (${owner}, ${creation.key}, ${kind}, ${JSON.stringify(result)}::jsonb)`,
         );
     });
+  /**
+   * The author of a version that became active, kept with the person's settings for the plugin.
+   * An install's is who wrote its source; a rebuild's is the author of the version it rebuilt; an
+   * activated version keeps the author it had. The plugin's author becomes the active version's.
+   * A plugin with no settings yet gets them only from an install.
+   */
+  const recordAuthor = (
+    app: AppId,
+    version: { readonly id: VersionId; readonly rebuiltFrom: VersionId | null },
+  ) =>
+    Effect.gen(function* () {
+      const author = yield* InstallAuthor;
+      const settingsOwner = sql`(select owner_id from public.personal_settings where singleton_key = 'personal')`;
+      if (author !== undefined && version.rebuiltFrom === null) {
+        yield* sql`insert into public.plugin_agent_settings
+            (owner_user_id, plugin_id, access, author, version_authors)
+          select ${settingsOwner}, ${app}, 'all', ${author}, jsonb_build_object(${version.id}::text, ${author}::text)
+          where ${settingsOwner} is not null
+          on conflict (owner_user_id, plugin_id) do update set author = excluded.author,
+            version_authors = plugin_agent_settings.version_authors || excluded.version_authors`;
+        return;
+      }
+      const from = version.rebuiltFrom ?? version.id;
+      yield* sql`update public.plugin_agent_settings set
+          author = coalesce(version_authors ->> ${from}::text, author),
+          version_authors = version_authors || jsonb_build_object(${version.id}::text,
+            coalesce(version_authors ->> ${from}::text, author))
+        where owner_user_id = ${settingsOwner} and plugin_id = ${app}`;
+    }).pipe(storage);
   const once = <A, B, E extends Error, R>(
     key: string | undefined,
     kind: CreationKind,
@@ -591,16 +628,19 @@ export function engineAccounts(options: {
       ),
     connectionCompleting: () => Effect.void,
     appCreated: (app) => (app.owner === owner ? Effect.void : Effect.fail(new StorageError())),
-    // The saved origin, not a later request's input, labels a recovered install.
+    // The saved origin, not a later request's input, labels a recovered install. The version's
+    // author is recorded in the same transaction that makes it active.
     appDeployed: (app, version) =>
-      Effect.flatMap(Creation, (creation) =>
-        rememberCreation("plugin", {
+      Effect.gen(function* () {
+        const creation = yield* Creation;
+        yield* rememberCreation("plugin", {
           status: "installed",
           plugin: app,
           version,
           origin: creation?.origin,
-        }),
-      ),
+        });
+        yield* recordAuthor(app.id, version);
+      }),
     appRemoving: () => Effect.void,
     appAccountConnected: (input) =>
       Effect.gen(function* () {

@@ -24,6 +24,7 @@ import {
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
 import { seedPersonalFixture } from "../packages/database/src/personal-fixture.test-support.js";
+import { recordPluginAuthor } from "../packages/database/src/plugin-agent-store.test-support.js";
 import { PluginService } from "../apps/host/src/plugins/plugin-service.js";
 import { PluginOwnerApi } from "../apps/host/src/plugins/plugin-owner-api.js";
 import { PluginAuthority } from "../apps/host/src/plugins/plugin-authority.js";
@@ -124,7 +125,7 @@ async function install(name: string, revision = 1, withWebhook = true) {
   const result = await service.install({ kind: "files", name, files: source }, owner);
   expect(result.status, JSON.stringify(result)).toBe("installed");
   if (result.status !== "installed") throw new Error("Fixture failed to build");
-  await records.recordInstall(personal.userId, result.plugin.id, result.version.id, "agent");
+  await recordPluginAuthor(database, personal.userId, result.plugin.id, result.version.id, "agent");
   const requirement = result.plugin.requirements.accounts.service!;
   const target = { pluginId: result.plugin.id, requirement: "service", scope: "user" as const };
   const review = await api.review(target, personal.userId);

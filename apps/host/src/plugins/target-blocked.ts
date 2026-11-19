@@ -72,3 +72,21 @@ export function pluginUpdatingBlocked(
     next: "Try the same call again in a minute; it was not run. The person can see the update in Plugins.",
   };
 }
+
+/** A call whose selected build may not run, answered unsent (see `DispatchRefusal`). */
+export function refusalBlocked(
+  name: string,
+  refusal: { readonly kind: "updating"; readonly reason: string } | { readonly kind: "stale" },
+): Blocked {
+  return refusal.kind === "updating"
+    ? pluginUpdatingBlocked(name, refusal.reason)!
+    : {
+        code: "unavailable",
+        message:
+          `${name} changed after this was saved, and the version it was saved for no longer runs, so nothing was sent to it.`.slice(
+            0,
+            2000,
+          ),
+        next: "Discover the plugin's tools again and make the call again.",
+      };
+}

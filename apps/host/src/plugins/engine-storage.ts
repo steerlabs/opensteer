@@ -227,35 +227,10 @@ const nextCursor = (more: boolean, last: { id: string; at: string } | undefined,
     : undefined;
 
 /**
- * A plugin's version changes: the fence one deploy, activation, removal or rebuild of it holds at
- * a time across engine processes (a session advisory lock on a connection of its own, taken before
- * any row lock), and the diagnostic of a rebuild that failed for good, kept with the version that
- * failed in the Host's own table.
+ * The diagnostic of a plugin's rebuild that failed for good, kept with the version that failed in
+ * the Host's own table until another version of it becomes active.
  */
-export const versionStore = (sql: SqlClient.SqlClient, fences: SqlClient.SqlClient) => ({
-  // `fences` is a pool of its own, so work under a fence always finds a connection in `sql`.
-  fence: <A, E>(app: string, work: Effect.Effect<A, E>) =>
-    fences.reserve.pipe(
-      Effect.flatMap((connection) =>
-        Effect.acquireUseRelease(
-          connection.execute(
-            "SELECT pg_advisory_lock(hashtextextended($1, 0))",
-            [`plugin-version:${app}`],
-            undefined,
-          ),
-          () => work,
-          () =>
-            connection
-              .execute(
-                "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
-                [`plugin-version:${app}`],
-                undefined,
-              )
-              .pipe(Effect.orDie),
-        ),
-      ),
-      Effect.scoped,
-    ),
+export const versionStore = (sql: SqlClient.SqlClient) => ({
   failed: (app: string, failure: { readonly version: string; readonly message: string }) =>
     sql`INSERT INTO public.plugin_rebuild_failures (plugin_id, version, message)
       VALUES (${app}, ${failure.version}, ${failure.message.slice(0, 4_000)})

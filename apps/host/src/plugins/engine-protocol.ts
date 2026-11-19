@@ -641,12 +641,12 @@ export const callbackOperations = {
   },
   webhookOrigin: { input: z.strictObject({}), output: z.url().nullable() },
   /**
-   * A version became a plugin's active one, whoever activated it; `from` is the stored version it
-   * was rebuilt from. The Host refreshes what it keeps beside the active version before the
-   * change is answered.
+   * A version became a plugin's active one, whoever activated it, and the change has committed,
+   * its author with it. The Host makes its skill record follow the plugin's active version; that
+   * is idempotent, so one that fails is repaired by the next.
    */
   versionPublished: {
-    input: z.strictObject({ plugin: id, version: id, from: id.nullable() }),
+    input: z.strictObject({ plugin: id }),
     output: z.strictObject({}),
   },
 } as const;

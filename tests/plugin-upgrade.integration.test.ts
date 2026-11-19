@@ -12,6 +12,7 @@ import { UiUpdating } from "apps/ui/contracts";
 import { PluginService } from "../apps/host/src/plugins/plugin-service.js";
 import { createDatabase, PluginAgentStore } from "../packages/database/src/index.js";
 import { seedPersonalFixture } from "../packages/database/src/personal-fixture.test-support.js";
+import { recordPluginAuthor } from "../packages/database/src/plugin-agent-store.test-support.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -308,7 +309,7 @@ test(
     const personal = await seedPersonalFixture(database, work);
     const settings = new PluginAgentStore(database);
     await settings.setAccess(personal.userId, plugin, "read-only");
-    await settings.recordInstall(personal.userId, plugin, before.version, "catalog");
+    await recordPluginAuthor(database, personal.userId, plugin, before.version, "catalog");
     const authorOf = async (version: string) =>
       (await settings.versionAuthors(personal.userId, [{ pluginId: plugin, version }])).get(
         `${plugin}\u0000${version}`,
@@ -358,8 +359,6 @@ test(
         npmRegistry: registry.origin,
         catalogUrl: registry.origin + "/catalog",
         idleMs: 0,
-        onVersionPublished: ({ plugin, version, from }) =>
-          settings.recordPublished(personal.userId, plugin, version, from),
         ...(onDiagnostic === undefined ? {} : { onDiagnostic }),
       });
       await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));

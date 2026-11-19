@@ -95,6 +95,16 @@ export class PluginSkillCache {
       throw error;
     }
   }
+  /** The plugins with an entry. */
+  async plugins(): Promise<string[]> {
+    const names = await readdir(this.#root).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    return names
+      .filter((name) => /^app_[0-9a-f-]{36}\.json$/u.test(name))
+      .map((name) => name.slice(0, -5));
+  }
   async remove(plugin: string) {
     if (!/^app_[0-9a-f-]{36}$/u.test(plugin)) throw new Error("Invalid plugin ID");
     await rm(join(this.#root, plugin + ".json"), { force: true });

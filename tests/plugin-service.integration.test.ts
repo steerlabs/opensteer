@@ -270,12 +270,13 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
 
 async function outputFixture(
   context: import("vitest").TestContext,
-  options: Pick<PluginServiceOptions, "providers" | "authorize" | "onVersionPublished"> = {},
+  options: Pick<PluginServiceOptions, "providers" | "authorize"> = {},
+  handle?: Parameters<typeof pluginFixtureRegistry>[2],
 ) {
   const clone = await cloneTestDatabase("host");
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-output-"));
   context.onTestFinished(() => rm(directory, { force: true, recursive: true }));
-  const registry = await pluginFixtureRegistry();
+  const registry = await pluginFixtureRegistry(undefined, undefined, handle);
   context.onTestFinished(() => registry.close());
   const service = new PluginService({
     ...options,
@@ -286,6 +287,7 @@ async function outputFixture(
     origin: "https://fixture.invalid",
     npmRegistry: registry.origin,
     catalogUrl: registry.origin + "/catalog",
+    selfOrigin: { origin: "https://api.fixture.invalid", address: registry.address },
     processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
     bridge: new URL("../apps/host/dist/plugin-engine-bridge.json", import.meta.url).pathname,
   });
@@ -294,22 +296,15 @@ async function outputFixture(
   return { service, databaseUrl: clone.url };
 }
 
-test("a version change of one plugin waits only for that plugin's change in progress", async (context) => {
-  // Each version that becomes active is published under its plugin's version fence; holding one
-  // publication holds that plugin's fence.
-  const events: string[] = [];
+test("a version change of one plugin holds that plugin alone, and only while it commits", async (context) => {
+  // A call of the first plugin that runs until the test releases it.
   const reached = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  let hold: { plugin: string; version: string } | undefined;
-  const { service } = await outputFixture(context, {
-    onVersionPublished: async ({ plugin, version }) => {
-      events.push(`start:${version}`);
-      if (plugin === hold?.plugin && version !== hold.version) {
-        reached.resolve();
-        await release.promise;
-      }
-      events.push(`end:${version}`);
-    },
+  let release = () => {};
+  const { service } = await outputFixture(context, {}, (request, response) => {
+    if (request.url !== "/wait") return false;
+    release = () => response.end("released");
+    reached.resolve();
+    return true;
   });
   const installed = await Promise.all(
     ["First", "Second"].map((name) =>
@@ -318,30 +313,44 @@ test("a version change of one plugin waits only for that plugin's change in prog
   );
   const [a, b] = installed.map((result) => {
     if (result.status !== "installed") throw new Error("Fixture did not install");
-    return { plugin: result.plugin.id, version: result.version.id };
+    return { plugin: result.plugin.id, version: result.version.id, slug: result.plugin.slug };
   });
-  // The next version of the first plugin is held while it is published.
-  hold = a!;
-  const held = service.install(
-    { kind: "files", plugin: a!.plugin, files: pluginFixtureFiles(2) },
-    caller,
+  const calling = service.call({ calls: { path: `tools.${a!.slug}.wait`, input: {} } }, caller);
+  await deadline(reached.promise, "The call never reached the fixture");
+  // Four installs into the first plugin build at once; a commit waits for the call that runs on
+  // the version it replaces.
+  const installs = [2, 3, 4, 5].map((revision) =>
+    service
+      .install({ kind: "files", plugin: a!.plugin, files: pluginFixtureFiles(revision) }, caller)
+      .then(
+        (result) => ({ ok: true as const, result }),
+        (error: unknown) => ({ ok: false as const, error }),
+      ),
   );
-  void held.catch(() => {});
-  await deadline(reached.promise, "The held install was never published");
-  const queued = service.activate(a!, caller);
-  // Another plugin's changes do not wait for it.
-  await deadline(service.activate(b!, caller), "Another plugin's activation waited");
+  // The other plugin's changes go on meanwhile, and the first plugin is still the version the
+  // call runs on.
+  await deadline(
+    service.activate({ plugin: b!.plugin, version: b!.version }, caller),
+    "Another plugin's activation waited",
+  );
   await deadline(service.remove({ plugin: b!.plugin }, caller), "Another plugin's removal waited");
-  release.resolve();
-  const second = await deadline(held, "The held install never finished");
-  if (second.status !== "installed") throw new Error("The second version did not install");
-  await deadline(queued, "The same plugin's activation never ran");
-  // The first plugin's activation started only after its install was published.
-  expect(events.lastIndexOf(`start:${a!.version}`)).toBeGreaterThan(
-    events.indexOf(`end:${second.version.id}`),
-  );
   expect((await service.installed({ plugins: [a!.plugin] }, caller))[0]).toMatchObject({
     plugin: { activeVersion: a!.version },
+  });
+  release();
+  expect((await deadline(calling, "The call never finished")).result).toMatchObject({
+    execution: { value: { ok: true, value: "released" } },
+  });
+  // One install commits; the others expected the version it replaced and change nothing.
+  const results = await deadline(Promise.all(installs), "The installs never finished");
+  const committed = results.flatMap((outcome) =>
+    outcome.ok && outcome.result.status === "installed" ? [outcome.result.version.id] : [],
+  );
+  expect(committed).toHaveLength(1);
+  for (const outcome of results.filter((outcome) => !outcome.ok))
+    expect(outcome).toMatchObject({ error: { tag: "AppVersionChanged" } });
+  expect((await service.installed({ plugins: [a!.plugin] }, caller))[0]).toMatchObject({
+    plugin: { activeVersion: committed[0] },
   });
 });
 

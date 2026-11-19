@@ -24,6 +24,7 @@ import {
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
 import { seedPersonalFixture } from "../packages/database/src/personal-fixture.test-support.js";
+import { recordPluginAuthor } from "../packages/database/src/plugin-agent-store.test-support.js";
 import {
   createPersonalRunFixturePort,
   startPersonalQueuedRunFixture,
@@ -256,7 +257,7 @@ beforeAll(async () => {
   if (installed.status !== "installed")
     throw new Error("Fixture did not install: " + JSON.stringify(installed));
   plugin = installed.plugin.id;
-  await records.recordInstall(personal.userId, plugin, installed.version.id, "agent");
+  await recordPluginAuthor(database, personal.userId, plugin, installed.version.id, "agent");
   handlers = new PluginToolHandlers({
     service,
     authority,
@@ -1398,8 +1399,8 @@ test("account Request pins disclosure and a person-reviewed link fulfils it", as
   );
   if (installed.status !== "installed") throw new Error("Account fixture did not install");
   const target = { plugin: installed.plugin.id, requirement: "service", scope: "user" as const };
-  await records.recordInstall(personal.userId, installed.plugin.id, installed.version.id, "agent");
-  await records.recordInstall(personal.userId, installed.plugin.id, "older-version", "catalog");
+  await recordPluginAuthor(database, personal.userId, installed.plugin.id, installed.version.id, "agent");
+  await recordPluginAuthor(database, personal.userId, installed.plugin.id, "older-version", "catalog");
   const unavailable = await call(caller, "plugin_search", { namespace: installed.plugin.slug });
   expect(unavailable.unavailableApps).toEqual(
     expect.arrayContaining([

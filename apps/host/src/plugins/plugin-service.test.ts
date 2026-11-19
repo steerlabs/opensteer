@@ -3,17 +3,23 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it, vi } from "vitest";
 import { HostMessageSchema } from "./engine-protocol.js";
 import { PluginService } from "./plugin-service.js";
 
 vi.mock("node:child_process", () => ({ fork: vi.fn() }));
 vi.mock("./engine-resources.js", () => ({ pluginEngineUnavailableReason: async () => undefined }));
+const active = vi.hoisted(() => new Map<string, string>());
+vi.mock("./engine-storage.js", () => ({
+  engineActiveVersions: async () => active,
+  engineDemand: async () => ({ busy: false, dueInMs: null }),
+}));
 
-it("refreshes what the Host keeps beside a published version before answering the engine", async () => {
+it("makes the skill record follow the active version, and repairs a refresh that failed", async () => {
   const plugin = "app_252169e9-de1b-4743-a005-50b6ed1b1fa0";
-  const answered = Promise.withResolvers<unknown>();
+  active.set(plugin, "v2");
+  const answered: unknown[] = [];
+  let reads = 0;
   const child = Object.assign(new EventEmitter(), {
     connected: true,
     exitCode: null,
@@ -23,7 +29,7 @@ it("refreshes what the Host keeps beside a published version before answering th
       if (message.type === "init") child.emit("message", { type: "ready", pid: 1, startupMs: 0 });
       if (message.type === "stop") child.emit("exit");
       if (message.type === "callbackResult" || message.type === "callbackError")
-        answered.resolve(message);
+        answered.push(message);
       if (message.type !== "request") return;
       if (message.operation === "health")
         child.emit("message", {
@@ -33,17 +39,22 @@ it("refreshes what the Host keeps beside a published version before answering th
           result: { pid: 1, rss: 1, startupMs: 0 },
         });
       if (message.operation === "skillFiles")
-        child.emit("message", {
-          type: "result",
-          id: message.id,
-          operation: message.operation,
-          result: { plugin, slug: "fixture", version: "v2", hasPage: true, files: [] },
-        });
+        // The first refresh fails; every later one reads the active version's files.
+        child.emit(
+          "message",
+          (reads += 1) === 1
+            ? { type: "error", id: message.id, error: { code: "engine", message: "Read failed" } }
+            : {
+                type: "result",
+                id: message.id,
+                operation: message.operation,
+                result: { plugin, slug: "fixture", version: "v2", hasPage: true, files: [] },
+              },
+        );
     },
   });
   vi.mocked(fork).mockReturnValue(child as unknown as ChildProcess);
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-cache-test-"));
-  const published: unknown[] = [];
   const service = new PluginService({
     processEntry: new URL("file:///unused.js"),
     databaseUrl: "postgres://unused.invalid/unused",
@@ -51,27 +62,36 @@ it("refreshes what the Host keeps beside a published version before answering th
     owner: "owner",
     credentialKey: new Uint8Array(32),
     origin: "https://fixture.invalid",
-    onVersionPublished: async (version) => {
-      // The skill record already names the version when its provenance is recorded.
-      expect(await service.skillCache.get(plugin)).toMatchObject({ version: "v2" });
-      published.push(version);
-    },
   });
-  try {
-    await service.health({}, { caller: "owner", mode: "automatic" });
+  const published = (id: string) => {
     child.emit("message", {
       type: "callback",
-      id: "published",
+      id,
       operation: "versionPublished",
-      input: { plugin, version: "v2", from: "v1" },
+      input: { plugin },
     });
-    expect(
-      await withTimeout(answered.promise, 4_000, {
-        timeoutError: () => new Error("The publication was never answered"),
-      }),
-    ).toMatchObject({ type: "callbackResult", id: "published" });
-    expect(published).toEqual([{ plugin, version: "v2", from: "v1" }]);
+    return vi.waitFor(() => expect(answered).toContainEqual(expect.objectContaining({ id })), {
+      timeout: 4_000,
+    });
+  };
+  try {
+    // The engine's start reconciles every plugin; this refresh fails and leaves no record.
+    await service.health({}, { caller: "owner", mode: "automatic" });
+    await vi.waitFor(() => expect(reads).toBe(1), { timeout: 4_000 });
+    expect(await service.skillCache.get(plugin)).toBeUndefined();
+    // The next promotion repairs it, and is answered once the record follows it.
+    await published("first");
+    expect(answered).toContainEqual(
+      expect.objectContaining({ type: "callbackResult", id: "first" }),
+    );
     expect(await service.skillCache.get(plugin)).toMatchObject({ version: "v2", hasPage: true });
+    // A record that already follows the active version is not read again.
+    await published("again");
+    expect(reads).toBe(2);
+    // A plugin with no active version has no record.
+    active.delete(plugin);
+    await published("removed");
+    expect(await service.skillCache.get(plugin)).toBeUndefined();
   } finally {
     await service.close();
     await rm(directory, { recursive: true, force: true });

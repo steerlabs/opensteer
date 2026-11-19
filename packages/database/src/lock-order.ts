@@ -112,9 +112,6 @@ export const databaseLockOrder = [
   "advisory:integration-catalog-definition",
   // The one plugin engine of a database holds this for its life, on a connection of its own.
   "advisory:plugin-engine",
-  // A plugin's version fence: one deploy, activation, removal or rebuild of it at a time, held on a
-  // connection of its own before any row the change then writes.
-  "advisory:plugin-version",
   // Plugin updates reconcile their MCP installation while holding the package row.
   "plugins",
   "plugin_versions",
@@ -324,7 +321,6 @@ export function advisoryLockResource(key: string, seed: number): string {
     if (key.startsWith(prefix)) return `advisory:${domain}`;
   const prefixes = [
     "plugin-owner-consent",
-    "plugin-version",
     "personal-tab-reopen",
     "browser-source-pairing",
     "browser-sources-owner",

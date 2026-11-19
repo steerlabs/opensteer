@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { stopProcessGroup } from "@opensteer/shared/processGroup";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { engineDemand } from "./engine-storage.js";
+import { engineActiveVersions, engineDemand } from "./engine-storage.js";
 import {
   EngineMessageSchema,
   HostMessageSchema,
@@ -88,15 +88,6 @@ export interface PluginServiceOptions {
     categories: import("@opensteer/protocol").PluginResourceCategory[],
   ) => void;
   readonly onExecution?: (execution: PluginExecution) => void;
-  /**
-   * A version became a plugin's active one: by an install, an activation or a rebuild after an
-   * upgrade. `from` is the stored version it was rebuilt from. Records who wrote it.
-   */
-  readonly onVersionPublished?: (version: {
-    readonly plugin: string;
-    readonly version: string;
-    readonly from: string | null;
-  }) => Promise<void>;
   readonly onDiagnostic?: (phase: string) => void;
   readonly onState?: (state: PluginServiceState) => void;
 }
@@ -415,6 +406,8 @@ export class PluginService {
         this.#touch();
         this.#set({ status: "ready", generation, pid: message.pid, startupMs: message.startupMs });
         resolveReady();
+        // What a previous engine promoted and never refreshed, it refreshes now.
+        void this.reconcileSkills().catch(() => {});
       } else if (message.type === "fatal") {
         fatal = new PluginServiceError(
           message.error.code,
@@ -617,8 +610,7 @@ export class PluginService {
         result = (await this.webhookOrigin()) ?? null;
       else if (message.operation === "versionPublished") {
         const published = callbackOperations.versionPublished.input.parse(message.input);
-        await this.#cacheVersion(published.plugin, controller.signal);
-        await this.#options.onVersionPublished?.(published);
+        await this.reconcileSkills([published.plugin], controller.signal);
         result = {};
       } else if (message.operation === "providers")
         result =
@@ -667,12 +659,43 @@ export class PluginService {
     context: PluginCaller,
     signal?: AbortSignal,
   ): Promise<PluginOutput<K>> {
-    // A version the engine activates is published to the Host before the change is answered
-    // (see the versionPublished callback), under the plugin's version fence.
-    if (operation !== "remove") return this.#request(operation, input, context, signal);
     const result = await this.#request(operation, input, context, signal);
-    await this.skillCache.remove(operations.remove.input.parse(input).plugin);
+    // A change of which version is active, an install replayed from its receipt included, is
+    // answered once the skill record follows it.
+    const plugin =
+      operation === "install"
+        ? (result as PluginOutput<"install">).status === "installed"
+          ? (result as Extract<PluginOutput<"install">, { status: "installed" }>).plugin.id
+          : undefined
+        : operation === "activate"
+          ? operations.activate.input.parse(input).plugin
+          : operation === "remove"
+            ? operations.remove.input.parse(input).plugin
+            : undefined;
+    if (plugin !== undefined) await this.reconcileSkills([plugin], signal);
     return result;
+  }
+  /**
+   * Make the skill record follow the committed active versions: a plugin's entry names its active
+   * version, and a plugin with none has no entry. Idempotent, so a refresh that failed is repaired
+   * by the next one: after every promotion, install and removal, and once each engine is ready,
+   * for every plugin (without `plugins`). A plugin whose refresh fails keeps its entry until then.
+   */
+  async reconcileSkills(plugins?: readonly string[], signal?: AbortSignal) {
+    const active = await engineActiveVersions(this.#options.databaseUrl);
+    const targets = plugins ?? [
+      ...new Set([...active.keys(), ...(await this.skillCache.plugins())]),
+    ];
+    for (const plugin of targets) {
+      try {
+        const version = active.get(plugin);
+        if (version === undefined) await this.skillCache.remove(plugin);
+        else if ((await this.skillCache.get(plugin))?.version !== version)
+          await this.#cacheVersion(plugin, signal);
+      } catch {
+        this.#options.onDiagnostic?.("skill-record-refresh-failed");
+      }
+    }
   }
   resourcesRead = (
     input: PluginInput<"resourcesRead">,

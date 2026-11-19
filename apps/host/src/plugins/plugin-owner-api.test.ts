@@ -282,17 +282,6 @@ function setup(
         });
       },
     ),
-    recordInstall: vi.fn(
-      async (_owner: UserId, pluginId: string, version: string, author: "catalog" | "agent") => {
-        const row = settings.get(pluginId);
-        settings.set(pluginId, {
-          pluginId,
-          access: row?.access ?? "all",
-          author,
-          versionAuthors: { ...row?.versionAuthors, [version]: author },
-        });
-      },
-    ),
   };
   const accountLinked = vi.fn(async () => {});
   const changed = vi.fn();
@@ -731,8 +720,8 @@ describe("the person's plugin API", () => {
     ]);
   });
 
-  it("records provenance for what it installs and activates", async () => {
-    const { api, service, store, changed } = setup();
+  it("installs and activates through the engine, which records each version's author", async () => {
+    const { api, service, changed } = setup();
     await run(
       api,
       { type: "plugins.install", source: { kind: "catalog", catalogId: "linear" } },
@@ -765,13 +754,9 @@ describe("the person's plugin API", () => {
         owner,
       ],
     ]);
-    expect(store.recordInstall.mock.calls.map((call) => call.slice(1))).toEqual([
-      ["new", "new-v1", "catalog"],
-      ["new", "new-v1", "agent"],
-    ]);
     await run(api, { type: "plugins.version.activate", pluginId: "p0", versionId: "p0-v1" });
     expect(service.activate).toHaveBeenCalledWith({ plugin: "p0", version: "p0-v1" }, owner);
-    // The engine publishes the version that became active, with its provenance, itself.
+    // The engine records the author of the version that became active, with its activation.
     expect(changed).toHaveBeenCalledTimes(3);
   });
 

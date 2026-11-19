@@ -8,9 +8,9 @@ import {
   type OwnerId,
   type PluginEngine,
   type VersionId,
-  type VersionMetadata,
 } from "@opensteer/plugin-engine-sdk/core";
 import { rewriteUpstreamSource } from "@opensteer/plugin-engine-catalog";
+import type { PluginGate } from "./plugin-gate.js";
 
 /** A framework as a stored build records it. */
 export interface Framework {
@@ -22,25 +22,10 @@ export interface RebuildFailure {
   readonly version: VersionId;
   readonly message: string;
 }
-/** Where version changes coordinate across engine processes, and what failed for good. */
+/** The rebuild failures the Host keeps beside each plugin. */
 export interface VersionStore {
-  /**
-   * Run `work` holding the plugin's version fence, which one operation of one engine process holds
-   * at a time. Every change to which version of a plugin is active, and so to its database, runs
-   * under it.
-   */
-  readonly fence: <A, E>(app: AppId, work: Effect.Effect<A, E>) => Effect.Effect<A, E | Error>;
   readonly failed: (app: AppId, failure: RebuildFailure) => Effect.Effect<void, Error>;
   readonly cleared: (app: AppId) => Effect.Effect<void, Error>;
-}
-/**
- * A version that became a plugin's active one. `from` is the stored version whose source it was
- * rebuilt from, whose author it inherits; null when it is that version, or new source.
- */
-export interface Published {
-  readonly plugin: AppId;
-  readonly version: VersionId;
-  readonly from: VersionId | null;
 }
 /** A plugin that is not served until it is rebuilt, and why it is still waiting. */
 export interface Updating {
@@ -70,18 +55,22 @@ const describe = (error: unknown) =>
 
 /**
  * Every change to which version of an installed plugin is active: deploying, activating and
- * removing it, and rebuilding it after an upgrade. Each runs under the plugin's version fence and
- * expects the active version it read there, so of two concurrent changes the second sees the
- * first; a deploy that finds another version active fails before it migrates the plugin's
- * database. A version that becomes active is published one way, whoever activated it: the
- * rebuild failure is cleared and `published` refreshes what the Host keeps beside the version.
+ * removing it, and rebuilding it after an upgrade. A deploy builds first, outside any lock; its
+ * commit (`commit`) then runs as the plugin's only change (`PluginGate.change`) with its execution
+ * held (`PluginGate.hold`): the engine checks that the version it expects is still active,
+ * migrates the plugin's database and promotes the new version, so the version that was active
+ * never runs against the migrated database. A change that finds another version active fails
+ * before it migrates anything. Whatever made it active, a promoted version clears the plugin's
+ * rebuild state and failure, and `published` tells the Host, which makes what it keeps beside the
+ * active version follow; its author was recorded with the promotion.
  *
  * Installed plugins whose active build links a framework other than the Host's, as there are
- * right after an upgrade, are not served at all until they are rebuilt: `updating` names them, and
- * the engine admits no call, page, schedule occurrence, workflow step or webhook for them. `run`
- * rebuilds them one at a time from the source of the active version, rewritten with the
- * upstream-name rules; the deploy builds it, then migrates the plugin's database and activates the
- * new version, so its accounts, links, settings, schedules and data stay.
+ * right after an upgrade, are not served at all until they are rebuilt: `updating` names them for
+ * their owner and the scheduler, and the runtime runs none of their builds. `run` rebuilds them
+ * one at a time from the source of the active version, rewritten with the upstream-name rules, as
+ * that version's rebuild (`rebuiltFrom`), so work saved for it continues on the new one. The deploy
+ * migrates the plugin's database and activates the new version; its accounts, links, settings,
+ * schedules and data stay.
  *
  * A rebuild failure that did not judge the source (a registry, memory, storage) keeps the old
  * version active and the plugin updating, and is tried again with backoff while the engine runs
@@ -94,35 +83,37 @@ export const pluginVersions = (input: {
   readonly framework: Framework;
   readonly linkedFramework: (build: BuildId) => Effect.Effect<Framework | undefined>;
   readonly store: VersionStore;
-  readonly published: (version: Published) => Effect.Effect<void, Error>;
+  readonly gate: PluginGate;
+  /** A version of `plugin` became active; never fails the change. */
+  readonly published: (plugin: AppId) => Effect.Effect<void>;
 }) => {
-  const { engine, owner, framework, store } = input;
+  const { engine, owner, framework, store, gate } = input;
   const updating = new Map<AppId, Updating>();
   const stale = (build: BuildId) =>
     input.linkedFramework(build).pipe(Effect.map((linked) => linked?.sha256 !== framework.sha256));
 
-  /** The one way a version becomes visible as the plugin's active one. */
-  const publish = (version: Published) =>
+  /** What follows every promotion, whoever made it. */
+  const promoted = (app: AppId) =>
     Effect.gen(function* () {
-      updating.delete(version.plugin);
-      yield* store.cleared(version.plugin);
-      yield* input.published(version);
+      updating.delete(app);
+      yield* store
+        .cleared(app)
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Clearing a plugin's rebuild failure failed").pipe(
+              Effect.annotateLogs({ plugin: app, reason: describe(error) }),
+            ),
+          ),
+        );
+      yield* input.published(app);
     });
-  /** Publish a deploy's version when it became the active one. */
-  const publishDeployed = (
-    deployed: {
-      readonly app: Pick<App, "id" | "activeVersion">;
-      readonly version: Pick<VersionMetadata, "id">;
-    },
-    from: VersionId | null,
-  ) =>
-    deployed.app.activeVersion === deployed.version.id
-      ? publish({ plugin: deployed.app.id, version: deployed.version.id, from })
-      : Effect.void;
+  /** A deploy's commit, and an activation: the plugin's only change, its execution held. */
+  const commit = <A, E, R>(app: AppId, work: Effect.Effect<A, E, R>) =>
+    gate.change(app, gate.hold(app, work)).pipe(Effect.tap(() => promoted(app)));
 
   /**
-   * Build a stored version's source, rewritten, as the plugin's new active version, expecting the
-   * active version the caller read under the fence.
+   * Build a stored version's source, rewritten, as its rebuild and the plugin's new active
+   * version, expecting the active version the caller read.
    */
   const rebuild = (app: App, version: VersionId) =>
     Effect.gen(function* () {
@@ -139,69 +130,60 @@ export const pluginVersions = (input: {
           message,
         });
       }
-      return yield* engine.apps.deploy({
-        owner,
-        app: app.id,
-        files: files.value,
-        expectedVersion: app.activeVersion,
-      });
+      return yield* engine.apps.deployWith(
+        { owner, app: app.id, files: files.value, expectedVersion: app.activeVersion },
+        { rebuiltFrom: version, commit },
+      );
     });
 
-  /** One attempt at one plugin, under its fence. */
+  /** One attempt at one plugin; only its commit holds the plugin. */
   const attempt = (id: AppId) =>
-    store
-      .fence(
+    Effect.gen(function* () {
+      const app = yield* engine.apps
+        .get({ app: id, owner })
+        .pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)));
+      if (app === undefined || app.activeVersion === null) return updating.delete(id);
+      const active = yield* engine.apps.version({ app: id, owner, version: app.activeVersion });
+      // The owner may have changed it since it was found.
+      if (!(yield* stale(active.build))) return updating.delete(id);
+      const started = performance.now();
+      const built = yield* rebuild(app, active.id).pipe(Effect.result);
+      const annotations = { plugin: id, ms: Math.round(performance.now() - started) };
+      if (built._tag === "Success")
+        return yield* Effect.logInfo("Plugin rebuilt for the Host's framework").pipe(
+          Effect.annotateLogs(annotations),
+        );
+      // Another version became active while this one built; the next attempt reads it.
+      if (built.failure._tag === "AppVersionChanged") return;
+      if (!judged(built.failure)) return yield* Effect.fail(built.failure);
+      const failure = built.failure;
+      yield* gate.change(
         id,
         Effect.gen(function* () {
-          const app = yield* engine.apps
-            .get({ app: id, owner })
-            .pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)));
-          if (app === undefined || app.activeVersion === null) return updating.delete(id);
-          const active = yield* engine.apps.version({ app: id, owner, version: app.activeVersion });
-          // Another engine, or the owner, may have changed it while this one waited for the fence.
-          if (!(yield* stale(active.build))) return updating.delete(id);
-          const started = performance.now();
-          const built = yield* rebuild(app, active.id).pipe(Effect.result);
-          const annotations = { plugin: id, ms: Math.round(performance.now() - started) };
-          if (built._tag === "Success") {
-            // The new version is served from here on; what the Host keeps beside it follows.
-            yield* publishDeployed(built.success, active.id).pipe(
-              Effect.catch((error) =>
-                Effect.logWarning("Publishing a rebuilt plugin version failed").pipe(
-                  Effect.annotateLogs({ plugin: id, reason: describe(error) }),
-                ),
-              ),
-            );
-            updating.delete(id);
-            return yield* Effect.logInfo("Plugin rebuilt for the Host's framework").pipe(
-              Effect.annotateLogs(annotations),
-            );
-          }
-          if (!judged(built.failure)) return yield* Effect.fail(built.failure);
-          yield* store.failed(id, { version: active.id, message: built.failure.message });
+          yield* store.failed(id, { version: active.id, message: failure.message });
           yield* engine.apps.deactivate({ owner, app: id, expectedVersion: active.id });
-          updating.delete(id);
-          yield* Effect.logWarning("Plugin source does not build for the Host's framework").pipe(
-            Effect.annotateLogs({ ...annotations, stage: built.failure.stage ?? "unknown" }),
+        }),
+      );
+      updating.delete(id);
+      yield* Effect.logWarning("Plugin source does not build for the Host's framework").pipe(
+        Effect.annotateLogs({ ...annotations, stage: failure.stage ?? "unknown" }),
+      );
+    }).pipe(
+      Effect.catch((error: unknown) =>
+        Effect.gen(function* () {
+          const attempts = (updating.get(id)?.attempts ?? 0) + 1;
+          const retryAt = Date.now() + backoff(attempts);
+          updating.set(id, {
+            reason: `Its rebuild could not finish and is tried again: ${describe(error)}`,
+            attempts,
+            retryAt,
+          });
+          yield* Effect.logWarning("Plugin rebuild will be tried again").pipe(
+            Effect.annotateLogs({ plugin: id, attempts, reason: describe(error) }),
           );
         }),
-      )
-      .pipe(
-        Effect.catch((error: unknown) =>
-          Effect.gen(function* () {
-            const attempts = (updating.get(id)?.attempts ?? 0) + 1;
-            const retryAt = Date.now() + backoff(attempts);
-            updating.set(id, {
-              reason: `Its rebuild could not finish and is tried again: ${describe(error)}`,
-              attempts,
-              retryAt,
-            });
-            yield* Effect.logWarning("Plugin rebuild will be tried again").pipe(
-              Effect.annotateLogs({ plugin: id, attempts, reason: describe(error) }),
-            );
-          }),
-        ),
-      );
+      ),
+    );
 
   return {
     /** Why the plugin is not served yet, or nothing when it is served. */
@@ -232,56 +214,27 @@ export const pluginVersions = (input: {
         yield* Effect.sleep(Math.max(0, next - Date.now()));
       }
     }),
-    /**
-     * Install source as a plugin's new version: `work` deploys or copies it, into `app` when it
-     * names an installed plugin, which then runs under that plugin's fence.
-     */
-    install: <
-      W extends Effect.Effect<
-        {
-          readonly app: Pick<App, "id" | "activeVersion">;
-          readonly version: Pick<VersionMetadata, "id">;
-        },
-        unknown
-      >,
-    >(
-      work: W,
-      app?: AppId,
-    ): Effect.Effect<Effect.Success<W>, Effect.Error<W> | Error> => {
-      // SAFETY: W is an Effect of that success and error, as its constraint says.
-      const typed = work as unknown as Effect.Effect<Effect.Success<W>, Effect.Error<W>>;
-      const published = typed.pipe(Effect.tap((deployed) => publishDeployed(deployed, null)));
-      return app === undefined ? published : store.fence(app, published);
-    },
+    /** The commit of a deploy into a plugin (see `DeployOptions.commit`). */
+    commit,
     /**
      * Activate a stored version. One built for another framework is never activated as it is: its
      * source is rebuilt for the Host's framework, and the new version activates. A failure leaves
      * the active version as it was. Returns the plugin with the version that became active.
      */
     activate: (app: AppId, version: VersionId) =>
-      store.fence(
-        app,
-        Effect.gen(function* () {
-          const current = yield* engine.apps.get({ app, owner });
-          const stored = yield* engine.apps.version({ app, owner, version });
-          if (!(yield* stale(stored.build))) {
-            const activated = yield* engine.apps.activate({
-              app,
-              owner,
-              version,
-              expectedVersion: current.activeVersion,
-            });
-            yield* publish({ plugin: app, version, from: null });
-            return activated;
-          }
-          const rebuilt = yield* rebuild(current, version);
-          yield* publishDeployed(rebuilt, version);
-          return rebuilt.app;
-        }),
-      ),
+      Effect.gen(function* () {
+        const current = yield* engine.apps.get({ app, owner });
+        const stored = yield* engine.apps.version({ app, owner, version });
+        if (!(yield* stale(stored.build)))
+          return yield* commit(
+            app,
+            engine.apps.activate({ app, owner, version, expectedVersion: current.activeVersion }),
+          );
+        return (yield* rebuild(current, version)).app;
+      }),
     /** Remove a plugin with everything the engine keeps for it. */
     remove: (app: AppId) =>
-      store.fence(
+      gate.change(
         app,
         engine.apps.remove({ app, owner }).pipe(
           Effect.tap(() => Effect.sync(() => updating.delete(app))),

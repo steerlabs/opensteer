@@ -83,10 +83,7 @@ export interface PluginOwnerApiOptions {
     service: Pick<PluginService, "webhook" | "readStream">;
     origin: () => Promise<string | undefined>;
   };
-  readonly settings: Pick<
-    PluginAgentStore,
-    "settings" | "versionAuthors" | "setAccess" | "recordInstall"
-  >;
+  readonly settings: Pick<PluginAgentStore, "settings" | "versionAuthors" | "setAccess">;
   /** Fulfils Requests waiting on this link; called after a person-reviewed link commits. */
   readonly accountLinked: (input: {
     owner: UserId;
@@ -268,9 +265,13 @@ function hostError(error: unknown): never {
             ? "plugin-webhooks-active"
             : error.tag === "AppWorkflowsActive"
               ? "plugin-workflows-active"
-              : error.code === "unavailable"
-                ? "plugin-engine-unavailable"
-                : `plugin-${error.code}`,
+              : error.tag === "PluginUpdating"
+                ? "plugin-updating"
+                : error.tag === "PluginStale"
+                  ? "plugin-stale"
+                  : error.code === "unavailable"
+                    ? "plugin-engine-unavailable"
+                    : `plugin-${error.code}`,
     });
   }
   throw error;
@@ -1065,13 +1066,8 @@ export class PluginOwnerApi {
             },
           };
         }
-        // Catalog code is reviewed upstream; a URL wrapper is generated code nobody reviewed.
-        await settings.recordInstall(
-          userId,
-          result.plugin.id,
-          result.version.id,
-          result.origin === "catalog" ? "catalog" : "agent",
-        );
+        // Its author was recorded when it became active: catalog code is reviewed upstream, and a
+        // URL wrapper is generated code nobody reviewed.
         changed();
         return {
           type: command.type,

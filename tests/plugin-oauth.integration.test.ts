@@ -23,6 +23,7 @@ import {
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
 import { seedPersonalFixture } from "../packages/database/src/personal-fixture.test-support.js";
+import { recordPluginAuthor } from "../packages/database/src/plugin-agent-store.test-support.js";
 import { createPersonalRunFixturePort } from "../packages/database/src/personal-run-fixture.test-support.js";
 import { pendingEvent } from "../packages/database/src/store.integration.test-support.js";
 import {
@@ -138,7 +139,7 @@ async function install(kind: Kind) {
     });
   if (result.status !== "installed")
     throw new Error("OAuth fixture did not build: " + JSON.stringify(result));
-  await records.recordInstall(personal.userId, result.plugin.id, result.version.id, "agent");
+  await recordPluginAuthor(database, personal.userId, result.plugin.id, result.version.id, "agent");
   return { plugin: result.plugin.id, requirement: "service", scope: "user" as const };
 }
 async function link(generation = "g".repeat(43)) {
