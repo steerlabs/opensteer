@@ -397,10 +397,21 @@ integration("MCP servers on a computer", () => {
           next: "Wait for the person to review it on the computer that runs it.",
         };
         const echo = `tools[${JSON.stringify(namespace)}].echo`;
-        expect(await gateway.call("plugin_search", { namespace })).toMatchObject({
+        const listed = await gateway.call("plugin_search", { namespace });
+        expect(listed).toMatchObject({
           items: expect.arrayContaining([expect.objectContaining({ path: echo })]),
           namespaces: [expect.objectContaining({ blocked: waiting })],
         });
+        // Named and described only, without its saved input type, until it may be called.
+        for (const item of listed.items as Record<string, unknown>[])
+          expect(Object.keys(item).sort()).toEqual(["description", "path"]);
+        expect(await gateway.call("plugin_describe", { paths: [echo] })).toMatchObject({
+          items: [{ path: echo, description: expect.any(String) }],
+          namespaces: [expect.objectContaining({ blocked: waiting })],
+        });
+        expect(
+          (await gateway.call("plugin_describe", { paths: [echo] })).items as object[],
+        ).toEqual([expect.not.objectContaining({ signature: expect.anything() })]);
         const refused = await pluginCall(gateway, echo, { text: "unapproved" });
         expect(refused.raw).toMatchObject({ isError: true, structuredContent: { error: waiting } });
         expect(

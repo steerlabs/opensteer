@@ -37,7 +37,7 @@ export const plugin_search = defineAgentTool({
       z.object({
         path: id,
         description: z.string(),
-        input: z.string(),
+        input: z.string().optional(),
         inputTruncated: z.literal(true).optional(),
         blocked: BlockedSchema.optional(),
       }),
@@ -63,7 +63,7 @@ export const plugin_describe = defineAgentTool({
       z.object({
         path: id,
         description: z.string(),
-        signature: z.string(),
+        signature: z.string().optional(),
         blocked: BlockedSchema.optional(),
       }),
     ),

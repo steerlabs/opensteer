@@ -284,10 +284,15 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
         next: expect.stringContaining("app_access_request"),
       },
     });
+    // The write it may not make is named without its input type or signature.
+    expect(
+      (discovery.items as { path: string }[]).find((item) => item.path === createEvent),
+    ).not.toHaveProperty("input");
     const blockedDescription = await gateway.call("plugin_describe", { paths: [createEvent] });
     expect((blockedDescription.items as { blocked?: unknown }[])[0]).toMatchObject({
       blocked: { code: "access_denied", next: expect.stringContaining('dataApp "calendar"') },
     });
+    expect((blockedDescription.items as object[])[0]).not.toHaveProperty("signature");
     let sent = helper.invocations.length;
     const readOnly = await pluginCall(gateway, createEvent, {
       start: "2026-10-01T09:00",

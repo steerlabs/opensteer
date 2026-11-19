@@ -429,8 +429,11 @@ export const SearchItem = Schema.Struct({
   path: Schema.String,
   /** The first line of the tool's description. */
   description: Schema.String,
-  /** The input type on one line, without documentation. */
-  input: Schema.String,
+  /**
+   * The input type on one line, without documentation. Absent for a tool the caller is kept from
+   * (see `blocked` here and on its namespace) until it may call the tool.
+   */
+  input: Schema.optionalKey(Schema.String),
   /** The input type was cut; tools.search.describe returns it whole. */
   inputTruncated: Schema.optionalKey(Schema.Literal(true)),
   /** What keeps this tool alone from the caller now; what keeps its app is on the namespace. */
@@ -460,14 +463,15 @@ export const DescribeInput = Schema.Struct({
 });
 /**
  * Full detail for each path found: the whole description and the TypeScript signature with its
- * input and output types. A path that names no tool is in `missing`, with the closest paths.
+ * input and output types; a tool the caller is kept from has no signature until it may call it.
+ * A path that names no tool is in `missing`, with the closest paths.
  */
 export const DescribeResult = Schema.Struct({
   items: Schema.Array(
     Schema.Struct({
       path: Schema.String,
       description: Schema.String,
-      signature: Schema.String,
+      signature: Schema.optionalKey(Schema.String),
       blocked: Schema.optionalKey(McpBlocked),
     }),
   ),

@@ -408,7 +408,8 @@ export const operations = {
           z.strictObject({
             path: id,
             description: z.string(),
-            input: z.string(),
+            // Absent for a tool the caller is kept from, until it may call it.
+            input: z.string().optional(),
             inputTruncated: z.literal(true).optional(),
             blocked: BlockedSchema.optional(),
           }),
@@ -427,7 +428,7 @@ export const operations = {
         z.strictObject({
           path: id,
           description: z.string(),
-          signature: z.string(),
+          signature: z.string().optional(),
           blocked: BlockedSchema.optional(),
         }),
       ),

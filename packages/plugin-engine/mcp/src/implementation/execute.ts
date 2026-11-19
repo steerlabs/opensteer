@@ -420,6 +420,13 @@ const targetNamespace = (target: Place): SearchNamespace => ({
 /** What keeps one tool alone from the caller; what keeps its app is said on its namespace. */
 const toolBlocked = (tool: McpTool) =>
   tool.blocked === undefined ? {} : { blocked: tool.blocked };
+/**
+ * Whether the caller is kept from a tool, by what keeps it or its app. Its input and output types
+ * are then not shown: a schema can hold what its author keeps private, such as defaults and
+ * allowed values, and the caller gets them once it may call the tool.
+ */
+const withheld = (tool: McpTool, target: Place) =>
+  tool.blocked !== undefined || target.blocked !== undefined;
 /** The namespaces a tool's path sits in: its app, and its router when that has a title. */
 const namespacesOf = (
   target: Place,
@@ -620,12 +627,14 @@ const searchPage = <E extends Error>(
         }>,
       ) =>
         Effect.gen(function* () {
-          const type = yield* inputType(yield* renderSchemas(found.tool));
+          const type = withheld(found.tool, first.target)
+            ? undefined
+            : yield* inputType(yield* renderSchemas(found.tool));
           const item = {
             path: CodeMode.toolExpression(first.path),
             description: summary(found.tool),
-            input: cut(type, defaultSearchLimits.inputChars),
-            ...(type.length > defaultSearchLimits.inputChars
+            ...(type === undefined ? {} : { input: cut(type, defaultSearchLimits.inputChars) }),
+            ...(type !== undefined && type.length > defaultSearchLimits.inputChars
               ? { inputTruncated: true as const }
               : {}),
             ...toolBlocked(found.tool),
@@ -673,20 +682,26 @@ const globalSearchPage = <E extends Error>(
       ranked.items,
       searchPageBytes,
       jsonBytes({ items: [], remaining: 0, next: { offset } }),
-      ({ found, first }) =>
-        renderSchemas(found.tool).pipe(
+      ({ found, first }) => {
+        const path = CodeMode.toolExpression(first.path);
+        const reason = found.tool.blocked ?? first.target.blocked;
+        // A tool the caller is kept from is named without its types (see `withheld`).
+        if (reason !== undefined)
+          return Effect.succeed({
+            path,
+            description: `${found.tool.description}\nBlocked (${reason.code}): ${reason.message} Next: ${reason.next}`,
+            signature: path,
+          });
+        return renderSchemas(found.tool).pipe(
           Effect.flatMap(signature),
           Effect.tap(() => Effect.sync(rendered)),
-          Effect.map((typed) => {
-            const path = CodeMode.toolExpression(first.path);
-            const reason = found.tool.blocked ?? first.target.blocked;
-            const description =
-              reason === undefined
-                ? found.tool.description
-                : `${found.tool.description}\nBlocked (${reason.code}): ${reason.message} Next: ${reason.next}`;
-            return { path, description, signature: `${path}${typed}` };
-          }),
-        ),
+          Effect.map((typed) => ({
+            path,
+            description: found.tool.description,
+            signature: `${path}${typed}`,
+          })),
+        );
+      },
       (item) => jsonBytes(item) + 1,
     );
     const remaining = ranked.remaining + ranked.items.length - items.length;
@@ -722,7 +737,9 @@ const describeTools = <E>(described: Described<E>, paths: ReadonlyArray<string>)
       items.push({
         path: CodeMode.toolExpression(entry.path),
         description: entry.tool.description,
-        signature: yield* signature(yield* renderSchemas(entry.tool)),
+        ...(withheld(entry.tool, entry.target)
+          ? {}
+          : { signature: yield* signature(yield* renderSchemas(entry.tool)) }),
         ...toolBlocked(entry.tool),
       });
       for (const space of namespacesOf(entry.target, routerOf(entry)))

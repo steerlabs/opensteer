@@ -390,4 +390,59 @@ describe("local apps an agent cannot use now", () => {
       },
     });
   });
+
+  it("name a tool the caller is kept from without its input type or signature", async () => {
+    const calendar = blockedLocal[0]!;
+    const { search, describe, program } = fixture({
+      providers: [offlineMac, calendar],
+      grants: { [offlineMac.id]: "read-only" },
+    });
+    const read = `${namespaceOf(offlineMac)}.list_events`;
+    const write = `${namespaceOf(offlineMac)}.create_event`;
+    const kept = `${namespaceOf(calendar)}.list_events`;
+    const outside = {
+      mac: await search({ namespace: namespaceOf(offlineMac) }),
+      calendar: await search({ namespace: namespaceOf(calendar) }),
+      described: await describe([read, write, kept]),
+    };
+    const inside = (await program(
+      `return {
+        mac: await tools.search({ namespace: ${JSON.stringify(offlineMac.slug)} }),
+        calendar: await tools.search({ namespace: ${JSON.stringify(calendar.slug)} }),
+        described: await tools.search.describe({ paths: ${JSON.stringify([read, write, kept])} }),
+        global: await search({ query: "calendar events" }),
+      };`,
+    )) as unknown as {
+      execution: {
+        value: typeof outside & {
+          global: { items: { path: string; description: string; signature: string }[] };
+        };
+      };
+    };
+    for (const found of [outside, inside.execution.value]) {
+      // A tool it may call keeps its type; a blocked write, and every tool of a blocked app, do not.
+      expect(found.mac.items.find(({ path }) => path === read)).toHaveProperty("input");
+      expect(found.mac.items.find(({ path }) => path === write)).toEqual({
+        path: write,
+        description: "Create a calendar event",
+        blocked: expect.objectContaining({ code: "access_denied" }),
+      });
+      expect(found.calendar.items).toEqual([{ path: kept, description: "List calendar events" }]);
+      expect(found.described.items).toEqual([
+        expect.objectContaining({ path: read, signature: expect.stringContaining("text") }),
+        {
+          path: write,
+          description: "Create a calendar event",
+          blocked: expect.objectContaining({ code: "access_denied" }),
+        },
+        { path: kept, description: "List calendar events" },
+      ]);
+    }
+    const global = inside.execution.value.global.items;
+    expect(global.find(({ path }) => path === kept)).toEqual({
+      path: kept,
+      description: `List calendar events\nBlocked (access_required): ${calendar.blocked!.message} Next: ${calendar.blocked!.next}`,
+      signature: kept,
+    });
+  });
 });

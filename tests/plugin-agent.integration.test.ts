@@ -483,6 +483,25 @@ test("connected external agents can discover and list, but cannot execute, manag
   expect(await call(caller, "plugin_describe", { paths: ["tools.fixture.read"] })).toMatchObject({
     items: [expect.objectContaining({ path: "tools.fixture.read" })],
   });
+  // A write it is kept from by Read-only is named without its input type or signature.
+  await records.setAccess(personal.userId, plugin, "read-only");
+  const found = await call(caller, "plugin_search", { namespace: "fixture" });
+  const items = found.items as { path: string; input?: string }[];
+  expect(items.find(({ path }) => path === "tools.fixture.read")).toHaveProperty("input");
+  expect(items.find(({ path }) => path === "tools.fixture.reviewed")).toEqual({
+    path: "tools.fixture.reviewed",
+    description: expect.any(String),
+    blocked: expect.objectContaining({ code: "access_denied" }),
+  });
+  expect(
+    await call(caller, "plugin_describe", { paths: ["tools.fixture.reviewed"] }),
+  ).toMatchObject({
+    items: [{ path: "tools.fixture.reviewed", blocked: { code: "access_denied" } }],
+  });
+  expect(
+    (await call(caller, "plugin_describe", { paths: ["tools.fixture.reviewed"] })).items,
+  ).toEqual([expect.not.objectContaining({ signature: expect.anything() })]);
+  await records.setAccess(personal.userId, plugin, "all");
   expect(await call(caller, "opensteer_plugin_list", {})).toMatchObject({
     plugins: expect.arrayContaining([expect.objectContaining({ id: plugin })]),
   });
