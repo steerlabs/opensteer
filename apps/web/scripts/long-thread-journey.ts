@@ -303,6 +303,67 @@ try {
       return observed;
     },
   );
+
+  await check("coming back lands on the message the reader left, without a jump", async () => {
+    const go = async (route: string) => {
+      await page.evaluate((to) => {
+        window.history.pushState({}, "", to);
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      }, route);
+      await page.waitForFunction((to) => window.location.pathname === to, route);
+      await page.locator(`${scroller} [data-transcript-row]`).first().waitFor();
+      await settle(page);
+    };
+    await go(`/tasks/${threadId}`);
+    await page.evaluate((selector) => {
+      const element = document.querySelector<HTMLElement>(selector)!;
+      element.scrollTop = Math.max(0, element.scrollTop - element.clientHeight * 4);
+    }, scroller);
+    await settle(page);
+    const left = await page.evaluate((selector) => {
+      const element = document.querySelector<HTMLElement>(selector)!;
+      const top = element.getBoundingClientRect().top;
+      const message = [...element.querySelectorAll<HTMLElement>("[data-message-id]")].find(
+        (candidate) => candidate.getBoundingClientRect().top > top + 1,
+      )!;
+      return { id: message.dataset.messageId!, top: message.getBoundingClientRect().top - top };
+    }, scroller);
+    await go(homeTask);
+    await go(`/tasks/${threadId}`);
+    const where = () =>
+      page.evaluate(
+        ({ selector, id }) => {
+          const element = document.querySelector<HTMLElement>(selector);
+          const row = element?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`);
+          return element && row
+            ? Math.round(row.getBoundingClientRect().top - element.getBoundingClientRect().top)
+            : null;
+        },
+        { selector: scroller, id: left.id },
+      );
+    await page.waitForFunction(
+      ({ selector, id }) =>
+        document.querySelector(`${selector} [data-message-id="${CSS.escape(id)}"]`) !== null,
+      { selector: scroller, id: left.id },
+    );
+    await settle(page);
+    const landed = await where();
+    await page.waitForTimeout(600);
+    const later = await where();
+    await shot("09-returned.png");
+    const observed = { left, landed, later };
+    expectThat(
+      observed,
+      landed !== null && Math.abs(landed - Math.round(left.top)) < 2,
+      "The reader came back somewhere else.",
+    );
+    expectThat(
+      observed,
+      landed !== null && later !== null && Math.abs(later - landed) < 2,
+      "The view moved after it came back.",
+    );
+    return observed;
+  });
 } catch (error) {
   abort(error);
 } finally {
