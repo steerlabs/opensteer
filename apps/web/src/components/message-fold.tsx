@@ -1,5 +1,7 @@
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import {
+  createContext,
+  useContext,
   useId,
   useLayoutEffect,
   useRef,
@@ -8,6 +10,13 @@ import {
   type ReactNode,
 } from "react";
 import { Icon } from "./icon.js";
+
+/**
+ * Set by a transcript row the browser may be skipping (off screen): its folds measure once laid
+ * out, so mounting it never forces its layout. Everywhere else a fold measures before its first
+ * paint, so Show more is there from the start.
+ */
+export const FoldMeasuresWhenLaidOut = createContext(false);
 
 /**
  * A sent message's words, folded to `lines` until the reader opens them. Show
@@ -33,21 +42,21 @@ export function MessageFold({
   const foldRef = useRef<HTMLDivElement | null>(null);
   const wordsRef = useRef<HTMLDivElement | null>(null);
   const [overflowing, setOverflowing] = useState(false);
+  const later = useContext(FoldMeasuresWhenLaidOut);
   useLayoutEffect(() => {
     const fold = foldRef.current;
     const words = wordsRef.current;
     if (!fold || !words) return;
     // Measured against the fold's own line, not its clamped box, so a message
     // opened before it was ever folded still knows whether it needs Show less.
-    // The words' box grows as Markdown arrives or the column narrows. Measured
-    // only once laid out: a transcript row the browser is skipping is never
-    // forced through layout just to decide its Show more.
+    // The words' box grows as Markdown arrives or the column narrows.
     const measure = () =>
       setOverflowing(
         words.offsetHeight > lines * parseFloat(getComputedStyle(fold).lineHeight) + 1,
       );
+    if (!later) measure();
     return observeResize([words], measure);
-  }, [lines]);
+  }, [later, lines]);
   return (
     <>
       <div
