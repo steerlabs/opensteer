@@ -1,44 +1,81 @@
 import type { ListingPrivateFilesystem } from "@opensteer/client/connections";
 import {
   checkpointFence,
+  checkpointKeyDeployment,
   noCheckpointFences,
   personalCheckpointMaxBytes,
   raiseCheckpointFence,
   type CheckpointFences,
   type CheckpointStorage,
 } from "@opensteer/client/host";
-import { utf8ByteLength } from "@opensteer/core";
+import { DeploymentIdSchema, utf8ByteLength } from "@opensteer/core";
+import type { PersonalSessionStore } from "./personal-session-store.js";
 
 type Entry = { readonly savedAt: number; readonly bytes: number };
 const fencesName = "fences.json";
 const fencesMaxBytes = 64 * 1024;
 const checkpointName = /^[0-9a-f]{16}\.json$/u;
+const journal = /\.(new|old)$/u;
 
 /**
- * Saved personal checkpoints as one private file per scope. The directory is the only record of
- * what is saved: each file names its key and when it was saved, and `fences.json` holds the
- * fences. A clear first raises the fence in one atomic write, then deletes; on every start and
- * every clear the directory is listed and any file not valid under the current fences — an
- * orphan, a journal left by an interrupted write, a record saved before a clear — is deleted, so
- * no interruption leaves private state that a later clear cannot find. One process owns the
- * directory: a write checks the fences before anything awaits.
+ * Which session this phone holds for a Deployment now, as an opaque label that changes with each
+ * sign-in, or null when it holds none. The app's own session store answers.
+ */
+export type CurrentCheckpointSession = (deploymentId: string) => Promise<string | null>;
+
+/**
+ * The current session label from the phone's personal session store: present only while the
+ * stored session is unexpired, and different for every sign-in (its login and absolute expiry;
+ * never the token).
+ */
+export function personalSessionLabel(
+  sessions: Pick<PersonalSessionStore, "authorization" | "load">,
+  now: () => Date,
+): CurrentCheckpointSession {
+  return async (deploymentId) => {
+    const id = DeploymentIdSchema.safeParse(deploymentId);
+    if (!id.success || (await sessions.authorization(id.data, now())) === null) return null;
+    const session = await sessions.load(id.data);
+    return session ? `${session.viewLoginId ?? ""}|${session.absoluteExpiresAt}` : null;
+  };
+}
+
+/**
+ * Saved personal checkpoints as one private file per scope.
+ *
+ * The invariant: a checkpoint file exists, and is read, only for a Deployment this phone holds a
+ * current session for, and only under that same session. Each file names its key, when it was
+ * saved and the session it was saved under. Nothing depends on one write landing:
+ * - a read or write checks the session store first;
+ * - every start and every clear lists the directory and deletes whatever is not a checkpoint of
+ *   the current session that the fences still allow — orphans, journals, records from before a
+ *   clear, files of a Deployment signed out of;
+ * - a clear tries the fence write and each deletion on its own, sweeps, and then reports any step
+ *   that failed.
+ * One process owns the directory.
  */
 export function fileCheckpointStorage(
   privateFiles: ListingPrivateFilesystem,
   directory: string,
+  currentSession: CurrentCheckpointSession,
 ): CheckpointStorage {
   const pathOf = (key: string) => `${directory}/${fileName(key)}.json`;
   let fences: CheckpointFences = noCheckpointFences;
   let entries = new Map<string, Entry>();
-  const sweep = async () => {
-    entries = await sweepDirectory(privateFiles, directory, fences);
+  const sessionOf = (key: string) => {
+    const deploymentId = checkpointKeyDeployment(key);
+    return deploymentId ? currentSession(deploymentId).catch(() => null) : Promise.resolve(null);
   };
-  const ready = (async () => {
-    fences = await readFences(privateFiles, `${directory}/${fencesName}`);
-    await sweep();
-  })();
-  // A failed start leaves nothing listed; the next clear sweeps again.
-  const started = () => ready.catch(() => undefined);
+  const sweep = async () => {
+    entries = await sweepDirectory(privateFiles, directory, fences, sessionOf);
+  };
+  let ready: Promise<void> | undefined;
+  // The first use sweeps, by when the session store can answer.
+  const started = () =>
+    (ready ??= (async () => {
+      fences = await readFences(privateFiles, `${directory}/${fencesName}`);
+      await sweep();
+    })()).catch(() => undefined);
   return {
     list: async () => {
       await started();
@@ -48,8 +85,10 @@ export function fileCheckpointStorage(
       await started();
       if (!entries.has(key)) return null;
       const held = await readCheckpoint(privateFiles, pathOf(key));
-      // The file names its key: two keys that share a file name never read each other.
-      return held?.key === key ? held.value : null;
+      // The file names its key, and is read only under the session it was saved under.
+      if (held?.key !== key) return null;
+      const session = await sessionOf(key);
+      return session !== null && held.session === session ? held.value : null;
     },
     fences: async () => {
       await started();
@@ -58,8 +97,10 @@ export function fileCheckpointStorage(
     write: async (key, value, guard) => {
       await started();
       if (checkpointFence(fences, guard) !== guard.fence) return false;
+      const session = await sessionOf(key);
+      if (session === null || session.includes("\n")) return false;
       const savedAt = Date.now();
-      await privateFiles.writeFileAtomic(pathOf(key), `${key}\n${savedAt}\n${value}`);
+      await privateFiles.writeFileAtomic(pathOf(key), `${key}\n${savedAt}\n${session}\n${value}`);
       entries.set(key, { savedAt, bytes: utf8ByteLength(value) });
       return true;
     },
@@ -72,30 +113,47 @@ export function fileCheckpointStorage(
     },
     clear: async (matches, scope) => {
       await started();
-      // The commit point: once the raised fence is on disk, nothing saved under the old one is
-      // valid, and the sweep below or at the next start deletes it whatever interrupts this.
+      const failures: unknown[] = [];
+      const attempt = async (step: () => Promise<unknown>) => {
+        try {
+          await step();
+        } catch (error) {
+          failures.push(error);
+        }
+      };
       fences = raiseCheckpointFence(fences, scope);
-      await privateFiles.writeFileAtomic(`${directory}/${fencesName}`, JSON.stringify(fences));
+      await attempt(() =>
+        privateFiles.writeFileAtomic(`${directory}/${fencesName}`, JSON.stringify(fences)),
+      );
       for (const key of [...entries.keys()].filter(matches)) {
         entries.delete(key);
-        await privateFiles.removeFile(pathOf(key));
+        await attempt(() => privateFiles.removeFile(pathOf(key)));
       }
-      await sweep();
+      await attempt(sweep);
+      if (failures.length)
+        throw new AggregateError(failures, "Saved private state could not all be cleared.");
     },
   };
 }
 
 /**
- * Deletes every file in the directory that is not a checkpoint valid under `fences`, and returns
- * the ones that are.
+ * Deletes every file in the directory that is not a checkpoint saved under its Deployment's
+ * current session and still allowed by `fences`, and returns the ones that are. A step that fails
+ * does not stop the rest; the first failure is rethrown at the end.
  */
 async function sweepDirectory(
   privateFiles: ListingPrivateFilesystem,
   directory: string,
   fences: CheckpointFences,
+  sessionOf: (key: string) => Promise<string | null>,
 ): Promise<Map<string, Entry>> {
   const kept = new Map<string, Entry>();
-  const journal = /\.(new|old)$/u;
+  let failure: unknown;
+  const remove = async (path: string) => {
+    await privateFiles.removeFile(path).catch((error: unknown) => {
+      failure ??= error;
+    });
+  };
   // A journal file stands for the file it was writing: reading that settles the journal.
   const names = new Set(
     (await privateFiles.listFiles(directory)).map((name) => name.replace(journal, "")),
@@ -105,13 +163,17 @@ async function sweepDirectory(
     const path = `${directory}/${name}`;
     const held = checkpointName.test(name) ? await readCheckpoint(privateFiles, path) : null;
     const valid =
-      held !== null && `${fileName(held.key)}.json` === name && validUnder(fences, held.value);
+      held !== null &&
+      `${fileName(held.key)}.json` === name &&
+      validUnder(fences, held.value) &&
+      held.session === (await sessionOf(held.key));
     if (valid) kept.set(held.key, { savedAt: held.savedAt, bytes: utf8ByteLength(held.value) });
-    else await privateFiles.removeFile(path);
+    else await remove(path);
   }
   // Whatever journal is still left belongs to no valid file.
   for (const name of await privateFiles.listFiles(directory))
-    if (journal.test(name)) await privateFiles.removeFile(`${directory}/${name}`);
+    if (journal.test(name)) await remove(`${directory}/${name}`);
+  if (failure !== undefined) throw failure;
   return kept;
 }
 
@@ -138,18 +200,25 @@ function validUnder(fences: CheckpointFences, value: string) {
 async function readCheckpoint(
   privateFiles: ListingPrivateFilesystem,
   path: string,
-): Promise<{ key: string; savedAt: number; value: string } | null> {
+): Promise<{ key: string; savedAt: number; session: string; value: string } | null> {
   const bytes = await privateFiles
     .readFile(path, personalCheckpointMaxBytes + 4096)
     .catch(() => null);
   if (!bytes) return null;
   const text = new TextDecoder().decode(bytes);
-  const first = text.indexOf("\n");
-  const second = first < 0 ? -1 : text.indexOf("\n", first + 1);
-  if (second < 0) return null;
+  const lines: number[] = [];
+  for (let at = text.indexOf("\n"); at >= 0 && lines.length < 3; at = text.indexOf("\n", at + 1))
+    lines.push(at);
+  if (lines.length < 3) return null;
+  const [first, second, third] = lines as [number, number, number];
   const savedAt = Number(text.slice(first + 1, second));
   return Number.isFinite(savedAt)
-    ? { key: text.slice(0, first), savedAt, value: text.slice(second + 1) }
+    ? {
+        key: text.slice(0, first),
+        savedAt,
+        session: text.slice(second + 1, third),
+        value: text.slice(third + 1),
+      }
     : null;
 }
 

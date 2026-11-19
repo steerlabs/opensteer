@@ -11,6 +11,18 @@ export type HostSelectionEquality<Selection> = (previous: Selection, next: Selec
 export interface HostSnapshotStore {
   readonly getSnapshot: () => HostSnapshot;
   readonly subscribe: (listener: () => void) => () => void;
+  /** A reader of its own, for a client whose fields are read on demand. */
+  readonly reader?: () => SnapshotReader;
+}
+
+/**
+ * One mounted reader of the snapshot. Fields read through `view` are what it needs; they stay
+ * current while it is open and for a short grace after its last close.
+ */
+export interface SnapshotReader {
+  view(snapshot: HostSnapshot): HostSnapshot;
+  open(): void;
+  close(): void;
 }
 
 const stores = new WeakMap<HostClient, HostSnapshotStore>();
@@ -55,6 +67,7 @@ function createHostSnapshotStore(hostClient: HostClient): HostSnapshotStore {
 
   return {
     getSnapshot: hostClient.getSnapshot,
+    ...(hostClient.snapshotReader ? { reader: hostClient.snapshotReader } : {}),
     subscribe: (listener) => {
       listeners.add(listener);
       if (listeners.size === 1) unsubscribeFromClient = hostClient.subscribe(publish);
@@ -94,11 +107,15 @@ export function createHostSelection<Selection>(
   store: HostSnapshotStore,
   selector: HostSnapshotSelector<Selection>,
   isEqual: HostSelectionEquality<Selection> = Object.is,
+  /** The mounted reader this selection reads for; one of its own when none is given. */
+  reader: SnapshotReader | undefined = store.reader?.(),
 ): HostSelection<Selection> {
   let initialized = false;
   let value: Selection;
+  // What the selector and its consumer read through the reader's view is what the reader needs.
   const getSnapshot = () => {
-    const next = selector(store.getSnapshot());
+    const snapshot = store.getSnapshot();
+    const next = selector(reader ? reader.view(snapshot) : snapshot);
     if (initialized && isEqual(rawSnapshot(value), rawSnapshot(next))) return value;
     initialized = true;
     value = next;
@@ -108,11 +125,19 @@ export function createHostSelection<Selection>(
   return {
     getSnapshot,
     subscribe: (listener) => {
+      reader?.open();
       getSnapshot();
-      return store.subscribe(() => {
+      const unsubscribe = store.subscribe(() => {
         const previous = value;
         if (getSnapshot() !== previous) listener();
       });
+      let open = true;
+      return () => {
+        if (!open) return;
+        open = false;
+        unsubscribe();
+        reader?.close();
+      };
     },
   };
 }

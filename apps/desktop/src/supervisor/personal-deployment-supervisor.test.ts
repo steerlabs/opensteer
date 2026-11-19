@@ -344,6 +344,44 @@ describe("PersonalDeploymentSupervisor", () => {
     }
   });
 
+  it.each([
+    ["only a migration heartbeat, then no progress", "heartbeat"],
+    ["a stage, then a crash, with no kept copy", "stage-no-copy"],
+  ] as const)("does not claim a kept copy it cannot show: %s", async (_, scenario) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const fixture = supervisorFixture(
+      deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+    );
+    fixture.files.pinnedFrom = null;
+    const entered = deferred<void>();
+    fixture.host.waitForHost.mockImplementationOnce(async () => {
+      entered.resolve();
+      return new Promise(() => undefined);
+    });
+    try {
+      const starting = fixture.supervisor.resumeIfConfigured();
+      const rejected = expect(starting).rejects.toThrow();
+      await entered.promise;
+      const host = childrenOf(fixture, "host")[0]!;
+      if (scenario === "heartbeat") {
+        host.stdout.write(`${personalUpgradeHeartbeatLine}\n`);
+        await vi.advanceTimersByTimeAsync(500);
+      } else {
+        host.stdout.write(`${personalUpgradeProgressLine}: ledger\n`);
+        host.emit("exit", 1, null);
+      }
+      await rejected;
+      const detail = fixture.supervisor.status.issue?.detail ?? "";
+      expect(detail).not.toContain("is kept");
+      if (scenario === "heartbeat")
+        expect(fixture.supervisor.status.issue?.code).not.toBe("personal-conversion-failed");
+      else expect(detail).toContain("No copy from before this update was found");
+    } finally {
+      await fixture.supervisor.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("resumes a returning Personal deployment through Host readiness", async () => {
     const configured = deploymentManifest({ databaseInitialized: true, ownerInitialized: true });
     const fixture = supervisorFixture(configured);

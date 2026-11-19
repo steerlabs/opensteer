@@ -772,7 +772,10 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .where((e) =>
         e.or([
           e.and([e("state", "=", "awaiting_approval"), e("consentExpiresAt", "<=", new Date())]),
-          e.and([e("state", "in", ["working", "needs_you"]), e("expiresAt", "<=", new Date())]),
+          e.and([
+            e("state", "in", ["working", "needs_you"]),
+            e("expiresAt", "<=", sql<Date>`now()`),
+          ]),
         ]),
       );
     if (id) query = query.where("id", "=", id);
@@ -793,7 +796,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
                 ]),
                 e.and([
                   e("state", "in", ["working", "needs_you"]),
-                  e("expiresAt", "<=", new Date()),
+                  e("expiresAt", "<=", sql<Date>`now()`),
                 ]),
               ]),
             )

@@ -1073,7 +1073,10 @@ export class ScopedPersonalStream {
       const current = () => authority === this.#authority && fence() === taken;
       const written = this.#fence;
       if (!written) continue;
-      this.#enqueue(key, async () => this.cache!.commit(checkpoint, current, await written));
+      const session = this.#sessionId;
+      this.#enqueue(key, async () =>
+        this.cache!.commit(checkpoint, current, await written, session),
+      );
     }
   }
 

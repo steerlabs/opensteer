@@ -1180,13 +1180,15 @@ export class ChannelStore {
     });
   }
 
+  // Ingress times are the Host's: stamped and claimed with it, so "due now" is the Host's now.
   async nextIngressDeadline(): Promise<Date | null> {
+    const now = new Date();
     const row = await this.#database
       .selectFrom("channelIngressEvents as claimable")
       .select(
         sql<Date | null>`min(case
         when status = 'leased' then claim_expires_at
-        when attempts >= ${ingressAttemptCeiling} then least(next_attempt_at, statement_timestamp())
+        when attempts >= ${ingressAttemptCeiling} then least(next_attempt_at, ${now})
         else next_attempt_at
       end)`.as("deadline"),
       )

@@ -1497,13 +1497,15 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       // Once the conversion has started, every way it can end without success (an
       // exit with or without its own diagnostic, no progress, the overall ceiling)
       // is the same failure, with the same step, rollback version and choices.
+      // Evidence is a reported conversion stage; the migration heartbeat alone
+      // also runs when nothing is converted, so it is not.
       if (
         !signal.aborted &&
         label === "Host" &&
-        this.#status.step === "upgrading-database" &&
+        this.#upgradeStage !== null &&
         !(error instanceof PersonalConversionError || error instanceof PersonalOldDatabaseError)
       )
-        throw await this.#conversionStopped(this.#upgradeStage ?? "unknown", error);
+        throw await this.#conversionStopped(this.#upgradeStage, error);
       if (
         signal.aborted ||
         error instanceof PersonalChildExitedError ||
@@ -1905,9 +1907,11 @@ class PersonalConversionError extends Error {
     super(
       `Opensteer couldn't finish converting this computer's data (step "${step}")${
         reason ? `: ${reason}` : ""
-      }. Nothing was lost: a copy from before this update is kept${
-        keptFrom ? `, and Opensteer ${keptFrom} can open it` : ""
-      }. Try again, or Start fresh to continue with new data.`,
+      }. ${
+        keptFrom
+          ? `A copy from before this update is kept, and Opensteer ${keptFrom} can open it.`
+          : "No copy from before this update was found on this computer."
+      } Try again, or Start fresh to continue with new data.`,
     );
     this.name = "PersonalConversionError";
     this.step = step;

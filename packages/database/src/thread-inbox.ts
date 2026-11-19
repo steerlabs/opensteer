@@ -4572,7 +4572,7 @@ async function withdrawAssignmentReturn(
 async function deliverAssignmentReturnTransaction(
   transaction: Transaction<DatabaseSchema>,
   assignmentId: AssignmentId,
-): Promise<void | "held"> {
+): Promise<void | { readonly heldUntil: number }> {
   const locked = await lockAssignmentReturn(transaction, assignmentId);
   if (!locked) return;
   const { assignment } = locked;
@@ -4666,8 +4666,9 @@ async function deliverAssignmentReturnTransaction(
         })
         .where("id", "=", assignment.id)
         .execute();
-      // A caller is still waiting to read this result itself; it stays pending.
-      return "held";
+      // A caller is still waiting to read this result itself; it stays pending
+      // until that wait ends, read here in the same transaction as the decision.
+      return { heldUntil: wait.expiresAt };
     } catch (error) {
       if (!(error instanceof OpensteerError && error.code === "forbidden")) throw error;
     }
@@ -5026,13 +5027,21 @@ export async function drainAssignmentReturn(
   database: Kysely<DatabaseSchema>,
   assignmentId: AssignmentId,
 ): Promise<"settled" | "waiting" | "held"> {
+  const outcome = await drainAssignmentReturnOutcome(database, assignmentId);
+  return outcome.status;
+}
+
+async function drainAssignmentReturnOutcome(
+  database: Kysely<DatabaseSchema>,
+  assignmentId: AssignmentId,
+): Promise<{ readonly status: "settled" | "waiting" | "held"; readonly heldUntil?: number }> {
   try {
     const outcome = await commitPersonalMutation(
       database,
       (transaction) => deliverAssignmentReturnTransaction(transaction, assignmentId),
       (error) => error instanceof TransactionScopeChanged,
     );
-    return outcome === "held" ? "held" : "settled";
+    return outcome ? { status: "held", heldUntil: outcome.heldUntil } : { status: "settled" };
   } catch (error) {
     await database
       .updateTable("delegations")
@@ -5042,7 +5051,8 @@ export async function drainAssignmentReturn(
       .where("id", "=", assignmentId)
       .where("resultStatus", "=", "pending")
       .execute();
-    if (error instanceof OpensteerError && error.code === "resource_exhausted") return "waiting";
+    if (error instanceof OpensteerError && error.code === "resource_exhausted")
+      return { status: "waiting" };
     throw error;
   }
 }
@@ -5082,14 +5092,18 @@ export async function drainPendingAssignmentReturns(
     readonly error: unknown;
   }[] = [];
   let waiting = 0,
-    settled = 0;
-  const held: AssignmentId[] = [];
+    settled = 0,
+    held = 0,
+    heldUntil: number | null = null;
   for (const candidate of candidates) {
     try {
-      const outcome = await drainAssignmentReturn(database, candidate.id);
-      if (outcome === "waiting") waiting++;
-      else if (outcome === "held") held.push(candidate.id);
-      else settled++;
+      const outcome = await drainAssignmentReturnOutcome(database, candidate.id);
+      if (outcome.status === "waiting") waiting++;
+      else if (outcome.status === "held") {
+        held++;
+        if (outcome.heldUntil !== undefined)
+          heldUntil = Math.min(heldUntil ?? outcome.heldUntil, outcome.heldUntil);
+      } else settled++;
     } catch (error) {
       failures.push({
         assignmentId: candidate.id,
@@ -5100,26 +5114,15 @@ export async function drainPendingAssignmentReturns(
   return {
     failures,
     waiting,
-    held: held.length,
-    heldUntil: held.length ? await earliestResultWaitExpiry(database, held) : null,
+    held,
+    // From the transactions that decided each hold, never filtered by a later
+    // clock: a hold that already ended reads as due, so its owner runs again.
+    heldUntil: heldUntil === null ? null : new Date(heldUntil),
     settled,
     more: candidates.length === Math.max(1, Math.min(limit, 1_000)),
   };
 }
 
-/** When the first live result wait on these returns ends, releasing them. */
-async function earliestResultWaitExpiry(
-  database: Kysely<DatabaseSchema>,
-  ids: readonly AssignmentId[],
-): Promise<Date | null> {
-  const row = await sql<{ until: string | null }>`
-    select min((wait->>'expiresAt')::bigint)::text as until
-    from delegations, jsonb_array_elements(result_waits) as wait
-    where id = any(${ids}::text[]) and (wait->>'expiresAt')::bigint > ${Date.now()}
-  `.execute(database);
-  const until = row.rows[0]?.until;
-  return until ? new Date(Number(until)) : null;
-}
 function canonicalDelegateThreadRequest(
   input: DelegateThreadRequest,
 ): Readonly<Record<string, unknown>> {
