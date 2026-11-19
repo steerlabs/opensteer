@@ -1542,8 +1542,19 @@ export class HttpHostClient {
    * Requests' signature, attention), so nothing cleared can look already read. It is the only place
    * held data is cleared for a viewer.
    */
-  #forgetViewer(keep: Partial<HostSnapshot>) {
+  #forgetViewer(keep: Partial<HostSnapshot>, sameViewer = false) {
     this.#viewerGeneration++;
+    // The same person under a new history (a rollback, a restored Host): what they were shown stays
+    // on screen while all of it is read again, so nothing they have open is torn down. Only what
+    // says it was read is forgotten.
+    const held: Partial<HostSnapshot> = sameViewer
+      ? Object.fromEntries(
+          [...Object.keys(resourceBackedFields), ...sameViewerFields].map((field) => [
+            field,
+            this.#snapshot[field as keyof HostSnapshot],
+          ]),
+        )
+      : {};
     clearRunPageViews(this);
     clearRunPlacePictures(this);
     this.#runPlaces.clear();
@@ -1553,11 +1564,12 @@ export class HttpHostClient {
     this.#ownerViews.clear();
     this.#pageSessions.clear();
     this.#viewers.clear();
-    this.#tabs.clear();
+    if (sameViewer) this.#tabs.markInventoryStale();
+    else this.#tabs.clear();
     this.#threadState.clear();
     this.#threadRenames.clear();
     this.#threadIcons.clear();
-    this.#environmentCatalogs.clear();
+    if (!sameViewer) this.#environmentCatalogs.clear();
     this.#bodies.clear();
     this.#clearAttachmentReads();
     this.#threadDeployment.clear();
@@ -1567,7 +1579,7 @@ export class HttpHostClient {
     this.#waitingRequestStamp = "";
     this.#answeredRequests.clear();
     this.#resources.reset();
-    this.#update({ ...emptySnapshot(this.#tabs), ...keep });
+    this.#update({ ...emptySnapshot(this.#tabs), ...held, ...keep });
   }
 
   watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
@@ -1758,8 +1770,14 @@ export class HttpHostClient {
           (shellAuthority.session &&
             this.#snapshot.sessionId !== shellAuthority.session.sessionId)))
     ) {
-      const { connection, connectionInterrupted, network } = this.#snapshot;
-      this.#forgetViewer({ connection, connectionInterrupted, network });
+      const { connection, connectionInterrupted, network, user, deploymentId } = this.#snapshot;
+      const sameViewer =
+        user !== null &&
+        shellAuthority !== undefined &&
+        shellAuthority !== null &&
+        user.id === shellAuthority.viewerId &&
+        deploymentId === shellAuthority.deploymentId;
+      this.#forgetViewer({ connection, connectionInterrupted, network }, sameViewer);
       forgot = true;
     }
     const shell = state.snapshot;
@@ -4781,6 +4799,18 @@ function updateRequired(): HostClientRequestError {
     status: 426,
   });
 }
+
+/** Who the viewer is, kept with their resources through a new history of the same viewer. */
+const sameViewerFields = [
+  "loadedResources",
+  "user",
+  "deploymentId",
+  "deploymentShape",
+  "session",
+  "sessionId",
+  "sessionSurface",
+  "can",
+] as const satisfies readonly (keyof HostSnapshot)[];
 
 function resourceKindsOf(field: PropertyKey): readonly PersonalResourceKind[] | undefined {
   return typeof field === "string" && Object.hasOwn(resourceBackedFields, field)

@@ -212,7 +212,49 @@ it("reads resources and waiting Requests again after a new history for the same 
     for (const kind of kinds) expect(reads.get(kind), kind).toBe(2);
   });
   await vi.waitFor(() => {
-    expect(shown(client.getSnapshot())).toEqual(before);
+    // Every value is the same as before; the machine counter tells its readers they were reread.
+    const { machineRevision, ...after } = shown(client.getSnapshot());
+    const { machineRevision: earlier, ...held } = before;
+    expect(after).toEqual(held);
+    expect(machineRevision).toBeGreaterThan(earlier as number);
     expect(client.getSnapshot().waitingRequests.map(({ request }) => request.id)).toEqual(waiting);
   });
+});
+
+it("keeps showing the same viewer's settings, accounts and tabs while a new history is read", async () => {
+  const { host, client, control, releaseAttach } = harness();
+  releaseAttach();
+  void shown(client.getSnapshot());
+  await client.load();
+  await vi.waitFor(() =>
+    expect([...client.getSnapshot().loadedResources].sort()).toEqual([...kinds].sort()),
+  );
+  const shownDuring: { session: string; settings: boolean; harnesses: number; tabs: number }[] = [];
+  disposals.push(
+    client.subscribe(() => {
+      const snapshot = client.getSnapshot();
+      shownDuring.push({
+        session: snapshot.session,
+        settings: snapshot.personalSettings !== null,
+        harnesses: snapshot.harnesses.length,
+        tabs: snapshot.tabs.rows.size,
+      });
+    }),
+  );
+  // Reads held: what is on screen meanwhile is what the person keeps working in.
+  control.readsHeld = true;
+  const epoch = crypto.randomUUID();
+  control.rewriteShell = (snapshot) => ({ ...snapshot, epoch });
+  host.repairShell();
+  await vi.waitFor(() => expect(control.heldReads.length).toBeGreaterThan(0));
+  control.readsHeld = false;
+  for (const resolve of control.heldReads.splice(0)) resolve();
+  await client.rpc["auth.config"]({});
+  expect(shownDuring.length).toBeGreaterThan(0);
+  for (const seen of shownDuring) {
+    expect(seen.session).toBe("authenticated");
+    expect(seen.settings).toBe(true);
+    expect(seen.harnesses).toBeGreaterThan(0);
+    expect(seen.tabs).toBeGreaterThan(0);
+  }
 });
