@@ -385,3 +385,50 @@ test("an inventory past its kind's bound stops as it arrives, keeps the last com
   ]);
   release();
 });
+
+test("a new reader or an attach reads a Runner kind at once and takes over a settling reread", async () => {
+  vi.useFakeTimers();
+  try {
+    const asked: string[] = [];
+    const reads = new PersonalResourceReads({
+      read: async (kind) => {
+        asked.push(reads.revision(kind) ?? "first");
+        return {
+          ok: true,
+          data: {
+            revision: reads.revision(kind) ?? "1.0123456789abcdef.1",
+            next: null,
+            data: { kind } as never,
+          },
+        };
+      },
+      apply: () => undefined,
+      canRead: () => true,
+      watchChanged: () => undefined,
+    });
+    const first = reads.watch("machine", () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    // A Runner drops: the reread settles. A screen mounting meanwhile reads now, once.
+    reads.changed({ machine: "1.0123456789abcdef.2" });
+    const second = reads.watch("machine", () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toEqual(["first", "1.0123456789abcdef.2"]);
+    await vi.advanceTimersByTimeAsync(runnerSettleMs * 2);
+    expect(asked).toHaveLength(2);
+    // After a gap the client attaches; the revision the Host answers it with is read at once.
+    reads.resume(true);
+    reads.changed({ machine: "1.0123456789abcdef.5" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toEqual(["first", "1.0123456789abcdef.2", "1.0123456789abcdef.5"]);
+    // A live push after that answer settles again.
+    reads.changed({ machine: "1.0123456789abcdef.6" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(runnerSettleMs);
+    expect(asked).toHaveLength(4);
+    first();
+    second();
+  } finally {
+    vi.useRealTimers();
+  }
+});

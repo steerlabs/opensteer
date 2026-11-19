@@ -1953,7 +1953,7 @@ export class HttpHostClient {
       this.references.reconnect();
       this.#invalidatePersonalRemoteAccess();
       this.#reverifyCapabilities();
-      this.#resources.resume();
+      this.#resources.resume(true);
       if (reattached) this.#noticesMissed();
     } else if (forgot) this.#resources.resume();
     if (

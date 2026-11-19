@@ -158,17 +158,31 @@ export class PersonalResourceReads implements PersonalResourcePort {
         this.#options.behind?.(kind);
       // What flies is judged when it lands: older than this push, it installs nothing.
       const installed = this.#installed.get(kind);
-      if (runnerKinds.has(kind) && installed !== undefined && sameBoot(installed, revision))
+      // Only a live push of a Runner kind waits; what the Host says in answer to an attach is
+      // read at once.
+      if (
+        runnerKinds.has(kind) &&
+        installed !== undefined &&
+        sameBoot(installed, revision) &&
+        Date.now() >= this.#attachAnswerUntil
+      )
         this.#settle(kind);
       else this.#read(kind);
       for (const listener of this.#listeners.get(kind) ?? []) listener();
     }
+    // The revisions the Host sends in answer to an attach come in one frame.
+    this.#attachAnswerUntil = 0;
   }
 
   /** Read every watched kind that is behind, as after attaching or returning to the front. */
-  resume() {
+  resume(attached = false) {
+    // The Host answers an attach with every revision that moved meanwhile; that answer is read at
+    // once, never held in the settle window. Bounded, in case nothing moved and no answer comes.
+    if (attached) this.#attachAnswerUntil = Date.now() + runnerSettleMs;
     for (const kind of this.#listeners.keys()) this.#read(kind);
   }
+
+  #attachAnswerUntil = 0;
 
   abort() {
     for (const kind of personalResourceKinds) this.#reads.stop(kind);
@@ -276,6 +290,13 @@ export class PersonalResourceReads implements PersonalResourcePort {
   }
 
   #read(kind: PersonalResourceKind) {
+    // A read now (a new reader, an attach, the app in front) takes over a settling reread.
+    const settling = this.#settling.get(kind);
+    if (settling !== undefined) {
+      clearTimeout(settling);
+      this.#timers.delete(settling);
+      this.#settling.delete(kind);
+    }
     const known = this.#known.get(kind);
     const installed = this.#installed.get(kind);
     // A kind not read yet is read at once, beside the socket's attach, so a cold start paints it
