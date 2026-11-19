@@ -96,3 +96,53 @@ it("backs off when a due notice cannot be listed, instead of spinning", async ()
     vi.useRealTimers();
   }
 });
+
+it("gives every due notice its turn when one notice's write keeps failing", async () => {
+  vi.useFakeTimers();
+  const notice = (id: string): PendingAutomationFailure => ({
+    anchorThreadId: createId("thread"),
+    anchorThreadTitle: "Task",
+    attempts: 0,
+    createdBy: createId("user"),
+    detail: "Service unavailable",
+    destinationThreadId: createId("thread"),
+    id,
+    reason: "final-occurrence-failed",
+    triggerId: createId("trigger"),
+    triggerName: id,
+  });
+  const [stuck, healthy] = [notice("stuck"), notice("healthy")];
+  let pending = [stuck, healthy];
+  const store = {
+    // Oldest first, so the stuck notice leads every batch.
+    listDue: vi.fn(async () => pending),
+    nextDeadline: async () => (pending.length ? new Date(Date.now()) : null),
+    // Neither write can be recorded for the stuck notice.
+    retryLater: vi.fn(async ({ id }: { id: string }) => {
+      if (id === "stuck") throw new Error("constraint violated");
+    }),
+    settle: vi.fn(async ({ id }: { id: string }) => {
+      if (id === "stuck") throw new Error("constraint violated");
+      pending = pending.filter((candidate) => candidate.id !== id);
+    }),
+  };
+  const enqueueThreadInput = vi.fn(async () => ({ disposition: "pending" }));
+  const errors: unknown[] = [];
+  const service = new AutomationFailureService({
+    commands: { enqueueThreadInput } as never,
+    onError: (error) => errors.push(error),
+    store,
+  });
+  try {
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.settle.mock.calls.map(([input]) => input.id)).toEqual(["stuck", "healthy"]);
+    expect(pending).toEqual([stuck]);
+    // The failure owes a retry with backoff, not a spin.
+    expect(errors).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(1);
+  } finally {
+    await service.close();
+    vi.useRealTimers();
+  }
+});
