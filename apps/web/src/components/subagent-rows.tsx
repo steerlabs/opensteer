@@ -29,7 +29,8 @@ import {
   type WorkflowView,
 } from "@opensteer/client/host";
 import type { AssignmentSummary } from "@opensteer/core";
-import { useShell } from "./app-shell.js";
+import { useLiveAgentCard } from "@opensteer/client/react";
+import { useOptionalShell, useShell } from "./app-shell.js";
 import { Icon } from "./icon.js";
 import { EngineMark } from "./model-picker.js";
 import { LifecycleNews, ObservedWorker, TaskMenu } from "./task-line.js";
@@ -48,6 +49,8 @@ interface AgentFoldState {
   readonly set: (key: string, open: boolean) => void;
 }
 const AgentFoldsContext = createContext<AgentFoldState | null>(null);
+/** The subagent whose own steps these rows are, whose scope carries its children's progress. */
+export const AgentProgressScope = createContext<string | undefined>(undefined);
 
 export function AgentFolds({ children }: { children: ReactNode }) {
   const [folds, setFolds] = useState<ReadonlyMap<string, boolean>>(() => new Map());
@@ -247,7 +250,7 @@ export function AgentPhrases({
  * itself hang one step in under it.
  */
 export const AgentRow = memo(function AgentRow({
-  card,
+  card: reported,
   compact = false,
   noun = false,
 }: {
@@ -257,6 +260,11 @@ export const AgentRow = memo(function AgentRow({
   /** Alone in its place, so line two says what it is. */
   noun?: boolean;
 }) {
+  const card = useLiveAgentCard(
+    useOptionalShell()?.hostClient,
+    reported,
+    useContext(AgentProgressScope),
+  );
   const open = useOpenAgent();
   const tasks = useContext(TaskAssignments);
   const task = card.task ? tasks.get(card.task.assignmentId) : undefined;

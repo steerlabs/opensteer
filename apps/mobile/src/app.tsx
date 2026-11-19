@@ -1,4 +1,5 @@
 import { createPersonalStreamCache, personalCacheFormat } from "@opensteer/client/host";
+import { fileCheckpointStorage } from "./client/personal-checkpoint-files.js";
 import { AiSharing } from "@opensteer/client/ai-sharing";
 import { AiSharingProvider } from "./ui/ai-sharing.js";
 import { readAiSharing } from "./client/ai-sharing-storage.js";
@@ -320,22 +321,16 @@ function mobileClient(): MobileRoot {
         notifications.registration,
         port.signedInSubject,
       );
-  const checkpointDirectory = `${root}${storeName}/personal-stream-v${personalCacheFormat}`;
-  const checkpointPath = `${checkpointDirectory}/checkpoints.json`;
-  const personalStreamCache = createPersonalStreamCache({
-    exists: () => privateFiles.fileExists(checkpointPath),
-    read: async () => {
-      const bytes = await privateFiles.readFile(checkpointPath, 512 * 1024);
-      return bytes ? new TextDecoder().decode(bytes) : null;
-    },
-    write: async (state, isCurrent) => {
-      await privateFiles.ensureDirectory(checkpointDirectory);
-      if (isCurrent()) await privateFiles.writeFileAtomic(checkpointPath, state);
-    },
-    remove: async () => {
-      await privateFiles.removeFile(checkpointPath);
-    },
-  });
+  // The single-file format before per-scope files is dropped, not read.
+  void privateFiles
+    .removeFile(`${root}${storeName}/personal-stream-v64/checkpoints.json`)
+    .catch(() => undefined);
+  const personalStreamCache = createPersonalStreamCache(
+    fileCheckpointStorage(
+      privateFiles,
+      `${root}${storeName}/personal-stream-v${personalCacheFormat}`,
+    ),
+  );
   const client: MobileClient = new MobileClient({
     afterMessageSent: () => {
       void notifications.registration.sync();

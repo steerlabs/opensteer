@@ -8,7 +8,7 @@ import type {
 import type { RunQueueEntry, TranscriptEntry } from "./client.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 import type { ObservedDetail } from "./scoped-personal-stream.js";
-import { nodeCardProgress, transcriptCard } from "./transcript-item-view.js";
+import { transcriptCard } from "./transcript-item-view.js";
 import {
   displayedItemIds,
   finalizedItemText,
@@ -130,14 +130,9 @@ export class ScopedThreadReader implements ThreadViewSource {
     this.#detail = detail;
     this.#rpc = rpc;
     this.#bodies = bodies;
+    // Node progress is not merged here: each row reads its own from the item text store.
     const unsubscribe = listen ? detail.transcript.subscribe(() => this.#update()) : undefined;
-    const unsubscribeProgress = listen
-      ? detail.text.subscribeNodeProgress(() => this.#update(true))
-      : undefined;
-    this.#release = () => {
-      unsubscribe?.();
-      unsubscribeProgress?.();
-    };
+    this.#release = () => unsubscribe?.();
     if (listen) this.#update();
   }
 
@@ -161,7 +156,7 @@ export class ScopedThreadReader implements ThreadViewSource {
     for (const listener of this.#listeners) listener();
   }
 
-  #update(progressChanged = false) {
+  #update() {
     const state = this.#detail.transcript.getSnapshot();
     if (this.#bodyGeneration !== state.generation) {
       for (const id of this.#rows?.keys() ?? [])
@@ -169,28 +164,18 @@ export class ScopedThreadReader implements ThreadViewSource {
       this.#bodyGeneration = state.generation;
     }
     let entries = this.#view.entries;
-    if (this.#rows !== state.items || this.#liveRows !== state.liveItems || progressChanged) {
+    if (this.#rows !== state.items || this.#liveRows !== state.liveItems) {
       for (const [id, item] of this.#rows ?? [])
         if (state.items.get(id) !== item) this.#bodies.remove(this.#bodyKey(id));
       this.#rows = state.items;
       this.#liveRows = state.liveItems;
-      const previousNodes = new Map(
-        entries.flatMap((entry) => (entry.kind === "node" ? [[entry.id, entry] as const] : [])),
-      );
       entries = displayedItemIds(state).flatMap((id) => {
         const durable = state.items.get(id);
         const item = durable ?? state.liveItems.get(id);
         if (!item) return [];
         const cards = durable ? this.#cards : this.#liveCards;
         if (!cards.has(item)) cards.set(item, transcriptCard(item, undefined, !durable));
-        const card = cards.get(item);
-        if (!card) return [];
-        if (card.kind !== "node") return card;
-        const progress = this.#detail.text.get(id)?.text;
-        const previous = previousNodes.get(id);
-        return progressChanged && previous?.progress === (progress ?? card.progress)
-          ? previous
-          : nodeCardProgress(card, progress);
+        return cards.get(item) ?? [];
       });
     }
     const queue = state.synchronized ? state.snapshot?.queue : undefined;

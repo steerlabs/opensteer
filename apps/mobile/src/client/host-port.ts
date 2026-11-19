@@ -107,9 +107,7 @@ export function createNetworkHostPort(options: {
   return ({ oauth, sessions, sessionExchange }) => ({
     credentials: createDeploymentCredentials({ now: options.now, oauth, sessions }),
     clearPersonalStreamCache: async (deploymentId) => {
-      const cache = options.streamCache?.(deploymentId);
-      if (cache?.removeDeployment) await cache.removeDeployment(deploymentId);
-      else await cache?.clear?.();
+      await options.streamCache?.(deploymentId).removeDeployment(deploymentId);
     },
 
     desktopUpdates: ({ catalog, deploymentId }) => {

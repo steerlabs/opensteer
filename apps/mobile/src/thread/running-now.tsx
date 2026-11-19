@@ -34,8 +34,10 @@ export function useRunningNow(
   hostClient: HostClient,
   threadId: string,
   reachable: boolean,
+  /** Whether its screen is in front; one stacked out of sight holds no subscription. */
+  observed: boolean,
 ): RunningNow | null {
-  const { entries, requests } = useThreadTranscript(hostClient, threadId);
+  const { entries, requests } = useThreadTranscript(hostClient, threadId, observed);
   const select = useMemo(() => {
     const cache = new SubagentCache();
     return heldSelector((snapshot: HostSnapshot) =>
@@ -68,8 +70,9 @@ export const RunningNowCapsule = memo(function RunningNowCapsule(props: {
   readonly onOpen: () => void;
   readonly reachable: boolean;
   readonly threadId: string;
+  readonly observed: boolean;
 }): ReactNode {
-  const model = useRunningNow(props.hostClient, props.threadId, props.reachable);
+  const model = useRunningNow(props.hostClient, props.threadId, props.reachable, props.observed);
   const keyboard = useKeyboardVisible();
   const { height } = useWindowDimensions();
   if (model === null || (keyboard && height < shortWindow)) return null;
