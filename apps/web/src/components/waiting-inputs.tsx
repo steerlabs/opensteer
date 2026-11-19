@@ -20,7 +20,7 @@ import {
   reloadWaitingDraft,
   removeWaitingDraftPart,
   setWaitingDraftText,
-  waitingDraftContent,
+  waitingDraftOutgoing,
   waitingDraftAwaits,
   waitingDraftSave,
   waitingMessageRows,
@@ -427,12 +427,13 @@ function useInPlaceEdit(
     if (!submission) {
       const current = await typed();
       if (!current || session.current !== held || held.sending) return;
-      const content = waitingDraftContent(current);
-      if (content.length === 0) return;
+      // Only words built on the full body leave: never the queue's clipped preview.
+      const outgoing = waitingDraftOutgoing(current);
+      if (!outgoing) return;
       submission = {
         attachments: [],
-        body: current.text.trim(),
-        content,
+        body: outgoing.text,
+        content: [...outgoing.content],
         idempotencyKey: mutationIdempotencyKey("message"),
       };
       held.sending = submission;
@@ -635,7 +636,7 @@ function WaitingRow({
         <EditStatus
           ask={ask !== null}
           canReload={edit.draft.conflict !== null}
-          canSendAsNew={!ask && waitingDraftContent(edit.draft).length > 0}
+          canSendAsNew={!ask && waitingDraftOutgoing(edit.draft) !== null}
           disabled={blocked}
           notice={edit.notice}
           onCancel={edit.close}

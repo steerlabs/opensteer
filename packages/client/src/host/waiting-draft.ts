@@ -118,9 +118,27 @@ export function reloadWaitingDraft(draft: WaitingDraft): WaitingDraft {
 }
 
 /** What the draft sends: its trimmed words, then the parts it kept. Empty when nothing is left. */
-export function waitingDraftContent(draft: WaitingDraft): ContentPart[] {
+function waitingDraftContent(draft: WaitingDraft): ContentPart[] {
   const text = draft.text.trim();
   return [...(text ? [{ text, type: "text" as const }] : []), ...draft.parts];
+}
+
+/**
+ * The one way a waiting message's words leave its editor, for every action that does so: Save,
+ * saving before an approval, Send as new, a move to the composer. Only a draft built from the full
+ * body at its revision gives anything; a locked one (still the queue's clipped preview) gives null,
+ * as does a draft with nothing left in it.
+ */
+export function waitingDraftOutgoing(draft: WaitingDraft): {
+  readonly content: readonly ContentPart[];
+  readonly text: string;
+  readonly parts: readonly ContentPart[];
+  readonly revision: number;
+} | null {
+  if (draft.loading) return null;
+  const content = waitingDraftContent(draft);
+  if (content.length === 0) return null;
+  return { content, parts: draft.parts, revision: draft.baseRevision, text: draft.text.trim() };
 }
 
 /**
@@ -138,12 +156,11 @@ export function waitingDraftSave(draft: WaitingDraft):
       readonly expectedRevision: number;
     }
   | null {
-  if (draft.conflict || draft.loading) return null;
-  if (!draft.dirty) return { kind: "unchanged", revision: draft.baseRevision };
-  const content = waitingDraftContent(draft);
-  return content.length === 0
-    ? null
-    : { content, expectedRevision: draft.baseRevision, kind: "edit" };
+  if (draft.conflict) return null;
+  const outgoing = waitingDraftOutgoing(draft);
+  if (outgoing === null) return null;
+  if (!draft.dirty) return { kind: "unchanged", revision: outgoing.revision };
+  return { content: outgoing.content, expectedRevision: outgoing.revision, kind: "edit" };
 }
 
 function measured(draft: WaitingDraft): WaitingDraft {

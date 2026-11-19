@@ -773,6 +773,42 @@ describe("WaitingInputs", () => {
     expect(decideTeamAsk).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 2 }));
   });
 
+  it("never sends the locked preview as a new message when the message is taken before its body is read", async () => {
+    // The lease is taken but the full body never arrives: the field still shows the clipped preview.
+    const client = new MockHostClient({ latencyMs: 0 });
+    vi.spyOn(client, "dispatch").mockRejectedValue(new TypeError("The connection was lost."));
+    client.editWaitingMessage = () => new Promise<WaitingMessageEditor>(() => undefined);
+    const records = new Map<string, string>();
+    const outbox = initializeMessageOutbox(client, {
+      storage: createMessageOutboxStorage({
+        read: async (key) => records.get(key) ?? null,
+        write: async (key, value) => {
+          records.set(key, value);
+        },
+        remove: async (key) => {
+          records.delete(key);
+        },
+      }),
+      drafts: { restore: async () => "restored" },
+    });
+    const [clipped] = inputsOf([item("mine", "The first words of a long", { canEdit: true })]).map(
+      (input) => ({ ...input, entry: { ...input.entry, previewTruncated: true } }),
+    );
+    try {
+      const container = mount(render(client, [clipped!]));
+      await clickWords(container, "mine");
+      expect(field(container)?.value).toBe("The first words of a long");
+      // A Run took the message while its body was still being read.
+      await act(async () => root?.render(render(client, [])));
+      expect(container.textContent).toContain("Your agent took this message");
+      expect(buttons(container)).not.toContain("Send as new message");
+      expect(records.size).toBe(0);
+      expect(outbox.getSnapshot().messages).toEqual([]);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("hands an edit to the app outbox before closing its editor", async () => {
     const editor = fakeEditor("Old", {
       save: vi.fn(async () => {

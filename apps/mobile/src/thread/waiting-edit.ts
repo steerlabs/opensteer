@@ -8,6 +8,7 @@ import {
   removeWaitingDraftPart,
   setWaitingDraftText,
   waitingDraftAwaits,
+  waitingDraftOutgoing,
   waitingDraftSave,
   type HostClient,
   type WaitingDraft,
@@ -405,10 +406,13 @@ export function useWaitingEdit(
         const shown = editRef.current;
         if (flushed?.composing || shown?.messageId !== opened.messageId) return;
         const draft = flushed ? setWaitingDraftText(shown.draft, flushed.text) : shown.draft;
+        // Only words built on the full body leave: never the queue's clipped preview.
+        const outgoing = waitingDraftOutgoing(draft);
+        if (outgoing === null) return;
         setKept({ ...shown, draft, failure: null, phase: "saving", replyFull: false });
         let issue = null;
         try {
-          if (await keep({ parts: draft.parts, text: draft.text.trim() })) {
+          if (await keep({ parts: outgoing.parts, text: outgoing.text })) {
             if (editRef.current?.messageId === shown.messageId) close();
             return;
           }
