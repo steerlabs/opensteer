@@ -1,3 +1,10 @@
+import {
+  conversationSubagents,
+  HttpHostClient,
+  requestDecisionRevision,
+  type NodeEntry,
+  type WebSocketClient,
+} from "@opensteer/client/host";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,6 +31,7 @@ import {
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { OpencodeHarnessDriver } from "@opensteer/harness-opencode";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
@@ -83,10 +91,51 @@ interface Journey {
 integration("Execution nodes", () => {
   let stack: VerticalStack | undefined;
   const journeys: Journey[] = [];
+  const viewers: HttpHostClient[] = [];
+  const sockets: WebSocket[] = [];
   afterEach(async () => {
+    for (const client of viewers.splice(0)) client.dispose();
+    for (const socket of sockets.splice(0)) socket.terminate();
     await stack?.close();
     stack = undefined;
   });
+  /** The shared client every surface draws from, attached to the stack and showing this task. */
+  async function viewer(active: VerticalStack, threadId: ThreadId) {
+    const client = new HttpHostClient({
+      baseUrl: active.hostOrigin,
+      fetch: (input, init) => {
+        const headers = new Headers(init?.headers);
+        headers.set("cookie", active.sessionCookie);
+        headers.set("origin", active.hostOrigin.origin);
+        return fetch(input, { ...init, headers });
+      },
+      webSocketFactory: (url) => {
+        const socket = new WebSocket(url, {
+          headers: { cookie: active.sessionCookie, origin: active.hostOrigin.origin },
+        });
+        sockets.push(socket);
+        return socket as unknown as WebSocketClient;
+      },
+    });
+    viewers.push(client);
+    await client.load();
+    client.activateThread(threadId);
+    return client;
+  }
+  /** The task as its screen reads it: its transcript, its Requests and its subagents' cards. */
+  function screen(client: HttpHostClient, threadId: ThreadId) {
+    const view = client.getThreadTranscript(threadId)?.getSnapshot();
+    const entries = view?.entries ?? [];
+    const agents = conversationSubagents(
+      { ...client.getSnapshot(), transcripts: { [threadId]: entries } },
+      threadId,
+    );
+    return {
+      cards: [...agents.now, ...agents.earlier],
+      nodes: entries.filter((entry): entry is NodeEntry => entry.kind === "node"),
+      requests: view?.requests ?? [],
+    };
+  }
   afterAll(async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-execution-nodes-"));
     const artifact = join(directory, "nodes.json");
@@ -176,11 +225,52 @@ integration("Execution nodes", () => {
     },
     async () => {
       const { active, captureFile, threadId } = await startCodex("subagents", ["--token-usage"]);
+      const client = await viewer(active, threadId);
       const runId = await queue(active, threadId, "Research the release notes");
       const request = await pendingRequest(active, runId);
       expect(request.originatingNodeId).not.toBeNull();
-      await answer(active, request);
+      // The subagent's question is answered on the task's screen: its card names it, and the
+      // task's Requests, which the composer and the subagent's pane answer from, hold it.
+      await vi.waitFor(
+        () => {
+          const shown = screen(client, threadId);
+          expect(
+            shown.cards.find((card) => card.nodeId === request.originatingNodeId),
+          ).toMatchObject({ tone: "needs-you", requestId: request.id });
+          expect(shown.requests.map(({ id }) => id)).toEqual([request.id]);
+        },
+        { timeout: 20_000, interval: 50 },
+      );
+      const asked = screen(client, threadId).requests[0]!;
+      const allow = (
+        asked.presentation as { readonly options: readonly { hint?: string; id: string }[] }
+      ).options.find((option) => option.hint !== "reject-once")!;
+      await client.dispatch({
+        type: "request.respond",
+        idempotencyKey: `respond-${randomUUID()}`,
+        requestId: asked.id,
+        ...requestDecisionRevision(asked),
+        response: { kind: "choice", optionId: allow.id },
+      });
       await settled(active, runId);
+      // A settled subagent's card keeps the time it ended, not the time it is read: as it settles,
+      // and when a task opened later reads it from the Host, as an upgraded install's cards are.
+      const ended = (await nodeRows(active, runId)).map((node) => ({
+        nodeId: node.id,
+        completedAt: node.endedAt!.toISOString(),
+      }));
+      const later = await viewer(active, threadId);
+      for (const reader of [client, later])
+        await vi.waitFor(
+          () =>
+            expect(
+              screen(reader, threadId).nodes.map(({ nodeId, completedAt }) => ({
+                nodeId,
+                completedAt,
+              })),
+            ).toEqual(ended),
+          { timeout: 20_000, interval: 50 },
+        );
 
       // The root's two responses and each invocation's own; the child thread's
       // running total carries from its first invocation into its second.

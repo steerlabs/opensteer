@@ -286,7 +286,9 @@ export function runFromRow(row: {
  * is what says a Run has usage at all; the rest are present only when the
  * engine reported them.
  */
-export function executionNodeFromRow(row: Selectable<ExecutionNodeTable>): ExecutionNode {
+export function executionNodeFromRow(
+  row: Omit<Selectable<ExecutionNodeTable>, "nativeRef" | "sessionRef" | "originCallId">,
+): ExecutionNode {
   return {
     attemptId: row.attemptId,
     stopSupported: row.stopSupported,

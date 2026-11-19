@@ -79,10 +79,8 @@ export async function overlayPage(
       .select(sql<string>`left(presentation->>'title',192)`.as("title"))
       .where("originatingThreadId", "=", scope.threadId)
       .where(sql<boolean>`status='pending'`);
-    query =
-      scope.kind === "thread"
-        ? query.where("originatingNodeId", "is", null)
-        : query.where("originatingNodeId", "=", scope.nodeId);
+    // A subagent's Request is answered from its task, so the task's scope lists it too.
+    if (scope.kind === "node") query = query.where("originatingNodeId", "=", scope.nodeId);
     if (beforeId) query = query.where(sql<boolean>`id > ${beforeId}`);
     const rows = await query.orderBy("id").limit(candidatesLimit).execute();
     const selected = boundedSerializedPrefix(

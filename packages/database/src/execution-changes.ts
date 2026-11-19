@@ -3,7 +3,7 @@ import { refreshInputQueue } from "./waiting-inputs.js";
 import { utf8ByteLength, utf8Prefix, type RunId, type ThreadId } from "@opensteer/core";
 import { sql, type Insertable, type Selectable, type Kysely, type InferResult } from "kysely";
 import { type PersonalMutation, type PersonalMutationTransaction } from "./personal-mutation.js";
-import { itemColumns, itemView } from "./personal-sync-store.js";
+import { itemColumns, itemView, type NodeFacts } from "./personal-sync-store.js";
 import { runDeliverySelection, runUsageFromRow } from "./thread-row-mappers.js";
 import type { DatabaseSchema } from "./schema.js";
 import type { TranscriptPreview, TranscriptItemTable } from "./personal-state-schema.js";
@@ -129,6 +129,8 @@ export async function writeExecutionItem(
   mutation: PersonalMutation,
   item: Omit<Insertable<TranscriptItemTable>, "position" | "revision">,
   fresh?: { readonly position: string | null },
+  /** A node's card draws its node's facts. */
+  node?: NodeFacts,
 ) {
   const old = fresh
     ? undefined
@@ -210,7 +212,7 @@ export async function writeExecutionItem(
       if (card.visible)
         mutation.change(
           { scopeKey, entityKind: "item", entityId: card.id, operation: "upsert" },
-          () => itemView(card),
+          () => itemView(node ? { ...card, node } : card),
         );
     },
   );
