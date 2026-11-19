@@ -30,8 +30,9 @@ export const RunningNowCapsule = memo(function RunningNowCapsule(props: {
   readonly onOpen: () => void;
   readonly reachable: boolean;
   readonly threadId: string;
+  readonly observed: boolean;
 }): ReactNode {
-  const model = useRunningNow(props.hostClient, props.threadId, props.reachable);
+  const model = useRunningNow(props.hostClient, props.threadId, props.reachable, props.observed);
   const keyboard = useKeyboardVisible();
   const { height } = useWindowDimensions();
   if (model === null || (keyboard && height < shortWindow)) return null;

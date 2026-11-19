@@ -4926,6 +4926,11 @@ export class MockHostClient implements HostClient {
     this.#state.mockSubagentProgress(threadId, nodeId, progress);
   }
 
+  /** Adds a settled task of `turns` asks, each a command and a reply, for long-thread journeys. */
+  mockLongThread(turns: number): string {
+    return this.#state.mockLongThread(turns);
+  }
+
   readonly #editLeases = new Set<string>();
 
   editWaitingMessage(
@@ -7238,6 +7243,98 @@ class MockHostState {
           : machine,
       ),
     });
+  }
+
+  mockLongThread(turns: number): string {
+    const template = this.snapshot.threads.find(({ purpose }) => purpose === "task");
+    if (!template) throw new Error("No task to copy.");
+    const threadId = createId("thread");
+    const start = Date.parse("2026-06-01T09:00:00.000Z");
+    const at = (minute: number) => new Date(start + minute * 60_000).toISOString();
+    const entries: TranscriptEntry[] = [];
+    for (let turn = 0; turn < turns; turn++) {
+      const runId = createId("run");
+      const replyId = createId("message");
+      entries.push(
+        {
+          author: mockHumanAuthor(),
+          body: `Question ${turn}: what changed in step ${turn}?`,
+          createdAt: at(turn * 3),
+          id: createId("message"),
+          kind: "message",
+          messageKind: "input",
+          runId: null,
+        },
+        {
+          createdAt: at(turn * 3),
+          error: null,
+          id: `run:${runId}`,
+          kind: "run",
+          replyMessageId: replyId,
+          runId,
+          status: "completed",
+        },
+        {
+          arguments: { command: `git log --oneline -n ${turn + 1}` },
+          callId: `call_long_${turn}`,
+          completedAt: at(turn * 3 + 1),
+          createdAt: at(turn * 3 + 1),
+          id: `tool:${runId}:call_long_${turn}`,
+          integration: null,
+          isError: false,
+          kind: "tool",
+          output: { text: `Output of step ${turn}\n`.repeat(1 + (turn % 4)) },
+          runId,
+          state: "done",
+          streamText: "",
+          tool: { name: "shell", namespace: "codex" },
+        },
+        {
+          author: mockAgentAuthor(runId, threadId),
+          body:
+            `Reply ${turn}. ` +
+            "Step ".repeat(1 + (turn % 7) * 12) +
+            (turn % 5 === 0 ? `\n\nA longer paragraph for reply ${turn}.` : ""),
+          createdAt: at(turn * 3 + 2),
+          id: replyId,
+          kind: "message",
+          messageKind: "assistant",
+          runId,
+        },
+      );
+    }
+    const messages = entries.filter(({ kind }) => kind === "message").length;
+    this.update({
+      ...this.snapshot,
+      threads: [
+        ...this.snapshot.threads,
+        {
+          ...template,
+          createdAt: at(0),
+          icon: null,
+          id: threadId,
+          parentThreadId: null,
+          pendingRequests: 0,
+          status: "idle",
+          title: "A long conversation",
+          unread: false,
+          updatedAt: at(turns * 3),
+        },
+      ],
+      transcripts: { ...this.snapshot.transcripts, [threadId]: entries },
+      transcriptWindows: {
+        ...this.snapshot.transcriptWindows,
+        [threadId]: {
+          byteCount: 2,
+          hasMore: false,
+          itemCount: messages,
+          nextBefore: null,
+          threadId,
+          totalItems: messages,
+        },
+      },
+    });
+    return threadId;
   }
 
   mockSubagentProgress(threadId: string, nodeId: string, progress: string): void {

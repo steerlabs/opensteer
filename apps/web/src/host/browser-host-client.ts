@@ -9,6 +9,7 @@ import {
 } from "@opensteer/client/host";
 import { desktopBridge } from "../desktop/desktop-bridge.js";
 import { browserClientLifecycle } from "./browser-lifecycle.js";
+import { indexedDbCheckpointStorage } from "./personal-checkpoint-storage.js";
 
 export interface BrowserHostClientOptions {
   readonly desktopMedia?: boolean;
@@ -37,17 +38,16 @@ export interface BrowserHostClientOptions {
  */
 export function createBrowserHostClient(options: BrowserHostClientOptions): HttpHostClient {
   const baseUrl = options.baseUrl ?? window.location.origin;
-  const key = `opensteer.personal-stream.v${personalCacheFormat}:${new URL(baseUrl).origin}`;
-  const streamCache = createPersonalStreamCache({
-    exists: async () => window.sessionStorage.getItem(key) !== null,
-    read: async () => window.sessionStorage.getItem(key),
-    write: async (state, isCurrent) => {
-      if (isCurrent()) window.sessionStorage.setItem(key, state);
-    },
-    remove: async () => {
-      window.sessionStorage.removeItem(key);
-    },
-  });
+  const origin = new URL(baseUrl).origin;
+  // The format before per-scope keys lived in this tab's sessionStorage; it is dropped, not read.
+  for (const key of Object.keys(window.sessionStorage))
+    if (key.startsWith("opensteer.personal-stream.v")) window.sessionStorage.removeItem(key);
+  const streamCache =
+    typeof indexedDB === "undefined"
+      ? undefined
+      : createPersonalStreamCache(
+          indexedDbCheckpointStorage(`opensteer-personal-stream-v${personalCacheFormat}:${origin}`),
+        );
   const client = new HttpHostClient({
     ...(options.assetRoute ? { assetRoute: options.assetRoute } : {}),
     ...(options.desktopMedia ? { desktopMedia: true } : {}),
@@ -67,7 +67,7 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
     ...(options.iphoneSetup ? { iphoneSetup: options.iphoneSetup } : {}),
     capabilities: options.capabilities ?? null,
     baseUrl,
-    streamCache,
+    ...(streamCache ? { streamCache } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.pacedUploads ? { pacedUploads: true } : {}),
     ...(options.realtimeLiveness ? { realtimeLiveness: options.realtimeLiveness } : {}),
@@ -82,6 +82,7 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
     ...(options.webSocketFactory ? { webSocketFactory: options.webSocketFactory } : {}),
   });
   initializeBrowserMessageOutbox(client);
+  window.addEventListener("pagehide", () => client.flushSavedState());
   void client.load().catch(() => undefined);
   return client;
 }

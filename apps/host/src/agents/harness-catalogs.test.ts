@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   HarnessCatalogReconciliationOwner,
   harnessCatalogMaxAgeMs,
+  harnessCatalogRetryMs,
   inspectHarnessCatalogsAfterUsageLimit,
   reconcileHarnessCatalogs,
   type HarnessCatalogConvergenceStore,
@@ -149,29 +150,43 @@ describe("harness catalog convergence", () => {
         runners: { inspectHarnesses },
         signal: AbortSignal.timeout(1_000),
       }),
-    ).resolves.toEqual({
-      staleAt: new Date(now - 10 * 60_000 + harnessCatalogMaxAgeMs),
-      unsettled: false,
-    });
+    ).resolves.toEqual({ staleAt: new Date(now - 10 * 60_000 + harnessCatalogMaxAgeMs) });
     expect(inspectHarnesses).not.toHaveBeenCalled();
   });
-  it("reports an inspected error as unsettled so the caller retries it", async () => {
+  it("asks again thirty seconds after inspecting an error", async () => {
+    const now = Date.now();
     const { catalogs, inspectHarnesses } = convergence({ stored: null });
     inspectHarnesses.mockResolvedValueOnce([errorCatalog()]);
     await expect(
       reconcileHarnessCatalogs({
         catalogs,
         connectedEnvironmentIds: [harnessEnvironmentId],
+        now,
         runners: { inspectHarnesses },
         signal: AbortSignal.timeout(1_000),
       }),
-    ).resolves.toEqual({ staleAt: null, unsettled: true });
+    ).resolves.toEqual({ staleAt: new Date(now + harnessCatalogRetryMs) });
   });
-  it("re-inspects a stored error, because that is the answer looking again can change", async () => {
+  it("re-inspects a stored error once its retry time has passed, and not right after it was recorded", async () => {
+    const now = Date.now();
+    const fresh = convergence({ capturedAt: new Date(now - 1_000), stored: errorCatalog() });
+    // The capture that recorded it just asked; asking again at once only rewrites it.
+    await expect(
+      reconcileHarnessCatalogs({
+        catalogs: fresh.catalogs,
+        connectedEnvironmentIds: [harnessEnvironmentId],
+        now,
+        runners: { inspectHarnesses: fresh.inspectHarnesses },
+        signal: AbortSignal.timeout(1_000),
+      }),
+    ).resolves.toEqual({ staleAt: new Date(now - 1_000 + harnessCatalogRetryMs) });
+    expect(fresh.inspectHarnesses).not.toHaveBeenCalled();
     const { catalogs, inspectHarnesses } = convergence({
+      capturedAt: new Date(now - harnessCatalogRetryMs),
       stored: errorCatalog(),
     });
     await reconcileHarnessCatalogs({
+      now,
       catalogs,
       connectedEnvironmentIds: [harnessEnvironmentId],
       runners: {
@@ -208,6 +223,7 @@ describe("harness catalog convergence", () => {
   );
   it("converges a preparing catalog to the Runner's completed result", async () => {
     const { catalogs, inspectHarnesses, recorded } = convergence({
+      capturedAt: new Date(Date.now() - harnessCatalogRetryMs),
       stored: {
         ...errorCatalog(),
         status: "preparing",

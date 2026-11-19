@@ -33,6 +33,7 @@ vi.mock("react-native", () => {
   type Children = { readonly children?: ReactNode };
   return {
     ActivityIndicator: () => <i data-spinner />,
+    AppState: { currentState: "active", addEventListener: () => ({ remove: () => undefined }) },
     Alert: { alert: vi.fn() },
     FlatList: (props: {
       readonly data: readonly unknown[];
@@ -97,6 +98,7 @@ vi.mock("../ui/pane.js", () => ({
   useContentInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));
 vi.mock("@react-navigation/native", () => ({
+  useIsFocused: () => true,
   StackActions: { push: (name: string, params: object) => ({ name, params, type: "PUSH" }) },
   useNavigation: () => ({
     dispatch: harness.dispatch,
@@ -186,7 +188,13 @@ describe("Running now on a phone", () => {
     const { hostClient, settle, threadId } = await scene("three");
     const onOpen = vi.fn();
     const container = render(
-      <RunningNowCapsule hostClient={hostClient} onOpen={onOpen} reachable threadId={threadId} />,
+      <RunningNowCapsule
+        hostClient={hostClient}
+        observed
+        onOpen={onOpen}
+        reachable
+        threadId={threadId}
+      />,
     );
     const capsule = container.querySelector<HTMLButtonElement>("button")!;
     expect(capsule.getAttribute("aria-label")).toBe(
@@ -198,11 +206,28 @@ describe("Running now on a phone", () => {
     expect(container.querySelector("button")).toBeNull();
   });
 
+  it("holds no subscription while its pane is stacked out of sight", async () => {
+    const { hostClient, threadId } = await scene("three");
+    const observe = vi.spyOn(hostClient, "observeThread");
+    const container = render(
+      <RunningNowCapsule
+        hostClient={hostClient}
+        observed={false}
+        onOpen={() => undefined}
+        reachable
+        threadId={threadId}
+      />,
+    );
+    expect(observe).not.toHaveBeenCalled();
+    expect(container.querySelector("button")).not.toBeNull();
+  });
+
   it("says one needs the reader, and never offers Stop on a question", async () => {
     const { hostClient, threadId } = await scene("needs");
     const capsule = render(
       <RunningNowCapsule
         hostClient={hostClient}
+        observed
         onOpen={() => undefined}
         reachable
         threadId={threadId}

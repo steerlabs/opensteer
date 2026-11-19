@@ -1238,3 +1238,91 @@ describe("a message still on this device", () => {
     }
   });
 });
+
+describe("a long transcript", () => {
+  it("draws the rows near the tail and keeps a jump target drawn far above them", () => {
+    const entries: MessageEntry[] = Array.from({ length: 150 }, (_, index) => ({
+      ...note,
+      runId: null,
+      body: `Update ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 16, 10, index)).toISOString(),
+      id: `message-${index}`,
+    }));
+    const scroller = document.createElement("div");
+    document.body.append(scroller);
+    const root = createRoot(scroller);
+    roots.push(root);
+    const windowing = { scroller: () => scroller, keep: [] };
+    const draw = (revealMessage: { readonly id: string } | null) =>
+      act(() =>
+        root.render(
+          <MemoryRouter initialEntries={["/tasks/thread-1"]}>
+            <AgentTranscript
+              entries={entries}
+              revealMessage={revealMessage}
+              windowing={windowing}
+            />
+          </MemoryRouter>,
+        ),
+      );
+    draw(null);
+    const rows = () => scroller.querySelectorAll("[data-transcript-row]").length;
+    expect(rows()).toBeLessThan(40);
+    expect(scroller.querySelector('[data-message-id="message-149"]')).not.toBeNull();
+    expect(scroller.querySelector('[data-message-id="message-3"]')).toBeNull();
+    const reveal = { id: "message-3" };
+    draw(reveal);
+    expect(scroller.querySelector('[data-message-id="message-3"]')).not.toBeNull();
+    expect(scroller.querySelector('[data-message-id="message-149"]')).not.toBeNull();
+    expect(rows()).toBeLessThan(40);
+  });
+});
+
+describe("a long transcript's rows", () => {
+  it("come back opened as the reader left them after scrolling out of the window", async () => {
+    const entries: TranscriptEntry[] = Array.from({ length: 120 }, (_, index) => {
+      const runId = `run-${index}`;
+      return [
+        { ...run, id: `run:${runId}`, runId },
+        tool({ id: `tool:${runId}:call`, callId: `call-${runId}`, runId }),
+        { ...note, body: `Reply ${index}`, id: `reply-${index}`, runId },
+      ];
+    }).flat();
+    const scroller = document.createElement("div");
+    document.body.append(scroller);
+    const root = createRoot(scroller);
+    roots.push(root);
+    const windowing = { scroller: () => scroller, keep: [] };
+    const draw = (revealMessage: { readonly id: string } | null) =>
+      act(() =>
+        root.render(
+          <MemoryRouter initialEntries={["/tasks/thread-1"]}>
+            <AgentTranscript
+              entries={entries}
+              revealMessage={revealMessage}
+              windowing={windowing}
+            />
+          </MemoryRouter>,
+        ),
+      );
+    draw(null);
+    const row = () => scroller.querySelector('[data-transcript-row="turn:run:run-112"]');
+    expect(row()).not.toBeNull();
+    click(status(row() as HTMLElement));
+    click(button(row() as HTMLElement, "Ran")!);
+    expect(row()!.querySelector(".trace-step--open")).not.toBeNull();
+
+    // The reader scrolls away: the row leaves the window.
+    await act(async () => {
+      scroller.dispatchEvent(new Event("scroll"));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+    expect(row()).toBeNull();
+
+    // And back to it.
+    draw({ id: "reply-112" });
+    expect(row()).not.toBeNull();
+    expect(status(row() as HTMLElement).getAttribute("aria-expanded")).toBe("true");
+    expect(row()!.querySelector(".trace-step--open")).not.toBeNull();
+  });
+});

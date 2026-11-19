@@ -284,6 +284,29 @@ it("shares the scoped subject, ordered cards and live text until the last node h
     expect(final.entries.at(-1)).toMatchObject({ id: item.id, text: "Complete" });
     expect(final.entries[0]).toBe(previous.entries[0]);
     expect(network.getThreadItemText(root.id, subject.nodeId)?.get(item.id)).toBeUndefined();
+    // The subject's own progress reaches its leaf through the text store, not the pane.
+    const notified = vi.fn();
+    const stop = watch.subscribe(notified);
+    socket.deliver({
+      ...live,
+      handle: 2,
+      afterSequence: throughSequence,
+      streamId: "node-progress",
+      itemId: `node:${subject.nodeId}`,
+      update: {
+        operation: "replace",
+        text: "Reading",
+        totalLength: 7,
+        offset: 0,
+        incomplete: false,
+      },
+    });
+    expect(
+      network.getThreadItemText(root.id, subject.nodeId)?.get(`node:${subject.nodeId}`)?.text,
+    ).toBe("Reading");
+    expect(notified).not.toHaveBeenCalled();
+    expect(watch.getSnapshot()).toBe(final);
+    stop();
     failure = "internal";
     watch.retry();
     await vi.waitFor(() =>

@@ -5,6 +5,7 @@ import {
   agentCardLabel,
   agentPhaseLabel,
   assignmentSubagentCard,
+  cardWithProgress,
   conversationSubagents,
   foldedSubagentSummary,
   nodeSubagentCard,
@@ -74,6 +75,23 @@ describe("shared agent contract", () => {
         network: "offline",
       })?.word,
     ).toBe("Finished");
+  });
+  it("draws a row's live progress the same as progress the card was built with", () => {
+    const { snapshot, nodes, thread, node } = fixture();
+    const progress = "Reading `files`";
+    for (const [patch, reader] of [
+      [{ status: "running" }, snapshot],
+      [{ status: "running" }, { ...snapshot, network: "offline" as const }],
+      [{ status: "running", stopping: true }, snapshot],
+      [{ status: "completed", result: "Done" }, snapshot],
+    ] as const) {
+      const built = nodeSubagentCard({ ...node, ...patch, progress }, thread.id, nodes, reader)!;
+      const live = cardWithProgress(
+        nodeSubagentCard({ ...node, ...patch, progress: null }, thread.id, nodes, reader)!,
+        progress,
+      );
+      expect(live).toEqual(built);
+    }
   });
   it("uses only summary data for lines and catalog names for models", () => {
     const { snapshot, nodes, thread, node } = fixture();

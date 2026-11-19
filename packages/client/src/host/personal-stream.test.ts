@@ -18,6 +18,7 @@ import {
   type PersonalStreamCheckpoint,
 } from "./personal-stream-cache.js";
 import { ScopedPersonalStream, type PersonalResourcePort } from "./scoped-personal-stream.js";
+import { memoryCheckpointStorage } from "../test-support/memory-checkpoint-storage.js";
 import { ScopedThreadReader, TranscriptBodies } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard } from "./transcript-item-view.js";
 import { detailThread } from "../test-support/scoped-transcript-fixture.js";
@@ -112,6 +113,7 @@ function fixture(cache?: PersonalStreamCache, resources?: PersonalResourcePort) 
       deploymentId,
       viewerId,
       epoch: replacementEpoch,
+      session,
       tasks: [task],
       visits: [],
       attention: [],
@@ -254,8 +256,7 @@ test("fences a pending write at generation replacement and checkpoints installed
   const release = Promise.withResolvers<void>();
   let pause = true;
   const f = fixture({
-    load: async () => null,
-    remove: async () => {},
+    ...createPersonalStreamCache(memoryCheckpointStorage()),
     commit: async (checkpoint, current) => {
       if (checkpoint.kind === "detail" && pause) {
         pause = false;
@@ -267,6 +268,7 @@ test("fences a pending write at generation replacement and checkpoints installed
   });
   f.syncShell();
   f.syncDetail();
+  f.stream.flushCheckpoints();
   await entered.promise;
   try {
     // A frame that skips part of the feed makes the client start the scope over.
@@ -306,6 +308,7 @@ test("fences a pending write at generation replacement and checkpoints installed
   } finally {
     release.resolve();
   }
+  f.stream.flushCheckpoints();
   await vi.waitFor(() => expect(commits.filter(({ kind }) => kind === "detail")).toHaveLength(1));
   expect(commits.at(-1)).toMatchObject({ cursor: { afterSequence: "2" }, state: { items: [] } });
 });
@@ -689,53 +692,43 @@ test("refreshes a loaded Done window after a hidden shell replacement, once on r
   }
 });
 
-test("attaches without a cursor when a warm-cache preflight is retryable", async () => {
-  const fetch = vi
-    .fn<typeof globalThis.fetch>()
-    .mockResolvedValue(
-      Response.json(
-        { ok: false, error: { code: "internal", message: "Starting", retryable: true } },
-        { status: 503 },
-      ),
+/** Saves one synchronized shell and selected-thread cut, as a previous run of the app would. */
+async function savedCache() {
+  const storage = memoryCheckpointStorage();
+  const cache = createPersonalStreamCache(storage);
+  const f = fixture(cache);
+  f.syncShell();
+  f.syncDetail();
+  f.stream.flushCheckpoints();
+  await vi.waitFor(() => expect(storage.values.size).toBe(2));
+  return { storage, cache };
+}
+
+function warmClient(
+  cache: PersonalStreamCache,
+  reply: (
+    socket: MockPersonalSocket,
+    attach: Extract<ScopedClientMessage, { type: "client.attach" }>,
+  ) => void,
+) {
+  const reads: string[] = [];
+  const order: string[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    reads.push(String(input));
+    order.push("http");
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
     );
-  const cache: PersonalStreamCache = {
-    hasCheckpoints: async () => true,
-    load: async () => null,
-    commit: async () => {},
-    remove: async () => {},
-  };
+  });
   let socket: MockPersonalSocket;
-  const connect = vi.fn(
-    () =>
-      (socket = new MockPersonalSocket((raw) => {
-        const message = JSON.parse(raw) as ScopedClientMessage;
-        if (message.type !== "client.attach") return;
-        const address = {
-          subscriptionId: "shell" as const,
-          scope: shellScope,
-          generation: message.generation,
-        };
-        socket.deliver({
-          ...address,
-          type: "host.snapshot",
-          throughSequence: "1",
-          snapshot: {
-            deploymentId,
-            viewerId,
-            epoch,
-            session,
-            tasks: [{ ...task, status: "idle" }],
-            visits: [],
-            attention: [],
-            counts,
-            ...shellLists,
-            recentTaskIds: [threadId],
-            activeTaskIds: [],
-          },
-        });
-        socket.deliver({ ...address, type: "host.synchronized", throughSequence: "1" });
-      })),
-  );
+  const connect = vi.fn(() => {
+    order.push("socket");
+    return (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      if (message.type === "client.attach") reply(socket, message);
+    }));
+  });
   const client = new HttpHostClient({
     baseUrl: "http://scoped-host",
     streamCache: cache,
@@ -743,21 +736,100 @@ test("attaches without a cursor when a warm-cache preflight is retryable", async
     webSocketFactory: connect,
     capabilities: [],
   });
+  return { client, connect, order, reads, socket: () => socket };
+}
+
+test("a warm start opens the socket with no HTTP read first and paints the saved cut once the attach reply resumes it", async () => {
+  const { cache } = await savedCache();
+  const painted: (readonly string[] | undefined)[] = [];
+  let attach: Extract<ScopedClientMessage, { type: "client.attach" }> | undefined;
+  const warm = warmClient(cache, (socket, message) => {
+    attach = message;
+    painted.push(warm.client.getSnapshot().tasks?.entries.map(({ thread }) => thread.id));
+    const shell = {
+      subscriptionId: "shell" as const,
+      scope: shellScope,
+      generation: message.generation,
+    };
+    queueMicrotask(() => {
+      socket.deliver({ ...shell, type: "host.synchronized", throughSequence: "1" });
+      const selected = message.selected!;
+      socket.deliver({
+        subscriptionId: selected.subscriptionId,
+        scope: selected.scope,
+        generation: selected.generation,
+        type: "host.synchronized",
+        throughSequence: "1",
+      });
+    });
+  });
   try {
-    client.activateThread(threadId);
-    await client.load();
-    expect(connect).toHaveBeenCalledTimes(1);
-    const attach = JSON.parse(socket!.sent[0]!) as Extract<
-      ScopedClientMessage,
-      { type: "client.attach" }
-    >;
-    expect(attach.cursor).toBeUndefined();
-    expect(attach.selected?.scope).toEqual(threadScope);
-    expect(client.getSnapshot().connection).toBe("connected");
-    expect(client.getSnapshot().tasks?.entries.map(({ thread }) => thread.id)).toEqual([threadId]);
-    expect(client.getSnapshot().activeTasks).toEqual([]);
+    warm.client.activateThread(threadId);
+    await warm.client.load();
+    expect(warm.order[0]).toBe("socket");
+    expect(attach?.cursor?.afterSequence).toBe("1");
+    expect(attach?.expectedSessionId).toBe(session.sessionId);
+    expect(attach?.selected?.cursor?.afterSequence).toBe("1");
+    // Nothing saved was shown before the Host answered the attach.
+    expect(painted).toEqual([undefined]);
+    expect(warm.client.getSnapshot().connection).toBe("connected");
+    expect(warm.client.getSnapshot().user?.id).toBe(viewerId);
+    expect(warm.client.getSnapshot().tasks?.entries.map(({ thread }) => thread.id)).toEqual([
+      threadId,
+    ]);
+    expect(warm.client.getThreadTranscript(threadId)?.getSnapshot().entries).toHaveLength(1);
   } finally {
-    client.dispose();
+    warm.client.dispose();
+  }
+});
+
+test("a saved cut for another session is discarded on attach and never shown", async () => {
+  const { cache, storage } = await savedCache();
+  const otherViewer = createId("user");
+  const otherTask = { ...task, id: createId("thread") };
+  const seen = new Set<string>();
+  const warm = warmClient(cache, (socket, message) => {
+    const address = {
+      subscriptionId: "shell" as const,
+      scope: shellScope,
+      generation: message.generation,
+    };
+    queueMicrotask(() => {
+      socket.deliver({
+        ...address,
+        type: "host.snapshot",
+        throughSequence: "7",
+        snapshot: {
+          deploymentId,
+          viewerId: otherViewer,
+          epoch,
+          session: {
+            ...session,
+            sessionId: createId("authSession"),
+            user: { ...session.user, id: otherViewer },
+          },
+          tasks: [otherTask],
+          visits: [],
+          attention: [],
+          counts,
+          ...shellLists,
+          recentTaskIds: [otherTask.id],
+        },
+      });
+      socket.deliver({ ...address, type: "host.synchronized", throughSequence: "7" });
+    });
+  });
+  const stop = warm.client.subscribe(() => {
+    for (const entry of warm.client.getSnapshot().tasks?.entries ?? []) seen.add(entry.thread.id);
+  });
+  try {
+    await warm.client.load();
+    expect(warm.client.getSnapshot().user?.id).toBe(otherViewer);
+    expect([...seen]).toEqual([otherTask.id]);
+    await vi.waitFor(() => expect(storage.values.size).toBe(0));
+  } finally {
+    stop();
+    warm.client.dispose();
   }
 });
 
@@ -1218,40 +1290,62 @@ test("keeps the latest publication and distinct place markers across overlapping
   expect(state.items.get(revisited.id)).toEqual(revisited);
 });
 
-test("rejects a saved cut whose revision or authority does not match and ignores a read after logout", async () => {
-  const saved = new Map<string, PersonalStreamCheckpoint>();
-  const cache: PersonalStreamCache = {
-    load: async (scope) => saved.get(scope.scopeKey) ?? null,
-    commit: async (checkpoint, current) => {
-      if (current()) saved.set(checkpoint.scope.scopeKey, checkpoint);
-    },
-    remove: async (scope) => {
-      saved.delete(scope.scopeKey);
-    },
-  };
-  const f = fixture(cache);
-  f.syncShell();
-  f.syncDetail();
-  await vi.waitFor(() => expect(saved.size).toBe(2));
-
+test("a saved cut whose epoch the attach reply does not confirm is never shown, and a read after logout is ignored", async () => {
+  const { cache, storage } = await savedCache();
   const fresh = new ScopedPersonalStream(cache);
   fresh.select(threadScope);
-  await fresh.restore({ deploymentId, viewerId, epoch: crypto.randomUUID() });
-  const emit = vi.fn();
-  fresh.attach(emit);
-  expect(emit.mock.calls[0]?.[0].cursor).toBeUndefined();
+  await fresh.restore();
+  const sent: ScopedClientMessage[] = [];
+  fresh.attach((frame) => sent.push(frame));
+  const attach = sent[0] as Extract<ScopedClientMessage, { type: "client.attach" }>;
+  expect(attach.cursor?.afterSequence).toBe("1");
+  expect(fresh.shell.getSnapshot().snapshot).toBeNull();
   expect(fresh.detail(threadScope).transcript.getSnapshot().items.size).toBe(0);
+  const shell = {
+    scope: shellScope,
+    subscriptionId: "shell" as const,
+    generation: attach.generation,
+  };
+  const replaced = crypto.randomUUID();
+  fresh.receive({
+    ...shell,
+    type: "host.snapshot",
+    throughSequence: "1",
+    snapshot: {
+      deploymentId,
+      viewerId,
+      epoch: replaced,
+      session,
+      tasks: [],
+      visits: [],
+      attention: [],
+      counts,
+      ...shellLists,
+    },
+  });
+  fresh.receive({ ...shell, type: "host.synchronized", throughSequence: "1" });
+  expect(fresh.shell.getSnapshot().snapshot).toMatchObject({ epoch: replaced, tasks: [] });
+  expect(fresh.detail(threadScope).transcript.getSnapshot().items.size).toBe(0);
+  await vi.waitFor(() => expect(storage.values.size).toBe(0));
 
-  const held = { ...saved.get("shell")! };
-  expect(held.kind).toBe("shell");
-  if (held.kind !== "shell") throw new Error("Missing saved shell.");
-  const gate = Promise.withResolvers<PersonalStreamCheckpoint | null>();
-  const next = new ScopedPersonalStream({ ...cache, load: () => gate.promise });
-  const reading = next.restore({ deploymentId, viewerId, epoch });
+  const again = await savedCache();
+  const gate = Promise.withResolvers<void>();
+  const next = new ScopedPersonalStream({
+    ...again.cache,
+    latestShell: async (id) => {
+      await gate.promise;
+      return again.cache.latestShell(id);
+    },
+  });
+  const reading = next.restore();
   next.clear(true);
-  gate.resolve(held);
+  gate.resolve();
   await reading;
-  expect(next.shell.getSnapshot().snapshot).toBeNull();
+  const after: ScopedClientMessage[] = [];
+  next.attach((frame) => after.push(frame));
+  expect(
+    (after[0] as Extract<ScopedClientMessage, { type: "client.attach" }>).cursor,
+  ).toBeUndefined();
 });
 
 test("refuses raw tool text in a feed preview while keeping the stable tool identity", () => {
@@ -1346,17 +1440,7 @@ test("reconnects from unaffected complete cuts when an authority close names a r
 });
 
 test("replays a full saved history window with updated and removed active overlays", async () => {
-  let serialized: string | null = null;
-  const storage = {
-    exists: async () => serialized !== null,
-    read: async () => serialized,
-    write: async (value: string, current: () => boolean) => {
-      if (current()) serialized = value;
-    },
-    remove: async () => {
-      serialized = null;
-    },
-  };
+  const storage = memoryCheckpointStorage();
   const cache = createPersonalStreamCache(storage);
   const f = fixture(cache);
   const history = Array.from({ length: 50 }, (_, i) => {
@@ -1400,14 +1484,26 @@ test("replays a full saved history window with updated and removed active overla
       { sequence: "2", ordinal: 1, entityKind: "item", entityId: other.id, operation: "remove" },
     ],
   });
-  await vi.waitFor(() => expect(serialized).toContain('"afterSequence":"2"'));
+  f.stream.flushCheckpoints();
+  await vi.waitFor(() =>
+    expect(
+      [...storage.values.values()].some(({ value }) => value.includes('"afterSequence":"2"')),
+    ).toBe(true),
+  );
   const fresh = new ScopedPersonalStream(createPersonalStreamCache(storage));
   fresh.select(threadScope);
-  await fresh.restore({ deploymentId, viewerId, epoch });
+  await fresh.restore();
   const sent: ScopedClientMessage[] = [];
   fresh.attach((message) => sent.push(message));
   const attach = sent[0] as Extract<ScopedClientMessage, { type: "client.attach" }>;
   expect(attach.selected?.cursor?.afterSequence).toBe("2");
+  fresh.receive({
+    scope: shellScope,
+    subscriptionId: "shell",
+    generation: attach.generation,
+    type: "host.synchronized",
+    throughSequence: "1",
+  });
   expect(fresh.detail(threadScope).transcript.getSnapshot().items.size).toBe(51);
   expect(fresh.detail(threadScope).transcript.getSnapshot().items.get(active.id)?.revision).toBe(
     "2",
@@ -1633,14 +1729,16 @@ test("pages a node across a missed window and ignores a released holder's earlie
 test("a named socket close purges its task and resumes the unaffected scope", async () => {
   const other = { kind: "thread" as const, threadId: createId("thread") };
   const saved = new Map<string, PersonalStreamCheckpoint>();
+  const base = createPersonalStreamCache(memoryCheckpointStorage());
   const cache: PersonalStreamCache = {
-    hasCheckpoints: async () => false,
-    load: async (key) => saved.get(key.scopeKey) ?? null,
+    ...base,
     commit: async (checkpoint, current) => {
+      await base.commit(checkpoint, current);
       if (current()) saved.set(checkpoint.scope.scopeKey, checkpoint);
     },
-    remove: async (key) => {
-      saved.delete(key.scopeKey);
+    removeThread: async (identity, id) => {
+      await base.removeThread(identity, id);
+      saved.delete(`thread:${id}`);
     },
   };
   const sockets: MockPersonalSocket[] = [];
@@ -1729,6 +1827,7 @@ test("a named socket close purges its task and resumes the unaffected scope", as
   try {
     client.activateThread(threadId);
     await client.load();
+    client.flushSavedState();
     await vi.waitFor(() => expect(saved.size).toBe(3));
     expect(client.getThreadTranscript(other.threadId)?.getSnapshot().entries).toHaveLength(1);
     sockets[0]!.emit("close", {
@@ -1740,10 +1839,15 @@ test("a named socket close purges its task and resumes the unaffected scope", as
     expect(attachments[1]?.cursor?.afterSequence).toBe("1");
     expect(attachments[1]?.selected?.cursor?.afterSequence).toBe("1");
     await vi.waitFor(() => expect(saved.has(`thread:${other.threadId}`)).toBe(false));
-    const restored = new ScopedPersonalStream(cache);
-    restored.select(other);
-    await restored.restore({ deploymentId, viewerId, epoch, session });
-    expect(restored.detail(other).transcript.getSnapshot().items.size).toBe(0);
+    expect(
+      await cache.load({
+        deploymentId,
+        viewerId,
+        epoch,
+        format: personalCacheFormat,
+        scopeKey: `thread:${other.threadId}`,
+      }),
+    ).toBeNull();
     expect(
       await cache.load({
         deploymentId,
@@ -2257,6 +2361,15 @@ test("acknowledges live text about every 32 KiB so a long reply keeps flowing, a
   // 640 KB of text, far past the Host's 256 KiB pause, arrived and was acknowledged as it came.
   expect(f.detail.text.get("live-reply")?.totalLength).toBe(offset);
   expect(acks() - before).toBeGreaterThanOrEqual(18);
+  // Compact text frames for the named stream spend the same credit, by their wire bytes.
+  const compact = acks();
+  for (let index = 0; index < 40; index++) {
+    const frame = { type: "host.text", h: 1, o: offset, n: offset + chunk.length, t: chunk };
+    f.stream.receive(frame, JSON.stringify(frame).length);
+    offset += chunk.length;
+  }
+  expect(f.detail.text.get("live-reply")?.totalLength).toBe(offset);
+  expect(acks() - compact).toBeGreaterThanOrEqual(4);
   f.stream.setBackground(true);
   const background = acks();
   for (let index = 0; index < 20; index++) live();
@@ -2300,6 +2413,242 @@ test("shows a task's new return hint from its republished thread value, with no 
   } finally {
     client.dispose();
   }
+});
+
+test("a burst of durable frames writes one checkpoint, for the changed scope only, after 2 s", async () => {
+  vi.useFakeTimers();
+  const storage = memoryCheckpointStorage();
+  const writes: string[] = [];
+  const write = storage.write;
+  storage.write = async (key, value) => {
+    writes.push(JSON.parse(key)[4] as string);
+    await write(key, value);
+  };
+  const f = fixture(createPersonalStreamCache(storage));
+  f.syncShell();
+  f.syncDetail();
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(writes.sort()).toEqual(["shell", `thread:${threadId}`]);
+  writes.length = 0;
+  for (let sequence = 2; sequence <= 21; sequence++)
+    f.stream.receive({
+      ...f.address,
+      type: "host.changes",
+      fromSequence: String(sequence - 1),
+      throughSequence: String(sequence),
+      changes: [
+        {
+          sequence: String(sequence),
+          ordinal: 0,
+          entityKind: "item",
+          entityId: item.id,
+          operation: "upsert",
+          value: { ...item, revision: String(sequence) },
+        },
+      ],
+    });
+  await vi.advanceTimersByTimeAsync(1_999);
+  expect(writes).toEqual([]);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(writes).toEqual([`thread:${threadId}`]);
+  const saved = await createPersonalStreamCache(storage).load({
+    deploymentId,
+    viewerId,
+    epoch,
+    scopeKey: `thread:${threadId}`,
+    format: personalCacheFormat,
+  });
+  expect(saved?.cursor.afterSequence).toBe("21");
+  // Going to the background writes what changed at once.
+  f.stream.receive({
+    ...f.address,
+    type: "host.changes",
+    fromSequence: "21",
+    throughSequence: "22",
+    changes: [],
+  });
+  f.stream.setBackground(true);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(writes).toEqual([`thread:${threadId}`, `thread:${threadId}`]);
+});
+
+test("a task observed after the socket opened paints its saved cut and resumes from it", async () => {
+  const { cache } = await savedCache();
+  const stream = new ScopedPersonalStream(cache);
+  const sent: ScopedClientMessage[] = [];
+  stream.attach((frame) => sent.push(frame));
+  const attach = sent[0] as Extract<ScopedClientMessage, { type: "client.attach" }>;
+  const shell = {
+    scope: shellScope,
+    subscriptionId: "shell" as const,
+    generation: attach.generation,
+  };
+  stream.receive({
+    ...shell,
+    type: "host.snapshot",
+    throughSequence: "1",
+    snapshot: {
+      deploymentId,
+      viewerId,
+      epoch,
+      session,
+      tasks: [task],
+      visits: [],
+      attention: [],
+      counts,
+      ...shellLists,
+    },
+  });
+  stream.receive({ ...shell, type: "host.synchronized", throughSequence: "1" });
+  sent.length = 0;
+  const release = stream.observe(threadScope);
+  // The saved cut is read before the subscription, so it can carry a cursor.
+  expect(sent).toEqual([]);
+  await vi.waitFor(() => expect(sent).toHaveLength(1));
+  expect(sent[0]).toMatchObject({ type: "client.subscribe", cursor: { afterSequence: "1" } });
+  expect(stream.detail(threadScope).transcript.getSnapshot().items.has(item.id)).toBe(true);
+  release();
+});
+
+test("opening a task reads each follow-up once, beside its snapshot, and the family's open work only when the newest page is not all of it", async () => {
+  const calls: string[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    const url = new URL(String(input));
+    const name = url.pathname.slice("/v1/rpc/".length);
+    calls.push(name);
+    if (name === "thread.assignments.list")
+      return Response.json({
+        ok: true,
+        data: {
+          assignments: [],
+          threadId,
+          window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
+        },
+      });
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+  let socket: MockPersonalSocket;
+  let detailSent = 0;
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      const deliverDetail = (
+        subscription: Pick<
+          Extract<ScopedClientMessage, { type: "client.subscribe" }>,
+          "scope" | "subscriptionId" | "generation"
+        >,
+      ) => {
+        const address = {
+          scope: subscription.scope,
+          subscriptionId: subscription.subscriptionId,
+          generation: subscription.generation,
+          throughSequence: "1",
+        };
+        detailSent++;
+        socket.deliver({
+          ...address,
+          type: "host.snapshot",
+          snapshot: {
+            thread: detailThread(task),
+            items: [item],
+            activeItems: [],
+            pendingRequests: [],
+            nextBefore: null,
+          },
+        } as never);
+        socket.deliver({ ...address, type: "host.synchronized" } as never);
+      };
+      queueMicrotask(() => {
+        if (message.type === "client.subscribe") deliverDetail(message);
+        if (message.type !== "client.attach") return;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: "1",
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [task],
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+      });
+    }));
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    webSocketFactory: connect,
+    capabilities: ["task-family-v1"],
+  });
+  try {
+    await client.load();
+    calls.length = 0;
+    client.activateThread(threadId);
+    await vi.waitFor(() => expect(detailSent).toBe(1));
+    await vi.waitFor(() => expect(calls).toContain("thread.browserUsage.get"));
+    expect(calls.sort()).toEqual([
+      "thread.assignments.list",
+      "thread.browserUsage.get",
+      "triggers.list",
+    ]);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("a subagent progress tick notifies only that row's text subscriber, not the task view", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const reader = new ScopedThreadReader(f.detail, {} as never, new TranscriptBodies());
+  const entries = reader.getSnapshot().entries;
+  const view = vi.fn();
+  const row = vi.fn();
+  const other = vi.fn();
+  reader.subscribe(view);
+  f.detail.text.subscribe("node:a", row);
+  f.detail.text.subscribe("node:b", other);
+  const attemptId = createId("runAttempt");
+  for (let tick = 1; tick <= 5; tick++)
+    f.stream.receive({
+      ...f.address,
+      type: "host.live",
+      handle: 1,
+      liveBootId: "00000000-0000-4000-8000-000000000001",
+      runId,
+      attemptId,
+      bindingGeneration: 1,
+      streamId: "progress",
+      itemId: "node:a",
+      afterSequence: "1",
+      update: {
+        operation: "replace",
+        text: `step ${tick}`,
+        offset: 0,
+        totalLength: 6,
+        incomplete: false,
+      },
+    });
+  expect(f.detail.text.get("node:a")?.text).toBe("step 5");
+  expect(row).toHaveBeenCalledTimes(5);
+  expect(other).not.toHaveBeenCalled();
+  expect(view).not.toHaveBeenCalled();
+  expect(reader.getSnapshot().entries).toBe(entries);
+  reader.dispose();
 });
 
 test("reads handle frames through the stream its host.live named, repairs a gap by its identity and drops a replaced generation's handles", () => {

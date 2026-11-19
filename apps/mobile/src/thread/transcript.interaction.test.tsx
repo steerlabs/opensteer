@@ -714,6 +714,7 @@ describe("a turn's subagents", () => {
     const hostClient = {
       ...scopedTranscriptFixture(() => current, subscribe),
       getSnapshot: () => current,
+      getThreadItemText: () => undefined,
       subscribe,
     } as unknown as HostClient;
     const onOpenSubagent = vi.fn();

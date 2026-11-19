@@ -36,6 +36,7 @@ import {
 import { computerAppAccessApproval, computerUseAccessLabel } from "@opensteer/client/integrations";
 import { isPluginRequest } from "@opensteer/client/plugins";
 import { PluginRequestBody } from "./plugin-request-body.js";
+import { useScreenShowing } from "./screen-showing.js";
 import { useHostSelector, useHostSnapshot } from "@opensteer/client/react";
 import {
   isPhoneDisplayDefinitionId,
@@ -173,7 +174,7 @@ function SubscribedRequestSheet(props: {
   const navigation = useNavigation();
   const { snapshot } = useHostSnapshot(props.hostClient);
   const { requestId, threadId } = props;
-  const transcript = useThreadTranscript(props.hostClient, threadId);
+  const transcript = useThreadTranscript(props.hostClient, threadId, useScreenShowing());
   const pending =
     transcript.requests.find(({ id, status }) => id === requestId && status === "pending") ?? null;
   const reviewing =
@@ -240,7 +241,7 @@ function ReferencedRequest(props: {
   const { deploymentId, hostClient, requestId, threadId } = props;
   const navigation = useNavigation();
   // The conversation's Requests stay live while it is open, so an answer given here shows.
-  const transcript = useThreadTranscript(hostClient, threadId);
+  const transcript = useThreadTranscript(hostClient, threadId, useScreenShowing());
   const held = transcript.requests.find(({ id }) => id === requestId) ?? null;
   // Absent or not the reader's is an answer (null); only a lost answer is retried.
   const read = useScreenRead(hostClient, {

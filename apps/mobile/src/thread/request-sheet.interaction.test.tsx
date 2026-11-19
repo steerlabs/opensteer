@@ -181,7 +181,7 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: vi.fn(),
   useMobileState: vi.fn(),
 }));
-vi.mock("@react-navigation/native", () => ({ useNavigation: vi.fn() }));
+vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true, useNavigation: vi.fn() }));
 vi.mock("./integration-connect-sheet.js", () => ({
   IntegrationConnectCard: () => <span>Inline Connect card</span>,
 }));

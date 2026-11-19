@@ -60,6 +60,10 @@ export interface ObservedDetail {
   /** Live bytes received since this scope last acknowledged anything. */
   liveBytes: number;
   revision: number;
+  /** Counts subscriptions; a checkpoint taken under an earlier one is not written. */
+  subscriptions: number;
+  /** The saved checkpoint for this scope was read, or is being read (`"reading"`). */
+  saved?: "reading" | "read";
 }
 
 /** The session's resource reads: what it watches, and the revisions the Host says changed. */
@@ -67,6 +71,24 @@ export interface PersonalResourcePort {
   interests(): { interests: PersonalResourceKind[]; installed: PersonalResourceRevisions };
   changed(revisions: PersonalResourceRevisions): void;
 }
+
+type Identity = ScopedPersonalIdentity;
+type DetailCheckpoint = {
+  readonly cursor: PersonalResumeCursor;
+  readonly state: import("zod").infer<typeof PersonalDetailSnapshotSchema>;
+};
+type ShellCandidate = {
+  readonly identity: Identity;
+  readonly sessionId: AuthSessionId;
+  readonly shell: {
+    readonly cursor: PersonalResumeCursor;
+    readonly state: import("zod").infer<typeof PersonalShellSnapshotSchema>;
+  };
+  readonly details: ReadonlyMap<string, DetailCheckpoint>;
+};
+
+/** Saved checkpoints are written together, at most this often, in idle time. */
+const checkpointIntervalMs = 2_000;
 
 /** The Host pauses a scope after 256 KiB of unacknowledged live text; ack well before that. */
 const liveAckBytes = 32 * 1024;
@@ -80,9 +102,14 @@ export class ScopedPersonalStream {
   readonly #resources: PersonalResourcePort | undefined;
   readonly #details = new Map<string, ObservedDetail>();
   readonly #slots = new Map<DetailId, ObservedDetail>();
-  readonly #cacheKeys = new Map<string, PersonalCacheScope>();
   readonly #writes = new Map<string, () => Promise<void>>();
   #writing: Promise<void> | undefined;
+  /** Scopes whose checkpoint changed since the last flush; written together, at most every 2 s. */
+  readonly #dirty = new Map<string, ObservedDetail | undefined>();
+  #flushTimer: ReturnType<typeof setTimeout> | undefined;
+  #candidate: ShellCandidate | undefined;
+  /** Details subscribed at attach with a saved cursor, installed once the attach reply confirms it. */
+  readonly #candidateDetails = new Map<ObservedDetail, DetailCheckpoint & { generation: number }>();
   #identity: ScopedPersonalIdentity | undefined;
   #sessionId: AuthSessionId | undefined;
   #generation = 0;
@@ -121,6 +148,7 @@ export class ScopedPersonalStream {
       heldBytes: 0,
       liveBytes: 0,
       revision: 0,
+      subscriptions: 0,
     };
     this.#details.set(key, detail);
     return detail;
@@ -163,90 +191,32 @@ export class ScopedPersonalStream {
     });
   }
 
-  async restore(
-    identity: ScopedPersonalIdentity & {
-      session?: import("zod").infer<typeof PersonalShellSnapshotSchema>["session"];
-    },
-  ) {
+  /**
+   * Reads the newest saved shell, and the selected task's saved detail, for a cold start. Nothing
+   * from them is shown until the socket's attach reply confirms the same viewer, Deployment, epoch
+   * and session; until then they only supply the resume cursors.
+   */
+  async restore(deploymentId?: string) {
     if (!this.cache || this.#send || this.#identity) return;
-    this.#identity = {
-      deploymentId: identity.deploymentId,
-      viewerId: identity.viewerId,
-      epoch: identity.epoch,
-    };
-    this.#sessionId = identity.session?.sessionId;
     const authority = this.#authority;
-    const scopes = [
-      shellScope,
-      ...[...this.#details.values()].filter((d) => this.#observed(d)).map((d) => d.scope),
-    ];
-    await Promise.all(
-      scopes.map(async (scope) => {
-        const key = this.#key(scope);
-        if (!key) return;
-        const held = await this.cache?.load(key).catch(() => null);
-        if (
-          !held ||
-          this.#authority !== authority ||
-          this.#send ||
-          held.scope?.format !== personalCacheFormat ||
-          held.cursor?.deploymentId !== key.deploymentId ||
-          held.cursor.viewerId !== key.viewerId ||
-          held.cursor.epoch !== key.epoch ||
-          held.cursor.scopeKey !== key.scopeKey ||
-          held.scope.deploymentId !== key.deploymentId ||
-          held.scope.viewerId !== key.viewerId ||
-          held.scope.epoch !== key.epoch ||
-          held.scope.scopeKey !== key.scopeKey ||
-          !PersonalResumeCursorSchema.safeParse(held.cursor).success
-        )
-          return;
-        if (scope.kind === "shell" && held.kind === "shell") {
-          const generation = ++this.#generation;
-          this.shell.begin(generation, false);
-          const state = PersonalShellSnapshotSchema.safeParse(held.state);
-          if (
-            !state.success ||
-            state.data.deploymentId !== key.deploymentId ||
-            state.data.viewerId !== key.viewerId ||
-            state.data.epoch !== key.epoch
-          )
-            return;
-          const { session: _oldSession, ...saved } = state.data;
-          const snapshot = { ...saved, ...(identity.session ? { session: identity.session } : {}) };
-          const frame = {
-            type: "host.snapshot",
-            scope,
-            subscriptionId: "shell",
-            generation,
-            throughSequence: held.cursor.afterSequence,
-            snapshot,
-          } as const;
-          if (!ScopedHostMessageSchema.safeParse(frame).success || !this.shell.apply(frame)) return;
-          this.#cacheKeys.set(key.scopeKey, key);
-        } else if (scope.kind !== "shell" && held.kind === "detail") {
-          const detail = this.detail(scope);
-          const state = PersonalDetailSnapshotSchema.safeParse(held.state);
-          if (!state.success || state.data.thread.id !== scope.threadId) return;
-          const generation = ++this.#generation;
-          detail.transcript.begin(generation, false);
-          const frame = {
-            type: "host.snapshot",
-            scope,
-            subscriptionId: "detail:0",
-            generation,
-            throughSequence: held.cursor.afterSequence,
-            snapshot: state.data,
-          } as const;
-          if (
-            !ScopedHostMessageSchema.safeParse(frame).success ||
-            !detail.transcript.apply(frame, this.#identity)
-          )
-            return;
-          this.#cacheKeys.set(key.scopeKey, key);
-        }
-      }),
-    );
+    const shell = await this.cache.latestShell(deploymentId).catch(() => null);
+    const candidate = shell && validShellCheckpoint(shell);
+    if (!candidate || this.#authority !== authority || this.#send || this.#identity) return;
+    const details = new Map<string, DetailCheckpoint>();
+    const selected = this.#selected ? this.#details.get(this.#selected) : undefined;
+    if (selected) {
+      const held = await this.cache
+        .load({
+          ...candidate.identity,
+          scopeKey: scopeKey(selected.scope),
+          format: personalCacheFormat,
+        })
+        .catch(() => null);
+      const detail = held && validDetailCheckpoint(held, selected.scope, candidate.identity);
+      if (detail) details.set(scopeKey(selected.scope), detail);
+    }
+    if (this.#authority !== authority || this.#send || this.#identity) return;
+    this.#candidate = { ...candidate, details };
   }
 
   /** Counts sockets; a scope repair on one socket keeps its attachment. */
@@ -265,20 +235,37 @@ export class ScopedPersonalStream {
     this.#attachment++;
     const generation = ++this.#generation;
     this.shell.begin(generation, true);
-    const cursor =
-      this.shell.checkpoint() && this.#cursor(shellScope, this.shell.getSnapshot().through);
+    const candidate = this.#candidate;
+    const cursor = candidate
+      ? candidate.shell.cursor
+      : this.shell.checkpoint() && this.#cursor(shellScope, this.shell.getSnapshot().through);
     const selected =
       this.#selected && !this.#background ? this.#details.get(this.#selected) : undefined;
-    const subscription = selected && this.#subscribe(selected, true);
+    const subscription = selected && !this.#mustLoad(selected) && this.#subscribe(selected, true);
+    const saved = subscription && candidate?.details.get(scopeKey(subscription.scope));
+    this.#candidateDetails.clear();
+    if (selected && subscription && saved)
+      this.#candidateDetails.set(selected, { ...saved, generation: subscription.generation });
+    const interests = this.#interests();
     send({
       type: "client.attach",
       apiVersion: scopedPersonalApiVersion,
-      ...(this.#sessionId ? { expectedSessionId: this.#sessionId } : {}),
+      ...(candidate
+        ? { expectedSessionId: candidate.sessionId }
+        : this.#sessionId
+          ? { expectedSessionId: this.#sessionId }
+          : {}),
       generation,
-      ...this.#interests(),
+      ...interests,
       ...(cursor ? { cursor } : {}),
       ...(subscription && subscription.scope.kind === "thread"
-        ? { selected: { ...subscription, scope: subscription.scope } }
+        ? {
+            selected: {
+              ...subscription,
+              scope: subscription.scope,
+              ...(saved ? { cursor: saved.cursor } : {}),
+            },
+          }
         : {}),
     });
     this.#reconcile();
@@ -318,52 +305,65 @@ export class ScopedPersonalStream {
     for (const threadId of roots) {
       this.shell.removeTask(threadId);
       const identity = this.#identity;
-      if (identity && this.cache?.removeThread)
+      if (identity && this.cache)
         this.#enqueue(`thread-cache:${threadId}`, () =>
-          this.cache!.removeThread!(identity, threadId),
+          this.cache!.removeThread(identity, threadId),
         );
     }
     return scopes;
   }
 
   #purge(identity: ScopedPersonalIdentity | undefined) {
-    if (identity && this.cache?.removeViewer) {
-      this.#enqueue(JSON.stringify([identity.deploymentId, identity.viewerId]), () =>
-        this.cache!.removeViewer!(identity),
-      );
-    } else if (this.cache) {
-      for (const scope of this.#cacheKeys.values())
-        this.#enqueue(JSON.stringify(scope), () => this.cache!.remove(scope));
-    }
+    if (!identity || !this.cache) return;
+    this.#enqueue(JSON.stringify([identity.deploymentId, identity.viewerId]), () =>
+      this.cache!.removeViewer(identity),
+    );
   }
 
   setBackground(background: boolean) {
     if (background === this.#background) return;
     this.#background = background;
+    if (background) this.flushCheckpoints();
     this.#reconcile();
   }
 
   clear(removeCheckpoints: boolean) {
     this.disconnect();
     this.#authority++;
-    const identity = this.#identity;
+    const identity = this.#identity ?? this.#candidate?.identity;
     this.#identity = undefined;
     this.#sessionId = undefined;
+    this.#candidate = undefined;
+    this.#candidateDetails.clear();
+    this.#dirty.clear();
+    if (this.#flushTimer) clearTimeout(this.#flushTimer);
+    this.#flushTimer = undefined;
     this.shell.begin(++this.#generation, false);
     for (const detail of this.#details.values()) {
       detail.transcript.begin(++this.#generation, false);
       detail.text.clear();
+      delete detail.saved;
     }
     if (removeCheckpoints) this.#purge(identity);
-    this.#cacheKeys.clear();
     this.#evict();
   }
 
+  /**
+   * Applies one frame. `wireBytes` is the received text's size, checked against the frame's limit;
+   * a frame from the socket must also carry its shell's session.
+   */
   receive(input: unknown, wireBytes?: number) {
     const parsed = ScopedHostMessageSchema.safeParse(input);
     if (!parsed.success) return false;
     if (wireBytes !== undefined && wireBytes > personalHostFrameMaxBytes(parsed.data))
       throw new Error("Personal scope frame exceeds its encoded limit.");
+    if (
+      wireBytes !== undefined &&
+      parsed.data.type === "host.snapshot" &&
+      "tasks" in parsed.data.snapshot &&
+      !parsed.data.snapshot.session
+    )
+      throw new Error("The Host omitted its authenticated shell identity.");
     if (!this.#send) return true;
     const frame = this.#resolveLive(parsed.data);
     if (!frame) return true;
@@ -430,8 +430,15 @@ export class ScopedPersonalStream {
   }
 
   #receiveShell(frame: Frame) {
+    if (frame.generation !== this.shell.getSnapshot().generation) return;
+    if (
+      this.#candidate &&
+      (frame.type === "host.snapshot" ||
+        frame.type === "host.changes" ||
+        frame.type === "host.synchronized")
+    )
+      this.#settleCandidate(frame);
     const previous = this.shell.getSnapshot();
-    if (frame.generation !== previous.generation) return;
     if (frame.type === "host.resource") {
       this.#resources?.changed(frame.revisions);
       return;
@@ -488,15 +495,61 @@ export class ScopedPersonalStream {
     }
   }
 
+  /** The attach reply decides whether the saved state read for a cold start is this viewer's. */
+  #settleCandidate(
+    frame: Extract<
+      ScopedHostMessage,
+      { type: "host.snapshot" | "host.changes" | "host.synchronized" }
+    >,
+  ) {
+    const candidate = this.#candidate!;
+    this.#candidate = undefined;
+    const pending = [...this.#candidateDetails];
+    this.#candidateDetails.clear();
+    if (frame.type === "host.snapshot") {
+      if (!("tasks" in frame.snapshot)) return;
+      const { deploymentId, viewerId, epoch, session } = frame.snapshot;
+      if (
+        deploymentId !== candidate.identity.deploymentId ||
+        viewerId !== candidate.identity.viewerId ||
+        epoch !== candidate.identity.epoch ||
+        session?.sessionId !== candidate.sessionId
+      ) {
+        // Another viewer, session or history: the saved state was never shown and is removed.
+        this.#purge(candidate.identity);
+        return;
+      }
+    }
+    // A reply that is not a snapshot resumed from the saved cursor under the saved session.
+    this.#identity = candidate.identity;
+    this.#sessionId = candidate.sessionId;
+    if (frame.type !== "host.snapshot") {
+      this.shell.apply({
+        type: "host.snapshot",
+        scope: shellScope,
+        subscriptionId: "shell",
+        generation: frame.generation,
+        throughSequence: candidate.shell.cursor.afterSequence,
+        snapshot: candidate.shell.state,
+      });
+    }
+    for (const [detail, saved] of pending)
+      if (detail.slot && detail.transcript.getSnapshot().generation === saved.generation) {
+        this.#installDetail(detail, saved, saved.generation);
+        detail.saved = "read";
+      }
+  }
+
   #discardViewerCheckpoints() {
     this.#authority++;
     this.#purge(this.#identity);
-    this.#cacheKeys.clear();
+    this.#dirty.clear();
     this.#early.length = 0;
     this.#earlyBytes = 0;
     for (const detail of this.#details.values()) {
       detail.transcript.begin(++this.#generation, false);
       detail.text.clear();
+      delete detail.saved;
     }
   }
 
@@ -669,7 +722,7 @@ export class ScopedPersonalStream {
     }
     if (this.#send && !this.#background) {
       const selected = this.#selected ? this.#details.get(this.#selected) : undefined;
-      if (selected && !selected.slot) {
+      if (selected && !selected.slot && !this.#mustLoad(selected)) {
         if (this.#slots.size === detailIds.length) {
           const first = this.#slots.entries().next();
           if (!first.done) this.#unsubscribe(...first.value);
@@ -677,9 +730,59 @@ export class ScopedPersonalStream {
         this.#subscribe(selected);
       }
       for (const detail of this.#details.values())
-        if (this.#observed(detail) && !detail.slot) this.#subscribe(detail);
-    }
+        if (this.#observed(detail) && !detail.slot && !this.#mustLoad(detail))
+          this.#subscribe(detail);
+    } else
+      for (const detail of this.#details.values())
+        if (this.#observed(detail) && !detail.slot) this.#mustLoad(detail);
     this.#evict();
+  }
+
+  /** Whether a scope must first read its saved checkpoint, so it can paint it and resume from it. */
+  #mustLoad(detail: ObservedDetail) {
+    const identity = this.#identity;
+    if (!this.cache || !identity || detail.saved === "read") return false;
+    if (detail.transcript.getSnapshot().snapshot) {
+      detail.saved = "read";
+      return false;
+    }
+    if (detail.saved === "reading") return true;
+    detail.saved = "reading";
+    const authority = this.#authority;
+    const key = {
+      ...identity,
+      scopeKey: scopeKey(detail.scope),
+      format: personalCacheFormat,
+    } as const;
+    void this.cache
+      .load(key)
+      .catch(() => null)
+      .then((held) => {
+        if (this.#authority !== authority || detail.saved !== "reading") return;
+        detail.saved = "read";
+        const saved = held && validDetailCheckpoint(held, detail.scope, identity);
+        if (saved && !detail.slot && !detail.transcript.getSnapshot().snapshot) {
+          const generation = ++this.#generation;
+          detail.transcript.begin(generation, false);
+          this.#installDetail(detail, saved, generation);
+        }
+        if (this.#details.get(scopeKey(detail.scope)) === detail) this.#reconcile();
+      });
+    return true;
+  }
+
+  #installDetail(detail: ObservedDetail, saved: DetailCheckpoint, generation: number) {
+    return detail.transcript.apply(
+      {
+        type: "host.snapshot",
+        scope: detail.scope,
+        subscriptionId: detail.slot ?? "detail:0",
+        generation,
+        throughSequence: saved.cursor.afterSequence,
+        snapshot: saved.state,
+      },
+      this.#identity,
+    );
   }
 
   #unsubscribe(slot: DetailId, detail: ObservedDetail) {
@@ -704,6 +807,7 @@ export class ScopedPersonalStream {
     detail.controller?.abort();
     detail.controller = new AbortController();
     detail.revision++;
+    detail.subscriptions++;
     detail.held = undefined;
     detail.heldBytes = 0;
     detail.liveBytes = 0;
@@ -771,65 +875,71 @@ export class ScopedPersonalStream {
   }
 
   #checkpoint(scope: PersonalScope, detail?: ObservedDetail) {
-    if (!this.cache) return;
+    if (!this.cache || !this.#identity) return;
+    this.#dirty.set(scopeKey(scope), detail);
+    this.#flushTimer ??= setTimeout(() => {
+      const idle = globalThis.requestIdleCallback;
+      if (idle) idle(() => this.flushCheckpoints(), { timeout: 1_000 });
+      else this.flushCheckpoints();
+    }, checkpointIntervalMs);
+  }
+
+  /** Writes every changed scope's checkpoint now: on the timer, when backgrounded or hidden. */
+  flushCheckpoints() {
+    if (this.#flushTimer) clearTimeout(this.#flushTimer);
+    this.#flushTimer = undefined;
+    const dirty = [...this.#dirty];
+    this.#dirty.clear();
+    for (const [key, detail] of dirty) {
+      const checkpoint = this.#checkpointOf(detail);
+      if (!checkpoint) continue;
+      const authority = this.#authority;
+      const fence = () => (detail ? detail.subscriptions : this.shell.getSnapshot().generation);
+      const taken = fence();
+      const current = () => authority === this.#authority && fence() === taken;
+      this.#enqueue(key, () => this.cache!.commit(checkpoint, current));
+    }
+  }
+
+  #checkpointOf(detail: ObservedDetail | undefined): PersonalStreamCheckpoint | undefined {
+    const scope = detail?.scope ?? shellScope;
     const state = detail ? detail.transcript.getSnapshot() : this.shell.getSnapshot();
     const cursor = this.#cursor(scope, state.through);
     const key = this.#key(scope);
     if (!cursor || !key || !state.synchronized) return;
-    if (detail && !detail.transcript.canCheckpoint()) return;
-    const authority = this.#authority;
-    const current = () =>
-      authority === this.#authority &&
-      (detail ? detail.transcript.getSnapshot() : this.shell.getSnapshot()).generation ===
-        state.generation;
-    this.#cacheKeys.delete(key.scopeKey);
-    this.#cacheKeys.set(key.scopeKey, key);
-    if (this.#cacheKeys.size > 128) {
-      const first = this.#cacheKeys.entries().next();
-      if (!first.done) {
-        const [oldest, oldKey] = first.value;
-        this.#cacheKeys.delete(oldest);
-        this.#enqueue(oldest, () => this.cache!.remove(oldKey));
-      }
+    if (detail) {
+      if (this.#details.get(key.scopeKey) !== detail) return;
+      const snapshot = detail.transcript.checkpoint();
+      if (!snapshot) return;
+      const strip = (item: import("@opensteer/protocol/transcript").TranscriptItem) => {
+        if (item.kind !== "message" || item.clientSendKey === undefined) return item;
+        const { clientSendKey: _discard, ...view } = item;
+        return view;
+      };
+      return {
+        scope: key,
+        cursor,
+        kind: "detail",
+        state: {
+          ...snapshot,
+          items: snapshot.items.map(strip),
+          activeItems: snapshot.activeItems.map(strip),
+        },
+      };
     }
-    this.#enqueue(key.scopeKey, async () => {
-      if (!current()) return;
-      const checkpoint: PersonalStreamCheckpoint | undefined = detail
-        ? (() => {
-            const snapshot = detail.transcript.checkpoint();
-            const strip = (item: import("@opensteer/protocol/transcript").TranscriptItem) => {
-              if (item.kind !== "message" || item.clientSendKey === undefined) return item;
-              const { clientSendKey: _discard, ...view } = item;
-              return view;
-            };
-            const state = snapshot && {
-              ...snapshot,
-              items: snapshot.items.map(strip),
-              activeItems: snapshot.activeItems.map(strip),
-            };
-            const detailCut = detail.transcript.getSnapshot();
-            const nextCursor = this.#cursor(scope, detailCut.through);
-            return state && nextCursor && { scope: key, cursor: nextCursor, kind: "detail", state };
-          })()
-        : (() => {
-            const snapshot = this.shell.checkpoint();
-            const nextCursor = this.#cursor(scope, this.shell.getSnapshot().through);
-            return (
-              snapshot &&
-              nextCursor && {
-                scope: key,
-                cursor: nextCursor,
-                kind: "shell",
-                state: withoutSession(snapshot),
-              }
-            );
-          })();
-      if (checkpoint) await this.cache!.commit(checkpoint, current);
-    });
+    const snapshot = this.shell.checkpoint();
+    if (!snapshot?.session || snapshot.session.sessionId !== this.#sessionId) return;
+    return {
+      scope: key,
+      cursor,
+      kind: "shell",
+      state: snapshot,
+    };
   }
 
   #removeCheckpoint(scope: PersonalScope) {
     const key = this.#key(scope);
+    this.#dirty.delete(scopeKey(scope));
     if (key && this.cache) this.#enqueue(key.scopeKey, () => this.cache!.remove(key));
   }
 
@@ -849,7 +959,74 @@ export class ScopedPersonalStream {
   }
 }
 
-function withoutSession(snapshot: import("zod").infer<typeof PersonalShellSnapshotSchema>) {
-  const { session: _session, ...state } = snapshot;
-  return state;
+function validShellCheckpoint(held: PersonalStreamCheckpoint): ShellCandidate | undefined {
+  if (held?.kind !== "shell" || held.scope?.format !== personalCacheFormat) return;
+  const cursor = PersonalResumeCursorSchema.safeParse(held.cursor);
+  if (!cursor.success || cursor.data.scopeKey !== "shell") return;
+  const identity = {
+    deploymentId: cursor.data.deploymentId,
+    viewerId: cursor.data.viewerId,
+    epoch: cursor.data.epoch,
+  };
+  const frame = ScopedHostMessageSchema.safeParse({
+    type: "host.snapshot",
+    scope: shellScope,
+    subscriptionId: "shell",
+    generation: 1,
+    throughSequence: cursor.data.afterSequence,
+    snapshot: held.state,
+  });
+  if (!frame.success || frame.data.type !== "host.snapshot" || !("tasks" in frame.data.snapshot))
+    return;
+  const state = frame.data.snapshot;
+  if (
+    !sameIdentity(held.scope, identity) ||
+    held.scope.scopeKey !== "shell" ||
+    !sameIdentity(state, identity) ||
+    !state.session ||
+    state.session.user.id !== identity.viewerId
+  )
+    return;
+  return {
+    identity,
+    sessionId: state.session.sessionId,
+    shell: { cursor: cursor.data, state },
+    details: new Map(),
+  };
+}
+
+function validDetailCheckpoint(
+  held: PersonalStreamCheckpoint,
+  scope: DetailScope,
+  identity: Identity,
+): DetailCheckpoint | undefined {
+  const key = scopeKey(scope);
+  if (
+    held?.kind !== "detail" ||
+    held.scope?.format !== personalCacheFormat ||
+    !sameIdentity(held.scope, identity) ||
+    held.scope.scopeKey !== key
+  )
+    return;
+  const cursor = PersonalResumeCursorSchema.safeParse(held.cursor);
+  if (!cursor.success || !sameIdentity(cursor.data, identity) || cursor.data.scopeKey !== key)
+    return;
+  const frame = ScopedHostMessageSchema.safeParse({
+    type: "host.snapshot",
+    scope,
+    subscriptionId: "detail:0",
+    generation: 1,
+    throughSequence: cursor.data.afterSequence,
+    snapshot: held.state,
+  });
+  if (!frame.success || frame.data.type !== "host.snapshot" || "tasks" in frame.data.snapshot)
+    return;
+  return { cursor: cursor.data, state: frame.data.snapshot };
+}
+
+function sameIdentity(
+  a: Pick<PersonalCacheScope, "deploymentId" | "viewerId" | "epoch">,
+  b: Pick<PersonalCacheScope, "deploymentId" | "viewerId" | "epoch">,
+) {
+  return a.deploymentId === b.deploymentId && a.viewerId === b.viewerId && a.epoch === b.epoch;
 }

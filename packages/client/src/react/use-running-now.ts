@@ -14,8 +14,10 @@ export function useRunningNow(
   hostClient: HostClient,
   threadId: string,
   reachable: boolean,
+  /** Whether its screen is in front; one stacked out of sight holds no subscription. */
+  observed = true,
 ): RunningNow | null {
-  const { entries, requests } = useThreadTranscript(hostClient, threadId);
+  const { entries, requests } = useThreadTranscript(hostClient, threadId, observed);
   const select = useMemo(() => {
     const cache = new SubagentCache();
     let held: { readonly inputs: readonly unknown[]; readonly value: RunningNow | null } | null =

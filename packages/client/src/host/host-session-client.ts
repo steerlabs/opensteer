@@ -19,11 +19,10 @@ import type { PersonalStreamCache } from "./personal-stream-cache.js";
 import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
 import { withThreadState } from "./optimistic-command-patches.js";
 import { ScopedThreadReader, TranscriptBodies, transcriptBodyKey } from "./scoped-thread-reader.js";
-import { nodeCardProgress, nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
+import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
 import { displayedItemIds } from "./thread-transcript-store.js";
 import {
   scopedPersonalApiVersion,
-  PersonalShellSnapshotSchema,
   personalDetailFrameMaxBytes,
   affectedPersonalSubscriptions,
   personalShellSettledTasks,
@@ -897,6 +896,11 @@ export class HttpHostClient {
     return () => this.#listeners.delete(listener);
   };
 
+  /** Writes saved personal state now, for a page about to be hidden or unloaded. */
+  flushSavedState() {
+    this.#stream.flushCheckpoints();
+  }
+
   async dispatch(
     command: ClientCommandInput,
     options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
@@ -1277,6 +1281,9 @@ export class HttpHostClient {
       | NonNullable<ReturnType<typeof detail.transcript.getSnapshot>["snapshot"]>["thread"]
       | undefined;
     let detailGeneration = 0;
+    let subscribedGeneration = 0;
+    let readsDue = false;
+    let reread = false;
     let previousAssignments:
       ReturnType<typeof detail.transcript.getSnapshot>["assignments"] | undefined;
     const clearPlaces = () => {
@@ -1330,6 +1337,17 @@ export class HttpHostClient {
         const threads = upsertThread(this.#snapshot.threads, thread);
         if (threads !== this.#snapshot.threads) this.#update({ ...this.#snapshot, threads });
       }
+      // Assignments and automations are read as the subscription opens, beside its snapshot.
+      if (detail.slot && subscribedGeneration !== state.generation) {
+        reread = subscribedGeneration !== 0;
+        subscribedGeneration = state.generation;
+        readsDue = true;
+      }
+      if (readsDue && this.#snapshot.session === "authenticated" && this.#showsThread(threadId)) {
+        readsDue = false;
+        this.#ensureAssignments(threadId);
+        this.#ensureAutomations(threadId, reread);
+      }
       if (!state.synchronized || !this.#showsThread(threadId)) return;
       if (placeItems !== state.items || placeQueue !== state.snapshot?.queue) {
         placeItems = state.items;
@@ -1363,8 +1381,6 @@ export class HttpHostClient {
       if (detailGeneration !== state.generation) {
         const reattached = detailGeneration !== 0;
         detailGeneration = state.generation;
-        this.#ensureAssignments(threadId);
-        this.#ensureAutomations(threadId, reattached);
         // Browser usage notices only reach synchronized details.
         this.#ensureBrowserUsage(threadId, reattached ? "full" : "missing");
       }
@@ -1435,13 +1451,8 @@ export class HttpHostClient {
     const notify = () => {
       for (const listener of listeners) listener();
     };
+    // Progress is not merged here: its leaf reads the item text store (`useLiveAgentCard`).
     const unsubscribe = detail.transcript.subscribe(notify);
-    let progressVersion = 0;
-    let shownProgress = 0;
-    const unsubscribeProgress = detail.text.subscribeNodeProgress(() => {
-      progressVersion++;
-      notify();
-    });
     let released = false;
     let read:
       | {
@@ -1498,9 +1509,7 @@ export class HttpHostClient {
         if (released) return closed;
         const state = detail.transcript.getSnapshot();
         const page = read?.generation === state.generation ? read : undefined;
-        const progressChanged = shownProgress !== progressVersion;
-        if (previous === state && shownRead === page && !progressChanged) return view;
-        shownProgress = progressVersion;
+        if (previous === state && shownRead === page) return view;
         shownRead = page;
         const status =
           state.removed || page?.status === "missing"
@@ -1511,7 +1520,6 @@ export class HttpHostClient {
                 ? "ready"
                 : "loading";
         const structureChanged =
-          progressChanged ||
           previous?.items !== state.items ||
           previous.liveItems !== state.liveItems ||
           (view.status === "missing") !== (status === "missing");
@@ -1519,12 +1527,10 @@ export class HttpHostClient {
         const node =
           status === "missing"
             ? null
-            : !progressChanged &&
-                subject === previous?.snapshot?.nodeSubject &&
-                view.status !== "missing"
+            : subject === previous?.snapshot?.nodeSubject && view.status !== "missing"
               ? view.node
               : subject
-                ? nodeCardProgress(transcriptCard(subject)!, detail.text.get(subject.id)?.text)
+                ? transcriptCard(subject)!
                 : null;
         const hasMore = status !== "missing" && state.snapshot?.nextBefore != null;
         const loadingOlder = page?.status === "loading" && page.mode === "earlier";
@@ -1552,7 +1558,7 @@ export class HttpHostClient {
                   const projected = durable ? cards : liveCards;
                   if (!projected.has(item)) projected.set(item, nodeTranscriptCard(item, !durable));
                   const card = projected.get(item);
-                  return card ? nodeCardProgress(card, detail.text.get(id)?.text) : [];
+                  return card ?? [];
                 });
         view = {
           ...view,
@@ -1579,7 +1585,6 @@ export class HttpHostClient {
         if (released) return;
         released = true;
         unsubscribe();
-        unsubscribeProgress();
         reader.dispose();
         release();
         notify();
@@ -2155,20 +2160,22 @@ export class HttpHostClient {
   }
 
   /**
-   * The newest page, which is all the history a family shows, and every open
-   * Assignment however far back it was handed out, so work under way is never
-   * missing. A Host without `task-family-v1` gives the newest page alone.
+   * The newest page, which is all the history a family shows, and, when that page is not the
+   * whole family, every open Assignment however far back it was handed out, so work under way is
+   * never missing. A Host without `task-family-v1` gives the newest page alone.
    */
   async #readAssignments(threadId: string, signal: AbortSignal): Promise<void> {
-    await Promise.all([
-      this.#readAssignmentPages(threadId, false, signal),
-      ...(this.#capabilities?.includes("task-family-v1")
-        ? [this.#readAssignmentPages(threadId, true, signal)]
-        : []),
-    ]);
+    const more = await this.#readAssignmentPages(threadId, false, signal);
+    if (more && this.#capabilities?.includes("task-family-v1"))
+      await this.#readAssignmentPages(threadId, true, signal);
   }
 
-  async #readAssignmentPages(threadId: string, open: boolean, signal: AbortSignal): Promise<void> {
+  /** Says whether the newest page left older Assignments out. */
+  async #readAssignmentPages(
+    threadId: string,
+    open: boolean,
+    signal: AbortSignal,
+  ): Promise<boolean> {
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
     const current = () => !signal.aborted && this.#viewerStillCurrent(generation, userId);
@@ -2191,14 +2198,16 @@ export class HttpHostClient {
         if (current()) this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
         throw error;
       }
-      if (!current()) return;
+      if (!current()) return false;
       if (response.threadId !== threadId) throw new Error("Assignment page Thread mismatch.");
       this.#update({
         ...this.#snapshot,
         assignments: mergeAssignments(this.#snapshot.assignments, response.assignments),
       });
-      before = open && response.window.hasMore ? response.window.nextBefore : null;
+      if (!open) return response.window.hasMore;
+      before = response.window.hasMore ? response.window.nextBefore : null;
     } while (before !== null);
+    return false;
   }
 
   /** Every Run whose browser use this Thread shows: its own, and its tasks' workers'. */
@@ -3654,30 +3663,8 @@ export class HttpHostClient {
     if (this.#visibility === "foreground") this.#resumeForeground();
     await this.#prepareSocket?.();
     attempt.signal.throwIfAborted();
-    const cache = this.#stream.cache;
-    const cacheCandidate = await cache
-      ?.hasCheckpoints?.(this.#cacheDeploymentId)
-      .catch(() => false);
-    attempt.signal.throwIfAborted();
-    if (cacheCandidate && this.#snapshot.session === "checking") {
-      const selected = ThreadIdSchema.safeParse(this.#activeThreadId);
-      const result = await this.rpc["personal.shell.get"](
-        selected.success ? { selectedThreadId: selected.data } : {},
-        { signal: attempt.signal },
-      );
-      attempt.signal.throwIfAborted();
-      if (result.ok && validNetworkShell(result.data)) await this.#stream.restore(result.data);
-      else if (!result.ok) {
-        if (
-          ["unsupported-version", "api-version-mismatch", "unknown-method"].includes(
-            result.error.reason ?? "",
-          )
-        )
-          throw updateRequired();
-        if (!result.error.retryable) unwrapRpcResult(result);
-      }
-    }
-    attempt.signal.throwIfAborted();
+    // The saved state is read while the socket opens; the attach reply decides whether it is ours.
+    const restored = this.#stream.restore(this.#cacheDeploymentId).catch(() => undefined);
     let socket: WebSocketClient;
     try {
       socket = this.#webSocketFactory(this.#webSocketUrl("/v1/realtime"));
@@ -3699,12 +3686,14 @@ export class HttpHostClient {
       liveness ? Math.min(15_000, liveness.idleMs + liveness.deadlineMs) : 15_000,
     );
     socket.addEventListener("open", () => {
-      if (this.#socket !== socket) return;
-      try {
-        this.#stream.attach((message) => socket.send(JSON.stringify(message)));
-      } catch {
-        this.#socketFailed();
-      }
+      void restored.then(() => {
+        if (this.#socket !== socket) return;
+        try {
+          this.#stream.attach((message) => socket.send(JSON.stringify(message)));
+        } catch {
+          this.#socketFailed();
+        }
+      });
     });
     socket.addEventListener("message", ({ data }) => {
       if (this.#socket !== socket || typeof data !== "string") return;
@@ -3726,19 +3715,6 @@ export class HttpHostClient {
       try {
         const message: unknown = JSON.parse(data);
         parsed = true;
-        if (
-          message &&
-          typeof message === "object" &&
-          "type" in message &&
-          message.type === "host.snapshot" &&
-          "subscriptionId" in message &&
-          message.subscriptionId === "shell" &&
-          "snapshot" in message
-        ) {
-          const shell = PersonalShellSnapshotSchema.safeParse(message.snapshot);
-          if (!shell.success || !validNetworkShell(shell.data))
-            throw new Error("The Host omitted its authenticated shell identity.");
-        }
         if (this.#stream.receive(message, wireBytes)) return;
         if (
           message &&
@@ -4324,10 +4300,6 @@ function browserUseKey(
 
 function sameKeys(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((key, index) => key === right[index]);
-}
-
-function validNetworkShell(snapshot: import("zod").infer<typeof PersonalShellSnapshotSchema>) {
-  return snapshot.session?.user.id === snapshot.viewerId;
 }
 
 const unknownModelSelection = ModelSelectionSchema.parse({
