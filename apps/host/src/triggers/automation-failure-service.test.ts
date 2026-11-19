@@ -66,3 +66,33 @@ it("drains on startup and commit, and retries at the durable deadline", async ()
     vi.useRealTimers();
   }
 });
+
+it("backs off when a due notice cannot be listed, instead of spinning", async () => {
+  vi.useFakeTimers();
+  let reads = 0;
+  const store = {
+    listDue: vi.fn(async () => []),
+    // Due by the deadline query, never by the listing; null after 20 reads so
+    // a spinning owner stops and the assertion can report it.
+    nextDeadline: async () => (++reads > 20 ? null : new Date(Date.now())),
+    retryLater: vi.fn(async () => undefined),
+    settle: vi.fn(async () => undefined),
+  };
+  const service = new AutomationFailureService({
+    commands: { enqueueThreadInput: vi.fn() },
+    onError: () => undefined,
+    store,
+  });
+  try {
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.listDue).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(store.listDue).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(store.listDue).toHaveBeenCalledTimes(2);
+  } finally {
+    await service.close();
+    vi.useRealTimers();
+  }
+});

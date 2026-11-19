@@ -123,8 +123,8 @@ it("runs no PostgreSQL queries from idle queue and execution owners for five min
   const onError = vi.fn();
   const nextIngressDeadline = channelStore.nextIngressDeadline.bind(channelStore);
   const nextContinuationDeadline = store.requests.nextContinuationDeadline.bind(store.requests);
-  vi.spyOn(channelStore, "nextIngressDeadline").mockImplementation(async () => {
-    const result = await nextIngressDeadline();
+  vi.spyOn(channelStore, "nextIngressDeadline").mockImplementation(async (asOf) => {
+    const result = await nextIngressDeadline(asOf);
     channelPlanned.resolve();
     return result;
   });

@@ -285,9 +285,12 @@ describe("TriggerService", () => {
         nextScheduleAt,
       } as Pick<TriggerStore, "claimDueSchedules" | "nextScheduleAt">,
     });
+    const passAt = Date.now();
     loop.start();
     await vi.advanceTimersByTimeAsync(0);
     expect(claimDueSchedules).toHaveBeenCalledTimes(1);
+    // Claimed at the pass's own time, the one its deadline is judged against.
+    expect(claimDueSchedules.mock.calls[0]?.[0]).toEqual(new Date(passAt));
     expect(onOccurrenceQueued).toHaveBeenCalledTimes(1);
     expect(onChanged.mock.calls).toEqual([[]]);
     // No polling before the deadline.

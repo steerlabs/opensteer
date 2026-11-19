@@ -35,9 +35,9 @@ function channelServiceFixture(
       kind: "adopted" as const,
       revokedGrants: [],
     })),
-    nextIngressDeadline: vi.fn(async () => null),
+    nextIngressDeadline: vi.fn(async (_asOf: Date): Promise<Date | null> => null),
     pruneHistory: vi.fn(async () => undefined),
-    claimIngress: vi.fn(async () =>
+    claimIngress: vi.fn(async (_workerId: string, _asOf?: Date) =>
       remaining-- > 0
         ? {
             accountId: "cha_00000000-0000-4000-8000-000000000001",
@@ -140,6 +140,29 @@ describe("ChannelService", () => {
       }
       await fixture.service.close();
       expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("judges an unclaimable exhausted event at the pass's own time and backs off", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = channelServiceFixture({ pending: 0 });
+      // The store answers an exhausted event (another transaction holds it) as
+      // due at the time it is asked about; asked later, it reads as later.
+      fixture.channels.nextIngressDeadline.mockImplementation(async (asOf) => asOf);
+      fixture.service.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fixture.channels.claimIngress).toHaveBeenCalledOnce();
+      const claimedAt = fixture.channels.claimIngress.mock.calls[0]![1];
+      expect(fixture.channels.nextIngressDeadline.mock.calls[0]![0]).toBe(claimedAt);
+      // Claimed nothing while something was due: one retry 5 s later, no spin.
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(fixture.channels.claimIngress).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fixture.channels.claimIngress).toHaveBeenCalledTimes(2);
+      await fixture.service.close();
     } finally {
       vi.useRealTimers();
     }

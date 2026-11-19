@@ -560,6 +560,55 @@ export class PersonalTeamRequestsStore {
     });
   }
 
+  /**
+   * Team requests whose answer is owed: their task's Run for the request has
+   * ended, but the request has not recorded its terminal state (the final
+   * reply or terminal status was not delivered). Durable, so a restart or a
+   * recovered link finds them again.
+   */
+  async owedTerminalPublications(limit = 100): Promise<PersonalTeamRequest[]> {
+    const rows = await this.database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("localTaskId", "is not", null)
+      .where("localInputId", "is not", null)
+      .where("terminalState", "is", null)
+      .where(({ exists, selectFrom }) =>
+        exists(
+          selectFrom("runs")
+            .select("runs.id")
+            .whereRef("runs.threadId", "=", "personalTeamRequests.localTaskId")
+            .whereRef("runs.seedInputId", "=", "personalTeamRequests.localInputId")
+            .where(sql<boolean>`runs.reply_target->>'kind' = 'team-thread'`)
+            .where(
+              sql<boolean>`runs.reply_target->>'requestId' = personal_team_requests.request_id`,
+            )
+            .where(
+              sql<boolean>`runs.reply_target->>'teamId' = personal_team_requests.team_deployment_id`,
+            )
+            .where("runs.status", "in", ["completed", "failed", "interrupted"]),
+        ),
+      )
+      // A removed or departing link owes nothing further.
+      .where(({ exists, selectFrom }) =>
+        exists(
+          selectFrom("personalTeamLinks")
+            .select("personalTeamLinks.id")
+            .whereRef(
+              "personalTeamLinks.teamDeploymentId",
+              "=",
+              "personalTeamRequests.teamDeploymentId",
+            )
+            .where("personalTeamLinks.state", "not in", ["leaving", "revoked"]),
+        ),
+      )
+      .orderBy("createdAt")
+      .orderBy("requestId")
+      .limit(limit)
+      .execute();
+    return rows.map((row) => this.#view(row));
+  }
+
   async forTeam(teamId: DeploymentId): Promise<PersonalTeamRequest[]> {
     const rows = await this.database
       .selectFrom("personalTeamRequests")

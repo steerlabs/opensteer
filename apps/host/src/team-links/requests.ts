@@ -258,10 +258,13 @@ export class PersonalTeamRequests {
         requestId: local.requestId,
       });
   }
-  async expireUndecidedAsks(): Promise<void> {
+  /** Answers how many expired asks it cancelled. */
+  async expireUndecidedAsks(): Promise<number> {
     await this.#recoverCancelledAsks();
-    for (const local of await this.options.requests.expiredUndecidedAsks())
+    const expired = await this.options.requests.expiredUndecidedAsks();
+    for (const local of expired)
       await this.cancel(local.teamId, local.requestId, "The time to approve this ask expired.");
+    return expired.length;
   }
   async decide(
     ownerId: UserId,

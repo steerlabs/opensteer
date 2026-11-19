@@ -26,6 +26,8 @@ import { personalTeamRunOutcome } from "@opensteer/database/personal-team-run-st
 import { needsYouPage, NotificationStore, setExecutionClock } from "@opensteer/database";
 import { TeamRunTools } from "./tools.js";
 import { PersonalTeamRequests } from "./requests.js";
+import { teamPublicationPass } from "../runtime/team-publication-pass.js";
+import { retryWithBackoff } from "../runtime/deadline-drain.js";
 import { TaskAdmissionService } from "../threads/task-admission-service.js";
 import type { TeamLinkCallInput, TeamLinkResult } from "../team-link-endpoint/contracts.js";
 
@@ -477,6 +479,67 @@ describeStore("personal team consent and returns", (it) => {
         });
     });
 
+  it("owes a finished Run's answer from the saved rows until it is recorded or the link leaves", async ({
+    storeFixture,
+  }) => {
+    const f = await consentFixture(storeFixture);
+    const asking = await f.ask();
+    const request = (await f.store.forRun(asking.receipt.runId!))!;
+    const owed = async () =>
+      (await f.store.owedTerminalPublications()).map(({ requestId }) => requestId);
+    expect(await owed()).toEqual([]);
+    await f.finish(asking.receipt.runId!, "Checked the launch.");
+    // Nothing in memory remembers it: the rows alone say the answer is owed.
+    expect(await owed()).toEqual([request.requestId]);
+    let online = false;
+    let posted = false;
+    const publisher = new PersonalTeamRequests({
+      ...f.publisher.options,
+      rpc: () => ({
+        call: async (input: TeamLinkCallInput): Promise<TeamLinkResult> => {
+          if (!online) throw new OpensteerError({ code: "runner_offline", message: "Offline" });
+          if (input.type === "receipt")
+            return { kind: "receipt", messageId: posted ? f.source.messageId : null };
+          if (input.type === "read")
+            return {
+              kind: "read",
+              result: { source: f.source, ownerHandle: "owner" },
+            } as TeamLinkResult;
+          if (input.type === "post") {
+            posted = true;
+            return { kind: "receipt", messageId: f.source.messageId };
+          }
+          return { kind: "ok" };
+        },
+      }),
+    });
+    const errors: unknown[] = [];
+    const pass = () =>
+      teamPublicationPass(
+        () => f.store.owedTerminalPublications(),
+        (owedRequest) => publisher.reconcileOne(owedRequest),
+        (error) => errors.push(error),
+      );
+    // Offline: nothing was recorded, so the owner backs off and stays armed.
+    expect(await pass()).toBe(retryWithBackoff);
+    expect(await owed()).toEqual([request.requestId]);
+    online = true;
+    expect(await pass()).toBeNull();
+    expect(await owed()).toEqual([]);
+    expect(await f.store.get(f.origin.teamId, request.requestId)).toMatchObject({
+      terminalState: "done",
+    });
+    // A departing link owes nothing further.
+    const other = await f.ask();
+    await f.finish(other.receipt.runId!, "Second answer.");
+    expect(await owed()).toHaveLength(1);
+    await f.database
+      .updateTable("personalTeamLinks")
+      .set({ state: "leaving" })
+      .where("teamDeploymentId", "=", f.origin.teamId)
+      .execute();
+    expect(await owed()).toEqual([]);
+  });
   it("reopens a Done task when releasing its approved ask", async ({ storeFixture }) => {
     const f = await consentFixture(storeFixture);
     await f.publisher.deliver(f.origin.teamId, f.frame);

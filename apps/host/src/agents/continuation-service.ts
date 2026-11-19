@@ -21,7 +21,7 @@ import {
   type PasswordSignInRequestResponse,
 } from "@opensteer/protocol";
 import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-sources";
-import { DeadlineDrain } from "../runtime/deadline-drain.js";
+import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
 import { z } from "zod";
 import type { PasswordSignInContinuationState } from "../browser/password-sign-in-service.js";
 import type { ComputerAppApprovalService } from "../devices/computer-app-approval-service.js";
@@ -141,20 +141,25 @@ export class ContinuationService {
         : {}),
     };
   }
-  async #drainOnce(): Promise<Date | null> {
+  async #drainOnce(): Promise<Date | null | typeof retryWithBackoff> {
     const publishingRuns = new Set<RunId>();
-    let next: Date | null;
-    do {
+    for (;;) {
+      // One time per round for both the listing and the "still due" comparison.
+      const now = Date.now();
       const continuations = await this.#requests.listPendingContinuations(
         undefined,
-        new Date(Date.now() - retryMs),
+        new Date(now - retryMs),
         publishingRuns,
       );
       await this.#deliver(continuations, publishingRuns);
       if (this.#closed) return null;
-      next = await this.#requests.nextContinuationDeadline(retryMs, publishingRuns);
-    } while (next && next.getTime() <= Date.now() && !this.#closed);
-    return next;
+      const next = await this.#requests.nextContinuationDeadline(retryMs, publishingRuns);
+      if (!next || next.getTime() > now) return next;
+      // Each listed row was attempted (its attempt is recorded) or held for a
+      // publishing Run, so a round that listed some made progress; one that
+      // listed none while something is due would only spin.
+      if (continuations.length === 0) return retryWithBackoff;
+    }
   }
 
   async #deliver(

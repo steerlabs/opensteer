@@ -1,7 +1,7 @@
 import { OpensteerError } from "@opensteer/core";
 import type { AutomationFailureStore, PendingAutomationFailure } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
-import { DeadlineDrain } from "../runtime/deadline-drain.js";
+import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
 
 type FailureStore = Pick<
   AutomationFailureStore,
@@ -44,8 +44,9 @@ export class AutomationFailureService {
     return this.#drains.close();
   }
 
-  async #drainOnce(): Promise<Date | null> {
-    for (const notice of await this.#store.listDue()) {
+  async #drainOnce(): Promise<Date | null | typeof retryWithBackoff> {
+    const due = await this.#store.listDue();
+    for (const notice of due) {
       try {
         const delivered = await this.#commands.enqueueThreadInput({
           content: [{ text: noticeText(notice), type: "text" }],
@@ -69,7 +70,11 @@ export class AutomationFailureService {
         this.#onError(error);
       }
     }
-    return this.#store.nextDeadline();
+    // Every listed notice was settled or given a durable retry time, so a pass
+    // that listed some made progress. One that listed none while a notice is
+    // still due (one the listing cannot reach) backs off instead of spinning.
+    const next = await this.#store.nextDeadline();
+    return due.length === 0 && next && next.getTime() <= Date.now() ? retryWithBackoff : next;
   }
 }
 

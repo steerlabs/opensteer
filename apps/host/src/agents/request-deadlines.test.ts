@@ -11,7 +11,12 @@ it("settles startup work and arms only the next deadline", async () => {
   const deadlines = [Date.now() - 1, Date.now() + 200, Date.now() + 500];
   const next = vi.fn(async () => (deadlines.length ? new Date(deadlines[0]!) : null));
   const settle = vi.fn(async (now: Date) => {
-    while (deadlines.length && deadlines[0]! <= now.getTime()) deadlines.shift();
+    let settled = 0;
+    while (deadlines.length && deadlines[0]! <= now.getTime()) {
+      deadlines.shift();
+      settled++;
+    }
+    return settled;
   });
   const onError = vi.fn();
   const scheduler = new RequestDeadlines({ next, settle, onError });
@@ -39,6 +44,7 @@ it("replaces a later alarm when an earlier deadline commits", async () => {
   let deadline: Date | null = new Date(now + 500);
   const settle = vi.fn(async () => {
     deadline = null;
+    return 1;
   });
   const scheduler = new RequestDeadlines({ next: async () => deadline, settle, onError: vi.fn() });
   try {
@@ -62,6 +68,7 @@ it.each(["read", "settlement"])("retries a failed deadline %s, then goes idle", 
   const next = vi.fn(async () => due);
   const settle = vi.fn(async () => {
     due = null;
+    return 1;
   });
   if (failure === "read") next.mockRejectedValueOnce(error);
   else settle.mockRejectedValueOnce(error);
@@ -88,6 +95,7 @@ it("observes a deadline committed during an in-flight read", async () => {
   const next = vi.fn(async () => nextDeadline).mockImplementationOnce(() => first.promise);
   const settle = vi.fn(async () => {
     nextDeadline = null;
+    return 1;
   });
   const scheduler = new RequestDeadlines({ next, settle, onError: vi.fn() });
   try {
