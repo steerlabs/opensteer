@@ -6,7 +6,7 @@ Tim performs every credential operation; agents never read or operate on key mat
 
 ## Fresh baseline and team servers
 
-Supported Personal databases upgrade in place. Migration 0035 converts Personal state after the
+Supported Personal databases upgrade in place. Migration 0036 converts Personal state after the
 plugin migrations. Desktop Start fresh renames personal data aside and creates a new Deployment
 identity. Phones then pair again, and the old Account/Connect entry remains removable. Test reset
 only in disposable fixtures or a VM.

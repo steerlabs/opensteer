@@ -2860,7 +2860,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "additionalProperties": false,
       "properties": {
         "cursor": {
-          "description": "Use nextBefore from the previous page of the same task or subagent, view and query.",
+          "description": "Use nextCursor from the previous page of the same task or subagent, view and query.",
           "maxLength": 2048,
           "minLength": 1,
           "type": "string",
@@ -2977,7 +2977,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "type": "string",
         },
         "cursor": {
-          "description": "Use nextBefore from the previous page of the same task or subagent, view and query.",
+          "description": "Use nextCursor from the previous page of the same task or subagent, view and query.",
           "maxLength": 2048,
           "minLength": 1,
           "type": "string",
