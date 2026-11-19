@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { anchorCorrection, readingAnchor } from "./reading-position.js";
+import { anchorCorrection, findReadingAnchor, readingAnchor } from "./reading-position.js";
 
 describe("reading position", () => {
   const rows = [
@@ -22,5 +22,41 @@ describe("reading position", () => {
     // Re-applied after that scroll, it is in place and stays put.
     expect(anchorCorrection(anchor, 300, 450)).toBe(0);
     expect(anchorCorrection(anchor, 300.4, 450)).toBe(0);
+  });
+});
+
+describe("finding the row in view", () => {
+  /** Rows 40px tall, some empty, counting every geometry read. */
+  function rows(count: number) {
+    let reads = 0;
+    const list = Array.from({ length: count }, (_, index) => {
+      const empty = index % 7 === 3;
+      return {
+        key: `row-${index}`,
+        getBoundingClientRect: () => {
+          reads++;
+          const top = index * 40;
+          return { top, bottom: empty ? top : top + 40 } as DOMRect;
+        },
+      };
+    });
+    return { list: list as unknown as Element[], reads: () => reads };
+  }
+  const key = (row: Element) => (row as unknown as { key: string }).key;
+
+  it("finds the same row as a scan from the top, reading a handful of rows however many there are", () => {
+    const { list, reads } = rows(5_000);
+    for (const viewportTop of [0, 15, 39, 40, 135, 99_999, 150_000]) {
+      const scanned = readingAnchor(
+        list.map((row) => ({ key: key(row), ...row.getBoundingClientRect() })),
+        viewportTop,
+      );
+      const before = reads();
+      expect(findReadingAnchor(list, viewportTop, key), String(viewportTop)).toEqual(scanned);
+      expect(
+        reads() - before,
+        "a scroll frame read rows in proportion to the transcript",
+      ).toBeLessThan(20);
+    }
   });
 });

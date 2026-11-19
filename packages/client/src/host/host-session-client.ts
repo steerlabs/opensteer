@@ -1279,20 +1279,20 @@ export class HttpHostClient {
     await this.#reader(threadId)?.loadMoreOverlays(kind);
   }
 
-  loadEarlierTranscript(threadId: string) {
-    return this.#reader(threadId)?.history("earlier") ?? Promise.resolve();
+  async loadEarlierTranscript(threadId: string): Promise<void> {
+    await this.#reader(threadId)?.history("earlier");
   }
 
-  loadNewerTranscript(threadId: string) {
-    return this.#reader(threadId)?.history("newer") ?? Promise.resolve();
+  async loadNewerTranscript(threadId: string): Promise<void> {
+    await this.#reader(threadId)?.history("newer");
   }
 
-  loadTranscriptAround(threadId: string, messageId: string) {
-    return this.#reader(threadId)?.history("around", messageId) ?? Promise.resolve();
+  loadTranscriptAround(threadId: string, messageId: string): Promise<boolean> {
+    return this.#reader(threadId)?.history("around", messageId) ?? Promise.resolve(true);
   }
 
-  loadLatestTranscript(threadId: string) {
-    return this.#reader(threadId)?.history("latest") ?? Promise.resolve();
+  loadLatestTranscript(threadId: string): Promise<boolean> {
+    return this.#reader(threadId)?.history("latest") ?? Promise.resolve(true);
   }
 
   loadThreadInputQueue(threadId: string) {

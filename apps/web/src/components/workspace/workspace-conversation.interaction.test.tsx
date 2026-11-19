@@ -907,6 +907,44 @@ describe("a conversation's foot", () => {
     expect(scroller.scrollTop, "A scroll up beside a reflow was taken for the reflow").toBe(1850);
   });
 
+  it("a link overtaken by a newer link in the same task reports nothing missing and leaves the reader at the newer one", async () => {
+    const long = "thr_00000000-0000-4000-8000-000000000005";
+    const messages = () =>
+      client
+        .getSnapshot()
+        .transcripts[long]!.filter((entry) => entry.kind === "message")
+        .map(({ id }) => id);
+    let first!: (landed: boolean) => void;
+    let around!: ReturnType<typeof vi.fn>;
+    let latest!: ReturnType<typeof vi.fn>;
+    const watch = (source: MockHostClient) => {
+      const real = source.loadTranscriptAround.bind(source);
+      around = vi
+        .fn(real)
+        // The first link's page is slow; the newer link's move supersedes it.
+        .mockImplementationOnce(() => new Promise<boolean>((resolve) => (first = resolve)));
+      source.loadTranscriptAround = around as typeof source.loadTranscriptAround;
+      latest = vi.fn(source.loadLatestTranscript.bind(source));
+      source.loadLatestTranscript = latest as typeof source.loadLatestTranscript;
+      return source;
+    };
+    await mount(`/tasks/${long}`, { hostClient: watch });
+    // A message the newer link's page does not hold: only a superseded jump could misjudge it.
+    const a = "msg_00000000-0000-4000-8000-0000000000aa";
+    const [b] = messages();
+    await act(async () => goTo!(`/tasks/${long}?messageId=${a}`));
+    await vi.waitFor(() => expect(around).toHaveBeenCalledTimes(1));
+    await act(async () => goTo!(`/tasks/${long}?messageId=${b}`));
+    await vi.waitFor(() => expect(around).toHaveBeenCalledTimes(2));
+    await act(async () => first(false));
+    await settle();
+    expect(
+      document.querySelector(".ref-unavailable"),
+      "a superseded link reported its message missing",
+    ).toBeNull();
+    expect(latest, "a superseded link returned the reader to the latest").not.toHaveBeenCalled();
+  });
+
   it("tells the Host the row in view as the reader scrolls, and puts that row back where it stood after a repair", async () => {
     // The Host's repairs of this conversation, as its reader counts them.
     let repairs = 0;

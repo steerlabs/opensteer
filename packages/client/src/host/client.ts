@@ -1227,8 +1227,13 @@ export interface HostClient extends TabsClient {
     query: string;
     before?: string;
   }): Promise<ThreadMessagePage>;
-  loadTranscriptAround(threadId: string, messageId: string): Promise<void>;
-  loadLatestTranscript(threadId: string): Promise<void>;
+  /**
+   * A move of the reader's: resolves true once its page landed, or false when a newer move (a
+   * later jump, Return to latest, a scroll) superseded it, which then says nothing about the
+   * message. Only a move that landed may judge what its page holds.
+   */
+  loadTranscriptAround(threadId: string, messageId: string): Promise<boolean>;
+  loadLatestTranscript(threadId: string): Promise<boolean>;
   /**
    * What the Host decided this viewer should be told — a reply, a Request, a
    * failure — each delivered once while this client is attached. Nothing is

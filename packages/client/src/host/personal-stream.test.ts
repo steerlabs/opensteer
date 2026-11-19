@@ -764,6 +764,168 @@ test("a history page the store refused (its change journal overflowed) is read a
   reader.dispose();
 });
 
+describe("the reader's intended position", () => {
+  /** A synced detail and a reader whose page reads the test answers by hand, in any order. */
+  function positioned() {
+    const f = fixture();
+    f.syncShell();
+    f.syncDetail();
+    const targets = Array.from({ length: 4 }, (_, index) => ({
+      ...item,
+      id: `target-${index}`,
+      messageId: createId("message"),
+      position: String(index - 10),
+    }));
+    // Each target's page holds only it and the latest row, so a page for one omits the others.
+    const pending: {
+      query: { aroundMessageId?: string; anchorItemId?: string };
+      answer: () => void;
+    }[] = [];
+    const read = vi.fn(
+      (query: { aroundMessageId?: string; anchorItemId?: string }) =>
+        new Promise((resolve) => {
+          const target = targets.find(
+            ({ messageId, id }) => messageId === query.aroundMessageId || id === query.anchorItemId,
+          );
+          const items = target ? [target, item] : [item];
+          pending.push({
+            query,
+            answer: () =>
+              resolve({
+                ok: true,
+                data: {
+                  kind: "page",
+                  threadId,
+                  nodeId: null,
+                  revision: "1",
+                  hasMore: false,
+                  nextBefore: null,
+                  nextAfter: null,
+                  items,
+                },
+              }),
+          });
+        }),
+    );
+    const reader = new ScopedThreadReader(
+      f.detail,
+      { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+      new TranscriptBodies(),
+    );
+    const settle = async () => {
+      for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    };
+    return { f, targets, pending, reader, settle };
+  }
+
+  it("a jump overtaken by a newer one lands nothing and says so, so no route reports it missing", async () => {
+    const { f, targets, pending, reader, settle } = positioned();
+    const first = reader.history("around", targets[0]!.messageId);
+    const second = reader.history("around", targets[1]!.messageId);
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    // The older page answers first: it is for a move the reader no longer wants.
+    pending[0]!.answer();
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]!.answer();
+    await expect(first).resolves.toBe(false);
+    await expect(second).resolves.toBe(true);
+    await settle();
+    expect(f.detail.anchor).toBe(targets[1]!.id);
+    expect(f.detail.transcript.getSnapshot().items.has(targets[0]!.id)).toBe(false);
+    reader.dispose();
+  });
+
+  it("a resubscription's first cut does not erase a scroll made after it subscribed", async () => {
+    const { f, targets, reader } = positioned();
+    // Back from the background: a subscription that asked for no anchor.
+    f.stream.setBackground(true);
+    f.stream.setBackground(false);
+    const subscribe = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+    expect(subscribe.anchorItemId).toBeUndefined();
+    // The reader scrolls up on the rows still on screen while that cut is in flight.
+    reader.setAnchor(targets[2]!.id);
+    const address = {
+      scope: subscribe.scope,
+      subscriptionId: subscribe.subscriptionId,
+      generation: subscribe.generation,
+    };
+    const cut = f.detailSnapshot();
+    f.stream.receive({ ...cut, ...address, snapshot: { ...cut.snapshot, anchorItemId: null } });
+    expect(f.detail.anchor, "the cut erased the newer scroll").toBe(targets[2]!.id);
+    reader.dispose();
+  });
+
+  it("under any interleaving of jumps, scrolls, repairs and resubscribes, only the latest move lands", async () => {
+    let seed = 11;
+    const next = (limit: number) => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed % limit;
+    };
+    for (let run = 0; run < 60; run++) {
+      const { f, targets, pending, reader, settle } = positioned();
+      const jumps: { promise: Promise<boolean>; target: number; move: number }[] = [];
+      let moves = 0;
+      let last: { kind: "jump" | "scroll"; target: number } | null = null;
+      for (let step = 0; step < 12; step++) {
+        const action = next(6);
+        if (action <= 1) {
+          const target = next(targets.length);
+          moves++;
+          last = { kind: "jump", target };
+          jumps.push({
+            promise: reader.history("around", targets[target]!.messageId),
+            target,
+            move: moves,
+          });
+        } else if (action === 2) {
+          const target = next(targets.length);
+          moves++;
+          last = { kind: "scroll", target };
+          reader.setAnchor(targets[target]!.id);
+        } else if (action === 3) {
+          f.stream.receive(f.detailSnapshot());
+        } else if (action === 4) {
+          f.stream.setBackground(true);
+          f.stream.setBackground(false);
+          const subscribe = f.sent.at(-1) as Extract<
+            ScopedClientMessage,
+            { type: "client.subscribe" }
+          >;
+          const address = {
+            scope: subscribe.scope,
+            subscriptionId: subscribe.subscriptionId,
+            generation: subscribe.generation,
+          };
+          const cut = f.detailSnapshot();
+          f.stream.receive({
+            ...cut,
+            ...address,
+            snapshot: { ...cut.snapshot, anchorItemId: subscribe.anchorItemId ?? null },
+          });
+          f.stream.receive({ ...address, type: "host.synchronized", throughSequence: "1" });
+        } else if (pending.length) {
+          pending.splice(next(pending.length), 1)[0]!.answer();
+        }
+        await settle();
+      }
+      // Everything still asked for is answered.
+      for (let guard = 0; guard < 50 && pending.length; guard++) {
+        pending.shift()!.answer();
+        await settle();
+      }
+      const outcomes = await Promise.all(jumps.map(({ promise }) => promise));
+      const label = `run ${run}`;
+      for (const [index, jump] of jumps.entries())
+        expect(outcomes[index], `${label}: jump ${index}`).toBe(
+          last?.kind === "jump" && jump.move === moves,
+        );
+      if (last?.kind === "jump") expect(f.detail.anchor, label).toBe(targets[last.target]!.id);
+      if (last?.kind === "scroll") expect(f.detail.anchor, label).toBe(targets[last.target]!.id);
+      reader.dispose();
+    }
+  });
+});
+
 test("bounds explicitly loaded bodies", () => {
   const bodies = new TranscriptBodies();
   const big = {
