@@ -79,3 +79,13 @@ test("the converter's raw parts project to the same references as live content",
   expect(converted.refs).toEqual(live.refs);
   expect(converted.view).toEqual(live.view);
 });
+
+test("a card is truncated only when its body holds more than the card draws", () => {
+  const two = ContentPartSchema.array().parse([{ type: "text", text: "Here" }, page(1), page(2)]);
+  expect(describe(two).view.truncated).toBeUndefined();
+  const many = ContentPartSchema.array().parse([
+    { type: "text", text: "Here" },
+    ...Array.from({ length: 6 }, (_, index) => page(index)),
+  ]);
+  expect(describe(many).view.truncated).toBe(true);
+});

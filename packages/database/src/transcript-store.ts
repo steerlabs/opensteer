@@ -148,12 +148,17 @@ export function describeTranscriptMessage(input: {
     (input.author.kind === "human" || !input.assigned || input.seedInRun);
   const text = utf8Prefix(content.text, transcriptMessageTextBytes);
   const preview = stripRefs(text).trim();
-  const truncated = content.hasRichParts || text !== content.text || preview !== text.trim();
+  const refs = transcriptMessageRefs(content.richParts);
+  const carried =
+    (refs?.attachments?.length ?? 0) + (refs?.pages?.length ?? 0) + (refs?.places?.length ?? 0);
+  // Truncated means the body holds more than the card draws: cut words or references past the bounds.
+  const truncated =
+    carried < content.richParts.length || text !== content.text || preview !== text.trim();
   return {
     published,
     visible,
     isTurnStart,
-    refs: transcriptMessageRefs(content.richParts),
+    refs,
     view: transcriptPreview({
       author: input.author.kind,
       ...(messageKind ? { messageKind, messageAuthor: input.author } : {}),
