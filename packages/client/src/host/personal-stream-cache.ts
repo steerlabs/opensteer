@@ -139,6 +139,14 @@ function storageKey(scope: PersonalCacheScope, threadId: string | null) {
   ]);
 }
 
+/**
+ * The Deployment a stored key belongs to, so storage can hold each record to that Deployment's
+ * current session without knowing the rest of the key.
+ */
+export function checkpointKeyDeployment(key: string): string | null {
+  return parseKey(key)?.deploymentId ?? null;
+}
+
 function parseKey(key: string): Key | null {
   try {
     const value: unknown = JSON.parse(key);

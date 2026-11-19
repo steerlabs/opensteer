@@ -3,40 +3,43 @@ import { afterEach, expect, test, vi } from "vitest";
 import { createPersonalStreamCache } from "@opensteer/client/host";
 import {
   checkpointDatabaseName,
+  checkpointSessionMarker,
   dropOtherCheckpointFormats,
   indexedDbCheckpointStorage,
 } from "./personal-checkpoint-storage.js";
 
 const guard = { deploymentId: "dep", viewerId: "viewer", fence: 0 };
+/** A key as the cache writes it: format, Deployment, viewer, epoch, scope, thread. */
+const key = (scope: string) => JSON.stringify([66, "dep", "viewer", "e", scope, null]);
+/** The session this origin holds for the Deployment. */
+const signedIn = () => "session-1";
 
 afterEach(() => vi.unstubAllGlobals());
 
 test("windows sharing the database write their own scopes without rewriting each other's", async () => {
   vi.stubGlobal("indexedDB", new IDBFactory());
-  const first = indexedDbCheckpointStorage("checkpoints");
-  const second = indexedDbCheckpointStorage("checkpoints");
+  const first = indexedDbCheckpointStorage("checkpoints", signedIn);
+  const second = indexedDbCheckpointStorage("checkpoints", signedIn);
   await Promise.all([
-    first.write("shell", "a1", guard),
-    second.write("thread:b", "b1", guard),
-    first.write("thread:a", "a2", guard),
-    second.write("thread:a", "b2", guard),
+    first.write(key("shell"), "a1", guard),
+    second.write(key("thread:b"), "b1", guard),
+    first.write(key("thread:a"), "a2", guard),
+    second.write(key("thread:a"), "b2", guard),
   ]);
-  expect((await first.list()).map(({ key }) => key).sort()).toEqual([
-    "shell",
-    "thread:a",
-    "thread:b",
-  ]);
-  expect(await second.read("shell")).toBe("a1");
-  expect(await first.read("thread:b")).toBe("b1");
-  expect(["a2", "b2"]).toContain(await first.read("thread:a"));
-  await second.remove(["shell", "thread:a"]);
-  expect(await first.list()).toEqual([expect.objectContaining({ key: "thread:b", bytes: 2 })]);
+  expect((await first.list()).map(({ key }) => key).toSorted()).toEqual(
+    [key("shell"), key("thread:a"), key("thread:b")].toSorted(),
+  );
+  expect(await second.read(key("shell"))).toBe("a1");
+  expect(await first.read(key("thread:b"))).toBe("b1");
+  expect(["a2", "b2"]).toContain(await first.read(key("thread:a")));
+  await second.remove([key("shell"), key("thread:a")]);
+  expect(await first.list()).toEqual([expect.objectContaining({ key: key("thread:b"), bytes: 2 })]);
 });
 
 test("an aborted write leaves the previous value and index", async () => {
   vi.stubGlobal("indexedDB", new IDBFactory());
-  const storage = indexedDbCheckpointStorage("checkpoints");
-  await storage.write("thread:a", "first", guard);
+  const storage = indexedDbCheckpointStorage("checkpoints", signedIn);
+  await storage.write(key("thread:a"), "first", guard);
   const put = IDBObjectStore.prototype.put;
   vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
     this: IDBObjectStore,
@@ -46,35 +49,36 @@ test("an aborted write leaves the previous value and index", async () => {
     if (this.name === "index") this.transaction.abort();
     return request;
   });
-  await expect(storage.write("thread:a", "second", guard)).rejects.toBeDefined();
+  await expect(storage.write(key("thread:a"), "second", guard)).rejects.toBeDefined();
   vi.restoreAllMocks();
-  expect(await storage.read("thread:a")).toBe("first");
-  expect(await storage.list()).toEqual([expect.objectContaining({ key: "thread:a", bytes: 5 })]);
+  expect(await storage.read(key("thread:a"))).toBe("first");
+  expect(await storage.list()).toEqual([
+    expect.objectContaining({ key: key("thread:a"), bytes: 5 }),
+  ]);
 });
 
 test("a clear in one window refuses another window's write taken before it", async () => {
   vi.stubGlobal("indexedDB", new IDBFactory());
-  const first = indexedDbCheckpointStorage("checkpoints");
-  const second = indexedDbCheckpointStorage("checkpoints");
-  expect(await second.write("thread:a", "a1", guard)).toBe(true);
-  // Both land together: the clear's transaction and the late write never interleave.
+  const first = indexedDbCheckpointStorage("checkpoints", signedIn);
+  const second = indexedDbCheckpointStorage("checkpoints", signedIn);
+  expect(await second.write(key("thread:a"), "a1", guard)).toBe(true);
   await Promise.all([
-    first.clear((key) => key === "thread:a", { deploymentId: "dep", viewerId: "viewer" }),
-    second.write("thread:a", "a2", guard),
+    first.clear((name) => name === key("thread:a"), { deploymentId: "dep", viewerId: "viewer" }),
+    second.write(key("thread:a"), "a2", guard),
   ]);
   // Whichever transaction ran first, nothing written under the old fence survives the clear.
-  const held = await indexedDbCheckpointStorage("checkpoints").read("thread:a");
-  expect(held === null || held === "a2").toBe(true);
-  expect(await second.write("thread:a", "a3", guard)).toBe(false);
-  expect(await first.read("thread:a")).toBeNull();
-  expect(await second.write("thread:a", "a4", { ...guard, fence: 1 })).toBe(true);
+  expect(
+    await indexedDbCheckpointStorage("checkpoints", signedIn).read(key("thread:a")),
+  ).toBeNull();
+  expect(await second.write(key("thread:a"), "a3", guard)).toBe(false);
+  expect(await second.write(key("thread:a"), "a4", { ...guard, fence: 1 })).toBe(true);
 });
 
 test("a fresh renderer does not load what a cleared viewer saved through another", async () => {
   vi.stubGlobal("indexedDB", new IDBFactory());
   const name = checkpointDatabaseName(66, "http://host");
-  const first = createPersonalStreamCache(indexedDbCheckpointStorage(name));
-  const second = createPersonalStreamCache(indexedDbCheckpointStorage(name));
+  const first = createPersonalStreamCache(indexedDbCheckpointStorage(name, signedIn));
+  const second = createPersonalStreamCache(indexedDbCheckpointStorage(name, signedIn));
   const viewer = { deploymentId: "dep", viewerId: "viewer" };
   const fence = await second.fence(viewer);
   await first.removeViewer(viewer);
@@ -85,8 +89,51 @@ test("a fresh renderer does not load what a cleared viewer saved through another
     state: {},
   } as never;
   await second.commit(checkpoint, () => true, fence);
-  const fresh = createPersonalStreamCache(indexedDbCheckpointStorage(name));
+  const fresh = createPersonalStreamCache(indexedDbCheckpointStorage(name, signedIn));
   expect(await fresh.latestShell("dep")).toBeNull();
+});
+
+test("a sign-out whose IndexedDB clear fails leaves nothing readable, and the next start deletes it", async () => {
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const stored = new Map<string, string>();
+  vi.stubGlobal("window", {
+    localStorage: {
+      getItem: (name: string) => stored.get(name) ?? null,
+      setItem: (name: string, value: string) => void stored.set(name, value),
+      removeItem: (name: string) => void stored.delete(name),
+    },
+  });
+  const marker = checkpointSessionMarker("http://host");
+  marker.held("dep", "session-1");
+  const storage = indexedDbCheckpointStorage("checkpoints", marker.current);
+  await storage.write(key("shell"), "private", guard);
+  // Sign-out: the session ends, then the clear's transaction fails.
+  marker.ended();
+  vi.spyOn(IDBObjectStore.prototype, "delete").mockImplementation(function (this: IDBObjectStore) {
+    this.transaction.abort();
+    return {} as IDBRequest<undefined>;
+  });
+  await expect(
+    storage.clear(() => true, { deploymentId: "dep", viewerId: "viewer" }),
+  ).rejects.toBeDefined();
+  vi.restoreAllMocks();
+  expect(await storage.read(key("shell"))).toBeNull();
+  // The next person signs in here: the first person's entry is neither read nor kept.
+  marker.held("dep", "session-2");
+  const next = indexedDbCheckpointStorage("checkpoints", marker.current);
+  expect(await next.read(key("shell"))).toBeNull();
+  expect(await next.list()).toEqual([]);
+  const raw = await new Promise<number>((resolve) => {
+    const request = indexedDB.open("checkpoints", 1);
+    request.onsuccess = () => {
+      const count = request.result.transaction("checkpoints").objectStore("checkpoints").count();
+      count.onsuccess = () => {
+        request.result.close();
+        resolve(count.result);
+      };
+    };
+  });
+  expect(raw).toBe(0);
 });
 
 test("every other format's database is deleted, for every origin", async () => {
@@ -98,7 +145,7 @@ test("every other format's database is deleted, for every origin", async () => {
     checkpointDatabaseName(66, "http://b"),
     "opensteer-message-outbox",
   ])
-    await indexedDbCheckpointStorage(name).write("shell", "x", guard);
+    await indexedDbCheckpointStorage(name, signedIn).write(key("shell"), "x", guard);
   await dropOtherCheckpointFormats(66, "http://a");
   await vi.waitFor(async () =>
     expect((await indexedDB.databases()).map(({ name }) => name).sort()).toEqual([
@@ -133,9 +180,9 @@ test.each([
       };
     });
     const registered = checkpointDatabaseName(65, "http://b");
-    await indexedDbCheckpointStorage(registered).write("shell", "x", guard);
-    await indexedDbCheckpointStorage(checkpointDatabaseName(66, "http://a")).write(
-      "shell",
+    await indexedDbCheckpointStorage(registered, signedIn).write(key("shell"), "x", guard);
+    await indexedDbCheckpointStorage(checkpointDatabaseName(66, "http://a"), signedIn).write(
+      key("shell"),
       "x",
       guard,
     );
