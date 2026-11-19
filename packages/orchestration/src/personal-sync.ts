@@ -109,6 +109,8 @@ interface Subscription {
   readonly sentLive: Map<string, SentLive>;
   liveTimer?: ReturnType<typeof setTimeout> | undefined;
   liveReady?: boolean;
+  /** Queued live state overflowed: it was dropped and the scope is repaired, then live is reread. */
+  liveReset?: boolean;
   checkCredit?: () => void;
   resources?: { interests: Watch["interests"]; installed: Watch["installed"]; dirty: boolean };
 }
@@ -400,6 +402,7 @@ export class PersonalSyncSocket {
     const barrier = BigInt(update.afterSequence);
     if (barrier > scopeHead && barrier <= this.#head)
       update = { ...update, afterSequence: scopeHead.toString() };
+    if (current.liveReset) return;
     const key = JSON.stringify([update.runId, update.attemptId, update.streamId]);
     const previous = current.live.get(key);
     if (previous) {
@@ -426,6 +429,16 @@ export class PersonalSyncSocket {
       if (pending.update.update.operation === "close") continue;
       current.live.delete(id);
       current.liveBytes -= pending.bytes;
+    }
+    // Only closes are left over the cap: the viewer stopped taking credit. Drop the queue and
+    // converge with one repair snapshot plus the streams still open, instead of growing.
+    if (current.liveBytes > liveQueueBytes) {
+      current.live.clear();
+      current.liveBytes = 0;
+      current.liveReset = true;
+      current.repair = true;
+      this.#schedule(current);
+      return;
     }
     if (entry.immediate) {
       this.#schedule(current);
@@ -559,6 +572,7 @@ export class PersonalSyncSocket {
     }
     const cursor = current.repair ? null : current.cursor;
     current.repair = false;
+    const liveReset = current.liveReset === true;
     const cut = await this.#port.read(
       request.scope,
       cursor,
@@ -587,6 +601,12 @@ export class PersonalSyncSocket {
     }
     if (!this.#matches(current) || current.pauseCount > 0 || !cut.cursor) return;
     current.cursor = cut.cursor;
+    if (liveReset && current.synchronized) {
+      current.liveReset = false;
+      if (request.scope.kind !== "shell")
+        for (const update of this.#port.readLive?.(request.scope) ?? [])
+          this.#queueLive(current, update, { replace: true }, true);
+    }
     const watched = current.resources;
     if (watched && cut.shellProgress) {
       const revisions = cut.shellProgress.resourceRevisions;

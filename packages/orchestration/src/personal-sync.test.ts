@@ -11,7 +11,11 @@ import {
 } from "@opensteer/protocol/resources";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, test, vi } from "vitest";
-import { encodePersonalFrame, PersonalSyncSocket } from "./personal-sync.js";
+import {
+  encodePersonalFrame,
+  PersonalSyncSocket,
+  type PersonalLiveUpdate,
+} from "./personal-sync.js";
 
 const scope = { kind: "shell" as const };
 const deploymentId = createId("deployment");
@@ -668,6 +672,79 @@ test("live text out of credit pauses its scope until the client acknowledges", a
     socket.ack({ subscriptionId: "detail:0", generation: 1, throughSequence: "1" });
     await vi.advanceTimersByTimeAsync(100);
     expect(live()).toBeGreaterThan(paused);
+    expect(closed).not.toHaveBeenCalled();
+  } finally {
+    socket.close("test finished");
+    await vi.advanceTimersByTimeAsync(0);
+    vi.useRealTimers();
+  }
+});
+
+test("a stalled scope's live closes stay bounded and converge by one repair", async () => {
+  vi.useFakeTimers();
+  const detail = { kind: "thread", threadId: createId("thread") } as const;
+  const closed = vi.fn();
+  const frames: ScopedHostMessage[] = [];
+  const read = vi.fn(async (_scope: PersonalScope, _after: PersonalResumeCursor | null) => ({
+    throughSequence: "1",
+    cursor: { ...cursor, scopeKey: `thread:${detail.threadId}` as const },
+    frames: [],
+  }));
+  const readLive = vi.fn(() => []);
+  const socket = new PersonalSyncSocket({
+    read,
+    readLive,
+    async send(encoded, guard) {
+      if (!guard()) return false;
+      frames.push(ScopedHostMessageSchema.parse(JSON.parse(encoded)));
+      return true;
+    },
+    close: closed,
+  });
+  const runId = createId("run");
+  const attemptId = createId("runAttempt");
+  const liveBootId = crypto.randomUUID();
+  const text = "x".repeat(12 * 1024);
+  const offer = (index: number, update: PersonalLiveUpdate["update"]) =>
+    socket.offerLive(detail, {
+      runId,
+      attemptId,
+      bindingGeneration: 1,
+      liveBootId,
+      streamId: `tool:${index}`,
+      itemId: `tool:${index}`,
+      afterSequence: "1",
+      update,
+    });
+  try {
+    socket.subscribe({
+      type: "client.subscribe",
+      subscriptionId: "detail:0",
+      scope: detail,
+      generation: 1,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    // Exhaust the scope's credit with text it never acknowledges.
+    for (let index = 0; index < 40; index++) {
+      offer(index, {
+        operation: "replace",
+        offset: 0,
+        totalLength: text.length,
+        text,
+        incomplete: false,
+      });
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    const sent = frames.length;
+    for (let index = 100; index < 400; index++) offer(index, { operation: "close" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(frames.length).toBe(sent);
+    socket.ack({ subscriptionId: "detail:0", generation: 1, throughSequence: "1" });
+    await vi.advanceTimersByTimeAsync(100);
+    // The overflow became one repair read and one reread of the open streams, not 300 closes.
+    expect(read.mock.calls.map(([, after]) => after)).toEqual([null, null]);
+    expect(readLive).toHaveBeenCalledTimes(2);
+    expect(frames.filter((frame) => frame.type === "host.live").length).toBeLessThan(40);
     expect(closed).not.toHaveBeenCalled();
   } finally {
     socket.close("test finished");
