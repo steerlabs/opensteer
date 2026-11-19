@@ -1,7 +1,4 @@
-import {
-  joinEnvironmentCatalogs,
-  testEnvironmentReads,
-} from "../server/test-host-api-request.js";
+import { joinEnvironmentCatalogs, testEnvironmentReads } from "../server/test-host-api-request.js";
 import type { AgentPhoneUpdateRelease } from "./update-release.js";
 /**
  * The parts the Agent Phone end-to-end suites drive: a real Android device or

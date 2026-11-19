@@ -2636,9 +2636,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "machine.access.history": async () => rpcSuccess({ nextCursor: null, sessions: [] }),
     // One work location whole, engines included, as the preview holds it.
     "environment.detail.get": async ({ environmentId }) => {
-      const environment = client
-        .getSnapshot()
-        .environments.find(({ id }) => id === environmentId);
+      const environment = client.getSnapshot().environments.find(({ id }) => id === environmentId);
       if (!environment) return rpcNotFound("This work location is not here.");
       return rpcSuccess(
         hostApi["environment.detail.get"].success.parse({ revision: "1", environment }),

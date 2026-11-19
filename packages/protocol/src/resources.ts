@@ -69,6 +69,14 @@ export const personalInventoryBytes: Readonly<Partial<Record<string, number>>> =
   "browser-placement": mebibyte,
   "browser-home": mebibyte,
 };
+/** One `resources.detail.get` response holds as many rows as fit this many bytes. */
+export const personalResourcePageBytes = 64 * 1024;
+/**
+ * A row too large to share a page travels alone, up to this: a model whose options fill every
+ * declared limit is larger than a page, and refusing it would refuse the whole inventory.
+ */
+export const personalResourceSingleRowBytes = 1024 * 1024;
+
 /** Settings, identity, profile, availability and every plugin signal are a single small value. */
 export const personalSmallInventoryBytes = 256 * 1024;
 export function personalInventoryBound(kind: string): number {
@@ -176,4 +184,5 @@ export const PersonalResourceDetailSchema = z
     data: PersonalResourceDataSchema,
     next: z.string().max(4096).nullable(),
   })
-  .refine((value) => utf8ByteLength(JSON.stringify(value)) <= 64 * 1024);
+  // A page is at most `personalResourcePageBytes`, unless it carries one larger row alone.
+  .refine((value) => utf8ByteLength(JSON.stringify(value)) <= personalResourceSingleRowBytes);

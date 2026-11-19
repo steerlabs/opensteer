@@ -31,6 +31,8 @@ import {
   type MachineListSummary,
 } from "@opensteer/protocol";
 import {
+  personalResourcePageBytes,
+  personalResourceSingleRowBytes,
   pluginChangeResources,
   PersonalResourceDetailSchema,
   type PersonalResourceKind,
@@ -220,8 +222,10 @@ export class PersonalResources {
           data: dataFor(rows.slice(0, count), count === rows.length),
           next: count && count < rows.length ? nextCursor(rows[count - 1]!.id) : null,
         });
+        const bytes = (value: ReturnType<typeof candidate>) =>
+          Buffer.byteLength(JSON.stringify(rpcSuccess(value)));
         const fits = (value: ReturnType<typeof candidate>) =>
-          Buffer.byteLength(JSON.stringify(rpcSuccess(value))) <= 64 * 1024;
+          bytes(value) <= personalResourcePageBytes;
         let accepted = candidate(limit);
         if (fits(accepted)) return PersonalResourceDetailSchema.parse(accepted);
         let lower = 1;
@@ -236,6 +240,9 @@ export class PersonalResources {
             lower = middle + 1;
           } else upper = middle - 1;
         }
+        // A row too large to share a page travels alone, up to its own ceiling.
+        if (!fitting && bytes(candidate(1)) <= personalResourceSingleRowBytes)
+          return PersonalResourceDetailSchema.parse(candidate(1));
         if (!fitting)
           throw new OpensteerError({
             code: "resource_exhausted",

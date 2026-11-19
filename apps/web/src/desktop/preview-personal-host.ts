@@ -1,4 +1,10 @@
 import { createId, emptyExecutionPreferences } from "@opensteer/core";
+import {
+  HostBootstrapEnvironmentSchema,
+  MachineSummarySchema,
+  environmentInventoryEntry,
+  machineInventoryEntry,
+} from "@opensteer/protocol";
 import type { DesktopDeploymentSummary } from "@opensteer/protocol/desktop";
 import { PersonalNetworkShellSnapshotSchema } from "@opensteer/protocol/personal-sync";
 import {
@@ -26,7 +32,7 @@ export function previewPersonalHost(
     agentHome: { computerId: ids.runnerId, path: "/Users/preview/Opensteer" },
     voiceThreadId: null,
   };
-  const environment = {
+  const environment = HostBootstrapEnvironmentSchema.parse({
     capabilities: ["filesystem", "host-apps", "network-egress"],
     connected: true,
     harnessAuthenticationAllowed: true,
@@ -39,8 +45,8 @@ export function previewPersonalHost(
     runnerId: ids.runnerId,
     status: "connected",
     can: { executeTasks: true },
-  };
-  const machine = {
+  });
+  const machine = MachineSummarySchema.parse({
     access: null,
     allowedModules: ["agents", "browser", "shell"],
     detail: null,
@@ -54,7 +60,7 @@ export function previewPersonalHost(
     ownership: "deployment",
     revocable: false,
     status: "online",
-  };
+  });
   const identity = {
     deployment: { kind: "personal", name: selected.name },
     emailDeliveryAvailable: true,
@@ -72,10 +78,13 @@ export function previewPersonalHost(
     settings: { settings, quietTaskDays: 7, executionPreferences: emptyExecutionPreferences },
     identity: { identity },
     "owner-profile": { ownerProfile: null },
-    environment: { environments: [environment] },
-    machine: { machines: [machine] },
+    // Summaries, as the real Host lists them; each one whole is its detail read.
+    environment: { environments: [environmentInventoryEntry(environment)] },
+    machine: { machines: [machineInventoryEntry(machine)] },
     harness: { harnesses: [] },
-    "harness-catalog": { environments: [environment] },
+    "harness-catalog": {
+      environments: [{ id: environment.id, harnessCatalogs: environment.harnessCatalogs }],
+    },
     tab: { tabs: previewTabs },
     "tab-layout": { tabs: previewTabs },
     "browser-profile": { profiles: [] },
@@ -131,6 +140,10 @@ export function previewPersonalHost(
   });
   return {
     shell,
+    environmentDetail: (environmentId: string) =>
+      environmentId === environment.id ? { revision: "0", environment } : null,
+    machineDetail: (machineId: string) =>
+      machineId === machine.id ? { revision: "0", machine } : null,
     resource: (kind: PersonalResourceKind) =>
       PersonalResourceDetailSchema.parse({
         revision: "0",

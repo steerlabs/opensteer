@@ -1,7 +1,11 @@
 import { OpensteerError, type EnvironmentId, type HarnessInstanceId } from "@opensteer/core";
 import type { HarnessInstanceCatalog } from "@opensteer/protocol";
 import { personalMachineLimit } from "@opensteer/protocol";
-import { personalInventoryBound } from "@opensteer/protocol/resources";
+import {
+  personalInventoryBound,
+  personalResourcePageBytes,
+  personalResourceSingleRowBytes,
+} from "@opensteer/protocol/resources";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
@@ -72,7 +76,9 @@ export async function requireHarnessRoom(tx: Tx, config: unknown, replacing?: Ha
   `.execute(tx);
   const count = Number(others.rows[0]?.count ?? 0);
   const bytes = Number(others.rows[0]?.bytes ?? 0);
-  if (Buffer.byteLength(JSON.stringify(config)) > personalInventoryLimits.harnessConfigBytesPerAccount)
+  if (
+    Buffer.byteLength(JSON.stringify(config)) > personalInventoryLimits.harnessConfigBytesPerAccount
+  )
     throw new OpensteerError({
       code: "conflict",
       message:
@@ -96,18 +102,22 @@ export async function requireHarnessRoom(tx: Tx, config: unknown, replacing?: Ha
  * the environment it names and the catalog's `capturedAt`, with room to spare.
  */
 const catalogPageOverhead = 512;
-/** The `data` one catalog page may carry: a 64 KiB response less its envelope and cursor. */
-const catalogPageData = 60 * 1024;
+/** The `data` one catalog page may carry: a page less its envelope and cursor. */
+const catalogPageData = personalResourcePageBytes - 4 * 1024;
+/** The `data` a page carrying one oversized model alone may carry. */
+const catalogSingleRowData = personalResourceSingleRowBytes - 4 * 1024;
 
 /**
  * The bytes a catalog adds to the `harness-catalog` inventory as `resources.detail.get` serves
- * it: its models once, and its header (everything but the models) again on every page they span.
- * `null` when no page could hold the header and one model.
+ * it, at most: its models once, and its header (everything but the models) again on every page.
+ * Models fill pages of `catalogPageData`; one larger than a page travels alone, which can add at
+ * most one page per page of models, so the page count is at most twice the packed count.
+ * `null` when the header with one model could not travel even alone.
  */
 export function projectedCatalogBytes(headerBytes: number, modelsBytes: number, largestModel = 0) {
-  const room = catalogPageData - headerBytes - catalogPageOverhead;
-  if (room < largestModel || room <= 0) return null;
-  const pages = Math.max(1, Math.ceil(modelsBytes / room));
+  if (headerBytes + catalogPageOverhead + largestModel > catalogSingleRowData) return null;
+  const room = Math.max(1, catalogPageData - headerBytes - catalogPageOverhead);
+  const pages = Math.max(1, 2 * Math.ceil(modelsBytes / room));
   return modelsBytes + pages * (headerBytes + catalogPageOverhead);
 }
 
@@ -152,6 +162,6 @@ export async function catalogWithinBudget(
   `.execute(tx);
   let total = own;
   for (const row of rows.rows)
-    total += projectedCatalogBytes(Number(row.header), Number(row.models)) ?? catalogPageData;
+    total += projectedCatalogBytes(Number(row.header), Number(row.models)) ?? catalogSingleRowData;
   return total <= personalInventoryLimits.catalogBytes ? catalog : overBudgetCatalog(catalog);
 }

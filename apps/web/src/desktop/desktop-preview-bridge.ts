@@ -646,16 +646,17 @@ export function desktopPreviewBridge(
       }
       // Every preview resource is fixed at revision "0".
       if (message.type !== "client.attach" && message.type !== "client.resources.watch") return;
+      // The answer to an attach or watch is always sent, marked, even when nothing moved.
       const revisions = Object.fromEntries(
         message.interests.flatMap((kind) => (message.installed[kind] === "0" ? [] : [[kind, "0"]])),
       );
-      if (Object.keys(revisions).length)
-        emit({
-          type: "host.resource",
-          subscriptionId: "shell",
-          generation: message.generation,
-          revisions,
-        });
+      emit({
+        type: "host.resource",
+        subscriptionId: "shell",
+        generation: message.generation,
+        revisions,
+        reply: true,
+      });
     },
 
     signOut: async () => {
@@ -1036,6 +1037,24 @@ export function desktopPreviewBridge(
         ok: true,
         data: hostApi[shellMember].success.parse(previewHostData(selected).shell),
       });
+    }
+    for (const member of ["environment.detail.get", "machine.detail.get"] as const) {
+      if (request.method !== hostApi[member].method || path !== `/v1/rpc/${member}`) continue;
+      const input = JSON.parse(url.searchParams.get("input") ?? "{}") as Record<string, unknown>;
+      const data = previewHostData(selected);
+      const found =
+        member === "environment.detail.get"
+          ? data.environmentDetail(hostApi[member].payload.parse(input).environmentId)
+          : data.machineDetail(hostApi["machine.detail.get"].payload.parse(input).machineId);
+      if (!found)
+        return Response.json(
+          {
+            error: { code: "not_found", message: "Not in this preview.", retryable: false },
+            ok: false,
+          },
+          { status: 404 },
+        );
+      return Response.json({ ok: true, data: hostApi[member].success.parse(found) });
     }
     if (request.method === hostApi[resourceMember].method && path === `/v1/rpc/${resourceMember}`) {
       const { kind } = hostApi[resourceMember].payload.parse(

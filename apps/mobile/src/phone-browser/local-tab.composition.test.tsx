@@ -175,10 +175,12 @@ test.each([false, true])(
           shellProgress: { counts: snapshot.counts },
         });
       }
+      // The first frame after an attach answers it, marked as the Host marks it.
       realtime.deliver({
         type: "host.resource",
         subscriptionId: "shell",
         generation,
+        ...(sequence === 1 ? { reply: true as const } : {}),
         revisions: Object.fromEntries(
           (["tab", "tab-layout", "browser-placement"] as const).map((kind) => [
             kind,

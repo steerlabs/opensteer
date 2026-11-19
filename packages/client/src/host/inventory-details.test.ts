@@ -89,31 +89,39 @@ it("lists every computer from its summary while its heavy sections cannot be rea
   release();
 });
 
-it("lists every work location from its summary while its engines cannot be read, then fills them", async () => {
+it("never shows a work location without the engines its summary says it has", async () => {
   const f = await harness();
   const expected = f.seed.getSnapshot().environments;
   const withEngines = expected.filter(({ harnessDrivers }) => harnessDrivers.length > 0);
   expect(withEngines.length).toBeGreaterThan(0);
+  // Every snapshot the client publishes: an environment with engines is never shown without them.
+  const engineless: string[] = [];
+  const stop = f.client.subscribe(() => {
+    for (const environment of f.client.getSnapshot().environments)
+      if (
+        withEngines.some(({ id }) => id === environment.id) &&
+        environment.harnessDrivers.length === 0
+      )
+        engineless.push(environment.id);
+  });
   await f.client.load();
   const release = f.client.watchPersonalResource("environment", () => {});
-  await vi.waitFor(() =>
-    expect(
-      f.client
-        .getSnapshot()
-        .environments.map(({ id }) => id)
-        .sort(),
-    ).toEqual(expected.map(({ id }) => id).sort()),
-  );
   await vi.waitFor(() => expect(f.control.detailReads.length).toBeGreaterThan(0));
-  for (const environment of f.client.getSnapshot().environments) {
-    const source = expected.find(({ id }) => id === environment.id)!;
-    expect(environment).toMatchObject({ status: source.status, name: source.name });
-  }
+  // While its engines cannot be read, it waits rather than listing as engineless.
+  for (const environment of f.client.getSnapshot().environments)
+    expect(withEngines.map(({ id }) => id)).not.toContain(environment.id);
   f.control.failDetails = false;
   await vi.waitFor(
     () => {
+      expect(
+        f.client
+          .getSnapshot()
+          .environments.map(({ id }) => id)
+          .sort(),
+      ).toEqual(expected.map(({ id }) => id).sort());
       for (const source of withEngines) {
         const environment = f.client.getSnapshot().environments.find(({ id }) => id === source.id)!;
+        expect(environment).toMatchObject({ status: source.status, name: source.name });
         expect(environment.harnessDrivers.map(({ driverKind }) => driverKind)).toEqual(
           source.harnessDrivers.map(({ driverKind }) => driverKind),
         );
@@ -121,5 +129,7 @@ it("lists every work location from its summary while its engines cannot be read,
     },
     { timeout: 5_000 },
   );
+  expect(engineless).toEqual([]);
+  stop();
   release();
 });
