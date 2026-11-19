@@ -29,7 +29,7 @@ import {
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useRef, useState, type ReactNode } from "react";
 import { Alert } from "react-native";
-import { presentClientIssue } from "@opensteer/client/feedback";
+import { clientIssueActions, presentClientIssue } from "@opensteer/client/feedback";
 import { settingsFooter, useScreenAction } from "../ui/client-feedback.js";
 import type { ActionLineValue } from "../ui/action-line.js";
 import { confirm } from "./confirm.js";
@@ -412,36 +412,29 @@ function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClien
   const sections: NativeSettingsSection[] = [];
   const notice = list.loading ? engineSection(engine) : null;
   if (notice) sections.push(notice);
-  if (action.error || list.error)
+  if (action.error)
     sections.push({
       key: "error",
       title: "Catalog",
-      rows: [
-        {
-          key: "error",
-          kind: "status",
-          tone: "bad",
-          label:
-            action.error ??
-            (list.error
-              ? presentClientIssue({ ...list.error, resource: "the catalog" }).title
-              : ""),
-        },
-      ],
+      rows: [{ key: "error", kind: "status", tone: "bad", label: action.error }],
     });
+  // A failed read is said under the list, with Try again; entries already shown stay.
+  const issue = list.error ? presentClientIssue({ ...list.error, resource: "the catalog" }) : null;
   sections.push({
     key: "catalog",
     title: search ? `Matching “${search}”` : "Catalog",
     rows: list.loading
       ? [{ key: "loading", kind: "text", label: "Loading the catalog…" }]
       : list.items.length === 0
-        ? [
-            {
-              key: "empty",
-              kind: "text",
-              label: search ? `Nothing matches “${search}”.` : "The catalog is empty.",
-            },
-          ]
+        ? issue
+          ? []
+          : [
+              {
+                key: "empty",
+                kind: "text",
+                label: search ? `Nothing matches “${search}”.` : "The catalog is empty.",
+              },
+            ]
         : [
             ...list.items.map((entry): NativeSettingsRow => {
               const already = pluginCatalogInstalled(entry, installed.data?.plugins ?? []);
@@ -467,9 +460,17 @@ function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClien
                 ]
               : []),
           ],
-    footer: {
-      text: "Plugins reviewed for the catalog. Each runs sandboxed until you connect an account.",
-    },
+    footer: issue
+      ? {
+          text: issue.detail ? `${issue.title}. ${issue.detail}` : issue.title,
+          link:
+            issue.action === "retry"
+              ? { label: clientIssueActions.tryAgain, onPress: list.reload }
+              : null,
+        }
+      : {
+          text: "Plugins reviewed for the catalog. Each runs sandboxed until you connect an account.",
+        },
   });
   return (
     <NativeSettingsPage
