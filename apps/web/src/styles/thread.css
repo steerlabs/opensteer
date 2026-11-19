@@ -72,6 +72,23 @@
   display: none;
 }
 
+/* A long transcript draws rows near the viewport in units, each its time and its row, and stands
+   measured gaps in for the rest. A unit lays out its children as the transcript would. */
+.transcript__unit {
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
+  min-width: 0;
+}
+
+.transcript__unit:not(:has(> :not(:empty))) {
+  display: none;
+}
+
+.transcript__gap {
+  flex: none;
+}
+
 .transcript__load-earlier {
   display: inline-flex;
   align-items: center;

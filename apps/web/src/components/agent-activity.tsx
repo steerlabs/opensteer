@@ -149,6 +149,7 @@ import { AreaLink } from "./workspace/area-link.js";
 import { DelegationLine } from "./task-line.js";
 import { EditedMark } from "./message-revisions.js";
 import { AgentFolds, AgentGroupRow, AgentRow, AgentsLive, WorkflowRow } from "./subagent-rows.js";
+import { transcriptRowOf, useTranscriptWindow } from "./transcript-window.js";
 import { act, failureWords } from "./use-action.js";
 
 // Fetched with this module, not when a reply is first drawn: until it lands a
@@ -310,6 +311,7 @@ export function AgentTranscript({
   renderPasswordsSuggestion,
   subagentReader = null,
   viewerUserId = null,
+  windowing = null,
 }: {
   /** What the Thread is doing, which decides the line under its transcript. */
   activity?: ThreadActivity;
@@ -369,6 +371,14 @@ export function AgentTranscript({
    */
   subagentReader?: SubagentReader | null;
   viewerUserId?: string | null;
+  /**
+   * Given, a long transcript draws only the rows near the scroller's viewport, the newest ones and
+   * the rows named in `keep` (an anchor the scroller is holding).
+   */
+  windowing?: {
+    readonly scroller: () => HTMLElement | null;
+    readonly keep: readonly string[];
+  } | null;
 }) {
   const groups = useMemo(
     () => groupTranscriptEntries(entries, { inputQueuePaused, startHold, assignments }),
@@ -459,6 +469,85 @@ export function AgentTranscript({
     () => (renderPasswordsSuggestion ? passwordsSetupOffer(groups) : null),
     [groups, renderPasswordsSuggestion],
   );
+  const rowKeys = useMemo(() => rows.map(({ key }) => key), [rows]);
+  const revealRow = revealMessage ? transcriptRowOf(rows, revealMessage.id) : null;
+  const ownerRow = activityOwner?.turnKey ?? null;
+  const keepRows = useMemo(
+    () =>
+      new Set(
+        [...(windowing?.keep ?? []), revealRow, ownerRow].filter(
+          (key): key is string => key !== null,
+        ),
+      ),
+    [ownerRow, revealRow, windowing?.keep],
+  );
+  const rowWindow = useTranscriptWindow({
+    keys: rowKeys,
+    scroller: windowing?.scroller ?? null,
+    keep: keepRows,
+  });
+  const drawRow = ({ group, key }: (typeof rows)[number], index: number) => (
+    <Fragment key={key}>
+      {places?.[index]?.time ? <p className="transcript__time">{places[index].time}</p> : null}
+      <div
+        className="transcript__row"
+        data-continued={places?.[index]?.continued || undefined}
+        data-joined={places?.[index]?.joined || undefined}
+        data-transcript-row={key}
+      >
+        {group.kind === "app" ? (
+          <AppCard entry={group.entry} />
+        ) : group.kind === "turn" ? (
+          <TurnView turn={group.turn} turnKey={group.key} reveal={revealMessage} />
+        ) : group.kind === "delegation" ? (
+          <DelegationNotice delegation={group.entry} />
+        ) : group.kind === "assignment" ? (
+          renderTask?.([group.entry])
+        ) : (
+          <TranscriptMessage
+            joinedRun={group.joinedRun === true}
+            reveal={revealMessage?.id === group.entry.id ? revealMessage : null}
+            message={group.entry}
+            viewerUserId={viewerUserId}
+          />
+        )}
+      </div>
+    </Fragment>
+  );
+  const drawnRows: ReactNode[] = [];
+  if (!rowWindow.windowed) drawnRows.push(rows.map(drawRow));
+  else
+    for (const segment of rowWindow.segments) {
+      const start = segment.from === 0 ? rowWindow.start : undefined;
+      if (segment.kind === "gap") {
+        drawnRows.push(
+          <div
+            aria-hidden="true"
+            className="transcript__gap"
+            key={`gap:${rowKeys[segment.from]}`}
+            ref={start}
+            style={{ height: segment.height }}
+          />,
+        );
+        continue;
+      }
+      for (let index = segment.from; index < segment.to; index++) {
+        const row = rows[index]!;
+        drawnRows.push(
+          <div
+            className="transcript__unit"
+            data-transcript-unit={row.key}
+            key={row.key}
+            ref={(element) => {
+              if (index === 0) rowWindow.start.current = element;
+              return rowWindow.measure(element);
+            }}
+          >
+            {drawRow(row, index)}
+          </div>,
+        );
+      }
+    }
 
   return (
     <DeliveryFeedback value={deliveryFeedback}>
@@ -486,48 +575,7 @@ export function AgentTranscript({
                                               : null
                                           }
                                         >
-                                          {rows.map(({ group, key }, index) => (
-                                            <Fragment key={key}>
-                                              {places?.[index]?.time ? (
-                                                <p className="transcript__time">
-                                                  {places[index].time}
-                                                </p>
-                                              ) : null}
-                                              <div
-                                                className="transcript__row"
-                                                data-continued={
-                                                  places?.[index]?.continued || undefined
-                                                }
-                                                data-joined={places?.[index]?.joined || undefined}
-                                                data-transcript-row={key}
-                                              >
-                                                {group.kind === "app" ? (
-                                                  <AppCard entry={group.entry} />
-                                                ) : group.kind === "turn" ? (
-                                                  <TurnView
-                                                    turn={group.turn}
-                                                    turnKey={group.key}
-                                                    reveal={revealMessage}
-                                                  />
-                                                ) : group.kind === "delegation" ? (
-                                                  <DelegationNotice delegation={group.entry} />
-                                                ) : group.kind === "assignment" ? (
-                                                  renderTask?.([group.entry])
-                                                ) : (
-                                                  <TranscriptMessage
-                                                    joinedRun={group.joinedRun === true}
-                                                    reveal={
-                                                      revealMessage?.id === group.entry.id
-                                                        ? revealMessage
-                                                        : null
-                                                    }
-                                                    message={group.entry}
-                                                    viewerUserId={viewerUserId}
-                                                  />
-                                                )}
-                                              </div>
-                                            </Fragment>
-                                          ))}
+                                          {drawnRows}
                                           {indicator === null ? null : indicator.kind ===
                                             "typing" ? (
                                             // No turn has begun, so there is no Activity to open yet.

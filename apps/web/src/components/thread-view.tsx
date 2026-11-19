@@ -193,6 +193,7 @@ const threadResourceKinds = [
   "settings",
 ] as const;
 const noRuns: readonly import("@opensteer/client/host").RunQueueEntry[] = [];
+const noRows: readonly string[] = [];
 
 interface ThreadViewProps {
   requests: readonly Request[];
@@ -263,6 +264,11 @@ function ThreadView({
   const phoneStageRef = useRef(phoneStage);
   phoneStageRef.current = phoneStage;
   const currentScroller = () => (phoneStageRef.current ? bodyRef.current : scrollRef.current);
+  // The transcript's window reads the scroller on screen; a new stage is a new scroller.
+  const transcriptScroller = useCallback(
+    () => (phoneStage ? bodyRef.current : scrollRef.current),
+    [phoneStage],
+  );
   const composerInputRef = useRef<HTMLElement | null>(null);
   // Whether new content keeps the reader at the foot, and where the scroller stood when last read.
   const tailRef = useRef<TailReading>({ follows: true, offset: 0 });
@@ -282,6 +288,12 @@ function ThreadView({
     readonly top: number;
     readonly rows: ReadonlySet<string>;
   } | null>(null);
+  // The row an earlier page is anchored to stays drawn until the page has landed under it.
+  const [earlierKeep, setEarlierKeep] = useState<readonly string[]>(noRows);
+  const transcriptWindowing = useMemo(
+    () => ({ scroller: transcriptScroller, keep: earlierKeep }),
+    [earlierKeep, transcriptScroller],
+  );
   const earlierFocus = useRef<{ button: HTMLElement; scroller: HTMLElement } | null>(null);
   const earlierMotion = useRef<Animation | null>(null);
   useEffect(() => () => earlierMotion.current?.cancel(), []);
@@ -599,6 +611,7 @@ function ThreadView({
 
   const abandonEarlier = () => {
     earlierAnchor.current = null;
+    setEarlierKeep(noRows);
     earlierMotion.current?.cancel();
   };
 
@@ -628,6 +641,7 @@ function ThreadView({
     if (element) scroller.scrollTop += element.getBoundingClientRect().top - top;
     if (loadingEarlier) return;
     earlierAnchor.current = null;
+    setEarlierKeep(noRows);
     if (!element) return;
     const rows = [...scroller.querySelectorAll<HTMLElement>("[data-transcript-row]:not(:empty)")];
     const newestEarlier = rows.findLast(
@@ -719,6 +733,7 @@ function ThreadView({
       };
     if (scroller && button && document.activeElement === button)
       earlierFocus.current = { button, scroller };
+    if (anchorRow?.dataset.transcriptRow) setEarlierKeep([anchorRow.dataset.transcriptRow]);
     setFollows(false);
     setLoadingEarlier(true);
     try {
@@ -1257,6 +1272,7 @@ function ThreadView({
                       <AgentTranscript
                         teamChannelName={teamSource?.channel.name ?? null}
                         revealMessage={revealMessage}
+                        windowing={transcriptWindowing}
                         key={thread.id}
                         attachmentReader={hostClient}
                         activity={activity}

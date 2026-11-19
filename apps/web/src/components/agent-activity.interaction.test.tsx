@@ -1238,3 +1238,42 @@ describe("a message still on this device", () => {
     }
   });
 });
+
+describe("a long transcript", () => {
+  it("draws the rows near the tail and keeps a jump target drawn far above them", () => {
+    const entries: MessageEntry[] = Array.from({ length: 150 }, (_, index) => ({
+      ...note,
+      runId: null,
+      body: `Update ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 16, 10, index)).toISOString(),
+      id: `message-${index}`,
+    }));
+    const scroller = document.createElement("div");
+    document.body.append(scroller);
+    const root = createRoot(scroller);
+    roots.push(root);
+    const windowing = { scroller: () => scroller, keep: [] };
+    const draw = (revealMessage: { readonly id: string } | null) =>
+      act(() =>
+        root.render(
+          <MemoryRouter initialEntries={["/tasks/thread-1"]}>
+            <AgentTranscript
+              entries={entries}
+              revealMessage={revealMessage}
+              windowing={windowing}
+            />
+          </MemoryRouter>,
+        ),
+      );
+    draw(null);
+    const rows = () => scroller.querySelectorAll("[data-transcript-row]").length;
+    expect(rows()).toBeLessThan(40);
+    expect(scroller.querySelector('[data-message-id="message-149"]')).not.toBeNull();
+    expect(scroller.querySelector('[data-message-id="message-3"]')).toBeNull();
+    const reveal = { id: "message-3" };
+    draw(reveal);
+    expect(scroller.querySelector('[data-message-id="message-3"]')).not.toBeNull();
+    expect(scroller.querySelector('[data-message-id="message-149"]')).not.toBeNull();
+    expect(rows()).toBeLessThan(40);
+  });
+});
