@@ -29,7 +29,7 @@ import {
   type WorkflowView,
 } from "@opensteer/client/host";
 import type { AssignmentSummary } from "@opensteer/core";
-import { useLiveAgentCard } from "@opensteer/client/react";
+import { useLiveAgentCard, useWorkerTranscripts } from "@opensteer/client/react";
 import { useOptionalShell, useShell } from "./app-shell.js";
 import { Icon } from "./icon.js";
 import { EngineMark } from "./model-picker.js";
@@ -639,7 +639,9 @@ function PhaseRow({
 
 /** The tasks one turn handed out, as rows that open each task's own conversation. */
 export function TaskRows({ entries }: { entries: readonly AssignmentEntry[] }) {
-  const { snapshot } = useShell();
+  const { hostClient, snapshot } = useShell();
+  // A working task names its step while its own transcript is held live.
+  const workers = useWorkerTranscripts(hostClient);
   const tasks = useMemo(
     () => entries.map((entry) => currentAssignment(entry, snapshot.assignments)),
     [entries, snapshot.assignments],
@@ -647,9 +649,13 @@ export function TaskRows({ entries }: { entries: readonly AssignmentEntry[] }) {
   const group = useMemo(
     () =>
       tasks.length
-        ? subagentGroup(tasks.map((assignment) => assignmentSubagentCard(assignment, snapshot)))
+        ? subagentGroup(
+            tasks.map((assignment) =>
+              assignmentSubagentCard(assignment, { ...snapshot, transcripts: workers }),
+            ),
+          )
         : null,
-    [tasks, snapshot],
+    [tasks, snapshot, workers],
   );
   const byId = useMemo(
     () =>

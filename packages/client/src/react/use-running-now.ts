@@ -4,6 +4,7 @@ import { SubagentCache } from "../host/subagent-model.js";
 import { runningNow, sameRunningNow, type RunningNow } from "../host/subagent-now.js";
 import { useHostSelector } from "./use-host-snapshot.js";
 import { useThreadTranscript } from "./use-thread-transcript.js";
+import { useWorkerTranscripts } from "./use-worker-transcripts.js";
 
 /**
  * What runs in one conversation now. Its subagents and commands are cards in
@@ -18,6 +19,8 @@ export function useRunningNow(
   observed = true,
 ): RunningNow | null {
   const { entries, requests } = useThreadTranscript(hostClient, threadId, observed);
+  // A working assignee's step shows while its own transcript is held live.
+  const workers = useWorkerTranscripts(hostClient);
   const select = useMemo(() => {
     const cache = new SubagentCache();
     let held: { readonly inputs: readonly unknown[]; readonly value: RunningNow | null } | null =
@@ -37,7 +40,7 @@ export function useRunningNow(
         {
           ...snapshot,
           connection: reachable ? snapshot.connection : "offline",
-          transcripts: { [threadId]: entries },
+          transcripts: { ...workers, [threadId]: entries },
           requests: { [threadId]: requests },
         },
         threadId,
@@ -46,6 +49,6 @@ export function useRunningNow(
       held = { inputs, value };
       return value;
     };
-  }, [entries, reachable, requests, threadId]);
+  }, [entries, reachable, requests, threadId, workers]);
   return useHostSelector(hostClient, select, sameRunningNow);
 }

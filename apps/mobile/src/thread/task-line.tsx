@@ -21,7 +21,11 @@ import {
   type Turn,
   type TurnAgents,
 } from "@opensteer/client/host";
-import { useHostSelector, useThreadTranscript } from "@opensteer/client/react";
+import {
+  useHostSelector,
+  useThreadTranscript,
+  useWorkerTranscripts,
+} from "@opensteer/client/react";
 import { MenuView } from "@expo/ui/community/menu";
 import {
   createContext,
@@ -176,6 +180,8 @@ function HeldTaskCards(props: {
 }): ReactNode {
   const { agents, entries, scope } = props;
   const cache = useMemo(() => new SubagentCache(), []);
+  // A working task names its step while its own transcript is held live.
+  const workers = useWorkerTranscripts(scope.hostClient);
   const select = useMemo(
     () =>
       heldSelector((snapshot) =>
@@ -185,14 +191,14 @@ function HeldTaskCards(props: {
             entries.map((entry) =>
               assignmentSubagentCard(
                 currentAssignment(entry, snapshot.assignments),
-                snapshot,
+                { ...snapshot, transcripts: workers },
                 cache,
               ),
             ),
           ),
         ),
       ),
-    [cache, entries],
+    [cache, entries, workers],
   );
   const group = useHostSelector(scope.hostClient, select);
   const byId = useMemo(
