@@ -152,31 +152,19 @@ test("renames a reserved route only where a literal starts with it, as the parse
   expect(lines[8]).toBe(content[8]!.replace(`href="${route.from}`, `href="${route.to}`));
 });
 
-test("renames a reserved route in a page's attributes, inline scripts and styles, and nowhere else", () => {
+test("leaves pages and stylesheets as they are", () => {
+  // No catalog plugin has one; only scripts' literals name a plugin's routes.
   const route = rule("route-path");
-  const page = [
-    `<link rel="stylesheet" href="${route.from}assets/a.css">`,
-    `<img src='${route.from}assets/b.png' alt="x">`,
-    `<p>Paste "${route.from}api" into the form.</p>`,
-    `<script>fetch("${route.from}api/query"); // "${route.from}"</script>`,
-    `<style>body { background: url(${route.from}assets/c.png); }</style>`,
-  ].join("\n");
-  const css = `@import "${route.from}assets/base.css";\n.a { background: url('${route.from}x.png'); }\n/* "${route.from}" */`;
+  const page = `<link rel="stylesheet" href="${route.from}assets/a.css">`;
+  const css = `@import "${route.from}assets/base.css";`;
   const { files } = rewriteUpstreamSource([
     { path: "ui/index.html", content: page },
     { path: "ui/style.css", content: css },
   ]);
-  const [html, sheet] = files.map((file) => (file as { content: string }).content);
-  expect(html!.split("\n")).toEqual([
-    `<link rel="stylesheet" href="${route.to}assets/a.css">`,
-    `<img src='${route.to}assets/b.png' alt="x">`,
-    `<p>Paste "${route.from}api" into the form.</p>`,
-    `<script>fetch("${route.to}api/query"); // "${route.from}"</script>`,
-    `<style>body { background: url(${route.to}assets/c.png); }</style>`,
+  expect(files).toEqual([
+    { path: "ui/index.html", content: page },
+    { path: "ui/style.css", content: css },
   ]);
-  expect(sheet).toBe(
-    `@import "${route.to}assets/base.css";\n.a { background: url('${route.to}x.png'); }\n/* "${route.from}" */`,
-  );
 });
 
 test("renames package.json's top-level name and keys, whatever is nested before them", () => {

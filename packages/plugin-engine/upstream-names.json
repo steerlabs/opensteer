@@ -14,7 +14,7 @@
   "scopes": {
     "package": "A package name's prefix: a catalog index entry's `package`, a source document's `package`, and the `name` of a plugin's package.json.",
     "manifest-key": "A top-level key of a plugin's package.json, renamed with its value kept. A package.json with both keys is refused.",
-    "route-path": "Code files: a reserved route path that starts a literal, as the language reads it: in scripts a string, a template without substitutions or a template's head, found by the TypeScript parser; in pages a tag's attribute value and the literals of inline scripts and stylesheets; in stylesheets a url() or @import string. A root-relative path only, never an absolute or protocol-relative URL, a comment, another string or other text.",
+    "route-path": "Code files: a reserved route path that starts a literal, as the language reads it: in scripts a string, a template without substitutions or a template's head, found by the TypeScript parser. A root-relative path only, never an absolute or protocol-relative URL, a comment, another string or other text.",
     "header": "Code files: a header name, matched without regard to case.",
     "element-id": "Code files: an element id the framework puts in an app's page.",
     "event": "Code files: the window event the framework dispatches when a new version is active.",

@@ -30,7 +30,7 @@ const literal = (text: string, rule: Rule, flags = "gu") =>
 const word = (text: string, rule: Rule) =>
   text.replace(new RegExp(`(?<![\\w$])${escape(rule.from)}(?![\\w$])`, "giu"), () => rule.to);
 
-const codeFile = /\.(?:[cm]?[jt]sx?|html?|css|py|sh)$/u;
+const codeFile = /\.(?:[cm]?[jt]sx?|py|sh)$/u;
 const migration = /^migrations\/[^/]+\.sql$/u;
 
 const signingSecret = (text: string) =>
@@ -84,36 +84,6 @@ const literalStarts = (path: string, text: string, prefix: string) => {
   return offsets;
 };
 
-/** In a stylesheet: where a `url(…)` or an `@import` string starts with `prefix`. */
-const stylesheetStarts = (text: string, prefix: string) =>
-  [
-    ...text.matchAll(
-      new RegExp(`(?:\\burl\\(\\s*["']?|@import\\s+["'])(?=${escape(prefix)})`, "giu"),
-    ),
-  ].map((match) => match.index + match[0].length);
-
-/**
- * In a page: where an attribute value of a tag starts with `prefix`, and the literals of its
- * inline scripts and stylesheets as above. Text between tags is prose.
- */
-const pageStarts = (text: string, prefix: string) => {
-  const offsets: number[] = [];
-  for (const tag of text.matchAll(/<(?!!--)[A-Za-z][^>]*>/gu)) {
-    for (const value of tag[0].matchAll(new RegExp(`=\\s*["']?(?=${escape(prefix)})`, "gu")))
-      offsets.push(tag.index + value.index + value[0].length);
-  }
-  for (const element of text.matchAll(/<(script|style)\b[^>]*>([\s\S]*?)<\/\1\s*>/giu)) {
-    const body = element[2]!;
-    const at = element.index + element[0].indexOf(">") + 1;
-    const found =
-      element[1]!.toLowerCase() === "script"
-        ? literalStarts("inline.js", body, prefix)
-        : stylesheetStarts(body, prefix);
-    offsets.push(...found.map((offset) => at + offset));
-  }
-  return offsets;
-};
-
 /**
  * A reserved route only where it is one of the plugin's own routes: a literal that starts with the
  * route, which is a root-relative path. Absolute and protocol-relative URLs, which name another
@@ -121,13 +91,7 @@ const pageStarts = (text: string, prefix: string) => {
  */
 const route = (path: string, text: string, rule: Rule) => {
   if (!text.includes(rule.from)) return text;
-  const offsets = scriptFile.test(path)
-    ? literalStarts(path, text, rule.from)
-    : /\.html?$/u.test(path)
-      ? pageStarts(text, rule.from)
-      : path.endsWith(".css")
-        ? stylesheetStarts(text, rule.from)
-        : [];
+  const offsets = scriptFile.test(path) ? literalStarts(path, text, rule.from) : [];
   return offsets.length === 0 ? text : replaceAt(text, offsets, rule.from, rule.to);
 };
 
