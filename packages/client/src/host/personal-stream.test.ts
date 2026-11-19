@@ -404,7 +404,11 @@ test("a failed Request read tries again while the Request stays pending, and sto
   f.syncDetail();
   const readRequests = vi
     .fn()
-    .mockRejectedValueOnce(new TypeError("The connection was lost."))
+    // The RPC client answers a lost connection, as any failure, with a result.
+    .mockResolvedValueOnce({
+      ok: false,
+      error: { code: "unavailable", message: "Connection lost", retryable: true },
+    })
     .mockResolvedValueOnce({
       ok: false,
       error: { code: "internal", message: "Busy", retryable: true },
@@ -2548,8 +2552,8 @@ test("after a repair the reader reads again the latest page, its loaded overlay 
       expect(rpc["thread.items.page"]).toHaveBeenCalledWith({ threadId }, expect.anything());
       expect(rpc["thread.overlays.page"]).toHaveBeenCalledTimes(2);
       expect(rpc["thread.inputQueue.get"]).toHaveBeenCalledTimes(1);
+      expect(f.detail.transcript.getSnapshot().newest).toBe(true);
     });
-    expect(f.detail.transcript.getSnapshot().newest).toBe(true);
   } finally {
     reader.dispose();
   }
@@ -2639,4 +2643,191 @@ test("an answered secret form is sent and never kept in the client's state", asy
   } finally {
     client.dispose();
   }
+});
+
+describe("reads that race a repair", () => {
+  /** A synced detail whose queue lists `inputs`, with `entries` carried, and an overlay cursor. */
+  function racing(inputs: string[], entries: string[]) {
+    const f = fixture();
+    f.syncShell();
+    const base = f.detailSnapshot();
+    const cut = (throughSequence: string, extra: object = {}) => ({
+      ...base,
+      throughSequence,
+      snapshot: {
+        ...base.snapshot,
+        nextBefore: null,
+        overlayCursors: { tools: "tools-1" },
+        queue: {
+          revision: throughSequence,
+          runs: [],
+          paused: true,
+          steerRunId: null,
+          inputs: inputs as never[],
+        },
+        inputQueue: entries.map((id) => waitingEntry(id, `v${throughSequence}`)),
+        ...extra,
+      },
+    });
+    f.stream.receive(cut("1"));
+    f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+    return { ...f, cut };
+  }
+  function waitingEntry(id: string, preview: string, canSteer = false) {
+    return {
+      message: {
+        id,
+        revision: 0,
+        author: { kind: "human", principalId: viewerId, displayName: "Owner" },
+        createdAt: time,
+        preview,
+        truncated: false,
+      },
+      input: { messageId: id, state: "pending", queueRank: "1" },
+      ask: null,
+      canEdit: true,
+      canCancel: true,
+      canMove: true,
+      canSteer,
+      lease: null,
+    } as never;
+  }
+  const held = <T>() => {
+    const answers: ((value: T) => void)[] = [];
+    const fn = vi.fn(() => new Promise<T>((resolve) => answers.push(resolve)));
+    return { fn, answers };
+  };
+
+  it("a queue read taken before a repair installs nothing, and the current cut is read again", async () => {
+    const head = createId("message");
+    const tail = createId("message");
+    const f = racing([head, tail], [head]);
+    const queue = held<unknown>();
+    const reader = new ScopedThreadReader(
+      f.detail,
+      { "thread.inputQueue.get": queue.fn } as never,
+      new TranscriptBodies(),
+    );
+    try {
+      await vi.waitFor(() => expect(queue.fn).toHaveBeenCalledTimes(1));
+      // Another device steers the tail; the Host repairs with a cut that still omits it.
+      f.stream.receive(f.cut("2"));
+      const answer = (preview: string, canSteer: boolean) => ({
+        ok: true,
+        data: {
+          threadId,
+          revision: "2",
+          paused: true,
+          steerRunId: null,
+          items: [waitingEntry(head, preview), waitingEntry(tail, preview, canSteer)],
+        },
+      });
+      queue.answers[0]!(answer("old", false));
+      await vi.waitFor(() =>
+        expect(queue.fn, "the current cut's tail was never read").toHaveBeenCalledTimes(2),
+      );
+      expect(f.detail.transcript.getSnapshot().queueEntries.has(tail)).toBe(false);
+      queue.answers[1]!(answer("new", true));
+      await vi.waitFor(() =>
+        expect(reader.getSnapshot().inputQueue?.items.at(-1)?.canSteer).toBe(true),
+      );
+    } finally {
+      reader.dispose();
+    }
+  });
+
+  it("an overlay page in flight across a repair still leaves the loaded pages read again", async () => {
+    const f = racing([], []);
+    const pages = held<unknown>();
+    const reader = new ScopedThreadReader(
+      f.detail,
+      { "thread.overlays.page": pages.fn } as never,
+      new TranscriptBodies(),
+    );
+    const tool = (id: string) => ({
+      ...item,
+      kind: "tool",
+      id,
+      toolCallId: id,
+      messageId: undefined,
+      view: { status: "running" },
+    });
+    const page = (id: string) => ({
+      ok: true,
+      data: {
+        threadId,
+        nodeId: null,
+        kind: "tools",
+        revision: "1",
+        entries: [tool(id)],
+        next: null,
+      },
+    });
+    try {
+      const loading = reader.loadMoreOverlays("tools");
+      await vi.waitFor(() => expect(pages.fn).toHaveBeenCalledTimes(1));
+      f.stream.receive(f.cut("2"));
+      pages.answers[0]!(page("stale"));
+      await vi.waitFor(() =>
+        expect(pages.fn, "the loaded page was never read again").toHaveBeenCalledTimes(2),
+      );
+      pages.answers[1]!(page("current"));
+      await loading;
+      const ids = [...f.detail.transcript.getSnapshot().activeIds];
+      expect(ids).toEqual(["current"]);
+    } finally {
+      reader.dispose();
+    }
+  });
+
+  it("a jump overtaken by a repair lands in the new cut, and a newer jump wins", async () => {
+    const f = racing([], []);
+    const pages = held<unknown>();
+    const reader = new ScopedThreadReader(
+      f.detail,
+      { "thread.items.page": pages.fn } as never,
+      new TranscriptBodies(),
+    );
+    const target = { ...item, id: createId("message"), position: "0" };
+    target.messageId = target.id as never;
+    const later = { ...item, id: createId("message"), position: "0" };
+    later.messageId = later.id as never;
+    const page = (found: TranscriptItem) => ({
+      ok: true,
+      data: {
+        kind: "page",
+        threadId,
+        nodeId: null,
+        revision: "2",
+        items: [found],
+        hasMore: false,
+        nextBefore: null,
+        nextAfter: { ...cursor, beforeId: found.id, beforePosition: found.position },
+      },
+    });
+    try {
+      const jump = reader.history("around", target.messageId);
+      await vi.waitFor(() => expect(pages.fn).toHaveBeenCalledTimes(1));
+      f.stream.receive(f.cut("2"));
+      pages.answers[0]!(page(target));
+      await vi.waitFor(() => expect(pages.fn).toHaveBeenCalledTimes(2));
+      pages.answers[1]!(page(target));
+      await jump;
+      expect(f.detail.transcript.getSnapshot().items.has(target.id)).toBe(true);
+      expect(f.detail.anchor).toBe(target.id);
+
+      // A second jump while a repair's reread flies: the jump is what lands.
+      f.stream.receive(f.cut("3"));
+      await vi.waitFor(() => expect(pages.fn).toHaveBeenCalledTimes(3));
+      const second = reader.history("around", later.messageId);
+      pages.answers[2]!(page(target));
+      await vi.waitFor(() => expect(pages.fn).toHaveBeenCalledTimes(4));
+      pages.answers[3]!(page(later));
+      await second;
+      expect(f.detail.anchor).toBe(later.id);
+      expect(f.detail.transcript.getSnapshot().items.has(target.id)).toBe(false);
+    } finally {
+      reader.dispose();
+    }
+  });
 });
