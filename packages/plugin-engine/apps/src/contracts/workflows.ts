@@ -84,6 +84,11 @@ export class WorkflowFailure extends Schema.TaggedError<WorkflowFailure>()("Work
     "execution",
     "conflict",
     "engine",
+    /**
+     * The run's version is no longer the app's active one, and only the active version runs
+     * anything. Nothing more of it ran; start it again.
+     */
+    "stale",
   ]),
   retryable: Schema.Boolean,
 }) {

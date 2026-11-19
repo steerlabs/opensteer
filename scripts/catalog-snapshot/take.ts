@@ -5,7 +5,6 @@
  */
 import { lstat, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { officialCatalogUrl } from "@opensteer/plugin-engine-catalog/contracts";
 import { buildSnapshot, iconPath, legacySourcePath, servableId, sha256 } from "./core.ts";
 import {
   holdLock,
@@ -28,7 +27,7 @@ const userAgent = "catalog-snapshot";
 export interface SnapshotOptions {
   readonly out: string;
   readonly cache?: string | undefined;
-  /** The feed's `index.json` URL; the engine's `officialCatalogUrl` by default. */
+  /** The `index.json` URL of the feed to copy; required unless `offline`. */
   readonly feed?: string | undefined;
   /** A rule file's path. */
   readonly rules?: string | undefined;
@@ -41,6 +40,11 @@ export async function takeSnapshot(
   values: SnapshotOptions,
   log: (line: string) => void = console.log,
 ) {
+  // Before anything on disk is read or put right. No default: the Host's own default feed is the
+  // copy these tools publish, never its source.
+  const feed = values.offline ? undefined : values.feed;
+  if (!values.offline && !feed)
+    throw new Error("--feed <index.json URL> is required unless --offline");
   const repository = resolve(import.meta.dirname, "../..");
   // The reports are replaced by rename, never written through: one that is a link is refused.
   for (const suffix of [".rewrites.json", ".rewrites.next.json", ".rewrites.failed.json"]) {
@@ -77,7 +81,7 @@ export async function takeSnapshot(
   await mkdir(dirname(places.out), { recursive: true });
   const release = await holdLock(lockOf(places.out), `--out ${places.out}`);
   try {
-    await build(values, places, repository, log);
+    await build(values, feed, places, repository, log);
   } finally {
     await release();
   }
@@ -86,6 +90,8 @@ export async function takeSnapshot(
 /** The run itself, under the output's lock. */
 async function build(
   values: SnapshotOptions,
+  /** The feed to download first; none for an offline rebuild. */
+  feed: string | undefined,
   places: Record<"out" | "cache" | "report" | "nextReport" | "failedReport", string>,
   repository: string,
   log: (line: string) => void,
@@ -200,7 +206,7 @@ async function build(
   }
 
   const started = performance.now();
-  if (!values.offline) await download(values.feed ?? officialCatalogUrl);
+  if (feed !== undefined) await download(feed);
   // Replace only an earlier snapshot, never a directory this tool did not write.
   if ((await exists(out)) && !(await exists(join(out, "manifest.json"))))
     throw new Error(`${out} exists and is not a snapshot`);
@@ -243,6 +249,8 @@ async function build(
         manifestSha256,
         duplicateIds: manifest.duplicateIds,
         largest: largest.map(([path, file]) => ({ path, bytes: file.bytes })),
+        shared: report.shared,
+        ruleFiles: report.ruleFiles,
         rules: report.rules,
         remaining: Object.fromEntries(reasons),
         failures: failures.slice(0, 50),

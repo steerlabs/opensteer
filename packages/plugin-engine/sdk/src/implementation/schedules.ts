@@ -35,7 +35,7 @@ import type { ScheduleDispatcher } from "../contracts/scheduler.ts";
 import type { Credentials } from "../contracts/storage.ts";
 import type { PluginEngineDatabase } from "./storage.ts";
 import { database, query, transaction } from "./database.ts";
-import { lockApp } from "./apps.ts";
+import { lockApp, storedApp } from "./apps.ts";
 import { backgroundAccounts } from "./background-accounts.ts";
 import { makeToolApprovals } from "./tool-approvals.ts";
 import type { makeTools } from "./tools.ts";
@@ -192,7 +192,8 @@ export const makeSchedules = (
         (item) => item.name === input.name && (item.scope === "app") === (input.actor === null),
       );
       if (found === undefined) return yield* new ScheduleNotFound();
-      return found;
+      // The version whose declaration this is: an occurrence calls that version only.
+      return { ...found, version: declared.version };
     });
   /** The actor's copy of a user declaration, or without an actor the app schedule, or null. */
   const findOwn = (input: {
@@ -973,8 +974,16 @@ export const makeSchedules = (
                       set: { nextAt, timing: declared.timing },
                     }),
                   );
+                  // Only the app's active version runs anything: an occurrence whose declaration
+                  // came from a version activated away since ends stale, unrun.
+                  const active = yield* storedApp(db, { app: setting.app }).pipe(
+                    Effect.map((app) => app.activeVersion),
+                  );
+                  if (active !== declared.version)
+                    return yield* finish(claim, "failed", "stale", "other");
                   const response = yield* tools.call({
                     app: setting.app,
+                    version: declared.version,
                     accounts,
                     tool: declared.tool,
                     // Schedules only target mutations; defineApp checks this.

@@ -186,10 +186,11 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         });
         await vi.waitFor(() => expect(observed.every(({ closed }) => closed)).toBe(true));
         const afterRevocation = traffic.length;
+        // Cut off by the revoked attachment: a cancel, never a Host answer.
         await expect(
           retained.rpc["resources.detail.get"]({ kind: "settings" }),
-        ).resolves.toMatchObject({
-          ok: false,
+        ).rejects.toMatchObject({
+          code: "deployment-changed",
         });
         await expect(network!.fetch(settingsResource)).rejects.toThrow();
         expect(() => network!.webSocketFactory(origin.replace("http", "ws"))).toThrow();

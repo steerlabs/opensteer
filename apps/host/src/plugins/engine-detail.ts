@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { keysetPage } from "./keyset-page.js";
-import { pluginDetailPageMax, pluginDetailPreview } from "@opensteer/protocol";
+import { pluginDetailPageMax, pluginDetailPreview, pluginStaleRunText } from "@opensteer/protocol";
 import { jsonBytes, operations } from "./engine-protocol.js";
 import { z } from "zod";
 
@@ -94,6 +94,18 @@ export function agentDefinitions(raw: unknown) {
     );
 }
 /** A finished run as an agent reads it: a short preview of its output, never the whole value. */
+/** A workflow run as an agent reads it: a stale end says plainly what to do. */
+export function agentWorkflowRun<R extends { status: string }>(run: R) {
+  return "error" in run && run.error === "stale"
+    ? { ...run, error: pluginStaleRunText.workflow }
+    : run;
+}
+/** A scheduled run as an agent reads it: a stale end says plainly what to do. */
+export function agentScheduledRun<R extends object>(run: R) {
+  return "failure" in run && run.failure === "stale"
+    ? { ...run, failure: pluginStaleRunText.schedule }
+    : run;
+}
 export function previewOutput<R extends { status: string }>(run: R) {
   if (!("output" in run)) return run;
   const text = JSON.stringify(run.output) ?? "null";

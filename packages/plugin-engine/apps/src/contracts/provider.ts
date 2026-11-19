@@ -93,6 +93,19 @@ const declaredAuthorizationQuery = Schema.makeFilter(
   },
 );
 
+/** Signing in without PKCE needs a client that authenticates with a secret. */
+const pkceNeedsSecret = Schema.makeFilter(
+  (config: { readonly pkce?: false; readonly tokenEndpointAuthMethod?: OAuthClientAuth }) =>
+    config.pkce !== false ||
+    (config.tokenEndpointAuthMethod !== undefined && config.tokenEndpointAuthMethod !== "none")
+      ? undefined
+      : {
+          path: ["pkce"],
+          issue:
+            "pkce: false needs a client secret: declare tokenEndpointAuthMethod as client_secret_post or client_secret_basic.",
+        },
+);
+
 /** How the token endpoint reads requests. RFC 6749 uses a form; some services want JSON. */
 export const OAuthTokenRequestFormat = Schema.Literals(["form", "json"]);
 export type OAuthTokenRequestFormat = typeof OAuthTokenRequestFormat.Type;
@@ -134,6 +147,14 @@ const oauthOptions = {
   resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
 };
 
+/** The machine grant exchanges no authorization code, so PKCE never applies to it. */
+const machinePkce = Schema.optionalKey(
+  Schema.Never.annotate({
+    message:
+      "pkce applies only to the authorization_code grant: remove it from a client_credentials declaration.",
+  }),
+);
+
 /**
  * OAuth endpoints and protocol choices. Omitted grant means authorization code; clients remain
  * host-owned. Declared endpoints may name an RFC 7009 `revocationUrl`; discovery reads the
@@ -149,6 +170,13 @@ export const OAuth2Config = Schema.Union([
     tokenUrl: Schema.optionalKey(Schema.Never),
     revocationUrl: Schema.optionalKey(Schema.Never),
     scopes: Schema.optionalKey(Schema.Array(Schema.String)),
+    /** A discovered server signs in with PKCE; only declared endpoints may turn it off. */
+    pkce: Schema.optionalKey(
+      Schema.Never.annotate({
+        message:
+          "pkce: false applies only to declared endpoints: declare authorizationUrl, tokenUrl and scopes with a secret tokenEndpointAuthMethod instead of discover.",
+      }),
+    ),
   }),
   Schema.Struct({
     ...oauthOptions,
@@ -159,9 +187,16 @@ export const OAuth2Config = Schema.Union([
     scopes: Schema.Array(Schema.String),
     /** RFC 8414 issuer identifier. Declared issuers are checked against the callback's `iss`. */
     issuer: Schema.optionalKey(HttpUrl),
+    /**
+     * `false` signs in without PKCE, for a service that refuses a code verifier from a client that
+     * authenticates with a secret (LinkedIn answers `invalid_client`). Only a client whose secret
+     * the host holds signs in this way; setup with any other client is refused. It needs a secret
+     * `tokenEndpointAuthMethod`.
+     */
+    pkce: Schema.optionalKey(Schema.Literal(false)),
     discover: Schema.optionalKey(Schema.Never),
     authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
-  }).check(declaredAuthorizationQuery),
+  }).check(declaredAuthorizationQuery, pkceNeedsSecret),
   Schema.Struct({
     grant: Schema.Literal("client_credentials"),
     discover: HttpUrl,
@@ -174,6 +209,7 @@ export const OAuth2Config = Schema.Union([
     ...tokenRequestOptions,
     tokenEndpointAuthMethod: OAuthSecretClientAuth,
     resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
+    pkce: machinePkce,
   }),
   Schema.Struct({
     grant: Schema.Literal("client_credentials"),
@@ -183,6 +219,7 @@ export const OAuth2Config = Schema.Union([
     ...tokenRequestOptions,
     tokenEndpointAuthMethod: OAuthSecretClientAuth,
     resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
+    pkce: machinePkce,
     authorizationUrl: Schema.optionalKey(Schema.Never),
     discover: Schema.optionalKey(Schema.Never),
     authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),

@@ -4,7 +4,7 @@ import { EventEmitter, once } from "node:events";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID, generateKeyPairSync } from "node:crypto";
+import { createHash, randomUUID, generateKeyPairSync } from "node:crypto";
 import { sql } from "kysely";
 import { z } from "zod";
 import { createId, type AuthenticatedSession } from "../packages/core/src/index.js";
@@ -16,20 +16,15 @@ import {
 } from "../packages/database/src/index.js";
 import { RunPluginsPlanSchema, type HostApiServerContext } from "../packages/protocol/src/index.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import {
-  queryPath,
-  mutatePath,
-  subscribePath,
-  versionPath,
-  assetsPath,
-  signingSecretSource,
-} from "apps/published-compat";
+import { engineSigningSecret } from "apps/contracts";
+import { queryPath, mutatePath, subscribePath, versionPath, assetsPath } from "apps/ui/contracts";
 import { pluginFixtureFiles, pluginFixtureRegistry } from "../scripts/plugin-engine/fixture.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
 import { seedPersonalFixture } from "../packages/database/src/personal-fixture.test-support.js";
+import { recordPluginAuthor } from "../packages/database/src/plugin-agent-store.test-support.js";
 import { PluginService } from "../apps/host/src/plugins/plugin-service.js";
 import { PluginOwnerApi } from "../apps/host/src/plugins/plugin-owner-api.js";
 import { PluginAuthority } from "../apps/host/src/plugins/plugin-authority.js";
@@ -95,7 +90,7 @@ export default defineApp(requirements, { tools: router({ tick, reviewed,
   ticks: query({ input: object({}) }, async ctx => ctx.sql.exec("SELECT account, source FROM ticks ORDER BY id").toArray()),
 }), schedules: { tick: userInterval({ minutes: 1 }, tick, { source: "schedule" }), reviewed: userInterval({ minutes: 1 }, reviewed, { source: "reviewed" }) },
 workflows: { quick: workflow({ input: object({}) }, async () => "done"), hold: workflow({ input: object({}) }, async ctx => { await ctx.step.sleep("hold", "1 hour"); return "done"; }) },
-webhooks: { incoming: { account: { user: "service" }, config: object({}), state: object({}), setup: { instructions: "Paste the callback and signing secret at the provider.", signingSecret: ${JSON.stringify(signingSecretSource)} },
+webhooks: { incoming: { account: { user: "service" }, config: object({}), state: object({}), setup: { instructions: "Paste the callback and signing secret at the provider.", signingSecret: ${JSON.stringify(engineSigningSecret)} },
   handle: async (ctx, { request, secret }) => {
     const body = await request.text();
     const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
@@ -130,7 +125,7 @@ async function install(name: string, revision = 1, withWebhook = true) {
   const result = await service.install({ kind: "files", name, files: source }, owner);
   expect(result.status, JSON.stringify(result)).toBe("installed");
   if (result.status !== "installed") throw new Error("Fixture failed to build");
-  await records.recordInstall(personal.userId, result.plugin.id, result.version.id, "agent");
+  await recordPluginAuthor(database, personal.userId, result.plugin.id, result.version.id, "agent");
   const requirement = result.plugin.requirements.accounts.service!;
   const target = { pluginId: result.plugin.id, requirement: "service", scope: "user" as const };
   const review = await api.review(target, personal.userId);
@@ -195,7 +190,7 @@ beforeEach(async (testContext) => {
   testContext.onTestFinished(() => database.destroy());
   personal = await seedPersonalFixture(database, directory);
   records = new PluginAgentStore(database);
-  registry = await pluginFixtureRegistry(directory, undefined, files(), (request, response) => {
+  registry = await pluginFixtureRegistry(undefined, files(), (request, response) => {
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
     const secure = requestUrl.pathname === "/secure-openapi.json";
     if (requestUrl.pathname === "/secured") {
@@ -485,6 +480,22 @@ test.each(["catalog", "url", "files"] as const)(
     expect(await service.stopIfIdle()).toBe(true);
     expect(await invoke()).toEqual(first);
     expect(await service.list({}, owner)).toHaveLength(1);
+    if (kind === "catalog") {
+      // The installed plugin keeps where it came from: the document's address and SHA-256.
+      const reference = `${registry.origin}/apps/fixture.json`;
+      const bytes = Buffer.from(await (await fetch(reference)).arrayBuffer());
+      const { rows } = await sql<{
+        origin: unknown;
+      }>`select copied_from as origin from plugin_engine.plugin_engine_apps`.execute(database);
+      expect(rows.map((row) => row.origin)).toEqual([
+        {
+          reference,
+          name: "fixture-plugin",
+          commit: null,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        },
+      ]);
+    }
     if (kind === "url") {
       // A reused key with a different source answers from the receipt and keeps its label.
       const relabel = { ...command, source: { kind: "catalog" as const, catalogId: "fixture" } };

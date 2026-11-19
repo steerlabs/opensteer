@@ -184,6 +184,10 @@ export class DeploymentAccessService {
     { readonly abort: AbortController; readonly done: Promise<void> }
   >();
   #revision = 0;
+  /** The newest catalog read: an older one finishing later must not undo it. */
+  #catalogRead = 0;
+  /** A selection moved elsewhere, owed to whichever read applies next. */
+  #externalSelection = false;
   #attachment: ConnectionAttachment | null = null;
   #attachmentUnsubscribe: (() => void) | null = null;
   #unavailable: readonly DeploymentAccessUnavailable[] = [];
@@ -221,7 +225,7 @@ export class DeploymentAccessService {
       ports.personal.subscribe((status) => {
         this.#personal = status;
         this.#publish();
-        void this.#reloadCatalog(false).then(() => this.#resumePendingAttachment());
+        void this.#reloadCatalog(false);
         if (status.state === "ready") {
           void ports.personalAccount.status().then(
             (link) => {
@@ -503,11 +507,14 @@ export class DeploymentAccessService {
       throw operationUnavailable("retry");
     }
     if (localRestart) {
-      const status = await this.#ports.personal.start();
-      if (this.#disposed || this.#catalog.selectedDeploymentId !== selected?.id) return;
-      this.#personal = status;
-      if (status.state !== "ready") return;
-    } else if (!this.#selectedAttachmentIsReady()) {
+      // The supervisor's ready attaches it, once, through the pending
+      // attachment; a Cancel meanwhile clears that intent.
+      this.#pendingAttachmentDeploymentId = selected!.id;
+      this.#interactiveAttachment = true;
+      await this.#ports.personal.start();
+      return;
+    }
+    if (!this.#selectedAttachmentIsReady()) {
       throw operationUnavailable("retry");
     }
     if (attachment.canCancel()) {
@@ -602,6 +609,7 @@ export class DeploymentAccessService {
     try {
       const catalog = await operation();
       if (operationId !== this.#operationId) return;
+      this.#catalogRead += 1;
       this.#catalog = catalog;
       this.#reconcileAttachment();
       this.#operation = null;
@@ -703,21 +711,29 @@ export class DeploymentAccessService {
    */
   async #reloadCatalog(externalSelection: boolean): Promise<void> {
     if (this.#disposed) return;
+    this.#externalSelection ||= externalSelection;
+    const read = ++this.#catalogRead;
     const selectedBefore = this.#catalog.selectedDeploymentId;
     try {
-      this.#catalog = await this.#ports.catalog.read();
+      const catalog = await this.#ports.catalog.read();
+      if (read !== this.#catalogRead || this.#disposed) return;
+      this.#catalog = catalog;
       this.#catalogFailure = null;
     } catch (error) {
+      if (read !== this.#catalogRead || this.#disposed) return;
       this.#catalogFailure = classifyPortFailure("catalog", error).detail;
       this.#publish();
       return;
     }
+    const external = this.#externalSelection;
+    this.#externalSelection = false;
     this.#reconcileAttachment();
     this.#publish();
+    this.#resumePendingAttachment();
     // A rotated route re-attaches through the selected attachment. Only a
     // selection somebody else moved is reopened here, and only under the same
     // rule that reopens one at startup: it has to be a place already used.
-    if (externalSelection && this.#catalog.selectedDeploymentId !== selectedBefore) {
+    if (external && this.#catalog.selectedDeploymentId !== selectedBefore) {
       this.#attachSelectedReturningDeployment();
     }
   }
@@ -738,6 +754,28 @@ export class DeploymentAccessService {
       this.#pendingAttachmentDeploymentId = null;
     }
     if (this.#attachment && this.#attachment.deploymentId === selected.id) {
+      // This computer's Host isn't serving, or the attachment isn't live: it
+      // waits for the supervisor's ready, or leaves the row to say why the Host
+      // isn't coming back. A live connection to a Host still serving under a
+      // degraded stack keeps going.
+      if (
+        this.#attachment.attached &&
+        !this.#selectedAttachmentIsReady() &&
+        (selected.access !== "owner" || this.#attachment.snapshot().status !== "connected")
+      ) {
+        if (this.#localHostComingBack(selected.id)) {
+          this.#pendingAttachmentDeploymentId = selected.id;
+          this.#attachment.hold(selected.key);
+        } else {
+          this.#pendingAttachmentDeploymentId = null;
+          this.#attachment.deactivate();
+          this.#attachment.reconfigure({ attachmentKey: selected.key });
+        }
+        return;
+      }
+      // A new key re-establishes here, so a held attachment isn't also resumed.
+      if (this.#attachment.attached && selected.key !== this.#attachment.key)
+        this.#pendingAttachmentDeploymentId = null;
       this.#attachment.reconfigure({ attachmentKey: selected.key });
       return;
     }
@@ -815,6 +853,12 @@ export class DeploymentAccessService {
     this.#requestSelectedAttachment(this.#interactiveAttachment);
   }
 
+  /** Whether this computer's supervisor is still bringing that Host up. */
+  #localHostComingBack(deploymentId: string): boolean {
+    if (this.#personal?.deploymentId !== deploymentId) return true;
+    return ["checking", "starting", "degraded"].includes(this.#personal.state);
+  }
+
   #selectedAttachmentIsReady(): boolean {
     const selected = this.#selectedDeployment();
     if (!selected) return false;
@@ -842,7 +886,10 @@ export class DeploymentAccessService {
       this.#selectedDeployment()?.onThisComputer &&
       this.#personal?.deploymentId === deploymentId &&
       this.#personal.canStart;
-    if (localRestart) return ["retry"];
+    // A held attachment can always be stopped waiting for its Host.
+    const held = this.#attachment?.held === true;
+    if (localRestart) return held ? ["retry", "cancel"] : ["retry"];
+    if (held) return ["cancel"];
     if (this.#pendingAttachmentDeploymentId === deploymentId) return [];
     const status = this.#attachment?.snapshot().status;
     if (status === "connecting") return ["cancel"];

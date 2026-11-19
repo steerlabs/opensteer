@@ -186,6 +186,8 @@ export const AppCopyOrigin = Schema.Struct({
   reference: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
   commit: Schema.NullOr(SourceCommit),
+  /** The SHA-256 of the catalog document an official app was installed from. */
+  sha256: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u))),
 });
 export type AppCopyOrigin = typeof AppCopyOrigin.Type;
 /** A host-resolved snapshot. Hosts authorize its origin before invoking the SDK. */
@@ -642,12 +644,13 @@ export const AppsGroup = HttpApiGroup.make("apps")
         AppNameTaken,
         AppSlugTaken,
         AppNotFound,
+        AppVersionChanged,
         AccountNotFound,
         AccountSelectionInvalid,
       ],
     }).annotate(
       OpenApi.Description,
-      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful version activates automatically. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
+      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. A successful version activates. A deploy to an existing app expects the activation it started from: one that finds any activation committed meanwhile, even a switch back to the same version, fails with AppVersionChanged before it migrates the app's database, and saves nothing. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
     ),
   )
   .add(
@@ -716,12 +719,13 @@ export const AppsGroup = HttpApiGroup.make("apps")
         VersionNotFound,
         AppNotDeployed,
         AppVersionChanged,
+        VersionBuildFailed,
         AccountNotFound,
         AccountSelectionInvalid,
       ],
     }).annotate(
       OpenApi.Description,
-      "Activate a retained version in the same code lineage. Managed webhooks re-register for it, except that a manual one whose setup the version still serves keeps its callback URL and secret; calls validate their accounts against the active requirements. expectedVersion rejects a concurrent activation. The former field names `deployment` and `expectedDeployment` are still accepted.",
+      "Activate a retained version in the same code lineage. Its migrations must be the ones the app's database has applied, so a version the database has moved past is refused with VersionBuildFailed and nothing changes. Activating the active version changes nothing. Managed webhooks re-register for it, except that a manual one whose setup the version still serves keeps its callback URL and secret; calls validate their accounts against the active requirements. expectedVersion rejects a concurrent activation. The former field names `deployment` and `expectedDeployment` are still accepted.",
     ),
   )
   .add(

@@ -66,37 +66,6 @@ export class PluginAgentStore {
       if (changed) mutation.bumpResource("plugin");
     });
   }
-  async recordInstall(owner: UserId, plugin: string, version: string, author: "catalog" | "agent") {
-    await commitPersonalMutation(this.database, async (tx, mutation) => {
-      await requirePersonalOwner(tx, owner);
-      await tx
-        .insertInto("pluginAgentSettings")
-        .values({
-          ownerUserId: owner,
-          pluginId: plugin,
-          access: "all",
-          author,
-          versionAuthors: { [version]: author },
-        })
-        .onConflict((c) =>
-          c.columns(["ownerUserId", "pluginId"]).doUpdateSet({
-            author,
-            versionAuthors: sql`plugin_agent_settings.version_authors || ${JSON.stringify({ [version]: author })}::jsonb`,
-          }),
-        )
-        .execute();
-      mutation.bumpResource("plugin");
-    });
-  }
-  async recordActivation(owner: UserId, plugin: string, version: string) {
-    const authors = await this.versionAuthors(owner, [{ pluginId: plugin, version }]);
-    await this.recordInstall(
-      owner,
-      plugin,
-      version,
-      authors.get(`${plugin}\u0000${version}`) ?? "agent",
-    );
-  }
   unfinishedRequest(requestId: import("@opensteer/core").RequestId) {
     return this.database
       .selectFrom("pluginExecutions")

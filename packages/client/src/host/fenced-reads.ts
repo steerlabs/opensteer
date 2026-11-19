@@ -206,6 +206,9 @@ export class FencedReads {
         slot.controller = null;
         if (!slot.observed()) return this.#settle(key, slot);
         if (stale()) return this.#rerun(key, slot);
+        // Cut off because the attachment moved (or the read was aborted): it installed nothing,
+        // is no failure to show or retry, and the next attach reads again.
+        if (classifyClientFailure(error).kind === "cancelled") return this.#settle(key, slot);
         if (!slot.retry || !classifyClientFailure(error).retryable)
           return this.#settle(key, slot, error);
         const delay = Math.min(

@@ -40,7 +40,7 @@ test.skipIf(process.platform === "win32")(
     const clone = await cloneTestDatabase("host");
     const directory = await realpath(await mkdtemp(join(tmpdir(), "opensteer-packaged-plugins-")));
     context.onTestFinished(() => rm(directory, { recursive: true, force: true }));
-    const registry = await pluginFixtureRegistry(directory);
+    const registry = await pluginFixtureRegistry();
     context.onTestFinished(() => registry.close());
     const staged = join(directory, "runtime");
     const main = join(directory, "host-entry.ts");

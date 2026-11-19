@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { HostTransportError } from "../connections/host-transport-error.js";
 import { HostClientRequestError } from "./client.js";
 import { FencedReads, type FencedRead } from "./fenced-reads.js";
 
@@ -187,4 +188,18 @@ it("bounds the wait for quiet, so a read under endless churn still runs", async 
   expect(runs).toBeGreaterThanOrEqual(4);
   expect(runs).toBeLessThan(10);
   reads.dispose();
+});
+
+it("settles a read the attachment cut off as a cancel: nothing installed, no retry, no failure", async () => {
+  vi.useFakeTimers();
+  const { reads, answers, installed, job, settle } = harness();
+  const settled = reads.request("queue", job(1));
+  await settle();
+  answers[0]!.reject(new HostTransportError("deployment-changed"));
+  await expect(settled).resolves.toBeUndefined();
+  await vi.advanceTimersByTimeAsync(60_000);
+  // Not asked again with backoff, as a failure would be: the next attach reads again.
+  expect(answers).toHaveLength(1);
+  expect(installed).toEqual([]);
+  expect(reads.busy("queue")).toBe(false);
 });

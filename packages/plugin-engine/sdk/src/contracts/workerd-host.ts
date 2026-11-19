@@ -51,7 +51,7 @@ export interface AppHostCallbacks extends RpcTarget {
   /** The invocation's encoded build, read only when the runner cold-starts its Worker. */
   load(): Promise<string>;
 }
-/** Sources declare the `apps` release they use in `dependencies.apps`; the host has none. */
+/** Sources declare `apps` in `dependencies`; every build links the Host's own framework. */
 export const CompileWorkerApp = Schema.Struct({
   files: CodeFiles,
   /** Public file paths relative to `ui/public/`, served beside the build and never compiled. */

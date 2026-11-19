@@ -1,4 +1,3 @@
-import * as __published from "../published-compat.ts";
 /** Catalog and onboarding projections, independent of any integration runtime. */
 import { Config, Schema, SchemaGetter, type Effect } from "effect";
 import { ApiError } from "@opensteer/plugin-engine-utils/api-error";
@@ -30,7 +29,7 @@ export type CatalogAuth = typeof CatalogAuth.Type;
  */
 export const CatalogEntry = Schema.Struct({
   id: Schema.NonEmptyString,
-  /** The app's package name, such as `@pluginEngine.sh/resend`. */
+  /** The app's package name, such as `@opensteer-plugins/resend`. */
   package: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
   description: Schema.String,
@@ -86,10 +85,12 @@ export type CatalogImport = typeof CatalogImport.Type;
 export const PreparedApp = Schema.Struct({
   files: SourceFiles,
   origin: Schema.optionalKey(AppCopyOrigin),
+  /** A feed app's display name, from the same read of the feed as its source. */
+  name: Schema.optionalKey(Schema.NonEmptyString),
 });
 export type PreparedApp = typeof PreparedApp.Type;
 /** The published official app feed. Hosts that list the official apps read it unless configured otherwise. */
-export const officialCatalogUrl = __published.feed;
+export const officialCatalogUrl = "https://catalog.opensteer.com/index.json";
 /**
  * `PLUGIN_ENGINE_CATALOG_URL`, as local and self-host read it: the feed's `index.json`, the official
  * feed when unset or empty, or `off` for no feed, for an instance without outbound internet.
@@ -100,19 +101,47 @@ export const catalogFeedSetting = Config.String("PLUGIN_ENGINE_CATALOG_URL").pip
   Config.map((value) => (value.trim().toLowerCase() === "off" ? undefined : value)),
 );
 /**
- * The feed's index, as `scripts/feed.ts` in the integrations repository writes it. Icon `src` and
- * `source` are relative to the index's own URL; `source` is always `apps/<id>.json`, which installs
- * read directly.
+ * The feed's index. Icon `src` and `source` are relative to the index's own URL; an install reads
+ * the entry's `source` document, which must be below the index. `sha256` is the hex SHA-256 of
+ * that document's exact bytes; Opensteer's own feed lists one for every entry.
  */
 export const CatalogFeed = Schema.Struct({
   version: Schema.Literal(1),
-  apps: Schema.Array(Schema.Struct({ ...CatalogEntry.fields, source: Schema.NonEmptyString })),
+  apps: Schema.Array(
+    Schema.Struct({
+      ...CatalogEntry.fields,
+      source: Schema.NonEmptyString,
+      sha256: Schema.optionalKey(Schema.String),
+    }),
+  ),
 });
+export type CatalogFeedEntry = (typeof CatalogFeed.Type)["apps"][number];
 /** One app's complete source, as the feed serves it. */
 export const CatalogFeedSource = Schema.Struct({
   package: Schema.NonEmptyString,
   files: SourceFiles,
 });
+/**
+ * An install refused because the app's source could not be shown to be what the catalog lists:
+ * listed more than once, without a valid hash on Opensteer's own feed, with a document whose bytes
+ * or package names differ from its entry, or below another address. Nothing was installed; the
+ * publisher's next feed may fix it, so trying again later can succeed. Hosts log the exact reason.
+ */
+export const CatalogSourceUnverified = UserFacingError.define({
+  tag: "CatalogSourceUnverified",
+  status: 502,
+  title: "App source could not be verified",
+  description:
+    "The app catalog lists this app, but its source did not match what the catalog says it is, so nothing was installed.",
+  recovery: {
+    action: "Try again later, or add the app from its MCP server URL.",
+    instructions:
+      "Nothing was added. Try again later; the catalog may be updating. Do not retry repeatedly. If it keeps failing, add the app from its MCP server URL or build it.",
+  },
+  retryable: true,
+});
+export type CatalogSourceUnverified = typeof CatalogSourceUnverified.Type;
+
 /** What to do next: a short step, and instructions for the agent that sets the service up. */
 export const CatalogRecovery = Schema.Struct({
   action: Schema.NonEmptyString,
@@ -253,7 +282,10 @@ export interface CatalogSource {
   /** The listed entry's complete source; it is read again, never kept from an earlier list. */
   readonly prepare: (
     entry: string,
-  ) => Effect.Effect<PreparedApp, CatalogImportFailed | CatalogUnavailable>;
+  ) => Effect.Effect<
+    PreparedApp,
+    CatalogImportFailed | CatalogUnavailable | CatalogSourceUnverified
+  >;
 }
 
 /** Read a catalog and prepare source. The caller owns access checks and installation. */
@@ -262,7 +294,10 @@ export interface Catalog {
   readonly list: Effect.Effect<CatalogListing>;
   readonly prepare: (
     input: CatalogImport,
-  ) => Effect.Effect<PreparedApp, CatalogImportFailed | CatalogUnavailable>;
+  ) => Effect.Effect<
+    PreparedApp,
+    CatalogImportFailed | CatalogUnavailable | CatalogSourceUnverified
+  >;
   /** Prepare source for an MCP URL a user supplied, using the same host egress as an install. */
   readonly custom: (input: CustomAppInput) => Effect.Effect<PreparedApp, CatalogImportFailed>;
 }

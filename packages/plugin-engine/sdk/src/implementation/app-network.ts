@@ -1,4 +1,3 @@
-import * as __published from "apps/published-compat";
 /**
  * What an app's `fetch` sees when PluginEngine's app network failed to get an answer from the service.
  * The platform's own `fetch` rejects when its network fails, and so does an app's: a host's network
@@ -41,7 +40,7 @@ export class NetworkUnreachable extends Schema.TaggedError<NetworkUnreachable>()
  * service's response with this status.
  */
 export const networkUnreachableStatus = 502;
-export const networkUnreachableHeader = __published.unreachableHeader;
+export const networkUnreachableHeader = "x-plugin-engine-unreachable";
 
 /**
  * What an app's `fetch` rejects with when Cloudflare refuses a request beyond the call's
@@ -68,7 +67,7 @@ export const networkUnreachableResponse = (unreachable: NetworkUnreachable) =>
  * and its caller is told to retry. Only that network sets it, as for `networkUnreachableHeader`.
  */
 export const hostApiChangingStatus = 503;
-export const hostApiChangingHeader = __published.changingHeader;
+export const hostApiChangingHeader = "x-plugin-engine-api-changing";
 export const hostApiChangingMessage =
   "PluginEngine's API is changing (a deploy is in progress). Retry shortly.";
 

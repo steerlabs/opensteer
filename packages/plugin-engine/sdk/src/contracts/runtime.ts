@@ -381,15 +381,15 @@ export class RuntimeProtocolUnsupported extends Schema.TaggedError<RuntimeProtoc
   }
 }
 /**
- * The app's `package.json` declares no `apps` version. Every app declares the exact release it uses;
- * `version` is the one this host ships, which new apps pin.
+ * The app's `package.json` declares no `apps` dependency. Every app declares it; the build links
+ * the Host's own framework, `version`, whatever version the declaration names.
  */
 export class RuntimeAppsDependencyMissing extends Schema.TaggedError<RuntimeAppsDependencyMissing>()(
   "RuntimeAppsDependencyMissing",
   { version: Schema.NonEmptyString },
 ) {
   override get message() {
-    return `Add "apps": "${this.version}" to package.json dependencies. Every app declares the exact apps version it uses; ${this.version} is this host's.`;
+    return `Add "apps": "${this.version}" to package.json dependencies. Every app declares apps; builds use this host's apps ${this.version}.`;
   }
   get [RecordedMessage]() {
     return this.message;

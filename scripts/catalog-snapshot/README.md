@@ -1,10 +1,8 @@
 # Plugin catalog snapshot
 
-Opensteer will serve its own copy of the plugin catalog at
-`https://catalog.opensteer.com/index.json`. Until that address is live, the Host's default feed stays
-upstream's (`officialCatalogUrl` in `apps/host/src/plugins/engine-runtime.ts`); switching it is a
-separate change made after the copy is published and verified there. These scripts take the copy,
-check it, publish it, and check what is served.
+Opensteer serves its own copy of the plugin catalog at `https://catalog.opensteer.com/index.json`,
+the Host's default feed (`officialCatalogUrl` in `@opensteer/plugin-engine-catalog`). These scripts
+take the copy, check it, publish it, and check what is served.
 
 Snapshots hold third-party plugin source and run to about 290 MB. Keep them outside this
 repository: every tool resolves its paths through symlinks and refuses one inside it.
@@ -12,7 +10,7 @@ repository: every tool resolves its paths through symlinks and refuses one insid
 ## Take a snapshot
 
 ```sh
-pnpm catalog:snapshot --out ~/catalog/2026-11-18 [--rules <rules.json>] [--feed <index.json URL>]
+pnpm catalog:snapshot --out ~/catalog/2026-11-18 (--feed <index.json URL> | --offline) [--rules <rules.json>]
 ```
 
 - Downloads go to `<out>.download` (`--cache` to choose), exactly as served, eight at a time
@@ -41,7 +39,8 @@ pnpm catalog:snapshot --out ~/catalog/2026-11-18 [--rules <rules.json>] [--feed 
   recovery never takes a running build or its set-aside snapshot for leftovers. A second run
   refuses, naming the holder. A lock left by a stopped run is not taken over: the refusal says its
   process is gone, and the operator removes the file.
-- `--feed` defaults to the engine's `officialCatalogUrl`, where the copy is taken from.
+- `--feed` is the `index.json` URL the copy is taken from, required unless `--offline`. It has no
+  default: the Host's own default feed is the copy, never its source.
 
 ### Layout
 
@@ -73,20 +72,24 @@ written with sorted keys and two-space indentation.
 
 ### Rewriting
 
-`--rules <rules.json>` takes a JSON rule file: data, never a module (its format is described at the
-top of `rewrite.ts`). Each rule names where it applies, and everything else is left as it is. The
-`package` and `manifest-key` rules, the names the engine itself reads, live in their own `engine`
-section and nowhere else, so that section can later come from the engine's own rule file; they
-apply first, to every document.
+Every build first applies the engine's shared rewrite, the one the Host applies to anything it
+installs: `rewriteUpstreamPackage` to each index entry's and document's `package`, and
+`rewriteUpstreamSource` to the files (package names, `package.json`'s key, reserved routes, headers
+and SQL identifiers; the rules are `packages/plugin-engine/upstream-names.json`). A document it
+cannot rewrite exactly fails the build. The served documents are therefore unchanged by the Host's
+rewrite, and each is hashed last, over its final bytes.
 
-| `scope`        | Where `from` becomes `to`                                                           |
-| -------------- | ----------------------------------------------------------------------------------- |
-| `package`      | The index entry's `package`, the document's `package` and `package.json`'s `name`.  |
-| `manifest-key` | A top-level key of `package.json`, renamed in place.                                |
-| `markdown`     | Prose in `.md` files: outside fenced code blocks and inline code spans.             |
-| `comments`     | Comments in JavaScript and TypeScript (as the TypeScript compiler parses the file), |
-|                | and full-line `#` comments in Python files.                                         |
-| `text`         | The whole text of the `files` named, in the `documents` named, for one-off edits.   |
+`--rules <rules.json>` then applies the catalog's own edits: prose, comments and one-off strings
+such as a User-Agent contact. It is a JSON rule file: data, never a module (its format is described
+at the top of `rewrite.ts`). Each rule names where it applies, and everything else is left as it
+is. It holds no package or `package.json` key rules; those are the shared rewrite's alone.
+
+| `scope`    | Where `from` becomes `to`                                                           |
+| ---------- | ----------------------------------------------------------------------------------- |
+| `markdown` | Prose in `.md` files: outside fenced code blocks and inline code spans.             |
+| `comments` | Comments in JavaScript and TypeScript (as the TypeScript compiler parses the file), |
+|            | and full-line `#` comments in Python files.                                         |
+| `text`     | The whole text of the `files` named, in the `documents` named, for one-off edits.   |
 
 Any rule may be limited to `documents` (entry ids). `preserve` lists literals that are never
 rewritten wherever they appear, each with its reason (a third-party literal, an identifier a
@@ -97,21 +100,20 @@ sets values a rule's `to` names as `{{name}}`, so one value (such as a contact a
 one place. A `comments` or `markdown` rule whose `to` does not have exactly the line breaks of its
 `from` is refused when the file is read: a line break added to a comment can change the code after
 it (`return`, a comment, then `42` returns nothing once the comment spans two lines). SQL under any `migrations/` path is never rewritten by any rule: the engine records
-each migration's hash.
+each migration's hash, and keeps its history only when the shared rewrite alone renamed it.
 
-After rewriting, the build also fails if a `comments` or `markdown` rule changed anything outside
+The checks below compare the rules' output with the shared rewrite's output: what the shared
+rewrite changed (a migration's reserved identifiers included) stands as it is, and the rules may
+change nothing they must not. After rewriting, the build also fails if a `comments` or `markdown` rule changed anything outside
 its scope (for JavaScript and TypeScript, the file's token stream apart from comments must be
 identical, including whether a line break precedes each token, on which automatic semicolon
 insertion depends) or changed how many line breaks a comment holds; if the file list, a non-text file, a data URI or base64 run, a migration, or a relative
 import changed; if an import that named a file in its document no longer does; if a
 JSON file that parsed no longer does; or if any package name breaks the contract.
 
-`package.json` is edited in place: its top-level members are found by position, so a nested `name`
-or key of the same name is never edited, and every other byte stays as it was.
-
-The detailed report (counts per rule, and every remaining occurrence with its location and
-reason) goes to `<out>.rewrites.json`, beside the snapshot and never in it. It names the SHA-256
-of the manifest it describes and is committed with its snapshot: written to
+The detailed report (what the shared rewrite changed, how many files the rules changed, counts per
+rule, and every remaining occurrence with its location and reason) goes to `<out>.rewrites.json`,
+beside the snapshot and never in it. It names the SHA-256 of the manifest it describes and is committed with its snapshot: written to
 `<out>.rewrites.next.json` before the swap and renamed into place after it. A run stopped between
 the two is put right by the next one, which moves a waiting report into place when it describes the
 snapshot at `<out>` and removes it otherwise; a report not describing that snapshot is removed too,
@@ -130,7 +132,8 @@ pnpm catalog:verify --feed https://catalog.opensteer.com/index.json \
 
 No request it makes follows a redirect; a redirect is a failure. Every path the manifest lists
 must be one the layout allows before any is requested. Every index response during the run, its
-own and those the catalog client makes, must have the manifest's exact size and hash, and the
+own and those the catalog client makes, must have the manifest's exact size and hash; a 304 the
+client gets when it revalidates the index must confirm the ETag of a full response that did. The
 served `manifest.json` must be the snapshot's manifest as published (the same bytes plus
 `published`). Every file the manifest lists, every document at both paths and every icon, is
 fetched (eight at a time, `--concurrency`) and must match its hash and size, and the served set
@@ -256,40 +259,3 @@ project also exists). Firebase is not yet enabled on `opensteer-staging`; billin
 6. When the console shows the certificate as active, run `catalog:verify` against
    `https://catalog.opensteer.com/index.json`. Then switch the Host's default feed in a separate
    change.
-
-## What remains (the engine workstream, after its move)
-
-These changes belong to the catalog client and the worker build in the engine; none is made here.
-
-1. **The client honors and validates `source`.** Today `catalogSource().prepare` in
-   `catalog/src/implementation/source.ts` ignores `source` and reads `apps/<id>.json`, so an index
-   and a document from different releases can meet. Change: `CatalogFeed` in
-   `catalog/src/contracts/catalog.ts` gains an optional `sha256` (64 lowercase hex characters) per
-   app; `catalogSource().list` keeps each entry's `source` and `sha256` from the index it read,
-   beside the listing, and `prepare` reads that `source` resolved against the feed URL. A `source`
-   that resolves outside the feed's origin, or not below the index's directory, fails with
-   `CatalogImportFailed` code `invalid_source` before any request. Without a kept index (an entry
-   never listed) `prepare` reads the index once, as `list` does. Test in
-   `catalog/src/implementation/source.test.ts`: serve an index whose entry names
-   `apps/x/<hash>.json` while `apps/x.json` holds other bytes; `prepare` returns the named
-   document. A `source` of `https://elsewhere.example/x.json` or `../x.json` is refused with
-   `invalid_source` and no request leaves.
-2. **The install checks the document's hash, failing closed for Opensteer's own feed.** In
-   `prepare`, read the document as bytes and compare their SHA-256 with the kept `sha256`. A
-   mismatch fails with `CatalogUnavailable` ("try again shortly; nothing was added"). An entry
-   without `sha256` installs as before, except from a feed the Host marks as requiring hashes:
-   `createCatalog` takes `requireHashes: true`, which the Host passes for Opensteer's own feed, and
-   there an entry without one is refused with `invalid_source`. Test: an index with one matching
-   entry, one whose document differs from its hash, and one without a hash; preparing them
-   succeeds, fails with `CatalogUnavailable`, and succeeds, and with `requireHashes` the third is
-   refused.
-3. **The plugin framework comes from the Host's own engine, not the public npm registry.**
-   Catalog documents declare `dependencies.apps` (for example `0.0.1-beta.140`), and the worker
-   build (`compileWorkerApp` in `sdk/src/implementation/worker-build.ts`, reached through
-   `workerdApps` and `workerd-entry.ts`) installs that release from the npm registry unless
-   `WorkerHost.apps` supplies it. Change: the Host passes `WorkerHost.apps` with the version and
-   package files of the engine's own `apps` package through `workerdApps`; a source declaring
-   another release is built against the Host's when its protocol is supported and refused with a
-   build failure otherwise, and the registry is never asked for `apps`. Test: compile a catalog
-   source declaring another `apps` release with the registry set to an unreachable address; it
-   builds against the Host's framework and no request is made.

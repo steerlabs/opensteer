@@ -348,8 +348,27 @@ export class DesktopHostTransport extends HostTransport {
         settled = exchange;
       },
     )
-      .catch(transportFailure)
+      .catch((error: unknown) => this.#refused(path, error))
       .finally(() => void settled.finally(() => this.#forwarded.delete(id)));
+  }
+
+  /**
+   * Main's own refusal of a window request, recorded by route and code so the
+   * log says why a window couldn't open. The window's own cancel is not one.
+   */
+  #refused(path: string, error: unknown): Response {
+    const failure = classifyClientFailure(error);
+    if (failure.kind !== "cancelled" || failure.reason === "deployment-changed") {
+      try {
+        this.#log?.("desktop.host-route.refused", {
+          route: hostRouteLabel(path),
+          code: failure.code,
+        });
+      } catch {
+        /* Diagnostics cannot change the answer. */
+      }
+    }
+    return transportFailure(error);
   }
 
   async #forward(
@@ -432,7 +451,7 @@ export class DesktopHostTransport extends HostTransport {
     const command =
       pathname === "/v1/rpc/commands.dispatch" && body ? enrollmentCommand(body) : null;
     if (command) return this.#forwardEnrollment(transport, command, forwarded);
-    const relayed = relay(transport, forwarded);
+    const relayed = relay(transport, forwarded, (error) => this.#refused(path, error));
     relaying(relayed.settled);
     return relayed.response;
   }
@@ -1056,6 +1075,7 @@ type ForwardedHeader = (typeof forwardedRequestHeaders)[keyof typeof forwardedRe
 function relay(
   transport: HostTransport,
   request: Parameters<HostTransport["exchange"]>[0],
+  refused: (error: unknown) => Response,
 ): { readonly response: Promise<Response>; readonly settled: Promise<void> } {
   const ready = Promise.withResolvers<Response>();
   const settled = transport
@@ -1072,8 +1092,18 @@ function relay(
       ready.resolve(new Response(body, init));
       await done;
     })
-    .catch((error: unknown) => ready.resolve(transportFailure(error)));
+    .catch((error: unknown) => ready.resolve(refused(error)));
   return { response: ready.promise, settled };
+}
+
+/** A fixed name for a Host route, never text taken from the path itself. */
+function hostRouteLabel(path: string): string {
+  const pathname = path.split("?", 1)[0]!;
+  const rpc = /^\/v1\/rpc\/([^/]+)$/u.exec(pathname)?.[1];
+  if (rpc !== undefined && Object.hasOwn(hostApi, rpc)) return rpc;
+  if (isDesktopHostUploadPath(pathname)) return "upload";
+  if (pathname.startsWith(teamFilesPath)) return "team-files";
+  return "other";
 }
 
 class RequestBodyTooLargeError extends Error {}

@@ -14,6 +14,10 @@ export function pluginWebhookStatusText(webhook: PluginWebhookView): string {
       return "Setting up";
     case "stopping":
       return "Waiting for you to remove it at the service";
+    case "disabled":
+      // Opensteer stopped using it but can't take it off the service: a manual setup, one whose
+      // accounts it may no longer use, or one the plugin's active version no longer declares.
+      return "Waiting for you to remove it at the service: Opensteer can't remove it there itself";
     default:
       return "Stopped";
   }

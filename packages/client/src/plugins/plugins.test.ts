@@ -30,8 +30,11 @@ import {
   pluginWebhookSetupCompletion,
   pluginWebhookSetupForm,
   PluginWorkflowRuns,
+  pluginScheduledRunLabel,
+  pluginWorkflowRunLabel,
   type PluginCatalogEntryView,
   type PluginsHost,
+  pluginWebhookStatusText,
 } from "./index.js";
 import type { PluginWorkflowRunView } from "@opensteer/protocol";
 
@@ -493,6 +496,33 @@ describe("finishing a manual webhook setup", () => {
   });
 });
 
+describe("run labels", () => {
+  it("says what to do about a run that ended stale, and shows any other failure's reason", () => {
+    const workflow = {
+      id: "wfr_1",
+      workflow: "Import",
+      status: "errored" as const,
+      createdAt: "2026-11-01T10:00:00.000Z",
+    };
+    expect(pluginWorkflowRunLabel({ ...workflow, failure: "stale" })).toBe(
+      "Stopped because the plugin changed after this was started. Steps it had already finished stay done; check them, then start it again.",
+    );
+    expect(pluginWorkflowRunLabel({ ...workflow, failure: "execution" })).toBe("Failed: execution");
+    const scheduled = {
+      id: "run_1",
+      scheduleId: "sch_1",
+      name: "Daily",
+      status: "failed" as const,
+      scheduledAt: null,
+      expiresAt: null,
+      approval: null,
+    } as unknown as Parameters<typeof pluginScheduledRunLabel>[0];
+    expect(pluginScheduledRunLabel({ ...scheduled, failure: "stale" })).toBe(
+      "Not run because the plugin changed after this was saved; approve it again when it next asks.",
+    );
+  });
+});
+
 describe("workflow runs", () => {
   const run = (id: string, status: PluginWorkflowRunView["status"], day: number) => ({
     id,
@@ -698,4 +728,20 @@ it("uses the original account creation receipt to recover a lost answer", async 
   expect(dispatch.mock.calls[5]?.[0].idempotencyKey).not.toBe(
     dispatch.mock.calls[4]?.[0].idempotencyKey,
   );
+});
+
+describe("pluginWebhookStatusText", () => {
+  const webhook = {
+    id: "subscription",
+    name: "incoming",
+    failure: null,
+    account: "account",
+    createdAt: null,
+  } as const;
+  it("says a disabled webhook waits for its removal at the service, and why", () => {
+    expect(pluginWebhookStatusText({ ...webhook, status: "disabled" })).toBe(
+      "Waiting for you to remove it at the service: Opensteer can't remove it there itself",
+    );
+    expect(pluginWebhookStatusText({ ...webhook, status: "stopped" })).toBe("Stopped");
+  });
 });

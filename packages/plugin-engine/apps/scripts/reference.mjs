@@ -21,7 +21,6 @@ const modules = {
 };
 /** Subpaths for hosts and Effect libraries. Apps do not import them, so the reference omits them. */
 const hostModules = new Set([
-  "./published-compat",
   "./contracts",
   "./host",
   "./effect",

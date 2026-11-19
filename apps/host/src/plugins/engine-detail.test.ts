@@ -1,5 +1,26 @@
 import { expect, test } from "vitest";
-import { detailPreview, detailSection } from "./engine-detail.js";
+import { pluginStaleRunText } from "@opensteer/protocol";
+import {
+  agentScheduledRun,
+  agentWorkflowRun,
+  detailPreview,
+  detailSection,
+} from "./engine-detail.js";
+
+test("an agent reads a stale run as a plain sentence that says what to do", () => {
+  expect(agentWorkflowRun({ status: "errored", error: "stale" })).toEqual({
+    status: "errored",
+    error: pluginStaleRunText.workflow,
+  });
+  expect(agentWorkflowRun({ status: "errored", error: "execution" })).toEqual({
+    status: "errored",
+    error: "execution",
+  });
+  expect(agentScheduledRun({ status: "failed", failure: "stale" })).toEqual({
+    status: "failed",
+    failure: pluginStaleRunText.schedule,
+  });
+});
 
 test("large tool, skill and version inventories cross IPC only as previews or pages", () => {
   const items = Array.from({ length: 600 }, (_, index) => ({

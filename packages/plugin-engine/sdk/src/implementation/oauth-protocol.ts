@@ -1576,6 +1576,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
               scopes: [...method.scopes],
               // Undeclared means the client decides: with nothing advertised, a secret uses Basic.
               tokenEndpointAuthMethod: method.tokenEndpointAuthMethod,
+              ...("pkce" in method && method.pkce === false ? { pkce: false as const } : {}),
               ...(method.resource == null ? {} : { resource: method.resource }),
               resourceSource:
                 method.resource === undefined ? ("none" as const) : ("declared" as const),
@@ -1737,6 +1738,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       resource?: string;
       authorizationParams?: Readonly<Record<string, string>>;
       scopeSeparator?: string;
+      /** Without PKCE: only for a client that authenticates with its secret (see `beginOAuth`). */
+      pkce?: false;
     }) =>
       Effect.gen(function* () {
         const state = `${options.statePrefix ?? ""}${yield* Effect.sync(oauth.generateRandomState)}`;
@@ -1753,8 +1756,9 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           client_id: input.client.client_id,
           redirect_uri: input.redirectUri,
           state,
-          code_challenge: challenge,
-          code_challenge_method: "S256",
+          ...(input.pkce === false
+            ? {}
+            : { code_challenge: challenge, code_challenge_method: "S256" }),
         }))
           url.searchParams.set(key, value);
         if (input.scopes.length > 0)
@@ -1807,6 +1811,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         resource?: string | undefined;
         tokenRequestFormat?: OAuthTokenRequestFormat | undefined;
         tokenResponse?: OAuthTokenResponse | undefined;
+        pkce?: false | undefined;
       },
       parameters: URLSearchParams,
     ) =>
@@ -1820,7 +1825,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
               clientAuth(input.client),
               parameters,
               input.redirectUri,
-              input.verifier,
+              input.pkce === false ? oauth.nopkce : input.verifier,
               {
                 ...settings,
                 ...(input.resource === undefined

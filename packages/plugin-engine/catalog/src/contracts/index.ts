@@ -14,13 +14,14 @@ export {
   CatalogRecovery,
   CatalogUnavailable,
   CatalogFeedUnavailable,
+  CatalogSourceUnverified,
   filterCatalog,
   PreparedApp,
   officialCatalogUrl,
   catalogFeedSetting,
 } from "./catalog.ts";
 export { customSetupRecovery, unknownEntryRecovery } from "./setup.ts";
-export type { Catalog, CatalogHost, CatalogSource } from "./catalog.ts";
+export type { Catalog, CatalogFeedEntry, CatalogHost, CatalogSource } from "./catalog.ts";
 export { CustomAppInput, ImportUrl } from "./imports.ts";
 export {
   McpAnswer,

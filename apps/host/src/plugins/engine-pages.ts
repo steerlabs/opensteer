@@ -1,7 +1,7 @@
 import { Effect, Option, Schema, Stream } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { appDocument, appAsset, appFile, assetPath, storedAppFile } from "apps/ui/serving";
-import * as routes from "apps/published-compat";
+import * as routes from "apps/ui/contracts";
 import {
   AppId,
   VersionId,
