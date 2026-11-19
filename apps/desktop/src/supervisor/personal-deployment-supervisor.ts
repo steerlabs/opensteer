@@ -259,6 +259,8 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   #desiredRunning = false;
   #restartWait: AbortController | undefined;
   readonly #dataReset: PersonalDataReset | undefined;
+  /** The conversion stage the Host last reported, to name if it stops. */
+  #upgradeStage: string | null = null;
   #oldData: PersonalOldDataState | null = null;
   #resetRecovered = false;
   #configuredManifestLookup: Promise<PersonalDeploymentManifest | null> | undefined;
@@ -970,6 +972,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       }
     }
     let renewDeadline: (() => void) | undefined;
+    this.#upgradeStage = null;
     const host = this.#spawn(
       hostSpec(
         release,
@@ -984,12 +987,18 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         await this.#personFullName(),
       ),
       (line) => {
+        const stage = line.startsWith(`${personalUpgradeProgressLine}: `)
+          ? line.slice(personalUpgradeProgressLine.length + 2)
+          : null;
         if (
-          (line !== personalUpgradeProgressLine && line !== personalUpgradeHeartbeatLine) ||
+          (stage === null &&
+            line !== personalUpgradeProgressLine &&
+            line !== personalUpgradeHeartbeatLine) ||
           !renewDeadline ||
           signal.aborted
         )
           return;
+        if (stage && /^[a-z-]{1,40}$/u.test(stage)) this.#upgradeStage = stage;
         renewDeadline();
         if (this.#status.step === "starting-host") this.#setStatus({ step: "upgrading-database" });
       },
@@ -1485,6 +1494,16 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
           ),
       ]);
     } catch (error) {
+      // Once the conversion has started, every way it can end without success (an
+      // exit with or without its own diagnostic, no progress, the overall ceiling)
+      // is the same failure, with the same step, rollback version and choices.
+      if (
+        !signal.aborted &&
+        label === "Host" &&
+        this.#status.step === "upgrading-database" &&
+        !(error instanceof PersonalConversionError || error instanceof PersonalOldDatabaseError)
+      )
+        throw await this.#conversionStopped(this.#upgradeStage ?? "unknown", error);
       if (
         signal.aborted ||
         error instanceof PersonalChildExitedError ||
@@ -1832,12 +1851,20 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   /** A Host that exited with a failed conversion names its step; this turns it into the error the app shows. */
   async #conversionFailure(diagnostic: string): Promise<PersonalConversionError | null> {
     const step = conversionFailureStep(diagnostic);
-    if (step === null) return null;
+    return step === null ? null : this.#conversionStopped(step);
+  }
+
+  /** The one failure every unsuccessful end of the conversion becomes. */
+  async #conversionStopped(step: string, cause?: unknown): Promise<PersonalConversionError> {
     const manifest = await this.#files.load().catch(() => null);
     const keptFrom = manifest
       ? await this.#files.pinnedSnapshotSourceVersion(manifest).catch(() => null)
       : null;
-    return new PersonalConversionError(step, keptFrom);
+    return new PersonalConversionError(
+      step,
+      keptFrom,
+      cause === undefined ? undefined : safeErrorDetail(cause),
+    );
   }
 
   #setFailure(
@@ -1874,9 +1901,11 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
 /** The Host's Personal state conversion failed; `step` is the stage it names. */
 class PersonalConversionError extends Error {
   readonly step: string;
-  constructor(step: string, keptFrom: string | null) {
+  constructor(step: string, keptFrom: string | null, reason?: string) {
     super(
-      `Opensteer couldn't finish converting this computer's data (step "${step}"). Nothing was lost: a copy from before this update is kept${
+      `Opensteer couldn't finish converting this computer's data (step "${step}")${
+        reason ? `: ${reason}` : ""
+      }. Nothing was lost: a copy from before this update is kept${
         keptFrom ? `, and Opensteer ${keptFrom} can open it` : ""
       }. Try again, or Start fresh to continue with new data.`,
     );

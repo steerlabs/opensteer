@@ -291,6 +291,59 @@ describe("PersonalDeploymentSupervisor", () => {
     }
   });
 
+  it.each([
+    ["the converter's own failure", "diagnostic"],
+    ["a Host exit with no diagnostic", "crash"],
+    ["no progress", "stall"],
+    ["the overall ceiling", "ceiling"],
+  ] as const)("shows the conversion failure screen after %s", async (_, failure) => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
+    const fixture = supervisorFixture(
+      deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+    );
+    fixture.files.pinnedFrom = "1.2.3";
+    const entered = deferred<void>();
+    fixture.host.waitForHost.mockImplementationOnce(async () => {
+      entered.resolve();
+      return new Promise(() => undefined);
+    });
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    try {
+      const starting = fixture.supervisor.resumeIfConfigured();
+      const rejected = expect(starting).rejects.toThrow(/step "ledger"/u);
+      await entered.promise;
+      const host = childrenOf(fixture, "host")[0]!;
+      host.stdout.write(`${personalUpgradeProgressLine}: ledger\n`);
+      expect(fixture.supervisor.status.step).toBe("upgrading-database");
+      if (failure === "diagnostic") {
+        host.stderr.write(
+          'PersonalStateConversionError: Personal state conversion failed at step "ledger": parity\n',
+        );
+        host.stderr.end();
+        host.emit("exit", 1, null);
+      } else if (failure === "crash") host.emit("exit", 1, null);
+      else if (failure === "stall") await vi.advanceTimersByTimeAsync(500);
+      else {
+        heartbeat = setInterval(() => host.stdout.write(`${personalUpgradeHeartbeatLine}\n`), 400);
+        await vi.advanceTimersByTimeAsync(30 * 60_000);
+      }
+      await rejected;
+      expect(fixture.supervisor.status).toMatchObject({
+        canStart: true,
+        issue: { code: "personal-conversion-failed", repairAction: "restart-opensteer" },
+        state: "repair-required",
+      });
+      expect(fixture.supervisor.status.issue?.detail).toContain('step "ledger"');
+      expect(fixture.supervisor.status.issue?.detail).toContain("Opensteer 1.2.3 can open it");
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
+      await fixture.supervisor.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("resumes a returning Personal deployment through Host readiness", async () => {
     const configured = deploymentManifest({ databaseInitialized: true, ownerInitialized: true });
     const fixture = supervisorFixture(configured);

@@ -36,7 +36,8 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
       if (stage === lastStage && now - lastProgressAt < 1_000) return;
       lastProgressAt = now;
       lastStage = stage;
-      process.stdout.write(`${personalUpgradeProgressLine}\n`);
+      // The stage lets the desktop name it if the conversion stalls or stops.
+      process.stdout.write(`${personalUpgradeProgressLine}: ${stage}\n`);
     },
     logger: {
       level: config.mode === "development" ? "debug" : "info",
