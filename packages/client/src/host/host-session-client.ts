@@ -169,10 +169,10 @@ const scopedRealtimeTypes = new Set([
   "host.snapshot",
   "host.changes",
   "host.synchronized",
-  "host.snapshot-required",
   "host.removed",
   "host.resource",
   "host.live",
+  "host.text",
 ]);
 
 type Fetch = typeof globalThis.fetch;
