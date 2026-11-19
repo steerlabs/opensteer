@@ -116,7 +116,7 @@ export function previewPersonalHost(
     },
     tasks: [],
     activeTaskIds: [],
-    activeHasMore: false,
+    activeNextBefore: null,
     recentTaskIds: [],
     nextBefore: null,
     taskCounts: { active: 0, open: 0 },

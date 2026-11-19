@@ -61,6 +61,7 @@ export function mockScopedTask(
     purpose: thread.purpose,
     askedAt: thread.askedAt,
     doneAt: thread.doneAt,
+    doneReason: thread.doneReason,
     pendingRequestCount: thread.pendingRequests,
     lastReplyPreview: lastReplyPreview?.slice(0, 500) ?? null,
     failurePreview: failurePreview?.slice(0, 500) ?? null,
@@ -126,7 +127,7 @@ export function mockScopedShell(
     tasks,
     recentTaskIds: recent.map(({ thread }) => thread.id).filter((id) => listed.has(id)),
     activeTaskIds: activeIds,
-    activeHasMore: false,
+    activeNextBefore: null,
     nextBefore: snapshot.tasks?.window.nextBefore ?? null,
     taskCounts: {
       active: activeIds.length,

@@ -16,6 +16,7 @@ const thread = {
   purpose: "task" as const,
   askedAt: createdAt,
   doneAt: null,
+  doneReason: null,
   pendingRequestCount: 0,
   lastReplyPreview: null,
   failurePreview: null,

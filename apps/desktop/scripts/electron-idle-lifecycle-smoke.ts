@@ -41,7 +41,7 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     viewerId: ids.userId,
     tasks: [],
     activeTaskIds: [],
-    activeHasMore: false,
+    activeNextBefore: null,
     recentTaskIds: [],
     nextBefore: null,
     taskCounts: { active: 0, open: 0 },

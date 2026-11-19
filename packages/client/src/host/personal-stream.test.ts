@@ -55,6 +55,7 @@ const task = {
   purpose: "task",
   askedAt: time,
   doneAt: null,
+  doneReason: null,
   pendingRequestCount: 0,
   lastReplyPreview: null,
   failurePreview: null,
@@ -79,7 +80,7 @@ const item = {
 const counts = { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 };
 const shellLists = {
   activeTaskIds: [],
-  activeHasMore: false,
+  activeNextBefore: null,
   recentTaskIds: [],
   nextBefore: null,
   taskCounts: { active: 0, open: 0 },
