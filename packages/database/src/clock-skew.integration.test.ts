@@ -352,13 +352,18 @@ describeStore("Host and PostgreSQL clocks 30 s apart", (it) => {
           );
         const retryMs = 60_000;
         await attempted(null);
-        const due = (await store.requests.nextContinuationDeadline(retryMs, new Set()))!.getTime();
+        const due = (await store.requests.nextContinuationDeadline(
+          retryMs,
+          new Set(),
+          new Date(),
+        ))!.getTime();
         expect(due).toBeLessThanOrEqual(Date.now());
         expect(due).toBeGreaterThan(Date.now() - 5_000);
         await attempted(hostAt(-5_000));
         const later = (await store.requests.nextContinuationDeadline(
           retryMs,
           new Set(),
+          new Date(),
         ))!.getTime();
         expect(later - Date.now()).toBeGreaterThan(retryMs - 10_000);
         expect(later - Date.now()).toBeLessThanOrEqual(retryMs - 5_000 + 1_000);

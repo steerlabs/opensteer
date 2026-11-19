@@ -153,7 +153,11 @@ export class ContinuationService {
       );
       await this.#deliver(continuations, publishingRuns);
       if (this.#closed) return null;
-      const next = await this.#requests.nextContinuationDeadline(retryMs, publishingRuns);
+      const next = await this.#requests.nextContinuationDeadline(
+        retryMs,
+        publishingRuns,
+        new Date(now),
+      );
       if (!next || next.getTime() > now) return next;
       // Each listed row was attempted (its attempt is recorded) or held for a
       // publishing Run, so a round that listed some made progress; one that

@@ -85,8 +85,8 @@ describeStore("Continuation paging", (it) => {
         get: (id) => store.requests.get(id),
         listPendingContinuations: (_limit, retryBefore, excludedRuns) =>
           store.requests.listPendingContinuations(2, retryBefore, excludedRuns),
-        nextContinuationDeadline: (retryMs, excludedRuns) =>
-          store.requests.nextContinuationDeadline(retryMs, excludedRuns),
+        nextContinuationDeadline: (retryMs, excludedRuns, asOf) =>
+          store.requests.nextContinuationDeadline(retryMs, excludedRuns, asOf),
         recordContinuationAttempt: (input) => store.requests.recordContinuationAttempt(input),
       },
       commands: {
@@ -134,7 +134,7 @@ describeStore("Continuation paging", (it) => {
       status: "waiting",
     });
     const retryMs = 5_000;
-    const next = (await store.requests.nextContinuationDeadline(retryMs, new Set()))!;
+    const next = (await store.requests.nextContinuationDeadline(retryMs, new Set(), new Date()))!;
     expect(
       await store.requests.listPendingContinuations(2, new Date(next.getTime() - retryMs - 1)),
     ).toEqual([]);

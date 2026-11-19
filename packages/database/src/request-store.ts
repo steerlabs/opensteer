@@ -2253,9 +2253,12 @@ export class RequestStore {
   async nextContinuationDeadline(
     retryMs: number,
     excludedRuns: ReadonlySet<RunId>,
+    asOf: Date,
   ): Promise<Date | null> {
-    // Attempts are stamped with the execution clock, so an unattempted row is due at its now.
-    const now = new Date(this.#executionNow());
+    // An unattempted row is due at the time the caller's pass judges by, never
+    // at a later read of the clock: "due" then means the same to the listing
+    // and to this answer.
+    const now = asOf;
     const row = await this.#eligibleContinuations(excludedRuns)
       .select(
         sql<Date>`coalesce(attempted_at + ${retryMs} * interval '1 millisecond', ${now})`.as(
