@@ -762,3 +762,67 @@ test("projects the exact decision and provenance on compact Request receipts", a
     await f.close();
   }
 });
+
+test("names a nested asker and the subagent it runs inside on the waiting Request", async () => {
+  const fixture = await createPersonalStateFixture("nested-asker");
+  const { database, run, attemptId } = fixture;
+  try {
+    const node = (
+      title: string,
+      parentNodeId: ReturnType<typeof createId<"executionNode">> | null,
+    ) => ({
+      id: createId("executionNode"),
+      attemptId,
+      runId: run.runId,
+      status: "running" as const,
+      kind: "subagent" as const,
+      effort: null,
+      phaseIndex: null,
+      phases: sql`'[]'::jsonb`,
+      title,
+      startedAt: new Date(),
+      endedAt: null,
+      nativeRef: title,
+      originCallId: null,
+      parentNodeId,
+      prompt: null,
+      result: null,
+      sessionRef: null,
+      model: null,
+    });
+    const parent = node("Trace the payment flow", null);
+    const child = node("Check webhook retries", parent.id);
+    await database
+      .insertInto("executionNodes")
+      .values([parent, child] as never)
+      .execute();
+    const request = liveRequest({
+      harnessInstanceId: run.harnessInstance.id,
+      id: createId("request"),
+      requestedBy: run.userId,
+      runId: run.runId,
+      threadId: run.threadId,
+      presentation: {
+        kind: "choice",
+        title: "Run stripe listen?",
+        options: [{ id: "allow", label: "Allow", hint: "allow-once" }],
+      },
+    });
+    await database
+      .insertInto("requests")
+      .values({ ...requestInsert(request), originatingNodeId: child.id })
+      .execute();
+    const { RequestStore } = await import("./request-store.js");
+    const page = await new RequestStore(database).waitingOnUserPage({
+      userId: run.userId,
+      limit: 10,
+    });
+    expect(page.requests.find(({ request: { id } }) => id === request.id)?.subagent).toEqual({
+      id: child.id,
+      title: "Check webhook retries",
+      within: { id: parent.id, title: "Trace the payment flow" },
+    });
+  } finally {
+    await fixture.close();
+  }
+});
