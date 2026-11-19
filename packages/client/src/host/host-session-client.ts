@@ -1047,7 +1047,15 @@ export class HttpHostClient {
     return origin ? { ...command, origin } : command;
   }
 
-  async #dispatchCommand(
+  #dispatchCommand(command: HostApiCommand, expectedSessionId?: string) {
+    if (command.type === "request.respond")
+      return this.#answerRequest(command.requestId, () =>
+        this.#dispatchCommandNow(command, expectedSessionId),
+      );
+    return this.#dispatchCommandNow(command, expectedSessionId);
+  }
+
+  async #dispatchCommandNow(
     command: HostApiCommand,
     expectedSessionId?: string,
   ): Promise<HostApiCommandOutput> {
@@ -1556,7 +1564,8 @@ export class HttpHostClient {
     this.#clearViewerReads();
     this.#invalidateAttention();
     this.#waitingRequestReads.stop("waiting-requests");
-    this.#waitingRequestSignature = "";
+    this.#waitingRequestStamp = "";
+    this.#answeredRequests.clear();
     this.#resources.reset();
     this.#update({ ...emptySnapshot(this.#tabs), ...keep });
   }
@@ -1875,24 +1884,74 @@ export class HttpHostClient {
       (attached || attentionChanged)
     )
       this.#invalidateAttention(true);
-    // Follows the Host's pending count: on attach whenever it is positive (the bounded snapshot may
-    // list none of them), and on every change to it or to a pending Request's row.
-    const requestRows = [...state.attention.values()]
+    if (state.synchronized) this.#syncWaitingRequests(attached);
+  }
+
+  /** The Host's pending Requests as the shell states them: their count and each row's revision. */
+  #requestStamp(): string | undefined {
+    const state = this.#stream.shell.getSnapshot();
+    if (!state.synchronized || !state.snapshot) return undefined;
+    const rows = [...state.attention.values()]
       .filter(({ kind }) => kind === "request")
       .map(({ id, revision }) => `${id}@${revision}`)
       .join(",");
-    const requestSignature = `${shell.counts.pendingRequestCount}|${requestRows}`;
-    if (
-      state.synchronized &&
-      (attached || requestSignature !== this.#waitingRequestSignature) &&
-      (shell.counts.pendingRequestCount > 0 || this.#snapshot.waitingRequests.length > 0)
-    )
-      this.#readWaitingRequests();
-    this.#waitingRequestSignature = requestSignature;
+    return `${state.snapshot.counts.pendingRequestCount}|${rows}`;
   }
 
-  #waitingRequestSignature = "";
+  /**
+   * Brings `waitingRequests` to what the Host states now. The list is current only for the stamp
+   * it was read at; any other stamp reads it again, and a read in flight that is overtaken
+   * installs nothing. A count of zero needs no read. Called on every shell change, on attach,
+   * on returning to the front and after a local answer.
+   */
+  #syncWaitingRequests(force = false) {
+    const stamp = this.#requestStamp();
+    if (stamp === undefined || this.#disposed) return;
+    if (stamp.startsWith("0|")) {
+      this.#waitingRequestReads.stop("waiting-requests");
+      this.#waitingRequestStamp = stamp;
+      if (this.#snapshot.waitingRequests.length)
+        this.#update({ ...this.#snapshot, waitingRequests: [] });
+      return;
+    }
+    if (
+      !force &&
+      stamp === this.#waitingRequestStamp &&
+      !this.#waitingRequestReads.busy("waiting-requests")
+    )
+      return;
+    if (this.#visibility === "background") return;
+    this.#readWaitingRequests();
+  }
+
+  /** The stamp the installed `waitingRequests` were read at. */
+  #waitingRequestStamp = "";
+  /** Each run of the list read, counted, so an answer confirmed after a run began outlives it. */
+  #waitingRequestRuns = 0;
+  /** Requests answered here: hidden from any list read that began before the answer was confirmed. */
+  readonly #answeredRequests = new Map<string, { confirmedAfterRun: number | null }>();
   readonly #waitingRequestReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
+
+  /** The person answered a Request here: it leaves the list now, and stays gone unless re-asked. */
+  async #answerRequest(requestId: string, answer: () => Promise<HostApiCommandOutput>) {
+    this.#answeredRequests.set(requestId, { confirmedAfterRun: null });
+    const waitingRequests = this.#snapshot.waitingRequests.filter(
+      ({ request }) => request.id !== requestId,
+    );
+    if (waitingRequests.length !== this.#snapshot.waitingRequests.length)
+      this.#update({ ...this.#snapshot, waitingRequests });
+    try {
+      const result = await answer();
+      const held = this.#answeredRequests.get(requestId);
+      if (held) held.confirmedAfterRun = this.#waitingRequestRuns;
+      return result;
+    } catch (error) {
+      this.#answeredRequests.delete(requestId);
+      throw error;
+    } finally {
+      this.#syncWaitingRequests(true);
+    }
+  }
 
   /**
    * The pending Requests this person answers, with the work each holds up: every page, installed
@@ -1904,7 +1963,9 @@ export class HttpHostClient {
       .request(
         "waiting-requests",
         async (read) => {
-          const waitingRequests: HostSnapshot["waitingRequests"][number][] = [];
+          const stamp = this.#requestStamp();
+          const run = ++this.#waitingRequestRuns;
+          const read_: HostSnapshot["waitingRequests"][number][] = [];
           let before: string | null = null;
           for (let pages = 0; pages < 20; pages++) {
             const page: {
@@ -1917,11 +1978,23 @@ export class HttpHostClient {
               ),
             );
             if (!read.current()) return;
-            waitingRequests.push(...page.requests);
+            read_.push(...page.requests);
             before = page.window.hasMore ? page.window.nextBefore : null;
             if (!before) break;
           }
-          if (read.current()) this.#update({ ...this.#snapshot, waitingRequests });
+          if (!read.current() || stamp === undefined) return;
+          // An answer confirmed before this run began is the Host's truth now: a Request it still
+          // lists was asked again. One confirmed later, or not yet, stays hidden from this answer.
+          for (const [id, { confirmedAfterRun }] of this.#answeredRequests)
+            if (confirmedAfterRun !== null && confirmedAfterRun < run)
+              this.#answeredRequests.delete(id);
+          const waitingRequests = read_.filter(
+            ({ request }) => !this.#answeredRequests.has(request.id),
+          );
+          this.#waitingRequestStamp = stamp;
+          this.#update({ ...this.#snapshot, waitingRequests });
+          // The shell moved while this flew without overtaking it (a row outside the bound).
+          if (this.#requestStamp() !== stamp) queueMicrotask(() => this.#syncWaitingRequests());
         },
         { observed: () => !this.#disposed && this.#visibility !== "background" },
       )
@@ -3799,6 +3872,8 @@ export class HttpHostClient {
           if (this.#snapshot.needsYouCount || this.#snapshot.needsYou)
             this.#invalidateAttention(true);
           this.#resources.resume();
+          // A list read given up in the background, or a change heard there, is read now.
+          this.#syncWaitingRequests(true);
         }
       },
     };
