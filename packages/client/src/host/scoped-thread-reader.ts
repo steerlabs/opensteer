@@ -114,7 +114,13 @@ export class ScopedThreadReader implements ThreadViewSource {
   readonly #cards = new WeakMap<TranscriptItem, TranscriptEntry | undefined>();
   readonly #liveCards = new WeakMap<TranscriptItem, TranscriptEntry | undefined>();
   readonly #overlayReads = new Map<Overlay, number>();
-  #queue: { generation: number; promise: Promise<PersonalInputQueue> } | undefined;
+  #queue:
+    | { generation: number; repairs: number; promise: Promise<PersonalInputQueue> }
+    | undefined;
+  /** Overlay pages the person loaded past the cut, read again after a repair. */
+  readonly #overlayPages = new Map<Overlay, number>();
+  #overlayGeneration = 0;
+  #repairs = 0;
   #queueFailure: { generation: number; revision: string; error: unknown } | undefined;
   #requestCut: RequestSummaries | undefined;
   /** A failed Request read tries again, backing off, while the same pending cut stands. */
@@ -236,9 +242,18 @@ export class ScopedThreadReader implements ThreadViewSource {
       this.#detail.controller &&
       missingQueueEntries(state) &&
       inputQueueError === undefined &&
-      this.#queue?.generation !== state.generation
+      (this.#queue?.generation !== state.generation || this.#queue.repairs !== state.repairs)
     )
       void this.queue().catch(() => undefined);
+    if (this.#overlayGeneration !== state.generation) {
+      this.#overlayGeneration = state.generation;
+      this.#overlayPages.clear();
+      this.#repairs = state.repairs;
+    }
+    if (state.synchronized && state.repairs !== this.#repairs) {
+      this.#repairs = state.repairs;
+      void this.#afterRepair(state.generation, state.repairs).catch(() => undefined);
+    }
     const requests = !state.synchronized
       ? emptyThreadView.requests
       : requestChanged
@@ -391,7 +406,8 @@ export class ScopedThreadReader implements ThreadViewSource {
     if (state.synchronized && state.inputQueue && !missingQueueEntries(state))
       return Promise.resolve(state.inputQueue);
     const existing = this.#queue;
-    if (existing?.generation === state.generation) return existing.promise;
+    if (existing?.generation === state.generation && existing.repairs === state.repairs)
+      return existing.promise;
     const signal = this.#detail.controller?.signal;
     if (!signal || !state.synchronized)
       return Promise.reject(new Error("This conversation is syncing."));
@@ -401,7 +417,7 @@ export class ScopedThreadReader implements ThreadViewSource {
         this.#update();
       }
     });
-    this.#queue = { generation: state.generation, promise };
+    this.#queue = { generation: state.generation, repairs: state.repairs, promise };
     return promise;
   }
 
@@ -426,6 +442,38 @@ export class ScopedThreadReader implements ThreadViewSource {
         this.#queueFailure = { generation, revision, error };
       throw error;
     }
+  }
+
+  /**
+   * A repair replaced the scope with the Host's cut. What the reader had read on top of the old
+   * state is read again: the page around its anchor, or the latest when it follows the tail, and
+   * as many overlay pages as the person had loaded. The queue and Requests reread by themselves.
+   */
+  async #afterRepair(generation: number, repairs: number) {
+    const current = () => {
+      const state = this.#detail.transcript.getSnapshot();
+      return state.generation === generation && state.repairs === repairs;
+    };
+    const state = this.#detail.transcript.getSnapshot();
+    const anchor = this.#detail.anchor;
+    const signal = this.#detail.controller?.signal;
+    if (anchor !== undefined && !state.items.has(anchor) && signal) {
+      const token = this.#detail.transcript.beginRead();
+      try {
+        const page = await this.#page(signal, null, undefined, anchor);
+        if (!current()) return;
+        if (page.kind === "page" && page.items.some(({ id }) => id === anchor))
+          this.#installPage([page, generation, "around", token], undefined);
+        else this.#detail.anchorTo(undefined);
+      } finally {
+        this.#detail.transcript.endRead(token);
+      }
+    }
+    if (this.#detail.anchor === undefined && !this.#detail.transcript.getSnapshot().newest)
+      await this.history("latest");
+    for (const [kind, pages] of this.#overlayPages)
+      for (let page = 0; page < pages && current(); page++)
+        if ((await this.#loadOverlayPage(kind)) === undefined) break;
   }
 
   setAnchor(itemId: string | undefined) {
@@ -592,6 +640,12 @@ export class ScopedThreadReader implements ThreadViewSource {
   }
 
   async loadMoreOverlays(kind: Overlay): Promise<OverlayPage | undefined> {
+    const page = await this.#loadOverlayPage(kind);
+    if (page) this.#overlayPages.set(kind, (this.#overlayPages.get(kind) ?? 0) + 1);
+    return page;
+  }
+
+  async #loadOverlayPage(kind: Overlay): Promise<OverlayPage | undefined> {
     const { scope, controller } = this.#detail;
     const state = this.#detail.transcript.getSnapshot();
     const cursor = state.snapshot?.overlayCursors?.[kind];

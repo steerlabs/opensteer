@@ -50,6 +50,11 @@ export interface TranscriptState {
   readonly inputQueue: PersonalInputQueue | null;
   readonly assignments: ReadonlyMap<string, AssignmentSummary | null>;
   readonly newest: boolean;
+  /**
+   * Counts the Host's inline repairs on this generation. A repair replaces the scope, so what a
+   * reader read on top of the old state (pages, overlay pages, queue entries) is read again.
+   */
+  readonly repairs: number;
 }
 
 const emptyState: TranscriptState = {
@@ -68,6 +73,7 @@ const emptyState: TranscriptState = {
   inputQueue: null,
   assignments: new Map(),
   newest: true,
+  repairs: 0,
 };
 
 function comparePosition(a: TranscriptItem, b: TranscriptItem) {
@@ -181,6 +187,7 @@ export class ThreadTranscriptStore {
       generation,
       synchronized: false,
       liveItems: emptyState.liveItems,
+      repairs: 0,
     });
   }
 
@@ -402,33 +409,19 @@ export class ThreadTranscriptStore {
       const held = state.items.get(item.id);
       items.set(item.id, held?.revision === item.revision ? held : item);
     }
-    let historyIds = next.items.map(({ id }) => id);
-    let nextBefore = next.nextBefore;
-    const first = next.items[0];
+    const historyIds = next.items.map(({ id }) => id);
+    // After `host.synchronized` this is the Host's repair: it replaces the scope. Rows, queue
+    // entries and overlays held from before may be stale, and page reads begun before it are
+    // fenced; the reader reads again what it had loaded on top.
     const repair = state.synchronized && state.snapshot !== null;
-    if (repair && first && next.nextBefore) {
-      const earlier = state.historyIds.filter((id) => {
-        const held = state.items.get(id);
-        return held && comparePosition(held, first) < 0;
-      });
-      const meets = state.historyIds.some((id) => {
-        const held = state.items.get(id);
-        return held && comparePosition(held, first) >= 0;
-      });
-      if (earlier.length && meets) {
-        for (const id of earlier) if (!items.has(id)) items.set(id, state.items.get(id)!);
-        historyIds = [...earlier, ...historyIds];
-        nextBefore = state.snapshot!.nextBefore;
-      }
+    if (repair) {
+      this.#pending.clear();
+      this.#lostReads = this.#readCount;
     }
     const queueEntries = new Map(
       (next.inputQueue ?? []).map((entry) => [entry.message.id as string, entry]),
     );
-    if (repair && next.queue)
-      for (const id of next.queue.inputs)
-        if (!queueEntries.has(id) && state.queueEntries.has(id))
-          queueEntries.set(id, state.queueEntries.get(id)!);
-    const snapshot = { ...next, nextBefore };
+    const snapshot = next;
     this.#set({
       ...state,
       through,
@@ -450,8 +443,9 @@ export class ThreadTranscriptStore {
         : (next.nextBefore ?? next.nextAfter ?? state.cursorScope ?? undefined),
       queueEntries,
       inputQueue: inputQueueOf(scope.threadId, next.queue, queueEntries, state.inputQueue),
-      assignments: repair ? state.assignments : emptyState.assignments,
+      assignments: emptyState.assignments,
       newest: next.anchorItemId == null && next.nextAfter == null,
+      repairs: repair ? state.repairs + 1 : 0,
     });
   }
 

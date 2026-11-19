@@ -1290,6 +1290,7 @@ export class HttpHostClient {
     let detailGeneration = 0;
     let subscribedGeneration = 0;
     let readsDue = false;
+    let subscribedRepairs = 0;
     let reread = false;
     let previousAssignments:
       ReturnType<typeof detail.transcript.getSnapshot>["assignments"] | undefined;
@@ -1348,6 +1349,15 @@ export class HttpHostClient {
       if (detail.slot && subscribedGeneration !== state.generation) {
         reread = subscribedGeneration !== 0;
         subscribedGeneration = state.generation;
+        subscribedRepairs = state.repairs;
+        readsDue = true;
+      } else if (state.repairs !== subscribedRepairs) {
+        // A repair replaced the scope: its assignments are read again, as on a new subscription.
+        subscribedRepairs = state.repairs;
+        const read = this.#assignmentReads.get(threadId);
+        if (read && read !== "read") read.abort();
+        this.#assignmentReads.delete(threadId);
+        reread = true;
         readsDue = true;
       }
       if (readsDue && this.#snapshot.session === "authenticated" && this.#showsThread(threadId)) {
