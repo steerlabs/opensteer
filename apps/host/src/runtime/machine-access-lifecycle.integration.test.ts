@@ -148,7 +148,13 @@ integration("Machine access session lifecycle", () => {
       await waitForCondition(async () =>
         feed.messages
           .slice(firstChange)
-          .some((message) => message.type === "host.resource" && message.kind === "machine"),
+          .some(
+            (message) =>
+              message.type === "host.resource" &&
+              typeof message.revisions === "object" &&
+              message.revisions !== null &&
+              "machine" in message.revisions,
+          ),
       );
       await waitForCondition(
         async () => (await host.store.requests.get(requestId))?.status === "fulfilled",

@@ -230,7 +230,12 @@ integration("session-scoped browser agent backends", () => {
     });
     const initial = waitForMessage(
       realtime,
-      (message) => message.type === "host.resource" && "kind" in message && message.kind === "tab",
+      (message) =>
+        message.type === "host.resource" &&
+        "revisions" in message &&
+        typeof message.revisions === "object" &&
+        message.revisions !== null &&
+        "tab" in message.revisions,
       2000,
     );
     realtime.send(
