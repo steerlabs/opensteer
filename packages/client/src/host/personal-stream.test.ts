@@ -466,6 +466,66 @@ test("reviews the exact pending Request revision and drops the reviewed card whe
   reader.dispose();
 });
 
+test("a failed Request read tries again while the Request stays pending, and stops with the scope", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const readRequests = vi
+    .fn()
+    .mockRejectedValueOnce(new TypeError("The connection was lost."))
+    .mockResolvedValueOnce({
+      ok: false,
+      error: { code: "internal", message: "Busy", retryable: true },
+    })
+    .mockResolvedValue({
+      ok: true,
+      data: {
+        threadId,
+        reviewedRevisions: { [requestId]: "2" },
+        requests: [{ id: requestId, originatingThreadId: threadId, status: "pending" }],
+      },
+    });
+  const rpc = {
+    "thread.requests.list": readRequests,
+  } as unknown as import("@opensteer/protocol").HostApiClient;
+  const reader = new ScopedThreadReader(f.detail, rpc, new TranscriptBodies());
+  f.stream.receive({
+    ...f.address,
+    type: "host.changes",
+    fromSequence: "1",
+    throughSequence: "2",
+    changes: [
+      {
+        entityKind: "request",
+        entityId: requestId,
+        ordinal: 0,
+        sequence: "2",
+        operation: "upsert",
+        value: {
+          id: requestId,
+          revision: "2",
+          status: "pending",
+          kind: "person.question",
+          title: "Question",
+          threadId,
+        },
+      },
+    ],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(reader.getSnapshot().requests).toEqual([]);
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(readRequests).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(readRequests).toHaveBeenCalledTimes(3);
+  expect(reader.getSnapshot().requests.map(({ id }) => id)).toEqual([requestId]);
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(readRequests).toHaveBeenCalledTimes(3);
+  reader.dispose();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 test("retains the moved item's anchor across a history reset and refuses a response that omits it", async () => {
   const f = fixture();
   f.syncShell();

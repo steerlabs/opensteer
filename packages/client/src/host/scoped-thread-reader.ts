@@ -117,6 +117,9 @@ export class ScopedThreadReader implements ThreadViewSource {
   #queue: { generation: number; promise: Promise<PersonalInputQueue> } | undefined;
   #queueFailure: { generation: number; revision: string; error: unknown } | undefined;
   #requestCut: RequestSummaries | undefined;
+  /** A failed Request read tries again, backing off, while the same pending cut stands. */
+  #requestRetry: { timer: ReturnType<typeof setTimeout>; attempt: number } | undefined;
+  #requestAttempt = 0;
   readonly #reviewedRevisions = new Map<string, string>();
   #historyRead = 0;
   #rows: ReadonlyMap<string, TranscriptItem> | undefined;
@@ -146,6 +149,7 @@ export class ScopedThreadReader implements ThreadViewSource {
   };
 
   dispose() {
+    this.#cancelRequestRetry();
     this.#historyRead++;
     this.#release();
     this.#listeners.clear();
@@ -218,12 +222,13 @@ export class ScopedThreadReader implements ThreadViewSource {
       pending !== this.#requestCut ||
       (state.synchronized && this.#requestGeneration !== state.generation);
     if (requestChanged) {
+      this.#cancelRequestRetry();
+      this.#requestAttempt = 0;
       this.#requestCut = pending;
       if (this.#requestGeneration !== state.generation || !state.synchronized)
         this.#reviewedRevisions.clear();
       if (state.synchronized) this.#requestGeneration = state.generation;
-      if (state.synchronized && pending?.length)
-        void this.#readRequests(pending, state.generation).catch(() => undefined);
+      if (state.synchronized && pending?.length) this.#reviewRequests(pending, state.generation);
     }
     if (
       state.synchronized &&
@@ -280,15 +285,53 @@ export class ScopedThreadReader implements ThreadViewSource {
     }
   }
 
-  async #readRequests(pending: RequestSummaries, generation: number) {
+  #reviewRequests(pending: RequestSummaries, generation: number) {
+    void this.#readRequests(pending, generation).then(
+      (complete) => {
+        if (!complete) this.#retryRequests(pending, generation);
+      },
+      () => this.#retryRequests(pending, generation),
+    );
+  }
+
+  #retryRequests(pending: RequestSummaries, generation: number) {
     const signal = this.#detail.controller?.signal;
-    if (!signal) return;
+    const state = this.#detail.transcript.getSnapshot();
+    if (
+      !signal ||
+      signal.aborted ||
+      this.#requestRetry ||
+      state.generation !== generation ||
+      state.snapshot?.pendingRequests !== pending
+    )
+      return;
+    const attempt = ++this.#requestAttempt;
+    const delay = Math.min(30_000, 1_000 * 2 ** (attempt - 1));
+    const timer = setTimeout(() => {
+      this.#requestRetry = undefined;
+      signal.removeEventListener("abort", stop);
+      this.#reviewRequests(pending, generation);
+    }, delay);
+    const stop = () => this.#cancelRequestRetry();
+    signal.addEventListener("abort", stop, { once: true });
+    this.#requestRetry = { timer, attempt };
+  }
+
+  #cancelRequestRetry() {
+    if (this.#requestRetry) clearTimeout(this.#requestRetry.timer);
+    this.#requestRetry = undefined;
+  }
+
+  /** Resolves false when some pending Request could not be read and needs another try. */
+  async #readRequests(pending: RequestSummaries, generation: number): Promise<boolean> {
+    const signal = this.#detail.controller?.signal;
+    if (!signal) return true;
     const { threadId } = this.#detail.scope;
     const held = new Map(this.#view.requests.map((request) => [request.id, request]));
     const missing = pending.filter(
       ({ id, revision }) => !held.has(id) || revision !== this.#reviewedRevisions.get(id),
     );
-    if (!missing.length) return;
+    if (!missing.length) return true;
     const reads = [];
     for (let i = 0; i < missing.length; i += 20) {
       const review = missing.slice(i, i + 20).map(({ id, revision }) => ({ id, revision }));
@@ -306,7 +349,8 @@ export class ScopedThreadReader implements ThreadViewSource {
       state.generation !== generation ||
       state.snapshot?.pendingRequests !== pending
     )
-      return;
+      return true;
+    const failed = results.some(({ result }) => !result.ok);
     const requests = new Map<string, Request & { reviewedRevision?: string | undefined }>(
       this.#view.requests.map((request) => [request.id, request]),
     );
@@ -337,6 +381,8 @@ export class ScopedThreadReader implements ThreadViewSource {
       ...this.#view,
       requests: reviewed,
     });
+    if (!failed) this.#requestAttempt = 0;
+    return !failed;
   }
 
   /** The waiting messages; reads the Host once when the snapshot had no room for some. */
