@@ -62,3 +62,92 @@ it("lists the Requests this person answers, and drops one once it is answered", 
     ).toBe(false),
   );
 });
+
+it("fills every snapshot field the UI reads while a task works, asks and queues", async () => {
+  const { client, host } = await connect(new MockHostClient({ latencyMs: 0, places: "absent" }));
+  const kinds = [
+    "settings",
+    "identity",
+    "owner-profile",
+    "machine",
+    "environment",
+    "harness",
+    "harness-catalog",
+  ] as const;
+  const releases = kinds.map((kind) => client.watchPersonalResource(kind, () => undefined));
+  const handedOut = Object.values(host.client.getSnapshot().assignments)[0]!;
+  const thread = host.client
+    .getSnapshot()
+    .threads.find(({ id }) => id === handedOut.parentThreadId)!;
+  releases.push(client.observeThread(thread.id));
+  await client.dispatch({
+    type: "thread.sendMessage",
+    threadId: thread.id,
+    idempotencyKey: "queued-follow-up",
+    content: [{ type: "text", text: "Also check Android" }],
+    delivery: "queue",
+  });
+  try {
+    await vi.waitFor(() => {
+      const snapshot = client.getSnapshot();
+      const view = client.getThreadTranscript(thread.id)!.getSnapshot();
+      expect({
+        connection: snapshot.connection,
+        user: snapshot.user !== null,
+        thread: snapshot.threads.some(({ id }) => id === thread.id),
+        listed: snapshot.tasks?.entries.some((entry) => entry.thread.id === thread.id),
+        active: snapshot.activeTasks.some((entry) => entry.thread.id === thread.id),
+        waitingRequests: snapshot.waitingRequests.length > 0,
+        attention: (snapshot.attentionSummaries?.length ?? 0) > 0,
+        needsYouCount: (snapshot.needsYouCount ?? 0) > 0,
+        settings: snapshot.personalSettings !== null,
+        identity: snapshot.identityConfig !== null,
+        machines: snapshot.machines.length > 0,
+        environments: snapshot.environments.length > 0,
+        harnesses: snapshot.harnesses.length > 0,
+        subagents: view.entries.some((entry) => entry.kind === "node"),
+        assignment: snapshot.assignments[handedOut.id] !== undefined,
+        requests: view.requests.length > 0,
+        runs: view.runQueue.some((run) => run.threadId === thread.id),
+        queued: view.inputQueue?.items.some((item) =>
+          JSON.stringify(item).includes("Also check Android"),
+        ),
+      }).toEqual({
+        connection: "connected",
+        user: true,
+        thread: true,
+        listed: true,
+        active: true,
+        waitingRequests: true,
+        attention: true,
+        needsYouCount: true,
+        settings: true,
+        identity: true,
+        machines: true,
+        environments: true,
+        harnesses: true,
+        subagents: true,
+        assignment: true,
+        requests: true,
+        runs: true,
+        queued: true,
+      });
+    });
+    const view = () => client.getThreadTranscript(thread.id)!.getSnapshot();
+    const run = view().runQueue.find((entry) => entry.threadId === thread.id)!;
+    await client.dispatch({
+      type: "run.interrupt",
+      threadId: thread.id,
+      runId: run.id,
+      idempotencyKey: "finish",
+    });
+    await vi.waitFor(() => {
+      expect(view().runQueue.some(({ id }) => id === run.id)).toBe(false);
+      expect(client.getSnapshot().activeTasks.some((entry) => entry.thread.id === thread.id)).toBe(
+        false,
+      );
+    });
+  } finally {
+    for (const release of releases) release();
+  }
+});
