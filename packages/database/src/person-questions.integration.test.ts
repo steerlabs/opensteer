@@ -223,8 +223,9 @@ describeStore("person questions", (it) => {
       scope: { kind: "thread", threadId: run.thread.id },
       limit: 100,
     });
+    // Drawn from the full Request when settled and from its read facts since: the same record.
     expect(page.kind === "page" && page.items.find(({ id }) => id === record!.id)).toMatchObject({
-      question: { truncated: true },
+      question: (change.payload as { question: unknown }).question,
     });
   });
 
@@ -248,7 +249,11 @@ describeStore("person questions", (it) => {
     expect(dismissed.request.status).toBe("declined");
     expect(await continuations(f)).toEqual([{ requestId: request.id }]);
     expect(await threadRecord(f, run, request.id)).toMatchObject({
-      question: { outcome: "dismissed", detail: presentation.detail, answers: [] },
+      question: {
+        outcome: "dismissed",
+        detail: presentation.detail,
+        answers: [{ prompt: "Send this reply?", answer: [] }],
+      },
     });
   });
 

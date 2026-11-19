@@ -78,7 +78,7 @@ describe("answered questions", () => {
     ).toEqual({ prompt: "Send it from your main account?", answer: ["Send it Monday"] });
   });
 
-  it("keeps a dismissal with what was asked and no answers", () => {
+  it("keeps a dismissal with every question asked and no answers", () => {
     expect(
       answeredQuestion(
         question({
@@ -86,7 +86,14 @@ describe("answered questions", () => {
           response: { kind: "external", value: { decision: "declined" } },
         }),
       ),
-    ).toEqual({ outcome: "dismissed", detail: draft, answers: [] });
+    ).toEqual({
+      outcome: "dismissed",
+      detail: draft,
+      answers: [
+        { prompt: "Send it from your main account?", answer: [] },
+        { prompt: "Where should I log it?", answer: [] },
+      ],
+    });
   });
 
   it("keeps nothing for a question never answered, or one whose answer is secret", () => {

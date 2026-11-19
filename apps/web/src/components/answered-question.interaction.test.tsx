@@ -18,7 +18,7 @@ const typed = "Rewrite it shorter, and mention the Boston pilot. ".repeat(80);
 const threadId = createId("thread");
 const requestId = createId("request");
 
-function answered(): Request {
+function answered(detail?: string): Request {
   const userId = createId("user");
   return RequestSchema.parse({
     callId: "ask",
@@ -34,6 +34,7 @@ function answered(): Request {
     presentation: {
       kind: "form",
       title: "How should I change the DM?",
+      ...(detail ? { detail } : {}),
       fields: [
         {
           custom: true,
@@ -69,7 +70,7 @@ const entry: AnsweredQuestionEntry = {
   title: "How should I change the DM?",
 };
 
-function render(readRequest: HostClient["readRequest"]) {
+function render(readRequest: HostClient["readRequest"], shown: AnsweredQuestionEntry = entry) {
   const client = {
     connection: controlledClientSession().connection,
     readRequest,
@@ -78,7 +79,7 @@ function render(readRequest: HostClient["readRequest"]) {
   document.body.append(node);
   const root = createRoot(node);
   roots.push(root);
-  act(() => root.render(<AnsweredQuestionRow client={client} entry={entry} threadId={threadId} />));
+  act(() => root.render(<AnsweredQuestionRow client={client} entry={shown} threadId={threadId} />));
   const toggle = () => {
     const button = [...node.querySelectorAll("button")].find((each) =>
       /Show (more|less)/u.test(each.textContent ?? ""),
@@ -104,6 +105,24 @@ it("opens an answer cut to fit to the whole of it, and folds it again", async ()
   );
   expect(readRequest).toHaveBeenCalledWith(threadId, requestId);
 
+  toggle();
+  expect(words()).toBe(typed.slice(0, 400));
+});
+
+it("keeps Show less on a short draft whose long answer was opened whole", async () => {
+  const note = "Draft below needs a softer tone.";
+  const { node, toggle } = render(
+    vi.fn(async () => answered(note)),
+    { ...entry, question: { ...entry.question, detail: note } },
+  );
+  const words = () => node.querySelector(".answered-question__words")?.textContent ?? "";
+  toggle();
+  await vi.waitFor(
+    () => expect(words().trim(), "the whole answer never arrived").toBe(typed.trim()),
+    {
+      timeout: 2_000,
+    },
+  );
   toggle();
   expect(words()).toBe(typed.slice(0, 400));
 });

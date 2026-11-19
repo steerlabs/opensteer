@@ -15,6 +15,7 @@ const detailFoldLines = 8;
 export function RequestDetail({
   excerpt = false,
   markdown,
+  more = excerpt,
   mono = false,
   onOpenChange,
   open,
@@ -22,6 +23,8 @@ export function RequestDetail({
 }: {
   excerpt?: boolean;
   markdown: boolean;
+  /** There is more to open than these words, even when they fit: an excerpt has. */
+  more?: boolean;
   mono?: boolean;
   onOpenChange: (open: boolean) => void;
   open: boolean;
@@ -36,7 +39,7 @@ export function RequestDetail({
   );
   return (
     <div className="request-detail">
-      <MessageFold lines={detailFoldLines} more={excerpt} onOpenChange={onOpenChange} open={open}>
+      <MessageFold lines={detailFoldLines} more={more} onOpenChange={onOpenChange} open={open}>
         {markdown ? (
           <Suspense fallback={plain(readableMarkdown(text))}>
             <Markdown excerpt={excerpt} text={text} />

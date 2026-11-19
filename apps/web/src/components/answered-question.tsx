@@ -82,6 +82,7 @@ export function AnsweredQuestionView({
         <RequestDetail
           excerpt={question.truncated === true}
           markdown
+          more={cut}
           onOpenChange={onOpenChange}
           open={open}
           text={question.detail}
@@ -92,7 +93,7 @@ export function AnsweredQuestionView({
           {several || prompt.trim() !== title.trim() ? (
             <p className="answered-question__prompt">{prompt}</p>
           ) : null}
-          <p className="answered-question__words">{answer.join(", ")}</p>
+          {answer.length ? <p className="answered-question__words">{answer.join(", ")}</p> : null}
         </div>
       ))}
       {cut && !question.detail ? (

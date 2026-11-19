@@ -1,6 +1,7 @@
 import type { DatabaseSchema } from "./schema.js";
 import {
   answeredQuestion,
+  answeredQuestionPreviewBytes,
   answeredQuestionWithin,
   OpensteerError,
   utf8Prefix,
@@ -284,9 +285,6 @@ type Item = Pick<Selectable<TranscriptItemTable>, (typeof itemColumns)[number]> 
   readonly question?: QuestionFacts | null;
 };
 
-/** The most a settled question's record adds to its card, beside the card's 2 KB view. */
-const answeredQuestionBytes = 3 * 1024;
-
 /**
  * What a node's card draws, from the node itself: its times, model, phases and stop support. Its
  * prompt is cut to the first line and its result to a preview; its own scope has the rest.
@@ -319,11 +317,27 @@ const nodeFacts = sql<NodeFacts | null>`case when kind = 'node' then (
 
 /**
  * A settled agent question's facts, read beside its card when drawn, so every
- * receipt shows the same record however long ago it was answered.
+ * receipt shows the same record however long ago it was answered. Each text is
+ * read no longer than the whole record may be, so the record drawn from these
+ * is the one drawn from the full Request, and a page reads little per card.
  */
 const questionFacts = sql<QuestionFacts | null>`case when kind = 'request' then (
-  select jsonb_build_object('kind',r.kind,'status',r.status,'presentation',r.presentation,
-    'response',r.response)
+  select jsonb_build_object('kind',r.kind,'status',r.status,
+    'presentation',jsonb_strip_nulls(jsonb_build_object(
+      'kind',r.presentation->'kind','title',r.presentation->'title',
+      'detail',left(r.presentation->>'detail',${sql.lit(answeredQuestionPreviewBytes)}),
+      'fields',(select jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
+          'id',f.field->'id','secret',f.field->'secret',
+          'prompt',left(f.field->>'prompt',${sql.lit(answeredQuestionPreviewBytes)}),
+          'choices',(select jsonb_agg(jsonb_build_object('label',c->'label','value',c->'value'))
+            from jsonb_array_elements(f.field->'choices') c))) order by f.at)
+        from jsonb_array_elements(r.presentation->'fields') with ordinality f(field,at)))),
+    'response',case when r.response->>'kind' = 'form' then jsonb_build_object('kind','form',
+      'answers',coalesce((select jsonb_object_agg(a.key,(select coalesce(jsonb_agg(
+          left(v.value,${sql.lit(answeredQuestionPreviewBytes)}) order by v.at),'[]'::jsonb)
+        from jsonb_array_elements_text(a.value) with ordinality v(value,at)))
+        from jsonb_each(r.response->'answers') a),'{}'::jsonb))
+      else r.response end)
   from requests r where r.id = transcript_items.request_id
     and r.kind = 'person.question' and r.status in ('fulfilled','declined')) end`;
 
@@ -389,7 +403,9 @@ export function itemView(row: Item) {
         requestId: row.requestId,
         requestKind,
         waitedSince,
-        ...(question ? { question: answeredQuestionWithin(question, answeredQuestionBytes) } : {}),
+        ...(question
+          ? { question: answeredQuestionWithin(question, answeredQuestionPreviewBytes) }
+          : {}),
       });
     }
     case "node":

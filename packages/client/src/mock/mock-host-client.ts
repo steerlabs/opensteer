@@ -118,6 +118,8 @@ import {
   type MockDevicePlugin,
 } from "./mock-devices.js";
 import {
+  answeredQuestionPreviewBytes,
+  answeredQuestionWithin,
   matchModelSelection,
   storedModelSelection as coreStoredModelSelection,
 } from "@opensteer/core";
@@ -6565,7 +6567,11 @@ class MockHostState {
   }
   private referenceRequestReceipt(request: Exclude<Request, { status: "pending" }>) {
     this.referenceRequests.set(request.id, request);
-    const receipt = requestReceipt(request);
+    const whole = requestReceipt(request);
+    // As the Host's card carries it: cut to fit, the whole left to a read of the Request.
+    const receipt = whole.question
+      ? { ...whole, question: answeredQuestionWithin(whole.question, answeredQuestionPreviewBytes) }
+      : whole;
     keepMockReceiptAsker(receipt, request);
     return receipt;
   }

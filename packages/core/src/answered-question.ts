@@ -40,7 +40,13 @@ export function answeredQuestion(
     return null;
   const { detail, fields } = request.presentation;
   const asked = detail ? { detail } : {};
-  if (request.status === "declined") return { ...asked, outcome: "dismissed", answers: [] };
+  // A dismissal keeps what was asked, with no answer to any of it.
+  if (request.status === "declined")
+    return {
+      ...asked,
+      outcome: "dismissed",
+      answers: fields.map(({ prompt }) => ({ prompt, answer: [] })),
+    };
   if (request.status !== "fulfilled" || request.response?.kind !== "form") return null;
   const { answers } = request.response;
   return {
@@ -55,6 +61,9 @@ export function answeredQuestion(
     })),
   };
 }
+
+/** The most a settled question's record adds to its thread card, beside the card's own view. */
+export const answeredQuestionPreviewBytes = 3 * 1024;
 
 const promptPreviewBytes = 200;
 const answerPreviewBytes = 400;

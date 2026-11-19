@@ -49,7 +49,7 @@ export function AnsweredQuestionView(props: {
         <MessageFold
           lines={detailLines}
           mine={false}
-          more={excerpt}
+          more={props.cut === true}
           onToggle={props.onToggle}
           open={open}
         >
@@ -63,9 +63,11 @@ export function AnsweredQuestionView(props: {
               {prompt}
             </AppText>
           ) : null}
-          <View style={styles.words}>
-            <AppText role="secondary">{answer.join(", ")}</AppText>
-          </View>
+          {answer.length ? (
+            <View style={styles.words}>
+              <AppText role="secondary">{answer.join(", ")}</AppText>
+            </View>
+          ) : null}
         </View>
       ))}
       {props.cut === true && !question.detail ? (
