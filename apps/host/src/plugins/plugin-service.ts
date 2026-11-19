@@ -378,7 +378,7 @@ export class PluginService {
     });
     this.#child = child;
     let ready = false;
-    // Why the engine could not start, as it said, such as another Host holding the database.
+    // Why the engine could not start, as it said.
     let fatal: PluginServiceError | undefined;
     let resolveReady!: () => void;
     let rejectReady!: (error: Error) => void;

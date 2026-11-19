@@ -110,8 +110,6 @@ export const databaseLockOrder = [
   "advisory:browser-sign-in",
   "advisory:browser-site-grants",
   "advisory:integration-catalog-definition",
-  // The one plugin engine of a database holds this for its life, on a connection of its own.
-  "advisory:plugin-engine",
   // Plugin updates reconcile their MCP installation while holding the package row.
   "plugins",
   "plugin_versions",
@@ -356,7 +354,6 @@ export function advisoryLockResource(key: string, seed: number): string {
     "opensteer:official-portal-client",
     "opensteer:account-directory-provider",
     "opensteer-deployment-identity",
-    "plugin-engine",
     "personal-remote-access",
     "team-storage",
   ] as const;

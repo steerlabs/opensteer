@@ -28,7 +28,7 @@ import {
 } from "./engine-storage.js";
 import { pluginNamespace } from "./provider-names.js";
 import { refusalBlocked } from "./target-blocked.js";
-import { holdEngineDatabase, holdEngineDirectory } from "./engine-ownership.js";
+import { holdEngineDirectory } from "./engine-ownership.js";
 import { folderSkills } from "apps/skills";
 import { oauthReviewDigest } from "./oauth-review.js";
 import { join } from "node:path";
@@ -249,8 +249,6 @@ export async function startEngine(
     const composed = await run(
       Effect.gen(function* () {
         phase("database");
-        // One engine per database: the scheduler and workflow recovery run as this engine alone.
-        yield* holdEngineDatabase(config.databaseUrl);
         const sql = yield* SqlClient.SqlClient;
         // The reserved connection holds this session lock across the SDK's own migration transactions.
         const storedDatabase = yield* sql.reserve.pipe(
