@@ -312,6 +312,452 @@ describe("DeploymentAccessService", () => {
     service.dispose();
   });
 
+  it("never publishes (ready, idle) while a returning local startup transitions to connecting", async () => {
+    const local = deployment({
+      attachmentKey: "owner",
+      kind: "personal",
+      lastUsedAt: "2026-08-20T10:00:00.000Z",
+      name: "This Mac",
+      onThisComputer: true,
+      source: "this-device",
+    });
+    const starting = {
+      ...personalStatus,
+      canStart: false,
+      deploymentId: local.id,
+      state: "starting" as const,
+      step: "starting-host" as const,
+    };
+    const ready = { ...readyPersonalStatus, deploymentId: local.id };
+    const fixture = fakePorts({
+      deployments: [{ ...local, access: "native", key: "native" }],
+      personal: starting,
+      selectedDeploymentId: local.id,
+    });
+    const service = new DeploymentAccessService(fixture.ports);
+    const observed: Array<{
+      personalState: string | null;
+      selectedStatus: string | null;
+    }> = [];
+    const record = (snap: ReturnType<DeploymentAccessService["snapshot"]>) => {
+      observed.push({
+        personalState: snap.personalSetup?.state ?? null,
+        selectedStatus: snap.deployments.find(({ id }) => id === local.id)?.status ?? null,
+      });
+    };
+    service.subscribe(record);
+
+    await service.initialize();
+    await settle();
+    expect(fixture.establish).not.toHaveBeenCalled();
+
+    // Defer the catalog reload and resolve personalAccount.status() before it finishes.
+    const catalogRead = Promise.withResolvers<CatalogProjection>();
+    vi.mocked(fixture.ports.catalog.read).mockReturnValueOnce(catalogRead.promise);
+    fixture.personalAccountStatus.mockResolvedValueOnce({
+      account: null,
+      deploymentId: local.id,
+      displayName: "This Mac",
+      status: "unlinked",
+      unlinkStep: null,
+    });
+
+    fixture.emitPersonal(ready);
+    await settle();
+    // Synchronous snapshot() while catalog reload is still in flight must not leak (ready, idle).
+    record(service.snapshot());
+
+    fixture.replaceCatalog({ deployments: [local], selectedDeploymentId: local.id });
+    catalogRead.resolve({
+      deployments: [local],
+      revision: 2,
+      selectedDeploymentId: local.id,
+    });
+    await settle();
+
+    expect(fixture.establish).toHaveBeenCalledOnce();
+    expect(service.snapshot().personalSetup?.state).toBe("ready");
+    expect(service.snapshot().deployments[0]?.status).toBe("connected");
+    expect(
+      observed.filter(
+        ({ personalState, selectedStatus }) =>
+          personalState === "ready" && selectedStatus === "idle",
+      ),
+    ).toEqual([]);
+    service.dispose();
+  });
+
+  it("handles cancel, reselection, out-of-order reads, null keys, and catalog failures while ready is staged", async () => {
+    const local = deployment({
+      attachmentKey: "owner",
+      kind: "personal",
+      lastUsedAt: "2026-08-20T10:00:00.000Z",
+      name: "This Mac",
+      onThisComputer: true,
+      source: "this-device",
+    });
+    const remote = deployment({ name: "Server" });
+    const starting = {
+      ...personalStatus,
+      canStart: false,
+      deploymentId: local.id,
+      state: "starting" as const,
+      step: "starting-host" as const,
+    };
+    const ready = { ...readyPersonalStatus, deploymentId: local.id };
+
+    // 1) Out-of-order catalog reads keep staged ready until the winning read lands.
+    {
+      const fixture = fakePorts({
+        deployments: [{ ...local, access: "native", key: "native" }],
+        personal: starting,
+        selectedDeploymentId: local.id,
+      });
+      const service = new DeploymentAccessService(fixture.ports);
+      const leaked: unknown[] = [];
+      service.subscribe((snap) => {
+        if (snap.personalSetup?.state === "ready" && snap.deployments[0]?.status === "idle") {
+          leaked.push(snap);
+        }
+      });
+      await service.initialize();
+      await settle();
+      const first = Promise.withResolvers<CatalogProjection>();
+      const second = Promise.withResolvers<CatalogProjection>();
+      vi.mocked(fixture.ports.catalog.read)
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(second.promise);
+      fixture.emitPersonal(ready);
+      fixture.emitCatalog({ deployments: [local], selectedDeploymentId: local.id });
+      first.resolve({
+        deployments: [{ ...local, access: "native", key: "native" }],
+        revision: 2,
+        selectedDeploymentId: local.id,
+      });
+      await settle();
+      expect(service.snapshot().personalSetup?.state).toBe("starting");
+      fixture.replaceCatalog({ deployments: [local], selectedDeploymentId: local.id });
+      second.resolve({ deployments: [local], revision: 3, selectedDeploymentId: local.id });
+      await settle();
+      expect(leaked).toEqual([]);
+      expect(fixture.establish).toHaveBeenCalledOnce();
+      expect(service.snapshot().deployments[0]?.status).toBe("connected");
+      service.dispose();
+    }
+
+    // 2) Cancel while ready is staged commits ready + idle cleanly and never attaches on late reload.
+    {
+      const fixture = fakePorts({
+        deployments: [{ ...local, access: "native", key: "native" }],
+        personal: starting,
+        selectedDeploymentId: local.id,
+      });
+      const service = new DeploymentAccessService(fixture.ports);
+      await service.initialize();
+      await settle();
+      await service.signIn();
+      const read = Promise.withResolvers<CatalogProjection>();
+      vi.mocked(fixture.ports.catalog.read).mockReturnValueOnce(read.promise);
+      fixture.emitPersonal(ready);
+      await service.cancel();
+      expect(service.snapshot().personalSetup?.state).toBe("ready");
+      expect(service.snapshot().deployments[0]?.status).toBe("idle");
+      read.resolve({ deployments: [local], revision: 2, selectedDeploymentId: local.id });
+      await settle();
+      expect(fixture.establish).not.toHaveBeenCalled();
+      service.dispose();
+    }
+
+    // 3) Null key after reload surfaces needs-remote-access instead of idle.
+    {
+      const fixture = fakePorts({
+        deployments: [{ ...local, access: "native", key: "native" }],
+        personal: starting,
+        selectedDeploymentId: local.id,
+      });
+      const service = new DeploymentAccessService(fixture.ports);
+      await service.initialize();
+      await settle();
+      const read = Promise.withResolvers<CatalogProjection>();
+      vi.mocked(fixture.ports.catalog.read).mockReturnValueOnce(read.promise);
+      fixture.emitPersonal(ready);
+      read.resolve({
+        deployments: [{ ...local, access: null, key: null }],
+        revision: 2,
+        selectedDeploymentId: local.id,
+      });
+      await settle();
+      expect(fixture.establish).not.toHaveBeenCalled();
+      expect(service.snapshot().personalSetup?.state).toBe("ready");
+      expect(service.snapshot().deployments[0]?.status).toBe("needs-remote-access");
+      service.dispose();
+    }
+
+    // 4) Catalog read failure while ready is staged reports repair-required and never leaks (ready, idle).
+    {
+      const fixture = fakePorts({
+        deployments: [{ ...local, access: "native", key: "native" }],
+        personal: starting,
+        selectedDeploymentId: local.id,
+      });
+      const service = new DeploymentAccessService(fixture.ports);
+      const leaked: unknown[] = [];
+      service.subscribe((snap) => {
+        if (snap.personalSetup?.state === "ready" && snap.deployments[0]?.status === "idle") {
+          leaked.push(snap);
+        }
+      });
+      await service.initialize();
+      await settle();
+      vi.mocked(fixture.ports.catalog.read).mockRejectedValueOnce(new Error("disk read failed"));
+      fixture.emitPersonal(ready);
+      await settle();
+      expect(leaked).toEqual([]);
+      expect(service.snapshot().personalSetup?.state).toBe("repair-required");
+      service.dispose();
+    }
+
+    // 5) Reselection while ready is staged commits ready without attaching the old local deployment.
+    {
+      const fixture = fakePorts({
+        deployments: [{ ...local, access: "native", key: "native" }, remote],
+        personal: starting,
+        selectedDeploymentId: local.id,
+      });
+      const service = new DeploymentAccessService(fixture.ports);
+      await service.initialize();
+      await settle();
+      const read = Promise.withResolvers<CatalogProjection>();
+      vi.mocked(fixture.ports.catalog.read).mockReturnValueOnce(read.promise);
+      fixture.emitPersonal(ready);
+      await service.select(remote.id);
+      read.resolve({ deployments: [local, remote], revision: 2, selectedDeploymentId: local.id });
+      await settle();
+      expect(fixture.establish).toHaveBeenCalledExactlyOnceWith(remote.id, true);
+      expect(service.snapshot().personalSetup?.state).toBe("ready");
+      service.dispose();
+    }
+
+    // 6) Startup when local Personal Host is already ready never leaks (ready, idle), even while signed in.
+    {
+      const fixture = fakePorts({
+        deployments: [local],
+        personal: ready,
+        selectedDeploymentId: local.id,
+      });
+      fixture.currentState.mockResolvedValueOnce(signedInAccount());
+      const syncGate = Promise.withResolvers<{
+        changed: boolean;
+        unavailable: readonly DeploymentAccessUnavailable[];
+      }>();
+      vi.mocked(fixture.ports.directory.syncAccountDeployments).mockReturnValueOnce(
+        syncGate.promise,
+      );
+      const service = new DeploymentAccessService(fixture.ports);
+      const leaked: unknown[] = [];
+      service.subscribe((snap) => {
+        if (snap.personalSetup?.state === "ready" && snap.deployments[0]?.status === "idle") {
+          leaked.push(snap);
+        }
+      });
+      const initializing = service.initialize();
+      await settle();
+      expect(service.snapshot().deployments[0]?.status).toBe("connected");
+      syncGate.resolve({ changed: false, unavailable: [] });
+      await initializing;
+      expect(leaked).toEqual([]);
+      expect(fixture.establish).toHaveBeenCalledOnce();
+      service.dispose();
+    }
+
+    // 7) Held local restart with simultaneous key rotation attaches once and never leaks (ready, idle).
+    {
+      const first = deployment({
+        attachmentKey: "owner:1",
+        kind: "personal",
+        lastUsedAt: "2026-08-20T10:00:00.000Z",
+        name: "This Mac",
+        onThisComputer: true,
+        source: "this-device",
+      });
+      const firstReady = { ...readyPersonalStatus, deploymentId: first.id };
+      const fixture = fakePorts({
+        deployments: [first],
+        personal: firstReady,
+        selectedDeploymentId: first.id,
+      });
+      const service = new DeploymentAccessService(fixture.ports);
+      const leaked: unknown[] = [];
+      service.subscribe((snap) => {
+        if (snap.personalSetup?.state === "ready" && snap.deployments[0]?.status === "idle") {
+          leaked.push(snap);
+        }
+      });
+      await service.initialize();
+      await settle();
+      fixture.replaceCatalog({
+        deployments: [{ ...first, access: "native", key: "native" }],
+        selectedDeploymentId: first.id,
+      });
+      fixture.emitPersonal({ ...firstReady, canStart: true, state: "degraded", step: null });
+      await settle();
+      const rotated = { ...first, key: "owner:2" };
+      const read = Promise.withResolvers<CatalogProjection>();
+      vi.mocked(fixture.ports.catalog.read).mockReturnValueOnce(read.promise);
+      fixture.emitPersonal(firstReady);
+      fixture.replaceCatalog({ deployments: [rotated], selectedDeploymentId: first.id });
+      read.resolve({ deployments: [rotated], revision: 3, selectedDeploymentId: first.id });
+      await settle();
+      expect(leaked).toEqual([]);
+      expect(fixture.establish).toHaveBeenCalledTimes(2);
+      expect(service.snapshot().deployments[0]).toMatchObject({
+        attachmentKey: "owner:2",
+        status: "connected",
+      });
+      service.dispose();
+    }
+
+    // 8) First-time setup (createPersonalDeployment) never leaks (ready, idle) before catalog reload attaches.
+    {
+      const created = deployment({
+        attachmentKey: "owner",
+        kind: "personal",
+        lastUsedAt: "2026-08-20T10:00:00.000Z",
+        name: "This Mac",
+        onThisComputer: true,
+        source: "this-device",
+      });
+      const createdReady = { ...readyPersonalStatus, deploymentId: created.id };
+      const fixture = fakePorts({
+        deployments: [],
+        personal: {
+          ...personalStatus,
+          canStart: true,
+          deploymentId: null,
+          state: "stopped",
+          step: null,
+        },
+      });
+      const startGate = Promise.withResolvers<DeploymentAccessPorts["personal"]["status"]>();
+      vi.mocked(fixture.ports.personal.start).mockReturnValueOnce(startGate.promise);
+      const service = new DeploymentAccessService(fixture.ports);
+      const leaked: unknown[] = [];
+      service.subscribe((snap) => {
+        if (
+          snap.personalSetup?.state === "ready" &&
+          snap.deployments.find(({ id }) => id === created.id)?.status === "idle"
+        ) {
+          leaked.push(snap);
+        }
+      });
+      await service.initialize();
+      const creating = service.createPersonalDeployment();
+      fixture.replaceCatalog({ deployments: [created], selectedDeploymentId: created.id });
+      const catalogRead = Promise.withResolvers<CatalogProjection>();
+      vi.mocked(fixture.ports.catalog.read).mockReturnValueOnce(catalogRead.promise);
+      fixture.emitPersonal(createdReady);
+      expect(service.snapshot().personalSetup?.state).not.toBe("ready");
+      catalogRead.resolve({
+        deployments: [created],
+        revision: 2,
+        selectedDeploymentId: created.id,
+      });
+      await settle();
+      expect(fixture.establish).toHaveBeenCalledOnce();
+      expect(service.snapshot().deployments[0]?.status).toBe("connected");
+
+      // A subsequent supervisor ready update while create-personal is still active must not re-establish.
+      const updatedReady = {
+        ...createdReady,
+        components: {
+          ...createdReady.components,
+          runner: { state: "ready" as const, version: "1.0.0" },
+        },
+      };
+      fixture.emitPersonal(updatedReady);
+      await settle();
+      startGate.resolve(updatedReady);
+      await creating;
+      await settle();
+      expect(leaked).toEqual([]);
+      expect(fixture.establish).toHaveBeenCalledOnce();
+      expect(service.snapshot().personalSetup?.state).toBe("ready");
+      expect(service.snapshot().personalSetup?.components.runner.state).toBe("ready");
+      expect(service.snapshot().deployments[0]?.status).toBe("connected");
+      service.dispose();
+    }
+
+    // 9) Reselecting the same local Host keeps staged ready held even if an earlier catalog read resolves while catalog.select() is pending.
+    {
+      const fixture = fakePorts({
+        deployments: [{ ...local, access: "native", key: "native" }],
+        personal: starting,
+        selectedDeploymentId: local.id,
+      });
+      const closeGate = Promise.withResolvers<void>();
+      const selectGate = Promise.withResolvers<CatalogProjection>();
+      vi.mocked(fixture.ports.hostSession.closeCurrent).mockReturnValueOnce(closeGate.promise);
+      vi.mocked(fixture.ports.catalog.select).mockReturnValueOnce(selectGate.promise);
+      const service = new DeploymentAccessService(fixture.ports);
+      const leaked: unknown[] = [];
+      const check = (snap: ReturnType<DeploymentAccessService["snapshot"]>) => {
+        if (snap.personalSetup?.state === "ready" && snap.deployments[0]?.status === "idle") {
+          leaked.push(snap);
+        }
+      };
+      service.subscribe(check);
+      await service.initialize();
+      await settle();
+      const read = Promise.withResolvers<CatalogProjection>();
+      vi.mocked(fixture.ports.catalog.read).mockReturnValueOnce(read.promise);
+      fixture.emitPersonal(ready);
+      const reselecting = service.select(local.id);
+      check(service.snapshot());
+      expect(service.snapshot().personalSetup?.state).toBe("starting");
+      fixture.replaceCatalog({ deployments: [local], selectedDeploymentId: local.id });
+      closeGate.resolve();
+      await settle();
+      // Earlier reload fails, then a recovery read succeeds, AND an overlapping select() rejects,
+      // all while catalog.select() is still in flight: none of them may release the guard or leak (ready, idle).
+      read.reject(new Error("transient catalog read failure"));
+      await settle();
+      check(service.snapshot());
+      fixture.emitCatalog({ deployments: [local], selectedDeploymentId: local.id });
+      await settle();
+      check(service.snapshot());
+      await expect(service.select(local.id)).rejects.toThrow(/already running/u);
+      check(service.snapshot());
+      expect(service.snapshot().personalSetup?.state).toBe("starting");
+      selectGate.resolve({ deployments: [local], revision: 3, selectedDeploymentId: local.id });
+      await reselecting;
+      await settle();
+      expect(leaked).toEqual([]);
+      expect(fixture.establish).toHaveBeenCalledOnce();
+      expect(service.snapshot().personalSetup?.state).toBe("ready");
+      expect(service.snapshot().deployments[0]?.status).toBe("connected");
+      service.dispose();
+    }
+
+    // 10) Startup initialize() does not overwrite a newer catalog notification that landed during a slow account read.
+    {
+      const accountGate = Promise.withResolvers<DesktopAccountAuthState>();
+      const fixture = fakePorts({ deployments: [] });
+      fixture.currentState.mockReturnValueOnce(accountGate.promise);
+      const service = new DeploymentAccessService(fixture.ports);
+      const initializing = service.initialize();
+      await settle();
+      fixture.emitCatalog({ deployments: [local], selectedDeploymentId: local.id });
+      await settle();
+      accountGate.resolve({
+        account: { available: true, detail: null, identity: null, status: "signed-out" },
+        schemaVersion: 2,
+      });
+      await initializing;
+      expect(service.snapshot().selectedDeploymentId).toBe(local.id);
+      service.dispose();
+    }
+  });
+
   it("holds a connected local attachment through a Host restart until the supervisor is ready", async () => {
     const owner = deployment({
       attachmentKey: "owner:first",

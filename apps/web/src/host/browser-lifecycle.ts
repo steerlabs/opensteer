@@ -12,17 +12,22 @@ import type { ClientLifecycle, ClientNetworkState } from "@opensteer/client/host
  * now, never a promise that the Host answers.
  */
 export function browserClientLifecycle(
-  options: Pick<ClientLifecycle, "socketTrustWindowMs"> = {},
+  options: Pick<ClientLifecycle, "socketTrustWindowMs"> & {
+    /** Loopback on this computer does not depend on external network interfaces. */
+    readonly ignoreNetwork?: boolean;
+  } = {},
 ): ClientLifecycle {
+  const { ignoreNetwork = false, ...lifecycle } = options;
   return {
-    ...options,
+    ...lifecycle,
     getSnapshot: () => ({
-      network: networkState(),
+      network: ignoreNetwork ? "unknown" : networkState(),
       visibility: pageVisible() ? "foreground" : "background",
     }),
     onBackground: (listener) => visibilityListener(false, listener),
     onForeground: (listener) => visibilityListener(true, listener),
     onNetworkChange: (listener) => {
+      if (ignoreNetwork) return () => undefined;
       const online = () => listener("online", "changed");
       const offline = () => listener("offline", "changed");
       window.addEventListener("online", online);

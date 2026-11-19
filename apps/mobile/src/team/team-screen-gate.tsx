@@ -152,7 +152,10 @@ function TeamGate(props: { readonly team: MobileTeam | null; readonly teamId: st
           name,
           target: "team",
         });
-  const key = issue === null ? "connecting" : `${issue.code}:${issue.reason ?? ""}`;
+  const key =
+    issue === null
+      ? "connecting"
+      : `${live?.phase ?? "connecting"}:${issue.code}:${issue.reason ?? ""}`;
   if (issue === null)
     return <ConnectionGate detail={copy.title} stateKey="connecting" symbol={null} title={null} />;
   const primary =
@@ -164,10 +167,10 @@ function TeamGate(props: { readonly team: MobileTeam | null; readonly teamId: st
         }
       : copy.action === "update"
         ? { label: clientIssueActions.update, onPress: () => void Linking.openURL(downloadPage) }
-        : copy.action === "retry" || issue.code === "connection" || issue.code === "update-server"
+        : copy.action === "retry" || issue.code === "update-server"
           ? {
               label: clientIssueActions.tryAgain,
-              busy,
+              busy: connection === null || state === "failed" ? busy : Boolean(live?.trying),
               onPress:
                 connection === null || state === "failed"
                   ? attempt(() => teams.select(teamId))

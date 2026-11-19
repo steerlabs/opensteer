@@ -33,6 +33,7 @@ export interface ClientIssue {
   readonly reason?: string;
   readonly name?: string;
   readonly target?: "computer" | "team";
+  readonly route?: "same-computer" | "private-network" | "connect";
   readonly resource?: string;
   /** The whole verb phrase, as "Couldn't {action}." says it: "close this tab". */
   readonly action?: string;
@@ -172,7 +173,12 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
       return issue.reason === "offline"
         ? result("Offline")
         : issue.reason === "unreachable"
-          ? result(`Can't reach ${name}`, "retry")
+          ? result(
+              issue.route === "same-computer"
+                ? "Opensteer isn't responding"
+                : `Can't reach ${name}`,
+              "retry",
+            )
           : result(team ? `Reconnecting to ${name}…` : "Reconnecting…");
     case "sign-in":
       return result(team ? `Signed out of ${name}` : "Signed out", "sign-in");
@@ -347,21 +353,56 @@ export function presentConnectionGate(
       detail: null,
       action: null,
     };
-  const value = { ...issue, ...(state.name ? { name: state.name } : {}), target: state.target };
-  if (issue.code === "connection")
-    return issue.reason === "offline"
-      ? {
-          title: "You're offline",
-          detail: "Your tasks will show up when you're back online.",
-          action: null,
-        }
-      : {
-          title: `Can't reach ${name}`,
-          detail: clientTargets[state.target ?? "computer"].team
-            ? "Your own tasks still work."
-            : "Make sure it's on and connected to the internet.",
-          action: "retry",
-        };
+  const route = state.route ?? issue.route ?? null;
+  const sameComputer = route === "same-computer";
+  const team = clientTargets[state.target ?? "computer"].team;
+  const value = {
+    ...issue,
+    ...(state.name ? { name: state.name } : {}),
+    ...(route ? { route } : {}),
+    target: state.target,
+  };
+  if (issue.code === "connection") {
+    if (issue.reason === "offline")
+      return {
+        title: "You're offline",
+        detail: "Your tasks will show up when you're back online.",
+        action: null,
+      };
+    if (issue.reason === "unreachable")
+      return sameComputer
+        ? {
+            title: "Opensteer isn't responding",
+            detail: "Opensteer on this computer isn't responding right now.",
+            action: "retry",
+          }
+        : {
+            title: `Can't reach ${name}`,
+            detail: team
+              ? "Your own tasks still work."
+              : "Make sure it's on and connected to the internet.",
+            action: "retry",
+          };
+    if (state.phase === "connecting")
+      return {
+        title: presentConnectionStarting(state.name, state.target),
+        detail: sameComputer
+          ? "Opensteer on this computer is taking longer than usual to respond."
+          : team
+            ? "This is taking longer than usual. Your own tasks still work."
+            : "This is taking longer than usual.",
+        action: null,
+      };
+    return {
+      title: team ? `Reconnecting to ${name}…` : "Reconnecting…",
+      detail: sameComputer
+        ? "Opensteer on this computer is reconnecting on its own."
+        : team
+          ? "Opensteer is reconnecting on its own. Your own tasks still work."
+          : "Opensteer is reconnecting on its own.",
+      action: null,
+    };
+  }
   if (issue.code === "sign-in")
     return issue.reason === "account-required"
       ? {
@@ -399,15 +440,24 @@ export function presentConnectionDetail(
             action: null,
           }
         : issue.reason === "unreachable"
-          ? {
-              title: "Can't reach it",
-              detail: "Make sure it's on and connected to the internet. Opensteer keeps trying.",
-              action: "retry",
-            }
+          ? issue.route === "same-computer"
+            ? {
+                title: "Opensteer isn't responding",
+                detail:
+                  "Opensteer on this computer isn't responding right now. Opensteer keeps trying.",
+                action: "retry",
+              }
+            : {
+                title: "Can't reach it",
+                detail: "Make sure it's on and connected to the internet. Opensteer keeps trying.",
+                action: "retry",
+              }
           : {
               title: "Reconnecting…",
               detail:
-                "Opensteer is reconnecting on its own. Messages you send will go out when it's back.",
+                issue.route === "same-computer"
+                  ? "Opensteer on this computer is reconnecting on its own."
+                  : "Opensteer is reconnecting on its own. Messages you send will go out when it's back.",
               action: null,
             };
     case "sign-in":

@@ -97,6 +97,179 @@ describe("safe client issues", () => {
       `Not answered. ${detail}`,
     );
   });
+  it("distinguishes slow connecting, recovering, same-computer unreachable, remote unreachable, and offline", () => {
+    const base: ClientConnectionState = {
+      epoch: 1,
+      issue: null,
+      lastConnectedAt: null,
+      name: "Mac mini",
+      network: "online",
+      pathRevision: 0,
+      phase: "connecting",
+      readyRevision: 0,
+      route: "connect",
+      scope: null,
+      showInterruption: true,
+      target: "computer",
+      trying: true,
+      visibility: "foreground",
+    };
+
+    // Unanswered initial attempt past the quiet hold: honest progress, no Retry button.
+    expect(
+      presentConnectionGate({
+        ...base,
+        phase: "connecting",
+        route: "same-computer",
+        issue: { code: "connection", reason: "reconnecting", route: "same-computer" },
+      }),
+    ).toEqual({
+      title: "Connecting to Mac mini…",
+      detail: "Opensteer on this computer is taking longer than usual to respond.",
+      action: null,
+    });
+    expect(
+      presentConnectionGate({
+        ...base,
+        phase: "connecting",
+        route: "connect",
+        issue: { code: "connection", reason: "reconnecting", route: "connect" },
+      }),
+    ).toEqual({
+      title: "Connecting to Mac mini…",
+      detail: "This is taking longer than usual.",
+      action: null,
+    });
+
+    // Automatic recovery without an observed unreachable failure: honest reconnecting, no Retry button.
+    expect(
+      presentConnectionGate({
+        ...base,
+        phase: "recovering",
+        route: "same-computer",
+        trying: false,
+        issue: { code: "connection", reason: "reconnecting", route: "same-computer" },
+      }),
+    ).toEqual({
+      title: "Reconnecting…",
+      detail: "Opensteer on this computer is reconnecting on its own.",
+      action: null,
+    });
+    expect(
+      presentConnectionGate({
+        ...base,
+        phase: "recovering",
+        route: "private-network",
+        target: "team",
+        name: "Acme",
+        trying: false,
+        issue: { code: "connection", reason: "reconnecting", target: "team" },
+      }),
+    ).toEqual({
+      title: "Reconnecting to Acme…",
+      detail: "Opensteer is reconnecting on its own. Your own tasks still work.",
+      action: null,
+    });
+
+    // Observed unreachable failure on same-computer never blames internet connectivity.
+    const localUnreachable = presentConnectionGate({
+      ...base,
+      phase: "recovering",
+      route: "same-computer",
+      trying: false,
+      issue: { code: "connection", reason: "unreachable", route: "same-computer" },
+    });
+    expect(localUnreachable).toEqual({
+      title: "Opensteer isn't responding",
+      detail: "Opensteer on this computer isn't responding right now.",
+      action: "retry",
+    });
+    expect(JSON.stringify(localUnreachable).toLowerCase()).not.toContain("internet");
+
+    // Observed unreachable on remote computer and team keeps remote/team copy and offers retry.
+    expect(
+      presentConnectionGate({
+        ...base,
+        phase: "recovering",
+        route: "connect",
+        trying: false,
+        issue: { code: "connection", reason: "unreachable", route: "connect" },
+      }),
+    ).toEqual({
+      title: "Can't reach Mac mini",
+      detail: "Make sure it's on and connected to the internet.",
+      action: "retry",
+    });
+    expect(
+      presentConnectionGate({
+        ...base,
+        phase: "recovering",
+        route: "private-network",
+        target: "team",
+        name: "Acme",
+        trying: false,
+        issue: { code: "connection", reason: "unreachable", target: "team" },
+      }),
+    ).toEqual({
+      title: "Can't reach Acme",
+      detail: "Your own tasks still work.",
+      action: "retry",
+    });
+
+    // Offline stays honest with no retry button.
+    expect(
+      presentConnectionGate({
+        ...base,
+        phase: "recovering",
+        network: "offline",
+        trying: false,
+        issue: { code: "connection", reason: "offline" },
+      }),
+    ).toEqual({
+      title: "You're offline",
+      detail: "Your tasks will show up when you're back online.",
+      action: null,
+    });
+
+    // Pill and details reflect same-computer route without blaming the internet.
+    expect(
+      presentClientIssue({
+        code: "connection",
+        reason: "unreachable",
+        name: "Mac mini",
+        route: "same-computer",
+      }),
+    ).toEqual({
+      title: "Opensteer isn't responding",
+      detail: null,
+      action: "retry",
+    });
+    expect(
+      presentConnectionDetail({
+        code: "connection",
+        reason: "unreachable",
+        name: "Mac mini",
+        route: "same-computer",
+      }),
+    ).toEqual({
+      title: "Opensteer isn't responding",
+      detail: "Opensteer on this computer isn't responding right now. Opensteer keeps trying.",
+      action: "retry",
+    });
+    expect(
+      presentConnectionDetail({
+        code: "connection",
+        reason: "reconnecting",
+        name: "Mac mini",
+        route: "same-computer",
+      }),
+    ).toEqual({
+      title: "Reconnecting…",
+      detail: "Opensteer on this computer is reconnecting on its own.",
+      action: null,
+    });
+  });
+
   // "Not sent. your computer didn't accept it." and "your computer needs an update"
   // started sentences in lowercase when the computer had no name to say.
   it("starts every sentence with a capital, with or without a name", () => {
@@ -122,28 +295,36 @@ describe("safe client issues", () => {
     const said: string[] = [];
     for (const name of [undefined, "Mac mini"])
       for (const target of ["computer", "team"] as const)
-        for (const code of codes)
-          for (const reason of [undefined, "offline", "unreachable"]) {
-            const issue: ClientIssue = {
-              code,
-              target,
-              ...(name ? { name } : {}),
-              ...(reason ? { reason } : {}),
-            };
-            const state = {
-              issue,
-              name: name ?? null,
-              target,
-              showInterruption: true,
-            } as ClientConnectionState;
-            for (const words of [
-              presentClientIssue(issue),
-              presentConnectionDetail(issue),
-              presentConnectionGate(state),
-            ])
-              said.push(words.title, ...(words.detail ? [words.detail] : []));
-            said.push(presentMessageDelivery("rejected", issue));
-          }
+        for (const route of [undefined, "same-computer", "connect"] as const)
+          for (const code of codes)
+            for (const reason of [undefined, "offline", "reconnecting", "unreachable"]) {
+              const issue: ClientIssue = {
+                code,
+                target,
+                ...(name ? { name } : {}),
+                ...(reason ? { reason } : {}),
+                ...(route ? { route } : {}),
+              };
+              for (const phase of ["connecting", "recovering"] as const) {
+                const state = {
+                  issue,
+                  name: name ?? null,
+                  phase,
+                  route: route ?? null,
+                  target,
+                  showInterruption: true,
+                } as ClientConnectionState;
+                said.push(
+                  presentConnectionGate(state).title,
+                  ...(presentConnectionGate(state).detail
+                    ? [presentConnectionGate(state).detail!]
+                    : []),
+                );
+              }
+              for (const words of [presentClientIssue(issue), presentConnectionDetail(issue)])
+                said.push(words.title, ...(words.detail ? [words.detail] : []));
+              said.push(presentMessageDelivery("rejected", issue));
+            }
     const lowercase = said.filter((words) =>
       words.split(/(?<=[.?!]) /u).some((sentence) => /^[a-z]/u.test(sentence)),
     );

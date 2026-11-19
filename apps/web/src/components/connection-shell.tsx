@@ -133,12 +133,7 @@ function details(
   const issue = connectionNotice(state);
   if (issue === null) return null;
   const said = presentConnectionDetail(issue, "device");
-  // Every connection trouble offers Try now: the presenter leaves it out only
-  // where the pill itself has no button.
-  const action =
-    issue.code === "connection"
-      ? pillAction("retry", source, "details")
-      : pillAction(said.action, source, "details");
+  const action = pillAction(said.action, source, "details");
   const meta = [
     lastConnected(state.lastConnectedAt, new Date()),
     state.route ? routeWords[state.route] : null,
@@ -449,7 +444,7 @@ function GateFor({
       />
     );
   const primary: ConnectionGateButton | null =
-    state.issue?.code === "connection" || said.action === "retry"
+    said.action === "retry"
       ? {
           label: clientIssueActions.tryAgain,
           onPress: () => connection.retry(),
@@ -465,8 +460,8 @@ function GateFor({
       detail={said.detail ?? ""}
       primary={primary ?? back}
       scope={options.scope}
-      secondary={primary === null ? null : (options.secondary ?? back)}
-      stateKey={`${state.issue?.code ?? ""}:${state.issue?.reason ?? ""}`}
+      secondary={options.secondary ?? (primary === null ? null : back)}
+      stateKey={`${state.phase}:${state.issue?.code ?? ""}:${state.issue?.reason ?? ""}`}
       title={said.title}
     />
   );

@@ -242,3 +242,86 @@ it("remounts team hooks on an owner change while retaining a personal screen", (
     h.ownerId = "account-A";
   }
 });
+
+it("does not force Try again on offline or slow reconnecting team gates", () => {
+  const retry = vi.fn();
+  const makeTeam = (state: {
+    phase: "connecting" | "recovering";
+    reason: "offline" | "reconnecting" | "unreachable";
+  }): MobileTeam => {
+    const connState = {
+      epoch: 1,
+      issue: { code: "connection" as const, reason: state.reason, target: "team" as const },
+      lastConnectedAt: null,
+      name: "Acme",
+      network: state.reason === "offline" ? ("offline" as const) : ("online" as const),
+      pathRevision: 0,
+      phase: state.phase,
+      readyRevision: state.phase === "connecting" ? 0 : 1,
+      route: "private-network" as const,
+      scope: null,
+      showInterruption: true,
+      target: "team" as const,
+      trying: state.phase === "connecting",
+      visibility: "foreground" as const,
+    };
+    const teamSnapshot = { bootstrap: null, sidebar: null };
+    return {
+      teamId: "dep_test",
+      name: "Acme",
+      state: "loading",
+      detail: null,
+      session: {
+        subscribe: () => () => {},
+        getSnapshot: () => teamSnapshot,
+        connection: {
+          subscribe: () => () => {},
+          retry,
+          getSnapshot: () => connState,
+        },
+      },
+    } as unknown as MobileTeam;
+  };
+  const host = document.createElement("div");
+  const root = createRoot(host);
+  try {
+    h.team = makeTeam({ phase: "connecting", reason: "reconnecting" });
+    act(() =>
+      root.render(
+        <TeamScreenLayout route={{ params: { teamId: "dep_test" } }}>
+          <span>Body</span>
+        </TeamScreenLayout>,
+      ),
+    );
+    expect(host.textContent).toContain("Connecting to Acme…");
+    expect(host.textContent).toContain("taking longer than usual");
+    expect([...host.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Back"]);
+
+    h.team = makeTeam({ phase: "recovering", reason: "offline" });
+    act(() =>
+      root.render(
+        <TeamScreenLayout route={{ params: { teamId: "dep_test" } }}>
+          <span>Body</span>
+        </TeamScreenLayout>,
+      ),
+    );
+    expect(host.textContent).toContain("You're offline");
+    expect([...host.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Back"]);
+
+    h.team = makeTeam({ phase: "recovering", reason: "unreachable" });
+    act(() =>
+      root.render(
+        <TeamScreenLayout route={{ params: { teamId: "dep_test" } }}>
+          <span>Body</span>
+        </TeamScreenLayout>,
+      ),
+    );
+    expect(host.textContent).toContain("Can't reach Acme");
+    expect([...host.querySelectorAll("button")].map((b) => b.textContent)).toEqual([
+      "Try again",
+      "Back",
+    ]);
+  } finally {
+    act(() => root.unmount());
+  }
+});
