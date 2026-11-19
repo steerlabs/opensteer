@@ -1,4 +1,4 @@
-import { readTestResource } from "../server/test-host-api-request.js";
+import { readTestResource, joinEnvironmentCatalogs } from "../server/test-host-api-request.js";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -384,13 +384,10 @@ const evidence: unknown[] = [];
             (record) => record.harnessInstanceId === accountId,
           )!.catalog.status,
         ).toBe("ready");
-        const bootstrap = {
-          ok: true as const,
-          data: await readTestResource(stack.api, "harness-catalog"),
-        };
-        const environment = bootstrap.data.environments.find(
-          (entry) => entry.id === harness.environmentId,
-        )!;
+        const environments = await joinEnvironmentCatalogs((kind) =>
+          readTestResource(stack.api, kind),
+        );
+        const environment = environments.find((entry) => entry.id === harness.environmentId)!;
         expect(environment.connected).toBe(true);
         expect(
           environment.harnessCatalogs.find((catalog) => catalog.harnessInstanceId === accountId)

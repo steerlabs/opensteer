@@ -211,7 +211,8 @@ test("holds selected detail until the initial shell is dispatched", async () => 
     expect(sent).toEqual([]);
     releaseShell.resolve();
     await deadline(detailSent.promise, "Detail did not dispatch after the shell");
-    expect(sent).toEqual(["host.snapshot", "host.synchronized", "host.removed"]);
+    // The attach is answered (nothing moved) before the selected detail is served.
+    expect(sent).toEqual(["host.snapshot", "host.synchronized", "host.resource", "host.removed"]);
   } finally {
     releaseShell.resolve();
     socket.close("test finished");
@@ -402,7 +403,7 @@ test("a synchronized socket does no state or resource work during five idle minu
   }
 });
 
-test("pushes only watched revisions that differ from what the client installed", async () => {
+test("answers an attach and a watch once, marked, even when nothing moved, and pushes only watched changes", async () => {
   const current = new Map<string, string>([
     ["settings", "4"],
     ["machine", "9.0123456789abcdef.2"],
@@ -421,14 +422,15 @@ test("pushes only watched revisions that differ from what the client installed",
       if (!guard()) return false;
       const frame = ScopedHostMessageSchema.parse(JSON.parse(raw));
       frames.push(frame);
-      if (frame.type === "host.resource") sent.resolve();
+      if (frame.type === "host.resource" && !frame.reply) sent.resolve();
       return true;
     },
     close() {},
   });
   const resources = () => frames.filter((frame) => frame.type === "host.resource");
+  const live = () => resources().filter((frame) => !("reply" in frame && frame.reply));
   try {
-    // A resume whose installed revisions are all current is told nothing.
+    // A resume whose installed revisions are all current is answered with nothing moved.
     socket.attach({
       type: "client.attach",
       apiVersion: 64,
@@ -436,10 +438,8 @@ test("pushes only watched revisions that differ from what the client installed",
       interests: ["settings", "machine"],
       installed: { settings: "4", machine: "9.0123456789abcdef.2" },
     });
-    await vi.waitFor(() =>
-      expect(frames.some((frame) => frame.type === "host.synchronized")).toBe(true),
-    );
-    expect(resources()).toEqual([]);
+    await vi.waitFor(() => expect(resources()).toHaveLength(1));
+    expect(resources()).toMatchObject([{ type: "host.resource", reply: true, revisions: {} }]);
     // A kind nobody watches never reaches the socket.
     current.set("tab", "5");
     socket.resourcesChanged(new Set(["tab"]));
@@ -447,10 +447,21 @@ test("pushes only watched revisions that differ from what the client installed",
     current.set("machine", "9.0123456789abcdef.3");
     socket.resourcesChanged(new Set(["machine", "tab"]));
     await deadline(sent.promise, "The changed revision was never pushed");
-    expect(resources()).toMatchObject([
+    expect(live()).toMatchObject([
       { type: "host.resource", generation: 1, revisions: { machine: "9.0123456789abcdef.3" } },
     ]);
-    expect(Object.keys((resources()[0] as { revisions: object }).revisions)).toEqual(["machine"]);
+    expect(live()[0]).not.toHaveProperty("reply");
+    expect(Object.keys((live()[0] as { revisions: object }).revisions)).toEqual(["machine"]);
+    // A new watch is answered once more, with what it has not installed.
+    socket.watchResources({
+      type: "client.resources.watch",
+      subscriptionId: "shell",
+      generation: 1,
+      interests: ["settings"],
+      installed: { settings: "3" },
+    });
+    await vi.waitFor(() => expect(resources()).toHaveLength(3));
+    expect(resources()[2]).toMatchObject({ reply: true, revisions: { settings: "4" } });
   } finally {
     socket.close("test finished");
   }

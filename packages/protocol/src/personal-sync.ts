@@ -26,7 +26,6 @@ import { WaitingInputViewSchema } from "./personal-input-queue.js";
 import {
   InstalledResourceRevisionsSchema,
   PersonalResourceInterestsSchema,
-  PersonalResourceRevisionsSchema,
   PersonalRevisionSchema,
 } from "./resources.js";
 import {
@@ -418,8 +417,17 @@ export const ScopedHostMessageSchema = z
       type: z.literal("host.resource"),
       ...address,
       subscriptionId: z.literal("shell"),
-      /** The current revision of each watched kind that differs from what the client installed. */
-      revisions: PersonalResourceRevisionsSchema,
+      /**
+       * The current revision of each watched kind that differs from what the client installed.
+       * Never empty on a live push; empty on a reply when nothing moved.
+       */
+      revisions: InstalledResourceRevisionsSchema,
+      /**
+       * This frame answers the client's `client.attach` or `client.resources.watch`. The Host sends
+       * exactly one per attach or watch, with empty `revisions` when nothing moved; every other
+       * `host.resource` frame is a live push.
+       */
+      reply: z.literal(true).optional(),
     }),
     /** Names a live stream on this socket with `handle`; later text for it is `host.text`. */
     z.strictObject({

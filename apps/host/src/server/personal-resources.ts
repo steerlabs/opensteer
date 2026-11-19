@@ -329,9 +329,10 @@ export class PersonalResources {
             }
             return {
               kind,
-              environments: environments.flatMap((environment) => {
-                const harnessCatalogs = catalogs.get(environment.id);
-                return harnessCatalogs ? [{ ...environment, harnessCatalogs }] : [];
+              // Only this owner's environments; each by id, its detail is the environment resource.
+              environments: environments.flatMap(({ id }) => {
+                const harnessCatalogs = catalogs.get(id);
+                return harnessCatalogs ? [{ id, harnessCatalogs }] : [];
               }),
             };
           },

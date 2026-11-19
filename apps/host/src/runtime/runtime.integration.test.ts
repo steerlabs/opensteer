@@ -1,5 +1,5 @@
 import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
-import { testResourceData } from "../server/test-host-api-request.js";
+import { testResourceData, joinEnvironmentCatalogs } from "../server/test-host-api-request.js";
 import {
   connectCallerMachine,
   type CallerMachine,
@@ -896,9 +896,11 @@ integration("Host vertical slice", () => {
           environment.id === environmentId && environment.harnessCatalogs.length === 1,
       );
     });
-    const bootstrap = await testResourceData(origin, "harness-catalog", {
-      headers: authorization(accessToken),
-    });
+    const bootstrap = {
+      environments: await joinEnvironmentCatalogs((kind) =>
+        testResourceData(origin, kind, { headers: authorization(accessToken) }),
+      ),
+    };
     expect(bootstrap.environments).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

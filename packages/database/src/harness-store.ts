@@ -831,8 +831,11 @@ export async function recordHarnessCatalogs(
         await adoptSupersededContinuationIdentities(transaction, input.environmentId, catalog);
     }
     // Publish catalogs only after every affected Thread and provider row is fenced.
+    // What was stored is what the caller learns: a catalog kept as an error is reported as one.
+    const stored: HarnessInstanceCatalog[] = [];
     for (const captured of currentCatalogs) {
       const catalog = await catalogWithinBudget(transaction, input.environmentId, captured);
+      stored.push(catalog);
       await transaction
         .insertInto("harnessCatalogs")
         .values({
@@ -853,7 +856,7 @@ export async function recordHarnessCatalogs(
       mutation.bumpResource("harness-catalog");
       mutation.bumpResource("environment");
     }
-    return currentCatalogs;
+    return stored;
   });
 }
 
@@ -1029,13 +1032,23 @@ export async function readHarnessCatalogModelPage(
         cross join lateral generate_series(
           first, least(last, first + ${input.limit}::integer - skipped - 1)
         ) m(ordinal)
+      ), split as materialized (
+        -- Each catalog is read once per page; its rows take the header and one model from here
+        -- rather than copying the whole catalog per model.
+        select c.environment_id, c.harness_instance_id, c.captured_at,
+          c.catalog ? 'models' as listed, c.catalog - 'models' as header,
+          c.catalog->'models' as models,
+          case when c.catalog ? 'models' then null else c.catalog end as whole
+        from harness_catalogs c
+        where (c.environment_id, c.harness_instance_id) in
+          (select environment_id, harness_instance_id from candidates)
       )
       select p.environment_id, p.harness_instance_id, p.ordinal, c.captured_at,
-        case when c.catalog ? 'models' then jsonb_set(c.catalog, '{models}',
-          case when jsonb_array_length(c.catalog->'models') = 0 then '[]'::jsonb
-            else jsonb_build_array(c.catalog->'models'->(p.ordinal - 1)) end)
-          else c.catalog end as catalog
-      from page p join harness_catalogs c using (environment_id, harness_instance_id)
+        case when c.listed then c.header || jsonb_build_object('models',
+          case when jsonb_array_length(c.models) = 0 then '[]'::jsonb
+            else jsonb_build_array(c.models->(p.ordinal - 1)) end)
+          else c.whole end as catalog
+      from page p join split c using (environment_id, harness_instance_id)
       order by p.environment_id, p.harness_instance_id, p.ordinal
     `.execute(tx)
   ).rows;

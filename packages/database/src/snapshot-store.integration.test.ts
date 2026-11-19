@@ -667,6 +667,14 @@ describeStore("Deployment snapshot history", (it) => {
     expect(revisions.get(`request:${requestId}`)).toBe(renamed.sequence);
     expect(revisions.get(`request:${childRequestId}`)).toBe(renamed.sequence);
     expect(repaired.snapshot.counts.pendingRequestsRevision).toBe(renamed.sequence);
+    // The same title again changes nothing a waiting Request shows.
+    await emit("node.updated", { nodeId, title: "Research the queue" });
+    const unchanged = await database
+      .selectFrom("clientSyncState")
+      .select("pendingRequestsRevision")
+      .executeTakeFirstOrThrow();
+    expect(unchanged.pendingRequestsRevision).toBe(renamed.sequence);
+    expect((await attention()).sequence).toBe(renamed.sequence);
   });
 
   it("moves the shell's pending-Requests revision when, and only when, the Waiting Requests list changes", async ({

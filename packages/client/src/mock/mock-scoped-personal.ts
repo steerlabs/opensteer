@@ -609,8 +609,15 @@ export function mockScopedResource(
     case "owner-profile":
       return { kind, ownerProfile: bootstrap.ownerProfile ?? null };
     case "environment":
-    case "harness-catalog":
       return { kind, environments: bootstrap.environments };
+    case "harness-catalog":
+      return {
+        kind,
+        // Catalog pages name environments by id; their detail is the environment resource.
+        environments: (
+          bootstrap.environments as readonly { id: string; harnessCatalogs: unknown }[]
+        ).map(({ id, harnessCatalogs }) => ({ id, harnessCatalogs })),
+      };
     case "harness":
       return { kind, harnesses: bootstrap.harnesses };
     case "machine":

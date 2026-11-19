@@ -146,3 +146,25 @@ export function injectTestResource<Kind extends ResourceDetail["kind"]>(
     kind,
   );
 }
+
+/**
+ * Each environment as the client holds it: its detail from the `environment` resource with its
+ * account catalogs from `harness-catalog`, which names environments by id only.
+ */
+export async function joinEnvironmentCatalogs(
+  read: <Kind extends "environment" | "harness-catalog">(
+    kind: Kind,
+  ) => ReturnType<typeof readTestResource<Kind>>,
+) {
+  const [{ environments }, catalogs] = await Promise.all([
+    read("environment"),
+    read("harness-catalog"),
+  ]);
+  const byId = new Map(
+    catalogs.environments.map(({ id, harnessCatalogs }) => [id, harnessCatalogs]),
+  );
+  return environments.map((environment) => ({
+    ...environment,
+    harnessCatalogs: byId.get(environment.id) ?? [],
+  }));
+}

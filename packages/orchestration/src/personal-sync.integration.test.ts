@@ -84,7 +84,8 @@ test("wakes independent device generations after a PostgreSQL resource-only comm
         if (!guard()) return false;
         const frame = ScopedHostMessageSchema.parse(JSON.parse(encoded));
         if (frame.type === "host.synchronized") synchronized.resolve();
-        if (frame.type === "host.resource")
+        // The attach's own answer comes first; the commit's revision is the live push after it.
+        if (frame.type === "host.resource" && !frame.reply)
           resource.resolve({ generation: frame.generation, revision: frame.revisions.settings! });
         return true;
       },
