@@ -357,6 +357,51 @@ describe("Runner connection registry", () => {
       await registry.close();
     }
   });
+  it("refuses an older generation even after the newer one has already gone", async () => {
+    const held = Promise.withResolvers<void>();
+    let holdNext = true;
+    const registry = new RunnerRegistry({
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onDisconnect: vi.fn(async () => {
+          if (!holdNext) return;
+          holdNext = false;
+          await held.promise;
+        }),
+        onEvent: vi.fn(commitThrough),
+      },
+    });
+    try {
+      const runnerId = createId("runner");
+      const environmentId = createId("environment");
+      const generation = (number: number, bootId: string) => {
+        const base = hello(runnerId, environmentId, bootId);
+        const fence = {
+          ...base.fence,
+          connectionGeneration: number,
+          connectionId:
+            `rcn_00000000-0000-4000-8000-00000000000${number}` as RunnerIdentity["connectionId"],
+        };
+        return { ...base, ...fence, fence };
+      };
+      await registerAttached(registry, generation(1, "boot-1"), new MemoryRunnerPeer("one"));
+      const secondRegistered = registry.register(
+        generation(2, "boot-2"),
+        new MemoryRunnerPeer("two"),
+      );
+      await vi.waitFor(() => expect(registry.identityForRunner(runnerId)).toBeUndefined());
+      const thirdPeer = new MemoryRunnerPeer("three");
+      await registerAttached(registry, generation(3, "boot-3"), thirdPeer);
+      await registry.disconnect(thirdPeer);
+      expect(registry.identityForRunner(runnerId)).toBeUndefined();
+      held.resolve();
+      // Nothing newer is mapped any more, yet generation 2 is still older than 3.
+      await expect(secondRegistered).rejects.toThrow("stale");
+      expect(registry.identityForRunner(runnerId)).toBeUndefined();
+    } finally {
+      await registry.close();
+    }
+  });
   it("fences a revoked Runner and rejects every later registration", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),

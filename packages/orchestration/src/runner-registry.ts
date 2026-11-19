@@ -559,6 +559,12 @@ export class RunnerRegistry {
   >();
   readonly #hookOperations = new Set<Promise<unknown>>();
   readonly #revokedRunnerIds = new Set<RunnerId>();
+  /**
+   * The newest connection generation each Runner has started registering with.
+   * It outlives the connection, so an older generation that resumes after a
+   * newer one came and went is still refused.
+   */
+  readonly #highestGeneration = new Map<RunnerId, number>();
   readonly #lifetime = new AbortController();
   #closing = false;
   #closePromise: Promise<void> | undefined;
@@ -586,6 +592,8 @@ export class RunnerRegistry {
         message: "Runner peer is already registered",
       });
     }
+    this.#assertNewestGeneration(identity);
+    this.#highestGeneration.set(identity.runnerId, identity.connectionGeneration);
     await this.#runHook(() => this.#hooks.authorize(identity));
     const agentHome = await this.#runHook(() => this.#hooks.agentHome?.(identity));
     this.#assertOpen();
@@ -632,6 +640,7 @@ export class RunnerRegistry {
         });
       }
     }
+    this.#assertNewestGeneration(identity);
     const settled = deferred<void>();
     const now = this.#now();
     const connection: RunnerConnection = {
@@ -721,6 +730,13 @@ export class RunnerRegistry {
       void this.#runHook(() => this.#hooks.onRegistered?.(identity)).catch(() => undefined);
     }
     return identity;
+  }
+  #assertNewestGeneration(identity: Pick<RunnerIdentity, "connectionGeneration" | "runnerId">) {
+    if ((this.#highestGeneration.get(identity.runnerId) ?? -1) > identity.connectionGeneration)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Runner connection generation is stale",
+      });
   }
   /** The in-memory connection fence: superseded or revoked connections fail it. */
   isCurrentConnection(identity: Pick<RunnerIdentity, "connectionId" | "runnerId">): boolean {

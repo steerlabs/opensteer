@@ -2254,13 +2254,18 @@ export async function createHostRuntime(
               await machineFullDiskAccess.fulfillForMachine(identity.runnerId);
             }
             try {
+              // A newer connection may have registered while this one awaited;
+              // its follow-up work must not discard what that one recorded.
+              const current = () => runners.isCurrentConnection(identity);
               // Reconnection supersedes the previous boot's observations even
               // if inventory work or the replacement capture fails below.
               for (const environmentId of identity.environmentIds) {
+                if (!current()) return;
                 const harnesses = await store.listHarnessInstances({
                   environmentIds: [environmentId],
                 });
                 for (const harness of harnesses) {
+                  if (!current()) return;
                   await store.discardHarnessCatalog(environmentId, harness.id);
                 }
               }
@@ -2279,6 +2284,7 @@ export async function createHostRuntime(
               }
               // Capture this boot's answer; convergence retries a failed capture.
               for (const environmentId of identity.environmentIds) {
+                if (!current()) return;
                 if (identity.modules.agents) {
                   await ensureDefaultHarnesses(store, environmentId, identity.modules.agents);
                 }
