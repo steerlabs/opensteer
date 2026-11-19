@@ -309,7 +309,7 @@ export class PersonalTeamRequestsStore {
       .where("kind", "=", "ask")
       .where("localDecision", "is", null)
       .where("terminalState", "is", null)
-      .where("consentExpiresAt", "<=", executionDate(this.database))
+      .where("consentExpiresAt", "<=", sql<Date>`clock_timestamp()`)
       .orderBy("consentExpiresAt")
       .orderBy("teamDeploymentId")
       .orderBy("requestId")

@@ -1,6 +1,5 @@
 import type { DatabaseSchema } from "./schema.js";
 import {
-  OpensteerError,
   type DeploymentId,
   type RequestId,
   type TeamAgentRequestId,
@@ -8,12 +7,8 @@ import {
   type ExecutionNodeId,
   utf8Prefix,
 } from "@opensteer/core";
-import { sql, type Kysely, type Insertable } from "kysely";
-import {
-  commitPersonalMutation,
-  type PersonalMutation,
-  type PersonalMutationTransaction,
-} from "./personal-mutation.js";
+import { sql, type Insertable } from "kysely";
+import type { PersonalMutation, PersonalMutationTransaction } from "./personal-mutation.js";
 import type { PersonalAttentionTable } from "./personal-state-schema.js";
 import { publishThreadSummary } from "./thread-status.js";
 
@@ -359,43 +354,6 @@ export async function refreshLatestRunCompletion(
   return changed;
 }
 
-export async function requireFreshPersonalAttention(tx: Tx) {
-  const due = await sql`select 1 from personal_attention a join personal_team_links link
-    on link.team_deployment_id=a.team_deployment_id
-    where a.kind='team-ask' and a.expires_at<=transaction_timestamp()
-      and link.state in (${sql.join(liveLinkStates)}) limit 1`.execute(tx);
-  if (due.rows.length)
-    throw new OpensteerError({
-      code: "conflict",
-      message: "Team approval expiry is being applied",
-      retryable: true,
-    });
-}
-
-export function settleExpiredPersonalAttention(database: Kysely<DatabaseSchema>) {
-  return commitPersonalMutation(database, async (tx, mutation) => {
-    const due = await tx
-      .selectFrom("personalAttention")
-      .select(["id", "teamDeploymentId", "teamRequestId"])
-      .where(sql<boolean>`kind='team-ask' and expires_at<=${mutation.state.now}`)
-      .orderBy("expiresAt")
-      .orderBy("id")
-      .limit(128)
-      .execute();
-    if (!due.length) return 0;
-    await tx
-      .selectFrom("personalTeamLinks")
-      .select("id")
-      .where("teamDeploymentId", "in", [...new Set(due.map((entry) => entry.teamDeploymentId!))])
-      .orderBy("id")
-      .forNoKeyUpdate()
-      .execute();
-    for (const entry of due)
-      await refreshTeamAskAttention(tx, mutation, entry.teamDeploymentId!, entry.teamRequestId!);
-    return due.length;
-  });
-}
-
 export async function readAttentionKeys(
   tx: Tx,
   input: {
@@ -432,7 +390,7 @@ export async function readAttentionKeys(
        from personal_team_links link cross join lateral (
          select id,kind,request_id,team_deployment_id,team_request_id,sort_at from personal_attention
          where team_deployment_id=link.team_deployment_id and kind='team-ask'
-          and expires_at > transaction_timestamp() ${seek}
+          ${seek}
          order by sort_at desc,id desc limit ${limit}
        ) ask where link.approval_attention_count>0 and link.state in (${sql.join(liveLinkStates)})
       )

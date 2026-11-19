@@ -3,15 +3,15 @@ import { sql } from "kysely";
 import { expect, test } from "vitest";
 import {
   readAttentionKeys,
-  requireFreshPersonalAttention,
   refreshLatestRunCompletion,
-  settleExpiredPersonalAttention,
   refreshTeamAskAttention,
 } from "./personal-attention-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { createPersonalStateFixture } from "./personal-state.test-support.js";
+import { buildPersonalShellSnapshot } from "./personal-snapshot-store.js";
 import { PersonalTeamLinksStore } from "./personal-team-links-store.js";
-import { withPersonalSyncRead } from "./personal-sync-store.js";
+import { setExecutionClock } from "./personal-transaction.js";
+import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
 
 test("parks ordinary asks by link while retaining failed asks and dropping expired consent", async () => {
   const fixture = await createPersonalStateFixture("link-bucket");
@@ -61,25 +61,40 @@ test("parks ordinary asks by link while retaining failed asks and dropping expir
     await flip("active");
     expect(await fetchKinds()).toEqual(["failed-ask", "team-ask"]);
 
-    const expiredAt = new Date("2000-01-01");
+    // PostgreSQL says the ask is due; this Host's clock runs an hour behind it.
+    const dueOnDatabase = sql<Date>`clock_timestamp() - interval '1 second'`;
     await database
       .updateTable("personalTeamRequests")
-      .set({ consentExpiresAt: expiredAt })
+      .set({ consentExpiresAt: dueOnDatabase })
       .where("teamDeploymentId", "=", teamId)
       .where("requestId", "=", ordinary)
       .execute();
     await database
       .updateTable("personalAttention")
-      .set({ expiresAt: expiredAt })
+      .set({ expiresAt: dueOnDatabase })
       .where("id", "=", `team:${teamId}:${ordinary}`)
       .execute();
-    await expect(
-      withPersonalSyncRead(database, requireFreshPersonalAttention),
-    ).rejects.toMatchObject({ code: "conflict", retryable: true });
-    expect(await settleExpiredPersonalAttention(database)).toBe(1);
-    await expect(
-      withPersonalSyncRead(database, requireFreshPersonalAttention),
-    ).resolves.toBeUndefined();
+    setExecutionClock(database, () => Date.now() - 3_600_000);
+    // An attach never waits on the owner: it shows the ask until the owner settles it.
+    expect(await fetchKinds()).toEqual(["failed-ask", "team-ask"]);
+    const shell = await withPersonalSyncRead(database, async (tx) =>
+      buildPersonalShellSnapshot(
+        tx,
+        await authorizedSyncState(tx, fixture.run.userId),
+        fixture.run.userId,
+      ),
+    );
+    expect(shell.attention.map(({ kind }) => kind).toSorted()).toEqual(["failed-ask", "team-ask"]);
+    // The owner settles it: the ask leaves Needs you.
+    await database
+      .updateTable("personalTeamRequests")
+      .set({ terminalState: "cancelled" })
+      .where("teamDeploymentId", "=", teamId)
+      .where("requestId", "=", ordinary)
+      .execute();
+    await commitPersonalMutation(database, (tx, mutation) =>
+      refreshTeamAskAttention(tx, mutation, teamId, ordinary),
+    );
     await flip("revoked");
     await flip("active");
     expect(await fetchKinds()).toEqual(["failed-ask"]);

@@ -10,7 +10,7 @@ import { threadQueueView } from "./personal-queue-view.js";
 import { nodeSubjectView } from "./execution-nodes.js";
 import { clientSendKeyWireReserve } from "@opensteer/protocol/transcript";
 import type { PersonalMutationTransaction } from "./personal-mutation.js";
-import { readAttentionKeys, requireFreshPersonalAttention } from "./personal-attention-store.js";
+import { readAttentionKeys } from "./personal-attention-store.js";
 import {
   type authorizedSyncState,
   type PersonalReadScope,
@@ -66,7 +66,6 @@ export async function buildPersonalShellSnapshot(
     viewerId,
     ...(selectedThreadId ? { selectedThreadId } : {}),
   });
-  await requireFreshPersonalAttention(tx);
   const attention = await readPendingAttention(tx);
   const { pendingRequestCount, needsYouCount, unreadTaskCount } = state;
   return PersonalShellSnapshotSchema.parse({

@@ -1,4 +1,5 @@
 import { sql, type Kysely } from "kysely";
+import { executionDate } from "./personal-transaction.js";
 import type { DatabaseSchema } from "./schema.js";
 
 const signInExpiry = sql<string>`payload->>'expiresAt'`;
@@ -9,7 +10,8 @@ export async function nextPersonalRequestDeadline(database: Kysely<DatabaseSchem
     select least(
       (select (payload->>'expiresAt')::timestamptz from requests
        where ${pendingSignIn} order by payload->>'expiresAt', id limit 1),
-      (select consent_expires_at from personal_team_requests
+      (select ${executionDate(database).toISOString()}::timestamptz
+         + (consent_expires_at - clock_timestamp()) from personal_team_requests
        where kind='ask' and terminal_state is null and local_decision is null
          and consent_expires_at is not null
        order by consent_expires_at, team_deployment_id, request_id limit 1),
