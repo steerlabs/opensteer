@@ -351,3 +351,57 @@ it("keeps a watching device on one stream of values through a busy Run, an overs
     await database.drop();
   }
 }, 120_000);
+
+it("republishes the thread a device views when a return-hint input changes, and only that thread", async () => {
+  const database = await cloneTestDatabase("host");
+  let host: PrivateMachineHost | undefined;
+  let watcher: Awaited<ReturnType<typeof watch>> | undefined;
+  try {
+    host = await startPrivateMachineHost(database.url, { logger: false });
+    const { store } = host;
+    const tasks = createPersonalRunFixturePort(store);
+    const viewed = await tasks.createTask({ ownerId: host.ownerId, suffix: "hint-viewed" });
+    const other = await tasks.createTask({ ownerId: host.ownerId, suffix: "hint-other" });
+    watcher = await watch(host, viewed.threadId);
+    const from = watcher.frames.length;
+    const head = async () =>
+      (
+        await store.database
+          .selectFrom("clientSyncState")
+          .select("sequence")
+          .executeTakeFirstOrThrow()
+      ).sequence;
+    const before = await head();
+    await store.notificationState.setIdleCompactionPolicy({
+      policy: { mode: "off" },
+      userId: host.ownerId,
+    });
+    await watcher.until(
+      () =>
+        watcher!.frames
+          .slice(from)
+          .some(
+            (frame) =>
+              frame.type === "host.changes" &&
+              frame.scope.kind === "thread" &&
+              frame.changes.some(
+                (change) => change.entityKind === "thread" && change.entityId === viewed.threadId,
+              ),
+          ),
+      "The viewed task's thread value was not republished",
+    );
+    const republished = await store.database
+      .selectFrom("clientChanges")
+      .select("scopeKey")
+      .where("entityKind", "=", "thread")
+      .where("sequence", ">", before)
+      .execute();
+    expect(republished).toEqual([{ scopeKey: `thread:${viewed.threadId}` }]);
+    expect(other.threadId).not.toBe(viewed.threadId);
+    expect(watcher.closes).toEqual([]);
+  } finally {
+    watcher?.socket.terminate();
+    await host?.close();
+    await database.drop();
+  }
+});

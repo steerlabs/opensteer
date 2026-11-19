@@ -294,6 +294,13 @@ export class PersonalSyncSocket {
     current.checkCredit?.();
   }
 
+  /** Threads with a detail subscription on this socket (at most four). */
+  watchedThreads() {
+    return [...this.#subscriptions.values()].flatMap(({ request, removed }) =>
+      request.scope.kind === "shell" || removed ? [] : [request.scope.threadId],
+    );
+  }
+
   observesThread(threadId: string) {
     return [...this.#subscriptions.values()].some(
       ({ request, synchronized, removed, pauseCount }) =>

@@ -50,6 +50,11 @@ export class RealtimeHub {
     return () => this.#connections.delete(connection);
   }
 
+  /** Every thread some socket holds a detail subscription for. */
+  watchedThreads(): ReadonlySet<string> {
+    return new Set([...this.#connections].flatMap(({ sync }) => sync.watchedThreads()));
+  }
+
   wake(head: string, changedScopes: ReadonlySet<string> = new Set()): void {
     if (BigInt(head) > BigInt(this.#head)) this.#head = head;
     for (const { sync } of this.#connections) sync.wake(head, changedScopes);
