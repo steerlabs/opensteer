@@ -151,7 +151,7 @@ export class PersonalResourceReads implements PersonalResourcePort {
       return;
     const observed = () => this.#listeners.has(kind) && this.#options.canRead();
     void this.#reads
-      .request(kind, (read) => this.#job(kind, read), observed)
+      .request(kind, (read) => this.#job(kind, read), { observed })
       .catch(() => undefined);
   }
 
