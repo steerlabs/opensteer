@@ -117,17 +117,17 @@ export class PersonalResourceReads implements PersonalResourcePort {
     this.#installed.delete(kind);
   }
 
-  /** Watches a kind for as long as this viewer lasts: something read the value it fills. */
+  /** Watches a kind for this client's life: something read the value it fills. */
   retain(kind: PersonalResourceKind) {
     if (this.#retained.has(kind)) return;
     this.#retained.set(kind, this.watch(kind, noop));
   }
 
-  /** Another viewer: nothing held or retained belongs to them. */
+  /**
+   * Another viewer or history: nothing read or in flight belongs to it. What screens show stays
+   * watched, so `resume()` reads it again for whoever is attached next.
+   */
   reset() {
-    const retained = [...this.#retained.values()];
-    this.#retained.clear();
-    for (const release of retained) release();
     this.#viewer++;
     this.abort();
     this.#known.clear();

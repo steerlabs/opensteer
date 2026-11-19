@@ -1494,6 +1494,39 @@ export class HttpHostClient {
     this.#removedTasks.clear();
   }
 
+  /**
+   * Another viewer, session or history. Everything held for the one before goes in this one step,
+   * together with what says it was read (the resource reader's installed revisions, the waiting
+   * Requests' signature, attention), so nothing cleared can look already read. It is the only place
+   * held data is cleared for a viewer.
+   */
+  #forgetViewer(keep: Partial<HostSnapshot>) {
+    this.#viewerGeneration++;
+    clearRunPageViews(this);
+    clearRunPlacePictures(this);
+    this.#runPlaces.clear();
+    this.#targetedWatch.clear();
+    this.#targetedControl.clear();
+    this.#computerViews.clear();
+    this.#ownerViews.clear();
+    this.#pageSessions.clear();
+    this.#viewers.clear();
+    this.#tabs.clear();
+    this.#threadState.clear();
+    this.#threadRenames.clear();
+    this.#threadIcons.clear();
+    this.#environmentCatalogs.clear();
+    this.#bodies.clear();
+    this.#clearAttachmentReads();
+    this.#threadDeployment.clear();
+    this.#clearViewerReads();
+    this.#invalidateAttention();
+    this.#waitingRequestReads.stop("waiting-requests");
+    this.#waitingRequestSignature = "";
+    this.#resources.reset();
+    this.#update({ ...emptySnapshot(this.#tabs), ...keep });
+  }
+
   watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
     const scope = this.#detailScope(threadId, nodeId);
     if (scope?.kind !== "node") throw new Error("Invalid subagent scope.");
@@ -1671,6 +1704,7 @@ export class HttpHostClient {
     const old = this.#publishedShell;
     this.#publishedShell = state;
     const shellAuthority = state.snapshot;
+    let forgot = false;
     if (
       (old !== undefined && old.history !== state.history) ||
       (shellAuthority &&
@@ -1681,19 +1715,9 @@ export class HttpHostClient {
           (shellAuthority.session &&
             this.#snapshot.sessionId !== shellAuthority.session.sessionId)))
     ) {
-      this.#viewerGeneration++;
-      this.#threadState.clear();
-      this.#threadRenames.clear();
-      this.#threadIcons.clear();
-      this.#resources.reset();
-      this.#environmentCatalogs.clear();
-      this.#bodies.clear();
-      this.#clearAttachmentReads();
-      this.#threadDeployment.clear();
-      this.#clearViewerReads();
-      this.#invalidateAttention();
       const { connection, connectionInterrupted, network } = this.#snapshot;
-      this.#update({ ...emptySnapshot(this.#tabs), connection, connectionInterrupted, network });
+      this.#forgetViewer({ connection, connectionInterrupted, network });
+      forgot = true;
     }
     const shell = state.snapshot;
     if (!shell || this.#disposed) return;
@@ -1810,7 +1834,7 @@ export class HttpHostClient {
       this.#invalidatePersonalRemoteAccess();
       this.#reverifyCapabilities();
       this.#resources.resume();
-    }
+    } else if (forgot) this.#resources.resume();
     if (
       state.synchronized &&
       (shell.counts.needsYouCount || this.#snapshot.needsYou) &&
@@ -2482,7 +2506,14 @@ export class HttpHostClient {
 
   async reauthenticate(): Promise<void> {
     if (this.#disposed) return;
-    this.#update({ ...this.#snapshot, session: "checking" });
+    // The credential may have changed. A known viewer is judged against the next shell cut; what
+    // was read before any viewer was known is read again under the new credential.
+    if (this.#snapshot.user === null)
+      this.#forgetViewer({
+        identityConfig: this.#snapshot.identityConfig,
+        connection: this.#snapshot.connection,
+      });
+    else this.#update({ ...this.#snapshot, session: "checking" });
     this.connection.retry();
     await this.#load;
   }
@@ -3888,11 +3919,8 @@ export class HttpHostClient {
         const affected = affectedPersonalSubscriptions(event.reason ?? "");
         if (affected !== null) {
           if (affected.length === 0 || affected.includes("shell")) {
-            this.#viewerGeneration++;
             this.#stream.clear(true);
-            this.#resources.reset();
-            this.#clearViewerReads();
-            this.#update({ ...emptySnapshot(this.#tabs), connection: "connecting" });
+            this.#forgetViewer({ connection: "connecting" });
           } else {
             for (const scope of this.#stream.revokeDetails(affected)) {
               if (scope.kind !== "thread") continue;
@@ -4048,20 +4076,10 @@ export class HttpHostClient {
 
   #expireSession() {
     if (this.#disposed || this.#snapshot.session === "authentication-required") return;
-    this.#viewerGeneration++;
     this.connection.invalidateScope();
     this.#closeSocket();
     this.#stream.clear(true);
-    this.#bodies.clear();
-    this.#resources.reset();
-    this.#environmentCatalogs.clear();
-    this.#clearViewerReads();
-    this.#threadDeployment.clear();
-    this.#threadState.clear();
-    this.#threadRenames.clear();
-    this.#threadIcons.clear();
-    this.#update({
-      ...emptySnapshot(this.#tabs),
+    this.#forgetViewer({
       identityConfig: this.#snapshot.identityConfig,
       connection: "connected",
       session: "authentication-required",
@@ -4168,25 +4186,10 @@ export class HttpHostClient {
         };
     }
     const scope = viewerScopeOf(snapshot);
-    if (this.#viewer.change(scope)) {
-      clearRunPageViews(this);
-      clearRunPlacePictures(this);
-      this.#runPlaces.clear();
-      this.#targetedWatch.clear();
-      this.#targetedControl.clear();
-      this.#clearAttachmentReads();
-      this.#computerViews.clear();
-      this.#ownerViews.clear();
-      this.#pageSessions.clear();
-      this.#viewers.clear();
-      this.#tabs.clear();
-      // The tab inventory a read installed went with the store: read it again for this viewer,
-      // or a read that landed before the viewer was known leaves the catalog empty until a push.
-      this.#resources.forget("tab");
-      this.#resources.forget("tab-layout");
-      this.#resources.resume();
-      snapshot = { ...snapshot, browserSessions: [] };
-    }
+    // Fences answers asked under another scope. What is held is cleared only by `#forgetViewer`:
+    // a viewer becoming known adopts what was read for it, and every other viewer has gone through
+    // `#forgetViewer` before its first cut is applied.
+    this.#viewer.change(scope);
     // A dropped connection pauses the views being watched; it does not end them.
     this.#computerViews.setConnected(scope !== null && snapshot.connection === "connected");
     this.browserHistory.setScope(scope);
