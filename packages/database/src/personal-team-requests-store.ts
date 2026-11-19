@@ -45,7 +45,7 @@ export class PersonalTeamRequestsStore {
   async prunePosts() {
     await this.database
       .deleteFrom("personalTeamPosts")
-      .where("createdAt", "<=", new Date(Date.now() - 14 * 86400000))
+      .where("createdAt", "<=", sql<Date>`now() - interval '14 days'`)
       .execute();
   }
 
