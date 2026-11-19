@@ -4999,6 +4999,8 @@ export interface AssignmentReturnDrain {
   }[];
   /** Returns still pending behind a full parent inbox. */
   readonly waiting: number;
+  /** The batch was full: more pending returns may be behind it. */
+  readonly more: boolean;
 }
 
 /** The outbox retry: one return that cannot be delivered never holds back the rest. */
@@ -5031,7 +5033,7 @@ export async function drainPendingAssignmentReturns(
       });
     }
   }
-  return { failures, waiting };
+  return { failures, waiting, more: candidates.length === Math.max(1, Math.min(limit, 1_000)) };
 }
 function canonicalDelegateThreadRequest(
   input: DelegateThreadRequest,

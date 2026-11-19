@@ -58,7 +58,8 @@ import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import { runAllowsPersonalContext } from "@opensteer/database";
 import { resolveTeamTaskExecution } from "./team-task-execution.js";
-import { DeadlineDrain, retryWithBackoff } from "./deadline-drain.js";
+import { DeadlineDrain } from "./deadline-drain.js";
+import { assignmentReturnPass } from "./assignment-return-pass.js";
 import { executionLeaseDrain } from "./execution-leases.js";
 import { TeamRunEvents } from "./team-run-events.js";
 import { initializePersonalState } from "./personal-state.js";
@@ -1681,13 +1682,11 @@ export async function createHostRuntime(
     assignmentReturns = new DeadlineDrain({
       ...(options.executionClock ? { clock: options.executionClock } : {}),
       onError: reportMutationFailure,
-      drain: async () => {
-        const returns = await store.drainPendingAssignmentReturns();
-        for (const { assignmentId, error } of returns.failures) {
-          reportAssignmentReturnError(assignmentId, error);
-        }
-        return returns.failures.length > 0 || returns.waiting > 0 ? retryWithBackoff : null;
-      },
+      drain: () =>
+        assignmentReturnPass(
+          (limit) => store.drainPendingAssignmentReturns(limit),
+          (assignmentId, error) => reportAssignmentReturnError(assignmentId, error),
+        ),
     });
     store.onAssignmentReturnReady(() => assignmentReturns?.wake());
     store.onPersonMessageReady((message) => notificationDispatcher?.dispatch(message));

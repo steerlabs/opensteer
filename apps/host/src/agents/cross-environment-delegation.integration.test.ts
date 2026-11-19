@@ -1183,6 +1183,7 @@ integration("personal task delegation lifecycle", () => {
     await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
       failures: [],
       waiting: 0,
+      more: false,
     });
     const returned = await returnMessages(fixture.parentThreadId);
     expect(returned).toHaveLength(1);
@@ -1413,6 +1414,7 @@ integration("personal task delegation lifecycle", () => {
     await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
       failures: [],
       waiting: 0,
+      more: false,
     });
     const waiting = await store.listThreadAssignmentsForOwner({
       ownerId: fixture.userId,
@@ -1753,6 +1755,7 @@ integration("personal task delegation lifecycle", () => {
     await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
       failures: [],
       waiting: 0,
+      more: false,
     });
     const nudge = await commands.enqueueThreadInput({
       content: [
@@ -2358,6 +2361,7 @@ integration("personal task delegation lifecycle", () => {
     await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
       failures: [],
       waiting: 0,
+      more: false,
     });
     acceptanceEvidence.push({
       caseId: "L23-unbound",
