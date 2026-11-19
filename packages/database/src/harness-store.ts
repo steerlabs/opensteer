@@ -1,4 +1,8 @@
 import {
+  catalogWithinBudget,
+  requireHarnessRoom,
+} from "./personal-inventory-limits.js";
+import {
   administrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
@@ -216,6 +220,7 @@ export async function createHarnessInstance(
       .where("environmentId", "=", input.environmentId)
       .where("removedAt", "is", null)
       .executeTakeFirstOrThrow();
+    await requireHarnessRoom(transaction, input.config);
     if (Number(live.count) >= maxHarnessInstancesPerEnvironment) {
       throw new OpensteerError({
         code: "conflict",
@@ -487,6 +492,7 @@ export async function updateHarnessInstance(
       // The name holds the revision the row carries right now; a
       // runtime-affecting change is what advances it.
       const currentRevision = current.runtimeRevision;
+      if (configChanged) await requireHarnessRoom(transaction, input.config, current.id);
       const enabling = input.enabled === true && !current.enabled;
       const disablingDefault = input.enabled === false && current.enabled && current.isDefault;
       let claimsDefault = false;
@@ -828,7 +834,8 @@ export async function recordHarnessCatalogs(
         await adoptSupersededContinuationIdentities(transaction, input.environmentId, catalog);
     }
     // Publish catalogs only after every affected Thread and provider row is fenced.
-    for (const catalog of currentCatalogs) {
+    for (const captured of currentCatalogs) {
+      const catalog = await catalogWithinBudget(transaction, input.environmentId, captured);
       await transaction
         .insertInto("harnessCatalogs")
         .values({
