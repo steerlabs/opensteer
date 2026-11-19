@@ -326,6 +326,55 @@ describe("harness catalog convergence", () => {
         }),
       ).rejects.toThrow("not connected");
     });
+    it("clears a committed profile's debt even when another Runner fails in the same pass", async () => {
+      const time = manual();
+      const otherEnvironment = createId("environment");
+      const other: HarnessInstanceRecord = {
+        ...harness,
+        environmentId: otherEnvironment,
+        id: createId("harnessInstance"),
+      };
+      const inspectHarnesses = vi.fn<HarnessCatalogInspector["inspectHarnesses"]>(
+        async (environmentId) => {
+          if (environmentId === otherEnvironment) throw new Error("Computer disconnected");
+          return [readyCatalog()];
+        },
+      );
+      // Both stored answers say sign-in required: only a debt makes a pass ask.
+      const catalogs: HarnessCatalogConvergenceStore = {
+        listHarnessCatalogs: async () =>
+          [harness, other].map((record) => ({
+            capturedAt: new Date(),
+            catalog: { ...signIn, harnessInstanceId: record.id },
+            environmentId: record.environmentId,
+            harnessInstanceId: record.id,
+          })),
+        listHarnessInstances: async () => [harness, other],
+        recordHarnessCatalogs: async ({ catalogs: captured }) => captured,
+      };
+      const owner = createHarnessCatalogConvergence({
+        catalogs,
+        runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
+        captureTimeoutMs: 1_000,
+        connectedEnvironmentIds: async () => [harnessEnvironmentId, otherEnvironment],
+        onCommitted: vi.fn(),
+        onError: vi.fn(),
+        clock: time.clock,
+      });
+      // The failing Runner's debt first: its pass is still running when A's
+      // debt arrives, so the rerun owes both and fails on B.
+      owner.owe(other.id);
+      owner.owe(harnessInstanceId);
+      await owner.settled();
+      expect(time.armed()).toHaveLength(1);
+      time.advance(time.armed()[0]!);
+      await owner.settled();
+      const asked = inspectHarnesses.mock.calls.map(([environmentId]) => environmentId);
+      // A's capture committed in the failing pass: the backoff retry asks only for B.
+      expect(asked.filter((id) => id === harnessEnvironmentId)).toHaveLength(1);
+      expect(asked.filter((id) => id === otherEnvironment)).toHaveLength(3);
+      await owner.close();
+    });
     it("keeps a newer invalidation owed when an older pass finishes after it", async () => {
       const time = manual();
       const stored = convergence({ stored: signIn });

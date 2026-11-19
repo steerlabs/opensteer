@@ -184,9 +184,13 @@ export function createHarnessCatalogConvergence(options: {
         signal: AbortSignal.timeout(options.captureTimeoutMs),
         ...(options.clock ? { now: options.clock.now() } : {}),
         onCommitted: options.onCommitted,
+        // Discharged per profile as each capture commits, so one Runner's
+        // failure in this pass leaves only its own profiles owed.
+        onRecorded: (ids) => {
+          for (const id of ids)
+            if (started.has(id) && owed.get(id) === started.get(id)) owed.delete(id);
+        },
       });
-      for (const id of convergence.inspected)
-        if (started.has(id) && owed.get(id) === started.get(id)) owed.delete(id);
       return convergence.staleAt;
     },
   });
@@ -488,6 +492,11 @@ export async function reconcileHarnessCatalogs(options: {
     environmentId: EnvironmentId,
     catalogs: readonly HarnessInstanceCatalog[],
   ) => void;
+  /**
+   * Each profile's capture as it commits, before the pass settles: another
+   * Runner failing later in the same pass does not undo this one.
+   */
+  readonly onRecorded?: (harnessInstanceIds: readonly HarnessInstanceId[]) => void;
 }): Promise<HarnessCatalogConvergence> {
   if (options.connectedEnvironmentIds.length === 0) return { staleAt: null, inspected: new Set() };
   const now = options.now ?? Date.now();
@@ -543,6 +552,7 @@ export async function reconcileHarnessCatalogs(options: {
       return capture.then((catalogs) => {
         // Only a committed capture discharges a profile's debt.
         for (const catalog of catalogs) recorded.add(catalog.harnessInstanceId);
+        options.onRecorded?.(catalogs.map(({ harnessInstanceId }) => harnessInstanceId));
         for (const catalog of catalogs) lookAgain(catalog.status, now);
         options.onCommitted?.(environmentId, catalogs);
       });
