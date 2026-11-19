@@ -83,8 +83,8 @@ function AttachedTabs(props: {
   useEffect(() => {
     void hostClient.load().catch(() => undefined);
   }, [hostClient]);
-  // Tabs that could not be read are said so, with Try again, never listed empty or stale.
-  if (reader !== null && tabsRead.unreadable)
+  // Tabs that could not be read, with none held: said so, with Try again, never listed empty.
+  if (reader !== null && tabsRead.unreadable && !tabsRead.held)
     return (
       <Screen>
         <Notice
@@ -169,8 +169,22 @@ function TabsForReader(props: {
   );
   const filtering = filter.agents || filter.computerId !== null;
   // Reopen is a bar action, so its answer stands at the head of the list.
+  // A held list stays with its controls; above it, that it could not be refreshed.
+  const tabsRead = useUnreadableResources(hostClient, tabKinds);
+  const unreadable = tabsRead.unreadable ? (
+    <Notice
+      action={{ label: "Try again", onPress: tabsRead.retry }}
+      detail="Your computer sent a tab list this phone couldn't read. These are the tabs it last read."
+      title="Couldn't refresh your tabs."
+    />
+  ) : null;
   const notices =
-    reopen.line === null ? null : <ActionLine line={reopen.line} onDismiss={reopen.dismiss} />;
+    reopen.line === null && unreadable === null ? null : (
+      <View>
+        {unreadable}
+        {reopen.line === null ? null : <ActionLine line={reopen.line} onDismiss={reopen.dismiss} />}
+      </View>
+    );
   return (
     <Screen edgeToEdge>
       <TabList

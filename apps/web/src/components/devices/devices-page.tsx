@@ -105,7 +105,11 @@ export function DevicesSection() {
         lead={`Everywhere you’re signed in. Your agent runs on ${homeName} and reaches the rest.`}
         title="Devices"
       />
-      {machinesRead.unreadable ? (
+      {/* With devices held they stay, with their controls, under the error. */}
+      {machinesRead.unreadable && machinesRead.held ? (
+        <SettingsUnreadable held label="your devices" onRetry={machinesRead.retry} />
+      ) : null}
+      {machinesRead.unreadable && !machinesRead.held ? (
         <SettingsUnreadable label="your devices" onRetry={machinesRead.retry} />
       ) : (
         <ul className="card devices-list">

@@ -220,25 +220,30 @@ export function useAiAccounts(host: HostClient): {
       // Accounts that could not be read are said so, with Try again, never shown empty or stale.
       line: accountsRead.unreadable
         ? {
-            text: "Couldn't load your AI accounts.",
+            text: accountsRead.held
+              ? "Couldn't refresh your AI accounts. Showing what was last loaded."
+              : "Couldn't load your AI accounts.",
             tone: "danger",
             link: { label: "Try again", onPress: accountsRead.retry },
           }
         : line,
-      groups: (accountsRead.unreadable ? [] : groups).map(({ accounts, engine }) => ({
-        addable: engine.addable,
-        driverKind: engine.driverKind,
-        name: engine.engineName,
-        rows: accounts.map(({ actions, profile, row }) => ({
-          attention: row.status?.tone === "bad" ? "bad" : row.status ? "warn" : null,
-          id: profile.id,
-          isDefault: profile.isDefault,
-          line: row.line,
-          menu: actions.menu.flatMap(menuAction),
-          name: row.name,
-          primary: primaryAction(actions.primary),
-        })),
-      })),
+      // Held accounts stay with their controls, so whatever is too large can be removed.
+      groups: (accountsRead.unreadable && !accountsRead.held ? [] : groups).map(
+        ({ accounts, engine }) => ({
+          addable: engine.addable,
+          driverKind: engine.driverKind,
+          name: engine.engineName,
+          rows: accounts.map(({ actions, profile, row }) => ({
+            attention: row.status?.tone === "bad" ? "bad" : row.status ? "warn" : null,
+            id: profile.id,
+            isDefault: profile.isDefault,
+            line: row.line,
+            menu: actions.menu.flatMap(menuAction),
+            name: row.name,
+            primary: primaryAction(actions.primary),
+          })),
+        }),
+      ),
       locationId: environment?.id ?? null,
       locations:
         environments.length > 1

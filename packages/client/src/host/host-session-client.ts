@@ -2004,6 +2004,17 @@ export class HttpHostClient {
     const stamp = this.#requestStamp();
     if (stamp === undefined || this.#disposed) return;
     const key = "waiting-requests";
+    // An answer not yet confirmed is never carried across a gap: what it hides shows again,
+    // unless the Host's list, read now, omits it.
+    if (force === "resume") {
+      let unconfirmed = false;
+      for (const [id, { confirmedAfterRun }] of this.#answeredRequests)
+        if (confirmedAfterRun === null) {
+          this.#answeredRequests.delete(id);
+          unconfirmed = true;
+        }
+      if (unconfirmed) force = true;
+    }
     // An attach or a return to the front asks again only when the Host's pending count or
     // Requests revision moved since the list held was read; the Host's revision is the whole news.
     if (
@@ -2043,6 +2054,11 @@ export class HttpHostClient {
   /** The person answered a Request here: it leaves the list now, and stays gone unless re-asked. */
   async #answerRequest(requestId: string, answer: () => Promise<HostApiCommandOutput>) {
     this.#answeredRequests.set(requestId, { confirmedAfterRun: null });
+    const generation = this.#viewerGeneration;
+    const index = this.#snapshot.waitingRequests.findIndex(
+      ({ request }) => request.id === requestId,
+    );
+    const removed = index === -1 ? undefined : this.#snapshot.waitingRequests[index];
     const waitingRequests = this.#snapshot.waitingRequests.filter(
       ({ request }) => request.id !== requestId,
     );
@@ -2054,7 +2070,19 @@ export class HttpHostClient {
       if (held) held.confirmedAfterRun = this.#waitingRequestRuns;
       return result;
     } catch (error) {
+      // Rejected, failed or cancelled: the Request is back now, where it was, and the list held
+      // no longer counts as current, so the next attach or return to the front reads it.
       this.#answeredRequests.delete(requestId);
+      this.#waitingRequestInstalled = "";
+      if (
+        removed &&
+        generation === this.#viewerGeneration &&
+        !this.#snapshot.waitingRequests.some(({ request }) => request.id === requestId)
+      ) {
+        const restored = [...this.#snapshot.waitingRequests];
+        restored.splice(Math.min(index, restored.length), 0, removed);
+        this.#update({ ...this.#snapshot, waitingRequests: restored });
+      }
       throw error;
     } finally {
       this.#syncWaitingRequests(true);

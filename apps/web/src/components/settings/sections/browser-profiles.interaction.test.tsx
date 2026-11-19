@@ -42,8 +42,8 @@ describe("Settings → Browser profiles", () => {
     expect(rows(page)).toEqual(["Shopping", "Work"]);
   });
 
-  it("says it could not load the profiles, with Try again, instead of an empty or old list", async () => {
-    const { page, retry } = await mount({ unreadable: true });
+  it("says it could not load the profiles, with Try again, instead of an empty list", async () => {
+    const { page, retry } = await mount({ unreadable: true, held: false });
     expect(page.textContent).toContain("Couldn't load your browser profiles.");
     expect(page.textContent).not.toContain("No profiles yet");
     expect(rows(page)).toEqual([]);
@@ -52,6 +52,19 @@ describe("Settings → Browser profiles", () => {
     );
     await act(async () => again!.click());
     expect(retry).toHaveBeenCalledWith(["browser-profile"]);
+  });
+
+  it("keeps the profiles last read, with their controls, under a failed refresh", async () => {
+    const { page, retry } = await mount({ unreadable: true });
+    expect(page.textContent).toContain(
+      "Couldn't refresh your browser profiles. Showing what was last loaded.",
+    );
+    expect(rows(page)).toEqual(["Shopping", "Work"]);
+    const again = [...page.querySelectorAll("button")].find(
+      (button) => button.textContent === "Try again",
+    );
+    await act(async () => again!.click());
+    expect(retry).toHaveBeenCalled();
   });
 
   it("keeps both pending disk erasure states visible without profile actions", async () => {
@@ -126,6 +139,8 @@ async function mount(
     readonly path?: string;
     readonly deletions?: HostSnapshot["browserProfileDeletions"];
     readonly unreadable?: boolean;
+    /** Whether a complete inventory of the profiles was read before the failure. */
+    readonly held?: boolean;
   } = {},
 ) {
   const hostClient = new MockHostClient({ latencyMs: 0 });
@@ -135,6 +150,9 @@ async function mount(
     vi.spyOn(hostClient, "getSnapshot").mockReturnValue({
       ...held,
       unreadableResources: ["browser-profile"],
+      ...(input.held === false
+        ? { loadedResources: held.loadedResources.filter((kind) => kind !== "browser-profile") }
+        : {}),
     });
     Object.assign(hostClient, { retryResources: retry });
   }
