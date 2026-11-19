@@ -11,7 +11,7 @@ import {
 } from "@opensteer/protocol/resources";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, test, vi } from "vitest";
-import { PersonalSyncSocket } from "./personal-sync.js";
+import { encodePersonalFrame, PersonalSyncSocket } from "./personal-sync.js";
 
 const scope = { kind: "shell" as const };
 const deploymentId = createId("deployment");
@@ -128,6 +128,7 @@ test("cannot dispatch an old generation after replacing the same slot", async ()
     }),
     async send(raw, guard) {
       const frame = ScopedHostMessageSchema.parse(JSON.parse(raw));
+      if (frame.type === "host.text") throw new Error("Unexpected live text");
       if (frame.generation === 1) {
         oldEntered.resolve();
         await oldMaySend.promise;
@@ -473,7 +474,9 @@ test("coalesces live text for its synchronized detail after the durable barrier"
     expect(frames.filter((frame) => frame.type === "host.live")).toEqual([]);
     socket.wake("2");
     await vi.advanceTimersByTimeAsync(0);
-    expect(frames.filter((frame) => frame.subscriptionId === "detail:0")).toMatchObject([
+    expect(
+      frames.filter((frame) => "subscriptionId" in frame && frame.subscriptionId === "detail:0"),
+    ).toMatchObject([
       { type: "host.synchronized", generation: 3, throughSequence: "1" },
       { type: "host.changes", generation: 3, throughSequence: "2" },
       {
@@ -579,7 +582,8 @@ test.each(["acknowledged", "unacknowledged"] as const)(
         });
         await vi.advanceTimersByTimeAsync(100);
       }
-      expect(frames.filter((frame) => frame.type === "host.live")).toHaveLength(49);
+      expect(frames.filter((frame) => frame.type === "host.live")).toHaveLength(1);
+      expect(frames.filter((frame) => frame.type === "host.text")).toHaveLength(48);
       expect(shellReads()).toBe(2);
       expect(delivered()).toEqual(["2"]);
       expect(closed).not.toHaveBeenCalled();
@@ -622,7 +626,8 @@ test("live text out of credit pauses its scope until the client acknowledges", a
     },
     close: closed,
   });
-  const live = () => frames.filter((frame) => frame.type === "host.live").length;
+  const live = () =>
+    frames.filter((frame) => frame.type === "host.live" || frame.type === "host.text").length;
   const text = "x".repeat(12 * 1024);
   const offer = (index: number) =>
     socket.offerLive(detail, {
@@ -667,5 +672,293 @@ test("live text out of credit pauses its scope until the client acknowledges", a
     socket.close("test finished");
     await vi.advanceTimersByTimeAsync(0);
     vi.useRealTimers();
+  }
+});
+
+test("addresses a shared encoded body exactly as stringifying the whole frame", () => {
+  const threadId = createId("thread");
+  const frame = {
+    type: "host.changes" as const,
+    scope: { kind: "thread" as const, threadId },
+    fromSequence: "1",
+    throughSequence: "2",
+    changes: [
+      {
+        sequence: "2",
+        ordinal: 0,
+        entityKind: "visit" as const,
+        entityId: "visit-é\u{1f600}",
+        operation: "remove" as const,
+      },
+    ],
+  };
+  for (const address of [
+    { subscriptionId: "detail:0" as const, generation: 1 },
+    { subscriptionId: "detail:3" as const, generation: 4096 },
+  ]) {
+    const whole = JSON.stringify({ type: frame.type, ...address, ...omitType(frame) });
+    const { encoded, bytes } = encodePersonalFrame(frame, address);
+    expect(encoded).toBe(whole);
+    expect(bytes).toBe(Buffer.byteLength(whole));
+  }
+});
+
+function omitType<T extends { type: string }>(frame: T) {
+  const { type: _type, ...rest } = frame;
+  return rest;
+}
+
+const liveScope = { kind: "thread", threadId: createId("thread") } as const;
+
+function liveSocket(frames: ScopedHostMessage[], guard: () => boolean = () => true) {
+  return new PersonalSyncSocket({
+    read: async (requested) => ({
+      throughSequence: "1",
+      cursor: {
+        ...cursor,
+        scopeKey: requested.kind === "shell" ? "shell" : `thread:${requested.threadId}`,
+      },
+      frames: [],
+    }),
+    async send(encoded, current) {
+      if (!guard() || !current()) return false;
+      frames.push(ScopedHostMessageSchema.parse(JSON.parse(encoded)));
+      return true;
+    },
+    close() {},
+  });
+}
+
+function liveText(stream: string, text: string, overrides: { runId?: string } = {}) {
+  return {
+    runId: (overrides.runId ?? liveRun) as ReturnType<typeof createId<"run">>,
+    attemptId: liveAttempt,
+    bindingGeneration: 1,
+    liveBootId: liveBoot,
+    streamId: stream,
+    itemId: stream,
+    afterSequence: "1",
+    update: {
+      operation: "replace" as const,
+      offset: 0,
+      totalLength: text.length,
+      text,
+      incomplete: false,
+    },
+  };
+}
+const liveRun = createId("run");
+const liveAttempt = createId("runAttempt");
+const liveBoot = crypto.randomUUID();
+
+test("names a live stream once, then appends with frames of at most 50 bytes of overhead", async () => {
+  vi.useFakeTimers();
+  const frames: ScopedHostMessage[] = [];
+  const socket = liveSocket(frames);
+  try {
+    socket.subscribe({
+      type: "client.subscribe",
+      subscriptionId: "detail:0",
+      scope: liveScope,
+      generation: 1,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const paragraph = "word ".repeat(200);
+    for (let end = 40; end <= paragraph.length; end += 40) {
+      socket.offerLive(liveScope, liveText("tool:a", paragraph.slice(0, end)), {
+        immediate: true,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    const live = frames.filter((frame) => frame.type === "host.live" || frame.type === "host.text");
+    expect(live[0]).toMatchObject({
+      type: "host.live",
+      handle: 1,
+      update: { operation: "replace" },
+    });
+    const appends = live.slice(1);
+    expect(appends).toHaveLength(24);
+    for (const [index, frame] of appends.entries()) {
+      expect(frame).toEqual({
+        type: "host.text",
+        h: 1,
+        o: 40 * (index + 1),
+        n: 40 * (index + 2),
+        t: "word ".repeat(8),
+      });
+      expect(JSON.stringify(frame).length - 40).toBeLessThanOrEqual(50);
+    }
+  } finally {
+    socket.close("test finished");
+    vi.useRealTimers();
+  }
+});
+
+test("a resync and a new generation each name the stream again under a new handle", async () => {
+  vi.useFakeTimers();
+  const frames: ScopedHostMessage[] = [];
+  let tail = "first";
+  const socket = new PersonalSyncSocket({
+    read: async () => ({
+      throughSequence: "1",
+      cursor: { ...cursor, scopeKey: `thread:${liveScope.threadId}` as const },
+      frames: [],
+    }),
+    readLive: () => [liveText("tool:a", tail)],
+    async send(encoded, current) {
+      if (!current()) return false;
+      frames.push(ScopedHostMessageSchema.parse(JSON.parse(encoded)));
+      return true;
+    },
+    close() {},
+  });
+  const subscribe = (generation: number) =>
+    socket.subscribe({
+      type: "client.subscribe",
+      subscriptionId: "detail:0",
+      scope: liveScope,
+      generation,
+    });
+  const live = () =>
+    frames.filter((frame) => frame.type === "host.live" || frame.type === "host.text");
+  try {
+    subscribe(1);
+    await vi.advanceTimersByTimeAsync(100);
+    tail = "first second";
+    socket.offerLive(liveScope, liveText("tool:a", tail), { immediate: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(live()).toMatchObject([
+      { type: "host.live", generation: 1, handle: 1, update: { text: "first" } },
+      { type: "host.text", h: 1, o: 5, n: 12, t: " second" },
+    ]);
+    socket.resyncLive({
+      type: "client.live.resync",
+      subscriptionId: "detail:0",
+      generation: 1,
+      runId: liveRun,
+      streamIds: ["tool:a"],
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(live()[2]).toMatchObject({
+      type: "host.live",
+      generation: 1,
+      handle: 2,
+      update: { operation: "replace", text: "first second" },
+    });
+    // The stream continues mid-flight across a new generation of the same slot.
+    subscribe(2);
+    await vi.advanceTimersByTimeAsync(100);
+    tail = "first second third";
+    socket.offerLive(liveScope, liveText("tool:a", tail), { immediate: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(live().slice(3)).toMatchObject([
+      { type: "host.live", generation: 2, handle: 3, update: { text: "first second" } },
+      { type: "host.text", h: 3, o: 12, n: 18, t: " third" },
+    ]);
+  } finally {
+    socket.close("test finished");
+    vi.useRealTimers();
+  }
+});
+
+test("never drops a queued close behind other streams past the live cap", async () => {
+  vi.useFakeTimers();
+  const frames: ScopedHostMessage[] = [];
+  let open = false;
+  const socket = liveSocket(frames, () => open);
+  try {
+    socket.subscribe({
+      type: "client.subscribe",
+      subscriptionId: "detail:0",
+      scope: liveScope,
+      generation: 1,
+    });
+    open = true;
+    await vi.advanceTimersByTimeAsync(0);
+    open = false;
+    const { update: _text, ...closing } = liveText("tool:closing", "");
+    socket.offerLive(liveScope, { ...closing, update: { operation: "close" } });
+    for (let index = 0; index < 40; index++)
+      socket.offerLive(liveScope, liveText(`tool:${index}`, "x".repeat(4096)));
+    open = true;
+    await vi.advanceTimersByTimeAsync(100);
+    const live = frames.filter((frame) => frame.type === "host.live");
+    expect(live.length).toBeLessThan(41);
+    expect(live).toContainEqual(
+      expect.objectContaining({ streamId: "tool:closing", update: { operation: "close" } }),
+    );
+  } finally {
+    socket.close("test finished");
+    vi.useRealTimers();
+  }
+});
+
+test("encodes a shared cut once and still refuses it on a socket that lost authority before sending", async () => {
+  const threadId = createId("thread");
+  const detail = { kind: "thread", threadId } as const;
+  const frame = {
+    type: "host.snapshot" as const,
+    scope: detail,
+    throughSequence: "1",
+    snapshot: { probe: "shared" },
+  };
+  const shared = {
+    throughSequence: "1",
+    cursor: { ...cursor, scopeKey: `thread:${threadId}` as const },
+    frames: [frame] as never[],
+  };
+  const stringify = vi.spyOn(JSON, "stringify");
+  const sent: string[][] = [[], []];
+  const sockets: PersonalSyncSocket[] = [];
+  for (const index of [0, 1])
+    sockets.push(
+      new PersonalSyncSocket({
+        read: async () => shared,
+        async send(encoded, guard) {
+          // The second device loses access after its frame was encoded and before dispatch.
+          if (index === 1 && encoded.includes('"host.snapshot"'))
+            sockets[1]!.suspendAuthority(new Set([`thread:${threadId}`]));
+          if (!guard()) return false;
+          sent[index]!.push(encoded);
+          return true;
+        },
+        close() {},
+      }),
+    );
+  try {
+    for (const socket of sockets)
+      socket.subscribe({
+        type: "client.subscribe",
+        subscriptionId: "detail:0",
+        scope: detail,
+        generation: 1,
+      });
+    await vi.waitFor(
+      () => expect(sent[0]!.some((raw) => raw.includes("synchronized"))).toBe(true),
+      {
+        timeout: 1000,
+      },
+    );
+    const bodies = stringify.mock.calls.filter(
+      ([value]) =>
+        typeof value === "object" &&
+        value !== null &&
+        "snapshot" in value &&
+        value.snapshot === frame.snapshot,
+    );
+    stringify.mockRestore();
+    expect(bodies).toHaveLength(1);
+    expect(sent[0]![0]).toBe(
+      JSON.stringify({
+        type: "host.snapshot",
+        subscriptionId: "detail:0",
+        generation: 1,
+        ...omitType(frame),
+      }),
+    );
+    expect(sent[1]).toEqual([]);
+  } finally {
+    stringify.mockRestore();
+    for (const socket of sockets) socket.close("test finished");
   }
 });

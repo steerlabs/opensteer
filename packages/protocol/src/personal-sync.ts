@@ -12,7 +12,6 @@ import {
   ThreadStatusSchema,
   ThreadViewSchema,
   UserIdSchema,
-  utf8ByteLength,
 } from "@opensteer/core";
 import { z } from "zod";
 import {
@@ -44,15 +43,20 @@ export const personalShellFrameMaxBytes = 128 * 1024;
 export const personalDetailFrameMaxBytes = 128 * 1024;
 export const personalControlFrameMaxBytes = 4 * 1024;
 
-export function personalHostFrameMaxBytes(frame: ScopedHostMessage): number {
+/** A frame's encoded size limit; senders and receivers measure the encoded bytes against it. */
+export function personalHostFrameMaxBytes(frame: {
+  readonly type: ScopedHostMessage["type"];
+  readonly scope?: PersonalScope;
+}): number {
   switch (frame.type) {
     case "host.snapshot":
-      return frame.scope.kind === "shell"
+      return frame.scope?.kind === "shell"
         ? personalShellFrameMaxBytes
         : personalDetailFrameMaxBytes;
     case "host.changes":
       return personalChangesFrameMaxBytes;
     case "host.live":
+    case "host.text":
       return personalLiveFrameMaxBytes;
     case "host.resource":
       return personalResourceFrameMaxBytes;
@@ -342,24 +346,25 @@ const durableAddress = {
   scope: PersonalScopeSchema,
   throughSequence: PersonalRevisionSchema,
 };
-const liveAddress = {
-  ...address,
-  subscriptionId: detailId,
-  scope: detailScope,
-  liveBootId: z.uuid(),
-  runId: RunIdSchema,
-  attemptId: RunAttemptIdSchema,
-  bindingGeneration: z.int().positive(),
-  streamId: z.string().min(1).max(600),
-  itemId: TranscriptItemIdSchema,
-  afterSequence: PersonalRevisionSchema,
-  item: TranscriptItemSchema.optional(),
-};
+const liveHandle = z.int().positive();
 const liveText = {
   text: z.string().max(16 * 1024),
   offset: z.int().nonnegative(),
   totalLength: z.int().nonnegative(),
 };
+/**
+ * More text for a live stream its `host.live` frame named: `h` is that frame's `handle`, `o` the
+ * offset of `t` and `n` the total length. With `incomplete` it replaces the text; otherwise it
+ * appends. A stream's close is always a full `host.live` frame.
+ */
+const liveTextFrame = z.strictObject({
+  type: z.literal("host.text"),
+  h: liveHandle,
+  o: z.int().nonnegative(),
+  n: z.int().nonnegative(),
+  t: z.string().max(16 * 1024),
+  incomplete: z.boolean().optional(),
+});
 export const ScopedHostMessageSchema = z
   .discriminatedUnion("type", [
     z
@@ -368,14 +373,7 @@ export const ScopedHostMessageSchema = z
         ...durableAddress,
         snapshot: z.union([PersonalShellSnapshotSchema, PersonalDetailSnapshotSchema]),
       })
-      .refine(
-        (value) =>
-          (value.scope.kind === "shell") === "tasks" in value.snapshot &&
-          utf8ByteLength(JSON.stringify(value)) <=
-            (value.scope.kind === "shell"
-              ? personalShellFrameMaxBytes
-              : personalDetailFrameMaxBytes),
-      ),
+      .refine((value) => (value.scope.kind === "shell") === "tasks" in value.snapshot),
     z
       .strictObject({
         type: z.literal("host.changes"),
@@ -393,8 +391,7 @@ export const ScopedHostMessageSchema = z
             (row, index) =>
               row.sequence === frame.throughSequence &&
               (index === 0 || row.ordinal > frame.changes[index - 1]!.ordinal),
-          ) &&
-          utf8ByteLength(JSON.stringify(frame)) <= personalChangesFrameMaxBytes,
+          ),
       ),
     z.strictObject({
       type: z.literal("host.synchronized"),
@@ -415,24 +412,31 @@ export const ScopedHostMessageSchema = z
       revision: PersonalRevisionSchema,
       view: PersonalResourceViewSchema,
     }),
-    z
-      .strictObject({
-        type: z.literal("host.live"),
-        ...liveAddress,
-        update: z.discriminatedUnion("operation", [
-          z.strictObject({ operation: z.literal("append"), ...liveText }),
-          z.strictObject({ operation: z.literal("replace"), ...liveText, incomplete: z.boolean() }),
-          z.strictObject({ operation: z.literal("close") }),
-        ]),
-      })
-      .refine((value) => utf8ByteLength(JSON.stringify(value)) <= personalLiveFrameMaxBytes),
+    /** Names a live stream on this socket with `handle`; later text for it is `host.text`. */
+    z.strictObject({
+      type: z.literal("host.live"),
+      subscriptionId: detailId,
+      generation: address.generation,
+      handle: liveHandle,
+      scope: detailScope,
+      liveBootId: z.uuid(),
+      runId: RunIdSchema,
+      attemptId: RunAttemptIdSchema,
+      bindingGeneration: z.int().positive(),
+      streamId: z.string().min(1).max(600),
+      itemId: TranscriptItemIdSchema,
+      afterSequence: PersonalRevisionSchema,
+      item: TranscriptItemSchema.optional(),
+      update: z.discriminatedUnion("operation", [
+        z.strictObject({ operation: z.literal("append"), ...liveText }),
+        z.strictObject({ operation: z.literal("replace"), ...liveText, incomplete: z.boolean() }),
+        z.strictObject({ operation: z.literal("close") }),
+      ]),
+    }),
+    liveTextFrame,
   ])
   .refine((frame) => {
-    if (frame.type === "host.resource")
-      return utf8ByteLength(JSON.stringify(frame)) <= personalResourceFrameMaxBytes;
-    if (frame.type === "host.synchronized" || frame.type === "host.removed") {
-      if (utf8ByteLength(JSON.stringify(frame)) > personalControlFrameMaxBytes) return false;
-    }
+    if (frame.type === "host.resource" || frame.type === "host.text") return true;
     const isShell = frame.scope.kind === "shell";
     if ((frame.subscriptionId === "shell") !== isShell) return false;
     if ("shellProgress" in frame && frame.shellProgress && !isShell) return false;
