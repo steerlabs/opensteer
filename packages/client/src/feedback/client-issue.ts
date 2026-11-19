@@ -119,6 +119,13 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   "plugin-workflows-active": "Stop this plugin's workflow runs first.",
 };
 
+/** A read the Host answered, saying a source beyond it can't be reached now. */
+const unreachableSources: Readonly<Record<string, string>> = {
+  "plugin-catalog-unavailable": "The plugin catalog can't be reached right now.",
+};
+const unreachableSource = (reason: string | undefined) =>
+  reason && Object.hasOwn(unreachableSources, reason) ? unreachableSources[reason] : undefined;
+
 function rejectionDetail(reason: string | undefined): string | undefined {
   return reason && Object.hasOwn(rejectionReasons, reason) ? rejectionReasons[reason] : undefined;
 }
@@ -187,12 +194,15 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
       return result(`Couldn't open ${issue.resource ?? name}`, "retry", "Try again in a moment.");
     case "read-failed":
       return result(
-        `Couldn't load ${issue.resource ?? "this"}.`,
+        unreachableSource(issue.reason) ?? `Couldn't load ${issue.resource ?? "this"}.`,
         "retry",
         issue.reason === "not_found" ? (rejectionDetail(issue.reason) ?? null) : null,
       );
     case "refresh-failed":
-      return result(`Couldn't refresh ${issue.resource ?? "this"}.`, "retry");
+      return result(
+        unreachableSource(issue.reason) ?? `Couldn't refresh ${issue.resource ?? "this"}.`,
+        "retry",
+      );
     case "not-sent":
       // No reason: a check after a lost answer found it was not done, so it can be tried again.
       return issue.reason === undefined

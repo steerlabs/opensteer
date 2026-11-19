@@ -32,14 +32,31 @@ function legacyState(database: Kysely<DatabaseSchema>) {
     .then(({ rows }) => rows[0]);
 }
 
-test.each(["empty", "personal", "team"] as const)(
+test.each(["empty", "personal", "team", "personal-0035"] as const)(
   "finalizes the %s pre-conversion database before owner setup",
-  async (kind) => {
+  async (start) => {
+    const kind = start === "personal-0035" ? "personal" : start;
     const fixture = await cloneTestDatabase("host");
     const database = createDatabase({ connectionString: fixture.url });
     try {
       await sql`drop schema public cascade; create schema public`.execute(database);
-      await migrateToLatest(database, migrationProvider({ personalCurrentState: false }));
+      // personal-0035 stops before main's shipped plugin migrations, which then run
+      // ahead of the conversion; the others start from main's latest (0037).
+      await migrateToLatest(
+        database,
+        start === "personal-0035"
+          ? {
+              async getMigrations() {
+                const all = await migrationProvider({
+                  personalCurrentState: false,
+                }).getMigrations();
+                return Object.fromEntries(
+                  Object.entries(all).filter(([name]) => name < "0036_one_plugin_per_owner_name"),
+                );
+              },
+            }
+          : migrationProvider({ personalCurrentState: false }),
+      );
       if (kind !== "empty") {
         const id = createId("deployment");
         await sql`insert into deployments (id,singleton_key,active_host_instance_id,canonical_origin,lifecycle,deployment_shape)
@@ -53,8 +70,12 @@ test.each(["empty", "personal", "team"] as const)(
       const lineage = migrationProvider({ personalCurrentState: true });
       await Promise.all([migrateToLatest(database, lineage), migrateToLatest(database, lineage)]);
       const applied = await sql<{ name: string }>`select name from kysely_migration
-        where name = ${personalCurrentStateMigrationName}`.execute(database);
-      expect(applied.rows).toEqual([{ name: personalCurrentStateMigrationName }]);
+        where name >= '0036' order by timestamp, name`.execute(database);
+      expect(applied.rows.map(({ name }) => name)).toEqual([
+        "0036_one_plugin_per_owner_name",
+        "0037_plugin_package_format",
+        personalCurrentStateMigrationName,
+      ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`
         select indexname as name from pg_indexes

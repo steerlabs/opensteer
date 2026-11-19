@@ -335,6 +335,7 @@
     "apps/host/src/knowledge/team-knowledge.ts",
     "apps/host/src/local-servers/computer-mcp-transport.ts",
     "apps/host/src/local-servers/folder-plugin-package.ts",
+    "apps/host/src/local-servers/launch-review.ts",
     "apps/host/src/local-servers/local-mcp-secrets.ts",
     "apps/host/src/local-servers/local-server-registry.ts",
     "apps/host/src/local-servers/local-server-service.ts",

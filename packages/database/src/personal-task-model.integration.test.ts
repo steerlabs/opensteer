@@ -75,7 +75,9 @@ import {
   cancelTeamTaskRequest,
   removeAskTask,
 } from "./task-admission-store.js";
-import { installPersonalMutationHooks } from "./personal-mutation.js";
+import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
+import { publishRunQueue } from "./thread-status.js";
+import { returnRunToQueue } from "./store-primitives.js";
 import { openVoiceThread } from "./voice-store.js";
 import { createMemoryPass } from "./memory-pass-store.js";
 import { messageTeamSources } from "./message-team-sources.js";
@@ -1494,4 +1496,49 @@ it("says on the shell task row whether a Run waits to start with none executing"
     .orderBy("sequence", "desc")
     .executeTakeFirstOrThrow();
   expect(published.payload).toMatchObject({ runQueued: false });
+});
+
+it("republishes the shell row when a starting Run returns to the queue", async () => {
+  const f = await fixture();
+  const task = await f.task("Requeued work");
+  const queued = await enqueueThreadInput(f.database, {
+    threadId: task.id,
+    requestedBy: f.userId,
+    source: { kind: "human" },
+    policy: "queue",
+    content: [{ type: "text", text: "Start, then wait again" }],
+    idempotencyKey: "requeued-row",
+  });
+  const runId = queued.run!.id;
+  const command = await f.database
+    .selectFrom("commands")
+    .select("id")
+    .where("runId", "=", runId)
+    .where("type", "=", "run.execute")
+    .executeTakeFirstOrThrow();
+  await claimCommand(f.database, command.id, "fixture");
+  await commitPersonalMutation(f.database, async (tx) => {
+    await tx.updateTable("runs").set({ status: "starting" }).where("id", "=", runId).execute();
+    await publishRunQueue(tx, task.id, runId);
+  });
+  const latest = async () =>
+    (
+      await f.database
+        .selectFrom("clientChanges")
+        .select("payload")
+        .where("scopeKey", "=", "shell")
+        .where("entityKind", "=", "task")
+        .where("entityId", "=", task.id)
+        .orderBy("sequence", "desc")
+        .executeTakeFirstOrThrow()
+    ).payload;
+  expect(await latest()).toMatchObject({ runQueued: false, status: "running" });
+  const run = await f.database
+    .selectFrom("runs")
+    .select(["id", "environmentId", "threadId"])
+    .where("id", "=", runId)
+    .executeTakeFirstOrThrow();
+  await commitPersonalMutation(f.database, (tx) => returnRunToQueue(tx, { run }));
+  // The task status stays running; only the row's queued bit moved, and viewers get it.
+  expect(await latest()).toMatchObject({ runQueued: true, status: "running" });
 });

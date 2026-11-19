@@ -53,6 +53,11 @@ type Definition<Tag extends string, Fields extends Schema.Struct.Fields> = Heade
    * error is recorded by its tag alone.
    */
   readonly recorded?: (fields: Schema.Struct.Type<Fields>) => string;
+  /**
+   * Its public code when one of its fields names it, such as the reason a product gave for a
+   * refusal it relays; otherwise its tag.
+   */
+  readonly code?: (fields: Schema.Struct.Type<Fields>) => string;
 } & (
     | ErrorPresentation
     | {
@@ -112,8 +117,8 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
     "presentation" in definition ? definition.presentation(error) : definition;
   const properties = {
     code: {
-      get() {
-        return definition.tag;
+      get(this: Self) {
+        return definition.code?.(this) ?? definition.tag;
       },
     },
     title: {

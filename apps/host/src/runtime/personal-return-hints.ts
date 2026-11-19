@@ -1,9 +1,13 @@
 import { returnHintResources } from "@opensteer/database";
 import type { PersonalResourceKind } from "@opensteer/protocol/resources";
 
+const retryFloorMs = 1_000;
+const retryCeilingMs = 60_000;
+
 /**
  * After a commit changes a return-hint input, republishes the `thread` value of each task some
  * device is viewing, never every task. Calls that arrive during a refresh coalesce into one more.
+ * A failed republish is owed: a timer stays armed, backing off, until a pass succeeds.
  */
 export function createReturnHintRefresh<Scope>(input: {
   readonly watched: () => readonly Scope[];
@@ -12,12 +16,15 @@ export function createReturnHintRefresh<Scope>(input: {
 }) {
   let running = false;
   let again = false;
-  return (kinds: ReadonlySet<PersonalResourceKind>) => {
-    if (![...kinds].some((kind) => returnHintResources.has(kind))) return;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  let delay = retryFloorMs;
+  const start = () => {
     if (running) {
       again = true;
       return;
     }
+    clearTimeout(retry);
+    retry = undefined;
     running = true;
     void (async () => {
       try {
@@ -26,11 +33,26 @@ export function createReturnHintRefresh<Scope>(input: {
           const scopes = input.watched();
           if (scopes.length) await input.republish(scopes);
         } while (again);
+        delay = retryFloorMs;
       } catch (error) {
         input.onError(error);
+        retry = setTimeout(start, delay);
+        retry.unref?.();
+        delay = Math.min(delay * 2, retryCeilingMs);
       } finally {
         running = false;
       }
     })();
   };
+  return Object.assign(
+    (kinds: ReadonlySet<PersonalResourceKind>) => {
+      if ([...kinds].some((kind) => returnHintResources.has(kind))) start();
+    },
+    {
+      close() {
+        clearTimeout(retry);
+        retry = undefined;
+      },
+    },
+  );
 }

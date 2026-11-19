@@ -126,12 +126,14 @@ export async function resumedThreadValue(
     (kind) => BigInt(state.resourceRevisions[kind] ?? "0") > BigInt(after),
   );
   const value = changed ? await detailThreadValue(tx, viewerId, threadId) : undefined;
+  // The task row did not change, its derived hint did: stamp the cut so a reader holding the
+  // row's own revision takes this value.
   return value
     ? {
         entityKind: "thread" as const,
         entityId: threadId,
         operation: "upsert" as const,
-        value,
+        value: { ...value, revision: state.sequence },
       }
     : null;
 }

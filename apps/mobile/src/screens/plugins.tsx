@@ -2,6 +2,7 @@ import {
   installPlugin,
   pluginAccessChoices,
   pluginCatalogInstalled,
+  pluginCatalogListView,
   pluginCatalogReader,
   pluginEngineNotice,
   pluginInstalledGroups,
@@ -418,55 +419,48 @@ function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClien
       title: "Catalog",
       rows: [{ key: "error", kind: "status", tone: "bad", label: action.error }],
     });
+  const view = pluginCatalogListView(list, search);
   // A failed read is said under the list, with Try again; entries already shown stay.
-  const issue = list.error ? presentClientIssue({ ...list.error, resource: "the catalog" }) : null;
+  const issue = view.kind === "failed" ? view : view.kind === "entries" ? view.issue : null;
   sections.push({
     key: "catalog",
     title: search ? `Matching “${search}”` : "Catalog",
-    rows: list.loading
-      ? [{ key: "loading", kind: "text", label: "Loading the catalog…" }]
-      : list.items.length === 0
-        ? issue
+    rows:
+      view.kind === "loading"
+        ? [{ key: "loading", kind: "text", label: "Loading the catalog…" }]
+        : view.kind === "failed"
           ? []
-          : [
-              {
-                key: "empty",
-                kind: "text",
-                label: search ? `Nothing matches “${search}”.` : "The catalog is empty.",
-              },
-            ]
-        : [
-            ...list.items.map((entry): NativeSettingsRow => {
-              const already = pluginCatalogInstalled(entry, installed.data?.plugins ?? []);
-              return {
-                key: entry.id,
-                kind: "button",
-                label: entry.name,
-                detail: already ? `Installed · ${entry.description}` : entry.description,
-                mark: { definitionId: entry.id, name: entry.name },
-                disabled: already || action.pending !== null,
-                onPress: () => install(entry),
-              };
-            }),
-            ...(list.nextCursor
-              ? [
-                  {
-                    key: "more",
-                    kind: "button" as const,
-                    label: list.loadingMore ? "Loading…" : "Show more",
-                    disabled: list.loadingMore,
-                    onPress: list.more,
-                  },
-                ]
-              : []),
-          ],
+          : view.kind === "empty"
+            ? [{ key: "empty", kind: "text", label: view.text }]
+            : [
+                ...list.items.map((entry): NativeSettingsRow => {
+                  const already = pluginCatalogInstalled(entry, installed.data?.plugins ?? []);
+                  return {
+                    key: entry.id,
+                    kind: "button",
+                    label: entry.name,
+                    detail: already ? `Installed · ${entry.description}` : entry.description,
+                    mark: { definitionId: entry.id, name: entry.name },
+                    disabled: already || action.pending !== null,
+                    onPress: () => install(entry),
+                  };
+                }),
+                ...(list.nextCursor
+                  ? [
+                      {
+                        key: "more",
+                        kind: "button" as const,
+                        label: list.loadingMore ? "Loading…" : "Show more",
+                        disabled: list.loadingMore,
+                        onPress: list.more,
+                      },
+                    ]
+                  : []),
+              ],
     footer: issue
       ? {
-          text: issue.detail ? `${issue.title}. ${issue.detail}` : issue.title,
-          link:
-            issue.action === "retry"
-              ? { label: clientIssueActions.tryAgain, onPress: list.reload }
-              : null,
+          text: issue.text,
+          link: issue.retry ? { label: clientIssueActions.tryAgain, onPress: list.reload } : null,
         }
       : {
           text: "Plugins reviewed for the catalog. Each runs sandboxed until you connect an account.",

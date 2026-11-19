@@ -8,6 +8,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { republishAskerAttention } from "./personal-attention-store.js";
 import { writeExecutionItem } from "./execution-changes.js";
 import { transcriptPreview } from "./transcript-store.js";
 import { itemView } from "./personal-sync-store.js";
@@ -111,6 +112,10 @@ export async function updateExecutionNode(
     .where("id", "=", update.nodeId)
     .execute();
   await publishExecutionNode(transaction, update.nodeId);
+  if (update.title !== undefined || update.parentNodeId !== undefined)
+    await commitPersonalMutation(transaction, (tx, mutation) =>
+      republishAskerAttention(tx, mutation, update.nodeId, update.title !== undefined),
+    );
 }
 
 /** Records how a subagent ended, once; a repeat of a finished node changes nothing. */

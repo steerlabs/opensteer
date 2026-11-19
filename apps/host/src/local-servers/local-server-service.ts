@@ -1,8 +1,15 @@
 import { readdir, realpath } from "node:fs/promises";
+import { basename } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { AesGcmSecretVault } from "@opensteer/access/host";
 import { createCredentialResponseRedactor } from "@opensteer/access/host";
-import type { LocalServerPackageServer } from "@opensteer/agent-plugins";
+import {
+  pluginPackageFormat,
+  readPluginSnapshot,
+  readVerifiedPluginSnapshot,
+  storePluginSnapshot,
+  type LocalServerPackageServer,
+} from "@opensteer/agent-plugins";
 import {
   OpensteerError,
   UserIdSchema,
@@ -23,7 +30,7 @@ import type {
 import { integrationToolEffect } from "@opensteer/integration-core/effect";
 import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import { createIntegrationId, type IntegrationServerId } from "@opensteer/integration-core/ids";
-import { localMcpLaunchSecrets, type LocalMcpLaunch } from "@opensteer/integration-core/local-mcp";
+import type { LocalMcpLaunch } from "@opensteer/integration-core/local-mcp";
 import {
   IntegrationServerTransportSchema,
   type IntegrationServer,
@@ -40,7 +47,6 @@ import {
   McpClientPool,
   answeredMcpError,
   connectMcpClient,
-  emptyToolCatalog,
   listTools,
   localToolBlocked,
   type LocalToolResponse,
@@ -50,6 +56,7 @@ import {
 } from "./mcp-clients.js";
 import { deviceAccessBlocked } from "../devices/target-blocked.js";
 import { ServerInput, serverInputTimeoutMs } from "./server-input.js";
+import { launchReview } from "./launch-review.js";
 
 /** A server a plugin declares, as the Host stores it before anything has started it. */
 export interface PendingLocalServer extends DiscoveredIntegrationServer {
@@ -109,7 +116,6 @@ export class LocalServerService {
     installationId?: string;
     ownerUserId?: UserId;
   }) => Promise<void>;
-  readonly #personal: boolean;
   readonly #store: IntegrationPlatformStore;
   /** The MCP clients the Host holds for the servers computers run. */
   readonly clients: McpClientPool;
@@ -134,7 +140,6 @@ export class LocalServerService {
       installationId?: string;
       ownerUserId?: UserId;
     }) => Promise<void>;
-    readonly personal?: boolean;
     readonly secretVault: Pick<AesGcmSecretVault, "open" | "seal">;
     readonly store: IntegrationPlatformStore;
   }) {
@@ -143,7 +148,6 @@ export class LocalServerService {
     this.#isRunnerConnected = options.isRunnerConnected;
     this.#onConnectionsChanged = options.onConnectionsChanged;
     this.#onSettingsChanged = options.onSettingsChanged ?? (async () => undefined);
-    this.#personal = options.personal ?? false;
     this.#store = options.store;
     this.secrets = new LocalMcpSecrets(options.secretVault);
     this.inputRequests = new ServerInput();
@@ -184,6 +188,35 @@ export class LocalServerService {
   async requestLocalServerApprovals(): Promise<void> {
     const changed = await this.#store.localMcp.requestApprovals();
     if (changed.length > 0) this.#onConnectionsChanged();
+  }
+
+  /**
+   * A package stored before its plugin version recorded the format of its digest is named by a
+   * digest no reader accepts now. Each is stored again, once, under the digest its files make
+   * today, as a new version of its plugin that its servers' launches name. Their approvals were
+   * for the earlier launch, so each computer's owner is asked again (see launchReview), and runs
+   * read the plugin's skills by the new digest.
+   */
+  async upgradePackages(): Promise<void> {
+    const packages = `${await realpath(this.#dataDirectory)}/plugins/data/packages`;
+    for (const plugin of await this.#store.plugins.list()) {
+      const current = plugin.versions.find(({ id }) => id === plugin.currentVersionId);
+      if (!current || current.packageFormat !== null) continue;
+      let digest: string;
+      try {
+        const files = await readPluginSnapshot(`${packages}/${current.digest}`);
+        digest = basename(await storePluginSnapshot(packages, files));
+      } catch (error) {
+        console.warn(`The package of plugin ${plugin.name} could not be stored again`, error);
+        continue;
+      }
+      await this.#store.plugins.upgradePackage({
+        pluginId: plugin.id,
+        fromVersionId: current.id,
+        digest,
+        packageFormat: pluginPackageFormat,
+      });
+    }
   }
 
   async deliverPluginDataRemovals(runnerId?: RunnerId): Promise<void> {
@@ -668,20 +701,35 @@ export class LocalServerService {
   }
 
   /**
-   * What an update keeps of a server a computer runs: on a Personal
-   * Deployment, its approval when nothing its owner would review changed, and
-   * the secrets the new launch still declares.
+   * What an update keeps of a server a computer runs: the secrets the new launch still declares.
+   * Its approval does not carry; a launch that changed in any way, its folder's files included,
+   * waits for its computer's owner again, and the previous launch stops meanwhile.
    */
   retainedServer(
     ...[existing, discovered]: Parameters<NonNullable<InstallIntegrationInput["retainedServer"]>>
   ): ReturnType<NonNullable<InstallIntegrationInput["retainedServer"]>> {
     return existing.transport.type === "runner" && discovered.transport.type === "runner"
-      ? {
-          carryApproval:
-            this.#personal && carriesApproval(existing, existing.transport, discovered.transport),
-          secrets: this.secrets.prune(existing.id, discovered.transport.launch),
-        }
+      ? { secrets: this.secrets.prune(existing.id, discovered.transport.launch) }
       : null;
+  }
+
+  /** What its owner allows by allowing this server's launch, and what changed since they last did. */
+  async launchReview(serverId: IntegrationServerId, launch: LocalMcpLaunch): Promise<string> {
+    const [server, plugins] = await Promise.all([
+      this.#store.localMcp.get(serverId),
+      this.#store.plugins.list(),
+    ]);
+    const packages = `${await realpath(this.#dataDirectory)}/plugins/data/packages`;
+    return launchReview({
+      launch,
+      approvedLaunchDigest: server?.approvedLaunchDigest ?? null,
+      versions:
+        plugins
+          .find(({ id }) => id === launch.pluginId)
+          ?.versions.map(({ digest, packageFormat }) => ({ digest, format: packageFormat })) ?? [],
+      files: (digest) =>
+        readVerifiedPluginSnapshot(`${packages}/${digest}`, digest).catch(() => null),
+    });
   }
 
   endRun(runId: RunId, generation?: number): void {
@@ -723,25 +771,6 @@ function portableComputerLaunch(server: LocalServerPackageServer): LocalMcpLaunc
   };
 }
 
-/**
- * Whether a Personal Deployment's update keeps a server's approval: on the same
- * computer, approved as it launched, not declined, and asking for no secret it
- * didn't, whose value its owner would have to enter.
- */
-export function carriesApproval(
-  existing: { readonly approvedLaunchDigest: string | null; readonly status: string },
-  previous: { readonly launch: LocalMcpLaunch; readonly runnerId: RunnerId | null },
-  next: { readonly launch: LocalMcpLaunch; readonly runnerId: RunnerId | null },
-): boolean {
-  const declared = new Set(localMcpLaunchSecrets(previous.launch).map(({ name }) => name));
-  return (
-    previous.runnerId === next.runnerId &&
-    existing.status !== "disabled" &&
-    existing.approvedLaunchDigest === localMcpLaunchDigest(previous.launch) &&
-    localMcpLaunchSecrets(next.launch).every(({ name }) => declared.has(name))
-  );
-}
-
 /** A plugin server pinned to its computer, waiting for that computer's approval. */
 export function pendingLocalServer(
   server: LocalServerPackageServer,
@@ -751,7 +780,7 @@ export function pendingLocalServer(
 ): PendingLocalServer {
   return {
     authorizationRequired: false,
-    catalog: emptyToolCatalog,
+    catalog: null,
     connectionRequirement: { kind: "none" },
     id: createIntegrationId("server"),
     name: server.name,

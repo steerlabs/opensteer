@@ -5,6 +5,7 @@ import {
   type RequestId,
   type TeamAgentRequestId,
   type ThreadId,
+  type ExecutionNodeId,
   utf8Prefix,
 } from "@opensteer/core";
 import { sql, type Kysely, type Insertable } from "kysely";
@@ -93,6 +94,47 @@ function stageAttention(
   row: Insertable<PersonalAttentionTable> | null,
 ) {
   mutation.stageAttention(id, row?.kind ?? null, () => writeAttention(tx, id, row));
+}
+
+/**
+ * A pending Request's asker presentation (its node's title and the node it sits within) is read
+ * with the Request list; when those change, its attention row moves forward so readers reread.
+ */
+export async function republishAskerAttention(
+  tx: Tx,
+  mutation: PersonalMutation,
+  nodeId: ExecutionNodeId,
+  /** The node's title changed, which its children's Requests show as where they sit. */
+  childrenToo: boolean,
+) {
+  const asking = await tx
+    .selectFrom("requests")
+    .select(["id", "originatingThreadId"])
+    .select(sql<string | null>`left(presentation->>'title',192)`.as("title"))
+    .where("status", "=", "pending")
+    .where((eb) =>
+      childrenToo
+        ? eb.or([
+            eb("originatingNodeId", "=", nodeId),
+            eb(
+              "originatingNodeId",
+              "in",
+              eb
+                .selectFrom("executionNodes as child")
+                .select("child.id")
+                .where("child.parentNodeId", "=", nodeId),
+            ),
+          ])
+        : eb("originatingNodeId", "=", nodeId),
+    )
+    .execute();
+  for (const request of asking)
+    attentionChanged(mutation, `request:${request.id}`, {
+      kind: "request",
+      threadId: request.originatingThreadId,
+      revision: mutation.sequence,
+      title: request.title,
+    });
 }
 
 export async function refreshRequestAttention(

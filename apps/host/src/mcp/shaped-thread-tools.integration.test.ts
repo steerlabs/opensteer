@@ -1647,7 +1647,7 @@ describeStore("shaped agent task tools", (it) => {
       status: "completed",
       wait: { status: "settled" },
     });
-    await expect(storeFixture.store.drainAssignmentReturn(assignmentId)).resolves.toBeUndefined();
+    await expect(storeFixture.store.drainAssignmentReturn(assignmentId)).resolves.toBe("settled");
   });
 
   it("returns a task's Request promptly and reads it without exposing its payload", async ({

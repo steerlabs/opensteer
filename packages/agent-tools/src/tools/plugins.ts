@@ -37,7 +37,7 @@ export const plugin_search = defineAgentTool({
       z.object({
         path: id,
         description: z.string(),
-        input: z.string(),
+        input: z.string().optional(),
         inputTruncated: z.literal(true).optional(),
         blocked: BlockedSchema.optional(),
       }),
@@ -63,7 +63,7 @@ export const plugin_describe = defineAgentTool({
       z.object({
         path: id,
         description: z.string(),
-        signature: z.string(),
+        signature: z.string().optional(),
         blocked: BlockedSchema.optional(),
       }),
     ),
@@ -111,7 +111,7 @@ export const opensteer_plugin_list = defineAgentTool({
   access: "read",
   callers: ["run", "connection"],
   description:
-    "List installed plugins, newest versions, connected account links, agent access and status, and the person's local tools (device data apps and local servers) that share the tools.<slug> namespace, with tool counts. Plugins page: pass cursor to continue; null ends it, and local tools come with the first page. Pass pluginId for that plugin with every kept version. Use plugin_search for callable tools.",
+    "List installed plugins, newest versions, connected account links, agent access and status, and local tools (device data apps and local servers) sharing the tools.<slug> namespace, with tool counts; a server awaiting launch approval appears only here. One list: pass cursor to continue; null ends it. Pass pluginId for that plugin with every kept version. Use plugin_search for callable tools.",
   input: z.strictObject({
     pluginId: id.optional(),
     cursor: z.string().min(1).max(2048).optional(),
@@ -124,7 +124,6 @@ export const opensteer_plugin_list = defineAgentTool({
         slug: z.string(),
         access: z.enum(["all", "read-only"]),
         status: z.enum(["active", "unavailable"]),
-        unavailable: z.string().optional(),
         blocked: BlockedSchema.optional(),
         toolCount: z.number().int().nonnegative(),
         readOnlyToolCount: z.number().int().nonnegative(),

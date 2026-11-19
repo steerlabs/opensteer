@@ -457,6 +457,7 @@ export function createPersonalReads(
             thread,
             failure: task.failurePreview?.slice(0, 280) ?? null,
             lastReply: task.lastReplyPreview?.slice(0, 280) ?? null,
+            runQueued: task.runQueued,
           };
           const bytes = Buffer.byteLength(JSON.stringify(entry)) + (tasks.length ? 1 : 0);
           if (byteCount + bytes > 63 * 1024) {
@@ -474,7 +475,7 @@ export function createPersonalReads(
           window: {
             hasMore,
             itemCount: tasks.length,
-            totalItems: page.totalItems,
+            ...(page.totalItems === undefined ? {} : { totalItems: page.totalItems }),
             byteCount,
             nextBefore:
               hasMore && last ? Buffer.from(JSON.stringify(last)).toString("base64url") : null,
