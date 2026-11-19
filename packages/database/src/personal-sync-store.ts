@@ -18,6 +18,7 @@ import type {
   TranscriptItemTable,
 } from "./personal-state-schema.js";
 import type { ExecutionNodeTable } from "./schema.js";
+import { nodeItemsPredicate, taskItemsPredicate } from "./personal-state-schema.js";
 
 type Database = Kysely<DatabaseSchema>;
 type Read = Transaction<DatabaseSchema>;
@@ -334,7 +335,7 @@ export function itemView(row: Item) {
     position: row.position,
     runId: row.runId,
     attemptId: row.attemptId,
-    nodeId: row.nodeId,
+    nodeId: itemScopeNodeId(row),
     isTurnStart: row.isTurnStart,
     createdAt: row.createdAt.toISOString(),
     view,
@@ -420,8 +421,13 @@ export function drawableItems(tx: Read, scope: DetailScope) {
     .where("visible", "=", true)
     .where("threadId", "=", scope.threadId);
   return scope.kind === "node"
-    ? query.where("nodeId", "=", scope.nodeId)
-    : query.where("nodeId", "is", null);
+    ? query.where("nodeId", "=", scope.nodeId).where(sql.raw<boolean>(nodeItemsPredicate))
+    : query.where(sql.raw<boolean>(taskItemsPredicate));
+}
+
+/** The node whose scope draws an item: null for the task, by the rule `drawableItems` reads with. */
+export function itemScopeNodeId(row: Pick<Item, "kind" | "nodeId" | "view">) {
+  return row.kind === "request" && row.view.requestKind === "harness.approval" ? null : row.nodeId;
 }
 
 function itemBytes(row: Item) {

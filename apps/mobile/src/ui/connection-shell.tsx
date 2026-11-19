@@ -92,8 +92,7 @@ export function shellAction(
   session: ShellSession,
 ): { readonly kind: "retry" | "sign-in" | "update"; readonly run: () => void } | null {
   const action = presentClientIssue(issue).action;
-  if (action === "retry" || issue.code === "connection")
-    return { kind: "retry", run: () => retryConnection(session.connection) };
+  if (action === "retry") return { kind: "retry", run: () => retryConnection(session.connection) };
   if (action === "sign-in")
     return { kind: "sign-in", run: () => void session.signIn().catch(() => undefined) };
   if (action === "update") return { kind: "update", run: () => void Linking.openURL(downloadPage) };

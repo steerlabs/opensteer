@@ -165,19 +165,41 @@ export function mockScopedItems(
   revision = String(snapshot.revision),
   nodeEvents: readonly AgentEventView[] = [],
 ) {
-  const rows = (snapshot.transcripts[threadId] ?? []).flatMap((entry, index) => {
+  const rows = (snapshot.transcripts[threadId] ?? []).flatMap((entry, index): TranscriptItem[] => {
     if (
       (entry.kind === "reasoning" && entry.state === "streaming") ||
       (entry.kind === "message" && entry.streaming)
     )
       return [];
     const item = mockScopedItem(entry, String(index + 1), revision);
-    return item && item.nodeId === (nodeId ?? null) ? [item] : [];
+    if (!item) return [];
+    if (item.kind !== "request") return item.nodeId === (nodeId ?? null) ? [item] : [];
+    const scope = mockRequestScope(snapshot, threadId, entry, item.requestId);
+    return scope === (nodeId ?? null) ? [{ ...item, nodeId: scope }] : [];
   });
   if (!nodeId) return rows;
   return [...mockScopedNodeItems(threadId, nodeId, nodeEvents, revision), ...rows]
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
     .map((row, index) => ({ ...row, position: String(index + 1) }));
+}
+
+/** Who asked a settled Request, kept beside its receipt: the snapshot lists only open Requests. */
+const receiptAskers = new WeakMap<TranscriptEntry, NonNullable<Request["originatingNodeId"]>>();
+export function keepMockReceiptAsker(receipt: TranscriptEntry, request: Request) {
+  if (request.originatingNodeId) receiptAskers.set(receipt, request.originatingNodeId);
+}
+
+/** As the Host places it: a node's receipt stays with that node, except an approval it asked. */
+function mockRequestScope(
+  snapshot: MockTranscriptSnapshot,
+  threadId: string,
+  entry: TranscriptEntry,
+  requestId: string,
+) {
+  const open = snapshot.requests[threadId]?.find(({ id }) => id === requestId);
+  const asker = open?.originatingNodeId ?? receiptAskers.get(entry) ?? null;
+  const kind = open?.kind ?? (entry.kind === "request" ? entry.requestKind : null);
+  return asker && kind !== "harness.approval" ? asker : null;
 }
 
 function mockScopedItem(

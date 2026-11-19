@@ -979,6 +979,31 @@ it("returns the mock history window as typed scoped cards", async () => {
   }
 });
 
+it("keeps a subagent's settled question with that subagent, as the Host does", async () => {
+  const client = createClient();
+  try {
+    const asked = Object.values(client.getSnapshot().requests)
+      .flat()
+      .find((request) => request.kind === "harness.input" && request.originatingNodeId);
+    if (!asked?.originatingNodeId) throw new Error("No seeded subagent question");
+    const threadId = asked.originatingThreadId!;
+    const answered = await client.rpc["commands.dispatch"]({
+      type: "request.respond",
+      idempotencyKey: `mock-answer:${crypto.randomUUID()}`,
+      requestId: asked.id,
+      response: { kind: "form", answers: {} },
+    });
+    if (!answered.ok) throw new Error(JSON.stringify(answered.error));
+    const receipt = `request:${asked.id}`;
+    const ids = (nodeId?: string) =>
+      client.scopedDetail(threadId, nodeId)?.items.map(({ id }) => id);
+    expect(ids(asked.originatingNodeId)).toContain(receipt);
+    expect(ids()).not.toContain(receipt);
+  } finally {
+    client.dispose();
+  }
+});
+
 it("offers transient Passwords choices and settles the pinned shared command in mock mode", async () => {
   const request = mockPasswordSignInRequest();
   const client = new MockHostClient({ latencyMs: 0, pendingRequests: [request] });

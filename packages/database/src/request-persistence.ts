@@ -113,8 +113,16 @@ export function refreshRequestState(
             .onConflict((conflict) => conflict.column("id").doUpdateSet(fields))
             .returningAll()
             .executeTakeFirstOrThrow();
-          mutation.change({ scopeKey, entityKind: "item", entityId: id, operation: "upsert" }, () =>
-            itemView(item),
+          // The receipt is drawn where `itemView` places it, which may be the task for a node's ask.
+          const shown = itemView(item);
+          mutation.change(
+            {
+              scopeKey: shown.nodeId ? `node:${shown.nodeId}` : `thread:${threadId}`,
+              entityKind: "item",
+              entityId: id,
+              operation: "upsert",
+            },
+            () => shown,
           );
         },
       );

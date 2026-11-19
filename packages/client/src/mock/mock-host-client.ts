@@ -7,6 +7,7 @@ import {
   mockScopedShell,
   mockScopedDetail,
   mockScopedItems,
+  keepMockReceiptAsker,
   mockScopedLive,
   mockScopedCursor,
   mockScopedResource,
@@ -6564,7 +6565,9 @@ class MockHostState {
   }
   private referenceRequestReceipt(request: Exclude<Request, { status: "pending" }>) {
     this.referenceRequests.set(request.id, request);
-    return requestReceipt(request);
+    const receipt = requestReceipt(request);
+    keepMockReceiptAsker(receipt, request);
+    return receipt;
   }
   /** Enrollments retired here, which the preview, like the Host, keeps no row for. */
   private readonly retiredEnrollments = new Set<string>();
