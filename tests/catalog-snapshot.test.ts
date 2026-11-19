@@ -188,7 +188,7 @@ describe("icons", () => {
       "icons/h.svg": "<svgx/>",
       // A doctype with an internal subset, as an Illustrator export writes it.
       "icons/i.svg": '<!DOCTYPE svg PUBLIC "x" "y" [\r\n\t<!ENTITY a "b">\r\n]>\r\n<svg>',
-      "icons/j.svg": "<!DOCTYPE html [<!ENTITY a \"b\">]><html>",
+      "icons/j.svg": '<!DOCTYPE html [<!ENTITY a "b">]><html>',
     };
     const apps = Object.keys(icons).map((src, index) => entry(`app${index}`, [{ src }]));
     const sources = Object.fromEntries(apps.map((app) => [app.id, source(`@acme.sh/${app.id}`)]));
@@ -535,15 +535,33 @@ describe("scoped rewrite rules", () => {
     ).toEqual(["db/migrations/1.sql: a migration changed"]);
   });
 
-  test("takes rules as JSON data with known keys only", () => {
-    const valid = JSON.stringify(scoped);
-    expect(parseRules(valid)).toEqual(scoped);
+  test("takes rules as JSON data with known keys only, the engine's names in their own section", () => {
+    // The package scope and the package.json key are the engine's names, kept apart.
+    const engine = scoped.rules.filter((rule) => ["package", "manifest-key"].includes(rule.scope));
+    const others = scoped.rules.filter((rule) => !engine.includes(rule));
+    const file = { ...scoped, engine, rules: others };
+    expect(parseRules(JSON.stringify(file))).toEqual(scoped);
+    // A variable is set once and used by name.
+    expect(
+      parseRules(
+        JSON.stringify({
+          ...file,
+          variables: { contact: "help@example.com" },
+          rules: [{ id: "ua", scope: "comments", from: "a", to: "x ({{contact}})" }],
+        }),
+      ).rules.at(-1)?.to,
+    ).toBe("x (help@example.com)");
     for (const invalid of [
       "export const renames = [];",
-      JSON.stringify({ ...scoped, rules: [{ ...scoped.rules[0], extra: 1 }] }),
-      JSON.stringify({ ...scoped, rules: [{ ...scoped.rules[0], scope: "everywhere" }] }),
-      JSON.stringify({ ...scoped, rules: [{ id: "t", scope: "text", from: "a", to: "b" }] }),
-      JSON.stringify({ ...scoped, rules: [scoped.rules[0], scoped.rules[0]] }),
+      JSON.stringify({ ...file, rules: [{ ...others[0], extra: 1 }] }),
+      JSON.stringify({ ...file, rules: [{ ...others[0], scope: "everywhere" }] }),
+      JSON.stringify({ ...file, rules: [{ id: "t", scope: "text", from: "a", to: "b" }] }),
+      JSON.stringify({ ...file, rules: [others[0], others[0]] }),
+      JSON.stringify({ ...file, rules: [...others, { ...others[0], id: "u", to: "{{unset}}" }] }),
+      // Engine scopes only in the engine section, and only engine scopes there.
+      JSON.stringify(scoped),
+      JSON.stringify({ ...file, engine: [...engine, others[0]] }),
+      JSON.stringify({ ...file, engine: [{ ...engine[0], documents: ["mail"] }] }),
     ])
       expect(() => parseRules(invalid)).toThrow();
   });

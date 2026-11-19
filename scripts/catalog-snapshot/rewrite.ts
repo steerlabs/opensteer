@@ -6,9 +6,14 @@
  *     "variables": { "contact": "value" },     // optional; `{{contact}}` in a rule's `to` is the value
  *     "names": ["word"],                       // every remaining case-insensitive occurrence must be
  *                                              // preserved below or inside base64 data
+ *     "engine": [{ "id", "scope", "from", "to" }],   // `package` and `manifest-key` rules only
  *     "rules": [{ "id", "scope", "from", "to", "documents"?, "files"? }],
  *     "preserve": [{ "text", "reason", "documents"? }]
  *   }
+ *
+ * `engine` holds the names the engine itself reads (the package scope, the `package.json` key), apart
+ * from the rest, so it can later come from the engine's own rule file. Those scopes appear nowhere
+ * else; engine rules apply before the others.
  *
  * Each rule applies only where its scope says; everything else is left as it is:
  *
@@ -56,20 +61,22 @@ export interface RewriteRules {
 }
 
 const strings = Schema.Array(Schema.NonEmptyString);
+const Rule = Schema.Struct({
+  id: Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]*$/u)),
+  scope: Schema.Literals(["package", "manifest-key", "markdown", "comments", "text"]),
+  from: Schema.NonEmptyString,
+  to: Schema.String,
+  documents: Schema.optionalKey(strings),
+  files: Schema.optionalKey(strings),
+});
+/** The scopes of the names the engine reads, which only the `engine` section holds. */
+const engineScopes: readonly RuleScope[] = ["package", "manifest-key"];
 const RulesFile = Schema.Struct({
   version: Schema.Literal(1),
   variables: Schema.optionalKey(Schema.Record(Schema.String, Schema.NonEmptyString)),
   names: strings,
-  rules: Schema.Array(
-    Schema.Struct({
-      id: Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]*$/u)),
-      scope: Schema.Literals(["package", "manifest-key", "markdown", "comments", "text"]),
-      from: Schema.NonEmptyString,
-      to: Schema.String,
-      documents: Schema.optionalKey(strings),
-      files: Schema.optionalKey(strings),
-    }),
-  ),
+  engine: Schema.optionalKey(Schema.Array(Rule)),
+  rules: Schema.Array(Rule),
   preserve: Schema.Array(
     Schema.Struct({
       text: Schema.NonEmptyString,
@@ -87,7 +94,7 @@ export function parseRules(text: string): RewriteRules {
     throw new Error(`Not a rewrite rule file: ${decoded.failure.message}`);
   const value = JSON.parse(text) as Record<string, unknown>;
   const allowed = {
-    top: ["version", "variables", "names", "rules", "preserve"],
+    top: ["version", "variables", "names", "engine", "rules", "preserve"],
     rule: ["id", "scope", "from", "to", "documents", "files"],
     preserve: ["text", "reason", "documents"],
   };
@@ -95,14 +102,24 @@ export function parseRules(text: string): RewriteRules {
     Object.keys(item).find((k) => !keys.includes(k));
   const extra =
     unknown(value, allowed.top) ??
-    (value.rules as object[]).map((rule) => unknown(rule, allowed.rule)).find(Boolean) ??
+    [...((value.engine as object[] | undefined) ?? []), ...(value.rules as object[])]
+      .map((rule) => unknown(rule, allowed.rule))
+      .find(Boolean) ??
     (value.preserve as object[]).map((item) => unknown(item, allowed.preserve)).find(Boolean);
   if (extra !== undefined) throw new Error(`Not a rewrite rule file: unknown key ${extra}`);
-  const { variables = {}, ...rest } = decoded.success;
+  const { variables = {}, engine = [], ...rest } = decoded.success;
+  for (const rule of engine)
+    if (!engineScopes.includes(rule.scope) || rule.documents !== undefined)
+      throw new Error(
+        `Rule ${rule.id}: the engine section holds only package and manifest-key rules, for every document`,
+      );
+  for (const rule of rest.rules)
+    if (engineScopes.includes(rule.scope))
+      throw new Error(`Rule ${rule.id}: ${rule.scope} rules belong in the engine section`);
   // A rule's `to` may name a variable, so one value (a contact address) is set in one place.
   const rules: RewriteRules = {
     ...rest,
-    rules: rest.rules.map((rule) => ({
+    rules: [...engine, ...rest.rules].map((rule) => ({
       ...rule,
       to: rule.to.replace(/\{\{([A-Za-z0-9_-]+)\}\}/gu, (_, name: string) => {
         if (!Object.hasOwn(variables, name))

@@ -65,8 +65,11 @@ written with sorted keys and two-space indentation.
 
 ### Rewriting
 
-`--rules <rules.json>` takes a JSON rule file: data, never a module. Each rule names where it
-applies, and everything else is left as it is:
+`--rules <rules.json>` takes a JSON rule file: data, never a module (its format is described at the
+top of `rewrite.ts`). Each rule names where it applies, and everything else is left as it is. The
+`package` and `manifest-key` rules, the names the engine itself reads, live in their own `engine`
+section and nowhere else, so that section can later come from the engine's own rule file; they
+apply first, to every document.
 
 | `scope`        | Where `from` becomes `to`                                                           |
 | -------------- | ----------------------------------------------------------------------------------- |
@@ -94,12 +97,14 @@ JSON file that parsed no longer does; or if any package name breaks the contract
 
 The detailed report (counts per rule, and every remaining occurrence with its location and
 reason) goes to `<out>.rewrites.json`, beside the snapshot and never in it. It names the SHA-256
-of the manifest it describes and is written right after its snapshot is swapped in, the earlier
-report removed first; a run that finds a report not describing the snapshot at `<out>` removes it
-and says so. A build that fails writes its report to `<out>.rewrites.failed.json` instead and
-leaves `<out>` and its report as they were. The published manifest
-records only the rule file's SHA-256, never its strings. The proposed rule set is kept outside this
-repository, with the rest of the catalog working files.
+of the manifest it describes and is committed with its snapshot: written to
+`<out>.rewrites.next.json` before the swap and renamed into place after it. A run stopped between
+the two is put right by the next one, which moves a waiting report into place when it describes the
+snapshot at `<out>` and removes it otherwise; a report not describing that snapshot is removed too,
+and the run says so. A report path that is a symlink is refused. A build that fails writes its
+report to `<out>.rewrites.failed.json` instead and leaves `<out>` and its report as they were.
+The published manifest records only the rule file's SHA-256, never its strings. The proposed rule
+set is kept outside this repository, with the rest of the catalog working files.
 
 ## Check a served feed
 

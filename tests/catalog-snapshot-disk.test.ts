@@ -252,6 +252,39 @@ describe("the snapshot tool", () => {
     );
   });
 
+  test("commits the report with its snapshot, so a stop after the swap keeps it", async () => {
+    const out = join(root, "out");
+    await run({ out, cache: await cache("old"), rules: await rulesFile([]) });
+    // A second build, stopped after its swap and before its report was moved into place.
+    const other = join(root, "other");
+    await run({ out: other, cache: await cache("other"), rules: await rulesFile([]) });
+    const swapped = await readFile(`${other}.rewrites.json`, "utf8");
+    expect(await readFile(join(other, "manifest.json"))).not.toEqual(
+      await readFile(join(out, "manifest.json")),
+    );
+    await rm(out, { recursive: true });
+    await rename(other, out);
+    await rename(`${other}.rewrites.json`, `${out}.rewrites.next.json`);
+    // The next run puts that report in place before it builds (this build fails, changing nothing).
+    await expect(
+      run({ out, cache: join(root, "cache"), rules: await rulesFile(["other"]) }),
+    ).rejects.toThrow("Not usable");
+    expect(await readFile(`${out}.rewrites.json`, "utf8")).toBe(swapped);
+    expect(JSON.parse(swapped).manifestSha256).toBe(
+      sha256(await readFile(join(out, "manifest.json"))),
+    );
+    // One left by a run stopped before its swap describes no snapshot there, and goes.
+    await writeFile(
+      `${out}.rewrites.next.json`,
+      JSON.stringify({ manifestSha256: "0".repeat(64) }),
+    );
+    const output = await run({ out, cache: await cache("new") });
+    expect(output).toContain("left by a run stopped before its swap");
+    // A report path that is a link is refused.
+    await symlink(join(root, "cache", "index.json"), `${out}.rewrites.json`);
+    await expect(run({ out, cache: join(root, "cache") })).rejects.toThrow("is a symlink");
+  });
+
   test("recovers from a stop between the swap's renames", async () => {
     const out = join(root, "nested", "out");
     await run({ out, cache: await cache("old") });

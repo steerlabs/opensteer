@@ -3,7 +3,7 @@
  * in-process. Everything downloaded is data: it is parsed as JSON or stored as bytes, never
  * executed.
  */
-import { readFile, rm, stat } from "node:fs/promises";
+import { lstat, readFile, rename, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { officialCatalogUrl } from "@opensteer/plugin-engine-catalog/contracts";
 import { buildSnapshot, iconPath, legacySourcePath, servableId, sha256 } from "./core.ts";
@@ -38,11 +38,18 @@ export async function takeSnapshot(
   log: (line: string) => void = console.log,
 ) {
   const repository = resolve(import.meta.dirname, "../..");
+  // The reports are replaced by rename, never written through: one that is a link is refused.
+  for (const suffix of [".rewrites.json", ".rewrites.next.json", ".rewrites.failed.json"]) {
+    const path = `${resolve(values.out)}${suffix}`;
+    if ((await lstat(path).catch(() => undefined))?.isSymbolicLink())
+      throw new Error(`${path} is a symlink; remove it`);
+  }
   const places = await separatePlaces(
     {
       out: values.out,
       cache: values.cache ?? `${resolve(values.out)}.download`,
       report: `${resolve(values.out)}.rewrites.json`,
+      nextReport: `${resolve(values.out)}.rewrites.next.json`,
       failedReport: `${resolve(values.out)}.rewrites.failed.json`,
     },
     repository,
@@ -63,22 +70,31 @@ export async function takeSnapshot(
       () => false,
     );
 
-  // Put right a run stopped mid-swap before anything else; then the rewrite report beside `<out>`
-  // must describe the snapshot there, or it goes.
+  // Put right a run stopped mid-swap before anything else. The rewrite report is committed with
+  // its snapshot: written to `nextReport` before the swap, and moved into place after it. So a
+  // `nextReport` describing the snapshot at `<out>` was swapped in with it and is moved into place
+  // now; any other goes. Then the report beside `<out>` must describe the snapshot there, or it goes.
   for (const line of await recoverBeside(out)) log(line);
   const outManifest = await readFile(join(out, "manifest.json")).catch(() => undefined);
-  const heldReport = await readFile(places.report, "utf8").catch(() => undefined);
-  const describes = (text: string) => {
+  const describesOut = async (path: string) => {
+    const text = await readFile(path, "utf8").catch(() => undefined);
+    if (text === undefined) return undefined;
     try {
-      return (JSON.parse(text) as { manifestSha256?: unknown }).manifestSha256;
+      const described = (JSON.parse(text) as { manifestSha256?: unknown }).manifestSha256;
+      return outManifest !== undefined && described === sha256(outManifest);
     } catch {
-      return undefined;
+      return false;
     }
   };
-  if (
-    heldReport !== undefined &&
-    (outManifest === undefined || describes(heldReport) !== sha256(outManifest))
-  ) {
+  const next = await describesOut(places.nextReport);
+  if (next === true) {
+    await rename(places.nextReport, places.report);
+    log(`moved ${places.nextReport} into place: the swap that wrote ${out} stopped before it`);
+  } else if (next === false) {
+    await rm(places.nextReport);
+    log(`removed ${places.nextReport}, left by a run stopped before its swap`);
+  }
+  if ((await describesOut(places.report)) === false) {
     await rm(places.report);
     log(`removed ${places.report}: it did not describe the snapshot at ${out}`);
   }
@@ -215,15 +231,16 @@ export async function takeSnapshot(
     await writeTree(staging, result.files);
     // Check what is on disk, as the publisher will.
     await readSnapshot(staging);
+    // The report waits beside the swap, so the swap commits both (see the start of the run).
+    if (rules) await writeFileAtomic(places.nextReport, reportBytes);
     await replaceDirectory(out, staging);
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
+    await rm(places.nextReport, { force: true });
     throw error;
   }
-  // The report follows its snapshot: the earlier one goes first, so a stop here leaves none rather
-  // than one describing another build (and a stale one is removed on the next start).
-  await rm(places.report, { force: true });
+  if (rules) await rename(places.nextReport, places.report);
+  else await rm(places.report, { force: true });
   await rm(places.failedReport, { force: true });
-  if (rules) await writeFileAtomic(places.report, reportBytes);
   log(`Snapshot written to ${out}${rules ? `; rewrite report in ${places.report}` : ""}`);
 }
