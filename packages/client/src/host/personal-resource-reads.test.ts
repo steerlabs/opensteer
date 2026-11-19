@@ -3,6 +3,7 @@ import { expect, test, vi } from "vitest";
 import {
   PersonalResourceReads,
   type PersonalResourceReadOptions,
+  readerGraceMs,
   runnerSettleMs,
 } from "./personal-resource-reads.js";
 
@@ -270,6 +271,70 @@ test("a Runner that drops and comes back costs one read of what it moves, and a 
     await vi.advanceTimersByTimeAsync(0);
     expect(asked).toHaveLength(3);
     release();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a kind is watched exactly while some reader that read it is mounted, or within its grace", async () => {
+  vi.useFakeTimers();
+  try {
+    // A small deterministic generator, so a failing sequence can be replayed.
+    let seed = 7;
+    const random = (bound: number) => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return seed % bound;
+    };
+    for (let run = 0; run < 200; run++) {
+      const reads = new PersonalResourceReads({
+        read: () => new Promise(() => undefined),
+        apply: () => undefined,
+        canRead: () => true,
+        watchChanged: () => undefined,
+      });
+      const readers = Array.from({ length: 3 }, () => ({
+        interest: reads.interest(),
+        mounted: 0,
+        held: false,
+        graceUntil: -1,
+      }));
+      let now = 0;
+      const steps: string[] = [];
+      for (let step = 0; step < 30; step++) {
+        const reader = readers[random(readers.length)]!;
+        const op = random(5);
+        if (op === 0) {
+          reader.interest.open();
+          reader.mounted++;
+          reader.graceUntil = -1;
+          reader.interest.hold("machine");
+          reader.held = true;
+          steps.push("mount");
+        } else if (op === 1 && reader.mounted > 0) {
+          reader.interest.hold("machine");
+          steps.push("render");
+        } else if (op === 2 && reader.mounted > 0) {
+          reader.interest.close();
+          if (--reader.mounted === 0) reader.graceUntil = now + readerGraceMs;
+          steps.push("unmount");
+        } else {
+          const by = random(readerGraceMs * 2);
+          now += by;
+          await vi.advanceTimersByTimeAsync(by);
+          for (const each of readers)
+            if (each.mounted === 0 && each.graceUntil !== -1 && each.graceUntil <= now) {
+              each.held = false;
+              each.graceUntil = -1;
+            }
+          steps.push(`wait ${by}`);
+        }
+        const expected = readers.some(
+          (each) => each.held && (each.mounted > 0 || each.graceUntil > now),
+        );
+        expect(reads.interests().interests.includes("machine"), steps.join(", ")).toBe(expected);
+      }
+      reads.dispose();
+    }
   } finally {
     vi.useRealTimers();
   }

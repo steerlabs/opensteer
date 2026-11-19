@@ -20,7 +20,6 @@ const signalKinds: ReadonlySet<PersonalResourceKind> = new Set([
   ...pluginChangeResources,
   "team-replies",
 ]);
-const noop = () => undefined;
 /**
  * Guards against a Host that pages without end. Every page is at most 64 KiB and every row is
  * bounded by its schema; a person's inventory is what the client must hold to show it, so this
@@ -181,7 +180,8 @@ export class PersonalResourceReads implements PersonalResourcePort {
     };
     return {
       hold: (kind) => {
-        if (!held.has(kind)) held.set(kind, this.watch(kind, noop));
+        // Its own registration: a listener shared with another reader would let either end both.
+        if (!held.has(kind)) held.set(kind, this.watch(kind, () => undefined));
         // Read by a render that never mounted: it lets go after the grace.
         if (opened === 0 && timer === undefined) arm();
       },
@@ -202,7 +202,7 @@ export class PersonalResourceReads implements PersonalResourcePort {
       clearTimeout(held.timer);
       this.#timers.delete(held.timer);
     }
-    const release = held?.release ?? this.watch(kind, noop);
+    const release = held?.release ?? this.watch(kind, () => undefined);
     const timer = setTimeout(() => {
       this.#timers.delete(timer);
       this.#leases.delete(kind);
