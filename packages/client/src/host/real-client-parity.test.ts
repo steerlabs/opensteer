@@ -195,3 +195,16 @@ it("reads watched resources beside the socket's attach on a cold start, and once
     for (const release of releases) release();
   }
 });
+
+it("moves only the published app's version, so an open app view rereads", async () => {
+  const { client, host } = await connect();
+  const published = "app_00000000-0000-4000-8000-000000000001";
+  const other = "app_00000000-0000-4000-8000-000000000002";
+  const before = client.getSnapshot().appVersions ?? {};
+  const [socket] = host.sockets;
+  socket!.deliver({ type: "host.apps.changed", appIds: [published] } as never);
+  await vi.waitFor(() =>
+    expect(client.getSnapshot().appVersions?.[published]).toBe((before[published] ?? 0) + 1),
+  );
+  expect(client.getSnapshot().appVersions?.[other]).toBeUndefined();
+});

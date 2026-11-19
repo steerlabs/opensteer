@@ -3874,9 +3874,17 @@ export class HttpHostClient {
       case "host.browser-history-changed":
         this.browserHistory.changed(message.profileId);
         break;
-      case "host.apps.changed":
-        this.#update({ ...this.#snapshot, appsRevision: this.#snapshot.appsRevision + 1 });
+      case "host.apps.changed": {
+        // An open app view rereads when its own app changed, as when the agent publishes it.
+        const appVersions = { ...this.#snapshot.appVersions };
+        for (const appId of message.appIds) appVersions[appId] = (appVersions[appId] ?? 0) + 1;
+        this.#update({
+          ...this.#snapshot,
+          appsRevision: this.#snapshot.appsRevision + 1,
+          appVersions,
+        });
         break;
+      }
       case "host.place-activity":
       case "host.place-activity-cleared":
         this.#placeActivity.apply(message);
