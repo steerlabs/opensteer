@@ -64,6 +64,11 @@ export interface ObservedDetail {
   subscriptions: number;
   /** The saved checkpoint for this scope was read, or is being read (`"reading"`). */
   saved?: "reading" | "read";
+  /**
+   * A saved cut whose task the current shell did not list: it only supplies the resume cursor, and
+   * is installed once the Host's first reply on `generation` confirms the scope.
+   */
+  unconfirmed?: { readonly saved: DetailCheckpoint; generation: number };
 }
 
 /** The session's resource reads: what it watches, and the revisions the Host says changed. */
@@ -108,8 +113,6 @@ export class ScopedPersonalStream {
   readonly #dirty = new Map<string, ObservedDetail | undefined>();
   #flushTimer: ReturnType<typeof setTimeout> | undefined;
   #candidate: ShellCandidate | undefined;
-  /** Details subscribed at attach with a saved cursor, installed once the attach reply confirms it. */
-  readonly #candidateDetails = new Map<ObservedDetail, DetailCheckpoint & { generation: number }>();
   #identity: ScopedPersonalIdentity | undefined;
   #sessionId: AuthSessionId | undefined;
   #generation = 0;
@@ -243,9 +246,9 @@ export class ScopedPersonalStream {
       this.#selected && !this.#background ? this.#details.get(this.#selected) : undefined;
     const subscription = selected && !this.#mustLoad(selected) && this.#subscribe(selected, true);
     const saved = subscription && candidate?.details.get(scopeKey(subscription.scope));
-    this.#candidateDetails.clear();
+    // The selected task's saved cut waits for the Host's reply on its own subscription.
     if (selected && subscription && saved)
-      this.#candidateDetails.set(selected, { ...saved, generation: subscription.generation });
+      selected.unconfirmed = { saved, generation: subscription.generation };
     const interests = this.#interests();
     send({
       type: "client.attach",
@@ -334,7 +337,6 @@ export class ScopedPersonalStream {
     this.#identity = undefined;
     this.#sessionId = undefined;
     this.#candidate = undefined;
-    this.#candidateDetails.clear();
     this.#dirty.clear();
     if (this.#flushTimer) clearTimeout(this.#flushTimer);
     this.#flushTimer = undefined;
@@ -343,6 +345,7 @@ export class ScopedPersonalStream {
       detail.transcript.begin(++this.#generation, false);
       detail.text.clear();
       delete detail.saved;
+      delete detail.unconfirmed;
     }
     if (removeCheckpoints) this.#purge(identity);
     this.#evict();
@@ -483,6 +486,15 @@ export class ScopedPersonalStream {
       this.repairShell();
       return;
     }
+    const gone =
+      frame.type === "host.changes"
+        ? frame.changes.flatMap((change) =>
+            change.entityKind === "task" && change.operation === "remove" ? [change.entityId] : [],
+          )
+        : frame.type === "host.snapshot"
+          ? [...previous.tasks.keys()].filter((id) => !this.shell.getSnapshot().tasks.has(id))
+          : [];
+    for (const threadId of gone) this.#forgetTask(threadId);
     this.#ack(frame);
     this.#checkpoint(shellScope);
     if (firstCut) {
@@ -504,8 +516,6 @@ export class ScopedPersonalStream {
   ) {
     const candidate = this.#candidate!;
     this.#candidate = undefined;
-    const pending = [...this.#candidateDetails];
-    this.#candidateDetails.clear();
     if (frame.type === "host.snapshot") {
       if (!("tasks" in frame.snapshot)) return;
       const { deploymentId, viewerId, epoch, session } = frame.snapshot;
@@ -517,6 +527,7 @@ export class ScopedPersonalStream {
       ) {
         // Another viewer, session or history: the saved state was never shown and is removed.
         this.#purge(candidate.identity);
+        for (const detail of this.#details.values()) delete detail.unconfirmed;
         return;
       }
     }
@@ -533,11 +544,6 @@ export class ScopedPersonalStream {
         snapshot: candidate.shell.state,
       });
     }
-    for (const [detail, saved] of pending)
-      if (detail.slot && detail.transcript.getSnapshot().generation === saved.generation) {
-        this.#installDetail(detail, saved, saved.generation);
-        detail.saved = "read";
-      }
   }
 
   #discardViewerCheckpoints() {
@@ -550,7 +556,31 @@ export class ScopedPersonalStream {
       detail.transcript.begin(++this.#generation, false);
       detail.text.clear();
       delete detail.saved;
+      delete detail.unconfirmed;
     }
+  }
+
+  /** Whether the socket's current synchronized shell lists this task. */
+  #listsTask(threadId: string) {
+    const shell = this.shell.getSnapshot();
+    return this.#shellReady && shell.synchronized && shell.tasks.has(threadId);
+  }
+
+  /** A task the shell no longer holds: its saved and retained cuts go, here and on disk. */
+  #forgetTask(threadId: string) {
+    for (const [key, detail] of this.#details) {
+      if (detail.scope.threadId !== threadId) continue;
+      delete detail.unconfirmed;
+      if (detail.slot) continue;
+      this.#dirty.delete(key);
+      if (detail.observers > 0 || key === this.#selected) {
+        detail.transcript.begin(++this.#generation, false);
+        delete detail.saved;
+      } else this.#details.delete(key);
+    }
+    const identity = this.#identity;
+    if (identity && this.cache)
+      this.#enqueue(`thread-cache:${threadId}`, () => this.cache!.removeThread(identity, threadId));
   }
 
   #currentDetail(frame: Frame): ObservedDetail | undefined {
@@ -574,6 +604,18 @@ export class ScopedPersonalStream {
     if (frame.type === "host.live") {
       this.#live(detail, frame);
       return;
+    }
+    // The Host's first reply confirms a saved cut it resumed from; a snapshot or removal replaces it.
+    const unconfirmed = detail.unconfirmed;
+    if (unconfirmed) {
+      delete detail.unconfirmed;
+      if (
+        unconfirmed.generation === frame.generation &&
+        (frame.type === "host.changes" || frame.type === "host.synchronized")
+      ) {
+        this.#installDetail(detail, unconfirmed.saved, frame.generation);
+        detail.saved = "read";
+      }
     }
     if (
       frame.type === "host.snapshot" &&
@@ -762,9 +804,12 @@ export class ScopedPersonalStream {
         detail.saved = "read";
         const saved = held && validDetailCheckpoint(held, detail.scope, identity);
         if (saved && !detail.slot && !detail.transcript.getSnapshot().snapshot) {
-          const generation = ++this.#generation;
-          detail.transcript.begin(generation, false);
-          this.#installDetail(detail, saved, generation);
+          // Painted now only for a task the current shell lists; otherwise the Host confirms it.
+          if (this.#listsTask(detail.scope.threadId)) {
+            const generation = ++this.#generation;
+            detail.transcript.begin(generation, false);
+            this.#installDetail(detail, saved, generation);
+          } else detail.unconfirmed = { saved, generation: 0 };
         }
         if (this.#details.get(scopeKey(detail.scope)) === detail) this.#reconcile();
       });
@@ -815,10 +860,12 @@ export class ScopedPersonalStream {
     this.#slots.set(slot, detail);
     detail.transcript.begin(generation, true);
     detail.text.generation(generation);
+    if (repair) delete detail.unconfirmed;
+    if (detail.unconfirmed) detail.unconfirmed.generation = generation;
     const cursor =
       !repair && detail.transcript.canCheckpoint()
         ? this.#cursor(detail.scope, detail.transcript.getSnapshot().through)
-        : undefined;
+        : detail.unconfirmed?.saved.cursor;
     const subscription = {
       subscriptionId: slot,
       scope: detail.scope,

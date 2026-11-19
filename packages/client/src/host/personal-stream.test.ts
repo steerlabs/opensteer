@@ -1507,6 +1507,16 @@ test("replays a full saved history window with updated and removed active overla
     type: "host.synchronized",
     throughSequence: "1",
   });
+  // The saved cut stays unpublished until the Host answers on its own subscription.
+  expect(fresh.detail(threadScope).transcript.getSnapshot().items.size).toBe(0);
+  const selected = attach.selected!;
+  fresh.receive({
+    scope: selected.scope,
+    subscriptionId: selected.subscriptionId,
+    generation: selected.generation,
+    type: "host.synchronized",
+    throughSequence: "2",
+  });
   expect(fresh.detail(threadScope).transcript.getSnapshot().items.size).toBe(51);
   expect(fresh.detail(threadScope).transcript.getSnapshot().items.get(active.id)?.revision).toBe(
     "2",
@@ -2722,4 +2732,96 @@ test("reads handle frames through the stream its host.live named, repairs a gap 
   name(next, 8, "Hello wor");
   f.stream.receive({ type: "host.text", h: 8, o: 9, n: 11, t: "ld" });
   expect(text()).toBe("Hello world");
+});
+
+function attachedWith(
+  cache: PersonalStreamCache,
+  tasks: readonly (typeof task)[],
+): {
+  stream: ScopedPersonalStream;
+  sent: ScopedClientMessage[];
+  shell: { scope: typeof shellScope; subscriptionId: "shell"; generation: number };
+} {
+  const stream = new ScopedPersonalStream(cache);
+  const sent: ScopedClientMessage[] = [];
+  stream.attach((frame) => sent.push(frame));
+  const attach = sent[0] as Extract<ScopedClientMessage, { type: "client.attach" }>;
+  const shell = {
+    scope: shellScope,
+    subscriptionId: "shell" as const,
+    generation: attach.generation,
+  };
+  stream.receive({
+    ...shell,
+    type: "host.snapshot",
+    throughSequence: "1",
+    snapshot: {
+      deploymentId,
+      viewerId,
+      epoch,
+      session,
+      tasks: [...tasks],
+      visits: [],
+      attention: [],
+      counts,
+      ...shellLists,
+    },
+  });
+  stream.receive({ ...shell, type: "host.synchronized", throughSequence: "1" });
+  sent.length = 0;
+  return { stream, sent, shell };
+}
+
+test("a saved task the shell does not list is never shown before the Host answers, and a removal drops it", async () => {
+  const { cache, storage } = await savedCache();
+  // The task was purged while this device was away: the shell no longer lists it.
+  const { stream, sent } = attachedWith(cache, []);
+  const shown: number[] = [];
+  const detail = stream.detail(threadScope);
+  detail.transcript.subscribe(() => shown.push(detail.transcript.getSnapshot().items.size));
+  stream.observe(threadScope);
+  await vi.waitFor(() => expect(sent).toHaveLength(1));
+  const subscribe = sent[0] as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+  // The saved cut still supplies the resume cursor, but nothing from it is published.
+  expect(subscribe.cursor?.afterSequence).toBe("1");
+  expect(detail.transcript.getSnapshot().items.size).toBe(0);
+  stream.receive({
+    scope: subscribe.scope,
+    subscriptionId: subscribe.subscriptionId,
+    generation: subscribe.generation,
+    type: "host.removed",
+    reason: "unavailable",
+  });
+  stream.flushCheckpoints();
+  expect(shown.every((size) => size === 0)).toBe(true);
+  await vi.waitFor(() =>
+    expect([...storage.values.keys()].some((key) => key.includes(`thread:${threadId}`))).toBe(
+      false,
+    ),
+  );
+});
+
+test("a task the shell removes takes its saved cut with it, from memory and disk", async () => {
+  const { cache, storage } = await savedCache();
+  const { stream, shell } = attachedWith(cache, [task]);
+  const release = stream.observe(threadScope);
+  await vi.waitFor(() =>
+    expect(stream.detail(threadScope).transcript.getSnapshot().items.size).toBe(1),
+  );
+  release();
+  stream.receive({
+    ...shell,
+    type: "host.changes",
+    fromSequence: "1",
+    throughSequence: "2",
+    changes: [
+      { entityKind: "task", entityId: threadId, operation: "remove", sequence: "2", ordinal: 0 },
+    ],
+  });
+  expect(stream.peekDetail(threadScope)?.transcript.getSnapshot().items.size ?? 0).toBe(0);
+  await vi.waitFor(() =>
+    expect([...storage.values.keys()].some((key) => key.includes(`thread:${threadId}`))).toBe(
+      false,
+    ),
+  );
 });
