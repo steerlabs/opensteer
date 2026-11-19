@@ -174,7 +174,7 @@ export function mockScopedItems(
     const item = mockScopedItem(entry, String(index + 1), revision);
     if (!item) return [];
     if (item.kind !== "request") return item.nodeId === (nodeId ?? null) ? [item] : [];
-    const scope = mockRequestScope(snapshot, threadId, item.requestId);
+    const scope = mockRequestScope(snapshot, threadId, entry, item.requestId);
     return scope === (nodeId ?? null) ? [{ ...item, nodeId: scope }] : [];
   });
   if (!nodeId) return rows;
@@ -183,12 +183,23 @@ export function mockScopedItems(
     .map((row, index) => ({ ...row, position: String(index + 1) }));
 }
 
+/** Who asked a settled Request, kept beside its receipt: the snapshot lists only open Requests. */
+const receiptAskers = new WeakMap<TranscriptEntry, NonNullable<Request["originatingNodeId"]>>();
+export function keepMockReceiptAsker(receipt: TranscriptEntry, request: Request) {
+  if (request.originatingNodeId) receiptAskers.set(receipt, request.originatingNodeId);
+}
+
 /** As the Host places it: a node's receipt stays with that node, except an approval it asked. */
-function mockRequestScope(snapshot: MockTranscriptSnapshot, threadId: string, requestId: string) {
-  const request = snapshot.requests[threadId]?.find(({ id }) => id === requestId);
-  return request?.originatingNodeId && request.kind !== "harness.approval"
-    ? request.originatingNodeId
-    : null;
+function mockRequestScope(
+  snapshot: MockTranscriptSnapshot,
+  threadId: string,
+  entry: TranscriptEntry,
+  requestId: string,
+) {
+  const open = snapshot.requests[threadId]?.find(({ id }) => id === requestId);
+  const asker = open?.originatingNodeId ?? receiptAskers.get(entry) ?? null;
+  const kind = open?.kind ?? (entry.kind === "request" ? entry.requestKind : null);
+  return asker && kind !== "harness.approval" ? asker : null;
 }
 
 function mockScopedItem(
