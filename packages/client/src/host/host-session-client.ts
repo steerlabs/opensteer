@@ -1767,6 +1767,7 @@ export class HttpHostClient {
     // Only the socket moves the connection; a scope repair on an open socket leaves it alone.
     const attachment = this.#stream.ready ? this.#stream.attachment : undefined;
     const attached = attachment !== undefined && this.#syncedAttachment !== attachment;
+    const reattached = attached && this.#syncedAttachment !== undefined;
     if (attached) this.#syncedAttachment = attachment;
     const connection = attached ? "connected" : this.#snapshot.connection;
     const session = shell.session;
@@ -1877,6 +1878,7 @@ export class HttpHostClient {
       this.#invalidatePersonalRemoteAccess();
       this.#reverifyCapabilities();
       this.#resources.resume();
+      if (reattached) this.#noticesMissed();
     } else if (forgot) this.#resources.resume();
     if (
       state.synchronized &&
@@ -4114,6 +4116,23 @@ export class HttpHostClient {
     this.#resolveLoad?.();
     this.#resolveLoad = undefined;
     this.#load = undefined;
+  }
+
+  /**
+   * The Host's notices are not replayed. After a gap, everything kept current only by one counts
+   * as changed: the apps directory and open apps, schedules and automations, browser usage and
+   * connected agents. Kinds with a resource revision compare it instead (`resume`); browser
+   * history, references and remote access reread on their own reconnect.
+   */
+  #noticesMissed() {
+    const appVersions = Object.fromEntries(
+      Object.entries(this.#snapshot.appVersions ?? {}).map(([appId, version]) => [appId, version + 1]),
+    );
+    this.#update({ ...this.#snapshot, appsRevision: this.#snapshot.appsRevision + 1, appVersions });
+    const deploymentId = this.#snapshot.deploymentId;
+    if (deploymentId) this.#triggersChanged(deploymentId);
+    this.#browserUsageChanged([...this.#browserUsageRead.keys()]);
+    for (const listener of this.#connectionsListeners) listener();
   }
 
   #applyNotice(message: HostToClientMessage) {
