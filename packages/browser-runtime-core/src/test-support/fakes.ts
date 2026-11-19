@@ -8,6 +8,7 @@ import {
   type BrowserRuntimeServerMessage,
 } from "@opensteer/protocol";
 import { isRecord } from "@opensteer/shared/isRecord";
+import type { RendererGoneCause } from "../browser/backend.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -270,13 +271,18 @@ export class FakePage implements BrowserPage {
     return this.closed;
   }
 
-  private readonly rendererListeners = new Set<() => void>();
-  /** The renderer dies; the page stays until it is closed, as in Chromium. */
-  crashRenderer(): void {
-    for (const listener of this.rendererListeners) listener();
+  private readonly rendererListeners = new Set<(cause: RendererGoneCause) => void>();
+  /** The renderer goes away; the page stays until it is closed, as in Chromium. */
+  crashRenderer(cause: RendererGoneCause = "crashed"): void {
+    for (const listener of this.rendererListeners) listener(cause);
   }
 
-  onRendererGone(listener: () => void): () => void {
+  /** The page whose script opened this one, as the engine knows it at creation. */
+  openerOf(): BrowserPage | null {
+    return this.openerPage;
+  }
+
+  onRendererGone(listener: (cause: RendererGoneCause) => void): () => void {
     this.rendererListeners.add(listener);
     return () => this.rendererListeners.delete(listener);
   }
@@ -329,6 +335,7 @@ export class FakeContext implements BrowserContext {
     return this.connected;
   }
   private readonly pageListeners = new Set<(page: BrowserPage) => void>();
+  private readonly handOffs = new Set<(page: BrowserPage, opener: BrowserPage | null) => void>();
   private readonly pageList: BrowserPage[];
 
   constructor(pages: BrowserPage[] = []) {
@@ -339,10 +346,26 @@ export class FakeContext implements BrowserContext {
     return [...this.pageList];
   }
 
-  async createPage(): Promise<BrowserPage> {
+  async createPage(
+    options: { readonly own?: (page: BrowserPage) => void } = {},
+  ): Promise<BrowserPage> {
     const page = new FakePage();
+    this.pageList.push(page);
+    this.handOffPage(page);
+    options.own?.(page);
     this.addPage(page);
     return page;
+  }
+
+  handOff(listener: (page: BrowserPage, opener: BrowserPage | null) => void): () => void {
+    this.handOffs.add(listener);
+    for (const page of this.pageList) listener(page, openerOf(page));
+    return () => this.handOffs.delete(listener);
+  }
+
+  /** The engine has a handle for `page`; it is announced later, if at all. */
+  handOffPage(page: BrowserPage): void {
+    for (const listener of this.handOffs) listener(page, openerOf(page));
   }
 
   onPage(listener: (page: BrowserPage) => void): void {
@@ -354,9 +377,16 @@ export class FakeContext implements BrowserContext {
   }
 
   addPage(page: BrowserPage): void {
-    this.pageList.push(page);
+    if (!this.pageList.includes(page)) {
+      this.pageList.push(page);
+      this.handOffPage(page);
+    }
     for (const listener of this.pageListeners) listener(page);
   }
+}
+
+function openerOf(page: BrowserPage): BrowserPage | null {
+  return page instanceof FakePage ? page.openerOf() : null;
 }
 
 export class FakeLaunchedBrowser implements LaunchedBrowser {

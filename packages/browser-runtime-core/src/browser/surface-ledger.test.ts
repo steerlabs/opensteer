@@ -31,14 +31,15 @@ const scriptTargetSetup = [
 ];
 
 describe("SurfaceLedger", () => {
-  it.each(["reject", "timeout"])(
-    "retains a %s close and suspends a late close without retiring the tab",
+  it.each(["rejects", "hangs"])(
+    "sleeps a tab at its destroy request and never returns that page to service when its close %s",
     async (failure) => {
       vi.useFakeTimers();
       const page = new FakePage({ url: "https://close.test/" });
       page.captureRestore = async () => ({ saved: true });
       const release = vi.fn();
-      const ledger = new SurfaceLedger(new FakeContext([page]), { releaseTarget: release });
+      const context = new FakeContext([page]);
+      const ledger = new SurfaceLedger(context, { releaseTarget: release });
       await ledger.start();
       await vi.advanceTimersByTimeAsync(0);
       const record = [...ledger.policyRecords()][0]!;
@@ -46,44 +47,35 @@ describe("SurfaceLedger", () => {
       const events: SurfaceLedgerEvent[] = [];
       ledger.subscribe((event) => events.push(event));
       const closing = Promise.withResolvers<void>();
-      const close = vi.spyOn(page, "close").mockImplementation(() => {
-        return closing.promise;
-      });
-      let lateClose: (() => void) | undefined;
-      vi.spyOn(page, "onClose").mockImplementation((listener) => {
-        lateClose = listener;
-      });
+      const close = vi.spyOn(page, "close").mockImplementation(() => closing.promise);
+      const create = vi.spyOn(context, "createPage");
       try {
-        let outcome: boolean | undefined;
-        void ledger
-          .sleep(record.id, () => null)
-          .then((value) => {
-            outcome = value;
-          });
-        await vi.advanceTimersByTimeAsync(0);
+        expect(await ledger.sleep(record.id, () => null)).toBe(true);
         expect(close).toHaveBeenCalledOnce();
-        expect(record.live).toBe(live);
-        expect(record.lease.state).toBe("sleeping");
-        expect(release).not.toHaveBeenCalled();
-        expect(ledger.stateOf(record.id)).toBe("live");
-        if (failure === "reject") {
-          closing.reject(new Error("Close refused"));
-          await vi.advanceTimersByTimeAsync(0);
-        } else await vi.advanceTimersByTimeAsync(2_000);
-        expect(outcome).toBe(false);
-        expect(record.live).toBe(live);
-        expect(record.lease.state).toBe("live");
-        expect(record.restore).toMatchObject({ engine: null, bytes: 0 });
-        expect(release).not.toHaveBeenCalled();
-        page.navigate("https://after-close.test/", "Still live");
-        await vi.advanceTimersByTimeAsync(0);
-        lateClose!();
+        // The destroy request is irreversible: the tab sleeps now, whatever the engine answers.
+        expect(record.live).toBeNull();
         expect(ledger.stateOf(record.id)).toBe("suspended");
         expect(release).toHaveBeenCalledExactlyOnceWith(live.targetId);
+        if (failure === "rejects") closing.reject(new Error("Close refused"));
+        await vi.advanceTimersByTimeAsync(2_000);
+        // Anything that still reaches the old page dies with it, so no tab shows it.
+        page.navigate("https://after-close.test/", "Lost with the page");
+        expect(ledger.stateOf(record.id)).toBe("suspended");
+        expect(ledger.binding(record.id)).toBeNull();
+        const early = ledger.wake(record.id);
+        const refused = expect(early).rejects.toMatchObject({
+          code: "conflict",
+          retryable: true,
+          reason: "tab-still-closing",
+        });
+        await vi.advanceTimersByTimeAsync(2_000);
+        await refused;
+        expect(create, "No second page while the first may live").not.toHaveBeenCalled();
+        page.crash();
         const next = await ledger.wake(record.id);
-        expect(next.surface.url).toBe("https://after-close.test/");
-        lateClose!();
-        expect(ledger.binding(record.id)?.page).toBe(next.page);
+        expect(next.surface.url).toBe("https://close.test/");
+        expect(next.page).not.toBe(page);
+        expect(create).toHaveBeenCalledOnce();
         expect(
           events.filter((event) => event.type === "changed" && event.change === "closed"),
         ).toEqual([]);

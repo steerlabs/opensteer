@@ -1,5 +1,15 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { FakeContext, FakePage } from "../test-support/fakes.js";
+import { BrowserRuntime } from "../runtime.js";
+import {
+  FakeContext,
+  FakeLaunchedBrowser,
+  FakeLauncher,
+  FakePage,
+  FakeSink,
+  FakeTicketVerifier,
+  freshClaims,
+  testSessionFilesRoot,
+} from "../test-support/fakes.js";
 import { PageOwnership, type BrowserPageDiagnostic } from "./page-ownership.js";
 import { SurfaceLedger } from "./surface-ledger.js";
 import { TabSleeper } from "./tab-sleeper.js";
@@ -9,136 +19,282 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function harness(pages: FakePage[]) {
-  vi.useFakeTimers();
+function registry() {
   const diagnostics: BrowserPageDiagnostic[] = [];
   const owner = new PageOwnership({ onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) });
-  const context = new FakeContext(pages);
-  const ledger = new SurfaceLedger(context, { pages: owner });
-  await ledger.start();
-  await vi.advanceTimersByTimeAsync(0);
-  const idOf = async (page: FakePage) => ledger.surfaceIdForTarget(await page.targetId())!;
-  const events = (event: BrowserPageDiagnostic["event"], page?: FakePage) =>
+  /** Lines of one event whose fields equal `match`. */
+  const events = (event: BrowserPageDiagnostic["event"], match: Record<string, unknown> = {}) =>
     diagnostics.filter(
       (diagnostic) =>
         diagnostic.event === event &&
-        (!page || ("page" in diagnostic && diagnostic.page === owner.incarnationOf(page))),
+        Object.entries(match).every(
+          ([key, value]) => (diagnostic as Record<string, unknown>)[key] === value,
+        ),
     );
-  return { context, diagnostics, events, idOf, ledger, owner };
+  return { diagnostics, events, owner };
 }
 
-/** A failed open or wake: its page refuses initialization once, then its close never answers. */
-function refusingPage(answer: Promise<void>) {
+async function harness(pages: FakePage[]) {
+  vi.useFakeTimers();
+  const r = registry();
+  const context = new FakeContext(pages);
+  const ledger = new SurfaceLedger(context, { pages: r.owner });
+  await ledger.start();
+  await vi.advanceTimersByTimeAsync(0);
+  const idOf = async (page: FakePage) => ledger.surfaceIdForTarget(await page.targetId())!;
+  return { ...r, context, idOf, ledger };
+}
+
+/** A page whose close the test answers, or never does. */
+function closeGate(page: FakePage) {
+  const answer = Promise.withResolvers<void>();
+  const close = vi.spyOn(page, "close").mockImplementation(() => answer.promise);
+  return { answer, close };
+}
+
+/** A failed wake: its page refuses initialization once, then its close is the test's. */
+function refusingPage() {
   const page = new FakePage();
   page.cdpSession.responses.set("Page.enable", () => {
     page.cdpSession.responses.delete("Page.enable");
     throw new Error("initialization refused");
   });
-  vi.spyOn(page, "close").mockReturnValue(answer);
   return page;
 }
 
-it.each(["delayed", "falsely acknowledged", "hung", "rejected"] as const)(
-  "owns a %s close's page as closing until the engine confirms it, without holding a sibling",
+it.each(["resolves with no event", "hangs until the event", "rejects after the event"] as const)(
+  "answers a tab close from the engine's confirmation when the close call %s",
   async (close) => {
     const page = new FakePage({ url: "https://closing.test/" });
     const sibling = new FakePage({ url: "https://sibling.test/" });
     const f = await harness([page, sibling]);
     const id = await f.idOf(page);
     const siblingId = await f.idOf(sibling);
-    const incarnation = f.owner.incarnationOf(page);
-    const answer = Promise.withResolvers<void>();
-    const asked = vi
-      .spyOn(page, "close")
-      .mockImplementation(() =>
-        close === "falsely acknowledged"
-          ? Promise.resolve()
-          : close === "rejected"
-            ? Promise.reject(new Error("close refused"))
-            : answer.promise,
-      );
+    const gate = closeGate(page);
     try {
-      expect(f.owner.stateOf(page)).toBe("live");
       const closing = f.ledger.closeSurface(id, "person-closed");
-      void closing.catch(() => undefined);
-      expect(f.owner.stateOf(page)).toBe("closing");
-
+      let outcome: string | undefined;
+      void closing.then(
+        () => (outcome = "closed"),
+        (error: { reason?: string }) => (outcome = error.reason),
+      );
       await expect(f.ledger.use(siblingId, async () => "acted")).resolves.toBe("acted");
-      const opened = await f.ledger.openSurface();
-      await f.ledger.closeSurface(opened.id, "agent-closed");
-      expect(f.owner.stateOf(page), "Sibling work never settles this page").toBe("closing");
-
-      if (close === "delayed") {
-        answer.resolve();
-        page.crash();
-        await closing;
-      } else {
-        if (close === "hung") await vi.advanceTimersByTimeAsync(2_000);
-        if (close === "falsely acknowledged") await closing;
-        else await expect(closing).rejects.toThrow();
-        expect(f.owner.stateOf(page)).toBe("closing");
-        expect(f.owner.incarnationOf(page)).toBe(incarnation);
-        // A refused or hung close keeps its tab listed until the page is gone.
-        expect(f.ledger.stateOf(id)).toBe(close === "falsely acknowledged" ? undefined : "live");
-        await vi.advanceTimersByTimeAsync(10_000);
-        expect(asked.mock.calls.length, "Only a settled, unproven close is asked again").toBe(
-          close === "hung" ? 1 : 4,
-        );
-        expect(f.events("browser.page.closing.stuck", page)).toHaveLength(1);
-        expect(f.events("browser.page.ended", page)).toEqual([]);
+      if (close === "resolves with no event") {
+        gate.answer.resolve();
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(outcome, "A settled call proves nothing").toBe("tab-still-closing");
+        expect(f.ledger.stateOf(id), "The tab stays listed until its page is gone").toBe("live");
+        expect(f.ledger.binding(id)).not.toBeNull();
         page.crash();
         await vi.advanceTimersByTimeAsync(0);
+      } else {
+        await vi.advanceTimersByTimeAsync(500);
+        page.crash();
+        if (close === "rejects after the event") gate.answer.reject(new Error("late refusal"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(outcome, "Confirmation is success, whatever the call does").toBe("closed");
       }
-
-      expect(f.owner.stateOf(page)).toBe("absent");
       expect(f.ledger.stateOf(id)).toBeUndefined();
-      expect(f.events("browser.page.ended", page)).toEqual([
-        {
-          event: "browser.page.ended",
-          page: incarnation,
-          surface: id,
+      expect(f.ledger.stateOf(siblingId)).toBe("live");
+      expect(f.events("browser.page.ended", { surface: id })).toEqual([
+        expect.objectContaining({
           reason: "person-closed",
-          lifetimeMs: expect.any(Number),
-          closingMs: expect.any(Number),
-          closeAttempts: close === "delayed" || close === "hung" ? 1 : 4,
-        },
+          surface: id,
+          confirmedBy: "page-event",
+          rendererGone: null,
+        }),
       ]);
-      await vi.advanceTimersByTimeAsync(60_000);
-      expect(asked.mock.calls.length, "A confirmed page is never asked again").toBe(
-        close === "delayed" || close === "hung" ? 1 : 4,
-      );
     } finally {
-      answer.resolve();
+      gate.answer.resolve();
       await f.ledger.close();
     }
   },
 );
 
-it.each(["live", "closing"] as const)(
-  "keeps a page whose renderer crashed while %s, ending it only on confirmation",
-  async (state) => {
+it("closes a tab whose sleep request is still closing, and its late end lists no dead tab", async () => {
+  const page = new FakePage({ url: "https://sleep.test/" });
+  const f = await harness([page, new FakePage()]);
+  const id = await f.idOf(page);
+  const gate = closeGate(page);
+  try {
+    expect(await f.ledger.sleep(id, () => null)).toBe(true);
+    expect(f.ledger.stateOf(id)).toBe("suspended");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(f.events("browser.page.closing.hung", { surface: id })).toHaveLength(1);
+    await f.ledger.closeSurface(id, "person-closed");
+    expect(f.ledger.stateOf(id)).toBeUndefined();
+    expect(gate.close, "Close asks a hung sleeping page again").toHaveBeenCalledTimes(2);
+    page.crash();
+    expect(f.ledger.snapshot().map((surface) => surface.id)).not.toContain(id);
+    expect(f.events("browser.page.ended", { surface: id })).toMatchObject([{ reason: "slept" }]);
+  } finally {
+    gate.answer.resolve();
+    await f.ledger.close();
+  }
+});
+
+it.each(["hangs", "keeps refusing"] as const)(
+  "keeps a tab whose failed wake's close %s recoverable by a later wake or close",
+  async (close) => {
+    const page = new FakePage({ url: "https://wake.test/" });
+    const f = await harness([page]);
+    const id = await f.idOf(page);
+    expect(await f.ledger.sleep(id, () => null)).toBe(true);
+    const failed = refusingPage();
+    const asked = vi
+      .spyOn(failed, "close")
+      .mockImplementation(() =>
+        close === "hangs" ? new Promise(() => {}) : Promise.reject(new Error("close refused")),
+      );
+    const create = vi.spyOn(f.context, "createPage").mockImplementationOnce(async () => failed);
+    try {
+      await expect(f.ledger.wake(id)).rejects.toMatchObject({ code: "conflict", retryable: true });
+      // Inside the Host's 15-second request budget, the answer is a retryable pending one.
+      const again = f.ledger.wake(id);
+      const pending = expect(again).rejects.toMatchObject({ reason: "tab-still-closing" });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await pending;
+      expect(create, "No replacement while the failed page may live").toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      const automatic = asked.mock.calls.length;
+      expect(
+        f.events(
+          close === "hangs" ? "browser.page.closing.hung" : "browser.page.closing.exhausted",
+        ),
+      ).not.toEqual([]);
+      const third = f.ledger.wake(id);
+      const refused = expect(third).rejects.toMatchObject({ reason: "tab-still-closing" });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await refused;
+      expect(asked.mock.calls.length, "A later wake drives cleanup again").toBeGreaterThan(
+        automatic,
+      );
+      await f.ledger.closeSurface(id, "person-closed");
+      expect(f.ledger.stateOf(id)).toBeUndefined();
+      failed.crash();
+      expect(f.events("browser.page.ended", { reason: "wake-failed" })).toHaveLength(1);
+    } finally {
+      await f.ledger.close();
+    }
+  },
+);
+
+it("finds a sibling target at once past a closing page and a page whose target never answers", async () => {
+  vi.useFakeTimers();
+  const r = registry();
+  const root = new FakePage();
+  const closing = new FakePage();
+  const silent = new FakePage();
+  const sibling = new FakePage();
+  const context = new FakeContext([root, closing]);
+  const ledger = new SurfaceLedger(context, { pages: r.owner, rootPages: [root], sessionId: "a" });
+  await ledger.start();
+  vi.spyOn(closing, "close").mockReturnValue(new Promise(() => {}));
+  const closingTarget = vi.spyOn(closing, "targetId").mockReturnValue(new Promise(() => {}));
+  vi.spyOn(silent, "targetId").mockReturnValue(new Promise(() => {}));
+  r.owner.destroy(closing, "agent-closed");
+  context.handOffPage(silent);
+  context.handOffPage(sibling);
+  try {
+    await expect(ledger.adoptTarget(await sibling.targetId())).resolves.toBe(true);
+    expect(closingTarget, "A closing page is never asked").not.toHaveBeenCalled();
+    expect(r.owner.sessionOf(sibling)).toBe("a");
+  } finally {
+    await ledger.close();
+  }
+});
+
+it("ends a page still registering when its session ends, while another session keeps the profile", async () => {
+  vi.useFakeTimers();
+  const r = registry();
+  const rootA = new FakePage();
+  const rootB = new FakePage();
+  const context = new FakeContext([rootA, rootB]);
+  const a = new SurfaceLedger(context, { pages: r.owner, rootPages: [rootA], sessionId: "a" });
+  const b = new SurfaceLedger(context, { pages: r.owner, rootPages: [rootB], sessionId: "b" });
+  await a.start();
+  await b.start();
+  const popup = new FakePage({ opener: rootA });
+  vi.spyOn(popup, "cdp").mockReturnValue(new Promise(() => {}));
+  context.addPage(popup);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(r.owner.sessionOf(popup)).toBe("a");
+  try {
+    await a.closeOwnedPages("session-ended");
+    const closing = a.close();
+    await vi.advanceTimersByTimeAsync(2_000);
+    await closing;
+    expect(popup.isClosed()).toBe(true);
+    expect(r.events("browser.page.ended", { surface: null })).toMatchObject([
+      { reason: "session-ended" },
+    ]);
+    expect(rootB.isClosed()).toBe(false);
+    expect(b.snapshot()).toHaveLength(1);
+  } finally {
+    await b.close();
+  }
+});
+
+it("ends a popup whose opener's session ended before the popup was discovered", async () => {
+  vi.useFakeTimers();
+  const r = registry();
+  const rootA = new FakePage();
+  const rootB = new FakePage();
+  const context = new FakeContext([rootA, rootB]);
+  const a = new SurfaceLedger(context, { pages: r.owner, rootPages: [rootA], sessionId: "a" });
+  const b = new SurfaceLedger(context, { pages: r.owner, rootPages: [rootB], sessionId: "b" });
+  await a.start();
+  await b.start();
+  await a.closeOwnedPages("session-ended");
+  await a.close();
+  const popup = new FakePage({ opener: rootA });
+  context.handOffPage(popup);
+  try {
+    expect(popup.isClosed(), "No session would ever own it").toBe(true);
+    expect(r.events("browser.page.ended", { surface: null })).toMatchObject([
+      { reason: "session-ended" },
+    ]);
+  } finally {
+    await b.close();
+  }
+});
+
+it("ends a page no session ever admits, such as a raw target nobody adopted", async () => {
+  vi.useFakeTimers();
+  const r = registry();
+  const context = new FakeContext([]);
+  r.owner.adopt(context);
+  const orphan = new FakePage();
+  context.handOffPage(orphan);
+  await vi.advanceTimersByTimeAsync(29_000);
+  expect(orphan.isClosed()).toBe(false);
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(orphan.isClosed()).toBe(true);
+  expect(r.events("browser.page.ended")).toMatchObject([{ reason: "never-admitted" }]);
+});
+
+it.each(["crashed", "exited"] as const)(
+  "keeps a page whose renderer %s, and ends it only on confirmation",
+  async (cause) => {
     const page = new FakePage();
     const f = await harness([page, new FakePage()]);
     const id = await f.idOf(page);
-    if (state === "closing") {
-      vi.spyOn(page, "close").mockReturnValue(new Promise(() => {}));
-      void f.ledger.closeSurface(id, "agent-closed").catch(() => undefined);
-    }
+    const incarnation = f.ledger.binding(id)!.incarnation;
     try {
-      page.crashRenderer();
-      expect(f.owner.stateOf(page)).toBe(state);
-      expect(f.events("browser.page.renderer.crashed")).toEqual([
+      page.crashRenderer(cause);
+      expect(f.ledger.binding(id)?.page).toBe(page);
+      expect(f.events("browser.page.renderer.gone")).toEqual([
         {
-          event: "browser.page.renderer.crashed",
-          page: f.owner.incarnationOf(page),
+          event: "browser.page.renderer.gone",
+          page: incarnation,
           surface: id,
-          state,
+          state: "live",
+          cause,
         },
       ]);
-      if (state === "live") expect(f.ledger.binding(id)?.page).toBe(page);
       page.crash();
-      expect(f.events("browser.page.ended", page)).toMatchObject([
-        { reason: state === "live" ? "crashed" : "agent-closed" },
+      expect(f.events("browser.page.ended", { page: incarnation })).toMatchObject([
+        { reason: "native-gone", rendererGone: cause },
       ]);
     } finally {
       await f.ledger.close();
@@ -146,168 +302,81 @@ it.each(["live", "closing"] as const)(
   },
 );
 
-it("owns a failed open's page until confirmed and never registers it, while the next open proceeds", async () => {
-  const f = await harness([new FakePage()]);
-  const answer = Promise.withResolvers<void>();
-  const failed = refusingPage(answer.promise);
-  vi.spyOn(f.context, "createPage").mockImplementationOnce(async () => {
-    f.context.addPage(failed);
-    return failed;
+it("reports shutdown incomplete while a page is still closing after its host is gone", async () => {
+  const page = new FakePage();
+  vi.spyOn(page, "close").mockReturnValue(new Promise(() => {}));
+  const browser = new FakeLaunchedBrowser(new FakeContext([page]));
+  const runtime = new BrowserRuntime({
+    launcher: new FakeLauncher(browser),
+    runtimeId: "runtime_test",
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: new FakeTicketVerifier(freshClaims()),
   });
-  try {
-    await expect(f.ledger.openSurface()).rejects.toThrow("initialization refused");
-    expect(f.owner.stateOf(failed)).toBe("closing");
-    const next = await f.ledger.openSurface();
-    expect(next.state).toBe("live");
-    await vi.advanceTimersByTimeAsync(0);
-    expect(f.ledger.snapshot().map((surface) => surface.id)).not.toContain(
-      f.ledger.surfaceIdForTarget(await failed.targetId()),
-    );
-    answer.resolve();
-    failed.crash();
-    expect(f.events("browser.page.ended", failed)).toMatchObject([{ reason: "open-failed" }]);
-  } finally {
-    answer.resolve();
-    await f.ledger.close();
-  }
+  const attachment = await runtime.attach("fresh-ticket", new FakeSink());
+  vi.useFakeTimers();
+  const detaching = attachment.close();
+  await vi.advanceTimersByTimeAsync(10_000);
+  await detaching;
+  expect(runtime.health().profileHostCount).toBe(0);
+  expect(runtime.pages.counts().states.closing).toBe(1);
+  const first = runtime.shutdown();
+  const incomplete = expect(first).rejects.toThrow("could not be closed");
+  await vi.advanceTimersByTimeAsync(1_000);
+  await incomplete;
+  page.crash();
+  const second = runtime.shutdown();
+  await vi.advanceTimersByTimeAsync(0);
+  await second;
+  expect(runtime.pages.counts().states).toEqual({ provisional: 0, live: 0, closing: 0 });
 });
 
-it("makes no replacement for a tab while its failed wake's page is unconfirmed", async () => {
-  const page = new FakePage({ url: "https://wake.test/" });
-  const f = await harness([page]);
-  const id = await f.idOf(page);
-  expect(await f.ledger.sleep(id, () => null)).toBe(true);
-  const answer = Promise.withResolvers<void>();
-  const failed = refusingPage(answer.promise);
-  const create = vi.spyOn(f.context, "createPage").mockImplementationOnce(async () => failed);
-  try {
-    await expect(f.ledger.wake(id)).rejects.toMatchObject({ code: "conflict", retryable: true });
-    expect(f.owner.stateOf(failed)).toBe("closing");
-    await f.ledger.openSurface();
-    expect(create, "A sibling open never waits on that close").toHaveBeenCalledTimes(2);
-    const waking = f.ledger.wake(id);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(create, "No replacement while the failed page may live").toHaveBeenCalledTimes(2);
-    answer.resolve();
-    failed.crash();
-    const binding = await waking;
-    expect(create).toHaveBeenCalledTimes(3);
-    expect(binding.page).not.toBe(failed);
-    expect(f.events("browser.page.ended", failed)).toMatchObject([{ reason: "wake-failed" }]);
-  } finally {
-    answer.resolve();
-    await f.ledger.close();
-  }
-});
-
-it("keeps a falsely acknowledged sleep's page in service and makes no replacement for it", async () => {
-  const page = new FakePage({ url: "https://sleep.test/" });
-  const f = await harness([page]);
-  const id = await f.idOf(page);
-  const close = vi.spyOn(page, "close").mockResolvedValue(undefined);
-  const create = vi.spyOn(f.context, "createPage");
-  try {
-    expect(await f.ledger.sleep(id, () => null)).toBe(false);
-    expect(f.owner.stateOf(page)).toBe("closing");
-    expect(f.ledger.stateOf(id)).toBe("live");
-    expect((await f.ledger.wake(id)).page).toBe(page);
-    expect(create).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(
-      close,
-      "A failed sleep returns the page to service; nothing retries it",
-    ).toHaveBeenCalledOnce();
-    page.crash();
-    expect(f.ledger.stateOf(id)).toBe("suspended");
-    expect(f.events("browser.page.ended", page)).toMatchObject([{ reason: "slept" }]);
-    expect(f.events("browser.page.sleep.refused", page)).toMatchObject([
-      { reason: "close-failed" },
-    ]);
-  } finally {
-    await f.ledger.close();
-  }
-});
-
-it.each(["rejected", "hung"] as const)(
-  "keeps owning a page whose teardown close %s after the ledger lets go",
-  async (close) => {
-    const page = new FakePage();
-    const f = await harness([page]);
-    const asked = vi
-      .spyOn(page, "close")
-      .mockImplementation(() =>
-        close === "rejected" ? Promise.reject(new Error("close refused")) : new Promise(() => {}),
-      );
-    const tearingDown = f.ledger.closeOwnedPages("session-ended");
-    await vi.advanceTimersByTimeAsync(2_000);
-    await tearingDown;
-    await f.ledger.close();
-    expect(f.owner.stateOf(page)).toBe("closing");
-    expect(f.owner.counts().states).toEqual({ provisional: 0, live: 0, closing: 1 });
-    expect(asked).toHaveBeenCalledTimes(close === "rejected" ? 2 : 1);
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(asked, "Backoff doubles; a hung close is never stacked").toHaveBeenCalledTimes(
-      close === "rejected" ? 3 : 1,
-    );
-    page.crash();
-    expect(f.events("browser.page.ended", page)).toMatchObject([{ reason: "session-ended" }]);
-    expect(f.owner.counts()).toMatchObject({
-      states: { provisional: 0, live: 0, closing: 0 },
-      ended: { "session-ended": 1 },
-    });
-  },
-);
-
-it("logs one ending per page and one sleep refusal per reason change, with nothing from the page", async () => {
+it("logs each sleep blocker and refusal once per transition, again after it clears, with nothing from the page", async () => {
   const page = new FakePage({
     url: "https://bank.test/account?token=hunter2",
     title: "Balance: 1,234",
   });
-  const pinned = new FakePage({ url: "https://pinned.test/private" });
-  const f = await harness([page, pinned]);
+  const f = await harness([page]);
   const id = await f.idOf(page);
-  const pinnedId = await f.idOf(pinned);
-  for (const record of f.ledger.policyRecords()) {
-    record.origin = "agent";
-    record.personUsed = false;
-  }
+  const record = [...f.ledger.policyRecords()][0]!;
+  record.origin = "agent";
+  record.personUsed = false;
   page.keepAwake = () => "media";
-  Object.assign(page, { rendererExit: () => "exited" });
-  const sleeper = new TabSleeper();
+  const passes: unknown[] = [];
+  const sleeper = new TabSleeper({
+    onPass: (pass) => passes.push(pass),
+    pageCounts: () => f.owner.counts(),
+  });
   sleeper.add("session", { ledger: f.ledger, restoreVersion: 1, blocked: () => null });
-  const refusals = (of: FakePage) => f.events("browser.page.sleep.refused", of);
+  const blocked = () => f.events("browser.page.sleep.blocked", { surface: id });
+  const refused = () => f.events("browser.page.sleep.refused", { surface: id });
   try {
-    sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [pinnedId] });
-    await vi.advanceTimersByTimeAsync(10 * 60_000);
-    expect(refusals(page)).toEqual([
-      {
-        event: "browser.page.sleep.refused",
-        page: f.owner.incarnationOf(page),
-        surface: id,
-        reason: "media",
-        previous: null,
-        previousAttempts: 0,
-      },
+    sleeper.poke();
+    expect(blocked(), "Missing Host facts are explained before any probe").toMatchObject([
+      { reason: "host-state", surface: id },
     ]);
-    expect(refusals(pinned)).toMatchObject([{ reason: "pinned", previous: null }]);
-    page.keepAwake = () => "upload";
+    sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(refused()).toMatchObject([{ reason: "media", previous: null, previousAttempts: 0 }]);
+    sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [id] });
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(refusals(page)).toHaveLength(2);
-    expect(refusals(page)[1]).toMatchObject({ reason: "upload", previous: "media" });
-    expect((refusals(page)[1] as { previousAttempts: number }).previousAttempts).toBeGreaterThan(
-      20,
-    );
+    sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(blocked().map((line) => (line as { reason: string }).reason)).toEqual([
+      "host-state",
+      "pinned",
+    ]);
+    expect(refused(), "The same refusal after a blocker cleared is logged again").toHaveLength(2);
+    expect(refused()[1]).toMatchObject({ reason: "media", previous: null });
     page.keepAwake = () => null;
     await vi.advanceTimersByTimeAsync(60_000);
     expect(f.ledger.stateOf(id)).toBe("suspended");
-    expect(f.events("browser.page.ended")).toMatchObject([{ reason: "slept", surface: id }]);
-    await vi.advanceTimersByTimeAsync(3_000);
-    expect(f.events("browser.page.renderer.exit")).toEqual([
-      { event: "browser.page.renderer.exit", page: f.owner.incarnationOf(page), outcome: "exited" },
-    ]);
-    expect(refusals(pinned)).toHaveLength(1);
-    expect(f.owner.counts().ended).toEqual({ slept: 1 });
-    expect(JSON.stringify(f.diagnostics)).not.toMatch(/bank|hunter2|Balance|pinned\.test|private/);
+    expect(f.owner.counts()).toMatchObject({
+      ended: { slept: 1 },
+      sleepBlocked: { "host-state": 1, pinned: 1 },
+      sleepRefused: { media: 2 },
+    });
+    expect(passes.at(-1)).toMatchObject({ pages: { ended: { slept: 1 } } });
+    expect(JSON.stringify(f.diagnostics)).not.toMatch(/bank|hunter2|Balance/);
   } finally {
     sleeper.close();
     await f.ledger.close();

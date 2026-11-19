@@ -1,6 +1,7 @@
 import { totalmem } from "node:os";
 import type { BrowserSurfaceId, BrowserSessionState } from "@opensteer/protocol/browser";
 import type { BrowserRendererUsage } from "./backend.js";
+import type { PageCounts, SleepBlocker } from "./page-ownership.js";
 import type { SurfaceLedger, TabRecord } from "./surface-ledger.js";
 
 const quietMs = 10_000;
@@ -28,6 +29,8 @@ export interface TabSleepPass {
   readonly rendererProcesses: number;
   readonly rendererResidentBytes: number | null;
   readonly unassignedRendererProcesses: number;
+  /** The runtime's native pages, so a change in them is never throttled away. */
+  readonly pages?: PageCounts;
   readonly underPressure: 0 | 1;
   readonly attempted: number;
   readonly slept: number;
@@ -48,12 +51,13 @@ interface TabSleeperOptions {
   readonly retireHost?: (key: string) => Promise<void>;
   readonly rendererUsage?: (() => BrowserRendererUsage) | undefined;
   readonly onPass?: ((pass: TabSleepPass) => void) | undefined;
+  readonly pageCounts?: (() => PageCounts) | undefined;
 }
 
 interface SleepSession {
   readonly ledger: SurfaceLedger;
   readonly restoreVersion?: 1 | undefined;
-  readonly blocked: (id: BrowserSurfaceId) => string | null;
+  readonly blocked: (id: BrowserSurfaceId) => SleepBlocker | null;
 }
 interface HeldSession extends SleepSession {
   hostState: BrowserSessionState | null;
@@ -249,7 +253,7 @@ export class TabSleeper {
     record: TabRecord,
     now: number,
     links?: ReadonlySet<BrowserSurfaceId>,
-  ): string | null {
+  ): SleepBlocker | null {
     const session = this.sessions.get(id);
     const state = session?.hostState;
     if (!session || !state || state.keepAwake) return "host-state";
@@ -292,6 +296,16 @@ export class TabSleeper {
         if (!record.live) continue;
         if (this.options.rendererUsage) earliest = Math.min(earliest, this.nextRendererSample);
         const reason = this.blocked(id, record, now, links);
+        // Explains a page that is due, or that Host facts keep from ever coming due.
+        session.ledger.noteSleepBlocker(
+          record.id,
+          reason === "host-state" ||
+            (reason &&
+              reason !== "quiet" &&
+              (budget || this.releasing || this.deadline(session, record, cutoff) <= now))
+            ? reason
+            : null,
+        );
         if (reason && reason !== "quiet") continue;
         earliest = Math.min(
           earliest,
@@ -352,6 +366,7 @@ export class TabSleeper {
       last.underPressure === pass.underPressure &&
       !this.countChanged(last.rendererProcesses, pass.rendererProcesses) &&
       !this.countChanged(last.unassignedRendererProcesses, pass.unassignedRendererProcesses) &&
+      JSON.stringify(last.pages) === JSON.stringify(pass.pages) &&
       (last.rendererResidentBytes === pass.rendererResidentBytes ||
         (last.rendererResidentBytes !== null &&
           pass.rendererResidentBytes !== null &&
@@ -401,14 +416,12 @@ export class TabSleeper {
           if (pending.size) await Promise.all(pending);
           if (this.closed) break;
         }
-        if (this.sessions.get(id) !== session || (this.nextProbe.get(record) ?? 0) > Date.now())
+        if (
+          this.sessions.get(id) !== session ||
+          (this.nextProbe.get(record) ?? 0) > Date.now() ||
+          this.blocked(id, record, Date.now())
+        )
           continue;
-        const refusal = this.blocked(id, record, Date.now());
-        if (refusal) {
-          if (deadline <= Date.now() || this.releasing)
-            session.ledger.refuseSleep(record.id, refusal);
-          continue;
-        }
         if (
           deadline > Date.now() &&
           // A page can share its process, so measure again before asking another
@@ -461,6 +474,7 @@ export class TabSleeper {
           underPressure: this.releasing ? 1 : 0,
           attempted,
           slept,
+          ...(this.options.pageCounts ? { pages: this.options.pageCounts() } : {}),
         });
     }
   }

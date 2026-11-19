@@ -58,6 +58,12 @@ export type KeepAwakeReason = "upload" | "post" | "download" | "media" | "fullsc
 /** A renderer after its page ended: gone, still serving other pages, or still running alone. */
 export type RendererExit = "exited" | "shared" | "running";
 
+/** What told the engine its native page is gone: the page's own end, or its whole context ending. */
+export type PageGoneCause = "page" | "context";
+
+/** Why a renderer went away while its page stayed: a crash or kill, or an orderly exit. */
+export type RendererGoneCause = "crashed" | "exited";
+
 export class BrowserPaintTimeoutError extends Error {
   constructor(message = "Browser paint wait timed out.") {
     super(message);
@@ -112,12 +118,12 @@ export interface BrowserPage {
   close(): Promise<void>;
   /** True only once the engine confirms the native page gone, never while a close is under way. */
   isClosed(): boolean;
-  offClose(listener: () => void): void;
+  offClose(listener: (cause?: PageGoneCause) => void): void;
   offMetadataChanged(listener: () => void): void;
   /** The engine's one confirmation that the native page is gone. */
-  onClose(listener: () => void): void;
-  /** The renderer died; the page stays until it is closed. Returns the unsubscribe. */
-  onRendererGone?(listener: () => void): () => void;
+  onClose(listener: (cause?: PageGoneCause) => void): void;
+  /** The renderer went away; the page stays until it is closed. Returns the unsubscribe. */
+  onRendererGone?(listener: (cause: RendererGoneCause) => void): () => void;
   /** After the page is gone: what became of the renderer it last used, null when unknown. */
   rendererExit?(): RendererExit | null;
   onMetadataChanged(listener: () => void): void;
@@ -130,8 +136,22 @@ export interface BrowserPage {
 export interface BrowserContext {
   /** False after whole-context/browser teardown; page closes alone keep it connected. */
   isConnected?(): boolean;
-  /** Restore precedes any load; other new pages submit their initial blank document. */
-  createPage(options?: { readonly restore?: unknown }): Promise<BrowserPage>;
+  /**
+   * Restore precedes any load; other new pages submit their initial blank
+   * document. `own` receives the page synchronously as soon as its handle
+   * exists, before any later step can fail.
+   */
+  createPage(options?: {
+    readonly restore?: unknown;
+    readonly own?: (page: BrowserPage) => void;
+  }): Promise<BrowserPage>;
+  /**
+   * The one handoff of native pages to the runtime: called synchronously as
+   * each page handle comes to exist, before any asynchronous work, with the
+   * page whose script opened it. Pages that already exist are handed off at
+   * subscription. Returns the unsubscribe.
+   */
+  handOff(listener: (page: BrowserPage, opener: BrowserPage | null) => void): () => void;
   offPage(listener: (page: BrowserPage) => void): void;
   onPage(listener: (page: BrowserPage) => void): void;
   pages(): BrowserPage[];

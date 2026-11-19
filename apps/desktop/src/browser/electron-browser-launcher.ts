@@ -12,6 +12,7 @@ import {
   BrowserPaintTimeoutError,
   BrowserRuntimeError,
   pageViewport,
+  pageWithTarget,
   normalizeElectronCursor,
   siteCookieReplacementBatch,
   viewportCapturePlan,
@@ -23,6 +24,7 @@ import {
   type BrowserPartitionKey,
   type BrowserRendererUsage,
   type RendererExit,
+  type RendererGoneCause,
   type CdpSession,
   type EngineClipboard,
   type HumanInputObservation,
@@ -112,6 +114,8 @@ type PageOpenTiming = (stage: ElectronLocalProfileOpenTiming["stage"]) => void;
 const paintWaitMs = 5_000;
 const placementWaitMs = 5_000;
 const pageCloseGraceMs = 1_000;
+/** A raw target is looked up briefly; the router reports a miss rather than waiting on it. */
+const targetLookupMs = 5_000;
 const pageDestroyMs = 500;
 
 interface ElectronBrowserLauncherOptions {
@@ -773,6 +777,7 @@ class ElectronBrowserContext implements BrowserContext {
   readonly #createHelper: ElectronBrowserContextOptions["createHelper"];
   readonly #events = new EventEmitter();
   readonly #pages = new Set<ElectronBrowserPage>();
+  readonly #handOffs = new Set<(page: BrowserPage, opener: BrowserPage | null) => void>();
   readonly #profileSession: Session;
   readonly #localProfile: ElectronLocalProfile | undefined;
   readonly #untrack: (() => void) | undefined;
@@ -803,7 +808,10 @@ class ElectronBrowserContext implements BrowserContext {
     return [...this.#pages].filter((page) => !page.isClosed());
   }
 
-  async createPage(options?: { readonly restore?: unknown }): Promise<BrowserPage> {
+  async createPage(options?: {
+    readonly restore?: unknown;
+    readonly own?: (page: BrowserPage) => void;
+  }): Promise<BrowserPage> {
     await this.#localProfile?.ready();
     this.#assertOpen();
     this.#localProfile?.assertAdmitted();
@@ -820,6 +828,7 @@ class ElectronBrowserContext implements BrowserContext {
       timing,
       restore === null && this.#localProfile !== undefined,
     );
+    options?.own?.(page);
     try {
       // Electron needs a renderer to answer Page.enable. Start it while target
       // identity and ledger ownership are established; the real navigation may
@@ -845,6 +854,12 @@ class ElectronBrowserContext implements BrowserContext {
 
   onPage(listener: (page: BrowserPage) => void): void {
     this.#events.on("page", listener);
+  }
+
+  handOff(listener: (page: BrowserPage, opener: BrowserPage | null) => void): () => void {
+    this.#handOffs.add(listener);
+    for (const page of this.#pages) if (!page.isClosed()) listener(page, page.openerPage);
+    return () => this.#handOffs.delete(listener);
   }
 
   offPage(listener: (page: BrowserPage) => void): void {
@@ -914,19 +929,19 @@ class ElectronBrowserContext implements BrowserContext {
     this.#untrack?.();
   }
 
+  /** A page asked to close is never found, and no page's target lookup delays another's. */
   pageByTargetId(targetId: string): Promise<ElectronBrowserPage | null> {
-    return this.#findPage(async (page) => (await page.targetId()) === targetId);
+    return pageWithTarget(
+      [...this.#pages].filter((page) => !page.isClosed() && !page.closeRequested),
+      targetId,
+      targetLookupMs,
+    );
   }
 
   async targetInfos(): Promise<Record<string, unknown>[]> {
     return Promise.all(
       [...this.#pages].filter((page) => !page.isClosed()).map((page) => page.targetInfo()),
     );
-  }
-
-  async #findPage(predicate: (page: ElectronBrowserPage) => Promise<boolean>) {
-    for (const page of this.#pages) if (!page.isClosed() && (await predicate(page))) return page;
-    return null;
   }
 
   #newPage(
@@ -956,6 +971,7 @@ class ElectronBrowserContext implements BrowserContext {
       this.#options.onPageCleanupFailure,
     );
     this.#pages.add(page);
+    for (const listener of this.#handOffs) listener(page, opener);
     page.onClose(() => {
       this.#pages.delete(page);
       void page
@@ -1108,6 +1124,14 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   #closePromise: Promise<void> | undefined;
   /** The main frame's renderer when the page was asked to close; a destroyed page cannot say. */
   #rendererPid = 0;
+  /** The page whose script opened this one, known from creation. */
+  get openerPage(): ElectronBrowserPage | null {
+    return this.#opener;
+  }
+  /** A close was asked for; the page may still exist until `destroyed`. */
+  get closeRequested(): boolean {
+    return this.#closePromise !== undefined;
+  }
   #passkeyBridge: PasskeyBridge | undefined;
   readonly #hub: ElectronDebuggerHub;
   readonly #opener: ElectronBrowserPage | null;
@@ -2173,9 +2197,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     this.#webContents.on("destroyed", listener);
   }
 
-  onRendererGone(listener: () => void): () => void {
-    this.#webContents.on("render-process-gone", listener);
-    return () => this.#webContents.off("render-process-gone", listener);
+  onRendererGone(listener: (cause: RendererGoneCause) => void): () => void {
+    const gone = (_event: unknown, details: Electron.RenderProcessGoneDetails) =>
+      listener(details.reason === "clean-exit" ? "exited" : "crashed");
+    this.#webContents.on("render-process-gone", gone);
+    return () => this.#webContents.off("render-process-gone", gone);
   }
 
   rendererExit(): RendererExit | null {

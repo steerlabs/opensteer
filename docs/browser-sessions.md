@@ -44,12 +44,16 @@ in-page state than other engines; phones and Playwright promise only a descripto
 Passwords, files and arbitrary app state are never promised. Ending a runtime loses that state,
 while the durable descriptor still permits reopening.
 
-The runtime owns every native page it makes until the engine confirms it gone: Electron's
-WebContents `destroyed`, or Playwright's page `close` or its context ending. A settled close proves
-nothing. A page asked to end stays owned as closing and is asked again with backoff, except after a
-failed sleep, which returns the page to service; no open, wake or close waits on another page's
-native close past a bound, and a tab gets no replacement page while its previous one may live.
-Page diagnostics carry ids, states, reasons, counts and durations, never a URL, title or page content.
+Each engine hands every native page to the runtime as soon as it has a handle, and the page belongs
+to one session from then on: its creator, its opener's, or the session that adopts a raw target. A
+session's teardown ends all of its pages, admitted or not, and a page no session admits within 30
+seconds is ended. Only the engine's confirmation ends ownership: Electron's WebContents `destroyed`,
+or Playwright's page `close` or its context ending; a settled close call proves nothing. A destroy
+request is irreversible: a sleep that has asked for it has slept, even if the engine is slow, so
+nothing typed into a dying page looks safe. A tab close succeeds only on confirmation and otherwise
+answers retryably while the tab stays listed; a tab gets no new page while an earlier one may live.
+Runtime shutdown reports pages still closing and keeps asking. Page diagnostics carry ids, states,
+fixed reasons, counts and durations, never a URL, title or page content.
 
 ## Agents address tabs
 

@@ -465,6 +465,62 @@ it.each(["page close", "context end"] as const)(
   },
 );
 
+it("hands a popup off with its opener, and finds a target past a page asked to close", async () => {
+  const f = await nativeCloseFixture();
+  const fakePage = () =>
+    Object.assign(new EventEmitter(), {
+      isClosed: () => false,
+      close: vi.fn(() => new Promise<void>(() => {})),
+    });
+  const opener = fakePage();
+  const popup = fakePage();
+  const closing = fakePage();
+  const sibling = fakePage();
+  f.context.newCDPSession.mockImplementation(async (target) => {
+    const page: unknown = target;
+    if (page === closing) return new Promise(() => {});
+    return Object.assign(new EventEmitter(), {
+      detach: vi.fn(async () => undefined),
+      send: vi.fn(async (method: string) =>
+        method === "Target.getTargetInfo"
+          ? { targetInfo: { targetId: page === sibling ? "sibling" : "other" } }
+          : {},
+      ),
+    });
+  });
+  try {
+    const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+    const handed: [unknown, unknown][] = [];
+    launched.context.handOff((page, from) => handed.push([page, from]));
+    const announce = (page: unknown) => {
+      for (const [event, listener] of f.context.on.mock.calls as [
+        string,
+        (page: unknown) => void,
+      ][])
+        if (event === "page") listener(page);
+    };
+    announce(opener);
+    announce(popup);
+    opener.emit("popup", popup);
+    await Promise.resolve();
+    const handles = launched.context as unknown as {
+      wrap(page: unknown): unknown;
+      pageByTargetId(targetId: string): Promise<unknown>;
+    };
+    expect(handed).toEqual([
+      [handles.wrap(opener), null],
+      [handles.wrap(popup), handles.wrap(opener)],
+    ]);
+    vi.spyOn(f.context, "pages").mockReturnValue([closing, sibling] as unknown as Page[]);
+    void (handles.wrap(closing) as { close(): Promise<void> }).close();
+    await expect(handles.pageByTargetId("sibling")).resolves.toBe(handles.wrap(sibling));
+    await launched.close();
+  } finally {
+    f.exit();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 describe("native Chromium profiles", () => {
   it.each(["iframe media", "iframe Web Audio", "top Web Audio"])(
     "protects %s using native media state, including existing playback",

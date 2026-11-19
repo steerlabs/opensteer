@@ -10,6 +10,7 @@ import {
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   BrowserRuntimeError,
+  pageWithTarget,
   siteCookieReplacementBatch,
   type BrowserContext,
   type BrowserLaunchRequest,
@@ -18,6 +19,8 @@ import {
   type CdpSession,
   type LaunchedBrowser,
   type LocalProfileEngine,
+  type PageGoneCause,
+  type RendererGoneCause,
   readImageDimensions,
   viewportCapturePlan,
   viewportImageScript,
@@ -883,6 +886,9 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
   }
 }
 
+/** A raw target is looked up briefly; the router reports a miss rather than waiting on it. */
+const targetLookupMs = 5_000;
+
 class PlaywrightContextHandle implements BrowserContext {
   private closed = false;
   isConnected(): boolean {
@@ -892,6 +898,7 @@ class PlaywrightContextHandle implements BrowserContext {
   private readonly openDialogs: Map<Page, Dialog>;
   private readonly pagesByPlaywrightPage = new Map<Page, PlaywrightPageHandle>();
   private readonly pageListeners = new Map<(page: BrowserPage) => void, (page: Page) => void>();
+  private readonly handOffs = new Set<(page: BrowserPage, opener: BrowserPage | null) => void>();
 
   readonly authenticator: PasskeyAuthenticator | undefined;
   readonly providerConfig: BrowserPagePolicyConfig;
@@ -911,9 +918,28 @@ class PlaywrightContextHandle implements BrowserContext {
     context.on("close", () => {
       this.closed = true;
       // A context's end ends its pages even when Playwright reports no page close.
-      for (const handle of this.pagesByPlaywrightPage.values()) handle.confirmGone();
+      for (const handle of this.pagesByPlaywrightPage.values()) handle.confirmGone("context");
+    });
+    // Playwright reports a popup to its opener right after the context's page
+    // event, in the same turn; one microtask later both are known.
+    context.on("page", (page) => {
+      if (page === this.privatePage) return;
+      const handle = this.wrap(page);
+      queueMicrotask(() => {
+        for (const listener of this.handOffs) listener(handle, handle.openerHandle);
+      });
     });
     this.openDialogs = openDialogs;
+  }
+
+  handOff(listener: (page: BrowserPage, opener: BrowserPage | null) => void): () => void {
+    this.handOffs.add(listener);
+    for (const page of this.context.pages()) {
+      if (page === this.privatePage || page.isClosed()) continue;
+      const handle = this.wrap(page);
+      listener(handle, handle.openerHandle);
+    }
+    return () => this.handOffs.delete(listener);
   }
 
   pages(): BrowserPage[] {
@@ -923,8 +949,10 @@ class PlaywrightContextHandle implements BrowserContext {
       .map((page) => this.wrap(page));
   }
 
-  async createPage(): Promise<BrowserPage> {
-    return this.wrap(await this.context.newPage());
+  async createPage(options?: { readonly own?: (page: BrowserPage) => void }): Promise<BrowserPage> {
+    const handle = this.wrap(await this.context.newPage());
+    options?.own?.(handle);
+    return handle;
   }
 
   onPage(listener: (page: BrowserPage) => void): void {
@@ -958,12 +986,17 @@ class PlaywrightContextHandle implements BrowserContext {
     return handle;
   }
 
-  async pageByTargetId(targetId: string): Promise<PlaywrightPageHandle | null> {
-    for (const page of this.context.pages().filter((page) => page !== this.privatePage)) {
-      const handle = this.wrap(page);
-      if ((await handle.targetId()) === targetId) return handle;
-    }
-    return null;
+  /** A page asked to close is never found, and no page's target lookup delays another's. */
+  pageByTargetId(targetId: string): Promise<PlaywrightPageHandle | null> {
+    return pageWithTarget(
+      this.context
+        .pages()
+        .filter((page) => page !== this.privatePage)
+        .map((page) => this.wrap(page))
+        .filter((handle) => !handle.isClosed() && !handle.closeRequested),
+      targetId,
+      targetLookupMs,
+    );
   }
 }
 
@@ -1004,7 +1037,9 @@ class PlaywrightPageHandle implements BrowserPage {
   private closePromise: Promise<void> | null = null;
   /** The confirmation: Playwright's page close event, or its context ending. */
   private gone = false;
-  private readonly goneListeners = new Set<() => void>();
+  private readonly goneListeners = new Set<(cause?: PageGoneCause) => void>();
+  /** The page whose script opened this one, from Playwright's popup event. */
+  openerHandle: PlaywrightPageHandle | null = null;
   private targetIdPromise: Promise<string> | null = null;
   private readonly context: PlaywrightBrowserContext;
   private readonly contextHandle: PlaywrightContextHandle;
@@ -1037,7 +1072,10 @@ class PlaywrightPageHandle implements BrowserPage {
     page.on("requestfinished", (request) => this.uploads.delete(request));
     page.on("requestfailed", (request) => this.uploads.delete(request));
     page.once("close", () => this.uploads.clear());
-    page.once("close", () => this.confirmGone());
+    page.once("close", () => this.confirmGone("page"));
+    page.on("popup", (popup) => {
+      contextHandle.wrap(popup).openerHandle = this;
+    });
     page.on("framenavigated", (frame) => {
       if (frame === page.mainFrame()) this.documentMethod = this.requestMethod;
     });
@@ -1254,23 +1292,30 @@ class PlaywrightPageHandle implements BrowserPage {
     return this.gone || this.page.isClosed();
   }
 
-  confirmGone(): void {
-    if (this.gone) return;
-    this.gone = true;
-    for (const listener of this.goneListeners) listener();
+  /** A close was asked for; the page may still exist until it is confirmed gone. */
+  get closeRequested(): boolean {
+    return this.closing;
   }
 
-  onClose(listener: () => void): void {
+  confirmGone(cause: PageGoneCause): void {
+    if (this.gone) return;
+    this.gone = true;
+    for (const listener of this.goneListeners) listener(cause);
+  }
+
+  onClose(listener: (cause?: PageGoneCause) => void): void {
     this.goneListeners.add(listener);
   }
 
-  offClose(listener: () => void): void {
+  offClose(listener: (cause?: PageGoneCause) => void): void {
     this.goneListeners.delete(listener);
   }
 
-  onRendererGone(listener: () => void): () => void {
-    this.page.on("crash", listener);
-    return () => this.page.off("crash", listener);
+  onRendererGone(listener: (cause: RendererGoneCause) => void): () => void {
+    // Playwright reports only crashes; an orderly renderer exit has no event.
+    const crashed = () => listener("crashed");
+    this.page.on("crash", crashed);
+    return () => this.page.off("crash", crashed);
   }
 
   onMetadataChanged(listener: () => void): void {

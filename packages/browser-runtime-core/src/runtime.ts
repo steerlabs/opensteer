@@ -38,7 +38,6 @@ import { SurfaceLedger } from "./browser/surface-ledger.js";
 import {
   PageOwnership,
   type BrowserPageDiagnostic,
-  type PageCounts,
   type PageEndReason,
 } from "./browser/page-ownership.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
@@ -50,6 +49,10 @@ export type BrowserRuntimeState = "closed" | "closing" | "idle" | "ready" | "sta
 const acquisitionTimeoutMs = 18_000;
 const cleanupTimeoutMs = 2_000;
 const shutdownTimeoutMs = 5_000;
+/** Within the shutdown budget, after hosts close, for the last pages to be confirmed. */
+const pageShutdownMs = 1_000;
+/** One session's teardown on its profile lane, so a dying page never holds the lane. */
+const sessionTeardownMs = 5_000;
 export interface BrowserRuntimeOptions {
   memoryBudgetBytes?: number | undefined;
   initialViewport?: Viewport;
@@ -70,7 +73,7 @@ export interface BrowserRuntimeOptions {
   ticketVerifier: AttachTicketVerifier;
   onOpenTiming?: (diagnostic: BrowserOpenTiming) => void;
   /** Each reported sleep pass, with the runtime's native page counts. */
-  onSleepPass?: (pass: TabSleepPass & { readonly pages: PageCounts }) => void;
+  onSleepPass?: (pass: TabSleepPass) => void;
   /** Page endings, sleep refusals, stuck closes, renderer crashes and exits. */
   onPageDiagnostic?: (diagnostic: BrowserPageDiagnostic) => void;
   onHostCleanupFailure?: (diagnostic: {
@@ -262,9 +265,8 @@ export class BrowserRuntime implements NativePresentationSource {
       memoryBudgetBytes: options.memoryBudgetBytes,
       hostCost: this.launcher.hostCost,
       rendererUsage: this.launcher.rendererUsage?.bind(this.launcher),
-      onPass: options.onSleepPass
-        ? (pass) => options.onSleepPass!({ ...pass, pages: this.pages.counts() })
-        : undefined,
+      onPass: options.onSleepPass,
+      pageCounts: () => this.pages.counts(),
       hosts: () =>
         [...this.hosts.values()].map((host) => ({
           key: host.identity.key,
@@ -744,19 +746,16 @@ export class BrowserRuntime implements NativePresentationSource {
               "This browser profile has been deleted or stopped.",
             );
           stage = "page-create";
-          if (host.browser.context.pages()[0] && createdHost)
-            rootPage = host.browser.context.pages()[0]!;
+          // A new host's launch page is this session's root unless another already owns it.
+          const launchPage = createdHost ? host.browser.context.pages()[0] : undefined;
+          if (launchPage && this.pages.claim(launchPage, claims.sessionId)) rootPage = launchPage;
           else {
-            const creating = host.browser.context.createPage();
-            void creating.then(
-              (page) => {
-                if (signal.aborted)
-                  void this.pages.destroy(page, "open-failed").catch(() => undefined);
-              },
-              () => undefined,
+            // Owned by this session from its handle on; rollback ends it.
+            const context = host.browser.context;
+            const creation = this.pages.create(claims.sessionId, null, "open-failed", (own) =>
+              context.createPage({ own }),
             );
-            rootPage = await wait(creating);
-            this.pages.track(rootPage);
+            rootPage = await wait(creation.page);
           }
 
           signal.throwIfAborted();
@@ -764,6 +763,7 @@ export class BrowserRuntime implements NativePresentationSource {
           const sessionRouter = host.router;
           ledger = new SurfaceLedger(host.browser.context, {
             pages: this.pages,
+            sessionId: claims.sessionId,
             creationOrigin: claims.creationOrigin,
             navigationVersion: claims.navigationVersion,
             beforeResize: async (surfaceId) => controller?.prepareResize(surfaceId),
@@ -890,8 +890,9 @@ export class BrowserRuntime implements NativePresentationSource {
               async () => ledger?.close(),
               () => files.dispose(),
               async () => {
+                // Pages still being created or registered for this session end too.
+                void this.pages.endSession(claims.sessionId, "open-failed");
                 if (createdHost && host) await this.cleanupHost(host, "open-failed");
-                else if (rootPage) await this.pages.destroy(rootPage, "open-failed");
               },
             ]),
           ).catch((cleanupError: unknown) => {
@@ -1032,6 +1033,7 @@ export class BrowserRuntime implements NativePresentationSource {
           () => undefined,
         );
         const browser = await wait(launching);
+        this.pages.adopt(browser.context);
         assertCurrent();
         const generation = ++this.generation;
         const stateImports = new AsyncMutex();
@@ -1162,12 +1164,19 @@ export class BrowserRuntime implements NativePresentationSource {
       const failures = results.flatMap((result) =>
         result.status === "rejected" ? [result.reason] : [],
       );
+      // Every page still held is asked again; recovery stays on until each is confirmed gone.
+      if (!(await this.pages.shutdown(pageShutdownMs)))
+        failures.push(
+          new BrowserRuntimeError("conflict", "Browser pages are still closing.", {
+            retryable: true,
+            reason: "runtime-shutdown.pages-closing",
+          }),
+        );
       if (failures.length)
         throw new AggregateError(failures, "Browser resources could not be closed.");
       this.hosts.clear();
       this.sessions.clear();
       await this.localStore?.close();
-      this.pages.stop();
       this.state = "closed";
     })();
     this.shutdownResult = withTimeout(operation, shutdownTimeoutMs, {
@@ -1198,7 +1207,10 @@ export class BrowserRuntime implements NativePresentationSource {
       const closeHost = host.sessions.size === 0;
       try {
         await settleCleanup([
-          ...closeSession(active, "session-ended"),
+          () =>
+            withTimeout(settleCleanup(closeSession(active, "session-ended")), sessionTeardownMs, {
+              timeoutError: () => new Error("Browser session teardown did not finish."),
+            }),
           () => active.files.dispose(),
           ...((closeHost && (host.identity.kind === "fresh" || this.launcher.hostCost === "process")
             ? [() => this.cleanupHost(host)]

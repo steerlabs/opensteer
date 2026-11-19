@@ -489,7 +489,8 @@ it("ends a page only on its WebContents' destroyed event and reports what became
   vi.useFakeTimers();
   try {
     for (const listener of listeners("render-process-gone")) listener({}, { reason: "crashed" });
-    expect(crashed).toHaveBeenCalledOnce();
+    for (const listener of listeners("render-process-gone")) listener({}, { reason: "clean-exit" });
+    expect(crashed.mock.calls).toEqual([["crashed"], ["exited"]]);
     expect(page.isClosed(), "A crashed renderer is not a closed page").toBe(false);
     const refused = expect(page.close()).rejects.toThrow("wasn't destroyed");
     await vi.advanceTimersByTimeAsync(1_500);
@@ -525,6 +526,36 @@ it("ends a page only on its WebContents' destroyed event and reports what became
     expect(page.rendererExit?.()).toBe("running");
   } finally {
     vi.useRealTimers();
+    await browser.close();
+    launcher.close();
+  }
+});
+
+it("hands each page off at its handle and gives a create that fails while loading to its owner", async () => {
+  const launcher = new ElectronBrowserLauncher({
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+  });
+  const browser = await launcher.launch({
+    partitionKey: "session:handoff",
+    initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    storage: { kind: "guest" },
+  });
+  const handed: [unknown, unknown][] = [];
+  browser.context.handOff((page, opener) => handed.push([page, opener]));
+  expect(handed).toEqual([[browser.context.pages()[0], null]]);
+  const owned: unknown[] = [];
+  electron.blankLoad = async () => {
+    throw new Error("load failed");
+  };
+  try {
+    await expect(browser.context.createPage({ own: (page) => owned.push(page) })).rejects.toThrow(
+      "load failed",
+    );
+    expect(owned, "The owner holds the handle before the create fails").toHaveLength(1);
+    expect(handed.at(-1)).toEqual([owned[0], null]);
+  } finally {
+    electron.blankLoad = undefined;
     await browser.close();
     launcher.close();
   }

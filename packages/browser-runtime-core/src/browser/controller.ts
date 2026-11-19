@@ -497,7 +497,7 @@ export class BrowserController {
     });
   }
 
-  sleepProtection(id: BrowserSurfaceId): string | null {
+  sleepProtection(id: BrowserSurfaceId): "viewer" | "held-input" | "sign-in" | null {
     if (this.targetedCasts.has(id) || this.legacySubscriptions.has(id)) return "viewer";
     if (this.gestures.has(id) || this.keyOwners.has(id)) return "held-input";
     if (
