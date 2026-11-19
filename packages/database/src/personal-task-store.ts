@@ -146,7 +146,10 @@ export function readPersonalTaskPage(
       tasks,
       hasMore,
       revision: state.sequence,
-      totalItems: await countTaskWindow(tx, input.viewerId, input.window),
+      // Counted when a list opens, not again on every continuation.
+      ...(input.before
+        ? {}
+        : { totalItems: await countTaskWindow(tx, input.viewerId, input.window) }),
       nextBefore: hasMore && last ? { at: last.cursorAt, id: last.id, window: input.window } : null,
     };
   });
@@ -252,16 +255,9 @@ export async function readInitialTaskWindows(
         .where("threadId", "in", [...tasks.keys()])
         .execute()
     : [];
-  const counts = await currentTasks(tx, input.viewerId)
-    .clearSelect()
-    .where("listed", "=", true)
-    .where("doneAt", "is", null)
-    .where(sql<boolean>`status <> 'archived'`)
-    .select([
-      sql<string>`count(*)`.as("open"),
-      sql<string>`count(*) filter (where status in ('running','waiting'))`.as("active"),
-    ])
-    .executeTakeFirstOrThrow();
+  // Each window's partial index answers a bounded count; a huge history costs a bounded scan.
+  const activeCount = await countTaskWindow(tx, input.viewerId, "active");
+  const settledCount = await countTaskWindow(tx, input.viewerId, "recent");
   return {
     tasks: [...tasks.values()],
     visits,
@@ -269,6 +265,6 @@ export async function readInitialTaskWindows(
     activeNextBefore: activeWindow.length < active.length ? (activeWindow.at(-1) ?? null) : null,
     recent: recentWindow.map(({ id }) => id),
     recentNextBefore: recentWindow.length < recent.length ? (recentWindow.at(-1) ?? null) : null,
-    taskCounts: { active: Number(counts.active), open: Number(counts.open) },
+    taskCounts: { active: activeCount, open: activeCount + settledCount },
   };
 }

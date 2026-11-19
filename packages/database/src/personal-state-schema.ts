@@ -542,14 +542,15 @@ const currentStateIndexes = `
     where state in ('pending','claimed','unknown') and authority_source->>'kind'='channel-ingress';
   create index thread_inputs_current_channel_binding on thread_inputs((authority_source->>'bindingId'),message_id)
     where state in ('pending','unknown') and authority_source->>'kind'='channel-ingress';
-  create index threads_current_recent on threads(asked_at desc,id desc)
+  create index threads_current_recent on threads(created_by,asked_at desc,id desc)
     where listed and removed_at is null and done_at is null
       and status not in ('archived','running','waiting');
-  create index threads_current_active on threads(asked_at desc,id desc)
+  create index threads_current_active on threads(created_by,asked_at desc,id desc)
     where listed and removed_at is null and done_at is null and status in ('running','waiting');
-  create index threads_current_done on threads(done_at desc,id desc)
+  create index threads_current_done on threads(created_by,done_at desc,id desc)
     where listed and removed_at is null and done_at is not null and status <> 'archived';
   create index threads_removed on threads(id) where removed_at is not null;
+  create index threads_environment_live on threads(environment_id) where status <> 'archived';
   create index threads_last_reply_source on threads(last_reply_message_id) where last_reply_message_id is not null;
   create index messages_current_published on messages(thread_id,sequence desc) where published;
   create index messages_run_sequence on messages(run_id,sequence desc);

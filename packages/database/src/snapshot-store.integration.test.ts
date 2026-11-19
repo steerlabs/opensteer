@@ -486,6 +486,15 @@ describeStore("Deployment snapshot history", (it) => {
     });
     expect(page).toMatchObject({ hasMore: true, totalItems: 2 });
     expect(page.tasks).toHaveLength(1);
+    // The list is counted when it opens; a continuation does not count it again.
+    const next = await readPersonalTaskPage(database, {
+      viewerId: f.userId,
+      window: "done",
+      limit: 1,
+      before: page.nextBefore!,
+    });
+    expect(next.tasks).toHaveLength(1);
+    expect(next).not.toHaveProperty("totalItems");
     await commitPersonalMutation(database, (tx) => publishThreadSummary(tx, done[0]!));
     const pushed = await database
       .selectFrom("clientChanges")

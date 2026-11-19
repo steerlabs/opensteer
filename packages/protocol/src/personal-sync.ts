@@ -287,6 +287,7 @@ export const PersonalShellSnapshotSchema = z.object({
   /** The newest settled open tasks; `nextBefore` pages the rest with `tasks.page`. */
   recentTaskIds: z.array(ThreadIdSchema).max(personalShellSettledTasks),
   nextBefore: z.string().max(4096).nullable(),
+  /** Bounded counts: each window counts at most 10,000 (draw more as "10,000+"). */
   taskCounts: z.object({ active: z.int().nonnegative(), open: z.int().nonnegative() }),
 });
 

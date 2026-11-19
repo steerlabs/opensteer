@@ -475,7 +475,7 @@ export function createPersonalReads(
           window: {
             hasMore,
             itemCount: tasks.length,
-            totalItems: page.totalItems,
+            ...(page.totalItems === undefined ? {} : { totalItems: page.totalItems }),
             byteCount,
             nextBefore:
               hasMore && last ? Buffer.from(JSON.stringify(last)).toString("base64url") : null,

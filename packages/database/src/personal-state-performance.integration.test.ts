@@ -191,7 +191,25 @@ async function measure(events: number) {
       where input.thread_id=${run.threadId} limit ${Math.min(messageCount, 50_000)}`.execute(
       target,
     );
-    await sql`analyze thread_inputs, messages, transcript_items`.execute(target);
+    // A long task history beside the measured one: settled and Done copies of its task row.
+    const columns = (
+      await sql<{ name: string }>`select column_name as name from information_schema.columns
+        where table_name='threads' and table_schema=current_schema() and is_generated='NEVER'
+        order by ordinal_position`.execute(target)
+    ).rows.map(({ name }) => name);
+    const copied = columns.map((name) =>
+      name === "id" || name === "lineage_root_thread_id"
+        ? sql.raw(`'thr_'||'90000000-0000-4000-8000-'||lpad(n::text,12,'0')`)
+        : name === "done_at"
+          ? sql.raw(`case when n % 2 = 0 then now() end`)
+          : name === "status"
+            ? sql.raw(`'idle'`)
+            : sql.ref(`t.${name}`),
+    );
+    await sql`insert into threads(${sql.join(columns.map((name) => sql.ref(name)))})
+      select ${sql.join(copied)} from threads t cross join generate_series(1,${Math.min(events, 100_000)}) n
+      where t.id=${run.threadId}`.execute(target);
+    await sql`analyze thread_inputs, messages, transcript_items, threads`.execute(target);
     const explain = async (query: ReturnType<typeof sql>) =>
       (await sql`explain(analyze,buffers,format json) ${query}`.execute(target)).rows;
     const plans = {
@@ -224,6 +242,13 @@ async function measure(events: number) {
         await explain(sql`select content,id,sequence from messages where thread_id=${run.threadId}
         and run_id='run_00000000-0000-4000-8000-000000000000' and kind='assistant'
         and addressed_to_user_id is null order by sequence desc limit 1`),
+      // Task-list counts read only the owner's partial index, bounded however long the history.
+      doneCount: await explain(sql`select count(*) from (select id from threads
+        where created_by=${run.userId} and listed and removed_at is null and done_at is not null
+        and status<>'archived' order by done_at desc,id desc limit 10000) listed`),
+      settledCount: await explain(sql`select count(*) from (select id from threads
+        where created_by=${run.userId} and listed and removed_at is null and done_at is null
+        and status not in ('archived','running','waiting') order by asked_at desc,id desc limit 10000) listed`),
       toolCard: await explain(
         sql`select id from transcript_items where tool_call_id=(select id from tool_calls limit 1)`,
       ),
@@ -231,6 +256,11 @@ async function measure(events: number) {
     expect(JSON.stringify(plans.channelAuthority)).toContain("thread_inputs_channel_authority");
     expect(JSON.stringify(plans.runReply)).toContain("messages_run_sequence");
     expect(JSON.stringify(plans.toolCard)).toContain("transcript_tool_call");
+    // With a long history the bounded counts read the owner's partial index, not the table.
+    if (events >= 600_000) {
+      expect(JSON.stringify(plans.doneCount)).toContain("threads_current_done");
+      expect(JSON.stringify(plans.settledCount)).toContain("threads_current_recent");
+    }
     expect(JSON.stringify(plans.detail)).toContain("transcript_root");
     expect(shellBytes).toBeLessThanOrEqual(96 * 1024);
     expect(detailBytes).toBeLessThanOrEqual(128 * 1024);
