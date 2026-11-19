@@ -235,7 +235,28 @@ async function liveFixture() {
     itemId,
     deliveries,
     accept,
-    frames: () => deliveries.filter((frame): frame is LiveDelivery => frame.type === "host.live"),
+    /** Live frames with each handle frame read as the stream its `host.live` named. */
+    frames: () => {
+      const named = new Map<number, LiveDelivery>();
+      return deliveries.flatMap((frame): LiveDelivery[] => {
+        if (frame.type === "host.live") {
+          named.set(frame.handle, frame);
+          return [frame];
+        }
+        if (frame.type !== "host.text") return [];
+        const stream = named.get(frame.h)!;
+        const text = { offset: frame.o, totalLength: frame.n, text: frame.t };
+        return [
+          {
+            ...stream,
+            update:
+              frame.incomplete === undefined
+                ? { operation: "append", ...text }
+                : { operation: "replace", ...text, incomplete: frame.incomplete },
+          },
+        ];
+      });
+    },
     append(text: string) {
       accept({ op: "append", stream: "assistant", at, text });
       at += text.length;

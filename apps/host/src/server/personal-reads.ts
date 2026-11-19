@@ -105,6 +105,15 @@ export function createPersonalReads(
     snapshot: Snapshot,
   ): Promise<Snapshot> => {
     const items = await decorateItems(session, [...snapshot.items, ...snapshot.activeItems]);
+    if (
+      !snapshot.inputQueue &&
+      items.every((item, index) =>
+        index < snapshot.items.length
+          ? item === snapshot.items[index]
+          : item === snapshot.activeItems[index - snapshot.items.length],
+      )
+    )
+      return snapshot;
     const inputQueue = snapshot.inputQueue
       ? await decorateQueueEntries(
           database,
@@ -135,23 +144,7 @@ export function createPersonalReads(
       });
       if (cut.kind !== "snapshot") return cut;
       const opened = (await findPersonalSettings(tx)) !== null;
-      return {
-        ...cut,
-        snapshot: {
-          ...cut.snapshot,
-          session: {
-            sessionId: session.id,
-            sessionSurface: surface,
-            user: session.user,
-            can: {
-              createTasks: opened,
-              useVoice: opened,
-              manageComputers: true,
-              managePrivateResources: true,
-            },
-          },
-        },
-      };
+      return { ...cut, snapshot: withSession(cut.snapshot, session, surface, opened), opened };
     });
   const detail = (
     session: Session,
@@ -169,7 +162,8 @@ export function createPersonalReads(
       return cut;
     });
 
-  const readCut = async (
+  /** One database cut of a scope with its frames before any session decorates them. */
+  const readShared = async (
     session: Session,
     surface: AuthenticatedHostSession["surface"],
     scope: PersonalScope,
@@ -187,6 +181,68 @@ export function createPersonalReads(
           )
         : await detail(session, scope, cursor ?? undefined, anchorItemId);
     await dependencies.onPersonalScopeCut?.(scope);
+    return {
+      cut,
+      // Rows are parsed once per cut, however many sockets share it.
+      replay:
+        cut.kind === "replay"
+          ? cut.commits.map((commit) => ({
+              ...commit,
+              changes: commit.changes.map((change) => PersonalChangeSchema.parse(change)),
+            }))
+          : [],
+    };
+  };
+  type SharedCut = Awaited<ReturnType<typeof readShared>>;
+  const pending = new Map<
+    string,
+    { readonly atLeast: bigint; readonly readers: Set<object>; readonly cut: Promise<SharedCut> }
+  >();
+  /**
+   * Sockets of one viewer woken by the same commit share one database cut of a scope at the same
+   * cursor. A socket joins a read in flight only when that read started after the commits it
+   * needs; it never joins its own earlier read, which may be the one it is replacing.
+   */
+  const readOnce = (
+    share: { readonly reader: object; readonly atLeast: string },
+    ...input: Parameters<typeof readShared>
+  ) => {
+    const [session, , scope, cursor, anchorItemId, selectedThreadId] = input;
+    const key = JSON.stringify([
+      session.user.id,
+      scope,
+      cursor,
+      anchorItemId ?? null,
+      scope.kind === "shell" && !cursor ? (selectedThreadId ?? null) : null,
+      // A shell snapshot carries the reading session; other cuts are the viewer's.
+      scope.kind === "shell" && !cursor ? session.id : null,
+    ]);
+    const atLeast = BigInt(share.atLeast);
+    const current = pending.get(key);
+    if (current && current.atLeast >= atLeast && !current.readers.has(share.reader)) {
+      current.readers.add(share.reader);
+      return current.cut;
+    }
+    const entry = { atLeast, readers: new Set([share.reader]), cut: readShared(...input) };
+    pending.set(key, entry);
+    const settled = () => {
+      if (pending.get(key) === entry) pending.delete(key);
+    };
+    entry.cut.then(settled, settled);
+    return entry.cut;
+  };
+
+  const readCut = async (
+    session: Session,
+    surface: AuthenticatedHostSession["surface"],
+    scope: PersonalScope,
+    cursor: PersonalResumeCursor | null,
+    anchorItemId?: string,
+    selectedThreadId?: string,
+    share?: { readonly reader: object; readonly atLeast: string },
+  ) => {
+    const input = [session, surface, scope, cursor, anchorItemId, selectedThreadId] as const;
+    const { cut, replay } = share ? await readOnce(share, ...input) : await readShared(...input);
     const { state } = cut;
     const throughSequence = state.sequence;
     const next: PersonalResumeCursor = {
@@ -222,13 +278,18 @@ export function createPersonalReads(
             snapshot: await decorateDetail(session, cut.snapshot),
           });
         } else
-          frames.push({ type: "host.snapshot", scope, throughSequence, snapshot: cut.snapshot });
+          frames.push({
+            type: "host.snapshot",
+            scope,
+            throughSequence,
+            snapshot:
+              "opened" in cut
+                ? withSession(cut.snapshot, session, surface, cut.opened)
+                : cut.snapshot,
+          });
         break;
       case "replay": {
-        const framesByCommit = cut.commits.map((commit) =>
-          commit.changes.map((change) => PersonalChangeSchema.parse(change)),
-        );
-        const rows = framesByCommit.flat();
+        const rows = replay.flatMap(({ changes }) => changes);
         const keys = await readSendKeys(session)(
           rows.flatMap((row) =>
             row.operation !== "upsert"
@@ -254,24 +315,31 @@ export function createPersonalReads(
             )
           ).map((entry) => [entry.message.id, entry]),
         );
-        for (const [index, commit] of cut.commits.entries())
-          frames.push({
-            type: "host.changes",
-            scope,
-            ...commit,
-            changes: framesByCommit[index]!.map((row) =>
-              row.operation !== "upsert"
-                ? row
-                : row.entityKind === "item"
-                  ? { ...row, value: decorateItem(row.value, keys) }
-                  : row.entityKind === "queue-entry"
-                    ? { ...row, value: entries.get(row.value.message.id) ?? row.value }
-                    : row,
-            ),
-            ...(shellProgress && commit.throughSequence === throughSequence
-              ? { shellProgress }
-              : {}),
+        for (const commit of replay) {
+          const changes = commit.changes.map((row) => {
+            if (row.operation !== "upsert") return row;
+            if (row.entityKind === "item") {
+              const value = decorateItem(row.value, keys);
+              return value === row.value ? row : { ...row, value };
+            }
+            if (row.entityKind === "queue-entry") {
+              const value = entries.get(row.value.message.id);
+              return value ? { ...row, value } : row;
+            }
+            return row;
           });
+          frames.push(
+            sharedFrame(commit, {
+              type: "host.changes" as const,
+              scope,
+              ...commit,
+              changes,
+              ...(shellProgress && commit.throughSequence === throughSequence
+                ? { shellProgress }
+                : {}),
+            }),
+          );
+        }
         break;
       }
     }
@@ -472,9 +540,50 @@ export function createPersonalReads(
   return { handlers, readCut };
 }
 
+/** The session's view of an item; the same object when the session adds nothing. */
 function decorateItem(item: TranscriptItem, keys: ReadonlyMap<string, string>): TranscriptItem {
   if (item.kind !== "message") return item;
-  const { clientSendKey: _discard, ...view } = item;
   const key = keys.get(item.messageId);
+  if (item.clientSendKey === key) return item;
+  const { clientSendKey: _discard, ...view } = item;
   return key ? { ...view, clientSendKey: key } : view;
+}
+
+const sharedFrames = new WeakMap<object, object>();
+
+/**
+ * One frame object per commit for every session it reads the same for, so the socket hub encodes
+ * the body once. A session-specific row yields that session's own frame.
+ */
+function sharedFrame<Frame extends { readonly changes: readonly unknown[] }>(
+  commit: { readonly changes: readonly unknown[] },
+  frame: Frame,
+): Frame {
+  if (frame.changes.some((row, index) => row !== commit.changes[index])) return frame;
+  const existing = sharedFrames.get(commit);
+  if (existing) return existing as Frame;
+  sharedFrames.set(commit, frame);
+  return frame;
+}
+
+function withSession<Snapshot extends object>(
+  snapshot: Snapshot,
+  session: Session,
+  surface: AuthenticatedHostSession["surface"],
+  opened: boolean,
+) {
+  return {
+    ...snapshot,
+    session: {
+      sessionId: session.id,
+      sessionSurface: surface,
+      user: session.user,
+      can: {
+        createTasks: opened,
+        useVoice: opened,
+        manageComputers: true,
+        managePrivateResources: true,
+      },
+    },
+  };
 }

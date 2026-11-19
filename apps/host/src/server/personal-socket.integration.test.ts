@@ -359,14 +359,17 @@ it("delivers an overlapping commit and replaces a held detail generation on a re
       "The replacement did not synchronize",
     );
     expect(
-      second.frames
-        .filter((frame) => frame.subscriptionId === "detail:0")
-        .map(({ generation }) => generation),
+      second.frames.flatMap((frame) =>
+        "subscriptionId" in frame && frame.subscriptionId === "detail:0" ? [frame.generation] : [],
+      ),
     ).toEqual([2, 2]);
     expect(
-      first.frames
-        .filter((frame) => frame.subscriptionId === "detail:0")
-        .every(({ generation }) => generation === 1),
+      first.frames.every(
+        (frame) =>
+          !("subscriptionId" in frame) ||
+          frame.subscriptionId !== "detail:0" ||
+          frame.generation === 1,
+      ),
     ).toBe(true);
   } finally {
     release.resolve();
