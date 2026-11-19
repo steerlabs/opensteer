@@ -130,6 +130,7 @@ import { RunningNowCapsule } from "./running-now.js";
 import { RunPageSlot } from "./run-page.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { useWaitingEdit } from "./waiting-edit.js";
+import { KeptEdits } from "./kept-edits.js";
 import { useAskDecisions, WaitingAskDock, WaitingEditBar } from "./waiting-dock.js";
 import { AnswerPill } from "./answer-pill.js";
 import { WaitingInputs } from "./waiting-inputs.js";
@@ -473,18 +474,20 @@ function ThreadPaneForUser(
   const waiting = useWaitingInputs(hostClient, threadId, false);
   // A waiting message is held for editing only while its task is in front of
   // the reader: under another screen, out of view or in the background, it goes on.
-  const keepUnsent = useRef<
-    (
-      target: string,
-      words: { readonly parts: readonly ContentPart[]; readonly text: string },
-    ) => Promise<boolean>
-  >(async () => false);
+  // Unsent waiting edits are kept under this login until the person saves, moves or discards them.
+  const unsentRecords = useMemo(
+    () =>
+      client.unsentEdits && viewerUserId !== null
+        ? { edits: client.unsentEdits, scope: JSON.stringify([deploymentId, viewerUserId]) }
+        : null,
+    [client.unsentEdits, deploymentId, viewerUserId],
+  );
   const editing = useWaitingEdit(
     hostClient,
     threadId,
     waiting,
     navigationFocused && inView && appForeground,
-    (target, words) => keepUnsent.current(target, words),
+    unsentRecords,
   );
   const askDecisions = useAskDecisions(hostClient);
   const [focusDraft, setFocusDraft] = useState(0);
@@ -534,7 +537,6 @@ function ThreadPaneForUser(
       sendAsNewTo(threadId, words),
     [sendAsNewTo, threadId],
   );
-  keepUnsent.current = sendAsNewTo;
 
   const thread = snapshot.thread;
   const canRespond = threadDetail.synchronized && canRespondToRequests(snapshot);
@@ -1589,6 +1591,17 @@ function ThreadPaneForUser(
   const editingInPlace = editing.edit !== null;
   const dock = (
     <>
+      <KeptEdits
+        hostClient={hostClient}
+        moveToComposer={sendAsNew}
+        records={unsentRecords}
+        threadId={threadId}
+        waitingIds={
+          threadDetail.synchronized
+            ? (threadDetail.queueInputs ?? waiting?.map(({ messageId }) => messageId))
+            : undefined
+        }
+      />
       {/* An older window can't say what runs now; back at the latest, it returns. */}
       {snapshot.user === null || voiceThread || historical || editingInPlace ? null : (
         <RunningNowCapsule

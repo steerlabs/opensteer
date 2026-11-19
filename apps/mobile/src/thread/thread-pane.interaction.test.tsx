@@ -1,4 +1,4 @@
-import type { HostSnapshot } from "@opensteer/client/host";
+import { UnsentEdits, type HostSnapshot, type UnsentEditStorage } from "@opensteer/client/host";
 import { mockInputQueue } from "@opensteer/client/mock";
 import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
@@ -138,6 +138,7 @@ const harness = vi.hoisted(() => ({
   /** The notices this reader put away, one store value as a snapshot must be. */
   dismissed: new Set<string>(),
   /** Where the screen's bar options go, as the native stack would take them. */
+  unsentEdits: null as UnsentEdits | null,
   setOptions: null as ((options: Record<string, unknown>) => void) | null,
   /** The transcript list's props as last rendered, to drive its native events. */
   list: null as null | {
@@ -158,6 +159,20 @@ const harness = vi.hoisted(() => ({
     }>;
   },
 }));
+
+/** A device's storage for kept edits, surviving any number of stores built over it. */
+function memoryUnsentStorage(): UnsentEditStorage & { refuse: boolean } {
+  let saved: string | null = null;
+  const storage = {
+    refuse: false,
+    read: () => saved,
+    write: async (document: string) => {
+      if (storage.refuse) throw new Error("The disk is full.");
+      saved = document;
+    },
+  };
+  return storage;
+}
 
 const selectionCalls = composerEditorFake.calls;
 composerEditorFake.blur = () => harness.blur();
@@ -524,6 +539,7 @@ vi.mock("../ui/mobile-client-context.js", () => ({
     client === null ? fallback : select(client.getSnapshot() as never),
   useMobileClient: () => ({
     drafts: harness.drafts,
+    unsentEdits: harness.unsentEdits,
     getSnapshot: () => ({ selection: { deploymentId, hostClient: harness.activeHost } }),
     usageNotices: {
       dismiss: () => undefined,
@@ -1618,6 +1634,8 @@ async function mount(
     readonly draftPage?: import("@opensteer/core").BrowserPageContentPart;
     /** Where the screen holding the pane takes the reader once its task is gone. */
     readonly onGone?: () => void;
+    /** The device storage kept edits live in, to stand for a restart over the same device. */
+    readonly unsentStorage?: UnsentEditStorage;
   } = {},
 ) {
   const drafts = createThreadDraftStore({
@@ -1629,6 +1647,8 @@ async function mount(
   if (options.draftPage !== undefined)
     await drafts.writeDraftPage(deploymentId, userId, threadId, options.draftPage);
   harness.drafts = drafts;
+  // The device's kept edits: a test passes the same storage again to stand for a restart.
+  harness.unsentEdits = new UnsentEdits(options.unsentStorage ?? memoryUnsentStorage());
   connectFixtureOutbox(host.client, drafts);
   const container = document.createElement("div");
   document.body.append(container);
@@ -4259,7 +4279,7 @@ describe("a task", () => {
     expect(host.editor.cancel).not.toHaveBeenCalled();
   });
 
-  it("hands words typed into a waiting message to the task's draft when the person leaves the task", async () => {
+  it("keeps words typed into a waiting message through leaving the task and a restart, and shows them on return", async () => {
     const task = taskAtWork();
     const waiting = said("Include the card fees", null);
     const host = fakeHost(
@@ -4270,16 +4290,69 @@ describe("a task", () => {
         threadId: workId,
       }),
     );
-    const { container, drafts, root } = await mount(host, workId);
-    await tapWaiting(container, waiting.body);
-    await type(container, "Edit message", "Card fees, FX and the wire charge");
-    // Away from the task: the message goes on to the agent, and the words stay the person's.
-    await act(async () => root.unmount());
+    const device = memoryUnsentStorage();
+    const first = await mount(host, workId, { unsentStorage: device });
+    await tapWaiting(first.container, waiting.body);
+    await type(first.container, "Edit message", "Card fees, FX and the wire charge");
+    // Leaving lets the message's lease go; nothing moves the words anywhere.
+    await act(async () => first.root.unmount());
     await settle();
     expect(host.editor.cancel).toHaveBeenCalled();
+    expect(first.drafts.readDraft(deploymentId, userId, workId)?.text ?? "").not.toContain("wire");
+    // A restart: a new store over the same device storage. Back at the task, the edit is shown.
+    const again = await mount(host, workId, { unsentStorage: device });
+    await settle();
+    await vi.waitFor(() =>
+      expect(editField(again.container)?.value).toBe("Card fees, FX and the wire charge"),
+    );
+    // Discard ends them.
+    await press(again.container, "Cancel");
+    await settle();
+    expect(harness.unsentEdits!.forThread(JSON.stringify([deploymentId, userId]), workId)).toEqual(
+      [],
+    );
+  });
+
+  it("offers kept words for a message no longer waiting; a refusing message box keeps them and says why", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const initial = snapshotFor({
+      entries: [...task.entries, waiting],
+      queue: [waitingInput(waiting, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    const device = memoryUnsentStorage();
+    const first = await mount(host, workId, { unsentStorage: device });
+    await tapWaiting(first.container, waiting.body);
+    await type(first.container, "Edit message", "Card fees, FX and the wire charge");
+    await act(async () => first.root.unmount());
+    // Away, a Run took the message. Back at the task, the kept words wait with their choices.
+    await act(async () =>
+      host.move(
+        snapshotFor({
+          entries: task.entries,
+          queue: [],
+          run: { id: task.runId, status: "running" },
+          threadId: workId,
+        }),
+      ),
+    );
+    const { container, drafts } = await mount(host, workId, { unsentStorage: device });
+    await settle();
+    expect(text(container)).toContain("Your words are kept");
+    const reserve = vi.spyOn(drafts, "reserveEdit").mockReturnValueOnce(async () => false);
+    await press(container, "Move to message box");
+    expect(text(container)).toContain("couldn’t take these words");
+    expect(text(container)).toContain("Card fees, FX and the wire charge");
+    reserve.mockRestore();
+    await press(container, "Move to message box");
+    await settle();
     expect(drafts.readDraft(deploymentId, userId, workId)?.text).toBe(
       "Card fees, FX and the wire charge",
     );
+    expect(text(container)).not.toContain("Your words are kept");
   });
 
   it("follows a version saved elsewhere until words are typed, then offers them as a new message", async () => {
@@ -5811,6 +5884,8 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
   await drafts.writeDraft(deploymentId, userId, draftKey, "Research this question");
   await drafts.writeDraftPage(deploymentId, userId, draftKey, page);
   harness.drafts = drafts;
+  // The device's kept edits: a test passes the same storage again to stand for a restart.
+  harness.unsentEdits = new UnsentEdits(memoryUnsentStorage());
   connectFixtureOutbox(host.client, drafts);
   harness.activeHost = host.client;
   const container = document.createElement("div");

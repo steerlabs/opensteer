@@ -1,6 +1,7 @@
 import { classifyClientFailure } from "@opensteer/client/connections";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import {
+  draftOfUnsentEdit,
   followWaitingDraft,
   hydrateWaitingDraft,
   openWaitingDraft,
@@ -10,6 +11,9 @@ import {
   waitingDraftAwaits,
   waitingDraftOutgoing,
   waitingDraftSave,
+  unsentEditOf,
+  type UnsentEdit,
+  type UnsentEdits,
   type HostClient,
   type WaitingDraft,
   type WaitingInput,
@@ -102,14 +106,12 @@ export function useWaitingEdit(
   threadId: string,
   items: readonly WaitingInput[] | null,
   active: boolean,
-  /** Where typed words go when the edit ends because the person left the task: the composer. */
-  keepUnsent?: (
-    threadId: string,
-    words: { readonly text: string; readonly parts: readonly ContentPart[] },
-  ) => Promise<boolean>,
+  /**
+   * Where the person's changed words are kept, durably, until Save, a move to the composer or
+   * Discard ends them. Leaving the task never moves or drops them.
+   */
+  records?: { readonly edits: UnsentEdits; readonly scope: string } | null,
 ): WaitingEditController {
-  const keep = useRef(keepUnsent);
-  keep.current = keepUnsent;
   const [kept, setKept] = useState<WaitingEdit | null>(null);
   const lease = useRef<Lease | null>(null);
   const moving = useRef(false);
@@ -241,18 +243,41 @@ export function useWaitingEdit(
     setKept(null);
   }, [letGo]);
 
-  // Leaving the task lets the message go on to the agent; words typed into it stay the person's,
-  // in the task's composer, rather than going with the view.
-  useEffect(
-    () => () => {
-      const shown = editRef.current;
-      const words = shown?.draft.dirty ? waitingDraftOutgoing(shown.draft) : null;
-      if (words && lease.current?.saving !== true)
-        void keep.current?.(threadId, { parts: words.parts, text: words.text }).catch(() => false);
-      close();
-    },
-    [close, hostClient, threadId],
+  // Leaving the task lets the message go on to the agent. The words typed into it stay kept, as
+  // they are, for the person's return.
+  useEffect(() => close, [close, hostClient, threadId]);
+
+  // The person's changed words are kept as they type; an untouched edit keeps none.
+  const keptDraft = kept?.draft;
+  const keptMessage = kept?.messageId;
+  useEffect(() => {
+    if (!records || !keptDraft || keptMessage === undefined || keptDraft.loading) return;
+    const record = unsentEditOf(threadId, keptMessage, keptDraft, Date.now());
+    if (record) void records.edits.put(records.scope, record).catch(() => undefined);
+    else void records.edits.remove(records.scope, threadId, keptMessage).catch(() => undefined);
+  }, [keptDraft, keptMessage, records, threadId]);
+  /** The record the words being acted on are, so its end never takes words typed after it. */
+  const recordOf = useCallback(
+    (messageId: string) => records?.edits.get(records.scope, threadId, messageId),
+    [records, threadId],
   );
+  /** Ends kept words once the action that took them completed. */
+  const endRecord = useCallback(
+    (record: UnsentEdit | undefined) => {
+      if (records && record)
+        void records.edits
+          .remove(records.scope, record.threadId, record.messageId, record)
+          .catch(() => undefined);
+    },
+    [records],
+  );
+  /** Discard: the person lets their words go, and the message goes on as it was. */
+  const discard = useCallback((): void => {
+    const shown = editRef.current;
+    if (records && shown)
+      void records.edits.remove(records.scope, threadId, shown.messageId).catch(() => undefined);
+    close();
+  }, [close, records, threadId]);
 
   // Out of sight, the message goes on without this phone's hold; back in
   // front, the hold is taken again. A save under way finishes either way.
@@ -280,13 +305,17 @@ export function useWaitingEdit(
       )
         return;
       close();
+      // Words kept from before come back as they were, bound to their version. Otherwise the
+      // preview shows while the full body is read; it cannot be edited or saved.
+      const record = recordOf(item.messageId);
       setKept({
         asker: item.kind === "ask" ? item.asker : null,
-        // The preview shows while the full body is read; it cannot be edited or saved.
-        draft: openWaitingDraft({
-          content: [{ type: "text", text: item.entry.body }, ...(item.entry.attachments ?? [])],
-          revision: item.revision,
-        }),
+        draft: record
+          ? draftOfUnsentEdit(record)
+          : openWaitingDraft({
+              content: [{ type: "text", text: item.entry.body }, ...(item.entry.attachments ?? [])],
+              revision: item.revision,
+            }),
         failure: null,
         gone: false,
         kind: item.kind,
@@ -295,8 +324,22 @@ export function useWaitingEdit(
       });
       if (activeRef.current) take(item.messageId);
     },
-    [close, take],
+    [close, recordOf, take],
   );
+
+  // Back at the task, a waiting message with kept words opens its edit again, showing them.
+  useEffect(() => {
+    if (!records || !active || items === null || editRef.current !== null) return;
+    let current = true;
+    void records.edits.ready().then(() => {
+      if (!current || editRef.current !== null) return;
+      const waiting = items.find(({ messageId }) => recordOf(messageId));
+      if (waiting) open(waiting);
+    });
+    return () => {
+      current = false;
+    };
+  }, [active, items, open, recordOf, records]);
 
   const retry = useCallback((): void => {
     const shown = editRef.current;
@@ -373,8 +416,11 @@ export function useWaitingEdit(
       return plan.revision;
     }
     setKept({ ...shown, draft, failure: null, phase: "saving" });
+    const record = recordOf(shown.messageId);
     try {
       const saved = await editor.save(plan.content, plan.expectedRevision);
+      // The Host has the words now: only then do they stop being kept.
+      endRecord(record);
       held.saving = false;
       // Only the edit this save came from closes; it ended the lease itself.
       if (lease.current === held) {
@@ -427,9 +473,12 @@ export function useWaitingEdit(
         const outgoing = waitingDraftOutgoing(draft);
         if (outgoing === null) return;
         setKept({ ...shown, draft, failure: null, phase: "saving", replyFull: false });
+        const record = recordOf(shown.messageId);
         let issue = null;
         try {
           if (await keep({ parts: outgoing.parts, text: outgoing.text })) {
+            // The composer holds the words now: only then do they stop being kept here.
+            endRecord(record);
             if (editRef.current?.messageId === shown.messageId) close();
             return;
           }
@@ -447,12 +496,12 @@ export function useWaitingEdit(
         moving.current = false;
       }
     },
-    [close],
+    [close, endRecord, recordOf],
   );
 
   return useMemo(
     () => ({
-      cancel: close,
+      cancel: discard,
       change,
       edit,
       field,
@@ -463,6 +512,6 @@ export function useWaitingEdit(
       save,
       moveToDraft,
     }),
-    [change, close, edit, open, reload, removePart, retry, save, moveToDraft],
+    [change, discard, edit, open, reload, removePart, retry, save, moveToDraft],
   );
 }
