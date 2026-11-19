@@ -3195,6 +3195,81 @@ describe("task lists from the shell and its pages", () => {
     }
   });
 
+  it("keeps the open and active lists right as pushed rows change, move and leave, one at a time", async () => {
+    const rows = Array.from({ length: 20 }, (_, index) => ({
+      ...task,
+      id: createId("thread"),
+      status: (index % 3 === 0 ? "running" : "idle") as "running" | "idle",
+      askedAt: minutesBefore(index * 2),
+    }));
+    const lists = {
+      recentTaskIds: rows.filter(({ status }) => status !== "running").map(({ id }) => id),
+      activeTaskIds: rows.filter(({ status }) => status === "running").map(({ id }) => id),
+    };
+    const host = scriptedHost({ tasks: rows, lists });
+    const client = scriptedClient(host);
+    let seed = 5;
+    const next = (limit: number) => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed % limit;
+    };
+    const statuses = ["running", "waiting", "idle", "failed"] as const;
+    const current = new Map(rows.map((row) => [row.id, row]));
+    try {
+      await client.load();
+      for (let step = 0; step < 150; step++) {
+        const id = [...current.keys()][next(current.size)]!;
+        const row = current.get(id)!;
+        if (current.size > 5 && next(8) === 0) {
+          // Archived or deleted: the Host removes the row.
+          current.delete(id);
+          host.commit([{ entityKind: "task", entityId: id, operation: "remove" } as never]);
+          continue;
+        }
+        const revision = String(10 + step);
+        const status = statuses[next(statuses.length)]!;
+        const changed = {
+          ...row,
+          revision,
+          status,
+          // Some changes move the task in the order, as a new ask would.
+          askedAt: next(4) === 0 ? minutesBefore(next(200)) : row.askedAt,
+          // Only a settled task can be Done.
+          doneAt: (status === "idle" || status === "failed") && next(4) === 0 ? time : null,
+        };
+        current.set(id, changed);
+        host.commit([upsert("task", id, changed)]);
+        const snapshot = client.getSnapshot();
+        const open = snapshot.tasks!.entries.map(({ thread }) => thread);
+        const label = `step ${step}`;
+        // Sorted in task order, with no task twice.
+        for (let index = 1; index < open.length; index++)
+          expect(
+            open[index - 1]!.askedAt > open[index]!.askedAt ||
+              (open[index - 1]!.askedAt === open[index]!.askedAt &&
+                open[index - 1]!.id > open[index]!.id),
+            label,
+          ).toBe(true);
+        // Exactly the open tasks the client holds.
+        const expected = [...current.values()]
+          .filter(({ doneAt, status }) => doneAt === null && status !== "archived")
+          .map(({ id: task }) => task)
+          .sort();
+        expect(open.map(({ id: task }) => task).sort(), label).toEqual(expected);
+        expect(
+          snapshot.activeTasks.map(({ thread }) => thread.id),
+          label,
+        ).toEqual(
+          open
+            .filter(({ status }) => status === "running" || status === "waiting")
+            .map(({ id: task }) => task),
+        );
+      }
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("a task page dropped for a newer cut leaves no trace in the task's state", async () => {
     const settled = Array.from({ length: 25 }, (_, index) => ({
       ...task,

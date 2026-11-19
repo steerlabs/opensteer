@@ -331,6 +331,17 @@ export class HttpHostClient {
   #doneDepth = 0;
   /** Counts pushes that may move Done membership: a Done read from before one is read again. */
   #doneCountTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The held open and active lists, as last built, and what they were built from. */
+  #openCache:
+    | {
+        readonly tasks: ReadonlyMap<string, unknown>;
+        readonly openPages: unknown;
+        readonly activePages: readonly TaskEntry[];
+        readonly byId: Map<string, TaskEntry>;
+        readonly open: readonly TaskEntry[];
+        readonly active: readonly TaskEntry[];
+      }
+    | undefined;
   /** Counts the times a person opened Done; each reads it again from its first page. */
   #doneOpens = 0;
   /** Tasks the shell removed in this cut: a page read before cannot bring one back. */
@@ -1827,7 +1838,13 @@ export class HttpHostClient {
       attentionChanged ||
       connection !== this.#snapshot.connection
     ) {
-      const taskLists = tasksChanged || taskChanges ? this.#taskLists(state) : undefined;
+      const taskLists =
+        tasksChanged || taskChanges
+          ? this.#taskLists(
+              state,
+              replaced ? undefined : { tasks: old?.tasks, changes: state.taskChanges },
+            )
+          : undefined;
       if (state.synchronized) this.#savedViewReadiness = { tasksReady: true };
       this.#update(
         {
@@ -3647,22 +3664,13 @@ export class HttpHostClient {
    */
   #taskLists(
     state: ReturnType<PersonalShellStore["getSnapshot"]>,
+    delta?: {
+      readonly tasks: ReadonlyMap<string, unknown> | undefined;
+      readonly changes: readonly { readonly id: string }[];
+    },
   ): Pick<HostSnapshot, "tasks" | "activeTasks" | "doneTasks"> {
     const shell = state.snapshot!;
-    const paged = (entries: readonly TaskEntry[]) =>
-      entries.filter(
-        ({ thread }) => !state.tasks.has(thread.id) && !this.#removedTasks.has(thread.id),
-      );
-    const byId = new Map<string, TaskEntry>();
-    for (const entry of [
-      ...[...state.tasks.values()].map((row) => this.#shellEntry(row)),
-      ...paged(this.#openPages?.entries ?? []),
-      ...paged(this.#activePages),
-    ])
-      if (!byId.has(entry.thread.id)) byId.set(entry.thread.id, entry);
-    const open = [...byId.values()]
-      .filter(({ thread }) => thread.doneAt === null && thread.status !== "archived")
-      .sort((left, right) => compareTaskOrder(left.thread, right.thread));
+    const { open, active } = this.#openLists(state, delta);
     const window =
       this.#openPages?.cut === this.#shellCut
         ? this.#openPages.window
@@ -3673,9 +3681,7 @@ export class HttpHostClient {
         entries: open,
         window: { ...window, totalItems: open.length, byteCount: 0, itemCount: open.length },
       },
-      activeTasks: open.filter(
-        ({ thread }) => thread.status === "running" || thread.status === "waiting",
-      ),
+      activeTasks: active,
       doneTasks: done
         ? {
             [mainDoneTasks]: {
@@ -3689,6 +3695,81 @@ export class HttpHostClient {
           }
         : {},
     };
+  }
+
+  /**
+   * The open and active lists, sorted. A publish that only changed some task rows (no page, no
+   * shell replacement, no row the shell let go of on its own) moves just those rows, by binary
+   * search, instead of rebuilding and re-sorting every held task.
+   */
+  #openLists(
+    state: ReturnType<PersonalShellStore["getSnapshot"]>,
+    delta?: {
+      readonly tasks: ReadonlyMap<string, unknown> | undefined;
+      readonly changes: readonly { readonly id: string }[];
+    },
+  ) {
+    const cache = this.#openCache;
+    const ids = delta ? new Set(delta.changes.map(({ id }) => id)) : undefined;
+    let size = delta?.tasks?.size ?? -1;
+    for (const id of ids ?? []) size += Number(state.tasks.has(id)) - Number(delta!.tasks!.has(id));
+    if (
+      cache &&
+      ids &&
+      delta!.tasks === cache.tasks &&
+      cache.openPages === this.#openPages &&
+      cache.activePages === this.#activePages &&
+      size === state.tasks.size
+    ) {
+      const open = [...cache.open];
+      const active = [...cache.active];
+      for (const id of ids) {
+        const before = cache.byId.get(id);
+        if (before) {
+          remove(open, before);
+          remove(active, before);
+          cache.byId.delete(id);
+        }
+        const row = state.tasks.get(id);
+        const entry = row
+          ? this.#shellEntry(row)
+          : this.#removedTasks.has(id)
+            ? undefined
+            : [...(this.#openPages?.entries ?? []), ...this.#activePages].find(
+                ({ thread }) => thread.id === id,
+              );
+        if (!entry) continue;
+        cache.byId.set(id, entry);
+        if (isOpenTask(entry)) insert(open, entry);
+        if (isActiveTask(entry)) insert(active, entry);
+      }
+      this.#openCache = { ...cache, tasks: state.tasks, open, active };
+      return { open, active };
+    }
+    const paged = (entries: readonly TaskEntry[]) =>
+      entries.filter(
+        ({ thread }) => !state.tasks.has(thread.id) && !this.#removedTasks.has(thread.id),
+      );
+    const byId = new Map<string, TaskEntry>();
+    for (const entry of [
+      ...[...state.tasks.values()].map((row) => this.#shellEntry(row)),
+      ...paged(this.#openPages?.entries ?? []),
+      ...paged(this.#activePages),
+    ])
+      if (!byId.has(entry.thread.id)) byId.set(entry.thread.id, entry);
+    const open = [...byId.values()]
+      .filter(isOpenTask)
+      .sort((left, right) => compareTaskOrder(left.thread, right.thread));
+    const active = open.filter(isActiveTask);
+    this.#openCache = {
+      tasks: state.tasks,
+      openPages: this.#openPages,
+      activePages: this.#activePages,
+      byId,
+      open,
+      active,
+    };
+    return { open, active };
   }
 
   #reconcilePageThread(
@@ -4669,6 +4750,37 @@ function settledEntries(list: TaskListState | null) {
 
 /** Rows a task page asks for: the Host's page size, within its response budget. */
 const taskPageSize = 50;
+function isOpenTask({ thread }: TaskEntry) {
+  return thread.doneAt === null && thread.status !== "archived";
+}
+
+function isActiveTask(entry: TaskEntry) {
+  return (
+    isOpenTask(entry) && (entry.thread.status === "running" || entry.thread.status === "waiting")
+  );
+}
+
+/** Where `entry` belongs in a list sorted by task order. */
+function taskIndex(list: readonly TaskEntry[], entry: TaskEntry) {
+  let low = 0;
+  let high = list.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (compareTaskOrder(list[middle]!.thread, entry.thread) < 0) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function insert(list: TaskEntry[], entry: TaskEntry) {
+  list.splice(taskIndex(list, entry), 0, entry);
+}
+
+function remove(list: TaskEntry[], entry: TaskEntry) {
+  const at = taskIndex(list, entry);
+  if (list[at]?.thread.id === entry.thread.id) list.splice(at, 1);
+}
+
 /** How long pushes must rest before Done's count is read again for moves the client cannot see. */
 const doneCountRestMs = 1_000;
 
