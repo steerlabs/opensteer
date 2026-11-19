@@ -33,12 +33,23 @@ export async function threadQueueView(tx: Tx, threadId: ThreadId, revision: stri
 }
 
 /** Publishes the Run queue and every waiting message; `left` names messages that may have gone. */
+/** Publishes the task's queue once per commit, after every change this commit makes to it. */
 export async function publishThreadQueues(
   tx: Tx,
   threadId: ThreadId,
   left: readonly MessageId[] = [],
 ) {
   if (isOfflineSettlement(tx)) return;
+  await commitPersonalMutation(tx, async (_tx, mutation) => {
+    mutation.deferQueue(threadId, left);
+  });
+}
+
+export async function writeThreadQueues(
+  tx: Tx,
+  threadId: ThreadId,
+  left: readonly MessageId[] = [],
+) {
   await commitPersonalMutation(tx, async (tx, mutation) => {
     const view = await threadQueueView(tx, threadId, mutation.sequence);
     if (!view) return;

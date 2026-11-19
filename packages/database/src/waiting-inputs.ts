@@ -1,6 +1,5 @@
 import { syncTranscriptMessage } from "./message-visibility.js";
 import { projectThreadState, publishThreadSummary } from "./thread-status.js";
-import { publishThreadQueues } from "./personal-queue-view.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   ContentPartSchema,
@@ -154,12 +153,14 @@ export async function refreshInputQueue(
   await commitPersonalMutation(tx, async (tx, mutation) => {
     mutation.touchThread(threadId);
     if (messageId) await syncTranscriptMessage(tx, messageId);
-    await tx
-      .updateTable("threads")
-      .set({ inputQueueRevision: mutation.sequence, revision: mutation.sequence })
-      .where("id", "=", threadId)
-      .execute();
-    await publishThreadQueues(tx, threadId, messageId ? [messageId] : []);
+    // The revision is this commit's head, so one update per task per commit is enough.
+    mutation.deferQueue(threadId, messageId ? [messageId] : []);
+    if (mutation.firstInputQueueChange(threadId))
+      await tx
+        .updateTable("threads")
+        .set({ inputQueueRevision: mutation.sequence, revision: mutation.sequence })
+        .where("id", "=", threadId)
+        .execute();
     await publishThreadSummary(tx, threadId);
     await projectThreadState(tx, threadId);
   });
