@@ -3,7 +3,6 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setImmediate } from "node:timers/promises";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it, vi } from "vitest";
 import { HostMessageSchema } from "./engine-protocol.js";
@@ -12,16 +11,9 @@ import { PluginService } from "./plugin-service.js";
 vi.mock("node:child_process", () => ({ fork: vi.fn() }));
 vi.mock("./engine-resources.js", () => ({ pluginEngineUnavailableReason: async () => undefined }));
 
-it("orders first-install cache publication with an update of the discovered plugin", async () => {
+it("refreshes what the Host keeps beside a published version before answering the engine", async () => {
   const plugin = "app_252169e9-de1b-4743-a005-50b6ed1b1fa0";
-  let version = "v1";
-  const app = () => ({
-    id: plugin,
-    name: "Fixture",
-    slug: "fixture",
-    activeVersion: version,
-    requirements: { accounts: {} },
-  });
+  const answered = Promise.withResolvers<unknown>();
   const child = Object.assign(new EventEmitter(), {
     connected: true,
     exitCode: null,
@@ -30,26 +22,28 @@ it("orders first-install cache publication with an update of the discovered plug
       const message = HostMessageSchema.parse(raw);
       if (message.type === "init") child.emit("message", { type: "ready", pid: 1, startupMs: 0 });
       if (message.type === "stop") child.emit("exit");
+      if (message.type === "callbackResult" || message.type === "callbackError")
+        answered.resolve(message);
       if (message.type !== "request") return;
-      const reply = (result: unknown) =>
+      if (message.operation === "health")
         child.emit("message", {
           type: "result",
           id: message.id,
           operation: message.operation,
-          result,
+          result: { pid: 1, rss: 1, startupMs: 0 },
         });
-      if (message.operation === "install") {
-        if ("plugin" in message.input) version = "v2";
-        reply({ status: "installed", plugin: app(), version: { id: version }, origin: "files" });
-      } else if (message.operation === "installed") {
-        reply([{ plugin: app(), links: [], readiness: {} }]);
-      } else if (message.operation === "skillFiles") {
-        reply({ plugin, slug: "fixture", version, hasPage: version === "v2", files: [] });
-      }
+      if (message.operation === "skillFiles")
+        child.emit("message", {
+          type: "result",
+          id: message.id,
+          operation: message.operation,
+          result: { plugin, slug: "fixture", version: "v2", hasPage: true, files: [] },
+        });
     },
   });
   vi.mocked(fork).mockReturnValue(child as unknown as ChildProcess);
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-cache-test-"));
+  const published: unknown[] = [];
   const service = new PluginService({
     processEntry: new URL("file:///unused.js"),
     databaseUrl: "postgres://unused.invalid/unused",
@@ -57,41 +51,29 @@ it("orders first-install cache publication with an update of the discovered plug
     owner: "owner",
     credentialKey: new Uint8Array(32),
     origin: "https://fixture.invalid",
+    onVersionPublished: async (version) => {
+      // The skill record already names the version when its provenance is recorded.
+      expect(await service.skillCache.get(plugin)).toMatchObject({ version: "v2" });
+      published.push(version);
+    },
   });
-  const publishing = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  const record = service.skillCache.record.bind(service.skillCache);
-  vi.spyOn(service.skillCache, "record").mockImplementation(async (bundle) => {
-    if (bundle.version === "v1") {
-      publishing.resolve();
-      await release.promise;
-    }
-    await record(bundle);
-  });
-  const owner = { caller: "owner", mode: "automatic" as const };
-  const source = { kind: "files" as const, files: [{ path: "index.ts", content: "" }] };
-  const install = service.install({ ...source, key: "first" }, owner);
-  const settled = [install];
-  void install.catch(publishing.reject);
   try {
-    await withTimeout(publishing.promise, 4_000, {
-      timeoutError: () => new Error("First install did not reach cache publication"),
+    await service.health({}, { caller: "owner", mode: "automatic" });
+    child.emit("message", {
+      type: "callback",
+      id: "published",
+      operation: "versionPublished",
+      input: { plugin, version: "v2", from: "v1" },
     });
-    const [installed] = await service.installed({}, owner);
-    expect(installed?.plugin).toMatchObject({ id: plugin, activeVersion: "v1" });
-    if (!installed) throw new Error("Could not find installed plugin");
-    const update = service.install({ ...source, plugin: installed.plugin.id }, owner);
-    settled.push(update);
-    // The in-memory child handles any unqueued update by the end of this turn.
-    await setImmediate();
-    if (version === "v2") await update;
-    release.resolve();
-    await Promise.all(settled);
+    expect(
+      await withTimeout(answered.promise, 4_000, {
+        timeoutError: () => new Error("The publication was never answered"),
+      }),
+    ).toMatchObject({ type: "callbackResult", id: "published" });
+    expect(published).toEqual([{ plugin, version: "v2", from: "v1" }]);
     expect(await service.skillCache.get(plugin)).toMatchObject({ version: "v2", hasPage: true });
   } finally {
-    release.resolve();
     await service.close();
-    await Promise.allSettled(settled);
     await rm(directory, { recursive: true, force: true });
   }
 });
