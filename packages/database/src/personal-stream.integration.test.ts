@@ -31,7 +31,7 @@ test("orders scoped mutations at the deployment fence and leaves no rollback gap
     const write = (hold?: boolean) =>
       commitPersonalMutation(database, async (_tx, mutation) => {
         mutation.change(
-          { scopeKey, entityKind: "signal", entityId: "team-replies", operation: "upsert" },
+          { scopeKey, entityKind: "visit", entityId: "fence-order", operation: "upsert" },
           () => ({ revision: mutation.sequence }),
         );
         if (hold) {
@@ -61,7 +61,7 @@ test("orders scoped mutations at the deployment fence and leaves no rollback gap
     await expect(
       commitPersonalMutation(database, async (_tx, mutation) => {
         mutation.change(
-          { scopeKey, entityKind: "signal", entityId: "team-replies", operation: "upsert" },
+          { scopeKey, entityKind: "visit", entityId: "fence-order", operation: "upsert" },
           () => ({ revision: mutation.sequence }),
         );
         throw new Error("rollback");

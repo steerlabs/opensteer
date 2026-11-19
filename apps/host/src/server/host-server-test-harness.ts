@@ -1,5 +1,6 @@
 import { RealtimeHub } from "@opensteer/orchestration";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
+import { ResourceRevisions } from "../runtime/personal-resource-revisions.js";
 import { unroutedShellControlStream } from "../shell/shell-control-stream.test-support.js";
 import type { HostServerDependencies } from "../server.js";
 
@@ -58,6 +59,7 @@ export function hostServerTestDependencies(
     },
     credentials: inert(),
     discovery: inert(),
+    resourceRevisions: new ResourceRevisions(() => undefined),
     egress: inert(),
     execution: inert(),
     teamLinks: inert(),

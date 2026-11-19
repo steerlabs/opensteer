@@ -3421,9 +3421,29 @@ async function attachThreadSocket(socket: WebSocket, threadId: ThreadId) {
 
 function observeRunnerDisconnect(socket: WebSocket, environmentId: EnvironmentId) {
   const connected = Promise.withResolvers<void>();
-  const disconnected = waitForMessage(socket, (raw) => {
-    const parsed = ScopedHostMessageSchema.safeParse(raw);
-    if (!parsed.success) return false;
+  const disconnected = Promise.withResolvers<void>();
+  const deadline = setTimeout(
+    () => disconnected.reject(new Error("timed out waiting for the environment to disconnect")),
+    10_000,
+  );
+  let reading = Promise.resolve();
+  const read = async () => {
+    const { data } = await testRpcData(
+      origin,
+      "resources.detail.get",
+      { kind: "environment" },
+      { headers: authorization(accessToken) },
+    );
+    const status =
+      data.kind === "environment"
+        ? data.environments.find(({ id }) => id === environmentId)?.status
+        : undefined;
+    if (status === "connected") connected.resolve();
+    if (status === "disconnected") disconnected.resolve();
+  };
+  const receive = (raw: WebSocket.RawData) => {
+    const parsed = ScopedHostMessageSchema.safeParse(JSON.parse(raw.toString()));
+    if (!parsed.success) return;
     const frame = parsed.data;
     if (frame.type === "host.snapshot" || frame.type === "host.changes") {
       const { subscriptionId, generation, throughSequence } = frame;
@@ -3431,20 +3451,10 @@ function observeRunnerDisconnect(socket: WebSocket, environmentId: EnvironmentId
         JSON.stringify({ type: "client.ack", subscriptionId, generation, throughSequence }),
       );
     }
-    const resources =
-      frame.type === "host.resource"
-        ? [frame]
-        : frame.type === "host.snapshot" &&
-            frame.scope.kind === "shell" &&
-            "resources" in frame.snapshot
-          ? (frame.snapshot.resources ?? [])
-          : [];
-    const observation = resources
-      .find(({ kind }) => kind === "environment")
-      ?.view.entries.find(({ id }) => id === environmentId);
-    if (observation?.status === "connected") connected.resolve();
-    return observation?.status === "disconnected";
-  });
+    if (frame.type === "host.resource" && frame.revisions.environment)
+      reading = reading.then(read).catch((cause: unknown) => disconnected.reject(cause));
+  };
+  socket.on("message", receive);
   socket.send(
     JSON.stringify({
       type: "client.attach",
@@ -3454,11 +3464,18 @@ function observeRunnerDisconnect(socket: WebSocket, environmentId: EnvironmentId
       installed: {},
     }),
   );
-  const outcome = disconnected.catch((cause: unknown) => {
-    const error = new Error(`No disconnected observation arrived for ${environmentId}`, { cause });
-    connected.reject(error);
-    throw error;
-  });
+  const outcome = disconnected.promise
+    .catch((cause: unknown) => {
+      const error = new Error(`No disconnected observation arrived for ${environmentId}`, {
+        cause,
+      });
+      connected.reject(error);
+      throw error;
+    })
+    .finally(() => {
+      clearTimeout(deadline);
+      socket.off("message", receive);
+    });
   void outcome.catch(() => undefined);
   return { connected: connected.promise, disconnected: outcome };
 }

@@ -39,8 +39,6 @@ export const personalResourceKinds = [
   "machine",
   "harness",
   "harness-catalog",
-  "harness-auth",
-  "agent-home-settings",
   "tab",
   "tab-layout",
   "browser-profile",
@@ -49,6 +47,8 @@ export const personalResourceKinds = [
   "browser-availability",
   ...pluginChangeResources,
   "plugin-engine",
+  /** An accepted team reply was published; a client waiting on one rereads it. */
+  "team-replies",
 ] as const;
 
 export const PersonalRevisionSchema = z
@@ -56,42 +56,39 @@ export const PersonalRevisionSchema = z
   .regex(/^(0|[1-9][0-9]{0,18})$/u)
   .refine((value) => value.length < 19 || value <= "9223372036854775807");
 export const PersonalResourceKindSchema = z.enum(personalResourceKinds);
-export const PersonalResourceRevisionsSchema = z.record(
-  PersonalResourceKindSchema,
-  PersonalRevisionSchema,
+/** Kinds whose revision a personal commit bumps; the rest change only at runtime. */
+export const durablePersonalResourceKinds = personalResourceKinds.filter(
+  (kind) => kind === "plugin" || !kind.startsWith("plugin-"),
 );
+export type DurablePersonalResourceKind = (typeof durablePersonalResourceKinds)[number];
+export type DurablePersonalResourceRevisions = Record<DurablePersonalResourceKind, string>;
+
+/**
+ * Compared only for equality. A kind's durable revision, followed by the Host
+ * boot and a counter once a runtime fact (a Runner, a browser placement, a
+ * plugin) has changed it during that boot, so a restarted Host never repeats one.
+ */
+export const PersonalResourceRevisionSchema = z
+  .string()
+  .regex(/^(0|[1-9][0-9]{0,18})(\.[0-9a-f]{16}\.[1-9][0-9]{0,15})?$/u)
+  .refine((value) => {
+    const durable = value.split(".", 1)[0]!;
+    return durable.length < 19 || durable <= "9223372036854775807";
+  });
+export const PersonalResourceRevisionsSchema = z
+  .partialRecord(PersonalResourceKindSchema, PersonalResourceRevisionSchema)
+  .refine((value) => Object.keys(value).length > 0);
 export const InstalledResourceRevisionsSchema = z.partialRecord(
   PersonalResourceKindSchema,
-  PersonalRevisionSchema,
+  PersonalResourceRevisionSchema,
 );
 export const PersonalResourceInterestsSchema = z
   .array(PersonalResourceKindSchema)
   .max(personalResourceKinds.length)
   .refine((kinds) => new Set(kinds).size === kinds.length);
 
-export const PersonalResourceSummarySchema = z.object({
-  id: z.string().min(1).max(255),
-  label: z.string().max(256).optional(),
-  status: z.string().max(80).optional(),
-  capabilities: z.array(z.string().min(1).max(80)).max(16).optional(),
-  detailId: z.string().min(1).max(255).optional(),
-  observedAt: z.iso.datetime().optional(),
-});
-export const PersonalResourceViewSchema = z
-  .object({
-    entries: z.array(PersonalResourceSummarySchema).max(32),
-    complete: z.boolean(),
-    hasMore: z.boolean(),
-    selectedId: z.string().min(1).max(255).nullable().optional(),
-  })
-  .refine(
-    (value) =>
-      value.complete !== value.hasMore && utf8ByteLength(JSON.stringify(value)) <= 32 * 1024,
-  );
-
 export type PersonalResourceKind = z.infer<typeof PersonalResourceKindSchema>;
-export type PersonalResourceRevisions = z.infer<typeof PersonalResourceRevisionsSchema>;
-export type PersonalResourceView = z.infer<typeof PersonalResourceViewSchema>;
+export type PersonalResourceRevisions = z.infer<typeof InstalledResourceRevisionsSchema>;
 
 export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -112,8 +109,6 @@ export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
     kind: z.literal("harness-catalog"),
     environments: PersonalEnvironmentsViewSchema,
   }),
-  z.object({ kind: z.literal("harness-auth"), environments: PersonalEnvironmentsViewSchema }),
-  z.object({ kind: z.literal("agent-home-settings"), settings: PersonalSettingsViewSchema }),
   z.object({ kind: z.enum(["tab", "tab-layout"]), tabs: TabBootstrapSchema }),
   z.object({
     kind: z.literal("browser-profile"),
@@ -126,13 +121,13 @@ export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
   }),
   z.object({ kind: z.literal("browser-home"), homes: BrowserProfileHomesViewSchema }),
   z.object({ kind: z.literal("browser-availability"), available: z.boolean() }),
-  z.object({ kind: z.enum(pluginChangeResources) }),
+  z.object({ kind: z.enum([...pluginChangeResources, "team-replies"]) }),
   z.object({ kind: z.literal("plugin-engine"), engine: PluginEngineStateViewSchema }),
 ]);
 
 export const PersonalResourceDetailSchema = z
   .object({
-    revision: PersonalRevisionSchema,
+    revision: PersonalResourceRevisionSchema,
     data: PersonalResourceDataSchema,
     next: z.string().max(4096).nullable(),
   })

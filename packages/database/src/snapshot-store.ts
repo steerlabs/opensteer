@@ -3,7 +3,6 @@ import type { Kysely } from "kysely";
 import {
   buildPersonalDetailSnapshot,
   buildPersonalShellSnapshot,
-  type InitialPersonalResourcesReader,
 } from "./personal-snapshot-store.js";
 import {
   readPersonalScopeCut,
@@ -18,7 +17,6 @@ export function readPersonalShellSnapshot(
     viewerId: UserId;
     selectedThreadId?: ThreadId;
     cursor?: PersonalResumeCursor;
-    readResources?: InitialPersonalResourcesReader;
   },
 ) {
   return readPersonalScopeCut(database, {
@@ -26,13 +24,7 @@ export function readPersonalShellSnapshot(
     scope: { kind: "shell" },
     ...(input.cursor ? { cursor: input.cursor } : {}),
     snapshot: (tx, state) =>
-      buildPersonalShellSnapshot(
-        tx,
-        state,
-        input.viewerId,
-        input.selectedThreadId,
-        input.readResources,
-      ),
+      buildPersonalShellSnapshot(tx, state, input.viewerId, input.selectedThreadId),
   });
 }
 

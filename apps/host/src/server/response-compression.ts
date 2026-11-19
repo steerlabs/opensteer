@@ -18,7 +18,6 @@ export const compressedReads = new Set<keyof typeof hostApi>([
   "node.items.page",
   "thread.overlays.page",
   "transcript.item.get",
-  "resources.get",
   "resources.detail.get",
   "requests.list",
   "tasks.list",

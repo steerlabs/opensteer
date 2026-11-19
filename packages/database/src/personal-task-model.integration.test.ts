@@ -996,27 +996,24 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
     Array.from({ length: 3 }, () => ({ originatingThreadId: child.id })),
   );
   const { readPersonalShellSnapshot } = await import("./snapshot-store.js");
+  const { withPersonalSyncRead } = await import("./personal-sync-store.js");
   const ready = Promise.withResolvers<void>(),
     release = Promise.withResolvers<void>();
   let resourceCount = 0;
-  const snapshot = readPersonalShellSnapshot(f.database, {
-    viewerId: f.userId,
-    readResources: async (database) => {
-      expect(database.isTransaction).toBe(true);
-      resourceCount = Number(
-        (
-          await database
-            .selectFrom("requests")
-            .select(({ fn }) => fn.countAll<string>().as("count"))
-            .executeTakeFirstOrThrow()
-        ).count,
-      );
-      ready.resolve();
-      await withTimeout(release.promise, 5_000, {
-        timeoutError: () => new Error("Snapshot resource reader never released"),
-      });
-      return [];
-    },
+  const snapshot = withPersonalSyncRead(f.database, async (tx) => {
+    resourceCount = Number(
+      (
+        await tx
+          .selectFrom("requests")
+          .select(({ fn }) => fn.countAll<string>().as("count"))
+          .executeTakeFirstOrThrow()
+      ).count,
+    );
+    ready.resolve();
+    await withTimeout(release.promise, 5_000, {
+      timeoutError: () => new Error("Snapshot read never released"),
+    });
+    return readPersonalShellSnapshot(tx, { viewerId: f.userId });
   });
   let snapshotError: unknown;
   void snapshot.catch((error) => {
@@ -1025,7 +1022,7 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
   let writer: ReturnType<typeof requests.create> | undefined;
   try {
     await withTimeout(ready.promise, 5_000, {
-      timeoutError: () => new Error("Snapshot never entered its resource transaction"),
+      timeoutError: () => new Error("Snapshot never entered its read transaction"),
     });
     writer = requests.create({
       callId: "needs-you-later",

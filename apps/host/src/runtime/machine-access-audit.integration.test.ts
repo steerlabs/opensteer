@@ -436,18 +436,11 @@ integration("Machine access audit, transfer and realtime", () => {
     const ownerFeed = await openRealtime(host, host.ownerHeaders, ["machine"]);
     const bystanderFeed = await openRealtime(host, otherOwnerHeaders, ["machine"]);
     const revision = (feed: typeof ownerFeed) => {
-      let latest = 0n;
+      let latest: string | undefined;
       for (const value of feed.messages) {
         const parsed = ScopedHostMessageSchema.safeParse(value);
-        if (!parsed.success) continue;
-        const frame = parsed.data;
-        const machine =
-          frame.type === "host.resource" && frame.kind === "machine"
-            ? frame.revision
-            : "shellProgress" in frame
-              ? frame.shellProgress?.resourceRevisions.machine
-              : undefined;
-        if (machine && BigInt(machine) > latest) latest = BigInt(machine);
+        if (parsed.success && parsed.data.type === "host.resource")
+          latest = parsed.data.revisions.machine ?? latest;
       }
       return latest;
     };
@@ -456,10 +449,9 @@ integration("Machine access audit, transfer and realtime", () => {
       seen = await vi.waitFor(
         () => {
           const ownerRevision = revision(ownerFeed);
-          expect(
-            ownerRevision,
-            `Owner machine revision did not advance after ${change}`,
-          ).toBeGreaterThan(seen);
+          expect(ownerRevision, `Owner machine revision did not change after ${change}`).not.toBe(
+            seen,
+          );
           expect(revision(bystanderFeed), `Second owner fell behind after ${change}`).toBe(
             ownerRevision,
           );

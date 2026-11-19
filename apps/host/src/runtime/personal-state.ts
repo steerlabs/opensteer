@@ -43,7 +43,6 @@ export async function initializePersonalState(
           "settings",
           "identity",
           "owner-profile",
-          "agent-home-settings",
         ] as const)
           mutation.bumpResource(kind);
       }

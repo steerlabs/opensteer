@@ -145,7 +145,7 @@ integration("Durable tab icons", () => {
     cleanups.push(() => caller.close());
     await testRpcData(
       host.origin,
-      "resources.get",
+      "resources.detail.get",
       { kind: "browser-placement" },
       { headers: host.ownerHeaders },
     );

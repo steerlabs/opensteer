@@ -93,7 +93,7 @@ type ResourceDetail = Extract<
 >["data"]["data"];
 
 export async function readTestResource<Kind extends ResourceDetail["kind"]>(
-  api: Pick<HostApiClient, "resources.get" | "resources.detail.get">,
+  api: Pick<HostApiClient, "resources.detail.get">,
   kind: Kind,
 ): Promise<
   ResourceDetail extends infer Detail
@@ -104,9 +104,7 @@ export async function readTestResource<Kind extends ResourceDetail["kind"]>(
       : never
     : never
 > {
-  const summary = await api["resources.get"]({ kind });
-  if (!summary.ok) throw new Error(summary.error.message);
-  const page = await api["resources.detail.get"]({ kind, expectedRevision: summary.data.revision });
+  const page = await api["resources.detail.get"]({ kind });
   if (!page.ok) throw new Error(page.error.message);
   if (page.data.data.kind !== kind || page.data.next)
     throw new Error(`Expected a complete ${kind} fixture resource`);
@@ -126,10 +124,6 @@ export function testResourceData<Kind extends ResourceDetail["kind"]>(
 ) {
   return readTestResource(
     {
-      "resources.get": async (input) => ({
-        ok: true,
-        data: await testRpcData(origin, "resources.get", input, init),
-      }),
       "resources.detail.get": async (input) => ({
         ok: true,
         data: await testRpcData(origin, "resources.detail.get", input, init),
@@ -146,8 +140,6 @@ export function injectTestResource<Kind extends ResourceDetail["kind"]>(
 ) {
   return readTestResource(
     {
-      "resources.get": async (input) =>
-        (await injectRpcRequest(app, "resources.get", input, headers)).json(),
       "resources.detail.get": async (input) =>
         (await injectRpcRequest(app, "resources.detail.get", input, headers)).json(),
     },

@@ -6,12 +6,7 @@ import {
   installPersonalMutationHooks,
 } from "@opensteer/database/personal-mutation";
 import { createPersonalStateFixture } from "@opensteer/database/test-support/personal-state";
-import {
-  authorizedSyncState,
-  personalScopeKey,
-  readPersonalScopeCut,
-  withPersonalSyncRead,
-} from "@opensteer/database/personal-sync-store";
+import { personalScopeKey, readPersonalScopeCut } from "@opensteer/database/personal-sync-store";
 import { buildPersonalShellSnapshot } from "@opensteer/database/personal-snapshot-store";
 import { PersonalSyncSocket } from "./personal-sync.js";
 
@@ -22,6 +17,7 @@ function deadline<T>(promise: Promise<T>, message: string) {
 test("wakes independent device generations after a PostgreSQL resource-only commit", async () => {
   const fixture = await createPersonalStateFixture("two-personal-devices");
   const { database, run } = fixture;
+  const revisions = new Map<string, string>();
   function device(generation: number) {
     const synchronized = Promise.withResolvers<void>();
     const resource = Promise.withResolvers<{ generation: number; revision: string }>();
@@ -39,7 +35,6 @@ test("wakes independent device generations after a PostgreSQL resource-only comm
             needsYouCount: cut.state.needsYouCount,
             unreadTaskCount: cut.state.unreadTaskCount,
           },
-          resourceRevisions: cut.state.resourceRevisions,
         };
         const throughSequence = cut.state.sequence;
         const next = {
@@ -82,27 +77,14 @@ test("wakes independent device generations after a PostgreSQL resource-only comm
           };
         throw new Error("Fixture scope was unexpectedly stale");
       },
-      readResources: (interests, installed) =>
-        withPersonalSyncRead(database, async (tx) => {
-          const state = await authorizedSyncState(tx, run.userId);
-          return interests.flatMap((kind) =>
-            state.resourceRevisions[kind] === installed[kind]
-              ? []
-              : [
-                  {
-                    kind,
-                    revision: state.resourceRevisions[kind],
-                    view: { entries: [], complete: true, hasMore: false },
-                  },
-                ],
-          );
-        }),
+      resourceRevisions: (kinds) =>
+        Object.fromEntries(kinds.map((kind) => [kind, revisions.get(kind) ?? "0"])),
       async send(encoded, guard) {
         if (!guard()) return false;
         const frame = ScopedHostMessageSchema.parse(JSON.parse(encoded));
         if (frame.type === "host.synchronized") synchronized.resolve();
         if (frame.type === "host.resource")
-          resource.resolve({ generation: frame.generation, revision: frame.revision });
+          resource.resolve({ generation: frame.generation, revision: frame.revisions.settings! });
         return true;
       },
       close() {},
@@ -113,9 +95,12 @@ test("wakes independent device generations after a PostgreSQL resource-only comm
   const first = device(1);
   const second = device(3);
   const remove = installPersonalMutationHooks(database, {
-    wake: ({ head }) => {
-      first.socket.wake(head);
-      second.socket.wake(head);
+    wake: ({ head, resourceKinds }) => {
+      for (const kind of resourceKinds) revisions.set(kind, head);
+      for (const { socket } of [first, second]) {
+        socket.wake(head);
+        socket.resourcesChanged(resourceKinds);
+      }
     },
     onFailure(error) {
       throw error;

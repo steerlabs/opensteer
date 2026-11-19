@@ -24,9 +24,7 @@ import { WaitingInputViewSchema } from "./personal-input-queue.js";
 import {
   InstalledResourceRevisionsSchema,
   PersonalResourceInterestsSchema,
-  PersonalResourceKindSchema,
   PersonalResourceRevisionsSchema,
-  PersonalResourceViewSchema,
   PersonalRevisionSchema,
 } from "./resources.js";
 import {
@@ -39,7 +37,6 @@ export const scopedPersonalApiVersion = 64;
 export const personalClientFrameMaxBytes = 32 * 1024;
 export const personalChangesFrameMaxBytes = 64 * 1024;
 export const personalLiveFrameMaxBytes = 16 * 1024;
-export const personalResourceFrameMaxBytes = 32 * 1024;
 export const personalShellFrameMaxBytes = 128 * 1024;
 export const personalDetailFrameMaxBytes = 128 * 1024;
 export const personalControlFrameMaxBytes = 4 * 1024;
@@ -54,8 +51,6 @@ export function personalHostFrameMaxBytes(frame: ScopedHostMessage): number {
       return personalChangesFrameMaxBytes;
     case "host.live":
       return personalLiveFrameMaxBytes;
-    case "host.resource":
-      return personalResourceFrameMaxBytes;
     default:
       return personalControlFrameMaxBytes;
   }
@@ -189,9 +184,6 @@ export const PersonalRequestSummarySchema = z.object({
   title: z.string().max(240),
   threadId: ThreadIdSchema,
 });
-/** Accepted team replies changed; clients reread the visible reply they wait on. */
-export const PersonalSignalIdSchema = z.enum(["team-replies"]);
-const signal = z.strictObject({ revision: PersonalRevisionSchema });
 export const personalInputQueueMaxEntries = 100;
 const queue = z.object({
   revision: PersonalRevisionSchema,
@@ -252,7 +244,6 @@ export const PersonalShellSnapshotSchema = z.object({
   attention: z.array(attention).max(200),
   attentionHasMore: z.boolean(),
   counts,
-  resourceRevisions: PersonalResourceRevisionsSchema,
   session: z
     .object({
       sessionId: AuthSessionIdSchema,
@@ -268,16 +259,6 @@ export const PersonalShellSnapshotSchema = z.object({
   recentTaskIds: z.array(ThreadIdSchema).max(personalShellSettledTasks),
   nextBefore: z.string().max(4096).nullable(),
   taskCounts: z.object({ active: z.int().nonnegative(), open: z.int().nonnegative() }),
-  resources: z
-    .array(
-      z.object({
-        kind: PersonalResourceKindSchema,
-        revision: PersonalRevisionSchema,
-        view: PersonalResourceViewSchema,
-      }),
-    )
-    .max(15)
-    .optional(),
 });
 
 export const PersonalNetworkShellSnapshotSchema = PersonalShellSnapshotSchema.extend({
@@ -289,7 +270,7 @@ const change = {
   ordinal: z.int().min(0).max(127),
   entityId: z.string().min(1).max(600),
 };
-export const personalShellEntityKinds = ["task", "visit", "attention", "signal"] as const;
+export const personalShellEntityKinds = ["task", "visit", "attention"] as const;
 export const personalDetailEntityKinds = [
   "thread",
   "run-queue",
@@ -323,7 +304,6 @@ export const PersonalChangeSchema = z.union([
   upsert("task", task),
   upsert("visit", visit),
   upsert("attention", attention),
-  upsert("signal", signal),
   upsert("thread", PersonalDetailThreadSchema),
   upsert("run-queue", queue),
   upsert("queue-entry", WaitingInputViewSchema),
@@ -333,10 +313,7 @@ export const PersonalChangeSchema = z.union([
   upsert("node", nodeSubject),
 ]);
 
-const shellProgress = z.strictObject({
-  counts,
-  resourceRevisions: PersonalResourceRevisionsSchema,
-});
+const shellProgress = z.strictObject({ counts });
 const durableAddress = {
   ...address,
   scope: PersonalScopeSchema,
@@ -411,9 +388,8 @@ export const ScopedHostMessageSchema = z
       type: z.literal("host.resource"),
       ...address,
       subscriptionId: z.literal("shell"),
-      kind: PersonalResourceKindSchema,
-      revision: PersonalRevisionSchema,
-      view: PersonalResourceViewSchema,
+      /** The current revision of each watched kind that differs from what the client installed. */
+      revisions: PersonalResourceRevisionsSchema,
     }),
     z
       .strictObject({
@@ -428,10 +404,13 @@ export const ScopedHostMessageSchema = z
       .refine((value) => utf8ByteLength(JSON.stringify(value)) <= personalLiveFrameMaxBytes),
   ])
   .refine((frame) => {
-    if (frame.type === "host.resource")
-      return utf8ByteLength(JSON.stringify(frame)) <= personalResourceFrameMaxBytes;
-    if (frame.type === "host.synchronized" || frame.type === "host.removed") {
+    if (
+      frame.type === "host.synchronized" ||
+      frame.type === "host.removed" ||
+      frame.type === "host.resource"
+    ) {
       if (utf8ByteLength(JSON.stringify(frame)) > personalControlFrameMaxBytes) return false;
+      if (frame.type === "host.resource") return true;
     }
     const isShell = frame.scope.kind === "shell";
     if ((frame.subscriptionId === "shell") !== isShell) return false;
@@ -512,11 +491,6 @@ export function personalChangeFitsScope(
         return row.entityId === row.value.threadId && withinCut(row.value.revision, through);
       case "attention":
         return row.entityId === row.value.id && withinCut(row.value.revision, through);
-      case "signal":
-        return (
-          PersonalSignalIdSchema.safeParse(row.entityId).success &&
-          withinCut(row.value.revision, through)
-        );
       default:
         return false;
     }

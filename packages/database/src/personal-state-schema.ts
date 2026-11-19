@@ -26,10 +26,13 @@ import type {
   ToolOutputImageMediaType,
 } from "@opensteer/core";
 import {
-  personalResourceKinds,
-  type PersonalResourceRevisions,
+  durablePersonalResourceKinds,
+  type DurablePersonalResourceRevisions,
 } from "@opensteer/protocol/resources";
-export type { PersonalResourceKind } from "@opensteer/protocol/resources";
+export type {
+  DurablePersonalResourceKind,
+  PersonalResourceKind,
+} from "@opensteer/protocol/resources";
 import type { PersonalChange } from "@opensteer/protocol/personal-sync";
 import type { TranscriptMessageRefs } from "@opensteer/protocol/transcript";
 import { sql, type Generated, type Kysely } from "kysely";
@@ -41,8 +44,8 @@ export type ClientChangeOperation = "upsert" | "remove" | "reset";
 export type ClientEntityKind = PersonalChange["entityKind"] | "scope";
 
 export const emptyPersonalResourceRevisions = Object.fromEntries(
-  personalResourceKinds.map((kind) => [kind, "0"]),
-) as PersonalResourceRevisions;
+  durablePersonalResourceKinds.map((kind) => [kind, "0"]),
+) as DurablePersonalResourceRevisions;
 
 export interface PlaceView {
   readonly tabId: TabId;
@@ -76,7 +79,7 @@ export interface ClientSyncStateTable {
   prunedThroughSequence: Generated<string>;
   retainedChangeCount: Generated<number>;
   lastCommitAt: Timestamp;
-  resourceRevisions: Generated<PersonalResourceRevisions>;
+  resourceRevisions: Generated<DurablePersonalResourceRevisions>;
   pendingRequestCount: Generated<number>;
   pendingDeviceAccessRequestCount: Generated<number>;
   needsYouCount: Generated<number>;
@@ -222,8 +225,8 @@ export interface PersonalAttentionTable {
 export const uncertainEarlierRun =
   "started_at is null and binding_generation is not null and not runner_safety_terminal and execute_claim_state <> 'unclaimed'";
 
-const revisionKeys = `array[${personalResourceKinds.map((kind) => `'${kind}'`).join(",")}]`;
-const resourceRevisionCheck = personalResourceKinds
+const revisionKeys = `array[${durablePersonalResourceKinds.map((kind) => `'${kind}'`).join(",")}]`;
+const resourceRevisionCheck = durablePersonalResourceKinds
   .map(
     (kind) => `jsonb_typeof(resource_revisions->'${kind}') = 'string' and
     (resource_revisions->>'${kind}') ~ '^(0|[1-9][0-9]{0,18})$' and
@@ -266,7 +269,7 @@ const retainedStateDdl = `
     primary key (deployment_id, sequence, ordinal),
     check (
       (entity_kind = 'scope') = (operation = 'reset')
-      and ((scope_key = 'shell' and entity_kind in ('task','visit','attention','signal','scope'))
+      and ((scope_key = 'shell' and entity_kind in ('task','visit','attention','scope'))
       or (scope_key <> 'shell' and entity_kind in
         ('thread','run-queue','queue-entry','assignment','request','item','node','scope')))
     )

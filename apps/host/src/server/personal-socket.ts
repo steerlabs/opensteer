@@ -80,9 +80,7 @@ export function attachPersonalSocket(options: {
     },
     readLive: (scope, request) => options.liveText?.read(scope, request) ?? [],
     onFailure: options.logFailure,
-    readResources: (kinds, installed, signal) =>
-      resources.watched(session, kinds, installed, signal),
-    isResourceCurrent: (kind, revision) => resources.isCurrent(kind, revision),
+    resourceRevisions: (kinds) => resources.revisions(kinds),
     send,
     close: (reason) => {
       if (socket.readyState === socket.OPEN)

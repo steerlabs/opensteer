@@ -253,7 +253,9 @@ integration("session-scoped browser agent backends", () => {
         (message) => {
           const parsed = ScopedHostMessageSchema.safeParse(message);
           return (
-            parsed.success && parsed.data.type === "host.resource" && parsed.data.kind === "tab"
+            parsed.success &&
+            parsed.data.type === "host.resource" &&
+            parsed.data.revisions.tab !== undefined
           );
         },
         2000,

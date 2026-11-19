@@ -766,15 +766,7 @@ export class PersonalTeamRequestsStore {
         saved.acceptedMessageId &&
         !saved.explicitReply
       )
-        mutation.change(
-          {
-            scopeKey: "shell",
-            entityKind: "signal",
-            entityId: "team-replies",
-            operation: "upsert",
-          },
-          () => ({ revision: mutation.sequence }),
-        );
+        mutation.bumpResource("team-replies");
       if (saved.publicationState === "accepted" && saved.acceptedMessageId && this.#onPublished) {
         const taskId = saved.localTaskId!;
         mutation.reaction(() => this.#onPublished?.(taskId));

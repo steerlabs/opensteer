@@ -549,7 +549,7 @@ export async function updateHarnessInstance(
       mutation.bumpResource("harness");
       if (configChanged || input.enabled !== undefined) {
         mutation.bumpResource("harness-catalog");
-        mutation.bumpResource("harness-auth");
+        mutation.bumpResource("environment");
       }
       return row;
     }),
@@ -714,7 +714,7 @@ export async function removeHarnessInstance(
       .execute();
     mutation.bumpResource("harness");
     mutation.bumpResource("harness-catalog");
-    mutation.bumpResource("harness-auth");
+    mutation.bumpResource("environment");
     return row;
   });
 }
@@ -841,7 +841,7 @@ export async function recordHarnessCatalogs(
     }
     if (currentCatalogs.length) {
       mutation.bumpResource("harness-catalog");
-      mutation.bumpResource("harness-auth");
+      mutation.bumpResource("environment");
     }
     return currentCatalogs;
   });
@@ -931,7 +931,7 @@ export async function discardHarnessCatalog(
       .executeTakeFirst();
     if (deleted.numDeletedRows > 0) {
       mutation.bumpResource("harness-catalog");
-      mutation.bumpResource("harness-auth");
+      mutation.bumpResource("environment");
     }
   });
 }
