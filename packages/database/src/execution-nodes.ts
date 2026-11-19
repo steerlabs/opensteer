@@ -67,6 +67,11 @@ export async function updateExecutionNode(
   update: EventData<"node.updated">,
 ): Promise<void> {
   await requireRunNode(transaction, runId, update.nodeId);
+  const before = await transaction
+    .selectFrom("executionNodes")
+    .select(["title", "parentNodeId"])
+    .where("id", "=", update.nodeId)
+    .executeTakeFirstOrThrow();
   if (update.stopping !== undefined)
     throw new OpensteerError({
       code: "conflict",
@@ -112,9 +117,13 @@ export async function updateExecutionNode(
     .where("id", "=", update.nodeId)
     .execute();
   await publishExecutionNode(transaction, update.nodeId);
-  if (update.title !== undefined || update.parentNodeId !== undefined)
+  // Only a real change to what a waiting Request shows of its asker moves its list.
+  const retitled = update.title !== undefined && update.title !== before.title;
+  const reparented =
+    update.parentNodeId !== undefined && update.parentNodeId !== before.parentNodeId;
+  if (retitled || reparented)
     await commitPersonalMutation(transaction, (tx, mutation) =>
-      republishAskerAttention(tx, mutation, update.nodeId, update.title !== undefined),
+      republishAskerAttention(tx, mutation, update.nodeId, retitled),
     );
 }
 
