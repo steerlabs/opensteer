@@ -88,7 +88,7 @@ describeStore("PostgreSQL store", (it) => {
     });
   });
 
-  it("announces a computer's changed task count when a task is placed on it", async ({
+  it("creating a task does not announce the machine resource to every device", async ({
     storeFixture,
   }) => {
     const { createRunFixture, store, database } = storeFixture;
@@ -109,7 +109,8 @@ describeStore("PostgreSQL store", (it) => {
       modelSelection: testModelSelection,
       title: "Placed",
     });
-    expect(await machineRevision()).not.toBe(before);
+    // A computer's placed-task count is read with its page; no task write fans out to it.
+    expect(await machineRevision()).toBe(before);
   });
   it("pages the owner's active listed tasks with filter-bound cursors", async ({
     storeFixture,
