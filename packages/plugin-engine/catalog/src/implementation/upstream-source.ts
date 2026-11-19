@@ -1,14 +1,14 @@
 /**
  * The one rewriter of plugin source written for upstream's framework: the rules in
  * `upstream-names.json`, the renames such source needs to build and run on Opensteer's framework.
- * The Host's rebuild of installed plugins and the catalog snapshot both use it, so the same source
- * always becomes the same bytes. Each rule applies only within its scope (the file says what each
+ * The catalog snapshot and its qualification both use it, so the same source always becomes the
+ * same bytes. Each rule applies only within its scope (the file says what each
  * scope covers); a file no rule changes keeps its exact bytes, so rewriting is idempotent and
  * rewritten source rewrites to itself. Prose and comments are not touched.
  */
 import { createRequire } from "node:module";
 import type * as TypeScript from "typescript-5";
-import { renameReservedTables } from "apps/contracts";
+import { renameReservedTables } from "./reserved-tables.ts";
 import upstreamNames from "../../../upstream-names.json" with { type: "json" };
 
 let compiler: typeof TypeScript | undefined;

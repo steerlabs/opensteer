@@ -61,7 +61,6 @@ export {
 } from "./elicitation.ts";
 export { McpClientLimits, defaultMcpClientLimits } from "./mcp.ts";
 export * from "./webhook-protocol.ts";
-export * from "./reserved-tables.ts";
 export * from "./events.ts";
 export { AppIcon, AppIcons, appIconLimits } from "./icons.ts";
 export { fieldDescriptions, helpTextLimits, withoutHelp } from "./help-text.ts";

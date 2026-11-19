@@ -427,18 +427,8 @@ export const AccountCheckCommand = Schema.Struct({
 });
 export type AccountCheckCommand = typeof AccountCheckCommand.Type;
 
-/**
- * Apply the build's pending SQL migrations. No accounts are bound and the app is not evaluated.
- * `originals` are the active version's migrations as it retained them: one already applied that
- * the build has only with the reserved tables renamed (see `renameReservedTables`) keeps its
- * history, which the framework checks against these bytes.
- */
-export const MigrateCommand = Schema.Struct({
-  operation: Schema.Literal("migrate"),
-  originals: Schema.optional(
-    Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
-  ),
-});
+/** Apply the build's pending SQL migrations. No accounts are bound and the app is not evaluated. */
+export const MigrateCommand = Schema.Struct({ operation: Schema.Literal("migrate") });
 export type MigrateCommand = typeof MigrateCommand.Type;
 
 /** The migrations this command applied, oldest first, by position and file path. Empty when the database was current. */

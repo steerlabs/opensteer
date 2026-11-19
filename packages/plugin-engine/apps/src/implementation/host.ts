@@ -457,7 +457,7 @@ function dispatch(
         const sources = yield* Schema.decodeUnknownEffect(Schema.Array(SkillFile))(
           context.files ?? [],
         ).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
-        const applied = yield* migrate(storage, sources, request.originals).pipe(
+        const applied = yield* migrate(storage, sources).pipe(
           Effect.mapError((error) => new HostOperationFailed(failureDetail(error, secrets))),
           Effect.withSpan("app.sql.migrate"),
         );

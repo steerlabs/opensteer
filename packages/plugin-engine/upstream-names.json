@@ -1,5 +1,5 @@
 {
-  "$comment": "Data, not code: upstream's names and what they became. `identity` is what the name guard (scripts/plugin-engine/names.mjs) forbids. `rules` are the renames plugin source written for upstream's framework needs to build and run on Opensteer's; one rewriter applies them, `rewriteUpstreamSource` and `rewriteUpstreamPackage` from @opensteer/plugin-engine-catalog, for the Host's rebuild after an upgrade and for the catalog snapshot alike. A rule applies only within its scope; see `scopes`. Matching is exact and case-sensitive unless a scope says otherwise. Prose and comments are not rules here: they change nothing a build or a run reads, and the catalog snapshot edits them on top.",
+  "$comment": "Data, not code: upstream's names and what they became. `identity` is what the name guard (scripts/plugin-engine/names.mjs) forbids. `rules` are the renames plugin source written for upstream's framework needs to build and run on Opensteer's; one rewriter applies them, `rewriteUpstreamSource` and `rewriteUpstreamPackage` from @opensteer/plugin-engine-catalog, for the catalog snapshot and its qualification. A rule applies only within its scope; see `scopes`. Matching is exact and case-sensitive unless a scope says otherwise. Prose and comments are not rules here: they change nothing a build or a run reads, and the catalog snapshot edits them on top.",
   "identity": {
     "everywhere": [
       "executor.sh",
@@ -20,7 +20,7 @@
     "event": "Code files: the window event the framework dispatches when a new version is active.",
     "ui-marker": "Code files: the marker the framework puts in an app's page.",
     "error-code": "Code files: an error code the Host returns to app code.",
-    "reserved-table": "A table the framework keeps in an app's SQLite database. In code files a whole word in any case; in migrations/*.sql only complete SQL identifiers, bare or quoted and in any case, never string literals or comments (packages/plugin-engine/apps/src/contracts/reserved-tables.ts). The framework keeps an applied migration's history when the build has it only renamed, checked against the active version's retained bytes.",
+    "reserved-table": "A table the framework keeps in an app's SQLite database. In code files a whole word in any case; in migrations/*.sql only complete SQL identifiers, bare or quoted and in any case, never string literals or comments (packages/plugin-engine/catalog/src/implementation/reserved-tables.ts).",
     "signing-secret": "Code files: the value of a `signingSecret` property in a manual webhook setup."
   },
   "rules": [

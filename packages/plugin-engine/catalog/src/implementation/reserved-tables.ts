@@ -1,6 +1,6 @@
 /**
- * The tables PluginEngine keeps in an app's database (see `reservedTablePrefix`) as a framework from
- * before the rename named them, and the SQL rename that gives an app's migrations their names now.
+ * The tables PluginEngine keeps in an app's database (see `reservedTablePrefix`) as upstream's
+ * framework names them, and the SQL rename that gives a plugin's migrations their names here.
  * The names come from the rules data, `upstream-names.json`.
  */
 import upstreamNames from "../../../upstream-names.json" with { type: "json" };
