@@ -409,7 +409,8 @@ export class TriggerScheduleLoop {
   }
   async #tick(): Promise<Date | typeof retryWithBackoff | null> {
     const now = Date.now();
-    const { occurrences, changed } = await this.#store.claimDueSchedules();
+    // One time for the claim and the "still due" comparison below.
+    const { occurrences, changed } = await this.#store.claimDueSchedules(new Date(now));
     for (const occurrence of occurrences) this.#onOccurrenceQueued(occurrence);
     if (changed) this.#onChanged();
     const next = await this.#store.nextScheduleAt();
