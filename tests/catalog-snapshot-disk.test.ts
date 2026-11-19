@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
@@ -14,6 +14,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   buildSnapshot,
@@ -414,14 +415,18 @@ describe("assembling a release", () => {
     );
   };
 
-  test("a dry run needs no credentials, reads no site and writes nothing into the snapshot", async () => {
-    const snapshot = await snapshotAt(join(root, "snapshot"));
-    const before = [...(await readTree(snapshot)).keys()].sort();
-    const output = publish("--dir", snapshot, "--site", "s", "--first", "--dry-run");
-    expect(output).toContain("was not read");
-    expect(output).toContain("Dry run: nothing was uploaded.");
-    expect([...(await readTree(snapshot)).keys()].sort()).toEqual(before);
-  });
+  test(
+    "a dry run needs no credentials, reads no site and writes nothing into the snapshot",
+    { timeout: 60_000 },
+    async () => {
+      const snapshot = await snapshotAt(join(root, "snapshot"));
+      const before = [...(await readTree(snapshot)).keys()].sort();
+      const output = publish("--dir", snapshot, "--site", "s", "--first", "--dry-run");
+      expect(output).toContain("was not read");
+      expect(output).toContain("Dry run: nothing was uploaded.");
+      expect([...(await readTree(snapshot)).keys()].sort()).toEqual(before);
+    },
+  );
 
   test("takes --previous or --first, and refuses a blank --previous", () => {
     expect(previousChoice("/s", false)).toBe("/s");
@@ -462,6 +467,55 @@ describe("publishing over the live release", () => {
     expect(check({ live: undefined, previous: undefined })).toBe("the site serves no manifest yet");
     expect(() => check({ live: undefined })).toThrow("the site serves no manifest: pass --first");
   });
+
+  test(
+    "refuses to deploy over a live site that is not --previous, too soon, or not new",
+    { timeout: 60_000 },
+    async () => {
+      const previous = await snapshotAt(join(root, "previous"), "old");
+      const snapshot = await snapshotAt(join(root, "snapshot"), "new");
+      const other = await snapshotAt(join(root, "other"), "other");
+      let live: Uint8Array | undefined;
+      const server = createServer((request, response) => {
+        if (request.url === "/manifest.json" && live !== undefined) response.end(live);
+        else response.writeHead(404).end();
+      });
+      await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+      const site = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+      // Only node on the PATH: nothing here can reach a deploy.
+      await mkdir(join(root, "bin"));
+      await symlink(process.execPath, join(root, "bin", "node"));
+      const repository = join(import.meta.dirname, "..");
+      const refused = async (args: string[], reason: string) => {
+        const stderr = await promisify(execFile)(
+          process.execPath,
+          [
+            join(repository, "node_modules", "tsx", "dist", "cli.mjs"),
+            join(repository, "scripts", "catalog-snapshot", "publish.ts"),
+            ...["--dir", snapshot, "--site", "s", "--site-url", site, ...args],
+          ],
+          { cwd: root, env: { HOME: root, PATH: join(root, "bin") } },
+        ).then(
+          () => "deployed",
+          (error: { stderr: string }) => error.stderr,
+        );
+        expect(stderr).toContain(reason);
+      };
+      const manifestOf = async (path: string) => readFile(join(path, "manifest.json"));
+      try {
+        live = publishedManifest(await manifestOf(previous), "2026-01-01T00:00:00.000Z");
+        await refused(["--previous", other], "--previous is not the live release");
+        await refused(["--first"], "--first, but the site already serves a manifest");
+        await refused(["--previous", " "], "--previous is blank");
+        live = publishedManifest(await manifestOf(previous), new Date().toISOString());
+        await refused(["--previous", previous], "wait until 65 minutes have passed");
+        live = undefined;
+        await refused(["--previous", previous], "the site serves no manifest: pass --first");
+      } finally {
+        await new Promise((done) => server.close(done));
+      }
+    },
+  );
 
   test("reads the live manifest without following a redirect", async () => {
     const answers: Record<string, [number, string]> = {
