@@ -172,6 +172,15 @@ two publishes must be further apart than both: the publisher refuses a publish l
 the upload itself) after the live release's `published` time, unless `--ignore-interval` is given.
 `published` is taken when the publish starts, before the upload, which the hour also covers.
 
+One operator publishes, from one machine, one publish at a time. Two publishes that overlapped
+could both pass the live check against the same old release; the second to deploy would then
+replace a release whose index installs may already have read, without keeping its documents. On one
+machine the publisher prevents that: it holds a lock per site in the user's temporary directory
+(`catalog-publish-<site>.lock`, as the snapshot tool's lock) for the whole publish, and it reads the
+live `manifest.json` again immediately before the deploy and refuses if it changed since the check.
+Across machines that second read only narrows the window to the deploy itself, which nothing here
+can lock; hence the rule.
+
 `--dry-run` stops before the deploy, needs no credentials and does not read the live site, so it
 does not check `--previous` or `--first` against it; it says so. Deploying needs a dedicated identity
 with Firebase Hosting permissions on the project (for example the Firebase Hosting Admin role),

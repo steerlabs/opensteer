@@ -15,7 +15,9 @@
  * content-addressed documents and icons (so an index cached from it still resolves), and the
  * Hosting configuration with each path's cache lifetime. The deploy runs from there; nothing is
  * written into a snapshot. `--dry-run` stops before deploying, needs no credentials and does not
- * read the live site.
+ * read the live site. A publish holds a lock per site on this machine and reads the live
+ * `manifest.json` again just before deploying, refusing if it changed; publish from one machine
+ * only (see the README).
  *
  * Deploying needs an identity with Firebase Hosting permissions on the project: `firebase login`,
  * or Application Default Credentials (`gcloud auth application-default login`).

@@ -24,7 +24,7 @@ import {
   serialize,
   sha256,
 } from "../scripts/catalog-snapshot/core.ts";
-import { publishRelease } from "../scripts/catalog-snapshot/release.ts";
+import { publishLockOf, publishRelease } from "../scripts/catalog-snapshot/release.ts";
 import { liveManifest } from "../scripts/catalog-snapshot/served.ts";
 import { takeSnapshot } from "../scripts/catalog-snapshot/take.ts";
 import {
@@ -542,7 +542,7 @@ describe("publishing over the live release", () => {
     const deployed: { command: string; manifest: string; previous: boolean }[] = [];
     const publish = (options: { previous?: string; first?: boolean }) =>
       publishRelease(
-        { dir: snapshot, site: "s", siteUrl, ...options },
+        { dir: snapshot, site: `s-${basename(root)}`, siteUrl, ...options },
         () => {},
         async (command, cwd) => {
           const files = await readTree(join(cwd, "public"));
@@ -581,6 +581,52 @@ describe("publishing over the live release", () => {
         "the site serves no manifest: pass --first",
       );
       expect(deployed).toHaveLength(1);
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
+  });
+
+  test("publishes to a site one at a time, and only over the release it checked", async () => {
+    const previous = await snapshotAt(join(root, "previous"), "old");
+    const snapshot = await snapshotAt(join(root, "snapshot"), "new");
+    const other = await snapshotAt(join(root, "other"), "other");
+    const live = publishedManifest(
+      await readFile(join(previous, "manifest.json")),
+      "2026-01-01T00:00:00.000Z",
+    );
+    // Another publish deploys `other` after this one's first read of the live release.
+    const answers = [
+      live,
+      publishedManifest(await readFile(join(other, "manifest.json")), now.toISOString()),
+    ];
+    let reads = 0;
+    const server = createServer((request, response) => {
+      if (request.url === "/manifest.json") response.end(answers[Math.min(reads++, 1)]);
+      else response.writeHead(404).end();
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const siteUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+    const site = `s-${basename(root)}`;
+    let deployed = 0;
+    const publish = () =>
+      publishRelease(
+        { dir: snapshot, site, siteUrl, previous },
+        () => {},
+        () => {
+          deployed++;
+        },
+      );
+    try {
+      // Refused while another publish to the site holds its lock, before the site is read.
+      const unlock = await holdLock(publishLockOf(site), "publishing", () => {});
+      await expect(publish()).rejects.toThrow(`is in use by process ${process.pid}`);
+      expect(reads).toBe(0);
+      await unlock();
+      // The live release changed between the check and the deploy: nothing is deployed.
+      await expect(publish()).rejects.toThrow("changed since it was checked");
+      expect({ reads, deployed }).toEqual({ reads: 2, deployed: 0 });
+      // The lock is released either way.
+      await expect(readFile(publishLockOf(site))).rejects.toThrow("ENOENT");
     } finally {
       await new Promise((done) => server.close(done));
     }
