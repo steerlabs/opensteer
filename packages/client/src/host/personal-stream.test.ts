@@ -3413,11 +3413,14 @@ describe("task lists from the shell and its pages", () => {
         }),
       ]);
       expect(done()!.window.totalItems).toBe(2);
-      // Reopened, a task this client holds leaves Done at once, and the count with it.
+      // Reopened, a task this client holds leaves the Done rows at once. The count is the Host's
+      // last answer until the Host is asked again, once the pushes rest.
       host.commit([upsert("task", quiet.id, { ...quiet, revision: "4", doneAt: null })]);
       expect(done()!.entries.some(({ thread }) => thread.id === quiet.id)).toBe(false);
-      expect(done()!.window.totalItems).toBe(1);
-      expect(answers, "a move the client could place read Done again").toHaveLength(2);
+      expect(done()!.window.totalItems).toBe(2);
+      await vi.waitFor(() => expect(answers).toHaveLength(3), { timeout: 2_000 });
+      answers[2]!(taskPageResponse(host, [older], { nextBefore: null, totalItems: 1 }));
+      await vi.waitFor(() => expect(done()!.window.totalItems).toBe(1));
     } finally {
       client.dispose();
     }
@@ -3467,7 +3470,8 @@ describe("task lists from the shell and its pages", () => {
         58,
       );
 
-      // Done just now: newer than every held Done task, so it was not Done before. Counted at once.
+      // Done just now: the row is placed in the held list at once; the number still waits for the
+      // Host, which here already counted it when its read took its cut (HTTP ahead of the push).
       host.commit([
         upsert("task", offPage.id, {
           ...offPage,
@@ -3476,10 +3480,38 @@ describe("task lists from the shell and its pages", () => {
           doneReason: "quiet",
         }),
       ]);
-      expect(done()!.window.totalItems).toBe(59);
       expect(done()!.entries[0]!.thread.id).toBe(offPage.id);
+      expect(done()!.window.totalItems).toBe(58);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reads).toHaveLength(3);
+      reads[2]!.resolve(
+        taskPageResponse(host, held.slice(0, 1), { nextBefore: "x", totalItems: 59 }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      // The number always equals the Host's last answer: no push is added on top of it.
+      expect(done()!.window.totalItems).toBe(59);
       await vi.advanceTimersByTimeAsync(5_000);
-      expect(reads, "a move the client could place read Done again").toHaveLength(2);
+      expect(done()!.window.totalItems).toBe(59);
+      // C4: a held row reopened elsewhere, whose push arrives after a count that already left it out.
+      reads.length = 0;
+      host.commit([
+        upsert("task", held[1]!.id, {
+          ...task,
+          id: held[1]!.id,
+          status: "idle",
+          revision: "4",
+          askedAt: held[1]!.askedAt,
+          doneAt: null,
+        }),
+      ]);
+      expect(done()!.entries.some(({ thread }) => thread.id === held[1]!.id)).toBe(false);
+      expect(done()!.window.totalItems, "a push was taken off the Host's count").toBe(59);
+      await vi.advanceTimersByTimeAsync(1_000);
+      reads[0]!.resolve(
+        taskPageResponse(host, held.slice(0, 1), { nextBefore: "x", totalItems: 58 }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(done()!.window.totalItems).toBe(58);
     } finally {
       client.dispose();
     }

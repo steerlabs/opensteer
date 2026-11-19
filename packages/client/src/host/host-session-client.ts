@@ -3609,51 +3609,43 @@ export class HttpHostClient {
   }
 
   /**
-   * Follows pushed moves in and out of Done in the held Done list and its count, whether or not the
-   * task's row is loaded. A move the client can classify (it knew the task, or the held list is
-   * the whole of Done, or the task's `doneAt` is newer than the oldest one held) is applied here
-   * with no read. One it cannot (an off-page task reopened or archived, which the row alone does
-   * not distinguish from an ordinary change to an open task) reads the count again, once the
-   * pushes rest. A Done read in flight from before a move runs again.
+   * Follows pushed moves in and out of Done. The loaded Done rows move at once where the client
+   * can place the task (it knew it, the held list is the whole of Done, or its `doneAt` is newer
+   * than every held one). The count does not: any push that can change Done's membership marks it
+   * stale, and the count shown stays the Host's last answer until the count is read again, once
+   * the pushes rest.
    */
   #moveDone(moves: readonly DoneMove[]) {
-    // A Done read in flight from before a push that can touch Done (into it, out of it, or a task
-    // this client could not place) is read again; churn on tasks known to be open leaves it be.
-    if (this.#taskReads.busy("done") && moves.some(({ was, now }) => now || was !== false))
-      this.#taskReads.changed("done");
+    // Pushes that can touch Done: into it, out of it, or a task this client cannot place.
+    const touching = moves.filter(({ was, now }) => now || was !== false);
+    if (!touching.length) return;
+    // A Done read in flight from before them is read again.
+    if (this.#taskReads.busy("done")) this.#taskReads.changed("done");
     const pages = this.#donePages;
     if (!pages) return;
+    // Rows the loaded Done page holds, or a task now Done newer than every held row, move at once.
     let entries = pages.entries;
-    let count = pages.window.totalItems ?? 0;
-    let moved = false;
-    let unclassified = false;
     const oldest = entries.at(-1)?.thread.doneAt ?? null;
-    for (const { row, was, now } of moves) {
-      let before = was;
-      if (before === undefined) {
-        if (!pages.window.hasMore) before = false;
-        else if (now && "doneAt" in row && oldest !== null && row.doneAt! > oldest) before = false;
-        else {
-          unclassified = true;
-          continue;
-        }
-      }
-      if (before === now) continue;
-      moved = true;
+    for (const { row, was, now } of touching) {
+      const before =
+        was ??
+        (!pages.window.hasMore ||
+        (now && "doneAt" in row && oldest !== null && row.doneAt! > oldest)
+          ? false
+          : undefined);
+      if (before === undefined || before === now) continue;
       entries = entries.filter(({ thread }) => thread.id !== row.id);
       if (now && !("removed" in row)) entries = [...entries, this.#shellEntry(row)];
-      count = Math.max(0, count + (now ? 1 : -1));
     }
-    if (moved) {
+    if (entries !== pages.entries)
       this.#donePages = {
         ...pages,
         entries: [...entries].sort((left, right) => compareDoneOrder(left.thread, right.thread)),
-        window: { ...pages.window, totalItems: count },
       };
-      // A count answered before these moves would undo them: it runs again.
-      if (this.#taskReads.busy("done-count")) this.#taskReads.changed("done-count");
-    }
-    if (unclassified) this.#countDoneSoon();
+    // The count is never worked out here: it is the Host's last answer, read again once the
+    // pushes rest. A count read in flight answers for before them, so it runs again.
+    if (this.#taskReads.busy("done-count")) this.#taskReads.changed("done-count");
+    this.#countDoneSoon();
   }
 
   /** Reads Done's count again once pushes have rested, so a burst of them costs one read. */
