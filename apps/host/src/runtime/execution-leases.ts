@@ -1,6 +1,6 @@
 import type { OpensteerStore } from "@opensteer/database";
 import type { Clock } from "@opensteer/shared/clock";
-import { DeadlineDrain } from "./deadline-drain.js";
+import { DeadlineDrain, retryWithBackoff } from "./deadline-drain.js";
 
 export function executionLeaseDrain(
   store: Pick<
@@ -22,7 +22,9 @@ export function executionLeaseDrain(
       if (!next || next > now) return next;
       await store.recoverRunsWithExpiredExecutionBindings(now);
       await store.stopRunsPastBackgroundDeadline(wakeExecution, now);
-      return store.nextExecutionDeadline();
+      // Both handle everything due; a deadline still due made no progress, so back off.
+      const after = await store.nextExecutionDeadline();
+      return after && after <= now ? retryWithBackoff : after;
     },
   });
 }

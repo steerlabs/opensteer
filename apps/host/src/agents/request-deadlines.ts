@@ -1,4 +1,4 @@
-import { DeadlineDrain } from "../runtime/deadline-drain.js";
+import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
 import type { Clock } from "@opensteer/shared/clock";
 
 interface RequestDeadlineOptions {
@@ -20,7 +20,10 @@ export class RequestDeadlines extends DeadlineDrain {
         const time = new Date(now());
         if (!next || next > time) return next;
         await options.settle(time);
-        return options.next();
+        // Settling handles everything due; a deadline still due made no progress
+        // (something kept it), so it backs off instead of running again at once.
+        const after = await options.next();
+        return after && after <= time ? retryWithBackoff : after;
       },
     });
   }
