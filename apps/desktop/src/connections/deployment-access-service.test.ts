@@ -495,15 +495,92 @@ describe("DeploymentAccessService", () => {
     const started = Promise.withResolvers<typeof ready>();
     vi.mocked(fixture.ports.personal.start).mockReturnValueOnce(started.promise);
     const retrying = service.retry();
+    // The restart it asked for is under way: stopping the wait stays on offer.
+    fixture.emitPersonal({ ...restarting, canStart: false, state: "starting" });
+    await settle();
+    expect(service.snapshot().deployments[0]).toMatchObject({
+      availableActions: ["cancel"],
+      status: "connecting",
+    });
     await service.cancel();
     expect(service.snapshot().deployments[0]?.status).toBe("idle");
     fixture.replaceCatalog({ deployments: [owner], selectedDeploymentId: owner.id });
+    fixture.emitPersonal(ready);
     started.resolve(ready);
     await retrying;
     await settle();
 
     expect(fixture.establish).toHaveBeenCalledOnce();
     expect(service.snapshot().deployments[0]?.status).toBe("idle");
+    service.dispose();
+  });
+
+  it("attaches a local Host whose first attempt failed once its restart is ready", async () => {
+    const owner = deployment({
+      attachmentKey: "owner",
+      kind: "personal",
+      lastUsedAt: "2026-08-20T10:00:00.000Z",
+      onThisComputer: true,
+      source: "this-device",
+    });
+    const ready = { ...readyPersonalStatus, deploymentId: owner.id };
+    const fixture = fakePorts({
+      deployments: [owner],
+      personal: ready,
+      selectedDeploymentId: owner.id,
+    });
+    fixture.establish.mockRejectedValueOnce(new HostTransportError("unreachable"));
+    const service = new DeploymentAccessService(fixture.ports);
+    await service.initialize();
+    await settle();
+    expect(service.snapshot().deployments[0]?.status).toBe("offline");
+
+    // Main never reads the Host as down: it is back under its own key, still degraded.
+    fixture.emitPersonal({ ...ready, canStart: true, state: "degraded", step: null });
+    await settle();
+    expect(service.snapshot().deployments[0]?.status).toBe("connecting");
+    fixture.emitPersonal(ready);
+    await settle();
+
+    expect(fixture.establish).toHaveBeenCalledTimes(2);
+    expect(service.snapshot().deployments[0]?.status).toBe("connected");
+    service.dispose();
+  });
+
+  it("opens this computer's Host when its supervisor selects it while another read is answered first", async () => {
+    const remote = deployment({ lastUsedAt: "2026-08-20T09:00:00.000Z", name: "Server" });
+    const local = deployment({
+      attachmentKey: "owner",
+      kind: "personal",
+      lastUsedAt: "2026-08-20T10:00:00.000Z",
+      onThisComputer: true,
+      source: "this-device",
+    });
+    const fixture = fakePorts({
+      deployments: [remote, local],
+      personal: { ...readyPersonalStatus, deploymentId: local.id, state: "starting" },
+      selectedDeploymentId: remote.id,
+    });
+    const service = new DeploymentAccessService(fixture.ports);
+    await service.initialize();
+    await settle();
+    expect(fixture.establish).toHaveBeenCalledExactlyOnceWith(remote.id, false);
+
+    // The supervisor selects its Host; that catalog notice's read is answered last.
+    const selection = Promise.withResolvers<CatalogProjection>();
+    vi.mocked(fixture.ports.catalog.read).mockReturnValueOnce(selection.promise);
+    fixture.emitCatalog({ deployments: [remote, local], selectedDeploymentId: local.id });
+    fixture.emitPersonal({ ...readyPersonalStatus, deploymentId: local.id });
+    await settle();
+    selection.resolve({
+      deployments: [remote, local],
+      revision: 1,
+      selectedDeploymentId: local.id,
+    });
+    await settle();
+
+    expect(fixture.establish).toHaveBeenLastCalledWith(local.id, false);
+    expect(service.snapshot().deployments[1]?.status).toBe("connected");
     service.dispose();
   });
 
