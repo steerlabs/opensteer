@@ -293,15 +293,18 @@ describe("schedules", () => {
           "Finished without a message",
         );
         f.get.mockResolvedValue({ ok: true, data: { ...wire, downstreamRuns: [delayed] } });
-        const baseQueue = f.snapshot().runQueue;
-        const queued = {
-          id: delayed.run.id,
-          threadId: delayed.run.threadId,
-          status: "running" as const,
-          createdAt: delayed.run.createdAt,
-          runOrdinal: 1,
+        // The Run's task is a running shell row, which every client holds.
+        const base = f.snapshot().activeTasks;
+        const working = {
+          thread: {
+            ...f.snapshot().threads[0]!,
+            id: delayed.run.threadId,
+            status: "running" as const,
+          },
+          lastReply: null,
+          failure: null,
         };
-        f.emit({ runQueue: [...baseQueue, queued] });
+        f.emit({ activeTasks: [...base, working] });
         await vi.waitFor(
           () =>
             expect(resource.getSnapshot().data?.definition.downstreamRuns[0]?.run.status).toBe(
@@ -313,7 +316,7 @@ describe("schedules", () => {
           ok: true,
           data: { ...wire, downstreamRuns: [{ ...delayed, run: { ...delayed.run, status } }] },
         });
-        f.emit({ runQueue: baseQueue });
+        f.emit({ activeTasks: base });
         await vi.waitFor(
           () =>
             expect(resource.getSnapshot().data?.definition.downstreamRuns[0]?.run.status).toBe(
