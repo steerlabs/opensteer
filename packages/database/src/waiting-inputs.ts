@@ -580,6 +580,8 @@ export async function expireThreadInputLeases(database: Kysely<DatabaseSchema>) 
     .execute();
 
   const revokedGrants = [];
+  // One Thread whose queue fails to advance does not keep the rest waiting.
+  const failures: unknown[] = [];
   for (const { threadId } of affected) {
     const result = await commitPersonalMutation(database, async (transaction) => {
       const thread = await lockInputQueueProjection(transaction, threadId);
@@ -601,8 +603,13 @@ export async function expireThreadInputLeases(database: Kysely<DatabaseSchema>) 
       }
       const advanced = await advanceThreadQueue(transaction, thread);
       return { ...advanced };
+    }).catch((error: unknown) => {
+      failures.push(error);
+      return null;
     });
-    revokedGrants.push(...result.revokedGrants);
+    if (result) revokedGrants.push(...result.revokedGrants);
   }
-  return { revokedGrants, settled: affected.length };
+  // Failures are returned, not thrown, so the grants the committed Threads
+  // revoked are still announced before the caller reports them.
+  return { revokedGrants, settled: affected.length - failures.length, failures };
 }

@@ -1454,6 +1454,8 @@ export class TriggerStore {
   ): Promise<{
     readonly occurrences: readonly TriggerOccurrence[];
     readonly changed: boolean;
+    /** Schedules this claim could not process; each was rolled back alone. */
+    readonly failures: readonly unknown[];
   }> {
     const dueSchedules = (database: Kysely<DatabaseSchema>) =>
       database
@@ -1467,7 +1469,7 @@ export class TriggerStore {
       .select("triggers.id")
       .limit(1)
       .executeTakeFirst();
-    if (!candidate) return { occurrences: [], changed: false };
+    if (!candidate) return { occurrences: [], changed: false, failures: [] };
     return commitPersonalMutation(this.#database, async (transaction) => {
       const due = await dueSchedules(transaction)
         .selectAll("triggers")
@@ -1478,8 +1480,16 @@ export class TriggerStore {
         .skipLocked()
         .execute();
       const occurrences: TriggerOccurrence[] = [];
-      for (const trigger of due) {
-        if (!trigger.nextFireAt) continue;
+      const failures: unknown[] = [];
+      let claimed = 0;
+      // Each schedule is claimed under its own savepoint: one that cannot be
+      // claimed rolls back alone and is reported, instead of failing the whole
+      // batch and starving every schedule behind it on every pass.
+      const claim = async (
+        trigger: (typeof due)[number],
+      ): Promise<TriggerOccurrence | undefined> => {
+        if (!trigger.nextFireAt) return undefined;
+        let occurrence: TriggerOccurrence | undefined;
         if (!(await triggerExecutionAuthorityAvailable(transaction, trigger))) {
           // Authority can be unavailable transiently — an offline Runner. Pausing keeps the Trigger recoverable by
           // its owner; archiving would be a permanent answer to a temporary
@@ -1494,7 +1504,7 @@ export class TriggerStore {
             })
             .where("id", "=", trigger.id)
             .execute();
-          continue;
+          return undefined;
         }
         const revision = await transaction
           .selectFrom("triggerRevisions")
@@ -1521,7 +1531,7 @@ export class TriggerStore {
               },
             },
           );
-          occurrences.push(enqueued.occurrence);
+          occurrence = enqueued.occurrence;
         }
         const next = nextTriggerFireAfter(
           source.schedule,
@@ -1535,10 +1545,24 @@ export class TriggerStore {
           })
           .where("id", "=", trigger.id)
           .execute();
+        return occurrence;
+      };
+      for (const trigger of due) {
+        await sql`savepoint claim_schedule`.execute(transaction);
+        try {
+          const occurrence = await claim(trigger);
+          await sql`release savepoint claim_schedule`.execute(transaction);
+          if (occurrence) occurrences.push(occurrence);
+          claimed += 1;
+        } catch (error) {
+          await sql`rollback to savepoint claim_schedule`.execute(transaction);
+          failures.push(error);
+        }
       }
       return {
         occurrences,
-        changed: due.length > 0,
+        changed: claimed > 0,
+        failures,
       };
     });
   }

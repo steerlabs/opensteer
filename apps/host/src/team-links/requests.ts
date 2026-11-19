@@ -246,24 +246,38 @@ export class PersonalTeamRequests {
     }
   }
   async resumeAdmissions(teamId: DeploymentId): Promise<void> {
-    await this.#recoverCancelledAsks(teamId);
+    const failures = await this.#recoverCancelledAsks(teamId);
+    if (failures.length > 0)
+      throw new AggregateError(failures, "Cleaning up cancelled asks failed");
     for (const local of await this.options.requests.mirrors(teamId))
       if (local.kind === "ask" && !local.terminalState && !local.taskId)
         await this.#admitAsk(local);
   }
-  async #recoverCancelledAsks(teamId?: DeploymentId): Promise<void> {
+  async #recoverCancelledAsks(teamId?: DeploymentId): Promise<unknown[]> {
+    // Every ask gets its turn; the failures are answered for the caller to report.
+    const failures: unknown[] = [];
     for (const local of await this.options.requests.terminalAsksPendingCleanup(teamId))
-      await this.options.admission.cancelTeamRequest({
-        teamId: local.teamId,
-        requestId: local.requestId,
-      });
+      await this.options.admission
+        .cancelTeamRequest({ teamId: local.teamId, requestId: local.requestId })
+        .catch((error: unknown) => {
+          failures.push(error);
+        });
+    return failures;
   }
   /** Answers how many expired asks it cancelled. */
   async expireUndecidedAsks(): Promise<number> {
-    await this.#recoverCancelledAsks();
+    // One ask that fails to clean up or cancel does not keep the rest from expiring.
+    const failures = await this.#recoverCancelledAsks();
     const expired = await this.options.requests.expiredUndecidedAsks();
     for (const local of expired)
-      await this.cancel(local.teamId, local.requestId, "The time to approve this ask expired.");
+      await this.cancel(
+        local.teamId,
+        local.requestId,
+        "The time to approve this ask expired.",
+      ).catch((error: unknown) => {
+        failures.push(error);
+      });
+    if (failures.length > 0) throw new AggregateError(failures, "Expiring team asks failed");
     return expired.length;
   }
   async decide(
@@ -593,10 +607,11 @@ export class PersonalTeamRequests {
     throw error;
   }
 
-  async reconcileOne(request: PersonalTeamRequest): Promise<void> {
+  /** Whether this call recorded the request's terminal state. */
+  async reconcileOne(request: PersonalTeamRequest): Promise<boolean> {
     const { requests, runs } = this.options;
     const outcome = await runs.outcome(request);
-    if (!["done", "failed", "stopped", "cancelled"].includes(outcome.state)) return;
+    if (!["done", "failed", "stopped", "cancelled"].includes(outcome.state)) return false;
     const terminalState = outcome.state as NonNullable<PersonalTeamRequest["terminalState"]>;
     this.#lastStatus.delete(`${request.teamId}:${request.requestId}`);
     const current = (await requests.get(request.teamId, request.requestId))!;
@@ -607,19 +622,23 @@ export class PersonalTeamRequests {
         outcome.answerMessageId,
       );
     if ((await requests.get(request.teamId, request.requestId))?.publicationState === "pending")
-      return;
+      return false;
     try {
       await this.options
         .rpc(request.teamId)
         .call({ type: "status", requestId: request.requestId, state: terminalState, steps: [] });
       await requests.terminal(request.teamId, request.requestId, outcome.runId, terminalState);
+      return true;
     } catch (error) {
       await this.#failure(current, error);
       if (
         error instanceof OpensteerError &&
         ["forbidden", "unauthorized", "not_found"].includes(error.code)
-      )
+      ) {
         await requests.terminal(request.teamId, request.requestId, outcome.runId, terminalState);
+        return true;
+      }
+      return false;
     }
   }
 

@@ -56,6 +56,10 @@ export class TeamLinkConnection implements TeamLinkRpc {
     this.options = options;
   }
 
+  get ready(): boolean {
+    return this.#ready;
+  }
+
   start(): void {
     if (!this.#lifetime.signal.aborted && !this.#socket && !this.#retry && !this.#opening)
       void this.#connect().catch(() => this.#schedule());

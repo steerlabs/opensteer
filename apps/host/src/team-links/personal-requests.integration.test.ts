@@ -486,11 +486,25 @@ describeStore("personal team consent and returns", (it) => {
     const asking = await f.ask();
     const request = (await f.store.forRun(asking.receipt.runId!))!;
     const owed = async () =>
-      (await f.store.owedTerminalPublications()).map(({ requestId }) => requestId);
+      (await f.store.owedTerminalPublications({ teamIds: [f.origin.teamId] })).map(
+        ({ requestId }) => requestId,
+      );
     expect(await owed()).toEqual([]);
     await f.finish(asking.receipt.runId!, "Checked the launch.");
     // Nothing in memory remembers it: the rows alone say the answer is owed.
     expect(await owed()).toEqual([request.requestId]);
+    // A team whose link is not ready right now is not read at all.
+    expect(await f.store.owedTerminalPublications({ teamIds: [] })).toEqual([]);
+    expect(await f.store.owedTerminalPublications({ teamIds: [createId("deployment")] })).toEqual(
+      [],
+    );
+    // Keyset paging moves past a row already given its turn.
+    expect(
+      await f.store.owedTerminalPublications({
+        teamIds: [f.origin.teamId],
+        after: { teamId: f.origin.teamId, requestId: request.requestId },
+      }),
+    ).toEqual([]);
     let online = false;
     let posted = false;
     const publisher = new PersonalTeamRequests({
@@ -515,11 +529,12 @@ describeStore("personal team consent and returns", (it) => {
     });
     const errors: unknown[] = [];
     const pass = () =>
-      teamPublicationPass(
-        () => f.store.owedTerminalPublications(),
-        (owedRequest) => publisher.reconcileOne(owedRequest),
-        (error) => errors.push(error),
-      );
+      teamPublicationPass({
+        readyTeams: () => [f.origin.teamId],
+        owed: (input) => f.store.owedTerminalPublications(input),
+        reconcile: (owedRequest) => publisher.reconcileOne(owedRequest),
+        report: (error) => errors.push(error),
+      });
     // Offline: nothing was recorded, so the owner backs off and stays armed.
     expect(await pass()).toBe(retryWithBackoff);
     expect(await owed()).toEqual([request.requestId]);

@@ -1565,6 +1565,41 @@ integration.sequential("conversation delivery", () => {
     });
     await receipt("deadline-keeps-follow-up", f);
   });
+  it("stops every overdue background Run even when one Run's stop keeps failing", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, emit, store, database } = storeFixture;
+    const a = await fixture("deadline-fails");
+    const b = await fixture("deadline-stops");
+    const runs = [await running(a, "overdue-a"), await running(b, "overdue-b")];
+    await emit(a, runs[0]!, "run.phase", { phase: "background" });
+    await emit(b, runs[1]!, "run.phase", { phase: "background" });
+    // The Run the sweep reaches first cannot record its stop, on any pass.
+    const [first] = runs.toSorted();
+    await sql`create function refuse_overdue_stop() returns trigger language plpgsql as $$
+      begin
+        if new.payload->>'runId' = ${sql.lit(first!)} then
+          raise exception 'injected stop failure';
+        end if;
+        return new;
+      end $$`.execute(database);
+    await sql`create trigger refuse_overdue_stop before insert on commands
+      for each row execute function refuse_overdue_stop()`.execute(database);
+    try {
+      const stops: unknown[] = [];
+      await expect(
+        store.stopRunsPastBackgroundDeadline(
+          (stopped) => stops.push(stopped),
+          new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+        ),
+      ).rejects.toThrow("background deadline");
+      // The failing Run did not end the sweep: the other overdue Run stopped.
+      expect(stops).toHaveLength(1);
+    } finally {
+      await sql`drop trigger refuse_overdue_stop on commands`.execute(database);
+      await sql`drop function refuse_overdue_stop()`.execute(database);
+    }
+  });
   it("ends a reply that had not started and keeps the conversation open", async ({
     storeFixture,
   }) => {

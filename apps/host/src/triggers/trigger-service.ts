@@ -378,6 +378,7 @@ export class TriggerService {
  */
 export class TriggerScheduleLoop {
   readonly #onChanged: () => void;
+  readonly #onError: (error: unknown) => void;
   readonly #onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
   readonly #store: Pick<TriggerStore, "claimDueSchedules" | "nextScheduleAt">;
   readonly #drain: DeadlineDrain;
@@ -390,6 +391,7 @@ export class TriggerScheduleLoop {
     readonly clock?: Clock;
   }) {
     this.#onChanged = options.onChanged;
+    this.#onError = options.onError;
     this.#onOccurrenceQueued = options.onOccurrenceQueued;
     this.#store = options.store;
     this.#drain = new DeadlineDrain({
@@ -410,7 +412,9 @@ export class TriggerScheduleLoop {
   async #tick(): Promise<Date | typeof retryWithBackoff | null> {
     const now = Date.now();
     // One time for the claim and the "still due" comparison below.
-    const { occurrences, changed } = await this.#store.claimDueSchedules(new Date(now));
+    const { occurrences, changed, failures } = await this.#store.claimDueSchedules(new Date(now));
+    // A schedule that could not be claimed rolled back alone; the rest committed.
+    for (const failure of failures) this.#onError(failure);
     for (const occurrence of occurrences) this.#onOccurrenceQueued(occurrence);
     if (changed) this.#onChanged();
     const next = await this.#store.nextScheduleAt();

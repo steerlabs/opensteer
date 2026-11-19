@@ -46,35 +46,47 @@ export class AutomationFailureService {
 
   async #drainOnce(): Promise<Date | null | typeof retryWithBackoff> {
     const due = await this.#store.listDue();
+    // A notice whose write fails does not end the batch: the rest still get
+    // their turn, and the failures are thrown together so the pass retries.
+    const failures: unknown[] = [];
     for (const notice of due) {
       try {
-        const delivered = await this.#commands.enqueueThreadInput({
-          content: [{ text: noticeText(notice), type: "text" }],
-          idempotencyKey: `automation-failure:${notice.id}`,
-          policy: "queue",
-          requestedBy: notice.createdBy,
-          source: { kind: "automation", noticeId: notice.id, triggerId: notice.triggerId },
-          threadId: notice.destinationThreadId,
-        });
-        await this.#store.settle({
-          id: notice.id,
-          reason:
-            delivered.disposition === "cancelled" ? "The anchor Thread refused the message" : null,
-        });
+        await this.#deliver(notice);
       } catch (error) {
-        if (error instanceof OpensteerError && !error.retryable) {
-          await this.#store.settle({ id: notice.id, reason: failureReason(error) });
-          continue;
-        }
-        await this.#store.retryLater({ error: failureReason(error), id: notice.id });
-        this.#onError(error);
+        failures.push(error);
       }
     }
+    if (failures.length > 0) throw new AggregateError(failures, "Automation notices failed");
     // Every listed notice was settled or given a durable retry time, so a pass
     // that listed some made progress. One that listed none while a notice is
     // still due (one the listing cannot reach) backs off instead of spinning.
     const next = await this.#store.nextDeadline();
     return due.length === 0 && next && next.getTime() <= Date.now() ? retryWithBackoff : next;
+  }
+
+  async #deliver(notice: PendingAutomationFailure): Promise<void> {
+    try {
+      const delivered = await this.#commands.enqueueThreadInput({
+        content: [{ text: noticeText(notice), type: "text" }],
+        idempotencyKey: `automation-failure:${notice.id}`,
+        policy: "queue",
+        requestedBy: notice.createdBy,
+        source: { kind: "automation", noticeId: notice.id, triggerId: notice.triggerId },
+        threadId: notice.destinationThreadId,
+      });
+      await this.#store.settle({
+        id: notice.id,
+        reason:
+          delivered.disposition === "cancelled" ? "The anchor Thread refused the message" : null,
+      });
+    } catch (error) {
+      if (error instanceof OpensteerError && !error.retryable) {
+        await this.#store.settle({ id: notice.id, reason: failureReason(error) });
+        return;
+      }
+      await this.#store.retryLater({ error: failureReason(error), id: notice.id });
+      this.#onError(error);
+    }
   }
 }
 

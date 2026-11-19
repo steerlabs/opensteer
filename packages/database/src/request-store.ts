@@ -1891,22 +1891,33 @@ export class RequestStore {
   /** Answers how many due sign-in Requests it settled or cancelled. */
   async expirePasswordSignIns(now: Date): Promise<number> {
     const due = await expiredPersonalSignInRequests(this.#database, now);
+    // A Request that fails to settle does not end the sweep: the rest still
+    // get their turn, and the failures are thrown together at the end.
+    const failures: unknown[] = [];
+    let settled = 0;
     for (const { id, requestedBy } of due) {
-      const result = await this.settlePasswordSignInRequest({
-        requestId: id,
-        ownerId: requestedBy,
-        settlement: { status: "fulfilled", response: { outcome: "expired" } },
-      });
-      if (result) continue;
-      await commitPersonalMutation(this.#database, (tx) =>
-        cancelPending(tx, {
-          requestIds: [id],
-          reason: "authority-revoked",
-          resolvedAt: now,
-        }),
-      );
+      try {
+        const result = await this.settlePasswordSignInRequest({
+          requestId: id,
+          ownerId: requestedBy,
+          settlement: { status: "fulfilled", response: { outcome: "expired" } },
+        });
+        if (!result)
+          await commitPersonalMutation(this.#database, (tx) =>
+            cancelPending(tx, {
+              requestIds: [id],
+              reason: "authority-revoked",
+              resolvedAt: now,
+            }),
+          );
+        settled += 1;
+      } catch (error) {
+        failures.push(error);
+      }
     }
-    return due.length;
+    if (failures.length > 0)
+      throw new AggregateError(failures, "Expiring password sign-in Requests failed");
+    return settled;
   }
 
   async settlePasswordSignInRequest(input: {
@@ -2253,9 +2264,12 @@ export class RequestStore {
   async nextContinuationDeadline(
     retryMs: number,
     excludedRuns: ReadonlySet<RunId>,
+    asOf: Date,
   ): Promise<Date | null> {
-    // Attempts are stamped with the execution clock, so an unattempted row is due at its now.
-    const now = new Date(this.#executionNow());
+    // An unattempted row is due at the time the caller's pass judges by, never
+    // at a later read of the clock: "due" then means the same to the listing
+    // and to this answer.
+    const now = asOf;
     const row = await this.#eligibleContinuations(excludedRuns)
       .select(
         sql<Date>`coalesce(attempted_at + ${retryMs} * interval '1 millisecond', ${now})`.as(

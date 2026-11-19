@@ -1332,7 +1332,12 @@ export class OpensteerStore {
     return waitingInputs.listMessageRevisions(this.#database, input);
   }
   async expireThreadInputLeases() {
-    return this.#announceRevokedGrants(await waitingInputs.expireThreadInputLeases(this.#database));
+    const result = this.#announceRevokedGrants(
+      await waitingInputs.expireThreadInputLeases(this.#database),
+    );
+    if (result.failures.length > 0)
+      throw new AggregateError(result.failures, "Expiring input edit leases failed");
+    return result;
   }
   async steerThreadInput(input: SteerThreadInputRequest): Promise<EnqueuedThreadInput> {
     return this.#announceRevokedGrants(await threadStore.steerThreadInput(this.#database, input));

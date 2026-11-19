@@ -10,6 +10,26 @@ interface RequestDeadlineOptions {
   readonly clock?: Clock;
 }
 
+/**
+ * Runs every settler, in order, even when one throws, and answers what they
+ * settled between them. One settler that keeps failing therefore cannot keep
+ * the others from their turn; its failures are thrown together at the end,
+ * which the owner answers with a backoff retry.
+ */
+export async function settleEach(settlers: readonly (() => Promise<number>)[]): Promise<number> {
+  let settled = 0;
+  const failures: unknown[] = [];
+  for (const settle of settlers) {
+    try {
+      settled += await settle();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "Settling due Requests failed");
+  return settled;
+}
+
 export class RequestDeadlines extends DeadlineDrain {
   constructor(options: RequestDeadlineOptions) {
     const now = options.clock?.now ?? options.now ?? Date.now;
