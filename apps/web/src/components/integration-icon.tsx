@@ -1,5 +1,12 @@
 import { integrationMark } from "@opensteer/client/integrations";
+import { usePluginIcon } from "@opensteer/client/react";
+import { useState } from "react";
+import { useShell } from "./app-shell.js";
 import { bundledIntegrationArt } from "./integration-art.js";
+
+type IconSize = "lg" | "md";
+const tileClass = (size: IconSize | undefined) =>
+  `intg-icon ${size === "lg" ? "intg-icon--lg" : ""}`;
 
 /** Local artwork and vector marks share the same tile treatment on every client. */
 export function IntegrationIcon({
@@ -11,9 +18,9 @@ export function IntegrationIcon({
   readonly icon?: string | undefined;
   readonly id: string;
   readonly name: string;
-  readonly size?: "lg" | "md" | undefined;
+  readonly size?: IconSize | undefined;
 }) {
-  const className = `intg-icon ${size === "lg" ? "intg-icon--lg" : ""}`;
+  const className = tileClass(size);
   const mark = integrationMark(id);
   if (mark?.kind === "art" || mark?.kind === "logo")
     return (
@@ -42,7 +49,7 @@ export function IntegrationIcon({
         </svg>
       </span>
     );
-  if (icon && /^(?:https?:\/\/|data:image\/)/u.test(icon)) {
+  if (icon?.startsWith("data:image/")) {
     return (
       <span className={className}>
         <img alt="" src={icon} />
@@ -63,6 +70,34 @@ export function IntegrationIcon({
       style={{ ["--intg-hue" as string]: integrationHue(id) }}
     >
       {name.slice(0, 2).toLocaleUpperCase()}
+    </span>
+  );
+}
+
+/**
+ * A plugin's own icon, read from its Host and drawn on a light tile in both
+ * themes. An empty tile holds its place while it is read; a plugin with none,
+ * or one this browser can't draw, wears its integration mark or initials.
+ */
+export function PluginIcon({
+  iconRef,
+  id,
+  name,
+  size = "md",
+}: {
+  readonly iconRef: string | null | undefined;
+  readonly id: string;
+  readonly name: string;
+  readonly size?: IconSize | undefined;
+}) {
+  const image = usePluginIcon(useShell().hostClient, iconRef);
+  const [broken, setBroken] = useState<string | null>(null);
+  if (image === undefined) return <span aria-hidden className={tileClass(size)} />;
+  if (image === null || image === broken)
+    return <IntegrationIcon id={id} name={name} size={size} />;
+  return (
+    <span aria-hidden className={`${tileClass(size)} intg-icon--mark`}>
+      <img alt="" decoding="async" onError={() => setBroken(image)} src={image} />
     </span>
   );
 }

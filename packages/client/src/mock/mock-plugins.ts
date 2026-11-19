@@ -248,6 +248,29 @@ const catalogCategories = [
 ] as const;
 const verbs = ["Read", "Search", "Create", "Update", "Sync"] as const;
 
+/** Mock icons, served by ref as a Host serves them: small WebP tiles in a few hues. */
+const mockIconTiles = [
+  "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",
+];
+const mockIconImages = new Map<string, string>();
+const mockIconRefs = new Map<string, string>();
+function mockIconRef(name: string): string {
+  const known = mockIconRefs.get(name);
+  if (known) return known;
+  const ref = `mock${String(mockIconRefs.size).padStart(39, "0")}`;
+  const tile = [...name].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 9_973, 0);
+  mockIconRefs.set(name, ref);
+  mockIconImages.set(ref, `data:image/webp;base64,${mockIconTiles[tile % mockIconTiles.length]!}`);
+  return ref;
+}
+
 function buildCatalog(): PluginCatalogEntryView[] {
   const entries: PluginCatalogEntryView[] = [];
   for (const [, names] of catalogCategories)
@@ -257,6 +280,7 @@ function buildCatalog(): PluginCatalogEntryView[] {
         name,
         description: `${name} for your agents: read and change what's in your ${name} account.`,
         icon: null,
+        iconRef: mockIconRef(name),
         auth: [
           { method: "apiKey", kind: "secrets", label: "API key" },
           ...(name.length % 3 === 0
@@ -927,6 +951,7 @@ export class MockPlugins {
       name: plugin.name,
       slug: plugin.id.replace(/^plg_/u, ""),
       icon: null,
+      iconRef: mockIconRef(plugin.name),
       author: plugin.author,
       access: plugin.access,
       activeVersion: plugin.activeVersion,
@@ -1446,6 +1471,13 @@ export class MockPlugins {
           catalog: "listed" as const,
         });
       },
+      "plugins.icons.get": async ({ refs }) =>
+        rpcSuccess({
+          icons: refs.flatMap((ref) => {
+            const image = mockIconImages.get(ref);
+            return image ? [{ ref, image }] : [];
+          }),
+        }),
       "plugins.catalog.get": async ({ catalogId }) => {
         const entry = this.catalog.find((candidate) => candidate.id === catalogId);
         if (!entry) throw refusal("not_found", "Catalog entry not found");

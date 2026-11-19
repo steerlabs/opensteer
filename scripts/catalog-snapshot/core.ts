@@ -17,6 +17,7 @@ import { Schema } from "effect";
 import { rewriteUpstreamPackage, rewriteUpstreamSource } from "@opensteer/plugin-engine-catalog";
 import { CatalogFeed, CatalogFeedSource } from "@opensteer/plugin-engine-catalog/contracts";
 import { PackageName } from "@opensteer/plugin-engine-sdk";
+import { iconImageType } from "@opensteer/shared/imageType";
 import {
   Rewriter,
   rewriteProblems,
@@ -93,34 +94,16 @@ export const sourcePath = (id: string, sha256: string) => `apps/${id}/${sha256}.
 export const legacySourcePath = (id: string) => `apps/${id}.json`;
 export const iconFile = (sha256: string, extension: string) => `icons/${sha256}.${extension}`;
 
-/** The image types the feed's icons use; anything else fails the build. */
-const iconTypes = ["svg", "png", "webp"] as const;
-const startsWith = (bytes: Uint8Array, prefix: readonly number[], at = 0) =>
-  prefix.every((byte, offset) => bytes[at + offset] === byte);
-const ascii = (text: string) => [...text].map((char) => char.charCodeAt(0));
+/** The image types the feed's icons use, by extension; anything else fails the build. */
+const iconTypes = { svg: "image/svg+xml", png: "image/png", webp: "image/webp" } as const;
+const iconNames = { svg: "an SVG image (no <svg> root)", png: "a PNG image", webp: "a WebP image" };
 
 /** Why these bytes are not an icon of this type (by its extension), or undefined when they are. */
 export function iconProblem(extension: string, bytes: Uint8Array): string | undefined {
-  if (!(iconTypes as readonly string[]).includes(extension))
-    return `icons are ${iconTypes.join(", ")}, not .${extension}`;
-  if (extension === "png")
-    return startsWith(bytes, [0x89, ...ascii("PNG\r\n\x1a\n")]) ? undefined : "not a PNG image";
-  if (extension === "webp")
-    return startsWith(bytes, ascii("RIFF")) && startsWith(bytes, ascii("WEBP"), 8)
-      ? undefined
-      : "not a WebP image";
-  // SVG: after an optional byte order mark, XML declaration, comments and doctype, an <svg> root.
-  let text: string;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return "not an SVG image (not UTF-8)";
-  }
-  const prolog =
-    /^(?:\s+|<\?xml[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[^[>]*(?:\[[\s\S]*?\])?\s*>)/iu;
-  for (let match = prolog.exec(text); match; match = prolog.exec(text))
-    text = text.slice(match[0].length);
-  return /^<svg[\s/>]/u.test(text) ? undefined : "not an SVG image (no <svg> root)";
+  if (!Object.hasOwn(iconTypes, extension))
+    return `icons are ${Object.keys(iconTypes).join(", ")}, not .${extension}`;
+  const type = extension as keyof typeof iconTypes;
+  return iconImageType(bytes) === iconTypes[type] ? undefined : `not ${iconNames[type]}`;
 }
 
 /**
@@ -381,9 +364,7 @@ export function snapshotPathKind(
     return servableId(parts[1]!.slice(0, -".json".length)) ? "legacy" : undefined;
   if (parts[0] === "icons" && parts.length === 2) {
     const [hash, extension, ...rest] = parts[1]!.split(".");
-    return hex64.test(hash!) &&
-      (iconTypes as readonly string[]).includes(extension ?? "") &&
-      rest.length === 0
+    return hex64.test(hash!) && Object.hasOwn(iconTypes, extension ?? "") && rest.length === 0
       ? "icon"
       : undefined;
   }

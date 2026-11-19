@@ -30,8 +30,12 @@ export type PluginChange = z.infer<typeof PluginChangeSchema>;
 export const pluginDetailPageMax = 50;
 /** How many tools, skills and versions the detail carries; the rest page. */
 export const pluginDetailPreview = { tools: 8, skills: 5, versions: 5 } as const;
-/** Icons larger than this are left out of views; a plugin then shows its initial. */
-export const pluginIconMaxLength = 8_192;
+/** The most bytes of a declared icon the Host reads. */
+export const pluginIconMaxBytes = 32 * 1_024;
+/** The most bytes of an icon the Host serves, after drawing it as a small WebP. */
+export const pluginIconImageMaxBytes = 24 * 1_024;
+/** The most icons one `plugins.icons.get` reads: a page of rows, well inside one engine reply. */
+export const pluginIconsMaxRefs = 30;
 
 const text = (max: number) => z.string().max(max);
 export const PluginIdSchema = z.string().min(1).max(200);
@@ -64,11 +68,24 @@ export const PluginEngineStateViewSchema = z.object({
 });
 export type PluginEngineStateView = z.infer<typeof PluginEngineStateViewSchema>;
 
-/** An https URL or a small inline image. */
-export const PluginIconSchema = z
+/**
+ * One declared plugin icon, served through `plugins.icons.get`. Clients never load a plugin icon
+ * from anywhere else, and keep what they read for a ref: a declaration names an icon once.
+ */
+export const PluginIconRefSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
+/** An icon as the Host draws it: a small WebP, never a plugin's own SVG or raster. */
+export const PluginIconImageSchema = z
   .string()
-  .max(pluginIconMaxLength)
-  .regex(/^(?:https:\/\/\S+|data:image\/(?:svg\+xml|png|webp|jpeg);base64,[A-Za-z0-9+/]*={0,2})$/u);
+  .max(64 + Math.ceil(pluginIconImageMaxBytes / 3) * 4)
+  .regex(/^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/u);
+/** What Hosts before `iconRef` sent as an icon. Apps still read it; this Host sends null. */
+const legacyPluginIcon = z
+  .string()
+  .max(8_192)
+  .regex(/^(?:https:\/\/\S+|data:image\/(?:svg\+xml|png|webp|jpeg);base64,[A-Za-z0-9+/]*={0,2})$/u)
+  .nullable();
+/** A plugin's icon, drawn on a light tile in both themes; null when it has none. An older Host omits it. */
+const pluginIconRef = PluginIconRefSchema.nullable().optional();
 
 /**
  * `needs-account`: a required link is missing or an existing link needs review.
@@ -87,7 +104,8 @@ export const PluginSummaryViewSchema = z.object({
   id: PluginIdSchema,
   name,
   slug: name,
-  icon: PluginIconSchema.nullable(),
+  icon: legacyPluginIcon,
+  iconRef: pluginIconRef,
   author: PluginAuthorSchema,
   access: PluginAccessSchema,
   activeVersion: name.nullable(),
@@ -288,7 +306,8 @@ export const PluginCatalogEntryViewSchema = z.object({
   id: name,
   name,
   description: text(1_000),
-  icon: PluginIconSchema.nullable(),
+  icon: legacyPluginIcon,
+  iconRef: pluginIconRef,
   /** How an account is connected: an API key or a sign-in. */
   auth: z
     .array(z.object({ method: name, kind: z.enum(["secrets", "oauth2"]), label: text(240) }))
@@ -473,6 +492,17 @@ export const pluginReads = {
   "plugins.catalog.get": {
     input: z.strictObject({ catalogId: name }),
     output: PluginCatalogEntryViewSchema,
+  },
+  /** The images these refs name; a ref the Host can't serve now is left out. */
+  "plugins.icons.get": {
+    input: z.strictObject({
+      refs: z.array(PluginIconRefSchema).min(1).max(pluginIconsMaxRefs),
+    }),
+    output: z.object({
+      icons: z
+        .array(z.object({ ref: PluginIconRefSchema, image: PluginIconImageSchema }))
+        .max(pluginIconsMaxRefs),
+    }),
   },
   "plugins.accounts.list": {
     input: z.strictObject({}),

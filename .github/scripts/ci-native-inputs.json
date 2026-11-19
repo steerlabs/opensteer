@@ -384,6 +384,7 @@
     "apps/host/src/plugins/oauth-review.ts",
     "apps/host/src/plugins/plugin-authority.ts",
     "apps/host/src/plugins/plugin-executions.ts",
+    "apps/host/src/plugins/plugin-icons.ts",
     "apps/host/src/plugins/plugin-oauth-routes.ts",
     "apps/host/src/plugins/plugin-oauth-service.ts",
     "apps/host/src/plugins/plugin-oauth-store.ts",

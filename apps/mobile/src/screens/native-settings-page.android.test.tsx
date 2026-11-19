@@ -14,7 +14,7 @@ vi.mock(
 );
 vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ bottom: 24 }) }));
-vi.mock("../ui/integration-icon.js", () => ({ IntegrationIcon: () => null }));
+vi.mock("../ui/integration-icon.js", () => ({ RowMarkIcon: () => null }));
 vi.mock("../theme.js", () => ({ color: new Proxy({}, { get: () => "#000000" }) }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });

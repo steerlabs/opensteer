@@ -3,7 +3,7 @@ import { fillMaxWidth, padding } from "@expo/ui/jetpack-compose/modifiers";
 import { SymbolView, type AndroidSymbol } from "expo-symbols";
 import { useState, type ReactNode } from "react";
 import { color } from "../theme.js";
-import { IntegrationIcon } from "../ui/integration-icon.js";
+import { RowMarkIcon } from "../ui/integration-icon.js";
 import type { SFSymbolName } from "../ui/symbol.js";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
 import {
@@ -145,7 +145,7 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
       const lead = row.mark ? (
         <Box modifiers={[]}>
           <RNHostView matchContents>
-            <IntegrationIcon definitionId={row.mark.definitionId} name={row.mark.name} size={28} />
+            <RowMarkIcon mark={row.mark} size={28} />
           </RNHostView>
         </Box>
       ) : material !== undefined ? (

@@ -120,6 +120,7 @@ export const hostApiScopes = {
   "plugins.page.view": "session",
   "plugins.catalog.list": "session",
   "plugins.catalog.get": "session",
+  "plugins.icons.get": "session",
   "plugins.accounts.list": "session",
   "plugins.account.review": "session",
   "plugins.schedule.runs": "session",

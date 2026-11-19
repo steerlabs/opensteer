@@ -1,3 +1,4 @@
+import type { RowMark } from "../ui/integration-icon.js";
 import type { SFSymbolName } from "../ui/symbol.js";
 
 /** Meaning colours only: green working, red broken, amber needs you, grey off. */
@@ -57,8 +58,8 @@ export type NativeSettingsRow =
       readonly detail?: string;
       /** The row opens a page about this thing rather than acting at once. */
       readonly opens?: boolean;
-      /** The integration whose mark leads the row. */
-      readonly mark?: { readonly definitionId: string; readonly name: string };
+      /** The integration or plugin whose mark leads the row. */
+      readonly mark?: RowMark;
       /** The system symbol on a quiet tile that leads the row, where the platform draws one. */
       readonly symbol?: SFSymbolName;
       readonly disabled?: boolean;

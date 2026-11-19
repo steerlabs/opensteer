@@ -24,7 +24,7 @@ import {
 import { useShell } from "../app-shell.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
-import { IntegrationIcon } from "../integration-icon.js";
+import { PluginIcon } from "../integration-icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import { SectionHeader, SettingsError, SettingsSegmented } from "../settings/primitives.js";
 import { useSettingsRead } from "../settings/use-settings-read.js";
@@ -239,7 +239,7 @@ function InstalledRow({ plugin }: { readonly plugin: PluginSummaryView }) {
   const status = pluginStatusView(plugin);
   return (
     <Link className="card__row plugins-row" role="listitem" to={pluginPath(plugin.id)}>
-      <IntegrationIcon icon={plugin.icon ?? undefined} id={plugin.slug} name={plugin.name} />
+      <PluginIcon iconRef={plugin.iconRef} id={plugin.slug} name={plugin.name} />
       <span className="card__row-body">
         <span className="card__row-title">{plugin.name}</span>
         <span className="card__row-detail">
@@ -324,7 +324,7 @@ function PluginCatalog() {
             const already = pluginCatalogInstalled(entry, installed.data?.plugins ?? []);
             return (
               <div className="card__row plugins-catalog__row" key={entry.id} role="listitem">
-                <IntegrationIcon icon={entry.icon ?? undefined} id={entry.id} name={entry.name} />
+                <PluginIcon iconRef={entry.iconRef} id={entry.id} name={entry.name} />
                 <span className="card__row-body">
                   <span className="card__row-title">{entry.name}</span>
                   <span className="card__row-detail plugins-catalog__description">
@@ -424,12 +424,7 @@ function InstallCatalogEntry({
     >
       <div className="plugins-install">
         <div className="settings-add-hero">
-          <IntegrationIcon
-            icon={entry.icon ?? undefined}
-            id={entry.id}
-            name={entry.name}
-            size="lg"
-          />
+          <PluginIcon iconRef={entry.iconRef} id={entry.id} name={entry.name} size="lg" />
           <p>{entry.description}</p>
         </div>
         <p className="settings-footnote">

@@ -190,7 +190,11 @@ function Plugins({ deploymentId, host }: { deploymentId: string; host: HostClien
           detail:
             plugin.author === "agent" ? `${status.label} · Written by an agent` : status.label,
           opens: true,
-          mark: { definitionId: plugin.slug, name: plugin.name },
+          mark: {
+            definitionId: plugin.slug,
+            name: plugin.name,
+            plugin: { hostClient: host, iconRef: plugin.iconRef },
+          },
           onPress: () => navigation.navigate("PluginDetail", { deploymentId, pluginId: plugin.id }),
         } satisfies NativeSettingsRow;
       }),
@@ -440,7 +444,11 @@ function Catalog({ deploymentId, host }: { deploymentId: string; host: HostClien
                     kind: "button",
                     label: entry.name,
                     detail: already ? `Installed · ${entry.description}` : entry.description,
-                    mark: { definitionId: entry.id, name: entry.name },
+                    mark: {
+                      definitionId: entry.id,
+                      name: entry.name,
+                      plugin: { hostClient: host, iconRef: entry.iconRef },
+                    },
                     disabled: already || action.pending !== null,
                     onPress: () => install(entry),
                   };
