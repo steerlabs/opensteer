@@ -1004,7 +1004,7 @@ test("uses no timers or network reads when an attached personal client is idle",
   }
 });
 
-test("restarts an interrupted catalog read when the same revision is reopened", async () => {
+test("keeps reading a catalog a screen still shows after a hand watch ends", async () => {
   const host = new MockPersonalHost();
   const environment = host.client.getSnapshot().environments[0]!;
   const account = createId("harnessInstance");
@@ -1043,21 +1043,18 @@ test("restarts an interrupted catalog read when the same revision is reopened", 
         },
       },
     });
-  let firstRead = true;
+  const secondPage = Promise.withResolvers<void>();
   let secondPageSignal: AbortSignal | null | undefined;
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
     const { kind, cursor } = JSON.parse(url.searchParams.get("input") ?? "{}");
     if (url.pathname !== "/v1/rpc/resources.detail.get" || kind !== "harness-catalog")
       return host.fetch(input, init);
-    if (!cursor) return reply("1", "first-model", "next");
-    if (firstRead) {
-      secondPageSignal = init?.signal;
-      return new Promise((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-      });
-    }
-    return reply("1", "second-model", null);
+    if (!cursor) return reply(String(host.client.getSnapshot().revision), "first-model", "next");
+    secondPageSignal ??= init?.signal;
+    return secondPage.promise.then(() =>
+      reply(String(host.client.getSnapshot().revision), "second-model", null),
+    );
   };
   const client = new HttpHostClient({
     baseUrl: "http://scoped-host",
@@ -1065,8 +1062,7 @@ test("restarts an interrupted catalog read when the same revision is reopened", 
     webSocketFactory: host.connect,
     capabilities: [],
   });
-  const releaseEnvironment = client.watchPersonalResource("environment", () => {});
-  let release = client.watchPersonalResource("harness-catalog", () => {});
+  const release = client.watchPersonalResource("harness-catalog", () => {});
   const models = () =>
     client
       .getSnapshot()
@@ -1078,20 +1074,19 @@ test("restarts an interrupted catalog read when the same revision is reopened", 
     await vi.waitFor(
       () => {
         expect(secondPageSignal).toBeDefined();
-        expect(models()).toEqual(["first-model"]);
       },
       { timeout: 1000 },
     );
+    // Half an inventory never paints: the first page waits for the rest.
+    expect(models()).toBeUndefined();
+    // The screen read `environments`, which keeps its catalog watched for this viewer.
     release();
-    expect(secondPageSignal?.aborted).toBe(true);
-    firstRead = false;
-    release = client.watchPersonalResource("harness-catalog", () => {});
+    expect(secondPageSignal?.aborted).toBe(false);
+    secondPage.resolve();
     await vi.waitFor(() => expect(models()).toEqual(["first-model", "second-model"]), {
       timeout: 1000,
     });
   } finally {
-    release();
-    releaseEnvironment();
     client.dispose();
     host.dispose();
   }

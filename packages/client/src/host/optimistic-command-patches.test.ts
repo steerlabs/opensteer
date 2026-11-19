@@ -264,6 +264,7 @@ function baseSnapshot(): TranscriptFixtureSnapshot {
   return {
     tabs: tabStoreFixture([]),
     appsRevision: 0,
+    loadedResources: [],
     doneTasks: {},
     quietTaskDays: null,
     threadRenameAvailable: true,

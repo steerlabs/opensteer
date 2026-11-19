@@ -365,6 +365,7 @@ import {
   type MockTriggerRecord,
 } from "./mock-automations.js";
 import { MockChromeSignIns } from "./mock-chrome-sign-ins.js";
+import { personalResourceKinds } from "@opensteer/protocol/resources";
 import { mockComputerUseMessageId, mockComputerUseTurn } from "./mock-computer-use-transcript.js";
 import { MockComputerViews } from "./mock-computer-views.js";
 import {
@@ -3838,6 +3839,7 @@ function mockBootstrap(
     quietTaskDays: snapshot.quietTaskDays,
     identityConfig: requiredMockIdentityConfig(snapshot),
     machines: snapshot.machines,
+    ownerProfile: snapshot.ownerProfile,
     sessionSurface: "canonical",
     user: snapshot.user,
   };
@@ -13820,6 +13822,8 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
     threadAutomations: {},
     inputQueues: {},
     waitingRequests: [],
+    // The mock holds every resource from the start.
+    loadedResources: [...personalResourceKinds],
     requests: {
       [mockComputerUseThreadId]: [
         RequestSchema.parse({

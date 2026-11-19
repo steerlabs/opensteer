@@ -1,4 +1,3 @@
-import { usePersonalResources } from "@opensteer/client/react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import type { ThreadAccessMode } from "@opensteer/core";
@@ -29,12 +28,9 @@ import { TasksHome } from "./tasks-home.js";
 import { belongsToPreviousLogin, heldTaskStart } from "./task-start.js";
 import { setAsideStagedFiles } from "../attachments/use-staged-attachments.js";
 
-const homeResources = ["environment", "harness", "harness-catalog", "settings"] as const;
-
 /** Home: what should your agent do, and the composer that starts it. */
 export function HomeRoute() {
   const { hostClient, snapshot } = useShell();
-  usePersonalResources(hostClient, homeResources);
   const navigate = useNavigate();
   const draftId = useTaskDraftId();
   const [suggestion, setSuggestion] = useState<{
@@ -48,7 +44,8 @@ export function HomeRoute() {
       composer={<NewTaskComposer draftId={draftId} key={draftId} suggestion={suggestion} />}
       firstRun={firstRun}
       header={<AreaHeader hostClient={hostClient} mark={<NewTaskMark />} title="New task" />}
-      needsAccount={snapshot.harnesses.length === 0}
+      // Unknown until the first accounts read lands; none connected only after it says so.
+      needsAccount={snapshot.loadedResources.includes("harness") && snapshot.harnesses.length === 0}
       onConnectAccount={() => void navigate("/settings/ai")}
       onSuggestion={(text) => setSuggestion((current) => ({ key: (current?.key ?? 0) + 1, text }))}
     />

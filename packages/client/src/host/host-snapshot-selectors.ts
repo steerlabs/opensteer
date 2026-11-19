@@ -22,6 +22,7 @@ export function sameStableHostSnapshot(previous: HostSnapshot, next: HostSnapsho
       // Recent, and the options a model comes back with.
       previous.executionPreferences === next.executionPreferences &&
       previous.harnesses === next.harnesses &&
+      previous.loadedResources === next.loadedResources &&
       previous.identityConfig === next.identityConfig &&
       previous.machines === next.machines &&
       previous.machineRevision === next.machineRevision &&

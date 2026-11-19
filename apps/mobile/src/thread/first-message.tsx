@@ -167,10 +167,14 @@ const filesWaitReason = presentClientIssue({ code: "preparation-required" }).det
 
 export function firstMessageBlocker(input: {
   readonly attachmentsReady: boolean;
+  /** The first accounts read has landed; before it, none listed means not known yet. */
+  readonly accountsKnown?: boolean;
   readonly execution: FirstMessageExecution;
 }): FirstMessageBlocker | null {
   const wait = (reason: string): FirstMessageBlocker => ({ choose: false, reason });
   const { blocked, blockedPlacement, placements, runnable, selection } = input.execution;
+  if (runnable.length === 0 && input.accountsKnown === false)
+    return wait("Checking your AI accounts. What you write here is kept.");
   if (runnable.length === 0) {
     // An account getting ready, as one does after its computer starts, is
     // only a wait: naming it keeps the person from hunting for a fault. Their

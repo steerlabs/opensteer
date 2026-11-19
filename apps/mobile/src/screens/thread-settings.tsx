@@ -1,5 +1,5 @@
 import { canRespondToRequests } from "@opensteer/client/host";
-import { useThreadTranscript, usePersonalResources } from "@opensteer/client/react";
+import { useThreadTranscript } from "@opensteer/client/react";
 import type { ClientSession } from "@opensteer/client/connections";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import {
@@ -119,7 +119,6 @@ function SubscribedThreadSettings(props: {
 }): ReactNode {
   const { snapshot } = useHostSnapshot(props.hostClient);
   const { runQueue } = useThreadTranscript(props.hostClient, props.threadId);
-  usePersonalResources(props.hostClient, settingsResources);
   const navigation = useNavigation();
   const userId = snapshot.user?.id ?? null;
   const thread = snapshot.threads.find(({ id }) => id === props.threadId) ?? null;
@@ -685,8 +684,6 @@ interface ExecutionSwitchReview {
   readonly expectedSelection: ExecutionSelection;
 }
 
-const settingsResources = ["environment", "harness", "harness-catalog", "settings"] as const;
-
 /** A Run that has not finished is what a switch has to wait for. */
 function runningHere(client: HostClient, threadId: string): boolean {
   return (client.getThreadTranscript(threadId)?.getSnapshot().runQueue.length ?? 0) > 0;
@@ -1130,7 +1127,6 @@ function SubscribedNewThread(props: {
   readonly hostClient: HostClient;
   readonly pickerAttemptId?: string;
 }): ReactNode {
-  usePersonalResources(props.hostClient, settingsResources);
   const { snapshot } = useHostSnapshot(props.hostClient);
   const navigation = useNavigation();
   const client = useMobileClient();

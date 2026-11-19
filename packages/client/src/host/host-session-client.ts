@@ -135,7 +135,8 @@ import type {
   TeamAskDecision,
   WaitingMessageEditor,
 } from "./client.js";
-import { HostClientRequestError, mainDoneTasks } from "./client.js";
+import { HostClientRequestError, mainDoneTasks, resourceBackedFields } from "./client.js";
+import { trackSnapshot } from "./host-snapshot-store.js";
 import { browserProfileHomeCommand } from "./browser-access.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
@@ -680,6 +681,13 @@ export class HttpHostClient {
       watchChanged: () => this.#stream.watchResources(),
       // Rows stay on screen; the inventory is only no longer known to be complete.
       behind: (kind) => kind === "tab" && this.#tabs.markInventoryStale(),
+      loaded: (kind) => {
+        if (this.#snapshot.loadedResources.includes(kind)) return;
+        this.#update({
+          ...this.#snapshot,
+          loadedResources: [...this.#snapshot.loadedResources, kind],
+        });
+      },
     });
     this.#stream = new ScopedPersonalStream(
       options.streamCache,
@@ -883,7 +891,13 @@ export class HttpHostClient {
     this.listComputerAppWindows = views.listComputerAppWindows;
   }
 
-  readonly getSnapshot = (): HostSnapshot => this.#snapshot;
+  readonly #views = new WeakMap<HostSnapshot, HostSnapshot>();
+  /** Reading a resource-backed field watches its kinds for this viewer; see `resourceBackedFields`. */
+  readonly getSnapshot = (): HostSnapshot =>
+    trackSnapshot(this.#snapshot, this.#views, (field) => {
+      const kinds = resourceKindsOf(field);
+      if (kinds) for (const kind of kinds) this.#resources.retain(kind);
+    });
 
   readonly #browserCursor = new BrowserCursorStore();
   readonly #browserEditing = new BrowserEditingStore(
@@ -1806,63 +1820,57 @@ export class HttpHostClient {
       (attached || attentionChanged)
     )
       this.#invalidateAttention(true);
+    // Follows the Host's pending count: on attach whenever it is positive (the bounded snapshot may
+    // list none of them), and on every change to it or to a pending Request's row.
     const requestRows = [...state.attention.values()]
       .filter(({ kind }) => kind === "request")
       .map(({ id, revision }) => `${id}@${revision}`)
       .join(",");
+    const requestSignature = `${shell.counts.pendingRequestCount}|${requestRows}`;
     if (
       state.synchronized &&
-      (attached || requestRows !== this.#waitingRequestRows) &&
-      (requestRows !== "" || this.#snapshot.waitingRequests.length > 0)
+      (attached || requestSignature !== this.#waitingRequestSignature) &&
+      (shell.counts.pendingRequestCount > 0 || this.#snapshot.waitingRequests.length > 0)
     )
       this.#readWaitingRequests();
-    this.#waitingRequestRows = requestRows;
+    this.#waitingRequestSignature = requestSignature;
   }
 
-  #waitingRequestRows = "";
-  #waitingRequestRead: { again: boolean } | undefined;
+  #waitingRequestSignature = "";
+  readonly #waitingRequestReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
 
   /**
-   * The pending Requests this person answers, with the work each holds up. The shell lists them
-   * as bounded attention rows; the full Request (its question, choices and presentation) is read
-   * here whenever those rows change.
+   * The pending Requests this person answers, with the work each holds up: every page, installed
+   * together. A read in flight when something changes installs nothing and runs again; a failure
+   * retries with backoff while the app is in front.
    */
   #readWaitingRequests() {
-    if (this.#waitingRequestRead) {
-      this.#waitingRequestRead.again = true;
-      return;
-    }
-    const read = { again: false };
-    this.#waitingRequestRead = read;
-    const generation = this.#viewerGeneration;
-    const userId = this.#snapshot.user?.id;
-    void (async () => {
-      const waitingRequests: HostSnapshot["waitingRequests"][number][] = [];
-      let before: string | null = null;
-      for (let pages = 0; pages < 4; pages++) {
-        const page: {
-          requests: HostSnapshot["waitingRequests"];
-          window: import("@opensteer/protocol").DurableWindow;
-        } = unwrapRpcResult(
-          await this.rpc["requests.list"]({
-            ...(before ? { before } : {}),
-            limit: 100,
-            deviceAccessRequests: "include",
-          }),
-        );
-        if (!this.#viewerStillCurrent(generation, userId)) return;
-        waitingRequests.push(...page.requests);
-        before = page.window.hasMore ? page.window.nextBefore : null;
-        if (!before) break;
-      }
-      if (!read.again) this.#update({ ...this.#snapshot, waitingRequests });
-    })()
-      .catch(() => undefined)
-      .finally(() => {
-        if (this.#waitingRequestRead !== read) return;
-        this.#waitingRequestRead = undefined;
-        if (read.again) this.#readWaitingRequests();
-      });
+    void this.#waitingRequestReads
+      .request(
+        "waiting-requests",
+        async (read) => {
+          const waitingRequests: HostSnapshot["waitingRequests"][number][] = [];
+          let before: string | null = null;
+          for (let pages = 0; pages < 20; pages++) {
+            const page: {
+              requests: HostSnapshot["waitingRequests"];
+              window: import("@opensteer/protocol").DurableWindow;
+            } = unwrapRpcResult(
+              await this.rpc["requests.list"](
+                { ...(before ? { before } : {}), limit: 100, deviceAccessRequests: "include" },
+                { signal: read.signal },
+              ),
+            );
+            if (!read.current()) return;
+            waitingRequests.push(...page.requests);
+            before = page.window.hasMore ? page.window.nextBefore : null;
+            if (!before) break;
+          }
+          if (read.current()) this.#update({ ...this.#snapshot, waitingRequests });
+        },
+        { observed: () => !this.#disposed && this.#visibility !== "background" },
+      )
+      .catch(() => undefined);
   }
 
   #attentionRead: { controller: AbortController; promise: Promise<void> } | undefined;
@@ -4370,6 +4378,7 @@ function emptySnapshot(tabs: TabStore): HostSnapshot {
     assignments: {},
     threadAutomations: {},
     waitingRequests: [],
+    loadedResources: [],
     runQueue: [],
 
     browserAvailable: false,
@@ -4606,4 +4615,10 @@ function updateRequired(): HostClientRequestError {
     retryable: false,
     status: 426,
   });
+}
+
+function resourceKindsOf(field: PropertyKey): readonly PersonalResourceKind[] | undefined {
+  return typeof field === "string" && Object.hasOwn(resourceBackedFields, field)
+    ? resourceBackedFields[field as keyof typeof resourceBackedFields]
+    : undefined;
 }

@@ -9,7 +9,7 @@ import {
   type HostClient,
   type HostSnapshot,
 } from "@opensteer/client/host";
-import { useHostSelector, usePersonalResources } from "@opensteer/client/react";
+import { useHostSelector } from "@opensteer/client/react";
 import { useState, type ReactNode } from "react";
 import { Alert } from "react-native";
 import { notDone, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
@@ -42,13 +42,10 @@ function menuAction(action: AiEngineAction): readonly AiAccountAction[] {
     : [];
 }
 
-const aiAccountKinds = ["harness", "environment", "harness-catalog"] as const;
-
 export function useAiAccounts(host: HostClient): {
   readonly form: AiAccountsForm;
   readonly sheet: ReactNode;
 } {
-  usePersonalResources(host, aiAccountKinds);
   const { environments, harnesses } = useHostSelector(host, selectAccounts, sameAccounts);
   const [requestedEnvironment, setRequestedEnvironment] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);

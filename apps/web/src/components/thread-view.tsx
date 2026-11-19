@@ -1,4 +1,4 @@
-import { useThreadTranscript, usePersonalResources } from "@opensteer/client/react";
+import { useThreadTranscript } from "@opensteer/client/react";
 import { useOutboxTranscript } from "@opensteer/client/react";
 import { hostMessageOutbox, splitLocalMessages } from "@opensteer/client/host";
 import { useTaskSourceView } from "../team/team-attachments.js";
@@ -120,7 +120,6 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
   const { nav } = useWorkspace();
   const navigate = useNavigate();
   const transcript = useThreadTranscript(hostClient, threadId);
-  usePersonalResources(hostClient, threadResourceKinds);
   const thread = snapshot.threads.find((candidate) => candidate.id === threadId) ?? null;
   const missing =
     thread === null && threadId !== null && snapshot.threadLookups[threadId] === "missing";
@@ -187,7 +186,6 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
   );
 }
 
-const threadResourceKinds = ["environment", "harness", "harness-catalog", "settings"] as const;
 const noRuns: readonly import("@opensteer/client/host").RunQueueEntry[] = [];
 
 interface ThreadViewProps {
