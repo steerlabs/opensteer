@@ -388,7 +388,9 @@ export async function createStoreFixture() {
           kind: "status",
           lastError: input.status === "retryable-failed" ? "Temporary provider failure" : null,
           messageId: null,
-          nextAttemptAt: new Date(),
+          // Due by the database's clock, which claimDelivery compares against; a container's
+          // clock can trail the host's by tens of milliseconds.
+          nextAttemptAt: sql<Date>`statement_timestamp()`,
           receipt: null,
           sentAt: null,
           status: input.status,
