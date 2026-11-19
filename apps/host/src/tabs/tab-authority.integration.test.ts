@@ -556,8 +556,10 @@ integration("tab projection database cost", () => {
       expect(targeted).toHaveBeenCalledExactlyOnceWith(run.userId, [rows[0]!]);
       expect(await targeted.mock.results[0]!.value).toHaveLength(1);
       expect(nativeRPCs, "rows projected through the native state port").toBe(1);
-      // Each resource read rechecks its viewer before sharing the changed row projection.
-      expect(queries).toBe(11);
+      // Each resource read rechecks its viewer before sharing the changed row projection: the
+      // owner check reads the Deployment and its first user in one query (4 reads), then one
+      // device lookup, one ownership lookup and the one changed row.
+      expect(queries).toBe(7);
       for (const { tabs } of projections)
         expect(tabs.find((tab) => tab.tabId === rows[0])).toMatchObject({ title: "Changed" });
     } finally {

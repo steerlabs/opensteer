@@ -12,6 +12,7 @@ import {
   type RunnerModuleName,
 } from "@opensteer/protocol";
 import { sql, type Transaction } from "kysely";
+import { personalDeploymentOwner } from "./machine-store.js";
 import type { DatabaseSchema } from "./schema.js";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { describe, expect, vi } from "vitest";
@@ -38,6 +39,28 @@ async function personalDeployment({ store }: StoreFixture): Promise<void> {
   });
 }
 describeStore("PostgreSQL store", (it) => {
+  it("names only the first, enabled user of a Personal Deployment as its owner", async ({
+    storeFixture,
+  }) => {
+    const { store, database } = storeFixture;
+    await personalDeployment(storeFixture);
+    const owner = await store.createUser("Owner");
+    await store.createUser("Second person");
+    await expect(personalDeploymentOwner(database)).resolves.toBe(owner);
+    await database
+      .updateTable("users")
+      .set({ disabledAt: new Date() })
+      .where("id", "=", owner)
+      .execute();
+    // A disabled owner is no owner; the next user does not inherit the role.
+    await expect(personalDeploymentOwner(database)).resolves.toBeNull();
+    await database.updateTable("users").set({ disabledAt: null }).where("id", "=", owner).execute();
+    await database
+      .updateTable("deployments")
+      .set({ deploymentShape: sql`'{"kind":"team"}'::jsonb` })
+      .execute();
+    await expect(personalDeploymentOwner(database)).resolves.toBeNull();
+  });
   it("delivers secret input through ciphertext while redacting durable projections", async ({
     storeFixture,
   }) => {
