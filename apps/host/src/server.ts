@@ -1056,13 +1056,7 @@ export async function createHostServer(
         runner.moduleDescriptors.shell?.platform !== "darwin"
       )
         continue;
-      computerUsePolicies.set(
-        runner.id,
-        await dependencies.integrations.devices.computerAppApprovals.computerUsePolicy({
-          deviceId: await dependencies.store.requireSelfDeviceId(runner.id),
-          ownerUserId: ownerId,
-        }),
-      );
+      // One policy read per Mac, in the page's own store when it has one.
       const target = { deviceId: await store.requireSelfDeviceId(runner.id), ownerUserId: ownerId };
       const policy = policyStore
         ? await policyStore.getDeviceComputerUsePolicy(target)
