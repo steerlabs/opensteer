@@ -72,8 +72,10 @@
   contain-intrinsic-block-size: auto 160px;
 }
 
-/* A row holding an inline dialog lets it escape the containment that would trap a fixed layer. */
-.transcript__row:has(.dialog-layer) {
+/* A row holding an inline dialog lets it escape the containment that would trap a fixed layer;
+   an engine that would let skipped rows move the reader (see row-skipping.ts) lays them all out. */
+.transcript__row:has(.dialog-layer),
+:root[data-row-skipping="off"] .transcript__row {
   content-visibility: visible;
 }
 
