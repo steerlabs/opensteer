@@ -190,22 +190,11 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     return { throughOrdinal: run.nextRunnerOrdinal - 1, replayed: true };
   }
   const terminal = isTerminal(run.status);
-  // A terminal Run's receipts are gone. A replay must still come from a binding the Run ran
-  // under, and a replay of its last statement must be that statement.
+  // A terminal Run's receipts are gone; only its last statement's digest remains. That proves a
+  // replay of the last statement (the digest covers Runner, boot and binding). Nothing proves an
+  // earlier one, so it is refused; refusing an ended Run changes nothing but its Runner's copy.
   if (terminal && statement.ordinal < run.nextRunnerOrdinal) {
-    const bound = await tx
-      .selectFrom("runAttempts")
-      .select("id")
-      .where("runId", "=", run.id)
-      .where("bindingGeneration", "=", statement.bindingGeneration)
-      .where("runnerId", "=", statement.runnerId)
-      .where("runnerBootId", "=", statement.runnerBootId)
-      .limit(1)
-      .executeTakeFirst();
-    if (
-      !bound ||
-      (statement.ordinal === run.nextRunnerOrdinal - 1 && !run.lastRunnerDigest?.equals(digest))
-    )
+    if (statement.ordinal !== run.nextRunnerOrdinal - 1 || !run.lastRunnerDigest?.equals(digest))
       throw new OpensteerError({
         code: "conflict",
         message: "Runner ordinal was already used by another statement",
