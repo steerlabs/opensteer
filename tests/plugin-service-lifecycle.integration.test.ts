@@ -136,3 +136,21 @@ test("starts at boot for a claimed scheduled run and stops once the engine has r
   });
   expect(stopped(pid!)).toBe(true);
 });
+
+test("runs one engine per database: a second Host's engine refuses to share it, clearly", async (context) => {
+  const { open } = await fixture(context);
+  const first = await open();
+  expect(await deadline(first.health({}, caller), "The first engine did not start")).toMatchObject({
+    pid: expect.any(Number),
+  });
+  // Another Host on the same database, with a plugin store of its own.
+  const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-lifecycle-other-"));
+  context.onTestFinished(() => rm(directory, { force: true, recursive: true }));
+  const second = await open({ dataDirectory: directory });
+  await expect(second.health({}, caller)).rejects.toMatchObject({
+    code: "unavailable",
+    message: expect.stringContaining("Another Opensteer Host runs plugins from this database"),
+  });
+  // The first keeps serving.
+  expect(await first.health({}, caller)).toMatchObject({ pid: first.state().pid });
+});

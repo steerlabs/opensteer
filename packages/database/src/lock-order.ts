@@ -110,6 +110,8 @@ export const databaseLockOrder = [
   "advisory:browser-sign-in",
   "advisory:browser-site-grants",
   "advisory:integration-catalog-definition",
+  // The one plugin engine of a database holds this for its life, on a connection of its own.
+  "advisory:plugin-engine",
   // A plugin's version fence: one deploy, activation, removal or rebuild of it at a time, held on a
   // connection of its own before any row the change then writes.
   "advisory:plugin-version",
@@ -358,6 +360,7 @@ export function advisoryLockResource(key: string, seed: number): string {
     "opensteer:official-portal-client",
     "opensteer:account-directory-provider",
     "opensteer-deployment-identity",
+    "plugin-engine",
     "personal-remote-access",
     "team-storage",
   ] as const;

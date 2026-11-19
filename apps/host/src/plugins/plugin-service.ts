@@ -387,6 +387,8 @@ export class PluginService {
     });
     this.#child = child;
     let ready = false;
+    // Why the engine could not start, as it said, such as another Host holding the database.
+    let fatal: PluginServiceError | undefined;
     let resolveReady!: () => void;
     let rejectReady!: (error: Error) => void;
     const started = new Promise<void>((resolve, reject) => {
@@ -414,9 +416,12 @@ export class PluginService {
         this.#set({ status: "ready", generation, pid: message.pid, startupMs: message.startupMs });
         resolveReady();
       } else if (message.type === "fatal") {
-        rejectReady(
-          new PluginServiceError(message.error.code, message.error.message, message.error.tag),
+        fatal = new PluginServiceError(
+          message.error.code,
+          message.error.message,
+          message.error.tag,
         );
+        rejectReady(fatal);
       } else if (message.type === "streamChunk") {
         this.#pulls.get(message.id)?.resolve(message);
         this.#pulls.delete(message.id);
@@ -488,14 +493,14 @@ export class PluginService {
         this.#set({
           status: "unavailable",
           generation,
-          reason: "Plugin engine repeatedly stopped",
+          reason: fatal?.message ?? "Plugin engine repeatedly stopped",
         });
         return;
       }
       this.#set({
         status: "restarting",
         generation,
-        reason: ready ? error.message : "Plugin engine could not start",
+        reason: ready ? error.message : (fatal?.message ?? "Plugin engine could not start"),
       });
       this.#restart = setTimeout(
         () => {

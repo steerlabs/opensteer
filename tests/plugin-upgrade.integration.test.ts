@@ -345,7 +345,7 @@ test(
       return true;
     });
     context.onTestFinished(() => registry.close());
-    const open = async () => {
+    const open = async (onDiagnostic?: (phase: string) => void) => {
       const service = new PluginService({
         processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
         bridge: resolve("apps/host/dist/plugin-engine-bridge.json"),
@@ -360,6 +360,7 @@ test(
         idleMs: 0,
         onVersionPublished: ({ plugin, version, from }) =>
           settings.recordPublished(personal.userId, plugin, version, from),
+        ...(onDiagnostic === undefined ? {} : { onDiagnostic }),
       });
       await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));
       context.onTestFinished(() => service.close());
@@ -388,8 +389,8 @@ test(
         ).rows[0]!.count,
       );
 
-    // Two engines start at once while the registry is down.
-    const [first, second] = await Promise.all([open(), open()]);
+    // The upgraded Host starts while the registry is down.
+    const first = await open();
     expect(first.rebuilding()).toBe(true);
     // A plugin waiting for its rebuild keeps its version and serves nothing: each refusal is typed
     // and says to try again, and nothing reaches the plugin.
@@ -482,10 +483,29 @@ test(
     expect(await first.versions({ plugin }, caller)).toHaveLength(1);
     expect(await queued()).toMatchObject({ status: "queued", deployment: before.version });
 
-    // The registry recovers: each plugin is rebuilt once across both engines.
+    // The Host restarts abruptly: its new engine finds the plugin store held by the old one, which
+    // is still running, and waits for it, opening nothing of the store meanwhile.
+    const phases: string[] = [];
+    const opening = open((phase) => phases.push(phase));
+    await vi.waitFor(() => expect(phases).toContain("directory-wait"), {
+      timeout: 20_000,
+      interval: 100,
+    });
+    expect(phases).not.toContain("database");
+    // The old engine dies without shutting down; the waiting one takes the store and the
+    // database over and finishes the rebuild.
+    const crashed = first.state().pid!;
+    process.kill(crashed, "SIGKILL");
+    await first.close();
+    const second = await opening;
+    expect(second.state()).toMatchObject({ status: "ready" });
+    expect(second.state().pid).not.toBe(crashed);
+    expect(phases).toContain("database");
+
+    // The registry recovers: each plugin is rebuilt once.
     outage = false;
-    await Promise.all([settle(first), settle(second)]);
-    const versions = await first.versions({ plugin }, caller);
+    await settle(second);
+    const versions = await second.versions({ plugin }, caller);
     expect(versions).toHaveLength(2);
     const rebuilt = versions.find((version) => version.id !== before.version)!.id;
     expect(await installed(second, plugin)).toMatchObject({
@@ -493,14 +513,14 @@ test(
     });
     // The rebuilt version is published as an install is: the Host's skill record names it, and
     // it keeps the author of the version it was rebuilt from.
-    expect(await first.skillCache.get(plugin)).toMatchObject({ version: rebuilt });
+    expect(await second.skillCache.get(plugin)).toMatchObject({ version: rebuilt });
     expect(await authorOf(rebuilt)).toBe("catalog");
     // Work saved on the old build never runs on it: the queued run moves to the rebuilt version,
     // which takes its workflow and input, and runs there, as does the answered scheduled call.
     await vi.waitFor(
       async () =>
         expect(
-          await first.manage(
+          await second.manage(
             { operation: "workflowRuns.get", input: { app: plugin, run: before.queued } },
             caller,
           ),
@@ -531,16 +551,16 @@ test(
         },
       },
     });
-    expect((await first.accounts({}, caller)).map((account) => account.id)).toContain(
+    expect((await second.accounts({}, caller)).map((account) => account.id)).toContain(
       before.account,
     );
-    expect((await installed(first, plugin)).links).toMatchObject([
+    expect((await installed(second, plugin)).links).toMatchObject([
       { requirement: "service", account: before.account },
     ]);
     expect(await settings.settings(personal.userId)).toMatchObject([
       { pluginId: plugin, access: "read-only" },
     ]);
-    const detail = await first.detail({ plugin }, caller);
+    const detail = await second.detail({ plugin }, caller);
     expect(detail.schedules).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -552,15 +572,15 @@ test(
 
     // The plugin whose source no longer builds is left with no active version, and its owner reads
     // the build's own diagnostic.
-    expect(await installed(first, before.broken)).toMatchObject({
+    expect(await installed(second, before.broken)).toMatchObject({
       plugin: { activeVersion: null },
       buildFailure: { message: expect.stringContaining("No matching export") },
     });
-    expect(await first.detail({ plugin: before.broken }, caller)).toMatchObject({
+    expect(await second.detail({ plugin: before.broken }, caller)).toMatchObject({
       buildFailure: { message: expect.stringContaining("No matching export") },
     });
     // Its source exports from the version whose build failed, as its detail shows.
-    expect(await first.export({ plugin: before.broken }, caller)).toEqual(
+    expect(await second.export({ plugin: before.broken }, caller)).toEqual(
       expect.arrayContaining([expect.objectContaining({ path: "index.ts" })]),
     );
 
@@ -568,14 +588,14 @@ test(
     // subscription that needs setup at the service, with a new callback URL and signing secret.
     const webhooks = await vi.waitFor(
       async () => {
-        const listed = (await first.detail({ plugin }, caller)).webhooks;
+        const listed = (await second.detail({ plugin }, caller)).webhooks;
         expect(listed.map((hook) => hook.status).sort()).toEqual(["setup-required", "stopped"]);
         return listed;
       },
       { timeout: 60_000, interval: 250 },
     );
     expect(webhooks.find((hook) => hook.status === "stopped")?.id).toBe(before.webhook);
-    const setup = (await first.manage(
+    const setup = (await second.manage(
       {
         operation: "webhookSetup.read",
         input: {
@@ -598,15 +618,15 @@ test(
 
     // Rolling back to the version from before the upgrade rebuilds its source first, and the
     // version that becomes active is the one published, with that version's author.
-    const activated = await first.activate({ plugin, version: before.version }, caller);
-    const rolled = await first.versions({ plugin }, caller);
+    const activated = await second.activate({ plugin, version: before.version }, caller);
+    const rolled = await second.versions({ plugin }, caller);
     expect(rolled).toHaveLength(3);
-    const active = (await installed(first, plugin)).plugin.activeVersion;
+    const active = (await installed(second, plugin)).plugin.activeVersion;
     expect([before.version, rebuilt]).not.toContain(active);
     expect(activated).toMatchObject({ activeVersion: active });
-    expect(await first.skillCache.get(plugin)).toMatchObject({ version: active });
+    expect(await second.skillCache.get(plugin)).toMatchObject({ version: active });
     expect(await authorOf(active!)).toBe("catalog");
-    expect((await notes(first)).result).toMatchObject({
+    expect((await notes(second)).result).toMatchObject({
       execution: {
         value: {
           ok: true,
@@ -616,7 +636,6 @@ test(
     });
 
     // A later start finds every plugin built for this framework, or not built, and builds nothing.
-    await first.close();
     await second.close();
     const again = await open();
     await settle(again);
