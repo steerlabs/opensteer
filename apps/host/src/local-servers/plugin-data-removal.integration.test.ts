@@ -163,6 +163,7 @@ it("queues plugin cleanup atomically, gates old Runners, acknowledges and replay
       actorUserId: host.ownerId,
       source: {},
       digest: "one",
+      packageFormat: "test",
       manifest: { name: "survivor" },
     });
     const survivorData = join(host.config.dataDirectory, "plugins", "data", survivorId);

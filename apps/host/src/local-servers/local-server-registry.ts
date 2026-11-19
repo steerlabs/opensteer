@@ -2,7 +2,7 @@ import { localNamespace, slugify } from "../plugins/provider-names.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { snapshotLocalServerPackage } from "@opensteer/agent-plugins";
+import { pluginPackageFormat, snapshotLocalServerPackage } from "@opensteer/agent-plugins";
 import {
   OpensteerError,
   refused,
@@ -200,9 +200,7 @@ export class LocalServerRegistry {
   ) {
     const store = this.#options.store;
     if (administration && (await store.replayAdministration(administration))) return;
-    const installations = (await store.listInstallations()).filter(
-      (installation) => installation.pluginId === pluginId,
-    );
+    const installations = await store.installationsForPlugin(pluginId);
     const devices = (
       await Promise.all(installations.map(({ id }) => this.#installationDevices(id)))
     ).flat();
@@ -260,10 +258,10 @@ export class LocalServerRegistry {
       ? await store.plugins.setupThread(input.threadId)
       : undefined;
     const updating = currentPlugin !== undefined;
+    // A first registration's id is chosen here; if another of the same name commits first, the
+    // database keeps that one and this registration is refused inside its transaction.
     const pluginId = currentPlugin?.id ?? createIntegrationId("installation");
-    const previous = updating
-      ? (await store.listInstallations()).find((i) => i.pluginId === pluginId)
-      : undefined;
+    const previous = updating ? (await store.installationsForPlugin(pluginId))[0] : undefined;
     const { computerId: _computer, folder: _folder, ...registration } = input.registration;
     const plugin = await snapshotLocalServerPackage({
       registration,
@@ -300,6 +298,7 @@ export class LocalServerRegistry {
     const version = {
       ...(setupThreadId !== undefined ? { setupThreadId } : {}),
       digest: basename(plugin.root),
+      packageFormat: pluginPackageFormat,
       manifest: {
         ...plugin.manifest,
         skills: plugin.skills.map(({ name, description, digest }) => ({

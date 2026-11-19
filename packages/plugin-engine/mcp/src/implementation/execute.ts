@@ -12,7 +12,6 @@ import {
   ToolSearchUnavailable,
   resolveLinkedAccounts,
   AccountChoiceUnsupported,
-  type App,
   type AppAccounts,
   type AppId,
   type Cursor,
@@ -21,7 +20,6 @@ import {
   type SearchableTools,
   type Tool as AppTool,
   type ToolRouter,
-  type ToolSearchItem,
   type ToolSearchListing,
   type ToolSearchScope,
   type ToolSearchTarget,
@@ -39,7 +37,13 @@ import {
 import { nearest } from "./suggestions.ts";
 import { withOperationSpan } from "./telemetry.ts";
 import type { McpAppAccounts } from "../contracts/targets.ts";
-import { ToolCallRecorded, type McpBackend } from "../contracts/backend.ts";
+import {
+  ToolCallRecorded,
+  type McpApp,
+  type McpBackend,
+  type McpSearchItem,
+  type McpTool,
+} from "../contracts/backend.ts";
 import { accountSummary, accountsKey, discoveryAccounts } from "./accounts.ts";
 import {
   AppAccountRequired,
@@ -55,6 +59,7 @@ import {
   defaultSearchLimits,
   DescribeInput,
   DescribeResult,
+  type McpBlocked,
   SearchInput,
   SearchResult,
   SearchItem,
@@ -239,7 +244,7 @@ function listTools<E extends Error>(
     let page = yield* list();
     // Later pages are pinned to the first page's version.
     const version = page.version;
-    const tools: AppTool[] = [...page.items];
+    const tools: McpTool[] = [...page.items];
     while (page.next !== undefined) {
       page = yield* list(version, page.next);
       tools.push(...page.items);
@@ -281,6 +286,8 @@ type Place = {
   readonly app: string;
   /** The labels of the linked accounts its calls use. */
   readonly accounts?: string;
+  /** What keeps the caller from all of its tools now. */
+  readonly blocked?: McpBlocked;
 };
 /** A loaded app, whose tools a program can call. */
 type Target = Place & {
@@ -299,7 +306,7 @@ type Target = Place & {
 type Entry = {
   /** Canonical path below `tools`. */
   readonly path: string;
-  readonly tool: AppTool;
+  readonly tool: McpTool;
   readonly target: Target;
 };
 /** An app whose current listing is kept as search rows. */
@@ -403,12 +410,23 @@ const summary = (tool: AppTool) =>
     defaultSearchLimits.descriptionChars,
   );
 
-/** An app's namespace, as results list it once. */
+/** An app's namespace, as results list it once, with what keeps the caller from the whole app. */
 const targetNamespace = (target: Place): SearchNamespace => ({
   path: CodeMode.toolExpression(target.path),
   app: target.app,
   ...(target.accounts === undefined ? {} : { accounts: target.accounts }),
+  ...(target.blocked === undefined ? {} : { blocked: target.blocked }),
 });
+/** What keeps one tool alone from the caller; what keeps its app is said on its namespace. */
+const toolBlocked = (tool: McpTool) =>
+  tool.blocked === undefined ? {} : { blocked: tool.blocked };
+/**
+ * Whether the caller is kept from a tool, by what keeps it or its app. Its input and output types
+ * are then not shown: a schema can hold what its author keeps private, such as defaults and
+ * allowed values, and the caller gets them once it may call the tool.
+ */
+const withheld = (tool: McpTool, target: Place) =>
+  tool.blocked !== undefined || target.blocked !== undefined;
 /** The namespaces a tool's path sits in: its app, and its router when that has a title. */
 const namespacesOf = (
   target: Place,
@@ -545,7 +563,7 @@ const rank = <E extends Error>(
     );
     // Each app has one target, so no item is listed under another.
     const items = ranked.items.flatMap(
-      (found): ReadonlyArray<{ found: ToolSearchItem; first: Found }> => {
+      (found): ReadonlyArray<{ found: McpSearchItem; first: Found }> => {
         const target = targets[found.target]?.target;
         return target === undefined
           ? []
@@ -609,14 +627,17 @@ const searchPage = <E extends Error>(
         }>,
       ) =>
         Effect.gen(function* () {
-          const type = yield* inputType(yield* renderSchemas(found.tool));
+          const type = withheld(found.tool, first.target)
+            ? undefined
+            : yield* inputType(yield* renderSchemas(found.tool));
           const item = {
             path: CodeMode.toolExpression(first.path),
             description: summary(found.tool),
-            input: cut(type, defaultSearchLimits.inputChars),
-            ...(type.length > defaultSearchLimits.inputChars
+            ...(type === undefined ? {} : { input: cut(type, defaultSearchLimits.inputChars) }),
+            ...(type !== undefined && type.length > defaultSearchLimits.inputChars
               ? { inputTruncated: true as const }
               : {}),
+            ...toolBlocked(found.tool),
           };
           // Each namespace is listed once, with the first item in it, and counts toward that item.
           const listed = new Set(page.flatMap(({ added }) => added.map((space) => space.path)));
@@ -639,8 +660,9 @@ const searchPage = <E extends Error>(
 
 /**
  * One page of CodeMode's global `search()`, ranked as `tools.search` ranks, in the shape CodeMode's
- * own `search()` documents: each tool's expression, whole description and signature. Only the
- * tools on the page have their signatures rendered; `rendered` counts them.
+ * own `search()` documents: each tool's expression, whole description and signature. That shape
+ * has no namespaces, so what keeps a tool or its app ends the tool's description. Only the tools on
+ * the page have their signatures rendered; `rendered` counts them.
  */
 const globalSearchPage = <E extends Error>(
   searchable: Searchable<E>,
@@ -660,15 +682,26 @@ const globalSearchPage = <E extends Error>(
       ranked.items,
       searchPageBytes,
       jsonBytes({ items: [], remaining: 0, next: { offset } }),
-      ({ found, first }) =>
-        renderSchemas(found.tool).pipe(
+      ({ found, first }) => {
+        const path = CodeMode.toolExpression(first.path);
+        const reason = found.tool.blocked ?? first.target.blocked;
+        // A tool the caller is kept from is named without its types (see `withheld`).
+        if (reason !== undefined)
+          return Effect.succeed({
+            path,
+            description: `${found.tool.description}\nBlocked (${reason.code}): ${reason.message} Next: ${reason.next}`,
+            signature: path,
+          });
+        return renderSchemas(found.tool).pipe(
           Effect.flatMap(signature),
           Effect.tap(() => Effect.sync(rendered)),
-          Effect.map((typed) => {
-            const path = CodeMode.toolExpression(first.path);
-            return { path, description: found.tool.description, signature: `${path}${typed}` };
-          }),
-        ),
+          Effect.map((typed) => ({
+            path,
+            description: found.tool.description,
+            signature: `${path}${typed}`,
+          })),
+        );
+      },
       (item) => jsonBytes(item) + 1,
     );
     const remaining = ranked.remaining + ranked.items.length - items.length;
@@ -704,7 +737,10 @@ const describeTools = <E>(described: Described<E>, paths: ReadonlyArray<string>)
       items.push({
         path: CodeMode.toolExpression(entry.path),
         description: entry.tool.description,
-        signature: yield* signature(yield* renderSchemas(entry.tool)),
+        ...(withheld(entry.tool, entry.target)
+          ? {}
+          : { signature: yield* signature(yield* renderSchemas(entry.tool)) }),
+        ...toolBlocked(entry.tool),
       });
       for (const space of namespacesOf(entry.target, routerOf(entry)))
         namespaces.set(space.path, space);
@@ -787,7 +823,7 @@ export const programReach = (code: string) =>
     Effect.orElseSucceed((): Reach => ({ apps: new Set(), reason: "parse" })),
   );
 
-type ListedApp = Pick<App, "id" | "name" | "slug">;
+type ListedApp = Pick<McpApp, "id" | "name" | "slug" | "blocked">;
 /**
  * One app's discovery: why it failed, that a requirement has no linked account (it then exposes
  * no tools), or what was read with the accounts discovery lists it with.
@@ -888,6 +924,35 @@ function catalog(
       "pluginEngine.discovery.apps": apps.length,
       "pluginEngine.discovery.concurrency": concurrency,
     });
+    /**
+     * What keeps the caller from each app, as last listed. Places carry it only as discovery
+     * hands them out (see `current`), never from when the app was loaded.
+     */
+    const appBlockers = new Map<AppId, McpBlocked>();
+    const keepBlockers = (listing: ReadonlyArray<McpApp>) => {
+      for (const app of listing)
+        if (app.blocked === undefined) appBlockers.delete(app.id);
+        else appBlockers.set(app.id, app.blocked);
+    };
+    keepBlockers(apps);
+    /** A place with what keeps the caller from its app now. */
+    const current = <P extends Place>({ blocked: _kept, ...place }: P): P => {
+      const blocked = appBlockers.get(place.id);
+      return (blocked === undefined ? place : { ...place, blocked }) as P;
+    };
+    /**
+     * While a program runs, what the caller may see can change: it can wait for approval for as
+     * long as the person takes, and the person can switch an app Off or Read-only meanwhile. Each
+     * search or describe in a program lists the apps again first; discovery before the program
+     * starts has just listed them.
+     */
+    const refreshApps = Effect.suspend(() =>
+      progress.phase === "program"
+        ? backend
+            .listApps({ toolsOnly: true })
+            .pipe(Effect.map(keepBlockers), withOperationSpan("mcp.discovery.apps"))
+        : Effect.void,
+    );
     const counts = new Map<string, number>();
     for (const app of apps) counts.set(app.slug, (counts.get(app.slug) ?? 0) + 1);
     const unique = (app: ListedApp) => Schema.is(AppSlug)(app.slug) && counts.get(app.slug) === 1;
@@ -921,7 +986,14 @@ function catalog(
         return true;
       });
     };
-    const unavailableApps = () => apps.flatMap((app) => unavailableOf(app.id));
+    // An app the caller is kept from says so with each entry, as its namespace does.
+    const unavailableApps = () =>
+      apps.flatMap((app) =>
+        unavailableOf(app.id).map((entry) => {
+          const blocked = appBlockers.get(app.id);
+          return blocked === undefined ? entry : { ...entry, blocked };
+        }),
+      );
     /**
      * Report an app that exposes no tools, such as one that needs an account, once a search or
      * describe names it; otherwise its empty result would look like an app with no tools. A call
@@ -1201,15 +1273,15 @@ function catalog(
     });
     // Each app is discovered at most once, by whichever of the program or a describe needs it
     // first, and made searchable at most once, by the first search that reaches it.
+    const listApp = (app: ListedApp) =>
+      discoverApp(app, "mcp.discovery.tools", (accounts) =>
+        listTools(backend, app.id, accounts, settled),
+      ).pipe(
+        Effect.flatMap((result) => project(app, result)),
+        Effect.andThen(reported),
+      );
     const discovered = yield* Effect.forEach(apps, (app) =>
-      Effect.cached(
-        discoverApp(app, "mcp.discovery.tools", (accounts) =>
-          listTools(backend, app.id, accounts, settled),
-        ).pipe(
-          Effect.flatMap((result) => project(app, result)),
-          Effect.andThen(reported),
-        ),
-      ).pipe(Effect.map((load) => ({ app, load }))),
+      Effect.cached(listApp(app)).pipe(Effect.map((load) => ({ app, load }))),
     );
     /**
      * The batch each app is made searchable in: the apps the first search that reached it reached
@@ -1309,10 +1381,27 @@ function catalog(
     const described = (names: ReadonlyArray<string> | "all") =>
       Effect.gen(function* () {
         const selected = named(discovered, names);
+        // In a program, an app listed before is listed again, so its tools' blockers and schemas
+        // are the ones the caller has now (see `refreshApps`).
+        const again =
+          progress.phase === "program"
+            ? selected
+                .filter(({ app }) => listed.has(app.slug))
+                .map(({ app }) => ({ app, load: listApp(app) }))
+            : [];
+        yield* refreshApps;
         yield* load(selected);
+        yield* load(again);
         if (names !== "all") yield* revealNamed(selected);
         const entries = selected
-          .flatMap(({ app }) => (unique(app) ? (listed.get(app.slug) ?? []) : []))
+          .flatMap(({ app }) =>
+            unique(app)
+              ? (listed.get(app.slug) ?? []).map((entry) => ({
+                  ...entry,
+                  target: current(entry.target),
+                }))
+              : [],
+          )
           .sort(byPath);
         yield* Effect.annotateCurrentSpan({
           "pluginEngine.discovery.apps": selected.length,
@@ -1357,10 +1446,12 @@ function catalog(
       Effect.gen(function* () {
         const selected = named(searchedApps, names);
         yield* claimSearchBatch(selected);
+        yield* refreshApps;
         yield* load(selected);
         if (names !== "all") yield* revealNamed(selected);
+        // Search ranks in the backend, which lists each tool with what keeps it now.
         const targets = selected
-          .flatMap(({ app }) => (unique(app) ? (indexed.get(app.slug) ?? []) : []))
+          .flatMap(({ app }) => (unique(app) ? (indexed.get(app.slug) ?? []).map(current) : []))
           .sort(byPath);
         yield* Effect.annotateCurrentSpan({
           "pluginEngine.discovery.apps": selected.length,

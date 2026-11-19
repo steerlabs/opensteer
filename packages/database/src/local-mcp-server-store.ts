@@ -32,6 +32,11 @@ export interface LocalMcpServerRecord {
   readonly launch: LocalMcpLaunch;
   readonly launchDigest: string;
   readonly name: string;
+  /**
+   * The registered plugin's name: what the person and agents call this server by, unique per
+   * person. Null for a server no plugin registered.
+   */
+  readonly pluginName: string | null;
   readonly runnerId: RunnerId | null;
   readonly deviceId: DeviceId | null;
   /** What the computer is called, or null when none runs it or it was removed. */
@@ -404,8 +409,10 @@ async function serverRows(
       "integrationInstallations.id",
       "integrationServers.installationId",
     )
+    .leftJoin("plugins", "plugins.id", "integrationInstallations.pluginId")
     .select([
       "integrationInstallations.title as installationTitle",
+      "plugins.name as pluginName",
       "integrationServers.approvedLaunchDigest",
       "integrationServers.id",
       "integrationServers.installationId",
@@ -461,6 +468,7 @@ async function records(
     launch: transport.launch,
     launchDigest: localMcpLaunchDigest(transport.launch),
     name: row.name,
+    pluginName: row.pluginName,
     runnerId: transport.runnerId,
     deviceId: transport.runnerId ? (computers.get(transport.runnerId)?.deviceId ?? null) : null,
     runnerName: transport.runnerId ? (computers.get(transport.runnerId)?.name ?? null) : null,

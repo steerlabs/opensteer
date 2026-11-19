@@ -6,7 +6,7 @@ Tim performs every credential operation; agents never read or operate on key mat
 
 ## Fresh baseline and team servers
 
-Supported Personal databases upgrade in place. Migration 0036 converts Personal state after the
+Supported Personal databases upgrade in place. Migration 0038 converts Personal state after the
 plugin migrations. Desktop Start fresh renames personal data aside and creates a new Deployment
 identity. Phones then pair again, and the old Account/Connect entry remains removable. Test reset
 only in disposable fixtures or a VM.
@@ -163,7 +163,7 @@ outside CI.
 
 Before migrating on a new version, the app [snapshots](../apps/desktop/src/supervisor/personal-database-snapshot.ts)
 the stopped PostgreSQL cluster: a guard against a bad migration, not a failing disk. It never blocks
-launch, except before the one-way Personal state conversion (migration 0036): until a Deployment
+launch, except before the one-way Personal state conversion (migration 0038): until a Deployment
 has started healthy after it, no copy means no update, and that copy is pinned past the newest-three
 retention. A failed conversion offers Try again or Start fresh and names the version that opens the
 kept copy; the new app cannot restore in place because it would rerun the conversion. Restore by

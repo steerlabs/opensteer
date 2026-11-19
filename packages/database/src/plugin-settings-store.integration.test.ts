@@ -22,6 +22,7 @@ describeStore("personal plugin settings", (test) => {
       actorUserId: owner.userId,
       source: { directory: "/private/plugin" },
       digest: "first",
+      packageFormat: "test",
       manifest: { name: "private" },
     });
     const command = {

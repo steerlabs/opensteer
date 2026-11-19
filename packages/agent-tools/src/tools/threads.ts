@@ -77,7 +77,7 @@ const readInput = z
       .optional()
       .describe("nextTextOffset of a cut-off item, with its itemId."),
     cursor: CursorSchema.optional().describe(
-      "Use nextCursor from the previous page of the same task or subagent, view and query.",
+      "nextCursor from the previous page; keep view and query.",
     ),
     query: z.string().trim().min(1).max(256).optional().describe("Search message text."),
     aroundMessageId: MessageIdSchema.optional().describe(

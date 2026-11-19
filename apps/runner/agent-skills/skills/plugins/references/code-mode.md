@@ -8,7 +8,7 @@ Find tools before calling them:
 return await tools.search({ query: "list issues", namespace: "tracker", limit: 5 });
 ```
 
-Search returns exact paths, input types and namespaces with linked account labels. Follow `next` as the complete input for the following page. An input marked inputTruncated needs its full signature:
+Search returns exact paths, input types and namespaces with linked account labels; a blocked tool or namespace gives its `blocked` reason instead of types. Follow `next` as the complete input for the following page. An input marked inputTruncated needs its full signature:
 
 ```js
 return await tools.search.describe({ paths: ["tools.tracker.issues.list"] });

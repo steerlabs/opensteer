@@ -1,37 +1,14 @@
-import { mkdtemp, realpath, readFile, rm, utimes, lstat, writeFile, mkdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readdir, readFile, rm, utimes, lstat, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { pluginSnapshotDigest } from "@opensteer/agent-plugins";
 import { cacheRunPlugins, fetchPluginPackage, prunePluginCache } from "./plugin-cache.js";
-const dirs: string[] = [];
+import { fixture, fixtureDirectories, launchFixture } from "./plugin-cache.test-support.js";
 afterEach(async () => {
   vi.unstubAllGlobals();
-  await Promise.all(dirs.splice(0).map((p) => rm(p, { recursive: true, force: true })));
+  await Promise.all(
+    fixtureDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
+  );
 });
-async function fixture() {
-  const stateDirectory = await realpath(await mkdtemp(join(tmpdir(), "plugin-cache-")));
-  dirs.push(stateDirectory);
-  const files = [
-    {
-      path: "skills/test/SKILL.md",
-      mode: 0o600,
-      bytes: Buffer.from(
-        "---\nname: test\ndescription: Test\n---\nRun ${PLUGIN_ROOT}/scripts/test.sh",
-      ),
-    },
-    { path: "scripts/test.sh", mode: 0o700, bytes: Buffer.from("echo test") },
-  ];
-  // Loader traversal orders scripts before skills.
-  files.sort((a, b) => a.path.localeCompare(b.path));
-  const digest = pluginSnapshotDigest(files);
-  const snapshot = files.map(({ path, mode, bytes }) => ({
-    path,
-    mode,
-    content: bytes.toString("base64"),
-  }));
-  return { stateDirectory, digest, snapshot };
-}
 describe("plugin package cache", () => {
   it("coalesces misses, verifies and atomically publishes a whole package, then hits disk", async () => {
     const f = await fixture();
@@ -99,69 +76,94 @@ describe("plugin package cache", () => {
   });
 });
 
-it("resolves an approved MCP launch entirely against this Runner's cached package and data", async () => {
-  const { LocalMcpServers } = await import("../computer-apps/local-mcp-servers.js");
-  const f = await fixture();
-  const script = {
-    path: "server.cjs",
-    mode: 0o600,
-    bytes: Buffer.from(
-      'require("node:fs").writeFileSync(process.env.PLUGIN_DATA+"/observed.json",JSON.stringify({cwd:process.cwd(),root:process.env.PLUGIN_ROOT,arg:process.argv[2]})); process.stdin.resume();',
-    ),
-  };
-  const digest = pluginSnapshotDigest([script]);
-  const snapshot = [
-    { path: script.path, mode: script.mode, content: script.bytes.toString("base64") },
-  ];
-  const fetchSnapshot = vi.fn(async () => new Response(JSON.stringify(snapshot)));
-  vi.stubGlobal("fetch", fetchSnapshot);
-  const launch = {
-    type: "stdio" as const,
-    pluginId: "test",
-    packageDigest: digest,
-    command: process.execPath,
-    cwd: "${PLUGIN_ROOT}",
-    args: ["${PLUGIN_ROOT}/server.cjs", "${PLUGIN_DATA}/arg"],
-    env: {},
-  };
-  const mcp = new LocalMcpServers({
-    stateDirectory: f.stateDirectory,
-  });
-  const frames: { type: string }[] = [];
-  mcp.attach(async (frame) => {
-    frames.push(frame);
-  });
-  const frame = {
-    type: "host.integrations.mcp.open" as const,
-    serverId: "server_test",
-    sessionId: "test",
-    launch,
-    packageSource: { url: "https://host/package", token: "test" },
-  } as Parameters<typeof mcp.open>[0];
+it("launches an approved MCP server from a private copy of its verified package, one per session", async () => {
+  const f = await launchFixture();
   try {
     const cached = await fetchPluginPackage({
       stateDirectory: f.stateDirectory,
-      digest,
-      fetchSnapshot: async () => snapshot,
+      digest: f.digest,
+      fetchSnapshot: async () => f.snapshot,
     });
-    await writeFile(join(cached, "server.cjs"), 'throw new Error("tampered")');
-    await mcp.open(frame);
-    expect(await readFile(join(cached, "server.cjs"), "utf8")).toBe(script.bytes.toString("utf8"));
-    expect(fetchSnapshot).toHaveBeenCalledTimes(1);
-    expect(frames.at(-1)?.type).toBe("runner.integrations.mcp.opened");
-    const data = join(f.stateDirectory, "plugin-data/test");
+    await writeFile(join(cached, "bin/server.cjs"), 'throw new Error("tampered")');
+    await f.open("one");
+    expect(f.frames.at(-1)?.type).toBe("runner.integrations.mcp.opened");
+    // The altered cache was fetched again, and the launch ran from a copy of what was verified.
+    expect(f.fetchSnapshot).toHaveBeenCalledTimes(1);
+    const first = await f.observed();
+    expect(first.root).toMatch(new RegExp(`^${join(f.stateDirectory, "plugin-launches")}/`));
+    expect(first).toEqual({ cwd: first.root, root: first.root, arg: join(f.data, "arg") });
+    expect(await readFile(join(cached, "bin/server.cjs"), "utf8")).toBe(
+      f.script.bytes.toString("utf8"),
+    );
+    // What the server wrote to its own folder reaches neither the cache nor the next launch.
     await vi.waitFor(
-      async () => {
-        expect(JSON.parse(await readFile(join(data, "observed.json"), "utf8"))).toEqual({
-          cwd: join(f.stateDirectory, "plugins", digest),
-          root: join(f.stateDirectory, "plugins", digest),
-          arg: join(data, "arg"),
-        });
-      },
+      async () =>
+        expect(await readFile(join(first.root, "bin/server.cjs"), "utf8")).toBe(
+          "rewritten by the server",
+        ),
       { timeout: 2000 },
     );
+    await rm(join(f.data, "observed.json"));
+    await f.open("two");
+    const second = await f.observed();
+    expect(second.root).not.toBe(first.root);
+    expect(f.frames.at(-1)?.type).toBe("runner.integrations.mcp.opened");
+    await Promise.all(
+      ["one", "two"].map((sessionId) =>
+        f.mcp.close({ sessionId } as Parameters<typeof f.mcp.close>[0]),
+      ),
+    );
+    for (const { root } of [first, second])
+      await expect(lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
-    await mcp.close({ sessionId: "test" } as Parameters<typeof mcp.close>[0]);
-    mcp.detach();
+    f.mcp.detach();
+  }
+});
+
+it("launches only what the verified package registers, with secrets only in its declared slots", async () => {
+  const f = await launchFixture();
+  try {
+    for (const [sessionId, changed] of [
+      ["arguments", { args: ["${PLUGIN_ROOT}/bin/server.cjs", "--inspect", "${PLUGIN_DATA}/arg"] }],
+      ["environment", { env: { NODE_OPTIONS: "--require=/tmp/elsewhere.cjs" } }],
+    ] as const) {
+      await f.open(sessionId, changed);
+      expect(f.frames.at(-1)).toMatchObject({
+        type: "runner.integrations.mcp.closed",
+        sessionId,
+        error: { message: "This launch is not the one its package registers." },
+      });
+    }
+    // Refused before its private copy was kept, so nothing ran from it.
+    expect(await readdir(join(f.stateDirectory, "plugin-launches"))).toEqual([]);
+    // Fetched once: each later launch is a cache hit, checked all the same.
+    expect(f.fetchSnapshot).toHaveBeenCalledTimes(1);
+    await f.open("secret", { env: { TEST_TOKEN: "owner value" } });
+    expect(f.frames.at(-1)).toMatchObject({
+      type: "runner.integrations.mcp.opened",
+      sessionId: "secret",
+    });
+    await f.mcp.close({ sessionId: "secret" } as Parameters<typeof f.mcp.close>[0]);
+  } finally {
+    f.mcp.detach();
+  }
+});
+
+it("refuses to launch a package its Host delivers altered", async () => {
+  const f = await launchFixture();
+  f.delivered.snapshot = f.snapshot.map((file) =>
+    file.path === "bin/server.cjs"
+      ? { ...file, content: Buffer.from("altered").toString("base64") }
+      : file,
+  );
+  try {
+    await f.open("one");
+    expect(f.frames.at(-1)).toMatchObject({
+      type: "runner.integrations.mcp.closed",
+      error: { message: expect.stringContaining("digest mismatch") },
+    });
+    expect(await readdir(join(f.stateDirectory, "plugin-launches")).catch(() => [])).toEqual([]);
+  } finally {
+    f.mcp.detach();
   }
 });

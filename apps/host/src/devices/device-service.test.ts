@@ -726,6 +726,87 @@ describe("DeviceService computer discovery", () => {
     },
   );
 
+  it.each([
+    [false, false, null, "READY", null],
+    [true, false, null, "READY", null],
+    [
+      true,
+      true,
+      computerStatus({
+        detail: "Messages needs Full access.",
+        remedy: "full-disk-access",
+        state: "permission-required",
+      }),
+      "INTEGRATION_UNAVAILABLE",
+      "Messages needs Full access on Studio Mac.",
+    ],
+  ] as const)(
+    "leaves an unreachable computer to the call in an agent's listing: connected=%s attached=%s",
+    async (runnerConnected, attached, status, expectedCode, expectedDetail) => {
+      const callable = computerCallable("read");
+      const runnerId = createId("runner");
+      const connectionId = callable.grant.connectionId!;
+      const readiness = {
+        code: "READY" as const,
+        connectionId,
+        detail: null,
+        provider: null,
+        requiredAccess: null,
+        serverId: callable.server.id,
+      };
+      const service = platform({
+        isRunnerConnected: vi.fn(() => runnerConnected),
+        computerApps: {
+          appStatus: vi.fn(() => status),
+          attached: vi.fn(() => attached),
+          send: vi.fn(),
+          withRunnerAdmission: vi.fn(),
+        },
+        store: {
+          getComputerConnectionForCall: vi.fn(async () => ({
+            access: "read" as const,
+            connection: {
+              ...computerConnectionSummary("read"),
+              computer: {
+                blockedAt: null,
+                policyRevision: null,
+                access: "read" as const,
+                app: null,
+                runnerId,
+              },
+              id: connectionId,
+            },
+            runnerId,
+            runnerName: "Studio Mac",
+            deviceProfile: null,
+            runnerRevoked: false,
+          })),
+        },
+      });
+      const [entry] = await service.devices.withAvailability(
+        [
+          {
+            accounts: [
+              { access: "read" as const, account: "Studio Mac", connectionId, isDefault: true },
+            ],
+            installation: callable.installation,
+            readiness: { servers: [readiness], tools: [{ readiness, toolId: callable.tool.id }] },
+            servers: [callable.server],
+            tools: [callable.tool],
+          },
+        ],
+        {
+          ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
+          offlineAtCall: true,
+        },
+      );
+      expect(entry?.readiness.tools[0]?.readiness).toMatchObject({
+        code: expectedCode,
+        detail: expectedDetail,
+      });
+    },
+  );
+
   it("keeps send ready when reading needs permission and keeps the server ready", async () => {
     const callable = computerCallable("read");
     const connectionId = callable.grant.connectionId!;

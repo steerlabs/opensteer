@@ -3,6 +3,7 @@ import { createClientRead } from "./client-read.js";
 import { controlledClientSession } from "../test-support/client-connection.js";
 import { HostTransportError } from "../connections/host-transport-error.js";
 import { HostClientRequestError } from "../host/client.js";
+import { ClientOperationError } from "../connections/operation-error.js";
 
 afterEach(() => vi.useRealTimers());
 describe("retained client reads", () => {
@@ -92,6 +93,44 @@ describe("retained client reads", () => {
       stale: false,
       issue: null,
     });
+    read.dispose();
+  });
+  it("shows a final Host answer to an automatic refresh, but not a lost link", async () => {
+    vi.useFakeTimers();
+    const session = controlledClientSession();
+    let fail: Error | null = null;
+    const read = createClientRead(session, {
+      key: "items",
+      label: "items",
+      read: async () => {
+        if (fail) throw fail;
+        return "accepted";
+      },
+    });
+    read.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    fail = new HostTransportError("timed-out");
+    session.change({ phase: "ready", readyRevision: 2 });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(read.getSnapshot()).toMatchObject({ data: "accepted", stale: true, issue: null });
+    fail = new ClientOperationError("gone", "blocked", {
+      kind: "service",
+      provenance: "host",
+      code: "unavailable",
+      reason: "source-unavailable",
+      retryable: false,
+    });
+    session.change({ phase: "ready", readyRevision: 3 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.getSnapshot()).toMatchObject({
+      data: "accepted",
+      stale: true,
+      issue: { code: "refresh-failed", reason: "source-unavailable" },
+    });
+    fail = null;
+    session.change({ phase: "ready", readyRevision: 4 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.getSnapshot()).toMatchObject({ data: "accepted", stale: false, issue: null });
     read.dispose();
   });
   it("coalesces a burst during an active read into exactly one trailing read", async () => {
