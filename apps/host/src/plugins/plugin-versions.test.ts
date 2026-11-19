@@ -1,9 +1,10 @@
-import { Deferred, Effect, Fiber } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber } from "effect";
 import { expect, test, vi } from "vitest";
 import {
   OwnerId,
   StorageError,
   VersionBuildFailed,
+  VersionPending,
   type AppId,
   type VersionId,
   type BuildId,
@@ -42,16 +43,20 @@ function engine(
       framework: typeof host;
       deploy?: Effect.Effect<never, unknown>;
       build?: Effect.Effect<void>;
+      /** Its deploys leave their version pending, as a migration with an unknown outcome does. */
+      pending?: boolean;
     }
   >,
+  wait?: number,
 ) {
   const active = new Map(Object.keys(apps).map((id) => [id, `version-${id}`]));
   const frameworks = new Map(
     Object.entries(apps).map(([id, { framework }]) => [`build-version-${id}`, framework]),
   );
-  const deployed: { app: string; files: unknown; rebuiltFrom: string | undefined }[] = [];
+  const deployed: { app: string; files: unknown; rebuildOf: string | undefined }[] = [];
+  /** Versions saved as pending whose change has not completed. */
+  const pending = new Map<string, string>();
   const deactivated: string[] = [];
-  const activated: string[] = [];
   const failures = new Map<string, RebuildFailure>();
   /** Commits run, and versions published, in order. */
   const log: string[] = [];
@@ -75,6 +80,15 @@ function engine(
             { path: "package.json", content: "{}" },
           ],
         }),
+      pending: () => Effect.succeed([...pending].map(([app, version]) => ({ app, version }))),
+      complete: ({ app, version }: { app: string; version: string }) =>
+        Effect.sync(() => {
+          log.push(`complete:${app}`);
+          pending.delete(app);
+          frameworks.set(`build-${version}`, host);
+          active.set(app, version);
+          return { app: { id: app, activeVersion: version }, version: { id: version } };
+        }),
       deployWith: (
         {
           app,
@@ -84,7 +98,7 @@ function engine(
         options: DeployOptions,
       ) =>
         Effect.gen(function* () {
-          deployed.push({ app, files, rebuiltFrom: options.rebuiltFrom });
+          deployed.push({ app, files, rebuildOf: options.rebuildOf });
           expected.push(expectedVersion);
           if (apps[app]!.build) yield* apps[app]!.build;
           log.push(`built:${app}`);
@@ -98,26 +112,18 @@ function engine(
               if (active.get(app) !== expectedVersion)
                 return yield* Effect.fail({ _tag: "AppVersionChanged" as const });
               const version = `rebuilt-${app}-${deployed.length}`;
+              // Its version is saved as pending; completing it may not finish.
+              if (apps[app]!.pending) {
+                pending.set(app, version);
+                return yield* Effect.fail(
+                  new VersionPending({ app: app as AppId, version: `dpl_${version}` as VersionId }),
+                );
+              }
               frameworks.set(`build-${version}`, host);
               active.set(app, version);
               return { app: { id: app, activeVersion: version }, version: { id: version } };
             }),
           );
-        }),
-      activate: ({
-        app,
-        version,
-        expectedVersion,
-      }: {
-        app: string;
-        version: string;
-        expectedVersion?: string | null;
-      }) =>
-        Effect.sync(() => {
-          expected.push(expectedVersion);
-          activated.push(version);
-          active.set(app, version);
-          return { id: app, activeVersion: version };
         }),
       remove: ({ app }: { app: string }) =>
         Effect.sync(() => {
@@ -134,7 +140,7 @@ function engine(
         }),
     },
   };
-  const gate = pluginGate();
+  const gate = pluginGate(wait);
   const rebuilds = pluginVersions({
     // SAFETY: the rebuilds call only the app operations above.
     engine: fake as unknown as PluginEngine,
@@ -156,13 +162,20 @@ function engine(
     Effect.runPromise(
       rebuilds.scan.pipe(Effect.andThen(rebuilds.run.pipe(Effect.timeout(1)))),
     ).catch(() => undefined);
+  /** Run the engine's loop until no plugin waits. */
+  const drain = async () => {
+    const loop = Effect.runFork(rebuilds.run);
+    await until(() => !rebuilds.pending());
+    await Effect.runPromise(Fiber.interrupt(loop));
+  };
   return {
     rebuilds,
     gate,
     pass,
+    drain,
+    pending,
     deployed,
     deactivated,
-    activated,
     failures,
     log,
     published,
@@ -178,7 +191,7 @@ test("rebuilds only plugins built for another framework, from rewritten source, 
   await Effect.runPromise(fixture.rebuilds.scan);
   expect(fixture.rebuilds.updating("stale")).toMatchObject({ attempts: 0 });
   expect(fixture.rebuilds.updating("current")).toBeUndefined();
-  await Effect.runPromise(fixture.rebuilds.run);
+  await fixture.drain();
   expect(fixture.deployed).toEqual([
     {
       app: "stale",
@@ -186,8 +199,8 @@ test("rebuilds only plugins built for another framework, from rewritten source, 
         { path: "index.ts", content: `fetch("${route.to}version");` },
         { path: "package.json", content: "{}" },
       ],
-      // Work saved for the version it was rebuilt from continues on it.
-      rebuiltFrom: "version-stale",
+      // Built with the packages of the version it rebuilds.
+      rebuildOf: "version-stale",
     },
   ]);
   expect(fixture.rebuilds.pending()).toBe(false);
@@ -235,7 +248,7 @@ test("an attempt reads the active version again before it builds", async () => {
   // The owner deployed another version since the scan.
   fixture.active.set("stale", "elsewhere");
   fixture.frameworks.set("build-elsewhere", host);
-  await Effect.runPromise(fixture.rebuilds.run);
+  await fixture.drain();
   expect(fixture.deployed).toEqual([]);
   expect(fixture.rebuilds.pending()).toBe(false);
 });
@@ -250,7 +263,8 @@ test("a rebuild whose version was changed while it built commits nothing and rea
   fixture.active.set("stale", "owner");
   fixture.frameworks.set("build-owner", host);
   Effect.runSync(Deferred.succeed(building, undefined));
-  await Effect.runPromise(Fiber.join(run));
+  await until(() => !fixture.rebuilds.pending());
+  await Effect.runPromise(Fiber.interrupt(run));
   expect(fixture.log).toEqual(["built:stale", "commit:stale"]);
   expect(fixture.active.get("stale")).toBe("owner");
   expect(fixture.published).toEqual([]);
@@ -294,7 +308,8 @@ test("a build holds nothing; only its commit holds the plugin, with its executio
   expect(fixture.log).not.toContain("commit:slow");
   Effect.runSync(Deferred.succeed(executing, undefined));
   await Effect.runPromise(Fiber.join(execution));
-  await Effect.runPromise(Fiber.join(run));
+  await until(() => !fixture.rebuilds.pending());
+  await Effect.runPromise(Fiber.interrupt(run));
   expect(fixture.log.slice(3)).toEqual([
     "execution",
     "built:slow",
@@ -304,27 +319,81 @@ test("a build holds nothing; only its commit holds the plugin, with its executio
   ]);
 });
 
-test("activating a version built for another framework rebuilds it first", async () => {
+test("activating any stored version deploys its source again, through the one change", async () => {
   const fixture = engine({ stale: { framework: earlier } });
   await Effect.runPromise(fixture.rebuilds.scan);
-  await Effect.runPromise(fixture.rebuilds.run);
+  await fixture.drain();
   const rebuilt = fixture.active.get("stale")!;
-  // Rolling back to the version from before the upgrade never activates its old build: it is
-  // rebuilt, as that version's rebuild, and expects the version active when it read it.
+  // Rolling back to the version from before the upgrade, or to one already on the Host's
+  // framework, deploys that version's source as a new version, expecting the version active when
+  // it read it, with the packages that version's build installed.
   const activated = await Effect.runPromise(
     fixture.rebuilds.activate("stale" as AppId, "version-stale" as VersionId),
   );
-  expect(fixture.activated).toEqual([]);
-  expect(fixture.deployed.map(({ rebuiltFrom }) => rebuiltFrom)).toEqual([
-    "version-stale",
-    "version-stale",
-  ]);
   expect(fixture.expected.at(-1)).toBe(rebuilt);
   expect(activated).toMatchObject({ activeVersion: fixture.active.get("stale") });
-  // Activating a version already on the Host's framework activates it as it is.
   await Effect.runPromise(fixture.rebuilds.activate("stale" as AppId, rebuilt as VersionId));
-  expect(fixture.activated).toEqual([rebuilt]);
+  expect(fixture.deployed.map(({ rebuildOf }) => rebuildOf)).toEqual([
+    "version-stale",
+    "version-stale",
+    rebuilt,
+  ]);
+  expect(fixture.log.filter((entry) => entry.startsWith("commit:"))).toHaveLength(3);
   expect(fixture.published).toEqual(["stale", "stale", "stale"]);
+});
+
+test("a change that left its version pending keeps the plugin updating until it completes", async () => {
+  const fixture = engine({
+    app_plugin: {
+      framework: host,
+      // Its migration's outcome is unknown, so its version stays pending.
+      pending: true,
+    },
+  });
+  await Effect.runPromise(fixture.rebuilds.scan);
+  const exit = await Effect.runPromise(
+    Effect.exit(
+      fixture.rebuilds.activate("app_plugin" as AppId, "version-app_plugin" as VersionId),
+    ),
+  );
+  expect(failureTag(exit)).toBe("VersionPending");
+  // Nothing of it is served meanwhile, and it never returns to the version that was active.
+  expect(fixture.rebuilds.updating("app_plugin")).toMatchObject({
+    reason: expect.stringContaining("activates once"),
+  });
+  expect(fixture.active.get("app_plugin")).toBe("version-app_plugin");
+  // The same engine completes it, with the same steps, holding the plugin alone.
+  await fixture.drain();
+  expect(fixture.log.filter((entry) => entry === "complete:app_plugin")).toHaveLength(1);
+  expect(fixture.active.get("app_plugin")).toBe("rebuilt-app_plugin-1");
+  expect(fixture.pending.size).toBe(0);
+  expect(fixture.published).toEqual(["app_plugin"]);
+});
+
+test("an owner's change that waits too long for running work fails busy, changing nothing", async () => {
+  const fixture = engine({ app_plugin: { framework: host } }, 100);
+  const release = Effect.runSync(Deferred.make<void>());
+  let started = false;
+  const running = Effect.runFork(
+    fixture.gate.run(
+      "app_plugin",
+      Effect.sync(() => {
+        started = true;
+      }).pipe(Effect.andThen(Deferred.await(release))),
+    ),
+  );
+  await until(() => started);
+  const exit = await Effect.runPromise(
+    Effect.exit(
+      fixture.rebuilds.activate("app_plugin" as AppId, "version-app_plugin" as VersionId),
+    ),
+  );
+  expect(failureTag(exit)).toBe("AppBusy");
+  expect(fixture.log).toEqual(["built:app_plugin"]);
+  expect(fixture.active.get("app_plugin")).toBe("version-app_plugin");
+  expect(fixture.rebuilds.pending()).toBe(false);
+  Effect.runSync(Deferred.succeed(release, undefined));
+  await Effect.runPromise(Fiber.join(running));
 });
 
 test("a rebuild expects the version it read, and its promotion clears the plugin's state", async () => {
@@ -332,7 +401,7 @@ test("a rebuild expects the version it read, and its promotion clears the plugin
   fixture.failures.set("stale", { version: "version-stale" as VersionId, message: "earlier" });
   await Effect.runPromise(fixture.rebuilds.scan);
   expect(fixture.rebuilds.held()).toEqual(["stale"]);
-  await Effect.runPromise(fixture.rebuilds.run);
+  await fixture.drain();
   expect(fixture.expected).toEqual(["version-stale"]);
   expect(fixture.published).toEqual(["stale"]);
   expect(fixture.failures.size).toBe(0);
@@ -346,6 +415,10 @@ test("removing a plugin is its only change and forgets its rebuild", async () =>
   expect(fixture.removed).toEqual(["gone"]);
   expect(fixture.rebuilds.held()).toEqual([]);
 });
+
+/** The tag of the error an effect failed with. */
+const failureTag = (exit: Exit.Exit<unknown, unknown>) =>
+  Exit.isFailure(exit) ? (Cause.squash(exit.cause) as { _tag?: string })._tag : undefined;
 
 /** Wait until `done` holds. */
 const until = (done: () => boolean) => vi.waitFor(() => expect(done()).toBe(true));

@@ -292,10 +292,10 @@ export const createPluginEngine = (
                 app.activeVersion === version.id ? activated(app.id) : Effect.void,
               ),
             ),
-        promotePending: (input) =>
-          apps
-            .promotePending(input)
-            .pipe(Effect.tap((promoted) => Effect.forEach(promoted, activated, { discard: true }))),
+        complete: (
+          input: Parameters<PluginEngine["apps"]["complete"]>[0],
+          options?: Parameters<PluginEngine["apps"]["complete"]>[1],
+        ) => apps.complete(input, options).pipe(Effect.tap(({ app }) => activated(app.id))),
         activate: (input) => apps.activate(input).pipe(Effect.tap((app) => activated(app.id))),
         checkCredentials,
       },

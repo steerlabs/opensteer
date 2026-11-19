@@ -14,6 +14,7 @@ import {
   RequestInvalid,
   type AccountId,
   type AppId,
+  type VersionId,
   type OwnerId,
 } from "../contracts/shared.ts";
 import { OAuthReconnectRequired } from "../contracts/oauth.ts";
@@ -35,7 +36,7 @@ import type { ScheduleDispatcher } from "../contracts/scheduler.ts";
 import type { Credentials } from "../contracts/storage.ts";
 import type { PluginEngineDatabase } from "./storage.ts";
 import { database, query, transaction } from "./database.ts";
-import { lockApp } from "./apps.ts";
+import { lockApp, storedApp } from "./apps.ts";
 import { backgroundAccounts } from "./background-accounts.ts";
 import { makeToolApprovals } from "./tool-approvals.ts";
 import type { makeTools } from "./tools.ts";
@@ -196,6 +197,12 @@ export const makeSchedules = (
       // activated since it read the declaration.
       return { ...found, version: declared.version };
     });
+  /** Whether `version` is still the app's active version, the only one that runs anything. */
+  const stillActive = (app: AppId, version: VersionId) =>
+    storedApp(db, { app }).pipe(
+      Effect.map((stored) => stored.activeVersion === version),
+      Effect.catchTag("AppNotFound", () => Effect.succeed(false)),
+    );
   /** The actor's copy of a user declaration, or without an actor the app schedule, or null. */
   const findOwn = (input: {
     readonly app: AppId;
@@ -983,6 +990,10 @@ export const makeSchedules = (
                       set: { nextAt, timing: declared.timing },
                     }),
                   );
+                  // Only the active version runs anything: an occurrence whose declaration came
+                  // from a version activated away since ends stale, unrun.
+                  if (!(yield* stillActive(setting.app, declared.version)))
+                    return yield* finish(claim, "failed", "stale", "other");
                   const response = yield* tools.call({
                     app: setting.app,
                     version: declared.version,

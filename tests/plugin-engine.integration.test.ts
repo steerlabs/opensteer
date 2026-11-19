@@ -457,7 +457,7 @@ test.for(fixtureFlows)(
         run(
           engine.apps.deployWith(
             { owner, app, files: files(source, true), expectedVersion: version.id },
-            { rebuiltFrom: version.id },
+            { rebuildOf: version.id },
           ),
         );
       // Work saved on the first version: a queued run and a reviewed call.

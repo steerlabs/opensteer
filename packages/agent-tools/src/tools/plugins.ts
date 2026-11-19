@@ -196,7 +196,7 @@ export const opensteer_plugin_activate = defineAgentTool({
   access: "settings",
   callers: ["run"],
   description:
-    "Make an installed earlier version the running plugin version. Rollback changes code, not plugin data; widened credential destinations require the person to consent again.",
+    "Run an installed earlier version's code again: its source is deployed as a new version, built with the packages it used. Rollback changes code, not plugin data, and is refused when that version's migrations no longer match the plugin's data; widened credential destinations require the person to consent again.",
   input: z.strictObject({ pluginId: id, versionId: id }),
   output: z.object({ ok: z.literal(true) }),
 });

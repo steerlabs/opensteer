@@ -423,6 +423,16 @@ export interface Runtime<Requirements = never> {
     readonly app: string;
     readonly build: BuildId;
   }) => Effect.Effect<void, RuntimeBuildUnavailable, Requirements>;
+  /**
+   * Run `work`, which runs no build itself, as one execution of the app: the host holds the app
+   * for it and admits the build while it does (see `admit`), so no version change of the app
+   * completes meanwhile. The SDK runs the state change a build's execution starts with this way,
+   * such as a queued workflow run starting. Without it `work` runs as it is.
+   */
+  readonly admitted?: <A, E, R>(
+    input: { readonly app: string; readonly build: BuildId },
+    work: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | RuntimeBuildUnavailable, R | Requirements>;
   /** Sources build with the `apps` package they declare; sources without one are rejected. */
   /**
    * Build the code files only. `public` lists the paths, relative to `ui/public/`, of the public

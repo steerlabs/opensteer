@@ -1909,15 +1909,10 @@ export const makeTools = (
                     ),
                     Effect.result,
                   );
-                // The reviewed call runs on the version it was reviewed on, or on the host's
-                // rebuild of that version's exact source; on nothing else (`continuedVersion`). A
+                // The reviewed call runs only while the active version is the one it was reviewed
+                // on, or the host's rebuild of that version's exact source (`continuedVersion`). A
                 // call that can continue on neither is stale, and the person approves it again.
-                const continued = yield* continuedVersion(
-                  db,
-                  runtime,
-                  saved.app,
-                  saved.version,
-                ).pipe(
+                const continued = yield* continuedVersion(db, saved.app, saved.version).pipe(
                   Effect.catchTag("AppNotFound", () => Effect.succeed(null)),
                   Effect.result,
                 );

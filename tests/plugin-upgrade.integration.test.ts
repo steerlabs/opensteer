@@ -611,21 +611,22 @@ test(
     // it keeps the author of the version it was rebuilt from.
     expect(await second.skillCache.get(plugin)).toMatchObject({ version: rebuilt });
     expect(await authorOf(rebuilt)).toBe("catalog");
-    // Work saved on the old build never runs on it: the queued run moves to the rebuilt version,
-    // which takes its workflow and input, and runs there, as does the answered scheduled call.
+    // Work saved on the old build never runs on it, nor on its rebuild: the baseline recorded no
+    // packages for its build, so its rebuild may run other dependency code, and the work saved
+    // for it ends stale. (A rebuild with the packages its version recorded continues it; see
+    // plugin-version-change.integration.test.ts.)
     await vi.waitFor(
       async () =>
-        expect(
-          await second.manage(
-            { operation: "workflowRuns.get", input: { app: plugin, run: before.queued } },
-            caller,
-          ),
-        ).toMatchObject({ status: "complete" }),
+        expect(await queued()).toMatchObject({
+          status: "errored",
+          failure: "stale",
+          deployment: before.version,
+        }),
       { timeout: 30_000, interval: 250 },
     );
-    expect(await queued()).toMatchObject({ status: "complete", deployment: rebuilt });
     await vi.waitFor(
-      async () => expect(await approvalState()).toMatchObject({ status: "succeeded" }),
+      async () =>
+        expect(await approvalState()).toMatchObject({ status: "failed", failure: "stale" }),
       { timeout: 30_000, interval: 250 },
     );
     // The due occurrence ran on the rebuilt version, and the account, its link, the plugin's rows
@@ -639,7 +640,7 @@ test(
         value: {
           ok: true,
           value: {
-            notes: expect.arrayContaining(["before", "approved", "schedule"]),
+            notes: expect.arrayContaining(["before", "schedule"]),
             applied: 1,
             token: "synthetic",
             label: "from the registry",
@@ -726,7 +727,7 @@ test(
       execution: {
         value: {
           ok: true,
-          value: { notes: expect.arrayContaining(["before", "approved", "schedule"]), applied: 1 },
+          value: { notes: expect.arrayContaining(["before", "schedule"]), applied: 1 },
         },
       },
     });

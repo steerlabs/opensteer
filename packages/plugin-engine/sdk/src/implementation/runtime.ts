@@ -226,6 +226,14 @@ export const toEffectRuntime = (
           admit: (input: { readonly app: string; readonly build: BuildId }) =>
             runtime.admit!(input).pipe(provide),
         }),
+    ...(runtime.admitted === undefined
+      ? {}
+      : {
+          admitted: <A, E, R>(
+            input: { readonly app: string; readonly build: BuildId },
+            work: Effect.Effect<A, E, R>,
+          ) => runtime.admitted!(input, work).pipe(provide),
+        }),
     build: (input) => runtime.build(input).pipe(provide),
     ...(asset === undefined
       ? {}

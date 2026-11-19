@@ -45,7 +45,7 @@ import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
 import { snapshot, resolve, resolveRemoval, type InvocationSnapshot } from "./tools.ts";
 import { storedAccount } from "./accounts.ts";
-import { continuedVersion, lockApp, storedApp, storedVersion } from "./apps.ts";
+import { lockApp, storedApp, storedVersion } from "./apps.ts";
 import { backgroundAccounts } from "./background-accounts.ts";
 import { setupCompleted } from "./webhook-sources.ts";
 import { accountAuthority } from "./selection.ts";
@@ -151,7 +151,7 @@ const ManagedWebhook = Schema.Struct({
 });
 
 const refusedRemoval =
-  "PluginEngine could not remove this registration: it is no longer allowed to use the accounts it was registered with. Remove the webhook for this callback URL at the provider, then confirm.";
+  "PluginEngine could not remove this registration: it may no longer use the accounts it was registered with, or the app's active version no longer declares this webhook, and only the active version runs. Remove the webhook for this callback URL at the provider, then confirm.";
 const selectedIds = (selected: SelectedAccounts) =>
   Object.values(selected).flatMap((value) => (typeof value === "string" ? [value] : value));
 /**
@@ -418,45 +418,13 @@ export const makeWebhooks = (
       }),
     );
   /**
-   * The version a subscription's work runs on (`continuedVersion`): its pinned version, or the
-   * host's rebuild of that version's exact source, which the subscription then names. One that can
-   * continue on neither ends here, and none of its pinned build runs: an unregistered one stops,
-   * and a registered one waits for a person to remove it at the provider (`disabled`).
+   * The subscription's version and source, with the actor's accounts for the rest. A subscription
+   * follows the app's active version through its source's reconciliation, which runs after every
+   * activation; until that has moved it, the host refuses its build as one that is not active, and
+   * a delivery is answered to be sent again.
    */
-  const continued = (row: typeof StoredWebhook.Type) =>
+  const subscriptionState = (row: typeof StoredWebhook.Type) =>
     Effect.gen(function* () {
-      const version = yield* continuedVersion(db, runtime, row.app, row.version).pipe(
-        Effect.catchTag("AppNotFound", () => Effect.succeed(null)),
-      );
-      if (version === row.version) return row;
-      if (version !== null) {
-        yield* query(() =>
-          db.updateMany("webhooks", {
-            where: (b) => b.and(b("id", "=", row.id), b("deployment", "=", row.version)),
-            set: { deployment: version },
-          }),
-        );
-        return { ...row, version };
-      }
-      const registered = (yield* registrationOf(row)) !== undefined;
-      yield* query(() =>
-        db.updateMany("webhooks", {
-          where: (b) =>
-            b.and(
-              b("id", "=", row.id),
-              b("deployment", "=", row.version),
-              b("status", "!=", "stopped"),
-            ),
-          set: { status: registered ? "disabled" : "stopped", leaseUntil: new Date(0) },
-        }),
-      );
-      yield* refused("stale");
-      return yield* new WebhookFailed({ reason: "inactive" });
-    });
-  /** The subscription's continued version and source, with the actor's accounts for the rest. */
-  const subscriptionState = (pinned: typeof StoredWebhook.Type) =>
-    Effect.gen(function* () {
-      const row = yield* continued(pinned);
       const accounts = yield* backgroundAccounts(db, lifecycle, {
         app: row.app,
         version: row.version,
@@ -464,7 +432,7 @@ export const makeWebhooks = (
         source: row.sourceAccount,
       });
       return yield* snapshot(db, { app: row.app, version: row.version, accounts });
-    }).pipe(Effect.provideService(CurrentActor, pinned.actor ?? undefined));
+    }).pipe(Effect.provideService(CurrentActor, row.actor ?? undefined));
   /**
    * The registration's pinned version and the accounts it ran with, as the actor it ran as.
    * Removing it uses only them: the subscription may have moved to another actor since, and the
@@ -762,13 +730,15 @@ export const makeWebhooks = (
               if (stopping) {
                 // A registration that never started reached no provider: nothing to remove.
                 const registration = yield* registrationOf(row);
-                // Removal runs on the registration's version, or on the host's rebuild of its
-                // exact source; never on an old build. A registration neither can remove waits
-                // for a person to remove it at the provider, as a refused one does.
+                // Only the app's active version runs anything, so it removes registrations its
+                // earlier versions made, with their saved state. One the active version cannot
+                // remove, such as a webhook it no longer declares, waits for a person to remove it
+                // at the provider, as a refused one does.
                 const version =
                   registration === undefined
                     ? null
-                    : yield* continuedVersion(db, runtime, row.app, row.version).pipe(
+                    : yield* storedApp(db, { app: row.app }).pipe(
+                        Effect.map((app) => app.activeVersion),
                         Effect.catchTag("AppNotFound", () => Effect.succeed(null)),
                       );
                 if (registration !== undefined && version === null) refused = true;
@@ -790,6 +760,15 @@ export const makeWebhooks = (
                       { operation: "webhook-unregister", ...common, state: saved.state },
                       state,
                       context,
+                    ).pipe(
+                      Effect.catchIf(
+                        (error) => Schema.is(WebhookFailed)(error) && error.reason === "definition",
+                        () =>
+                          Effect.sync(() => {
+                            refused = true;
+                            return null;
+                          }),
+                      ),
                     );
                 }
               } else {

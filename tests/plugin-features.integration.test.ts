@@ -791,8 +791,10 @@ test("owner reads and commands match real catalog, accounts, schedule approvals,
     },
     context,
   );
-  expect((await api.detail(personal.userId, fixture.plugin)).plugin.activeVersion).toBe(
-    fixture.version,
+  // Activating the first version deploys its source again, as a new version.
+  const rolledBack = (await api.detail(personal.userId, fixture.plugin)).plugin.activeVersion;
+  expect([fixture.version, second.status === "installed" ? second.version.id : ""]).not.toContain(
+    rolledBack,
   );
   await api.command(
     {

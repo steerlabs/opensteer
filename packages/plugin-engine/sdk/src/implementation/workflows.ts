@@ -238,8 +238,17 @@ export const makeWorkflowRuns = (
       version: row.version,
       captured: { accounts: row.accounts, scope: row.scope },
     }).pipe(Effect.provideService(CurrentActor, row.actor ?? undefined));
-  /** Whether the runtime runs this build as it is; see `Runtime.current`. */
-  const runsAsIs = (build: BuildId) => runtime.current?.(build) ?? Effect.succeed(true);
+  /** Whether the run's version is the app's active version, the only one that runs anything. */
+  const isActive = (row: typeof StoredRun.Type) =>
+    storedApp(db, { app: row.app }).pipe(
+      Effect.map((app) => app.activeVersion === row.version),
+      Effect.catchTag("AppNotFound", () => Effect.succeed(false)),
+    );
+  /** Run `work` as one admitted execution of the build; see `Runtime.admitted`. */
+  const admitted = <A, E, R>(
+    input: { readonly app: AppId; readonly build: BuildId },
+    work: Effect.Effect<A, E, R>,
+  ) => (runtime.admitted === undefined ? work : runtime.admitted(input, work));
   /** End a run stale: nothing more of it runs, and its view says why. */
   const stale = (run: WorkflowRunId) =>
     finish(run, { ok: false, error: "stale" }).pipe(Effect.andThen(Effect.fail(failure("stale"))));
@@ -249,7 +258,7 @@ export const makeWorkflowRuns = (
    */
   const continued = (row: typeof StoredRun.Type) =>
     Effect.gen(function* () {
-      const version = yield* continuedVersion(db, runtime, row.app, row.version).pipe(
+      const version = yield* continuedVersion(db, row.app, row.version).pipe(
         Effect.catchTag("AppNotFound", () => Effect.succeed(null)),
       );
       if (version === null || version === row.version) return version;
@@ -270,10 +279,11 @@ export const makeWorkflowRuns = (
       return version;
     });
   /**
-   * The run as it may run now. A started run ran its steps on its version's build and never
-   * moves: once the runtime no longer runs that build, it ends stale at its next step, neither
+   * The run as it may run now. A started run ran its steps on its version and never moves: once
+   * that version is no longer the app's active one, it ends stale at its next step, neither
    * continuing on old code nor jumping to new code. A queued run starts on the version `continued`
-   * selects, or ends stale.
+   * selects, or ends stale. The host checks again, while the step holds the app, that the version
+   * is still the active one.
    */
   const runnable = (saved: typeof StoredRun.Type) =>
     Effect.gen(function* () {
@@ -286,14 +296,13 @@ export const makeWorkflowRuns = (
           () => stale(row.id),
         ),
       );
-      if (row.status !== "queued" && !(yield* runsAsIs(state.version.build)))
-        return yield* stale(row.id);
+      if (row.status !== "queued" && !(yield* isActive(row))) return yield* stale(row.id);
       return { row, state };
     });
   /**
-   * Hand a queued run to the native engine once the version it starts on runs as it is: one whose
-   * build waits for its rebuild stays queued, and a stale one ends. Reports whether the engine
-   * accepted it.
+   * Hand a queued run to the native engine once the version it starts on is admitted (see
+   * `Runtime.admit`): one whose plugin is updating stays queued, and a stale one ends. Reports
+   * whether the engine accepted it.
    */
   const dispatchQueued = (backend: WorkflowRuntime, row: typeof StoredRun.Type) =>
     Effect.gen(function* () {
@@ -304,7 +313,14 @@ export const makeWorkflowRuns = (
       }
       const app = yield* storedApp(db, { app: row.app });
       const build = (yield* storedVersion(db, app, version)).build;
-      if (!(yield* runsAsIs(build))) {
+      const refused =
+        runtime.admit === undefined
+          ? false
+          : yield* runtime.admit({ app: row.app, build }).pipe(
+              Effect.as(false),
+              Effect.catchTag("RuntimeBuildUnavailable", () => Effect.succeed(true)),
+            );
+      if (refused) {
         yield* Effect.annotateCurrentSpan("pluginEngine.workflow.dispatch", "held");
         return false;
       }
@@ -339,23 +355,30 @@ export const makeWorkflowRuns = (
           return yield* failure(saved.status === "terminated" ? "terminated" : "conflict");
         const { row, state } = yield* runnable(saved);
         const payload = yield* decrypt(row);
-        if (row.status === "queued")
-          yield* query(() =>
-            db.updateMany("workflowRuns", {
-              where: (b) => b.and(b("id", "=", run), b("status", "=", "queued")),
-              set: { status: "running" },
-            }),
-          );
-        const hostApi = declarations.hostApi(state.version);
-        return {
-          runId: run,
-          app: row.app,
-          build: state.version.build,
-          ...(hostApi === undefined ? {} : { hostApi }),
-          version: row.version,
-          name: row.name,
-          input: payload.input,
-        };
+        // Admitted, while the app is held, before a queued run starts: prepare and the build's
+        // load both name the run's one version, and neither runs once it is not active.
+        return yield* admitted(
+          { app: row.app, build: state.version.build },
+          Effect.gen(function* () {
+            if (row.status === "queued")
+              yield* query(() =>
+                db.updateMany("workflowRuns", {
+                  where: (b) => b.and(b("id", "=", run), b("status", "=", "queued")),
+                  set: { status: "running" },
+                }),
+              );
+            const hostApi = declarations.hostApi(state.version);
+            return {
+              runId: run,
+              app: row.app,
+              build: state.version.build,
+              ...(hostApi === undefined ? {} : { hostApi }),
+              version: row.version,
+              name: row.name,
+              input: payload.input,
+            };
+          }),
+        );
       }),
       "engine",
       true,
@@ -496,15 +519,9 @@ export const makeWorkflowRuns = (
         return yield* view(yield* read(row.id));
       }
       if (state.status === "errored" || (state.status === "missing" && row.status !== "queued")) {
-        // The native engine gave the run up. One whose build the runtime no longer runs could not
+        // The native engine gave the run up. One whose version is no longer active could not
         // have continued: it is stale, not an engine failure.
-        const runs = yield* captured(row).pipe(
-          Effect.flatMap((captured) => runsAsIs(captured.version.build)),
-          Effect.catchIf(
-            (error) => isContextChange(error),
-            () => Effect.succeed(false),
-          ),
-        );
+        const runs = yield* isActive(row);
         yield* finish(row.id, { ok: false, error: runs ? "engine" : "stale" });
         return yield* view(yield* read(row.id));
       }
