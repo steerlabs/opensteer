@@ -32,6 +32,10 @@ const shown = (what: string, path: (path: string) => boolean) =>
 const openTask = async (threadId: string) => {
   await click(element(`.side-task[data-thread-id="${threadId}"] .side-task__main`));
   await shown("The task", (path) => path === `/tasks/${threadId}`);
+  // On screen, not only addressed: its row is the open one.
+  await until("The task's row was never marked open", () =>
+    element(`.side-task[data-thread-id="${threadId}"] .side-task__main[aria-current="page"]`),
+  );
 };
 const newTask = async () => {
   await click(element('[aria-label="New task"]'));

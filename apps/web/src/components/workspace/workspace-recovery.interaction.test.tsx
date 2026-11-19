@@ -103,8 +103,14 @@ describe("the review's findings", () => {
     });
     await write(element<HTMLElement>("[data-composer-input]"), "First");
     await click(element(".composer__send"));
-    await vi.waitFor(() => expect(started.promise).resolves.toBeUndefined(), { timeout: 1_000 });
-    await vi.waitFor(() => expect(history.at(-1)!.path).toMatch(/^\/tasks\//u), { timeout: 1_000 });
+    await until("The first send never reached the Host", () => started.promise);
+    // The person goes Back once the new task is on screen: its conversation, committed.
+    await until("The new task never opened", () => {
+      const path = history.at(-1)!.path;
+      expect(path).toMatch(/^\/tasks\//u);
+      const threadId = decodeURIComponent(path.slice("/tasks/".length));
+      element(`.side-task[data-thread-id="${threadId}"] .side-task__main[aria-current="page"]`);
+    });
     await act(async () => goTo!(-1));
     // The next draft is its own from the press: it follows the page, then freezes on typing.
     const field = await until("The next draft never followed the page", () => {
