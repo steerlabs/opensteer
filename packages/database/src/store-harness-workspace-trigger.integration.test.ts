@@ -1297,12 +1297,16 @@ describeStore("PostgreSQL store", (it) => {
     expect(
       await database
         .selectFrom("clientChanges")
-        .select(["entityId", "operation"])
+        .select([
+          "entityKind",
+          "operation",
+          sql<string>`payload->'thread'->>'accessMode'`.as("accessMode"),
+        ])
         .where("scopeKey", "=", `thread:${fixture.thread.id}`)
         .where("sequence", "=", updated.asOfSequence)
-        .where("entityId", "=", "thread-details")
+        .where("entityKind", "=", "thread")
         .execute(),
-    ).toEqual([{ entityId: "thread-details", operation: "invalidate" }]);
+    ).toEqual([{ entityKind: "thread", operation: "upsert", accessMode: "auto" }]);
     await store.claimCommand(beforeUpdate.command.id, "access-mode-dispatcher");
     await store.failCommand(beforeUpdate.command.id, "Complete the original access snapshot");
     const afterUpdate = await enqueueHumanTrigger({

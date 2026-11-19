@@ -292,15 +292,14 @@ describeStore("Claude compaction persistence", (it) => {
       ).contextSnapshot,
     ).toBeNull();
     expect((await store.getThreadForOwner(thread.id, userId))?.returnHint).toBeNull();
-    expect(
-      await database
-        .selectFrom("clientChanges")
-        .select("entityId")
-        .where("scopeKey", "=", `thread:${thread.id}`)
-        .where("entityId", "=", "return-hint")
-        .where("operation", "=", "invalidate")
-        .executeTakeFirst(),
-    ).toEqual({ entityId: "return-hint" });
+    const published = await database
+      .selectFrom("clientChanges")
+      .select("payload")
+      .where("scopeKey", "=", `thread:${thread.id}`)
+      .where("entityKind", "=", "thread")
+      .orderBy("sequence", "desc")
+      .executeTakeFirstOrThrow();
+    expect(published.payload).toMatchObject({ thread: { id: thread.id, returnHint: null } });
   });
   it("rechecks source selections at execution binding even with retained evidence", async ({
     storeFixture,

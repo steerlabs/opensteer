@@ -197,29 +197,23 @@ it("delivers a bound send key only to the sending login in live and retained vie
         (frame) =>
           "scope" in frame &&
           frame.scope.kind === "thread" &&
-          (frame.type === "host.snapshot-required" ||
+          ((frame.type === "host.snapshot" &&
+            "items" in frame.snapshot &&
+            frame.snapshot.items.some((item) => item.id === id)) ||
             (frame.type === "host.changes" &&
               frame.changes.some(
                 (change) => change.entityKind === "item" && change.entityId === id,
               ))),
         "The committed message was absent from the viewer's synchronized detail",
       );
-      if (cut.type === "host.changes") {
-        const row = cut.changes.find(
-          (change) => change.entityKind === "item" && change.entityId === id,
-        );
-        if (row?.operation === "upsert" && row.entityKind === "item") return row.value;
-      }
-      if (cut.type !== "host.snapshot-required") throw new Error("The message was not upserted");
-      peer.send({ type: "client.subscribe", subscriptionId: "detail:0", generation: 2, scope });
-      const replacement = await peer.read(
-        (frame) =>
-          frame.type === "host.snapshot" && frame.scope.kind === "thread" && frame.generation === 2,
-        "The selected detail could not repair its cut",
+      if (cut.type === "host.snapshot" && "items" in cut.snapshot)
+        return cut.snapshot.items.find((item) => item.id === id);
+      if (cut.type !== "host.changes") throw new Error("The message was not upserted");
+      const row = cut.changes.find(
+        (change) => change.entityKind === "item" && change.entityId === id,
       );
-      if (replacement.type !== "host.snapshot" || !("items" in replacement.snapshot))
-        throw new Error("Expected a replacement detail");
-      return replacement.snapshot.items.find((item) => item.id === id);
+      if (row?.operation === "upsert" && row.entityKind === "item") return row.value;
+      throw new Error("The message was not upserted");
     };
     const items = await host.store.database
       .selectFrom("clientChanges")
@@ -1184,6 +1178,7 @@ it("keeps an idle detail and shell at zero statements and bytes during unrelated
     const { readCut } = createPersonalReads({ store } as HostServerDependencies, resources);
     const attached = Promise.withResolvers<void>();
     const repaired = Promise.withResolvers<void>();
+    let synchronized = false;
     let wireBytes = 0;
     const realtime = new RealtimeHub();
     const sync = new PersonalSyncSocket({
@@ -1194,8 +1189,15 @@ it("keeps an idle detail and shell at zero statements and bytes during unrelated
         const frame = ScopedHostMessageSchema.parse(JSON.parse(data));
         if (frame.type === "host.synchronized" && frame.subscriptionId === "detail:0")
           attached.resolve();
-        if (frame.type === "host.snapshot-required" && frame.subscriptionId === "detail:0")
+        if (
+          frame.type === "host.snapshot" &&
+          frame.subscriptionId === "detail:0" &&
+          frame.generation === 1 &&
+          synchronized
+        )
           repaired.resolve();
+        if (frame.type === "host.synchronized" && frame.subscriptionId === "detail:0")
+          synchronized = true;
         if (frame.type === "host.snapshot" || frame.type === "host.changes") sync.ack(frame);
         return true;
       },
@@ -1232,15 +1234,7 @@ it("keeps an idle detail and shell at zero statements and bytes during unrelated
       statements = wireBytes = 0;
       const write = (id: typeof threadId) =>
         commitPersonalMutation(db, async (_tx, mutation) => {
-          mutation.change(
-            {
-              scopeKey: `thread:${id}`,
-              entityKind: "collection",
-              entityId: "activity",
-              operation: "invalidate",
-            },
-            () => ({ revision: mutation.sequence }),
-          );
+          mutation.resetScope(`thread:${id}`);
         });
       for (let i = 0; i < 25; i++) await write(busyId);
       // Each completed source transaction has already published its wake.
@@ -1254,7 +1248,7 @@ it("keeps an idle detail and shell at zero statements and bytes during unrelated
       await write(threadId);
       await deadline(
         repaired.promise,
-        "A relevant commit beyond the feed floor did not request repair",
+        "A relevant commit beyond the feed floor was not repaired inline",
       );
       expect(statements).toBeGreaterThan(0);
       expect(wireBytes).toBeGreaterThan(0);

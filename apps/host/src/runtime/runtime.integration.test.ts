@@ -3392,18 +3392,7 @@ async function attachThreadSocket(socket: WebSocket, threadId: ThreadId) {
     const parsed = ScopedHostMessageSchema.safeParse(JSON.parse(data.toString()));
     if (!parsed.success) return;
     const frame = parsed.data;
-    if (frame.type === "host.snapshot-required" && frame.subscriptionId === "detail:0") {
-      socket.send(
-        JSON.stringify({
-          type: "client.subscribe",
-          subscriptionId: frame.subscriptionId,
-          generation: frame.generation + 1,
-          scope: frame.scope,
-        }),
-      );
-      return;
-    }
-    if (!("throughSequence" in frame) || frame.type === "host.snapshot-required") return;
+    if (!("throughSequence" in frame)) return;
     const { subscriptionId, generation, throughSequence } = frame;
     socket.send(
       JSON.stringify({ type: "client.ack", subscriptionId, generation, throughSequence }),

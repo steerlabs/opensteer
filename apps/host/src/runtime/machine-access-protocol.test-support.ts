@@ -1535,16 +1535,6 @@ export async function openRealtime(
     const decoded = ScopedHostMessageSchema.safeParse(message);
     if (!decoded.success) return;
     const data = decoded.data;
-    if (data.type === "host.snapshot-required" && data.subscriptionId === "shell") {
-      socket.send(
-        JSON.stringify({
-          type: "client.subscribe",
-          subscriptionId: "shell",
-          generation: data.generation + 1,
-          scope: { kind: "shell" },
-        }),
-      );
-    }
     if (data.type === "host.snapshot" || data.type === "host.changes") {
       const { generation, subscriptionId, throughSequence } = data;
       socket.send(
