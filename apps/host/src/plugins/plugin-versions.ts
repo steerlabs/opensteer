@@ -107,7 +107,10 @@ export const pluginVersions = (input: {
         );
       yield* input.published(app);
     });
-  /** A deploy's commit, and an activation: the plugin's only change, its execution held. */
+  /**
+   * A deploy's commit: the plugin's only change, with its execution held while the plugin's
+   * database migrates and the new version is promoted.
+   */
   const commit = <A, E, R>(app: AppId, work: Effect.Effect<A, E, R>) =>
     gate.change(app, gate.hold(app, work)).pipe(Effect.tap(() => promoted(app)));
 
@@ -225,11 +228,15 @@ export const pluginVersions = (input: {
       Effect.gen(function* () {
         const current = yield* engine.apps.get({ app, owner });
         const stored = yield* engine.apps.version({ app, owner, version });
+        // An activation migrates nothing, so it holds no execution: the plugin's schedules are
+        // reconciled against the version it activates, which runs it.
         if (!(yield* stale(stored.build)))
-          return yield* commit(
-            app,
-            engine.apps.activate({ app, owner, version, expectedVersion: current.activeVersion }),
-          );
+          return yield* gate
+            .change(
+              app,
+              engine.apps.activate({ app, owner, version, expectedVersion: current.activeVersion }),
+            )
+            .pipe(Effect.tap(() => promoted(app)));
         return (yield* rebuild(current, version)).app;
       }),
     /** Remove a plugin with everything the engine keeps for it. */
