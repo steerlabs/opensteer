@@ -3,6 +3,7 @@ package phone
 import (
 	"context"
 	"encoding/base64"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -23,6 +24,29 @@ type nativeScreen struct {
 	open channelOpener
 	dial ServiceDialer
 	lock func(context.Context) string
+	apps *appCache
+}
+
+// appCache keeps the installed-app list for front-app labels; it rarely
+// changes, and reading it costs about half a second per call.
+type appCache struct {
+	mu   sync.Mutex
+	apps []InstalledApp
+	at   time.Time
+}
+
+func (c *appCache) read(ctx context.Context, dial ServiceDialer) ([]InstalledApp, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.apps != nil && time.Since(c.at) < time.Minute {
+		return c.apps, nil
+	}
+	apps, err := readInstalledApps(ctx, dial)
+	if err != nil {
+		return nil, err
+	}
+	c.apps, c.at = apps, time.Now()
+	return apps, nil
 }
 
 func (n nativeScreen) State(ctx context.Context) (DeviceState, error) {
@@ -44,7 +68,7 @@ func (n nativeScreen) Capture(ctx context.Context, display string) ([]byte, erro
 	return data, nil
 }
 func (n nativeScreen) Foreground(ctx context.Context) (*Foreground, error) {
-	return readForeground(ctx, n.dial)
+	return readForeground(ctx, n.dial, n.apps.read)
 }
 func (n nativeScreen) AX(ctx context.Context) (AXSnapshot, error) {
 	return collectRemoteAX(ctx, n.dial)
@@ -95,7 +119,7 @@ func (s *Session) screenState() *screenSession {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.screen == nil {
-		s.screen = &screenSession{backend: nativeScreen{open: func(ctx context.Context, name string) (xpcChannel, error) { return s.OpenXPC(ctx, name) }, dial: s, lock: s.readLockState}, apps: map[string]bool{}, closed: s.closed}
+		s.screen = &screenSession{backend: nativeScreen{open: func(ctx context.Context, name string) (xpcChannel, error) { return s.OpenXPC(ctx, name) }, dial: s, lock: s.readLockState, apps: &appCache{}}, apps: map[string]bool{}, closed: s.closed}
 	}
 	return s.screen
 }
@@ -130,6 +154,34 @@ func (s *screenSession) close() {
 		<-done
 	}
 }
+
+// foreground reads the front app for a label; failures only mean "unknown".
+func (s *screenSession) foreground(ctx context.Context) *Foreground {
+	f, err := s.backend.Foreground(ctx)
+	if err != nil {
+		slog.Debug("bridge.native-error", "reason", string(Classify(err, wire.NativeServiceFailed).Code))
+	}
+	return f
+}
+
+// settleForeground keeps Opensteer's own screen private if any reading saw it.
+// Otherwise it names an app only when the readings before and after the capture
+// both exist and agree; accessibility is a fallback when neither exists.
+func settleForeground(first, last, ax *Foreground) *Foreground {
+	for _, f := range []*Foreground{first, last, ax} {
+		if f != nil && f.AppID == opensteerAppID {
+			return f
+		}
+	}
+	if first == nil && last == nil {
+		return ax
+	}
+	if first != nil && last != nil && first.AppID == last.AppID {
+		return first
+	}
+	return nil
+}
+
 func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guard func() error) (interface{}, error) {
 	ctx, finish, err := s.begin(ctx)
 	if err != nil {
@@ -146,7 +198,7 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	if err = before.safe(); err != nil {
 		return nil, err
 	}
-	foreground, _ := s.backend.Foreground(ctx)
+	first := s.foreground(ctx)
 	png, err := s.backend.Capture(ctx, before.uniqueID)
 	if err != nil {
 		return nil, err
@@ -158,6 +210,7 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	g.DisplayID = before.DisplayID
 	g.DisplayUniqueID = before.uniqueID
 	g.Rotation = before.Rotation
+	last := s.foreground(ctx)
 	axCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	ax, axErr := s.backend.AX(axCtx)
 	cancel()
@@ -167,18 +220,7 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	if axErr != nil {
 		ax = AXSnapshot{Nodes: []AXNode{}, Coverage: AXCoverage{CoordinateSpace: "unqualified", Status: "unavailable", Reason: "accessibility-unavailable"}}
 	}
-	current, _ := s.backend.Foreground(ctx)
-	if foreground != nil && current != nil && foreground.AppID != current.AppID {
-		return nil, wire.Fail(wire.StaleObservation)
-	}
-	for _, reading := range []*Foreground{foreground, current} {
-		if reading != nil && ax.Foreground != nil && ax.Foreground.AppID != reading.AppID {
-			return nil, wire.Fail(wire.StaleObservation)
-		}
-	}
-	if foreground == nil || current == nil {
-		foreground = ax.Foreground
-	}
+	foreground := settleForeground(first, last, ax.Foreground)
 	after, err := s.backend.State(ctx)
 	if err != nil {
 		return nil, err

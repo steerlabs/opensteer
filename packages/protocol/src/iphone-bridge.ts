@@ -770,18 +770,18 @@ export interface IphoneRunnerPort {
   connect(emit: (event: IphoneRunnerEvent) => void): IphoneRunnerConnection;
 }
 
-/** Setup and runtime must apply the same privacy gate before accepting screen pixels. */
+/**
+ * Setup and runtime must apply the same privacy gate before accepting screen pixels.
+ * The front app is only a label: iOS 27 can't always name it, and an unknown app
+ * on an unlocked, lit screen is what the person approved the agent to see.
+ */
 export function iphoneScreenshotHiddenReason(observation: {
   state: { display: string; lock: string };
   foreground: { appId: string } | null;
 }): "screen-off" | "locked" | "protected" | "opensteer-app" | null {
   if (observation.state.display === "off") return "screen-off";
   if (observation.state.lock === "locked") return "locked";
-  if (
-    observation.state.lock === "unknown" ||
-    observation.state.display === "unknown" ||
-    !observation.foreground
-  )
+  if (observation.state.lock === "unknown" || observation.state.display === "unknown")
     return "protected";
-  return observation.foreground.appId === "com.opensteer.opensteer" ? "opensteer-app" : null;
+  return observation.foreground?.appId === "com.opensteer.opensteer" ? "opensteer-app" : null;
 }

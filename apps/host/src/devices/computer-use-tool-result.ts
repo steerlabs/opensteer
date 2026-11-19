@@ -46,7 +46,7 @@ export function computerObservationContent(
               `Screen: ${observation.screen}`,
               `Locked: ${observation.locked === null ? "unknown" : observation.locked ? "yes" : "no"}`,
               `Secure lock: ${observation.secureLock === null ? "unknown" : observation.secureLock ? "yes" : "no"}`,
-              `Foreground app: ${observation.foreground ? `${observation.foreground.label ?? observation.foreground.appId} (${observation.foreground.appId})` : "none"}`,
+              `Foreground app: ${observation.foreground ? `${observation.foreground.label ?? observation.foreground.appId} (${observation.foreground.appId})` : "unknown"}`,
             ]
           : []),
         ...("screenshotUnavailable" in observation &&

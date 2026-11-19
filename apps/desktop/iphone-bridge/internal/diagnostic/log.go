@@ -28,6 +28,9 @@ func Remember(values ...string) {
 
 var identifiers = regexp.MustCompile(`(?i)\b(?:[0-9a-f]{8}-[0-9a-f]{16}|[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9a-f]{16,}|[0-9]{9,})\b`)
 var opaque = regexp.MustCompile(`[A-Za-z0-9+/=_-]{64,}`)
+
+// The phone's tunnel and Wi-Fi addresses identify it as surely as its UDID.
+var addresses = regexp.MustCompile(`(?i)\[?\b[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}\b\]?(?::[0-9]+)?|\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]+)?\b`)
 var sensitive = regexp.MustCompile(`(?i)udid|unique.?device|serial|ecid|pair.?record|private.?key|public.?key|certificate|BEGIN .*KEY|escrow|host.?id|system.?buid|["']?(?:key|password|token)["']?\s*[:=]`)
 
 func scrub(value string) string {
@@ -41,6 +44,7 @@ func scrub(value string) string {
 		value = strings.ReplaceAll(value, secret, "[redacted]")
 	}
 	secrets.RUnlock()
+	value = addresses.ReplaceAllString(value, "[redacted]")
 	value = identifiers.ReplaceAllString(value, "[redacted]")
 	value = opaque.ReplaceAllString(value, "[redacted]")
 	if len(value) > 2048 {
@@ -50,8 +54,9 @@ func scrub(value string) string {
 }
 
 func Open(path string) (*slog.Logger, io.Closer, error) {
+	// By default diagnostics go to stderr, which the desktop writes to its own rotating log.
 	if path == "" {
-		return slog.New(slog.NewJSONHandler(io.Discard, nil)), io.NopCloser(strings.NewReader("")), nil
+		return newLogger(os.Stderr), io.NopCloser(strings.NewReader("")), nil
 	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
 	if err != nil {
@@ -71,7 +76,11 @@ func Open(path string) (*slog.Logger, io.Closer, error) {
 		f.Close()
 		return nil, nil, errors.New("cannot restrict debug log")
 	}
-	handler := slog.NewJSONHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug, ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+	return newLogger(f), f, nil
+}
+
+func newLogger(w io.Writer) *slog.Logger {
+	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug, ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
 		switch a.Key {
 		case slog.TimeKey, slog.LevelKey:
 			return a
@@ -94,5 +103,5 @@ func Open(path string) (*slog.Logger, io.Closer, error) {
 			return slog.Attr{}
 		}
 	}})
-	return slog.New(handler), f, nil
+	return slog.New(handler)
 }

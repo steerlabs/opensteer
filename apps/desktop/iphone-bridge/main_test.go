@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"strings"
@@ -86,7 +87,10 @@ func TestShutdownExitsWithStdinStillOpen(t *testing.T) {
 	if err = command.Wait(); err != nil {
 		t.Fatalf("shutdown failed or waited for stdin close: %v %s", err, stderr.String())
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("default logging wrote stderr: %s", stderr.String())
+	for _, line := range strings.Split(strings.TrimSpace(stderr.String()), "\n") {
+		var entry map[string]interface{}
+		if json.Unmarshal([]byte(line), &entry) != nil || entry["msg"] == nil {
+			t.Fatalf("stderr carried more than diagnostic entries: %q", line)
+		}
 	}
 }

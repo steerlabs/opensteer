@@ -418,6 +418,11 @@ async function runDesktop(
           root: iphoneOwnershipRoot(loaded.config.dataDirectory),
         })
       : privateFiles;
+  const iphoneBridgeLog = new RotatingPersonalLog(
+    path.join(loaded.config.dataDirectory, "logs", "iphone-bridge.log"),
+    false,
+  );
+  app.once("will-quit", () => iphoneBridgeLog.close());
   const iphone = new IphoneService({
     store: new IphoneStore(privateFiles, iphoneFiles),
     supported: process.platform === "darwin",
@@ -432,6 +437,7 @@ async function runDesktop(
       });
       return IphoneBridgeClient.start({
         binary,
+        log: (line) => iphoneBridgeLog.append("stderr", line),
         supervisorExecutable: readPersonalProcessSupervisorRelease(resourcesDirectory),
         privateRoot: iphoneFiles.root,
         imageRoots: (await iphoneMacSupport.inspect()).imageRoots,

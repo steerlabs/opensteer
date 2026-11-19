@@ -726,5 +726,23 @@
       "Recovery after the injected recapture failure waits for the Host's periodic catalog pass, so the test's duration depends on where that pass falls and sits at its 45 s poll limit. Measured: main CI 17 s (job 134653758870); main locally 44.8 s; PR #669 locally 35 s (4/4 passes); PR #669 CI overran twice (jobs 134758148340, 134763294091), then timed out in afterEach while runtime.close waited.",
       "Acceptance: drive the recapture from an explicit trigger or fake timers instead of the periodic pass, so the test completes well inside its limits on every run without a longer timeout."
     ]
+  },
+  {
+    "file": "apps/web/src/components/workspace/workspace-recovery.interaction.test.tsx",
+    "name": [
+      "the review's findings",
+      "1 · a send's late answer never resets, refollows or overwrites the next draft's places"
+    ],
+    "area": "Web composer",
+    "owner": "Web composer maintainers",
+    "status": "quarantined",
+    "firstSeen": "2026-11-19T03:44:35Z",
+    "deadline": "2026-11-26T03:44:35Z",
+    "sha": "c53842247e200d174a57f8cd25d9703327c2735d",
+    "evidence": [
+      "CI tests (1) failed twice on PR #698, which changes no web workspace or composer code: Missing .context-chip__title at line 99 after clicking another side tab. https://github.com/steerlabs/opensteer/actions/runs/44451286523/job/135316236002 and https://github.com/steerlabs/opensteer/actions/runs/44451286523/job/135320745920",
+      "Reproduces locally on origin/main 56afa54c8 (1 of 3 file runs, plus other cases in the file under load). Replacing the 100 ms settles with condition waits (side tab active, then chip title, 2 s each) still fails 3 of 5 runs: the typed draft's chip disappears instead of staying on the original page, so this is a race in draft context freezing, not test timing. Composer draft places last changed in #669.",
+      "Acceptance: after the late send answer, typing a second draft freezes its page chip, and switching tabs keeps that chip on the original page in 20 consecutive runs of this case, with the settles replaced by condition waits."
+    ]
   }
 ]

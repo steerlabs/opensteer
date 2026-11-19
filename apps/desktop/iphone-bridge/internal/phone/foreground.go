@@ -13,6 +13,7 @@ import (
 )
 
 const instrumentsService = "com.apple.instruments.dtservicehub"
+const opensteerAppID = "com.opensteer.opensteer"
 
 func instrumentCall(conn *dtx.RawConnection, id, channel int, selector string, args ...interface{}) error {
 	payload, err := nskeyedarchiver.ArchiveBin(selector)
@@ -95,27 +96,29 @@ func runningProcesses(ctx context.Context, dial ServiceDialer) ([]interface{}, e
 	}
 	return processes, nil
 }
-func foregroundProcess(processes []interface{}) (string, error) {
-	found := ""
+
+// foregroundExecutables lists every process iOS flags as running in the
+// foreground. On iOS 27 that is SpringBoard plus system UI services and any
+// visible app, so the list alone never names the front app.
+func foregroundExecutables(processes []interface{}) []string {
+	found := []string{}
 	for _, value := range processes {
-		process, ok := value.(map[string]interface{})
-		if !ok {
-			return "", wire.Fail(wire.ProtocolUnsupported)
-		}
-		foreground, ok := process["foregroundRunning"].(bool)
-		if !ok || !foreground {
+		process, _ := value.(map[string]interface{})
+		if foreground, _ := process["foregroundRunning"].(bool); !foreground {
 			continue
 		}
-		executable, ok := process["realAppName"].(string)
-		if !ok || len(executable) > 4096 || executable == "" || found != "" {
-			return "", wire.Fail(wire.ProtocolUnsupported)
+		if executable := processPath(stringValue(process["realAppName"])); executable != "" {
+			found = append(found, executable)
 		}
-		found = executable
 	}
-	if found == "" {
-		return "", wire.Fail(wire.ProtocolUnsupported)
+	return found
+}
+func stringValue(v interface{}) string {
+	s, _ := v.(string)
+	if len(s) > 4096 {
+		return ""
 	}
-	return found, nil
+	return s
 }
 func processPath(value string) string {
 	if strings.HasPrefix(value, "file://") {
@@ -139,9 +142,6 @@ func resolveForeground(executable string, apps []InstalledApp) *Foreground {
 	if executable == "" {
 		return nil
 	}
-	if executable == "/System/Library/CoreServices/SpringBoard.app/SpringBoard" {
-		return &Foreground{AppID: "com.apple.springboard", Label: "Home Screen"}
-	}
 	var found *Foreground
 	for _, app := range apps {
 		if app.executable != "" && processPath(app.executable) == executable {
@@ -153,27 +153,46 @@ func resolveForeground(executable string, apps []InstalledApp) *Foreground {
 	}
 	return found
 }
-func readForeground(ctx context.Context, dial ServiceDialer) (*Foreground, error) {
+
+// readForeground names the front app only when exactly one flagged executable
+// is an installed app. Anything else, including SpringBoard under an overlay,
+// is unknown (nil); callers treat the result as a label, never as a gate.
+func readForeground(ctx context.Context, dial ServiceDialer, installed func(context.Context, ServiceDialer) ([]InstalledApp, error)) (*Foreground, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	processes, err := runningProcesses(ctx, dial)
 	if err != nil {
 		return nil, err
 	}
-	executable, err := foregroundProcess(processes)
+	executables := foregroundExecutables(processes)
+	if len(executables) == 0 {
+		return nil, nil
+	}
+	apps, err := installed(ctx, dial)
 	if err != nil {
 		return nil, err
 	}
-	if foreground := resolveForeground(executable, nil); foreground != nil {
-		return foreground, nil
+	return pickForeground(executables, apps), nil
+}
+func pickForeground(executables []string, apps []InstalledApp) *Foreground {
+	var found *Foreground
+	ambiguous := false
+	for _, executable := range executables {
+		app := resolveForeground(executable, apps)
+		if app == nil {
+			continue
+		}
+		// Opensteer anywhere in front keeps its screen private, whatever else is flagged.
+		if app.AppID == opensteerAppID {
+			return app
+		}
+		if found != nil && found.AppID != app.AppID {
+			ambiguous = true
+		}
+		found = app
 	}
-	apps, err := readInstalledApps(ctx, dial)
-	if err != nil {
-		return nil, err
+	if ambiguous {
+		return nil
 	}
-	foreground := resolveForeground(executable, apps)
-	if foreground == nil {
-		return nil, wire.Fail(wire.ProtocolUnsupported)
-	}
-	return foreground, nil
+	return found
 }

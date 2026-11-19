@@ -76,8 +76,8 @@ export function phoneScreenStatus(machine: MachineSummary): PhoneScreenStatus | 
       };
     case "paused":
       return {
-        label: "Another app is using it",
-        fix: `Quit Xcode or any other tool connected to the iPhone on ${mac.name}.`,
+        label: "Busy",
+        fix: `Quit Xcode or any other app connected to the iPhone on ${mac.name}. If it stays busy, restart the iPhone.`,
         tone: "waiting",
         needsSetup: false,
       };

@@ -38,8 +38,6 @@ type localPhone struct {
 	readinessReason wire.Reason
 	routeCtx        context.Context
 	routeCancel     context.CancelFunc
-	apps            map[string]bool
-	appsEpoch       uint64
 	access          string
 }
 type imageOption struct {
