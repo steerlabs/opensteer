@@ -64,11 +64,13 @@ export function TranscriptMemoryScope({ children }: { readonly children: ReactNo
 }
 
 /**
- * A row's choice under `key`: the reader's once made, else `initial`. Outside a transcript it is
- * the row's own state.
+ * A row's choice under `key`: the reader's once made, else `initial` as the row was first drawn.
+ * Outside a transcript it is the row's own state.
  */
 export function useRemembered<T>(key: string, initial: T): [T, (value: T) => void] {
   const memory = useContext(TranscriptMemoryContext);
+  // Like `useState`, the default is the one the row was drawn with.
+  const [drawnWith] = useState(initial);
   const [own, setOwn] = useState<{ readonly value: T } | null>(null);
   const subscribe = useCallback(
     (listener: () => void) => memory?.subscribe(key, listener) ?? (() => {}),
@@ -80,6 +82,6 @@ export function useRemembered<T>(key: string, initial: T): [T, (value: T) => voi
     (value: T) => (memory ? memory.set(key, value) : setOwn({ value })),
     [key, memory],
   );
-  if (memory) return [memory.has(key) ? (stored as T) : initial, set];
-  return [own ? own.value : initial, set];
+  if (memory) return [memory.has(key) ? (stored as T) : drawnWith, set];
+  return [own ? own.value : drawnWith, set];
 }
