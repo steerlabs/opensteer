@@ -2552,6 +2552,159 @@ test("a repaired task drops an open assignment its reread no longer returns, and
   }
 });
 
+test("a resubscribed task reads its assignments again; one pushed while that read flies is kept though the read omits it", async () => {
+  const seed = Object.values(new MockHostClient({ latencyMs: 0 }).getSnapshot().assignments)[0]!;
+  const finished = {
+    ...seed,
+    id: createId("delegation"),
+    parentThreadId: threadId,
+    status: "open" as const,
+  };
+  const fresh = {
+    ...seed,
+    id: createId("delegation"),
+    parentThreadId: threadId,
+    status: "open" as const,
+    revision: 5,
+  };
+  const lists: ((assignments: (typeof seed)[]) => void)[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    const name = new URL(String(input)).pathname.slice("/v1/rpc/".length);
+    if (name === "thread.assignments.list") {
+      const assignments = await new Promise<(typeof seed)[]>((resolve) => lists.push(resolve));
+      return Response.json({
+        ok: true,
+        data: {
+          assignments,
+          threadId,
+          window: {
+            byteCount: 0,
+            hasMore: false,
+            itemCount: assignments.length,
+            nextBefore: null,
+            totalItems: assignments.length,
+          },
+        },
+      });
+    }
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+  let socket: MockPersonalSocket;
+  let detail: Extract<ScopedClientMessage, { type: "client.subscribe" }> | undefined;
+  const deliverDetail = () => {
+    const address = {
+      scope: detail!.scope,
+      subscriptionId: detail!.subscriptionId,
+      generation: detail!.generation,
+      throughSequence: "1",
+    };
+    socket.deliver({
+      ...address,
+      type: "host.snapshot",
+      snapshot: {
+        thread: detailThread(task),
+        items: [item],
+        activeItems: [],
+        pendingRequests: [],
+        nextBefore: null,
+      },
+    } as never);
+    socket.deliver({ ...address, type: "host.synchronized" } as never);
+  };
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      queueMicrotask(() => {
+        if (message.type === "client.ping")
+          socket.deliver({ type: "host.pong", nonce: message.nonce } as never);
+        if (message.type === "client.subscribe") {
+          detail = message;
+          deliverDetail();
+        }
+        if (message.type !== "client.attach") return;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: "1",
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [task],
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+      });
+    }));
+  let foreground = () => {};
+  let background = () => {};
+  const lifecycle: ClientLifecycle = {
+    getSnapshot: () => ({ network: "online", visibility: "foreground" }),
+    onForeground: (listener) => ((foreground = listener), () => {}),
+    onBackground: (listener) => ((background = listener), () => {}),
+    onNetworkChange: () => () => {},
+  };
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    lifecycle,
+    webSocketFactory: connect,
+  });
+  const held = () => Object.keys(client.getSnapshot().assignments).sort();
+  try {
+    await client.load();
+    client.activateThread(threadId);
+    await vi.waitFor(() => expect(lists).toHaveLength(1));
+    lists[0]!([finished]);
+    await vi.waitFor(() => expect(held()).toEqual([finished.id]));
+    // The app goes away and comes back: a new subscription, which may have skipped the change
+    // that finished the assignment.
+    background();
+    foreground();
+    await vi.waitFor(() =>
+      expect(lists, "the new subscription never read assignments").toHaveLength(2),
+    );
+    // While that read flies, another assignment is handed out and pushed.
+    socket!.deliver({
+      scope: detail!.scope,
+      subscriptionId: detail!.subscriptionId,
+      generation: detail!.generation,
+      type: "host.changes",
+      fromSequence: "1",
+      throughSequence: "2",
+      changes: [
+        {
+          entityKind: "assignment",
+          entityId: fresh.id,
+          operation: "upsert",
+          sequence: "2",
+          ordinal: 0,
+          value: fresh,
+        },
+      ],
+    } as never);
+    await vi.waitFor(() => expect(held()).toEqual([finished.id, fresh.id].sort()));
+    // The read's answer is from before that push: the finished one goes, the new one stays.
+    lists[1]!([]);
+    await vi.waitFor(() => expect(held()).toEqual([fresh.id]));
+  } finally {
+    client.dispose();
+  }
+});
+
 test("a subagent progress tick notifies only that row's text subscriber, not the task view", () => {
   const f = fixture();
   f.syncShell();

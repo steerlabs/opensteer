@@ -342,6 +342,11 @@ export class HttpHostClient {
   /** A task's assignment reads, fenced by the viewer; and the tasks whose list is read. */
   readonly #assignmentReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
   readonly #assignmentsRead = new Set<string>();
+  /** When each assignment was last pushed, by a counter a read notes as it begins. */
+  readonly #assignmentPushes = new Map<string, number>();
+  /** Every task whose assignments were asked for under this viewer. */
+  readonly #assignmentKeys = new Set<string>();
+  #assignmentPushCount = 0;
   readonly #automationReads = new Map<string, { again: boolean }>();
   readonly #readAutomations = new Set<string>();
   /**
@@ -1360,6 +1365,8 @@ export class HttpHostClient {
         );
         previousAssignments = state.assignments;
         if (changed.length) {
+          // Each pushed assignment is stamped, so a read begun before it never prunes it.
+          for (const [id] of changed) this.#assignmentPushes.set(id, ++this.#assignmentPushCount);
           const assignments = mergeAssignments(
             this.#snapshot.assignments,
             changed.flatMap(([, value]) => value ?? []),
@@ -1388,6 +1395,12 @@ export class HttpHostClient {
         subscribedGeneration = state.generation;
         subscribedRepairs = state.repairs;
         readsDue = true;
+        // A new subscription (a reconnect, a resubscribe) may have skipped the change that ended
+        // an assignment: the task's assignments are read again, as after a repair.
+        if (reread) {
+          this.#assignmentsRead.delete(threadId);
+          this.#assignmentReads.changed(`assignments:${threadId}`);
+        }
       } else if (state.repairs !== subscribedRepairs) {
         // A repair replaced the scope: its assignments are read again, as on a new subscription.
         subscribedRepairs = state.repairs;
@@ -1476,9 +1489,12 @@ export class HttpHostClient {
   }
 
   #clearViewerReads() {
-    for (const threadId of this.#assignmentsRead)
+    // Every task's read stops, those still in flight as well as those that installed.
+    for (const threadId of this.#assignmentKeys)
       this.#assignmentReads.stop(`assignments:${threadId}`);
+    this.#assignmentKeys.clear();
     this.#assignmentsRead.clear();
+    this.#assignmentPushes.clear();
     this.#automationReads.clear();
     this.#readAutomations.clear();
     this.#browserUsageRead.clear();
@@ -1752,7 +1768,13 @@ export class HttpHostClient {
           // What this client knew of the task's Done membership before the push, if anything.
           const prior = old?.tasks.get(row.id);
           const listed = this.#donePages?.entries.some(({ thread }) => thread.id === row.id);
-          const was = listed ? true : held ? isDoneTask(held) : prior ? isDoneTask(prior) : undefined;
+          const was = listed
+            ? true
+            : held
+              ? isDoneTask(held)
+              : prior
+                ? isDoneTask(prior)
+                : undefined;
           doneMoves.push({ row, was, now: !("removed" in row) && isDoneTask(row) });
         }
         if ("removed" in row) {
@@ -2128,6 +2150,7 @@ export class HttpHostClient {
     if (this.#disposed || this.#snapshot.session !== "authenticated") return;
     const key = `assignments:${threadId}`;
     if (this.#assignmentsRead.has(threadId) || this.#assignmentReads.busy(key)) return;
+    this.#assignmentKeys.add(threadId);
     void this.#assignmentReads
       .request(key, (read) => this.#readAssignments(threadId, read), {
         observed: () => !this.#disposed && this.#showsThread(threadId),
@@ -2203,6 +2226,7 @@ export class HttpHostClient {
    * has finished, even when the feed's update for it was skipped by a repair.
    */
   async #readAssignments(threadId: string, read: FencedRead): Promise<void> {
+    const startedAt = this.#assignmentPushCount;
     const list = async (open: boolean, before: string | null) => {
       try {
         const response = unwrapRpcResult(
@@ -2240,8 +2264,16 @@ export class HttpHostClient {
     if (complete) {
       const returned = new Set<string>(found.map(({ id }) => id));
       for (const [id, held] of Object.entries(assignments))
-        if (held.parentThreadId === threadId && held.status === "open" && !returned.has(id))
+        if (
+          held.parentThreadId === threadId &&
+          held.status === "open" &&
+          !returned.has(id) &&
+          // Pushed after this read began: newer than what the read could have returned.
+          (this.#assignmentPushes.get(id) ?? 0) <= startedAt
+        ) {
           delete assignments[id];
+          this.#assignmentPushes.delete(id);
+        }
     }
     this.#assignmentsRead.add(threadId);
     this.#update({ ...this.#snapshot, assignments });
