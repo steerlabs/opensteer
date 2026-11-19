@@ -21,13 +21,42 @@ const signalKinds: ReadonlySet<PersonalResourceKind> = new Set([
   "team-replies",
 ]);
 const noop = () => undefined;
-/** Bounds what one kind's pages may hold before the read gives up. */
-const inventoryBytes = 1024 * 1024;
+/**
+ * Guards against a Host that pages without end. Every page is at most 64 KiB and every row is
+ * bounded by its schema; a person's inventory is what the client must hold to show it, so this
+ * is far above any real one (the largest, `harness-catalog`, is up to 8,192 models per account).
+ */
+export const inventoryCeilingBytes = 256 * 1024 * 1024;
+/**
+ * The kinds a Runner's connection moves. The Host bumps them on every connect and disconnect; a
+ * reread waits this long after the first such push, so a Runner that drops and comes back costs
+ * one read of each rather than two. A first read, a new Host boot and an attach never wait. Tabs,
+ * which people change, are read at once.
+ */
+export const runnerSettleMs = 2_000;
+const runnerKinds: ReadonlySet<PersonalResourceKind> = new Set([
+  "machine",
+  "environment",
+  "harness-catalog",
+  "browser-availability",
+  "browser-placement",
+]);
+/** How long a reader that unmounted keeps its kinds watched, so navigating back reads nothing. */
+export const readerGraceMs = 5_000;
+/** How long a read made outside any reader (an effect, a handler, a controller) keeps its kind watched. */
+export const ambientLeaseMs = 30_000;
+
+/** What one reader read: held while it is open, and for a grace after its last close. */
+export interface ResourceInterest {
+  hold(kind: PersonalResourceKind): void;
+  open(): void;
+  close(): void;
+}
 
 export interface PersonalResourceReadOptions {
   read(kind: PersonalResourceKind, cursor: string | undefined, signal: AbortSignal): Promise<Page>;
-  /** Install one page; a later page of the same read appends. */
-  apply(data: Detail["data"], append: boolean, hasMore: boolean): void;
+  /** Install a kind's complete inventory, every page of one read, as one change. */
+  apply(pages: readonly Detail["data"][]): void;
   /** The app is in front; a background app reads nothing. */
   canRead(): boolean;
   /** The watched kinds changed. */
@@ -41,17 +70,25 @@ export interface PersonalResourceReadOptions {
 /**
  * The Host pushes only `{kind: revision}`; this reads a kind's detail when a
  * surface watches it and the pushed revision differs from the one installed.
- * Revisions compare only for equality. Reads are fenced (`FencedReads`): one per
- * kind, a push while one flies supersedes it, all of a kind's pages install
- * together and only while nothing newer arrived, and a failure retries with
- * backoff while the kind is watched.
+ * Reads are fenced (`FencedReads`): one per kind, judged when it lands against
+ * the newest push; all of a kind's pages install together, as one change, and
+ * only while nothing newer arrived; a failure retries with backoff while the
+ * kind is watched. A kind is watched while a reader that read it is mounted.
  */
 export class PersonalResourceReads implements PersonalResourcePort {
   readonly #options: PersonalResourceReadOptions;
   readonly #listeners = new Map<PersonalResourceKind, Set<() => void>>();
   readonly #known = new Map<PersonalResourceKind, string>();
   readonly #installed = new Map<PersonalResourceKind, string>();
-  readonly #retained = new Map<PersonalResourceKind, () => void>();
+  readonly #leases = new Map<
+    PersonalResourceKind,
+    { release: () => void; timer: ReturnType<typeof setTimeout> }
+  >();
+  readonly #timers = new Set<ReturnType<typeof setTimeout>>();
+  /** Each kind's read in flight, settled once it installs or gives up. */
+  readonly #inFlight = new Map<PersonalResourceKind, Promise<void>>();
+  /** A Runner kind's pending reread, from its first push within the settle window. */
+  readonly #settling = new Map<PersonalResourceKind, ReturnType<typeof setTimeout>>();
   /** The older revision a read last answered after a newer push, so it is not reread forever. */
   readonly #behind = new Map<PersonalResourceKind, string>();
   #viewer = 0;
@@ -98,7 +135,10 @@ export class PersonalResourceReads implements PersonalResourcePort {
       else if (this.#installed.has(kind) && this.#installed.get(kind) !== revision)
         this.#options.behind?.(kind);
       // What flies is judged when it lands: older than this push, it installs nothing.
-      this.#read(kind);
+      const installed = this.#installed.get(kind);
+      if (runnerKinds.has(kind) && installed !== undefined && sameBoot(installed, revision))
+        this.#settle(kind);
+      else this.#read(kind);
       for (const listener of this.#listeners.get(kind) ?? []) listener();
     }
   }
@@ -117,10 +157,78 @@ export class PersonalResourceReads implements PersonalResourcePort {
     this.#installed.delete(kind);
   }
 
-  /** Watches a kind for this client's life: something read the value it fills. */
-  retain(kind: PersonalResourceKind) {
-    if (this.#retained.has(kind)) return;
-    this.#retained.set(kind, this.watch(kind, noop));
+  /** A reader (a mounted selection, a subscription): what it reads stays watched while it is open. */
+  interest(): ResourceInterest {
+    const held = new Map<PersonalResourceKind, () => void>();
+    let opened = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const disarm = () => {
+      if (timer === undefined) return;
+      clearTimeout(timer);
+      this.#timers.delete(timer);
+      timer = undefined;
+    };
+    const arm = () => {
+      disarm();
+      timer = setTimeout(() => {
+        this.#timers.delete(timer!);
+        timer = undefined;
+        const releases = [...held.values()];
+        held.clear();
+        for (const release of releases) release();
+      }, readerGraceMs);
+      this.#timers.add(timer);
+    };
+    return {
+      hold: (kind) => {
+        if (!held.has(kind)) held.set(kind, this.watch(kind, noop));
+        // Read by a render that never mounted: it lets go after the grace.
+        if (opened === 0 && timer === undefined) arm();
+      },
+      open: () => {
+        opened++;
+        disarm();
+      },
+      close: () => {
+        if (opened > 0 && --opened === 0) arm();
+      },
+    };
+  }
+
+  /** A read outside any reader: the kind stays watched for a while after the latest such read. */
+  lease(kind: PersonalResourceKind) {
+    const held = this.#leases.get(kind);
+    if (held) {
+      clearTimeout(held.timer);
+      this.#timers.delete(held.timer);
+    }
+    const release = held?.release ?? this.watch(kind, noop);
+    const timer = setTimeout(() => {
+      this.#timers.delete(timer);
+      this.#leases.delete(kind);
+      release();
+    }, ambientLeaseMs);
+    this.#timers.add(timer);
+    this.#leases.set(kind, { release, timer });
+  }
+
+  /** Ends every grace, lease and settle timer; the client is closing. */
+  dispose() {
+    for (const timer of this.#timers) clearTimeout(timer);
+    this.#timers.clear();
+    this.#settling.clear();
+    this.abort();
+  }
+
+  #settle(kind: PersonalResourceKind) {
+    if (this.#settling.has(kind)) return;
+    const timer = setTimeout(() => {
+      this.#timers.delete(timer);
+      this.#settling.delete(kind);
+      this.#read(kind);
+    }, runnerSettleMs);
+    this.#timers.add(timer);
+    this.#settling.set(kind, timer);
   }
 
   /**
@@ -129,6 +237,11 @@ export class PersonalResourceReads implements PersonalResourcePort {
    */
   reset() {
     this.#viewer++;
+    for (const timer of this.#settling.values()) {
+      clearTimeout(timer);
+      this.#timers.delete(timer);
+    }
+    this.#settling.clear();
     this.abort();
     this.#known.clear();
     this.#installed.clear();
@@ -150,9 +263,23 @@ export class PersonalResourceReads implements PersonalResourcePort {
     )
       return;
     const observed = () => this.#listeners.has(kind) && this.#options.canRead();
-    void this.#reads
+    const flying: Promise<void> = this.#reads
       .request(kind, (read) => this.#job(kind, read), { observed })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.#inFlight.get(kind) === flying) this.#inFlight.delete(kind);
+      });
+    this.#inFlight.set(kind, flying);
+  }
+
+  /**
+   * For a command that needs a kind's value: settles once the kind holds a read for this viewer,
+   * or its read gave up (a Host without the kind), or none can run now (the app is behind).
+   */
+  async firstRead(kind: PersonalResourceKind) {
+    this.lease(kind);
+    if (this.#installed.has(kind)) return;
+    await this.#inFlight.get(kind);
   }
 
   /** Every page of one kind, installed together and only while nothing newer has arrived. */
@@ -165,9 +292,10 @@ export class PersonalResourceReads implements PersonalResourcePort {
       const page = await this.#options.read(kind, cursor, read.signal);
       if (!read.current()) return;
       if (!page.ok) throw Object.assign(new Error(page.error.message), page.error);
-      if (page.data.data.kind !== kind) return;
+      if (page.data.data.kind !== kind) throw invalidInventory(`answered a ${page.data.data.kind}`);
       bytes += utf8ByteLength(JSON.stringify(page.data));
-      if (bytes > inventoryBytes || (page.data.next && cursors.has(page.data.next))) return;
+      if (bytes > inventoryCeilingBytes) throw invalidInventory("exceeds the inventory ceiling");
+      if (page.data.next && cursors.has(page.data.next)) throw invalidInventory("repeats a cursor");
       pages.push(page.data);
       if (page.data.next === null) break;
       cursors.add(page.data.next);
@@ -186,15 +314,25 @@ export class PersonalResourceReads implements PersonalResourcePort {
       return;
     }
     this.#behind.delete(kind);
-    pages.forEach((page, index) =>
-      this.#options.apply(page.data, index > 0, index < pages.length - 1),
-    );
+    this.#options.apply(pages.map((page) => page.data));
     const first = !this.#installed.has(kind);
     this.#installed.set(kind, revision);
     // Installed with no push since it began, so it is at least as new as anything pushed before.
     this.#known.set(kind, revision);
     if (first) this.#options.loaded?.(kind);
   }
+}
+
+/** Whether two revisions come from one Host boot, where a push may be a Runner's flap. */
+function sameBoot(a: string, b: string) {
+  return a.split(".")[1] === b.split(".")[1];
+}
+
+/** A Host answer no retry can mend; the error names the kind and is logged by the read's owner. */
+function invalidInventory(detail: string) {
+  return Object.assign(new Error(`The Host's resource inventory ${detail}.`), {
+    code: "invalid-response",
+  });
 }
 
 /**

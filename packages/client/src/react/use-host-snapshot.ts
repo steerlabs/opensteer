@@ -13,9 +13,12 @@ export function useHostSelector<Selection>(
   isEqual: HostSelectionEquality<Selection> = Object.is,
 ): Selection {
   const store = hostSnapshotStore(hostClient);
+  // One reader for this mounted hook, kept across selector changes, so its kinds stay watched
+  // exactly while it is mounted.
+  const reader = useMemo(() => store.reader?.(), [store]);
   const selection = useMemo(
-    () => createHostSelection(store, selector, isEqual),
-    [isEqual, selector, store],
+    () => createHostSelection(store, selector, isEqual, reader),
+    [isEqual, selector, store, reader],
   );
   return useSyncExternalStore(selection.subscribe, selection.getSnapshot, selection.getSnapshot);
 }

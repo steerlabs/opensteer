@@ -14,18 +14,24 @@ const source = (file: string) => readFileSync(path.join(root, file), "utf8");
 
 it("lists every HostSnapshot field a resource detail fills", () => {
   const client = source("packages/client/src/host/host-session-client.ts");
-  const start = client.indexOf("  #applyResource(");
-  const body = client.slice(start, client.indexOf("\n  }\n", start));
-  const updates = [...body.matchAll(/this\.#update\(\{([\s\S]*?)\n {8}\}\);/gu)].map(
+  // `#applyResource` installs a read; `#resourcePage` lays each page onto the snapshot it builds.
+  const body = ["  #applyResource(", "  #resourcePage("]
+    .map((head) => {
+      const start = client.indexOf(head);
+      return client.slice(start, client.indexOf("\n  }\n", start));
+    })
+    .join("\n");
+  const objects = [...body.matchAll(/\{\s*\.\.\.snapshot,([\s\S]*?)\n {6,8}\};/gu)].map(
     ([, fields]) => fields!,
   );
   const written = new Set(
-    updates.flatMap((fields) =>
-      [...fields.matchAll(/^ {10}([a-zA-Z]+):/gmu)].map(([, field]) => field!),
+    objects.flatMap((fields) =>
+      [...fields.matchAll(/^ {8,10}([a-zA-Z]+):/gmu)].map(([, field]) => field!),
     ),
   );
+  for (const [, field] of body.matchAll(/\{ \.\.\.snapshot, ([a-zA-Z]+):/gu)) written.add(field!);
   // The tab store is filled in place rather than replaced.
-  if (body.includes("this.#tabs.replaceCurrent")) written.add("tabs");
+  if (client.includes("this.#tabs.replaceCurrent")) written.add("tabs");
   expect(written.size).toBeGreaterThan(10);
   expect([...written].filter((field) => !(field in resourceBackedFields))).toEqual([]);
 });

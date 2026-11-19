@@ -30,7 +30,7 @@ import {
 } from "@opensteer/protocol/personal-sync";
 import { pluginCategoryResources, type PersonalResourceKind } from "@opensteer/protocol/resources";
 import type { PersonalShellStore } from "./personal-shell-store.js";
-import { PersonalResourceReads } from "./personal-resource-reads.js";
+import { PersonalResourceReads, type ResourceInterest } from "./personal-resource-reads.js";
 import { savedStartWaitMs, ScopedPersonalStream } from "./scoped-personal-stream.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { HostClient } from "./client.js";
@@ -136,7 +136,7 @@ import type {
   WaitingMessageEditor,
 } from "./client.js";
 import { HostClientRequestError, mainDoneTasks, resourceBackedFields } from "./client.js";
-import { trackSnapshot } from "./host-snapshot-store.js";
+import { rawSnapshot, trackSnapshot, type SnapshotReader } from "./host-snapshot-store.js";
 import { browserProfileHomeCommand } from "./browser-access.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
@@ -336,7 +336,8 @@ export class HttpHostClient {
   #publishedShell: ReturnType<ScopedPersonalStream["shell"]["getSnapshot"]> | undefined;
   #syncedAttachment: number | undefined;
   readonly #fetch: Fetch;
-  readonly #listeners = new Set<() => void>();
+  /** Each subscription is a reader: what its listener reads stays watched while it is subscribed. */
+  readonly #listeners = new Map<() => void, ResourceInterest>();
   /** A task's assignment reads, fenced by the viewer; and the tasks whose list is read. */
   readonly #assignmentReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
   readonly #assignmentsRead = new Set<string>();
@@ -673,8 +674,10 @@ export class HttpHostClient {
     this.#resources = new PersonalResourceReads({
       read: (kind, cursor, signal) =>
         this.rpc["resources.detail.get"]({ kind, ...(cursor ? { cursor } : {}) }, { signal }),
-      apply: (data, append, hasMore) => this.#applyResource(data, append, hasMore),
-      canRead: () => this.#visibility !== "background",
+      apply: (pages) => this.#applyResource(pages),
+      // Signed out, nothing can be read; signing in attaches, which reads what is watched.
+      canRead: () =>
+        this.#visibility !== "background" && this.#snapshot.session !== "authentication-required",
       watchChanged: () => this.#stream.watchResources(),
       // Rows stay on screen; the inventory is only no longer known to be complete.
       behind: (kind) => kind === "tab" && this.#tabs.markInventoryStale(),
@@ -889,12 +892,37 @@ export class HttpHostClient {
   }
 
   readonly #views = new WeakMap<HostSnapshot, HostSnapshot>();
-  /** Reading a resource-backed field watches its kinds for this viewer; see `resourceBackedFields`. */
+  /** The subscription whose listener is running: what it reads, it holds while subscribed. */
+  #reading: ResourceInterest | undefined;
+  /**
+   * Reading a resource-backed field watches its kinds (`resourceBackedFields`): for the
+   * subscription whose listener reads it, or else for a short lease renewed by every such read.
+   * Mounted screens read through a selection's own reader (`snapshotReader`).
+   */
   readonly getSnapshot = (): HostSnapshot =>
     trackSnapshot(this.#snapshot, this.#views, (field) => {
       const kinds = resourceKindsOf(field);
-      if (kinds) for (const kind of kinds) this.#resources.retain(kind);
+      if (!kinds) return;
+      const reading = this.#reading;
+      for (const kind of kinds) {
+        if (reading) reading.hold(kind);
+        else this.#resources.lease(kind);
+      }
     });
+
+  /** A reader of its own: kinds read through its view stay watched while it is open. */
+  readonly snapshotReader = (): SnapshotReader => {
+    const interest = this.#resources.interest();
+    const views = new WeakMap<HostSnapshot, HostSnapshot>();
+    return {
+      view: (snapshot) =>
+        trackSnapshot(rawSnapshot(snapshot), views, (field) => {
+          for (const kind of resourceKindsOf(field) ?? []) interest.hold(kind);
+        }),
+      open: interest.open,
+      close: interest.close,
+    };
+  };
 
   readonly #browserCursor = new BrowserCursorStore();
   readonly #browserEditing = new BrowserEditingStore(
@@ -934,8 +962,16 @@ export class HttpHostClient {
   };
 
   readonly subscribe = (listener: () => void): (() => void) => {
-    this.#listeners.add(listener);
-    return () => this.#listeners.delete(listener);
+    const interest = this.#listeners.get(listener) ?? this.#resources.interest();
+    if (!this.#listeners.has(listener)) {
+      interest.open();
+      this.#listeners.set(listener, interest);
+    }
+    return () => {
+      if (this.#listeners.get(listener) !== interest) return;
+      this.#listeners.delete(listener);
+      interest.close();
+    };
   };
 
   /** Writes saved personal state now, for a page about to be hidden or unloaded. */
@@ -947,6 +983,12 @@ export class HttpHostClient {
     command: ClientCommandInput,
     options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
   ): Promise<HostApiCommandOutput> {
+    // A new browser profile's home is kept only once this client knows the Host's homes.
+    if (
+      command.type === "browser.profile.create" ||
+      (command.type === "request.respond" && command.response.kind === "external")
+    )
+      await this.#resources.firstRead("browser-home");
     const parsedCommand = clientCommandSchema.parse(
       options?.preserveOrigin
         ? browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)
@@ -1013,7 +1055,15 @@ export class HttpHostClient {
     return origin ? { ...command, origin } : command;
   }
 
-  async #dispatchCommand(
+  #dispatchCommand(command: HostApiCommand, expectedSessionId?: string) {
+    if (command.type === "request.respond")
+      return this.#answerRequest(command.requestId, () =>
+        this.#dispatchCommandNow(command, expectedSessionId),
+      );
+    return this.#dispatchCommandNow(command, expectedSessionId);
+  }
+
+  async #dispatchCommandNow(
     command: HostApiCommand,
     expectedSessionId?: string,
   ): Promise<HostApiCommandOutput> {
@@ -1500,8 +1550,19 @@ export class HttpHostClient {
    * Requests' signature, attention), so nothing cleared can look already read. It is the only place
    * held data is cleared for a viewer.
    */
-  #forgetViewer(keep: Partial<HostSnapshot>) {
+  #forgetViewer(keep: Partial<HostSnapshot>, sameViewer = false) {
     this.#viewerGeneration++;
+    // The same person under a new history (a rollback, a restored Host): what they were shown stays
+    // on screen while all of it is read again, so nothing they have open is torn down. Only what
+    // says it was read is forgotten.
+    const held: Partial<HostSnapshot> = sameViewer
+      ? Object.fromEntries(
+          [...Object.keys(resourceBackedFields), ...sameViewerFields].map((field) => [
+            field,
+            this.#snapshot[field as keyof HostSnapshot],
+          ]),
+        )
+      : {};
     clearRunPageViews(this);
     clearRunPlacePictures(this);
     this.#runPlaces.clear();
@@ -1511,20 +1572,22 @@ export class HttpHostClient {
     this.#ownerViews.clear();
     this.#pageSessions.clear();
     this.#viewers.clear();
-    this.#tabs.clear();
+    if (sameViewer) this.#tabs.markInventoryStale();
+    else this.#tabs.clear();
     this.#threadState.clear();
     this.#threadRenames.clear();
     this.#threadIcons.clear();
-    this.#environmentCatalogs.clear();
+    if (!sameViewer) this.#environmentCatalogs.clear();
     this.#bodies.clear();
     this.#clearAttachmentReads();
     this.#threadDeployment.clear();
     this.#clearViewerReads();
     this.#invalidateAttention();
     this.#waitingRequestReads.stop("waiting-requests");
-    this.#waitingRequestSignature = "";
+    this.#waitingRequestStamp = "";
+    this.#answeredRequests.clear();
     this.#resources.reset();
-    this.#update({ ...emptySnapshot(this.#tabs), ...keep });
+    this.#update({ ...emptySnapshot(this.#tabs), ...held, ...keep });
   }
 
   watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
@@ -1715,8 +1778,14 @@ export class HttpHostClient {
           (shellAuthority.session &&
             this.#snapshot.sessionId !== shellAuthority.session.sessionId)))
     ) {
-      const { connection, connectionInterrupted, network } = this.#snapshot;
-      this.#forgetViewer({ connection, connectionInterrupted, network });
+      const { connection, connectionInterrupted, network, user, deploymentId } = this.#snapshot;
+      const sameViewer =
+        user !== null &&
+        shellAuthority !== undefined &&
+        shellAuthority !== null &&
+        user.id === shellAuthority.viewerId &&
+        deploymentId === shellAuthority.deploymentId;
+      this.#forgetViewer({ connection, connectionInterrupted, network }, sameViewer);
       forgot = true;
     }
     const shell = state.snapshot;
@@ -1724,6 +1793,7 @@ export class HttpHostClient {
     // Only the socket moves the connection; a scope repair on an open socket leaves it alone.
     const attachment = this.#stream.ready ? this.#stream.attachment : undefined;
     const attached = attachment !== undefined && this.#syncedAttachment !== attachment;
+    const reattached = attached && this.#syncedAttachment !== undefined;
     if (attached) this.#syncedAttachment = attachment;
     const connection = attached ? "connected" : this.#snapshot.connection;
     const session = shell.session;
@@ -1834,6 +1904,7 @@ export class HttpHostClient {
       this.#invalidatePersonalRemoteAccess();
       this.#reverifyCapabilities();
       this.#resources.resume();
+      if (reattached) this.#noticesMissed();
     } else if (forgot) this.#resources.resume();
     if (
       state.synchronized &&
@@ -1841,24 +1912,74 @@ export class HttpHostClient {
       (attached || attentionChanged)
     )
       this.#invalidateAttention(true);
-    // Follows the Host's pending count: on attach whenever it is positive (the bounded snapshot may
-    // list none of them), and on every change to it or to a pending Request's row.
-    const requestRows = [...state.attention.values()]
+    if (state.synchronized) this.#syncWaitingRequests(attached);
+  }
+
+  /** The Host's pending Requests as the shell states them: their count and each row's revision. */
+  #requestStamp(): string | undefined {
+    const state = this.#stream.shell.getSnapshot();
+    if (!state.synchronized || !state.snapshot) return undefined;
+    const rows = [...state.attention.values()]
       .filter(({ kind }) => kind === "request")
       .map(({ id, revision }) => `${id}@${revision}`)
       .join(",");
-    const requestSignature = `${shell.counts.pendingRequestCount}|${requestRows}`;
-    if (
-      state.synchronized &&
-      (attached || requestSignature !== this.#waitingRequestSignature) &&
-      (shell.counts.pendingRequestCount > 0 || this.#snapshot.waitingRequests.length > 0)
-    )
-      this.#readWaitingRequests();
-    this.#waitingRequestSignature = requestSignature;
+    return `${state.snapshot.counts.pendingRequestCount}|${rows}`;
   }
 
-  #waitingRequestSignature = "";
+  /**
+   * Brings `waitingRequests` to what the Host states now. The list is current only for the stamp
+   * it was read at; any other stamp reads it again, and a read in flight that is overtaken
+   * installs nothing. A count of zero needs no read. Called on every shell change, on attach,
+   * on returning to the front and after a local answer.
+   */
+  #syncWaitingRequests(force = false) {
+    const stamp = this.#requestStamp();
+    if (stamp === undefined || this.#disposed) return;
+    if (stamp.startsWith("0|")) {
+      this.#waitingRequestReads.stop("waiting-requests");
+      this.#waitingRequestStamp = stamp;
+      if (this.#snapshot.waitingRequests.length)
+        this.#update({ ...this.#snapshot, waitingRequests: [] });
+      return;
+    }
+    if (
+      !force &&
+      stamp === this.#waitingRequestStamp &&
+      !this.#waitingRequestReads.busy("waiting-requests")
+    )
+      return;
+    if (this.#visibility === "background") return;
+    this.#readWaitingRequests();
+  }
+
+  /** The stamp the installed `waitingRequests` were read at. */
+  #waitingRequestStamp = "";
+  /** Each run of the list read, counted, so an answer confirmed after a run began outlives it. */
+  #waitingRequestRuns = 0;
+  /** Requests answered here: hidden from any list read that began before the answer was confirmed. */
+  readonly #answeredRequests = new Map<string, { confirmedAfterRun: number | null }>();
   readonly #waitingRequestReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
+
+  /** The person answered a Request here: it leaves the list now, and stays gone unless re-asked. */
+  async #answerRequest(requestId: string, answer: () => Promise<HostApiCommandOutput>) {
+    this.#answeredRequests.set(requestId, { confirmedAfterRun: null });
+    const waitingRequests = this.#snapshot.waitingRequests.filter(
+      ({ request }) => request.id !== requestId,
+    );
+    if (waitingRequests.length !== this.#snapshot.waitingRequests.length)
+      this.#update({ ...this.#snapshot, waitingRequests });
+    try {
+      const result = await answer();
+      const held = this.#answeredRequests.get(requestId);
+      if (held) held.confirmedAfterRun = this.#waitingRequestRuns;
+      return result;
+    } catch (error) {
+      this.#answeredRequests.delete(requestId);
+      throw error;
+    } finally {
+      this.#syncWaitingRequests(true);
+    }
+  }
 
   /**
    * The pending Requests this person answers, with the work each holds up: every page, installed
@@ -1870,7 +1991,9 @@ export class HttpHostClient {
       .request(
         "waiting-requests",
         async (read) => {
-          const waitingRequests: HostSnapshot["waitingRequests"][number][] = [];
+          const stamp = this.#requestStamp();
+          const run = ++this.#waitingRequestRuns;
+          const read_: HostSnapshot["waitingRequests"][number][] = [];
           let before: string | null = null;
           for (let pages = 0; pages < 20; pages++) {
             const page: {
@@ -1883,11 +2006,23 @@ export class HttpHostClient {
               ),
             );
             if (!read.current()) return;
-            waitingRequests.push(...page.requests);
+            read_.push(...page.requests);
             before = page.window.hasMore ? page.window.nextBefore : null;
             if (!before) break;
           }
-          if (read.current()) this.#update({ ...this.#snapshot, waitingRequests });
+          if (!read.current() || stamp === undefined) return;
+          // An answer confirmed before this run began is the Host's truth now: a Request it still
+          // lists was asked again. One confirmed later, or not yet, stays hidden from this answer.
+          for (const [id, { confirmedAfterRun }] of this.#answeredRequests)
+            if (confirmedAfterRun !== null && confirmedAfterRun < run)
+              this.#answeredRequests.delete(id);
+          const waitingRequests = read_.filter(
+            ({ request }) => !this.#answeredRequests.has(request.id),
+          );
+          this.#waitingRequestStamp = stamp;
+          this.#update({ ...this.#snapshot, waitingRequests });
+          // The shell moved while this flew without overtaking it (a row outside the bound).
+          if (this.#requestStamp() !== stamp) queueMicrotask(() => this.#syncWaitingRequests());
         },
         { observed: () => !this.#disposed && this.#visibility !== "background" },
       )
@@ -1908,44 +2043,98 @@ export class HttpHostClient {
     if (this.#attentionTarget) void this.#readAttention(true).catch(() => undefined);
   }
 
+  /** A kind's complete inventory, every page of one read, installed as one change. */
   #applyResource(
+    pages: readonly import("zod").infer<
+      typeof import("@opensteer/protocol/resources").PersonalResourceDataSchema
+    >[],
+  ) {
+    const first = pages[0];
+    if (!first) return;
+    if (first.kind === "tab" || first.kind === "tab-layout") return this.#applyTabResource(pages);
+    let snapshot = this.#snapshot;
+    pages.forEach((data, index) => {
+      snapshot = this.#resourcePage(snapshot, data, index > 0);
+    });
+    if (first.kind === "harness-catalog")
+      snapshot = {
+        ...snapshot,
+        environments: snapshot.environments.map((row) => this.#withEnvironmentCatalogs(row)),
+      };
+    if (first.kind === "machine")
+      snapshot = { ...snapshot, machineRevision: this.#snapshot.machineRevision + 1 };
+    if (snapshot !== this.#snapshot) this.#update(snapshot);
+  }
+
+  /** The tab rows or layout of one read, replacing what the tab store holds in one step. */
+  #applyTabResource(
+    pages: readonly import("zod").infer<
+      typeof import("@opensteer/protocol/resources").PersonalResourceDataSchema
+    >[],
+  ) {
+    const tabPages = pages.flatMap((data) => (data.kind === "tab" ? [data.tabs] : []));
+    if (tabPages.length) {
+      this.#tabs.replaceRows(
+        mergeResourceRows(
+          [],
+          tabPages.flatMap((page) => page.tabs),
+          (tab) => tab.tabId,
+        ),
+        // Each page says whether the rows end with it; the last one speaks for the whole read.
+        tabPages.at(-1)!.complete,
+      );
+      return;
+    }
+    const layouts = pages.flatMap((data) => (data.kind === "tab-layout" ? [data.tabs.layout] : []));
+    const last = layouts.at(-1);
+    if (!last) return;
+    this.#tabs.replaceLayout({
+      ...last,
+      items: mergeResourceRows(
+        [],
+        layouts
+          .filter((layout) => layout.revision === last.revision)
+          .flatMap((layout) => layout.items),
+        (item) => (item.kind === "tab" ? item.tabId : item.group.groupId),
+      ),
+    });
+  }
+
+  /** One page of a read laid onto the snapshot being built; nothing is published here. */
+  #resourcePage(
+    snapshot: HostSnapshot,
     data: import("zod").infer<
       typeof import("@opensteer/protocol/resources").PersonalResourceDataSchema
     >,
     append: boolean,
-    hasMore: boolean,
-  ) {
-    const snapshot = this.#snapshot;
+  ): HostSnapshot {
     switch (data.kind) {
       case "plugin-engine":
         for (const listener of this.#pluginEngineListeners) listener(data.engine);
-        break;
+        return snapshot;
       case "settings":
-        this.#update({
+        return {
           ...snapshot,
           personalSettings: data.settings,
           quietTaskDays: data.quietTaskDays,
           executionPreferences: data.executionPreferences,
           voiceThreadId: data.settings?.voiceThreadId ?? null,
-        });
-        break;
+        };
       case "identity":
-        this.#update({ ...snapshot, identityConfig: data.identity });
-        break;
+        return { ...snapshot, identityConfig: data.identity };
       case "owner-profile":
-        this.#update({ ...snapshot, ownerProfile: data.ownerProfile });
-        break;
+        return { ...snapshot, ownerProfile: data.ownerProfile };
       case "environment":
-        this.#update({
+        return {
           ...snapshot,
           environments: mergeResourceRows(
             append ? snapshot.environments : [],
             data.environments.map((row) => this.#withEnvironmentCatalogs(row)),
             (row) => row.id,
           ),
-        });
-        break;
+        };
       case "harness-catalog":
+        // Staged in the catalog map; the snapshot takes it once every page is in.
         if (!append) this.#environmentCatalogs.clear();
         for (const row of data.environments) {
           const held = this.#environmentCatalogs.get(row.id) ?? [];
@@ -1962,24 +2151,18 @@ export class HttpHostClient {
             mergeResourceRows(held, page, (catalog) => catalog.harnessInstanceId),
           );
         }
-        this.#update({
-          ...snapshot,
-          environments: snapshot.environments.map((row) => this.#withEnvironmentCatalogs(row)),
-        });
-        break;
+        return snapshot;
       case "machine":
-        this.#update({
+        return {
           ...snapshot,
           machines: mergeResourceRows(
             append ? snapshot.machines : [],
             data.machines,
             (row) => row.id,
           ),
-          machineRevision: snapshot.machineRevision + 1,
-        });
-        break;
+        };
       case "harness":
-        this.#update({
+        return {
           ...snapshot,
           harnesses: mergeResourceRows(
             append ? snapshot.harnesses : [],
@@ -1989,37 +2172,12 @@ export class HttpHostClient {
             })),
             (row) => row.id,
           ),
-        });
-        break;
+        };
       case "tab":
-        this.#tabs.replaceCurrent({
-          tabs: mergeResourceRows(
-            append ? [...this.#tabs.rows.values()] : [],
-            data.tabs.tabs,
-            (tab) => tab.tabId,
-          ),
-          layout: this.#tabs.layout,
-          complete: data.tabs.complete && !hasMore,
-        });
-        break;
       case "tab-layout":
-        this.#tabs.replaceCurrent({
-          tabs: [...this.#tabs.rows.values()],
-          layout: {
-            ...data.tabs.layout,
-            items: mergeResourceRows(
-              append && this.#tabs.layout.revision === data.tabs.layout.revision
-                ? this.#tabs.layout.items
-                : [],
-              data.tabs.layout.items,
-              (item) => (item.kind === "tab" ? item.tabId : item.group.groupId),
-            ),
-          },
-          complete: this.#tabs.complete,
-        });
-        break;
+        return snapshot;
       case "browser-profile":
-        this.#update({
+        return {
           ...snapshot,
           browserProfiles: mergeResourceRows(
             append ? snapshot.browserProfiles : [],
@@ -2031,32 +2189,29 @@ export class HttpHostClient {
             data.deletions ?? [],
             (row) => row.profileId,
           ),
-        });
-        break;
+        };
       case "browser-placement":
-        this.#update({
+        return {
           ...snapshot,
           browserPlacements: mergeResourceRows(
             append ? snapshot.browserPlacements : [],
             data.placements,
             (row) => row.runnerId,
           ),
-        });
-        break;
+        };
       case "browser-home":
-        this.#update({
+        return {
           ...snapshot,
           browserProfileHomes: mergeResourceRows(
             append ? (snapshot.browserProfileHomes ?? []) : [],
             data.homes ?? [],
             (runnerId) => runnerId,
           ),
-        });
-        break;
+        };
       case "browser-availability":
-        this.#update({ ...snapshot, browserAvailable: data.available });
-        break;
+        return { ...snapshot, browserAvailable: data.available };
     }
+    return snapshot;
   }
 
   #withEnvironmentCatalogs(row: EnvironmentSummary): EnvironmentSummary {
@@ -3200,6 +3355,7 @@ export class HttpHostClient {
     this.transcriptFiles.dispose();
     this.assetUrls.dispose();
     this.#listeners.clear();
+    this.#resources.dispose();
   }
 
   loadEarlierNeedsYou(): Promise<void> {
@@ -3739,6 +3895,8 @@ export class HttpHostClient {
           if (this.#snapshot.needsYouCount || this.#snapshot.needsYou)
             this.#invalidateAttention(true);
           this.#resources.resume();
+          // A list read given up in the background, or a change heard there, is read now.
+          this.#syncWaitingRequests(true);
         }
       },
     };
@@ -3979,6 +4137,26 @@ export class HttpHostClient {
     this.#resolveLoad?.();
     this.#resolveLoad = undefined;
     this.#load = undefined;
+  }
+
+  /**
+   * The Host's notices are not replayed. After a gap, everything kept current only by one counts
+   * as changed: the apps directory and open apps, schedules and automations, browser usage and
+   * connected agents. Kinds with a resource revision compare it instead (`resume`); browser
+   * history, references and remote access reread on their own reconnect.
+   */
+  #noticesMissed() {
+    const appVersions = Object.fromEntries(
+      Object.entries(this.#snapshot.appVersions ?? {}).map(([appId, version]) => [
+        appId,
+        version + 1,
+      ]),
+    );
+    this.#update({ ...this.#snapshot, appsRevision: this.#snapshot.appsRevision + 1, appVersions });
+    const deploymentId = this.#snapshot.deploymentId;
+    if (deploymentId) this.#triggersChanged(deploymentId);
+    this.#browserUsageChanged([...this.#browserUsageRead.keys()]);
+    for (const listener of this.#connectionsListeners) listener();
   }
 
   #applyNotice(message: HostToClientMessage) {
@@ -4339,7 +4517,15 @@ export class HttpHostClient {
     reconcileBrowserTargets?.();
     this.browserHistory.setConnected(this.#snapshot.connection === "connected");
     if (this.connection) nameConnectionFromHost(this.connection, this.#snapshot);
-    for (const listener of this.#listeners) listener();
+    for (const [listener, interest] of this.#listeners) {
+      const outer = this.#reading;
+      this.#reading = interest;
+      try {
+        listener();
+      } finally {
+        this.#reading = outer;
+      }
+    }
     this.#checkBrowserUsageRuns();
   }
 }
@@ -4621,6 +4807,18 @@ function updateRequired(): HostClientRequestError {
     status: 426,
   });
 }
+
+/** Who the viewer is, kept with their resources through a new history of the same viewer. */
+const sameViewerFields = [
+  "loadedResources",
+  "user",
+  "deploymentId",
+  "deploymentShape",
+  "session",
+  "sessionId",
+  "sessionSurface",
+  "can",
+] as const satisfies readonly (keyof HostSnapshot)[];
 
 function resourceKindsOf(field: PropertyKey): readonly PersonalResourceKind[] | undefined {
   return typeof field === "string" && Object.hasOwn(resourceBackedFields, field)

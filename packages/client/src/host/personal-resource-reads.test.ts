@@ -3,6 +3,7 @@ import { expect, test, vi } from "vitest";
 import {
   PersonalResourceReads,
   type PersonalResourceReadOptions,
+  runnerSettleMs,
 } from "./personal-resource-reads.js";
 
 type Read = Awaited<ReturnType<PersonalResourceReadOptions["read"]>>;
@@ -29,7 +30,7 @@ function harness() {
       });
       return answer.promise;
     },
-    apply: (data) => applied.push(data),
+    apply: (pages) => applied.push(...pages),
     canRead: () => true,
     watchChanged: vi.fn(),
   });
@@ -118,7 +119,7 @@ test("a failed read retries with backoff while the kind is watched", async () =>
           ? { ok: false, error: { code: "timeout", message: "Host busy", retryable: true } }
           : { ok: true, data: { revision: "3", next: null, data: { kind } as never } };
       },
-      apply: (data) => applied.push(data),
+      apply: (pages) => applied.push(...pages),
       canRead: () => true,
       watchChanged: () => undefined,
     });
@@ -145,7 +146,7 @@ test("a read whose later page meets a newer push installs none of its pages", as
           resolve({ ok: true, data: { revision, next, data: { kind, cursor } as never } }),
         ),
       ),
-    apply: (data) => applied.push(data),
+    apply: (pages) => applied.push(...pages),
     canRead: () => true,
     watchChanged: () => undefined,
   });
@@ -182,4 +183,94 @@ test("an answer older than the push is read again once, then waits for the next 
   reads.changed({ machine: "3" });
   await vi.waitFor(() => expect(calls).toBe(3));
   release();
+});
+
+test("an inventory larger than a mebibyte installs whole, as one change, and counts as loaded", async () => {
+  const applied: unknown[][] = [];
+  const loaded: PersonalResourceKind[] = [];
+  // Twenty pages of about 60 KiB, as the Host serves a large model catalog.
+  const reads = new PersonalResourceReads({
+    read: async (kind, cursor) => {
+      const index = cursor ? Number(cursor) : 0;
+      return {
+        ok: true,
+        data: {
+          revision: "7",
+          next: index < 19 ? String(index + 1) : null,
+          data: { kind, padding: "m".repeat(60 * 1024), index } as never,
+        },
+      };
+    },
+    apply: (pages) => applied.push([...pages]),
+    canRead: () => true,
+    watchChanged: () => undefined,
+    loaded: (kind) => loaded.push(kind),
+  });
+  const release = reads.watch("harness-catalog", () => {});
+  await vi.waitFor(() => expect(loaded).toEqual(["harness-catalog"]));
+  expect(applied).toHaveLength(1);
+  expect(applied[0]).toHaveLength(20);
+  expect(reads.interests().installed).toEqual({ "harness-catalog": "7" });
+  release();
+});
+
+test("a Host that repeats a cursor installs nothing and is read again on its next revision", async () => {
+  let calls = 0;
+  const applied: unknown[] = [];
+  const reads = new PersonalResourceReads({
+    read: async (kind) => {
+      calls++;
+      return { ok: true, data: { revision: "1", next: "again", data: { kind } as never } };
+    },
+    apply: (pages) => applied.push(...pages),
+    canRead: () => true,
+    watchChanged: () => undefined,
+  });
+  const release = reads.watch("machine", () => {});
+  await vi.waitFor(() => expect(calls).toBe(2));
+  expect(applied).toEqual([]);
+  reads.changed({ machine: "2" });
+  await vi.waitFor(() => expect(calls).toBe(4));
+  release();
+});
+
+test("a Runner that drops and comes back costs one read of what it moves, and a first read never waits", async () => {
+  vi.useFakeTimers();
+  try {
+    const asked: string[] = [];
+    const reads = new PersonalResourceReads({
+      read: async (kind) => {
+        asked.push(kind);
+        return {
+          ok: true,
+          data: {
+            revision: reads.revision(kind) ?? "1.0123456789abcdef.1",
+            next: null,
+            data: { kind } as never,
+          },
+        };
+      },
+      apply: () => undefined,
+      canRead: () => true,
+      watchChanged: () => undefined,
+    });
+    const release = reads.watch("machine", () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toEqual(["machine"]);
+    // Disconnect, then reconnect, within the window: one reread, of the newest.
+    reads.changed({ machine: "1.0123456789abcdef.2" });
+    await vi.advanceTimersByTimeAsync(runnerSettleMs / 2);
+    reads.changed({ machine: "1.0123456789abcdef.3" });
+    expect(asked).toEqual(["machine"]);
+    await vi.advanceTimersByTimeAsync(runnerSettleMs);
+    expect(asked).toEqual(["machine", "machine"]);
+    expect(reads.interests().installed).toEqual({ machine: "1.0123456789abcdef.3" });
+    // A new Host boot is not a flap: read at once.
+    reads.changed({ machine: "1.fedcba9876543210.1" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toHaveLength(3);
+    release();
+  } finally {
+    vi.useRealTimers();
+  }
 });
