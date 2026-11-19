@@ -1328,6 +1328,10 @@ function ThreadPaneForUser(
     }
     tail.current = readTail(tail.current, contentOffset.y, max, true);
     const follows = tail.current.follows;
+    // Where the reader is, for a repair or the next subscription to centre on: the row at the top
+    // of the screen, or none while they follow the latest. The client tells the Host once they rest.
+    if (follows && !historical) hostClient.setTranscriptAnchor(threadId, undefined);
+    else if (visibleItem.current) hostClient.setTranscriptAnchor(threadId, visibleItem.current);
     // Only a change repaints: a scroll fires many times a second and the pill
     // is the only thing on screen that depends on it.
     setAtTail((current) => (current === follows ? current : follows));
