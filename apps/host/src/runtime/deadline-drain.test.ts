@@ -77,4 +77,54 @@ describe("DeadlineDrain", () => {
     expect(passes.map((at) => at - start)).toEqual([0, 2_000]);
     await drain.close();
   });
+
+  it("runs again for work that arrives between a pass's read and its arm", async () => {
+    let durable: Date | null = null;
+    const read = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let passes = 0;
+    const drain = new DeadlineDrain({
+      drain: async () => {
+        passes++;
+        const next = durable;
+        if (passes === 1) {
+          read.resolve();
+          await release.promise;
+        }
+        return next;
+      },
+    });
+    drain.start();
+    await read.promise;
+    // A commit lands after the pass read "nothing due" but before it arms.
+    durable = new Date(Date.now() + 60_000);
+    drain.wake();
+    release.resolve();
+    await drain.settled();
+    expect(passes).toBe(2);
+    // The second pass armed the new deadline.
+    expect(vi.getTimerCount()).toBe(1);
+    await drain.close();
+  });
+
+  it("resets its backoff on an outside wake, but not on its own retries", async () => {
+    const passes: number[] = [];
+    const drain = new DeadlineDrain({
+      drain: async () => {
+        passes.push(Date.now());
+        return retryWithBackoff;
+      },
+    });
+    const start = Date.now();
+    drain.start();
+    await drain.settled();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+    // A commit wakes it: the next retry is 5 s again, not 20 s.
+    drain.wake();
+    await drain.settled();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(passes.map((at) => at - start)).toEqual([0, 5_000, 15_000, 15_000, 20_000]);
+    await drain.close();
+  });
 });

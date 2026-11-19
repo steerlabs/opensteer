@@ -47,14 +47,25 @@ export class DeadlineDrain {
     this.wake();
   }
 
+  /**
+   * New durable work or a change that may unblock it: runs a pass now, with the
+   * backoff reset. A wake during a pass makes that pass run again after it ends,
+   * and every pass ends by arming from what it read, so work that arrives between
+   * a pass's read and its arm is never lost: its commit wakes the owner.
+   */
   wake(): void {
+    this.#failedPasses = 0;
+    this.#startPass();
+  }
+
+  #startPass(): void {
     if (this.#closed) return;
     this.#cancelTimer?.();
     this.#cancelTimer = undefined;
     this.#dirty = true;
     this.#work ??= this.#run().finally(() => {
       this.#work = undefined;
-      if (this.#dirty) this.wake();
+      if (this.#dirty) this.#startPass();
     });
   }
 
@@ -94,8 +105,9 @@ export class DeadlineDrain {
       }
     }
     if (next && !this.#closed)
+      // The owner's own deadline or retry: keeps the backoff growing.
       this.#cancelTimer = this.#clock.schedule(
-        () => this.wake(),
+        () => this.#startPass(),
         Math.min(maxTimerMs, Math.max(0, next.getTime() - this.#clock.now())),
       );
   }
