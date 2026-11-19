@@ -10,11 +10,11 @@
  * come from the npm registry as in a real install. Results append to `results.jsonl` in the report
  * directory, which must be outside this repository; a rerun skips documents already recorded.
  * `report.json` and `report.md` summarize them. `--rewrite` first rewrites each document with the
- * rules in `packages/plugin-engine/upstream-names.json`, as the catalog will serve it.
+ * one rewriter of upstream's names (`rewriteUpstreamSource`), as the catalog will serve it.
  */
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
-import { Effect, Schema } from "effect";
+import { Effect, Result as Outcome, Schema } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Digest, SecureRandom } from "effect/crypto";
 import {
@@ -126,10 +126,11 @@ await Effect.runPromise(
             const document = yield* Effect.tryPromise(() =>
               readFile(join(catalog, source), "utf8"),
             ).pipe(Effect.map((text) => Schema.decodeUnknownSync(Document)(JSON.parse(text))));
+            const rewritten = rewrite ? rewriteUpstreamSource(document.files) : undefined;
             const split = splitSource(
-              rewrite
-                ? Schema.decodeUnknownSync(SourceFiles)(rewriteUpstreamSource(document.files).files)
-                : document.files,
+              rewritten === undefined
+                ? document.files
+                : Schema.decodeUnknownSync(SourceFiles)(rewritten.files),
             );
             const manifest = split.code.find((file) => file.path === "package.json");
             const framework =
@@ -140,13 +141,20 @@ await Effect.runPromise(
                   ).pipe((option) => (option._tag === "Some" ? option.value : undefined))
                     ?.dependencies?.apps) ?? "none";
             const begin = performance.now();
-            const outcome = yield* runtime
-              .build({
-                files: Schema.decodeUnknownSync(CodeFiles)(split.code),
-                public: split.public.map((file) => file.path.slice("ui/public/".length)),
-                retain: false,
-              })
-              .pipe(Effect.timeout(`${timeoutSeconds} seconds`), Effect.result);
+            // Source the rewriter could not rewrite exactly fails as the author's own source does.
+            const outcome = rewritten?.problems.length
+              ? Outcome.fail({
+                  _tag: "VersionBuildFailed",
+                  stage: "source",
+                  message: rewritten.problems.join("\n"),
+                })
+              : yield* runtime
+                  .build({
+                    files: Schema.decodeUnknownSync(CodeFiles)(split.code),
+                    public: split.public.map((file) => file.path.slice("ui/public/".length)),
+                    retain: false,
+                  })
+                  .pipe(Effect.timeout(`${timeoutSeconds} seconds`), Effect.result);
             const result: Result = {
               source,
               framework,

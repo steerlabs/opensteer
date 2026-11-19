@@ -9,65 +9,63 @@ const rule = (scope: string, index = 0) => {
   return found;
 };
 const [bare] = names.identity.pluginCode as [string];
-const prose = rule("readme-prose", 1);
+const pkg = rule("package");
+const key = rule("manifest-key");
+const table = rule("reserved-table", 3);
 
+const manifest = `{
+  "name": "${pkg.from}demo",
+  "type": "module",
+  "${key.from}": { "title": "Demo" },
+  "dependencies": { "apps": "0.0.1-beta.140" }
+}
+`;
 const source = () => [
-  {
-    path: "package.json",
-    content:
-      JSON.stringify(
-        {
-          name: `${rule("manifest-name").from}demo`,
-          [rule("manifest-key").from]: { title: "Demo" },
-          dependencies: { apps: "0.0.1-beta.140" },
-        },
-        null,
-        2,
-      ) + "\n",
-  },
+  { path: "package.json", content: manifest },
   {
     path: "index.ts",
     content: [
-      `// ${prose.from} reads this file; "${bare}" in a comment is a name.`,
-      `/* ${bare} */`,
+      `// ${bare} comments and prose are not the rewriter's: they change nothing a build reads.`,
       `const route = "${rule("route-path").from}api/query";`,
       `const header = "${rule("header").from.toUpperCase()}";`,
       `const element = "${rule("element-id").from}";`,
       `const event = "${rule("event").from}";`,
       `const marker = "${rule("ui-marker").from}";`,
       `const code = "${rule("error-code").from}";`,
-      `const table = "SELECT * FROM ${rule("reserved-table").from}";`,
+      `const table = "SELECT * FROM ${rule("reserved-table").from.toUpperCase()}";`,
       `const setup = { signingSecret: "${rule("signing-secret").from}" };`,
-      // Outside every scope: an ordinary string with the word, and a URL that is not a comment.
       `const label = "Task ${bare}"; const url = "https://example.invalid//${bare}";`,
     ].join("\n"),
   },
   {
     path: "migrations/0001_init.sql",
-    content: `-- ${bare} comment stays: only reserved tables change here\nINSERT INTO notes SELECT * FROM ${rule("reserved-table", 3).from};\n`,
+    content: `-- ${bare} comment stays\nINSERT INTO notes SELECT '${table.from}', id FROM ${table.from};\n`,
   },
-  { path: "README.md", content: `${prose.from} discovers it. Set ${rule("readme-prose").from}.\n` },
-  { path: "data.json", content: JSON.stringify({ description: `${prose.from}` }) },
+  { path: "README.md", content: `${bare} discovers it.\n` },
+  { path: "data.json", content: JSON.stringify({ description: bare }) },
   { path: "ui/public/logo.png", content: "iVBORw0KGgo=", encoding: "base64" as const },
 ];
 
 test("rewrites plugin source within each rule's scope and nowhere else", () => {
   const original = source();
-  const { files, changed } = rewriteUpstreamSource(original);
+  const { files, changed, problems } = rewriteUpstreamSource(original);
   expect(changed).toBe(true);
+  expect(problems).toEqual([]);
   const text = (path: string) => {
     const file = files.find((candidate) => candidate.path === path);
     if (file === undefined || !("content" in file)) throw new Error(path);
     return file.content;
   };
-  expect(JSON.parse(text("package.json"))).toEqual({
-    name: `${rule("manifest-name").to}demo`,
-    [rule("manifest-key").to]: { title: "Demo" },
-    dependencies: { apps: "0.0.1-beta.140" },
-  });
+  // package.json is edited in place: its name's scope and the key, every other byte kept.
+  expect(text("package.json")).toBe(
+    manifest
+      .replace(`"${pkg.from}demo"`, `"${pkg.to}demo"`)
+      .replace(`"${key.from}"`, `"${key.to}"`),
+  );
+  expect(pkg.to).toBe("@opensteer-plugins/");
+  expect(key.to).toBe("pluginEngine");
   expect(text("index.ts").split("\n")).toEqual([
-    `// ${rule("code-comment").to} reads this file; "${rule("code-comment", 1).to}" in a comment is a name.`,
-    `/* ${rule("code-comment", 1).to} */`,
+    `// ${bare} comments and prose are not the rewriter's: they change nothing a build reads.`,
     `const route = "${rule("route-path").to}api/query";`,
     `const header = "${rule("header").to}";`,
     `const element = "${rule("element-id").to}";`,
@@ -78,13 +76,12 @@ test("rewrites plugin source within each rule's scope and nowhere else", () => {
     `const setup = { signingSecret: "${rule("signing-secret").to}" };`,
     `const label = "Task ${bare}"; const url = "https://example.invalid//${bare}";`,
   ]);
+  // A migration's identifiers change; its comments and the data it writes do not.
   expect(text("migrations/0001_init.sql")).toBe(
-    `-- ${bare} comment stays: only reserved tables change here\nINSERT INTO notes SELECT * FROM ${rule("reserved-table", 3).to};\n`,
+    `-- ${bare} comment stays\nINSERT INTO notes SELECT '${table.from}', id FROM ${table.to};\n`,
   );
-  expect(text("README.md")).toBe(`${prose.to} discovers it. Set ${rule("readme-prose").to}.\n`);
-  // No rule covers other JSON files or binary files: they keep their bytes.
-  expect(files[4]).toBe(original[4]);
-  expect(files[5]).toBe(original[5]);
+  // No rule covers prose, other JSON files or binary files: they keep their bytes.
+  for (const index of [3, 4, 5]) expect(files[index]).toBe(original[index]);
 });
 
 test("rewritten source rewrites to itself", () => {
@@ -94,10 +91,14 @@ test("rewritten source rewrites to itself", () => {
   expect(twice.files).toEqual(once);
 });
 
-test("package names change only by their scope's prefix", () => {
-  const from = rule("index-package").from;
-  expect(rewriteUpstreamPackage("index-package", `${from}gmail`)).toBe(
-    `${rule("index-package").to}gmail`,
-  );
-  expect(rewriteUpstreamPackage("document-package", "@acme/notes")).toBe("@acme/notes");
+test("refuses a package.json that has the key under both names", () => {
+  const both = JSON.stringify({ name: "demo", [key.from]: {}, [key.to]: {} });
+  const { files, problems } = rewriteUpstreamSource([{ path: "package.json", content: both }]);
+  expect(problems).toEqual([expect.stringContaining("package.json")]);
+  expect(files).toEqual([{ path: "package.json", content: both }]);
+});
+
+test("package names change only by the scope's prefix", () => {
+  expect(rewriteUpstreamPackage(`${pkg.from}gmail`)).toBe(`${pkg.to}gmail`);
+  expect(rewriteUpstreamPackage("@acme/notes")).toBe("@acme/notes");
 });

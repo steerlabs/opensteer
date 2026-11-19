@@ -29,7 +29,7 @@ export type CatalogAuth = typeof CatalogAuth.Type;
  */
 export const CatalogEntry = Schema.Struct({
   id: Schema.NonEmptyString,
-  /** The app's package name, such as `@plugin-engine/resend`. */
+  /** The app's package name, such as `@opensteer-plugins/resend`. */
   package: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
   description: Schema.String,

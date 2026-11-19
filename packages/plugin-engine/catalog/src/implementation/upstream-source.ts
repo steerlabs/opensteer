@@ -1,9 +1,10 @@
 /**
- * Rewrite plugin source written for upstream's names with the rules in `upstream-names.json`. Each
- * rule applies only within its scope (the file says what each scope covers); a file no rule
- * changes keeps its exact bytes, so rewriting is idempotent and rewritten source rewrites to
- * itself. Migrations get only the reserved-table rule, on complete SQL identifiers (see
- * `renameReservedTables` in the framework's contracts).
+ * The one rewriter of plugin source written for upstream's framework: the rules in
+ * `upstream-names.json`, the renames such source needs to build and run on Opensteer's framework.
+ * The Host's rebuild of installed plugins and the catalog snapshot both use it, so the same source
+ * always becomes the same bytes. Each rule applies only within its scope (the file says what each
+ * scope covers); a file no rule changes keeps its exact bytes, so rewriting is idempotent and
+ * rewritten source rewrites to itself. Prose and comments are not touched.
  */
 import { renameReservedTables } from "apps/contracts";
 import upstreamNames from "../../../upstream-names.json" with { type: "json" };
@@ -20,41 +21,10 @@ const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 const literal = (text: string, rule: Rule, flags = "gu") =>
   text.replace(new RegExp(escape(rule.from), flags), () => rule.to);
 const word = (text: string, rule: Rule) =>
-  text.replace(new RegExp(`(?<![\\w$])${escape(rule.from)}(?![\\w$])`, "gu"), () => rule.to);
+  text.replace(new RegExp(`(?<![\\w$])${escape(rule.from)}(?![\\w$])`, "giu"), () => rule.to);
 
 const codeFile = /\.(?:[cm]?[jt]sx?|html?|css|py|sh)$/u;
-const hashComments = /\.(?:py|sh)$/u;
 const migration = /^migrations\/[^/]+\.sql$/u;
-
-/** Apply `rewrite` to the text of each comment in `source`, leaving strings and code alone. */
-const inComments = (source: string, hashes: boolean, rewrite: (comment: string) => string) => {
-  let output = "";
-  let index = 0;
-  while (index < source.length) {
-    const char = source[index]!;
-    const next = source[index + 1];
-    const lineComment = (char === "/" && next === "/") || (hashes && char === "#");
-    if (lineComment || (char === "/" && next === "*")) {
-      const close = source.indexOf(lineComment ? "\n" : "*/", index + (lineComment ? 1 : 2));
-      const end = close === -1 ? source.length : lineComment ? close : close + 2;
-      output += rewrite(source.slice(index, end));
-      index = end;
-      continue;
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      let end = index + 1;
-      while (end < source.length && source[end] !== char && (char === "`" || source[end] !== "\n"))
-        end += source[end] === "\\" ? 2 : 1;
-      output += source.slice(index, end + 1);
-      index = end + 1;
-      continue;
-    }
-    const step = char === "\\" ? 2 : 1;
-    output += source.slice(index, index + step);
-    index += step;
-  }
-  return output;
-};
 
 const signingSecret = (text: string) =>
   scoped("signing-secret").reduce(
@@ -66,22 +36,35 @@ const signingSecret = (text: string) =>
     text,
   );
 
-const code = (path: string, text: string) => {
+const code = (text: string) => {
   let current = scoped("route-path", "element-id", "event", "ui-marker", "error-code").reduce(
     (value, rule) => literal(value, rule),
     text,
   );
   current = scoped("header").reduce((value, rule) => literal(value, rule, "giu"), current);
-  current = scoped("reserved-table").reduce((value, rule) => literal(value, rule), current);
-  current = signingSecret(current);
-  const comments = scoped("code-comment");
-  return inComments(current, hashComments.test(path), (comment) =>
-    comments.reduce((value, rule) => word(value, rule), comment),
-  );
+  current = scoped("reserved-table").reduce((value, rule) => word(value, rule), current);
+  return signingSecret(current);
 };
 
-/** package.json: the name's prefix and upstream-named keys; other bytes are kept when unchanged. */
-const manifest = (text: string) => {
+/** A package name with the package rule applied. */
+export const rewriteUpstreamPackage = (name: string): string => {
+  const rule = scoped("package").find((candidate) => name.startsWith(candidate.from));
+  return rule === undefined ? name : rule.to + name.slice(rule.from.length);
+};
+
+/** JSON text with object keys sorted, to compare values whatever their keys' order. */
+const canonical = (value: unknown) =>
+  JSON.stringify(value, (_key, item: unknown) =>
+    typeof item === "object" && item !== null && !Array.isArray(item)
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : item,
+  );
+
+/**
+ * package.json, edited in place: the name's prefix and the renamed top-level keys, every other byte
+ * kept. A problem when it holds a key under both names, or an edit would change anything else.
+ */
+const manifest = (text: string): string | { readonly problem: string } => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -89,61 +72,71 @@ const manifest = (text: string) => {
     return text;
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return text;
-  const keys = scoped("manifest-key");
-  const names = scoped("manifest-name");
-  let changed = false;
-  const entries = Object.entries(parsed).map(([key, value]): [string, unknown] => {
-    const renamed = keys.find((rule) => rule.from === key)?.to;
-    if (key === "name" && typeof value === "string") {
-      const rule = names.find((candidate) => value.startsWith(candidate.from));
-      if (rule !== undefined) {
-        changed = true;
-        return [key, rule.to + value.slice(rule.from.length)];
-      }
+  const expected: Record<string, unknown> = { ...parsed };
+  let output = text;
+  if (typeof expected.name === "string") {
+    const name = rewriteUpstreamPackage(expected.name);
+    const token = /("name"\s*:\s*)"(?:[^"\\]|\\.)*"/u.exec(output);
+    if (name !== expected.name && token !== null) {
+      output = `${output.slice(0, token.index)}${token[1]}${JSON.stringify(name)}${output.slice(token.index + token[0].length)}`;
+      expected.name = name;
     }
-    if (renamed === undefined) return [key, value];
-    changed = true;
-    return [renamed, value];
-  });
-  if (!changed) return text;
-  const indent = /^[{[]\r?\n([ \t]+)/u.exec(text)?.[1] ?? "  ";
-  return (
-    JSON.stringify(Object.fromEntries(entries), null, indent) + (text.endsWith("\n") ? "\n" : "")
-  );
+  }
+  for (const { from, to } of scoped("manifest-key")) {
+    if (!Object.hasOwn(expected, from)) continue;
+    if (Object.hasOwn(expected, to))
+      return { problem: `package.json has both "${from}" and "${to}"; keep only "${to}".` };
+    const key = new RegExp(`${escape(JSON.stringify(from))}(?=\\s*:)`, "gu");
+    const found = [...output.matchAll(key)];
+    if (found.length !== 1) return { problem: `package.json's "${from}" could not be renamed.` };
+    output = `${output.slice(0, found[0]!.index)}${JSON.stringify(to)}${output.slice(found[0]!.index + found[0]![0].length)}`;
+    expected[to] = expected[from];
+    delete expected[from];
+  }
+  if (output === text) return text;
+  let result: unknown;
+  try {
+    result = JSON.parse(output);
+  } catch {
+    return { problem: "package.json does not parse after its names were rewritten." };
+  }
+  return canonical(result) === canonical(expected)
+    ? output
+    : { problem: "package.json changed beyond its name and renamed keys." };
 };
 
 /** One source file's new text, or its own text when no rule in scope applies. */
-export const rewriteUpstreamFile = (path: string, text: string): string => {
+export const rewriteUpstreamFile = (
+  path: string,
+  text: string,
+): string | { readonly problem: string } => {
   if (path === "package.json") return manifest(text);
   if (migration.test(path)) return renameReservedTables(text);
-  if (path.endsWith(".md"))
-    return scoped("readme-prose").reduce((value, rule) => word(value, rule), text);
-  if (codeFile.test(path)) return code(path, text);
+  if (codeFile.test(path)) return code(text);
   return text;
 };
 
-/** Rewrite every text file; base64 and stored files are kept as they are. */
+/**
+ * Rewrite every text file of a plugin's source; base64 and stored files are kept as they are.
+ * `problems` lists what could not be rewritten exactly, by path; a file with one keeps its bytes.
+ */
 export const rewriteUpstreamSource = <
   File extends { readonly path: string } & ({ readonly content: string } | object),
 >(
   files: ReadonlyArray<File>,
-): { readonly files: File[]; readonly changed: boolean } => {
+): { readonly files: File[]; readonly changed: boolean; readonly problems: string[] } => {
   let changed = false;
+  const problems: string[] = [];
   const rewritten = files.map((file) => {
     if (!("content" in file) || typeof file.content !== "string" || "encoding" in file) return file;
     const content = rewriteUpstreamFile(file.path, file.content);
+    if (typeof content !== "string") {
+      problems.push(`${file.path}: ${content.problem}`);
+      return file;
+    }
     if (content === file.content) return file;
     changed = true;
     return { ...file, content };
   });
-  return { files: rewritten, changed };
-};
-
-/** A package name with the package-scope rule of `scope` applied. */
-export const rewriteUpstreamPackage = (
-  scope: "index-package" | "document-package",
-  name: string,
-): string => {
-  const rule = scoped(scope).find((candidate) => name.startsWith(candidate.from));
-  return rule === undefined ? name : rule.to + name.slice(rule.from.length);
+  return { files: rewritten, changed, problems };
 };
