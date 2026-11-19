@@ -56,6 +56,7 @@ import { catalogModelDisplayName } from "./model-catalog.js";
 import type { NodeDetailSubscription, NodeDetailSnapshot } from "./node-detail.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
 import type {
+  EnvironmentInventoryEntry,
   MachineInventoryEntry,
   MachineSectionCounts,
   MachineSummary,
@@ -1615,6 +1616,7 @@ export class HttpHostClient {
     this.#computerViews.clear();
     this.#ownerViews.clear();
     this.#machineSections.clear();
+    this.#environmentDrivers.clear();
     this.#pageSessions.clear();
     this.#viewers.clear();
     this.#tabs.clear();
@@ -2131,6 +2133,64 @@ export class HttpHostClient {
       snapshot = { ...snapshot, machineRevision: this.#snapshot.machineRevision + 1 };
     if (snapshot !== this.#snapshot) this.#update(snapshot);
     if (first.kind === "machine") this.#syncMachineDetails();
+    if (first.kind === "environment") this.#syncEnvironmentDetails();
+  }
+
+  /** How many engines the inventory said each environment has, by environment. */
+  readonly #environmentDrivers = new Map<string, number>();
+  readonly #environmentDetailReads = new FencedReads({
+    epoch: () => String(this.#viewerGeneration),
+  });
+
+  /**
+   * An environment from its inventory summary; its engines are what this client last read for
+   * it until `environment.detail.get` answers.
+   */
+  #environmentFromEntry(entry: EnvironmentInventoryEntry): EnvironmentSummary {
+    const { sections, ...summary } = entry;
+    this.#environmentDrivers.set(entry.id, sections.harnessDrivers);
+    const prior = this.#snapshot.environments.find(({ id }) => id === entry.id);
+    return {
+      ...summary,
+      harnessDrivers: sections.harnessDrivers ? (prior?.harnessDrivers ?? []) : [],
+      harnessCatalogs: [],
+    };
+  }
+
+  /**
+   * Reads each listed environment's engines, each on its own: an environment whose engines
+   * cannot be read stays listed with its status.
+   */
+  #syncEnvironmentDetails() {
+    const listed = new Set(this.#snapshot.environments.map(({ id }) => id));
+    for (const id of [...this.#environmentDrivers.keys()])
+      if (!listed.has(id)) {
+        this.#environmentDrivers.delete(id);
+        this.#environmentDetailReads.stop(`environment:${id}`);
+      }
+    for (const [id, drivers] of this.#environmentDrivers) {
+      if (!drivers) continue;
+      const key = `environment:${id}`;
+      if (this.#environmentDetailReads.busy(key)) {
+        this.#environmentDetailReads.changed(key);
+        continue;
+      }
+      void this.#environmentDetailReads
+        .request(key, async (read) => {
+          const { environment } = unwrapRpcResult(
+            await this.rpc["environment.detail.get"]({ environmentId: id }, { signal: read.signal }),
+          );
+          if (!read.current()) return;
+          if (!this.#snapshot.environments.some((held) => held.id === id)) return;
+          this.#update({
+            ...this.#snapshot,
+            environments: this.#snapshot.environments.map((held) =>
+              held.id === id ? { ...held, harnessDrivers: environment.harnessDrivers } : held,
+            ),
+          });
+        })
+        .catch(() => undefined);
+    }
   }
 
   /** What the inventory said each computer's heavy sections hold, by computer. */
@@ -2268,7 +2328,9 @@ export class HttpHostClient {
           ...snapshot,
           environments: mergeResourceRows(
             append ? snapshot.environments : [],
-            data.environments.map((row) => this.#withEnvironmentCatalogs(row)),
+            data.environments.map((entry) =>
+              this.#withEnvironmentCatalogs(this.#environmentFromEntry(entry)),
+            ),
             (row) => row.id,
           ),
         };
@@ -3490,6 +3552,7 @@ export class HttpHostClient {
     this.#assignmentReads.dispose();
     this.#waitingRequestReads.dispose();
     this.#machineDetailReads.dispose();
+    this.#environmentDetailReads.dispose();
     disposeMessageOutbox(this);
     if (this.#ownsConnection) this.connection.dispose();
     this.#closeSocket();

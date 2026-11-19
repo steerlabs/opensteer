@@ -1,7 +1,11 @@
 import { MachineSummarySchema } from "./machines.js";
 import { HostedBrowserBootstrapSchema } from "./browser.js";
 import { TabBootstrapSchema } from "./tabs.js";
-import { IdleCompactionPolicyViewSchema, PersonalSettingsSchema } from "@opensteer/core";
+import {
+  IdleCompactionPolicyViewSchema,
+  PersonalSettingsSchema,
+  RunnerCapabilitySchema,
+} from "@opensteer/core";
 import { AuthSessionIdSchema, PersonNameSchema, QuietTaskDaysSchema } from "@opensteer/core";
 import {
   AuthenticatedUserSchema,
@@ -38,6 +42,45 @@ export const HostBootstrapEnvironmentSchema = z.object({
   status: HostEnvironmentStatusSchema,
   can: z.object({ executeTasks: z.boolean() }),
 });
+
+export type HostBootstrapEnvironment = z.infer<typeof HostBootstrapEnvironmentSchema>;
+
+/**
+ * An environment as the `environment` inventory carries it: identity, status and what it can do,
+ * each bounded, so every environment a Deployment can hold sits far inside the inventory bound.
+ * Its engines (`harnessDrivers`, with their sources, installation and attachment facts) are read
+ * per environment through `environment.detail.get`; the list says only how many it has. Its
+ * account catalogs are the `harness-catalog` inventory.
+ */
+export const EnvironmentInventoryEntrySchema = HostBootstrapEnvironmentSchema.omit({
+  harnessCatalogs: true,
+  harnessDrivers: true,
+}).extend({
+  // Known capability names only: a Runner's descriptor drops any this Host does not know.
+  capabilities: z.array(z.string().max(64)).max(RunnerCapabilitySchema.options.length),
+  id: z.string().min(1).max(255),
+  name: z.string().min(1).max(255),
+  runnerId: z.string().min(1).max(255).nullable(),
+  sections: z.object({ harnessDrivers: z.number().int().nonnegative().max(100) }),
+});
+export type EnvironmentInventoryEntry = z.infer<typeof EnvironmentInventoryEntrySchema>;
+/** No environment inventory entry is larger than this, every field at its declared limit. */
+export const environmentInventoryEntryMaxBytes = 20 * 1024;
+
+/** An environment without its engines and catalogs, which are read on their own. */
+export function environmentInventoryEntry(
+  environment: HostBootstrapEnvironment,
+): EnvironmentInventoryEntry {
+  const { harnessCatalogs: _catalogs, harnessDrivers, ...entry } = environment;
+  return {
+    ...entry,
+    // Names stored before a Host stopped knowing them do not travel, so the count stays bounded.
+    capabilities: entry.capabilities.filter(
+      (name) => RunnerCapabilitySchema.safeParse(name).success,
+    ),
+    sections: { harnessDrivers: harnessDrivers.length },
+  };
+}
 
 export const HostBootstrapHarnessSchema = z.object({
   modelSettings: HarnessModelSettingsMapViewSchema.optional(),

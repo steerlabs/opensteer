@@ -158,6 +158,7 @@ export const hostApiScopes = {
   "integrations.get": "session",
   "machines.list": "session",
   "machine.detail.get": "session",
+  "environment.detail.get": "session",
   "machine.access.history": "session",
   "requests.list": "session",
   "tasks.list": "session",

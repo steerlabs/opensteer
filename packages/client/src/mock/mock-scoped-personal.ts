@@ -1,4 +1,9 @@
-import { machineInventoryEntry, type MachineSummary } from "@opensteer/protocol";
+import {
+  environmentInventoryEntry,
+  machineInventoryEntry,
+  type HostBootstrapEnvironment,
+  type MachineSummary,
+} from "@opensteer/protocol";
 import {
   MessageIdSchema,
   ExecutionNodeViewSchema,
@@ -610,7 +615,12 @@ export function mockScopedResource(
     case "owner-profile":
       return { kind, ownerProfile: bootstrap.ownerProfile ?? null };
     case "environment":
-      return { kind, environments: bootstrap.environments };
+      return {
+        kind,
+        environments: (bootstrap.environments as readonly HostBootstrapEnvironment[]).map(
+          (environment) => environmentInventoryEntry(environment),
+        ),
+      };
     case "harness-catalog":
       return {
         kind,

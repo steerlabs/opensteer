@@ -1,4 +1,7 @@
-import { testResourceData, joinEnvironmentCatalogs } from "../server/test-host-api-request.js";
+import {
+  joinEnvironmentCatalogs,
+  testEnvironmentReads,
+} from "../server/test-host-api-request.js";
 import type { AgentPhoneUpdateRelease } from "./update-release.js";
 /**
  * The parts the Agent Phone end-to-end suites drive: a real Android device or
@@ -1772,8 +1775,8 @@ export async function connectAgentComputer(
     const harnessInstanceId = await eventually(
       `${name}'s engine to be ready`,
       async () => {
-        const environments = await joinEnvironmentCatalogs((kind) =>
-          testResourceData(host.origin, kind, { headers: host.ownerHeaders }),
+        const environments = await joinEnvironmentCatalogs(
+          testEnvironmentReads(host.origin, { headers: host.ownerHeaders }),
         );
         const environment = environments.find(({ id }) => id === caller.environmentId);
         return environment?.connected

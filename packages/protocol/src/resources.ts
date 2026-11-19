@@ -6,10 +6,10 @@ import {
 import { z } from "zod";
 import { MachineInventoryEntrySchema } from "./machines.js";
 import {
+  EnvironmentInventoryEntrySchema,
   HostBootstrapEnvironmentSchema,
   IdentityConfigViewSchema,
   OwnerProfileViewSchema,
-  PersonalEnvironmentsViewSchema,
   PersonalHarnessesViewSchema,
   PersonalSettingsViewSchema,
 } from "./bootstrap.js";
@@ -135,7 +135,11 @@ export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
     kind: z.literal("owner-profile"),
     ownerProfile: OwnerProfileViewSchema.nullable(),
   }),
-  z.object({ kind: z.literal("environment"), environments: PersonalEnvironmentsViewSchema }),
+  /** Each environment's bounded summary; its engines are `environment.detail.get`. */
+  z.object({
+    kind: z.literal("environment"),
+    environments: z.array(EnvironmentInventoryEntrySchema).max(400),
+  }),
   /** Each computer's bounded summary; its heavy sections are `machine.detail.get`. */
   z.object({
     kind: z.literal("machine"),

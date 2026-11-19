@@ -1395,6 +1395,15 @@ export async function createHostServer(
         }),
       );
     },
+    "environment.detail.get": async (input, context) =>
+      rpcSuccess(
+        hostApi["environment.detail.get"].success.parse(
+          await personalResources.environmentDetail(
+            requireRpcSession(context),
+            input.environmentId,
+          ),
+        ),
+      ),
     "machine.detail.get": async (input, context) =>
       rpcSuccess(
         hostApi["machine.detail.get"].success.parse(
@@ -1607,6 +1616,7 @@ export async function createHostServer(
     | "machine.access.history"
     | "machines.list"
     | "machine.detail.get"
+    | "environment.detail.get"
     | "requests.list"
     | "run.attempts.list"
     | "tasks.list"

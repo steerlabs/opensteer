@@ -384,9 +384,7 @@ const evidence: unknown[] = [];
             (record) => record.harnessInstanceId === accountId,
           )!.catalog.status,
         ).toBe("ready");
-        const environments = await joinEnvironmentCatalogs((kind) =>
-          readTestResource(stack.api, kind),
-        );
+        const environments = await joinEnvironmentCatalogs(stack.api);
         const environment = environments.find((entry) => entry.id === harness.environmentId)!;
         expect(environment.connected).toBe(true);
         expect(

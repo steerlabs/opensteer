@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { z } from "zod";
+import { EnvironmentInventoryEntrySchema, environmentInventoryEntryMaxBytes } from "./bootstrap.js";
 import { DeviceCapabilityReasonSchema } from "./devices.js";
 import {
   MachineInventoryEntrySchema,
@@ -65,5 +66,15 @@ test("a machine inventory entry is bounded by its declared limits, and every com
   // Every computer a Deployment may hold, each at its worst, in under two thirds of the bound.
   expect(personalMachineLimit * machineInventoryEntryMaxBytes).toBeLessThanOrEqual(
     (personalInventoryBound("machine") * 2) / 3,
+  );
+});
+
+test("an environment inventory entry is bounded by its declared limits, and every environment fits", () => {
+  const { bytes, unbounded } = worstBytes(EnvironmentInventoryEntrySchema);
+  expect(unbounded).toEqual([]);
+  expect(bytes).toBeLessThanOrEqual(environmentInventoryEntryMaxBytes);
+  // Every Runner, and so every environment, comes from one of the Deployment's computers.
+  expect(personalMachineLimit * environmentInventoryEntryMaxBytes).toBeLessThanOrEqual(
+    (personalInventoryBound("environment") * 2) / 3,
   );
 });

@@ -78,6 +78,7 @@ export function createHostApiHandlers(
     | "tabs.state"
     | "machines.list"
     | "machine.detail.get"
+    | "environment.detail.get"
     | "assignment.get"
     | "thread.assignments.list"
     | "browser.searchSuggestions.get"
@@ -229,6 +230,7 @@ export function createHostApiHandlers(
     HostApiHandlers,
     | "machines.list"
     | "machine.detail.get"
+    | "environment.detail.get"
     | "tabs.get"
     | "tabs.state"
     | "apps.list"
