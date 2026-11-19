@@ -107,6 +107,8 @@ export class PersonalResourceReads implements PersonalResourcePort {
   >();
   readonly #timers = new Set<ReturnType<typeof setTimeout>>();
   readonly #unreadableKinds = new Set<PersonalResourceKind>();
+  /** Each kind's last read that ended in a failure no retry can mend, until another read starts. */
+  readonly #failures = new Map<PersonalResourceKind, unknown>();
   /** Each kind's read in flight, settled once it installs or gives up. */
   readonly #inFlight = new Map<PersonalResourceKind, Promise<void>>();
   /** A Runner kind's pending reread, from its first push within the settle window. */
@@ -287,6 +289,9 @@ export class PersonalResourceReads implements PersonalResourcePort {
     this.#known.clear();
     this.#installed.clear();
     this.#behind.clear();
+    // The next viewer or history reports its own failures.
+    this.#unreadableKinds.clear();
+    this.#failures.clear();
   }
 
   #read(kind: PersonalResourceKind) {
@@ -311,9 +316,14 @@ export class PersonalResourceReads implements PersonalResourcePort {
     )
       return;
     const observed = () => this.#listeners.has(kind) && this.#options.canRead();
+    this.#failures.delete(kind);
     const flying: Promise<void> = this.#reads
       .request(kind, (read) => this.#job(kind, read), { observed })
-      .catch(() => undefined)
+      // Only a failure no retry can mend settles the request with an error: kept for a command
+      // waiting on the kind, which then stops at once rather than asking again.
+      .catch((error: unknown) => {
+        this.#failures.set(kind, error);
+      })
       .finally(() => {
         if (this.#inFlight.get(kind) === flying) this.#inFlight.delete(kind);
       });
@@ -347,6 +357,8 @@ export class PersonalResourceReads implements PersonalResourcePort {
         }),
       ]);
       clearTimeout(timer);
+      // The read ended in a failure no retry can mend: the command fails with it, now.
+      if (this.#failures.has(kind)) throw this.#failures.get(kind);
       if (Date.now() >= deadline) break;
     }
     if (!ready())

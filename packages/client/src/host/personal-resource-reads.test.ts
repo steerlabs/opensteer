@@ -432,3 +432,23 @@ test("a new reader or an attach reads a Runner kind at once and takes over a set
     vi.useRealTimers();
   }
 });
+
+test("a command waiting on a kind whose read fails for good fails with that error at once", async () => {
+  let calls = 0;
+  const reads = new PersonalResourceReads({
+    read: async (kind) => {
+      calls++;
+      // A repeated cursor: no retry can mend it.
+      return { ok: true, data: { revision: "1", next: "again", data: { kind } as never } };
+    },
+    apply: () => undefined,
+    canRead: () => true,
+    watchChanged: () => undefined,
+  });
+  const started = Date.now();
+  await expect(reads.current("browser-home", 10_000)).rejects.toThrow("repeats a cursor");
+  expect(Date.now() - started).toBeLessThan(1_000);
+  // One read: its two pages, the second repeating the cursor.
+  expect(calls).toBe(2);
+  reads.dispose();
+});
