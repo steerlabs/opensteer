@@ -1104,6 +1104,14 @@ export async function createThreadInTransaction(
 ): Promise<ThreadCreationResult> {
   await requirePersonalOwner(transaction, input.createdBy);
   await lockCommandIdempotency(transaction, input.createdBy, input.idempotencyKey);
+  // The Voice task's slot is claimed before the environment it will run in is locked.
+  if (input.purpose === "voice")
+    await transaction
+      .selectFrom("personalSettings")
+      .select("singletonKey")
+      .where("singletonKey", "=", "personal")
+      .forNoKeyUpdate()
+      .execute();
   const resolvedInput = {
     ...input,
     accessMode: await resolveCreateThreadAccessMode(transaction, input),

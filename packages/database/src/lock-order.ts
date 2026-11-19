@@ -13,7 +13,6 @@ export const databaseLockOrder = [
   "client_sync_state",
   // The 0029 fence occupies the same rank before the offline rename.
   "deployment_event_state",
-  "personal_settings",
   // BEGIN team authority and content lock order.
   "team_access_state",
   "team_channels",
@@ -98,6 +97,8 @@ export const databaseLockOrder = [
   "channel_ingress_events",
   "advisory:lane",
   "advisory:command-idempotency",
+  // Written only under the deployment fence, first by commands that already hold their idempotency key.
+  "personal_settings",
   // Run admission and control precede Occurrences and browser execution state.
   "agent_connections",
   "runs",

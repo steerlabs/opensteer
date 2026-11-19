@@ -5,7 +5,6 @@ import { useTaskSourceView } from "../team/team-attachments.js";
 import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
 import { threadMark, type PasswordsSetupOffer } from "@opensteer/client/host";
-import { observeResize } from "@opensteer/shared/resizeObserver";
 import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import {
   useCallback,
@@ -719,10 +718,14 @@ function ThreadView({
     const elements = [transcript, body, transcript.firstElementChild, body.lastElementChild].filter(
       (element): element is Element => element !== null,
     );
-    return observeResize(elements, () => {
+    // Applied in the frame the size changed, before it is painted. Both only move the
+    // scroll, so neither resizes what is observed.
+    const observer = new ResizeObserver(() => {
       keepTailInView();
       restoreReading();
     });
+    for (const element of elements) observer.observe(element);
+    return () => observer.disconnect();
   }, []);
 
   // Arriving work never moves a reader who is elsewhere; it offers.

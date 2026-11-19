@@ -113,6 +113,14 @@ async function recordReceipt(
 /** Called when a Run becomes terminal; its Runner binding retires in the same commit. */
 export function deleteTerminalRunReceipts(tx: Tx, mutation: PersonalMutation, runId: RunId) {
   mutation.receipt(async () => {
+    await tx
+      .selectFrom("runnerEventReceipts")
+      .select("ordinal")
+      .where("runId", "=", runId)
+      .orderBy("ordinal")
+      // FOR UPDATE: Deletes these rows.
+      .forUpdate()
+      .execute();
     await tx.deleteFrom("runnerEventReceipts").where("runId", "=", runId).execute();
   });
 }

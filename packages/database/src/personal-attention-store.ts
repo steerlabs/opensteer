@@ -124,22 +124,25 @@ export async function republishAskerAttention(
   ).rows;
   if (!asking.length) return;
   mutation.pendingRequestsChanged();
-  await tx
-    .updateTable("personalAttention")
-    .set({ revision: mutation.sequence })
-    .where(
-      "id",
-      "in",
-      asking.map((request) => `request:${request.id}`),
-    )
-    .execute();
-  for (const request of asking)
-    attentionChanged(mutation, `request:${request.id}`, {
+  for (const request of asking) {
+    const id = `request:${request.id}`;
+    // Written with the commit's other attention rows, in their order; a row this commit
+    // already writes carries this revision.
+    if (mutation.attentionKind(id) === undefined)
+      mutation.stageAttention(id, "request", async () => {
+        await tx
+          .updateTable("personalAttention")
+          .set({ revision: mutation.sequence })
+          .where("id", "=", id)
+          .execute();
+      });
+    attentionChanged(mutation, id, {
       kind: "request",
       threadId: request.originatingThreadId,
       revision: mutation.sequence,
       title: request.title,
     });
+  }
 }
 
 /**

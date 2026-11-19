@@ -103,22 +103,56 @@ try {
   );
 
   await check("a reply that streams in keeps the reader at the tail", async () => {
+    // Read where the browser paints: after this frame's layout and the page's own resize
+    // observers, which were created first and so run first. A read from outside can land
+    // between a row growing and that frame, a state no reader is shown.
+    await page.evaluate((selector) => {
+      const element = document.querySelector<HTMLElement>(selector)!;
+      const gaps: number[] = [];
+      const observer = new ResizeObserver(() =>
+        gaps.push(Math.round(element.scrollHeight - element.clientHeight - element.scrollTop)),
+      );
+      observer.observe(element.firstElementChild!);
+      Reflect.set(window, "journeyTail", { gaps, observer });
+    }, scroller);
     await page.getByRole("textbox", { name: "Message", exact: true }).fill("One more question.");
     await page.keyboard.press("Enter");
-    const samples: number[] = [];
-    for (let sample = 0; sample < 20; sample++) {
-      await page.waitForTimeout(150);
-      samples.push(
-        await page.evaluate((selector) => {
-          const element = document.querySelector<HTMLElement>(selector)!;
-          return Math.round(element.scrollHeight - element.clientHeight - element.scrollTop);
-        }, scroller),
+    await page.waitForFunction((id) => {
+      const entries = (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot()
+        .transcripts[id]!;
+      const asked = entries.findIndex(
+        (entry) => entry.kind === "message" && entry.body === "One more question.",
       );
-    }
+      return (
+        asked >= 0 &&
+        entries
+          .slice(asked + 1)
+          .some(
+            (entry) =>
+              entry.kind === "message" && entry.messageKind === "assistant" && !entry.streaming,
+          )
+      );
+    }, threadId);
     await settle(page);
     await shot("02-streamed.png");
-    const observed = { samples, worst: Math.max(...samples) };
+    const observed = await page.evaluate((selector) => {
+      const element = document.querySelector<HTMLElement>(selector)!;
+      const { gaps, observer } = Reflect.get(window, "journeyTail") as {
+        gaps: number[];
+        observer: ResizeObserver;
+      };
+      observer.disconnect();
+      // The first reading is the observer starting, before anything grew.
+      const grown = gaps.slice(1);
+      return {
+        growths: grown.length,
+        worst: Math.max(0, ...grown),
+        settled: Math.round(element.scrollHeight - element.clientHeight - element.scrollTop),
+      };
+    }, scroller);
+    expectThat(observed, observed.growths > 2, "The reply never grew while it was watched.");
     expectThat(observed, observed.worst < 8, "The tail fell out of view while the reply grew.");
+    expectThat(observed, observed.settled < 8, "The reader was left short of the tail.");
     return observed;
   });
 
