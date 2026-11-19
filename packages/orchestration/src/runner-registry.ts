@@ -595,17 +595,22 @@ export class RunnerRegistry {
         message: "Runner identity is revoked",
       });
     }
-    for (const environmentId of identity.environmentIds) {
-      const owner = this.#byEnvironment.get(environmentId);
-      if (owner && owner.identity.runnerId !== identity.runnerId) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: `Execution environment ${environmentId} already belongs to another Runner`,
-        });
+    // Replacing a prior connection awaits its disconnect hook, and a newer
+    // generation can install itself meanwhile. So the check repeats until no
+    // mapping remains, with nothing awaited between the last check and install:
+    // an older generation never replaces a newer one.
+    for (;;) {
+      for (const environmentId of identity.environmentIds) {
+        const owner = this.#byEnvironment.get(environmentId);
+        if (owner && owner.identity.runnerId !== identity.runnerId) {
+          throw new OpensteerError({
+            code: "conflict",
+            message: `Execution environment ${environmentId} already belongs to another Runner`,
+          });
+        }
       }
-    }
-    const prior = this.#byRunner.get(identity.runnerId);
-    if (prior) {
+      const prior = this.#byRunner.get(identity.runnerId);
+      if (!prior) break;
       if (prior.identity.connectionGeneration >= identity.connectionGeneration) {
         throw new OpensteerError({
           code: "forbidden",
@@ -620,6 +625,12 @@ export class RunnerRegistry {
         sameBoot ? "superseded" : "replaced",
       );
       this.#assertOpen();
+      if (this.#revokedRunnerIds.has(identity.runnerId)) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Runner identity is revoked",
+        });
+      }
     }
     const settled = deferred<void>();
     const now = this.#now();

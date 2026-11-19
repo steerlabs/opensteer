@@ -313,6 +313,50 @@ describe("Runner connection registry", () => {
     expect(registry.identityForEnvironment(environmentId)?.bootId).toBe("boot-2");
     expect(registry.identityForRunner(runnerId)?.bootId).toBe("boot-2");
   });
+  it("never installs an older generation over a newer one that registered while it waited", async () => {
+    const held = Promise.withResolvers<void>();
+    let holdNext = true;
+    const registry = new RunnerRegistry({
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        // Generation 1's disconnect recovery is held while generation 2 waits on it.
+        onDisconnect: vi.fn(async () => {
+          if (!holdNext) return;
+          holdNext = false;
+          await held.promise;
+        }),
+        onEvent: vi.fn(commitThrough),
+      },
+    });
+    try {
+      const runnerId = createId("runner");
+      const environmentId = createId("environment");
+      const generation = (number: number, bootId: string) => {
+        const base = hello(runnerId, environmentId, bootId);
+        const fence = {
+          ...base.fence,
+          connectionGeneration: number,
+          connectionId:
+            `rcn_00000000-0000-4000-8000-00000000000${number}` as RunnerIdentity["connectionId"],
+        };
+        return { ...base, ...fence, fence };
+      };
+      await registerAttached(registry, generation(1, "boot-1"), new MemoryRunnerPeer("one"));
+      const second = generation(2, "boot-2");
+      const secondRegistered = registry.register(second, new MemoryRunnerPeer("two"));
+      await vi.waitFor(() => expect(registry.identityForRunner(runnerId)).toBeUndefined());
+      const third = generation(3, "boot-3");
+      await registerAttached(registry, third, new MemoryRunnerPeer("three"));
+      held.resolve();
+      await expect(secondRegistered).rejects.toThrow("stale");
+      expect(registry.identityForRunner(runnerId)?.connectionGeneration).toBe(3);
+      // The heartbeat fence keeps accepting the current connection.
+      expect(registry.isCurrentConnection(third)).toBe(true);
+      expect(registry.isCurrentConnection(second)).toBe(false);
+    } finally {
+      await registry.close();
+    }
+  });
   it("fences a revoked Runner and rejects every later registration", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
