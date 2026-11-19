@@ -881,6 +881,76 @@ test("refreshes a loaded Done window after a hidden shell replacement, once on r
   }
 });
 
+test("a foreground probe answered by frames rather than its pong still resumes the conversation", async () => {
+  vi.useFakeTimers();
+  const mock = new MockHostClient({ latencyMs: 0 });
+  const host = new MockPersonalHost(mock);
+  let foreground = () => {};
+  let background = () => {};
+  const lifecycle: ClientLifecycle = {
+    getSnapshot: () => ({ network: "online", visibility: "foreground" }),
+    onForeground: (listener) => {
+      foreground = listener;
+      return () => {};
+    },
+    onBackground: (listener) => {
+      background = listener;
+      return () => {};
+    },
+    onNetworkChange: () => () => {},
+  };
+  // A slow link: the pong to the foreground probe never comes back in time.
+  let holdPong = false;
+  const subscribes: string[] = [];
+  const connect = () => {
+    const socket = host.connect();
+    const send = socket.send.bind(socket);
+    socket.send = (data) => {
+      const frame = JSON.parse(String(data)) as { type: string; subscriptionId?: string };
+      if (holdPong && frame.type === "client.ping") return;
+      if (frame.type === "client.subscribe" && frame.subscriptionId !== "shell")
+        subscribes.push(frame.subscriptionId!);
+      send(data);
+    };
+    return socket;
+  };
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    capabilities: [],
+    lifecycle,
+    fetch: host.fetch,
+    webSocketFactory: connect,
+    // A client that watches its socket's liveness, as the apps do.
+    realtimeLiveness: { idleMs: 60_000, deadlineMs: 10_000 },
+  });
+  try {
+    await client.load();
+    const task = mock.getSnapshot().threads.find(({ listed }) => listed)!;
+    client.activateThread(task.id);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(subscribes).toHaveLength(1);
+    // In the background the conversation's subscription is let go.
+    background();
+    holdPong = true;
+    foreground();
+    await vi.advanceTimersByTimeAsync(100);
+    // Work arrives over the socket while the pong is still out: the socket is alive.
+    await mock.dispatch({
+      type: "thread.sendMessage",
+      threadId: task.id,
+      content: [{ type: "text", text: "Arrives while the pong is slow" }],
+      delivery: "queue",
+      idempotencyKey: "probe-progress",
+    });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(subscribes, "the conversation was never resumed").toHaveLength(2);
+    expect(client.getSnapshot().connection).toBe("connected");
+  } finally {
+    client.dispose();
+    host.dispose();
+  }
+});
+
 /** Saves one synchronized shell and selected-thread cut, as a previous run of the app would. */
 test("uses no timers or network reads when an attached personal client is idle", async () => {
   vi.useFakeTimers();
