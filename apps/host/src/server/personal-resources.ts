@@ -29,7 +29,7 @@ import {
 } from "@opensteer/protocol";
 import {
   personalResourcePageBytes,
-  personalResourceSingleRowBytes,
+  personalResourceReadCeilingBytes,
   pluginChangeResources,
   PersonalResourceDetailSchema,
   type PersonalResourceKind,
@@ -196,8 +196,8 @@ export class PersonalResources {
             lower = middle + 1;
           } else upper = middle - 1;
         }
-        // A row too large to share a page travels alone, up to its own ceiling.
-        if (!fitting && bytes(candidate(1)) <= personalResourceSingleRowBytes)
+        // A row too large to share a page travels alone, as large as one read carries.
+        if (!fitting && bytes(candidate(1)) <= personalResourceReadCeilingBytes)
           return PersonalResourceDetailSchema.parse(candidate(1));
         if (!fitting)
           throw new OpensteerError({

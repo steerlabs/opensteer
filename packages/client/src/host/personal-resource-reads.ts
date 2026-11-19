@@ -1,6 +1,7 @@
 import { utf8ByteLength } from "@opensteer/core";
 import {
   personalResourceKinds,
+  personalResourceReadCeilingBytes,
   pluginChangeResources,
   type PersonalResourceKind,
   type PersonalResourceRevisions,
@@ -24,9 +25,10 @@ const signalKinds: ReadonlySet<PersonalResourceKind> = new Set([
  * A safety net only: the most one read of an inventory may accumulate, as its pages arrive, before
  * it is taken for a runaway. Past it the read installs nothing, the last complete inventory stays,
  * and the kind is reported unreadable, so the screen offers "Couldn't load… Try again". Real
- * inventories are a few KiB an entry; this is far above any of them.
+ * inventories are a few KiB an entry; this is far above any of them, and the largest row the Host
+ * serves alone.
  */
-export const inventoryReadCeilingBytes = 32 * 1024 * 1024;
+export const inventoryReadCeilingBytes = personalResourceReadCeilingBytes;
 /**
  * The kinds a Runner's connection moves. The Host bumps them on every connect and disconnect; a
  * reread waits this long after the first such push, so a Runner that drops and comes back costs

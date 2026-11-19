@@ -93,10 +93,13 @@ export type PersonalResourceRevisions = z.infer<typeof InstalledResourceRevision
 /** One `resources.detail.get` response holds as many rows as fit this many bytes. */
 export const personalResourcePageBytes = 64 * 1024;
 /**
- * A row too large to share a page travels alone, up to this: a large model, account or computer
- * is loadable rather than refusing its whole inventory.
+ * The most one read of a kind's inventory carries, all its pages together. A row too large to
+ * share a page travels alone, as large as it is up to this: no transport between the Host and a
+ * client caps a response below it. The largest rows stored today are a few MiB (an AI account with
+ * every model setting it may hold; a catalog model, which arrives in one Runner frame of at most
+ * 8 MiB), far below it.
  */
-export const personalResourceSingleRowBytes = 1024 * 1024;
+export const personalResourceReadCeilingBytes = 32 * 1024 * 1024;
 
 export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -140,4 +143,4 @@ export const PersonalResourceDetailSchema = z
     next: z.string().max(4096).nullable(),
   })
   // A page is at most `personalResourcePageBytes`, unless it carries one larger row alone.
-  .refine((value) => utf8ByteLength(JSON.stringify(value)) <= personalResourceSingleRowBytes);
+  .refine((value) => utf8ByteLength(JSON.stringify(value)) <= personalResourceReadCeilingBytes);
