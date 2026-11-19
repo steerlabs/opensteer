@@ -121,7 +121,15 @@ export class ConnectionAttachment {
     this.#listeners.clear();
   }
 
-  reconfigure(options: { readonly attachmentKey: string | null }): void {
+  /**
+   * `establish: false` keeps an attachment that was live waiting as
+   * `connecting` instead of establishing now: the Host behind the new key is
+   * not ready to own a session yet, and `attach()` continues it when it is.
+   */
+  reconfigure(options: {
+    readonly attachmentKey: string | null;
+    readonly establish?: boolean;
+  }): void {
     if (this.#attachmentKey === options.attachmentKey) return;
     const wasAttached = this.#attachment !== null;
     this.#operationId += 1;
@@ -131,11 +139,26 @@ export class ConnectionAttachment {
     // and verified against the new identity rather than parked on a key that
     // nobody will ever answer for.
     if (wasAttached && options.attachmentKey !== null) {
+      if (options.establish === false) {
+        this.#attachment = { failure: null, status: "connecting" };
+        this.#publish();
+        void this.#close().catch(() => undefined);
+        return;
+      }
       this.#run(this.#operationId, true);
       return;
     }
     this.#attachment = null;
     this.#publish();
+  }
+
+  /** Whether this attachment is live or wanted, as opposed to plain "not attached". */
+  get attached(): boolean {
+    return this.#attachment !== null;
+  }
+
+  get key(): string | null {
+    return this.#attachmentKey;
   }
 
   observe(observation: HostSessionObservation): void {

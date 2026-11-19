@@ -245,6 +245,103 @@ it("carries setup from creating this computer straight into the app it opens", a
   container.remove();
 });
 
+it("opens this computer's Host only once main has attached it", async () => {
+  const personalId = createId("deployment");
+  const restarting = {
+    canStart: true,
+    issue: {
+      code: "host-unavailable" as const,
+      component: "host" as const,
+      detail: "Restarting Host in 2 seconds.",
+      repairAction: "restart-opensteer" as const,
+    },
+  };
+  const local = (
+    status: DeploymentAccessDeployment["status"],
+    attachmentKey: string,
+    state: DesktopPersonalDeploymentStatus["state"],
+    revision: number,
+  ) =>
+    snapshot({
+      deployments: [{ ...accessDeployment(status), ...personalSummary(personalId), attachmentKey }],
+      personalSetup: personalStatus({
+        deploymentId: personalId,
+        state,
+        step: null,
+        ...(state === "degraded" ? restarting : {}),
+      }),
+      revision,
+      selectedDeploymentId: personalId,
+    });
+  let access = local("idle", "loopback", "starting", 1);
+  const listeners = new Set<(next: DeploymentAccessSnapshot) => void>();
+  const retry = vi.fn(async () => undefined);
+  const bridge = {
+    cancelHostRequest: async () => undefined,
+    checkDeployments: async () => undefined,
+    retry,
+    getDeploymentAccessSnapshot: async () => access,
+    onHostWebSocketEvent: () => () => undefined,
+    onDeploymentAccessSnapshotChanged: (listener: (next: DeploymentAccessSnapshot) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    onNotificationActivated: () => () => undefined,
+    onLocalExecutionStatusChanged: () => () => undefined,
+  } as unknown as OpensteerDesktopBridge;
+  const emit = async (next: DeploymentAccessSnapshot) => {
+    access = next;
+    await act(async () => {
+      for (const listener of listeners) listener(next);
+    });
+  };
+  // The place list's own badge reads (attention, team links) are not the window's connection.
+  const placeListReads = ["/v1/rpc/attention.get", "/v1/rpc/teams.links.list"];
+  const hostRequests: string[] = [];
+  const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = input instanceof Request ? input.url : String(input);
+    const path = url.startsWith("app://opensteer/host/") ? new URL(url).pathname : null;
+    if (path && !placeListReads.some((read) => path.endsWith(read))) hostRequests.push(path);
+    return new Promise<Response>(() => undefined);
+  });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<DesktopApp bridge={bridge} />));
+    await vi.waitFor(() => expect(container.textContent).toContain("Starting Opensteer"));
+
+    // The Host came up and main is attaching it: nothing here is the window's to open yet.
+    await emit(local("idle", "owner", "ready", 2));
+    await emit(local("connecting", "owner", "ready", 3));
+    expect(hostRequests).toEqual([]);
+
+    await emit(local("connected", "owner", "ready", 4));
+    await vi.waitFor(() => expect(hostRequests.length).toBeGreaterThan(0));
+    expect(hostRequests.every((path) => path.startsWith(`/host/${personalId}/`))).toBe(true);
+
+    // The Host restarts and comes back as the same identity: still main's to attach first.
+    const beforeRestart = hostRequests.length;
+    await emit(local("connecting", "loopback", "degraded", 5));
+    // The restart says what it is doing and can be tried again by hand.
+    expect(container.textContent).toContain("Restarting Host in 2 seconds.");
+    const tryAgain = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Try again",
+    );
+    await act(async () => tryAgain!.click());
+    expect(retry).toHaveBeenCalledOnce();
+    await emit(local("connecting", "owner", "degraded", 6));
+    await emit(local("connecting", "owner", "ready", 7));
+    expect(hostRequests.length).toBe(beforeRestart);
+    await emit(local("connected", "owner", "ready", 8));
+    await vi.waitFor(() => expect(hostRequests.length).toBeGreaterThan(beforeRestart));
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    fetch.mockRestore();
+  }
+});
+
 it.each([
   ["listed", () => ({ deployments: [{ ...accessDeployment("idle"), name: "Studio" }] })],
   [

@@ -1757,6 +1757,94 @@ describe("DesktopHostTransport", () => {
     expect(networkSocket.close).toHaveBeenCalledWith(4_001, "Deployment changed");
   });
 
+  it("keeps a renderer connection trying when its attachment moves under a request", async () => {
+    // The supervised Host was down when this request entered main and is up when
+    // it resolves: main refuses it as `deployment-changed`, which is a cancel.
+    const canonicalOrigin = "http://127.0.0.1:43110";
+    const personal = DeploymentConnectionSchema.parse({
+      ...deployment("Mac mini", canonicalOrigin),
+      authority: testDiscoveryEnvelope({
+        canonicalOrigin,
+        deploymentId: createId("deployment"),
+        hostInstanceId: createId("hostInstance"),
+        hostKey: { algorithm: "Ed25519" },
+        deploymentShape: { kind: "personal" },
+      }),
+      bootstrapMethods: [],
+      endpoints: [
+        { kind: "canonical", origin: canonicalOrigin, verifiedAt: "2026-08-11T10:00:00.000Z" },
+      ],
+      kind: "personal",
+    });
+    const deploymentId = personal.authority.document.deploymentId;
+    const ready = testPersonalHostRuntime({
+      discovery: personal.authority.document,
+      localOrigin: canonicalOrigin,
+      observedAt: "2026-08-11T10:00:00.000Z",
+      ownership: "desktop-personal-host-supervisor",
+      state: "ready",
+      verification: "signed-loopback-discovery",
+    });
+    let runtime: PersonalHostRuntimeRecord | null = null;
+    let reachedHost = 0;
+    const reached = vi.fn(async () => {
+      if (!runtime) throw new TypeError("net::ERR_CONNECTION_REFUSED");
+      reachedHost += 1;
+      return new Promise<Response>(() => undefined);
+    });
+    const log = vi.fn();
+    const transport = desktopHostTransport({
+      catalog: catalogStore([personal], deploymentId),
+      localRuntime: { current: async () => runtime },
+      log,
+      network: { openWebSocket: () => socket(), request: reached },
+      supervisedDeploymentId: deploymentId,
+    });
+    const refusals: (string | null)[] = [];
+    const route = routeFetch(transport);
+    const host = new HttpHostClient({
+      baseUrl: new URL(routeOrigin),
+      fetch: createDesktopHostFetch(
+        cancelBridge(transport),
+        routeOrigin,
+        deploymentId,
+        async (input, init) => {
+          const response = await route(input, init);
+          refusals.push(response.headers.get(desktopHostTransportErrorHeader));
+          return response;
+        },
+      ),
+    });
+    const phases = new Set<string>();
+    const unsubscribe = host.connection.subscribe(() =>
+      phases.add(host.connection.getSnapshot().phase),
+    );
+    try {
+      host.connection.start();
+      await vi.waitFor(() => expect(refusals).toContain("unreachable"), {
+        timeout: 1_000,
+        interval: 5,
+      });
+      runtime = ready;
+      // Retried by itself: the next attempt reaches the Host without a person's Try again.
+      await vi.waitFor(() => expect(reachedHost).toBeGreaterThan(0), {
+        timeout: 3_000,
+        interval: 10,
+      });
+      expect(refusals).toContain("deployment-changed");
+      expect(phases).not.toContain("blocked");
+      // Main says why, by route and code alone.
+      expect(log).toHaveBeenCalledWith("desktop.host-route.refused", {
+        code: "deployment-changed",
+        route: "bootstrap.get",
+      });
+    } finally {
+      unsubscribe();
+      host.dispose();
+      transport.dispose();
+    }
+  });
+
   /**
    * The regression this phase exists to fix: at the keyboard of the computer
    * that hosts a Personal Deployment, the attachment is `owner` and provider

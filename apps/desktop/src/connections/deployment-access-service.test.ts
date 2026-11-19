@@ -312,6 +312,174 @@ describe("DeploymentAccessService", () => {
     service.dispose();
   });
 
+  it("holds a connected local attachment through a Host restart until the supervisor is ready", async () => {
+    const owner = deployment({
+      attachmentKey: "owner:first",
+      kind: "personal",
+      lastUsedAt: "2026-08-20T10:00:00.000Z",
+      onThisComputer: true,
+      source: "this-device",
+    });
+    const ready = { ...readyPersonalStatus, deploymentId: owner.id };
+    const fixture = fakePorts({
+      deployments: [owner],
+      personal: ready,
+      selectedDeploymentId: owner.id,
+    });
+    const service = new DeploymentAccessService(fixture.ports);
+    await service.initialize();
+    await settle();
+    expect(fixture.establish).toHaveBeenCalledOnce();
+    expect(service.snapshot().deployments[0]?.status).toBe("connected");
+
+    // The Host crashed: no runtime, so the row resolves to its loopback address.
+    const restarting = { ...ready, canStart: true, state: "degraded" as const, step: null };
+    fixture.replaceCatalog({
+      deployments: [{ ...owner, access: "native", key: "native" }],
+      selectedDeploymentId: owner.id,
+    });
+    fixture.emitPersonal(restarting);
+    await settle();
+    // The new Host is serving, but its owner claim and Runner are not back yet.
+    fixture.replaceCatalog({
+      deployments: [{ ...owner, key: "owner:second" }],
+      selectedDeploymentId: owner.id,
+    });
+    fixture.emitPersonal({ ...restarting, step: "starting-host" });
+    await settle();
+
+    expect(fixture.establish).toHaveBeenCalledOnce();
+    expect(service.snapshot().deployments[0]).toMatchObject({
+      attachmentKey: "owner:second",
+      failure: null,
+      status: "connecting",
+    });
+
+    fixture.emitPersonal(ready);
+    await settle();
+
+    expect(fixture.establish).toHaveBeenCalledTimes(2);
+    expect(service.snapshot().deployments[0]).toMatchObject({
+      attachmentKey: "owner:second",
+      status: "connected",
+    });
+
+    // The next restart's new key and its ready arrive in one read: one establishment.
+    fixture.replaceCatalog({
+      deployments: [{ ...owner, access: "native", key: "native" }],
+      selectedDeploymentId: owner.id,
+    });
+    fixture.emitPersonal(restarting);
+    await settle();
+    fixture.replaceCatalog({
+      deployments: [{ ...owner, key: "owner:third" }],
+      selectedDeploymentId: owner.id,
+    });
+    fixture.emitPersonal(ready);
+    await settle();
+    expect(fixture.establish).toHaveBeenCalledTimes(3);
+    expect(service.snapshot().deployments[0]).toMatchObject({
+      attachmentKey: "owner:third",
+      status: "connected",
+    });
+
+    // A restart that gives up leaves the row to the supervisor's own failure.
+    fixture.replaceCatalog({
+      deployments: [{ ...owner, access: "native", key: "native" }],
+      selectedDeploymentId: owner.id,
+    });
+    fixture.emitPersonal(restarting);
+    await settle();
+    expect(service.snapshot().deployments[0]?.status).toBe("connecting");
+    fixture.emitPersonal({ ...restarting, state: "repair-required" });
+    await settle();
+
+    expect(fixture.establish).toHaveBeenCalledTimes(3);
+    expect(service.snapshot().deployments[0]).toMatchObject({ failure: null, status: "idle" });
+    service.dispose();
+  });
+
+  it("lets Cancel win over a local Retry whose restart is still running", async () => {
+    const owner = deployment({
+      attachmentKey: "owner",
+      kind: "personal",
+      lastUsedAt: "2026-08-20T10:00:00.000Z",
+      onThisComputer: true,
+      source: "this-device",
+    });
+    const ready = { ...readyPersonalStatus, deploymentId: owner.id };
+    const fixture = fakePorts({
+      deployments: [owner],
+      personal: ready,
+      selectedDeploymentId: owner.id,
+    });
+    const service = new DeploymentAccessService(fixture.ports);
+    await service.initialize();
+    await settle();
+    const restarting = { ...ready, canStart: true, state: "degraded" as const, step: null };
+    fixture.replaceCatalog({
+      deployments: [{ ...owner, access: "native", key: "native" }],
+      selectedDeploymentId: owner.id,
+    });
+    fixture.emitPersonal(restarting);
+    await settle();
+    expect(service.snapshot().deployments[0]?.status).toBe("connecting");
+
+    const started = Promise.withResolvers<typeof ready>();
+    vi.mocked(fixture.ports.personal.start).mockReturnValueOnce(started.promise);
+    const retrying = service.retry();
+    await service.cancel();
+    expect(service.snapshot().deployments[0]?.status).toBe("idle");
+    fixture.replaceCatalog({ deployments: [owner], selectedDeploymentId: owner.id });
+    started.resolve(ready);
+    await retrying;
+    await settle();
+
+    expect(fixture.establish).toHaveBeenCalledOnce();
+    expect(service.snapshot().deployments[0]?.status).toBe("idle");
+    service.dispose();
+  });
+
+  it("keeps the newest place list when an older read finishes last", async () => {
+    const owner = deployment({
+      attachmentKey: "owner",
+      kind: "personal",
+      lastUsedAt: "2026-08-20T10:00:00.000Z",
+      onThisComputer: true,
+      source: "this-device",
+    });
+    const ready = { ...readyPersonalStatus, deploymentId: owner.id };
+    const fixture = fakePorts({
+      deployments: [owner],
+      personal: ready,
+      selectedDeploymentId: owner.id,
+    });
+    const service = new DeploymentAccessService(fixture.ports);
+    await service.initialize();
+    await settle();
+    expect(service.snapshot().deployments[0]?.status).toBe("connected");
+
+    // Read while the Host was down, answered only after the read that saw it back.
+    const stale = Promise.withResolvers<CatalogProjection>();
+    vi.mocked(fixture.ports.catalog.read).mockReturnValueOnce(stale.promise);
+    fixture.emitPersonal({ ...ready, state: "degraded", step: null });
+    fixture.emitPersonal(ready);
+    await settle();
+    stale.resolve({
+      deployments: [{ ...owner, access: "native", key: "native" }],
+      revision: 2,
+      selectedDeploymentId: owner.id,
+    });
+    await settle();
+
+    expect(fixture.establish).toHaveBeenCalledOnce();
+    expect(service.snapshot().deployments[0]).toMatchObject({
+      attachmentKey: "owner",
+      status: "connected",
+    });
+    service.dispose();
+  });
+
   it("does not carry a deferred local attachment across a selection change", async () => {
     const local = deployment({
       kind: "personal",
@@ -1704,6 +1872,10 @@ function fakePorts(
     emitCatalog(next: Omit<CatalogProjection, "revision">) {
       projection = { ...next, revision: projection.revision + 1 };
       for (const listener of catalogListeners) listener();
+    },
+    /** What the next projection read returns, as a supervisor status change re-reads it. */
+    replaceCatalog(next: Omit<CatalogProjection, "revision">) {
+      projection = { ...next, revision: projection.revision + 1 };
     },
     emitJoined(ids: readonly string[]) {
       joined = new Set(ids);

@@ -101,6 +101,10 @@ function personalSetupShowing(
   if (setup.deploymentId === null)
     return setup.state !== "stopped" && setup.state !== "repair-required";
   if (!deployments.some(({ id }) => id === setup.deploymentId)) return !selected;
+  // Main holds this computer's attachment while its Host restarts, and the
+  // restart's own progress and Try again belong on screen until it is back.
+  if (setup.state === "degraded")
+    return selected?.id === setup.deploymentId && selected.status === "connecting";
   if (setup.state !== "checking" && setup.state !== "starting") return false;
   return !selected || (selected.id === setup.deploymentId && selected.status === "idle");
 }
@@ -240,8 +244,17 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     selectedConnection?.attachmentKey,
     selectedConnection?.capabilities,
   ]);
+  // Main attaches this computer's own Host once its supervisor says it can own
+  // a session; a window connecting first races that attach and the Host's start.
+  // Admission holds while the identity does, so status changes keep the client,
+  // and ends when it moves: a restarted Host can come back as the same identity.
+  const [admittedIdentity, setAdmittedIdentity] = useState<string | null>(null);
+  const admits = !selected?.onThisComputer || selectedConnection?.status === "connected";
+  if (admittedIdentity !== hostTransportIdentity && (admits || admittedIdentity !== null))
+    setAdmittedIdentity(admits ? hostTransportIdentity : null);
   const hostClient = useMemo(() => {
-    if (!selected || passkeyMode === null) return null;
+    if (!selected || passkeyMode === null || admittedIdentity !== hostTransportIdentity)
+      return null;
     return createBrowserHostClient({
       desktopMedia: true,
       ...(selectedConnection?.authorityKey
@@ -276,7 +289,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
         selected.id,
       ),
     });
-  }, [bridge, hostTransportIdentity, passkeyMode]);
+  }, [admittedIdentity, bridge, hostTransportIdentity, passkeyMode]);
 
   // Only whether this window's connection was ever ready; the surface never redraws per publish.
   const everReady = useClientConnectionEverReady(hostClient?.connection ?? null);

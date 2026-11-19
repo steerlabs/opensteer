@@ -602,11 +602,14 @@ async function run(): Promise<void> {
       catalog = { ...catalog, revision: 4, selectedDeploymentId: null };
       await transport.selection();
       const movedResult = z
-        .strictObject({ ok: z.literal(false), error: HostApiErrorSchema })
+        .object({
+          rejected: z.object({
+            kind: z.literal("cancelled"),
+            reason: z.literal("deployment-changed"),
+          }),
+        })
         .parse(await moved);
-      assert.equal(movedResult.error.reason, "transport-deployment-changed");
-      assert.equal(movedResult.error.retryable, false);
-      cases.push({ case: "renderer-deployment-changed", ...movedResult });
+      cases.push({ case: "renderer-deployment-changed", ...movedResult.rejected });
       catalog = {
         ...catalog,
         revision: 5,

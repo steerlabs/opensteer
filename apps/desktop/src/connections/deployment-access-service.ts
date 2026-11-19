@@ -184,6 +184,8 @@ export class DeploymentAccessService {
     { readonly abort: AbortController; readonly done: Promise<void> }
   >();
   #revision = 0;
+  /** The newest catalog read: an older one finishing later must not undo it. */
+  #catalogRead = 0;
   #attachment: ConnectionAttachment | null = null;
   #attachmentUnsubscribe: (() => void) | null = null;
   #unavailable: readonly DeploymentAccessUnavailable[] = [];
@@ -503,8 +505,15 @@ export class DeploymentAccessService {
       throw operationUnavailable("retry");
     }
     if (localRestart) {
+      // A Cancel while the stack starts is the newer wish.
+      const operationId = this.#operationId;
       const status = await this.#ports.personal.start();
-      if (this.#disposed || this.#catalog.selectedDeploymentId !== selected?.id) return;
+      if (
+        this.#disposed ||
+        operationId !== this.#operationId ||
+        this.#catalog.selectedDeploymentId !== selected?.id
+      )
+        return;
       this.#personal = status;
       if (status.state !== "ready") return;
     } else if (!this.#selectedAttachmentIsReady()) {
@@ -602,6 +611,7 @@ export class DeploymentAccessService {
     try {
       const catalog = await operation();
       if (operationId !== this.#operationId) return;
+      this.#catalogRead += 1;
       this.#catalog = catalog;
       this.#reconcileAttachment();
       this.#operation = null;
@@ -704,10 +714,14 @@ export class DeploymentAccessService {
   async #reloadCatalog(externalSelection: boolean): Promise<void> {
     if (this.#disposed) return;
     const selectedBefore = this.#catalog.selectedDeploymentId;
+    const read = ++this.#catalogRead;
     try {
-      this.#catalog = await this.#ports.catalog.read();
+      const catalog = await this.#ports.catalog.read();
+      if (read !== this.#catalogRead || this.#disposed) return;
+      this.#catalog = catalog;
       this.#catalogFailure = null;
     } catch (error) {
+      if (read !== this.#catalogRead || this.#disposed) return;
       this.#catalogFailure = classifyPortFailure("catalog", error).detail;
       this.#publish();
       return;
@@ -738,7 +752,12 @@ export class DeploymentAccessService {
       this.#pendingAttachmentDeploymentId = null;
     }
     if (this.#attachment && this.#attachment.deploymentId === selected.id) {
-      this.#attachment.reconfigure({ attachmentKey: selected.key });
+      // A restarting local Host gets a new key before it can own a session
+      // again, so a live attachment waits for the supervisor's ready instead.
+      const establish = this.#selectedAttachmentIsReady();
+      if (this.#attachment.attached && selected.key !== this.#attachment.key)
+        this.#pendingAttachmentDeploymentId = establish ? null : selected.id;
+      this.#attachment.reconfigure({ attachmentKey: selected.key, establish });
       return;
     }
     this.#disposeAttachment();
@@ -811,7 +830,17 @@ export class DeploymentAccessService {
   #resumePendingAttachment(): void {
     if (this.#disposed) return;
     if (this.#pendingAttachmentDeploymentId !== this.#catalog.selectedDeploymentId) return;
-    if (!this.#selectedAttachmentIsReady()) return;
+    if (!this.#selectedAttachmentIsReady()) {
+      // A local Host that stopped coming back leaves its row to say why, rather
+      // than a held attachment connecting forever.
+      const state =
+        this.#personal?.deploymentId === this.#pendingAttachmentDeploymentId
+          ? this.#personal.state
+          : null;
+      if (state !== null && !["checking", "starting", "degraded"].includes(state))
+        this.#attachment?.deactivate();
+      return;
+    }
     this.#requestSelectedAttachment(this.#interactiveAttachment);
   }
 

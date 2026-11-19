@@ -369,6 +369,10 @@ async function request<Name extends keyof typeof hostApi>(
     // is the only portable evidence.
     if (call?.signal?.aborted) throw call.signal.reason ?? error;
     if (error instanceof Error && error.name === "AbortError") throw error;
+    // A request the attachment moved out from under is cancelled too: as a
+    // Host error it would read as a refusal, not as one to try again.
+    if (error instanceof HostTransportError && classifyClientFailure(error).kind === "cancelled")
+      throw error;
     if (
       authenticationRequired ||
       (error instanceof HostTransportError && error.failure.code === "unauthorized")
