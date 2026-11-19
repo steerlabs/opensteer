@@ -638,7 +638,7 @@ describe("DeploymentAccessService", () => {
           step: null,
         },
       });
-      const startGate = Promise.withResolvers<typeof createdReady>();
+      const startGate = Promise.withResolvers<DeploymentAccessPorts["personal"]["status"]>();
       vi.mocked(fixture.ports.personal.start).mockReturnValueOnce(startGate.promise);
       const service = new DeploymentAccessService(fixture.ports);
       const leaked: unknown[] = [];
@@ -656,8 +656,6 @@ describe("DeploymentAccessService", () => {
       const catalogRead = Promise.withResolvers<CatalogProjection>();
       vi.mocked(fixture.ports.catalog.read).mockReturnValueOnce(catalogRead.promise);
       fixture.emitPersonal(createdReady);
-      startGate.resolve(createdReady);
-      await creating;
       expect(service.snapshot().personalSetup?.state).not.toBe("ready");
       catalogRead.resolve({
         deployments: [created],
@@ -665,14 +663,31 @@ describe("DeploymentAccessService", () => {
         selectedDeploymentId: created.id,
       });
       await settle();
+      expect(fixture.establish).toHaveBeenCalledOnce();
+      expect(service.snapshot().deployments[0]?.status).toBe("connected");
+
+      // A subsequent supervisor ready update while create-personal is still active must not re-establish.
+      const updatedReady = {
+        ...createdReady,
+        components: {
+          ...createdReady.components,
+          runner: { state: "ready" as const, version: "1.0.0" },
+        },
+      };
+      fixture.emitPersonal(updatedReady);
+      await settle();
+      startGate.resolve(updatedReady);
+      await creating;
+      await settle();
       expect(leaked).toEqual([]);
       expect(fixture.establish).toHaveBeenCalledOnce();
       expect(service.snapshot().personalSetup?.state).toBe("ready");
+      expect(service.snapshot().personalSetup?.components.runner.state).toBe("ready");
       expect(service.snapshot().deployments[0]?.status).toBe("connected");
       service.dispose();
     }
 
-    // 9) Reselecting the same local Host keeps staged ready held through closeCurrent() until catalogMutation attaches.
+    // 9) Reselecting the same local Host keeps staged ready held even if an earlier catalog read resolves while catalog.select() is pending.
     {
       const fixture = fakePorts({
         deployments: [{ ...local, access: "native", key: "native" }],
@@ -680,7 +695,9 @@ describe("DeploymentAccessService", () => {
         selectedDeploymentId: local.id,
       });
       const closeGate = Promise.withResolvers<void>();
+      const selectGate = Promise.withResolvers<CatalogProjection>();
       vi.mocked(fixture.ports.hostSession.closeCurrent).mockReturnValueOnce(closeGate.promise);
+      vi.mocked(fixture.ports.catalog.select).mockReturnValueOnce(selectGate.promise);
       const service = new DeploymentAccessService(fixture.ports);
       const leaked: unknown[] = [];
       const check = (snap: ReturnType<DeploymentAccessService["snapshot"]>) => {
@@ -699,8 +716,20 @@ describe("DeploymentAccessService", () => {
       expect(service.snapshot().personalSetup?.state).toBe("starting");
       fixture.replaceCatalog({ deployments: [local], selectedDeploymentId: local.id });
       closeGate.resolve();
+      await settle();
+      // Earlier reload fails, then a recovery read succeeds, AND an overlapping select() rejects,
+      // all while catalog.select() is still in flight: none of them may release the guard or leak (ready, idle).
+      read.reject(new Error("transient catalog read failure"));
+      await settle();
+      check(service.snapshot());
+      fixture.emitCatalog({ deployments: [local], selectedDeploymentId: local.id });
+      await settle();
+      check(service.snapshot());
+      await expect(service.select(local.id)).rejects.toThrow(/already running/u);
+      check(service.snapshot());
+      expect(service.snapshot().personalSetup?.state).toBe("starting");
+      selectGate.resolve({ deployments: [local], revision: 3, selectedDeploymentId: local.id });
       await reselecting;
-      read.resolve({ deployments: [local], revision: 2, selectedDeploymentId: local.id });
       await settle();
       expect(leaked).toEqual([]);
       expect(fixture.establish).toHaveBeenCalledOnce();

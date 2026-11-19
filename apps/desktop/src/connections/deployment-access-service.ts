@@ -173,7 +173,7 @@ export class DeploymentAccessService {
   #operationId = 0;
   #interactiveAttachment = false;
   #pendingAttachmentDeploymentId: string | null = null;
-  #selectingDeploymentId: string | null = null;
+  #selecting: { readonly deploymentId: string } | null = null;
   #personal: DesktopPersonalDeploymentStatus | null = null;
   /**
    * Supervisor `ready` held back until the catalog reload that resumes a
@@ -361,7 +361,7 @@ export class DeploymentAccessService {
     this.#assertActive();
     if (this.#account.status === "authorizing") {
       this.#pendingAttachmentDeploymentId = null;
-      this.#selectingDeploymentId = null;
+      this.#selecting = null;
       this.#commitStagedPersonal();
       await this.#accountOperation("sign-out-of-app", () => this.#ports.account.signOut());
       return;
@@ -373,7 +373,7 @@ export class DeploymentAccessService {
     const abandoning = attachment?.canCancel() ?? false;
     this.#batchPublish(() => {
       this.#pendingAttachmentDeploymentId = null;
-      this.#selectingDeploymentId = null;
+      this.#selecting = null;
       this.#commitStagedPersonal();
       this.#operationId += 1;
       this.#operation = null;
@@ -414,9 +414,10 @@ export class DeploymentAccessService {
           status.deploymentId !== null &&
           (this.#attachment?.deploymentId !== status.deploymentId || !this.#attachment.attached)
         ) {
+          const alreadyStaged = this.#stagedPersonal?.deploymentId === status.deploymentId;
           this.#pendingAttachmentDeploymentId = status.deploymentId;
           this.#stagedPersonal = status;
-          void this.#reloadCatalog(false);
+          if (!alreadyStaged) void this.#reloadCatalog(false);
         } else {
           this.#stagedPersonal = null;
           this.#personal = status;
@@ -641,18 +642,24 @@ export class DeploymentAccessService {
     ) {
       throw operationUnavailable("select");
     }
+    if (this.#operation || this.#selecting) {
+      throw new Error("Another deployment access operation is already running.");
+    }
+    const selecting = { deploymentId };
     this.#pendingAttachmentDeploymentId = null;
-    this.#selectingDeploymentId = deploymentId;
+    this.#selecting = selecting;
     if (this.#stagedPersonal?.deploymentId !== deploymentId) {
       this.#commitStagedPersonal();
     }
     this.#selectedAttachment()?.deactivate();
     try {
       await this.#ports.hostSession.closeCurrent();
-      await this.#catalogMutation("open-deployment", () => this.#ports.catalog.select(deploymentId));
+      await this.#catalogMutation("open-deployment", () =>
+        this.#ports.catalog.select(deploymentId),
+      );
     } finally {
-      if (this.#selectingDeploymentId === deploymentId) {
-        this.#selectingDeploymentId = null;
+      if (this.#selecting === selecting) {
+        this.#selecting = null;
         if (this.#stagedPersonal?.deploymentId === deploymentId) {
           this.#commitStagedPersonal();
           this.#publish();
@@ -787,7 +794,9 @@ export class DeploymentAccessService {
     } catch (error) {
       if (read !== this.#catalogRead || this.#disposed) return;
       this.#catalogAppliedRead = read;
-      this.#commitStagedPersonal();
+      if (this.#stagedPersonal?.deploymentId !== this.#selecting?.deploymentId) {
+        this.#commitStagedPersonal();
+      }
       this.#catalogFailure = classifyPortFailure("catalog", error).detail;
       this.#publish();
       return;
@@ -795,7 +804,9 @@ export class DeploymentAccessService {
     const external = this.#externalSelection;
     this.#externalSelection = false;
     this.#batchPublish(() => {
-      this.#commitStagedPersonal();
+      if (this.#stagedPersonal?.deploymentId !== this.#selecting?.deploymentId) {
+        this.#commitStagedPersonal();
+      }
       this.#reconcileAttachment();
       this.#publish();
       this.#resumePendingAttachment();
@@ -1129,10 +1140,11 @@ export class DeploymentAccessService {
 
   #shouldStagePersonalReady(status: DesktopPersonalDeploymentStatus): boolean {
     if (status.state !== "ready" || status.deploymentId === null) return false;
+    if (this.#pendingAttachmentDeploymentId === status.deploymentId) return true;
+    if (this.#selecting?.deploymentId === status.deploymentId) return true;
     return (
-      this.#pendingAttachmentDeploymentId === status.deploymentId ||
-      this.#selectingDeploymentId === status.deploymentId ||
-      this.#operation?.kind === "create-personal"
+      this.#operation?.kind === "create-personal" &&
+      (this.#attachment?.deploymentId !== status.deploymentId || !this.#attachment.attached)
     );
   }
 

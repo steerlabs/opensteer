@@ -13,6 +13,8 @@ import {
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
+// Preload the lazy app bundle outside per-test timeouts so fake-timer gate checks run immediately.
+import "../app.js";
 import {
   DesktopApp,
   chooserNotice,
@@ -358,8 +360,9 @@ it("opens this computer's Host only once main has attached it", async () => {
 });
 
 it("keeps a verified local owner client connecting while the browser reports offline, unlike a remote place", async () => {
-  await import("../app.js");
-  vi.useFakeTimers();
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"],
+  });
   const onLineDescriptor = Object.getOwnPropertyDescriptor(Navigator.prototype, "onLine");
   Object.defineProperty(Navigator.prototype, "onLine", { configurable: true, get: () => false });
 
@@ -367,6 +370,8 @@ it("keeps a verified local owner client connecting while the browser reports off
   const remoteId = createId("deployment");
   const otherId = createId("deployment");
   const otherPlace = { ...accessDeployment("idle"), id: otherId, name: "Studio" };
+  const placeListReads = ["/v1/rpc/attention.get", "/v1/rpc/teams.links.list"];
+  const hostRequests: string[] = [];
   const makeBridge = (access: DeploymentAccessSnapshot) =>
     ({
       cancel: async () => undefined,
@@ -378,14 +383,16 @@ it("keeps a verified local owner client connecting while the browser reports off
         deploymentId,
         runner: { enrolled: false, runnerId: null },
       }),
+      openHostWebSocket: async (input: { path: string; expectedDeploymentId: string }) => {
+        hostRequests.push(`/host/${input.expectedDeploymentId}${input.path}`);
+        return new Promise<never>(() => undefined);
+      },
       onHostWebSocketEvent: () => () => undefined,
       onDeploymentAccessSnapshotChanged: () => () => undefined,
       onNotificationActivated: () => () => undefined,
       onLocalExecutionStatusChanged: () => () => undefined,
     }) as unknown as OpensteerDesktopBridge;
 
-  const placeListReads = ["/v1/rpc/attention.get", "/v1/rpc/teams.links.list"];
-  const hostRequests: string[] = [];
   const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     const url = input instanceof Request ? input.url : String(input);
     const path = url.startsWith("app://opensteer/host/") ? new URL(url).pathname : null;
@@ -415,6 +422,8 @@ it("keeps a verified local owner client connecting while the browser reports off
     });
     await act(async () => {
       root.render(<DesktopApp bridge={makeBridge(localAccess)} />);
+    });
+    await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(hostRequests.some((path) => path.startsWith(`/host/${localId}/`))).toBe(true);
@@ -453,6 +462,12 @@ it("keeps a verified local owner client connecting while the browser reports off
       });
       await act(async () => {
         remoteRoot.render(<DesktopApp bridge={makeBridge(remoteAccess)} />);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(container.textContent).toContain("Connecting to Server…");
+      await act(async () => {
         await vi.advanceTimersByTimeAsync(5_000);
       });
       expect(hostRequests.filter((path) => path.startsWith(`/host/${remoteId}/`))).toEqual([]);
