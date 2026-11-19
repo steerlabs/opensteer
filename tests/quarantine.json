@@ -354,7 +354,7 @@
     ],
     "area": "Browser",
     "owner": "Browser maintainers",
-    "status": "quarantined",
+    "status": "investigating",
     "firstSeen": "2026-11-12T19:34:18Z",
     "deadline": "2026-11-19T19:34:18Z",
     "sha": "3c7eadff8545a492ccd6236fba0a22f2cab428c2",
@@ -364,7 +364,8 @@
       "Acceptance: bound what Runtime shutdown waits on so cleanup finishes under its unchanged 5,000 ms cap on a loaded runner, keep the empty-cleanup-failures assertion, and pass the file under the normal integration workload before removing this record.",
       "Investigation on fresh main 059294a2e05a80f2f348cbfb7625e1cff26fc0aa: the complete identities file passed alongside presence, profiles and editing in four enforcing workers, then passed alongside presence, viewer and editing with two headless browser workers also active. This scenario opens only a few tabs; its BrowserRuntime shutdown queue belongs to the test process, not the 10,000-tab file’s lock-order checker. PR #602 could reduce shared CPU contention but does not establish this failure’s cause. No shutdown stage was captured in the CI artifact. Keep the 5,000 ms cap. Cleanup reports now default into the run-owned retained artifact tree; acceptance still requires a gated reproduction of the blocked lifecycle operation.",
       "Linux CI hunt from bba0d040fe (Ubuntu 24.04, pinned headless Chromium, real PostgreSQL, enforcing lock order, configured four-worker integration lane): the target passed 31 baseline iterations (https://github.com/steerlabs/opensteer/actions/runs/43639185533) and 8 candidate iterations at d342426bd8 (https://github.com/steerlabs/opensteer/actions/runs/43640089838), including one complete identities/viewer/editing file run. The ninth candidate iteration was interrupted by investigation cancellation and is excluded. Retained shutdown markers, cleanup reports and database traces show no target shutdown stall in completed attempts. No lifecycle root cause or production fix is established; keep the quarantine and the 5,000 ms shutdown cap. Browser-lane attempts from these two runs had an argument-selection error and are not qualification evidence.",
-      "The final native-close candidate at 59b6f192bb was not qualified by https://github.com/steerlabs/opensteer/actions/runs/43646513195: fail-fast cancelled the integration job during its first full-file attempt after the browser sibling reproduced popup loss. Retain that attempt for diagnosis but exclude it from completed-loop counts; its database termination/containment errors during cancellation are not a reproduction of the historical 5,000 ms shutdown persistence stall. Earlier 31 baseline plus 8 candidate passes do not identify the original blocked lifecycle step. Keep this quarantine unchanged."
+      "The final native-close candidate at 59b6f192bb was not qualified by https://github.com/steerlabs/opensteer/actions/runs/43646513195: fail-fast cancelled the integration job during its first full-file attempt after the browser sibling reproduced popup loss. Retain that attempt for diagnosis but exclude it from completed-loop counts; its database termination/containment errors during cancellation are not a reproduction of the historical 5,000 ms shutdown persistence stall. Earlier 31 baseline plus 8 candidate passes do not identify the original blocked lifecycle step. Keep this quarantine unchanged.",
+      "The quarantine expired on 2026-11-19 without a root fix and was not renewed. The case runs and gates again; this record stays for the unexplained shutdown timeout."
     ]
   },
   {
