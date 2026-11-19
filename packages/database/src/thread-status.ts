@@ -11,7 +11,7 @@ import {
 } from "@opensteer/core";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { taskLineMaxLength } from "@opensteer/protocol";
-import { sql, type Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { isOfflineSettlement } from "./personal-transaction.js";
@@ -91,6 +91,21 @@ export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<
         operation: "remove",
       });
     }
+  });
+}
+
+/** Republishes the `thread` values of these tasks, so their detail viewers see a derived change. */
+export function republishThreads(database: Kysely<DatabaseSchema>, threadIds: readonly ThreadId[]) {
+  return commitPersonalMutation(database, async (tx) => {
+    if (!threadIds.length) return;
+    const live = await tx
+      .selectFrom("threads")
+      .select("id")
+      .where("id", "in", threadIds)
+      .where("removedAt", "is", null)
+      .orderBy("id")
+      .execute();
+    for (const { id } of live) await publishThreadSummary(tx, id);
   });
 }
 

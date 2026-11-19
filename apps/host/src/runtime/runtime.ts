@@ -7,7 +7,8 @@ import {
   installPersonalMutationHooks,
   type PersonalCommitReaction,
 } from "@opensteer/database/personal-mutation";
-import { createRunFinishDrain } from "@opensteer/database";
+import { createRunFinishDrain, republishThreads } from "@opensteer/database";
+import { createReturnHintRefresh } from "./personal-return-hints.js";
 import { withUpgradeHeartbeat } from "./upgrade-heartbeat.js";
 import { PersonalRetentionDeadline } from "@opensteer/orchestration";
 import { RequestDeadlines } from "../agents/request-deadlines.js";
@@ -29,7 +30,7 @@ import { PluginService, PluginServiceError } from "../plugins/plugin-service.js"
 import { PluginOwnerApi, pluginEngineStateView } from "../plugins/plugin-owner-api.js";
 import { changeDeviceDrivers } from "../administration/device-removal.js";
 import { DeviceDriverResolver } from "../computer-use/device-drivers.js";
-import { DeviceIdSchema, type DeviceId } from "@opensteer/core";
+import { DeviceIdSchema, ThreadIdSchema, type DeviceId } from "@opensteer/core";
 import { TabStore, AgentToolActivityStore } from "@opensteer/database";
 import { TabService } from "../tabs/tab-service.js";
 import { NativeTabTargets } from "../computer-use/native-tab-targets.js";
@@ -672,11 +673,21 @@ export async function createHostRuntime(
       () => commitPersonalMutation(database, async () => undefined),
       reportMutationFailure,
     );
+    const refreshReturnHints = createReturnHintRefresh({
+      watched: () => realtime.watchedThreads(),
+      republish: (threadIds) =>
+        republishThreads(
+          database,
+          threadIds.map((id) => ThreadIdSchema.parse(id)),
+        ),
+      onError: reportMutationFailure,
+    });
     removeMutationHooks = installPersonalMutationHooks(database, {
       wake: (notice) => {
         resourceObservations.committed(notice.resourceKinds, notice.head);
         if (BigInt(notice.head) > BigInt(syncHead)) syncHead = notice.head;
         realtime.wake(notice.head, notice.changedScopes);
+        refreshReturnHints(notice.resourceKinds);
         retention?.update(notice);
       },
       suspend: (scopes) => realtime.suspendAuthority(scopes),

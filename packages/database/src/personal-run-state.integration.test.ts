@@ -12,22 +12,17 @@ import { interruptPersonalToolCalls } from "./personal-tool-calls.js";
 test("a finishing Run resumes its bounded work and only acknowledges an exact terminal statement after the final batch", async () => {
   const fixture = await createPersonalStateFixture("bounded-finalization");
   const { database, run, attemptId } = fixture;
-  let fenced = false;
+  const liveClosed: unknown[] = [];
   const disconnect = installPersonalMutationHooks(database, {
     wake() {},
     onFailure(error) {
       throw error;
     },
-    suspend(scopes) {
-      expect(scopes.has(`thread:${run.threadId}`)).toBe(true);
-      return {
-        committed() {
-          fenced = true;
-        },
-        rolledBack() {
-          throw new Error("Unexpected rollback");
-        },
-      };
+    suspend() {
+      throw new Error("A finish that spans commits is not a revocation");
+    },
+    react(reaction) {
+      if (reaction.type === "runLiveClosed") liveClosed.push(reaction);
     },
   });
   try {
@@ -87,7 +82,15 @@ test("a finishing Run resumes its bounded work and only acknowledges an exact te
         }),
       ),
     ).resolves.toEqual({ finishing: true });
-    expect(fenced).toBe(true);
+    expect(liveClosed).toEqual([
+      {
+        type: "runLiveClosed",
+        runId: run.runId,
+        threadId: run.threadId,
+        attemptId,
+        bindingGeneration: run.bindingGeneration,
+      },
+    ]);
     const observedBatchSizes: number[] = [];
     const crash = new Error("Host stopped before final commit");
     const advance = (failure?: Error) =>

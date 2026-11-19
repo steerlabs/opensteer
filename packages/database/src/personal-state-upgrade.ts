@@ -338,6 +338,7 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
     assigned: boolean;
     hasContent: boolean;
     hasRichParts: boolean;
+    richParts: unknown[];
     text: string;
   };
   const {
@@ -361,7 +362,8 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
         or marker.id is not null as "admittedSeed",
       (placement.run_id=seed.id) is true as "seedInRun",
       r.assignment_id is not null as assigned,
-      content.has_content as "hasContent",content.has_rich_parts as "hasRichParts",content.text
+      content.has_content as "hasContent",content.has_rich_parts as "hasRichParts",content.text,
+      content.rich_parts as "richParts"
     from page join messages m using (id)
     left join thread_inputs i on i.message_id=m.id
     left join transcript_items marker on marker.id=m.id
@@ -377,6 +379,9 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
     cross join lateral (
       select coalesce(bool_or(part->>'type' in ('artifact','browser-page','computer-app','phone')),false)
           as has_rich_parts,
+        coalesce(jsonb_agg(part order by n)
+          filter (where part->>'type' in ('artifact','browser-page','computer-app','phone')),'[]'::jsonb)
+          as rich_parts,
         coalesce(bool_or(part->>'type' in ('artifact','browser-page','computer-app','phone')
           or (part->>'type'='text' and btrim(part->>'text',${messageWhitespace})<>'')),false)
           as has_content,
@@ -388,9 +393,9 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
       select array_agg(id order by batch_offset) as ids,
         array_agg(batch_offset order by batch_offset) as offsets,
         "runId",kind,author,revision,"editedAt",policy,state,"cancelReason","teamSource",
-        "admittedSeed","seedInRun",assigned,"hasContent","hasRichParts",text
+        "admittedSeed","seedInRun",assigned,"hasContent","hasRichParts",text,"richParts"
       from derived group by "runId",kind,author,revision,"editedAt",policy,state,"cancelReason",
-        "teamSource","admittedSeed","seedInRun",assigned,"hasContent","hasRichParts",text
+        "teamSource","admittedSeed","seedInRun",assigned,"hasContent","hasRichParts",text,"richParts"
     )
     select (select json_build_array(thread_id,sequence::text) from page
         order by batch_offset desc limit 1) as key,
@@ -425,14 +430,15 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
       published: card.published,
       turn_start: card.isTurnStart,
       view: card.view,
+      refs: card.refs,
     };
   });
   const cards = sql`(
       select item.id,card.run_id,
         case when card.visible then ${cursor.position}::bigint + item.batch_offset end as position,
-        card.visible,card.published,card.turn_start,card.view
+        card.visible,card.published,card.turn_start,card.view,card.refs
       from jsonb_to_recordset(${JSON.stringify(projected)}::jsonb)
-        as card(ids text[],offsets int[],run_id text,visible boolean,published boolean,turn_start boolean,view jsonb)
+        as card(ids text[],offsets int[],run_id text,visible boolean,published boolean,turn_start boolean,view jsonb,refs jsonb)
       cross join lateral unnest(card.ids,card.offsets) as item(id,batch_offset)
     )`;
   await sql`select m.id from messages m join ${cards} c on c.id=m.id
@@ -444,11 +450,12 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
   await sql`select i.id from transcript_items i join ${cards} c on c.id=i.id
     order by i.id for no key update of i`.execute(tx);
   await sql`
-    insert into transcript_items(id,thread_id,run_id,kind,position,visible,is_turn_start,created_at,message_id,view)
-    select m.id,m.thread_id,c.run_id,'message',c.position,c.visible,c.turn_start,m.created_at,m.id,c.view
+    insert into transcript_items(id,thread_id,run_id,kind,position,visible,is_turn_start,created_at,message_id,view,refs)
+    select m.id,m.thread_id,c.run_id,'message',c.position,c.visible,c.turn_start,m.created_at,m.id,c.view,
+      nullif(c.refs,'null'::jsonb)
     from ${cards} c join messages m on m.id=c.id order by m.id
     on conflict (id) do update set position=excluded.position,visible=excluded.visible,
-      is_turn_start=excluded.is_turn_start,view=excluded.view,run_id=excluded.run_id
+      is_turn_start=excluded.is_turn_start,view=excluded.view,run_id=excluded.run_id,refs=excluded.refs
   `.execute(tx);
   return {
     ...cursor,
@@ -797,6 +804,7 @@ async function verifyConversion(tx: Tx, source: Source, cursor: UpgradeCursor) {
           "appId",
           "blockId",
           "bindingGeneration",
+          "refs",
         ])
         .select(sql<string>`coalesce(position,1)::text`.as("position"))
         .where(sql<boolean>`id=any(${page!.ids}::text[])`)

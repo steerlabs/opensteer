@@ -176,6 +176,15 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
     });
 
     await preparePersonalConversion(database, 1013);
+    const sharedPage = {
+      type: "browser-page",
+      sessionId: `bsn_${crypto.randomUUID()}`,
+      tabId: "tab-shared",
+      title: "Shared page",
+      url: "https://example.com/shared",
+    };
+    await sql`update messages set content = content || jsonb_build_array(${JSON.stringify(sharedPage)}::jsonb)
+      where id = ${prompt.id}`.execute(database);
     const imagePath = "/disposable-fixture/screenshot.png";
     const reasoningText = "考".repeat(200_000);
     await sql`delete from deployment_events`.execute(database);
@@ -342,6 +351,13 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
       .where("id", "=", prompt.id)
       .executeTakeFirstOrThrow();
     expect(BigInt(tools[1]!.completionOrder!) - BigInt(placed.position!)).toBe(390n);
+    expect(
+      await target
+        .selectFrom("transcriptItems")
+        .select("refs")
+        .where("id", "=", prompt.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ refs: { pages: [sharedPage] } });
     expect(
       await target
         .selectFrom("transcriptItems")

@@ -19,7 +19,7 @@ import { readPersonalToolImage, resolvePersonalToolImages } from "./personal-too
 
 test("orders scoped mutations at the deployment fence and leaves no rollback gap", async () => {
   const fixture = await createPersonalStateFixture("scope-commit-order");
-  const { database, run } = fixture;
+  const { database } = fixture;
   const ready = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const inFlight: Promise<unknown>[] = [];
@@ -27,11 +27,11 @@ test("orders scoped mutations at the deployment fence and leaves no rollback gap
     database.selectFrom("clientSyncState").select("sequence").executeTakeFirstOrThrow();
   try {
     const initial = BigInt((await head()).sequence);
-    const scopeKey = `thread:${run.threadId}` as const;
+    const scopeKey = "shell" as const;
     const write = (hold?: boolean) =>
       commitPersonalMutation(database, async (_tx, mutation) => {
         mutation.change(
-          { scopeKey, entityKind: "collection", entityId: "queue", operation: "invalidate" },
+          { scopeKey, entityKind: "signal", entityId: "team-replies", operation: "upsert" },
           () => ({ revision: mutation.sequence }),
         );
         if (hold) {
@@ -60,12 +60,10 @@ test("orders scoped mutations at the deployment fence and leaves no rollback gap
     ]);
     await expect(
       commitPersonalMutation(database, async (_tx, mutation) => {
-        mutation.change({
-          scopeKey,
-          entityKind: "collection",
-          entityId: "queue",
-          operation: "invalidate",
-        });
+        mutation.change(
+          { scopeKey, entityKind: "signal", entityId: "team-replies", operation: "upsert" },
+          () => ({ revision: mutation.sequence }),
+        );
         throw new Error("rollback");
       }),
     ).rejects.toThrow("rollback");

@@ -2,6 +2,7 @@ import { stripRefs } from "@opensteer/shared/stripRefs";
 import { createHash } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
 import {
+  ContentPartSchema,
   contentSaysSomething,
   threadInputDelivery,
   type MessageEdit,
@@ -14,6 +15,12 @@ import {
   utf8Prefix,
 } from "@opensteer/core";
 import type { Insertable } from "kysely";
+import {
+  TranscriptMessageRefsSchema,
+  transcriptMessageRefLimits,
+  transcriptMessageRefsMaxBytes,
+  type TranscriptMessageRefs,
+} from "@opensteer/protocol/transcript";
 import type {
   ToolCallTable,
   ToolOutputImageTable,
@@ -61,12 +68,44 @@ function transcriptMessageContent(content: readonly ContentPart[]) {
     hasContent: contentSaysSomething(content),
     hasRichParts: content.some((part) => part.type !== "text"),
     text: content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n"),
+    richParts: content.filter((part) => part.type !== "text"),
   };
+}
+
+/**
+ * The references a message card carries so clients draw them inline, in message order, bounded
+ * by count per kind and by total bytes. Anything past the bounds stays in the body.
+ */
+export function transcriptMessageRefs(parts: readonly unknown[]): TranscriptMessageRefs | null {
+  const refs: { attachments: unknown[]; pages: unknown[]; places: unknown[] } = {
+    attachments: [],
+    pages: [],
+    places: [],
+  };
+  let bytes = 2;
+  for (const candidate of parts) {
+    const parsed = ContentPartSchema.safeParse(candidate);
+    if (!parsed.success || parsed.data.type === "text") continue;
+    const part = parsed.data;
+    const kind =
+      part.type === "artifact" ? "attachments" : part.type === "browser-page" ? "pages" : "places";
+    if (refs[kind].length >= transcriptMessageRefLimits[kind]) continue;
+    const size = utf8ByteLength(JSON.stringify(part)) + 16;
+    if (bytes + size > transcriptMessageRefsMaxBytes) continue;
+    bytes += size;
+    refs[kind].push(part);
+  }
+  const bounded = Object.fromEntries(Object.entries(refs).filter(([, list]) => list.length));
+  return Object.keys(bounded).length ? TranscriptMessageRefsSchema.parse(bounded) : null;
 }
 
 export function describeTranscriptMessage(input: {
   readonly kind: MessageKind;
-  readonly content: readonly ContentPart[] | ReturnType<typeof transcriptMessageContent>;
+  readonly content:
+    | readonly ContentPart[]
+    | (Omit<ReturnType<typeof transcriptMessageContent>, "richParts"> & {
+        readonly richParts: readonly unknown[];
+      });
   readonly author: MessageAuthor;
   readonly policy?: "queue" | "steer" | "report";
   readonly state?: string;
@@ -114,6 +153,7 @@ export function describeTranscriptMessage(input: {
     published,
     visible,
     isTurnStart,
+    refs: transcriptMessageRefs(content.richParts),
     view: transcriptPreview({
       author: input.author.kind,
       ...(messageKind ? { messageKind, messageAuthor: input.author } : {}),

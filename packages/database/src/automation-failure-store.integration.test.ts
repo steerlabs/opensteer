@@ -327,12 +327,7 @@ integration.sequential("automation failure notices", () => {
           })
           .where("id", "=", runId)
           .execute();
-        mutation.change({
-          scopeKey: `thread:${fixture.threadId}`,
-          entityKind: "collection",
-          entityId: "scope",
-          operation: "invalidate",
-        });
+        mutation.resetScope(`thread:${fixture.threadId}`);
       });
       return messageId;
     }

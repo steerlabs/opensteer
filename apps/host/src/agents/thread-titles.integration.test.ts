@@ -909,12 +909,14 @@ integration.sequential("Thread title lifecycle", () => {
     expect(
       await database
         .selectFrom("clientChanges")
-        .select("entityId")
+        .select(sql<string>`payload->'thread'->>'icon'`.as("icon"))
         .where("scopeKey", "=", `thread:${thread.id}`)
-        .where("entityId", "=", "thread-details")
-        .where("operation", "=", "invalidate")
+        .where("entityKind", "=", "thread")
+        .where("operation", "=", "upsert")
+        .orderBy("sequence", "desc")
+        .limit(1)
         .execute(),
-    ).toEqual([{ entityId: "thread-details" }]);
+    ).toEqual([{ icon: "plane" }]);
     await commands.setThreadIcon({
       ...input,
       idempotencyKey: randomUUID(),

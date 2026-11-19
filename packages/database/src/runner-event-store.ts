@@ -137,7 +137,7 @@ async function publishRunnerMessage(
   attempt: RunAttemptRow,
 ) {
   const message = messageFromRow(row);
-  const { published, visible, isTurnStart, view } = describeTranscriptMessage({
+  const { published, visible, isTurnStart, view, refs } = describeTranscriptMessage({
     ...message,
     edited: false,
     admittedSeed: false,
@@ -157,6 +157,7 @@ async function publishRunnerMessage(
     visible,
     isTurnStart,
     view,
+    refs,
   });
   if (message.kind === "assistant") await projectLastReply(tx, message);
 }

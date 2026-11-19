@@ -31,6 +31,7 @@ import {
 } from "@opensteer/protocol/resources";
 export type { PersonalResourceKind } from "@opensteer/protocol/resources";
 import type { PersonalChange } from "@opensteer/protocol/personal-sync";
+import type { TranscriptMessageRefs } from "@opensteer/protocol/transcript";
 import { sql, type Generated, type Kysely } from "kysely";
 import type { DatabaseSchema, Timestamp } from "./schema.js";
 
@@ -178,6 +179,8 @@ export interface TranscriptItemTable {
   blockId: Generated<string | null>;
   body: Generated<string | PlaceView | null>;
   view: TranscriptPreview;
+  /** A message's bounded attachment, page and place references. */
+  refs: Generated<TranscriptMessageRefs | null>;
 }
 
 export interface ToolOutputImageTable {
@@ -422,6 +425,8 @@ const retainedStateDdl = `
     block_id text,
     body jsonb,
     view jsonb not null check (jsonb_typeof(view) = 'object' and octet_length(view::text) <= 2048),
+    refs jsonb check (refs is null or (kind = 'message' and jsonb_typeof(refs) = 'object'
+      and octet_length(refs::text) <= 5120)),
     foreign key (message_id,thread_id) references messages(id,thread_id) on delete cascade,
     foreign key (run_id,thread_id) references runs(id,thread_id) on delete cascade,
     foreign key (attempt_id,run_id) references run_attempts(id,run_id) on delete cascade,
