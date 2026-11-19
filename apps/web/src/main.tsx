@@ -7,6 +7,7 @@ import { installDictation } from "./desktop/dictation-runtime.js";
 
 import { createRoot } from "react-dom/client";
 import { checkRowSkipping } from "./row-skipping.js";
+import { removeRetiredStorage } from "./host/retired-storage.js";
 import { desktopBridge } from "./desktop/desktop-bridge.js";
 import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
@@ -30,6 +31,8 @@ if (!root) {
   throw new Error("Opensteer web root was not found.");
 }
 
+// What earlier builds wrote and nothing reads goes first, private text included.
+removeRetiredStorage(safeLocalStorage());
 const appRoot = createRoot(root);
 // Decided once, beside the first paint: whether off-screen transcript rows may be skipped here.
 void checkRowSkipping().catch(() => undefined);
@@ -447,3 +450,12 @@ void renderOpensteer().catch((error: unknown) => {
     </StartupFailure>,
   );
 });
+
+/** The page's local storage, or undefined where reaching it throws (blocked site data). */
+function safeLocalStorage(): Storage | undefined {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return undefined;
+  }
+}
