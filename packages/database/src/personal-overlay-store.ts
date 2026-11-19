@@ -59,6 +59,8 @@ export async function overlayPage(
   limit = 20,
   budget = 16 * 1024 - 1024,
   beforeId?: string,
+  /** The task's queued and running Runs, when the caller already read them in this cut. */
+  activeRuns?: Awaited<ReturnType<typeof activeRunQueue>>,
 ) {
   const candidatesLimit = limit + 1;
   const page = <T>(rows: number, selected: readonly { id: string; value: T }[]) => {
@@ -114,7 +116,7 @@ export async function overlayPage(
       `.execute(tx)
       ).rows;
     } else {
-      const active = (await activeRunQueue(tx, scope.threadId)).map(({ id }) => id);
+      const active = (activeRuns ?? (await activeRunQueue(tx, scope.threadId))).map(({ id }) => id);
       ids = active.length
         ? (
             await sql<{ id: string }>`

@@ -10,16 +10,27 @@ import { readThreadInputQueue } from "./thread-inbox.js";
 type Tx = PersonalMutationTransaction;
 
 /** The owner's view of a task's Run queue and waiting messages, shared by the feed and snapshots. */
-export async function threadQueueView(tx: Tx, threadId: ThreadId, revision: string) {
+export async function threadQueueView(
+  tx: Tx,
+  threadId: ThreadId,
+  revision: string,
+  /** The task's queued and running Runs, when the caller already read them in this cut. */
+  activeRuns?: Awaited<ReturnType<typeof activeRunQueue>>,
+) {
+  // Read once and handed to the waiting-input read, which then needs neither it nor the owner.
   const thread = await tx
     .selectFrom("threads")
-    .select(["createdBy", "inputQueuePaused"])
+    .selectAll()
     .where("id", "=", threadId)
     .where("removedAt", "is", null)
     .executeTakeFirst();
   if (!thread) return null;
-  const runs = await activeRunQueue(tx, threadId);
-  const waiting = await readThreadInputQueue(tx, { threadId, requestedBy: thread.createdBy });
+  const runs = activeRuns ?? (await activeRunQueue(tx, threadId));
+  const waiting = await readThreadInputQueue(tx, {
+    threadId,
+    requestedBy: thread.createdBy,
+    thread,
+  });
   return {
     queue: {
       revision,

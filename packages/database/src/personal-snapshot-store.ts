@@ -5,7 +5,7 @@ import {
   PersonalDetailSnapshotSchema,
   PersonalShellSnapshotSchema,
 } from "@opensteer/protocol/personal-sync";
-import { encodeOverlayCursor, overlayPage } from "./personal-overlay-store.js";
+import { activeRunQueue, encodeOverlayCursor, overlayPage } from "./personal-overlay-store.js";
 import { threadQueueView } from "./personal-queue-view.js";
 import { nodeSubjectView } from "./execution-nodes.js";
 import { clientSendKeyWireReserve } from "@opensteer/protocol/transcript";
@@ -19,7 +19,9 @@ import {
 import {
   currentTasks,
   readInitialTaskWindows,
-  readTaskPageThreads,
+  taskPageThreadSelections,
+  taskPageThreadsFromRows,
+  threadRunQueued,
 } from "./personal-task-store.js";
 
 type Tx = PersonalMutationTransaction;
@@ -105,9 +107,18 @@ export const returnHintResources: ReadonlySet<DurablePersonalResourceKind> = new
 
 /** A task's detail value: its row and full Thread view, return hint included. */
 export async function detailThreadValue(tx: Tx, viewerId: UserId, threadId: ThreadId) {
-  const thread = await currentTasks(tx, viewerId).where("id", "=", threadId).executeTakeFirst();
-  const view = thread && (await readTaskPageThreads(tx, viewerId, [thread.id])).get(thread.id);
-  return thread && view ? { ...taskView(thread), thread: view } : undefined;
+  // One read of the row serves both the task fields and the thread value derived from it.
+  const row = await tx
+    .selectFrom("threads")
+    .selectAll("threads")
+    .select(taskPageThreadSelections())
+    .select(threadRunQueued.as("runQueued"))
+    .where("threads.id", "=", threadId)
+    .where("threads.createdBy", "=", viewerId)
+    .where("threads.removedAt", "is", null)
+    .executeTakeFirst();
+  const view = row && (await taskPageThreadsFromRows(tx, [row])).get(row.id);
+  return row && view ? { ...taskView(row), thread: view } : undefined;
 }
 
 /**
@@ -170,6 +181,8 @@ export async function buildPersonalDetailSnapshot(
   const page = await readTranscriptPage(tx, {
     viewerId,
     scope,
+    // A task's own read is authorized above; a node's still checks its node.
+    ...(scope.kind === "thread" ? { authorized: { state, thread } } : {}),
     limit: 50,
     maxBytes: 64 * 1024,
     maxTurns: 10,
@@ -187,8 +200,10 @@ export async function buildPersonalDetailSnapshot(
   };
   const requests = await overlayPage(tx, scope, address, "requests");
   const tools = await overlayPage(tx, scope, address, "tools", 10, 8 * 1024);
-  const nodes = await overlayPage(tx, scope, address, "nodes", 10, 8 * 1024);
-  const queue = root ? await threadQueueView(tx, thread.id, state.sequence) : null;
+  // The task's Runs serve both its top-level subagents and its queue: read once.
+  const activeRuns = root ? await activeRunQueue(tx, thread.id) : undefined;
+  const nodes = await overlayPage(tx, scope, address, "nodes", 10, 8 * 1024, undefined, activeRuns);
+  const queue = root ? await threadQueueView(tx, thread.id, state.sequence, activeRuns) : null;
   const nodeSubject =
     scope.kind === "node" ? await nodeSubjectView(tx, thread.id, scope.nodeId) : undefined;
   return PersonalDetailSnapshotSchema.parse({

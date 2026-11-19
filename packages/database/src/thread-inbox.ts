@@ -236,15 +236,19 @@ export async function readThreadInputQueue(
     readonly requestedBy: UserId;
     readonly expectedRevision?: string;
     readonly sessionId?: AuthSessionId;
+    /** The task's row, read in this transaction by a caller that already authorized its owner. */
+    readonly thread?: Selectable<DatabaseSchema["threads"]>;
   },
 ): Promise<PersonalInputQueue> {
-  await requirePersonalOwner(transaction, request.requestedBy);
-  const thread = await transaction
-    .selectFrom("threads")
-    .selectAll()
-    .where("id", "=", request.threadId)
-    .where("removedAt", "is", null)
-    .executeTakeFirst();
+  if (!request.thread) await requirePersonalOwner(transaction, request.requestedBy);
+  const thread =
+    request.thread ??
+    (await transaction
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", request.threadId)
+      .where("removedAt", "is", null)
+      .executeTakeFirst());
   if (!thread)
     throw new OpensteerError({
       code: "not_found",
