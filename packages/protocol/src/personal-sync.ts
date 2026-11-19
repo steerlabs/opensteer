@@ -189,8 +189,8 @@ export const PersonalRequestSummarySchema = z.object({
   title: z.string().max(240),
   threadId: ThreadIdSchema,
 });
-/** Shell-level lists that still refetch on change; each later becomes a resource kind. */
-export const PersonalSignalIdSchema = z.enum(["team-links", "channels", "team-replies"]);
+/** Accepted team replies changed; clients reread the visible reply they wait on. */
+export const PersonalSignalIdSchema = z.enum(["team-replies"]);
 const signal = z.strictObject({ revision: PersonalRevisionSchema });
 export const personalInputQueueMaxEntries = 100;
 const queue = z.object({

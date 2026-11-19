@@ -19,15 +19,6 @@ function linkChanged(
       after,
       bucket: before.approvalAttentionCount,
     });
-  mutation.change(
-    {
-      scopeKey: "shell",
-      entityKind: "signal",
-      entityId: "team-links",
-      operation: "upsert",
-    },
-    () => ({ revision: mutation.sequence }),
-  );
 }
 
 export class PersonalTeamLinksStore {
