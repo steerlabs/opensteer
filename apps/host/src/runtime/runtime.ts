@@ -1823,6 +1823,7 @@ export async function createHostRuntime(
       actorUserId: null,
       requestId: "startup:ensure-built-in-integrations",
     });
+    await localServers.upgradePackages();
     await localServers.requestLocalServerApprovals();
     for (const event of await store.recoverThreadWorkQueues()) publishDeploymentEvent(event);
     await store.restartExecutionLeases(new Date(executionNow() + config.executionLeaseMs));

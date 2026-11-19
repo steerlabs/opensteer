@@ -99,6 +99,8 @@ export class PluginStore {
       source: Readonly<Record<string, unknown>>;
       actorUserId: UserId;
       digest: string;
+      /** The definition `digest` follows. */
+      packageFormat: string;
       manifest: Readonly<Record<string, unknown>>;
       setupThreadId?: ThreadId | null;
     },
@@ -144,6 +146,7 @@ export class PluginStore {
           pluginId: input.id,
           digest: input.digest,
           manifest: jsonValue(input.manifest),
+          packageFormat: input.packageFormat,
           createdAt: now,
         })
         .execute();
@@ -162,6 +165,8 @@ export class PluginStore {
       pluginId: string;
       source?: Readonly<Record<string, unknown>>;
       digest: string;
+      /** The definition `digest` follows. */
+      packageFormat: string;
       manifest: Readonly<Record<string, unknown>>;
       setupThreadId?: ThreadId | null;
     },
@@ -187,6 +192,7 @@ export class PluginStore {
           pluginId: plugin.id,
           digest: input.digest,
           manifest: jsonValue(input.manifest),
+          packageFormat: input.packageFormat,
           createdAt: new Date(),
         })
         .execute();
@@ -210,6 +216,101 @@ export class PluginStore {
         .execute();
     };
     return transaction ? persist(transaction) : withPersonalTransaction(this.database, persist);
+  }
+
+  /**
+   * A plugin's current package, stored again under the digest its files make in `packageFormat`:
+   * a new version with the same manifest, which its installation and its servers' launches then
+   * name. Each server keeps the approval it had, which was for its earlier launch, so its
+   * computer's owner is asked again. Nothing changes if the plugin moved past `fromVersionId`.
+   */
+  async upgradePackage(input: {
+    readonly pluginId: string;
+    readonly fromVersionId: string;
+    readonly digest: string;
+    readonly packageFormat: string;
+  }) {
+    await withPersonalTransaction(this.database, async (tx) => {
+      const plugin = await tx
+        .selectFrom("plugins")
+        .select(["id", "currentVersionId"])
+        .where("id", "=", input.pluginId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (plugin?.currentVersionId !== input.fromVersionId) return;
+      const from = await tx
+        .selectFrom("pluginVersions")
+        .selectAll()
+        .where("id", "=", input.fromVersionId)
+        .executeTakeFirstOrThrow();
+      const now = new Date();
+      const id = randomUUID();
+      await tx
+        .insertInto("pluginVersions")
+        .values({
+          id,
+          pluginId: plugin.id,
+          digest: input.digest,
+          manifest: jsonValue(from.manifest),
+          packageFormat: input.packageFormat,
+          createdAt: now,
+        })
+        .execute();
+      await tx
+        .updateTable("plugins")
+        .set({ currentVersionId: id, updatedAt: now })
+        .where("id", "=", plugin.id)
+        .execute();
+      // Plugin writes precede installation locks, as they do on install and update.
+      const installations = await tx
+        .selectFrom("integrationInstallations")
+        .select(["id", "provenance"])
+        .where("pluginId", "=", plugin.id)
+        .orderBy("id", "asc")
+        .forNoKeyUpdate()
+        .execute();
+      for (const installation of installations)
+        if (installation.provenance.snapshotDigest === from.digest)
+          await tx
+            .updateTable("integrationInstallations")
+            .set({
+              provenance: jsonValue({ ...installation.provenance, snapshotDigest: input.digest }),
+              updatedAt: now,
+            })
+            .where("id", "=", installation.id)
+            .execute();
+      if (installations.length === 0) return;
+      const servers = await tx
+        .selectFrom("integrationServers")
+        .select(["id", "transport"])
+        .where(
+          "installationId",
+          "in",
+          installations.map(({ id }) => id),
+        )
+        .orderBy("id", "asc")
+        .forNoKeyUpdate()
+        .execute();
+      for (const server of servers) {
+        const transport = server.transport as {
+          readonly type?: unknown;
+          readonly launch?: { readonly packageDigest?: unknown };
+        };
+        if (transport.type !== "runner" || transport.launch?.packageDigest !== from.digest)
+          continue;
+        await tx
+          .updateTable("integrationServers")
+          .set({
+            transport: jsonValue({
+              ...transport,
+              launch: { ...transport.launch, packageDigest: input.digest },
+            }),
+            updatedAt: now,
+          })
+          .where("id", "=", server.id)
+          .execute();
+      }
+    });
   }
 
   async pendingDataRemovals(runnerId?: RunnerId) {

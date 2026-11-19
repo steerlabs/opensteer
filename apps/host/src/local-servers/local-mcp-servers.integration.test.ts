@@ -152,7 +152,7 @@ integration("MCP servers on a computer", () => {
       expect(reviewed.request.server?.launch).toEqual(launch);
       // It says what allowing covers: the command, and the files of its folder it runs.
       expect(reviewed.request.reason).toMatch(
-        /^Allowing it covers this command and the 1 file in its folder \(\d+\.\d KB\); a program it starts from elsewhere on this computer is covered by its command only\.$/u,
+        /^Allowing it covers this command and the 1 file in its folder \(\d+\.\d KB\); a program it starts from elsewhere on this computer is covered by its command only\. Once allowed, it runs as you on this computer, with your permissions, not in a sandbox\.$/u,
       );
 
       // 3. Approved on the Mac: started there once, and its tools listed.

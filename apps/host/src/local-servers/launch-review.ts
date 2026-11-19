@@ -1,5 +1,6 @@
 import {
   localServerRegistrationFile as registrationFile,
+  pluginPackageFormat,
   type SnapshotFile,
 } from "@opensteer/agent-plugins";
 import type { LocalMcpLaunch } from "@opensteer/integration-core/local-mcp";
@@ -21,8 +22,11 @@ export async function launchReview(input: {
   readonly launch: LocalMcpLaunch;
   /** The launch the person last allowed for this server, or null if they never have. */
   readonly approvedLaunchDigest: string | null;
-  /** The package digests this server's plugin has kept, oldest first. */
-  readonly versions: readonly string[];
+  /**
+   * The packages this server's plugin has kept, oldest first, by digest and the definition it
+   * follows (null for one stored before that was recorded).
+   */
+  readonly versions: readonly { readonly digest: string; readonly format: string | null }[];
   /** A kept package's files, or null when it is no longer on this Host as its digest names it. */
   readonly files: (digest: string) => Promise<readonly SnapshotFile[] | null>;
 }): Promise<string> {
@@ -40,19 +44,25 @@ export async function launchReview(input: {
   const covers =
     launch.type !== "stdio"
       ? "Allowing it covers this address only, not the program that serves it."
-      : current
-        ? `Allowing it covers this command and the ${folder.length} ${folder.length === 1 ? "file" : "files"} in its folder (${size(folder.reduce((sum, file) => sum + file.bytes.byteLength, 0))}); a program it starts from elsewhere on this computer is covered by its command only.`
-        : "Allowing it covers this command only, not the programs it starts.";
+      : `${
+          current
+            ? `Allowing it covers this command and the ${folder.length} ${folder.length === 1 ? "file" : "files"} in its folder (${size(folder.reduce((sum, file) => sum + file.bytes.byteLength, 0))}); a program it starts from elsewhere on this computer is covered by its command only.`
+            : "Allowing it covers this command only, not the programs it starts."
+        } Once allowed, it runs as you on this computer, with your permissions, not in a sandbox.`;
   const approved = input.approvedLaunchDigest;
   if (approved === null || approved === localMcpLaunchDigest(launch)) return covers;
   // The same launch with an earlier package of this plugin is what the person allowed.
   const previous = input.versions.find(
-    (digest) =>
+    ({ digest }) =>
       digest !== launch.packageDigest &&
       localMcpLaunchDigest({ ...launch, packageDigest: digest }) === approved,
   );
   if (previous === undefined) return `How it runs changed since you allowed it. ${covers}`;
-  const before = await input.files(previous);
+  // Allowed before Opensteer named packages as it does now: its package was stored again under
+  // today's digest, and the one allowed can't be compared with it.
+  if (previous.format !== pluginPackageFormat)
+    return `Opensteer was updated since you allowed it, so it needs allowing again. ${covers}`;
+  const before = await input.files(previous.digest);
   if (!before || !current) return `Its files changed since you allowed it. ${covers}`;
   const changes = fileChanges(before, current);
   const listed = changes.slice(0, shownChanges);

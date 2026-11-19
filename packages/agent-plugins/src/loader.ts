@@ -440,6 +440,18 @@ async function snapshotPackage(
     // Canonical, so the package digest does not depend on the order its keys were given in.
     bytes: Buffer.from(canonicalJson(registration)),
   });
+  return storePluginSnapshot(snapshotRoot, files);
+}
+
+/**
+ * Stores a package's files under the digest they make, once, and answers its root, read back as
+ * delivery and launch will read it. A stored snapshot that is no longer what its name says is
+ * written again from these files.
+ */
+export async function storePluginSnapshot(
+  snapshotRoot: string,
+  files: readonly SnapshotFile[],
+): Promise<string> {
   const digest = pluginSnapshotDigest(files);
   await mkdir(snapshotRoot, { mode: 0o700, recursive: true });
   const destination = join(snapshotRoot, digest);
@@ -447,7 +459,6 @@ async function snapshotPackage(
     await requireRealDirectory(destination, "Local-server package snapshot");
     return await verifiedSnapshot(destination, digest);
   } catch (error) {
-    // A stored snapshot that is no longer what its name says is written again from these files.
     if (error instanceof PluginPackageMismatchError)
       await rm(destination, { force: true, recursive: true });
     else if (!isRecord(error) || error.code !== "ENOENT") throw error;

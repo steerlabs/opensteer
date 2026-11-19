@@ -19,6 +19,7 @@ import {
   agentHomeSettingsMigrationName,
   dropSpecialistsMigrationName,
   onePluginPerOwnerNameMigrationName,
+  pluginPackageFormatMigrationName,
   MigrationLineageError,
   migrateToLatest,
   migrationProvider,
@@ -824,6 +825,20 @@ describe("fresh personal/team lineage", () => {
     await sql`drop schema public cascade; create schema public`.execute(database);
     await migrateToLatest(database);
     expect(await catalog()).toEqual(upgraded);
+  });
+  it("records no package format for a plugin version stored before formats were recorded", async () => {
+    await migrateToLatest(database, migrationsBefore(pluginPackageFormatMigrationName));
+    const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    await sql`insert into plugins(id, name, scope, source, installed_by, current_version_id)
+      values ('iin_00000000-0000-4000-8000-0000000000aa', 'office-light', 'deployment', '{}',
+        ${userId}, 'version-before')`.execute(database);
+    await sql`insert into plugin_versions(id, plugin_id, digest, manifest)
+      values ('version-before', 'iin_00000000-0000-4000-8000-0000000000aa', ${"a".repeat(64)},
+        '{"name":"office-light"}')`.execute(database);
+    await migrateToLatest(database);
+    expect(
+      await database.selectFrom("pluginVersions").select(["id", "packageFormat"]).execute(),
+    ).toEqual([{ id: "version-before", packageFormat: null }]);
   });
   it("drops specialist storage and settings from databases made before specialists were removed", async () => {
     await migrateToLatest(database, migrationsBefore(dropSpecialistsMigrationName));

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  pluginPackageFormat,
   readPluginSnapshot,
   readVerifiedPluginSnapshot,
   snapshotLocalServerPackage,
@@ -57,6 +58,11 @@ async function registered(
   };
 }
 
+/** A package as its plugin keeps it, by its digest under today's definition. */
+const stored = (digest: string) => ({ digest, format: pluginPackageFormat });
+const runsAsYou =
+  " Once allowed, it runs as you on this computer, with your permissions, not in a sandbox.";
+
 const server = "import tv\nprint('on')\n";
 const util = "def volume(level):\n    return level\n";
 
@@ -100,11 +106,12 @@ describe("the approval Request of a local server", () => {
     const review = await launchReview({
       launch: first.launch,
       approvedLaunchDigest: null,
-      versions: [first.digest],
+      versions: [stored(first.digest)],
       files: async () => first.files,
     });
     expect(review).toBe(
-      "Allowing it covers this command and the 2 files in its folder (58 B); a program it starts from elsewhere on this computer is covered by its command only.",
+      "Allowing it covers this command and the 2 files in its folder (58 B); a program it starts from elsewhere on this computer is covered by its command only." +
+        runsAsYou,
     );
   });
 
@@ -129,11 +136,12 @@ describe("the approval Request of a local server", () => {
     const review = await launchReview({
       launch: edited.launch,
       approvedLaunchDigest: localMcpLaunchDigest(approved.launch),
-      versions: [approved.digest, edited.digest],
+      versions: [stored(approved.digest), stored(edited.digest)],
       files: async (digest) => packages.get(digest) ?? null,
     });
     expect(review).toBe(
-      "Changed since you allowed it: changed .env (23 B → 23 B); added bad?name.py (0 B); changed lib/util.py (36 B → 45 B); added new.py (31 B); removed old.py (1 B); changed server.py (22 B → 34 B). Allowing it covers this command and the 5 files in its folder (133 B); a program it starts from elsewhere on this computer is covered by its command only.",
+      "Changed since you allowed it: changed .env (23 B → 23 B); added bad?name.py (0 B); changed lib/util.py (36 B → 45 B); added new.py (31 B); removed old.py (1 B); changed server.py (22 B → 34 B). Allowing it covers this command and the 5 files in its folder (133 B); a program it starts from elsewhere on this computer is covered by its command only." +
+        runsAsYou,
     );
     for (const said of ["secret", "TOKEN", "API_KEY", "reboot", "min(level"])
       expect(review).not.toContain(said);
@@ -152,11 +160,28 @@ describe("the approval Request of a local server", () => {
       await launchReview({
         launch: edited.launch,
         approvedLaunchDigest: localMcpLaunchDigest(approved.launch),
-        versions: [approved.digest, edited.digest],
+        versions: [stored(approved.digest), stored(edited.digest)],
         files: async (digest) => packages.get(digest) ?? null,
       }),
     ).toMatch(
       /^Changed since you allowed it: (changed f\d\.py \(1 B → 1 B\); ){7}changed f7\.py \(1 B → 1 B\); and 2 more\. /u,
+    );
+  });
+
+  it("says one allowed before an update needs allowing again, without listing changes", async () => {
+    const approved = await registered({ "server.py": server, "lib/util.py": util });
+    // Stored again under today's digest after the update; the one allowed followed no recorded
+    // definition, and no reader accepts it now.
+    const upgraded = { ...approved.launch, packageDigest: "f".repeat(64) };
+    const review = await launchReview({
+      launch: upgraded,
+      approvedLaunchDigest: localMcpLaunchDigest(approved.launch),
+      versions: [{ digest: approved.digest, format: null }, stored(upgraded.packageDigest)],
+      files: async (digest) => (digest === upgraded.packageDigest ? approved.files : null),
+    });
+    expect(review).toBe(
+      "Opensteer was updated since you allowed it, so it needs allowing again. Allowing it covers this command and the 2 files in its folder (58 B); a program it starts from elsewhere on this computer is covered by its command only." +
+        runsAsYou,
     );
   });
 
@@ -171,7 +196,7 @@ describe("the approval Request of a local server", () => {
       await launchReview({
         launch: command.launch,
         approvedLaunchDigest: localMcpLaunchDigest(approved.launch),
-        versions: [approved.digest],
+        versions: [stored(approved.digest)],
         files,
       }),
     ).toMatch(/^How it runs changed since you allowed it\. Allowing it covers this command/u);
@@ -179,7 +204,7 @@ describe("the approval Request of a local server", () => {
       await launchReview({
         launch: approved.launch,
         approvedLaunchDigest: localMcpLaunchDigest(approved.launch),
-        versions: [approved.digest],
+        versions: [stored(approved.digest)],
         files,
       }),
     ).toMatch(/^Allowing it covers this command and the 1 file in its folder/u);

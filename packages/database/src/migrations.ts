@@ -284,6 +284,15 @@ begin
 end $$;
 create unique index plugins_owner_name on plugins(installed_by, name);
 `;
+/**
+ * The definition each plugin version's package digest follows. Versions stored before it was
+ * recorded are null: their digests follow the earlier definition, which no reader accepts now, so
+ * the Host stores each such package again under its current digest at startup.
+ */
+export const pluginPackageFormatMigrationName = "0037_plugin_package_format";
+const PLUGIN_PACKAGE_FORMAT_SQL = `
+alter table plugin_versions add column package_format text;
+`;
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -561,6 +570,11 @@ export function migrationProvider(): MigrationProvider {
         [onePluginPerOwnerNameMigrationName]: {
           async up(database) {
             await sql.raw(ONE_PLUGIN_PER_OWNER_NAME_SQL).execute(database);
+          },
+        },
+        [pluginPackageFormatMigrationName]: {
+          async up(database) {
+            await sql.raw(PLUGIN_PACKAGE_FORMAT_SQL).execute(database);
           },
         },
       };

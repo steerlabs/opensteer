@@ -19,6 +19,7 @@ describeStore("personal plugin packages", (test) => {
       actorUserId: owner.userId,
       source: {},
       digest: "old",
+      packageFormat: "test",
       manifest: { name: "mine" },
     });
     await settings.setEnabled(owner.userId, {
@@ -28,11 +29,21 @@ describeStore("personal plugin packages", (test) => {
       expectedRevision: 0,
       idempotencyKey: "off",
     });
-    await plugins.update({ pluginId, digest: "new", manifest: { name: "mine" } });
+    await plugins.update({
+      pluginId,
+      digest: "new",
+      packageFormat: "test",
+      manifest: { name: "mine" },
+    });
     expect((await plugins.list())[0]!.versions).toHaveLength(2);
     expect(await plugins.current(owner.userId)).toEqual([]);
     await expect(
-      plugins.update({ pluginId, digest: "renamed", manifest: { name: "changed" } }),
+      plugins.update({
+        pluginId,
+        digest: "renamed",
+        packageFormat: "test",
+        manifest: { name: "changed" },
+      }),
     ).rejects.toThrow("keep its name");
     expect((await plugins.list())[0]!.versions).toHaveLength(2);
   });
@@ -49,6 +60,7 @@ describeStore("personal plugin packages", (test) => {
         actorUserId: owner.userId,
         source: {},
         digest: "first",
+        packageFormat: "test",
         manifest: { name: "office-light" },
       });
     const settled = await Promise.allSettled([install(), install(), install()]);
@@ -82,6 +94,7 @@ describeStore("personal plugin packages", (test) => {
         actorUserId: owner.userId,
         source: {},
         digest: name,
+        packageFormat: "test",
         manifest: { name },
       });
     await install("first");
@@ -105,6 +118,7 @@ describeStore("personal plugin packages", (test) => {
         actorUserId,
         source: {},
         digest: name,
+        packageFormat: "test",
         manifest: { name },
       });
     await expect(install("opensteer")).rejects.toThrow("reserved");

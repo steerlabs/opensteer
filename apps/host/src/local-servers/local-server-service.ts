@@ -1,9 +1,13 @@
 import { readdir, realpath } from "node:fs/promises";
+import { basename } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { AesGcmSecretVault } from "@opensteer/access/host";
 import { createCredentialResponseRedactor } from "@opensteer/access/host";
 import {
+  pluginPackageFormat,
+  readPluginSnapshot,
   readVerifiedPluginSnapshot,
+  storePluginSnapshot,
   type LocalServerPackageServer,
 } from "@opensteer/agent-plugins";
 import {
@@ -184,6 +188,35 @@ export class LocalServerService {
   async requestLocalServerApprovals(): Promise<void> {
     const changed = await this.#store.localMcp.requestApprovals();
     if (changed.length > 0) this.#onConnectionsChanged();
+  }
+
+  /**
+   * A package stored before its plugin version recorded the format of its digest is named by a
+   * digest no reader accepts now. Each is stored again, once, under the digest its files make
+   * today, as a new version of its plugin that its servers' launches name. Their approvals were
+   * for the earlier launch, so each computer's owner is asked again (see launchReview), and runs
+   * read the plugin's skills by the new digest.
+   */
+  async upgradePackages(): Promise<void> {
+    const packages = `${await realpath(this.#dataDirectory)}/plugins/data/packages`;
+    for (const plugin of await this.#store.plugins.list()) {
+      const current = plugin.versions.find(({ id }) => id === plugin.currentVersionId);
+      if (!current || current.packageFormat !== null) continue;
+      let digest: string;
+      try {
+        const files = await readPluginSnapshot(`${packages}/${current.digest}`);
+        digest = basename(await storePluginSnapshot(packages, files));
+      } catch (error) {
+        console.warn(`The package of plugin ${plugin.name} could not be stored again`, error);
+        continue;
+      }
+      await this.#store.plugins.upgradePackage({
+        pluginId: plugin.id,
+        fromVersionId: current.id,
+        digest,
+        packageFormat: pluginPackageFormat,
+      });
+    }
   }
 
   async deliverPluginDataRemovals(runnerId?: RunnerId): Promise<void> {
@@ -691,8 +724,9 @@ export class LocalServerService {
       launch,
       approvedLaunchDigest: server?.approvedLaunchDigest ?? null,
       versions:
-        plugins.find(({ id }) => id === launch.pluginId)?.versions.map(({ digest }) => digest) ??
-        [],
+        plugins
+          .find(({ id }) => id === launch.pluginId)
+          ?.versions.map(({ digest, packageFormat }) => ({ digest, format: packageFormat })) ?? [],
       files: (digest) =>
         readVerifiedPluginSnapshot(`${packages}/${digest}`, digest).catch(() => null),
     });

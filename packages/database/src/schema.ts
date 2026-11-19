@@ -2256,6 +2256,8 @@ export interface DatabaseSchema {
     pluginId: string;
     digest: string;
     manifest: JsonColumn<Readonly<Record<string, unknown>>>;
+    /** The definition `digest` follows; null for a version stored before it was recorded. */
+    packageFormat: string | null;
     createdAt: Timestamp;
   };
 

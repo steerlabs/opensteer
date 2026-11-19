@@ -2,7 +2,7 @@ import { localNamespace, slugify } from "../plugins/provider-names.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { snapshotLocalServerPackage } from "@opensteer/agent-plugins";
+import { pluginPackageFormat, snapshotLocalServerPackage } from "@opensteer/agent-plugins";
 import {
   OpensteerError,
   refused,
@@ -305,6 +305,7 @@ export class LocalServerRegistry {
     const version = {
       ...(setupThreadId !== undefined ? { setupThreadId } : {}),
       digest: basename(plugin.root),
+      packageFormat: pluginPackageFormat,
       manifest: {
         ...plugin.manifest,
         skills: plugin.skills.map(({ name, description, digest }) => ({
