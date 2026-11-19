@@ -587,11 +587,12 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
       if (
         snapshot.public.screenshotUnavailable === "opensteer-app" &&
         action.type !== "navigate" &&
+        action.type !== "launch" &&
         action.type !== "wait"
       )
         failure(
           "permission-required",
-          "Navigate away from Opensteer before controlling the screen.",
+          "Navigate away from Opensteer or launch another app before controlling the screen.",
         );
       switch (action.type) {
         case "tap":
@@ -928,7 +929,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
             ? ["navigate" as const]
             : (["tap", "longPress", "swipe", "drag", "scroll", "navigate"] as const)),
         );
-      if (!selfApp && (!capabilities || capabilities.launch === null)) actions.push("launch");
+      if (!capabilities || capabilities.launch === null) actions.push("launch");
       actions.push("wait");
     }
     this.#emit({

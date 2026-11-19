@@ -621,7 +621,7 @@ describe("iPhone screen driver", () => {
     expect(
       (await f.connection.observe(context, observeParams)).observation.screenshotUnavailable,
     ).toBe("opensteer-app");
-    expect(f.events.at(-1)).toMatchObject({ actions: ["navigate", "wait"] });
+    expect(f.events.at(-1)).toMatchObject({ actions: ["navigate", "launch", "wait"] });
     f.bridge.observation = native({ foreground: null });
     expect((await f.connection.observe(context, observeParams)).observation).toMatchObject({
       foreground: null,

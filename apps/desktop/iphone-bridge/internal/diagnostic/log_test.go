@@ -21,6 +21,7 @@ func TestPrivateStructuredLogScrubsNativeData(t *testing.T) {
 	Remember("SENTINEL_DEVICE", "SERIAL_SENTINEL")
 	logger.Debug("bridge.request", "method", "phone.observe", "requestId", 7, "params", map[string]string{"udid": "SENTINEL_DEVICE"})
 	logger.Debug("bridge.native-error", "err", errors.New("connect SENTINEL_DEVICE failed: EOF"), "reason", "native-service-failed")
+	logger.Debug("bridge.native-error", "err", errors.New("dial tcp [fd2b:1c4e:9a::1]:61423: connection refused"), "reason", "native-service-failed")
 	for _, secret := range []string{"PairRecord=map[HostPrivateKey:SENTINEL_PAIR]", "ECID: 1234567", "serial SERIAL_SENTINEL", "00008150-123456789abcdef0", "-----BEGIN PRIVATE KEY-----SENTINEL_KEY"} {
 		logger.Debug("untrusted "+secret, "err", errors.New(secret), "pairRecord", secret, "udid", secret)
 	}
@@ -35,7 +36,7 @@ func TestPrivateStructuredLogScrubsNativeData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, private := range []string{"SENTINEL", "1234567", "00008150", "PRIVATE KEY", "pairRecord", "params", "udid"} {
+	for _, private := range []string{"SENTINEL", "1234567", "00008150", "PRIVATE KEY", "pairRecord", "params", "udid", "fd2b", "61423"} {
 		if strings.Contains(string(data), private) {
 			t.Fatalf("private data %q leaked: %s", private, data)
 		}

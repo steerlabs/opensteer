@@ -24,29 +24,27 @@ func TestForegroundNamesOneLaunchableAppAmongIOS27Flags(t *testing.T) {
 	other := eligibleForegroundFixture(t, "other.app", "/var/containers/Other.app", "Other")
 	apps := []InstalledApp{example, other}
 	// iOS 27 flags SpringBoard and system UI services alongside the visible app.
-	system := []string{springBoard, "/Applications/InputUI.app/InputUI", "/Applications/DockFolderViewService.app/DockFolderViewService"}
+	system := []string{"/System/Library/CoreServices/SpringBoard.app/SpringBoard", "/Applications/InputUI.app/InputUI", "/Applications/DockFolderViewService.app/DockFolderViewService"}
 	pick := func(processes []interface{}) *Foreground {
-		home, others := false, []string{}
-		for _, e := range foregroundExecutables(processes) {
-			if e == springBoard {
-				home = true
-			} else {
-				others = append(others, e)
-			}
-		}
-		return pickForeground(home, others, apps)
+		return pickForeground(foregroundExecutables(processes), apps)
 	}
 	if f := pick(flagged(append(system, "file:///var/containers/Example.app/Example")...)); f == nil || f.AppID != "example.app" {
 		t.Fatalf("visible app not named: %+v", f)
 	}
-	if f := pick(flagged(system...)); f == nil || f.AppID != "com.apple.springboard" {
-		t.Fatalf("Home Screen not named: %+v", f)
+	if f := pick(flagged(system...)); f != nil {
+		t.Fatalf("SpringBoard alone named an app: %+v", f)
 	}
 	if f := pick(flagged(append(system, "/var/containers/Example.app/Example", "/var/containers/Other.app/Other")...)); f != nil {
 		t.Fatalf("two flagged apps named one: %+v", f)
 	}
 	if f := pick(flagged("/var/containers/Unknown.app/Unknown")); f != nil {
 		t.Fatalf("guessed an app that isn't installed: %+v", f)
+	}
+	if f := settleForeground(&Foreground{AppID: "example.app"}, nil, &Foreground{AppID: opensteerAppID}); f == nil || f.AppID != opensteerAppID {
+		t.Fatal("a reading of Opensteer's own screen didn't keep it private")
+	}
+	if settleForeground(&Foreground{AppID: "example.app"}, &Foreground{AppID: "other.app"}) != nil {
+		t.Fatal("disagreeing readings named an app")
 	}
 	if resolveForeground("/elsewhere/Example.app/Example", apps) != nil {
 		t.Fatal("guessed identity from app name")
@@ -143,8 +141,8 @@ func TestRunningProcessesUsesBoundedTunnelDTX(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f := pickForeground(true, nil, nil); len(foregroundExecutables(processes)) != 1 || f == nil {
-		t.Fatal("tunnel reply did not identify home screen")
+	if len(foregroundExecutables(processes)) != 1 {
+		t.Fatal("tunnel reply lost the flagged process")
 	}
 	select {
 	case err := <-served:

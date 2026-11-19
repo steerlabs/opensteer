@@ -28,6 +28,9 @@ func Remember(values ...string) {
 
 var identifiers = regexp.MustCompile(`(?i)\b(?:[0-9a-f]{8}-[0-9a-f]{16}|[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9a-f]{16,}|[0-9]{9,})\b`)
 var opaque = regexp.MustCompile(`[A-Za-z0-9+/=_-]{64,}`)
+
+// The phone's tunnel and Wi-Fi addresses identify it as surely as its UDID.
+var addresses = regexp.MustCompile(`(?i)\[?\b[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}\b\]?(?::[0-9]+)?|\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]+)?\b`)
 var sensitive = regexp.MustCompile(`(?i)udid|unique.?device|serial|ecid|pair.?record|private.?key|public.?key|certificate|BEGIN .*KEY|escrow|host.?id|system.?buid|["']?(?:key|password|token)["']?\s*[:=]`)
 
 func scrub(value string) string {
@@ -41,6 +44,7 @@ func scrub(value string) string {
 		value = strings.ReplaceAll(value, secret, "[redacted]")
 	}
 	secrets.RUnlock()
+	value = addresses.ReplaceAllString(value, "[redacted]")
 	value = identifiers.ReplaceAllString(value, "[redacted]")
 	value = opaque.ReplaceAllString(value, "[redacted]")
 	if len(value) > 2048 {

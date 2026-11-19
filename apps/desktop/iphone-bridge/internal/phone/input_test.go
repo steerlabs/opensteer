@@ -434,4 +434,10 @@ func TestObserveKeepsTheScreenshotWhenTheFrontAppIsUnknown(t *testing.T) {
 	if o := result.(*Observation); o.Foreground != nil || o.Screenshot == nil {
 		t.Fatal("an unknown front app hid the screenshot")
 	}
+	// The person left Opensteer between the capture's readings: its pixels stay private.
+	backend.foregroundReads = []*Foreground{{AppID: opensteerAppID}, nil}
+	result, err = s.observe(context.Background(), &wire.ObserveParams{ScreenRef: wire.ScreenRef{NativeEpoch: 1}, IncludeScreenshot: &include}, okay)
+	if err != nil || result.(*Observation).Foreground.AppID != opensteerAppID {
+		t.Fatal("a capture around Opensteer's own screen lost its identity", err)
+	}
 }

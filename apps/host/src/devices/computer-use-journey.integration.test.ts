@@ -3450,7 +3450,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
               "Screen: off",
               "Locked: no",
               "Secure lock: no",
-              "Foreground app: none",
+              "Foreground app: unknown",
               'The screen is off, so there is nothing to see. If this Device advertises wake, act with {"type":"wake"}; otherwise ask the person to turn it on.',
             ]
           : [

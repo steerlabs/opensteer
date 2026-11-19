@@ -13,13 +13,13 @@ import (
 
 const logModule = "go-ios/dtx_codec"
 const maxMessageSize = 16 << 20
+const maxAuxiliarySize = 1 << 20
 
 var ErrFrame = errors.New("malformed or oversized DTX message")
 
-// RawConnection reads DTX messages from a supplied connection. It follows
-// upstream's decoder and adds one rule: no message may make it allocate more
-// than maxMessageSize. Header fields Apple sizes or sets freely (the auxiliary
-// buffer capacity, flags, primitive types) are read, never required to match.
+// RawConnection reads DTX messages like upstream's decoder, plus allocation
+// bounds. Header fields Apple sizes or sets freely (the auxiliary buffer
+// capacity, flags, primitive types) are read, never required to match.
 type RawConnection struct {
 	conn net.Conn
 }
@@ -66,7 +66,7 @@ func (c *RawConnection) Read() (Message, error) {
 			if _, e := io.ReadFull(c.conn, part); e != nil {
 				return Message{}, e
 			}
-			if binary.BigEndian.Uint32(part) != DtxMessageMagic || binary.LittleEndian.Uint16(part[8:]) != i || !bytes.Equal(part[16:28], header[16:28]) {
+			if binary.BigEndian.Uint32(part) != DtxMessageMagic || binary.LittleEndian.Uint32(part[4:]) != 32 || binary.LittleEndian.Uint16(part[8:]) != i || binary.LittleEndian.Uint16(part[10:]) != fragments || !bytes.Equal(part[16:28], header[16:28]) {
 				return Message{}, ErrFrame
 			}
 			n := int(binary.LittleEndian.Uint32(part[12:]))
@@ -92,7 +92,8 @@ func (c *RawConnection) Read() (Message, error) {
 	offset := 16
 	if ph.AuxiliaryLength > 0 {
 		n := int(ph.AuxiliaryLength)
-		if n < 16 || uint64(binary.LittleEndian.Uint32(body[24:])) != uint64(n-16) {
+		// Arguments are small; the cap keeps a flood of tiny entries from expanding in memory.
+		if n < 16 || n > maxAuxiliarySize || uint64(binary.LittleEndian.Uint32(body[24:])) != uint64(n-16) {
 			return Message{}, ErrFrame
 		}
 		m.Auxiliary = DecodeAuxiliary(body[32 : 16+n])

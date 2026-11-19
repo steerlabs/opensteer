@@ -131,6 +131,37 @@ func (s *screenSession) close() {
 		<-done
 	}
 }
+
+// foreground reads the front app for a label; failures only mean "unknown".
+func (s *screenSession) foreground(ctx context.Context) *Foreground {
+	f, err := s.backend.Foreground(ctx)
+	if err != nil {
+		slog.Debug("bridge.native-error", "reason", string(Classify(err, wire.NativeServiceFailed).Code))
+	}
+	return f
+}
+
+// settleForeground keeps Opensteer's own screen private if any reading around
+// the capture saw it, and otherwise names an app only when the readings agree.
+func settleForeground(readings ...*Foreground) *Foreground {
+	var found *Foreground
+	for _, f := range readings {
+		if f != nil && f.AppID == opensteerAppID {
+			return f
+		}
+	}
+	for _, f := range readings {
+		if f == nil {
+			continue
+		}
+		if found != nil && found.AppID != f.AppID {
+			return nil
+		}
+		found = f
+	}
+	return found
+}
+
 func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guard func() error) (interface{}, error) {
 	ctx, finish, err := s.begin(ctx)
 	if err != nil {
@@ -147,6 +178,7 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	if err = before.safe(); err != nil {
 		return nil, err
 	}
+	first := s.foreground(ctx)
 	png, err := s.backend.Capture(ctx, before.uniqueID)
 	if err != nil {
 		return nil, err
@@ -158,10 +190,7 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	g.DisplayID = before.DisplayID
 	g.DisplayUniqueID = before.uniqueID
 	g.Rotation = before.Rotation
-	foreground, err := s.backend.Foreground(ctx)
-	if err != nil {
-		slog.Debug("bridge.native-error", "err", err, "reason", string(Classify(err, wire.NativeServiceFailed).Code))
-	}
+	last := s.foreground(ctx)
 	axCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	ax, axErr := s.backend.AX(axCtx)
 	cancel()
@@ -171,9 +200,7 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	if axErr != nil {
 		ax = AXSnapshot{Nodes: []AXNode{}, Coverage: AXCoverage{CoordinateSpace: "unqualified", Status: "unavailable", Reason: "accessibility-unavailable"}}
 	}
-	if foreground == nil {
-		foreground = ax.Foreground
-	}
+	foreground := settleForeground(first, last, ax.Foreground)
 	after, err := s.backend.State(ctx)
 	if err != nil {
 		return nil, err

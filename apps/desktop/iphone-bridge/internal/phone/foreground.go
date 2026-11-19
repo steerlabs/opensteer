@@ -13,7 +13,7 @@ import (
 )
 
 const instrumentsService = "com.apple.instruments.dtservicehub"
-const springBoard = "/System/Library/CoreServices/SpringBoard.app/SpringBoard"
+const opensteerAppID = "com.opensteer.opensteer"
 
 func instrumentCall(conn *dtx.RawConnection, id, channel int, selector string, args ...interface{}) error {
 	payload, err := nskeyedarchiver.ArchiveBin(selector)
@@ -154,9 +154,9 @@ func resolveForeground(executable string, apps []InstalledApp) *Foreground {
 	return found
 }
 
-// readForeground names the front app when the flags make it unambiguous: one
-// launchable app, or the Home Screen when no app is flagged. Anything else is
-// unknown (nil); callers treat the result as a label, never as a gate.
+// readForeground names the front app only when exactly one flagged executable
+// is an installed app. Anything else, including SpringBoard under an overlay,
+// is unknown (nil); callers treat the result as a label, never as a gate.
 func readForeground(ctx context.Context, dial ServiceDialer) (*Foreground, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -165,24 +165,16 @@ func readForeground(ctx context.Context, dial ServiceDialer) (*Foreground, error
 		return nil, err
 	}
 	executables := foregroundExecutables(processes)
-	home := false
-	others := []string{}
-	for _, executable := range executables {
-		if executable == springBoard {
-			home = true
-		} else {
-			others = append(others, executable)
-		}
+	if len(executables) == 0 {
+		return nil, nil
 	}
-	var apps []InstalledApp
-	if len(others) > 0 {
-		if apps, err = readInstalledApps(ctx, dial); err != nil {
-			return nil, err
-		}
+	apps, err := readInstalledApps(ctx, dial)
+	if err != nil {
+		return nil, err
 	}
-	return pickForeground(home, others, apps), nil
+	return pickForeground(executables, apps), nil
 }
-func pickForeground(home bool, executables []string, apps []InstalledApp) *Foreground {
+func pickForeground(executables []string, apps []InstalledApp) *Foreground {
 	var found *Foreground
 	for _, executable := range executables {
 		app := resolveForeground(executable, apps)
@@ -193,9 +185,6 @@ func pickForeground(home bool, executables []string, apps []InstalledApp) *Foreg
 			return nil
 		}
 		found = app
-	}
-	if found == nil && home {
-		return &Foreground{AppID: "com.apple.springboard", Label: "Home Screen"}
 	}
 	return found
 }
