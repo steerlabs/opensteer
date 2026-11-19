@@ -95,6 +95,7 @@ import {
   type ConversationActivity as ReplyActivity,
   type ConversationActivitySelection,
   type AssignmentEntry,
+  type AnsweredQuestionEntry,
   type DelegationEntry,
   type MessageEntry,
   type TranscriptGroup,
@@ -146,6 +147,7 @@ import {
   SurfaceLink,
 } from "./surface-chips.js";
 import { FoldMeasuresWhenLaidOut, MessageFold } from "./message-fold.js";
+import { AnsweredQuestionRow } from "./answered-question.js";
 import { useToast } from "./toast.js";
 import { TaskMark, AgentOrb } from "./workspace/task-mark.js";
 import { automationPath, useMediaQuery } from "../ui-utils.js";
@@ -701,6 +703,8 @@ const TranscriptRow = memo(
               <TurnView turn={group.turn} turnKey={group.key} reveal={reveal} />
             ) : group.kind === "delegation" ? (
               <DelegationNotice delegation={group.entry} />
+            ) : group.kind === "question" ? (
+              <TranscriptAnsweredQuestion entry={group.entry} />
             ) : group.kind === "assignment" ? (
               renderTask?.([group.entry])
             ) : (
@@ -3101,6 +3105,12 @@ function HeldDelegationNotice({
 }
 
 const nothingHeld = { activeTasks: [], tasks: null, threads: [], workspaceTasks: {} };
+
+function TranscriptAnsweredQuestion({ entry }: { entry: AnsweredQuestionEntry }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  return <AnsweredQuestionRow client={client} entry={entry} threadId={threadId} />;
+}
 
 /* ---- Run outcomes ---- */
 

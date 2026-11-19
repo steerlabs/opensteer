@@ -168,4 +168,28 @@ describe("personal wire compatibility", () => {
     ]);
     expect(same(windowBreaks(baseline, baseline), [])).toBe(true);
   });
+
+  it("compares a union nested in a union by its members, field by field", () => {
+    const item = (fields: z.ZodRawShape) =>
+      json(
+        z.object({
+          entries: z.array(
+            z.union([
+              z.discriminatedUnion("kind", [
+                z.object({ kind: z.literal("request"), ...fields }),
+                z.object({ kind: z.literal("run") }),
+              ]),
+              z.object({ kind: z.literal("gap") }),
+            ]),
+          ),
+        }),
+      );
+    const before = item({ title: z.string() });
+    expect(
+      surfaceBreaks(before, item({ title: z.string(), note: z.string().optional() }), "output"),
+    ).toEqual([]);
+    expect(surfaceBreaks(before, item({}), "output").join("\n")).toContain(
+      "oneOf[kind=request]/properties/title",
+    );
+  });
 });

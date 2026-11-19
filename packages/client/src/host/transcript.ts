@@ -3,6 +3,7 @@ import { browserSiteLabel } from "./browser-sign-in.js";
 import { cardUseTitle } from "./cards.js";
 import { passwordSignInOutcome, passwordSignInReceipt } from "./passwords.js";
 import {
+  answeredQuestion,
   contentSaysSomething,
   threadInputIsPublished,
   type ThreadInput,
@@ -282,12 +283,14 @@ export function upsertEntry(
 export function requestReceipt(
   request: Exclude<Request, { status: "pending" }>,
 ): RequestReceiptEntry {
+  const question = answeredQuestion(request);
   return {
     createdAt: request.resolvedAt,
     ...(request.status === "declined" ? { declined: true } : {}),
     id: `request:${request.id}`,
     kind: "request",
     outcome: requestOutcome(request),
+    ...(question ? { question } : {}),
     requestId: request.id,
     requestKind: request.kind,
     runId: request.originatingRunId,

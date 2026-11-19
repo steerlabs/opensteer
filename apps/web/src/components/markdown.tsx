@@ -68,8 +68,18 @@ function TranscriptBlock({ children }: ComponentProps<"pre">) {
   );
 }
 
+/** A block cut short: copying it would hand over part as if it were whole. */
+function ExcerptBlock({ children }: ComponentProps<"pre">) {
+  return (
+    <div className={isDraft(children) ? "md-block md-block--draft" : "md-block"}>
+      <pre>{children}</pre>
+    </div>
+  );
+}
+
 const bareComponents: Components = { a: ReferenceLink, img: TranscriptImage };
 const components: Components = { ...bareComponents, pre: TranscriptBlock };
+const excerptComponents: Components = { ...bareComponents, pre: ExcerptBlock };
 
 /**
  * A link keeps its destination only when it is one Opensteer knows how to
@@ -86,14 +96,17 @@ const urlTransform: UrlTransform = (url, key, node) =>
  * holds back a link whose destination is still arriving. `bare` is for code
  * that is a bubble of its own, whose copy mark stands beside it; code held in
  * words keeps its own. `person` reads a person's words as they typed them.
+ * `excerpt` is for text cut short, whose blocks offer no copy.
  */
 export const Markdown = memo(function Markdown({
   bare = false,
+  excerpt = false,
   profile = "assistant",
   streaming = false,
   text,
 }: {
   bare?: boolean;
+  excerpt?: boolean;
   profile?: MarkdownProfile;
   streaming?: boolean;
   text: string;
@@ -103,7 +116,7 @@ export const Markdown = memo(function Markdown({
     <div className={profile === "person" ? "md-prose md-prose--person" : "md-prose"}>
       {blocks.map((block, index) => (
         <MarkdownBlock
-          bare={bare}
+          components={bare ? bareComponents : excerpt ? excerptComponents : components}
           key={index}
           profile={profile}
           streaming={streaming && index === blocks.length - 1}
@@ -115,12 +128,12 @@ export const Markdown = memo(function Markdown({
 });
 
 const MarkdownBlock = memo(function MarkdownBlock({
-  bare,
+  components,
   profile,
   streaming,
   text,
 }: {
-  bare: boolean;
+  components: Components;
   profile: MarkdownProfile;
   streaming: boolean;
   text: string;
@@ -129,7 +142,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
   const highlight = useMemo(createMarkdownHighlight, []);
   return (
     <ReactMarkdown
-      components={bare ? bareComponents : components}
+      components={components}
       remarkPlugins={
         person ? personRemarkPlugins : streaming ? streamingRemarkPlugins : remarkPlugins
       }

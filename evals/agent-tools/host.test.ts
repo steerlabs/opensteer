@@ -256,6 +256,10 @@ it("validates the new surface cases with each caller's production inventory", as
             ...(["opensteer_task_delegate", "opensteer_task_create"].includes(required.tool)
               ? { message: "Compare vendors" }
               : {}),
+            // What the person is asked is the agent's wording; the case grades only its detail.
+            ...(required.tool === "ask_person"
+              ? { title: "Send this DM?", questions: [{ question: "Send it as written?" }] }
+              : {}),
             // A new group's color is the agent's choice; the case leaves it open.
             ...(required.tool === "tab_organize"
               ? { group: { color: "blue", ...(required.args.group as object) } }

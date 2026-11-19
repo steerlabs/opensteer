@@ -77,6 +77,9 @@ vi.mock("../ui/primitives.js", () => ({
   AppText: (props: { children?: ReactNode }) => <span>{props.children}</span>,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+vi.mock("../markdown/markdown.js", () => ({
+  Markdown: ({ text }: { text: string }) => <p>{text}</p>,
+}));
 vi.mock("./asker-byline.js", () => ({ AskerByline: () => null, useRequestAsker: () => null }));
 vi.mock("./request-card.js", () => ({ arrivalGuardMs: 450, WaitingMenu: () => null }));
 vi.mock("../ui/composer-action.js", () => ({

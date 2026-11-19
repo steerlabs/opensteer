@@ -5,7 +5,7 @@ import type { MarkdownProfile } from "@opensteer/shared/personMarkdown";
 import { AssetImage } from "./asset-image.js";
 import { punctuateLinks, splitMarkdownBlocks } from "@opensteer/shared/markdown";
 import type { List, PhrasingContent, RootContent, Table as TableNode } from "mdast";
-import { memo, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, memo, useContext, useMemo, useState, type ReactNode } from "react";
 import {
   ScrollView,
   StyleSheet,
@@ -37,6 +37,8 @@ export type MarkdownLook = "bubble" | "reading";
  * words take the person profile: their line breaks stand as written.
  */
 export const Markdown = memo(function Markdown(props: {
+  /** Text cut short: its blocks offer no copy, which would hand over part as if whole. */
+  readonly excerpt?: boolean;
   readonly look?: MarkdownLook;
   /** The reader's own bubble, whose accent fill takes its own ink. */
   readonly mine?: boolean;
@@ -60,8 +62,12 @@ export const Markdown = memo(function Markdown(props: {
       ))}
     </View>
   );
-  return props.mine === true ? <ChipInk value="accent">{prose}</ChipInk> : prose;
+  const inked = props.mine === true ? <ChipInk value="accent">{prose}</ChipInk> : prose;
+  return props.excerpt === true ? <Excerpt value>{inked}</Excerpt> : inked;
 });
+
+/** Set inside an excerpt, whose code and drafts are cut short and offer no copy. */
+const Excerpt = createContext(false);
 
 const Block = memo(function Block(props: {
   readonly look: MarkdownLook;
@@ -238,6 +244,7 @@ export function CodeLines(props: {
  */
 function CodeBlock(props: { readonly language: string | null; readonly text: string }): ReactNode {
   const draft = props.language === "draft";
+  const excerpt = useContext(Excerpt);
   return (
     <View style={styles.block}>
       {draft ? (
@@ -247,9 +254,11 @@ function CodeBlock(props: { readonly language: string | null; readonly text: str
       ) : (
         <CodeLines text={props.text} />
       )}
-      <View style={styles.blockCopy}>
-        <CopyMark accessibilityLabel={draft ? "Copy draft" : "Copy code"} text={props.text} />
-      </View>
+      {excerpt ? null : (
+        <View style={styles.blockCopy}>
+          <CopyMark accessibilityLabel={draft ? "Copy draft" : "Copy code"} text={props.text} />
+        </View>
+      )}
     </View>
   );
 }

@@ -166,6 +166,9 @@ vi.mock("../ui/sheet.js", () => ({
     ) : null,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+vi.mock("../markdown/markdown.js", () => ({
+  Markdown: ({ text }: { text: string }) => <p>{text}</p>,
+}));
 // A question opens as its card, which question.interaction.test.tsx covers.
 vi.mock("./waiting-questions.js", () => ({ QuestionCard: () => null }));
 vi.mock("../computers/here-device.js", () => ({ useHereDeviceId: () => null }));

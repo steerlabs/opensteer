@@ -9,7 +9,10 @@ import {
   migrationProvider,
   personalCurrentStateMigrationName,
 } from "./migrations.js";
-import { taskApprovalReceiptsMigrationName } from "./personal-state-schema.js";
+import {
+  answeredQuestionRecordsMigrationName,
+  taskApprovalReceiptsMigrationName,
+} from "./personal-state-schema.js";
 import { preparePersonalConversion } from "./personal-state.test-support.js";
 import { finishPersonalStateUpgrade } from "./personal-state-upgrade.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -77,6 +80,7 @@ test.each(["empty", "personal", "team", "personal-0035"] as const)(
         "0037_plugin_package_format",
         personalCurrentStateMigrationName,
         taskApprovalReceiptsMigrationName,
+        answeredQuestionRecordsMigrationName,
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`

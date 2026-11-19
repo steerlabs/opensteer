@@ -87,6 +87,7 @@ export function transcriptCard(
             requestKind: item.requestKind ?? null,
             title: view.title ?? "Request",
             outcome: preview,
+            ...(item.question ? { question: item.question } : {}),
             ...(item.waitedSince ? { waitedSince: item.waitedSince } : {}),
           };
     case "run": {

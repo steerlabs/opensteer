@@ -185,10 +185,17 @@
   width: 100%;
 }
 
+/* One scroll for a long ask, its detail and answers together, so the
+   composer stays in view. The inset keeps focus rings inside the clip. */
 .action-panel__content {
   display: flex;
   flex-direction: column;
   gap: var(--space-10);
+  max-height: 50vh;
+  margin: calc(var(--space-4) * -1);
+  padding: var(--space-4);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* ---- Requests: the open one whole, the others one row each ---- */
@@ -349,44 +356,34 @@
   color: var(--text);
 }
 
-/* Detail: the substance of the decision — clamped until asked for. */
-.action-detail__frame {
+/* Detail: the substance of the decision, folded until asked for. */
+.request-detail {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-}
-
-.action-detail {
   font-size: var(--text-lg);
   line-height: 1.55;
   color: var(--text-soft);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 300px;
-  overflow-y: auto;
 }
 
-.action-detail--mono {
+.request-detail__text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.request-detail__text--mono {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
 }
 
-.action-detail--clamped {
-  display: -webkit-box;
-  -webkit-line-clamp: 4;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+.request-detail .md-prose {
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
 }
 
-.action-detail__more {
-  align-self: flex-start;
-  font-size: var(--text-xs);
-  color: var(--muted);
-  transition: color var(--duration-fast) var(--ease-out);
-}
-
-.action-detail__more:hover {
-  color: var(--text-soft);
+/* A draft is the words to send: set apart from the card, as in a message. */
+.request-detail .md-block {
+  border: 1px solid var(--line);
 }
 
 /* Option rows: every choice is a full-width target with a digit shortcut. */

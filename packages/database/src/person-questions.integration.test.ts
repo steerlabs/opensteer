@@ -1,6 +1,7 @@
 import { createId, type RequestPresentation } from "@opensteer/core";
 import { expect } from "vitest";
 import { needsYouPage } from "./needs-you-store.js";
+import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
 import {
   describeStore,
   pendingEvent,
@@ -62,6 +63,16 @@ async function finish(f: StoreFixture, run: Started) {
       data: { status: "completed" },
     }),
   });
+}
+
+/** The question as its thread keeps it once settled: the record clients draw. */
+async function threadRecord(f: StoreFixture, run: Started, requestId: string) {
+  const read = await readTranscriptItem(f.database, {
+    viewerId: run.userId,
+    scope: { kind: "thread", threadId: run.thread.id },
+    itemId: `request:${requestId}`,
+  });
+  return read.kind === "item" ? read.item : null;
 }
 
 async function continuations(f: StoreFixture) {
@@ -147,6 +158,14 @@ describeStore("person questions", (it) => {
         .executeTakeFirstOrThrow(),
     ).toEqual({ pendingRequestCount: 0 });
     expect(await continuations(f)).toEqual([{ requestId: request.id }]);
+    expect(await threadRecord(f, run, request.id)).toMatchObject({
+      kind: "request",
+      question: {
+        outcome: "answered",
+        detail: presentation.detail,
+        answers: [{ prompt: "Send this reply?", answer: ["Wait until Friday"] }],
+      },
+    });
     await expect(
       f.store.requests.answerPersonQuestion({
         requestId: request.id,
@@ -155,6 +174,59 @@ describeStore("person questions", (it) => {
         response: answer({ question_1: ["Send it"] }),
       }),
     ).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("settles a question as long as an ask allows, and draws it cut to fit", async ({
+    storeFixture: f,
+  }) => {
+    const run = await f.startRunFixture("person-question-long");
+    const detail = `\`\`\`draft\n${"Long draft words. ".repeat(1_200)}`.slice(0, 20_000);
+    const { request } = await f.store.requests.create({
+      callId: "long",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: run.run.id,
+      originatingThreadId: run.thread.id,
+      payload: { kind: "person.question" },
+      presentation: { ...presentation, detail },
+      requestedBy: run.userId,
+      requiredActor: "requester",
+    });
+    const typed = "Rewrite it shorter. ".repeat(200);
+    const settled = await f.store.requests.answerPersonQuestion({
+      requestId: request.id,
+      expectedRevision: (await f.store.requests.revision(request.id))!,
+      resolvedBy: run.userId,
+      response: { kind: "form", answers: { question_1: [typed] } },
+    });
+    expect(settled.request.status).toBe("fulfilled");
+
+    const record = await threadRecord(f, run, request.id);
+    const question = record?.kind === "request" ? record.question : undefined;
+    expect(question).toMatchObject({ outcome: "answered", truncated: true });
+    expect(detail.startsWith(question!.detail!)).toBe(true);
+    expect(typed.startsWith(question!.answers[0]!.answer[0]!)).toBe(true);
+
+    // The settlement reached attached devices as the record, not as a reset.
+    const change = await f.database
+      .selectFrom("clientChanges")
+      .select(["operation", "payload", "byteCount"])
+      .where("entityKind", "=", "item")
+      .where("entityId", "=", `request:${request.id}`)
+      .executeTakeFirstOrThrow();
+    expect(change.operation).toBe("upsert");
+    expect(change.payload).toMatchObject({ kind: "request", question: { truncated: true } });
+    expect(change.byteCount).toBeLessThanOrEqual(8192);
+
+    const page = await readTranscriptPage(f.database, {
+      viewerId: run.userId,
+      scope: { kind: "thread", threadId: run.thread.id },
+      limit: 100,
+    });
+    // Drawn from the full Request when settled and from its read facts since: the same record.
+    expect(page.kind === "page" && page.items.find(({ id }) => id === record!.id)).toMatchObject({
+      question: (change.payload as { question: unknown }).question,
+    });
   });
 
   it("takes Dismiss as a decline the task hears about", async ({ storeFixture: f }) => {
@@ -176,6 +248,13 @@ describeStore("person questions", (it) => {
     });
     expect(dismissed.request.status).toBe("declined");
     expect(await continuations(f)).toEqual([{ requestId: request.id }]);
+    expect(await threadRecord(f, run, request.id)).toMatchObject({
+      question: {
+        outcome: "dismissed",
+        detail: presentation.detail,
+        answers: [{ prompt: "Send this reply?", answer: [] }],
+      },
+    });
   });
 
   it("wakes the task with one answer while the agent's other question still waits", async ({

@@ -4,7 +4,10 @@ import {
   readTranscriptPage,
 } from "./personal-sync-store.js";
 import { writeExecutionItem } from "./execution-changes.js";
-import { applyTaskApprovalReceipts } from "./personal-state-schema.js";
+import {
+  applyAnsweredQuestionRecords,
+  applyTaskApprovalReceipts,
+} from "./personal-state-schema.js";
 import { readTranscriptOverlays } from "./personal-overlay-store.js";
 import { RequestSchema, createId, type Request } from "@opensteer/core";
 import { sql } from "kysely";
@@ -1069,31 +1072,36 @@ test("draws a subagent's settled approval once, in its task, and nothing else of
   }
 });
 
-test("starts every scope over after the approval placement change", async () => {
+test("starts every scope over after a change to what its cards draw", async () => {
   const f = await createPersonalStateFixture("task-approval-epoch");
   const { database, run } = f;
   try {
-    const state = await database
-      .selectFrom("clientSyncState")
-      .select(["deploymentId", "epoch", "sequence"])
-      .executeTakeFirstOrThrow();
-    const cursor = {
-      deploymentId: state.deploymentId,
-      epoch: state.epoch,
-      viewerId: run.userId,
-      scopeKey: `thread:${run.threadId}` as const,
-      afterSequence: state.sequence,
-    };
-    const resume = () =>
-      readPersonalScopeCut(database, {
+    const resume = async () => {
+      const state = await database
+        .selectFrom("clientSyncState")
+        .select(["deploymentId", "epoch", "sequence"])
+        .executeTakeFirstOrThrow();
+      const cursor = {
+        deploymentId: state.deploymentId,
+        epoch: state.epoch,
         viewerId: run.userId,
-        scope: { kind: "thread", threadId: run.threadId },
-        cursor,
-        snapshot: async () => "snapshot",
-      });
-    expect(await resume()).toMatchObject({ kind: "replay" });
-    await applyTaskApprovalReceipts(database);
-    expect(await resume()).toMatchObject({ kind: "snapshot", snapshot: "snapshot" });
+        scopeKey: `thread:${run.threadId}` as const,
+        afterSequence: state.sequence,
+      };
+      return () =>
+        readPersonalScopeCut(database, {
+          viewerId: run.userId,
+          scope: { kind: "thread", threadId: run.threadId },
+          cursor,
+          snapshot: async () => "snapshot",
+        });
+    };
+    for (const migrate of [applyTaskApprovalReceipts, applyAnsweredQuestionRecords]) {
+      const fromBefore = await resume();
+      expect(await fromBefore()).toMatchObject({ kind: "replay" });
+      await migrate(database);
+      expect(await fromBefore()).toMatchObject({ kind: "snapshot", snapshot: "snapshot" });
+    }
   } finally {
     await f.close();
   }

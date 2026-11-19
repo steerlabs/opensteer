@@ -299,6 +299,25 @@ describe("groupTranscriptEntries", () => {
     expect(turn).toMatchObject({ reply: note, work: [note, receipt] });
   });
 
+  it("stands an answered question where it was answered, apart from the Run that asked it", () => {
+    const asked = command("crm lookup");
+    const stopped = run({ status: "interrupted" });
+    const answered = request({
+      createdAt: at(40),
+      outcome: "Fulfilled · Answered",
+      question: { outcome: "answered", answers: [{ prompt: "Send it?", answer: ["Yes"] }] },
+      requestKind: "person.question",
+    });
+    const sent = command("linkedin send", { runId: "run-b" });
+    const groups = groupTranscriptEntries([stopped, asked, answered, sent]);
+
+    expect(shape(groups)).toEqual([
+      { key: "turn:run:run-a", reply: null, run: "interrupted", work: [asked.id] },
+      `question:${answered.id}`,
+      { key: `turn:${sent.id}`, reply: null, run: null, work: [sent.id] },
+    ]);
+  });
+
   it("splits a Run around a message sent into it, and gives the outcome to its last stretch", () => {
     const before = command("ls");
     const steer = input({ body: "Also check the tests", runId: "run-a" });
