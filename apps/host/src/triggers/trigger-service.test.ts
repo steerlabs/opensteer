@@ -305,3 +305,43 @@ describe("TriggerService", () => {
     await loop.close();
   });
 });
+
+describe("TriggerScheduleLoop exits", () => {
+  it.each([
+    ["claimed and moved on: re-armed at the next time", true, 60_000, 60_000],
+    ["nothing due: armed at the next time", false, 60_000, 60_000],
+    ["no schedule armed: disarmed", false, null, null],
+    ["due but not claimable: backs off, no spin", false, -1, 5_000],
+  ] as const)("%s", async (_, changed, nextIn, armedIn) => {
+    vi.useFakeTimers();
+    try {
+      const claimDueSchedules = vi.fn(async () => ({ occurrences: [], changed }));
+      const nextScheduleAt = vi.fn(async () =>
+        nextIn === null ? null : new Date(Date.now() + nextIn),
+      );
+      const loop = new TriggerScheduleLoop({
+        onChanged: vi.fn(),
+        onError: vi.fn(),
+        onOccurrenceQueued: vi.fn(),
+        store: { claimDueSchedules, nextScheduleAt } as Pick<
+          TriggerStore,
+          "claimDueSchedules" | "nextScheduleAt"
+        >,
+      });
+      loop.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(claimDueSchedules).toHaveBeenCalledTimes(1);
+      if (armedIn === null) expect(vi.getTimerCount()).toBe(0);
+      else {
+        await vi.advanceTimersByTimeAsync(armedIn - 1);
+        expect(claimDueSchedules).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(claimDueSchedules).toHaveBeenCalledTimes(2);
+      }
+      await loop.close();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

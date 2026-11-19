@@ -20,7 +20,7 @@ import {
 } from "./trigger-program-compatibility.js";
 import type { SignedTokenService } from "../identity/host-keys.js";
 import type { Clock } from "@opensteer/shared/clock";
-import { DeadlineDrain } from "../runtime/deadline-drain.js";
+import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
 interface TriggerServiceOptions {
   readonly onChanged?: () => void;
   readonly onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
@@ -407,11 +407,15 @@ export class TriggerScheduleLoop {
   async close(): Promise<void> {
     await this.#drain.close();
   }
-  async #tick(): Promise<Date | null> {
+  async #tick(): Promise<Date | typeof retryWithBackoff | null> {
+    const now = Date.now();
     const { occurrences, changed } = await this.#store.claimDueSchedules();
     for (const occurrence of occurrences) this.#onOccurrenceQueued(occurrence);
     if (changed) this.#onChanged();
-    return this.#store.nextScheduleAt();
+    const next = await this.#store.nextScheduleAt();
+    // A due schedule this pass could not claim (another transaction holds it)
+    // backs off rather than spinning; one that it moved on is simply re-armed.
+    return next && next.getTime() <= now && !changed ? retryWithBackoff : next;
   }
 }
 function hashSecret(value: string): string {
