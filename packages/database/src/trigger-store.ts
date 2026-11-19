@@ -1,5 +1,9 @@
 import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
-import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
+import {
+  commitPersonalMutation,
+  wakeExecutionCommands,
+  wakeTriggerSchedules,
+} from "./personal-mutation.js";
 import { TransactionScopeChanged } from "./connection.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
 import { createHash } from "node:crypto";
@@ -322,6 +326,7 @@ export async function createTriggerInTransaction(
       webhookSecretHash: source.kind === "webhook" ? required(input.webhookSecretHash) : null,
     })
     .execute();
+  if (nextFireAt) await wakeTriggerSchedules(transaction);
   await transaction
     .insertInto("triggerRevisions")
     .values({
@@ -560,6 +565,7 @@ export class TriggerStore {
         .where("id", "=", trigger.id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      if ("nextFireAt" in rearmed && rearmed.nextFireAt) await wakeTriggerSchedules(transaction);
       if (trigger.kind === "watch") {
         await stopActiveWatchActivation(transaction, trigger.id, now);
         if (updated.status === "active") {
@@ -650,6 +656,7 @@ export class TriggerStore {
         .where("id", "=", trigger.id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      if (nextFireAt) await wakeTriggerSchedules(transaction);
       if (trigger.kind === "watch") {
         await stopActiveWatchActivation(transaction, trigger.id, updated.updatedAt);
         if (input.status === "active") {
@@ -716,6 +723,7 @@ export class TriggerStore {
         .where("id", "=", trigger.id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      await wakeTriggerSchedules(transaction);
       return triggerFromRow(updated);
     });
   }
@@ -1417,6 +1425,19 @@ export class TriggerStore {
       },
       (error) => error instanceof TriggerOccurrenceSetChanged,
     );
+  }
+
+  /** When the earliest active, runnable schedule is due; null when none is armed. */
+  async nextScheduleAt(): Promise<Date | null> {
+    const row = await this.#database
+      .selectFrom("triggers")
+      .innerJoin("triggerRevisions", "triggerRevisions.id", "triggers.currentRevisionId")
+      .select((eb) => eb.fn.min("triggers.nextFireAt").as("next"))
+      .where("triggers.kind", "=", "schedule")
+      .where("triggers.status", "=", "active")
+      .where(executableProgram)
+      .executeTakeFirst();
+    return row?.next ? new Date(row.next) : null;
   }
 
   /**

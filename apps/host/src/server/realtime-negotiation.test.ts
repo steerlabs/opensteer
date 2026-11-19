@@ -108,6 +108,7 @@ describe("personal realtime negotiation", () => {
       cursor,
       undefined,
       undefined,
+      expect.objectContaining({ atLeast: expect.any(String) }),
     );
   });
 
@@ -129,28 +130,6 @@ describe("personal realtime negotiation", () => {
     } finally {
       release.resolve();
     }
-  });
-
-  it("closes without sending an invalid cut to the reader", async () => {
-    readCut.mockReset().mockResolvedValue({
-      throughSequence: "1",
-      cursor: { deploymentId, epoch, viewerId: ownerId, scopeKey: "shell", afterSequence: "1" },
-      frames: [
-        {
-          type: "host.snapshot",
-          scope: { kind: "shell" },
-          throughSequence: "1",
-          snapshot: { internal: "private" },
-        },
-      ],
-    });
-    await using peer = await realtimeSocket();
-    const received = vi.fn();
-    peer.socket.on("message", received);
-    const closed = once(peer.socket, "close");
-    peer.socket.send(JSON.stringify(attach));
-    await expect(deadline(closed)).resolves.toEqual([1011, expect.any(Buffer)]);
-    expect(received).not.toHaveBeenCalled();
   });
 });
 

@@ -183,6 +183,9 @@ export const RunnerCapabilitySchema = z.enum([
   "thread-state-v1",
   "task-done-v1",
   "person-show-v1",
+  // Accepts `host.shell.probe-full-disk-access`; an older Runner's strict
+  // frame parser drops its connection on an unknown Host frame.
+  "full-disk-access-probe-v1",
 ]);
 export type RunnerCapability = z.infer<typeof RunnerCapabilitySchema>;
 

@@ -705,6 +705,13 @@ export class RunnerRegistry {
     }
     return identity;
   }
+  /** The in-memory connection fence: superseded or revoked connections fail it. */
+  isCurrentConnection(identity: Pick<RunnerIdentity, "connectionId" | "runnerId">): boolean {
+    return (
+      !this.#revokedRunnerIds.has(identity.runnerId) &&
+      this.#byRunner.get(identity.runnerId)?.identity.connectionId === identity.connectionId
+    );
+  }
   identityForEnvironment(environmentId: EnvironmentId): RunnerIdentity | undefined {
     return this.#byEnvironment.get(environmentId)?.identity;
   }
@@ -1804,7 +1811,8 @@ export class RunnerRegistry {
       if (
         !connection.attached ||
         (runnerId && runnerId !== identity.runnerId) ||
-        identity.modules.shell?.platform !== "darwin"
+        identity.modules.shell?.platform !== "darwin" ||
+        !identity.capabilities.includes("full-disk-access-probe-v1")
       )
         continue;
       void connection.peer

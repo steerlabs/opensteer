@@ -33,7 +33,12 @@ import {
   preparePrivateDesktopDeploymentDirectories,
   type DesktopDeploymentPaths,
 } from "../app/application-paths.js";
-import { snapshotDatabase } from "../supervisor/personal-database-snapshot.js";
+import {
+  markPersonalStateConverted,
+  personalStateConverted,
+  pinnedSnapshotSourceVersion,
+  snapshotDatabase,
+} from "../supervisor/personal-database-snapshot.js";
 import { PersonalOldDatabaseError } from "../supervisor/personal-data-reset.js";
 import type { DesktopPrivateFilesystem } from "./desktop-private-files.js";
 
@@ -166,7 +171,13 @@ export interface PersonalDeploymentFilesystemPort {
     manifest: PersonalDeploymentManifest,
     toRelease: PersonalRuntimeIdentity,
     createdAt: Date,
+    pinned?: boolean,
   ): Promise<string>;
+  /** Whether this Deployment has started healthy since its Personal state conversion. */
+  personalStateConverted(manifest: PersonalDeploymentManifest): Promise<boolean>;
+  markPersonalStateConverted(manifest: PersonalDeploymentManifest): Promise<void>;
+  /** The app version that can open the copy kept for the conversion, if one is pinned. */
+  pinnedSnapshotSourceVersion(manifest: PersonalDeploymentManifest): Promise<string | null>;
   /**
    * initdb only reads the bootstrap superuser password from a real file, so
    * the secret is staged as an owner-only file inside the deployment's
@@ -288,6 +299,7 @@ export class NativePersonalDeploymentFilesystem implements PersonalDeploymentFil
     manifestInput: PersonalDeploymentManifest,
     toRelease: PersonalRuntimeIdentity,
     createdAt: Date,
+    pinned = false,
   ): Promise<string> {
     const manifest = PersonalDeploymentManifestSchema.parse(manifestInput);
     const paths = desktopDeploymentPaths(this.#dataDirectory, manifest.deploymentId);
@@ -296,8 +308,25 @@ export class NativePersonalDeploymentFilesystem implements PersonalDeploymentFil
       dataDirectory: paths.postgresDataDirectory,
       deploymentRoot: paths.rootDirectory,
       fromRelease: manifest.release,
+      pinned,
       toRelease: PersonalRuntimeIdentitySchema.parse(toRelease),
     });
+  }
+
+  personalStateConverted(manifest: PersonalDeploymentManifest): Promise<boolean> {
+    return personalStateConverted(this.#deploymentRoot(manifest));
+  }
+
+  markPersonalStateConverted(manifest: PersonalDeploymentManifest): Promise<void> {
+    return markPersonalStateConverted(this.#deploymentRoot(manifest));
+  }
+
+  pinnedSnapshotSourceVersion(manifest: PersonalDeploymentManifest): Promise<string | null> {
+    return pinnedSnapshotSourceVersion(this.#deploymentRoot(manifest));
+  }
+
+  #deploymentRoot(manifest: PersonalDeploymentManifest): string {
+    return desktopDeploymentPaths(this.#dataDirectory, manifest.deploymentId).rootDirectory;
   }
 
   async stageDatabaseInitPassword(

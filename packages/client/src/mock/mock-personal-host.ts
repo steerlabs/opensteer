@@ -54,7 +54,9 @@ type Revisioned = { readonly revision: string };
 interface SocketState {
   subscriptions: Map<string, Subscription>;
   cuts: Map<string, Snapshot>;
-  live: Map<string, Extract<ScopedHostMessage, { type: "host.live" }>[]>;
+  live: Map<string, Omit<Extract<ScopedHostMessage, { type: "host.live" }>, "handle">[]>;
+  /** The last live handle this socket named; the mock names every frame afresh. */
+  handles: number;
   interests: readonly PersonalResourceKind[];
   selected?: string;
 }
@@ -142,6 +144,7 @@ export class MockPersonalHost {
       subscriptions: new Map(),
       cuts: new Map(),
       live: new Map(),
+      handles: 0,
       interests: [],
     };
     const socket = new MockPersonalSocket((data) => {
@@ -253,13 +256,14 @@ export class MockPersonalHost {
         const { item: _item, ...address } = frame;
         socket.deliver({
           ...address,
+          handle: ++state.handles,
           afterSequence: this.#through,
           update: { operation: "close" },
         });
       }
     }
     state.live.set(subscriptionId, latest);
-    for (const frame of latest) socket.deliver(frame);
+    for (const frame of latest) socket.deliver({ ...frame, handle: ++state.handles });
   }
 
   #readSnapshot(state: SocketState, { scope, anchorItemId }: Subscription) {

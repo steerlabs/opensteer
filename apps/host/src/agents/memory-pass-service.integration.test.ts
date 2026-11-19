@@ -518,6 +518,8 @@ describeStore("managed memory passes", (it) => {
         ownerId: base.userId,
       }),
     ).toEqual([]);
+    // Unsettled, so the Host asks again on the next Runner registration or finished Run.
+    expect(s.instance.settled).toBe(false);
     // An offline computer or an account without a light model does not
     // defer creation: each pass chooses its model when it is admitted.
     s.runners.isAvailable.mockReturnValue(false);
@@ -527,6 +529,8 @@ describeStore("managed memory passes", (it) => {
       pauseReason: null,
     });
     expect((await role(f, base.userId, "memory-nightly")).trigger.status).toBe("active");
+    await s.instance.ensureForPersonal();
+    expect(s.instance.settled).toBe(true);
   });
   it("creates both identities paused, with one reason, when memory is off", async ({
     storeFixture: f,

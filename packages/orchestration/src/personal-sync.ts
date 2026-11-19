@@ -1,6 +1,6 @@
 import {
-  ScopedHostMessageSchema,
   personalAuthorityChangedReason,
+  personalHostFrameMaxBytes,
   type PersonalResumeCursor,
   type PersonalScope,
   type ScopedClientMessage,
@@ -21,9 +21,14 @@ type CutFrame = Extract<
 type WithoutAddress<T> = T extends CutFrame ? Omit<T, keyof Address> : never;
 type Watch = Extract<ScopedClientMessage, { type: "client.resources.watch" }>;
 type LiveFrame = Extract<ScopedHostMessage, { type: "host.live" }>;
+type TextFrame = Extract<ScopedHostMessage, { type: "host.text" }>;
 type DetailScope = LiveFrame["scope"];
 type LiveResync = Extract<ScopedClientMessage, { type: "client.live.resync" }>;
-export type PersonalLiveUpdate = Omit<LiveFrame, "type" | "scope" | keyof Address>;
+export type PersonalLiveUpdate = Omit<LiveFrame, "type" | "scope" | "handle" | keyof Address>;
+type AddressedFrame = Exclude<ScopedHostMessage, TextFrame>;
+type Unaddressed<T> = T extends AddressedFrame ? Omit<T, keyof Address> : never;
+/** A frame before the socket addresses it; `host.text` carries a handle instead. */
+export type PersonalOutgoingFrame = Unaddressed<AddressedFrame> | TextFrame;
 type ShellProgress = Extract<ScopedHostMessage, { type: "host.synchronized" }>["shellProgress"];
 
 interface ScopeCut {
@@ -34,12 +39,14 @@ interface ScopeCut {
 }
 
 interface PersonalSyncPort {
+  /** `atLeast`: every commit through it that touched the scope must be in the cut. */
   read(
     scope: PersonalScope,
     cursor: PersonalResumeCursor | null,
     signal: AbortSignal,
-    anchorItemId?: string,
-    selectedThreadId?: string,
+    anchorItemId: string | undefined,
+    selectedThreadId: string | undefined,
+    atLeast: string,
   ): Promise<ScopeCut>;
   send(encoded: string, dispatchGuard: () => boolean, signal: AbortSignal): Promise<boolean>;
   /** Current revisions, from memory; a detail read checks access. */
@@ -67,6 +74,15 @@ interface PendingLive {
   readonly update: PersonalLiveUpdate;
   readonly immediate: boolean;
   readonly replace: boolean;
+  /** Sends the stream's full identity under a new handle, as after a resync. */
+  readonly identify: boolean;
+  readonly bytes: number;
+}
+
+interface SentLive {
+  readonly handle: number;
+  readonly identity: string;
+  readonly length: number;
 }
 
 interface Subscription {
@@ -87,7 +103,8 @@ interface Subscription {
   removed: boolean;
   pauseCount: number;
   readonly live: Map<string, PendingLive>;
-  readonly sentLive: Map<string, number>;
+  liveBytes: number;
+  readonly sentLive: Map<string, SentLive>;
   liveTimer?: ReturnType<typeof setTimeout> | undefined;
   liveReady?: boolean;
   checkCredit?: () => void;
@@ -96,6 +113,33 @@ interface Subscription {
 
 const scopeBudget = 256 * 1024;
 const socketBudget = 512 * 1024;
+const liveQueueBytes = 64 * 1024;
+/** Identity, item card and framing a queued live update may add to its text. */
+const liveEntryOverhead = 640;
+
+const encodedBodies = new WeakMap<object, { readonly rest: string; readonly bytes: number }>();
+
+/**
+ * Encodes a frame for one socket. The body after the address is encoded once per frame object,
+ * so a cut shared by several sockets is stringified once; the result equals `JSON.stringify` of
+ * `{ type, subscriptionId, generation, ...rest }`.
+ */
+export function encodePersonalFrame(frame: PersonalOutgoingFrame, address: Address) {
+  if (frame.type === "host.text") {
+    const encoded = JSON.stringify(frame);
+    return { encoded, bytes: Buffer.byteLength(encoded) };
+  }
+  let body = encodedBodies.get(frame);
+  if (!body) {
+    const { type: _type, ...rest } = frame;
+    const json = JSON.stringify(rest);
+    const tail = json === "{}" ? "}" : `,${json.slice(1)}`;
+    body = { rest: tail, bytes: Buffer.byteLength(tail) };
+    encodedBodies.set(frame, body);
+  }
+  const head = `{"type":${JSON.stringify(frame.type)},"subscriptionId":${JSON.stringify(address.subscriptionId)},"generation":${address.generation}`;
+  return { encoded: head + body.rest, bytes: head.length + body.bytes };
+}
 
 export class PersonalSyncSocket {
   readonly #port: PersonalSyncPort;
@@ -108,6 +152,7 @@ export class PersonalSyncSocket {
   #initialShellReady = true;
   #selectedThreadId: string | undefined;
   #attached = false;
+  #nextHandle = 0;
 
   constructor(port: PersonalSyncPort) {
     this.#port = port;
@@ -181,6 +226,7 @@ export class PersonalSyncSocket {
       repair: false,
       removed: false,
       live: new Map(),
+      liveBytes: 0,
       sentLive: new Map(),
       pauseCount: [...this.#fences].filter((matches) => matches(request.scope)).length,
       ...(watch ? { resources: { ...watch, dirty: true } } : {}),
@@ -294,6 +340,7 @@ export class PersonalSyncSocket {
   #cancel(current: Subscription) {
     clearTimeout(current.liveTimer);
     current.live.clear();
+    current.liveBytes = 0;
     current.sentLive.clear();
     current.controller.abort();
     current.checkCredit?.();
@@ -342,10 +389,15 @@ export class PersonalSyncSocket {
     )
       return;
     for (const update of this.#port.readLive?.(current.request.scope, request) ?? [])
-      this.#queueLive(current, update, { replace: true });
+      this.#queueLive(current, update, { replace: true }, true);
   }
 
-  #queueLive(current: Subscription, update: PersonalLiveUpdate, options?: LiveDeliveryOptions) {
+  #queueLive(
+    current: Subscription,
+    update: PersonalLiveUpdate,
+    options?: LiveDeliveryOptions,
+    identify = false,
+  ) {
     // The global head includes unrelated work the slot never needs to read.
     // Its pending head already includes every commit affecting this scope.
     const delivered = BigInt(current.cursor?.afterSequence ?? 0);
@@ -355,24 +407,30 @@ export class PersonalSyncSocket {
       update = { ...update, afterSequence: scopeHead.toString() };
     const key = JSON.stringify([update.runId, update.attemptId, update.streamId]);
     const previous = current.live.get(key);
-    current.live.delete(key);
-    const entry = {
+    if (previous) {
+      current.live.delete(key);
+      current.liveBytes -= previous.bytes;
+    }
+    const text = update.update;
+    const entry: PendingLive = {
       update,
       immediate: options?.immediate ?? false,
       replace:
         update.itemId.startsWith("node:") ||
         options?.replace === true ||
         previous?.replace === true,
+      identify: identify || previous?.identify === true,
+      bytes: liveEntryOverhead + (text.operation === "close" ? 0 : Buffer.byteLength(text.text)),
     };
     current.live.set(key, entry);
-    let bytes = [...current.live.values()].reduce(
-      (total, frame) => total + Buffer.byteLength(JSON.stringify(frame.update)) + 128,
-      0,
-    );
-    for (const [id, frame] of current.live) {
-      if (bytes <= 64 * 1024) break;
+    current.liveBytes += entry.bytes;
+    // Text past the cap is dropped oldest first and repaired by offsets; a close is never
+    // dropped, so a stalled viewer always learns that a stream ended.
+    for (const [id, pending] of current.live) {
+      if (current.liveBytes <= liveQueueBytes) break;
+      if (pending.update.update.operation === "close") continue;
       current.live.delete(id);
-      bytes -= Buffer.byteLength(JSON.stringify(frame.update)) + 128;
+      current.liveBytes -= pending.bytes;
     }
     if (entry.immediate) {
       this.#schedule(current);
@@ -397,45 +455,53 @@ export class PersonalSyncSocket {
   async #sendLive(current: Subscription) {
     if (current.request.subscriptionId === "shell" || current.request.scope.kind === "shell")
       return;
+    const scope = current.request.scope;
     for (const [key, entry] of this.#readyLive(current)) {
       const { update } = entry;
-      const last = current.sentLive.get(key);
       const text = update.update;
-      const append =
-        !entry.replace &&
-        last !== undefined &&
+      const identity = JSON.stringify([update.liveBootId, update.bindingGeneration, update.itemId]);
+      const sent = current.sentLive.get(key);
+      const known =
+        sent !== undefined &&
+        sent.identity === identity &&
+        !entry.identify &&
+        text.operation !== "close";
+      const handle = known ? sent.handle : ++this.#nextHandle;
+      let frame: PersonalOutgoingFrame;
+      if (!known) frame = { ...update, type: "host.live", handle, scope };
+      else if (text.operation === "append")
+        frame = { type: "host.text", h: handle, o: text.offset, n: text.totalLength, t: text.text };
+      else if (
         text.operation === "replace" &&
-        text.offset <= last &&
-        last < text.totalLength;
-      const { item: _item, ...identity } = update;
-      const frame = append
-        ? {
-            ...identity,
-            update: {
-              operation: "append" as const,
-              offset: last,
-              totalLength: text.totalLength,
-              text: text.text.slice(last - text.offset),
-            },
-          }
-        : update;
-      if (
-        !(await this.#send(
-          current,
-          {
-            ...frame,
-            type: "host.live",
-            subscriptionId: current.request.subscriptionId,
-            generation: current.request.generation,
-            scope: current.request.scope,
-          },
-          () => current.live.get(key) === entry,
-        ))
+        !entry.replace &&
+        text.offset <= sent.length &&
+        sent.length < text.totalLength
       )
-        return;
-      if (current.live.get(key) === entry) current.live.delete(key);
+        frame = {
+          type: "host.text",
+          h: handle,
+          o: sent.length,
+          n: text.totalLength,
+          t: text.text.slice(sent.length - text.offset),
+        };
+      else if (text.operation === "replace")
+        frame = {
+          type: "host.text",
+          h: handle,
+          o: text.offset,
+          n: text.totalLength,
+          t: text.text,
+          incomplete: text.incomplete,
+        };
+      else continue;
+      if (!(await this.#send(current, frame, () => current.live.get(key) === entry))) return;
+      if (current.live.get(key) === entry) {
+        current.live.delete(key);
+        current.liveBytes -= entry.bytes;
+      }
       current.sentLive.delete(key);
-      if (text.operation !== "close") current.sentLive.set(key, text.totalLength);
+      if (text.operation !== "close")
+        current.sentLive.set(key, { handle, identity, length: text.totalLength });
       if (current.sentLive.size > 64)
         current.sentLive.delete(current.sentLive.keys().next().value!);
     }
@@ -504,15 +570,15 @@ export class PersonalSyncSocket {
       controller.signal,
       request.anchorItemId,
       this.#selectedThreadId,
+      current.pendingHead.toString(),
     );
     if (!this.#matches(current)) return;
-    const address = { subscriptionId: request.subscriptionId, generation: request.generation };
     for (const frame of cut.frames) {
       if (frame.type === "host.removed") {
-        if (await this.#send(current, { ...frame, ...address })) current.removed = true;
+        if (await this.#send(current, frame)) current.removed = true;
         return;
       }
-      const sent = await this.#send(current, { ...frame, ...address });
+      const sent = await this.#send(current, frame);
       if (!sent) return;
       if (!cut.cursor) throw new Error("A durable personal cut needs a cursor");
       current.cursor = { ...cut.cursor, afterSequence: frame.throughSequence };
@@ -522,7 +588,6 @@ export class PersonalSyncSocket {
     if (!current.synchronized) {
       const sent = await this.#send(current, {
         type: "host.synchronized",
-        ...address,
         scope: request.scope,
         throughSequence: cut.throughSequence,
         ...(cut.shellProgress ? { shellProgress: cut.shellProgress } : {}),
@@ -558,12 +623,7 @@ export class PersonalSyncSocket {
     if (!Object.keys(revisions).length) return;
     const sent = await this.#send(
       current,
-      {
-        type: "host.resource",
-        subscriptionId: "shell",
-        generation: current.request.generation,
-        revisions,
-      },
+      { type: "host.resource", revisions },
       () => current.resources === watch,
     );
     if (sent) watch.installed = { ...watch.installed, ...revisions };
@@ -589,18 +649,17 @@ export class PersonalSyncSocket {
     return socketBytes + bytes <= socketBudget && socketChanges + changes <= 256;
   }
 
-  async #send(current: Subscription, frame: ScopedHostMessage, stillCurrent = () => true) {
+  async #send(current: Subscription, frame: PersonalOutgoingFrame, stillCurrent = () => true) {
     const guard = () => this.#matches(current) && current.pauseCount === 0 && stillCurrent();
     if (!guard()) return false;
-    const parsed = ScopedHostMessageSchema.safeParse(frame);
-    if (!parsed.success) {
-      if (frame.type !== "host.changes") throw parsed.error;
+    const { encoded, bytes } = encodePersonalFrame(frame, current.request);
+    if (bytes > personalHostFrameMaxBytes(frame)) {
+      if (frame.type !== "host.changes")
+        throw new Error(`A ${frame.type} frame exceeded its limit`);
       // A replay that does not fit one frame is repaired by a snapshot on the next drain.
       current.repair = true;
       return false;
     }
-    const encoded = JSON.stringify(parsed.data);
-    const bytes = Buffer.byteLength(encoded);
     const changes = frame.type === "host.changes" ? frame.changes.length : 0;
     if (bytes > scopeBudget || changes > 128)
       throw new Error("A single personal frame exceeded its credit");
@@ -618,7 +677,7 @@ export class PersonalSyncSocket {
     }
     if (!guard()) return false;
     const durable = frame.type === "host.snapshot" || frame.type === "host.changes";
-    const live = frame.type === "host.live";
+    const live = frame.type === "host.live" || frame.type === "host.text";
     const credit: Credit = {
       through: "throughSequence" in frame ? frame.throughSequence : "0",
       bytes,

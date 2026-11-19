@@ -512,10 +512,14 @@ class SessionConnectionController implements ConnectionController {
     const probe = new AbortController();
     const aborted = () => probe.abort(controller.signal.reason);
     controller.signal.addEventListener("abort", aborted, { once: true });
+    // A return to foreground or a network change is a moment the person is
+    // waiting, so its probe keeps the short deadline; only a quiet socket's
+    // routine probe gets the longer, weak-link allowance.
     const timer = setTimeout(
       () => probe.abort(new HostTransportError("timed-out")),
-      this.#options.liveness?.deadlineMs ??
-        (force || followsNetwork ? socketProbeDeadlineMs : realtimeIdleProbeDeadlineMs),
+      force || followsNetwork
+        ? socketProbeDeadlineMs
+        : (this.#options.liveness?.deadlineMs ?? realtimeIdleProbeDeadlineMs),
     );
     unrefTimer(timer);
     const failed = new Promise<never>((_, reject) =>

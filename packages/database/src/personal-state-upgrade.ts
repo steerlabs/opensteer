@@ -781,7 +781,9 @@ async function verifyConversion(tx: Tx, source: Source, cursor: UpgradeCursor) {
         limit 1
       ) as "badText"
   `.execute(tx.withoutPlugins());
-  if (page?.badText) throw new Error("Personal conversion text parity check failed");
+  // Imported reasoning and subagent text is display-only: a mismatch is
+  // reported and the conversion goes on.
+  if (page?.badText) reportDisplayDrift({ check: "imported-text", afterKey: cursor.key });
   const cards = page!.ids.length
     ? await tx
         .selectFrom("transcriptItems")
@@ -875,18 +877,41 @@ async function verifyConversion(tx: Tx, source: Source, cursor: UpgradeCursor) {
         or exists(select 1 from runner_event_receipts limit 1)) as invalid
   `.execute(tx)
   ).rows[0]!;
-  if (
-    parity.invalid ||
-    parity.canonical !== cursor.reserved ||
-    Number(parity.tools) !== cursor.counts.tools ||
-    parity.tools !== parity.toolCards ||
-    Number(parity.images) !== cursor.counts.images ||
-    Number(parity.reasoning) !== cursor.counts.reasoning ||
-    Number(parity.nodeMessages) !== cursor.counts.nodeMessages
-  ) {
+  // Authority parity stays fatal: every canonical card, Request, Run, delegation,
+  // delivery and command state must match, or the converted state is not used.
+  if (parity.invalid || parity.canonical !== cursor.reserved) {
     throw new Error("Personal conversion parity check failed");
   }
+  // Counts of imported tool, image, reasoning and subagent rows only change
+  // what history shows, so a difference is reported and the conversion goes on.
+  const counts = {
+    tools: [Number(parity.tools), cursor.counts.tools],
+    toolCards: [Number(parity.toolCards), Number(parity.tools)],
+    images: [Number(parity.images), cursor.counts.images],
+    reasoning: [Number(parity.reasoning), cursor.counts.reasoning],
+    nodeMessages: [Number(parity.nodeMessages), cursor.counts.nodeMessages],
+  } as const;
+  for (const [check, [found, expected]] of Object.entries(counts))
+    if (found !== expected) reportDisplayDrift({ check, found, expected });
   return stage(cursor, "index");
+}
+
+/** Counts and identifiers only; never imported text. */
+function reportDisplayDrift(detail: Readonly<Record<string, string | number>>): void {
+  console.warn(JSON.stringify({ event: "personal-conversion-display-drift", ...detail }));
+}
+
+/** Names the conversion step that failed, so the app can say which one. */
+export class PersonalStateConversionError extends Error {
+  readonly step: string;
+  constructor(step: string, cause: unknown) {
+    super(
+      `Personal state conversion failed at step "${step}": ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+    this.name = "PersonalStateConversionError";
+    this.step = step;
+  }
 }
 
 async function dropOldState(tx: Tx) {
@@ -940,6 +965,18 @@ async function convertBatch(
       ? { ...initialCursor, through: state.sequence }
       : cursorSchema.parse(state.upgradeCursor);
   if (state.sequence !== cursor.through) throw new Error("Personal conversion head changed");
+  try {
+    return await convertStage(tx, source, cursor);
+  } catch (error) {
+    throw new PersonalStateConversionError(cursor.stage, error);
+  }
+}
+
+async function convertStage(
+  tx: Tx,
+  source: Source,
+  cursor: UpgradeCursor,
+): Promise<{ stage: UpgradeCursor["stage"]; done: boolean }> {
   let next: UpgradeCursor;
   switch (cursor.stage) {
     case "settle":

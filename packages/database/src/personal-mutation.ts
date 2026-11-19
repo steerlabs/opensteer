@@ -8,6 +8,7 @@ import type {
   RequestId,
   RunAttemptId,
   RunId,
+  RunnerId,
   ThreadId,
 } from "@opensteer/core";
 import {
@@ -102,6 +103,8 @@ export type PersonalCommitReaction =
   | { readonly type: "automationFailuresChanged" }
   | { readonly type: "deadlinesChanged" }
   | { readonly type: "grantsRevoked"; readonly grants: readonly RevokedRunGrant[] }
+  | { readonly type: "runnerRevoked"; readonly runnerId: RunnerId }
+  | { readonly type: "triggerSchedulesChanged" }
   | { readonly type: "authorityChanged"; readonly scopes: ReadonlySet<ScopeAuthority> }
   | {
       readonly type: "requestChanged";
@@ -665,6 +668,13 @@ export async function commitPersonalMutation<Result>(
 export function wakeExecutionCommands(tx: PersonalMutationTransaction) {
   return commitPersonalMutation(tx, async (_tx, mutation) => {
     mutation.react({ type: "executionCommandsChanged" });
+  });
+}
+
+/** A schedule's next fire time moved; the Host re-arms its schedule deadline at commit. */
+export function wakeTriggerSchedules(tx: PersonalMutationTransaction) {
+  return commitPersonalMutation(tx, async (_tx, mutation) => {
+    mutation.react({ type: "triggerSchedulesChanged" });
   });
 }
 

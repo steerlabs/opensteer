@@ -301,7 +301,7 @@ function mockScopedItem(
   }
 }
 
-type MockLive = Extract<ScopedHostMessage, { type: "host.live" }>;
+type MockLive = Omit<Extract<ScopedHostMessage, { type: "host.live" }>, "handle">;
 const mockLiveBoot = "4eae39b7-8771-4ed4-9f87-632a36e0819e";
 
 export function mockScopedLive(

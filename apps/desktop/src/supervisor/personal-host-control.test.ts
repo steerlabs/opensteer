@@ -553,13 +553,13 @@ function shellData(): Response {
       tasks: [],
       visits: [],
       attention: [],
-      counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
-      activeTaskIds: [],
-      recentTaskIds: [],
-      activeHasMore: false,
       attentionHasMore: false,
+      activeTaskIds: [],
+      activeHasMore: false,
+      recentTaskIds: [],
       nextBefore: null,
       taskCounts: { active: 0, open: 0 },
+      counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
     }),
   });
 }

@@ -68,10 +68,18 @@ export function attachPersonalSocket(options: {
     });
   };
   const sync = new PersonalSyncSocket({
-    read: async (scope, cursor, signal, anchorItemId, selectedThreadId) => {
+    read: async (scope, cursor, signal, anchorItemId, selectedThreadId, atLeast) => {
       signal.throwIfAborted();
       try {
-        return await reads.readCut(session, surface, scope, cursor, anchorItemId, selectedThreadId);
+        return await reads.readCut(
+          session,
+          surface,
+          scope,
+          cursor,
+          anchorItemId,
+          selectedThreadId,
+          { reader: sync, atLeast },
+        );
       } catch (error) {
         if (error instanceof OpensteerError && ["forbidden", "unauthorized"].includes(error.code))
           socket.close(authorityCloseCode, "Deployment subscription forbidden");

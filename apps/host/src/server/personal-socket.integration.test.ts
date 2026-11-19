@@ -359,14 +359,17 @@ it("delivers an overlapping commit and replaces a held detail generation on a re
       "The replacement did not synchronize",
     );
     expect(
-      second.frames
-        .filter((frame) => frame.subscriptionId === "detail:0")
-        .map(({ generation }) => generation),
+      second.frames.flatMap((frame) =>
+        "subscriptionId" in frame && frame.subscriptionId === "detail:0" ? [frame.generation] : [],
+      ),
     ).toEqual([2, 2]);
     expect(
-      first.frames
-        .filter((frame) => frame.subscriptionId === "detail:0")
-        .every(({ generation }) => generation === 1),
+      first.frames.every(
+        (frame) =>
+          !("subscriptionId" in frame) ||
+          frame.subscriptionId !== "detail:0" ||
+          frame.generation === 1,
+      ),
     ).toBe(true);
   } finally {
     release.resolve();
@@ -1334,6 +1337,77 @@ it("does not deliver a prepared Request response to its Runner after Stop commit
     release.resolve();
     await runner?.close();
     await host?.close();
+    await database.drop();
+  }
+});
+
+it("reads a commit's cut once for two devices on the same scope and sends them the same bytes", async () => {
+  const database = await cloneTestDatabase("host");
+  let runtime: PrivateMachineHost | undefined;
+  const sockets: WebSocket[] = [];
+  const cuts: string[] = [];
+  try {
+    runtime = await startPrivateMachineHost(database.url, {
+      onPersonalScopeCut: async (scope) => {
+        if (scope.kind === "thread") cuts.push(scope.threadId);
+      },
+    });
+    const { threadId } = await createPersonalRunFixturePort(runtime.store).createTask({
+      ownerId: runtime.ownerId,
+      suffix: "shared-cut",
+    });
+    const second = await claimPrivateMachineOwner(runtime.runtime, runtime.config);
+    const devices = await Promise.all(
+      [runtime.ownerHeaders.cookie!, second.cookie].map((cookie) =>
+        connect(runtime!.origin, cookie),
+      ),
+    );
+    const raw: string[][] = devices.map(() => []);
+    for (const [index, device] of devices.entries()) {
+      sockets.push(device.socket);
+      device.socket.on("message", (data) => {
+        const text = data.toString();
+        if (text.includes('"host.changes"') && text.includes('"detail:0"')) raw[index]!.push(text);
+      });
+      device.send({
+        type: "client.attach",
+        apiVersion: hostApiVersion,
+        generation: 1,
+        interests: [],
+        installed: {},
+        selected: {
+          subscriptionId: "detail:0",
+          generation: 1,
+          scope: { kind: "thread", threadId },
+        },
+      });
+      await device.read(
+        (frame) => frame.type === "host.synchronized" && frame.subscriptionId === "detail:0",
+        "A device's detail did not synchronize",
+      );
+    }
+    cuts.length = 0;
+    const changed = await runtime.api["commands.dispatch"]({
+      type: "thread.done.set",
+      threadId,
+      done: true,
+      idempotencyKey: crypto.randomUUID(),
+    });
+    if (!changed.ok) throw new Error("Task change failed");
+    await Promise.all(
+      devices.map((device) =>
+        device.read(
+          (frame) => frame.type === "host.changes" && frame.subscriptionId === "detail:0",
+          "A device missed the detail change",
+        ),
+      ),
+    );
+    expect(cuts).toEqual([threadId]);
+    expect(raw[0]).toHaveLength(1);
+    expect(raw[1]).toEqual(raw[0]);
+  } finally {
+    for (const socket of sockets) socket.terminate();
+    await runtime?.close();
     await database.drop();
   }
 });

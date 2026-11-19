@@ -3,6 +3,7 @@ import type { CommandId, EnvironmentId, RunId, ThreadId } from "@opensteer/core"
 import { OpensteerError } from "@opensteer/core";
 import type { CommandRow, OpensteerStore, PendingCommandRow } from "@opensteer/database";
 import { CoalescedWake } from "@opensteer/shared/coalescedWake";
+import { systemClock, type Clock } from "@opensteer/shared/clock";
 export type DispatchDisposition = "retry" | "uncertain" | "failed";
 export class CommandDispatchError extends Error {
   readonly disposition: DispatchDisposition;
@@ -40,8 +41,10 @@ interface ExecutionCoordinatorOptions {
   readonly maxConcurrentTriggerPrograms: number;
   readonly maxQueuedBytes: number;
   readonly maxQueuedCommands: number;
-  readonly now?: () => number;
+  /** Time and timers for dispatch backoff; defaults to the system clock. */
+  readonly clock?: Clock;
   readonly onDispatchError?: (error: unknown, command: CommandRow) => void;
+  /** The retry delay after a failed read or claim. */
   readonly pollIntervalMs?: number;
   readonly store: ExecutionCoordinatorStore;
 }
@@ -65,6 +68,7 @@ export class ExecutionCoordinator {
   readonly #maxConcurrentTriggerPrograms: number;
   readonly #maxQueuedBytes: number;
   readonly #maxQueuedCommands: number;
+  readonly #clock: Clock;
   readonly #now: () => number;
   readonly #onDispatchError: ExecutionCoordinatorOptions["onDispatchError"];
   readonly #pollIntervalMs: number;
@@ -82,7 +86,8 @@ export class ExecutionCoordinator {
   #activeControls = 0;
   #activeTriggerPrograms = 0;
   #controller: AbortController | undefined;
-  #pollTimer: NodeJS.Timeout | undefined;
+  #cancelPoll: (() => void) | undefined;
+  #pollAt = 0;
   #readFailed = false;
   #claimFailed = false;
   readonly #reads = new CoalescedWake({
@@ -107,7 +112,8 @@ export class ExecutionCoordinator {
     );
     this.#maxQueuedBytes = positiveInteger(options.maxQueuedBytes, "maxQueuedBytes");
     this.#maxQueuedCommands = positiveInteger(options.maxQueuedCommands, "maxQueuedCommands");
-    this.#now = options.now ?? Date.now;
+    this.#clock = options.clock ?? systemClock;
+    this.#now = this.#clock.now;
     this.#onDispatchError = options.onDispatchError;
     this.#pollIntervalMs = positiveInteger(options.pollIntervalMs ?? 500, "pollIntervalMs");
     this.#store = options.store;
@@ -123,8 +129,8 @@ export class ExecutionCoordinator {
   }
   wake(): void {
     if (!this.#controller || this.#controller.signal.aborted) return;
-    if (this.#pollTimer) clearTimeout(this.#pollTimer);
-    this.#pollTimer = undefined;
+    this.#cancelPoll?.();
+    this.#cancelPoll = undefined;
     this.#reads.wake();
   }
   async stop(): Promise<void> {
@@ -134,8 +140,8 @@ export class ExecutionCoordinator {
   }
   async #stop(): Promise<void> {
     this.#controller?.abort(new Error("Coordinator stopped"));
-    if (this.#pollTimer) clearTimeout(this.#pollTimer);
-    this.#pollTimer = undefined;
+    this.#cancelPoll?.();
+    this.#cancelPoll = undefined;
     await this.#reads.stop();
     while (this.#activeRuns > 0 || this.#activeControls > 0 || this.#activeTriggerPrograms > 0) {
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
@@ -339,20 +345,25 @@ export class ExecutionCoordinator {
     entry.recorded = ++this.#backoffRecords;
     this.#dispatchBackoff.set(commandId, entry);
   }
+  /**
+   * Idle means no timer. A failed read or claim retries after the poll
+   * interval; a command in backoff wakes the queue when it next becomes
+   * eligible. Everything else is woken by the commit or Runner that changed it.
+   */
   #schedulePoll(): void {
     const signal = this.#controller?.signal;
-    if (
-      !signal ||
-      signal.aborted ||
-      this.#pollTimer ||
-      (!this.#readFailed && !this.#claimFailed && !this.#dispatchBackoff.size)
-    )
-      return;
-    this.#pollTimer = setTimeout(() => {
-      this.#pollTimer = undefined;
+    if (!signal || signal.aborted) return;
+    const now = this.#now();
+    let at = this.#readFailed || this.#claimFailed ? now + this.#pollIntervalMs : Infinity;
+    for (const { nextEligibleAt } of this.#dispatchBackoff.values())
+      if (nextEligibleAt > now) at = Math.min(at, nextEligibleAt);
+    if (at === Infinity || (this.#cancelPoll && this.#pollAt <= at)) return;
+    this.#cancelPoll?.();
+    this.#pollAt = at;
+    this.#cancelPoll = this.#clock.schedule(() => {
+      this.#cancelPoll = undefined;
       this.wake();
-    }, this.#pollIntervalMs);
-    this.#pollTimer.unref();
+    }, at - now);
   }
 }
 function normalizeDispatchError(error: unknown): CommandDispatchError {

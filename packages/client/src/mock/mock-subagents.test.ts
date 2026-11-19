@@ -233,6 +233,7 @@ it("shares the scoped subject, ordered cards and live text until the last node h
     };
     const live = {
       type: "host.live" as const,
+      handle: 1,
       scope,
       subscriptionId: subscription.subscriptionId,
       generation: subscription.generation,

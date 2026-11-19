@@ -1053,6 +1053,7 @@ export async function revokeRunner(
             message: "Active Runner not found",
           });
         }
+        mutation.react({ type: "runnerRevoked", runnerId });
         if (
           (await homes(transaction).execute(databaseOperationOptions())).some(
             (row) => !profileIds.includes(row.id),
