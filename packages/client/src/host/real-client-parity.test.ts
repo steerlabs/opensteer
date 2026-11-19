@@ -333,3 +333,44 @@ it("says accounts are unknown, not absent, until the first accounts read lands",
   await vi.waitFor(() => expect(client.getSnapshot().loadedResources).toContain("harness"));
   expect(client.getSnapshot().harnesses.length).toBeGreaterThan(0);
 });
+
+it("lists waiting Requests from the Host's pending count when the bounded attention shows none, and retries a failed read", async () => {
+  const seed = new MockHostClient({ latencyMs: 0 });
+  await seed.load();
+  const base = seed.getSnapshot();
+  // The shell's attention prefix is full of other asks: no Request row, a positive count.
+  vi.spyOn(seed, "getSnapshot").mockReturnValue({ ...base, needsYou: null });
+  const host = new MockPersonalHost(seed);
+  let failures = 1;
+  const listCalls: string[] = [];
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname.endsWith("/requests.list")) listCalls.push(String(failures));
+      if (url.pathname.endsWith("/requests.list") && failures-- > 0)
+        return Response.json({
+          ok: false,
+          error: { code: "timeout", message: "Host busy", retryable: true },
+        });
+      return host.fetch(input, init);
+    },
+    webSocketFactory: host.connect,
+    capabilities: [],
+  });
+  open.push({ client, host });
+  await client.load();
+  expect(client.getSnapshot().attentionSummaries ?? []).toEqual([]);
+  await vi.waitFor(() => expect(failures).toBeLessThan(1), { timeout: 2_000 });
+  await vi.waitFor(
+    () =>
+      expect(
+        client
+          .getSnapshot()
+          .waitingRequests.map(({ request }) => request.id)
+          .sort(),
+      ).toEqual(base.waitingRequests.map(({ request }) => request.id).sort()),
+    { timeout: 4_000 },
+  );
+  expect(listCalls).toEqual(["1", "0"]);
+});

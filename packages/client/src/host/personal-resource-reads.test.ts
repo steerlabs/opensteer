@@ -115,7 +115,7 @@ test("a failed read retries with backoff while the kind is watched", async () =>
       read: async (kind) => {
         calls++;
         return calls === 1
-          ? { ok: false, error: { code: "unavailable", message: "Host busy", retryable: true } }
+          ? { ok: false, error: { code: "timeout", message: "Host busy", retryable: true } }
           : { ok: true, data: { revision: "3", next: null, data: { kind } as never } };
       },
       apply: (data) => applied.push(data),
