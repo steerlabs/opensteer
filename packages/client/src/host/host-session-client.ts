@@ -1800,6 +1800,63 @@ export class HttpHostClient {
       (attached || attentionChanged)
     )
       this.#invalidateAttention(true);
+    const requestRows = [...state.attention.values()]
+      .filter(({ kind }) => kind === "request")
+      .map(({ id, revision }) => `${id}@${revision}`)
+      .join(",");
+    if (
+      state.synchronized &&
+      (attached || requestRows !== this.#waitingRequestRows) &&
+      (requestRows !== "" || this.#snapshot.waitingRequests.length > 0)
+    )
+      this.#readWaitingRequests();
+    this.#waitingRequestRows = requestRows;
+  }
+
+  #waitingRequestRows = "";
+  #waitingRequestRead: { again: boolean } | undefined;
+
+  /**
+   * The pending Requests this person answers, with the work each holds up. The shell lists them
+   * as bounded attention rows; the full Request (its question, choices and presentation) is read
+   * here whenever those rows change.
+   */
+  #readWaitingRequests() {
+    if (this.#waitingRequestRead) {
+      this.#waitingRequestRead.again = true;
+      return;
+    }
+    const read = { again: false };
+    this.#waitingRequestRead = read;
+    const generation = this.#viewerGeneration;
+    const userId = this.#snapshot.user?.id;
+    void (async () => {
+      const waitingRequests: HostSnapshot["waitingRequests"][number][] = [];
+      let before: string | null = null;
+      for (let pages = 0; pages < 4; pages++) {
+        const page: {
+          requests: HostSnapshot["waitingRequests"];
+          window: import("@opensteer/protocol").DurableWindow;
+        } = unwrapRpcResult(
+          await this.rpc["requests.list"]({
+            ...(before ? { before } : {}),
+            limit: 100,
+            deviceAccessRequests: "include",
+          }),
+        );
+        if (!this.#viewerStillCurrent(generation, userId)) return;
+        waitingRequests.push(...page.requests);
+        before = page.window.hasMore ? page.window.nextBefore : null;
+        if (!before) break;
+      }
+      if (!read.again) this.#update({ ...this.#snapshot, waitingRequests });
+    })()
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.#waitingRequestRead !== read) return;
+        this.#waitingRequestRead = undefined;
+        if (read.again) this.#readWaitingRequests();
+      });
   }
 
   #attentionRead: { controller: AbortController; promise: Promise<void> } | undefined;
