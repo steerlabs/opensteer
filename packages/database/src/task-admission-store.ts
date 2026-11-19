@@ -1,3 +1,4 @@
+import { deleteTerminalRunReceipts } from "./personal-runner-receipts.js";
 import { refreshTeamAskAttention, unreadTaskContribution } from "./personal-attention-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
@@ -308,6 +309,7 @@ export async function cancelTeamTaskRequest(
           .set({ status: "interrupted", completedAt: new Date() })
           .where("id", "=", run.id)
           .execute();
+        deleteTerminalRunReceipts(transaction, mutation, run.id);
         await transaction
           .updateTable("commands")
           .set({ status: "failed", updatedAt: new Date() })

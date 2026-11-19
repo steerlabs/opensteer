@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { teamOperationId } from "./operation-id.js";
 import { expect, onTestFinished, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -499,6 +500,33 @@ describeStore("personal team consent and returns", (it) => {
       .where("threadId", "=", mirror.taskId!)
       .execute();
     expect(runs).toHaveLength(1);
+  });
+  it("deletes a queued Run's receipts when its ask is cancelled", async ({ storeFixture }) => {
+    const f = await consentFixture(storeFixture);
+    await f.publisher.deliver(f.origin.teamId, f.frame);
+    await f.publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve", 0);
+    const { runId } = (await f.store.mirror(f.origin.teamId, f.frame.request.id))!;
+    // A steer or recovery requeues a Run that already admitted statements under a binding.
+    await sql`insert into runner_event_receipts(run_id,ordinal,runner_id,runner_boot_id,binding_generation,
+        reported_digest,disposition,committed_head)
+      values (${runId},0,'runner','boot',1,sha256('statement'::bytea),'applied',0)`.execute(
+      f.database,
+    );
+    await f.publisher.cancel(f.origin.teamId, f.frame.request.id);
+    expect(
+      await f.database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", runId!)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "interrupted" });
+    expect(
+      await f.database
+        .selectFrom("runnerEventReceipts")
+        .select("ordinal")
+        .where("runId", "=", runId!)
+        .execute(),
+    ).toEqual([]);
   });
   it("keeps cancellation nonterminal if input cleanup cannot commit", async ({ storeFixture }) => {
     const f = await consentFixture(storeFixture);
