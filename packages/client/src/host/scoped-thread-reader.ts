@@ -479,7 +479,7 @@ export class ScopedThreadReader implements ThreadViewSource {
         !page.items.some((item) => item.kind === "message" && item.messageId === aroundMessageId)
       )
         throw new Error("The requested message is unavailable.");
-      this.#installPage(page, generation, mode, token);
+      this.#installPage([page, generation, mode, token], aroundMessageId);
       return;
     }
     const anchor = this.#detail.anchor ?? before?.beforeId ?? after?.beforeId;
@@ -496,20 +496,35 @@ export class ScopedThreadReader implements ThreadViewSource {
     }
     if (current() && reset.kind === "page")
       this.#installPage(
-        reset,
-        generation,
-        aroundMessageId || (anchor && reset.items.some(({ id }) => id === anchor))
-          ? "around"
-          : "latest",
-        token,
+        [
+          reset,
+          generation,
+          aroundMessageId || (anchor && reset.items.some(({ id }) => id === anchor))
+            ? "around"
+            : "latest",
+          token,
+        ],
+        aroundMessageId,
       );
   }
 
-  #installPage(...args: Parameters<ThreadTranscriptStore["installPage"]>) {
+  #installPage(
+    args: Parameters<ThreadTranscriptStore["installPage"]>,
+    aroundMessageId: string | undefined,
+  ) {
     if (!this.#detail.transcript.installPage(...args)) return;
+    const state = this.#detail.transcript.getSnapshot();
     for (const item of args[0].items) {
-      const current = this.#detail.transcript.getSnapshot().items.get(item.id);
+      const current = state.items.get(item.id);
       if (finalizedItemText(current)) this.#detail.text.finishItem(item.id);
+    }
+    // The scope's anchor is where the reader is: none at the tail, the linked message after a jump.
+    if (state.newest) delete this.#detail.anchor;
+    else if (aroundMessageId) {
+      const target = args[0].items.find(
+        (item) => item.kind === "message" && item.messageId === aroundMessageId,
+      );
+      if (target) this.#detail.anchor = target.id;
     }
   }
 

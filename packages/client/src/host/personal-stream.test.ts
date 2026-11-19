@@ -578,6 +578,46 @@ test("retains the moved item's anchor across a history reset and refuses a respo
   reader.dispose();
 });
 
+test("the scope's anchor follows the reader: set by a jump, cleared on return to latest", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const old = { ...item, id: "old", messageId: createId("message"), position: "0" };
+  const page = (items: TranscriptItem[], newest: boolean) => ({
+    ok: true,
+    data: {
+      kind: "page",
+      threadId,
+      nodeId: null,
+      revision: "1",
+      hasMore: false,
+      nextBefore: null,
+      nextAfter: newest ? null : { ...cursor, beforeId: items.at(-1)!.id, beforePosition: "0" },
+      items,
+    },
+  });
+  const read = vi
+    .fn()
+    .mockResolvedValueOnce(page([old], false))
+    .mockResolvedValueOnce(page([item], true));
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  const resubscribe = () => {
+    f.stream.setBackground(true);
+    f.stream.setBackground(false);
+    return f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+  };
+  await reader.history("around", old.messageId);
+  expect(f.detail.anchor).toBe(old.id);
+  await reader.history("latest");
+  expect(f.detail.anchor).toBeUndefined();
+  expect(resubscribe().anchorItemId).toBeUndefined();
+  reader.dispose();
+});
+
 test("bounds explicitly loaded bodies", () => {
   const bodies = new TranscriptBodies();
   const big = {
