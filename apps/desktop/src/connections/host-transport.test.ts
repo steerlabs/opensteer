@@ -1870,7 +1870,7 @@ describe("DesktopHostTransport", () => {
       // Main says why, by route and code alone.
       expect(log).toHaveBeenCalledWith("desktop.host-route.refused", {
         code: "deployment-changed",
-        route: "bootstrap.get",
+        route: "personal.shell.get",
       });
     } finally {
       unsubscribe();
