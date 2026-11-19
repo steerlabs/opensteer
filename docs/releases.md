@@ -162,7 +162,11 @@ outside CI.
 ## Personal database snapshots
 
 Before migrating on a new version, the app [snapshots](../apps/desktop/src/supervisor/personal-database-snapshot.ts)
-the stopped PostgreSQL cluster: a guard against a bad migration, not a failing disk, that never blocks launch. Restore by
+the stopped PostgreSQL cluster: a guard against a bad migration, not a failing disk. It never blocks
+launch, except before the one-way Personal state conversion (migration 0036): until a Deployment
+has started healthy after it, no copy means no update, and that copy is pinned past the newest-three
+retention. A failed conversion offers Try again or Start fresh and names the version that opens the
+kept copy; the new app cannot restore in place because it would rerun the conversion. Restore by
 hand with Opensteer and PostgreSQL stopped, setting the current data aside; an older binary alone
 is not a restore. Snapshots exclude native browser storage: a restored pre-conversion database
 must never recreate or replace an established native directory, and named profiles stay
