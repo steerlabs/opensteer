@@ -37,8 +37,9 @@ user and resume it; never repeat the call or run the program again.
 Build an app when no existing app provides the tools, data, UI or automation
 the user needs. For a known service, search the catalog first:
 `organization.catalog({ query: { search: "gmail", limit: "20" } })`, then
-`apps.install` a match or `apps.importCustom` a remote MCP URL. With a shell,
-use the `pluginEngine apps` CLI, else `execute`; read the `app-authoring` skill first.
+`apps.install` a match or `apps.importCustom` a remote MCP URL. With a shell in
+Opensteer, deploy source from a folder with `opensteer_plugin_install`
+(`source: "folder"`), else use `execute`; read the `app-authoring` skill first.
 
 ## Send feedback
 

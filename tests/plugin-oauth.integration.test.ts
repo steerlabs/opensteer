@@ -23,6 +23,7 @@ import {
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
 import { seedPersonalFixture } from "../packages/database/src/personal-fixture.test-support.js";
+import { recordPluginAuthor } from "../packages/database/src/plugin-agent-store.test-support.js";
 import { createPersonalRunFixturePort } from "../packages/database/src/personal-run-fixture.test-support.js";
 import { pendingEvent } from "../packages/database/src/store.integration.test-support.js";
 import {
@@ -88,6 +89,7 @@ let beforeStartResult: (() => Promise<void>) | undefined;
 let beforePullResult: (() => Promise<void>) | undefined;
 const refreshIds: string[] = [];
 const tokenRedirects: string[] = [];
+const tokenRequests: URLSearchParams[] = [];
 const registrations: string[] = [];
 const apiTokens: string[] = [];
 const unpinnedTokens: string[] = [];
@@ -95,9 +97,20 @@ const errors: unknown[] = [];
 const createdRequests: CreatePluginOAuthAttemptRequest[] = [];
 const providerEvents = new EventEmitter();
 
-const source = (kind: "managed" | "custom" | "mcp" | "metadata", extraSite = false) => `
+type Kind = "managed" | "custom" | "mcp" | "metadata" | "confidential" | "unpinned" | "discovered";
+/**
+ * `confidential` declares `pkce: false` with a client secret; `unpinned` declares it without;
+ * `discovered` declares it beside `discover`.
+ */
+const declared = (kind: Kind) =>
+  kind === "discovered"
+    ? `{discover: "${providerOrigin}/resource", scopes: ["read"], pkce: false, tokenEndpointAuthMethod: "client_secret_post"}`
+    : kind === "mcp" || kind === "metadata"
+      ? `{discover: "${providerOrigin}/${kind === "metadata" ? "metadata-resource" : "resource"}", scopes: ["read"]}`
+      : `{authorizationUrl: "${providerOrigin}/${kind}/authorize", tokenUrl: "${providerOrigin}/${kind}/token", scopes: ["read"]${kind === "confidential" ? `, pkce: false, tokenEndpointAuthMethod: "client_secret_post"` : kind === "unpinned" ? ", pkce: false" : ""}}`;
+const source = (kind: Kind, extraSite = false) => `
 import { defineApp, defineProvider, oauth2, object, query, router } from "apps";
-const service = defineProvider({name: "OAuth fixture", hosts: ["api.fixture.invalid", "${new URL(providerOrigin).host}"${extraSite ? ', "other.fixture.invalid"' : ""}], auth: {oauth: oauth2(${kind === "mcp" || kind === "metadata" ? `{discover: "${providerOrigin}/${kind === "metadata" ? "metadata-resource" : "resource"}", scopes: ["read"]}` : `{authorizationUrl: "${providerOrigin}/${kind}/authorize", tokenUrl: "${providerOrigin}/${kind}/token", scopes: ["read"]}`})}});
+const service = defineProvider({name: "OAuth fixture", hosts: ["api.fixture.invalid", "${new URL(providerOrigin).host}"${extraSite ? ', "other.fixture.invalid"' : ""}], auth: {oauth: oauth2(${declared(kind)})}});
 export default defineApp({user: {accounts: {service}}}, {tools: router({
  probe: query({input: object({})}, async ctx => {
    const token = ctx.user.accounts.service.fields.access_token;
@@ -107,11 +120,11 @@ export default defineApp({user: {accounts: {service}}}, {tools: router({
    return {token, echo: await response.text(), refused};
  }),
 })});`;
-const files = (kind: "managed" | "custom" | "mcp" | "metadata", extraSite = false) =>
+const files = (kind: Kind, extraSite = false) =>
   pluginFixtureFiles(1).map((file) =>
     file.path === "index.ts" ? { ...file, content: source(kind, extraSite) } : file,
   );
-async function install(kind: "managed" | "custom" | "mcp" | "metadata") {
+async function install(kind: Kind) {
   const result = await service
     .install(
       { kind: "files", name: `OAuth ${kind} ${randomUUID()}`, files: files(kind) },
@@ -126,7 +139,7 @@ async function install(kind: "managed" | "custom" | "mcp" | "metadata") {
     });
   if (result.status !== "installed")
     throw new Error("OAuth fixture did not build: " + JSON.stringify(result));
-  await records.recordInstall(personal.userId, result.plugin.id, result.version.id, "agent");
+  await recordPluginAuthor(database, personal.userId, result.plugin.id, result.version.id, "agent");
   return { plugin: result.plugin.id, requirement: "service", scope: "user" as const };
 }
 async function link(generation = "g".repeat(43)) {
@@ -285,6 +298,7 @@ beforeAll(async () => {
         } else if (request.url?.endsWith("/token")) {
           const fields = new URLSearchParams(body);
           tokenRedirects.push(fields.get("redirect_uri")!);
+          tokenRequests.push(fields);
           response.end(
             JSON.stringify({
               access_token: "custom-test-token",
@@ -463,7 +477,7 @@ beforeAll(async () => {
     }
   };
   await link();
-  registry = await pluginFixtureRegistry(directory, undefined, undefined, (request, response) => {
+  registry = await pluginFixtureRegistry(undefined, undefined, (request, response) => {
     if (request.url !== "/secret") return false;
     apiTokens.push(String(request.headers.authorization));
     response.setHeader("content-type", "text/plain");
@@ -1117,5 +1131,97 @@ test("without an Account link custom and MCP callbacks finish locally; remote st
     ).statusCode,
   ).toBe(303);
   expect(await oauth.status(mcp.attemptId, personal.userId)).toMatchObject({ status: "completed" });
+  await link();
+});
+
+test("pkce: false signs in only with a client whose secret the Host holds, and sends no PKCE", async () => {
+  await database.deleteFrom("personalRemoteAccountLink").execute();
+  // A declaration that drops PKCE without a client secret does not build.
+  const unpinned = await service.install(
+    { kind: "files", name: `OAuth unpinned ${randomUUID()}`, files: files("unpinned") },
+    ownerContext,
+  );
+  expect(unpinned).toMatchObject({ status: "build-error" });
+  expect(JSON.stringify(unpinned)).toContain("pkce: false needs a client secret");
+  // Discovery always signs in with PKCE: a discovered declaration that turns it off does not build.
+  const discovered = await service.install(
+    { kind: "files", name: `OAuth discovered ${randomUUID()}`, files: files("discovered") },
+    ownerContext,
+  );
+  expect(discovered).toMatchObject({ status: "build-error" });
+  expect(JSON.stringify(discovered)).toContain("pkce: false applies only to declared endpoints");
+
+  const target = await install("confidential");
+  const begin = async (client: { clientId: string; clientSecret?: string }) => {
+    const prepared = await oauth.prepare(target, personal.userId);
+    return oauth.begin(
+      {
+        connection: prepared.connection,
+        consent: prepared.consent,
+        method: "oauth",
+        review: prepared.methods[0]!.review,
+        client,
+        surface: "web" as const,
+        returnPath: "/settings",
+      },
+      personal.userId,
+      "canonical",
+    );
+  };
+  // A public client cannot sign in without PKCE: setup says it needs the app's secret.
+  await expect(begin({ clientId: "public-client" })).rejects.toMatchObject({
+    reason: "plugin-oauth-client-secret-required",
+    message: expect.stringContaining("needs your own OAuth app with its client secret"),
+  });
+
+  const started = await begin({
+    clientId: "confidential-client",
+    clientSecret: "confidential-secret",
+  });
+  const launched = await web.inject({
+    url: `/v1/integration-authorizations/${started.attemptId}/launch?ticket=${started.launchTicket}`,
+  });
+  const authorization = new URL(launched.headers.location!);
+  expect(authorization.searchParams.has("code_challenge")).toBe(false);
+  expect(authorization.searchParams.has("code_challenge_method")).toBe(false);
+  expect(authorization.searchParams.get("state")).toBeTruthy();
+  const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+  callback.searchParams.set("state", authorization.searchParams.get("state")!);
+  callback.searchParams.set("code", "confidential-code");
+  const cookie = String(launched.headers["set-cookie"]).split(";")[0];
+  expect(
+    (await web.inject({ url: callback.pathname + callback.search, headers: { cookie } }))
+      .statusCode,
+  ).toBe(303);
+  expect(await oauth.status(started.attemptId, personal.userId)).toMatchObject({
+    status: "completed",
+  });
+  const exchange = tokenRequests.at(-1)!;
+  expect(exchange.get("code")).toBe("confidential-code");
+  expect(exchange.get("client_secret")).toBe("confidential-secret");
+  expect(exchange.has("code_verifier")).toBe(false);
+
+  // Every other declaration keeps PKCE.
+  const custom = await install("custom");
+  const prepared = await oauth.prepare(custom, personal.userId);
+  const other = await oauth.begin(
+    {
+      connection: prepared.connection,
+      consent: prepared.consent,
+      method: "oauth",
+      review: prepared.methods[0]!.review,
+      client: { clientId: "pkce-client", clientSecret: "pkce-secret" },
+      surface: "web" as const,
+      returnPath: "/settings",
+    },
+    personal.userId,
+    "canonical",
+  );
+  const otherLaunch = await web.inject({
+    url: `/v1/integration-authorizations/${other.attemptId}/launch?ticket=${other.launchTicket}`,
+  });
+  expect(new URL(otherLaunch.headers.location!).searchParams.get("code_challenge_method")).toBe(
+    "S256",
+  );
   await link();
 });

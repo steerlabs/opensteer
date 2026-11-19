@@ -1,8 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { cp, readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import framework from "../../packages/plugin-engine/apps/package.json" with { type: "json" };
 export const pluginFixtureFiles = (revision: number, sites?: string[]) => [
@@ -48,40 +46,20 @@ export function pluginFixtureProcesses(parent: number) {
 }
 const deadline = <T>(promise: Promise<T>, message: string) =>
   withTimeout(promise, 15_000, { timeoutError: () => new Error(message) });
+/**
+ * The test network: an npm registry with no packages, a catalog and a slow endpoint. It serves no
+ * framework, since builds link the Host's own; `requests` records every host and path asked for.
+ */
 export async function pluginFixtureRegistry(
-  directory: string,
   waiting?: () => void,
   catalogFiles?: ReturnType<typeof pluginFixtureFiles>,
   handle?: (request: IncomingMessage, response: ServerResponse) => boolean,
 ) {
-  await cp(resolve("packages/plugin-engine/apps/dist"), join(directory, "package"), {
-    recursive: true,
-  });
-  const archive = join(directory, "framework.tgz");
-  execFileSync("tar", ["--format=ustar", "-czf", archive, "-C", directory, "package"], {
-    env: { ...process.env, COPYFILE_DISABLE: "1" },
-  });
-  const tarball = await readFile(archive);
-  let origin = "";
+  const requests: string[] = [];
   const server = createServer((request, response) => {
+    requests.push(`${request.headers.host ?? ""}${request.url ?? ""}`);
     if (handle?.(request, response)) return;
-    if (request.url === "/apps") {
-      response.setHeader("content-type", "application/json");
-      response.end(
-        JSON.stringify({
-          name: "apps",
-          "dist-tags": { latest: framework.version },
-          versions: {
-            [framework.version]: {
-              name: "apps",
-              version: framework.version,
-              dist: { tarball: origin + "/framework.tgz" },
-            },
-          },
-        }),
-      );
-    } else if (request.url === "/framework.tgz") response.end(tarball);
-    else if (request.url === "/wait") {
+    if (request.url === "/wait") {
       waiting?.();
     } else if (request.url === "/catalog")
       response.end(
@@ -114,9 +92,10 @@ export async function pluginFixtureRegistry(
   await deadline(listening, "Registry did not listen");
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Registry has no port");
-  origin = `http://127.0.0.1:${address.port}`;
+  const origin = `http://127.0.0.1:${address.port}`;
   return {
     origin,
+    requests,
     address: `127.0.0.1:${address.port}`,
     close: async () => {
       server.closeAllConnections();

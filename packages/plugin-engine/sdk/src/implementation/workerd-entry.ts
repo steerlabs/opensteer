@@ -46,6 +46,8 @@ import {
   type AppWorkerResidency,
 } from "./app-worker-residency.ts";
 import { compileWorkerApp } from "../workerd-build.ts";
+import framework from "plugin-engine-framework";
+import apps from "apps/package.json" with { type: "json" };
 import { assembleWorkerBundle } from "./worker-build-storage.ts";
 import { declarationFailed } from "./worker-source-map.ts";
 import {
@@ -251,6 +253,11 @@ const runner = (env: Environment, context: Pick<ExecutionContext, "waitUntil" | 
     waitUntil: (task) => context.waitUntil(task.then(ignore, ignore)),
   });
 const ignore = () => undefined;
+/** The Host's framework package as every build installs it. */
+const frameworkFiles = {
+  "package.json": JSON.stringify({ name: "apps", version: apps.version, type: "module" }),
+  "runtime.json": framework,
+};
 const encodedJson = Schema.fromJsonString(Schema.Json);
 
 /** Each WebSocket session owns its invocation lifetime and host capabilities. */
@@ -297,7 +304,11 @@ class AppApi extends RpcTarget {
         ).pipe(Effect.mapError((cause) => buildFailed("source", cause)));
         const compiled = yield* compileWorkerApp(
           request.files,
-          this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY },
+          {
+            ...(this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY }),
+            publicFetch: (input, init) => this.#env.PUBLIC_FETCH.fetch(new Request(input, init)),
+            apps: { files: frameworkFiles },
+          },
           request.public ?? [],
         );
         const { bundle, framework, ui, sourceMap } = compiled;

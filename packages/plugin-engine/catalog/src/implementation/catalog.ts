@@ -3,6 +3,7 @@ import { catalogStage } from "./diagnostics.ts";
 import { Effect } from "effect";
 import {
   CatalogFeedUnavailable,
+  officialCatalogUrl,
   catalogTurnedOff,
   type Catalog,
   type CatalogHost,
@@ -22,7 +23,10 @@ export const createCatalog = (
   host: CatalogHost,
   source: CatalogSource | undefined = host.feedUrl === undefined
     ? undefined
-    : catalogSource(host.egress.client, host.feedUrl),
+    : catalogSource(host.egress.client, host.feedUrl, {
+        // Opensteer's own feed must prove every install; a development feed may list no hashes.
+        verified: host.feedUrl === officialCatalogUrl,
+      }),
 ): Catalog => ({
   list:
     source === undefined

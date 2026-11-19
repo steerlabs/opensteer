@@ -28,8 +28,11 @@ list and use the last source revision as the expected revision for an edit.
 A copy has independent Git history, app data, and account selections.
 
 Activation selects a retained build without rebuilding it. It preserves app data
-and does not undo writes to external services. Check account requirements after
-changing versions. Start a new codemode execution to discover changed tools.
+and does not undo writes to external services; a version whose migrations are not
+the ones the app's database has applied is refused. Only the active version runs:
+an approval, queued workflow run or schedule occurrence saved on another version
+ends `stale` and is started again. Check account requirements after changing
+versions. Start a new codemode execution to discover changed tools.
 
 ### Carry source as data
 
@@ -51,12 +54,12 @@ cannot read a local path.
 
 ## Dependencies and current boundaries
 
-Every app declares the exact `apps` version in `package.json` `dependencies`:
+Every app declares `apps` in `package.json` `dependencies`:
 `{ "dependencies": { "apps": "<version>" } }`. `framework.release` returns the
 version this host runs; a deploy without
-it fails and names the same version. That package supplies the server and browser
-framework, and the exact version keeps rebuilds on it across host upgrades. Apps the host generates, such as imported MCP apps, already declare it. Keep it when
-editing, and change it only to upgrade the app. The host retains the compiled framework with each app version. Missing
+it fails and names the same version. Every build links the host's own `apps`
+framework, whatever version the declaration names; it is never downloaded. Apps the host generates, such as imported MCP apps, already declare it. Keep it when
+editing. The host retains the compiled framework with each app version and runs the version with it for as long as the host supports its protocol. Missing
 or unsupported packages fail the build without replacing the active app.
 Installation disables lifecycle scripts. Do not depend on the PluginEngine SDK in
 app code. Native dependencies that need scripts are unsupported.
@@ -101,6 +104,6 @@ that service's answer. PluginEngine refuses only requests it must not send:
 
 `ctx.fetch` then rejects with `NetworkRefused`, whose `refusal.reason` and
 message name the host and the rule. The global `fetch` instead receives status
-421 with the refusal in an `x-pluginEngine-refused` header, as URI-encoded JSON, and
+421 with the refusal in an `x-plugin-engine-refused` header, as URI-encoded JSON, and
 in the body as JSON. A public name that resolves to a private address passes
 this URL check; the embedding service must also enforce network egress policy.

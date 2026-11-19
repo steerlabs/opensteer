@@ -1,4 +1,4 @@
-import * as __published from "apps/published-compat";
+import { engineSigningSecret } from "apps/contracts";
 import { ProviderError } from "apps/contracts";
 import { appProviderFailure } from "./provider-error.ts";
 import { AppProviderFailed, mayHaveWritten } from "../contracts/tools.ts";
@@ -1246,9 +1246,9 @@ export const makeWebhooks = (
                     instructions: saved.setup.instructions,
                     stateSchema: saved.setup.stateSchema,
                     signingSecret:
-                      saved.setup.signingSecret === __published.signingSecretSource
+                      saved.setup.signingSecret === engineSigningSecret
                         ? {
-                            source: __published.signingSecretSource,
+                            source: engineSigningSecret,
                             value: Redacted.make(saved.secret),
                           }
                         : { source: "provider" },
@@ -1272,10 +1272,7 @@ export const makeWebhooks = (
             return yield* new WebhookConflict();
           if (saved.setup.signingSecret === "provider" && parsed.secret === undefined)
             return yield* new WebhookFailed({ reason: "input" });
-          if (
-            saved.setup.signingSecret === __published.signingSecretSource &&
-            parsed.secret !== undefined
-          )
+          if (saved.setup.signingSecret === engineSigningSecret && parsed.secret !== undefined)
             return yield* new WebhookFailed({ reason: "input" });
           const secret = parsed.secret === undefined ? saved.secret : Redacted.value(parsed.secret);
           const state = yield* invoke(row, {

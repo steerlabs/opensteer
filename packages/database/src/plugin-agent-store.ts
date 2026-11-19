@@ -59,34 +59,6 @@ export class PluginAgentStore {
         .execute();
     });
   }
-  async recordInstall(owner: UserId, plugin: string, version: string, author: "catalog" | "agent") {
-    await requirePersonalOwner(this.database, owner);
-    await this.database
-      .insertInto("pluginAgentSettings")
-      .values({
-        ownerUserId: owner,
-        pluginId: plugin,
-        access: "all",
-        author,
-        versionAuthors: { [version]: author },
-      })
-      .onConflict((c) =>
-        c.columns(["ownerUserId", "pluginId"]).doUpdateSet({
-          author,
-          versionAuthors: sql`plugin_agent_settings.version_authors || ${JSON.stringify({ [version]: author })}::jsonb`,
-        }),
-      )
-      .execute();
-  }
-  async recordActivation(owner: UserId, plugin: string, version: string) {
-    const authors = await this.versionAuthors(owner, [{ pluginId: plugin, version }]);
-    await this.recordInstall(
-      owner,
-      plugin,
-      version,
-      authors.get(`${plugin}\u0000${version}`) ?? "agent",
-    );
-  }
   execution(id: string) {
     return this.database
       .selectFrom("pluginExecutions")

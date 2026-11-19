@@ -603,6 +603,8 @@ export async function bundleNodeService(
       outDir: path.dirname(scriptPath),
       outExtension: () => ({ js: ".mjs" }),
       platform: "node",
+      // Prefix-only builtins (node:sqlite) stop resolving if tsup removes node:.
+      removeNodeProtocol: false,
       silent: true,
       sourcemap: false,
       splitting: false,

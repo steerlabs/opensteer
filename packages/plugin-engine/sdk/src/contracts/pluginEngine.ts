@@ -200,7 +200,10 @@ export interface ResourceLifecycle {
   ) => Effect.Effect<void, Error>;
   /** Called once after inserting a new configured app, before its transaction commits. */
   readonly appCreated: (app: App) => Effect.Effect<void, StorageError>;
-  /** Runs in the version commit transaction, including deployments to an existing app. */
+  /**
+   * Runs in the transaction that makes a version active: a deploy's, to a new or an existing app,
+   * and an activation's of a stored version.
+   */
   readonly appDeployed?: (
     app: App,
     version: import("./version.ts").VersionMetadata,

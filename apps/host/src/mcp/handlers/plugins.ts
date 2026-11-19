@@ -230,13 +230,10 @@ export class PluginToolHandlers {
     const result = receipt
       ? installedView(operations.install.output.parse(receipt))
       : await this.#install(c, context, key);
-    if (result.status === "installed")
-      await this.options.settings.recordInstall(
-        c.caller.userId,
-        result.plugin.id,
-        result.version.id,
-        result.origin === "catalog" ? "catalog" : "agent",
-      );
+    // The version's author was recorded when it became active; a replay changes no author. It
+    // repairs the skill record, which follows the active version however this install ended.
+    if (receipt && result.status === "installed")
+      await this.options.service.reconcileSkills([result.plugin.id]);
     if (result.status === "installed") this.options.changed?.(c.caller.userId);
     return {
       ...result,
@@ -491,7 +488,6 @@ export class PluginToolHandlers {
           o.authority.admit(c.caller),
           c.signal,
         );
-        await o.settings.recordActivation(c.caller.userId, c.input.pluginId, c.input.versionId);
         o.changed?.(c.caller.userId);
         return { ok: true };
       },

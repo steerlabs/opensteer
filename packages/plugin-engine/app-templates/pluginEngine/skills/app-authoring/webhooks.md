@@ -56,9 +56,9 @@ Providers retry deliveries; PluginEngine does not deduplicate or replay them.
 registration response. Local providers need a publicly reachable callback origin.
 
 For providers without a registration API, replace `register` and `unregister`
-with `setup: { instructions: "...", signingSecret: "pluginEngine" }`.
+with `setup: { instructions: "...", signingSecret: "plugin-engine" }`.
 Keep `handle` and both schemas. `state` describes the private setup fields;
-use `object({})` if only a signing secret is needed. `pluginEngine` means the operator
+use `object({})` if only a signing secret is needed. `plugin-engine` means the operator
 copies a generated secret into the provider; `provider` means they paste the
 provider's secret into PluginEngine's secure page. A version that keeps `signingSecret`
 and the fields `state` accepts keeps the subscription, callback URL and secret,

@@ -503,11 +503,19 @@ export class PluginOAuthService {
               reason: "plugin-consent-changed",
               message: "Sign-in scopes or client configuration changed. Review them again.",
             })
-          : new OpensteerError({
-              code: "conflict",
-              message:
-                "Plugin sign-in could not start. Review the sign-in method and callback, then try again.",
-            });
+          : error instanceof PluginServiceError &&
+              error.code === "invalid" &&
+              error.tag === "OAuthSetupFailed"
+            ? new OpensteerError({
+                code: "bad_request",
+                reason: "plugin-oauth-client-secret-required",
+                message: error.message,
+              })
+            : new OpensteerError({
+                code: "conflict",
+                message:
+                  "Plugin sign-in could not start. Review the sign-in method and callback, then try again.",
+              });
     }
   }
   async #startAttempt(

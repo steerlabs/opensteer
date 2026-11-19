@@ -1,5 +1,5 @@
-import * as __published from "../published-compat.ts";
 /** Runs before authored modules and must not depend on their framework. */
+import * as page from "../contracts/page-names.ts";
 const install = () => {
   let activeDialog: HTMLDialogElement | undefined;
   let windowStart = Date.now(),
@@ -33,7 +33,7 @@ const install = () => {
     const url = new URL(filename);
     if (
       url.origin !== location.origin ||
-      !url.pathname.startsWith(__published.assetsPath) ||
+      !url.pathname.startsWith(page.assetsPath) ||
       !url.pathname.endsWith(".js")
     )
       return attributes;
@@ -130,7 +130,7 @@ const install = () => {
       show();
     }
     // Error text can contain app data. Keep it in this browser; export only a fixed classification.
-    void fetch(__published.browserTracePath, {
+    void fetch(page.browserTracePath, {
       method: "POST",
       headers: { "content-type": "application/json" },
       credentials: "same-origin",

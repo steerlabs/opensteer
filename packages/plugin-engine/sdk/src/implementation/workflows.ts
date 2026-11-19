@@ -231,12 +231,28 @@ export const makeWorkflowRuns = (
       version: row.version,
       captured: { accounts: row.accounts, scope: row.scope },
     }).pipe(Effect.provideService(CurrentActor, row.actor ?? undefined));
+  /**
+   * Only the app's active version runs anything. A run saved for another version ends `stale`
+   * before it starts, or at its next step once started: it neither continues on that version nor
+   * moves to the active one.
+   */
+  const current = (row: typeof StoredRun.Type) =>
+    Effect.gen(function* () {
+      const active = yield* storedApp(db, { app: row.app }).pipe(
+        Effect.map((app) => app.activeVersion),
+        Effect.catchTag("AppNotFound", () => Effect.succeed(null)),
+      );
+      if (active === row.version) return;
+      yield* finish(row.id, { ok: false, error: "stale" });
+      return yield* failure("stale");
+    });
   const context: WorkflowHost["context"] = (run) =>
     safe(
       Effect.gen(function* () {
         const row = yield* read(run);
         if (terminal(row))
           return yield* failure(row.status === "terminated" ? "terminated" : "conflict");
+        yield* current(row);
         const state = yield* captured(row);
         const resolved = yield* resolve(state, resolveAccount).pipe(
           Effect.provideService(CurrentActor, state.actor),
@@ -258,6 +274,7 @@ export const makeWorkflowRuns = (
         const row = yield* read(run);
         if (row.status === "terminated" || row.status === "errored")
           return yield* failure(row.status === "terminated" ? "terminated" : "conflict");
+        yield* current(row);
         const state = yield* captured(row);
         const payload = yield* decrypt(row);
         if (row.status === "queued")

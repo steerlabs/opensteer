@@ -58,9 +58,17 @@ export const workerdHostModules = Effect.gen(function* () {
     .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(HostBundle))));
 }).pipe(Effect.mapError(() => new RuntimeBuildFailed({ stage: "compile" })));
 
+/**
+ * The Host's framework, `apps/runtime.json`, as a Text module of the trusted host bundle. Every
+ * plugin build links this framework, whatever `apps` version its `package.json` names; it is never
+ * fetched from a registry. Declared for the entry in framework-module.d.ts.
+ */
+const frameworkModule = "plugin-engine-framework";
+
 /** Build the trusted Worker entry point, and with `sourceMap` each JavaScript module's map. */
 const buildWorkerdHost = (sourceMap: boolean) =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const directory = path.dirname(yield* path.fromFileUrl(new URL(import.meta.url)));
     const outdir = path.join(directory, ".runtime-host");
@@ -75,7 +83,7 @@ const buildWorkerdHost = (sourceMap: boolean) =>
         conditions: ["workerd"],
         target: "es2022",
         write: false,
-        external: ["cloudflare:*"],
+        external: ["cloudflare:*", frameworkModule],
         loader: { ".wasm": "copy" },
         // An external map adds no reference to the module, so the module is unchanged.
         ...(sourceMap ? { sourcemap: "external" as const, sourcesContent: false } : {}),
@@ -97,6 +105,13 @@ const buildWorkerdHost = (sourceMap: boolean) =>
             : { type: "ESModule" as const, content: file.text }),
         });
     }
+    modules.push({
+      name: frameworkModule,
+      type: "Text",
+      content: yield* fs.readFileString(
+        yield* path.fromFileUrl(new URL(import.meta.resolve("apps/runtime.json"))),
+      ),
+    });
     modules.sort((a, b) =>
       a.name === "main.js" ? -1 : b.name === "main.js" ? 1 : a.name.localeCompare(b.name),
     );

@@ -37,6 +37,14 @@ type CreationKind =
 const Creation = Context.Reference<
   { key: string; kind: CreationKind; origin?: string | undefined } | undefined
 >("opensteer/PluginCreation", { defaultValue: () => undefined });
+/**
+ * Who wrote the source an install deploys: reviewed catalog source, or source an agent or person
+ * gave. Recorded as the version's author in the transaction that makes it active (`appDeployed`).
+ */
+export const InstallAuthor = Context.Reference<"catalog" | "agent" | undefined>(
+  "opensteer/PluginInstallAuthor",
+  { defaultValue: () => undefined },
+);
 const RemovingAccount = Context.Reference<string[] | undefined>("opensteer/RemovingAccount", {
   defaultValue: () => undefined,
 });
@@ -591,16 +599,33 @@ export function engineAccounts(options: {
       ),
     connectionCompleting: () => Effect.void,
     appCreated: (app) => (app.owner === owner ? Effect.void : Effect.fail(new StorageError())),
-    // The saved origin, not a later request's input, labels a recovered install.
+    // The saved origin, not a later request's input, labels a recovered install. The plugin's
+    // author becomes the active version's: an install's is who wrote its source, and an activated
+    // version keeps the author it was installed with.
     appDeployed: (app, version) =>
-      Effect.flatMap(Creation, (creation) =>
-        rememberCreation("plugin", {
+      Effect.gen(function* () {
+        const creation = yield* Creation;
+        yield* rememberCreation("plugin", {
           status: "installed",
           plugin: app,
           version,
           origin: creation?.origin,
-        }),
-      ),
+        });
+        const author = yield* InstallAuthor;
+        yield* storage(sql`insert into public.plugin_agent_settings
+            (owner_user_id, plugin_id, access, author, version_authors)
+          select personal.owner_id, ${app.id}, 'all', chosen.author,
+            jsonb_build_object(${version.id}::text, chosen.author)
+          from public.personal_settings personal
+          cross join lateral (select coalesce(${author ?? null}::text, (
+            select settings.version_authors ->> ${version.id}::text
+            from public.plugin_agent_settings settings
+            where settings.owner_user_id = personal.owner_id and settings.plugin_id = ${app.id}
+          ), 'agent') as author) chosen
+          where personal.singleton_key = 'personal'
+          on conflict (owner_user_id, plugin_id) do update set author = excluded.author,
+            version_authors = plugin_agent_settings.version_authors || excluded.version_authors`);
+      }),
     appRemoving: () => Effect.void,
     appAccountConnected: (input) =>
       Effect.gen(function* () {
