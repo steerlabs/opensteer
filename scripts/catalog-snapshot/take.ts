@@ -11,9 +11,11 @@ import {
   holdLock,
   lockOf,
   readSnapshot,
+  realTarget,
   recoverBeside,
   refuseLinks,
   replaceDirectory,
+  reservedBeside,
   separatePlaces,
   stagingBeside,
   writeFileAtomic,
@@ -56,6 +58,20 @@ export async function takeSnapshot(
     },
     repository,
   );
+  // Recovery removes or moves the names it reserves beside `--out`; no input may be one of them.
+  const inputs: Record<string, string> = {
+    cache: places.cache,
+    report: places.report,
+    failedReport: places.failedReport,
+    ...(values.rules === undefined ? {} : { rules: await realTarget(values.rules) }),
+  };
+  for (const [key, path] of Object.entries(inputs)) {
+    const reserved = reservedBeside(places.out, path, [places.nextReport]);
+    if (reserved !== undefined)
+      throw new Error(
+        `--${key} ${path} is or lies inside ${reserved}, which the tool reserves beside --out and may remove; choose another path`,
+      );
+  }
   // One run at a time per output: recovery below would otherwise take another run's staging
   // directory or set-aside snapshot for leftovers.
   await mkdir(dirname(places.out), { recursive: true });

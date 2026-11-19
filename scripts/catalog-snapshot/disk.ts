@@ -223,6 +223,21 @@ export const asideOf = (target: string) => join(dirname(target), `.${basename(ta
 /** The lock a run writing `target` holds from before `recoverBeside` until after its swap. */
 export const lockOf = (target: string) => join(dirname(target), `.${basename(target)}.lock`);
 
+/**
+ * The name beside `target` that `path` is, or lies inside, when recovery may remove or move it: a
+ * staging directory, the set-aside copy, the lock, or one of `others` (full paths). Undefined for
+ * any other path.
+ */
+export function reservedBeside(target: string, path: string, others: readonly string[] = []) {
+  const parent = dirname(target);
+  if (path === parent || !inside(path, parent)) return undefined;
+  const name = relative(parent, path).split(sep)[0]!;
+  if (name.startsWith(stagingPrefix(target))) return join(parent, `${stagingPrefix(target)}*`);
+  return [asideOf(target), lockOf(target), ...others].find(
+    (reserved) => join(parent, name) === reserved,
+  );
+}
+
 /** A new, empty directory of its own beside `target`, for building its replacement. */
 export const stagingBeside = (target: string) =>
   mkdtemp(join(dirname(target), stagingPrefix(target)));

@@ -331,6 +331,40 @@ describe("the snapshot tool", () => {
     expect((await readdir(root)).sort()).toEqual(["cache", "out"]);
   });
 
+  test("refuses an input that is a name recovery reserves beside --out", async () => {
+    const out = join(root, "data", "catalog");
+    await run({ out, cache: await cache("old") });
+    const manifest = await readFile(join(out, "manifest.json"));
+    const rules = await rulesFile([]);
+    for (const name of [
+      ".catalog.staging-cache",
+      ".catalog.previous",
+      ".catalog.lock",
+      "catalog.rewrites.next.json",
+    ]) {
+      const reserved = join(root, "data", name);
+      await rename(await cache("new"), reserved);
+      // The waiting report is also one of the tool's own places, so it overlaps first.
+      const refused = (key: string, path: string) =>
+        name.endsWith(".json") && key === "cache"
+          ? /overlaps --cache/u
+          : `--${key} ${path} is or lies inside`;
+      await expect(run({ out, cache: reserved })).rejects.toThrow(refused("cache", reserved));
+      await expect(run({ out, cache: join(reserved, "inner") })).rejects.toThrow(
+        refused("cache", join(reserved, "inner")),
+      );
+      await rename(rules, join(reserved, "rules.json"));
+      await expect(
+        run({ out, cache: join(root, "cache"), rules: join(reserved, "rules.json") }),
+      ).rejects.toThrow(refused("rules", join(reserved, "rules.json")));
+      await rename(join(reserved, "rules.json"), rules);
+      // Nothing was removed or moved.
+      expect(await readFile(join(reserved, "index.json"), "utf8")).toContain('"apps"');
+      expect(await readFile(join(out, "manifest.json"))).toEqual(manifest);
+      await rename(reserved, join(root, "cache"));
+    }
+  });
+
   test("refuses a cache holding a symlink", async () => {
     const path = await cache();
     await writeFile(join(root, "outside.json"), JSON.stringify(documentFor("mail")));

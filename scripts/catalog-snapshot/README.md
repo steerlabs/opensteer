@@ -24,7 +24,10 @@ pnpm catalog:snapshot --out ~/catalog/2026-11-18 [--rules <rules.json>] [--feed 
   the repository and apart from each other. A cache that holds a symlink is refused. Every file the
   tool writes outside the staging directory (cache files, the rewrite report) goes first to a new,
   uniquely named file created exclusively, never through an existing entry, in a directory that is
-  its own real path, and is then renamed into place.
+  its own real path, and is then renamed into place. No input (the cache, the rule file, a report)
+  may be, or lie inside, a name the tool reserves beside `<out>`: `.<out>.staging-*`,
+  `.<out>.previous`, `.<out>.lock` or `<out>.rewrites.next.json`, since recovery removes or moves
+  those.
 - `<out>`'s parent is created if missing; a mount root is refused, since it cannot be renamed.
 - The build is written to a new, uniquely named directory beside `<out>`, read back and checked as
   `catalog:publish` checks it, and only then swapped in with two renames: an earlier snapshot to
