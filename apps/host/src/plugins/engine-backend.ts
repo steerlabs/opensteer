@@ -328,7 +328,8 @@ export function compositeBackend(
         for (const [app, tools] of retained)
           hostCatalog.set(app, {
             name: namespaces.get(app) ?? app,
-            tools: tools.map((tool) => projectTool(tool, "off")),
+            // The person may have changed this plugin's access since the listing was kept.
+            tools: tools.map((tool) => projectTool(tool, grants?.[app])),
           });
         const local = searchHost(input, hostCatalog);
         const all = [
