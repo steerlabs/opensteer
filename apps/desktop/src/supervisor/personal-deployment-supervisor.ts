@@ -1900,6 +1900,12 @@ function postgresSpec(
       "password_encryption=scram-sha-256",
       "-c",
       "logging_collector=off",
+      // One person's database on a laptop: no bursty parallel scans on two
+      // cores, and a WAL ceiling sized for its write rate rather than 1 GB.
+      "-c",
+      "max_parallel_workers_per_gather=0",
+      "-c",
+      "max_wal_size=256MB",
     ],
     component: "postgresql",
     cwd: paths.rootDirectory,
