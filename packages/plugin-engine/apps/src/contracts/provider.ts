@@ -147,6 +147,14 @@ const oauthOptions = {
   resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
 };
 
+/** The machine grant exchanges no authorization code, so PKCE never applies to it. */
+const machinePkce = Schema.optionalKey(
+  Schema.Never.annotate({
+    message:
+      "pkce applies only to the authorization_code grant: remove it from a client_credentials declaration.",
+  }),
+);
+
 /**
  * OAuth endpoints and protocol choices. Omitted grant means authorization code; clients remain
  * host-owned. Declared endpoints may name an RFC 7009 `revocationUrl`; discovery reads the
@@ -201,6 +209,7 @@ export const OAuth2Config = Schema.Union([
     ...tokenRequestOptions,
     tokenEndpointAuthMethod: OAuthSecretClientAuth,
     resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
+    pkce: machinePkce,
   }),
   Schema.Struct({
     grant: Schema.Literal("client_credentials"),
@@ -210,6 +219,7 @@ export const OAuth2Config = Schema.Union([
     ...tokenRequestOptions,
     tokenEndpointAuthMethod: OAuthSecretClientAuth,
     resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
+    pkce: machinePkce,
     authorizationUrl: Schema.optionalKey(Schema.Never),
     discover: Schema.optionalKey(Schema.Never),
     authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),

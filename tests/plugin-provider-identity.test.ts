@@ -60,3 +60,23 @@ test("a discovered OAuth declaration that turns PKCE off does not build", async 
   );
   expect(JSON.stringify(declared)).toContain("pkce: false applies only to declared endpoints");
 });
+
+test("a client_credentials OAuth declaration that sets PKCE does not build", async () => {
+  for (const config of [
+    { discover: "https://mcp.example.com/mcp" },
+    { tokenUrl: "https://example.com/token", scopes: ["read"] },
+  ]) {
+    const declared = await Effect.runPromiseExit(
+      oauth2(
+        {
+          ...config,
+          grant: "client_credentials",
+          pkce: false,
+          tokenEndpointAuthMethod: "client_secret_basic",
+        } as unknown as Parameters<typeof oauth2>[0],
+        Schema.Struct({ access_token: Schema.String }),
+      ),
+    );
+    expect(JSON.stringify(declared)).toContain("pkce applies only to the authorization_code grant");
+  }
+});
