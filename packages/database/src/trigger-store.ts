@@ -565,7 +565,10 @@ export class TriggerStore {
         .where("id", "=", trigger.id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      if ("nextFireAt" in rearmed && rearmed.nextFireAt) await wakeTriggerSchedules(transaction);
+      // A new program can make a waiting schedule runnable at its existing time,
+      // so any update that leaves one armed re-arms the scheduler.
+      if (updated.kind === "schedule" && updated.status === "active" && updated.nextFireAt)
+        await wakeTriggerSchedules(transaction);
       if (trigger.kind === "watch") {
         await stopActiveWatchActivation(transaction, trigger.id, now);
         if (updated.status === "active") {
