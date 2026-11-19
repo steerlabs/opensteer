@@ -101,8 +101,10 @@ export function agentWorkflowRun<R extends { status: string }>(run: R) {
     : run;
 }
 /** A scheduled run as an agent reads it: a stale end says plainly what to do. */
-export function agentScheduledRun<R extends { failure?: string | null }>(run: R) {
-  return run.failure === "stale" ? { ...run, failure: pluginStaleRunText.schedule } : run;
+export function agentScheduledRun<R extends object>(run: R) {
+  return "failure" in run && run.failure === "stale"
+    ? { ...run, failure: pluginStaleRunText.schedule }
+    : run;
 }
 export function previewOutput<R extends { status: string }>(run: R) {
   if (!("output" in run)) return run;
