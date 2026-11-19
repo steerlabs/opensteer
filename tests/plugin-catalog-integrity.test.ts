@@ -120,3 +120,44 @@ test("an install refuses a source the index does not uniquely list, hash and nam
   // No refused source was ever fetched from outside the feed.
   expect(requested).not.toContain("/secret.json");
 });
+
+test("a prepared feed app carries the display name of the entry its source came from", async (context) => {
+  // Each read of the index is a new revision that renames the app; the name an install records
+  // is the one listed beside the source it installs, never one from another read.
+  let revision = 0;
+  const source = document("@demo/renamed");
+  const server = createServer((request, response) => {
+    if (request.url === "/feed/index.json") {
+      revision += 1;
+      response.end(
+        JSON.stringify({
+          version: 1,
+          apps: [
+            {
+              ...entry("renamed", "apps/renamed.json", sha256(source)),
+              name: `Revision ${revision}`,
+            },
+          ],
+        }),
+      );
+      return;
+    }
+    response.statusCode = request.url === "/feed/apps/renamed.json" ? 200 : 404;
+    response.end(request.url === "/feed/apps/renamed.json" ? source : undefined);
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  context.onTestFinished(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("No port");
+  const prepared = await Effect.runPromise(
+    Effect.gen(function* () {
+      const client = yield* HttpClient.HttpClient;
+      return yield* catalogSource(client, `http://127.0.0.1:${address.port}/feed/index.json`, {
+        verified: true,
+      }).prepare("renamed");
+    }).pipe(Effect.provide(FetchHttpClient.layer)),
+  );
+  expect(revision).toBe(1);
+  expect(prepared.name).toBe("Revision 1");
+});

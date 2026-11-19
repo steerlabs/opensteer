@@ -223,6 +223,7 @@ export const catalogSource = (
         return PreparedApp.make({
           files: source.files,
           origin: { reference, name: source.package, commit: null, sha256 },
+          name: entry.name,
         });
       }),
   };

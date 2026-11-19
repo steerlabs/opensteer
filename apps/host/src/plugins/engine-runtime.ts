@@ -907,7 +907,7 @@ export async function startEngine(
                   const prepared = yield* catalog.prepare({ entry: input.id });
                   files = prepared.files;
                   origin = prepared.origin;
-                  name = (yield* catalog.list).apps.find((entry) => entry.id === input.id)?.name;
+                  name = prepared.name;
                 } else if (input.kind === "mcp") {
                   files = (yield* catalog.custom({ ...input, kind: "mcp" })).files;
                   name = input.name;

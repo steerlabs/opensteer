@@ -85,6 +85,8 @@ export type CatalogImport = typeof CatalogImport.Type;
 export const PreparedApp = Schema.Struct({
   files: SourceFiles,
   origin: Schema.optionalKey(AppCopyOrigin),
+  /** A feed app's display name, from the same read of the feed as its source. */
+  name: Schema.optionalKey(Schema.NonEmptyString),
 });
 export type PreparedApp = typeof PreparedApp.Type;
 /** The published official app feed. Hosts that list the official apps read it unless configured otherwise. */
