@@ -148,7 +148,9 @@ export function indexedDbCheckpointStorage(
     write: async (key, value, guard) => {
       await started();
       const session = sessionOf(key);
-      if (session === null) return false;
+      // A writer from a session that has since ended (another window's late flush) is refused.
+      if (session === null || (guard.session !== undefined && guard.session !== session))
+        return false;
       return run("readwrite", (stores) => {
         let written = false;
         withFences(stores, (fences) => {

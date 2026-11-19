@@ -197,3 +197,16 @@ test.each([
     );
   },
 );
+
+test("a late write from a window of an ended session never lands under the next one", async () => {
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  let current: string | null = "session-1";
+  const storage = indexedDbCheckpointStorage("checkpoints", () => current);
+  // Another person signed in here before the first person's window flushed.
+  current = "session-2";
+  expect(await storage.write(key("shell"), "theirs", { ...guard, session: "session-1" })).toBe(
+    false,
+  );
+  expect(await storage.read(key("shell"))).toBeNull();
+  expect(await storage.write(key("shell"), "mine", { ...guard, session: "session-2" })).toBe(true);
+});

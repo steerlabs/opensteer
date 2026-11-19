@@ -42,10 +42,12 @@ export interface PersonalStreamCache {
   /** The newest saved shell, for this Deployment when named. */
   latestShell(deploymentId?: string): Promise<PersonalShellCheckpoint | null>;
   load(scope: PersonalCacheScope): Promise<PersonalStreamCheckpoint | null>;
+  /** `session` is the Host session the writer saved under; storage refuses it once that ended. */
   commit(
     checkpoint: PersonalStreamCheckpoint,
     isCurrent: () => boolean,
     fence: number,
+    session?: string,
   ): Promise<void>;
   remove(scope: PersonalCacheScope): Promise<void>;
   removeThread(identity: Identity, threadId: string): Promise<void>;
@@ -108,7 +110,11 @@ export interface CheckpointStorage {
   read(key: string): Promise<string | null>;
   fences(): Promise<CheckpointFences>;
   /** Writes only while `checkpointFence(fences, guard)` is still `guard.fence`; says whether. */
-  write(key: string, value: string, guard: Viewer & { readonly fence: number }): Promise<boolean>;
+  write(
+    key: string,
+    value: string,
+    guard: Viewer & { readonly fence: number; readonly session?: string | undefined },
+  ): Promise<boolean>;
   remove(keys: readonly string[]): Promise<void>;
   /** Removes every key `matches` accepts and raises the fence for `scope`, together. */
   clear(matches: (key: string) => boolean, scope: Partial<Viewer>): Promise<void>;
@@ -266,7 +272,7 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
         );
         return entry ? current(parse(await storage.read(entry.key))) : null;
       }),
-    commit: (checkpoint, isCurrent, fence) =>
+    commit: (checkpoint, isCurrent, fence, session) =>
       serial(async () => {
         if (!isCurrent()) return;
         const serialized = JSON.stringify({ ...checkpoint, fence });
@@ -278,6 +284,7 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
             deploymentId: checkpoint.scope.deploymentId,
             viewerId: checkpoint.scope.viewerId,
             fence,
+            session,
           },
         );
         if (written) await evict();
