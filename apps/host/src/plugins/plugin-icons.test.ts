@@ -7,13 +7,12 @@ import { safeHttpClient } from "@opensteer/plugin-engine-utils/safe-fetch";
 import { defaultUrlPolicy, httpsOnlyUrlPolicy } from "@opensteer/plugin-engine-utils/url-policy";
 import { pluginIconMaxBytes } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
+import { pluginIconReader, readPluginIcons } from "./plugin-icon-reader.js";
 import {
-  pluginIconReader,
   pluginIconRef,
   pluginIconRefOf,
   pluginIconSource,
   pluginIconSources,
-  readPluginIcons,
   type PluginIconSource,
 } from "./plugin-icons.js";
 

@@ -123,7 +123,8 @@ import {
 import { engineAccounts, InstallAuthor, migrateEngineProduct } from "./engine-accounts.js";
 import { compositeBackend, type EngineHostCallbacks } from "./engine-backend.js";
 import { catalogPage } from "./catalog-page.js";
-import { pluginIconReader, pluginIconSources, readPluginIcons } from "./plugin-icons.js";
+import { pluginIconReader, readPluginIcons } from "./plugin-icon-reader.js";
+import { pluginIconSources } from "./plugin-icons.js";
 import { enginePages } from "./engine-pages.js";
 import {
   operations,
