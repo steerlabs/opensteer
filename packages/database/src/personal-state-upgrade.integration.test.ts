@@ -116,7 +116,6 @@ test.each(["empty", "personal", "team", "personal-0035"] as const)(
             prunedThroughSequence: "0",
             retainedChangeCount: 0,
             pendingRequestCount: 0,
-            pendingRequestsRevision: "0",
             needsYouCount: 0,
             unreadTaskCount: 0,
             lastCommitAt: expect.any(Date),
