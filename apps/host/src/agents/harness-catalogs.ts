@@ -47,6 +47,7 @@ export interface HarnessCatalogRecorder {
     readonly catalogs: readonly HarnessInstanceCatalog[];
     readonly environmentId: EnvironmentId;
     readonly expectedRevisions: ReadonlyMap<HarnessInstanceId, number>;
+    readonly connectionGeneration?: number;
   }): Promise<readonly HarnessInstanceCatalog[]>;
 }
 
@@ -259,6 +260,8 @@ export async function reconcileAndRecordHarnessCatalogs(options: {
   readonly harnesses: HarnessInspectionDefinitions;
   readonly runners: HarnessCatalogReconciler;
   readonly signal: AbortSignal;
+  /** The registering connection; nothing is recorded once a newer one exists. */
+  readonly connectionGeneration?: number;
 }): Promise<readonly HarnessInstanceCatalog[]> {
   const catalogs = await options.runners.reconcileHarnesses(
     options.environmentId,
@@ -268,6 +271,9 @@ export async function reconcileAndRecordHarnessCatalogs(options: {
   return options.catalogs.recordHarnessCatalogs({
     catalogs,
     environmentId: options.environmentId,
+    ...(options.connectionGeneration === undefined
+      ? {}
+      : { connectionGeneration: options.connectionGeneration }),
     expectedRevisions: new Map(
       options.harnesses.map(({ id, runtimeRevision }) => [id, runtimeRevision]),
     ),

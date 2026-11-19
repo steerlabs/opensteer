@@ -2266,7 +2266,13 @@ export async function createHostRuntime(
                 });
                 for (const harness of harnesses) {
                   if (!current()) return;
-                  await store.discardHarnessCatalog(environmentId, harness.id);
+                  // Fenced in its own transaction too: a newer connection may
+                  // register between this check and the write.
+                  await store.discardHarnessCatalog(
+                    environmentId,
+                    harness.id,
+                    identity.connectionGeneration,
+                  );
                 }
               }
               // Managed AI-engine sign-in attempts survive reconnects, so a
@@ -2296,6 +2302,7 @@ export async function createHostRuntime(
                   environmentId,
                   harnesses: harnesses.map(harnessInspectionDefinition),
                   runners,
+                  connectionGeneration: identity.connectionGeneration,
                   signal: AbortSignal.timeout(harnessCatalogCaptureTimeoutMs),
                 });
                 observeRunnerCatalogs(identity, environmentId, captured);
