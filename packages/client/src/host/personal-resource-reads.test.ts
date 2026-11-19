@@ -3,6 +3,7 @@ import { expect, test, vi } from "vitest";
 import {
   PersonalResourceReads,
   type PersonalResourceReadOptions,
+  runnerSettleMs,
 } from "./personal-resource-reads.js";
 
 type Read = Awaited<ReturnType<PersonalResourceReadOptions["read"]>>;
@@ -231,4 +232,45 @@ test("a Host that repeats a cursor installs nothing and is read again on its nex
   reads.changed({ machine: "2" });
   await vi.waitFor(() => expect(calls).toBe(4));
   release();
+});
+
+test("a Runner that drops and comes back costs one read of what it moves, and a first read never waits", async () => {
+  vi.useFakeTimers();
+  try {
+    const asked: string[] = [];
+    const reads = new PersonalResourceReads({
+      read: async (kind) => {
+        asked.push(kind);
+        return {
+          ok: true,
+          data: {
+            revision: reads.revision(kind) ?? "1.0123456789abcdef.1",
+            next: null,
+            data: { kind } as never,
+          },
+        };
+      },
+      apply: () => undefined,
+      canRead: () => true,
+      watchChanged: () => undefined,
+    });
+    const release = reads.watch("machine", () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toEqual(["machine"]);
+    // Disconnect, then reconnect, within the window: one reread, of the newest.
+    reads.changed({ machine: "1.0123456789abcdef.2" });
+    await vi.advanceTimersByTimeAsync(runnerSettleMs / 2);
+    reads.changed({ machine: "1.0123456789abcdef.3" });
+    expect(asked).toEqual(["machine"]);
+    await vi.advanceTimersByTimeAsync(runnerSettleMs);
+    expect(asked).toEqual(["machine", "machine"]);
+    expect(reads.interests().installed).toEqual({ machine: "1.0123456789abcdef.3" });
+    // A new Host boot is not a flap: read at once.
+    reads.changed({ machine: "1.fedcba9876543210.1" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toHaveLength(3);
+    release();
+  } finally {
+    vi.useRealTimers();
+  }
 });

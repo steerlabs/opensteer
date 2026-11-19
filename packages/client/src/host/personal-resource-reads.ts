@@ -27,6 +27,20 @@ const noop = () => undefined;
  * is far above any real one (the largest, `harness-catalog`, is up to 8,192 models per account).
  */
 export const inventoryCeilingBytes = 256 * 1024 * 1024;
+/**
+ * The kinds a Runner's connection moves. The Host bumps them on every connect and disconnect; a
+ * reread waits this long after the first such push, so a Runner that drops and comes back costs
+ * one read of each rather than two. A first read, a new Host boot and an attach never wait. Tabs,
+ * which people change, are read at once.
+ */
+export const runnerSettleMs = 2_000;
+const runnerKinds: ReadonlySet<PersonalResourceKind> = new Set([
+  "machine",
+  "environment",
+  "harness-catalog",
+  "browser-availability",
+  "browser-placement",
+]);
 /** How long a reader that unmounted keeps its kinds watched, so navigating back reads nothing. */
 export const readerGraceMs = 5_000;
 /** How long a read made outside any reader (an effect, a handler, a controller) keeps its kind watched. */
@@ -71,6 +85,8 @@ export class PersonalResourceReads implements PersonalResourcePort {
     { release: () => void; timer: ReturnType<typeof setTimeout> }
   >();
   readonly #timers = new Set<ReturnType<typeof setTimeout>>();
+  /** A Runner kind's pending reread, from its first push within the settle window. */
+  readonly #settling = new Map<PersonalResourceKind, ReturnType<typeof setTimeout>>();
   /** The older revision a read last answered after a newer push, so it is not reread forever. */
   readonly #behind = new Map<PersonalResourceKind, string>();
   #viewer = 0;
@@ -117,7 +133,10 @@ export class PersonalResourceReads implements PersonalResourcePort {
       else if (this.#installed.has(kind) && this.#installed.get(kind) !== revision)
         this.#options.behind?.(kind);
       // What flies is judged when it lands: older than this push, it installs nothing.
-      this.#read(kind);
+      const installed = this.#installed.get(kind);
+      if (runnerKinds.has(kind) && installed !== undefined && sameBoot(installed, revision))
+        this.#settle(kind);
+      else this.#read(kind);
       for (const listener of this.#listeners.get(kind) ?? []) listener();
     }
   }
@@ -191,11 +210,23 @@ export class PersonalResourceReads implements PersonalResourcePort {
     this.#leases.set(kind, { release, timer });
   }
 
-  /** Ends every grace and lease timer; the client is closing. */
+  /** Ends every grace, lease and settle timer; the client is closing. */
   dispose() {
     for (const timer of this.#timers) clearTimeout(timer);
     this.#timers.clear();
+    this.#settling.clear();
     this.abort();
+  }
+
+  #settle(kind: PersonalResourceKind) {
+    if (this.#settling.has(kind)) return;
+    const timer = setTimeout(() => {
+      this.#timers.delete(timer);
+      this.#settling.delete(kind);
+      this.#read(kind);
+    }, runnerSettleMs);
+    this.#timers.add(timer);
+    this.#settling.set(kind, timer);
   }
 
   /**
@@ -204,6 +235,11 @@ export class PersonalResourceReads implements PersonalResourcePort {
    */
   reset() {
     this.#viewer++;
+    for (const timer of this.#settling.values()) {
+      clearTimeout(timer);
+      this.#timers.delete(timer);
+    }
+    this.#settling.clear();
     this.abort();
     this.#known.clear();
     this.#installed.clear();
@@ -269,6 +305,11 @@ export class PersonalResourceReads implements PersonalResourcePort {
     this.#known.set(kind, revision);
     if (first) this.#options.loaded?.(kind);
   }
+}
+
+/** Whether two revisions come from one Host boot, where a push may be a Runner's flap. */
+function sameBoot(a: string, b: string) {
+  return a.split(".")[1] === b.split(".")[1];
 }
 
 /** A Host answer no retry can mend; the error names the kind and is logged by the read's owner. */
