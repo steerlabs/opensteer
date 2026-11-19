@@ -303,6 +303,13 @@ export class HttpHostClient {
   #taskWindow: { nextBefore: string | null; hasMore: boolean } | undefined;
   /** Tasks removed since the shell cut, with the cut they left at, so a slower page cannot restore them. */
   readonly #removedTasks = new Map<string, bigint>();
+  /**
+   * Each task's latest pushed Done membership and the cut it arrived at, so a Done page read
+   * before it cannot undo it, whether the Done list was held then or not.
+   */
+  readonly #doneMoves = new Map<string, { readonly done: boolean; readonly at: bigint }>();
+  /** How many settled rows the person had loaded when a shell repair replaced the lists. */
+  #taskDepth = 0;
   #publishedShell: ReturnType<ScopedPersonalStream["shell"]["getSnapshot"]> | undefined;
   #syncedAttachment: number | undefined;
   readonly #fetch: Fetch;
@@ -1649,6 +1656,9 @@ export class HttpHostClient {
     // A new shell cut replaces the lists; between cuts every row is applied where it is held.
     const replaced = old?.snapshot?.recentTaskIds !== shell.recentTaskIds;
     if (replaced) {
+      // A repair keeps the window the person loaded: the rows are read again to the same depth.
+      if (this.#taskWindow && old?.snapshot?.viewerId === shell.viewerId)
+        this.#taskDepth = Math.max(this.#taskDepth, settledEntries(this.#snapshot.tasks).length);
       this.#taskWindow = undefined;
       this.#removedTasks.clear();
     }
@@ -1660,6 +1670,13 @@ export class HttpHostClient {
       for (const row of state.taskChanges) {
         const held = heldThread(this.#snapshot, row.id);
         const done = doneTasks[mainDoneTasks];
+        this.#doneMoves.delete(row.id);
+        this.#doneMoves.set(row.id, {
+          done: !("removed" in row) && row.doneAt !== null,
+          at: BigInt(state.through ?? "0"),
+        });
+        if (this.#doneMoves.size > 256)
+          this.#doneMoves.delete(this.#doneMoves.keys().next().value!);
         if ("removed" in row) {
           this.#removedTasks.delete(row.id);
           this.#removedTasks.set(row.id, BigInt(state.through ?? "0"));
@@ -1679,7 +1696,10 @@ export class HttpHostClient {
         if (done && listed !== (row.doneAt !== null))
           doneTasks = {
             [mainDoneTasks]: {
-              ...done,
+              window: {
+                ...done.window,
+                totalItems: Math.max(0, done.window.totalItems + (listed ? -1 : 1)),
+              },
               entries: listed
                 ? done.entries.filter(({ thread }) => thread.id !== row.id)
                 : [...done.entries, this.#shellEntry(row)].sort((left, right) =>
@@ -1694,7 +1714,7 @@ export class HttpHostClient {
               title: row.title,
               status: row.status,
               doneAt: row.doneAt,
-              doneReason: row.doneAt === held.doneAt ? held.doneReason : null,
+              doneReason: row.doneReason,
               latestRunCompletedAt: row.latestRunCompletedAt,
               inputQueuePaused: row.inputQueuePaused ?? held.inputQueuePaused,
               runQueued: row.runQueued,
@@ -1763,8 +1783,6 @@ export class HttpHostClient {
             ({ thread }) => thread.status === "running" || thread.status === "waiting",
           ),
         };
-        if (state.synchronized && window.hasMore && open.length < personalShellSettledTasks)
-          void this.loadEarlierTasks().catch(() => undefined);
       }
       if (state.synchronized) this.#savedViewReadiness = { tasksReady: true };
       this.#update(
@@ -1792,6 +1810,7 @@ export class HttpHostClient {
         taskChanges,
       );
     }
+    if (state.synchronized && (tasksChanged || !old?.synchronized)) this.#refillTasks();
     if (attached) {
       this.#connectionAdmit?.();
       this.#finishLoad();
@@ -3316,10 +3335,24 @@ export class HttpHostClient {
     if (!this.#doneTasksStale || this.#doneTaskRefresh || this.#visibility === "background") return;
     const viewer = this.#viewerGeneration;
     this.#doneTasksStale = false;
+    // The refresh reads again as deep as the person had loaded Done.
+    const depth = this.#snapshot.doneTasks[mainDoneTasks]?.entries.length ?? 0;
+    const deepen = async (): Promise<void> => {
+      const done = this.#snapshot.doneTasks[mainDoneTasks];
+      if (
+        viewer !== this.#viewerGeneration ||
+        !done?.window.hasMore ||
+        done.entries.length >= depth
+      )
+        return;
+      await this.#readTaskPage("done:*", done.window.nextBefore);
+      if (this.#snapshot.doneTasks[mainDoneTasks] !== done) await deepen();
+    };
     const refresh = this.#readTaskPage("done:*", null)
       .then(
-        (applied) => {
+        async (applied) => {
           if (!applied && viewer === this.#viewerGeneration) this.#doneTasksStale = true;
+          else if (applied) await deepen();
         },
         () => {
           if (viewer === this.#viewerGeneration) this.#doneTasksStale = true;
@@ -3338,6 +3371,32 @@ export class HttpHostClient {
 
   loadEarlierTasks(): Promise<void> {
     return this.#loadEarlier(null);
+  }
+
+  /**
+   * Reads earlier open tasks until the settled list holds its window (the shell's 25, or the depth
+   * the person had loaded before a repair), one page at a time, while the Host has more.
+   */
+  #refillTasks() {
+    const tasks = this.#snapshot.tasks;
+    const want = Math.max(personalShellSettledTasks, this.#taskDepth);
+    if (!this.#stream.shell.getSnapshot().synchronized || !tasks?.window.hasMore) {
+      if (!tasks?.window.hasMore) this.#taskDepth = 0;
+      return;
+    }
+    if (settledEntries(tasks).length >= want) {
+      this.#taskDepth = 0;
+      return;
+    }
+    if (this.#taskPageLoads.has(null)) return;
+    const viewer = this.#viewerGeneration;
+    void this.loadEarlierTasks().then(
+      () => {
+        if (viewer === this.#viewerGeneration && this.#snapshot.tasks !== tasks)
+          this.#refillTasks();
+      },
+      () => undefined,
+    );
   }
 
   #loadEarlier(scope: string | null): Promise<void> {
@@ -3412,14 +3471,37 @@ export class HttpHostClient {
       ];
     });
     const held = this.#heldTasks(scope);
-    const merged = mergeTasks(before ? held : null, { entries, window: page.window });
-    const bounded = { ...merged, entries: merged.entries.slice(-256) };
+    // Loaded pages are not evicted: they are what the person asked to see, in the order shown.
+    let merged = mergeTasks(before ? held : null, { entries, window: page.window });
+    if (scope) {
+      // Done membership pushed after this page's cut wins over the page, held list or not.
+      let entries = merged.entries;
+      for (const [id, move] of this.#doneMoves) {
+        if (move.at <= asOf) continue;
+        const listed = entries.some(({ thread }) => thread.id === id);
+        const row = current.tasks.get(id);
+        if (move.done && !listed && row)
+          entries = [...entries, this.#shellEntry(row)].sort((left, right) =>
+            compareTaskOrder(left.thread, right.thread),
+          );
+        else if (!move.done && listed) entries = entries.filter(({ thread }) => thread.id !== id);
+        else continue;
+        merged = {
+          ...merged,
+          window: {
+            ...merged.window,
+            totalItems: Math.max(0, merged.window.totalItems + (move.done ? 1 : -1)),
+          },
+        };
+      }
+      merged = { ...merged, entries };
+    }
     if (!scope)
       this.#taskWindow = { nextBefore: page.window.nextBefore, hasMore: page.window.hasMore };
     this.#update(
       scope
-        ? { ...this.#snapshot, doneTasks: { [mainDoneTasks]: bounded } }
-        : { ...this.#snapshot, tasks: bounded },
+        ? { ...this.#snapshot, doneTasks: { [mainDoneTasks]: merged } }
+        : { ...this.#snapshot, tasks: merged },
     );
     return true;
   }
@@ -4326,7 +4408,7 @@ function compactThread(
     createdAt: row.askedAt,
     updatedAt: row.askedAt,
     doneAt: row.doneAt,
-    doneReason: null,
+    doneReason: row.doneReason,
     latestRunCompletedAt: row.latestRunCompletedAt,
     lastVisitedAt: null,
     status: row.status,
@@ -4393,6 +4475,13 @@ function toThreadSummary(
 }
 
 /** Pages in a freshly read prefix share their continuation; newer Thread data wins duplicates. */
+/** Open tasks no Run is working on: the window the shell's 25 and the refill keep full. */
+function settledEntries(list: TaskListState | null) {
+  return (list?.entries ?? []).filter(
+    ({ thread }) => thread.status !== "running" && thread.status !== "waiting",
+  );
+}
+
 function mergeTasks(held: TaskListState | null, page: TaskListState): TaskListState {
   return { entries: mergeTaskEntries(held?.entries ?? [], page.entries), window: page.window };
 }
