@@ -228,6 +228,7 @@ async function activateRunnerConnection(
       "publicKeyFingerprint",
       "publicKeyPem",
       "revokedAt",
+      "capabilities",
     ])
     .where("id", "=", descriptor.runnerId)
     .forNoKeyUpdate()
@@ -321,6 +322,15 @@ async function activateRunnerConnection(
     ])
     .executeTakeFirstOrThrow(databaseOperationOptions());
   await upsertSelfDeviceInTransaction(transaction, descriptor.runnerId);
+  // Capabilities are durable facts derived views read (a task's return hint); connecting is not.
+  const before = new Set<string>(existing.capabilities as readonly string[]);
+  if (
+    before.size !== new Set(descriptor.capabilities).size ||
+    descriptor.capabilities.some((capability) => !before.has(capability))
+  )
+    await commitPersonalMutation(transaction, async (_tx, mutation) => {
+      mutation.bumpResource("machine");
+    });
   // The first advertisement is the binding, and there is never a second one.
   // A computer can reach here having enrolled reach-only and come back running
   // agents: the grant already allowed it — `assertModulesWithinGrant` above
