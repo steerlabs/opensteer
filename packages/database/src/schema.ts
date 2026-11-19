@@ -719,7 +719,6 @@ export interface ThreadTable {
   pendingRequestCount: Generated<number>;
   revision: Generated<string>;
   nextTranscriptPosition: Generated<string>;
-  transcriptOrderRevision: Generated<string>;
   inputQueueRevision: Generated<string>;
   lastReplyMessageId: Generated<MessageId | null>;
   lastReplyPreview: Generated<string | null>;

@@ -56,7 +56,7 @@ export async function preparePersonalConversion(
       drop index transcript_root, transcript_node, transcript_run_place, transcript_root_activity, transcript_node_activity;
       truncate client_changes, runner_event_receipts, transcript_items, tool_output_images,
         tool_calls, personal_attention;
-      update threads set next_transcript_position=0, transcript_order_revision=0,
+      update threads set next_transcript_position=0,
         latest_run_completed_at=null, last_reply_message_id=null, last_reply_preview=null,
         failure_preview=null, revision=0, input_queue_revision=0;
     `.execute(tx);

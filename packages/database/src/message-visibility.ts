@@ -110,7 +110,6 @@ export async function syncTranscriptMessage(
         ? await allocateTranscriptPosition(tx, message.threadId)
         : prior.position
       : null;
-    const orderChanged = Boolean(prior?.visible && (!visible || move));
     const fields = {
       position,
       revision: mutation.sequence,
@@ -145,13 +144,6 @@ export async function syncTranscriptMessage(
       else if (prior?.visible)
         mutation.change({ scopeKey, entityKind: "item", entityId: messageId, operation: "remove" });
     });
-    if (orderChanged) {
-      await tx
-        .updateTable("threads")
-        .set({ transcriptOrderRevision: mutation.sequence })
-        .where("id", "=", message.threadId)
-        .execute();
-    }
     if (visible && message.kind === "assistant") {
       const updated = await tx
         .updateTable("threads")
@@ -188,13 +180,6 @@ export async function publishThreadCard(
       .executeTakeFirst());
   const position =
     !move && old?.position ? old.position : await allocateTranscriptPosition(tx, card.threadId);
-  if (move && old?.position) {
-    await tx
-      .updateTable("threads")
-      .set({ transcriptOrderRevision: mutation.sequence })
-      .where("id", "=", card.threadId)
-      .execute();
-  }
   mutation.stageTranscript(
     card.id,
     { position, visible: true, nodeId: null, isTurnStart: false },

@@ -285,7 +285,6 @@ const retainedStateDdl = `
   alter table threads
     add column revision bigint not null default 0 check (revision >= 0),
     add column next_transcript_position bigint not null default 0 check (next_transcript_position >= 0),
-    add column transcript_order_revision bigint not null default 0 check (transcript_order_revision >= 0),
     add column input_queue_revision bigint not null default 0 check (input_queue_revision >= 0),
     add column last_reply_message_id text references messages(id) on delete set null,
     add column last_reply_preview text check (octet_length(last_reply_preview) <= 1120),

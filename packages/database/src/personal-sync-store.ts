@@ -106,7 +106,7 @@ type DetailScope = Exclude<PersonalReadScope, { kind: "shell" }>;
 export async function authorizedDetail(tx: Read, viewerId: UserId, scope: DetailScope) {
   const thread = await tx
     .selectFrom("threads")
-    .select(["id", "revision", "transcriptOrderRevision"])
+    .select(["id", "revision"])
     .where("id", "=", scope.threadId)
     .where("removedAt", "is", null)
     .where("createdBy", "=", viewerId)
