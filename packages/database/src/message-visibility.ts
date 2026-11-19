@@ -18,6 +18,7 @@ import { messageEditFromRow } from "./thread-row-mappers.js";
 import { describeTranscriptMessage } from "./transcript-store.js";
 import type { TranscriptItemTable } from "./personal-state-schema.js";
 import { sql, type Insertable, type RawBuilder } from "kysely";
+import type { TranscriptMessageRefs } from "@opensteer/protocol/transcript";
 
 /** A published report is visible before consumption; waiting work is not. */
 export function publishedMessagePredicate(inputAlias: string): RawBuilder<boolean> {
@@ -84,7 +85,7 @@ export async function syncTranscriptMessage(
             .executeTakeFirst()
         : seed;
     const edit = messageEditFromRow(message);
-    const { published, visible, isTurnStart, view } = describeTranscriptMessage({
+    const { published, visible, isTurnStart, view, refs } = describeTranscriptMessage({
       kind: message.kind,
       content: MessageContentSchema.parse(message.content),
       author: message.author,
@@ -117,6 +118,7 @@ export async function syncTranscriptMessage(
       isTurnStart: visible && prior?.visible && !move ? prior.isTurnStart : isTurnStart,
       runId,
       view,
+      refs: refs === null ? null : sql<TranscriptMessageRefs>`${JSON.stringify(refs)}::jsonb`,
     };
     const scopeKey = `thread:${message.threadId}` as const;
     mutation.stageTranscript(messageId, { ...fields, nodeId: null }, async () => {

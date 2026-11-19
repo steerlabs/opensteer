@@ -1,5 +1,9 @@
 import {
   AppIdSchema,
+  ArtifactContentPartSchema,
+  BrowserPageContentPartSchema,
+  ComputerAppContentPartSchema,
+  PhoneContentPartSchema,
   DeploymentIdSchema,
   DelegationIdSchema,
   ExecutionNodeIdSchema,
@@ -82,9 +86,35 @@ const clientSendKey = z.string().min(1).max(255);
 // Covers JSON escaping and the field name when a sender reads their item.
 export const clientSendKeyWireReserve = 6 * 255 + 20;
 
+/** At most this many references of each kind ride on a message card; the body has the rest. */
+export const transcriptMessageRefLimits = { attachments: 6, pages: 4, places: 4 } as const;
+/** The references' combined JSON size; references past it are left to the body. */
+export const transcriptMessageRefsMaxBytes = 4 * 1024;
+export const TranscriptMessageRefsSchema = z.object({
+  attachments: z
+    .array(z.object(ArtifactContentPartSchema.shape))
+    .max(transcriptMessageRefLimits.attachments)
+    .optional(),
+  pages: z
+    .array(z.object(BrowserPageContentPartSchema.shape))
+    .max(transcriptMessageRefLimits.pages)
+    .optional(),
+  places: z
+    .array(
+      z.discriminatedUnion("type", [
+        z.object(ComputerAppContentPartSchema.shape),
+        z.object(PhoneContentPartSchema.shape),
+      ]),
+    )
+    .max(transcriptMessageRefLimits.places)
+    .optional(),
+});
+export type TranscriptMessageRefs = z.infer<typeof TranscriptMessageRefsSchema>;
+
 export const TranscriptItemSchema = z.discriminatedUnion("kind", [
   z.object({
     ...card,
+    ...TranscriptMessageRefsSchema.shape,
     kind: z.literal("message"),
     messageId: MessageIdSchema,
     clientSendKey: clientSendKey.optional(),

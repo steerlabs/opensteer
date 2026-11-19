@@ -7,6 +7,7 @@ import { itemView } from "./personal-sync-store.js";
 import { runDeliverySelection, runUsageFromRow } from "./thread-row-mappers.js";
 import type { DatabaseSchema } from "./schema.js";
 import type { TranscriptPreview, TranscriptItemTable } from "./personal-state-schema.js";
+import type { TranscriptMessageRefs } from "@opensteer/protocol/transcript";
 
 export async function updateExecutionThread(
   tx: PersonalMutationTransaction,
@@ -147,7 +148,11 @@ export async function writeExecutionItem(
       .executeTakeFirstOrThrow();
     position = thread.nextTranscriptPosition;
   }
-  const { body, ...fields } = item;
+  const { body, refs, ...fields } = item;
+  const ownedRefs =
+    refs === undefined
+      ? {}
+      : { refs: refs === null ? null : sql<TranscriptMessageRefs>`${JSON.stringify(refs)}::jsonb` };
   const ownedBody =
     body === undefined
       ? {}
@@ -180,7 +185,7 @@ export async function writeExecutionItem(
     async () => {
       const card = await tx
         .insertInto("transcriptItems")
-        .values({ ...fields, ...ownedBody, position, revision: mutation.sequence })
+        .values({ ...fields, ...ownedBody, ...ownedRefs, position, revision: mutation.sequence })
         .onConflict((conflict) =>
           conflict.column("id").doUpdateSet({
             nodeId: item.nodeId,
@@ -190,6 +195,7 @@ export async function writeExecutionItem(
             visible: item.visible,
             position,
             ...ownedBody,
+            ...ownedRefs,
             revision: mutation.sequence,
           }),
         )

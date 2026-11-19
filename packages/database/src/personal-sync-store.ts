@@ -235,6 +235,7 @@ const itemColumns = [
   "blockId",
   "bindingGeneration",
   "view",
+  "refs",
 ] as const;
 type Item = Pick<Selectable<TranscriptItemTable>, (typeof itemColumns)[number]> & {
   readonly place?: PlaceView | null;
@@ -277,6 +278,7 @@ export function itemView(row: Item) {
     case "message":
       return TranscriptItemSchema.parse({
         ...base,
+        ...row.refs,
         messageId: row.messageId,
         messageKind,
         author: messageAuthor,
