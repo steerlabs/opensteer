@@ -4,6 +4,7 @@ import { commitPersonalMutation, installPersonalMutationHooks } from "./personal
 import { advancePersonalRunFinish, beginPersonalRunFinish } from "./personal-run-state.js";
 import {
   acceptPersonalRunnerStatement,
+  deleteTerminalRunReceipts,
   runnerStatementDigest,
 } from "./personal-runner-receipts.js";
 import { createPersonalStateFixture } from "./personal-state.test-support.js";
@@ -145,6 +146,8 @@ test("a finishing Run resumes its bounded work and only acknowledges an exact te
               })
               .where("id", "=", run.runId)
               .execute();
+            // Like finalizeRunOutcome, which owns deleting a terminal Run's receipts.
+            deleteTerminalRunReceipts(tx, mutation, run.runId);
             if (failure) throw failure;
           },
         }),

@@ -81,8 +81,9 @@ function isTerminal(status: string) {
 }
 
 /**
- * Advances the Run's ordinal and keeps a receipt only while the Run can still change: a
- * terminal Run's receipts are deleted, and any replay to it is acknowledged without one.
+ * Advances the Run's ordinal and keeps a receipt only while the Run can still change. Ending a
+ * Run deletes its receipts (finalizeRunOutcome owns that); the Run keeps its last statement's
+ * digest so a replay to it can still be proven.
  */
 async function recordReceipt(
   tx: Tx,
@@ -92,17 +93,14 @@ async function recordReceipt(
 ) {
   const advanced = await tx
     .updateTable("runs")
-    .set({ nextRunnerOrdinal: receipt.ordinal + 1 })
+    .set({ nextRunnerOrdinal: receipt.ordinal + 1, lastRunnerDigest: receipt.reportedDigest })
     .where("id", "=", receipt.runId)
     .where("nextRunnerOrdinal", "=", receipt.ordinal)
     .$if(unlessFinishing, (query) => query.where("finishIntent", "is", null))
     .returning("status")
     .executeTakeFirst();
   if (!advanced) return false;
-  if (isTerminal(advanced.status)) {
-    deleteTerminalRunReceipts(tx, mutation, receipt.runId);
-    return true;
-  }
+  if (isTerminal(advanced.status)) return true;
   mutation.receipt(async (committedHead) => {
     await tx
       .insertInto("runnerEventReceipts")
@@ -192,9 +190,28 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     return { throughOrdinal: run.nextRunnerOrdinal - 1, replayed: true };
   }
   const terminal = isTerminal(run.status);
-  // Its receipt went when the Run ended; nothing a replay says can change a terminal Run.
-  if (terminal && statement.ordinal < run.nextRunnerOrdinal)
+  // A terminal Run's receipts are gone. A replay must still come from a binding the Run ran
+  // under, and a replay of its last statement must be that statement.
+  if (terminal && statement.ordinal < run.nextRunnerOrdinal) {
+    const bound = await tx
+      .selectFrom("runAttempts")
+      .select("id")
+      .where("runId", "=", run.id)
+      .where("bindingGeneration", "=", statement.bindingGeneration)
+      .where("runnerId", "=", statement.runnerId)
+      .where("runnerBootId", "=", statement.runnerBootId)
+      .limit(1)
+      .executeTakeFirst();
+    if (
+      !bound ||
+      (statement.ordinal === run.nextRunnerOrdinal - 1 && !run.lastRunnerDigest?.equals(digest))
+    )
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Runner ordinal was already used by another statement",
+      });
     return { throughOrdinal: run.nextRunnerOrdinal - 1, replayed: true };
+  }
   if (run.nextRunnerOrdinal !== statement.ordinal)
     throw new OpensteerError({
       code: "conflict",
