@@ -2984,6 +2984,7 @@ integration("personal task delegation lifecycle", () => {
           modules: { agents: { computerTool: 1 } },
           runnerId,
         }),
+        connectionGenerationFor: () => 1,
         inspectHarnesses: async (
           _environmentId: EnvironmentId,
           harnesses: readonly {

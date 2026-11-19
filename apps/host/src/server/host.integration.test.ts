@@ -2573,6 +2573,8 @@ describe("durable harness catalogs", () => {
           : undefined,
       dispatch,
       inspectHarnesses,
+      // The registry answers a generation only for a connected Runner.
+      connectionGenerationFor: () => (options.connected ? 1 : undefined),
       isAvailable: () => options.connected,
       manageHarnessAuthentication,
       reconcileHarnesses,
@@ -2817,6 +2819,8 @@ describe("durable harness catalogs", () => {
       );
       expect(fixture.recordHarnessCatalogs).toHaveBeenCalledWith({
         catalogs: [gatewayCatalog],
+        // Written under the connection that answered.
+        connectionGeneration: 1,
         environmentId,
         expectedRevisions: new Map([[harnessInstanceId, 1]]),
       });
@@ -3772,6 +3776,8 @@ describe("durable harness catalogs", () => {
       );
       expect(fixture.recordHarnessCatalogs).toHaveBeenCalledExactlyOnceWith({
         catalogs: [readyCatalog],
+        // Written under the connection that answered.
+        connectionGeneration: 1,
         environmentId,
         expectedRevisions: new Map([[harnessInstanceId, 1]]),
       });
