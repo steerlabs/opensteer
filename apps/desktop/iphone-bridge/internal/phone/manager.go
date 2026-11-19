@@ -41,8 +41,8 @@ type localPhone struct {
 	access          string
 }
 type imageOption struct {
-	Handle string `json:"handle"`
-	Build  string `json:"build"`
+	Build   string `json:"build"`
+	Version string `json:"version,omitempty"`
 }
 type Manager struct {
 	mu             sync.Mutex
@@ -60,8 +60,7 @@ type Manager struct {
 	rootPath       string
 	identities     map[string]string
 	phones         map[string]*localPhone
-	images         map[string]string
-	selectedImages map[string]string
+	imagePaths     []string
 	mountImage     func(context.Context, *Session, ios.DeviceEntry, string) error
 	inventory      Inventory
 	revision       uint64
@@ -79,7 +78,7 @@ type Manager struct {
 func NewManager(parent context.Context, usb USB, publish func(wire.Roster)) *Manager {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	workCtx, stopWork := context.WithCancel(ctx)
-	return &Manager{ctx: ctx, cancel: cancel, workCtx: workCtx, stopWork: stopWork, usb: usb, wifi: make(map[string]wirelessState), restoring: make(map[string]bool), browse: browseRemote, interfaces: lanInterfaces, dial: dialLAN, publish: publish, phones: make(map[string]*localPhone), images: make(map[string]string), selectedImages: make(map[string]string), mountImage: MountDeveloperImage, identities: make(map[string]string), inspectionWake: make(chan struct{}, 1)}
+	return &Manager{ctx: ctx, cancel: cancel, workCtx: workCtx, stopWork: stopWork, usb: usb, wifi: make(map[string]wirelessState), restoring: make(map[string]bool), browse: browseRemote, interfaces: lanInterfaces, dial: dialLAN, publish: publish, phones: make(map[string]*localPhone), mountImage: MountDeveloperImage, identities: make(map[string]string), inspectionWake: make(chan struct{}, 1)}
 }
 func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error) {
 	m.mu.Lock()
@@ -192,9 +191,8 @@ func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error)
 			return wire.Empty{}, err
 		})
 	case "setup.prepareDeveloperServices":
-		params := p.(*wire.PrepareParams)
-		return m.withPhone(ctx, params.PhoneRef, func(ctx context.Context, phone *localPhone) (interface{}, error) {
-			return m.prepare(ctx, phone, params.ImageHandle)
+		return m.withPhone(ctx, *p.(*wire.PhoneRef), func(ctx context.Context, phone *localPhone) (interface{}, error) {
+			return m.prepare(ctx, phone)
 		})
 	case "binding.acquire":
 		params := p.(*wire.BindingParams)
@@ -257,11 +255,6 @@ func (m *Manager) init(p *wire.InitParams) (interface{}, error) {
 	result := m.refreshImages(p.ImageRoots)
 	m.root = root
 	m.rootPath = canonical
-	if err := m.loadSelectedImages(); err != nil {
-		root.Close()
-		m.root = nil
-		return nil, err
-	}
 	if err := m.loadWifi(); err != nil {
 		root.Close()
 		m.root = nil
@@ -553,10 +546,10 @@ func (m *Manager) roster() wire.Roster {
 			}
 		}
 		caps := unavailableCapabilities(reason)
-		if p.session != nil {
-			caps = p.session.capabilities()
-		} else if p.readinessReason != "" {
+		if p.readinessReason != "" {
 			caps = unavailableCapabilities(p.readinessReason)
+		} else if p.session != nil {
+			caps = p.session.capabilities()
 		}
 		r.Candidates = append(r.Candidates, wire.Candidate{Trust: p.trust(), LocalPhoneID: p.id, NativeEpoch: p.epoch, Name: name, Model: p.inspection.Model, OSVersion: p.inspection.OSVersion, Build: p.inspection.Build, Transport: transport, Reason: candidateReason(p, reason), Capabilities: &caps})
 	}
@@ -602,7 +595,7 @@ func (m *Manager) finishPhoneOperation(p *localPhone) {
 	m.mu.Unlock()
 	m.wakeInspections()
 }
-func (m *Manager) prepare(ctx context.Context, p *localPhone, handle string) (interface{}, error) {
+func (m *Manager) prepare(ctx context.Context, p *localPhone) (interface{}, error) {
 	unlock, err := m.setupLock(p)
 	if err != nil {
 		return nil, err
@@ -618,12 +611,6 @@ func (m *Manager) prepare(ctx context.Context, p *localPhone, handle string) (in
 		}
 		return nil, wire.Fail(wire.DeveloperModeRequired)
 	}
-	m.mu.Lock()
-	path := m.images[handle]
-	m.mu.Unlock()
-	if path == "" {
-		return nil, wire.Fail(wire.ImageMissing)
-	}
 	lifetime, cancel := context.WithCancel(m.ctx)
 	session, err := m.openTransport(lifetime, ctx, p)
 	if err != nil {
@@ -631,23 +618,7 @@ func (m *Manager) prepare(ctx context.Context, p *localPhone, handle string) (in
 		return nil, err
 	}
 	defer func() { cancel(); _ = session.Close() }()
-	if err := m.mountSelectedImage(ctx, p, session, path); err != nil {
-		return nil, err
-	}
-	m.mu.Lock()
-	imageLock, lockErr := LockIdentityStore(m.root)
-	if lockErr != nil {
-		m.mu.Unlock()
-		return nil, lockErr
-	}
-	err = m.loadSelectedImages()
-	if err == nil {
-		m.selectedImages[p.identity] = path
-		err = m.saveSelectedImages()
-	}
-	imageLock.Close()
-	m.mu.Unlock()
-	if err != nil {
+	if err := m.ensureDeveloperServices(ctx, p, session); err != nil {
 		return nil, err
 	}
 	inspection.Image = "mounted"
@@ -898,17 +869,6 @@ func (m *Manager) forget(params *wire.ForgetParams) error {
 		m.mu.Unlock()
 		return err
 	}
-	if err := m.loadSelectedImages(); err != nil {
-		identityLock.Close()
-		m.mu.Unlock()
-		return err
-	}
-	delete(m.selectedImages, identity)
-	if err := m.saveSelectedImages(); err != nil {
-		identityLock.Close()
-		m.mu.Unlock()
-		return err
-	}
 	delete(m.identities, identity)
 	delete(m.phones, p.id)
 	if p.routeCancel != nil {
@@ -1022,20 +982,49 @@ type imagesResult struct {
 	Images []imageOption `json:"images"`
 }
 
+type validatedImage struct {
+	path    string
+	build   string
+	version string
+}
+
 func (m *Manager) refreshImages(roots []string) imagesResult {
-	options := []imageOption{}
-	images := map[string]string{}
+	seen := map[string]bool{}
+	discovered := make([]validatedImage, 0, len(roots))
 	for _, directory := range roots {
+		canonical := filepath.Clean(directory)
+		if resolved, err := filepath.EvalSymlinks(directory); err == nil {
+			canonical = resolved
+		}
+		if seen[canonical] {
+			continue
+		}
 		image, err := ValidateImage(directory)
 		if err != nil {
 			continue
 		}
-		handle := uuid.New().String()
-		images[handle] = directory
-		options = append(options, imageOption{handle, safeLabel(image.Build)})
+		seen[canonical] = true
+		discovered = append(discovered, validatedImage{
+			path:    directory,
+			build:   safeLabel(image.Build),
+			version: image.Version,
+		})
 		image.Close()
 	}
-	m.images = images
+	sort.SliceStable(discovered, func(i, j int) bool {
+		return compareImageNewness(discovered[i].version, discovered[i].build, discovered[j].version, discovered[j].build) < 0
+	})
+	options := make([]imageOption, len(discovered))
+	paths := make([]string, len(discovered))
+	for i, item := range discovered {
+		paths[i] = item.path
+		option := imageOption{Build: item.build}
+		if item.version != "" {
+			option.Version = safeLabel(item.version)
+		}
+		options[i] = option
+	}
+	m.imagePaths = paths
 	return imagesResult{options}
 }
 

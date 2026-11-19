@@ -21,8 +21,20 @@ type inspectionUSB struct {
 func (f *inspectionUSB) PassiveInspect(ctx context.Context, d ios.DeviceEntry) (Inspection, error) {
 	return f.inspect(ctx, d)
 }
-func (f *inspectionUSB) Open(context.Context, context.Context, ios.DeviceEntry) (*Session, error) {
-	return &Session{screen: &screenSession{backend: &fixtureScreen{}}}, nil
+func (f *inspectionUSB) Open(_ context.Context, _ context.Context, d ios.DeviceEntry) (*Session, error) {
+	return &Session{
+		identity:  d.Properties.SerialNumber,
+		announced: true,
+		services: ios.RsdHandshakeResponse{
+			Udid: d.Properties.SerialNumber,
+			Services: map[string]ios.RsdServiceEntry{
+				screenshotService: {Port: 1001},
+				hidService:        {Port: 1002},
+				deviceInfoService: {Port: 1003},
+			},
+		},
+		screen: &screenSession{backend: &fixtureScreen{}},
+	}, nil
 }
 func inspectionDevice(id int) ios.DeviceEntry {
 	return ios.DeviceEntry{DeviceID: id, Properties: ios.DeviceProperties{SerialNumber: string(rune('a' + id)), ConnectionType: "USB"}}

@@ -29,7 +29,7 @@ export const ownerB: IphoneRunnerOwner = {
   runnerId: createId("runner"),
 };
 export class FakeIphoneNative implements IphoneNativeTransport {
-  calls: { method: string; params: unknown }[] = [];
+  calls: { method: string; params: unknown; timeoutMs?: number }[] = [];
   /** Like the real bridge, announce a new roster revision after every inspection. */
   echoInspections = false;
   closed = 0;
@@ -37,7 +37,7 @@ export class FakeIphoneNative implements IphoneNativeTransport {
   readonly failures = new Map<string, Error>();
   readonly identities = new Map<string, string>();
   epoch = 1;
-  images = [{ handle: "image", build: "test" }];
+  images: { build: string; version?: string | undefined }[] = [{ build: "test" }];
   inspection: z.infer<
     typeof import("@opensteer/protocol/iphone-bridge").iphoneNativeInspectionSchema
   > = {
@@ -73,8 +73,17 @@ export class FakeIphoneNative implements IphoneNativeTransport {
       },
     ],
   };
-  async request<T>(method: string, params: unknown, schema: z.ZodType<T>): Promise<T> {
-    this.calls.push({ method, params });
+  async request<T>(
+    method: string,
+    params: unknown,
+    schema: z.ZodType<T>,
+    options?: { timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<T> {
+    this.calls.push({
+      method,
+      params,
+      ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    });
     await this.held.get(method);
     const failure = this.failures.get(method);
     if (failure) throw failure;
@@ -221,7 +230,7 @@ export class FakeIphoneNative implements IphoneNativeTransport {
     this.lose();
   }
 }
-export async function fixture() {
+export async function fixture(optionsInput?: { mac?: IphoneMacSupport }) {
   const root = await mkdtemp(path.join(tmpdir(), "opensteer-iphone-service-"));
   const files = await openDesktopPrivateFilesystem({
     binary: nativeFsTestBinary,
@@ -242,7 +251,8 @@ export async function fixture() {
   const restart = () => {
     const service = new IphoneService({
       store,
-      startNative: async () => ({ client: native, images: [{ handle: "image", build: "test" }] }),
+      ...(optionsInput?.mac ? { mac: optionsInput.mac } : {}),
+      startNative: async () => ({ client: native, images: [{ build: "test" }] }),
     });
     services.push(service);
     return service;

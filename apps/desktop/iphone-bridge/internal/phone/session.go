@@ -45,6 +45,7 @@ type Session struct {
 	closed       bool
 	state        DeviceState
 	stateReason  wire.Reason
+	ddiReason    wire.Reason
 }
 
 func OpenSession(lifetime, setup context.Context, device ios.DeviceEntry) (*Session, error) {

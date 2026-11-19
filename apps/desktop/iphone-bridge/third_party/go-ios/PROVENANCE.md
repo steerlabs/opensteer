@@ -84,11 +84,10 @@ Hardware-path corrections:
   cryptex first and personalized mounting second. A direct RemotePairing tunnel
   with no usbmux device uses cryptex without a lockdown version lookup; the
   personalized fallback requires a lockdown route. Never unmount another image.
-  Cryptex comparison uses the installed DDI's `CFBundleVersion` from
-  `cryptex_info`, not manifest `Cryptex1,Version`. A numerically newer build in
-  the same major/minor release train is accepted; older or other trains are
-  left alone and reported in use. The bridge also accepts already working
-  developer services without replacing their image.
+  Both setup and runtime in `internal/phone` check whether required developer
+  services are already exposed on RSD first, reusing any working mounted DDI
+  without comparing builds or reporting `phone-in-use`, and mount from the Mac's
+  current local DDIs (newest first) only when services are missing.
 - The input media gate is removed. Upstream [#887](https://github.com/danielpaulus/go-ios/pull/887),
   merged as `63c0d5705a010b03c340de888ba6c7c4052d763b`, explicitly reports Indigo
   contacts working without a display stream on an iPhone Duo running iOS 27.1,

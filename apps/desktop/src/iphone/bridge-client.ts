@@ -74,7 +74,10 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
     imageRoots: readonly string[];
     environment: Readonly<Record<string, string>>;
     log?: (line: string) => void;
-  }): Promise<{ client: IphoneBridgeClient; images: { handle: string; build: string }[] }> {
+  }): Promise<{
+    client: IphoneBridgeClient;
+    images: { build: string; version?: string | undefined }[];
+  }> {
     const process = spawnSupervised({
       executable: options.binary,
       supervisorExecutable: options.supervisorExecutable,
@@ -92,7 +95,9 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
         "init",
         { privateRoot: options.privateRoot, imageRoots: options.imageRoots },
         z.strictObject({
-          images: z.array(z.strictObject({ handle: z.string(), build: z.string() })).max(8),
+          images: z
+            .array(z.strictObject({ build: z.string(), version: z.string().optional() }))
+            .max(8),
         }),
       );
       return { client, images };
@@ -118,13 +123,13 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
       this.#fail();
       return Promise.reject(new IphoneServiceError("protocol-unsupported"));
     }
-    const timeoutMs = Math.max(
-      1,
-      Math.min(
-        options.timeoutMs ?? 30000,
-        method === "setup.prepareDeveloperServices" ? 120000 : 30000,
-      ),
-    );
+    const maxTimeoutMs =
+      method === "setup.prepareDeveloperServices" ||
+      method === "binding.probe" ||
+      method === "session.open"
+        ? 120000
+        : 30000;
+    const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? 30000, maxTimeoutMs));
     const frame = encodeLengthPrefixedJson(
       { kind: "request", protocolVersion: 1, id, timeoutMs, method, params },
       iphoneBridgeBounds.requestBytes,

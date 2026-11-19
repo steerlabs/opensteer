@@ -152,9 +152,21 @@ export function AddIphoneDialog({
         };
       case "waiting": {
         const said = status.reason ? words(status.reason) : waitingFallback;
+        const checkAgain =
+          status.reason === "developer-image-incompatible" ||
+          status.reason === "developer-image-missing" ? (
+            <button
+              className="btn"
+              disabled={busy}
+              onClick={() => setup.send("retry", () => port.retry({ setupId: status.setupId }))}
+              type="button"
+            >
+              Check again
+            </button>
+          ) : null;
         return {
           ...(said.cue ? { cue: said.cue } : {}),
-          actions: wrap(helpButton(status, help, busy), usbOnly),
+          actions: wrap(helpButton(status, help, busy), checkAgain, usbOnly),
           after: needs,
           body: wrap(notice, <HowTo words={said} />),
           detail: said.detail,
@@ -568,7 +580,9 @@ function helpButton(
       type="button"
     >
       {action === "get-xcode"
-        ? "Get Xcode"
+        ? status.reason === "developer-image-incompatible"
+          ? "Update Xcode"
+          : "Get Xcode"
         : action === "open-xcode"
           ? "Open Xcode"
           : "Open Local Network settings"}
@@ -760,13 +774,14 @@ function AgentAccessChoice({
   );
 }
 
-/** Two parts in fixed places, or nothing when neither is there. */
-function wrap(first: ReactNode, second: ReactNode): ReactNode {
-  if (first == null && second == null) return null;
+/** Parts in fixed places, or nothing when none are present. */
+function wrap(first: ReactNode, second?: ReactNode, third?: ReactNode): ReactNode {
+  if (first == null && second == null && third == null) return null;
   return (
     <>
       {first}
       {second}
+      {third}
     </>
   );
 }

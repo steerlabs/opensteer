@@ -1,12 +1,15 @@
 package phone
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/danielpaulus/go-ios/ios"
@@ -29,11 +32,16 @@ type imageManifest struct {
 		Manifest map[string]struct{ Info struct{ Path string } }
 	}
 }
+type cryptexInfoPlist struct {
+	CFBundleVersion string `plist:"CFBundleVersion"`
+}
+
 type Image struct {
 	root     *os.Root
 	manifest []byte
 	files    []string
 	Build    string
+	Version  string
 }
 
 func (i *Image) Close() error { return i.root.Close() }
@@ -117,11 +125,74 @@ func ValidateImage(directory string) (*Image, error) {
 			}
 		}
 	}
-	image := &Image{root: root, manifest: raw, Build: m.ProductBuildVersion}
+	version := ""
+	for _, identity := range m.BuildIdentities {
+		if version != "" {
+			break
+		}
+		if infoPath := identity.Manifest["Cryptex1,CryptexInfoPlist"].Info.Path; infoPath != "" {
+			if f, err := root.Open(infoPath); err == nil {
+				if rawInfo, err := io.ReadAll(io.LimitReader(f, maxManifestBytes+1)); err == nil && int64(len(rawInfo)) <= maxManifestBytes {
+					var info cryptexInfoPlist
+					if _, err := plist.Unmarshal(rawInfo, &info); err == nil {
+						version = strings.TrimSpace(info.CFBundleVersion)
+					}
+				}
+				f.Close()
+			}
+		}
+	}
+	image := &Image{root: root, manifest: raw, Build: m.ProductBuildVersion, Version: version}
 	for p := range paths {
 		image.files = append(image.files, p)
 	}
 	return image, nil
+}
+
+func parseVersionParts(version string) ([]uint64, bool) {
+	if version == "" {
+		return nil, false
+	}
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 || len(parts) > 8 {
+		return nil, false
+	}
+	out := make([]uint64, len(parts))
+	for i, part := range parts {
+		n, err := strconv.ParseUint(part, 10, 32)
+		if err != nil {
+			return nil, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+// compareImageNewness orders newer developer images first.
+func compareImageNewness(aVersion, aBuild, bVersion, bBuild string) int {
+	av, aOK := parseVersionParts(aVersion)
+	bv, bOK := parseVersionParts(bVersion)
+	switch {
+	case aOK && bOK:
+		for i := 0; i < len(av) || i < len(bv); i++ {
+			var x, y uint64
+			if i < len(av) {
+				x = av[i]
+			}
+			if i < len(bv) {
+				y = bv[i]
+			}
+			if x != y {
+				return cmp.Compare(y, x)
+			}
+		}
+	case aOK != bOK:
+		if aOK {
+			return -1
+		}
+		return 1
+	}
+	return cmp.Compare(bBuild, aBuild)
 }
 
 // Stage from contained file handles so upstream path-based readers see an immutable private copy.
@@ -133,7 +204,7 @@ func (i *Image) Stage(ctx context.Context, privateRoot string) (string, func(), 
 	cleanup := func() { _ = os.RemoveAll(dir) }
 	if err := os.WriteFile(filepath.Join(dir, "BuildManifest.plist"), i.manifest, 0600); err != nil {
 		cleanup()
-		return "", nil, err
+		return "", nil, wire.Fail(wire.ImageMountFailed)
 	}
 	var total int64
 	for _, p := range i.files {
@@ -150,13 +221,13 @@ func (i *Image) Stage(ctx context.Context, privateRoot string) (string, func(), 
 		if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
 			source.Close()
 			cleanup()
-			return "", nil, err
+			return "", nil, wire.Fail(wire.ImageMountFailed)
 		}
 		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
 			source.Close()
 			cleanup()
-			return "", nil, err
+			return "", nil, wire.Fail(wire.ImageMountFailed)
 		}
 		n, copyErr := io.Copy(out, io.LimitReader(contextReader{ctx, source}, maxImageBytes-total+1))
 		closeErr := out.Close()
@@ -188,19 +259,24 @@ func MountDeveloperImage(ctx context.Context, session *Session, d ios.DeviceEntr
 		return Classify(err, wire.ImageMountFailed)
 	}
 	defer m.Close()
+	return mountDeveloperImageWithMounter(ctx, session, m, path)
+}
+
+func mountDeveloperImageWithMounter(ctx context.Context, session *Session, m imagemounter.ImageMounter, path string) error {
 	existing, err := m.ListImages()
 	if err != nil {
 		return Classify(err, wire.ImageMountFailed)
 	}
 	if len(existing) > 0 {
-		same, err := m.IsImageMounted(path)
-		if err != nil {
-			return Classify(err, wire.ImageIncompatible)
+		// Never unmount another tool's DDI; re-check live services once in case a mount just completed.
+		if err := session.Refresh(ctx); err != nil {
+			return err
 		}
-		if same {
-			return session.Refresh(ctx)
+		if developerServicesPresent(session) {
+			return nil
 		}
-		return wire.Fail(wire.PhoneInUse)
+		slog.Debug("bridge.service", "service", "developer-image", "reason", string(wire.ServiceMissing))
+		return wire.Fail(wire.ServiceMissing)
 	}
 	if err := m.MountImage(path); err != nil {
 		if imagemounter.IsImageIncompatible(err) {

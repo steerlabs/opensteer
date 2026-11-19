@@ -69,8 +69,10 @@ func (m *Manager) installedApps(ctx context.Context, p *wire.AppsParams) (interf
 		if err != nil {
 			return nil, err
 		}
-		if err := m.ensureDeveloperServices(ctx, phone, session); err != nil {
-			return nil, err
+		if !servicePresent(session, inventoryService) {
+			if err := m.ensureDeveloperServices(ctx, phone, session); err != nil && !servicePresent(session, inventoryService) {
+				return nil, err
+			}
 		}
 		apps, err := readInstalledApps(ctx, session)
 		if err != nil {
