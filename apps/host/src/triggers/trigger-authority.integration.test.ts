@@ -1354,6 +1354,32 @@ integration.sequential("Trigger authority through real Host services and Postgre
       await Promise.allSettled([delegated, mutation]);
     }
   });
+  it("claims every other due schedule when one schedule cannot be claimed", async () => {
+    const f = await fixture();
+    const created = [
+      (await personCreate(f, f.child)).trigger.id,
+      (await personCreate(f, f.child)).trigger.id,
+    ];
+    const due = "2040-01-02T08:10:00.000Z";
+    for (const triggerId of created)
+      await agentTrigger(f.childToken, { operation: "set_next_fire", triggerId, nextFireAt: due });
+    // The schedule the claim reaches first (same instant, lower id) has a
+    // revision it cannot read, on every pass.
+    const [broken, healthy] = created.toSorted();
+    await sql`update trigger_revisions set source = jsonb_set(source, '{kind}', '"webhook"')
+      where id = (select current_revision_id from triggers where id = ${broken})`.execute(database);
+    const claimed = await triggerStore.claimDueSchedules(new Date(due));
+    expect(claimed.occurrences.map(({ triggerId }) => triggerId)).toEqual([healthy]);
+    expect(claimed.failures).toHaveLength(1);
+    expect(claimed.changed).toBe(true);
+    // The broken one rolled back alone: still due, nothing committed for it.
+    const brokenRow = await database
+      .selectFrom("triggers")
+      .select("nextFireAt")
+      .where("id", "=", broken as never)
+      .executeTakeFirstOrThrow();
+    expect(brokenRow.nextFireAt?.toISOString()).toBe(due);
+  });
   it("A11/F19/F20: preserves pending schedule work, suppresses the deferred enqueue and resumes cadence", async () => {
     const f = await fixture();
     const created = await personCreate(f, f.child);

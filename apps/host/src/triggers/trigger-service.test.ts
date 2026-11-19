@@ -266,10 +266,12 @@ describe("TriggerService", () => {
           },
         ],
         changed: true,
+        failures: [],
       })
       .mockResolvedValue({
         occurrences: [],
         changed: false,
+        failures: [],
       });
     // The next schedule is a minute out, and then none is armed.
     const nextScheduleAt = vi
@@ -318,7 +320,7 @@ describe("TriggerScheduleLoop exits", () => {
   ] as const)("%s", async (_, changed, nextIn, armedIn) => {
     vi.useFakeTimers();
     try {
-      const claimDueSchedules = vi.fn(async () => ({ occurrences: [], changed }));
+      const claimDueSchedules = vi.fn(async () => ({ occurrences: [], changed, failures: [] }));
       const nextScheduleAt = vi.fn(async () =>
         nextIn === null ? null : new Date(Date.now() + nextIn),
       );
