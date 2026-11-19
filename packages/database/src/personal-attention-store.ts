@@ -1,6 +1,5 @@
 import type { DatabaseSchema } from "./schema.js";
 import {
-  OpensteerError,
   type DeploymentId,
   type RequestId,
   type TeamAgentRequestId,
@@ -8,13 +7,10 @@ import {
   type ExecutionNodeId,
   utf8Prefix,
 } from "@opensteer/core";
-import { sql, type Kysely, type Insertable } from "kysely";
-import {
-  commitPersonalMutation,
-  type PersonalMutation,
-  type PersonalMutationTransaction,
-} from "./personal-mutation.js";
+import { sql, type Insertable } from "kysely";
+import type { PersonalMutation, PersonalMutationTransaction } from "./personal-mutation.js";
 import type { PersonalAttentionTable } from "./personal-state-schema.js";
+import { executionDate } from "./personal-transaction.js";
 import { publishThreadSummary } from "./thread-status.js";
 
 type Tx = PersonalMutationTransaction;
@@ -99,6 +95,8 @@ function stageAttention(
 /**
  * A pending Request's asker presentation (its node's title and the node it sits within) is read
  * with the Request list; when those change, its attention row moves forward so readers reread.
+ * The move is stored on the attention row, so a repair reads the same revision as the feed.
+ * Driven from pending Requests, so a node's history is never scanned.
  */
 export async function republishAskerAttention(
   tx: Tx,
@@ -107,25 +105,27 @@ export async function republishAskerAttention(
   /** The node's title changed, which its children's Requests show as where they sit. */
   childrenToo: boolean,
 ) {
-  const asking = await tx
-    .selectFrom("requests")
-    .select(["id", "originatingThreadId"])
-    .select(sql<string | null>`left(presentation->>'title',192)`.as("title"))
-    .where("status", "=", "pending")
-    .where((eb) =>
-      childrenToo
-        ? eb.or([
-            eb("originatingNodeId", "=", nodeId),
-            eb(
-              "originatingNodeId",
-              "in",
-              eb
-                .selectFrom("executionNodes as child")
-                .select("child.id")
-                .where("child.parentNodeId", "=", nodeId),
-            ),
-          ])
-        : eb("originatingNodeId", "=", nodeId),
+  const sits = childrenToo ? sql`or node.parent_node_id=${nodeId}` : sql``;
+  const asking = (
+    await sql<{ id: RequestId; originatingThreadId: ThreadId | null; title: string | null }>`
+    with pending as materialized (
+      select id,originating_node_id,originating_thread_id,presentation from requests
+      where status='pending' and originating_node_id is not null
+    )
+    select pending.id,pending.originating_thread_id as "originatingThreadId",
+      left(pending.presentation->>'title',192) as title
+    from pending join execution_nodes node on node.id=pending.originating_node_id
+    where node.id=${nodeId} ${sits}
+  `.execute(tx)
+  ).rows;
+  if (!asking.length) return;
+  await tx
+    .updateTable("personalAttention")
+    .set({ revision: mutation.sequence })
+    .where(
+      "id",
+      "in",
+      asking.map((request) => `request:${request.id}`),
     )
     .execute();
   for (const request of asking)
@@ -193,7 +193,8 @@ export async function refreshRequestAttention(
         ? {
             kind: "request",
             threadId: source.originatingThreadId,
-            revision: source.revision,
+            // The staged attention row's revision, which a snapshot reads back.
+            revision: mutation.sequence,
             title: source.title,
           }
         : null,
@@ -253,7 +254,8 @@ export async function refreshTeamAskAttention(
     source.localDecision === null &&
     source.terminalState === null &&
     source.consentExpiresAt !== null &&
-    source.consentExpiresAt > mutation.state.now;
+    // A team ask's expiry arrives as a time the Host compares on its own clock.
+    source.consentExpiresAt > executionDate(tx);
   const bucketDelta = Number(ordinary) - Number(previous === "team-ask");
   if (bucketDelta) {
     await tx
@@ -359,43 +361,6 @@ export async function refreshLatestRunCompletion(
   return changed;
 }
 
-export async function requireFreshPersonalAttention(tx: Tx) {
-  const due = await sql`select 1 from personal_attention a join personal_team_links link
-    on link.team_deployment_id=a.team_deployment_id
-    where a.kind='team-ask' and a.expires_at<=transaction_timestamp()
-      and link.state in (${sql.join(liveLinkStates)}) limit 1`.execute(tx);
-  if (due.rows.length)
-    throw new OpensteerError({
-      code: "conflict",
-      message: "Team approval expiry is being applied",
-      retryable: true,
-    });
-}
-
-export function settleExpiredPersonalAttention(database: Kysely<DatabaseSchema>) {
-  return commitPersonalMutation(database, async (tx, mutation) => {
-    const due = await tx
-      .selectFrom("personalAttention")
-      .select(["id", "teamDeploymentId", "teamRequestId"])
-      .where(sql<boolean>`kind='team-ask' and expires_at<=${mutation.state.now}`)
-      .orderBy("expiresAt")
-      .orderBy("id")
-      .limit(128)
-      .execute();
-    if (!due.length) return 0;
-    await tx
-      .selectFrom("personalTeamLinks")
-      .select("id")
-      .where("teamDeploymentId", "in", [...new Set(due.map((entry) => entry.teamDeploymentId!))])
-      .orderBy("id")
-      .forNoKeyUpdate()
-      .execute();
-    for (const entry of due)
-      await refreshTeamAskAttention(tx, mutation, entry.teamDeploymentId!, entry.teamRequestId!);
-    return due.length;
-  });
-}
-
 export async function readAttentionKeys(
   tx: Tx,
   input: {
@@ -432,7 +397,7 @@ export async function readAttentionKeys(
        from personal_team_links link cross join lateral (
          select id,kind,request_id,team_deployment_id,team_request_id,sort_at from personal_attention
          where team_deployment_id=link.team_deployment_id and kind='team-ask'
-          and expires_at > transaction_timestamp() ${seek}
+          ${seek}
          order by sort_at desc,id desc limit ${limit}
        ) ask where link.approval_attention_count>0 and link.state in (${sql.join(liveLinkStates)})
       )
@@ -440,7 +405,7 @@ export async function readAttentionKeys(
     )
     select selected.id,selected.kind,selected.request_id,selected.team_deployment_id,selected.team_request_id,
       to_char(selected.sort_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at,
-      attention.thread_id,coalesce(request.revision,attention.revision) as revision,
+      attention.thread_id,greatest(request.revision,attention.revision)::text as revision,
       left(coalesce(request.presentation->>'title',mirror.presentation->>'title'),192) as title,
       left(mirror.blocked_reason,160) as blocked_reason
     from selected join personal_attention attention on attention.id=selected.id

@@ -2,7 +2,9 @@ import { createId, TeamMessageIdSchema, type RequestId } from "@opensteer/core";
 import { sql } from "kysely";
 import { expect, vi } from "vitest";
 import { AutomationFailureStore } from "./automation-failure-store.js";
-import { requireFreshPersonalAttention } from "./personal-attention-store.js";
+import { refreshTeamAskAttention } from "./personal-attention-store.js";
+import { buildPersonalShellSnapshot } from "./personal-snapshot-store.js";
+import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { expiredPersonalSignInRequests, nextPersonalRequestDeadline } from "./request-deadlines.js";
 import { TriggerStore } from "./trigger-store.js";
@@ -416,25 +418,67 @@ describeStore("Host and PostgreSQL clocks 30 s apart", (it) => {
       });
     });
 
-    // The Host agent is fixing this on pcs-root/r1-host: the guard compares a Host-stamped expiry
-    // with transaction_timestamp(). Expected to fail until that merges; then drop `.fails`.
-    it.fails(
-      `team-ask attention: an expired ask blocks until settled (${side})`,
-      async ({ storeFixture }) => {
-        const { createRunFixture, database } = storeFixture;
-        const personal = await createRunFixture(`skew-attention-${offset}`);
-        const team = await teamLink(database);
-        const requestId = await teamRequest(database, personal, team.teamId);
-        await withHostClockOffset(offset, async () => {
-          // Expired by 5 s on the Host's clock when the Host is ahead; 5 s from expiry when behind.
-          await sql`insert into personal_attention(id,kind,team_deployment_id,team_request_id,sort_at,expires_at)
-          values (${`team:${team.teamId}:${requestId}`},'team-ask',${team.teamId},${requestId},
-            ${new Date()},${hostAt(offset > 0 ? -5_000 : 5_000)})`.execute(database);
-          const guard = commitPersonalMutation(database, (tx) => requireFreshPersonalAttention(tx));
-          if (offset > 0) await expect(guard).rejects.toMatchObject({ code: "conflict" });
-          else await expect(guard).resolves.toBeUndefined();
-        });
-      },
-    );
+    it(`team-ask attention: an attach shows an ask until the Host-clock owner settles it (${side})`, async ({
+      storeFixture,
+    }) => {
+      const { createRunFixture, database } = storeFixture;
+      const personal = await createRunFixture(`skew-attention-${offset}`);
+      const team = await teamLink(database);
+      const requestId = await teamRequest(database, personal, team.teamId);
+      const requests = new PersonalTeamRequestsStore(database);
+      await withHostClockOffset(offset, async () => {
+        const consent = (at: Date) =>
+          sql`update personal_team_requests set kind = 'ask', remote_state = 'awaiting_approval',
+            local_decision = null, terminal_state = null, consent_expires_at = ${at},
+            presentation = jsonb_build_object(
+              'asker', jsonb_build_object('teamUserId', ${createId("user")}::text,
+                'displayName', 'Maya', 'actor', 'agent'),
+              'bodyMarkdown', 'Ask', 'attachments', '[]'::jsonb,
+              'destination', jsonb_build_object('teamId', team_deployment_id,
+                'channelId', source->>'channelId', 'threadRootId', source->>'threadRootId'),
+              'audience', source->'audience')
+            where team_deployment_id = ${team.teamId} and request_id = ${requestId}`.execute(
+            database,
+          );
+        const id = `team:${team.teamId}:${requestId}`;
+        const expire = async (at: Date) => {
+          await consent(at);
+          await sql`update personal_attention set expires_at = ${at} where id = ${id}`.execute(
+            database,
+          );
+        };
+        const attached = async () =>
+          (
+            await withPersonalSyncRead(database, async (tx) =>
+              buildPersonalShellSnapshot(
+                tx,
+                await authorizedSyncState(tx, personal.userId),
+                personal.userId,
+              ),
+            )
+          ).attention.map((item) => item.id);
+        // Open on the Host's clock, so the ask is waiting for the owner.
+        await consent(hostAt(60_000));
+        await commitPersonalMutation(database, (tx, mutation) =>
+          refreshTeamAskAttention(tx, mutation, team.teamId, requestId),
+        );
+        expect(await attached()).toContain(id);
+        // 5 s from expiry on the Host's clock: not due, and the owner wakes then.
+        const open = hostAt(5_000);
+        await expire(open);
+        expect(await attached()).toContain(id);
+        expect(await nextPersonalRequestDeadline(database)).toEqual(open);
+        expect(await requests.expiredUndecidedAsks()).toEqual([]);
+        // Expired 5 s ago on the Host's clock: due, and an attach still reads, showing the ask
+        // until the owner settles it.
+        const expired = hostAt(-5_000);
+        await expire(expired);
+        expect(await attached()).toContain(id);
+        expect(await nextPersonalRequestDeadline(database)).toEqual(expired);
+        expect((await requests.expiredUndecidedAsks()).map((ask) => ask.requestId)).toEqual([
+          requestId,
+        ]);
+      });
+    });
   }
 });

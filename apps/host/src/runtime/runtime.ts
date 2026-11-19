@@ -3125,7 +3125,6 @@ export async function createHostRuntime(
           : {}),
         ownerProfile,
         realtime,
-        settleRequestDeadlines: () => deadlines?.settle() ?? Promise.resolve(),
         runnerAuthenticator,
         runners,
         shellControl: requiredService(shellHub, "Shell session hub"),

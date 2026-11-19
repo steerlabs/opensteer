@@ -87,7 +87,6 @@ export function attachPersonalSocket(options: {
       }
     },
     readLive: (scope, request) => options.liveText?.read(scope, request) ?? [],
-    liveStreams: (scope) => options.liveText?.streams(scope) ?? [],
     onFailure: options.logFailure,
     resourceRevisions: (kinds) => resources.revisions(kinds),
     send,

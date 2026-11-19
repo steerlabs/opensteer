@@ -381,7 +381,7 @@ export class PersonalTeamRequestsStore {
         row.remoteState !== "awaiting_approval" ||
         row.terminalState ||
         !row.consentExpiresAt ||
-        row.consentExpiresAt <= mutation.state.now
+        row.consentExpiresAt <= executionDate(tx)
       )
         throw new OpensteerError({
           code: "conflict",

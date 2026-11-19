@@ -1,4 +1,3 @@
-import type { RunId } from "@opensteer/core";
 import {
   personalAuthorityChangedReason,
   personalHostFrameMaxBytes,
@@ -54,8 +53,6 @@ interface PersonalSyncPort {
   /** Current revisions, from memory; a detail read checks access. */
   resourceRevisions?(kinds: readonly PersonalResourceKind[]): PersonalResourceRevisions;
   readLive?(scope: DetailScope, request?: LiveResync): readonly PersonalLiveUpdate[];
-  /** The streams of a scope still open, newest first. */
-  liveStreams?(scope: DetailScope): readonly { runId: RunId; streamId: string }[];
   onFailure?(error: unknown): void;
   close(reason: string): void;
 }
@@ -615,19 +612,29 @@ export class PersonalSyncSocket {
     if (!this.#matches(current) || current.pauseCount > 0 || !cut.cursor) return;
     current.cursor = cut.cursor;
     if (liveReset && current.synchronized && request.scope.kind !== "shell") {
-      // The reader learns exactly which streams survive; every other live item of the scope ends.
+      // One view: the streams the reset names are exactly the replacements queued behind it, so
+      // the reader keeps nothing whose text is not re-sent. Live offers resume at once and queue
+      // after the reset, so a close that lands while it is dispatched is sent, not dropped.
+      const replacements = (this.#port.readLive?.(request.scope) ?? []).slice(
+        0,
+        personalLiveResetMaxStreams,
+      );
+      current.liveReset = false;
+      current.sentLive.clear();
+      for (const update of replacements) this.#queueLive(current, update, { replace: true }, true);
       const sent = await this.#send(current, {
         type: "host.live-reset",
         scope: request.scope,
-        open: (this.#port.liveStreams?.(request.scope) ?? [])
-          .slice(0, personalLiveResetMaxStreams)
-          .map(({ runId, streamId }) => ({ runId, streamId })),
+        open: replacements.map(({ runId, streamId }) => ({ runId, streamId })),
       });
-      if (!sent) return;
-      current.liveReset = false;
-      current.sentLive.clear();
-      for (const update of this.#port.readLive?.(request.scope) ?? [])
-        this.#queueLive(current, update, { replace: true }, true);
+      if (!sent) {
+        // Not delivered: what was queued would land without the reset. Start over next drain.
+        current.live.clear();
+        current.liveBytes = 0;
+        current.liveReset = true;
+        current.repair = true;
+        return;
+      }
     }
     if (!current.synchronized) {
       const sent = await this.#send(current, {

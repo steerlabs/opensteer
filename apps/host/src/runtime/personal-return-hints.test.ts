@@ -61,3 +61,20 @@ it("arms nothing after close, even for a pass that fails as the Host shuts down"
   await vi.advanceTimersByTimeAsync(60_000);
   expect(republish).toHaveBeenCalledTimes(1);
 });
+
+it("runs no further pass after close, even one coalesced before it", async () => {
+  const pass = Promise.withResolvers<void>();
+  const republish = vi.fn(() => pass.promise);
+  const refresh = createReturnHintRefresh({
+    watched: () => ["thread:viewed"],
+    republish,
+    onError: () => undefined,
+  });
+  refresh(new Set(["settings"]));
+  await Promise.resolve();
+  refresh(new Set(["machine"]));
+  refresh.close();
+  pass.resolve();
+  for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+  expect(republish).toHaveBeenCalledTimes(1);
+});

@@ -165,16 +165,6 @@ it("moves a provisional reply past a tool step that committed before it", async 
   expect(fixture.frames().at(-1)).toMatchObject({ item: { position: "8" } });
 });
 
-it("names the streams a live reset keeps: open ones only", async () => {
-  fixture.append("Reply");
-  await vi.advanceTimersByTimeAsync(1_000);
-  expect(fixture.live.streams(fixture.scope)).toEqual([
-    expect.objectContaining({ streamId: fixture.itemId }),
-  ]);
-  fixture.finalize("Reply");
-  expect(fixture.live.streams(fixture.scope)).toEqual([]);
-});
-
 async function liveFixture(options: { readonly tail?: string | null } = {}) {
   const runId = createId("run");
   const threadId = createId("thread");

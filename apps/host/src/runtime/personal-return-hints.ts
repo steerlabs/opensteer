@@ -34,7 +34,7 @@ export function createReturnHintRefresh<Scope>(input: {
           again = false;
           const scopes = input.watched();
           if (scopes.length) await input.republish(scopes);
-        } while (again);
+        } while (again && !closed);
         delay = retryFloorMs;
       } catch (error) {
         input.onError(error);

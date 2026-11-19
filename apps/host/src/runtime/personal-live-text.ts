@@ -428,20 +428,6 @@ export class PersonalLiveText {
     this.#timerAt = Infinity;
   }
 
-  /** The streams of a scope still open, newest Run first: what a live reset keeps. */
-  streams(scope: DetailScope): { runId: RunId; streamId: string }[] {
-    const open: { runId: RunId; streamId: string }[] = [];
-    for (const [runId, streams] of [...this.#runs].reverse())
-      for (const { scope: owner, subject, frame, held } of streams.values())
-        if (
-          !held &&
-          frame.update.operation !== "close" &&
-          (matches(owner, scope) || (subject !== undefined && matches(subject, scope)))
-        )
-          open.push({ runId, streamId: frame.streamId });
-    return open;
-  }
-
   read(scope: DetailScope, request?: Resync): PersonalLiveUpdate[] {
     const out: PersonalLiveUpdate[] = [];
     let bytes = 0;

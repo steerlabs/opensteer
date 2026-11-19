@@ -431,7 +431,6 @@ export interface HostServerDependencies {
   ) => Promise<void>;
   readonly liveText?: import("./runtime/personal-live-text.js").PersonalLiveText;
   readonly realtime: RealtimeHub;
-  readonly settleRequestDeadlines?: () => Promise<void>;
   readonly runnerAuthenticator: RunnerAuthenticator;
   readonly runners: RunnerRegistry;
   readonly resourceRevisions: import("./runtime/personal-resource-revisions.js").ResourceRevisions;
@@ -1544,9 +1543,6 @@ export async function createHostServer(
           limit: Math.min(input.limit ?? 50, 50),
           maxBytes: 64 * 1024,
           userId: requireRpcSession(context).user.id,
-          ...(dependencies.settleRequestDeadlines
-            ? { awaitDeadlineWork: dependencies.settleRequestDeadlines }
-            : {}),
         }),
       ),
     "teams.links.list": async (_input, context) => {

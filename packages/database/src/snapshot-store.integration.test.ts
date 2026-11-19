@@ -634,11 +634,38 @@ describeStore("Deployment snapshot history", (it) => {
         .where("entityId", "=", `request:${requestId}`)
         .orderBy("sequence", "desc")
         .executeTakeFirstOrThrow();
+    const childId = createId("executionNode");
+    await emit("node.started", {
+      nodeId: childId,
+      kind: "subagent",
+      effort: null,
+      model: null,
+      phaseIndex: 0,
+      nativeRef: childId,
+      sessionRef: null,
+      originCallId: null,
+      parentNodeId: nodeId,
+      prompt: null,
+      title: "Read the logs",
+    });
+    const childRequestId = createId("request");
+    await openLiveRequest(f, childRequestId);
+    await database
+      .updateTable("requests")
+      .set({ originatingNodeId: childId })
+      .where("id", "=", childRequestId)
+      .execute();
     const opened = await attention();
     await emit("node.updated", { nodeId, title: "Research the queue" });
     const renamed = await attention();
     expect(renamed.operation).toBe("upsert");
     expect(BigInt(renamed.sequence)).toBeGreaterThan(BigInt(opened.sequence));
+    // A repair reads the same revision from current rows, for the asker and the Request inside it.
+    const repaired = await readPersonalShellSnapshot(database, { viewerId: f.userId });
+    if (repaired.kind !== "snapshot") throw new Error("Expected a shell snapshot");
+    const revisions = new Map(repaired.snapshot.attention.map((item) => [item.id, item.revision]));
+    expect(revisions.get(`request:${requestId}`)).toBe(renamed.sequence);
+    expect(revisions.get(`request:${childRequestId}`)).toBe(renamed.sequence);
   });
 
   it("builds addressed shell and detail cuts within their budgets without reading message bodies", async ({

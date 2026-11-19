@@ -23,7 +23,7 @@ import { admitTeamTaskRequest } from "@opensteer/database/task-admission-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { personalTeamRunOutcome } from "@opensteer/database/personal-team-run-store";
-import { needsYouPage, NotificationStore } from "@opensteer/database";
+import { needsYouPage, NotificationStore, setExecutionClock } from "@opensteer/database";
 import { TeamRunTools } from "./tools.js";
 import { PersonalTeamRequests } from "./requests.js";
 import { TaskAdmissionService } from "../threads/task-admission-service.js";
@@ -867,6 +867,40 @@ describeStore("personal team consent and returns", (it) => {
       );
       if (adopted) expect(await pendingBadge(f.database, mirror.taskId!)).toEqual([0, 0]);
     });
+
+  it("shows an expired ask in Needs you until the owner settles it, on the Host's clock", async ({
+    storeFixture,
+  }) => {
+    const f = await consentFixture(storeFixture);
+    await f.publisher.deliver(f.origin.teamId, f.frame);
+    const { requestId } = (await f.store.mirror(f.origin.teamId, f.frame.request.id))!;
+    const expireAt = (at: Date) =>
+      f.database
+        .updateTable("personalTeamRequests")
+        .set({ consentExpiresAt: at })
+        .where("requestId", "=", requestId)
+        .execute();
+    const kinds = async () =>
+      (await needsYouPage(f.database, { userId: f.userId })).entries.map((entry) => entry.kind);
+    // PostgreSQL's clock plays no part: this Host runs an hour behind it.
+    const hostNow = () => Date.now() - 3_600_000;
+    for (const database of new Set([f.database, storeFixture.store.database]))
+      setExecutionClock(database, hostNow);
+    onTestFinished(() => {
+      for (const database of new Set([f.database, storeFixture.store.database]))
+        setExecutionClock(database, Date.now);
+    });
+    const open = new Date(hostNow() + 600_000);
+    await expireAt(open);
+    expect(await f.store.expiredUndecidedAsks()).toEqual([]);
+    expect(await storeFixture.store.requests.nextDeadline()).toEqual(open);
+    // Past its expiry on the Host's clock: Needs you still reads, showing it until it is settled.
+    await expireAt(new Date(hostNow() - 1_000));
+    expect(await kinds()).toContain("team-ask");
+    await f.publisher.expireUndecidedAsks();
+    expect((await f.store.mirror(f.origin.teamId, requestId))?.terminalState).toBe("cancelled");
+    expect(await kinds()).not.toContain("team-ask");
+  });
 
   it("admits consent-gated work on arrival, replays approval after a lost ack, and resolves device races", async ({
     storeFixture,

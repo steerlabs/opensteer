@@ -10,7 +10,7 @@ import {
 } from "@opensteer/core";
 import { NeedsYouPageSchema, type NeedsYouPage, type NeedsYouEntry } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
-import { readAttentionKeys, requireFreshPersonalAttention } from "./personal-attention-store.js";
+import { readAttentionKeys } from "./personal-attention-store.js";
 import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
 import { requestFromRow } from "./request-persistence.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -29,7 +29,6 @@ export function needsYouPage(
     readonly before?: string;
     readonly limit?: number;
     readonly maxBytes?: number;
-    readonly awaitDeadlineWork?: () => Promise<void>;
   },
 ): Promise<NeedsYouPage> {
   const limit = boundedWindowLimit(input.limit, 50);
@@ -40,54 +39,52 @@ export function needsYouPage(
         JSON.parse(Buffer.from(input.before, "base64url").toString()).timestamp,
       )
     : null;
-  const read = () =>
-    withPersonalSyncRead(database, async (transaction) => {
-      const state = await authorizedSyncState(transaction, input.userId);
-      await requireFreshPersonalAttention(transaction);
-      const excludeDeviceAccess = input.deviceAccessRequests !== "include";
-      const keys = await readAttentionKeys(transaction, {
-        limit,
-        excludeDeviceAccess,
-        ...(cursor && cursorAt ? { before: { at: cursorAt, id: cursor.id } } : {}),
-      });
-      const requestIds = keys.flatMap((key) => (key.requestId ? [key.requestId] : []));
-      const asks = keys.filter((key) => key.kind !== "request");
-      const [rows, askRows] = await Promise.all([
-        requestIds.length
-          ? transaction.selectFrom("requests").selectAll().where("id", "in", requestIds).execute()
-          : [],
-        asks.length
-          ? transaction
-              .selectFrom("personalTeamRequests")
-              .selectAll()
-              .where(
-                sql<boolean>`(team_deployment_id,request_id) in (${sql.join(
-                  asks.map(
-                    ({ teamDeploymentId, teamRequestId }) =>
-                      sql`(${teamDeploymentId},${teamRequestId})`,
-                  ),
-                )})`,
-              )
-              .execute()
-          : [],
-      ]);
-      const askInputIds = askRows.flatMap((row) => (row.localInputId ? [row.localInputId] : []));
-      const askMessages = askInputIds.length
-        ? await transaction
-            .selectFrom("messages")
-            .select(["id", "revision"])
-            .where("id", "in", askInputIds)
+  return withPersonalSyncRead(database, async (transaction) => {
+    const state = await authorizedSyncState(transaction, input.userId);
+    const excludeDeviceAccess = input.deviceAccessRequests !== "include";
+    const keys = await readAttentionKeys(transaction, {
+      limit,
+      excludeDeviceAccess,
+      ...(cursor && cursorAt ? { before: { at: cursorAt, id: cursor.id } } : {}),
+    });
+    const requestIds = keys.flatMap((key) => (key.requestId ? [key.requestId] : []));
+    const asks = keys.filter((key) => key.kind !== "request");
+    const [rows, askRows] = await Promise.all([
+      requestIds.length
+        ? transaction.selectFrom("requests").selectAll().where("id", "in", requestIds).execute()
+        : [],
+      asks.length
+        ? transaction
+            .selectFrom("personalTeamRequests")
+            .selectAll()
+            .where(
+              sql<boolean>`(team_deployment_id,request_id) in (${sql.join(
+                asks.map(
+                  ({ teamDeploymentId, teamRequestId }) =>
+                    sql`(${teamDeploymentId},${teamRequestId})`,
+                ),
+              )})`,
+            )
             .execute()
-        : [];
-      const revisionById = new Map(askMessages.map((row) => [row.id, row.revision]));
-      const selected = rows;
-      const navigation = selected.length
-        ? await sql<{
-            requestId: RequestId;
-            purpose: TaskPurpose;
-            id: ThreadId;
-            title: string;
-          }>`with recursive navigation as (
+        : [],
+    ]);
+    const askInputIds = askRows.flatMap((row) => (row.localInputId ? [row.localInputId] : []));
+    const askMessages = askInputIds.length
+      ? await transaction
+          .selectFrom("messages")
+          .select(["id", "revision"])
+          .where("id", "in", askInputIds)
+          .execute()
+      : [];
+    const revisionById = new Map(askMessages.map((row) => [row.id, row.revision]));
+    const selected = rows;
+    const navigation = selected.length
+      ? await sql<{
+          requestId: RequestId;
+          purpose: TaskPurpose;
+          id: ThreadId;
+          title: string;
+        }>`with recursive navigation as (
       select request.id as request_id, origin.id, origin.title, origin.purpose,
         coalesce(held.parent_thread_id, origin.parent_thread_id) as next_thread_id,
         held.parent_assignment_id as next_assignment_id,
@@ -106,77 +103,71 @@ export function needsYouPage(
       where navigation.roll_up and not parent.id = any(navigation.seen)
     ) select distinct on (request_id) request_id as "requestId", purpose, id, title
       from navigation order by request_id, depth desc`.execute(transaction)
-        : { rows: [] };
-      const byRequest = new Map(navigation.rows.map((row) => [row.requestId, row]));
-      const requests = selected.map((row) => {
-        const target = byRequest.get(row.id);
-        if (!target) throw new Error("Request lost its originating task");
-        return {
-          kind: "request" as const,
-          request: PendingRequestViewSchema.parse(requestFromRow(row)),
-          originThreadId: row.originatingThreadId,
-          navigationThreadId: target.id,
-          title: target.title,
-          purpose: target.purpose,
-        };
-      });
-      const byId = new Map<string, NeedsYouEntry>(
-        requests.map((entry) => [`request:${entry.request.id}`, entry]),
-      );
-      for (const row of askRows) {
-        byId.set(`team:${row.teamDeploymentId}:${row.requestId}`, {
-          kind: "team-ask",
-          teamId: row.teamDeploymentId,
-          requestId: row.requestId,
-          presentation: row.presentation!,
-          ...(row.localTaskId && row.localInputId
-            ? {
-                task: {
-                  threadId: row.localTaskId,
-                  messageId: row.localInputId,
-                  revision: revisionById.get(row.localInputId) ?? 0,
-                },
-              }
-            : {}),
-          createdAt: row.createdAt.toISOString(),
-          consentExpiresAt: row.consentExpiresAt!.toISOString(),
-          ...(!row.releasedAt && row.blockedReason ? { failureReason: row.blockedReason } : {}),
-        });
-      }
-      const candidates = keys.map((key) => {
-        const entry = byId.get(key.id);
-        if (!entry) throw new Error("Attention lost its canonical source");
-        return entry;
-      });
-      const bounded = boundedSerializedPrefix(candidates, limit, maxBytes);
-      if (candidates.length && !bounded.items.length)
-        throw new OpensteerError({
-          code: "resource_exhausted",
-          message: "A pending Request exceeds the page byte limit.",
-        });
-      const entries = [...bounded.items];
-      const last = keys[entries.length - 1];
-      const count =
-        state.needsYouCount - (excludeDeviceAccess ? state.pendingDeviceAccessRequestCount : 0);
-      return NeedsYouPageSchema.parse({
-        count,
-        entries,
-        window: {
-          byteCount: bounded.byteCount,
-          hasMore: candidates.length > entries.length,
-          itemCount: entries.length,
-          totalItems: count,
-          nextBefore:
-            candidates.length > entries.length && last
-              ? encodeWindowCursor("request", input.userId, last.at, last.id)
-              : null,
-        },
-      });
+      : { rows: [] };
+    const byRequest = new Map(navigation.rows.map((row) => [row.requestId, row]));
+    const requests = selected.map((row) => {
+      const target = byRequest.get(row.id);
+      if (!target) throw new Error("Request lost its originating task");
+      return {
+        kind: "request" as const,
+        request: PendingRequestViewSchema.parse(requestFromRow(row)),
+        originThreadId: row.originatingThreadId,
+        navigationThreadId: target.id,
+        title: target.title,
+        purpose: target.purpose,
+      };
     });
-  return read().catch(async (error: unknown) => {
-    if (!(error instanceof OpensteerError) || !error.retryable || !input.awaitDeadlineWork)
-      throw error;
-    await input.awaitDeadlineWork();
-    return read();
+    const byId = new Map<string, NeedsYouEntry>(
+      requests.map((entry) => [`request:${entry.request.id}`, entry]),
+    );
+    for (const row of askRows) {
+      byId.set(`team:${row.teamDeploymentId}:${row.requestId}`, {
+        kind: "team-ask",
+        teamId: row.teamDeploymentId,
+        requestId: row.requestId,
+        presentation: row.presentation!,
+        ...(row.localTaskId && row.localInputId
+          ? {
+              task: {
+                threadId: row.localTaskId,
+                messageId: row.localInputId,
+                revision: revisionById.get(row.localInputId) ?? 0,
+              },
+            }
+          : {}),
+        createdAt: row.createdAt.toISOString(),
+        consentExpiresAt: row.consentExpiresAt!.toISOString(),
+        ...(!row.releasedAt && row.blockedReason ? { failureReason: row.blockedReason } : {}),
+      });
+    }
+    const candidates = keys.map((key) => {
+      const entry = byId.get(key.id);
+      if (!entry) throw new Error("Attention lost its canonical source");
+      return entry;
+    });
+    const bounded = boundedSerializedPrefix(candidates, limit, maxBytes);
+    if (candidates.length && !bounded.items.length)
+      throw new OpensteerError({
+        code: "resource_exhausted",
+        message: "A pending Request exceeds the page byte limit.",
+      });
+    const entries = [...bounded.items];
+    const last = keys[entries.length - 1];
+    const count =
+      state.needsYouCount - (excludeDeviceAccess ? state.pendingDeviceAccessRequestCount : 0);
+    return NeedsYouPageSchema.parse({
+      count,
+      entries,
+      window: {
+        byteCount: bounded.byteCount,
+        hasMore: candidates.length > entries.length,
+        itemCount: entries.length,
+        totalItems: count,
+        nextBefore:
+          candidates.length > entries.length && last
+            ? encodeWindowCursor("request", input.userId, last.at, last.id)
+            : null,
+      },
+    });
   });
 }

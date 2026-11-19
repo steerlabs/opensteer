@@ -154,7 +154,10 @@ export const MachineSummarySchema = z.object({
   }),
   name: z.string(),
   ownership: z.enum(["mine", "deployment"]),
-  /** Threads placed here, which lose the computer they run on with it. */
+  /**
+   * Threads placed here, which lose the computer they run on with it. Counted when the page is
+   * read: creating or removing a task does not announce the machine resource.
+   */
   pinnedThreads: z.number().int().nonnegative().max(1_000_000),
   revocable: z.boolean(),
   status: z.enum(["online", "offline", "pending", "needs-update", "updating", "update-pending"]),

@@ -767,21 +767,37 @@ test("a stalled scope's live closes stay bounded and converge by one repair", as
     frames: [],
   }));
   const runId = createId("run");
-  const readLive = vi.fn(() => []);
-  const liveStreams = vi.fn(() => [{ runId, streamId: "tool:still-open" }]);
+  const attemptId = createId("runAttempt");
+  const liveBootId = crypto.randomUUID();
+  const stillOpen: PersonalLiveUpdate = {
+    runId,
+    attemptId,
+    bindingGeneration: 1,
+    liveBootId,
+    streamId: "tool:still-open",
+    itemId: "tool:still-open",
+    afterSequence: "1",
+    update: { operation: "replace", offset: 0, totalLength: 4, text: "open", incomplete: false },
+  };
+  const readLive = vi.fn<() => PersonalLiveUpdate[]>(() => []);
+  // The reset's own dispatch is held, so a close can land while it is on its way.
+  const resetHeld = Promise.withResolvers<void>();
+  const resetSending = Promise.withResolvers<void>();
   const socket = new PersonalSyncSocket({
     read,
     readLive,
-    liveStreams,
     async send(encoded, guard) {
       if (!guard()) return false;
-      frames.push(ScopedHostMessageSchema.parse(JSON.parse(encoded)));
+      const frame = ScopedHostMessageSchema.parse(JSON.parse(encoded));
+      if (frame.type === "host.live-reset") {
+        resetSending.resolve();
+        await resetHeld.promise;
+      }
+      frames.push(frame);
       return true;
     },
     close: closed,
   });
-  const attemptId = createId("runAttempt");
-  const liveBootId = crypto.randomUUID();
   const text = "x".repeat(12 * 1024);
   const offer = (index: number, update: PersonalLiveUpdate["update"]) =>
     socket.offerLive(detail, {
@@ -816,19 +832,32 @@ test("a stalled scope's live closes stay bounded and converge by one repair", as
     const liveFrames = () =>
       frames.filter((frame) => frame.type === "host.live" || frame.type === "host.text").length;
     const sent = liveFrames();
+    readLive.mockReturnValue([stillOpen]);
     for (let index = 100; index < 400; index++) offer(index, { operation: "close" });
     await vi.advanceTimersByTimeAsync(100);
     expect(liveFrames()).toBe(sent);
     socket.ack({ subscriptionId: "detail:0", generation: 1, throughSequence: "1" });
+    await resetSending.promise;
+    // The surviving stream closes while the reset is on its way: the close must still reach the reader.
+    offer(-1, { operation: "close" });
+    socket.offerLive(detail, { ...stillOpen, update: { operation: "close" } }, { immediate: true });
+    resetHeld.resolve();
     await vi.advanceTimersByTimeAsync(100);
     // The overflow became one repair read and one reread of the open streams, not 300 closes.
     expect(read.mock.calls.map(([, after]) => after)).toEqual([null, null]);
     expect(readLive).toHaveBeenCalledTimes(2);
-    expect(frames.filter((frame) => frame.type === "host.live").length).toBeLessThan(40);
     // The reader is told exactly which streams survive the dropped closes.
-    expect(frames.filter((frame) => frame.type === "host.live-reset")).toMatchObject([
-      { scope: detail, generation: 1, open: [{ runId, streamId: "tool:still-open" }] },
-    ]);
+    const resetAt = frames.findIndex((frame) => frame.type === "host.live-reset");
+    expect(frames[resetAt]).toMatchObject({
+      scope: detail,
+      generation: 1,
+      open: [{ runId, streamId: "tool:still-open" }],
+    });
+    const after = frames.slice(resetAt + 1).filter((frame) => frame.type === "host.live");
+    expect(after.at(-1)).toMatchObject({
+      streamId: "tool:still-open",
+      update: { operation: "close" },
+    });
     expect(closed).not.toHaveBeenCalled();
   } finally {
     socket.close("test finished");

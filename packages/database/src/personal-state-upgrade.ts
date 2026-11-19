@@ -22,7 +22,7 @@ import { resendableControlCommandTypes } from "./command-delivery.js";
 import { checkoutSession } from "./connection.js";
 import { describeTranscriptMessage, transcriptMessageTextBytes } from "./transcript-store.js";
 import { messageEditFromRow } from "./thread-row-mappers.js";
-import { runOfflineSettlement } from "./personal-transaction.js";
+import { executionDate, runOfflineSettlement } from "./personal-transaction.js";
 import { createNextPersonalTranscriptOrderIndex } from "./personal-state-schema.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
 import { threadPathLinks } from "./store-primitives.js";
@@ -720,7 +720,7 @@ async function deriveAttentionAsks(tx: Tx, cursor: UpgradeCursor) {
     from personal_team_requests where kind='ask'
       and (team_deployment_id,request_id)>(${key[0]},${key[1]})
       and ((remote_state='awaiting_approval' and local_decision is null and terminal_state is null
-        and consent_expires_at > clock_timestamp())
+        and consent_expires_at > ${executionDate(tx)})
         or (terminal_state='failed' and released_at is null and blocked_reason is not null))
     order by team_deployment_id,request_id limit ${batchSize}
     returning team_deployment_id,team_request_id
