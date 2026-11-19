@@ -88,7 +88,6 @@ it("keeps a detached screen Device visible without borrowing its Mac's execution
     allowedModules: [],
     modules: {},
     fullDiskAccess: null,
-    pinnedThreads: 0,
     status: "offline",
     capabilities: {
       apps: { enabled: false, state: "disabled" },

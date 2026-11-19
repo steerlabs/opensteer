@@ -1,12 +1,12 @@
 import { createId } from "@opensteer/core";
-import { rpcSuccess, type MachineSummary } from "@opensteer/protocol";
+import { rpcSuccess, type MachineListSummary } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { createSettingsReadHandlers } from "./settings-read-handlers.js";
 import { testHostApiContext } from "./test-host-api-context.js";
 
 function fixture() {
   const owner = createId("user");
-  const machines = vi.fn(async () => rpcSuccess({ machines: [] as MachineSummary[] }));
+  const machines = vi.fn(async () => rpcSuccess({ machines: [] as MachineListSummary[] }));
   return {
     owner,
     machines,
@@ -34,7 +34,9 @@ describe("Settings read projections", () => {
       },
       computerUse: { private: true },
     };
-    f.machines.mockResolvedValue(rpcSuccess({ machines: [machine as unknown as MachineSummary] }));
+    f.machines.mockResolvedValue(
+      rpcSuccess({ machines: [machine as unknown as MachineListSummary] }),
+    );
     const response = await f.handlers["devices.overview.get"]({}, testHostApiContext(f.owner));
     expect(response).toEqual(
       rpcSuccess({

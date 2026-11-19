@@ -14,6 +14,7 @@ import {
   type MachineAppStatus,
   type MachineComputerUse,
   type MachineModuleSummary,
+  type MachineListSummary,
   type MachineSummary,
   type RunnerDevice,
   type RunnerModuleName,
@@ -299,9 +300,9 @@ function projectComputerUse(
   };
 }
 
-export function projectMachines(input: MachineProjectionInput): readonly MachineSummary[] {
+export function projectMachines(input: MachineProjectionInput): readonly MachineListSummary[] {
   if (input.devices) return projectDeviceMachines(input);
-  const machines: MachineSummary[] = [];
+  const machines: MachineListSummary[] = [];
 
   for (const runner of input.runners) {
     if (runner.revokedAt !== null) continue;
@@ -434,9 +435,9 @@ export interface MachineDeviceInput {
   readonly phoneAccess: "read" | "read-write" | null;
 }
 
-function projectDeviceMachines(input: MachineProjectionInput): readonly MachineSummary[] {
+function projectDeviceMachines(input: MachineProjectionInput): readonly MachineListSummary[] {
   const legacy = projectMachines({ ...input, devices: undefined });
-  const result: MachineSummary[] = [];
+  const result: MachineListSummary[] = [];
   for (const {
     device,
     drivers,

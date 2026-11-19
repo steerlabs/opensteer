@@ -45,7 +45,6 @@ function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {
     name: "Mac",
 
     ownership: "mine",
-    pinnedThreads: 0,
     revocable: true,
     status: "online",
     runtimeVersion: null,

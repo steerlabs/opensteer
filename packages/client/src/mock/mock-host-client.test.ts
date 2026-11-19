@@ -1160,7 +1160,6 @@ it("projects each screen preview as its own Device and preserves both existing p
         selfRunnerId: null,
         allowedModules: [],
         modules: {},
-        pinnedThreads: 0,
       });
       expect(
         snapshot.machines.some((machine) => machine.id === phone.phoneDisplay?.driver?.runnerId),

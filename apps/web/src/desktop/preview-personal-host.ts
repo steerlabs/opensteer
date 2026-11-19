@@ -52,7 +52,6 @@ export function previewPersonalHost(
     modules: { agents: { checkedAt: previewDate, detail: null, readiness: "ready" } },
     name: "Preview MacBook",
     ownership: "deployment",
-    pinnedThreads: 1,
     revocable: false,
     status: "online",
   };

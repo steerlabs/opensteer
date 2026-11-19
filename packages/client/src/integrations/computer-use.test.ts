@@ -64,7 +64,6 @@ describe("Host-projected phone displays", () => {
       allowedModules: [],
       modules: {},
       ownership: "mine",
-      pinnedThreads: 0,
       revocable: true,
       selfRunnerId: null,
       drivers: [],
