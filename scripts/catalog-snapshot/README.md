@@ -73,20 +73,24 @@ written with sorted keys and two-space indentation.
 
 ### Rewriting
 
-`--rules <rules.json>` takes a JSON rule file: data, never a module (its format is described at the
-top of `rewrite.ts`). Each rule names where it applies, and everything else is left as it is. The
-`package` and `manifest-key` rules, the names the engine itself reads, live in their own `engine`
-section and nowhere else, so that section can later come from the engine's own rule file; they
-apply first, to every document.
+Every build first applies the engine's shared rewrite, the one the Host applies to anything it
+installs: `rewriteUpstreamPackage` to each index entry's and document's `package`, and
+`rewriteUpstreamSource` to the files (package names, `package.json`'s key, reserved routes, headers
+and SQL identifiers; the rules are `packages/plugin-engine/upstream-names.json`). A document it
+cannot rewrite exactly fails the build. The served documents are therefore unchanged by the Host's
+rewrite, and each is hashed last, over its final bytes.
 
-| `scope`        | Where `from` becomes `to`                                                           |
-| -------------- | ----------------------------------------------------------------------------------- |
-| `package`      | The index entry's `package`, the document's `package` and `package.json`'s `name`.  |
-| `manifest-key` | A top-level key of `package.json`, renamed in place.                                |
-| `markdown`     | Prose in `.md` files: outside fenced code blocks and inline code spans.             |
-| `comments`     | Comments in JavaScript and TypeScript (as the TypeScript compiler parses the file), |
-|                | and full-line `#` comments in Python files.                                         |
-| `text`         | The whole text of the `files` named, in the `documents` named, for one-off edits.   |
+`--rules <rules.json>` then applies the catalog's own edits: prose, comments and one-off strings
+such as a User-Agent contact. It is a JSON rule file: data, never a module (its format is described
+at the top of `rewrite.ts`). Each rule names where it applies, and everything else is left as it
+is. It holds no package or `package.json` key rules; those are the shared rewrite's alone.
+
+| `scope`    | Where `from` becomes `to`                                                           |
+| ---------- | ----------------------------------------------------------------------------------- |
+| `markdown` | Prose in `.md` files: outside fenced code blocks and inline code spans.             |
+| `comments` | Comments in JavaScript and TypeScript (as the TypeScript compiler parses the file), |
+|            | and full-line `#` comments in Python files.                                         |
+| `text`     | The whole text of the `files` named, in the `documents` named, for one-off edits.   |
 
 Any rule may be limited to `documents` (entry ids). `preserve` lists literals that are never
 rewritten wherever they appear, each with its reason (a third-party literal, an identifier a
@@ -97,21 +101,20 @@ sets values a rule's `to` names as `{{name}}`, so one value (such as a contact a
 one place. A `comments` or `markdown` rule whose `to` does not have exactly the line breaks of its
 `from` is refused when the file is read: a line break added to a comment can change the code after
 it (`return`, a comment, then `42` returns nothing once the comment spans two lines). SQL under any `migrations/` path is never rewritten by any rule: the engine records
-each migration's hash.
+each migration's hash, and keeps its history only when the shared rewrite alone renamed it.
 
-After rewriting, the build also fails if a `comments` or `markdown` rule changed anything outside
+The checks below compare the rules' output with the shared rewrite's output: what the shared
+rewrite changed (a migration's reserved identifiers included) stands as it is, and the rules may
+change nothing they must not. After rewriting, the build also fails if a `comments` or `markdown` rule changed anything outside
 its scope (for JavaScript and TypeScript, the file's token stream apart from comments must be
 identical, including whether a line break precedes each token, on which automatic semicolon
 insertion depends) or changed how many line breaks a comment holds; if the file list, a non-text file, a data URI or base64 run, a migration, or a relative
 import changed; if an import that named a file in its document no longer does; if a
 JSON file that parsed no longer does; or if any package name breaks the contract.
 
-`package.json` is edited in place: its top-level members are found by position, so a nested `name`
-or key of the same name is never edited, and every other byte stays as it was.
-
-The detailed report (counts per rule, and every remaining occurrence with its location and
-reason) goes to `<out>.rewrites.json`, beside the snapshot and never in it. It names the SHA-256
-of the manifest it describes and is committed with its snapshot: written to
+The detailed report (what the shared rewrite changed, how many files the rules changed, counts per
+rule, and every remaining occurrence with its location and reason) goes to `<out>.rewrites.json`,
+beside the snapshot and never in it. It names the SHA-256 of the manifest it describes and is committed with its snapshot: written to
 `<out>.rewrites.next.json` before the swap and renamed into place after it. A run stopped between
 the two is put right by the next one, which moves a waiting report into place when it describes the
 snapshot at `<out>` and removes it otherwise; a report not describing that snapshot is removed too,

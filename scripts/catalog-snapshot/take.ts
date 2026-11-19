@@ -243,6 +243,8 @@ async function build(
         manifestSha256,
         duplicateIds: manifest.duplicateIds,
         largest: largest.map(([path, file]) => ({ path, bytes: file.bytes })),
+        shared: report.shared,
+        ruleFiles: report.ruleFiles,
         rules: report.rules,
         remaining: Object.fromEntries(reasons),
         failures: failures.slice(0, 50),
