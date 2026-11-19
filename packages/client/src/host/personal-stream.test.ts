@@ -622,6 +622,48 @@ test("scrolling keeps the anchor on the row in view, told to the Host once the r
   reader.dispose();
 });
 
+test("a link opened while the scope resubscribes waits for its cut and lands, rather than reporting the message missing", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const linked = { ...item, id: "linked", messageId: createId("message"), position: "0" };
+  const read = vi.fn().mockResolvedValue({
+    ok: true,
+    data: {
+      kind: "page",
+      threadId,
+      nodeId: null,
+      revision: "1",
+      hasMore: false,
+      nextBefore: null,
+      nextAfter: null,
+      items: [linked, item],
+    },
+  });
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  f.stream.setBackground(true);
+  const jump = reader.history("around", linked.messageId);
+  f.stream.setBackground(false);
+  const subscribe = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+  const address = {
+    scope: subscribe.scope,
+    subscriptionId: subscribe.subscriptionId,
+    generation: subscribe.generation,
+  };
+  expect(read).not.toHaveBeenCalled();
+  f.stream.receive({ ...f.detailSnapshot(), ...address });
+  f.stream.receive({ ...address, type: "host.synchronized", throughSequence: "1" });
+  await jump;
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(f.detail.transcript.getSnapshot().items.has(linked.id)).toBe(true);
+  expect(f.detail.anchor).toBe(linked.id);
+  reader.dispose();
+});
+
 test("bounds explicitly loaded bodies", () => {
   const bodies = new TranscriptBodies();
   const big = {

@@ -145,6 +145,7 @@ export class ScopedThreadReader implements ThreadViewSource {
   }
 
   getSnapshot = () => this.#view;
+  #disposed = false;
 
   subscribe = (listener: () => void) => {
     this.#listeners.add(listener);
@@ -154,6 +155,7 @@ export class ScopedThreadReader implements ThreadViewSource {
   };
 
   dispose() {
+    this.#disposed = true;
     this.#reads.dispose();
     this.#release();
     this.#listeners.clear();
@@ -428,14 +430,40 @@ export class ScopedThreadReader implements ThreadViewSource {
    * repair runs again in the new cut, so a jump lands even when a repair arrived first.
    */
   history(mode: "earlier" | "newer" | "around" | "latest", aroundMessageId?: string) {
-    const state = this.#detail.transcript.getSnapshot();
-    if (!this.#observed() || !state.snapshot) return Promise.resolve();
-    // The person waits on this read: a failure is theirs to see and retry.
+    if (this.#disposed) return Promise.resolve();
+    // The person waits on this read: a failure is theirs to see and retry. One asked for while the
+    // scope resubscribes waits for its cut rather than finding nothing, so a valid link still lands.
     return this.#reads.request(
       "history",
-      (read) => this.#readHistory(read, { mode, aroundMessageId }),
-      { observed: this.#observed, retry: false },
+      async (read) => {
+        if (!this.#ready() && (!(await this.#untilObserved(read.signal)) || !read.current()))
+          return;
+        await this.#readHistory(read, { mode, aroundMessageId });
+      },
+      { observed: () => !this.#disposed, retry: false },
     );
+  }
+
+  #ready() {
+    return this.#observed() && this.#detail.transcript.getSnapshot().snapshot !== null;
+  }
+
+  /** Resolves once the scope is subscribed and its cut current; false when the read ended first. */
+  #untilObserved(signal: AbortSignal) {
+    return new Promise<boolean>((resolve) => {
+      const check = () => {
+        if (signal.aborted) finish(false);
+        else if (this.#ready()) finish(true);
+      };
+      const finish = (observed: boolean) => {
+        unsubscribe();
+        signal.removeEventListener("abort", check);
+        resolve(observed);
+      };
+      const unsubscribe = this.#detail.transcript.subscribe(check);
+      signal.addEventListener("abort", check);
+      check();
+    });
   }
 
   async #readHistory(
