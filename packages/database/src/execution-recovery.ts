@@ -960,12 +960,14 @@ export async function stopRunsPastBackgroundDeadline(
   onStopped: (stop: BackgroundDeadlineStop) => void,
   links: ChannelLinks,
   now = new Date(),
-): Promise<void> {
+): Promise<number> {
   const candidates = await unstoppedBackgroundRuns(database)
     .select("runs.id")
     .where("backgroundDeadlineAt", "<", now)
     .orderBy("runs.id")
     .execute();
+  // How many this sweep itself stopped: its owner's measure of progress.
+  let settled = 0;
   for (const candidate of candidates) {
     const stopped = await commitPersonalMutation(database, async (transaction) => {
       const run = await transaction
@@ -1009,8 +1011,12 @@ export async function stopRunsPastBackgroundDeadline(
         `background-deadline:${run.id}`,
       );
     });
-    if (stopped) onStopped(stopped);
+    if (stopped) {
+      onStopped(stopped);
+      settled += 1;
+    }
   }
+  return settled;
 }
 export async function stopHeldRun(
   database: Kysely<DatabaseSchema>,
@@ -1129,7 +1135,7 @@ export async function recoverRunsWithExpiredExecutionBindings(
   links: ChannelLinks,
   onRevoked: (grants: readonly RevokedRunGrant[]) => void,
   now = new Date(),
-): Promise<RunRecoveryOutcome> {
+): Promise<RunRecoveryOutcome & { readonly settled: number }> {
   // A session keeps its last Run's lease after that Run ends; only the Run
   // that acquired the current binding is judged by it.
   const candidates = await leasedRuns(database)
@@ -1139,6 +1145,8 @@ export async function recoverRunsWithExpiredExecutionBindings(
     .execute();
   const revokedGrants: RevokedRunGrant[] = [];
   const terminatedRuns: RecoveredRunTarget[] = [];
+  // Every expired binding this sweep itself recovered, requeued or ended.
+  let settled = 0;
   for (const candidate of candidates) {
     const terminal = await commitPersonalMutation(database, async (transaction) => {
       const run = await transaction
@@ -1192,6 +1200,7 @@ export async function recoverRunsWithExpiredExecutionBindings(
       };
     });
     if (terminal) {
+      settled += 1;
       onRevoked(terminal.revokedGrants);
       revokedGrants.push(...terminal.revokedGrants);
       if (terminal.status === "terminal") terminatedRuns.push(terminal.target);
@@ -1200,6 +1209,7 @@ export async function recoverRunsWithExpiredExecutionBindings(
   return {
     terminatedRuns,
     revokedGrants,
+    settled,
   };
 }
 

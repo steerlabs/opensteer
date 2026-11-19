@@ -267,7 +267,7 @@ function warmClient(
     webSocketFactory: connect,
     capabilities: [],
   });
-  return { client, connect, order, reads, socket: () => socket };
+  return { client, connect, fetch, order, reads, socket: () => socket };
 }
 
 test("a warm start opens the socket with no HTTP read first and paints the saved cut once the attach reply resumes it", async () => {
@@ -826,6 +826,40 @@ test("a task the shell removes takes its saved cut with it, from memory and disk
       false,
     ),
   );
+});
+
+test("a 401 on any unrelated request ends the session and clears its saved state", async () => {
+  const { cache, storage } = await savedCache();
+  const warm = warmClient(cache, (socket, message) => {
+    queueMicrotask(() =>
+      socket.deliver({
+        subscriptionId: "shell",
+        scope: shellScope,
+        generation: message.generation,
+        type: "host.synchronized",
+        throughSequence: "1",
+      }),
+    );
+  });
+  try {
+    await warm.client.load();
+    expect(warm.client.getSnapshot()).toMatchObject({
+      session: "authenticated",
+      connection: "connected",
+    });
+    warm.fetch.mockImplementation(async () =>
+      Response.json(
+        { ok: false, error: { code: "unauthorized", message: "Signed out", retryable: false } },
+        { status: 401 },
+      ),
+    );
+    // A read the saved state has nothing to do with: the refusal still ends the session.
+    await warm.client.rpc["machines.list"]({}).catch(() => undefined);
+    expect(warm.client.getSnapshot().session).toBe("authentication-required");
+    await vi.waitFor(() => expect(storage.values.size, "The saved state was kept").toBe(0));
+  } finally {
+    warm.client.dispose();
+  }
 });
 
 test("a refusal before any viewer is known still clears that Deployment's saved state", async () => {

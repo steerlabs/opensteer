@@ -1888,7 +1888,8 @@ export class RequestStore {
     return nextPersonalRequestDeadline(this.#database);
   }
 
-  async expirePasswordSignIns(now: Date) {
+  /** Answers how many due sign-in Requests it settled or cancelled. */
+  async expirePasswordSignIns(now: Date): Promise<number> {
     const due = await expiredPersonalSignInRequests(this.#database, now);
     for (const { id, requestedBy } of due) {
       const result = await this.settlePasswordSignInRequest({
@@ -1905,6 +1906,7 @@ export class RequestStore {
         }),
       );
     }
+    return due.length;
   }
 
   async settlePasswordSignInRequest(input: {

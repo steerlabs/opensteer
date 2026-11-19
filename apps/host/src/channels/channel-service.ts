@@ -688,10 +688,10 @@ export class ChannelService {
     const availableEngines = await this.#availableEngines();
     let claimed = 0;
     for (let processed = 0; processed < 100 && !this.#closed; processed += 1) {
-      const claim = await this.#channels.claimIngress(`host:${process.pid}`);
+      const claim = await this.#channels.claimIngress(`host:${process.pid}`, now);
       if (!claim) break;
       claimed += 1;
-      const stale = staleIngress(claim, Date.now());
+      const stale = staleIngress(claim, now.getTime());
       if (stale) {
         await this.#channels
           .markIngressIgnored(
@@ -736,9 +736,10 @@ export class ChannelService {
       }
     }
     if (this.#closed) return null;
-    const next = await this.#channels.nextIngressDeadline();
-    // A due delivery nothing could claim (another transaction holds it) backs off
-    // rather than spinning; after progress a due one simply runs again.
+    // Judged at the time this pass claimed at: work due then that the pass could
+    // not claim (another transaction holds it) backs off rather than spinning;
+    // after a claim a due one simply runs again.
+    const next = await this.#channels.nextIngressDeadline(now);
     return next && next.getTime() <= now.getTime() && claimed === 0 ? retryWithBackoff : next;
   }
 

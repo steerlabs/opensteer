@@ -268,6 +268,27 @@ describe("ContinuationService", () => {
       await fixture.service.close();
     }
   });
+  it("backs off when a due continuation cannot be listed, instead of looping", async () => {
+    vi.useFakeTimers();
+    try {
+      // Due by the deadline query, yet the listing returns nothing (a filter the
+      // two do not share): the pass delivered nothing, so it must not rerun.
+      let reads = 0;
+      const fixture = makeService([], {
+        nextContinuationDeadline: async () => (++reads > 20 ? null : new Date(Date.now() - 1)),
+      });
+      fixture.service.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fixture.listPendingContinuations).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(fixture.listPendingContinuations).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fixture.listPendingContinuations).toHaveBeenCalledTimes(2);
+      await fixture.service.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("settles a Trigger-originated Request without delivering any continuation", async () => {
     const triggerRequest = triggerOriginatedRequest();
     const runRequest = fulfilledRequest("integration.access");
@@ -857,6 +878,7 @@ function makeService(
   options: {
     enqueueThreadInput?: ReturnType<typeof vi.fn>;
     passwordSignIn?: ConstructorParameters<typeof ContinuationService>[0]["passwordSignIn"];
+    nextContinuationDeadline?: () => Promise<Date | null>;
   } = {},
 ) {
   const errors: unknown[] = [];
@@ -884,7 +906,7 @@ function makeService(
     requests: {
       get: async (id: Request["id"]) => requests.find((request) => request.id === id) ?? null,
       listPendingContinuations,
-      nextContinuationDeadline: async () => null,
+      nextContinuationDeadline: options.nextContinuationDeadline ?? (async () => null),
       recordContinuationAttempt,
     } as unknown as Pick<
       OpensteerStore["requests"],

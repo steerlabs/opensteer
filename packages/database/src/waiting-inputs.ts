@@ -604,5 +604,5 @@ export async function expireThreadInputLeases(database: Kysely<DatabaseSchema>) 
     });
     revokedGrants.push(...result.revokedGrants);
   }
-  return { revokedGrants };
+  return { revokedGrants, settled: affected.length };
 }

@@ -22,16 +22,20 @@ type Exit =
 
 function owner(kind: "requests" | "leases", exit: Exit) {
   let due = exit.startsWith("due") || exit === "settle-throws" || exit === "capped-progress";
-  // A capped sweep: each pass settles one page and commits, the next page is still due.
+  // A capped sweep: each pass settles one page, and the next page is still due.
   let pages = exit === "capped-progress" ? 2 : 0;
-  let head = 0;
   const settle = vi.fn(async () => {
     if (exit === "settle-throws") throw new Error("database down");
-    if (exit === "due-then-done") due = false;
-    if (exit === "capped-progress") {
-      head++;
-      if (--pages < 0) due = false;
+    if (exit === "due-then-done") {
+      due = false;
+      return 1;
     }
+    if (exit === "capped-progress") {
+      if (--pages < 0) due = false;
+      return 100;
+    }
+    // Kept: nothing settled, whatever else commits meanwhile.
+    return 0;
   });
   const next = vi.fn(async () => {
     if (exit === "next-throws") throw new Error("database down");
@@ -41,12 +45,15 @@ function owner(kind: "requests" | "leases", exit: Exit) {
   });
   const drain: DeadlineDrain =
     kind === "requests"
-      ? new RequestDeadlines({ next, settle, onError: () => undefined, progressMark: () => head })
+      ? new RequestDeadlines({ next, settle, onError: () => undefined })
       : executionLeaseDrain(
           {
             nextExecutionDeadline: next,
-            recoverRunsWithExpiredExecutionBindings: settle,
-            stopRunsPastBackgroundDeadline: async () => undefined,
+            recoverRunsWithExpiredExecutionBindings: async () => ({
+              terminatedRuns: [],
+              settled: await settle(),
+            }),
+            stopRunsPastBackgroundDeadline: async () => 0,
           } as never,
           () => undefined,
           () => undefined,
@@ -80,14 +87,17 @@ describe.each(["requests", "leases"] as const)("%s deadline owner", (kind) => {
   });
 });
 
-it("drains every capped page of due Requests at once while each pass makes progress", async () => {
-  const { drain, settle } = owner("requests", "capped-progress");
-  drain.start();
-  await drain.settled();
-  // Well inside the first backoff (5 s): only immediate reruns can reach page three.
-  await vi.advanceTimersByTimeAsync(100);
-  // Three pages settled without waiting for a backoff, then nothing armed.
-  expect(settle).toHaveBeenCalledTimes(3);
-  expect(vi.getTimerCount()).toBe(0);
-  await drain.close();
-});
+it.each(["requests", "leases"] as const)(
+  "%s: a pass that settled something while more is still due runs again at once",
+  async (kind) => {
+    const { drain, settle } = owner(kind, "capped-progress");
+    drain.start();
+    await drain.settled();
+    // Well inside the first backoff (5 s): only immediate reruns can reach page three.
+    await vi.advanceTimersByTimeAsync(100);
+    // Three pages settled without waiting for a backoff, then nothing armed.
+    expect(settle).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(0);
+    await drain.close();
+  },
+);

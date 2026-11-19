@@ -14,8 +14,14 @@ export type HarnessInspectionDefinitions = Extract<
   { readonly type: "host.reconcile-harnesses" }
 >["harnesses"];
 
+/** The Runner connection a catalog answer comes from: its authority to write. */
+interface HarnessCatalogSource {
+  /** The current connection generation for the environment; undefined when none is connected. */
+  connectionGenerationFor(environmentId: EnvironmentId): number | undefined;
+}
+
 /** A read of some profiles. Nothing it does can retire one. */
-export interface HarnessCatalogInspector {
+export interface HarnessCatalogInspector extends HarnessCatalogSource {
   inspectHarnesses(
     environmentId: EnvironmentId,
     harnesses: HarnessInspectionDefinitions,
@@ -24,12 +30,21 @@ export interface HarnessCatalogInspector {
   ): Promise<readonly HarnessInstanceCatalog[]>;
 }
 
+/** The environment's Runner went away before it answered: nothing was captured. */
+function catalogUnavailable(): OpensteerError {
+  return new OpensteerError({
+    code: "conflict",
+    message: "The computer is not connected, so its AI models could not be read.",
+    retryable: true,
+  });
+}
+
 /**
  * The destructive direction, kept a separate capability so that a caller
  * holding a partial list cannot reach it by passing a flag. Every reconciler
  * must hand over the environment's complete enabled set.
  */
-interface HarnessCatalogReconciler {
+interface HarnessCatalogReconciler extends HarnessCatalogSource {
   reconcileHarnesses(
     environmentId: EnvironmentId,
     harnesses: HarnessInspectionDefinitions,
@@ -47,7 +62,8 @@ export interface HarnessCatalogRecorder {
     readonly catalogs: readonly HarnessInstanceCatalog[];
     readonly environmentId: EnvironmentId;
     readonly expectedRevisions: ReadonlyMap<HarnessInstanceId, number>;
-    readonly connectionGeneration?: number;
+    /** The Runner connection that supplied the answer; refused unless still current. */
+    readonly connectionGeneration: number;
   }): Promise<readonly HarnessInstanceCatalog[]>;
 }
 
@@ -109,15 +125,22 @@ export async function inspectAndRecordHarnessCatalogs(options: {
   readonly signal: AbortSignal;
   readonly fresh?: boolean;
 }): Promise<readonly HarnessInstanceCatalog[]> {
+  // Read before asking: a reply that a newer connection superseded is refused
+  // at the write, never recorded under the newer connection's authority.
+  const connectionGeneration = options.runners.connectionGenerationFor(options.environmentId);
+  if (connectionGeneration === undefined) throw catalogUnavailable();
   const catalogs = await options.runners.inspectHarnesses(
     options.environmentId,
     options.harnesses,
     options.signal,
     ...(options.fresh ? [{ fresh: true }] : []),
   );
+  // The registry answers an empty list once the Runner has gone: not a capture.
+  if (catalogs.length < options.harnesses.length) throw catalogUnavailable();
   return options.catalogs.recordHarnessCatalogs({
     catalogs,
     environmentId: options.environmentId,
+    connectionGeneration,
     expectedRevisions: new Map(
       options.harnesses.map(({ id, runtimeRevision }) => [id, runtimeRevision]),
     ),
@@ -188,9 +211,15 @@ export function createHarnessCatalogConvergence(options: {
 export async function recaptureInvalidatedHarnessCatalog(options: {
   readonly harnessInstanceId: HarnessInstanceId;
   readonly environmentIds: readonly EnvironmentId[];
+  /** The invalidating connection; its discard is refused once a newer one exists. */
+  readonly connectionGeneration: number;
   readonly store: {
     getHarnessInstance(id: HarnessInstanceId): Promise<HarnessInstanceRecord | null | undefined>;
-    discardHarnessCatalog(environmentId: EnvironmentId, id: HarnessInstanceId): Promise<unknown>;
+    discardHarnessCatalog(
+      environmentId: EnvironmentId,
+      id: HarnessInstanceId,
+      connectionGeneration: number,
+    ): Promise<unknown>;
   };
   readonly catalogs: HarnessCatalogRecorder;
   readonly runners: HarnessCatalogInspector;
@@ -210,7 +239,11 @@ export async function recaptureInvalidatedHarnessCatalog(options: {
       !options.environmentIds.includes(harness.environmentId)
     )
       return;
-    await options.store.discardHarnessCatalog(harness.environmentId, harness.id);
+    await options.store.discardHarnessCatalog(
+      harness.environmentId,
+      harness.id,
+      options.connectionGeneration,
+    );
     const captured = await inspectAndRecordInvalidatedHarnessCatalog({
       catalogs: options.catalogs,
       environmentId: harness.environmentId,
@@ -261,7 +294,7 @@ export async function reconcileAndRecordHarnessCatalogs(options: {
   readonly runners: HarnessCatalogReconciler;
   readonly signal: AbortSignal;
   /** The registering connection; nothing is recorded once a newer one exists. */
-  readonly connectionGeneration?: number;
+  readonly connectionGeneration: number;
 }): Promise<readonly HarnessInstanceCatalog[]> {
   const catalogs = await options.runners.reconcileHarnesses(
     options.environmentId,
@@ -271,9 +304,7 @@ export async function reconcileAndRecordHarnessCatalogs(options: {
   return options.catalogs.recordHarnessCatalogs({
     catalogs,
     environmentId: options.environmentId,
-    ...(options.connectionGeneration === undefined
-      ? {}
-      : { connectionGeneration: options.connectionGeneration }),
+    connectionGeneration: options.connectionGeneration,
     expectedRevisions: new Map(
       options.harnesses.map(({ id, runtimeRevision }) => [id, runtimeRevision]),
     ),
@@ -350,6 +381,8 @@ export class HarnessCatalogReconciliationOwner {
       if (!this.#runners.isAvailable(environmentId)) continue;
       const desired = await this.#desired(environmentId);
       if (this.#lifetime.signal.aborted) return;
+      const connectionGeneration = this.#runners.connectionGenerationFor(environmentId);
+      if (connectionGeneration === undefined) continue;
       const catalogs = await this.#runners.reconcileHarnesses(
         environmentId,
         desired,
@@ -368,6 +401,7 @@ export class HarnessCatalogReconciliationOwner {
       await this.#catalogs.recordHarnessCatalogs({
         catalogs,
         environmentId,
+        connectionGeneration,
         expectedRevisions: new Map(desired.map(({ id, runtimeRevision }) => [id, runtimeRevision])),
       });
     }
@@ -464,6 +498,7 @@ export async function reconcileHarnessCatalogs(options: {
   const captured = new Map(stored.map((record) => [record.harnessInstanceId, record]));
   const pending = new Map<EnvironmentId, HarnessInspectionDefinitions[number][]>();
   const connected = new Set(options.connectedEnvironmentIds);
+  const recorded = new Set<HarnessInstanceId>();
   const next: { staleAt: number | null } = { staleAt: null };
   const lookAgainAt = (at: number) => {
     next.staleAt = next.staleAt === null ? at : Math.min(next.staleAt, at);
@@ -506,6 +541,8 @@ export async function reconcileHarnessCatalogs(options: {
         signal: options.signal,
       });
       return capture.then((catalogs) => {
+        // Only a committed capture discharges a profile's debt.
+        for (const catalog of catalogs) recorded.add(catalog.harnessInstanceId);
         for (const catalog of catalogs) lookAgain(catalog.status, now);
         options.onCommitted?.(environmentId, catalogs);
       });
@@ -517,7 +554,7 @@ export async function reconcileHarnessCatalogs(options: {
   if (failures.length > 0) throw new AggregateError(failures, "AI model catalog refresh failed");
   return {
     staleAt: next.staleAt === null ? null : new Date(next.staleAt),
-    inspected: new Set([...pending.values()].flat().map(({ id }) => id)),
+    inspected: recorded,
   };
 }
 
@@ -528,6 +565,6 @@ export interface HarnessCatalogConvergence {
    * was recorded. Sign-in required waits for the person.
    */
   readonly staleAt: Date | null;
-  /** The profiles this pass asked their Runner about and recorded. */
+  /** The profiles whose capture this pass committed. */
   readonly inspected: ReadonlySet<HarnessInstanceId>;
 }

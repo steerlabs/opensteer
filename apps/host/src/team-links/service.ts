@@ -22,6 +22,8 @@ export interface PersonalTeamLinksOptions {
   readonly vault: PersonalTeamVault;
   readonly network: Pick<TeamLinkNetwork, "discover" | "redeem" | "connect">;
   readonly requests: PersonalTeamRequests;
+  /** A link's connection is ready again: owed terminal publications are retried. */
+  readonly onReady?: (teamId: DeploymentId) => void;
 }
 
 export class PersonalTeamLinks {
@@ -162,7 +164,13 @@ export class PersonalTeamLinks {
         return network.connect(link.approvedOrigin, secret, signal);
       },
       terminalRequests: () => requests.options.requests.forTeam(teamId),
-      onReady: () => requests.reconnect(teamId),
+      onReady: async () => {
+        try {
+          await requests.reconnect(teamId);
+        } finally {
+          this.options.onReady?.(teamId);
+        }
+      },
       onFrame: async (frame) => {
         if (frame.type === "requests") {
           for (const item of frame.requests) await requests.deliver(teamId, item);

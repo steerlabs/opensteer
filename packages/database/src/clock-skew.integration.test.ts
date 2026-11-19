@@ -159,7 +159,7 @@ describeStore("Host and PostgreSQL clocks 30 s apart", (it) => {
         await pending(hostAt(-5_000), 0);
         expect((await channels.claimIngress("worker-skew"))?.id).toBe(committed.ingressId);
         await pending(hostAt(3_600_000), 100);
-        const deadline = (await channels.nextIngressDeadline())!.getTime();
+        const deadline = (await channels.nextIngressDeadline(new Date()))!.getTime();
         expect(deadline).toBeLessThanOrEqual(Date.now());
         expect(deadline).toBeGreaterThan(Date.now() - 5_000);
       });
