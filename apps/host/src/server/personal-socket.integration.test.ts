@@ -15,7 +15,13 @@ import type { HostServerDependencies } from "../server.js";
 import { createPersonalReads } from "./personal-reads.js";
 import type { PersonalResources } from "./personal-resources.js";
 import { hostApiVersion } from "@opensteer/deployment-authority";
-import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
+import {
+  cardWithProgress,
+  HttpHostClient,
+  nodeSubagentCard,
+  type NodeEntry,
+  type WebSocketClient,
+} from "@opensteer/client/host";
 import { createDatabase } from "@opensteer/database";
 import { preparePersonalConversion } from "@opensteer/database/test-support/personal-state";
 import { createHostRuntime, type PersonalHostRuntime } from "../runtime/runtime.js";
@@ -1102,22 +1108,38 @@ it("shows Runner progress in the shared node view and clears it on completion", 
     const node = nodeClient.watchNode(threadId, nodeId);
     watched = node;
     const reader = nodeClient.getThreadTranscript(threadId)!;
+    // Progress reaches the subagent's own row leaf through the item text stores: the conversation's
+    // row reads the thread's, the subagent's own view reads its node scope's.
+    const key = `node:${nodeId}`;
+    const threadText = nodeClient.getThreadItemText(threadId)!;
+    const nodeText = nodeClient.getThreadItemText(threadId, nodeId)!;
     const waitForNode = (predicate: () => boolean, message: string) => {
       const ready = Promise.withResolvers<void>();
       const check = () => {
         if (predicate()) ready.resolve();
       };
-      const unsubscribeNode = node.subscribe(check);
-      const unsubscribeThread = reader.subscribe(check);
+      const unsubscribers = [
+        node.subscribe(check),
+        reader.subscribe(check),
+        threadText.subscribe(key, check),
+        nodeText.subscribe(key, check),
+      ];
       check();
       return deadline(ready.promise, message).finally(() => {
-        unsubscribeNode();
-        unsubscribeThread();
+        for (const unsubscribe of unsubscribers) unsubscribe();
       });
     };
-    const parentProgress = () => {
-      const entry = reader.getSnapshot().entries.find((item) => item.id === `node:${nodeId}`);
-      return entry?.kind === "node" ? entry.progress : undefined;
+    const rowCard = () => {
+      const entry = reader
+        .getSnapshot()
+        .entries.find((item): item is NodeEntry => item.kind === "node" && item.nodeId === nodeId);
+      const card = entry && nodeSubagentCard(entry, threadId);
+      return card ? cardWithProgress(card, threadText.get(key)?.text) : undefined;
+    };
+    const paneCard = () => {
+      const subject = node.getSnapshot().node;
+      const card = subject && nodeSubagentCard(subject, threadId);
+      return card ? cardWithProgress(card, nodeText.get(key)?.text) : undefined;
     };
     await waitForNode(
       () => node.getSnapshot().node?.status === "running",
@@ -1140,14 +1162,14 @@ it("shows Runner progress in the shared node view and clears it on completion", 
     progress("Checking the source files");
     await waitForNode(
       () =>
-        node.getSnapshot().node?.progress === "Checking the source files" &&
-        parentProgress() === "Checking the source files",
-      "Runner progress did not reach the scoped client",
+        rowCard()?.line?.text === "Checking the source files" &&
+        paneCard()?.line?.text === "Checking the source files",
+      "Runner progress did not reach the subagent's row and its own view",
     );
     progress("Done soon");
     await waitForNode(
-      () => node.getSnapshot().node?.progress === "Done soon",
-      "A shorter replacement did not reach the scoped client",
+      () => paneCard()?.line?.text === "Done soon" && rowCard()?.line?.text === "Done soon",
+      "A shorter replacement did not reach the subagent's row and its own view",
     );
     event("node.completed", attempt.nextOrdinal + 1, {
       nodeId,
@@ -1156,10 +1178,14 @@ it("shows Runner progress in the shared node view and clears it on completion", 
       usage: null,
     });
     await waitForNode(
-      () => node.getSnapshot().node?.status === "completed" && parentProgress() === null,
+      () => node.getSnapshot().node?.status === "completed" && rowCard()?.tone === "finished",
       "Node completion did not reach the scoped client",
     );
-    expect(node.getSnapshot().node).toMatchObject({ progress: null, result: "Finished." });
+    expect(node.getSnapshot().node).toMatchObject({ result: "Finished." });
+    // Finished, the row no longer shows what the subagent was last doing.
+    expect(rowCard()?.line?.kind).not.toBe("progress");
+    expect(rowCard()?.detail.some(({ tone }) => tone === "live")).toBe(false);
+    expect(paneCard()?.line).toEqual({ kind: "result", text: "Finished." });
   } finally {
     watched?.release();
     client?.dispose();
