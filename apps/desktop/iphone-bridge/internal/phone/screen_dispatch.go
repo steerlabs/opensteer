@@ -69,10 +69,12 @@ func (m *Manager) installedApps(ctx context.Context, p *wire.AppsParams) (interf
 		if err != nil {
 			return nil, err
 		}
+		refreshed := false
 		if !servicePresent(session, inventoryService) {
 			if err := m.ensureDeveloperServices(ctx, phone, session); err != nil && !servicePresent(session, inventoryService) {
 				return nil, err
 			}
+			refreshed = developerServicesPresent(session)
 		}
 		apps, err := readInstalledApps(ctx, session)
 		if err != nil {
@@ -83,6 +85,9 @@ func (m *Manager) installedApps(ctx context.Context, p *wire.AppsParams) (interf
 		defer m.mu.Unlock()
 		if phone.binding != p.BindingToken || phone.epoch != p.NativeEpoch || ctx.Err() != nil {
 			return nil, wire.Fail(wire.StaleEpoch)
+		}
+		if refreshed {
+			phone.readinessReason = ""
 		}
 		return result, nil
 	})

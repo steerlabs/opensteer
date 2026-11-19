@@ -1013,6 +1013,7 @@ export class IphoneService {
       );
       if (signal?.aborted) throw new IphoneServiceError("cancelled");
       if (identity.udid !== record.udid) throw new IphoneServiceError("identity-mismatch");
+      // Keep binding.acquire alive so a late token reply is always received and released on abort.
       const result = await native.request(
         "binding.acquire",
         {
@@ -1024,20 +1025,16 @@ export class IphoneService {
           driverGeneration: record.driverGeneration ?? 1,
         },
         z.strictObject({ bindingToken: z.string().min(1).max(128) }),
-        signal ? { signal } : {},
       );
       const binding = { token: result.bindingToken, epoch: ref.nativeEpoch, record };
       if (this.#stopped || this.#native !== native)
         throw new IphoneServiceError("phone-disconnected");
       if (signal?.aborted) {
-        this.#cleanup(
-          native.request(
-            "binding.release",
-            { bindingToken: result.bindingToken, forget: false },
-            empty,
-            { timeoutMs: 2000 },
-          ),
-        );
+        await native
+          .request("binding.release", { bindingToken: result.bindingToken, forget: false }, empty, {
+            timeoutMs: 2000,
+          })
+          .catch(() => undefined);
         throw new IphoneServiceError("cancelled");
       }
       this.#bindings.set(record.udid, binding);

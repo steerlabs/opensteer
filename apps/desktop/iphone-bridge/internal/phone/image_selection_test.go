@@ -322,6 +322,19 @@ func TestCurrentMacImagesRestoreServicesAfterRestartWithoutPerPhonePersistence(t
 		t.Fatalf("expected %q after failed refresh, got %v", wire.TunnelFailed, got)
 	}
 
+	// A subsequent successful session.open must clear the stale refresh readinessReason.
+	p.sessionID = ""
+	s.newRSD = func(context.Context) (RSD, error) {
+		return selectedRSD{ios.RsdHandshakeResponse{Udid: identity, Services: services}}, nil
+	}
+	if _, err := m.open(context.Background(), &wire.SessionParams{BindingToken: p.binding, SessionID: "recovered", RunID: "run", Access: "observe"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.roster().Candidates[0].Capabilities.Observe; got != nil {
+		t.Fatalf("expected recovered phone to be ready after session.open, got %v", *got)
+	}
+	p.sessionID = ""
+
 	// A probe whose epoch changed while in flight must not clobber the newer epoch's readiness.
 	p.readinessReason = ""
 	s.setDDIReason("")

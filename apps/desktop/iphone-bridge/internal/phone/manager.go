@@ -757,6 +757,7 @@ func (m *Manager) open(ctx context.Context, params *wire.SessionParams) (interfa
 			_ = session.stopControl()
 			return nil, wire.Fail(wire.StaleEpoch)
 		}
+		p.readinessReason = ""
 		p.access = params.Access
 		p.sessionID = params.SessionID
 		opened = true

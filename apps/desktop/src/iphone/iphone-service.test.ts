@@ -818,6 +818,55 @@ it("does not reacquire a binding after slot close during recovery and retries wh
   expect(f.native.calls.filter((c) => c.method === "binding.acquire").length).toBe(acquiresBefore);
 });
 
+it("releases a newly acquired binding when a probe is canceled while binding.acquire is in flight", async () => {
+  const f = await fixture();
+  cleanups.push(f.cleanup);
+  await f.bind();
+  await f.service.stop();
+  const service = f.restart();
+  await service.start();
+  const heldAcquire = Promise.withResolvers<void>();
+  let acquireSignal: AbortSignal | undefined;
+  let acquireStarted = false;
+  const originalRequest = f.native.request.bind(f.native);
+  vi.spyOn(f.native, "request").mockImplementation(async (method, params, schema, opts) => {
+    if (method === "binding.acquire") {
+      acquireStarted = true;
+      acquireSignal = opts?.signal;
+      f.native.calls.push({ method, params });
+      await heldAcquire.promise;
+      return schema.parse({ bindingToken: "late-binding-token" });
+    }
+    return originalRequest(method, params, schema, opts);
+  });
+  const connection = service.forSlot(ownerA).connect(() => undefined);
+  cleanups.push(async () => connection.close());
+  await connection.request(
+    "iphone.targets",
+    {
+      assignments: [
+        { deviceId: f.deviceId, generation: 1, role: "screen", definitionId: "iphone-screen" },
+      ],
+    },
+    f.options(),
+  );
+  await vi.waitFor(() => expect(acquireStarted).toBe(true), { timeout: 1000 });
+  expect(acquireSignal).toBeUndefined();
+  connection.close();
+  heldAcquire.resolve();
+  await vi.waitFor(
+    () =>
+      expect(
+        f.native.calls.some(
+          (c) =>
+            c.method === "binding.release" &&
+            (c.params as { bindingToken?: string }).bindingToken === "late-binding-token",
+        ),
+      ).toBe(true),
+    { timeout: 1000 },
+  );
+});
+
 it("refuses first observations with stale epochs or unusable geometry", async () => {
   const f = await fixture();
   cleanups.push(f.cleanup);
