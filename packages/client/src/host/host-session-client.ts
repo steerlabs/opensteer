@@ -330,7 +330,9 @@ export class HttpHostClient {
   #openDepth: number = personalShellSettledTasks;
   #doneDepth = 0;
   /** Counts pushes that may move Done membership: a Done read from before one is read again. */
-  #doneChanges = 0;
+  #doneCountTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Counts the times a person opened Done; each reads it again from its first page. */
+  #doneOpens = 0;
   /** Tasks the shell removed in this cut: a page read before cannot bring one back. */
   readonly #removedTasks = new Set<string>();
   #publishedShell: ReturnType<ScopedPersonalStream["shell"]["getSnapshot"]> | undefined;
@@ -1484,7 +1486,9 @@ export class HttpHostClient {
     this.#browserUsageRunSources.clear();
     this.#browserUses.clear();
     this.#deniedAssignments.clear();
-    for (const key of ["open", "active", "done"]) this.#taskReads.stop(key);
+    for (const key of ["open", "active", "done", "done-count"]) this.#taskReads.stop(key);
+    if (this.#doneCountTimer) clearTimeout(this.#doneCountTimer);
+    this.#doneCountTimer = undefined;
     this.#openPages = undefined;
     this.#activePages = [];
     this.#activeCursor = null;
@@ -1740,13 +1744,17 @@ export class HttpHostClient {
     const tasksChanged = replaced || old?.tasks !== state.tasks;
     const visitsChanged = old?.visits !== state.visits;
     const taskChanges = state.taskChanges.length > 0 && old?.taskChanges !== state.taskChanges;
-    let doneMoved = false;
+    const doneMoves: DoneMove[] = [];
     if (taskChanges) {
       for (const row of state.taskChanges) {
         const held = heldThread(this.#snapshot, row.id);
-        const doneListed = this.#donePages?.entries.some(({ thread }) => thread.id === row.id);
-        // A change that may move Done membership makes any Done read from before it stale.
-        if (doneListed || (!("removed" in row) && row.doneAt !== null)) doneMoved = true;
+        if (this.#donePages || this.#taskReads.busy("done")) {
+          // What this client knew of the task's Done membership before the push, if anything.
+          const prior = old?.tasks.get(row.id);
+          const listed = this.#donePages?.entries.some(({ thread }) => thread.id === row.id);
+          const was = listed ? true : held ? isDoneTask(held) : prior ? isDoneTask(prior) : undefined;
+          doneMoves.push({ row, was, now: !("removed" in row) && isDoneTask(row) });
+        }
         if ("removed" in row) {
           this.#removedTasks.add(row.id);
           continue;
@@ -1769,10 +1777,7 @@ export class HttpHostClient {
           );
       }
     }
-    if (doneMoved && this.#doneDepth > 0) {
-      this.#doneChanges++;
-      this.#taskReads.changed("done");
-    }
+    if (doneMoves.length) this.#moveDone(doneMoves);
     if (
       session &&
       (this.#snapshot.user?.id !== session.user.id ||
@@ -3175,6 +3180,7 @@ export class HttpHostClient {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    if (this.#doneCountTimer) clearTimeout(this.#doneCountTimer);
     disposeMessageOutbox(this);
     if (this.#ownsConnection) this.connection.dispose();
     this.#closeSocket();
@@ -3297,8 +3303,10 @@ export class HttpHostClient {
     return reviewed;
   }
 
+  /** Opens Done: a person opening it sees it read again from its first page. */
   loadDoneTasks(): Promise<void> {
     this.#doneDepth = Math.max(this.#doneDepth, taskPageSize);
+    this.#doneOpens++;
     return this.#requestDone();
   }
 
@@ -3391,6 +3399,78 @@ export class HttpHostClient {
     });
   }
 
+  /**
+   * Follows pushed moves in and out of Done in the held Done list and its count, whether or not the
+   * task's row is loaded. A move the client can classify (it knew the task, or the held list is
+   * the whole of Done, or the task's `doneAt` is newer than the oldest one held) is applied here
+   * with no read. One it cannot (an off-page task reopened or archived, which the row alone does
+   * not distinguish from an ordinary change to an open task) reads the count again, once the
+   * pushes rest. A Done read in flight from before a move runs again.
+   */
+  #moveDone(moves: readonly DoneMove[]) {
+    // A Done read in flight from before a push that can touch Done (into it, out of it, or a task
+    // this client could not place) is read again; churn on tasks known to be open leaves it be.
+    if (this.#taskReads.busy("done") && moves.some(({ was, now }) => now || was !== false))
+      this.#taskReads.changed("done");
+    const pages = this.#donePages;
+    if (!pages) return;
+    let entries = pages.entries;
+    let count = pages.window.totalItems ?? 0;
+    let moved = false;
+    let unclassified = false;
+    const oldest = entries.at(-1)?.thread.doneAt ?? null;
+    for (const { row, was, now } of moves) {
+      let before = was;
+      if (before === undefined) {
+        if (!pages.window.hasMore) before = false;
+        else if (now && "doneAt" in row && oldest !== null && row.doneAt! > oldest) before = false;
+        else {
+          unclassified = true;
+          continue;
+        }
+      }
+      if (before === now) continue;
+      moved = true;
+      entries = entries.filter(({ thread }) => thread.id !== row.id);
+      if (now && !("removed" in row)) entries = [...entries, this.#shellEntry(row)];
+      count = Math.max(0, count + (now ? 1 : -1));
+    }
+    if (moved) {
+      this.#donePages = {
+        ...pages,
+        entries: [...entries].sort((left, right) => compareDoneOrder(left.thread, right.thread)),
+        window: { ...pages.window, totalItems: count },
+      };
+      // A count answered before these moves would undo them: it runs again.
+      if (this.#taskReads.busy("done-count")) this.#taskReads.changed("done-count");
+    }
+    if (unclassified) this.#countDoneSoon();
+  }
+
+  /** Reads Done's count again once pushes have rested, so a burst of them costs one read. */
+  #countDoneSoon() {
+    if (this.#doneCountTimer) clearTimeout(this.#doneCountTimer);
+    this.#doneCountTimer = setTimeout(() => {
+      this.#doneCountTimer = undefined;
+      if (!this.#donePages) return;
+      void this.#taskReads
+        .request("done-count", (read) => this.#readDoneCount(read), {
+          observed: this.#tasksObserved,
+        })
+        .catch(() => undefined);
+    }, doneCountRestMs);
+  }
+
+  async #readDoneCount(read: FencedRead) {
+    const page = unwrapRpcResult(
+      await this.rpc["tasks.page"]({ done: true, limit: 1 }, { signal: read.signal }),
+    );
+    const pages = this.#donePages;
+    if (!read.current() || !pages || page.window.totalItems === undefined) return;
+    this.#donePages = { ...pages, window: { ...pages.window, totalItems: page.window.totalItems } };
+    this.#publishTasks();
+  }
+
   #requestDone() {
     return this.#taskReads.request("done", (read) => this.#readDone(read), {
       observed: this.#tasksObserved,
@@ -3398,7 +3478,7 @@ export class HttpHostClient {
   }
 
   #doneStamp() {
-    return `${this.#viewerGeneration}:${this.#shellCut}:${this.#doneChanges}`;
+    return `${this.#viewerGeneration}:${this.#shellCut}:${this.#doneOpens}`;
   }
 
   /** Reads open tasks past the shell's settled window until `#openDepth` settled rows, or the end. */
@@ -3472,7 +3552,9 @@ export class HttpHostClient {
       if (!read.current()) return;
       held = {
         stamp,
-        entries: mergeTaskEntries(held?.entries ?? [], page.entries),
+        entries: mergeTaskEntries(held?.entries ?? [], page.entries).sort((left, right) =>
+          compareDoneOrder(left.thread, right.thread),
+        ),
         // Only a list's first page counts it; a continuation keeps that count.
         window: {
           ...page.window,
@@ -4555,6 +4637,28 @@ function settledEntries(list: TaskListState | null) {
 
 /** Rows a task page asks for: the Host's page size, within its response budget. */
 const taskPageSize = 50;
+/** How long pushes must rest before Done's count is read again for moves the client cannot see. */
+const doneCountRestMs = 1_000;
+
+interface DoneMove {
+  readonly row: ReturnType<PersonalShellStore["getSnapshot"]>["taskChanges"][number];
+  /** In Done before the push: unknown when this client held nothing of the task. */
+  readonly was: boolean | undefined;
+  readonly now: boolean;
+}
+
+/** In Done, as the Host's Done list counts it: settled with a `doneAt`, and not archived. */
+function isDoneTask(task: { readonly doneAt: string | null; readonly status: string }) {
+  return task.doneAt !== null && task.status !== "archived";
+}
+
+/** Done's own order, as the Host pages it: most recently done first. */
+function compareDoneOrder(
+  left: { readonly doneAt: string | null; readonly id: string },
+  right: { readonly doneAt: string | null; readonly id: string },
+) {
+  return (right.doneAt ?? "").localeCompare(left.doneAt ?? "") || right.id.localeCompare(left.id);
+}
 
 function modelLabel(
   selection: Thread["modelSelection"],

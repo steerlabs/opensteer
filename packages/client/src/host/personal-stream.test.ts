@@ -3005,7 +3005,7 @@ describe("task lists from the shell and its pages", () => {
       );
       expect(done()!.window.totalItems).toBe(2);
 
-      // An edit to a Done task leaves the count to the Host, which still says two.
+      // An edit to a Done task moves nothing: no read, and the count stays the Host's two.
       host.commit([
         upsert("task", older.id, {
           ...task,
@@ -3017,19 +3017,79 @@ describe("task lists from the shell and its pages", () => {
           title: "Renamed",
         }),
       ]);
-      await vi.waitFor(() => expect(answers).toHaveLength(3));
-      answers[2]!(taskPageResponse(host, current, { nextBefore: null, totalItems: 2 }));
-      await vi.waitFor(() => expect(done()!.window.totalItems).toBe(2));
-      // Reopened, it leaves Done at once; the Host's count follows on the next read.
+      expect(done()!.window.totalItems).toBe(2);
+      // Reopened, a task this client holds leaves Done at once, and the count with it.
       host.commit([upsert("task", quiet.id, { ...quiet, revision: "4", doneAt: null })]);
       expect(done()!.entries.some(({ thread }) => thread.id === quiet.id)).toBe(false);
-      await vi.waitFor(() => expect(answers).toHaveLength(4));
-      answers[3]!(taskPageResponse(host, [older], { nextBefore: null, totalItems: 1 }));
-      await vi.waitFor(() => expect(done()!.window.totalItems).toBe(1));
+      expect(done()!.window.totalItems).toBe(1);
+      expect(answers, "a move the client could place read Done again").toHaveLength(2);
     } finally {
       client.dispose();
     }
   });
+  it("follows off-page moves in and out of Done in its count, reading the count once the pushes rest", async () => {
+    const held = Array.from({ length: 50 }, (_, index) => ({
+      id: createId("thread"),
+      askedAt: minutesBefore(500 + index),
+      doneAt: minutesBefore(400 + index),
+    }));
+    // Done tasks this client never loaded: one past the held page, one open the Host never sent.
+    const offPage = { ...task, id: createId("thread"), status: "idle" as const };
+    const host = scriptedHost({ tasks: [task], lists: { recentTaskIds: [task.id] } });
+    const reads: { input: { limit?: number }; resolve: (response: Response) => void }[] = [];
+    const client = scriptedClient(host, async (input) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+      const query = JSON.parse(url.searchParams.get("input") ?? "{}") as { limit?: number };
+      return new Promise<Response>((resolve) => reads.push({ input: query, resolve }));
+    });
+    const done = () => Object.values(client.getSnapshot().doneTasks)[0];
+    try {
+      await client.load();
+      const opening = client.loadDoneTasks();
+      await vi.waitFor(() => expect(reads).toHaveLength(1));
+      reads[0]!.resolve(taskPageResponse(host, held, { nextBefore: "done-1", totalItems: 60 }));
+      await opening;
+      expect(done()!.window.totalItems).toBe(60);
+      vi.useFakeTimers();
+
+      // Reopened elsewhere, a Done task past the held page: the row alone does not say it was Done.
+      host.commit([upsert("task", offPage.id, { ...offPage, revision: "2", doneAt: null })]);
+      // Archived elsewhere, another one: an id-only remove.
+      host.commit([
+        { entityKind: "task", entityId: createId("thread"), operation: "remove" } as never,
+      ]);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(reads, "the count was read before the pushes rested").toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reads).toHaveLength(2);
+      expect(reads[1]!.input.limit).toBe(1);
+      reads[1]!.resolve(
+        taskPageResponse(host, held.slice(0, 1), { nextBefore: "x", totalItems: 58 }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(done()!.window.totalItems, "an off-page reopen and archive left the badge stale").toBe(
+        58,
+      );
+
+      // Done just now: newer than every held Done task, so it was not Done before. Counted at once.
+      host.commit([
+        upsert("task", offPage.id, {
+          ...offPage,
+          revision: "3",
+          doneAt: time,
+          doneReason: "quiet",
+        }),
+      ]);
+      expect(done()!.window.totalItems).toBe(59);
+      expect(done()!.entries[0]!.thread.id).toBe(offPage.id);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(reads, "a move the client could place read Done again").toHaveLength(2);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("keeps Done's count from its first page; a continuation does not carry one", async () => {
     const host = scriptedHost({ tasks: [task], lists: { recentTaskIds: [task.id] } });
     const rows = Array.from({ length: 3 }, (_, index) => ({
