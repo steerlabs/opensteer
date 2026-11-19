@@ -82,8 +82,9 @@ transport and each capability probe, never identifiers.
    alerts, edges and corners: screenshot pixels land where they point.
 5. **Lock and sleep.** Screen off, locked, unknown lock state, reboot, Mac sleep, Developer Mode
    off and an iOS update. Hidden content never leaks; control returns only after a fresh observe.
-   The front app is a label: check it names Home Screen and an ordinary app, that the Opensteer
-   app's own screen stays hidden, and that an unnamed app still shows its screenshot.
+   The front app is a label: check it names an ordinary app, that the Home Screen and other
+   unnamed screens still show their screenshot, and that the Opensteer app's own screen stays
+   hidden.
 6. **Wi‑Fi.** After USB setup, unplug and drive the phone over the same Wi‑Fi for over ten
    minutes. Cover Local Network permission denied then granted, Wi‑Fi off and on, an access point
    change, two phones with the same name and Mac sleep.
