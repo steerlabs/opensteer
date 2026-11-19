@@ -88,6 +88,8 @@ async function normalize(bytes: Uint8Array): Promise<string | null> {
   const density = svg ? Math.min(Math.max((72 * side) / longest, 1), 100_000) : undefined;
   if (density !== undefined && (longest * density) / 72 > largestSvgRender) return null;
   const image = await sharp(bytes, { limitInputPixels, ...(density ? { density } : {}) })
+    // WebP keeps no EXIF, so a JPEG's orientation is applied to its pixels first.
+    .rotate()
     .resize(side, side, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .webp({ quality: 90, alphaQuality: 100 })
     .toBuffer();

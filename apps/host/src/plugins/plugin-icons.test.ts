@@ -74,6 +74,35 @@ describe("plugin icon choice", () => {
 });
 
 describe("plugin icon reads", () => {
+  it("draws a JPEG the way its EXIF orientation shows it", async () => {
+    // Stored landscape, tagged to show turned a quarter: it displays portrait.
+    const stored = await sharp({
+      create: { width: 32, height: 16, channels: 3, background: { r: 200, g: 0, b: 0 } },
+    })
+      .withMetadata({ orientation: 6 })
+      .jpeg()
+      .toBuffer();
+    const src = dataUri("image/jpeg", stored);
+    const [icon] = await Effect.runPromise(
+      Effect.gen(function* () {
+        const egress = {
+          policy: httpsOnlyUrlPolicy,
+          client: yield* safeHttpClient(httpsOnlyUrlPolicy),
+        };
+        const read = yield* pluginIconReader({ catalog: egress, plugin: egress });
+        const source = { src, origin: "plugin" } as const;
+        return yield* readPluginIcons(read, new Map([[pluginIconRef(source), source]]));
+      }).pipe(Effect.scoped),
+    );
+    const { data, info } = await sharp(Buffer.from(icon!.image.split(",")[1]!, "base64"))
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const alpha = (x: number, y: number) => data[(y * info.width + x) * info.channels + 3];
+    // Portrait in a square tile: the top middle is drawn, the left middle is padding.
+    expect([alpha(64, 2), alpha(2, 64)]).toEqual([255, 0]);
+  });
+
   it("serves every icon as a small WebP, read once and only from where its declarer may point", async (context) => {
     const hits = new Map<string, number>();
     const routes: Record<string, (response: ServerResponse) => void> = {
