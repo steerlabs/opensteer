@@ -1,4 +1,10 @@
-import { createId, DeviceIdSchema, MessageViewSchema, RequestSchema } from "@opensteer/core";
+import {
+  BrowserPageContentPartSchema,
+  createId,
+  DeviceIdSchema,
+  MessageViewSchema,
+  RequestSchema,
+} from "@opensteer/core";
 import { TranscriptItemSchema, type TranscriptItem } from "@opensteer/protocol/transcript";
 import { expect, it } from "vitest";
 import { conversationTurn, groupTranscriptEntries, workSummary } from "./agent-activity-model.js";
@@ -427,13 +433,13 @@ it("draws a message's attachments, pages and places from its card, with no body 
     mediaType: "image/png",
     name: "shot.png",
   };
-  const page = {
-    type: "browser-page" as const,
+  const page = BrowserPageContentPartSchema.parse({
+    type: "browser-page",
     sessionId: `bsn_${crypto.randomUUID()}`,
     tabId: "tab-1",
     title: "Docs",
     url: "https://example.com",
-  };
+  });
   const place = {
     type: "phone" as const,
     machineId: DeviceIdSchema.parse(createId("device")),
