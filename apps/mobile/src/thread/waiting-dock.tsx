@@ -4,6 +4,7 @@ import {
   type WaitingAsk,
   type WaitingInput,
 } from "@opensteer/client/host";
+import { useWaitingBody } from "@opensteer/client/react";
 import * as Haptics from "expo-haptics";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AccessibilityInfo, Pressable, StyleSheet, View } from "react-native";
@@ -11,6 +12,7 @@ import { controlBorderWidth, controlFontScaleLimit, material, radius, space } fr
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { AppText } from "../ui/primitives.js";
 import { AnswerPill } from "./answer-pill.js";
+import { useAskShownWhole } from "./ask-shown.js";
 import { ComposerBar, composerLaneHeight } from "./composer-bar.js";
 import type { WaitingEditController } from "./waiting-edit.js";
 import { failureWords } from "../ui/client-feedback.js";
@@ -95,8 +97,13 @@ export function WaitingAskDock(props: {
   readonly ask: WaitingAsk;
   readonly canRespond: boolean;
   readonly decisions: AskDecisions;
+  readonly hostClient: HostClient;
 }): ReactNode {
   const { ask, decisions } = props;
+  // A long ask's preview is clipped: Answer waits until its whole text is on screen.
+  const body = useWaitingBody(props.hostClient, ask);
+  // And unfolded in its bubble: Answer approves what the person can read.
+  const whole = useAskShownWhole(ask.messageId) && body.status === "complete";
   const arrivedAt = useRef(Date.now());
   const settled = (): boolean => Date.now() - arrivedAt.current >= arrivalGuardMs;
   const pending = decisions.pending?.messageId === ask.messageId ? decisions.pending : null;
@@ -110,8 +117,21 @@ export function WaitingAskDock(props: {
           {ask.asker} is asking your agent
         </AppText>
         <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="muted">
-          {elsewhere === null ? ask.consent.line : `Being edited on ${elsewhere}`}
+          {elsewhere !== null
+            ? `Being edited on ${elsewhere}`
+            : body.status === "loading"
+              ? "Loading the whole ask…"
+              : body.status === "failed"
+                ? "Couldn’t load the whole ask."
+                : ask.consent.line}
         </AppText>
+        {body.status === "failed" && elsewhere === null ? (
+          <Pressable accessibilityRole="button" hitSlop={8} onPress={body.retry}>
+            <AppText role="caption" tone="ember">
+              Try again
+            </AppText>
+          </Pressable>
+        ) : null}
         {failure === null ? null : (
           <AppText role="caption" tone="danger">
             {failure}
@@ -132,11 +152,12 @@ export function WaitingAskDock(props: {
         <AnswerPill
           {...(elsewhere === null ? { accessibilityHint: ask.consent.line } : {})}
           busy={pending?.decision === "approve"}
-          disabled={locked || elsewhere !== null}
+          disabled={locked || elsewhere !== null || !whole}
           fill
           label="Answer"
           onPress={() => {
-            if (settled()) void decisions.decide(ask, "approve");
+            if (settled() && whole && body.status === "complete")
+              void decisions.decide(ask, "approve", body.revision);
           }}
           tone="primary"
         />

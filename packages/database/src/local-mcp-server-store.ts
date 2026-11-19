@@ -1,5 +1,5 @@
 import { requireSelfDeviceId } from "./device-inventory-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { requestSettlementActor } from "./request-settlement.js";
 
 import { OpensteerError, type DeviceId, type RunnerId, type UserId } from "@opensteer/core";
@@ -122,7 +122,7 @@ export class LocalMcpServerStore {
       if (server.runnerId === null || server.status === "disabled") continue;
       if (server.approvedLaunchDigest === server.launchDigest) continue;
       const runnerId = server.runnerId;
-      const asked = await withPersonalTransaction(this.#database, async (transaction) => {
+      const asked = await commitPersonalMutation(this.#database, async (transaction) => {
         // The computer, then the server, then the request: the order every
         // server approval takes them in, and the one computer apps use.
         await lockComputer(transaction, runnerId);
@@ -222,7 +222,7 @@ export class LocalMcpServerStore {
     readonly setupRequestId: string;
   }): Promise<{ readonly launchDigest: string; readonly serverId: IntegrationServerId }> {
     const now = input.now ?? new Date();
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const { request, server } = await answeredRequest(transaction, { ...input, now });
       await transaction
         .deleteFrom("computerAppSetupRequests")
@@ -263,7 +263,7 @@ export class LocalMcpServerStore {
       throw new OpensteerError({ code: "not_found", message: "That server isn't installed." });
     }
     const runnerId = named.runnerId;
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       await lockComputer(transaction, runnerId);
       await lockServer(transaction, input.serverId);
       const server = (await records(transaction, await serverRows(transaction, input.serverId)))[0];
@@ -331,7 +331,7 @@ export class LocalMcpServerStore {
     readonly setupRequestId: string;
   }): Promise<void> {
     const now = input.now ?? new Date();
-    await withPersonalTransaction(this.#database, async (transaction) => {
+    await commitPersonalMutation(this.#database, async (transaction) => {
       const { request, server } = await answeredRequest(transaction, { ...input, now });
       await transaction
         .deleteFrom("computerAppSetupRequests")
@@ -353,7 +353,7 @@ export class LocalMcpServerStore {
     readonly tools: readonly IntegrationToolMaterial[];
   }): Promise<boolean> {
     const now = input.now ?? new Date();
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const server = await lockedApproved(transaction, input.serverId, input.launchDigest);
       if (!server) return false;
       await replaceServerToolsInTransaction(transaction, {
@@ -382,7 +382,7 @@ export class LocalMcpServerStore {
     readonly now?: Date;
     readonly serverId: IntegrationServerId;
   }): Promise<void> {
-    await withPersonalTransaction(this.#database, async (transaction) => {
+    await commitPersonalMutation(this.#database, async (transaction) => {
       if (!(await lockedApproved(transaction, input.serverId, input.launchDigest))) return;
       await setStatus(
         transaction,

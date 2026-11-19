@@ -1,3 +1,4 @@
+import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
 import { delay } from "@opensteer/shared/delay";
@@ -13,7 +14,6 @@ import {
   PersonalHostAccountUnlinkStepRequestSchema,
   ResumePersonalHostAccountLinkRequestSchema,
   PublishPersonalConnectProjectionRequestSchema,
-  type hostApi,
   type HostApiClient,
   type ConfigurePersonalRemoteAccessRequest,
   type PublishPersonalConnectProjectionRequest,
@@ -38,7 +38,7 @@ import {
   type RunnerId,
 } from "@opensteer/core";
 import {
-  apiVersionHeaders,
+  hostApiVersionHeader,
   hostKeyFingerprint,
   isPersonalHost,
 } from "@opensteer/deployment-authority";
@@ -123,9 +123,7 @@ export class PersonalHostBootstrapRefusedError extends Error {
   }
 }
 
-type PersonalHostBootstrap = z.output<(typeof hostApi)["bootstrap.get"]["success"]>;
-
-const personalVersionHeaders = apiVersionHeaders("personal");
+const personalVersionHeaders = { [hostApiVersionHeader]: String(scopedPersonalApiVersion) };
 
 export class NativePersonalHostControl implements PersonalHostControlPort {
   readonly #fetch: PersonalHostFetch;
@@ -273,7 +271,10 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     signal: AbortSignal,
   ): Promise<void> {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
-    await this.#readBootstrap(deploymentId, origin, signal);
+    const result = await this.#withDeadline(signal, (deadline) =>
+      this.#hostApi(deploymentId, origin)["personal.shell.get"]({}, { signal: deadline }),
+    );
+    if (!result.ok) throw bootstrapRefusal(result.error);
   }
 
   async claimOwner(
@@ -302,14 +303,12 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
     const environmentId = EnvironmentIdSchema.parse(environmentIdInput);
     const runnerId = RunnerIdSchema.parse(runnerIdInput);
-    while (true) {
-      const snapshot = await this.#pollBootstrap(deploymentId, origin, signal);
-      const environment = snapshot?.environments.find(
-        (candidate) => candidate.id === environmentId,
-      );
-      if (environment?.connected && environment.runnerId === runnerId) return;
-      await delay(this.#pollIntervalMs, signal);
-    }
+    await this.#waitForReadiness(
+      deploymentId,
+      origin,
+      { kind: "runner", environmentId, runnerId },
+      signal,
+    );
   }
 
   async waitForBrowserPlacement(
@@ -322,56 +321,35 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
     const environmentId = EnvironmentIdSchema.parse(environmentIdInput);
     const runtimeId = RuntimeIdSchema.parse(runtimeIdInput);
-    while (true) {
-      const snapshot = await this.#pollBootstrap(deploymentId, origin, signal);
-      // The environment binding is enrolled, not claimed, so readiness can
-      // never be satisfied by some other connected computer that happens to
-      // advertise the same runtime id.
-      if (
-        snapshot?.browser.placements.some(
-          (placement) =>
-            placement.runtimeId === runtimeId &&
-            placement.environmentIds.includes(environmentId) &&
-            placement.available,
-        )
-      ) {
-        return;
+    await this.#waitForReadiness(
+      deploymentId,
+      origin,
+      { kind: "browser-placement", environmentId, runtimeId },
+      signal,
+    );
+  }
+
+  async #waitForReadiness(
+    deploymentId: string,
+    origin: string,
+    target: Parameters<HostApiClient["personal.readiness.get"]>[0],
+    signal: AbortSignal,
+  ) {
+    const read = this.#hostApi(deploymentId, origin)["personal.readiness.get"];
+    for (;;) {
+      throwIfAborted(signal, "Personal setup was cancelled.");
+      try {
+        const result = await this.#withDeadline(signal, (deadline) =>
+          read(target, { signal: deadline }),
+        );
+        if (!result.ok) throw bootstrapRefusal(result.error);
+        if (result.data.ready) return;
+      } catch (error) {
+        throwIfAborted(signal, "Personal setup was cancelled.");
+        if (error instanceof PersonalHostBootstrapRefusedError) throw error;
       }
       await delay(this.#pollIntervalMs, signal);
     }
-  }
-
-  /**
-   * One readiness poll. A Host that has not answered yet is the ordinary case
-   * while it starts, so that yields null and the caller waits; a Host that
-   * refused has already settled the question, and the refusal propagates
-   * rather than becoming a wait that only the caller's abort can end.
-   */
-  async #pollBootstrap(
-    deploymentId: string,
-    origin: string,
-    signal: AbortSignal,
-  ): Promise<PersonalHostBootstrap | null> {
-    throwIfAborted(signal, "Personal setup was cancelled.");
-    try {
-      return await this.#readBootstrap(deploymentId, origin, signal);
-    } catch (error) {
-      throwIfAborted(signal, "Personal setup was cancelled.");
-      if (error instanceof PersonalHostBootstrapRefusedError) throw error;
-      return null;
-    }
-  }
-
-  async #readBootstrap(
-    deploymentId: string,
-    origin: string,
-    signal: AbortSignal,
-  ): Promise<PersonalHostBootstrap> {
-    const result = await this.#withDeadline(signal, (deadline) =>
-      this.#hostApi(deploymentId, origin)["bootstrap.get"]({}, { signal: deadline }),
-    );
-    if (result.ok) return result.data;
-    throw bootstrapRefusal(result.error);
   }
 
   #hostApi(deploymentId: string, origin: string): HostApiClient {
@@ -812,7 +790,7 @@ function bootstrapRefusal(error: {
   readonly reason?: string | undefined;
   readonly retryable: boolean;
 }): Error {
-  const message = `Personal Host refused bootstrap.get (${error.code}): ${error.message}`;
+  const message = `Personal Host refused the setup read (${error.code}): ${error.message}`;
   // A bare server fault carries no reason; every named, non-retryable failure is final.
   if (error.retryable || (error.code === "internal" && error.reason === undefined))
     return new Error(message);

@@ -1,5 +1,4 @@
 import { TeamRuntimeOwner } from "@opensteer/client/team";
-import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { HostTransport as SharedHostTransport } from "@opensteer/client/connections";
 import {
   createDesktopHostFetch,
@@ -13,8 +12,9 @@ import {
   type DesktopHostWebSocketEvent,
 } from "@opensteer/protocol/desktop";
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
+import { hostApiCurrentHeader, hostApiVersionHeader } from "@opensteer/protocol";
+import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import {
-  hostApiVersionHeader,
   minimumHostApiVersion,
   teamApiVersion,
   teamApiVersionHeader,
@@ -55,130 +55,147 @@ describe("DesktopHostTransport", () => {
     ["web", 60],
     ["web", 61],
     ["web", 62],
+    ["web", 63],
+    ["web", 64],
     ["desktop", 60],
     ["desktop", 61],
     ["desktop", 62],
-  ] as const)("%s sends and creates tasks on Personal API %i", async (surface, version) => {
-    const row = deployment("Home", "https://home.connect.opensteer.test", "personal");
-    const deploymentId = row.authority.document.deploymentId;
-    const userId = createId("user");
-    const loginId = createId("authSession");
-    const threadId = createId("thread");
-    const environmentId = createId("environment");
-    const harnessInstanceId = createId("harnessInstance");
-    const modelSelection = { modelId: "claude", providerId: "anthropic", options: {} };
-    const at = "2026-09-01T00:00:00Z";
-    const messageId = createId("message");
-    const scope = {
-      authorityKey: row.authority.document.canonicalOrigin,
-      deploymentId,
-      viewerId: userId,
-      loginId,
-    };
-    const view = controlledClientSession();
-    view.change({ scope });
-    const admitted: { type: string; session: string | null }[] = [];
-    const answer = (headers: Headers, path: string, body: string | null) => {
-      expect(path.endsWith("/commands.dispatch")).toBe(true);
-      expect(headers.get(hostApiVersionHeader)).toBe(String(minimumHostApiVersion));
-      const command = JSON.parse(body!) as { type: string };
-      const session = version >= 62 ? headers.get(expectedMutationSessionHeader) : null;
-      admitted.push({ type: command.type, session });
-      return Response.json({
-        ok: true,
-        data:
-          command.type === "thread.create"
-            ? {
-                type: command.type,
-                asOfSequence: "0",
-                wasDuplicate: false,
-                thread: {
-                  accessMode: "auto",
-                  continuationIdentity: null,
-                  createdAt: at,
-                  updatedAt: at,
-                  createdBy: userId,
-                  environmentId,
-                  harnessInstanceId,
-                  id: threadId,
-                  lineageRootThreadId: threadId,
-                  inputQueuePaused: false,
-                  listed: true,
-                  modelSelection,
-                  parentThreadId: null,
-                  pendingRequests: 0,
-                  status: "idle",
-                  title: "Task",
-                  purpose: "task",
-                  teamOrigin: null,
-                },
-              }
-            : {
-                type: command.type,
-                run: null,
-                wasDuplicate: false,
-                input: {
-                  assignmentId: null,
-                  cancelReason: null,
-                  causalChainId: createId("causalChain"),
-                  createdAt: at,
-                  deliveredAt: null,
-                  messageId,
-                  policy: "queue",
-                  replyTarget: null,
-                  runId: null,
-                  state: "pending",
-                  teamRequestId: null,
-                  teamSource: null,
-                  threadId,
-                  updatedAt: at,
-                },
-                message: {
-                  author: { kind: "human", displayName: "Person", principalId: "person", userId },
-                  content: [{ type: "text", text: "Hello" }],
-                  createdAt: at,
-                  id: messageId,
-                  kind: "input",
-                  runId: null,
-                  sequence: "1",
-                  threadId,
-                },
+    ["desktop", 63],
+    ["desktop", 64],
+  ] as const)(
+    "%s checks the Personal API %i before admitting sends and task creation",
+    async (surface, version) => {
+      const row = deployment("Home", "https://home.connect.opensteer.test", "personal");
+      const deploymentId = row.authority.document.deploymentId;
+      const userId = createId("user");
+      const loginId = createId("authSession");
+      const threadId = createId("thread");
+      const environmentId = createId("environment");
+      const harnessInstanceId = createId("harnessInstance");
+      const modelSelection = { modelId: "claude", providerId: "anthropic", options: {} };
+      const at = "2026-09-01T00:00:00Z";
+      const messageId = createId("message");
+      const scope = {
+        authorityKey: row.authority.document.canonicalOrigin,
+        deploymentId,
+        viewerId: userId,
+        loginId,
+      };
+      const view = controlledClientSession();
+      view.change({ scope });
+      const admitted: { type: string; session: string | null }[] = [];
+      const answer = (headers: Headers, path: string, body: string | null) => {
+        expect(path.endsWith("/commands.dispatch")).toBe(true);
+        expect(headers.get(hostApiVersionHeader)).toBe(String(minimumHostApiVersion));
+        if (version < scopedPersonalApiVersion)
+          return Response.json(
+            {
+              ok: false,
+              error: {
+                code: "bad_request",
+                reason: "unsupported-version",
+                message: "Update Opensteer.",
+                retryable: false,
               },
-      });
-    };
-    const transport =
-      surface === "desktop"
-        ? desktopHostTransport({
-            catalog: catalogStore([row], deploymentId),
-            network: {
-              openWebSocket: () => socket(),
-              request: async ({ request }) =>
-                answer(
-                  new Headers(request.headers.additional),
-                  request.path,
-                  request.body instanceof Uint8Array
-                    ? new TextDecoder().decode(request.body)
-                    : null,
-                ),
             },
-          })
-        : null;
-    const host = new HttpHostClient({
-      baseUrl: new URL(routeOrigin),
-      bindMutationsToSession: true,
-      fetch: transport
-        ? hostFetch(transport, deploymentId)
-        : async (input, init) =>
-            answer(
-              new Headers(init?.headers),
-              String(input),
-              typeof init?.body === "string" ? init.body : null,
-            ),
-    });
-    vi.spyOn(host.connection, "getSnapshot").mockImplementation(view.connection.getSnapshot);
-    try {
-      await expect(
-        host.dispatch(
+            { status: 426 },
+          );
+        const command = JSON.parse(body!) as { type: string };
+        const session = headers.get(expectedMutationSessionHeader);
+        admitted.push({ type: command.type, session });
+        return Response.json({
+          ok: true,
+          data:
+            command.type === "thread.create"
+              ? {
+                  type: command.type,
+                  asOfSequence: "0",
+                  wasDuplicate: false,
+                  thread: {
+                    accessMode: "auto",
+                    continuationIdentity: null,
+                    createdAt: at,
+                    updatedAt: at,
+                    createdBy: userId,
+                    environmentId,
+                    harnessInstanceId,
+                    id: threadId,
+                    lineageRootThreadId: threadId,
+                    inputQueuePaused: false,
+                    listed: true,
+                    modelSelection,
+                    parentThreadId: null,
+                    pendingRequests: 0,
+                    status: "idle",
+                    title: "Task",
+                    purpose: "task",
+                    teamOrigin: null,
+                  },
+                }
+              : {
+                  type: command.type,
+                  run: null,
+                  wasDuplicate: false,
+                  input: {
+                    assignmentId: null,
+                    cancelReason: null,
+                    causalChainId: createId("causalChain"),
+                    createdAt: at,
+                    deliveredAt: null,
+                    messageId,
+                    policy: "queue",
+                    replyTarget: null,
+                    runId: null,
+                    state: "pending",
+                    teamRequestId: null,
+                    teamSource: null,
+                    threadId,
+                    updatedAt: at,
+                  },
+                  message: {
+                    author: { kind: "human", displayName: "Person", principalId: "person", userId },
+                    content: [{ type: "text", text: "Hello" }],
+                    createdAt: at,
+                    id: messageId,
+                    kind: "input",
+                    runId: null,
+                    sequence: "1",
+                    threadId,
+                  },
+                },
+        });
+      };
+      const transport =
+        surface === "desktop"
+          ? desktopHostTransport({
+              catalog: catalogStore([row], deploymentId),
+              network: {
+                openWebSocket: () => socket(),
+                request: async ({ request }) =>
+                  answer(
+                    new Headers(request.headers.additional),
+                    request.path,
+                    request.body instanceof Uint8Array
+                      ? new TextDecoder().decode(request.body)
+                      : null,
+                  ),
+              },
+            })
+          : null;
+      const host = new HttpHostClient({
+        baseUrl: new URL(routeOrigin),
+        fetch: transport
+          ? hostFetch(transport, deploymentId)
+          : async (input, init) =>
+              answer(
+                new Headers(init?.headers),
+                String(input),
+                typeof init?.body === "string" ? init.body : null,
+              ),
+      });
+      vi.spyOn(host.connection, "getSnapshot").mockImplementation(view.connection.getSnapshot);
+      try {
+        const create = host.dispatch(
           {
             type: "thread.create",
             accessMode: "auto",
@@ -189,10 +206,8 @@ describe("DesktopHostTransport", () => {
             title: "Task",
           },
           { expectedLogin: scope },
-        ),
-      ).resolves.toMatchObject({ thread: { id: threadId } });
-      await expect(
-        host.dispatch(
+        );
+        const send = host.dispatch(
           {
             type: "thread.sendMessage",
             content: [{ type: "text", text: "Hello" }],
@@ -200,19 +215,29 @@ describe("DesktopHostTransport", () => {
             idempotencyKey: "reply",
           },
           { expectedLogin: scope },
-        ),
-      ).resolves.toMatchObject({ message: { id: messageId } });
-      expect(admitted).toEqual(
-        ["thread.create", "thread.sendMessage"].map((type) => ({
-          type,
-          session: version < 62 ? null : loginId,
-        })),
-      );
-    } finally {
-      host.dispose();
-      transport?.dispose();
-    }
-  });
+        );
+        if (version < scopedPersonalApiVersion) {
+          await Promise.all([
+            expect(create).rejects.toMatchObject({ reason: "unsupported-version" }),
+            expect(send).rejects.toMatchObject({ reason: "unsupported-version" }),
+          ]);
+          expect(admitted).toEqual([]);
+          return;
+        }
+        await expect(create).resolves.toMatchObject({ thread: { id: threadId } });
+        await expect(send).resolves.toMatchObject({ message: { id: messageId } });
+        expect(admitted).toEqual(
+          ["thread.create", "thread.sendMessage"].map((type) => ({
+            type,
+            session: loginId,
+          })),
+        );
+      } finally {
+        host.dispose();
+        transport?.dispose();
+      }
+    },
+  );
 
   it("preserves the renderer's expected session through the Host mutation route", async () => {
     const deploymentRow = deployment("Home", "https://home.connect.opensteer.test", "personal");
@@ -1286,40 +1311,49 @@ describe("DesktopHostTransport", () => {
     expect(observed).toHaveLength(4);
   });
 
-  it("logs only sanitized anomalous bootstrap summaries, once per minute", async () => {
-    const selected = deployment("Home", "https://home.connect.opensteer.test");
+  it("forwards the scoped Personal version and ignores retired diagnostic fields", async () => {
+    const selected = deployment("Home", "https://home.connect.opensteer.test", "personal");
     const log = vi.fn();
-    const request = vi.fn(async () => new Response("{}"));
+    const request = vi.fn(async (_input: HostNetworkRequest) => new Response("{}"));
     const transport = desktopHostTransport({
       catalog: catalogStore([selected], selected.authority.document.deploymentId),
       log,
       network: { openWebSocket: () => socket(), request },
     });
+    const bootstrapDiagnosticHeader = "x-opensteer-bootstrap-diagnostics";
     const summary = JSON.stringify({ windowMs: 3000, triggers: { load: 6 }, starts: { load: 6 } });
     const read = (bootstrapDiagnostics?: string) =>
-      send(
-        transport,
-        selected.authority.document.deploymentId,
-        "/v1/rpc/bootstrap.get?input=%7B%7D",
-        {
-          headers: bootstrapDiagnostics
-            ? { [bootstrapDiagnosticHeader]: bootstrapDiagnostics }
-            : {},
-        },
-      );
+      expect(
+        send(
+          transport,
+          selected.authority.document.deploymentId,
+          "/v1/rpc/personal.shell.get?input=%7B%7D",
+          {
+            headers: {
+              [hostApiVersionHeader]: String(scopedPersonalApiVersion),
+              [hostApiCurrentHeader]: String(scopedPersonalApiVersion),
+              ...(bootstrapDiagnostics
+                ? { [bootstrapDiagnosticHeader]: bootstrapDiagnostics }
+                : {}),
+            },
+          },
+        ),
+      ).resolves.toMatchObject({ body: "{}", status: 200 });
     await read();
     await read(
       JSON.stringify({ windowMs: 1, triggers: {}, starts: { load: 6 }, url: "PRIVATE-VALUE" }),
     );
-    expect(log).not.toHaveBeenCalled();
     await read(summary);
     await read(summary);
-    expect(log).toHaveBeenCalledExactlyOnceWith(
-      "host.bootstrap.loop",
-      expect.objectContaining({ triggers: '{"load":6}', starts: '{"load":6}' }),
-    );
     expect(request).toHaveBeenCalledTimes(4);
-    expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE-VALUE");
+    for (const [input] of request.mock.calls) {
+      expect(input.request.headers).toMatchObject({
+        apiVersion: String(scopedPersonalApiVersion),
+        apiCurrent: String(scopedPersonalApiVersion),
+      });
+      expect(input.request.headers.additional).not.toHaveProperty(bootstrapDiagnosticHeader);
+    }
+    expect(log).not.toHaveBeenCalled();
   });
 
   it("routes bounded requests only through the selected catalog Host", async () => {
@@ -1836,7 +1870,7 @@ describe("DesktopHostTransport", () => {
       // Main says why, by route and code alone.
       expect(log).toHaveBeenCalledWith("desktop.host-route.refused", {
         code: "deployment-changed",
-        route: "bootstrap.get",
+        route: "personal.shell.get",
       });
     } finally {
       unsubscribe();

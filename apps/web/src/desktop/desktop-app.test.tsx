@@ -277,12 +277,20 @@ it("opens this computer's Host only once main has attached it", async () => {
   const listeners = new Set<(next: DeploymentAccessSnapshot) => void>();
   const retry = vi.fn(async () => undefined);
   const cancel = vi.fn(async () => undefined);
+  // The place list's own badge reads (attention, team links) are not the window's connection.
+  const placeListReads = ["/v1/rpc/attention.get", "/v1/rpc/teams.links.list"];
+  // The window opens its Host by attaching its socket, then reading over HTTP: both count.
+  const hostRequests: string[] = [];
   const bridge = {
     cancel,
     cancelHostRequest: async () => undefined,
     checkDeployments: async () => undefined,
     retry,
     getDeploymentAccessSnapshot: async () => access,
+    openHostWebSocket: async (input: { path: string; expectedDeploymentId: string }) => {
+      hostRequests.push(`/host/${input.expectedDeploymentId}${input.path}`);
+      return new Promise<never>(() => undefined);
+    },
     onHostWebSocketEvent: () => () => undefined,
     onDeploymentAccessSnapshotChanged: (listener: (next: DeploymentAccessSnapshot) => void) => {
       listeners.add(listener);
@@ -297,9 +305,6 @@ it("opens this computer's Host only once main has attached it", async () => {
       for (const listener of listeners) listener(next);
     });
   };
-  // The place list's own badge reads (attention, team links) are not the window's connection.
-  const placeListReads = ["/v1/rpc/attention.get", "/v1/rpc/teams.links.list"];
-  const hostRequests: string[] = [];
   const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     const url = input instanceof Request ? input.url : String(input);
     const path = url.startsWith("app://opensteer/host/") ? new URL(url).pathname : null;

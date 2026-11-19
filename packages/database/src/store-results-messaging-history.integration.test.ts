@@ -1,5 +1,8 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { readTranscriptPage, readTranscriptItem } from "./personal-sync-store.js";
+import { readPersonalDetailSnapshot } from "./snapshot-store.js";
+import type { TranscriptOrderCursor } from "@opensteer/protocol/transcript";
 import { runAllowsPersonalContext } from "./run-personal-context.js";
-import { readEmptyPersonalResources } from "./store.integration.test-support.js";
 
 import { createHash } from "node:crypto";
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
@@ -12,7 +15,7 @@ import {
 } from "@opensteer/core";
 import { type PendingAgentEvent } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { expect, vi } from "vitest";
+import { expect } from "vitest";
 import { runFromRow } from "./thread-row-mappers.js";
 import { ChannelStore, OpensteerStore } from "./index.js";
 import { ChannelIngressDeferredError } from "./channel-store.js";
@@ -66,10 +69,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId: endedRun.runnerBootId,
       runnerId: endedRun.runnerId,
     });
-    expect(terminal.compensatingEvents.map(({ type }) => type)).toEqual([
-      "thread-input.updated",
-      "thread.state-changed",
-    ]);
+    expect(terminal.throughOrdinal).toBe(1);
     await expect(
       database
         .selectFrom("threadInputs")
@@ -449,22 +449,17 @@ describeStore("PostgreSQL store", (it) => {
       runnerId: fixture.runnerId,
     });
 
-    // The personal stream records completion on the worker; return delivery wakes the parent.
-    const completion = completed.compensatingEvents.filter(
-      ({ type }) => type === "assignment.updated",
-    );
-    expect(completion).toEqual([
+    expect(completed.throughOrdinal).toBeGreaterThan(0);
+    const cut = await readPersonalDetailSnapshot(database, {
+      viewerId: fixture.userId,
+      scope: { kind: "thread", threadId: delegated.thread.id },
+    });
+    if (cut.kind !== "snapshot") throw new Error("Expected worker detail");
+    expect(cut.snapshot.items).toContainEqual(
       expect.objectContaining({
-        data: {
-          assignment: expect.objectContaining({
-            id: delegated.assignment.id,
-            returnStatus: "pending",
-            status: "completed",
-          }),
-        },
-        threadId: delegated.thread.id,
+        id: `assignment:${delegated.assignment.id}`,
       }),
-    ]);
+    );
     await expect(
       database
         .selectFrom("delegations")
@@ -475,37 +470,22 @@ describeStore("PostgreSQL store", (it) => {
       resultRunId: delegated.run.id,
       resultText: childResult,
     });
-    const resultEvents = await store.drainAssignmentReturn(delegated.assignment.id);
-    expect(resultEvents.map(({ type }) => type)).toContain("message.created");
-    expect(resultEvents.map(({ type }) => type)).toContain("run.queued");
-    const settlementEvent = resultEvents.find(
-      (event) => event.type === "assignment.updated" && event.threadId === delegated.thread.id,
-    );
-    expect(settlementEvent).toMatchObject({
-      data: {
-        assignment: {
-          id: delegated.assignment.id,
-          returnStatus: "delivered",
-          status: "completed",
-          resultPreview: expect.stringMatching(/^The evidence is ready/u),
-        },
-      },
-      threadId: delegated.thread.id,
-      type: "assignment.updated",
+    await store.drainAssignmentReturn(delegated.assignment.id);
+    const assignments = await store.listThreadAssignmentsForOwner({
+      threadId: fixture.thread.id,
+      ownerId: fixture.userId,
     });
-    if (
-      settlementEvent?.type !== "assignment.updated" ||
-      !settlementEvent.data.assignment.resultPreview
-    ) {
-      throw new Error("Expected Assignment result preview");
-    }
-    expect(
-      Buffer.byteLength(settlementEvent.data.assignment.resultPreview, "utf8"),
-    ).toBeLessThanOrEqual(8 * 1_024);
-    expect(settlementEvent.data.assignment.resultPreview).not.toBe(childResult);
+    const settled = assignments?.assignments.find(({ id }) => id === delegated.assignment.id);
+    expect(settled).toMatchObject({
+      id: delegated.assignment.id,
+      returnStatus: "delivered",
+      status: "completed",
+      resultPreview: expect.stringMatching(/^The evidence is ready/u),
+    });
+    expect(Buffer.byteLength(settled!.resultPreview!, "utf8")).toBeLessThanOrEqual(8 * 1_024);
+    expect(settled!.resultPreview).not.toBe(childResult);
     expect(replayed).toMatchObject({
-      compensatingEvents: [],
-      wasDuplicate: true,
+      replayed: true,
     });
     const delegatedRun = await database
       .selectFrom("runs")
@@ -646,9 +626,7 @@ describeStore("PostgreSQL store", (it) => {
       replies: ["The worker finished while the parent still runs"],
       suffix: "delegation-result-delivery-unknown-child",
     });
-    const delivered = await store.drainAssignmentReturn(delegated.assignment.id);
-    expect(delivered.map(({ type }) => type)).toContain("message.created");
-    expect(delivered.map(({ type }) => type)).toContain("assignment.updated");
+    await store.drainAssignmentReturn(delegated.assignment.id);
     const steered = await database
       .selectFrom("threadInputs")
       .select(["messageId", "policy", "state", "steerCommandId"])
@@ -676,12 +654,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId: fixture.runnerBootId,
       runnerId: fixture.runnerId,
     });
-    expect(terminal.compensatingEvents.map(({ type }) => type)).toEqual([
-      "message.placed",
-      "run.queued",
-      "thread.state-changed",
-      "thread.state-changed",
-    ]);
+    expect(terminal.throughOrdinal).toBe(1);
     // A delivered Assignment is never drained again, so cancelling this input
     // would leave the result in the Thread with no Run that reads it.
     await expect(
@@ -725,7 +698,7 @@ describeStore("PostgreSQL store", (it) => {
     ).resolves.toEqual({
       resultStatus: "delivered",
     });
-    await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toEqual([]);
+    await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toBe("settled");
   });
   it.for(["failed", "interrupted"] as const)(
     "settles the Assignment from how its child Run ended: %s",
@@ -757,14 +730,13 @@ describeStore("PostgreSQL store", (it) => {
         replies: ["Checked two of the three sources"],
         suffix: `delegation-result-${outcome}-child`,
       });
-      const events = await store.drainAssignmentReturn(delegated.assignment.id);
+      await store.drainAssignmentReturn(delegated.assignment.id);
       const assignment = await database
         .selectFrom("delegations")
         .select(["status", "resultStatus", "resultText"])
         .where("id", "=", delegated.assignment.id)
         .executeTakeFirstOrThrow();
       if (outcome === "failed") {
-        expect(events.map(({ type }) => type)).toContain("message.created");
         expect(assignment).toEqual({
           resultStatus: "delivered",
           resultText:
@@ -783,14 +755,20 @@ describeStore("PostgreSQL store", (it) => {
         });
       } else {
         // A person stopped this Run, not the task; a later Run continues it.
-        expect(events).toEqual([]);
+        expect(
+          await database
+            .selectFrom("threadInputs")
+            .select("messageId")
+            .where("idempotencyKey", "=", `assignment-return:${delegated.assignment.id}`)
+            .executeTakeFirst(),
+        ).toBeUndefined();
         expect(assignment).toEqual({
           resultStatus: "pending",
           resultText: null,
           status: "open",
         });
       }
-      await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toEqual([]);
+      await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toBe("settled");
     },
   );
   it.for(["archived-thread", "disabled-owner"] as const)(
@@ -848,20 +826,15 @@ describeStore("PostgreSQL store", (it) => {
           .where("id", "=", fixture.userId)
           .execute();
       }
-      const events = await store.drainAssignmentReturn(delegated.assignment.id);
-      expect(events).toContainEqual(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            assignment: expect.objectContaining({
-              id: delegated.assignment.id,
-              returnStatus: "undeliverable",
-              status: "completed",
-            }),
-          }),
-          threadId: delegated.thread.id,
-          type: "assignment.updated",
-        }),
-      );
+      await store.drainAssignmentReturn(delegated.assignment.id);
+      expect(
+        await database
+          .selectFrom("transcriptItems")
+          .select("id")
+          .where("threadId", "=", delegated.thread.id)
+          .where("delegationId", "=", delegated.assignment.id)
+          .execute(),
+      ).toEqual([{ id: `assignment:${delegated.assignment.id}` }]);
       await expect(
         database
           .selectFrom("messages")
@@ -889,7 +862,7 @@ describeStore("PostgreSQL store", (it) => {
           .where("status", "=", "queued")
           .executeTakeFirst(),
       ).toBeUndefined();
-      await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toEqual([]);
+      await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toBe("settled");
     },
   );
   it("charges delegation fan-out once per causal root and not per lifetime Thread", async ({
@@ -1009,9 +982,7 @@ describeStore("PostgreSQL store", (it) => {
       .executeTakeFirstOrThrow();
     const afterTerminal = await Promise.all([
       store.claimCommand(queuedCommand.id, "thread-input-claim-c"),
-      new OpensteerStore(database, {
-        readPersonalResources: readEmptyPersonalResources,
-      }).claimCommand(queuedCommand.id, "thread-input-claim-d"),
+      new OpensteerStore(database, {}).claimCommand(queuedCommand.id, "thread-input-claim-d"),
     ]);
     expect(afterTerminal.filter((claim) => claim !== null)).toHaveLength(1);
   });
@@ -1106,12 +1077,14 @@ describeStore("PostgreSQL store", (it) => {
       threadId: fixture.thread.id,
     });
     expect(resumed.thread.inputQueuePaused).toBe(false);
-    expect(resumed.events.map(({ type }) => type)).toEqual([
-      "thread.input-queue-updated",
-      "message.placed",
-      "run.queued",
-      "thread.state-changed",
-    ]);
+    expect(
+      await database
+        .selectFrom("clientChanges")
+        .select(["entityKind", "entityId"])
+        .where("scopeKey", "=", `thread:${fixture.thread.id}`)
+        .where("sequence", "=", resumed.asOfSequence)
+        .execute(),
+    ).toEqual(expect.arrayContaining([{ entityKind: "run-queue", entityId: fixture.thread.id }]));
     await expect(
       database
         .selectFrom("runs")
@@ -1294,13 +1267,15 @@ describeStore("PostgreSQL store", (it) => {
     if (adopted.kind !== "adopted" || !adopted.run) {
       throw new Error("Expected channel ingress adoption to queue a Run");
     }
-    expect(adopted.events.map(({ type }) => type)).toEqual([
-      "thread.created",
-      "message.created",
-      "message.placed",
-      "run.queued",
-      "thread.state-changed",
-    ]);
+    expect(
+      await database
+        .selectFrom("transcriptItems")
+        .select(["visible", "view"])
+        .where("threadId", "=", adopted.run.threadId)
+        .where("runId", "=", adopted.run.id)
+        .where("kind", "=", "message")
+        .execute(),
+    ).toMatchObject([{ visible: true, view: { published: false } }]);
     const followupCommitted = await channels.commitIngress(configured.connection.id, {
       ...event,
       content: [
@@ -1331,7 +1306,6 @@ describeStore("PostgreSQL store", (it) => {
       run: null,
     });
     if (followup.kind !== "adopted") throw new Error("Expected channel follow-up adoption");
-    expect(followup.events.map(({ type }) => type)).toEqual(["message.created"]);
     const followupRow = await database
       .selectFrom("channelIngressEvents")
       .innerJoin("threadInputs", "threadInputs.messageId", "channelIngressEvents.messageId")
@@ -2428,24 +2402,17 @@ describeStore("PostgreSQL store", (it) => {
     expect(dispatch.historyWindow.byteCount).toBe(
       Buffer.byteLength(JSON.stringify(dispatch.history), "utf8"),
     );
-    const messageSnapshot = await store.deploymentSnapshot({
-      maxMessages: 1,
+    const messageSnapshot = await readPersonalDetailSnapshot(store.database, {
+      viewerId: userId,
+      scope: { kind: "thread", threadId: thread.id },
     });
-    expect(messageSnapshot.serializedBytes).toBe(
-      Buffer.byteLength(JSON.stringify(messageSnapshot), "utf8"),
+    if (messageSnapshot.kind !== "snapshot") throw new Error("Expected thread detail");
+    expect(Buffer.byteLength(JSON.stringify(messageSnapshot.snapshot))).toBeLessThanOrEqual(
+      128 * 1024,
     );
-    expect(messageSnapshot.serializedBytes).toBeLessThanOrEqual(900 * 1_024);
-    expect(messageSnapshot.messages).toHaveLength(1);
-    const messageWindow = messageSnapshot.messageWindows.find(
-      ({ threadId }) => threadId === thread.id,
-    );
-    expect(messageWindow).toMatchObject({
-      hasMore: true,
-      itemCount: 1,
-      totalItems: 3,
-    });
-    expect(messageSnapshot.messages[0]?.id).toBe(third.message.id);
-    expect(messageWindow?.nextBefore).not.toBeNull();
+    expect(
+      messageSnapshot.snapshot.items.filter(({ kind }) => kind === "message").map(({ id }) => id),
+    ).toEqual([first.message.id, second.message.id, third.message.id]);
     const thirdBinding = await store.acquireExecutionBinding({
       bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
       continuationIdentity: testContinuationIdentity,
@@ -2487,30 +2454,20 @@ describeStore("PostgreSQL store", (it) => {
         title: suffix,
       });
     }
-    const snapshot = await store.deploymentSnapshot({
-      maxMessages: 1,
-      maxThreads: 2,
-    });
-    expect(snapshot.threadWindow).toMatchObject({
-      hasMore: true,
-      itemCount: 2,
-      totalItems: 3,
-    });
     const newestTasks = await store.taskPageForUser({
-      maxItems: 1,
-      userId,
+      window: "recent",
+      limit: 1,
+      viewerId: userId,
     });
-    expect(newestTasks.window).toMatchObject({
-      hasMore: true,
-      itemCount: 1,
-      totalItems: 3,
-    });
+    expect(newestTasks.hasMore).toBe(true);
+    expect(newestTasks.tasks).toHaveLength(1);
     const olderTasks = await store.taskPageForUser({
-      before: newestTasks.window.nextBefore!,
-      maxItems: 1,
-      userId,
+      before: newestTasks.nextBefore!,
+      window: "recent",
+      limit: 1,
+      viewerId: userId,
     });
-    expect(olderTasks.tasks[0]?.thread.id).not.toBe(newestTasks.tasks[0]?.thread.id);
+    expect(olderTasks.tasks[0]?.id).not.toBe(newestTasks.tasks[0]?.id);
     const ownerThreads = await store.ownerThreadPageForOwner({
       maxItems: 1,
       ownerId: userId,
@@ -2543,7 +2500,6 @@ describeStore("PostgreSQL store", (it) => {
     expect(earlier?.window).toMatchObject({
       hasMore: true,
       itemCount: 1,
-      totalItems: 3,
     });
     const oldest = await store.threadMessagePageForOwner({
       before: earlier!.window.nextBefore!,
@@ -2668,111 +2624,34 @@ describeStore("PostgreSQL store", (it) => {
       }),
     );
 
-    const fullPage = await store.threadEventPageForOwner({
-      ownerId: userId,
-      threadId: thread.id,
+    const scope = { kind: "thread", threadId: thread.id } as const;
+    const read = { scope, viewerId: userId };
+    const full = await readTranscriptPage(store.database, read);
+    if (full.kind !== "page") throw new Error("Expected transcript page");
+    expect(full.hasMore).toBe(false);
+    expect(full.nextBefore).toBeNull();
+    expect(full.items.map(({ kind }) => kind)).toEqual(["message", "run", "reasoning", "tool"]);
+    const newest = await readTranscriptPage(store.database, { ...read, limit: 2 });
+    if (newest.kind !== "page") throw new Error("Expected newest page");
+    expect(newest.items).toEqual(full.items.slice(-2));
+    expect(newest.hasMore).toBe(true);
+    expect(newest.nextBefore).toMatchObject({
+      beforeId: newest.items[0]!.id,
+      beforePosition: newest.items[0]!.position,
     });
-    expect(fullPage?.events.map(({ type }) => type)).toEqual([
-      "thread.created",
-      "message.created",
-      "message.placed",
-      "run.queued",
-      "thread.state-changed",
-      "thread-input.updated",
-      "run.status",
-      "thread.continuation-established",
-      "run.started",
-      "thread-input.updated",
-      "reasoning.completed",
-      "tool.started",
-      "tool.completed",
-      "run.completed",
-      "thread.state-changed",
-    ]);
-    expect(fullPage?.window).toMatchObject({
-      hasMore: false,
-      itemCount: 15,
-      nextBefore: null,
-      threadId: thread.id,
-      totalItems: 15,
+    const older = await readTranscriptPage(store.database, {
+      ...read,
+      cursor: newest.nextBefore!,
+      limit: 2,
     });
-    expect(fullPage?.window.byteCount).toBe(
-      Buffer.byteLength(JSON.stringify(fullPage?.events), "utf8"),
-    );
-    const sequences = fullPage!.events.map(({ sequence }) => BigInt(sequence));
-    expect([...sequences].sort((left, right) => (left < right ? -1 : 1))).toEqual(sequences);
-    const newest = await store.threadEventPageForOwner({
-      maxItems: 5,
-      ownerId: userId,
-      threadId: thread.id,
-    });
-    expect(newest?.events.map(({ type }) => type)).toEqual([
-      "reasoning.completed",
-      "tool.started",
-      "tool.completed",
-      "run.completed",
-      "thread.state-changed",
-    ]);
-    expect(newest?.window).toMatchObject({
-      hasMore: true,
-      itemCount: 5,
-      totalItems: 15,
-    });
-    expect(newest?.window.nextBefore).toBe(newest?.events[0]?.sequence);
-    const older = await store.threadEventPageForOwner({
-      before: newest!.window.nextBefore!,
-      maxItems: 5,
-      ownerId: userId,
-      threadId: thread.id,
-    });
-    expect(older?.events.map(({ type }) => type)).toEqual([
-      "thread-input.updated",
-      "run.status",
-      "thread.continuation-established",
-      "run.started",
-      "thread-input.updated",
-    ]);
-    expect(older?.window).toMatchObject({
-      hasMore: true,
-      itemCount: 5,
-      nextBefore: older?.events[0]?.sequence,
-      totalItems: 15,
-    });
-    const oldest = await store.threadEventPageForOwner({
-      before: older!.window.nextBefore!,
-      maxItems: 5,
-      ownerId: userId,
-      threadId: thread.id,
-    });
-    expect(oldest?.events.map(({ type }) => type)).toEqual([
-      "thread.created",
-      "message.created",
-      "message.placed",
-      "run.queued",
-      "thread.state-changed",
-    ]);
-    expect(oldest?.window).toMatchObject({
-      hasMore: false,
-      itemCount: 5,
-      nextBefore: null,
-      totalItems: 15,
-    });
-    await expect(
-      store.threadEventPageForOwner({
-        before: "not a sequence",
-        ownerId: userId,
-        threadId: thread.id,
-      }),
-    ).rejects.toMatchObject({
-      code: "bad_request",
-    });
+    if (older.kind !== "page") throw new Error("Expected older page");
+    expect(older.items).toEqual(full.items.slice(0, 2));
+    expect(older.hasMore).toBe(false);
+    expect(older.nextBefore).toBeNull();
     const outsider = await store.createUser("Outsider");
     await expect(
-      store.threadEventPageForOwner({
-        ownerId: outsider,
-        threadId: thread.id,
-      }),
-    ).rejects.toMatchObject({ code: "not_found" });
+      readTranscriptPage(store.database, { ...read, viewerId: outsider }),
+    ).rejects.toMatchObject({ code: "forbidden" });
   });
   it("pages human and silent automatic Thread turns with split-turn budgets", async ({
     storeFixture,
@@ -2920,92 +2799,58 @@ describeStore("PostgreSQL store", (it) => {
         () => 1,
       ),
     });
-    const page = (input: {
-      before?: string;
+    const page = async (input: {
+      cursor?: TranscriptOrderCursor;
       maxBytes?: number;
-      maxItems?: number;
+      limit?: number;
       maxTurns?: number;
-    }) =>
-      store.threadEventPageForOwner({
+    }) => {
+      const result = await readTranscriptPage(database, {
         ...input,
-        ownerId: userId,
-        threadId: thread.id,
+        viewerId: userId,
+        scope: { kind: "thread", threadId: thread.id },
       });
-    const all = (await page({
-      maxTurns: 20,
-    }))!;
-    expect(all.window).toMatchObject({
-      hasMore: false,
-      nextBefore: null,
-    });
-    expect(all.window.totalItems).toBe(all.events.length);
-    // A queued input is a turn where a Run placed it, not where it was sent.
-    const starts = all.events.flatMap(({ type }, index) =>
-      type === "message.placed" ? [index] : [],
-    );
+      if (result.kind !== "page") throw new Error("Expected transcript page");
+      return result;
+    };
+    const all = await page({ maxTurns: 20 });
+    expect(all.hasMore).toBe(false);
+    expect(all.nextBefore).toBeNull();
+    const starts = all.items.flatMap(({ isTurnStart }, index) => (isTurnStart ? [index] : []));
     expect(starts).toHaveLength(3);
-    const [, second, third] = starts as [number, number, number];
-    const newest = (await page({
-      maxTurns: 2,
-    }))!;
-    expect(newest.events).toEqual(all.events.slice(second));
-    expect(newest.window).toMatchObject({
-      hasMore: true,
-      nextBefore: all.events[second]!.sequence,
-      totalItems: all.events.length,
-    });
-    expect(newest.window.byteCount).toBe(Buffer.byteLength(JSON.stringify(newest.events), "utf8"));
-    const oldest = (await page({
-      before: newest.window.nextBefore!,
-      maxTurns: 2,
-    }))!;
-    expect(oldest.events).toEqual(all.events.slice(0, second));
-    expect(oldest.window).toMatchObject({
-      hasMore: false,
-      nextBefore: null,
-    });
-
-    // A turn that fits what is sent is never cut for how it is stored.
-    const newestTurn = all.events.slice(third);
-    const fitted = (await page({
-      maxBytes: Buffer.byteLength(JSON.stringify(newestTurn), "utf8"),
-      maxTurns: 1,
-    }))!;
-    expect(fitted.events).toEqual(newestTurn);
-
-    // An event-count page ends at a turn rather than splitting the next one.
-    const counted = (await page({
-      maxItems: all.events.length - second + 2,
-    }))!;
-    expect(counted.events).toEqual(all.events.slice(second));
-
-    // Only a newest turn that alone crosses a bound is cut inside, and paging
-    // then continues through it.
-    const cut = (await page({
-      maxItems: 3,
-      maxTurns: 1,
-    }))!;
-    expect(cut.events).toEqual(all.events.slice(-3));
-    const rest = (await page({
-      before: cut.window.nextBefore!,
-      maxTurns: 1,
-    }))!;
-    expect(rest.events).toEqual(all.events.slice(third, -3));
-
-    // An event larger than the byte bound is still a page of one, never the end.
-    const largeIndex = all.events.findIndex(
-      (event) => event.type === "tool.completed" && JSON.stringify(event).includes(large),
-    );
-    const alone = (await page({
-      before: all.events[largeIndex + 1]!.sequence,
-      maxBytes: 10_000,
-      maxTurns: 2,
-    }))!;
-    expect(alone.events).toEqual([all.events[largeIndex]]);
-    expect(alone.window).toMatchObject({
-      hasMore: true,
-      nextBefore: all.events[largeIndex]!.sequence,
-    });
+    const [first, second, third] = starts as [number, number, number];
+    const newest = await page({ maxTurns: 2 });
+    expect(newest.items).toEqual(all.items.slice(first + 1));
+    expect(newest.hasMore).toBe(true);
+    expect(newest.nextBefore).toMatchObject({ beforeId: all.items[first + 1]!.id });
+    const oldest = await page({ cursor: newest.nextBefore!, maxTurns: 2 });
+    expect(oldest.items).toEqual(all.items.slice(0, first + 1));
+    expect(oldest.hasMore).toBe(false);
+    const newestTurn = all.items.slice(third);
+    const bounded = await page({ maxBytes: 8192, maxTurns: 1 });
+    expect(bounded.items).toEqual(all.items.slice(second + 1));
+    expect(bounded.items.slice(-newestTurn.length)).toEqual(newestTurn);
+    expect(Buffer.byteLength(JSON.stringify(bounded))).toBeLessThanOrEqual(8192);
+    const counted = await page({ limit: 2, maxTurns: 1 });
+    expect(counted.items).toEqual(newestTurn.slice(-2));
+    const rest = await page({ cursor: counted.nextBefore!, maxTurns: 1 });
+    expect(rest.items).toEqual(all.items.slice(second + 1, -2));
+    const { id: toolCallId } = await database
+      .selectFrom("toolCalls")
+      .select("id")
+      .where("threadId", "=", thread.id)
+      .where("callId", "=", "call-2-1")
+      .executeTakeFirstOrThrow();
+    const tool = all.items.find((item) => item.kind === "tool" && item.toolCallId === toolCallId);
+    expect(tool).toBeDefined();
+    expect(Buffer.byteLength(JSON.stringify(tool))).toBeLessThan(Buffer.byteLength(large));
+    await expect(
+      readTranscriptItem(database, {
+        itemId: tool!.id,
+        scope: { kind: "thread", threadId: thread.id },
+        viewerId: userId,
+      }),
+    ).resolves.toMatchObject({ kind: "item", body: { kind: "tool", output: { text: large } } });
   });
   it("persists tool output whose source text carried NUL bytes", async ({ storeFixture }) => {
     const { createRunFixture, enqueueHumanTrigger, store } = storeFixture;
@@ -3081,12 +2926,12 @@ describeStore("PostgreSQL store", (it) => {
       type: "tool.completed",
     });
     expect(await commit(raw)).toMatchObject({
-      wasDuplicate: false,
+      replayed: false,
     });
     const output = createToolOutput(machOHead);
     expect(output.text).not.toContain("\u0000");
     expect(await commit(raw)).toMatchObject({
-      wasDuplicate: true,
+      replayed: true,
     });
     expect(
       await commit({
@@ -3097,7 +2942,7 @@ describeStore("PostgreSQL store", (it) => {
         },
       }),
     ).toMatchObject({
-      wasDuplicate: true,
+      replayed: true,
     });
     await commit(
       pendingEvent({
@@ -3109,16 +2954,13 @@ describeStore("PostgreSQL store", (it) => {
         type: "run.completed",
       }),
     );
-    const page = await store.threadEventPageForOwner({
-      ownerId: userId,
-      threadId: thread.id,
-    });
-    const completed = page?.events.find(({ type }) => type === "tool.completed");
-    expect(completed?.data).toEqual({
-      callId: "call-nul",
-      isError: false,
-      output,
-    });
+    const scope = { kind: "thread", threadId: thread.id } as const;
+    const page = await readTranscriptPage(store.database, { viewerId: userId, scope });
+    if (page.kind !== "page") throw new Error("Expected tool page");
+    const tool = page.items.find(({ kind }) => kind === "tool")!;
+    expect(
+      await readTranscriptItem(store.database, { viewerId: userId, scope, itemId: tool.id }),
+    ).toMatchObject({ kind: "item", body: { kind: "tool", output } });
   });
   it("accepts only contiguous Runner events and legal Run transitions", async ({
     storeFixture,
@@ -3167,7 +3009,7 @@ describeStore("PostgreSQL store", (it) => {
         runnerBootId: "boot-event-order",
         runnerId,
       }),
-    ).rejects.toThrow(/out of sequence; expected 0/);
+    ).rejects.toMatchObject({ code: "conflict", message: "Expected Runner ordinal 0" });
     await expect(
       store.commitRunnerEvent({
         environmentId,
@@ -3222,7 +3064,10 @@ describeStore("PostgreSQL store", (it) => {
         runnerBootId: "boot-event-order",
         runnerId,
       }),
-    ).rejects.toThrow(/already committed with different content/);
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "Runner ordinal was already used by another statement",
+    });
     await expect(
       store.commitRunnerEvent({
         environmentId,
@@ -3237,7 +3082,7 @@ describeStore("PostgreSQL store", (it) => {
         runnerBootId: "boot-event-order",
         runnerId,
       }),
-    ).rejects.toThrow(/out of sequence; expected 1/);
+    ).rejects.toMatchObject({ code: "conflict", message: "Expected Runner ordinal 1" });
     const later = await store.enqueueThreadInput({
       content: [
         {
@@ -3282,9 +3127,9 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId: "boot-event-order",
       runnerId,
     });
-    expect(committed.wasDuplicate).toBe(false);
-    expect(duplicate.wasDuplicate).toBe(true);
-    expect(duplicate.event.sequence).toBe(committed.event.sequence);
+    expect(committed.replayed).toBe(false);
+    expect(duplicate.replayed).toBe(true);
+    expect(duplicate.throughOrdinal).toBe(committed.throughOrdinal);
     expect(
       await database
         .selectFrom("runs")
@@ -3422,21 +3267,28 @@ describeStore("PostgreSQL store", (it) => {
       nextRunnerOrdinal: 2,
       status: "waiting",
     });
-    const waitingSnapshot = await store.deploymentSnapshot();
-    expect(waitingSnapshot.pendingRequests).toHaveLength(1);
-    expect(waitingSnapshot.pendingRequests[0]).toMatchObject({
-      id: requestId,
-      originatingRunId: turn.run.id,
-      presentation: {
-        kind: "choice",
-        title: "Approve write",
-      },
+    const waiting = await readPersonalDetailSnapshot(database, {
+      viewerId: userId,
+      scope: { kind: "thread", threadId: thread.id },
     });
-    expect(waitingSnapshot.pendingRequestWindow).toMatchObject({
-      hasMore: false,
-      itemCount: 1,
-      totalItems: 1,
-    });
+    if (waiting.kind !== "snapshot") throw new Error("Expected waiting detail");
+    expect(waiting.snapshot.pendingRequests).toEqual([
+      expect.objectContaining({ id: requestId, title: "Approve write", status: "pending" }),
+    ]);
+    const reviewedRevision = (await store.requests.revision(requestId))!;
+    await expect(
+      store.enqueueRunnerControl({
+        idempotencyKey: "stale-review",
+        requestId,
+        expectedRevision: (BigInt(reviewedRevision) - 1n).toString(),
+        requestedBy: userId,
+        response: { kind: "choice", optionId: "allow" },
+        sealedResponse: sealedTestRequestResponse(),
+        threadId: thread.id,
+        runId: turn.run.id,
+        type: "request.respond",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
     await expect(
       store.enqueueRunnerControl({
         requestId,
@@ -3451,6 +3303,7 @@ describeStore("PostgreSQL store", (it) => {
         sealedResponse: sealedTestRequestResponse(),
         runId: turn.run.id,
         threadId: thread.id,
+        expectedRevision: (await store.requests.revision(requestId))!,
         type: "request.respond",
       }),
     ).rejects.toMatchObject({
@@ -3468,6 +3321,7 @@ describeStore("PostgreSQL store", (it) => {
         sealedResponse: sealedTestRequestResponse(),
         runId: turn.run.id,
         threadId: thread.id,
+        expectedRevision: reviewedRevision,
         type: "request.respond",
       }),
     ).rejects.toMatchObject({
@@ -3484,6 +3338,7 @@ describeStore("PostgreSQL store", (it) => {
       sealedResponse: sealedTestRequestResponse(),
       runId: turn.run.id,
       threadId: thread.id,
+      expectedRevision: (await store.requests.revision(requestId))!,
       type: "request.respond" as const,
     };
     const control = await store.enqueueRunnerControl(controlInput);
@@ -3531,12 +3386,7 @@ describeStore("PostgreSQL store", (it) => {
       responseCommandId: control.command.id,
       status: "pending",
     });
-    const resolutionEvents = await store.succeedCommand(control.command.id);
-    expect(resolutionEvents).toEqual([
-      expect.objectContaining({
-        type: "request.resolved",
-      }),
-    ]);
+    await store.succeedCommand(control.command.id);
     expect(
       await database
         .selectFrom("requests")
@@ -3670,7 +3520,7 @@ describeStore("PostgreSQL store", (it) => {
         }),
       );
     };
-    const respond = (requestId: RequestId, suffix: string) =>
+    const respond = async (requestId: RequestId, suffix: string) =>
       store.enqueueRunnerControl({
         requestId,
         idempotencyKey: `action-cancellation-${suffix}`,
@@ -3682,6 +3532,7 @@ describeStore("PostgreSQL store", (it) => {
         sealedResponse: sealedTestRequestResponse(),
         runId: fixture.run.id,
         threadId: fixture.thread.id,
+        expectedRevision: (await store.requests.revision(requestId))!,
         type: "request.respond",
       });
     const cancelledId = createId("request");
@@ -3722,7 +3573,14 @@ describeStore("PostgreSQL store", (it) => {
     ).resolves.toEqual({
       status: "failed",
     });
-    await expect(store.succeedCommand(cancelledResponse.command.id)).resolves.toEqual([]);
+    await store.succeedCommand(cancelledResponse.command.id);
+    await expect(
+      database
+        .selectFrom("commands")
+        .select("status")
+        .where("id", "=", cancelledResponse.command.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "failed" });
     const acceptedId = createId("request");
     await openRequest(acceptedId, 3);
     const acceptedResponse = await respond(acceptedId, "accepted");
@@ -3760,14 +3618,15 @@ describeStore("PostgreSQL store", (it) => {
     await openRequest(authorityCancelledId, 5);
     const authorityCancelledResponse = await respond(authorityCancelledId, "authority-cancelled");
     await expect(store.requests.cancelForRun(fixture.run.id, "run-ended")).resolves.toEqual([
-      expect.objectContaining({
-        data: {
-          reason: "run-ended",
-          requestId: authorityCancelledId,
-        },
-        type: "request.cancelled",
-      }),
+      authorityCancelledId,
     ]);
+    await expect(
+      database
+        .selectFrom("requests")
+        .select(["status", "cancellationReason"])
+        .where("id", "=", authorityCancelledId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "cancelled", cancellationReason: "run-ended" });
     await expect(
       database
         .selectFrom("commands")
@@ -3784,71 +3643,51 @@ describeStore("PostgreSQL store", (it) => {
       store.claimCommand(authorityCancelledResponse.command.id, "cancelled-response-worker"),
     ).resolves.toBeNull();
   });
-  it("holds cancellation behind the transactional Runner response boundary", async ({
+  it("rejects the Runner receipt when Stop revokes authority after the response handoff", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, openLiveRequest, store, database } = storeFixture;
+    const { startRunFixture, openLiveRequest, store, database, reactions } = storeFixture;
     const fixture = await startRunFixture("request-response-dispatch-fence");
     const requestId = createId("request");
     await openLiveRequest(fixture, requestId);
+    const claims = (await store.runCapabilityScope(fixture.run.id))!;
     const response = await store.enqueueRunnerControl({
       idempotencyKey: "request-response-dispatch-fence",
       requestId,
       requestedBy: fixture.userId,
-      response: {
-        kind: "choice",
-        optionId: "allow",
-      },
+      response: { kind: "choice", optionId: "allow" },
       sealedResponse: sealedTestRequestResponse(),
       runId: fixture.run.id,
       threadId: fixture.thread.id,
+      expectedRevision: (await store.requests.revision(requestId))!,
       type: "request.respond",
     });
     await store.claimCommand(response.command.id, "request-response-dispatch-fence-worker");
-    let announceSend!: () => void;
-    const sendStarted = new Promise<void>((resolve) => {
-      announceSend = resolve;
-    });
-    let releaseReceipt!: () => void;
-    const receipt = new Promise<void>((resolve) => {
-      releaseReceipt = resolve;
-    });
+    const offered = Promise.withResolvers<void>();
+    const receipt = Promise.withResolvers<void>();
     const delivery = store.dispatchRequestResponse(response.command.id, async (beforeAck) => {
-      announceSend();
-      await receipt;
+      offered.resolve();
+      await receipt.promise;
       await beforeAck();
     });
-    void delivery.catch(() => undefined);
-    await sendStarted;
-    const cancellation = store.requests.cancelForRun(fixture.run.id, "run-ended");
-    void cancellation.catch(() => undefined);
-    await vi.waitFor(
-      async () => {
-        const result = await sql<{
-          readonly waiting: number;
-        }>`
-          select count(*)::integer as waiting
-          from pg_locks locks
-          join pg_stat_activity activity on activity.pid = locks.pid
-          where locks.granted = false
-          and locks.locktype = 'transactionid'
-          and activity.datname = current_database()
-          and activity.application_name = 'opensteer-integration-test'
-        `.execute(database);
-        expect(
-          Number(result.rows[0]?.waiting ?? 0),
-          "The operation never waited on its database lock",
-        ).toBeGreaterThan(0);
-      },
-      { timeout: 1_000, interval: 5 },
-    );
-    releaseReceipt();
-    await expect(delivery).resolves.toEqual([
-      expect.objectContaining({
-        type: "request.resolved",
-      }),
-    ]);
-    await expect(cancellation).resolves.toEqual([]);
+    void delivery.catch(offered.reject);
+    try {
+      await withTimeout(offered.promise, 5_000, {
+        timeoutError: () => new Error("The Runner never received the Request response intent"),
+      });
+      expect(await store.stopHeldRun(claims, "device-access")).not.toBeNull();
+    } finally {
+      receipt.resolve();
+      await expect(delivery).rejects.toMatchObject({ code: "conflict" });
+    }
+    expect(
+      reactions.filter(
+        (reaction) =>
+          reaction.type === "requestChanged" &&
+          reaction.requestId === requestId &&
+          reaction.status !== "pending",
+      ),
+    ).toEqual([expect.objectContaining({ type: "requestChanged", status: "cancelled" })]);
     await expect(
       database
         .selectFrom("requests")
@@ -3856,12 +3695,9 @@ describeStore("PostgreSQL store", (it) => {
         .where("id", "=", requestId)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({
-      cancellationReason: null,
-      response: {
-        kind: "choice",
-        optionId: "allow",
-      },
-      status: "fulfilled",
+      cancellationReason: "run-ended",
+      response: null,
+      status: "cancelled",
     });
   });
   it("allows a Runner infrastructure failure before run.started", async ({ storeFixture }) => {

@@ -1,3 +1,4 @@
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { randomUUID } from "node:crypto";
 import type { RequestPresentation, DeviceId, UserId, ThreadId } from "@opensteer/core";
 import {
@@ -12,7 +13,7 @@ import {
 import { sql, type Selectable, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
-import { requestFromRow } from "./request-persistence.js";
+import { lockRequestThreads, requestFromRow } from "./request-persistence.js";
 
 export type ComputerAppSetupRequestRow = Selectable<DatabaseSchema["computerAppSetupRequests"]>;
 
@@ -72,23 +73,51 @@ export function computerAppSetupRequestFromRow(
   });
 }
 
+export async function lockComputerApprovalRequestThreads(
+  tx: Transaction<DatabaseSchema>,
+  setupIds:
+    | import("kysely").SelectQueryBuilder<
+        DatabaseSchema,
+        "computerAppSetupRequests",
+        { id: string }
+      >
+    | readonly string[],
+  otherThreads: readonly ThreadId[] = [],
+) {
+  if (Array.isArray(setupIds) && setupIds.length === 0) return lockRequestThreads(tx, otherThreads);
+  const linked = await tx
+    .selectFrom("requests")
+    .select("originatingThreadId")
+    .distinct()
+    .where("kind", "=", "computer.app.access")
+    .where("status", "=", "pending")
+    .where(sql<string>`payload->>'setupRequestId'`, "in", setupIds)
+    .execute();
+  await lockRequestThreads(tx, [
+    ...otherThreads,
+    ...linked.map(({ originatingThreadId }) => originatingThreadId),
+  ]);
+}
+
 /** Locks the one row that may exist for this scope, so approval cannot race replacement. */
 export async function lockComputerAppSetupRequestInTransaction(
   transaction: Transaction<DatabaseSchema>,
   scope: ComputerAppScope,
+  threadId?: ThreadId,
 ): Promise<ComputerAppSetupRequestRow | undefined> {
-  return (
-    transaction
-      .selectFrom("computerAppSetupRequests")
-      .selectAll()
-      .where("kind", "=", scope.kind)
-      .where("runnerId", "=", scope.deviceId)
-      .where("definitionId", "=", scope.definitionId)
-      .where("appKey", scope.appKey === null ? "is" : "=", scope.appKey)
-      // FOR UPDATE: Callers delete or replace this computer app setup request.
-      .forUpdate()
-      .executeTakeFirst()
+  const query = transaction
+    .selectFrom("computerAppSetupRequests")
+    .where("kind", "=", scope.kind)
+    .where("runnerId", "=", scope.deviceId)
+    .where("definitionId", "=", scope.definitionId)
+    .where("appKey", scope.appKey === null ? "is" : "=", scope.appKey);
+  await lockComputerApprovalRequestThreads(
+    transaction,
+    query.select("id"),
+    threadId ? [threadId] : [],
   );
+  // FOR UPDATE: Callers delete or replace this computer app setup request.
+  return query.selectAll().forUpdate().executeTakeFirst();
 }
 
 /**
@@ -108,7 +137,7 @@ export async function deleteComputerAppSetupRequestsInTransaction(
     readonly deviceId?: DeviceId;
   },
 ): Promise<readonly string[]> {
-  let query = transaction.deleteFrom("computerAppSetupRequests");
+  let query = transaction.selectFrom("computerAppSetupRequests").select("id");
   if (scope.kind !== undefined) query = query.where("kind", "=", scope.kind);
   if (scope.deviceId !== undefined) query = query.where("runnerId", "=", scope.deviceId);
   if (scope.definitionId !== undefined) {
@@ -117,7 +146,22 @@ export async function deleteComputerAppSetupRequestsInTransaction(
   if (scope.appKey !== undefined) {
     query = query.where("appKey", scope.appKey === null ? "is" : "=", scope.appKey);
   }
-  const removed = await query.returning("id").execute();
+  await lockComputerApprovalRequestThreads(transaction, query);
+  const rows = await query
+    .orderBy("id")
+    // FOR UPDATE: Deletes these app setup requests.
+    .forUpdate()
+    .execute();
+  if (!rows.length) return [];
+  const removed = await transaction
+    .deleteFrom("computerAppSetupRequests")
+    .where(
+      "id",
+      "in",
+      rows.map(({ id }) => id),
+    )
+    .returning("id")
+    .execute();
   return removed.map(({ id }) => id);
 }
 
@@ -228,7 +272,7 @@ export async function insertComputerAppSetupRequestInTransaction(
     .select("id")
     .where("singletonKey", "=", "primary")
     .executeTakeFirstOrThrow();
-  return transaction
+  const request = await transaction
     .insertInto("computerAppSetupRequests")
     .values({
       kind: input.kind ?? "app",
@@ -251,6 +295,12 @@ export async function insertComputerAppSetupRequestInTransaction(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
+  await commitPersonalMutation(transaction, async (_tx, mutation) => {
+    mutation.react({ type: "deadlinesChanged" });
+    mutation.bumpResource("plugin");
+    mutation.bumpResource("machine");
+  });
+  return request;
 }
 
 /** Whether an existing pending approval is the same ask, and therefore replayable. */

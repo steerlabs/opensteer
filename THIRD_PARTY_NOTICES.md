@@ -9,7 +9,8 @@ to your computer was inspired by theirs. Thank you to the T3 team.
 Portions of the engine drivers in `packages/harness-claude`, `packages/harness-codex`,
 `packages/harness-grok` and `packages/harness-opencode`, subagent title normalization in
 `packages/client`, and the mobile composer editor in `apps/mobile/modules/composer-editor` and
-`apps/mobile/src/ui/composer-editor-revision.ts` are adapted from T3 Code.
+`apps/mobile/src/ui/composer-editor-revision.ts`, and the live Markdown scanner in
+`apps/host/src/runtime/markdown-live-boundary.ts` are adapted from T3 Code.
 
 MIT License
 

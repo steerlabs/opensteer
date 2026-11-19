@@ -1,3 +1,4 @@
+import { readTestResource } from "../apps/host/src/server/test-host-api-request.js";
 import { runtimeBrowserCommand } from "./browser-sessions.test-support.js";
 
 import { execFileSync } from "node:child_process";
@@ -95,10 +96,15 @@ describe("live agent-created browser profile", () => {
       });
       evidence.turns = [{ ask, reply: first.assistantText, runId: first.runId }];
 
-      const afterFirst = await stack.api["bootstrap.get"]({});
-      if (!afterFirst.ok) throw new Error(afterFirst.error.message);
-      const { profiles } = afterFirst.data.browser;
-      const sessions = afterFirst.data.tabs.tabs;
+      const [
+        { profiles },
+        {
+          tabs: { tabs: sessions },
+        },
+      ] = await Promise.all([
+        readTestResource(stack.api, "browser-profile"),
+        readTestResource(stack.api, "tab"),
+      ]);
       const onSite = sessions.filter((tab) => tab.kind === "page" && tab.url?.startsWith(origin));
       Object.assign(evidence, {
         profiles: profiles.map(({ id, name }) => ({ id, name })),

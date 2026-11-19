@@ -69,14 +69,11 @@ export function blockingDetail(presentation: AssignmentPresentation): Assignment
 /** What a client holds that a task's presentation depends on. */
 export type AssignmentReader = Pick<
   HostSnapshot,
-  | "connection"
-  | "environments"
-  | "network"
-  | "requests"
-  | "threads"
-  | "transcripts"
-  | "waitingRequests"
->;
+  "connection" | "environments" | "network" | "threads" | "waitingRequests"
+> & {
+  readonly requests?: Readonly<Record<string, readonly import("@opensteer/core").Request[]>>;
+  readonly transcripts?: Readonly<Record<string, readonly TranscriptEntry[]>>;
+};
 
 export function assignmentTitle(
   assignment: { readonly workerThread: Pick<AssignmentSummary["workerThread"], "id" | "title"> },
@@ -149,7 +146,7 @@ export function assignmentPresentation(
     assignment.currentRunStatus === "queued" &&
     worker !== undefined &&
     threadAccountPreparing(reader.environments, worker);
-  const step = tone === "working" ? currentStep(assignment, reader.transcripts) : null;
+  const step = tone === "working" ? currentStep(assignment, reader.transcripts ?? {}) : null;
   const detail: AssignmentDetail | null =
     stopBlocked !== null
       ? { kind: "unreachable", text: stopBlocked }

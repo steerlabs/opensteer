@@ -16,6 +16,7 @@ import {
   RunnerChallengeSchema,
   RunnerDescriptorSchema,
   hostApi,
+  runEventsCapability,
   type RunnerDescriptor,
   type ComputerAppStatusEntry,
 } from "@opensteer/protocol";
@@ -63,12 +64,22 @@ import {
 const baseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = baseUrl ? describe : describe.skip;
 const methods = [
-  "bootstrap.get",
+  "personal.shell.get",
   "machines.list",
   "integrations.get",
   "integration.platform.get",
   "integration.computer.setup.list",
 ] as const;
+/** A `host.resource` push names each changed kind's revision (e522ce7fd); apps live in `machine`. */
+function machineRevision(message: Record<string, unknown>) {
+  const revisions = message.revisions;
+  return (
+    message.type === "host.resource" &&
+    typeof revisions === "object" &&
+    revisions !== null &&
+    "machine" in revisions
+  );
+}
 const envelope = z.object({ ok: z.literal(true), data: z.unknown() });
 const apps = ["apple-calendar", "apple-contacts", "apple-reminders"];
 const iphoneAppAccess = {
@@ -183,10 +194,14 @@ integration.sequential("iPhone integrations Host contract", () => {
       ...earlier.descriptor,
       modules: { integrations: { ...earlier.descriptor.modules.integrations, protocolVersion: 3 } },
     };
-    const viewer = keep(await openRealtime(host, host.ownerHeaders));
-    const pluginNotices = () =>
-      viewer.messages.filter(({ type }) => type === "host.plugins-changed").length;
-    const beforeRefusal = pluginNotices();
+    const pluginNotices = async () =>
+      (
+        await host.store.database
+          .selectFrom("clientSyncState")
+          .select("resourceRevisions")
+          .executeTakeFirstOrThrow()
+      ).resourceRevisions.plugin;
+    const beforeRefusal = await pluginNotices();
     expect(
       (await refusal(host, outdated, { privateKey: earlier.primary.privateKey })).frames,
     ).toContainEqual(
@@ -194,14 +209,14 @@ integration.sequential("iPhone integrations Host contract", () => {
         error: expect.objectContaining({ reason: "iphone-app-outdated" }),
       }),
     );
-    await waitForCondition(async () => pluginNotices() > beforeRefusal);
+    await waitForCondition(async () => (await pluginNotices()) !== beforeRefusal);
     const stale = (await local()).find(({ computer }) => computer?.id === earlier.runnerId)!;
     expect(stale.unavailable).toBe("Update Opensteer on Test iPhone to use its apps.");
 
     const earlierDevice = await host.store.requireSelfDeviceId(earlier.runnerId);
-    const beforeRemoval = pluginNotices();
+    const beforeRemoval = await pluginNotices();
     await revokeMachine(host, { runnerId: earlier.runnerId, key: "remove-earlier" });
-    await waitForCondition(async () => pluginNotices() > beforeRemoval);
+    await waitForCondition(async () => (await pluginNotices()) !== beforeRemoval);
     expect(
       (await local()).filter(({ title }) => title.startsWith("Calendar on Test iPhone")),
     ).toEqual([
@@ -572,6 +587,7 @@ integration.sequential("iPhone integrations Host contract", () => {
       },
       { modules: { integrations: descriptor.modules.integrations, shell } },
       {
+        capabilities: [runEventsCapability],
         modules: {
           integrations: descriptor.modules.integrations,
           agents: {
@@ -888,7 +904,7 @@ integration.sequential("iPhone integrations Host contract", () => {
         token: host.hostingRunnerEnrollmentToken,
       }),
     );
-    const realtime = keep(await openRealtime(host, host.ownerHeaders));
+    const realtime = keep(await openRealtime(host, host.ownerHeaders, ["machine"]));
     const macCalls: unknown[] = [];
     const mac = keep(
       await connectComputerAppMachine(
@@ -998,9 +1014,7 @@ integration.sequential("iPhone integrations Host contract", () => {
       "corpus",
       "apple-calendar",
     );
-    await waitForCondition(async () =>
-      realtime.messages.some(({ type }) => type === "host.machines.changed"),
-    );
+    await waitForCondition(async () => realtime.messages.some(machineRevision));
     const rpc: { method: (typeof methods)[number]; data: unknown }[] = [];
     for (const method of methods) {
       const response = await testRpcRequest(
@@ -1023,7 +1037,7 @@ integration.sequential("iPhone integrations Host contract", () => {
           iphoneMachineId: phone.runnerId,
           setupRequestId: pending.id,
           rpc,
-          frames: realtime.messages.filter(({ type }) => type === "host.machines.changed"),
+          frames: realtime.messages.filter(machineRevision),
         },
         null,
         2,
@@ -1412,6 +1426,7 @@ async function grant(
       type: "request.respond",
       idempotencyKey: randomUUID(),
       requestId: request.request.id,
+      expectedRevision: (await host.store.requests.revision(request.request.id))!,
       response: {
         kind: "external",
         value: {

@@ -1,9 +1,8 @@
-import type { AgentEvent, RequestId, RequestResponse, UserId } from "@opensteer/core";
+import type { RequestId, RequestResponse, UserId } from "@opensteer/core";
 import { DeviceIdSchema } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
-import type { ContinuationService } from "../agents/continuation-service.js";
 
 interface DeviceAccessServiceOptions {
   readonly store: Pick<OpensteerStore, "requests" | "getDeviceSelfRunnerId">;
@@ -12,8 +11,6 @@ interface DeviceAccessServiceOptions {
     capability: "browser" | "apps" | "files",
   ) => boolean;
   readonly runners: Pick<RunnerRegistry, "isRunnerConnected">;
-  readonly onDeploymentEvent: (event: AgentEvent) => void;
-  readonly continuations: Pick<ContinuationService, "notify">;
 }
 export class DeviceAccessService {
   readonly #options: DeviceAccessServiceOptions;
@@ -44,7 +41,6 @@ export class DeviceAccessService {
           ? this.#options.runners.isRunnerConnected(self)
           : (this.#options.deviceOnline?.(machineId, input.access) ?? false),
     );
-    for (const event of created.events) this.#options.onDeploymentEvent(event);
     return {
       kind: "device.access" as const,
       replayed: created.replayed,
@@ -54,13 +50,12 @@ export class DeviceAccessService {
   }
   async decline(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }) {
     const result = await this.#options.store.requests.declineDeviceAccessRequest(input);
-    for (const event of result.events) this.#options.onDeploymentEvent(event);
-    this.#options.continuations.notify();
     return result;
   }
 }

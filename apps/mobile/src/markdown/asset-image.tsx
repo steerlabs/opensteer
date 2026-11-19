@@ -114,3 +114,29 @@ const styles = StyleSheet.create({
     width: "100%",
   },
 });
+
+export function RetainedToolImage({ imageId }: { imageId: string }) {
+  const visible = useContext(ReferenceVisibility);
+  const preview = useAssetImage({ kind: "transcript-image", imageId }, "preview", {
+    enabled: visible,
+  });
+  const image = preview.image;
+  if (preview.failed) return <Text>Image unavailable</Text>;
+  if (!image) return null;
+  return (
+    <Image
+      key={preview.retry}
+      accessibilityLabel="Tool image"
+      contentFit="contain"
+      source={{
+        uri: image.source,
+        cacheKey: `${preview.deploymentId}:${image.revision}:preview:v62`,
+      }}
+      style={[
+        styles.image,
+        { aspectRatio: image.width && image.height ? image.width / image.height : 4 / 3 },
+      ]}
+      onError={preview.onError}
+    />
+  );
+}

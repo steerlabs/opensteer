@@ -28,6 +28,7 @@ import {
   BrowserSessionIdSchema,
 } from "../packages/protocol/src/browser.js";
 import {
+  browserFixtureOwner,
   addCleanup,
   browserAvailable,
   deployment,
@@ -265,7 +266,11 @@ run("Browser Sessions through a whole deployment", () => {
         }) as unknown as WebSocketClient;
       },
     });
-    addCleanup("Host client", async () => client.dispose());
+    const releaseTabs = client.watchPersonalResource("tab", () => {});
+    addCleanup("Host client", async () => {
+      releaseTabs();
+      client.dispose();
+    });
     const urlSessionId = BrowserSessionIdSchema.parse(
       await startPersonBrowser(stack, { viewport: { height: 700, width: 1000 } }),
     );
@@ -279,9 +284,9 @@ run("Browser Sessions through a whole deployment", () => {
     const activated = await client.activateTab(clientResult.tab.tabId);
     if (activated.kind !== "page") throw new Error("Expected page viewer");
     const clientOpened = { tabId: clientResult.tab.tabId, sessionId: activated.sessionId };
-    expect(
-      client.getSnapshot().tabs.get(BrowserSurfaceIdSchema.parse(clientOpened.tabId)),
-    ).toBeDefined();
+    await vi.waitFor(() => {
+      expect(client.getSnapshot().tabs.get(clientOpened.tabId)).toBeDefined();
+    });
     await waitFor(
       async () =>
         (await client.readBrowserContextCandidate(clientOpened.sessionId, clientOpened.tabId))
@@ -499,7 +504,11 @@ run("Browser Sessions through a whole deployment", () => {
           headers: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
         }) as unknown as WebSocketClient,
     });
-    addCleanup("Host client", async () => client.dispose());
+    const releaseTabs = client.watchPersonalResource("tab", () => {});
+    addCleanup("Host client", async () => {
+      releaseTabs();
+      client.dispose();
+    });
     await client.load();
     const targets = catalog.tabs.map((tab) => tab.id);
     for (const tabId of targets.slice(0, 8))
@@ -513,6 +522,7 @@ run("Browser Sessions through a whole deployment", () => {
           .slice(0, 8)
           .every((id) => client.browserWatchState(sessionId, id).status === "live"),
       25_000,
+      "The first eight browser watches did not become live",
     );
     const owner = await stack.host.store.firstUser();
     if (!owner) throw new Error("Missing browser owner");
@@ -556,6 +566,7 @@ run("Browser Sessions through a whole deployment", () => {
           .every((id) => client.browserWatchState(sessionId, id).status === "live") &&
         client.browserWatchState(sessionId, targets[8]!).error !== null,
       25_000,
+      "The ninth browser watch did not report capture saturation",
     );
     const saturated = targets.map((id) => ({
       id,
@@ -570,6 +581,7 @@ run("Browser Sessions through a whole deployment", () => {
     await waitFor(
       async () => client.browserWatchState(sessionId, targets[8]!).status === "live",
       20_000,
+      "The ninth browser watch did not recover after a capture slot was released",
     );
     expect(
       targets.slice(1).every((id) => client.browserWatchState(sessionId, id).status === "live"),
@@ -1350,7 +1362,7 @@ run("Browser Sessions through a whole deployment", () => {
               entries: viewer.entries.map((entry) =>
                 entry.kind === "frame" ? { kind: entry.kind, header: entry.header } : entry,
               ),
-              bootstrap: await stack.api["bootstrap.get"]({}),
+              tabs: (await browserInventory(stack)).tabs,
             },
             null,
             2,
@@ -1464,15 +1476,13 @@ run("Browser Sessions through a whole deployment", () => {
         pageAnsweredBeforePicture,
         liveAfterAnswer: live?.kind === "frame" ? live.header : null,
       };
-      const bootstrap = await stack.api["bootstrap.get"]({});
-      const sessionState =
-        bootstrap.ok &&
-        (
-          await stack.host.store.getBrowserSessionForOwner(
-            BrowserSessionIdSchema.parse(sessionId),
-            bootstrap.data.user.id,
-          )
-        )?.state;
+      const owner = await browserFixtureOwner(stack);
+      const sessionState = (
+        await stack.host.store.getBrowserSessionForOwner(
+          BrowserSessionIdSchema.parse(sessionId),
+          owner.id,
+        )
+      )?.state;
       const outcome = {
         mode,
         handoffInjected,
@@ -1627,15 +1637,14 @@ run("Browser Sessions through a whole deployment", () => {
       expect(runtime.protocolErrors()).toEqual([]);
       expect(runtime.streamOpen()).toBe(true);
       expect(control.socket.readyState).toBe(WebSocket.OPEN);
-      const bootstrap = await stack.api["bootstrap.get"]({});
+      const owner = await browserFixtureOwner(stack);
       expect(
-        bootstrap.ok &&
-          (
-            await stack.host.store.getBrowserSessionForOwner(
-              BrowserSessionIdSchema.parse(sessionId),
-              bootstrap.data.user.id,
-            )
-          )?.state,
+        (
+          await stack.host.store.getBrowserSessionForOwner(
+            BrowserSessionIdSchema.parse(sessionId),
+            owner.id,
+          )
+        )?.state,
       ).toBe("ready");
       return {
         browserModule: runtime.browserModule(),

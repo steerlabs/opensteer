@@ -294,9 +294,9 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
       );
       await kit.foregroundApp();
       await kit.focusPage();
-      const beforeBootstrap = await kit.context.api["bootstrap.get"]({});
+      const beforeBootstrap = await kit.context.api["tabs.state"]({});
       assert(beforeBootstrap.ok);
-      const tabs = beforeBootstrap.data.tabs;
+      const tabs = beforeBootstrap.data;
       assert(tabs?.complete);
       let quit = 0,
         closed = 0;
@@ -339,9 +339,9 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
           item.click = originals[i]!;
         });
       }
-      const afterBootstrap = await kit.context.api["bootstrap.get"]({});
+      const afterBootstrap = await kit.context.api["tabs.state"]({});
       assert(afterBootstrap.ok);
-      const after = afterBootstrap.data.tabs;
+      const after = afterBootstrap.data;
       assert(after?.complete);
       assert.deepEqual(after, tabs);
       assert.equal(quit, 0);

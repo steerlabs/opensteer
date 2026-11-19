@@ -1,3 +1,4 @@
+import { useThreadTranscript } from "@opensteer/client/react";
 import { setPhoneDisplayAccess } from "@opensteer/client/integrations";
 import { classifyClientFailure, isMissingClientResource } from "@opensteer/client/connections";
 import {
@@ -35,6 +36,7 @@ import {
 import { computerAppAccessApproval, computerUseAccessLabel } from "@opensteer/client/integrations";
 import { isPluginRequest } from "@opensteer/client/plugins";
 import { PluginRequestBody } from "./plugin-request-body.js";
+import { useScreenShowing } from "./screen-showing.js";
 import { useHostSelector, useHostSnapshot } from "@opensteer/client/react";
 import {
   isPhoneDisplayDefinitionId,
@@ -172,11 +174,31 @@ function SubscribedRequestSheet(props: {
   const navigation = useNavigation();
   const { snapshot } = useHostSnapshot(props.hostClient);
   const { requestId, threadId } = props;
-  const request =
-    (snapshot.requests[threadId] ?? []).find(({ id }) => id === requestId) ??
-    snapshot.waitingRequests.find(({ request }) => request.id === requestId)?.request ??
-    null;
-  const pending = request?.status === "pending" ? request : null;
+  const transcript = useThreadTranscript(props.hostClient, threadId, useScreenShowing());
+  const pending =
+    transcript.requests.find(({ id, status }) => id === requestId && status === "pending") ?? null;
+  const reviewing =
+    !transcript.synchronized ||
+    transcript.pendingRequestIds?.includes(requestId) ||
+    transcript.moreRequests;
+  useEffect(() => {
+    if (
+      !transcript.synchronized ||
+      pending ||
+      transcript.pendingRequestIds?.includes(requestId) ||
+      !transcript.moreRequests
+    )
+      return;
+    void props.hostClient.loadMoreOverlays(threadId, "requests").catch(() => undefined);
+  }, [
+    pending,
+    props.hostClient,
+    requestId,
+    threadId,
+    transcript.moreRequests,
+    transcript.pendingRequestIds,
+    transcript.synchronized,
+  ]);
   // Admitted and gone can both ask to close; only the sheet itself may go back.
   const close = useRef(() => undefined as void);
   close.current = () => {
@@ -184,13 +206,18 @@ function SubscribedRequestSheet(props: {
   };
   // Answered elsewhere, withdrawn or admitted: there is nothing left to decide here.
   useEffect(() => {
-    if (pending === null) close.current();
-  }, [pending === null]);
-  if (pending === null || snapshot.user === null) return null;
+    if (!reviewing && pending === null) close.current();
+  }, [reviewing, pending === null]);
+  if (pending === null || snapshot.user === null)
+    return reviewing ? (
+      <View style={styles.gone}>
+        <ActivityIndicator color={color.muted} />
+      </View>
+    ) : null;
   return (
     <SheetForRequest
       {...props}
-      canRespond={canRespondToRequests(snapshot)}
+      canRespond={transcript.synchronized && canRespondToRequests(snapshot)}
       machines={snapshot.machines}
       onClose={() => close.current()}
       surface={deriveSurface([pending], snapshot.user)}
@@ -214,14 +241,8 @@ function ReferencedRequest(props: {
   const { deploymentId, hostClient, requestId, threadId } = props;
   const navigation = useNavigation();
   // The conversation's Requests stay live while it is open, so an answer given here shows.
-  useEffect(() => hostClient.observeThread(threadId), [hostClient, threadId]);
-  const held = useHostSelector(
-    hostClient,
-    (snapshot) =>
-      (snapshot.requests[threadId] ?? []).find(({ id }) => id === requestId) ??
-      snapshot.waitingRequests.find(({ request }) => request.id === requestId)?.request ??
-      null,
-  );
+  const transcript = useThreadTranscript(hostClient, threadId, useScreenShowing());
+  const held = transcript.requests.find(({ id }) => id === requestId) ?? null;
   // Absent or not the reader's is an answer (null); only a lost answer is retried.
   const read = useScreenRead(hostClient, {
     key: `request:${threadId}:${requestId}`,
@@ -232,7 +253,8 @@ function ReferencedRequest(props: {
         throw error;
       }),
   });
-  if (held?.status === "pending")
+  const request = held ?? read.data;
+  if (request?.status === "pending")
     return (
       <SubscribedRequestSheet
         deploymentId={deploymentId}
@@ -242,7 +264,6 @@ function ReferencedRequest(props: {
         threadId={threadId}
       />
     );
-  const request = held ?? read.data;
   if (request !== null)
     return (
       <SettledRequest

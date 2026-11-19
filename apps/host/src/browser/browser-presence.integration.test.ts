@@ -1,5 +1,7 @@
 import { browserRows } from "./browser-rows.test-support.js";
-import { zeroSequence } from "@opensteer/core";
+import type { ThreadId } from "@opensteer/core";
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
+import type { TranscriptItem } from "@opensteer/protocol/transcript";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,63 +19,73 @@ import { testRpcData } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = describe.skipIf(!databaseUrl);
-interface Listener {
-  readonly messages: Record<string, unknown>[];
-  socket: WebSocket;
-  close(): Promise<void>;
-}
-
-/** A personal realtime socket that keeps every message. */
-async function listen(
-  host: MachineAccessHost,
-  headers: Record<string, string>,
-  subscribe = true,
-  placeEvents = false,
-  browserStreams = true,
-): Promise<Listener> {
-  const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/v1/realtime`, { headers });
-  await new Promise<void>((resolve, reject) => {
-    socket.once("open", resolve);
-    socket.once("error", reject);
+async function listen(host: MachineAccessHost, threadId: ThreadId) {
+  const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/v1/realtime`, {
+    headers: host.ownerHeaders,
   });
-  const messages: Record<string, unknown>[] = [];
-  socket.on("message", (frame: WebSocket.RawData) => {
-    const message = JSON.parse(frame.toString()) as Record<string, unknown> & {
-      readonly events?: readonly { readonly sequence?: string }[];
-    };
-    messages.push(message);
-    const latest = message.events?.at(-1);
-    if (message.type === "host.events" && latest?.sequence && subscribe) {
-      socket.send(JSON.stringify({ sequence: latest.sequence, type: "client.ack" }));
+  const items = new Map<string, TranscriptItem>();
+  const scope = { kind: "thread", threadId };
+  const synchronized = waitForMessage(
+    socket,
+    (message) =>
+      message.type === "host.synchronized" &&
+      "subscriptionId" in message &&
+      message.subscriptionId === "detail:0",
+  );
+  void synchronized.catch(() => undefined);
+  socket.on("message", (frame) => {
+    const decoded = ScopedHostMessageSchema.safeParse(JSON.parse(frame.toString()));
+    if (!decoded.success) return;
+    const message = decoded.data;
+    if (message.type !== "host.text" && message.subscriptionId === "detail:0") {
+      if (message.type === "host.snapshot" && "items" in message.snapshot) {
+        items.clear();
+        for (const item of message.snapshot.items) items.set(item.id, item);
+      }
+      if (message.type === "host.changes") {
+        for (const change of message.changes)
+          if (change.entityKind === "item" && change.operation === "upsert")
+            items.set(change.value.id, change.value);
+      }
+    }
+    if (message.type === "host.snapshot" || message.type === "host.changes") {
+      const { subscriptionId, generation, throughSequence } = message;
+      socket.send(
+        JSON.stringify({ type: "client.ack", subscriptionId, generation, throughSequence }),
+      );
     }
   });
-  if (subscribe) {
-    const synchronized = waitForMessage(socket, (message) => message.type === "host.synchronized");
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+    });
     socket.send(
       JSON.stringify({
-        cursor: {
-          deploymentId: (await host.store.getDeployment())!.id,
-          apiVersion: hostApiVersion,
-          afterSequence: zeroSequence,
-        },
+        type: "client.attach",
         apiVersion: hostApiVersion,
-        threadId: null,
-        personShow: "accept",
-        ...(placeEvents ? { placeEvents: "include" } : {}),
-        type: "client.subscribe",
+        generation: 1,
+        interests: [],
+        installed: {},
+        selected: {
+          subscriptionId: "detail:0",
+          generation: 1,
+          scope,
+        },
       }),
     );
     await synchronized;
+    return {
+      items,
+      close: async () => {
+        socket.close();
+        await closed(socket);
+      },
+    };
+  } catch (error) {
+    socket.terminate();
+    throw error;
   }
-  if (browserStreams) socket.send(JSON.stringify({ type: "client.browser.resync" }));
-  return {
-    socket,
-    close: async () => {
-      socket.close();
-      await closed(socket);
-    },
-    messages,
-  };
 }
 
 async function until<Value>(
@@ -90,8 +102,6 @@ async function until<Value>(
   );
 }
 
-const ofType = (listener: Listener, type: string) =>
-  listener.messages.filter((message) => message.type === type);
 integration("Tab activity attribution", () => {
   const cleanups: Array<() => Promise<void>> = [];
   afterEach(async () => {
@@ -119,7 +129,7 @@ integration("Tab activity attribution", () => {
     );
     cleanups.push(() => runtime.close());
     await until(() => (host.runtime.browser.available ? true : undefined));
-    const owner = await listen(host, host.ownerHeaders);
+    const owner = await listen(host, first.threadId);
     cleanups.push(() => owner.close());
     const opened = await testRpcData(
       host.origin,
@@ -239,13 +249,11 @@ integration("Tab activity attribution", () => {
       await acting;
     };
     const named = (runId: string) =>
-      ofType(owner, "host.thread-place-changed").find(
-        (message) => (message.reference as { runId?: string }).runId === runId,
-      );
+      [...owner.items.values()].find((item) => item.kind === "place" && item.runId === runId);
 
     await actIn(first, "cdp-first");
     expect(await until(() => named(first.runId))).toMatchObject({
-      reference: { taskId: first.threadId, tabId, title: "Shared" },
+      place: { tabId, title: "Shared" },
     });
     await first.complete();
     // The same Thread's next Run, in the same page, title and site as the first.
@@ -257,12 +265,16 @@ integration("Tab activity attribution", () => {
     expect(second.runId).not.toBe(first.runId);
     await actIn(second, "cdp-second");
     expect(await until(() => named(second.runId))).toMatchObject({
-      reference: { taskId: first.threadId, tabId, title: "Shared" },
+      place: { tabId, title: "Shared" },
     });
     expect(
-      (await host.runtime.browser.latestTabPlaces(host.ownerId)).find(
-        (reference) => reference.taskId === first.threadId,
-      ),
-    ).toMatchObject({ runId: second.runId });
+      await host.store.database
+        .selectFrom("threads")
+        .select("latestPlace")
+        .where("id", "=", first.threadId)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({
+      latestPlace: { tabId, title: "Shared" },
+    });
   }, 60_000);
 });

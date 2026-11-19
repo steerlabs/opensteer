@@ -3,10 +3,11 @@ import { act, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
 import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
-import { MockHostClient } from "@opensteer/client/mock";
-import { TabIdSchema, TabSchema, type Tab } from "@opensteer/core";
+import { MockHostClient, MockPersonalSocket } from "@opensteer/client/mock";
+import { DeploymentIdSchema, TabIdSchema, TabSchema, type Tab } from "@opensteer/core";
 import { BrowserSessionIdSchema, hostApi, type TabBootstrap } from "@opensteer/protocol";
 import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
+import { ScopedClientMessageSchema } from "@opensteer/protocol/personal-sync";
 import type {
   BrowserTabRecord,
   BrowserTabStreamMeta,
@@ -98,13 +99,15 @@ test.each([false, true])(
     }
     const admission = f.manager.localPresentation(f.deploymentId, f.surfaceId)!;
     const seed = new MockHostClient({ latencyMs: 0 });
-    const bootstrap = await seed.rpc["bootstrap.get"]({});
-    if (!bootstrap.ok) throw new Error("The seed Host did not provide bootstrap metadata");
-    const base = bootstrap.data;
+    const shell = await seed.rpc["personal.shell.get"]({});
+    if (!shell.ok) throw new Error("The seed Host did not provide shell metadata");
+    const base = shell.data;
     const sessionId = BrowserSessionIdSchema.parse(admission.sessionId);
     const tabId = TabIdSchema.parse(f.surfaceId);
     const browser = (): HostedBrowserBootstrap => ({
-      ...base.browser,
+      available: true,
+      profiles: [],
+      profileHomes: [],
       placements: [
         {
           kind: "runner",
@@ -144,6 +147,48 @@ test.each([false, true])(
       };
     };
     const sockets: { url: string; socket: Socket }[] = [];
+    let realtime: MockPersonalSocket;
+    let generation = 0;
+    let sequence = 0;
+    const publish = () => {
+      const fromSequence = String(sequence);
+      const throughSequence = String(++sequence);
+      const address = {
+        scope: { kind: "shell" } as const,
+        subscriptionId: "shell" as const,
+        generation,
+        throughSequence,
+      };
+      const snapshot = {
+        ...seed.scopedShell(undefined, throughSequence),
+        deploymentId: DeploymentIdSchema.parse(f.deploymentId),
+      };
+      if (sequence === 1) {
+        realtime.deliver({ ...address, type: "host.snapshot", snapshot });
+        realtime.deliver({ ...address, type: "host.synchronized" });
+      } else {
+        realtime.deliver({
+          ...address,
+          type: "host.changes",
+          fromSequence,
+          changes: [],
+          shellProgress: { counts: snapshot.counts },
+        });
+      }
+      // The first frame after an attach answers it, marked as the Host marks it.
+      realtime.deliver({
+        type: "host.resource",
+        subscriptionId: "shell",
+        generation,
+        ...(sequence === 1 ? { reply: true as const } : {}),
+        revisions: Object.fromEntries(
+          (["tab", "tab-layout", "browser-placement"] as const).map((kind) => [
+            kind,
+            throughSequence,
+          ]),
+        ),
+      });
+    };
     const dispatch = vi.fn(async () => {
       // The Host restores the sleeping page on the phone that keeps it.
       if (restore)
@@ -164,7 +209,17 @@ test.each([false, true])(
     const client = new HttpHostClient({
       baseUrl: "http://composition.test",
       capabilities: ["browser-target-control-v1"],
+
       webSocketFactory: (url) => {
+        if (new URL(url).pathname === "/v1/realtime") {
+          realtime = new MockPersonalSocket((data) => {
+            const message = ScopedClientMessageSchema.parse(JSON.parse(data));
+            if (message.type !== "client.attach") return;
+            generation = message.generation;
+            queueMicrotask(publish);
+          });
+          return realtime;
+        }
         const socket = new Socket();
         sockets.push({ url, socket });
         return socket;
@@ -172,13 +227,31 @@ test.each([false, true])(
       fetch: async (input, init) => {
         const url = new URL(input instanceof Request ? input.url : String(input));
         const name = url.pathname.slice("/v1/rpc/".length) as keyof typeof hostApi;
-        if (name === "bootstrap.get")
-          return Response.json({
-            ok: true,
-            data: { ...base, deploymentId: f.deploymentId, browser: browser(), tabs: tabs() },
-          });
+        if (name === "personal.shell.get")
+          return Response.json({ ok: true, data: { ...base, deploymentId: f.deploymentId } });
         const raw = url.searchParams.get("input") ?? init?.body;
         const payload = hostApi[name].payload.parse(typeof raw === "string" ? JSON.parse(raw) : {});
+        if (name === "resources.detail.get") {
+          const detail = hostApi[name].payload.parse(payload);
+          if (detail.kind === "browser-placement")
+            return Response.json({
+              ok: true,
+              data: {
+                revision: String(sequence),
+                next: null,
+                data: { kind: detail.kind, placements: browser().placements },
+              },
+            });
+          if (detail.kind === "tab" || detail.kind === "tab-layout")
+            return Response.json({
+              ok: true,
+              data: {
+                revision: String(sequence),
+                next: null,
+                data: { kind: detail.kind, tabs: tabs() },
+              },
+            });
+        }
         if (
           name === "commands.dispatch" &&
           "type" in payload &&
@@ -206,24 +279,19 @@ test.each([false, true])(
         />,
       );
     const viewers = () => sockets.filter(({ url }) => url.includes("/browser-sessions/"));
+    const releaseTabs = client.watchPersonalResource("tab", () => {});
     try {
       await withTimeout(client.load(), 1_000, {
         timeoutError: () => new Error("The composition Host did not load"),
       });
-      const realtime = sockets.find(({ url }) => url.includes("/realtime"))!.socket;
-      let sequence = 0;
-      const publish = () =>
-        realtime.receive({
-          type: "host.snapshot",
-          snapshot: {
-            ...seed.deploymentSnapshot(String(++sequence)),
-            deploymentId: f.deploymentId,
-            resources: { tabs: tabs(), browser: browser() },
-          },
-        });
-      realtime.open();
-      publish();
-      realtime.receive({ type: "host.synchronized", sequence: "1" });
+      await vi.waitFor(
+        () =>
+          expect(
+            client.getSnapshot().tabs.get(tabId),
+            "Tab resource was never installed",
+          ).toBeDefined(),
+        { timeout: 1000 },
+      );
       // The screen's own activation binds a live page's viewer before the page draws.
       if (!restore) await client.activateTab(tabId);
       await act(async () => render(front));
@@ -319,6 +387,7 @@ test.each([false, true])(
           );
         });
       } finally {
+        releaseTabs();
         client.dispose();
         seed.dispose();
       }

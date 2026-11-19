@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { createId, TeamSourceSchema } from "@opensteer/core";
+import { createId, OpensteerError, TeamSourceSchema } from "@opensteer/core";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import type { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import { PersonalTeamRequestSchema } from "@opensteer/protocol";
@@ -100,4 +100,68 @@ it("uses durable operation IDs and attaches reply claims only for the exact Run 
   expect(posts[0]).toMatchObject({ requestId: request.requestId });
   expect(posts[2]).not.toHaveProperty("requestId");
   expect(posts[2]?.clientMessageId).not.toBe(posts[0]?.clientMessageId);
+});
+
+it("retries a Run's team context only before the team confirms the accept", async () => {
+  const source = TeamSourceSchema.parse({
+    teamId: createId("deployment"),
+    channelId: createId("teamChannel"),
+    threadRootId: "1",
+    messageId: "2",
+    audience: {
+      teamName: "Acme",
+      channelName: "support",
+      channelKind: "public",
+      memberCount: 2,
+      peopleOnly: false,
+    },
+  });
+  let teamReply = false;
+  let request: ReturnType<typeof PersonalTeamRequestSchema.parse> | null = null;
+  const refusal = new OpensteerError({
+    code: "forbidden",
+    message: "Team request is unavailable",
+    retryable: false,
+  });
+  const tools = new TeamRunTools(
+    {} as PersonalTeamLinksStore,
+    {
+      forRun: async () => request,
+      repliesToTeam: async () => teamReply,
+    } as unknown as PersonalTeamRequestsStore,
+    () => ({
+      call: async () => {
+        throw refusal;
+      },
+    }),
+  );
+  const runId = createId("run");
+  await expect(tools.context(runId)).rejects.toMatchObject({
+    code: "forbidden",
+    retryable: false,
+  });
+  teamReply = true;
+  await expect(tools.context(runId)).rejects.toMatchObject({ retryable: true });
+  request = PersonalTeamRequestSchema.parse({
+    kind: "self",
+    teamId: source.teamId,
+    requestId: createId("teamAgentRequest"),
+    triggerMessageId: "2",
+    taskId: createId("thread"),
+    inputId: createId("message"),
+    runId,
+    source,
+    remoteState: "queued",
+    publicationState: "pending",
+    terminalState: null,
+    replyMessageId: null,
+  });
+  await expect(tools.context(runId)).rejects.toMatchObject({ retryable: true });
+  for (const settled of [
+    { ...request, remoteState: "working" as const },
+    { ...request, terminalState: "cancelled" as const },
+  ]) {
+    request = settled;
+    await expect(tools.context(runId)).rejects.toBe(refusal);
+  }
 });

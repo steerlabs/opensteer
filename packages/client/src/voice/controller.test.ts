@@ -256,6 +256,60 @@ describe("VoiceController", () => {
     f.dispose();
   });
 
+  it("keeps the call while its viewer and accounts are being read again, and ends it once they are known gone", async () => {
+    const f = setup();
+    await f.controller.start();
+    const before = f.host.getSnapshot();
+    // A new history for the same viewer: the client holds nothing until its first cut and reads.
+    f.publish({
+      user: null,
+      deploymentId: null,
+      session: "checking",
+      voiceAvailable: false,
+      environments: [],
+      harnesses: [],
+      loadedResources: [],
+    });
+    expect(f.controller.getSnapshot().phase).toBe("listening");
+    // The viewer is back; its accounts are not read yet.
+    f.publish({
+      user: before.user,
+      deploymentId: before.deploymentId,
+      session: "authenticated",
+      voiceAvailable: true,
+    });
+    expect(f.controller.getSnapshot().phase).toBe("listening");
+    f.publish({
+      environments: before.environments,
+      harnesses: before.harnesses,
+      loadedResources: before.loadedResources,
+    });
+    expect(f.controller.getSnapshot().phase).toBe("listening");
+    // Read complete, and the account is not in it.
+    f.publish({ harnesses: [] });
+    await vi.waitFor(() => expect(f.controller.getSnapshot().phase).toBe("idle"));
+    f.dispose();
+  });
+
+  it("keeps the call while only some of a new history's account inventories have landed", async () => {
+    const f = setup();
+    await f.controller.start();
+    const before = f.host.getSnapshot();
+    // After a reset, each inventory lands on its own: harnesses first, catalogs not yet.
+    f.publish({
+      environments: before.environments.map((environment) => ({
+        ...environment,
+        harnessCatalogs: [],
+      })),
+      harnesses: [],
+      loadedResources: ["environment", "harness"],
+    });
+    expect(f.controller.getSnapshot().phase).toBe("listening");
+    f.publish({ loadedResources: ["environment", "harness", "harness-catalog"] });
+    await vi.waitFor(() => expect(f.controller.getSnapshot().phase).toBe("idle"));
+    f.dispose();
+  });
+
   it("says the call failed when the Voice Thread can't open", async () => {
     const f = setup();
     f.publish({ voiceThreadId: null });

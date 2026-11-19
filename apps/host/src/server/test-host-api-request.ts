@@ -86,3 +86,63 @@ export async function testRpcData<Name extends RpcName>(
     { readonly ok: true }
   >["data"];
 }
+
+type ResourceDetail = Extract<
+  Awaited<ReturnType<HostApiClient["resources.detail.get"]>>,
+  { readonly ok: true }
+>["data"]["data"];
+
+export async function readTestResource<Kind extends ResourceDetail["kind"]>(
+  api: Pick<HostApiClient, "resources.detail.get">,
+  kind: Kind,
+): Promise<
+  ResourceDetail extends infer Detail
+    ? Detail extends ResourceDetail
+      ? Kind extends Detail["kind"]
+        ? Detail
+        : never
+      : never
+    : never
+> {
+  const page = await api["resources.detail.get"]({ kind });
+  if (!page.ok) throw new Error(page.error.message);
+  if (page.data.data.kind !== kind || page.data.next)
+    throw new Error(`Expected a complete ${kind} fixture resource`);
+  return page.data.data as ResourceDetail extends infer Detail
+    ? Detail extends ResourceDetail
+      ? Kind extends Detail["kind"]
+        ? Detail
+        : never
+      : never
+    : never;
+}
+
+export function testResourceData<Kind extends ResourceDetail["kind"]>(
+  origin: string | URL,
+  kind: Kind,
+  init: Omit<RequestInit, "body" | "method"> = {},
+) {
+  return readTestResource(
+    {
+      "resources.detail.get": async (input) => ({
+        ok: true,
+        data: await testRpcData(origin, "resources.detail.get", input, init),
+      }),
+    },
+    kind,
+  );
+}
+
+export function injectTestResource<Kind extends ResourceDetail["kind"]>(
+  app: FastifyInstance,
+  kind: Kind,
+  headers: Readonly<Record<string, string>> = {},
+) {
+  return readTestResource(
+    {
+      "resources.detail.get": async (input) =>
+        (await injectRpcRequest(app, "resources.detail.get", input, headers)).json(),
+    },
+    kind,
+  );
+}

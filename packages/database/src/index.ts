@@ -12,6 +12,7 @@ export * from "./connection.js";
 export * from "./deployment-authority.js";
 export * from "./integration-auth-attempt-store.js";
 export * from "./integration-platform-store.js";
+export { listIntegrationConnections } from "./integration-connections.js";
 export * from "./integration-connections.js";
 export * from "./migrations.js";
 export * from "./notification-state.js";
@@ -60,12 +61,17 @@ export * from "./administration-command.js";
 export * from "./personal-desktop-update-store.js";
 
 export * from "./agent-thread-history.js";
-export { encodeThreadHistoryCursor } from "./thread-history.js";
+export { encodeThreadHistoryCursor, readThreadHistory } from "./thread-history.js";
 export { assignmentSummaryInTransaction } from "./assignment-store.js";
 export { personalDeploymentOwner } from "./machine-store.js";
 export * from "./team-knowledge-store.js";
 
-export { listEligibleBrowserRunners } from "./browser-home-store.js";
+export {
+  hasEligibleBrowserPlacement,
+  listEligibleBrowserRunners,
+  readBrowserHomeResourcePage,
+} from "./browser-home-store.js";
+export { readHarnessCatalogModelPage } from "./harness-store.js";
 export * from "./request-agent-response.js";
 export { deliverTaskQuestionNotice, cancelSettledTaskQuestionNotice } from "./thread-inbox.js";
 
@@ -97,17 +103,16 @@ export * from "./team-requests-store.js";
 export type * from "./team-requests-port.js";
 export * from "./personal-settings-store.js";
 export * from "./personal-transaction.js";
-export * from "./deployment-events.js";
 export * from "./task-admission-store.js";
 export * from "./needs-you-store.js";
 export * from "./run-personal-context.js";
-export type { PersonalSnapshotResourcesReader } from "./snapshot-store.js";
+export { readPersonalDetailSnapshot, readPersonalShellSnapshot } from "./snapshot-store.js";
+export { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
+export { readTranscriptOverlays } from "./personal-overlay-store.js";
 
 export { personalTeamRunOutcome, type PersonalTeamRunOutcome } from "./personal-team-run-store.js";
 
 export * from "./deployment-store.js";
-
-export { eventFromRow } from "./deployment-events.js";
 
 export { systemPrincipalId } from "./store-primitives.js";
 
@@ -127,3 +132,14 @@ export * from "./device-driver-store.js";
 export { deviceOwnershipIn } from "./machine-ownership.js";
 
 export type { DeviceRemovalEffects } from "./device-removal-store.js";
+export { readPersonalTaskPage, readTaskPageThreads } from "./personal-task-store.js";
+export type { RequestResponseSendFence } from "./command-store.js";
+export { createRunFinishDrain, drainRunFinish } from "./run-finalization.js";
+export { transcriptIdentity, toolCallId } from "./transcript-store.js";
+export { getThreadForOwner } from "./thread-store.js";
+export { requestFromRow } from "./request-persistence.js";
+export { executionNodeFromRow } from "./thread-row-mappers.js";
+export { isEligibleBrowserRunner } from "./browser-home-store.js";
+export { decorateQueueEntries, readQueueLeaseHolders } from "./personal-queue-view.js";
+export { republishThreads } from "./thread-status.js";
+export { returnHintResources } from "./personal-snapshot-store.js";

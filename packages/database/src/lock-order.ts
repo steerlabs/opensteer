@@ -10,8 +10,9 @@
  * ordered, and it refuses MERGE and data-modifying WITH, whose locks it cannot see.
  */
 export const databaseLockOrder = [
+  "client_sync_state",
+  // The 0029 fence occupies the same rank before the offline rename.
   "deployment_event_state",
-  "personal_settings",
   // BEGIN team authority and content lock order.
   "team_access_state",
   "team_channels",
@@ -96,6 +97,8 @@ export const databaseLockOrder = [
   "channel_ingress_events",
   "advisory:lane",
   "advisory:command-idempotency",
+  // Written only under the deployment fence, first by commands that already hold their idempotency key.
+  "personal_settings",
   // Run admission and control precede Occurrences and browser execution state.
   "agent_connections",
   "runs",
@@ -132,7 +135,6 @@ export const databaseLockOrder = [
   // Independent lifecycle rows retain their position when no observed edge constrains them.
   "request_continuations",
   "advisory:grant",
-  "deployment_events",
   "auth_admissions",
   "auth_jwks",
   "auth_rate_limits",
@@ -207,7 +209,6 @@ export const databaseLockOrder = [
   "integration_tools",
   "integration_tool_definitions",
   "integration_skills",
-  "thread_state_pending",
   // Erasure acknowledgements follow profile archival, history cleanup and grant revocation.
   "browser_profile_deletions",
   "browser_site_grants",
@@ -255,6 +256,13 @@ export const databaseLockOrder = [
   "plugin_oauth_records",
   // Deferred invalidations and sorted generation updates follow all source mutations.
   "integration_authority_pending",
+  "tool_calls",
+  "transcript_items",
+  "tool_output_images",
+  "runner_event_receipts",
+  "personal_attention",
+  "client_changes",
+  // The deferred integration trigger writes generations at COMMIT, after Personal projections.
   "integration_authority_generations",
   // Account-service tables are separate physical resources from identically named Host tables.
   "control-plane:auth_accounts",

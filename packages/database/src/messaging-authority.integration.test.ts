@@ -78,6 +78,9 @@ it("fences Messaging binding edits, idempotent ingress and queued replies to cur
       conversationId,
       access: { kind: "binding-owner", mode: "approved", grantRevision: 1 },
     };
+    await sql`update messages set content = ${JSON.stringify(event.content)}::jsonb where id = ${p.messageId}`.execute(
+      database,
+    );
     await sql`insert into thread_inputs(actor_principal_id,authority_source,causal_chain_id,idempotency_key,message_id,policy,queue_rank,request_fingerprint,requested_by,state,thread_id,run_id) values(${principalId},${JSON.stringify(source)}::jsonb,${p.causalChainId},'channel',${p.messageId},'queue',1,'test',${p.userId},'pending',${p.threadId},${p.runId})`.execute(
       database,
     );
@@ -119,7 +122,7 @@ it("fences Messaging binding edits, idempotent ingress and queued replies to cur
       database,
     );
     const deliveryId = createChannelId("delivery");
-    await sql`insert into channel_deliveries(id,account_id,conversation_id,message_id,audience,kind,content,status,part_count) values(${deliveryId},${accountId},${conversationId},${replyId},'conversation','reply','[{"type":"text","text":"reply"}]','pending',1)`.execute(
+    await sql`insert into channel_deliveries(id,account_id,conversation_id,message_id,audience,kind,content,status,part_count,next_attempt_at) values(${deliveryId},${accountId},${conversationId},${replyId},'conversation','reply','[{"type":"text","text":"reply"}]','pending',1,now()-interval '1 second')`.execute(
       database,
     );
     const claimed = await store.claimDelivery(p.runnerId);
@@ -171,8 +174,8 @@ it("fences Messaging binding edits, idempotent ingress and queued replies to cur
       database,
     );
     const allowedDeliveryId = createChannelId("delivery");
-    await sql`insert into channel_deliveries(id,account_id,conversation_id,message_id,audience,kind,content,status,part_count)
-      values(${allowedDeliveryId},${accountId},${conversationId},${allowedReplyId},'conversation','reply','[{"type":"text","text":"reply"}]','pending',1)`.execute(
+    await sql`insert into channel_deliveries(id,account_id,conversation_id,message_id,audience,kind,content,status,part_count,next_attempt_at)
+      values(${allowedDeliveryId},${accountId},${conversationId},${allowedReplyId},'conversation','reply','[{"type":"text","text":"reply"}]','pending',1,now()-interval '1 second')`.execute(
       database,
     );
     let allowed: Awaited<ReturnType<ChannelStore["claimDelivery"]>>;

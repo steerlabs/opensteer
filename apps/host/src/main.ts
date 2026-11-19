@@ -1,4 +1,9 @@
 import { pathToFileURL } from "node:url";
+import { performance } from "node:perf_hooks";
+import {
+  personalUpgradeHeartbeatLine,
+  personalUpgradeProgressLine,
+} from "@opensteer/protocol/desktop";
 import { parseHostConfig } from "@opensteer/config";
 import { hostStopper } from "./runtime/host-stop.js";
 import { createHostRuntime } from "./runtime/runtime.js";
@@ -20,7 +25,20 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
     delete environment.OPENSTEER_NATIVE_MODEL_API_KEY;
     delete environment.OPENSTEER_NATIVE_MODEL_API_KEY_FILE;
   }
+  let lastProgressAt = -Infinity;
+  let lastStage: string | undefined;
   const runtime = await createHostRuntime(config, {
+    onPersonalUpgradeHeartbeat: () => {
+      process.stdout.write(`${personalUpgradeHeartbeatLine}\n`);
+    },
+    onPersonalUpgradeBatch: (stage) => {
+      const now = performance.now();
+      if (stage === lastStage && now - lastProgressAt < 1_000) return;
+      lastProgressAt = now;
+      lastStage = stage;
+      // The stage lets the desktop name it if the conversion stalls or stops.
+      process.stdout.write(`${personalUpgradeProgressLine}: ${stage}\n`);
+    },
     logger: {
       level: config.mode === "development" ? "debug" : "info",
       redact: [

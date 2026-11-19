@@ -1,3 +1,4 @@
+import { mockInputQueue } from "@opensteer/client/mock";
 import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
 import "@fontsource-variable/fraunces/wght-italic.css";
@@ -358,7 +359,10 @@ function Fixture() {
                   <WaitingInputs
                     client={client}
                     disabled={false}
-                    inputs={waitingInputs(queue, { ownsLease: () => false })}
+                    inputs={waitingInputs(
+                      mockInputQueue(queue, "0", () => false),
+                      {},
+                    )}
                     onError={noOp}
                     paused={queue.paused}
                     resumable

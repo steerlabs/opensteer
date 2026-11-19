@@ -1,11 +1,9 @@
 import {
   isPlaceContentPart,
   placeContentLabel,
-  requestTitleText,
   formatReferenceLink,
   type AssignmentSummary,
   type Message,
-  type Request,
   type TeamSource,
 } from "@opensteer/core";
 import { toolMessageAuthor, type ThreadItem } from "@opensteer/agent-tools/outputs";
@@ -59,9 +57,6 @@ export function messageItem(
     createdAt: message.createdAt,
   };
 }
-type ActivityEvent = Exclude<AgentThreadActivityItem, { type: "message" }>;
-type ToolStarted = Extract<ActivityEvent, { type: "tool.started" }>;
-
 /**
  * Their text can hold a sign-in, a card, a webhook secret or typed values. Engines spell names their
  * own way, and stored history keeps the names tools had when it was recorded.
@@ -72,67 +67,40 @@ export function withheldTool(name: string): boolean {
   );
 }
 
-/** What a reader may see of one event; the caller has already dropped what it may not see at all. */
 export function activityItem(
-  event: ActivityEvent,
-  facts: {
-    readonly start?: ToolStarted | undefined;
-    readonly request?: Request | null | undefined;
-    readonly nodeTitle?: string | undefined;
-    /** The Run acted for this reader, so its tool text is theirs. */
-    readonly ownRun: boolean;
-    readonly named: boolean;
-    readonly maxChars: number;
-    readonly offset?: number | undefined;
-  },
+  item: Exclude<AgentThreadActivityItem, { type: "message" }>,
+  facts: { named: boolean; maxChars: number; offset?: number | undefined },
 ): ThreadItem {
-  let title: string | null = null;
-  let text: string | null = null;
-  let status: string = event.type.split(".")[1]!;
-  switch (event.type) {
-    case "tool.started":
-    case "tool.completed": {
-      title = facts.start?.data.tool.name ?? null;
-      const readable = facts.ownRun && !!facts.start && !withheldTool(facts.start.data.tool.name);
-      if (event.type === "tool.completed") {
-        status = event.data.isError ? "failed" : "completed";
-        if (readable) text = event.data.output.text;
-      } else if (readable && facts.named) text = JSON.stringify(event.data.arguments) ?? null;
-      break;
-    }
-    case "place.entered":
-      title = event.data.title;
-      text = event.data.site;
-      break;
-    case "app.published":
-      title = event.data.title;
-      break;
-    case "node.started":
-      title = event.data.title;
-      break;
-    case "node.completed":
-      title = facts.nodeTitle ?? null;
-      status = event.data.status;
-      break;
-    default:
-      if (facts.request) {
-        title = requestTitleText(facts.request.presentation);
-        text = facts.request.kind;
-      }
-  }
-  const maxChars =
-    event.type === "tool.completed" && !facts.named
-      ? Math.min(500, facts.maxChars)
-      : facts.maxChars;
+  const tool = item.type === "tool.started" || item.type === "tool.completed";
+  const title =
+    item.type === "place.entered" ? item.place.title : "title" in item ? item.title : null;
+  const status =
+    "status" in item
+      ? item.status
+      : item.type === "node.message"
+        ? "published"
+        : item.type.split(".")[1]!;
+  const text =
+    item.type === "place.entered"
+      ? item.place.site
+      : "requestKind" in item
+        ? item.requestKind
+        : "text" in item && (!tool || (title && !withheldTool(title)))
+          ? item.text
+          : null;
   return {
-    itemId: event.sequence,
-    ...(facts.request ? { link: formatReferenceLink(facts.request.id, title ?? "Request") } : {}),
-    type: event.type,
+    itemId: item.id,
+    ...("requestId" in item ? { link: formatReferenceLink(item.requestId, item.title) } : {}),
+    type: item.type,
     status,
-    runId: event.runId,
+    runId: item.runId,
     title,
-    ...itemText(text, maxChars, facts.offset),
-    createdAt: event.createdAt,
+    ...itemText(
+      text,
+      tool && !facts.named ? Math.min(500, facts.maxChars) : facts.maxChars,
+      facts.offset,
+    ),
+    createdAt: item.createdAt,
   };
 }
 

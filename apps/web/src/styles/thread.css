@@ -66,6 +66,17 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Every loaded row stays in the document for Find, Tab, selection and assistive reading; the
+     browser skips laying out and painting the ones off screen, sized as last drawn. */
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 160px;
+}
+
+/* A row holding an inline dialog lets it escape the containment that would trap a fixed layer;
+   an engine that would let skipped rows move the reader (see row-skipping.ts) lays them all out. */
+.transcript__row:has(.dialog-layer),
+:root[data-row-skipping="off"] .transcript__row {
+  content-visibility: visible;
 }
 
 .transcript__row:empty {

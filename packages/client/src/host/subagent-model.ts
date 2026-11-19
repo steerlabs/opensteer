@@ -331,20 +331,18 @@ export function nodeSubagentCard(
             : tone === "stopped"
               ? (previewLine("result", node.result) ??
                 previewLine("prompt", node.prompt?.split("\n")[0]))
-              : (previewLine("progress", node.progress) ??
-                previewLine("prompt", node.prompt?.split("\n")[0]));
+              : previewLine("prompt", node.prompt?.split("\n")[0]);
   const stopping = node.status === "running" && node.stopping === true;
   const lastKnown = !live && node.status === "running";
-  const progress = subagentPreview(node.progress);
   const waitingOn =
-    tone === "working" && !progress
+    tone === "working"
       ? children.find((child) => child.tone === "working" || child.tone === "needs-you")
       : undefined;
   const quiet = (text: string): AgentPhrase => ({ text, tone: "quiet" });
   const detail: AgentPhrase[] = workflow
     ? [quiet(workflow.summary)]
     : lastKnown
-      ? [quiet("Last known"), ...(progress ? [quiet(progress)] : [])]
+      ? [quiet("Last known")]
       : stopping
         ? [quiet("Stopping…")]
         : tone === "needs-you"
@@ -354,11 +352,7 @@ export function nodeSubagentCard(
             : tone === "working"
               ? waitingOn
                 ? [quiet(`Waiting for ${waitingOn.title}`)]
-                : [
-                    progress
-                      ? { text: progress, tone: "live" }
-                      : quiet(firstLine(node.prompt) ?? "Starting"),
-                  ]
+                : [quiet(firstLine(node.prompt) ?? "Starting")]
               : tone === "finished"
                 ? [quiet(subagentPreview(node.result) ?? "Finished")]
                 : tone === "failed"
@@ -413,7 +407,27 @@ export function nodeSubagentCard(
     workflow,
     task: null,
   };
-  return cache ? cache.keep(card.key, card) : card;
+  const shown = cardWithProgress(card, node.progress);
+  return cache ? cache.keep(shown.key, shown) : shown;
+}
+
+/**
+ * A subagent card with the progress its engine last reported. Live progress reaches a row through
+ * its own keyed subscription, so a tick redraws that row alone.
+ */
+export function cardWithProgress(card: AgentCard, text: string | null | undefined): AgentCard {
+  const progress = subagentPreview(text);
+  if (!progress || card.origin !== "subagent" || card.kind !== "subagent") return card;
+  const line: AgentCard["line"] =
+    card.tone === "working" || card.tone === "waiting"
+      ? { kind: "progress", text: progress }
+      : card.line;
+  const detail: readonly AgentPhrase[] = card.lastKnown
+    ? [...card.detail, { text: progress, tone: "quiet" }]
+    : !card.stopping && card.tone === "working"
+      ? [{ text: progress, tone: "live" }]
+      : card.detail;
+  return line === card.line && detail === card.detail ? card : { ...card, detail, line };
 }
 function workflowView(
   node: NodeEntry,
@@ -576,7 +590,7 @@ export function conversationSubagents(
   threadId: string,
   { tasks = true }: { readonly tasks?: boolean } = {},
 ): AgentRoster {
-  const entries = reader.transcripts[threadId] ?? [];
+  const entries = reader.transcripts?.[threadId] ?? [];
   const nodes = transcriptNodes(entries);
   const workflows = new Set(
     nodes.filter((node) => node.nodeKind === "workflow").map((node) => node.nodeId),
@@ -638,7 +652,7 @@ export function subagentTurnModel(
   },
   cache?: SubagentCache,
 ): TurnAgents {
-  const nodes = transcriptNodes(reader.transcripts[threadId] ?? []);
+  const nodes = transcriptNodes(reader.transcripts?.[threadId] ?? []);
   const rows: SubagentTurnRow[] = [];
   let pending: AgentCard[] = [];
   const group = (cards: readonly AgentCard[], key = "") => {

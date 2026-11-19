@@ -1,9 +1,10 @@
 import { requireSelfDeviceId } from "./device-inventory-store.js";
 import { deviceOwnershipIn } from "./machine-ownership.js";
 import type { DeviceId } from "@opensteer/core";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { deploymentPolicy } from "@opensteer/core";
+import { assertRequestRevision } from "./request-persistence.js";
 import { fulfillDeviceAccessRequestsInTransaction } from "./request-store.js";
-import { type AgentEvent, deploymentPolicy } from "@opensteer/core";
 import { withDatabaseTransaction } from "./connection.js";
 import { type CommandRow, type DatabaseSchema } from "./schema.js";
 import {
@@ -20,6 +21,7 @@ import {
   type RunnerId,
   type RunId,
   type ThreadId,
+  type RequestId,
   OpensteerError,
   runnerRunsItsDeployment,
 } from "@opensteer/core";
@@ -274,6 +276,7 @@ export async function updateDeviceAccessPolicy(
     readonly policy: MachineAccessPolicy;
     readonly deviceId: DeviceId;
     readonly legacyRunnerId?: RunnerId;
+    readonly requestReview?: { readonly requestId: RequestId; readonly revision: string };
   },
 ): Promise<
   | { readonly outcome: "conflict"; readonly replayed: boolean }
@@ -281,7 +284,7 @@ export async function updateDeviceAccessPolicy(
       readonly outcome: "updated";
       readonly replayed: boolean;
       readonly revision: number;
-      readonly requestEvents: readonly AgentEvent[];
+      readonly fulfilledRequestIds: readonly RequestId[];
       readonly changed: {
         readonly shell: boolean;
         readonly browser: boolean;
@@ -292,9 +295,10 @@ export async function updateDeviceAccessPolicy(
   const request = {
     expectedRevision: input.expectedRevision,
     policy: input.policy,
+    ...(input.requestReview ? { requestReview: input.requestReview } : {}),
     ...(input.legacyRunnerId ? { runnerId: input.legacyRunnerId } : { deviceId: input.deviceId }),
   };
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     if (input.idempotency) {
       const { key, requestedBy } = input.idempotency;
       await lockCommandIdempotency(transaction, requestedBy, key);
@@ -312,7 +316,7 @@ export async function updateDeviceAccessPolicy(
           | { readonly outcome: "updated"; readonly revision: number };
         return result.outcome === "conflict"
           ? { ...result, replayed: true }
-          : { ...result, changed: noPolicyChanges, requestEvents: [], replayed: true };
+          : { ...result, changed: noPolicyChanges, fulfilledRequestIds: [], replayed: true };
       }
     }
     const stored = await transaction
@@ -353,6 +357,25 @@ export async function updateDeviceAccessPolicy(
       browser: input.policy.browser ?? previous.browser,
       apps: input.policy.apps ?? previous.apps,
     };
+    if (input.requestReview) {
+      const request = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestReview.requestId)
+        .where("requestedBy", "=", input.ownerId)
+        .where("status", "=", "pending")
+        .executeTakeFirst();
+      if (
+        request?.payload.kind !== "device.access" ||
+        request.payload.machineId !== input.deviceId ||
+        !deviceAccess(policy)[request.payload.access]
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          message: "The device Request is unavailable",
+        });
+      assertRequestRevision(request, input.requestReview.revision);
+    }
     const self = await transaction
       .selectFrom("deviceDrivers")
       .select("runnerId")
@@ -394,6 +417,13 @@ export async function updateDeviceAccessPolicy(
     const result = updated
       ? { outcome: "updated" as const, revision: updated.accessPolicyRevision, changed }
       : { outcome: "conflict" as const };
+    if (updated) {
+      mutation.bumpResource("machine");
+      if (changed.browser) {
+        mutation.bumpResource("browser-availability");
+        mutation.bumpResource("browser-placement");
+      }
+    }
     if (input.idempotency) {
       await recordMachineAccessCommand(transaction, {
         idempotency: input.idempotency,
@@ -406,7 +436,7 @@ export async function updateDeviceAccessPolicy(
       ? {
           ...result,
           replayed: false,
-          requestEvents: await fulfillDeviceAccessRequestsInTransaction(
+          fulfilledRequestIds: await fulfillDeviceAccessRequestsInTransaction(
             transaction,
             input.deviceId,
             policy,
@@ -665,26 +695,29 @@ export async function reserveShellSession(
     readonly threadTitle: string;
   },
 ): Promise<void> {
-  await database
-    .insertInto("machineAccessSessions")
-    .values({
-      bytesIn: 0,
-      bytesOut: 0,
-      callerMachineName: input.callerMachineName,
-      callerRunnerId: input.callerRunnerId,
-      endReason: null,
-      endedAt: null,
-      id: input.sessionId,
-      policyRevision: input.policyRevision,
-      requestedBy: input.requestedBy,
-      runId: input.runId,
-      runnerId: input.runnerId,
-      startedAt: input.startedAt,
-      state: "pending",
-      threadId: input.threadId,
-      threadTitle: input.threadTitle,
-    })
-    .executeTakeFirstOrThrow();
+  await commitPersonalMutation(database, async (tx, mutation) => {
+    await tx
+      .insertInto("machineAccessSessions")
+      .values({
+        bytesIn: 0,
+        bytesOut: 0,
+        callerMachineName: input.callerMachineName,
+        callerRunnerId: input.callerRunnerId,
+        endReason: null,
+        endedAt: null,
+        id: input.sessionId,
+        policyRevision: input.policyRevision,
+        requestedBy: input.requestedBy,
+        runId: input.runId,
+        runnerId: input.runnerId,
+        startedAt: input.startedAt,
+        state: "pending",
+        threadId: input.threadId,
+        threadTitle: input.threadTitle,
+      })
+      .executeTakeFirstOrThrow();
+    mutation.bumpResource("machine");
+  });
 }
 
 /** Promotes a paired session; a session that already ended stays ended. */
@@ -692,14 +725,17 @@ export async function activateShellSession(
   database: Kysely<DatabaseSchema>,
   sessionId: ShellSessionId,
 ): Promise<boolean> {
-  const result = await database
-    .updateTable("machineAccessSessions")
-    .set({ state: "active" })
-    .where("id", "=", sessionId)
-    .where("state", "=", "pending")
-    .where("endedAt", "is", null)
-    .executeTakeFirst();
-  return result.numUpdatedRows === 1n;
+  return commitPersonalMutation(database, async (tx, mutation) => {
+    const result = await tx
+      .updateTable("machineAccessSessions")
+      .set({ state: "active" })
+      .where("id", "=", sessionId)
+      .where("state", "=", "pending")
+      .where("endedAt", "is", null)
+      .executeTakeFirst();
+    if (result.numUpdatedRows === 1n) mutation.bumpResource("machine");
+    return result.numUpdatedRows === 1n;
+  });
 }
 
 /**
@@ -724,7 +760,7 @@ export async function endShellSession(
   },
 ): Promise<{ readonly ended: boolean }> {
   const request = { sessionId: input.sessionId };
-  return withDatabaseTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     if (input.idempotency) {
       const { key, requestedBy } = input.idempotency;
       await lockCommandIdempotency(transaction, requestedBy, key);
@@ -758,6 +794,7 @@ export async function endShellSession(
         .where("id", "=", input.sessionId)
         .where("endedAt", "is", null)
         .executeTakeFirstOrThrow();
+      mutation.bumpResource("machine");
     }
     if (input.idempotency) {
       await recordMachineAccessCommand(transaction, {
@@ -944,11 +981,28 @@ async function isPersonalDeployment(database: Kysely<DatabaseSchema>): Promise<b
 export async function personalDeploymentOwner(
   database: Kysely<DatabaseSchema>,
 ): Promise<UserId | null> {
-  if (!(await isPersonalDeployment(database))) return null;
-  const owner = await database
-    .selectFrom("users")
-    .select(["id", "disabledAt"])
-    .orderBy("createdAt", "asc")
+  // One read: the Deployment's shape and its first user.
+  const row = await database
+    .selectFrom("deployments")
+    .leftJoinLateral(
+      (eb) =>
+        eb
+          .selectFrom("users")
+          .select(["users.id", "users.disabledAt"])
+          .orderBy("users.createdAt", "asc")
+          // Every read of "the first user" breaks a tie the same way.
+          .orderBy("users.id", "asc")
+          .limit(1)
+          .as("owner"),
+      (join) => join.onTrue(),
+    )
+    .select([
+      "deployments.deploymentShape",
+      "owner.id as ownerId",
+      "owner.disabledAt as ownerDisabledAt",
+    ])
+    .where("deployments.singletonKey", "=", "primary")
     .executeTakeFirst();
-  return owner && owner.disabledAt === null ? owner.id : null;
+  if (!row || !deploymentPolicy(row.deploymentShape).services.personal) return null;
+  return row.ownerId && row.ownerDisabledAt === null ? row.ownerId : null;
 }

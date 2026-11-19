@@ -1,22 +1,27 @@
+import type { Clock } from "@opensteer/shared/clock";
+import { DeadlineDrain } from "../runtime/deadline-drain.js";
 import {
   OpensteerError,
   harnessUsageLimitFailureCode,
-  type AgentEvent,
   type EnvironmentId,
   type HarnessInstanceId,
 } from "@opensteer/core";
 import type { HarnessInstanceRecord } from "@opensteer/database";
 import type { HarnessInstanceCatalog, HostToRunnerMessage } from "@opensteer/protocol";
-import type { RealtimeHub } from "@opensteer/orchestration";
-import { notifyMachinesChanged } from "../shell/machine-access-events.js";
 
 export type HarnessInspectionDefinitions = Extract<
   HostToRunnerMessage,
   { readonly type: "host.reconcile-harnesses" }
 >["harnesses"];
 
+/** The Runner connection a catalog answer comes from: its authority to write. */
+interface HarnessCatalogSource {
+  /** The current connection generation for the environment; undefined when none is connected. */
+  connectionGenerationFor(environmentId: EnvironmentId): number | undefined;
+}
+
 /** A read of some profiles. Nothing it does can retire one. */
-export interface HarnessCatalogInspector {
+export interface HarnessCatalogInspector extends HarnessCatalogSource {
   inspectHarnesses(
     environmentId: EnvironmentId,
     harnesses: HarnessInspectionDefinitions,
@@ -25,12 +30,21 @@ export interface HarnessCatalogInspector {
   ): Promise<readonly HarnessInstanceCatalog[]>;
 }
 
+/** The environment's Runner went away before it answered: nothing was captured. */
+function catalogUnavailable(): OpensteerError {
+  return new OpensteerError({
+    code: "conflict",
+    message: "The computer is not connected, so its AI models could not be read.",
+    retryable: true,
+  });
+}
+
 /**
  * The destructive direction, kept a separate capability so that a caller
  * holding a partial list cannot reach it by passing a flag. Every reconciler
  * must hand over the environment's complete enabled set.
  */
-interface HarnessCatalogReconciler {
+interface HarnessCatalogReconciler extends HarnessCatalogSource {
   reconcileHarnesses(
     environmentId: EnvironmentId,
     harnesses: HarnessInspectionDefinitions,
@@ -48,20 +62,9 @@ export interface HarnessCatalogRecorder {
     readonly catalogs: readonly HarnessInstanceCatalog[];
     readonly environmentId: EnvironmentId;
     readonly expectedRevisions: ReadonlyMap<HarnessInstanceId, number>;
+    /** The Runner connection that supplied the answer; refused unless still current. */
+    readonly connectionGeneration: number;
   }): Promise<readonly HarnessInstanceCatalog[]>;
-}
-
-export function notifyingHarnessCatalogRecorder(
-  catalogs: HarnessCatalogRecorder,
-  realtime: Pick<RealtimeHub, "broadcast">,
-): HarnessCatalogRecorder {
-  return {
-    recordHarnessCatalogs: async (input) => {
-      const recorded = await catalogs.recordHarnessCatalogs(input);
-      if (recorded.length > 0) notifyMachinesChanged(realtime, "harness.catalog");
-      return recorded;
-    },
-  };
 }
 
 interface HarnessCatalogReader {
@@ -76,8 +79,13 @@ interface HarnessCatalogReader {
 }
 
 export const harnessCatalogMaxAgeMs = 30 * 60 * 1_000;
+/**
+ * How long a preparing, unavailable or error answer stands before it is asked
+ * again. The capture that recorded it just asked; a Runner reports finished
+ * preparation itself, so this is only the backstop for a lost report.
+ */
+export const harnessCatalogRetryMs = 30_000;
 
-/** Enough of the store to ask an environment what profiles it has and file answers. */
 export interface HarnessCatalogInventoryStore extends HarnessCatalogRecorder {
   listHarnessInstances(options?: {
     readonly environmentIds?: readonly EnvironmentId[];
@@ -117,19 +125,140 @@ export async function inspectAndRecordHarnessCatalogs(options: {
   readonly signal: AbortSignal;
   readonly fresh?: boolean;
 }): Promise<readonly HarnessInstanceCatalog[]> {
+  // Read before asking: a reply that a newer connection superseded is refused
+  // at the write, never recorded under the newer connection's authority.
+  const connectionGeneration = options.runners.connectionGenerationFor(options.environmentId);
+  if (connectionGeneration === undefined) throw catalogUnavailable();
   const catalogs = await options.runners.inspectHarnesses(
     options.environmentId,
     options.harnesses,
     options.signal,
     ...(options.fresh ? [{ fresh: true }] : []),
   );
+  // The registry answers an empty list once the Runner has gone: not a capture.
+  if (catalogs.length < options.harnesses.length) throw catalogUnavailable();
   return options.catalogs.recordHarnessCatalogs({
     catalogs,
     environmentId: options.environmentId,
+    connectionGeneration,
     expectedRevisions: new Map(
       options.harnesses.map(({ id, runtimeRevision }) => [id, runtimeRevision]),
     ),
   });
+}
+
+/**
+ * The owner that keeps every connected profile's catalog converged. It runs
+ * after each Runner registration and invalidation, and at the earliest
+ * deadline a pass reports (a ready catalog at 30 minutes, an unsettled one at
+ * 30 seconds); a failed pass backs off. A profile a Runner invalidated is owed
+ * a fresh capture, whatever its stored answer says, until a pass records one.
+ */
+export function createHarnessCatalogConvergence(options: {
+  readonly connectedEnvironmentIds: () => Promise<readonly EnvironmentId[]>;
+  readonly catalogs: HarnessCatalogConvergenceStore;
+  readonly runners: HarnessCatalogInspector;
+  readonly captureTimeoutMs: number;
+  readonly onCommitted: (
+    environmentId: EnvironmentId,
+    catalogs: readonly HarnessInstanceCatalog[],
+  ) => void;
+  readonly onError: (error: unknown) => void;
+  readonly clock?: Clock;
+}) {
+  // Each owed profile carries the number of the invalidation that owes it, so a
+  // pass clears only the debt it started with, never a newer one.
+  const owed = new Map<HarnessInstanceId, number>();
+  let invalidations = 0;
+  const drain = new DeadlineDrain({
+    ...(options.clock ? { clock: options.clock } : {}),
+    onError: options.onError,
+    drain: async () => {
+      const started = new Map(owed);
+      const reinspect = new Set(started.keys());
+      const convergence = await reconcileHarnessCatalogs({
+        catalogs: options.catalogs,
+        connectedEnvironmentIds: await options.connectedEnvironmentIds(),
+        reinspect,
+        runners: options.runners,
+        signal: AbortSignal.timeout(options.captureTimeoutMs),
+        ...(options.clock ? { now: options.clock.now() } : {}),
+        onCommitted: options.onCommitted,
+        // Discharged per profile as each capture commits, so one Runner's
+        // failure in this pass leaves only its own profiles owed.
+        onRecorded: (ids) => {
+          for (const id of ids)
+            if (started.has(id) && owed.get(id) === started.get(id)) owed.delete(id);
+        },
+      });
+      return convergence.staleAt;
+    },
+  });
+  return {
+    wake: () => drain.wake(),
+    /** A recapture after invalidation failed: the next pass asks for it regardless. */
+    owe(harnessInstanceId: HarnessInstanceId) {
+      owed.set(harnessInstanceId, ++invalidations);
+      drain.wake();
+    },
+    settled: () => drain.settled(),
+    close: () => drain.close(),
+  };
+}
+
+/**
+ * A Runner said a profile's catalog changed: drop the stored answer and ask
+ * again. Every exit leaves convergence armed: a failure (before or after the
+ * discard) owes the profile a fresh capture, and a captured answer wakes it so
+ * an unsettled one is looked at again at its deadline.
+ */
+export async function recaptureInvalidatedHarnessCatalog(options: {
+  readonly harnessInstanceId: HarnessInstanceId;
+  readonly environmentIds: readonly EnvironmentId[];
+  /** The invalidating connection; its discard is refused once a newer one exists. */
+  readonly connectionGeneration: number;
+  readonly store: {
+    getHarnessInstance(id: HarnessInstanceId): Promise<HarnessInstanceRecord | null | undefined>;
+    discardHarnessCatalog(
+      environmentId: EnvironmentId,
+      id: HarnessInstanceId,
+      connectionGeneration: number,
+    ): Promise<unknown>;
+  };
+  readonly catalogs: HarnessCatalogRecorder;
+  readonly runners: HarnessCatalogInspector;
+  readonly signal: AbortSignal;
+  readonly onCaptured: (
+    environmentId: EnvironmentId,
+    catalogs: readonly HarnessInstanceCatalog[],
+  ) => void;
+  readonly onFailed: (error: unknown) => void;
+}): Promise<void> {
+  try {
+    const harness = await options.store.getHarnessInstance(options.harnessInstanceId);
+    if (
+      !harness ||
+      !harness.enabled ||
+      harness.removedAt !== null ||
+      !options.environmentIds.includes(harness.environmentId)
+    )
+      return;
+    await options.store.discardHarnessCatalog(
+      harness.environmentId,
+      harness.id,
+      options.connectionGeneration,
+    );
+    const captured = await inspectAndRecordInvalidatedHarnessCatalog({
+      catalogs: options.catalogs,
+      environmentId: harness.environmentId,
+      harnesses: [harnessInspectionDefinition(harness)],
+      runners: options.runners,
+      signal: options.signal,
+    });
+    options.onCaptured(harness.environmentId, captured);
+  } catch (error) {
+    options.onFailed(error);
+  }
 }
 
 /** An invalidation may race the inspection it prompted; recapture only that stale read. */
@@ -168,6 +297,8 @@ export async function reconcileAndRecordHarnessCatalogs(options: {
   readonly harnesses: HarnessInspectionDefinitions;
   readonly runners: HarnessCatalogReconciler;
   readonly signal: AbortSignal;
+  /** The registering connection; nothing is recorded once a newer one exists. */
+  readonly connectionGeneration: number;
 }): Promise<readonly HarnessInstanceCatalog[]> {
   const catalogs = await options.runners.reconcileHarnesses(
     options.environmentId,
@@ -177,6 +308,7 @@ export async function reconcileAndRecordHarnessCatalogs(options: {
   return options.catalogs.recordHarnessCatalogs({
     catalogs,
     environmentId: options.environmentId,
+    connectionGeneration: options.connectionGeneration,
     expectedRevisions: new Map(
       options.harnesses.map(({ id, runtimeRevision }) => [id, runtimeRevision]),
     ),
@@ -253,6 +385,8 @@ export class HarnessCatalogReconciliationOwner {
       if (!this.#runners.isAvailable(environmentId)) continue;
       const desired = await this.#desired(environmentId);
       if (this.#lifetime.signal.aborted) return;
+      const connectionGeneration = this.#runners.connectionGenerationFor(environmentId);
+      if (connectionGeneration === undefined) continue;
       const catalogs = await this.#runners.reconcileHarnesses(
         environmentId,
         desired,
@@ -271,6 +405,7 @@ export class HarnessCatalogReconciliationOwner {
       await this.#catalogs.recordHarnessCatalogs({
         catalogs,
         environmentId,
+        connectionGeneration,
         expectedRevisions: new Map(desired.map(({ id, runtimeRevision }) => [id, runtimeRevision])),
       });
     }
@@ -309,19 +444,20 @@ function sameHarnessDefinitions(
  */
 export async function inspectHarnessCatalogsAfterUsageLimit(options: {
   readonly catalogs: HarnessCatalogInventoryStore;
-  readonly event: AgentEvent;
+  readonly environmentId: EnvironmentId;
+  readonly failureCode: string | undefined;
   readonly runners: HarnessCatalogInspector;
   readonly signal: AbortSignal;
 }): Promise<void> {
-  const { event } = options;
-  if (event.type !== "run.failed" || event.data.code !== harnessUsageLimitFailureCode) return;
+  const { environmentId, failureCode } = options;
+  if (failureCode !== harnessUsageLimitFailureCode) return;
   const harnesses = (
-    await options.catalogs.listHarnessInstances({ environmentIds: [event.environmentId] })
+    await options.catalogs.listHarnessInstances({ environmentIds: [environmentId] })
   ).filter((harness) => harness.enabled);
   if (harnesses.length === 0) return;
   await inspectAndRecordHarnessCatalogs({
     catalogs: options.catalogs,
-    environmentId: event.environmentId,
+    environmentId,
     harnesses: harnesses.map(harnessInspectionDefinition),
     runners: options.runners,
     signal: options.signal,
@@ -339,7 +475,10 @@ export async function inspectHarnessCatalogsAfterUsageLimit(options: {
  * thirty minutes. Provider inventories change independently of profile
  * configuration; dispatch and sign-in are not the only reasons to look again.
  * Sign-in required is settled: only an explicit refresh, profile change, sign-in
- * action or Runner invalidation may ask it again, never this periodic pass.
+ * action or Runner invalidation may ask it again, never this pass.
+ *
+ * Returns when the next catalog needs looking at, so the caller can arm a
+ * deadline instead of polling.
  */
 export async function reconcileHarnessCatalogs(options: {
   readonly catalogs: HarnessCatalogConvergenceStore;
@@ -347,12 +486,19 @@ export async function reconcileHarnessCatalogs(options: {
   readonly runners: HarnessCatalogInspector;
   readonly signal: AbortSignal;
   readonly now?: number;
+  /** Profiles a Runner invalidated whose recapture is still owed, whatever is stored. */
+  readonly reinspect?: ReadonlySet<HarnessInstanceId>;
   readonly onCommitted?: (
     environmentId: EnvironmentId,
     catalogs: readonly HarnessInstanceCatalog[],
   ) => void;
-}): Promise<void> {
-  if (options.connectedEnvironmentIds.length === 0) return;
+  /**
+   * Each profile's capture as it commits, before the pass settles: another
+   * Runner failing later in the same pass does not undo this one.
+   */
+  readonly onRecorded?: (harnessInstanceIds: readonly HarnessInstanceId[]) => void;
+}): Promise<HarnessCatalogConvergence> {
+  if (options.connectedEnvironmentIds.length === 0) return { staleAt: null, inspected: new Set() };
   const now = options.now ?? Date.now();
   const [harnesses, stored] = await Promise.all([
     options.catalogs.listHarnessInstances({ environmentIds: options.connectedEnvironmentIds }),
@@ -361,18 +507,30 @@ export async function reconcileHarnessCatalogs(options: {
   const captured = new Map(stored.map((record) => [record.harnessInstanceId, record]));
   const pending = new Map<EnvironmentId, HarnessInspectionDefinitions[number][]>();
   const connected = new Set(options.connectedEnvironmentIds);
+  const recorded = new Set<HarnessInstanceId>();
+  const next: { staleAt: number | null } = { staleAt: null };
+  const lookAgainAt = (at: number) => {
+    next.staleAt = next.staleAt === null ? at : Math.min(next.staleAt, at);
+  };
+  const lookAgain = (status: HarnessInstanceCatalog["status"], capturedAt: number) => {
+    if (status === "ready") lookAgainAt(capturedAt + harnessCatalogMaxAgeMs);
+    else if (status !== "authentication-required") lookAgainAt(capturedAt + harnessCatalogRetryMs);
+  };
   for (const harness of harnesses) {
     if (!harness.enabled || harness.removedAt !== null || !connected.has(harness.environmentId)) {
       continue;
     }
     const record = captured.get(harness.id);
+    const age = record ? now - record.capturedAt.getTime() : 0;
     if (
+      !options.reinspect?.has(harness.id) &&
       record?.environmentId === harness.environmentId &&
       (record.catalog.status === "authentication-required" ||
-        (record.catalog.status === "ready" &&
-          record.capturedAt.getTime() <= now &&
-          now - record.capturedAt.getTime() < harnessCatalogMaxAgeMs))
+        (age >= 0 &&
+          age <
+            (record.catalog.status === "ready" ? harnessCatalogMaxAgeMs : harnessCatalogRetryMs)))
     ) {
+      lookAgain(record.catalog.status, record.capturedAt.getTime());
       continue;
     }
     const definitions = pending.get(harness.environmentId) ?? [];
@@ -391,14 +549,32 @@ export async function reconcileHarnessCatalogs(options: {
         runners: options.runners,
         signal: options.signal,
       });
-      const onCommitted = options.onCommitted;
-      return onCommitted
-        ? capture.then((catalogs) => onCommitted(environmentId, catalogs))
-        : capture;
+      return capture.then((catalogs) => {
+        // Only a committed capture discharges a profile's debt.
+        for (const catalog of catalogs) recorded.add(catalog.harnessInstanceId);
+        options.onRecorded?.(catalogs.map(({ harnessInstanceId }) => harnessInstanceId));
+        for (const catalog of catalogs) lookAgain(catalog.status, now);
+        options.onCommitted?.(environmentId, catalogs);
+      });
     }),
   );
   const failures = results.flatMap((result) =>
     result.status === "rejected" ? [result.reason] : [],
   );
   if (failures.length > 0) throw new AggregateError(failures, "AI model catalog refresh failed");
+  return {
+    staleAt: next.staleAt === null ? null : new Date(next.staleAt),
+    inspected: recorded,
+  };
+}
+
+export interface HarnessCatalogConvergence {
+  /**
+   * When a connected environment's catalog needs looking at again: a ready one
+   * at thirty minutes old, any other unsettled answer thirty seconds after it
+   * was recorded. Sign-in required waits for the person.
+   */
+  readonly staleAt: Date | null;
+  /** The profiles whose capture this pass committed. */
+  readonly inspected: ReadonlySet<HarnessInstanceId>;
 }

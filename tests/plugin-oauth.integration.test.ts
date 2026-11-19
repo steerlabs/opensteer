@@ -522,10 +522,7 @@ beforeAll(async () => {
     store,
     records,
     authority,
-    publish: () => {},
-    notify: () => {},
     onError: (error) => errors.push(error),
-    onStopped: () => {},
   });
   handlers = new PluginToolHandlers({
     service,
@@ -533,8 +530,6 @@ beforeAll(async () => {
     settings: records,
     authority,
     executions,
-    publish: () => {},
-    notify: () => {},
     folder: async () => {
       throw new Error("unused");
     },

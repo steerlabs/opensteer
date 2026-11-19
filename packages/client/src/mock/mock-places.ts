@@ -1,4 +1,4 @@
-import { deviceMachine } from "../host/device-projection.js";
+import { mockDeviceMachine } from "./mock-device-machine.js";
 import { mockAgentPhoneRunnerId } from "./mock-integration-fixtures.js";
 import type {
   MockBrowserSource as HostSnapshot,
@@ -477,15 +477,14 @@ export function seedMockPlaces(
     name: "Alex's iPhone",
     ownership: "mine",
 
-    pinnedThreads: 0,
     revocable: true,
     status: "online",
     runtimeVersion: null,
   });
-  const main = deviceMachine(machines[0]!).selfRunnerId!;
+  const main = mockDeviceMachine(machines[0]!).selfRunnerId!;
   const studio =
-    machines.map(deviceMachine).find((machine) => machine.name === "Studio Mac")?.selfRunnerId ??
-    main;
+    machines.map(mockDeviceMachine).find((machine) => machine.name === "Studio Mac")
+      ?.selfRunnerId ?? main;
   const profileHomes = machines
     .filter(
       (machine) =>
@@ -493,7 +492,7 @@ export function seedMockPlaces(
         (machine.allowedModules.includes("browser") || machine.device?.platform === "macos"),
     )
     .flatMap((machine) => {
-      const runnerId = deviceMachine(machine).selfRunnerId;
+      const runnerId = mockDeviceMachine(machine).selfRunnerId;
       return runnerId ? [runnerId] : [];
     });
   const profile = (id: number, name: string, homeRunnerId: string | null) =>
@@ -518,7 +517,7 @@ export function seedMockPlaces(
       .filter(
         (machine) => machine.device?.platform === "macos" && machine.computerUse?.state === "ready",
       )
-      .map(deviceMachine)
+      .map(mockDeviceMachine)
       .flatMap((machine) =>
         machine.selfRunnerId
           ? [

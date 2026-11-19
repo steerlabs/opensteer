@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { teamOperationId } from "./operation-id.js";
 import { expect, onTestFinished, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -9,19 +10,44 @@ import {
   TeamTurnContextSchema,
   type RunId,
   type TeamSource,
+  type ThreadId,
 } from "@opensteer/core";
 import { TeamRunRequestSchema } from "@opensteer/protocol";
-import { describeStore, type StoreFixture } from "@opensteer/database/test-support/store";
+import {
+  describeStore,
+  pendingEvent,
+  type StoreFixture,
+} from "@opensteer/database/test-support/store";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import { admitTeamTaskRequest } from "@opensteer/database/task-admission-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { personalTeamRunOutcome } from "@opensteer/database/personal-team-run-store";
-import { needsYouPage, NotificationStore } from "@opensteer/database";
+import { needsYouPage, NotificationStore, setExecutionClock } from "@opensteer/database";
 import { TeamRunTools } from "./tools.js";
 import { PersonalTeamRequests } from "./requests.js";
+import { teamPublicationPass } from "../runtime/team-publication-pass.js";
+import { retryWithBackoff } from "../runtime/deadline-drain.js";
 import { TaskAdmissionService } from "../threads/task-admission-service.js";
 import type { TeamLinkCallInput, TeamLinkResult } from "../team-link-endpoint/contracts.js";
+
+/** The task's stored pending count and the count its last published summary carried. */
+async function pendingBadge(database: StoreFixture["database"], taskId: ThreadId) {
+  const task = await database
+    .selectFrom("threads")
+    .select("pendingRequestCount")
+    .where("id", "=", taskId)
+    .executeTakeFirstOrThrow();
+  const summary = await database
+    .selectFrom("clientChanges")
+    .select("payload")
+    .where("entityKind", "=", "thread")
+    .where("entityId", "=", taskId)
+    .orderBy("sequence", "desc")
+    .limit(1)
+    .executeTakeFirstOrThrow();
+  return [task.pendingRequestCount, summary.payload.pendingRequestCount];
+}
 
 async function consentFixture(base: StoreFixture) {
   const personal = await base.createRunFixture("Consent");
@@ -76,6 +102,40 @@ async function consentFixture(base: StoreFixture) {
         execution,
       }),
     start: (runId: RunId) => startPersonalQueuedRunFixture(base.store, runId),
+    finish: async (runId: RunId, text: string) => {
+      const { run, bindingGeneration, runnerBootId } = await startPersonalQueuedRunFixture(
+        base.store,
+        runId,
+      );
+      const messageId = createId("message");
+      const wire = { environmentId: run.environmentId, runnerId: personal.runnerId, runnerBootId };
+      const scope = {
+        runId,
+        threadId: run.threadId,
+        bindingGeneration,
+        environmentId: run.environmentId,
+      };
+      await base.store.commitRunnerEvent({
+        ...wire,
+        event: pendingEvent({
+          ...scope,
+          ordinal: 1,
+          type: "assistant.message",
+          data: { messageId, content: [{ type: "text", text }] },
+        }),
+      });
+      await base.store.commitRunnerEvent({
+        ...wire,
+        event: pendingEvent({
+          ...scope,
+          ordinal: 2,
+          type: "run.completed",
+          data: { status: "completed" },
+        }),
+      });
+      await base.store.drainRunFinish(runId);
+      return messageId;
+    },
   };
   await f.database
     .updateTable("personalTeamLinks")
@@ -129,7 +189,6 @@ async function consentFixture(base: StoreFixture) {
     admission: new TaskAdmissionService({
       database: f.database,
       execution: async () => f.execution,
-      publish() {},
       revokeGrants() {},
     }),
     runs: { outcome: (request) => personalTeamRunOutcome(f.database, request) },
@@ -287,18 +346,8 @@ describeStore("personal team consent and returns", (it) => {
           },
         );
       } else {
-        const publisher = new PersonalTeamRequests({
-          ...f.publisher.options,
-          rpc,
-          runs: {
-            outcome: async () => ({
-              state: "done",
-              runId: asking.receipt.runId!,
-              finalMessage: original,
-              answerMessageId: null,
-            }),
-          },
-        });
+        await f.finish(asking.receipt.runId!, original);
+        const publisher = new PersonalTeamRequests({ ...f.publisher.options, rpc });
         await publisher.reconcileOne(request);
       }
       expect(posted).toBe(true);
@@ -317,24 +366,18 @@ describeStore("personal team consent and returns", (it) => {
         const asking = await f.ask();
         const request = (await f.store.forRun(asking.receipt.runId!))!;
         const payload = { bodyMarkdown: "[old](/private/secret.txt)", attachmentIds: [] };
+        const answerMessageId =
+          via === "final" ? await f.finish(asking.receipt.runId!, "New answer") : null;
         await f.store.freeze(f.origin.teamId, request.requestId, {
           runId: asking.receipt.runId!,
           via,
           clientMessageId: teamOperationId("tool", asking.receipt.runId!, "old-operation"),
-          answerMessageId: null,
+          answerMessageId,
           payload,
         });
         const calls: TeamLinkCallInput[] = [];
         const publisher = new PersonalTeamRequests({
           ...f.publisher.options,
-          runs: {
-            outcome: async () => ({
-              state: "done",
-              runId: asking.receipt.runId!,
-              finalMessage: "New answer",
-              answerMessageId: null,
-            }),
-          },
           rpc: () => ({
             call: async (input): Promise<TeamLinkResult> => {
               calls.push(input);
@@ -436,6 +479,82 @@ describeStore("personal team consent and returns", (it) => {
         });
     });
 
+  it("owes a finished Run's answer from the saved rows until it is recorded or the link leaves", async ({
+    storeFixture,
+  }) => {
+    const f = await consentFixture(storeFixture);
+    const asking = await f.ask();
+    const request = (await f.store.forRun(asking.receipt.runId!))!;
+    const owed = async () =>
+      (await f.store.owedTerminalPublications({ teamIds: [f.origin.teamId] })).map(
+        ({ requestId }) => requestId,
+      );
+    expect(await owed()).toEqual([]);
+    await f.finish(asking.receipt.runId!, "Checked the launch.");
+    // Nothing in memory remembers it: the rows alone say the answer is owed.
+    expect(await owed()).toEqual([request.requestId]);
+    // A team whose link is not ready right now is not read at all.
+    expect(await f.store.owedTerminalPublications({ teamIds: [] })).toEqual([]);
+    expect(await f.store.owedTerminalPublications({ teamIds: [createId("deployment")] })).toEqual(
+      [],
+    );
+    // Keyset paging moves past a row already given its turn.
+    expect(
+      await f.store.owedTerminalPublications({
+        teamIds: [f.origin.teamId],
+        after: { teamId: f.origin.teamId, requestId: request.requestId },
+      }),
+    ).toEqual([]);
+    let online = false;
+    let posted = false;
+    const publisher = new PersonalTeamRequests({
+      ...f.publisher.options,
+      rpc: () => ({
+        call: async (input: TeamLinkCallInput): Promise<TeamLinkResult> => {
+          if (!online) throw new OpensteerError({ code: "runner_offline", message: "Offline" });
+          if (input.type === "receipt")
+            return { kind: "receipt", messageId: posted ? f.source.messageId : null };
+          if (input.type === "read")
+            return {
+              kind: "read",
+              result: { source: f.source, ownerHandle: "owner" },
+            } as TeamLinkResult;
+          if (input.type === "post") {
+            posted = true;
+            return { kind: "receipt", messageId: f.source.messageId };
+          }
+          return { kind: "ok" };
+        },
+      }),
+    });
+    const errors: unknown[] = [];
+    const pass = () =>
+      teamPublicationPass({
+        readyTeams: () => [f.origin.teamId],
+        owed: (input) => f.store.owedTerminalPublications(input),
+        reconcile: (owedRequest) => publisher.reconcileOne(owedRequest),
+        report: (error) => errors.push(error),
+      });
+    // Offline: nothing was recorded, so the owner backs off and stays armed.
+    expect(await pass()).toBe(retryWithBackoff);
+    expect(await owed()).toEqual([request.requestId]);
+    online = true;
+    expect(await pass()).toBeNull();
+    expect(await owed()).toEqual([]);
+    expect(await f.store.get(f.origin.teamId, request.requestId)).toMatchObject({
+      terminalState: "done",
+    });
+    // A departing link owes nothing further.
+    const other = await f.ask();
+    await f.finish(other.receipt.runId!, "Second answer.");
+    expect(await owed()).toHaveLength(1);
+    await f.database
+      .updateTable("personalTeamLinks")
+      .set({ state: "leaving" })
+      .where("teamDeploymentId", "=", f.origin.teamId)
+      .execute();
+    expect(await owed()).toEqual([]);
+  });
   it("reopens a Done task when releasing its approved ask", async ({ storeFixture }) => {
     const f = await consentFixture(storeFixture);
     await f.publisher.deliver(f.origin.teamId, f.frame);
@@ -459,6 +578,33 @@ describeStore("personal team consent and returns", (it) => {
       .where("threadId", "=", mirror.taskId!)
       .execute();
     expect(runs).toHaveLength(1);
+  });
+  it("deletes a queued Run's receipts when its ask is cancelled", async ({ storeFixture }) => {
+    const f = await consentFixture(storeFixture);
+    await f.publisher.deliver(f.origin.teamId, f.frame);
+    await f.publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve", 0);
+    const { runId } = (await f.store.mirror(f.origin.teamId, f.frame.request.id))!;
+    // A steer or recovery requeues a Run that already admitted statements under a binding.
+    await sql`insert into runner_event_receipts(run_id,ordinal,runner_id,runner_boot_id,binding_generation,
+        reported_digest,disposition,committed_head)
+      values (${runId},0,'runner','boot',1,sha256('statement'::bytea),'applied',0)`.execute(
+      f.database,
+    );
+    await f.publisher.cancel(f.origin.teamId, f.frame.request.id);
+    expect(
+      await f.database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", runId!)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "interrupted" });
+    expect(
+      await f.database
+        .selectFrom("runnerEventReceipts")
+        .select("ordinal")
+        .where("runId", "=", runId!)
+        .execute(),
+    ).toEqual([]);
   });
   it("keeps cancellation nonterminal if input cleanup cannot commit", async ({ storeFixture }) => {
     const f = await consentFixture(storeFixture);
@@ -618,10 +764,10 @@ describeStore("personal team consent and returns", (it) => {
     f.offline(true);
     const inputEvents = () =>
       storeFixture.database
-        .selectFrom("deploymentEvents")
+        .selectFrom("clientChanges")
         .select("sequence")
-        .where("threadId", "=", identity.threadId)
-        .where("type", "=", "thread-input.updated")
+        .where("scopeKey", "=", `thread:${identity.threadId}`)
+        .where("entityKind", "=", "run-queue")
         .execute();
     const before = (await inputEvents()).length;
     await expect(
@@ -756,13 +902,12 @@ describeStore("personal team consent and returns", (it) => {
         .where("id", "=", before.taskId!)
         .executeTakeFirst(),
     ).toBeUndefined();
-    expect(
-      await f.database
-        .selectFrom("deploymentEvents")
-        .select(["threadId", "data"])
-        .where("type", "=", "task.removed")
-        .execute(),
-    ).toEqual([{ threadId: null, data: { threadId: before.taskId } }]);
+    const state = await f.database
+      .selectFrom("clientSyncState")
+      .select(["prunedThroughSequence", "sequence"])
+      .executeTakeFirstOrThrow();
+    expect(BigInt(state.prunedThroughSequence)).toBeGreaterThan(0n);
+    expect(BigInt(state.prunedThroughSequence)).toBeLessThanOrEqual(BigInt(state.sequence));
   });
 
   for (const adopted of [false, true])
@@ -779,6 +924,7 @@ describeStore("personal team consent and returns", (it) => {
           title: "My task",
           idempotencyKey: "adopt-ask",
         });
+      if (adopted) expect(await pendingBadge(f.database, mirror.taskId!)).toEqual([1, 1]);
       await f.database
         .updateTable("personalTeamRequests")
         .set({ consentExpiresAt: new Date(0) })
@@ -797,7 +943,42 @@ describeStore("personal team consent and returns", (it) => {
       expect((await f.store.mirror(f.origin.teamId, f.frame.request.id))?.terminalState).toBe(
         "cancelled",
       );
+      if (adopted) expect(await pendingBadge(f.database, mirror.taskId!)).toEqual([0, 0]);
     });
+
+  it("shows an expired ask in Needs you until the owner settles it, on the Host's clock", async ({
+    storeFixture,
+  }) => {
+    const f = await consentFixture(storeFixture);
+    await f.publisher.deliver(f.origin.teamId, f.frame);
+    const { requestId } = (await f.store.mirror(f.origin.teamId, f.frame.request.id))!;
+    const expireAt = (at: Date) =>
+      f.database
+        .updateTable("personalTeamRequests")
+        .set({ consentExpiresAt: at })
+        .where("requestId", "=", requestId)
+        .execute();
+    const kinds = async () =>
+      (await needsYouPage(f.database, { userId: f.userId })).entries.map((entry) => entry.kind);
+    // PostgreSQL's clock plays no part: this Host runs an hour behind it.
+    const hostNow = () => Date.now() - 3_600_000;
+    for (const database of new Set([f.database, storeFixture.store.database]))
+      setExecutionClock(database, hostNow);
+    onTestFinished(() => {
+      for (const database of new Set([f.database, storeFixture.store.database]))
+        setExecutionClock(database, Date.now);
+    });
+    const open = new Date(hostNow() + 600_000);
+    await expireAt(open);
+    expect(await f.store.expiredUndecidedAsks()).toEqual([]);
+    expect(await storeFixture.store.requests.nextDeadline()).toEqual(open);
+    // Past its expiry on the Host's clock: Needs you still reads, showing it until it is settled.
+    await expireAt(new Date(hostNow() - 1_000));
+    expect(await kinds()).toContain("team-ask");
+    await f.publisher.expireUndecidedAsks();
+    expect((await f.store.mirror(f.origin.teamId, requestId))?.terminalState).toBe("cancelled");
+    expect(await kinds()).not.toContain("team-ask");
+  });
 
   it("admits consent-gated work on arrival, replays approval after a lost ack, and resolves device races", async ({
     storeFixture,
@@ -840,6 +1021,7 @@ describeStore("personal team consent and returns", (it) => {
         .where("messageId", "=", arrival.receipt.inputId)
         .executeTakeFirstOrThrow(),
     ).toEqual({ state: "awaiting-approval" });
+    expect(await pendingBadge(f.database, arrival.receipt.taskId)).toEqual([1, 1]);
     expect(await needsYouPage(f.database, { userId: f.userId })).toMatchObject({
       count: 1,
       entries: [{ kind: "team-ask", presentation: f.frame.presentation }],
@@ -889,6 +1071,7 @@ describeStore("personal team consent and returns", (it) => {
       replyTarget: { kind: "team-thread", requestId: f.frame.request.id },
     });
     expect((await needsYouPage(f.database, { userId: f.userId })).count).toBe(0);
+    expect(await pendingBadge(f.database, saved.taskId!)).toEqual([0, 0]);
     const provider = await f.database
       .selectFrom("providerSessions")
       .select("personalContext")
@@ -1824,6 +2007,7 @@ describeStore("personal team consent and returns", (it) => {
       .where("teamDeploymentId", "=", f.origin.teamId)
       .where("requestId", "=", f.frame.request.id)
       .execute();
+    await f.publisher.expireUndecidedAsks();
     expect((await needsYouPage(f.database, { userId: f.userId })).count).toBe(0);
     await expect(
       f.publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve", 0),

@@ -67,8 +67,6 @@ function fixture(machines: ReachableMachineRecord[]) {
         fulfillMachineFullDiskAccessRequests: vi.fn(),
       },
     },
-    onDeploymentEvent: vi.fn(),
-    continuations: { notify: vi.fn() },
   });
   return { service, create, listReachableMachines };
 }

@@ -2,7 +2,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   OpensteerError,
   voiceModelSelection,
-  type AgentEvent,
   type EnvironmentId,
   type HarnessInstanceId,
   type MessageOrigin,
@@ -48,7 +47,6 @@ export function createVoiceHandlers(dependencies: {
   >;
   readonly runners: Pick<RunnerRegistry, "voice">;
   readonly threads: Pick<ThreadService, "configure">;
-  readonly publishDeploymentEvent?: (event: AgentEvent) => void;
 }): Pick<
   HostApiHandlers,
   "voice.open" | "voice.start" | "voice.renew" | "voice.say" | "voice.context" | "voice.stop"
@@ -63,8 +61,7 @@ export function createVoiceHandlers(dependencies: {
     return id;
   };
   const stop = async (sessionId: string, context: HostApiServerContext) => {
-    const result = await dependencies.store.stopVoiceCall(owner(context), sessionId);
-    for (const event of result?.events ?? []) dependencies.publishDeploymentEvent?.(event);
+    await dependencies.store.stopVoiceCall(owner(context), sessionId);
   };
   const callFor = async (sessionId: string, context: HostApiServerContext) => {
     const call = await dependencies.store.resolveVoiceCall(owner(context), sessionId);
@@ -186,7 +183,6 @@ export function createVoiceHandlers(dependencies: {
         harnessInstanceId: input.harnessInstanceId,
         ...(input.origin ? { origin: input.origin } : {}),
       });
-      for (const event of call.events) dependencies.publishDeploymentEvent?.(event);
       if (!call.busy) return call;
       if (Date.now() >= deadline)
         throw new OpensteerError({
@@ -203,7 +199,7 @@ export function createVoiceHandlers(dependencies: {
     "voice.open": async (input, context) => {
       const ownerId = owner(context);
       const catalog = await requireAccount(ownerId, input);
-      const { events, ...opened } = await dependencies.store.openVoiceThread({
+      const opened = await dependencies.store.openVoiceThread({
         ownerId,
         environmentId: input.environmentId,
         harnessInstanceId: input.harnessInstanceId,
@@ -213,7 +209,6 @@ export function createVoiceHandlers(dependencies: {
             }
           : {}),
       });
-      for (const event of events) dependencies.publishDeploymentEvent?.(event);
       if (
         opened.harnessInstanceId === input.harnessInstanceId ||
         opened.environmentId !== input.environmentId ||

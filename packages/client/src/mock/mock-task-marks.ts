@@ -5,7 +5,7 @@ import {
   type MarkColor,
   type IconName,
 } from "@opensteer/core";
-import type { HostSnapshot, ThreadSummary } from "../host/client.js";
+import type { TranscriptFixtureSnapshot, ThreadSummary } from "../host/client.js";
 
 /** The mock's one naming reply: an unclassified subject settles to `none`/document. */
 export function mockGeneratedTaskIcon(text: string): IconName {
@@ -32,7 +32,9 @@ export function mockGeneratedTaskIcon(text: string): IconName {
 }
 
 /** Errands that exercise task marks alongside the existing demo journeys. */
-export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snapshot): Snapshot {
+export function seedMockTaskMarks<Snapshot extends TranscriptFixtureSnapshot>(
+  snapshot: Snapshot,
+): Snapshot {
   const template = snapshot.threads[0]!;
   const at = "2026-10-25T12:00:00.000Z";
   const specs: readonly {

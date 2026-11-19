@@ -28,7 +28,7 @@ import {
 } from "@opensteer/core";
 import { createDatabase, migrateToLatest, OpensteerStore, TriggerStore } from "@opensteer/database";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { withPersonalTransaction } from "@opensteer/database";
+import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
 import { recordedTransactionConflicts } from "@opensteer/database/test-support/lock-order";
 import {
   CommandService,
@@ -133,7 +133,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       maxQueuedCommands: 64,
     }),
     onExecutionQueued: vi.fn(),
-    onDeploymentEvent: vi.fn(),
+
     store,
   });
   const tokens = {
@@ -1244,7 +1244,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
               triggerId: created.trigger.id,
               nextFireAt: plusThirty,
             };
-      const downgrade = withPersonalTransaction(database, async (transaction) => {
+      const downgrade = commitPersonalMutation(database, async (transaction) => {
         fence.resolve();
         await withTimeout(release.promise, 5_000, {
           timeoutError: () => new Error("Authority race did not release the personal event fence"),
@@ -1261,7 +1261,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       const mutation = service.manage(f.ownerId, TriggerControlInputSchema.parse(input), actor.id);
       void mutation.catch(() => undefined);
       try {
-        await blockedQuery("deployment_event_state", mutation);
+        await blockedQuery("client_sync_state", mutation);
         release.resolve();
         await downgrade;
         await denied(`A10/F15 ${change}`, actor.id, input.operation, "forbidden", () => mutation);
@@ -1290,7 +1290,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         maxQueuedCommands: 64,
       }),
       onExecutionQueued: vi.fn(),
-      onDeploymentEvent: vi.fn(),
+
       store: peer,
     });
     const peerPrograms = new TriggerToolsTestClient({
@@ -1320,7 +1320,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         f.child.id,
       );
       void mutation.catch(() => undefined);
-      await blockedQuery("deployment_event_state", mutation);
+      await blockedQuery("client_sync_state", mutation);
       barrier.release();
       await check(
         "A10 delegation and mutation overlap",
@@ -1353,6 +1353,32 @@ integration.sequential("Trigger authority through real Host services and Postgre
       barrier.release();
       await Promise.allSettled([delegated, mutation]);
     }
+  });
+  it("claims every other due schedule when one schedule cannot be claimed", async () => {
+    const f = await fixture();
+    const created = [
+      (await personCreate(f, f.child)).trigger.id,
+      (await personCreate(f, f.child)).trigger.id,
+    ];
+    const due = "2040-01-02T08:10:00.000Z";
+    for (const triggerId of created)
+      await agentTrigger(f.childToken, { operation: "set_next_fire", triggerId, nextFireAt: due });
+    // The schedule the claim reaches first (same instant, lower id) has a
+    // revision it cannot read, on every pass.
+    const [broken, healthy] = created.toSorted();
+    await sql`update trigger_revisions set source = jsonb_set(source, '{kind}', '"webhook"')
+      where id = (select current_revision_id from triggers where id = ${broken})`.execute(database);
+    const claimed = await triggerStore.claimDueSchedules(new Date(due));
+    expect(claimed.occurrences.map(({ triggerId }) => triggerId)).toEqual([healthy]);
+    expect(claimed.failures).toHaveLength(1);
+    expect(claimed.changed).toBe(true);
+    // The broken one rolled back alone: still due, nothing committed for it.
+    const brokenRow = await database
+      .selectFrom("triggers")
+      .select("nextFireAt")
+      .where("id", "=", broken as never)
+      .executeTakeFirstOrThrow();
+    expect(brokenRow.nextFireAt?.toISOString()).toBe(due);
   });
   it("A11/F19/F20: preserves pending schedule work, suppresses the deferred enqueue and resumes cadence", async () => {
     const f = await fixture();
@@ -1441,7 +1467,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         f.child.id,
       );
       void mutation.catch(() => undefined);
-      await blockedQuery("deployment_event_state", mutation);
+      await blockedQuery("client_sync_state", mutation);
       barrier.release();
       await check(
         "A11 claim commits before reschedule",
@@ -1731,7 +1757,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         runners: runnerRegistry,
         executionLeaseMs: 90_000,
         publicUrl: new URL("https://host.test"),
-        onDeploymentEvent: vi.fn(),
+
         requestResponseVault: {} as never,
         runToolTokens: {} as never,
         attachmentRunTokens: {} as never,
@@ -1917,7 +1943,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       } as unknown as RunnerRegistry,
       executionLeaseMs: 90_000,
       publicUrl: new URL("https://host.test"),
-      onDeploymentEvent: vi.fn(),
+
       requestResponseVault: {} as never,
       runToolTokens: {} as never,
       attachmentRunTokens: {} as never,
@@ -1956,7 +1982,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
       .execute();
     const pending = await store.listPendingCommands();
     vi.setSystemTime(new Date(nextHour));
-    expect(await triggerStore.claimDueSchedules()).toEqual({ changed: false, occurrences: [] });
+    expect(await triggerStore.claimDueSchedules()).toEqual({
+      changed: false,
+      occurrences: [],
+      failures: [],
+    });
     const blocked = {
       status: "paused",
       nextFireAt: null,
@@ -2008,7 +2038,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
       automation: { status: "active", pauseReason: null, nextFireAt: next },
       revision: { program },
     });
-    expect(await triggerStore.claimDueSchedules()).toEqual({ changed: false, occurrences: [] });
+    expect(await triggerStore.claimDueSchedules()).toEqual({
+      changed: false,
+      occurrences: [],
+      failures: [],
+    });
     expect((await triggerStore.claimDueSchedules(new Date(next))).occurrences).toEqual([
       expect.objectContaining({ triggerId, revisionId: repaired.revision!.id }),
     ]);
@@ -2922,7 +2956,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
 
   // Observe PostgreSQL's actual wait graph; ordering never depends on a timer.
   async function blockedQuery(
-    table: "threads" | "triggers" | "deployment_event_state",
+    table: "threads" | "triggers" | "client_sync_state",
     mutation: Promise<unknown>,
   ) {
     const observed = vi.waitFor(

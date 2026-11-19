@@ -2979,3 +2979,11 @@ label.machine-access__grant-head {
 .settings-model-server .settings-account__line {
   white-space: normal;
 }
+
+/* A settings list that could not be loaded: its error, then Try again. */
+.settings-unreadable {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2, 8px);
+}

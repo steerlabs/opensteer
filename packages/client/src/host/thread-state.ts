@@ -1,7 +1,7 @@
-import { compareSequence, type AgentEventView as AgentEvent, type Sequence } from "@opensteer/core";
+import { compareSequence, type Sequence } from "@opensteer/core";
 import type { ThreadSummary } from "./client.js";
 
-const unloadedThreadLimit = 4096;
+const unloadedThreadLimit = 128;
 
 export type ThreadView = Pick<ThreadSummary, "title" | "icon"> &
   Partial<
@@ -19,8 +19,10 @@ export type ThreadView = Pick<ThreadSummary, "title" | "icon"> &
 
 type ThreadState = { returnHint?: ThreadSummary["returnHint"] } & Pick<
   ThreadSummary,
-  "status" | "inputQueuePaused" | "pendingRequests" | "updatedAt"
+  "status" | "pendingRequests" | "updatedAt"
 > & {
+    readonly inputQueuePaused?: boolean | undefined;
+    readonly compact?: boolean | undefined;
     readonly doneAt?: ThreadSummary["doneAt"] | undefined;
     readonly doneReason?: ThreadSummary["doneReason"] | undefined;
     readonly title?: string | undefined;
@@ -33,45 +35,26 @@ export class ThreadStateProjection {
   readonly #loaded = new Map<string, ThreadState>();
   readonly #unloaded = new Map<string, ThreadState>();
 
-  #coverageFloor: Sequence | null = null;
-
-  cover(sequence: Sequence): void {
-    const previous = this.#coverageFloor;
-    if (previous === null || compareSequence(sequence, previous) > 0)
-      this.#coverageFloor = sequence;
-  }
-
-  needsRead(thread: Pick<ThreadSummary, "id">, sequence: Sequence): boolean {
-    const floor = this.#coverageFloor;
-    if (floor === null || compareSequence(sequence, floor) >= 0) return false;
-    const loaded = this.#loaded.get(thread.id);
-    return loaded === undefined || compareSequence(loaded.stateSequence, floor) < 0;
-  }
-
-  record(event: AgentEvent): boolean {
-    const state =
-      event.type === "thread.state-changed"
-        ? event.data
-        : event.type === "thread.created" ||
-            event.type === "thread.execution-updated" ||
-            event.type === "thread.listed"
-          ? event.data.thread
-          : null;
-    if (!state) return false;
-    this.#accept(event.threadId, {
-      ...state,
-      stateSequence: event.sequence,
-      updatedAt: state.updatedAt ?? event.createdAt,
-    });
-    return true;
-  }
-
   reconcile(
     summary: ThreadSummary,
     asOfSequence: Sequence,
     current?: ThreadSummary,
+    compact?: { readonly inputQueuePaused?: boolean | undefined },
   ): ThreadSummary {
-    const accepted = this.#accept(summary.id, { ...summary, stateSequence: asOfSequence }, true);
+    const accepted = this.#accept(
+      summary.id,
+      {
+        ...summary,
+        ...(compact && {
+          icon: undefined,
+          inputQueuePaused: compact.inputQueuePaused,
+          returnHint: undefined,
+        }),
+        compact: !!compact,
+        stateSequence: asOfSequence,
+      },
+      true,
+    );
     const state = {
       ...accepted,
       doneAt: accepted.doneAt === undefined ? summary.doneAt : accepted.doneAt,
@@ -97,7 +80,7 @@ export class ThreadStateProjection {
           ? summary.latestRunCompletedAt
           : state.latestRunCompletedAt,
       status: state.status,
-      inputQueuePaused: state.inputQueuePaused,
+      inputQueuePaused: state.inputQueuePaused ?? summary.inputQueuePaused,
       pendingRequests: state.pendingRequests,
       updatedAt,
     };
@@ -118,7 +101,7 @@ export class ThreadStateProjection {
       // A page counts only the Requests its reader may see, so the count stays the page's.
       ...(state && {
         status: state.status,
-        inputQueuePaused: state.inputQueuePaused,
+        inputQueuePaused: state.inputQueuePaused ?? thread.inputQueuePaused,
         returnHint: state.returnHint === undefined ? thread.returnHint : state.returnHint,
       }),
     };
@@ -144,8 +127,10 @@ export class ThreadStateProjection {
 
   #accept(id: string, incoming: ThreadState, loaded = false): ThreadState {
     const previous = this.#loaded.get(id) ?? this.#unloaded.get(id);
-    if (previous && compareSequence(incoming.stateSequence, previous.stateSequence) <= 0)
-      return previous;
+    if (previous) {
+      const order = compareSequence(incoming.stateSequence, previous.stateSequence);
+      if (order < 0 || (order === 0 && !(previous.compact && !incoming.compact))) return previous;
+    }
     const state = {
       doneAt: incoming.doneAt === undefined ? previous?.doneAt : incoming.doneAt,
       // Events that predate reasons carry Done alone, which then reads as a person's.
@@ -159,7 +144,8 @@ export class ThreadStateProjection {
           : incoming.latestRunCompletedAt,
       returnHint: incoming.returnHint === undefined ? previous?.returnHint : incoming.returnHint,
       status: incoming.status,
-      inputQueuePaused: incoming.inputQueuePaused,
+      inputQueuePaused: incoming.inputQueuePaused ?? previous?.inputQueuePaused,
+      compact: incoming.compact,
       pendingRequests: incoming.pendingRequests,
       stateSequence: incoming.stateSequence,
       updatedAt:
@@ -176,29 +162,17 @@ export class ThreadStateProjection {
     this.#unloaded.delete(id);
     this.#unloaded.set(id, state);
     if (this.#unloaded.size > unloadedThreadLimit) {
-      const [evictedId, evicted] = this.#unloaded.entries().next().value!;
-      this.cover(evicted.stateSequence);
-      this.#unloaded.delete(evictedId);
+      this.#unloaded.delete(this.#unloaded.keys().next().value!);
     }
   }
 
-  checkpoint() {
-    return {
-      coverage: this.#coverageFloor,
-      loaded: [...this.#loaded],
-      unloaded: [...this.#unloaded],
-    };
-  }
-  restore(checkpoint: ReturnType<ThreadStateProjection["checkpoint"]>): void {
-    this.clear();
-    this.#coverageFloor = checkpoint.coverage;
-    for (const [id, state] of checkpoint.loaded) this.#loaded.set(id, state);
-    for (const [id, state] of checkpoint.unloaded) this.#remember(id, state);
+  forget(threadId: string) {
+    this.#loaded.delete(threadId);
+    this.#unloaded.delete(threadId);
   }
 
   clear(): void {
     this.#loaded.clear();
     this.#unloaded.clear();
-    this.#coverageFloor = null;
   }
 }

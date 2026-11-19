@@ -1,3 +1,4 @@
+import { browserFixtureOwner } from "./browser-deployment.test-support.js";
 import { runtimeBrowserCommand } from "./browser-sessions.test-support.js";
 import { browserInventory } from "./browser-sessions.test-support.js";
 import { randomUUID } from "node:crypto";
@@ -40,9 +41,7 @@ run("Browser Sessions through a whole deployment", () => {
     if (!created.ok || created.data.type !== "browser.profile.create")
       throw new Error(JSON.stringify(created));
     const profileId = created.data.profile.id;
-    const bootstrap = await stack.api["bootstrap.get"]({});
-    if (!bootstrap.ok) throw new Error(JSON.stringify(bootstrap));
-    const owner = bootstrap.data.user.id;
+    const owner = (await browserFixtureOwner(stack)).id;
     // A legacy browser has unknown creation provenance and cannot become the person's reuse candidate.
     const legacy = await stack.host.browser.start({
       ownerId: owner,

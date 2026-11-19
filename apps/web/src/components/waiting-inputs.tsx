@@ -13,13 +13,15 @@ import {
 import type { ContentPart, TeamSource } from "@opensteer/core";
 import {
   followWaitingDraft,
+  hydrateWaitingDraft,
   messageAuthorName,
   mutationIdempotencyKey,
   openWaitingDraft,
   reloadWaitingDraft,
   removeWaitingDraftPart,
   setWaitingDraftText,
-  waitingDraftContent,
+  waitingDraftOutgoing,
+  waitingDraftAwaits,
   waitingDraftSave,
   waitingMessageRows,
   type MessageEntry,
@@ -30,6 +32,7 @@ import {
   type WaitingInput,
   type WaitingMessageEditor,
 } from "@opensteer/client/host";
+import { useWaitingBody } from "@opensteer/client/react";
 import { TranscriptMessage } from "./agent-activity.js";
 import { ComposerEditor, type ComposerEditorControl } from "./composer-editor.js";
 import { personalReferenceCandidates, useReferencePicker } from "./composer-reference-picker.js";
@@ -251,7 +254,10 @@ function useInPlaceEdit(
   const row = useRef<HTMLLIElement | null>(null);
   const draft =
     kept && input && !gone && !saving
-      ? followWaitingDraft(kept, { content: input.item.message.content, revision: input.revision })
+      ? followWaitingDraft(kept, {
+          content: [{ type: "text", text: input.entry.body }, ...(input.entry.attachments ?? [])],
+          revision: input.revision,
+        })
       : kept;
 
   useEffect(
@@ -264,6 +270,29 @@ function useInPlaceEdit(
     },
     [],
   );
+  // A newer version locks the field until its full body is read under the lease.
+  const awaited = draft ? waitingDraftAwaits(draft) : null;
+  useEffect(() => {
+    const held = session.current;
+    if (awaited === null || !held) return;
+    let current = true;
+    void held.opening
+      .then((editor) => (editor.revision === awaited ? null : editor.read(awaited)))
+      .then(
+        (content) => {
+          if (!content || !current || session.current !== held) return;
+          const source = { content, revision: awaited, full: true } as const;
+          setKept((kept) => (kept ? hydrateWaitingDraft(kept, source) : kept));
+        },
+        (error: unknown) => {
+          if (current && session.current === held)
+            setNotice(isConflict(error) ? "changed" : "failed");
+        },
+      );
+    return () => {
+      current = false;
+    };
+  }, [awaited]);
   useEffect(() => {
     if (draft || !returnFocus.current) return;
     returnFocus.current = false;
@@ -280,12 +309,32 @@ function useInPlaceEdit(
       sending: null,
     };
     session.current = held;
-    setKept(openWaitingDraft({ content: input.item.message.content, revision: input.revision }));
+    // The preview shows while the full body is read; it cannot be edited or saved.
+    setKept(
+      openWaitingDraft({
+        content: [{ type: "text", text: input.entry.body }, ...(input.entry.attachments ?? [])],
+        revision: input.revision,
+      }),
+    );
     setNotice(null);
     onOpenChange(true);
-    held.opening.catch((error: unknown) => {
-      if (session.current === held) setNotice(isConflict(error) ? "changed" : "failed");
-    });
+    load(held);
+  };
+
+  /** Installs the full body the lease read returns: the only words an edit opens from. */
+  const load = (held: EditSession) => {
+    const opening = held.opening;
+    void opening.then(
+      (editor) => {
+        if (session.current !== held || held.opening !== opening) return;
+        const source = { content: editor.content, revision: editor.revision, full: true } as const;
+        setKept((draft) => (draft ? hydrateWaitingDraft(draft, source) : draft));
+      },
+      (error: unknown) => {
+        if (session.current === held && held.opening === opening)
+          setNotice(isConflict(error) ? "changed" : "failed");
+      },
+    );
   };
 
   /** Ends `held` if it is still the edit open here; a save under way ends it itself. */
@@ -319,6 +368,15 @@ function useInPlaceEdit(
   const save = async (): Promise<number | null> => {
     const held = session.current;
     if (!input || !held || !draft || held.saving) return null;
+    if (draft.loading) {
+      // The lease never opened: take it again; the field stays locked until its body arrives.
+      if (notice === "failed") {
+        held.opening = client.editWaitingMessage(input.threadId, input.messageId);
+        setNotice(null);
+        load(held);
+      }
+      return null;
+    }
     held.saving = true;
     const current = await typed();
     held.saving = false;
@@ -369,12 +427,13 @@ function useInPlaceEdit(
     if (!submission) {
       const current = await typed();
       if (!current || session.current !== held || held.sending) return;
-      const content = waitingDraftContent(current);
-      if (content.length === 0) return;
+      // Only words built on the full body leave: never the queue's clipped preview.
+      const outgoing = waitingDraftOutgoing(current);
+      if (!outgoing) return;
       submission = {
         attachments: [],
-        body: current.text.trim(),
-        content,
+        body: outgoing.text,
+        content: [...outgoing.content],
         idempotencyKey: mutationIdempotencyKey("message"),
       };
       held.sending = submission;
@@ -462,6 +521,17 @@ function WaitingRow({
   const editable =
     input?.canEdit && otherDevice === null && !disabled && !gone && edit.draft === null;
   const ask = input?.kind === "ask" ? input : null;
+  // A long ask's preview is clipped: Answer waits until its whole text is on screen.
+  const body = useWaitingBody(client, ask);
+  const shown =
+    ask && body.status === "complete" && message.previewTruncated
+      ? { ...message, body: body.text, previewTruncated: false }
+      : message;
+  // An ask is shown unfolded, and Answer waits while the person has folded it away again.
+  const asking = ask !== null;
+  const askReveal = useMemo(() => (asking ? { id: message.id } : null), [asking, message.id]);
+  const [askOpen, setAskOpen] = useState(false);
+  const seen = edit.draft ? !edit.draft.loading : !ask || (body.status === "complete" && askOpen);
 
   const startEditing = () => {
     if (editable && !blocked) edit.open();
@@ -484,6 +554,7 @@ function WaitingRow({
           return;
         }
         // Consent names the version on screen: the editor's, saved first when changed.
+        if (!seen) return;
         const revision = edit.draft ? await edit.save() : ask.revision;
         if (revision === null) return;
         await client.decideTeamAsk({
@@ -545,7 +616,7 @@ function WaitingRow({
           client={client}
           draft={edit.draft}
           field={edit.field}
-          locked={edit.saving || edit.notice === "unconfirmed"}
+          locked={edit.saving || edit.notice === "unconfirmed" || edit.draft.loading}
           source={input.entry.teamSource ?? null}
           onCancel={edit.close}
           onRemovePart={edit.removePart}
@@ -554,9 +625,10 @@ function WaitingRow({
         />
       ) : (
         <TranscriptMessage
-          message={message}
+          message={shown}
+          onOpenChange={asking ? setAskOpen : undefined}
           queued={input !== null || message.queuePending === true}
-          reveal={null}
+          reveal={askReveal}
           viewerUserId={viewerUserId}
         />
       )}
@@ -564,7 +636,7 @@ function WaitingRow({
         <EditStatus
           ask={ask !== null}
           canReload={edit.draft.conflict !== null}
-          canSendAsNew={!ask && waitingDraftContent(edit.draft).length > 0}
+          canSendAsNew={!ask && waitingDraftOutgoing(edit.draft) !== null}
           disabled={blocked}
           notice={edit.notice}
           onCancel={edit.close}
@@ -592,8 +664,24 @@ function WaitingRow({
                 }
               >
                 <span aria-hidden className="waiting-ask__dot" />
-                {otherDevice ? `Being edited on ${otherDevice}` : ask.consent.line}
+                {otherDevice
+                  ? `Being edited on ${otherDevice}`
+                  : body.status === "loading" && !edit.draft
+                    ? "Loading the whole ask…"
+                    : body.status === "failed" && !edit.draft
+                      ? "Couldn’t load the whole ask."
+                      : ask.consent.line}
               </span>
+              {body.status === "failed" && !edit.draft && !otherDevice ? (
+                <button
+                  className="queued__action"
+                  disabled={blocked}
+                  onClick={body.retry}
+                  type="button"
+                >
+                  Try again
+                </button>
+              ) : null}
               <span className="waiting-ask__actions">
                 {otherDevice ? (
                   <ReleaseAction
@@ -632,7 +720,8 @@ function WaitingRow({
                     gone ||
                     otherDevice !== null ||
                     edit.saving ||
-                    edit.draft?.conflict != null
+                    edit.draft?.conflict != null ||
+                    !seen
                   }
                   onClick={() => decide("approve", ask)}
                   title={

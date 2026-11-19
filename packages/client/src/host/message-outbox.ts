@@ -1,3 +1,4 @@
+import type { ThreadViewSource } from "./scoped-thread-reader.js";
 /*
  * One durable FIFO per task and login. Enqueue appends waiting. Browser drafts
  * record the consumed revision in the same commit, so discard and send have
@@ -135,7 +136,9 @@ export interface MessageOutbox {
       readonly bindDraft?: () => Promise<void>;
     },
   ): Promise<string>;
-  observe(messages: readonly { readonly id: string; readonly clientSendKey?: string }[]): void;
+  observe(
+    messages: readonly { readonly id: string; readonly clientSendKey?: string | undefined }[],
+  ): void;
   retry(localId: string): Promise<"retried" | "settled">;
   hasHandoff(
     scope: ClientScope,
@@ -526,7 +529,7 @@ class SessionMessageOutbox implements MessageOutbox {
     });
   };
   observe = (
-    messages: readonly { readonly id: string; readonly clientSendKey?: string }[],
+    messages: readonly { readonly id: string; readonly clientSendKey?: string | undefined }[],
   ): void => {
     const acknowledged = new Map(this.#state.acknowledged);
     let changed = false;
@@ -959,11 +962,12 @@ export function initializeMessageOutbox(
     session: ports.session ?? client,
     startsRun: (threadId) => {
       const snapshot = client.getSnapshot();
+      const detail = client.getThreadTranscript(threadId)?.getSnapshot();
       const thread = snapshot.threads.find(({ id }) => id === threadId);
       return (
         thread !== undefined &&
-        threadStartsRunForMessage({ runQueue: snapshot.runQueue, thread }) &&
-        !snapshot.inputQueues[threadId]?.items.length
+        threadStartsRunForMessage({ runQueue: detail?.runQueue ?? snapshot.runQueue, thread }) &&
+        !detail?.inputQueue?.items.length
       );
     },
     prepare: (command) => {
@@ -982,10 +986,10 @@ export function initializeMessageOutbox(
       return { messageId: result.message.id };
     },
   });
+  const watched = new Map<string, { source: ThreadViewSource; release: () => void }>();
   const observe = () => {
     const scope = (ports.session ?? client).connection.getSnapshot().scope;
     const snapshot = client.getSnapshot();
-    if (outbox.getSnapshot().messages.length === 0) return;
     if (
       !scope ||
       scope.viewerId !== snapshot.user?.id ||
@@ -994,24 +998,44 @@ export function initializeMessageOutbox(
     )
       return;
     outbox.observe(
-      Object.values(snapshot.transcripts).flatMap((entries) =>
-        entries.flatMap((entry) =>
-          entry.kind === "message" &&
-          entry.author.kind === "human" &&
-          entry.author.userId === scope.viewerId &&
-          entry.messageKind === "input"
-            ? [entry]
-            : [],
-        ),
-      ),
+      [...watched.values()].flatMap(({ source }) => {
+        const { entries, inputQueue } = source.getSnapshot();
+        return [
+          ...entries.flatMap((entry) =>
+            entry.kind === "message" &&
+            entry.author.kind === "human" &&
+            entry.author.userId === scope.viewerId &&
+            entry.messageKind === "input"
+              ? [entry]
+              : [],
+          ),
+          ...(inputQueue?.items.map(({ message }) => message) ?? []),
+        ];
+      }),
     );
   };
-  const releaseHost = client.subscribe(observe),
-    releaseOutbox = outbox.subscribe(observe);
+  const watch = () => {
+    const targets = new Set(outbox.getSnapshot().messages.map(({ command }) => command.threadId));
+    for (const [id, { release, source }] of watched) {
+      if (targets.has(id) && client.getThreadTranscript(id) === source) continue;
+      release();
+      watched.delete(id);
+    }
+    for (const id of targets) {
+      const source = client.getThreadTranscript(id);
+      if (!source || watched.has(id)) continue;
+      watched.set(id, { source, release: source.subscribe(observe) });
+    }
+    observe();
+  };
+  const releaseHost = client.subscribe(watch);
+  const releaseOutbox = outbox.subscribe(watch);
   const dispose = outbox.dispose;
   outbox.dispose = () => {
     releaseHost();
     releaseOutbox();
+    for (const { release } of watched.values()) release();
+    watched.clear();
     dispose();
   };
   hostOutboxes.set(client, outbox);

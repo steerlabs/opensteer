@@ -1,7 +1,6 @@
 import { act, failureWords, refusalReason } from "../use-action.js";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  deviceMachine,
   type HostClient,
   type HostSnapshot,
   type NativeViewerSource,
@@ -348,7 +347,7 @@ export function OwnerView({
       {inputAvailable || phone ? (
         <PhoneControlBar
           display={display}
-          phone={machine ? (deviceMachine(machine).phoneDisplay ?? null) : null}
+          phone={machine ? (machine.phoneDisplay ?? null) : null}
         />
       ) : null}
     </section>

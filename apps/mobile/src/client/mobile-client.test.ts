@@ -95,7 +95,12 @@ function testPort(options: {
   const verified: string[] = [];
   /** Makes the most recent attachment answer the way a refused Host does. */
   const refusals: (() => void)[] = [];
+  /** Every Deployment whose saved stream state was cleared. */
+  const streamCleared: string[] = [];
   const factory: MobileHostPortFactory = ({ oauth, sessions }): MobileHostPort => ({
+    clearPersonalStreamCache: async (deploymentId) => {
+      streamCleared.push(deploymentId);
+    },
     credentials:
       options.realCredentials === true
         ? createDeploymentCredentials({ now: () => new Date(), oauth, sessions })
@@ -205,6 +210,7 @@ function testPort(options: {
     factory,
     refusals,
     scopes,
+    streamCleared,
     verified,
   };
 }
@@ -1438,6 +1444,9 @@ describe("MobileClient Account directory state", () => {
     await client.clearAccountSavedViews();
     // Push unregistration still needs the Account credential; keys leave first.
     expect(invalidated).toContain(serverId);
+    // The Account's Deployments lose their saved private stream state with it.
+    expect(port.streamCleared).toContain(serverId);
+    expect(port.streamCleared).not.toContain(otherId);
     expect(client.getSnapshot().selection.hostClient).toBeNull();
     await client.signOutAccount();
     await settle();
@@ -3259,30 +3268,27 @@ describe("MobileClient other computers' attention", () => {
       }),
     );
 
-  it.each([false, true])(
-    "opts raw attention into device Requests only after capability verification (%s)",
-    async (devices) => {
-      const input = vi.fn(async () => ({ ok: true, data: { needsYou: 1, unread: false } }));
-      const port = testPort({
-        held: true,
-        verification: { status: "compatible", capabilities: devices ? ["devices-v1"] : [] },
-        configureClient: (host) => {
-          Object.defineProperty(host, "rpc", {
-            value: new Proxy(host.rpc, {
-              get: (rpc, key) => (key === "attention.get" ? input : Reflect.get(rpc, key)),
-            }),
-          });
-        },
-      });
-      const { client } = open(port.factory);
-      await client.catalog.upsertAndSelect(connectComputer(1));
-      await client.catalog.upsert(otherComputer());
-      await client.initialize();
-      await client.readAttention(otherId);
-      expect(input).toHaveBeenCalledWith(devices ? { deviceAccessRequests: "include" } : {});
-      client.dispose();
-    },
-  );
+  it.each([false, true])("reads scoped attention for a verified computer (%s)", async (devices) => {
+    const input = vi.fn(async () => ({ ok: true, data: { needsYou: 1, unread: false } }));
+    const port = testPort({
+      held: true,
+      verification: { status: "compatible", capabilities: devices ? ["devices-v1"] : [] },
+      configureClient: (host) => {
+        Object.defineProperty(host, "rpc", {
+          value: new Proxy(host.rpc, {
+            get: (rpc, key) => (key === "attention.get" ? input : Reflect.get(rpc, key)),
+          }),
+        });
+      },
+    });
+    const { client } = open(port.factory);
+    await client.catalog.upsertAndSelect(connectComputer(1));
+    await client.catalog.upsert(otherComputer());
+    await client.initialize();
+    await client.readAttention(otherId);
+    expect(input).toHaveBeenCalledWith({});
+    client.dispose();
+  });
 
   it("reads another computer once, leaves the selection alone, and never reads the shown one", async () => {
     const port = testPort({ held: true });

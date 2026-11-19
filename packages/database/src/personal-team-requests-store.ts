@@ -2,15 +2,12 @@ import {
   lockInputQueueProjection,
   liveInputLease,
   clearInputLease,
-  leaseChangedEvent,
+  refreshInputQueue,
 } from "./waiting-inputs.js";
 import { executionDate } from "./personal-transaction.js";
-import { threadInputFromRow } from "./thread-row-mappers.js";
 import { isDeepStrictEqual } from "node:util";
 import {
   MessageIdSchema,
-  type AgentEvent,
-  type TeamRunDelivery,
   OpensteerError,
   type DeploymentId,
   type RunId,
@@ -33,27 +30,22 @@ import { sql, type Insertable, type Kysely, type Selectable } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { personalTeamReturnPost } from "./personal-team-return-provenance.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
-import { appendHostDeploymentEvent, eventFromRow } from "./deployment-events.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { publishTranscriptRun } from "./execution-changes.js";
+import { refreshTeamAskAttention } from "./personal-attention-store.js";
 
 export class PersonalTeamRequestsStore {
   readonly database: Kysely<DatabaseSchema>;
   readonly #onPublished: ((taskId: ThreadId) => Promise<void>) | undefined;
-  readonly #onDeliveryEvent: ((event: AgentEvent) => void) | undefined;
-  constructor(
-    database: Kysely<DatabaseSchema>,
-    onPublished?: (taskId: ThreadId) => Promise<void>,
-    onDeliveryEvent?: (event: AgentEvent) => void,
-  ) {
+  constructor(database: Kysely<DatabaseSchema>, onPublished?: (taskId: ThreadId) => Promise<void>) {
     this.database = database;
     this.#onPublished = onPublished;
-    this.#onDeliveryEvent = onDeliveryEvent;
   }
 
   async prunePosts() {
     await this.database
       .deleteFrom("personalTeamPosts")
-      .where("createdAt", "<=", new Date(Date.now() - 14 * 86400000))
+      .where("createdAt", "<=", sql<Date>`now() - interval '14 days'`)
       .execute();
   }
 
@@ -100,7 +92,7 @@ export class PersonalTeamRequestsStore {
         : [],
     );
     await this.prunePosts();
-    await withPersonalTransaction(this.database, async (tx) => {
+    await commitPersonalMutation(this.database, async (tx) => {
       await tx
         .insertInto("personalTeamPosts")
         .values({
@@ -231,68 +223,84 @@ export class PersonalTeamRequestsStore {
     input: PersonalTeamRequestMirror & { readonly createdAt: string },
   ): Promise<boolean> {
     await this.pruneReturns(input.teamId);
-    const rejected =
-      input.kind === "return" && !(await personalTeamReturnPost(this.database, input));
-    const returnPayload =
-      rejected && input.returnPayload
-        ? { ...input.returnPayload, bodyMarkdown: null, attachments: [] }
-        : input.returnPayload;
-    const saved = await this.database
-      .insertInto("personalTeamRequests")
-      .values({
-        teamDeploymentId: input.teamId,
-        requestId: input.requestId,
-        kind: input.kind,
-        remoteState: input.remoteState,
-        presentation: input.presentation,
-        returnPayload,
-        consentExpiresAt: input.consentExpiresAt,
-        localDecision: null,
-        decisionAt: null,
-        returnAdmission: rejected ? "undeliverable" : null,
-        triggerMessageId: input.triggerMessageId,
-        localTaskId: null,
-        localInputId: null,
-        runId: null,
-        source: input.source,
-        publicationState: rejected ? "blocked" : "pending",
-        terminalState: rejected ? "done" : null,
-        acceptedMessageId: null,
-        createdAt: input.kind === "return" ? new Date() : input.createdAt,
-        finishedAt: rejected ? new Date() : null,
-      })
-      .onConflict((conflict) => conflict.doNothing())
-      .returning("requestId")
-      .executeTakeFirst();
-    const current = await this.mirror(input.teamId, input.requestId);
-    if (
-      !current ||
-      current.kind !== input.kind ||
-      current.triggerMessageId !== input.triggerMessageId ||
-      !isDeepStrictEqual(current.presentation, input.presentation) ||
-      !isDeepStrictEqual(
-        current.returnPayload,
-        current.terminalState && input.returnPayload
+    const inserted = await commitPersonalMutation(this.database, async (tx, mutation) => {
+      const rejected = input.kind === "return" && !(await personalTeamReturnPost(tx, input));
+      const returnPayload =
+        rejected && input.returnPayload
           ? { ...input.returnPayload, bodyMarkdown: null, attachments: [] }
-          : input.returnPayload,
+          : input.returnPayload;
+      const saved = await tx
+        .insertInto("personalTeamRequests")
+        .values({
+          teamDeploymentId: input.teamId,
+          requestId: input.requestId,
+          kind: input.kind,
+          remoteState: input.remoteState,
+          presentation: input.presentation,
+          returnPayload,
+          consentExpiresAt: input.consentExpiresAt,
+          localDecision: null,
+          decisionAt: null,
+          returnAdmission: rejected ? "undeliverable" : null,
+          triggerMessageId: input.triggerMessageId,
+          localTaskId: null,
+          localInputId: null,
+          runId: null,
+          source: input.source,
+          publicationState: rejected ? "blocked" : "pending",
+          terminalState: rejected ? "done" : null,
+          acceptedMessageId: null,
+          createdAt: input.kind === "return" ? new Date() : input.createdAt,
+          finishedAt: rejected ? new Date() : null,
+        })
+        .onConflict((conflict) => conflict.doNothing())
+        .returning("requestId")
+        .executeTakeFirst();
+      const row = await tx
+        .selectFrom("personalTeamRequests")
+        .selectAll()
+        .where("teamDeploymentId", "=", input.teamId)
+        .where("requestId", "=", input.requestId)
+        .executeTakeFirst();
+      const current = row ? personalTeamRequestMirrorFromRow(row) : null;
+      if (
+        !current ||
+        current.kind !== input.kind ||
+        current.triggerMessageId !== input.triggerMessageId ||
+        !isDeepStrictEqual(current.presentation, input.presentation) ||
+        !isDeepStrictEqual(
+          current.returnPayload,
+          current.terminalState && input.returnPayload
+            ? { ...input.returnPayload, bodyMarkdown: null, attachments: [] }
+            : input.returnPayload,
+        )
       )
-    )
-      throw new OpensteerError({ code: "conflict", message: "Team request presentation changed" });
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Team request presentation changed",
+        });
+      if (saved && input.kind === "ask")
+        await refreshTeamAskAttention(tx, mutation, input.teamId, input.requestId);
+      return Boolean(saved);
+    });
     await this.pruneReturns(input.teamId);
-    return Boolean(saved);
+    return inserted;
   }
 
   async admissionBlocked(teamId: DeploymentId, requestId: TeamAgentRequestId, reason: string) {
-    await withPersonalTransaction(this.database, (tx) =>
-      tx
+    await commitPersonalMutation(this.database, async (tx, mutation) => {
+      const row = await tx
         .updateTable("personalTeamRequests")
         .set({ blockedReason: reason.slice(0, 500) })
         .where("teamDeploymentId", "=", teamId)
         .where("requestId", "=", requestId)
         .where("localTaskId", "is", null)
         .where("terminalState", "is", null)
-        .execute(),
-    );
+        .where("blockedReason", "is distinct from", reason.slice(0, 500))
+        .returning("kind")
+        .executeTakeFirst();
+      if (row?.kind === "ask") await refreshTeamAskAttention(tx, mutation, teamId, requestId);
+    });
   }
   async expiredUndecidedAsks() {
     const rows = await this.database
@@ -302,6 +310,7 @@ export class PersonalTeamRequestsStore {
       .where("localDecision", "is", null)
       .where("terminalState", "is", null)
       .where("consentExpiresAt", "<=", executionDate(this.database))
+      .orderBy("consentExpiresAt")
       .orderBy("teamDeploymentId")
       .orderBy("requestId")
       .limit(100)
@@ -316,8 +325,7 @@ export class PersonalTeamRequestsStore {
     expectedRevision?: number,
     sessionId?: import("@opensteer/core").AuthSessionId,
   ) {
-    const result = await withPersonalTransaction(this.database, async (tx) => {
-      const events: AgentEvent[] = [];
+    return commitPersonalMutation(this.database, async (tx, mutation) => {
       await requirePersonalOwner(tx, ownerId);
       const observed = await tx
         .selectFrom("personalTeamRequests")
@@ -350,7 +358,8 @@ export class PersonalTeamRequestsStore {
           .where("requestId", "=", requestId)
           .returningAll()
           .executeTakeFirstOrThrow();
-        return { mirror: personalTeamRequestMirrorFromRow(saved), events };
+        await refreshTeamAskAttention(tx, mutation, teamId, requestId);
+        return personalTeamRequestMirrorFromRow(saved);
       }
       if (decision === "approve" && expectedRevision === undefined)
         throw new OpensteerError({
@@ -366,7 +375,7 @@ export class PersonalTeamRequestsStore {
             code: "conflict",
             message: "This team ask was already decided on another device.",
           });
-        return { mirror: personalTeamRequestMirrorFromRow(row), events };
+        return personalTeamRequestMirrorFromRow(row);
       }
       if (
         row.remoteState !== "awaiting_approval" ||
@@ -378,6 +387,13 @@ export class PersonalTeamRequestsStore {
           code: "conflict",
           message: "This team ask is no longer awaiting approval.",
         });
+      const link = await tx
+        .selectFrom("personalTeamLinks")
+        .select("state")
+        .where("teamDeploymentId", "=", teamId)
+        .executeTakeFirst();
+      if (!link || !["active", "unreachable", "needs_update"].includes(link.state))
+        throw new OpensteerError({ code: "conflict", message: "This team link is unavailable." });
       let approvedRevision: number | null = null;
       if (decision === "approve") {
         if (!thread || !row.localInputId || expectedRevision === undefined)
@@ -413,7 +429,7 @@ export class PersonalTeamRequestsStore {
             .set(clearInputLease)
             .where("messageId", "=", inbox.messageId)
             .execute();
-          events.push(await leaseChangedEvent(tx, thread, inbox.messageId, null));
+          mutation.react({ type: "deadlinesChanged" });
         }
       }
       const saved = await tx
@@ -423,30 +439,10 @@ export class PersonalTeamRequestsStore {
         .where("requestId", "=", requestId)
         .returningAll()
         .executeTakeFirstOrThrow();
-      // A decided ask can no longer be edited or decided again, even while the team is unreachable;
-      // every device reading the task's queue learns that now, not when the team answers.
-      const input =
-        thread && row.localInputId
-          ? await tx
-              .selectFrom("threadInputs")
-              .selectAll()
-              .where("messageId", "=", row.localInputId)
-              .executeTakeFirst()
-          : undefined;
-      if (thread && input)
-        events.push(
-          await appendHostDeploymentEvent(tx, {
-            data: { input: threadInputFromRow(input) },
-            environmentId: thread.environmentId,
-            runId: null,
-            threadId: thread.id,
-            type: "thread-input.updated",
-          }),
-        );
-      return { mirror: personalTeamRequestMirrorFromRow(saved), events };
+      await refreshTeamAskAttention(tx, mutation, teamId, requestId);
+      if (thread) await refreshInputQueue(tx, thread.id);
+      return personalTeamRequestMirrorFromRow(saved);
     });
-    for (const event of result.events) this.#onDeliveryEvent?.(event);
-    return result.mirror;
   }
 
   async failDecision(
@@ -454,8 +450,8 @@ export class PersonalTeamRequestsStore {
     requestId: TeamAgentRequestId,
     reason: string,
   ): Promise<void> {
-    await withPersonalTransaction(this.database, async (tx) => {
-      await tx
+    await commitPersonalMutation(this.database, async (tx, mutation) => {
+      const row = await tx
         .updateTable("personalTeamRequests")
         .set({
           terminalState: "failed",
@@ -468,7 +464,9 @@ export class PersonalTeamRequestsStore {
         .where("kind", "=", "ask")
         .where("releasedAt", "is", null)
         .where("terminalState", "is", null)
-        .execute();
+        .returning("kind")
+        .executeTakeFirst();
+      if (row?.kind === "ask") await refreshTeamAskAttention(tx, mutation, teamId, requestId);
     });
   }
 
@@ -477,12 +475,17 @@ export class PersonalTeamRequestsStore {
     requestId: TeamAgentRequestId,
     remoteState: TeamAgentRequestState,
   ) {
-    await this.database
-      .updateTable("personalTeamRequests")
-      .set({ remoteState })
-      .where("teamDeploymentId", "=", teamId)
-      .where("requestId", "=", requestId)
-      .execute();
+    await commitPersonalMutation(this.database, async (tx, mutation) => {
+      const row = await tx
+        .updateTable("personalTeamRequests")
+        .set({ remoteState })
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .where("remoteState", "is distinct from", remoteState)
+        .returning("kind")
+        .executeTakeFirst();
+      if (row?.kind === "ask") await refreshTeamAskAttention(tx, mutation, teamId, requestId);
+    });
   }
 
   async get(
@@ -501,47 +504,132 @@ export class PersonalTeamRequestsStore {
   }
 
   async record(input: PersonalTeamRequest): Promise<PersonalTeamRequest> {
-    await this.database
-      .insertInto("personalTeamRequests")
-      .values({
-        teamDeploymentId: input.teamId,
-        requestId: input.requestId,
-        kind: input.kind,
-        remoteState: input.remoteState,
-        presentation: input.presentation,
-        returnPayload: input.returnPayload,
-        consentExpiresAt: input.consentExpiresAt,
-        localDecision: input.localDecision,
-        decisionAt: input.decisionAt,
-        returnAdmission: input.returnAdmission,
-        triggerMessageId: input.triggerMessageId,
-        localTaskId: input.taskId,
-        localInputId: MessageIdSchema.parse(input.inputId),
-        runId: input.runId,
-        source: input.source,
-        answerMessageId: input.answerMessageId,
-        answerPayload: input.answerPayload,
-        clientMessageId: input.clientMessageId,
-        deliveryVia: input.deliveryVia,
-        blockedReason: input.blockedReason,
-        publicationState: input.publicationState,
-        terminalState: input.terminalState,
-        acceptedMessageId: input.replyMessageId,
-        createdAt: new Date().toISOString(),
-        finishedAt: null,
-      })
-      .onConflict((conflict) => conflict.columns(["teamDeploymentId", "requestId"]).doNothing())
+    return commitPersonalMutation(this.database, async (tx, mutation) => {
+      const inserted = await tx
+        .insertInto("personalTeamRequests")
+        .values({
+          teamDeploymentId: input.teamId,
+          requestId: input.requestId,
+          kind: input.kind,
+          remoteState: input.remoteState,
+          presentation: input.presentation,
+          returnPayload: input.returnPayload,
+          consentExpiresAt: input.consentExpiresAt,
+          localDecision: input.localDecision,
+          decisionAt: input.decisionAt,
+          returnAdmission: input.returnAdmission,
+          triggerMessageId: input.triggerMessageId,
+          localTaskId: input.taskId,
+          localInputId: MessageIdSchema.parse(input.inputId),
+          runId: input.runId,
+          source: input.source,
+          answerMessageId: input.answerMessageId,
+          answerPayload: input.answerPayload,
+          clientMessageId: input.clientMessageId,
+          deliveryVia: input.deliveryVia,
+          blockedReason: input.blockedReason,
+          publicationState: input.publicationState,
+          terminalState: input.terminalState,
+          acceptedMessageId: input.replyMessageId,
+          createdAt: new Date().toISOString(),
+          finishedAt: null,
+        })
+        .onConflict((conflict) => conflict.columns(["teamDeploymentId", "requestId"]).doNothing())
+        .returning("kind")
+        .executeTakeFirst();
+      const row = await tx
+        .selectFrom("personalTeamRequests")
+        .selectAll()
+        .where("teamDeploymentId", "=", input.teamId)
+        .where("requestId", "=", input.requestId)
+        .where("localTaskId", "is not", null)
+        .where("localInputId", "is not", null)
+        .executeTakeFirst();
+      const saved = row ? this.#view(row) : null;
+      if (
+        !saved ||
+        saved.triggerMessageId !== input.triggerMessageId ||
+        saved.inputId !== input.inputId ||
+        saved.taskId !== input.taskId
+      ) {
+        throw new OpensteerError({ code: "conflict", message: "Team request input changed" });
+      }
+      if (inserted?.kind === "ask")
+        await refreshTeamAskAttention(tx, mutation, input.teamId, input.requestId);
+      return saved;
+    });
+  }
+
+  /**
+   * Team requests whose answer is owed: their task's Run for the request has
+   * ended, but the request has not recorded its terminal state (the final
+   * reply or terminal status was not delivered). Durable, so a restart or a
+   * recovered link finds them again.
+   *
+   * Only teams whose link can publish right now (`teamIds`, the connected
+   * links) are read, so rows behind a link that is down never fill a page; a
+   * caller pages with `after` through all of them, so every owed row gets a
+   * turn in every pass and rows that fail cannot hold a page.
+   */
+  async owedTerminalPublications(input: {
+    readonly teamIds: readonly DeploymentId[];
+    readonly after?: { readonly teamId: DeploymentId; readonly requestId: TeamAgentRequestId };
+    readonly limit?: number;
+  }): Promise<PersonalTeamRequest[]> {
+    if (input.teamIds.length === 0) return [];
+    const after = input.after;
+    const rows = await this.database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("teamDeploymentId", "in", input.teamIds)
+      .$if(after !== undefined, (query) =>
+        query.where((eb) =>
+          eb.or([
+            eb("teamDeploymentId", ">", after!.teamId),
+            eb.and([
+              eb("teamDeploymentId", "=", after!.teamId),
+              eb("requestId", ">", after!.requestId),
+            ]),
+          ]),
+        ),
+      )
+      .where("localTaskId", "is not", null)
+      .where("localInputId", "is not", null)
+      .where("terminalState", "is", null)
+      .where(({ exists, selectFrom }) =>
+        exists(
+          selectFrom("runs")
+            .select("runs.id")
+            .whereRef("runs.threadId", "=", "personalTeamRequests.localTaskId")
+            .whereRef("runs.seedInputId", "=", "personalTeamRequests.localInputId")
+            .where(sql<boolean>`runs.reply_target->>'kind' = 'team-thread'`)
+            .where(
+              sql<boolean>`runs.reply_target->>'requestId' = personal_team_requests.request_id`,
+            )
+            .where(
+              sql<boolean>`runs.reply_target->>'teamId' = personal_team_requests.team_deployment_id`,
+            )
+            .where("runs.status", "in", ["completed", "failed", "interrupted"]),
+        ),
+      )
+      // A removed or departing link owes nothing further.
+      .where(({ exists, selectFrom }) =>
+        exists(
+          selectFrom("personalTeamLinks")
+            .select("personalTeamLinks.id")
+            .whereRef(
+              "personalTeamLinks.teamDeploymentId",
+              "=",
+              "personalTeamRequests.teamDeploymentId",
+            )
+            .where("personalTeamLinks.state", "not in", ["leaving", "revoked"]),
+        ),
+      )
+      .orderBy("teamDeploymentId")
+      .orderBy("requestId")
+      .limit(input.limit ?? 100)
       .execute();
-    const saved = await this.get(input.teamId, input.requestId);
-    if (
-      !saved ||
-      saved.triggerMessageId !== input.triggerMessageId ||
-      saved.inputId !== input.inputId ||
-      saved.taskId !== input.taskId
-    ) {
-      throw new OpensteerError({ code: "conflict", message: "Team request input changed" });
-    }
-    return saved;
+    return rows.map((row) => this.#view(row));
   }
 
   async forTeam(teamId: DeploymentId): Promise<PersonalTeamRequest[]> {
@@ -558,6 +646,16 @@ export class PersonalTeamRequestsStore {
       .orderBy("requestId")
       .execute();
     return rows.map((row) => this.#view(row));
+  }
+
+  /** Whether the Run answers a team request, even before that request's mirror is recorded. */
+  async repliesToTeam(runId: RunId): Promise<boolean> {
+    const run = await this.database
+      .selectFrom("runs")
+      .select("replyTarget")
+      .where("id", "=", runId)
+      .executeTakeFirst();
+    return run?.replyTarget?.kind === "team-thread";
   }
 
   async forRun(runId: RunId): Promise<PersonalTeamRequest | null> {
@@ -585,8 +683,8 @@ export class PersonalTeamRequestsStore {
     runId: RunId | null,
     state: NonNullable<PersonalTeamRequest["terminalState"]>,
   ): Promise<void> {
-    await withPersonalTransaction(this.database, async (tx) => {
-      await tx
+    await commitPersonalMutation(this.database, async (tx, mutation) => {
+      const row = await tx
         .updateTable("personalTeamRequests")
         .set({
           runId,
@@ -598,7 +696,9 @@ export class PersonalTeamRequestsStore {
         .where("teamDeploymentId", "=", teamId)
         .where("requestId", "=", requestId)
         .where("terminalState", "is", null)
-        .execute();
+        .returning("kind")
+        .executeTakeFirst();
+      if (row?.kind === "ask") await refreshTeamAskAttention(tx, mutation, teamId, requestId);
     });
   }
 
@@ -655,7 +755,7 @@ export class PersonalTeamRequestsStore {
     messageId: PersonalTeamRequest["replyMessageId"] = null,
     reason: string | null = null,
   ): Promise<void> {
-    const saved = await this.#change(teamId, requestId, (row) => {
+    await this.#change(teamId, requestId, (row) => {
       if (row.publicationState !== "pending") return null;
       return {
         publicationState: state,
@@ -663,7 +763,6 @@ export class PersonalTeamRequestsStore {
         blockedReason: state === "blocked" ? (reason ?? "The team request was cancelled.") : null,
       };
     });
-    if (state === "accepted" && messageId !== null) await this.#onPublished?.(saved.taskId);
   }
 
   async #change(
@@ -673,7 +772,7 @@ export class PersonalTeamRequestsStore {
       row: Selectable<DatabaseSchema["personalTeamRequests"]>,
     ) => import("kysely").Updateable<DatabaseSchema["personalTeamRequests"]> | null,
   ): Promise<PersonalTeamRequest> {
-    const result = await withPersonalTransaction(this.database, async (tx) => {
+    return commitPersonalMutation(this.database, async (tx, mutation) => {
       const observed = await tx
         .selectFrom("personalTeamRequests")
         .selectAll()
@@ -687,13 +786,22 @@ export class PersonalTeamRequestsStore {
         });
       const run = await tx
         .selectFrom("runs")
-        .select(["id", "threadId", "environmentId"])
+        .select(["id", "threadId", "status", "terminalReplyMessageId"])
         .where("threadId", "=", observed.localTaskId)
         .where("seedInputId", "=", observed.localInputId)
         .where(sql<string>`reply_target->>'requestId'`, "=", requestId)
         .where(sql<string>`reply_target->>'teamId'`, "=", teamId)
+        .$if(observed.runId !== null, (query) => query.where("id", "=", observed.runId!))
+        .orderBy("runOrdinal", "desc")
         .forNoKeyUpdate()
         .executeTakeFirst();
+      if (run)
+        await tx
+          .selectFrom("threads")
+          .select("id")
+          .where("id", "=", run.threadId)
+          .forNoKeyUpdate()
+          .executeTakeFirstOrThrow();
       const row = await tx
         .selectFrom("personalTeamRequests")
         .selectAll()
@@ -702,7 +810,19 @@ export class PersonalTeamRequestsStore {
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
       const patch = change(row);
-      if (!patch) return { saved: this.#view(row), event: null };
+      if (!patch) return this.#view(row);
+      if (
+        patch.deliveryVia === "final" &&
+        (!run ||
+          run.id !== patch.runId ||
+          run.status !== "completed" ||
+          !run.terminalReplyMessageId ||
+          run.terminalReplyMessageId !== patch.answerMessageId)
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Team answer is no longer available",
+        });
       const saved = await tx
         .updateTable("personalTeamRequests")
         .set(patch)
@@ -710,31 +830,21 @@ export class PersonalTeamRequestsStore {
         .where("requestId", "=", requestId)
         .returningAll()
         .executeTakeFirstOrThrow();
-      const delivery: TeamRunDelivery = {
-        state:
-          saved.publicationState === "accepted"
-            ? "sent"
-            : saved.publicationState === "blocked"
-              ? "blocked"
-              : "sending",
-        via: saved.deliveryVia ?? (saved.explicitReply ? "tool" : "final"),
-        answerMessageId: saved.answerMessageId,
-        teamMessageId: saved.acceptedMessageId,
-        reason: saved.blockedReason,
-      };
-      const event = run
-        ? await appendHostDeploymentEvent(tx, {
-            type: "run.delivery-updated",
-            runId: run.id,
-            threadId: run.threadId,
-            environmentId: run.environmentId,
-            data: { delivery },
-          })
-        : null;
-      return { saved: this.#view(saved), event };
+      if (saved.kind === "ask") await refreshTeamAskAttention(tx, mutation, teamId, requestId);
+      if (run) await publishTranscriptRun(tx, mutation, run.id);
+      if (
+        row.publicationState !== "accepted" &&
+        saved.publicationState === "accepted" &&
+        saved.acceptedMessageId &&
+        !saved.explicitReply
+      )
+        mutation.bumpResource("team-replies");
+      if (saved.publicationState === "accepted" && saved.acceptedMessageId && this.#onPublished) {
+        const taskId = saved.localTaskId!;
+        mutation.reaction(() => this.#onPublished?.(taskId));
+      }
+      return this.#view(saved);
     });
-    if (result.event) this.#onDeliveryEvent?.(result.event);
-    return result.saved;
   }
 
   async replyTask(
@@ -755,8 +865,15 @@ export class PersonalTeamRequestsStore {
               sql<boolean>`r.reply_target->>'requestId' = p.request_id and r.reply_target->>'teamId' = p.team_deployment_id and r.reply_target->>'kind' = 'team-thread'`,
             ),
         )
-        .select(["t.id as taskId", "r.id as runId", "r.completedAt"])
+        .select([
+          "t.id as taskId",
+          "r.id as runId",
+          "r.completedAt",
+          "r.terminalReplyMessageId",
+          "p.answerMessageId",
+        ])
         .where("t.createdBy", "=", ownerId)
+        .where("t.removedAt", "is", null)
         .where("t.teamId", "=", input.teamId)
         .where("t.channelId", "=", input.channelId)
         .where("t.threadRootId", "=", input.threadRootId)
@@ -766,24 +883,20 @@ export class PersonalTeamRequestsStore {
         .where("p.explicitReply", "=", false)
         .where("r.status", "=", "completed")
         .executeTakeFirst();
-      if (!request) return empty;
-      const row = await tx
-        .selectFrom("deploymentEvents")
-        .selectAll()
-        .where("runId", "=", request.runId)
-        .where("type", "=", "run.completed")
-        .orderBy("sequence", "desc")
-        .executeTakeFirst();
-      const event = row ? eventFromRow(row) : null;
-      if (event?.type !== "run.completed" || !event.data.replyMessageId) return empty;
+      if (
+        !request?.terminalReplyMessageId ||
+        request.answerMessageId !== request.terminalReplyMessageId
+      )
+        return empty;
       const message = await tx
         .selectFrom("messages")
         .select("sequence")
-        .where("id", "=", event.data.replyMessageId)
+        .where("id", "=", request.terminalReplyMessageId)
         .where("runId", "=", request.runId)
         .where("threadId", "=", request.taskId)
         .where("kind", "=", "assistant")
         .where("addressedToUserId", "is", null)
+        .where("published", "=", true)
         .executeTakeFirst();
       return message
         ? { taskId: request.taskId, completedAt: request.completedAt!.toISOString() }

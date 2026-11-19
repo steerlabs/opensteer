@@ -57,6 +57,14 @@ let url: string;
 let publicOrigin: string | undefined = "https://fixture.invalid";
 const states = new EventEmitter();
 
+const fixtureIcon = `data:image/svg+xml;base64,${Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><circle cx="1" cy="1" r="1"/></svg>',
+).toString("base64")}`;
+/** Only the light variant is drawn, so the dark one's address is never read. */
+const fixtureIcons = [
+  { src: fixtureIcon, theme: "light" },
+  { src: "https://icons.fixture.invalid/dark.svg", theme: "dark" },
+];
 function files(revision = 1, wider = false) {
   return [
     ...pluginFixtureFiles(revision).filter((f) => f.path !== "index.ts"),
@@ -78,7 +86,7 @@ import { defineApp, defineProvider, secrets, object, string, query, mutation, ro
 import { always } from "apps/operations/approval";
 const service = defineProvider({ name: "Feature fixture", hosts: ${JSON.stringify(wider ? ["api.fixture.invalid", "other.fixture.invalid"] : ["api.fixture.invalid"])}, auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
 const received = event({ description: "Received a callback", payload: object({ body: string() }) });
-const requirements = { user: { accounts: { service } }, events: { received } };
+const requirements = { user: { accounts: { service } }, events: { received }, icons: ${JSON.stringify(fixtureIcons)} };
 const tick = mutation({ input: object({ source: string() }) }, async (ctx, { source }) => {
   ctx.sql.exec("INSERT INTO ticks (account, source) VALUES (?, ?)", ctx.user.accounts.service.id, source);
   return { account: ctx.user.accounts.service.id, revision: ${revision} };
@@ -824,6 +832,22 @@ test("owner reads and commands match real catalog, accounts, schedule approvals,
     context,
   );
   expect(catalog).toMatchObject({ result: { status: "installed" } });
+  // Icons travel by ref: the Host reads the plugin's declared icon and the catalog's own.
+  const installedList = await api.reads()["plugins.installed.list"]({}, context);
+  const installedRef =
+    installedList.ok &&
+    installedList.data.plugins?.find(({ id }) => id === fixture.plugin)?.iconRef;
+  const listing = await api.reads()["plugins.catalog.list"]({}, context);
+  const catalogRef = listing.ok && listing.data.items.find(({ id }) => id === "fixture")?.iconRef;
+  if (!installedRef || !catalogRef) throw new Error("A view did not name its icon");
+  const icons = await api
+    .reads()
+    ["plugins.icons.get"]({ refs: [installedRef, catalogRef] }, context);
+  // Each is served as the Host draws it: a small WebP, never the declared SVG itself.
+  expect(icons.ok && icons.data.icons.map(({ ref }) => ref)).toEqual([installedRef, catalogRef]);
+  for (const { image } of icons.ok ? icons.data.icons : [])
+    expect(image).toMatch(/^data:image\/webp;base64,/u);
+  expect(registry.requests.filter((path) => path.endsWith("/icons/fixture.svg"))).toHaveLength(1);
   await api.command(
     {
       type: "plugins.account.unlink",

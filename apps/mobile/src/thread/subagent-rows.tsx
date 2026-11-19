@@ -11,6 +11,7 @@ import {
   type HostClient,
   type WorkflowView,
 } from "@opensteer/client/host";
+import { useLiveAgentCard } from "@opensteer/client/react";
 import {
   createContext,
   memo,
@@ -103,6 +104,8 @@ export const AgentsLive = createContext(true);
 /** Where a row goes when pressed, and the Host it stops through. */
 export interface AgentScope {
   readonly hostClient?: HostClient;
+  /** The subagent whose own steps these rows are, whose scope carries its children's progress. */
+  readonly progressNodeId?: string;
   readonly onOpen: (card: AgentCard) => void;
   /** A task's own row: its menu and Stop belong to the conversation's task lines. */
   readonly renderTask?: (
@@ -263,9 +266,9 @@ export const AgentRow = memo(function AgentRow(props: AgentRowProps): ReactNode 
 export function AgentStep(props: AgentRowProps): ReactNode {
   const scope = useContext(AgentScopeContext);
   const lines = useLines();
-  const stopLine = useSubagentStopLine(scope?.hostClient, props.card);
+  const card = useLiveAgentCard(scope?.hostClient, props.card, scope?.progressNodeId);
+  const stopLine = useSubagentStopLine(scope?.hostClient, card);
   if (scope === null) return null;
-  const { card } = props;
   const compact = props.compact === true;
   const line = props.line ?? stopLine;
   const children = card.children;

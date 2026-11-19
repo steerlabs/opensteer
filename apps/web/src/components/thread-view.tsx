@@ -1,10 +1,10 @@
+import { useThreadTranscript } from "@opensteer/client/react";
 import { useOutboxTranscript } from "@opensteer/client/react";
 import { hostMessageOutbox, splitLocalMessages } from "@opensteer/client/host";
 import { useTaskSourceView } from "../team/team-attachments.js";
 import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
 import { threadMark, type PasswordsSetupOffer } from "@opensteer/client/host";
-import { observeResize } from "@opensteer/shared/resizeObserver";
 import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import {
   useCallback,
@@ -90,6 +90,14 @@ import { VoiceStart } from "./voice.js";
 import { WaitingInputs } from "./waiting-inputs.js";
 import { setThreadReading } from "./thread-reading.js";
 import { ThreadFind } from "./thread-find.js";
+import {
+  anchorCorrection,
+  findReadingAnchor,
+  neighbourKeys,
+  readingAnchor,
+  restoreTarget,
+  type ReadingAnchor,
+} from "./reading-position.js";
 import { BrandMark } from "./brand.js";
 import { useVisualViewportKeyboardInset } from "./visual-viewport-keyboard.js";
 import { ConversationHeader } from "./workspace/conversation-header.js";
@@ -117,12 +125,15 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
   const { hostClient, placements, snapshot } = useShell();
   const { nav } = useWorkspace();
   const navigate = useNavigate();
+  const transcript = useThreadTranscript(hostClient, threadId);
   const thread = snapshot.threads.find((candidate) => candidate.id === threadId) ?? null;
   const missing =
     thread === null && threadId !== null && snapshot.threadLookups[threadId] === "missing";
   useEffect(() => {
-    if (threadId) hostClient.activateThread(threadId);
-  }, [hostClient, threadId, thread?.id]);
+    if (!threadId) return;
+    hostClient.activateThread(threadId);
+    return () => hostClient.deactivateThread?.(threadId);
+  }, [hostClient, threadId]);
   // Back to where the reader came from, or Home when a link opened the app here.
   const back = () => {
     const state: unknown = window.history.state;
@@ -153,9 +164,14 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
       {thread ? (
         <ThreadView
           key={`${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`}
-          requests={snapshot.requests[thread.id] ?? []}
-          canLoadEarlier={snapshot.transcriptWindows[thread.id]?.hasMore ?? false}
-          entries={snapshot.transcripts[thread.id] ?? []}
+          requests={transcript.requests}
+          canLoadEarlier={transcript.hasMore}
+          canLoadNewer={transcript.hasNewer}
+          moreRequests={transcript.moreRequests}
+          moreTools={transcript.moreTools ?? false}
+          moreNodes={transcript.moreNodes ?? false}
+          inputQueueError={transcript.inputQueueError}
+          entries={transcript.entries}
           environmentStatus={
             snapshot.environments.find((item) => item.id === thread.environmentId)?.status ??
             "disconnected"
@@ -167,16 +183,30 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
               (thread.id !== snapshot.voiceThreadId || placement.driverKind === "codex"),
           )}
           thread={thread}
+          runQueue={transcript.runQueue}
+          detailCurrent={transcript.synchronized}
+          cuts={transcript.cuts ?? 0}
         />
       ) : null}
     </Gated>
   );
 }
 
+const noRuns: readonly import("@opensteer/client/host").RunQueueEntry[] = [];
+
 interface ThreadViewProps {
-  requests: Request[];
+  requests: readonly Request[];
   canLoadEarlier: boolean;
-  entries: TranscriptEntry[];
+  canLoadNewer?: boolean;
+  moreRequests?: boolean;
+  moreTools?: boolean;
+  moreNodes?: boolean;
+  inputQueueError?: unknown;
+  entries: readonly TranscriptEntry[];
+  detailCurrent?: boolean;
+  /** Counts the snapshots installed for this conversation (a subscription's or a repair's). */
+  cuts?: number;
+  runQueue?: readonly import("@opensteer/client/host").RunQueueEntry[];
   environmentStatus: EnvironmentStatus;
   executionPlacements: ThreadPlacementOption[];
   thread: ThreadSummary;
@@ -185,7 +215,11 @@ interface ThreadViewProps {
 /** Where each conversation was left, by deployment, user and Thread. */
 const readingPositions = new Map<
   string,
-  { readonly scrollTop: number; readonly seenSequence: string | null }
+  {
+    readonly anchor: ReadingAnchor | null;
+    readonly scrollTop: number;
+    readonly seenSequence: string | null;
+  }
 >();
 
 const renderPasswordsSuggestion = (offer: PasswordsSetupOffer) => (
@@ -194,10 +228,18 @@ const renderPasswordsSuggestion = (offer: PasswordsSetupOffer) => (
 
 function ThreadView({
   canLoadEarlier,
+  canLoadNewer = false,
+  moreRequests = false,
+  moreTools = false,
+  moreNodes = false,
+  inputQueueError,
   entries,
   environmentStatus,
   executionPlacements,
   requests,
+  runQueue = noRuns,
+  detailCurrent = true,
+  cuts = 0,
   thread,
 }: ThreadViewProps) {
   const teamSource = useTaskSourceView(thread.teamOrigin);
@@ -228,6 +270,11 @@ function ThreadView({
   const phoneStageRef = useRef(phoneStage);
   phoneStageRef.current = phoneStage;
   const currentScroller = () => (phoneStageRef.current ? bodyRef.current : scrollRef.current);
+  // What the transcript's rows scroll in; a new stage is a new scroller.
+  const transcriptScroller = useCallback(
+    () => (phoneStage ? bodyRef.current : scrollRef.current),
+    [phoneStage],
+  );
   const composerInputRef = useRef<HTMLElement | null>(null);
   // Whether new content keeps the reader at the foot, and where the scroller stood when last read.
   const tailRef = useRef<TailReading>({ follows: true, offset: 0 });
@@ -247,6 +294,8 @@ function ThreadView({
     readonly top: number;
     readonly rows: ReadonlySet<string>;
   } | null>(null);
+  // A reading position being restored: its row is put back as the rows around it lay out.
+  const restoring = useRef<ReadingAnchor | null>(null);
   const earlierFocus = useRef<{ button: HTMLElement; scroller: HTMLElement } | null>(null);
   const earlierMotion = useRef<Animation | null>(null);
   useEffect(() => () => earlierMotion.current?.cancel(), []);
@@ -254,7 +303,11 @@ function ThreadView({
   // The live conversation is not being shown, so the foot of what is on screen
   // is not the conversation's tail and nothing here may claim it is.
   const [historical, setHistorical] = useState(false);
-  const [revealMessage, setRevealMessage] = useState<{ readonly id: string } | null>(null);
+  const [revealMessage, setRevealMessage] = useState<{
+    readonly id: string;
+    /** The move that asked for it: a newer move's frame owns the position instead. */
+    readonly move?: number;
+  } | null>(null);
   // A message a link named that this conversation no longer holds, or could not reach.
   const [missingMessage, setMissingMessage] = useState<{
     readonly id: string;
@@ -328,6 +381,10 @@ function ThreadView({
       setFocusTarget(null);
       return;
     }
+    if (!known && moreRequests && detailCurrent) {
+      void hostClient.loadMoreOverlays(thread.id, "requests").catch(reportActionError);
+      return;
+    }
     if (!dockedRequests.some((item) => item.surface.request.id === focusTarget.id)) return;
     if (openRequestId !== focusTarget.id) {
       openRequest(focusTarget.id);
@@ -345,7 +402,17 @@ function ThreadView({
       setFocusTarget(null);
     });
     return () => cancelAnimationFrame(frame);
-  }, [dockedRequests, focusTarget, openRequest, openRequestId, requests]);
+  }, [
+    detailCurrent,
+    dockedRequests,
+    focusTarget,
+    hostClient,
+    moreRequests,
+    openRequest,
+    openRequestId,
+    requests,
+    thread.id,
+  ]);
   const conversational = thread.purpose === "voice";
   // In work, a message waiting behind the current turn stands unsent at the
   // conversation's foot until a Run takes it. In a conversation the reply under
@@ -360,7 +427,6 @@ function ThreadView({
   );
   // The same answer every surface gives: what this Thread is doing, and
   // which Run, if any, a Stop would reach.
-  const activity = threadActivity({ entries, runQueue: snapshot.runQueue, thread });
   // This device's waiting messages, drawn where they will stand once sent. They
   // meet the Host's copies before the queue is taken out, so one the Host
   // already holds in its queue is drawn once, there.
@@ -376,7 +442,7 @@ function ThreadView({
     [conversation, conversational, entries, inputQueue, projected, thread.id],
   );
   const hasQueuedInputs = Boolean(inputQueue?.items.length);
-  const startsRun = threadStartsRunForMessage({ runQueue: snapshot.runQueue, thread });
+  const startsRun = threadStartsRunForMessage({ runQueue, thread });
   const local = useMemo(
     () => splitLocalMessages(withOutbox, !conversational, hasQueuedInputs, startsRun),
     [conversational, hasQueuedInputs, startsRun, withOutbox],
@@ -392,12 +458,15 @@ function ThreadView({
 
   const threadRunQueue = useMemo(
     () =>
-      snapshot.runQueue
+      runQueue
         .filter((run) => run.threadId === thread.id)
         .toSorted((left, right) => left.runOrdinal - right.runOrdinal),
-    [snapshot.runQueue, thread.id],
+    [runQueue, thread.id],
   );
-  const stopTarget = threadStopTarget({ runQueue: snapshot.runQueue, thread });
+  // The same answer every surface gives: what this Thread is doing, and
+  // which Run, if any, a Stop would reach.
+  const activity = threadActivity({ entries, runQueue: runQueue, thread });
+  const stopTarget = threadStopTarget({ runQueue: runQueue, thread });
 
   /**
    * What a candidate AI would do to this conversation, decided before
@@ -458,22 +527,76 @@ function ThreadView({
       // What had arrived by then was seen; only what came after is new.
       seenSequenceRef.current = saved.seenSequence;
       scroller.scrollTop = saved.scrollTop;
+      // The row the reader stood on, not the pixel: rows above it may measure differently now.
+      restoring.current = saved.anchor;
+      restoreReading();
     }
     return () => {
       if (!scroller) return;
       if (tailRef.current.follows) readingPositions.delete(composerKey);
-      else
+      else {
+        const top = scroller.getBoundingClientRect().top;
+        const rows = [...scroller.querySelectorAll<HTMLElement>("[data-transcript-row]")].map(
+          (row) => {
+            const box = row.getBoundingClientRect();
+            return { key: row.dataset.transcriptRow!, top: box.top, bottom: box.bottom };
+          },
+        );
         readingPositions.set(composerKey, {
+          anchor: readingAnchor(rows, top),
           scrollTop: scroller.scrollTop,
           seenSequence: seenSequenceRef.current,
         });
+      }
     };
   }, [composerKey]);
+
+  /** Puts a restoring reader's anchor row back where it stood. */
+  const restoreReading = () => {
+    const anchor = restoring.current;
+    const scroller = currentScroller();
+    if (!anchor || !scroller) return;
+    // The measured row; else its nearest surviving neighbour, older first; else the latest. It is
+    // applied again as rows lay out, so a reread that brings the row back puts the reader on it.
+    const row = restoreTarget(anchor, (key) =>
+      scroller.querySelector<HTMLElement>(`[data-transcript-row="${CSS.escape(key)}"]`),
+    );
+    if (row === null) return;
+    if (row === "latest") {
+      setFollows(true);
+      keepTailInView();
+      return;
+    }
+    const delta = anchorCorrection(
+      anchor,
+      row.getBoundingClientRect().top,
+      scroller.getBoundingClientRect().top,
+    );
+    if (delta) scroller.scrollTop += delta;
+  };
+  useLayoutEffect(restoreReading, [conversation]);
+  // The reader moving on ends the restore; until then it is re-applied as rows lay out.
+  useEffect(() => {
+    const scrollers = [scrollRef.current, bodyRef.current].filter(
+      (element): element is HTMLDivElement => element !== null,
+    );
+    const stop = () => {
+      restoring.current = null;
+    };
+    const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+    for (const scroller of scrollers)
+      for (const event of events) scroller.addEventListener(event, stop, { passive: true });
+    return () => {
+      for (const scroller of scrollers)
+        for (const event of events) scroller.removeEventListener(event, stop);
+    };
+  }, []);
 
   const setFollows = (follows: boolean) => {
     tailRef.current = { ...tailRef.current, follows };
     setAtTail(follows);
     if (!follows) return;
+    restoring.current = null;
     seenSequenceRef.current = observed;
     setPendingUpdates(0);
   };
@@ -515,6 +638,73 @@ function ThreadView({
   };
   const keepTailInView = () => readScroller(false);
   const handleScroll = () => readScroller(true);
+
+  /* ---- Reading position: the row in view, measured when asked ---- */
+
+  // Each row's first item, which is what the Host centres a repair or the next subscription on.
+  const rowItems = useMemo(() => {
+    let rows: Map<string, string> | undefined;
+    return () =>
+      (rows ??= new Map(
+        groupTranscriptEntries(conversation, { inputQueuePaused: thread.inputQueuePaused }).flatMap(
+          (group) => {
+            const first =
+              group.kind === "turn"
+                ? (group.turn.work[0] ?? group.turn.reply ?? group.turn.run)
+                : group.entry;
+            return first
+              ? [[group.key, "itemId" in first ? (first.itemId ?? first.id) : first.id] as const]
+              : [];
+          },
+        ),
+      ));
+  }, [conversation, thread.inputQueuePaused]);
+  // The row the reader was looking at, and where it stood, when the client last asked: a repair
+  // puts it back there. Ordinary scrolling reports nothing.
+  const reading = useRef<ReadingAnchor | null>(null);
+  const historicalRef = useRef(historical);
+  historicalRef.current = historical;
+  // The reader's explicit moves (jumps, returns), numbered: a frame scheduled for one never acts
+  // after a newer one.
+  const moves = useRef(0);
+  /**
+   * Measures the row in view once, now, for a repair or a subscription the client is making:
+   * undefined at the latest; null when it cannot tell (the view is mid-layout), which keeps the
+   * last place.
+   */
+  const measureNow = (): string | undefined | null => {
+    const scroller = currentScroller();
+    reading.current = null;
+    if (!scroller) return null;
+    if (tailRef.current.follows && !historicalRef.current) return undefined;
+    const rows = scroller.getElementsByClassName("transcript__row");
+    const key = (row: Element) => (row as HTMLElement).dataset.transcriptRow;
+    const anchor = findReadingAnchor(rows, scroller.getBoundingClientRect().top, key);
+    const itemId = anchor && rowItems().get(anchor.key);
+    if (!anchor || !itemId) return null;
+    const index = Array.prototype.findIndex.call(rows, (row: Element) => key(row) === anchor.key);
+    reading.current = { ...anchor, neighbours: neighbourKeys(rows, index, key) };
+    return itemId;
+  };
+  const measure = useRef(measureNow);
+  measure.current = measureNow;
+  useEffect(() => {
+    hostClient.setTranscriptPosition(thread.id, () => measure.current());
+    return () => hostClient.setTranscriptPosition(thread.id, null);
+  }, [hostClient, thread.id]);
+  // A new cut (a repair, or a new subscription's snapshot) replaces the rows on screen: the row
+  // measured just before it is put back where it stood, or its nearest surviving neighbour, or
+  // the reader follows the latest. Never wherever the browser left the scroll.
+  const seenCuts = useRef(cuts);
+  useLayoutEffect(() => {
+    if (seenCuts.current === cuts) return;
+    seenCuts.current = cuts;
+    const measured = reading.current;
+    reading.current = null;
+    if (tailRef.current.follows || !measured) return;
+    restoring.current = measured;
+    restoreReading();
+  }, [cuts]);
   useLayoutEffect(() => {
     keepTailInView();
   }, [conversation, inputQueue, keyboardInset, phoneStage, requests]);
@@ -528,7 +718,14 @@ function ThreadView({
     const elements = [transcript, body, transcript.firstElementChild, body.lastElementChild].filter(
       (element): element is Element => element !== null,
     );
-    return observeResize(elements, keepTailInView);
+    // Applied in the frame the size changed, before it is painted. Both only move the
+    // scroll, so neither resizes what is observed.
+    const observer = new ResizeObserver(() => {
+      keepTailInView();
+      restoreReading();
+    });
+    for (const element of elements) observer.observe(element);
+    return () => observer.disconnect();
   }, []);
 
   // Arriving work never moves a reader who is elsewhere; it offers.
@@ -673,24 +870,53 @@ function ThreadView({
     return () => setThreadReading(null);
   }, [atTail, historical, thread.id]);
 
+  // A move's reveal, pending until its target is on screen (a repair in between replaces the rows,
+  // and the move's page is read again). Done, it tells the client the move has landed. A newer
+  // move replaces it.
+  const [pendingReveal, setPendingReveal] = useState<{
+    readonly messageId: string | null;
+    readonly move: number;
+    /** A found message is marked, as a link's target is. */
+    readonly found: boolean;
+  } | null>(null);
+  useLayoutEffect(() => {
+    if (!pendingReveal) return;
+    if (pendingReveal.move !== moves.current) return setPendingReveal(null);
+    if (pendingReveal.messageId === null) {
+      keepTailInView();
+    } else {
+      const target = currentScroller()?.querySelector<HTMLElement>(
+        `[data-message-id="${CSS.escape(pendingReveal.messageId)}"]`,
+      );
+      if (!target) return;
+      target.scrollIntoView({ block: "center" });
+      if (pendingReveal.found) {
+        target.classList.add("transcript__found");
+        window.setTimeout(() => target.classList.remove("transcript__found"), 2400);
+      }
+    }
+    hostClient.revealedTranscriptMove(thread.id);
+    setPendingReveal(null);
+  }, [pendingReveal, conversation]);
+
   /**
    * Moves the reader to one exact message, and leaves them there. A message
    * still waiting to be taken is at the foot, not in the history; one the
    * conversation no longer holds says so rather than doing nothing.
    */
   const jumpToMessage = async (messageId: string): Promise<boolean> => {
+    const move = ++moves.current;
     setMissingMessage(null);
     if (inputQueue?.items.some((item) => item.message.id === messageId)) {
-      requestAnimationFrame(() =>
-        currentScroller()
-          ?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`)
-          ?.scrollIntoView({ block: "center" }),
-      );
+      // A waiting message stands at the conversation's foot: getting there is a return to the
+      // latest, a move of the reader's like any other, so an older jump cannot undo it.
+      if (!(await moveToLatest(move))) return false;
+      setPendingReveal({ messageId, move, found: false });
       return true;
     }
     setHistorical(true);
     setFollows(false);
-    setRevealMessage({ id: messageId });
+    setRevealMessage({ id: messageId, move });
     const missing = async (unloaded: boolean) => {
       setMissingMessage({
         id: messageId,
@@ -699,26 +925,23 @@ function ThreadView({
       await returnToLatest().catch(() => undefined);
       return false;
     };
+    let landed: boolean;
     try {
-      await hostClient.loadTranscriptAround(thread.id, messageId);
+      landed = await hostClient.loadTranscriptAround(thread.id, messageId);
     } catch (error) {
       return missing(!notFound(error));
     }
+    // A newer move of the reader's (another jump, Return to latest, a scroll) took over: this jump
+    // says nothing about its message and leaves the reader where that move put them.
+    if (!landed) return false;
     if (
-      !(hostClient.getSnapshot().transcripts[thread.id] ?? []).some(
+      !(hostClient.getThreadTranscript(thread.id)?.getSnapshot().entries ?? []).some(
         (entry) => entry.kind === "message" && entry.id === messageId,
       )
     )
       return missing(false);
-    requestAnimationFrame(() => {
-      const target = currentScroller()?.querySelector<HTMLElement>(
-        `[data-message-id="${CSS.escape(messageId)}"]`,
-      );
-      if (!target) return;
-      target.scrollIntoView({ block: "center" });
-      target.classList.add("transcript__found");
-      window.setTimeout(() => target.classList.remove("transcript__found"), 2400);
-    });
+    // The move has landed only once its message is on screen: until then it holds the position.
+    setPendingReveal({ messageId, move, found: true });
     return true;
   };
 
@@ -765,17 +988,21 @@ function ThreadView({
     openActivity({ key: revealedActivity.key, kind: "turn" }, null, revealMessage.id);
     const { replyId } = revealedActivity;
     if (replyId === null) return;
-    requestAnimationFrame(() =>
+    const { move } = revealMessage;
+    requestAnimationFrame(() => {
+      if (move !== undefined && move !== moves.current) return;
       currentScroller()
         ?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(replyId)}"]`)
-        ?.scrollIntoView({ block: "center" }),
-    );
+        ?.scrollIntoView({ block: "center" });
+    });
   }, [revealMessage, revealedActivity]);
 
-  /** Puts the live conversation back and returns the reader to its foot. */
-  const returnToLatest = async () => {
+  /** Puts the live conversation back and returns the reader to its foot: the person's own move. */
+  const returnToLatest = () => moveToLatest(++moves.current);
+  const moveToLatest = async (move: number): Promise<boolean> => {
     abandonEarlier();
-    await hostClient.loadLatestTranscript(thread.id);
+    // A newer move superseded this one: it owns the reader's position and the address.
+    if (!(await hostClient.loadLatestTranscript(thread.id)) || move !== moves.current) return false;
     // The anchor is spent. Releasing it from the address as well is what lets
     // the same update be opened again later as a fresh jump.
     anchored.current = null;
@@ -783,7 +1010,8 @@ function ThreadView({
     setRevealMessage(null);
     setHistorical(false);
     setFollows(true);
-    requestAnimationFrame(keepTailInView);
+    setPendingReveal({ messageId: null, move, found: false });
+    return true;
   };
 
   // A notification or a link can name the exact update it is about. The router
@@ -792,8 +1020,9 @@ function ThreadView({
   const [anchoredMessageId, releaseAnchor] = useAnchoredMessageId();
   const [linkSearch, setLinkSearch] = useSearchParams();
   const anchored = useRef<string | null>(null);
+  // The jump reads history, which only a synchronized detail can do: the anchor waits for it.
   useEffect(() => {
-    if (!anchoredMessageId || anchored.current === anchoredMessageId) return;
+    if (!anchoredMessageId || !detailCurrent || anchored.current === anchoredMessageId) return;
     anchored.current = anchoredMessageId;
     // A Run's link names the message that started it; its Activity opens once that is loaded.
     const runId = linkSearch.get("runId");
@@ -803,7 +1032,7 @@ function ThreadView({
         if (found && runId && conversational) openActivity({ kind: "run", runId }, null);
       })
       .catch(reportActionError);
-  }, [anchoredMessageId]);
+  }, [anchoredMessageId, detailCurrent]);
 
   const releaseLinkParam = (name: string) =>
     setLinkSearch(
@@ -851,11 +1080,12 @@ function ThreadView({
     requestAnimationFrame(() => composerInputRef.current?.focus());
   };
 
-  const canRespond = canRespondToRequests(snapshot);
-  const live = useConnectionLive(hostClient.connection) && environmentStatus === "connected";
+  const canRespond = detailCurrent && canRespondToRequests(snapshot);
+  const connectionLive = useConnectionLive(hostClient.connection);
+  const live = detailCurrent && connectionLive && environmentStatus === "connected";
   // What this client holds of the account is current only while it is live.
   const startHold = live
-    ? threadStartHold({ environments: snapshot.environments, runQueue: snapshot.runQueue, thread })
+    ? threadStartHold({ environments: snapshot.environments, runQueue: runQueue, thread })
     : null;
   const composerPlaceholder = thread.teamOrigin
     ? "Message your agent privately"
@@ -921,8 +1151,9 @@ function ThreadView({
   const title = conversationName(thread.title);
   // Under the name only when the task is not plainly working, and only what is known.
   const waitingReason = useMemo(
-    () => (thread.status === "waiting" ? taskWaitingReason(snapshot, thread.id) : null),
-    [snapshot, thread.id, thread.status],
+    () =>
+      thread.status === "waiting" ? taskWaitingReason(snapshot, thread.id, threadRunQueue) : null,
+    [snapshot, thread.id, thread.status, threadRunQueue],
   );
   // What the task's own strip used to say beyond its state — offline, its
   // account preparing, a result that could not be returned — is said here.
@@ -1179,6 +1410,7 @@ function ThreadView({
                       <AgentTranscript
                         teamChannelName={teamSource?.channel.name ?? null}
                         revealMessage={revealMessage}
+                        scroller={transcriptScroller}
                         key={thread.id}
                         attachmentReader={hostClient}
                         activity={activity}
@@ -1252,7 +1484,17 @@ function ThreadView({
                   {/* An anchored search leaves the reader in an older window, and the only
           way back is to load the live one — so the offer stands whether or not
           anything new has arrived since. */}
-                  {historical ? (
+                  {canLoadNewer ? (
+                    <button
+                      className="transcript__jump"
+                      type="button"
+                      onClick={() =>
+                        void hostClient.loadNewerTranscript(thread.id).catch(reportActionError)
+                      }
+                    >
+                      <Icon name="chevron-down" /> Load newer
+                    </button>
+                  ) : historical ? (
                     <button
                       className="transcript__jump"
                       disabled={returning}
@@ -1315,6 +1557,46 @@ function ThreadView({
                   openId={openRequestId}
                   threadId={thread.id}
                 />
+                {inputQueueError !== undefined ? (
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() =>
+                      void hostClient.loadThreadInputQueue(thread.id).catch(reportActionError)
+                    }
+                  >
+                    Retry loading waiting messages
+                  </button>
+                ) : null}
+                {(["tools", "nodes"] as const).map((kind) =>
+                  (kind === "tools" ? moreTools : moreNodes) ? (
+                    <button
+                      key={kind}
+                      className="btn"
+                      type="button"
+                      disabled={!canRespond}
+                      onClick={() =>
+                        void hostClient.loadMoreOverlays(thread.id, kind).catch(reportActionError)
+                      }
+                    >
+                      {kind === "tools" ? "Show more tools" : "Show more subagents"}
+                    </button>
+                  ) : null,
+                )}
+                {moreRequests ? (
+                  <button
+                    className="btn"
+                    disabled={!canRespond}
+                    type="button"
+                    onClick={() =>
+                      void hostClient
+                        .loadMoreOverlays(thread.id, "requests")
+                        .catch(reportActionError)
+                    }
+                  >
+                    Show more requests
+                  </button>
+                ) : null}
               </div>
 
               {conversational && activityView ? (

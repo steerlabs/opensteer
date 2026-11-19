@@ -1,3 +1,4 @@
+import { readVerticalRunTools } from "../apps/host/src/agents/vertical-stack.test-support.js";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
@@ -6,12 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import {
-  ModelSelectionSchema,
-  zeroSequence,
-  type AgentEventView as AgentEvent,
-  type RunId,
-} from "../packages/core/src/index.js";
+import { ModelSelectionSchema, type RunId } from "../packages/core/src/index.js";
 import type { LaunchedBrowser } from "../packages/browser-runtime-core/src/index.js";
 import { serveHarnessActionsFixture } from "../packages/browser-runtime-core/src/test-support/harness-actions-fixture.js";
 import { nativeUserHarnessRuntimeBoundary } from "../packages/harness/src/index.js";
@@ -134,7 +130,7 @@ describe.sequential.each(matrix)("real $label browser element-action journey", (
     let fixture: Awaited<ReturnType<typeof serveHarnessActionsFixture>> | undefined;
     const launched: LaunchedBrowser[] = [];
     let runId: RunId | undefined;
-    let events: readonly AgentEvent[] = [];
+    let tools: Awaited<ReturnType<typeof readVerticalRunTools>> = [];
     let reply = "";
     let pageState: PageState | undefined;
     let origin: string | undefined;
@@ -228,13 +224,10 @@ describe.sequential.each(matrix)("real $label browser element-action journey", (
       });
       evidence.runDurationMs = Date.now() - runStartedAt;
       runId = turn.runId;
-      events = turn.events;
+      tools = await readVerticalRunTools(stack.host.store.database, turn.runId);
       reply = turn.assistantText;
-      expect(
-        events.some((event) => event.type === "run.completed"),
-        "the real Run completes without an execution error",
-      ).toBe(true);
-      const harnessCalls = analyseCalls(events).harnessCalls;
+      expect(turn.status, "the real Run completes without an execution error").toBe("completed");
+      const harnessCalls = analyseCalls(tools).harnessCalls;
       expect(
         harnessCalls.length,
         "the agent actually invokes the shipped Browser Harness",
@@ -290,15 +283,7 @@ describe.sequential.each(matrix)("real $label browser element-action journey", (
       // Run. Never export Runner private state, auth files or environment maps.
       if (stack && runId) {
         try {
-          const durable: AgentEvent[] = [];
-          let cursor = zeroSequence;
-          for (;;) {
-            const batch = await stack.host.store.eventsAfter(cursor);
-            if (!batch.length) break;
-            durable.push(...batch.filter((event) => event.runId === runId));
-            cursor = batch.at(-1)!.sequence;
-          }
-          events = durable;
+          tools = await readVerticalRunTools(stack.host.store.database, runId);
         } catch (error) {
           evidenceErrors.push(`Transcript: ${String(error)}`);
         }
@@ -361,8 +346,8 @@ describe.sequential.each(matrix)("real $label browser element-action journey", (
       Object.assign(evidence, {
         runId,
         reply,
-        events,
-        analysis: analyseCalls(events, evidence.serverSubmissions),
+        tools,
+        analysis: analyseCalls(tools, evidence.serverSubmissions),
         diagnostics,
         screenshots,
         durationMs: Date.now() - startedAt,
@@ -402,25 +387,16 @@ async function moduleHashes(directory: string) {
   );
 }
 
-function analyseCalls(events: readonly AgentEvent[], serverSubmissions?: unknown) {
-  const completions = new Map(
-    events
-      .filter((event) => event.type === "tool.completed")
-      .map((event) => [event.data.callId, event]),
-  );
-  const calls = events
-    .filter((event) => event.type === "tool.started")
-    .map((event) => {
-      const script = JSON.stringify(event.data.arguments);
-      const completion = completions.get(event.data.callId);
+function analyseCalls(
+  tools: Awaited<ReturnType<typeof readVerticalRunTools>>,
+  serverSubmissions?: unknown,
+) {
+  const calls = tools
+    .filter((call) => call.startedAt !== null)
+    .map((call) => {
+      const script = JSON.stringify(call.arguments);
       return {
-        callId: event.data.callId,
-        startedAt: event.createdAt,
-        completedAt: completion?.createdAt,
-        tool: event.data.tool,
-        arguments: event.data.arguments,
-        output: completion?.data.output,
-        isError: completion?.data.isError ?? null,
+        ...call,
         harness: /OPENSTEER_BROWSER_HARNESS|browser-harness(?:\.mjs)?/u.test(script),
         locators: /\.(?:getByRole|getByLabel|getByText|locator)\s*\(/u.test(script),
         coordinates: /\bclickAt\s*\(|\.mouse\.click\s*\(/u.test(script),

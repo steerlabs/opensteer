@@ -31,6 +31,8 @@ import {
   resetMachineAccessDatabase,
   startMachineAccessWireHost,
   waitForCondition,
+  waitForMessage,
+  type CallerMachine,
 } from "../apps/host/src/runtime/machine-access-protocol.test-support.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -70,6 +72,7 @@ integration("device data apps as plugin tools", () => {
     const caller = await connectCallerMachine(host, {
       name: "Caller",
       token: host.hostingRunnerEnrollmentToken,
+      triggerPrograms: true,
     });
     closers.unshift(() => caller.close());
     const helper = scriptedHelper();
@@ -114,7 +117,7 @@ integration("device data apps as plugin tools", () => {
       connectionId: reminders.connection.id,
       integration: "apple-reminders",
     });
-    return { host, helper, computer, gateway, calendar, reminders, run };
+    return { host, helper, caller, computer, gateway, calendar, reminders, run };
   }
 
   it("refuses device plugin access revoked while waiting for Device admission", async () => {
@@ -539,11 +542,11 @@ return { found, described, refused };`,
   }, 240_000);
 
   it("serves a Trigger program's device call with the Trigger's own authority", async () => {
-    const { host, helper, gateway, run, calendar, computer } = await start();
+    const { host, helper, caller: hosting, gateway, run, calendar, computer } = await start();
     await pluginPath(gateway, "list_events", "list_events");
     const page = { events: [{ id: "E1" }], nextCursor: null };
     helper.answer = () => page;
-    const caller = await triggerCaller(host, run.threadId);
+    const caller = await triggerCaller(host, hosting, run.threadId);
     const result = await host.runtime.pluginTools!.handlers().plugin_execute!({
       caller,
       operationKey: "trigger-device-call",
@@ -563,7 +566,6 @@ return { found, described, refused };`,
       access: new AccessRequests({
         definitions: deviceDefinitions,
         devices,
-        onDeploymentEvent: () => {},
         store: devices.store,
       }),
     });
@@ -617,9 +619,14 @@ return { found, described, refused };`,
   }, 240_000);
 });
 
-/** A running Trigger occurrence of this person's, as its program calls tools. */
+/**
+ * A running Trigger occurrence of this person's, as its program calls tools.
+ * The Host's own coordinator dispatches it to the hosting computer, which
+ * accepts it; the test only plays that Runner's program.
+ */
 async function triggerCaller(
   host: Awaited<ReturnType<typeof startMachineAccessWireHost>>,
+  hosting: CallerMachine,
   threadId: ThreadId,
 ) {
   const database = host.store.database;
@@ -637,19 +644,30 @@ async function triggerCaller(
     },
     program: { language: "javascript", source: "export default ()=>null", toolContractVersion: 5 },
   });
+  type TriggerExecute = {
+    readonly type: string;
+    readonly command?: {
+      readonly type: string;
+      readonly context?: { readonly executionGeneration: number; readonly triggerId: string };
+    };
+  };
+  const dispatched = waitForMessage(hosting.primary.socket, (message) => {
+    const { command } = message as TriggerExecute;
+    return (
+      message.type === "host.command" &&
+      command?.type === "trigger.execute" &&
+      command.context?.triggerId === created.trigger.id
+    );
+  }) as Promise<TriggerExecute>;
   const occurrence = await triggers.enqueueManual({
     actorThreadId: null,
     ownerId: host.ownerId,
     triggerId: created.trigger.id,
     idempotencyKey: randomUUID(),
   });
-  await host.store.claimCommand(occurrence.commandId, "device-plugin-test");
-  const runnerId = host.hostingComputerId;
-  const started = await triggers.startExecution({
-    commandId: occurrence.commandId,
-    runnerBootId: "fixture-boot",
-    runnerId,
-  });
+  const started = (await dispatched).command!.context!;
+  const runnerId = hosting.runnerId;
+  const runnerBootId = hosting.primary.bootId;
   const now = Math.floor(Date.now() / 1000);
   return {
     kind: "program" as const,
@@ -668,7 +686,7 @@ async function triggerCaller(
       executionGeneration: started.executionGeneration,
       occurrenceId: occurrence.id,
       requestedBy: host.ownerId,
-      runnerBootId: "fixture-boot",
+      runnerBootId,
       runnerId,
       threadId: anchor.id,
       toolContractVersion: 5,

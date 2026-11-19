@@ -1,9 +1,9 @@
 import { ThreadIdSchema } from "@opensteer/core";
 import {
-  FileSourceSchema,
+  AssetSourceSchema,
   type AssetUrl,
   type AssetVariant,
-  type FileSource,
+  type AssetSource,
 } from "@opensteer/protocol";
 import type { HostTransport } from "../connections/host-transport.js";
 import type { ReferenceReadPorts } from "../references/contracts.js";
@@ -18,7 +18,7 @@ export interface AssetReadOptions {
 type Entry = {
   deploymentId: string;
   threadId: string | null;
-  source: FileSource;
+  source: AssetSource;
   variant: AssetVariant;
   listeners: Set<() => void>;
   value?: AssetUrl;
@@ -48,23 +48,27 @@ export function assetImageUrl(
     ? `app://opensteer/media/${encodeURIComponent(deploymentId)}/${relative.slice(7)}`
     : new URL(relative, origin).href;
 }
-function sourceValue(source: FileSource | string): FileSource {
+function sourceValue(source: AssetSource | string): AssetSource {
   // Legacy image spellings are passed intact to the Host's confined normalizer.
-  return FileSourceSchema.parse(
+  return AssetSourceSchema.parse(
     typeof source === "string" ? { kind: "path", path: source } : source,
   );
 }
 function entryKey(
   deploymentId: string,
   threadId: string | null,
-  source: FileSource,
+  source: AssetSource,
   variant: AssetVariant,
 ) {
   return JSON.stringify([
     deploymentId,
     threadId,
     source.kind,
-    source.kind === "path" ? source.path : source.attachmentId,
+    source.kind === "path"
+      ? source.path
+      : source.kind === "transcript-image"
+        ? source.imageId
+        : source.attachmentId,
     variant,
   ]);
 }
@@ -106,7 +110,7 @@ export class AssetUrlStore {
   subscribeImage(
     deploymentId: string,
     threadId: string | null,
-    source: FileSource | string,
+    source: AssetSource | string,
     variant: AssetVariant,
     listener: () => void,
   ) {
@@ -124,7 +128,7 @@ export class AssetUrlStore {
   #entry(
     deploymentId: string,
     threadId: string | null,
-    source: FileSource | string,
+    source: AssetSource | string,
     variant: AssetVariant,
   ) {
     const value = sourceValue(source);
@@ -151,7 +155,7 @@ export class AssetUrlStore {
   seed(
     deploymentId: string,
     threadId: string | null,
-    source: FileSource | string,
+    source: AssetSource | string,
     variant: AssetVariant,
     value: AssetUrl,
   ) {
@@ -166,7 +170,7 @@ export class AssetUrlStore {
   async image(
     deploymentId: string,
     threadId: string | null,
-    source: FileSource | string,
+    source: AssetSource | string,
     variant: AssetVariant,
     options: AssetReadOptions = {},
   ): Promise<AssetImage | null> {
@@ -187,7 +191,7 @@ export class AssetUrlStore {
   get(
     deploymentId: string,
     threadId: string | null,
-    source: FileSource | string,
+    source: AssetSource | string,
     variant: AssetVariant,
     refresh = false,
     options: AssetReadOptions = {},
@@ -241,7 +245,7 @@ export class AssetUrlStore {
   confirm(
     deploymentId: string,
     threadId: string | null,
-    source: FileSource | string,
+    source: AssetSource | string,
     variant: AssetVariant,
     options: AssetReadOptions = {},
   ) {
@@ -266,7 +270,7 @@ export class AssetUrlStore {
   async loadFailed(
     deploymentId: string,
     threadId: string | null,
-    source: FileSource | string,
+    source: AssetSource | string,
     variant: AssetVariant,
     options: AssetReadOptions = {},
   ): Promise<boolean> {

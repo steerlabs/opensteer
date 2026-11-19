@@ -114,6 +114,7 @@ describeStore("Device and local-server access settlement", (it) => {
     await expect(
       platform.integrationRequests.installForIntegrationAccessRequest({
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
         resolvedBy: fixture.userId,
         preparedFulfillment: changed,
       }),
@@ -122,6 +123,7 @@ describeStore("Device and local-server access settlement", (it) => {
     expect(await platform.listInstallations()).toEqual([]);
     const installed = await platform.integrationRequests.installForIntegrationAccessRequest({
       requestId: opened.request.id,
+      expectedRevision: (await platform.requests.revision(opened.request.id))!,
       resolvedBy: fixture.userId,
       preparedFulfillment: reviewed,
     });
@@ -156,6 +158,7 @@ describeStore("Device and local-server access settlement", (it) => {
     });
     await platform.integrationRequests.resolveIntegrationAccessRequest({
       requestId: opened.request.id,
+      expectedRevision: (await platform.requests.revision(opened.request.id))!,
       resolvedBy: fixture.userId,
       response: { kind: "external", value: { decision: "declined" } },
     });
@@ -188,6 +191,7 @@ describeStore("Device and local-server access settlement", (it) => {
     });
     const bound = await platform.integrationRequests.tryBindExistingIntegrationAccessInstallation({
       requestId: opened.request.id,
+      expectedRevision: (await platform.requests.revision(opened.request.id))!,
       resolvedBy: fixture.userId,
     });
     expect(bound?.request).toMatchObject({
@@ -265,6 +269,7 @@ describeStore("Device and local-server access settlement", (it) => {
         await expect(
           platform.integrationRequests.resolveIntegrationAccessRequest({
             requestId: opened.request.id,
+            expectedRevision: (await platform.requests.revision(opened.request.id))!,
             resolvedBy: fixture.userId,
             response: {
               kind: "external",
@@ -281,9 +286,10 @@ describeStore("Device and local-server access settlement", (it) => {
           code: "forbidden",
           message: "Integration access requires the requested account",
         });
-      const resolve = () =>
+      const resolve = async () =>
         platform.integrationRequests.resolveIntegrationAccessRequest({
           requestId: opened.request.id,
+          expectedRevision: (await platform.requests.revision(opened.request.id))!,
           resolvedBy: fixture.userId,
           response: {
             kind: "external",
@@ -316,6 +322,7 @@ describeStore("Device and local-server access settlement", (it) => {
           .execute();
       await platform.integrationRequests.resolveIntegrationAccessRequest({
         requestId: other.request.id,
+        expectedRevision: (await platform.requests.revision(other.request.id))!,
         resolvedBy: fixture.userId,
         response: { kind: "external", value: { decision: "declined" } },
       });

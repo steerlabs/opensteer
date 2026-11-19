@@ -1,19 +1,12 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { foldTranscriptEvent, type TranscriptEntry } from "@opensteer/client/host";
-import {
-  AgentEventSchema,
-  ModelSelectionSchema,
-  type RunAttempt,
-  type RunId,
-  type ThreadId,
-} from "@opensteer/core";
+import { ModelSelectionSchema, type RunAttempt, type RunId, type ThreadId } from "@opensteer/core";
 import { HarnessRegistry, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { OpencodeHarnessDriver } from "@opensteer/harness-opencode";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
 /*
@@ -38,7 +31,6 @@ const fakeOpencodeServer = fileURLToPath(
 );
 interface Journey {
   readonly attempts: readonly RunAttempt[];
-  readonly events: readonly string[];
   readonly inputs: readonly {
     readonly cancelReason: string | null;
     readonly state: string;
@@ -135,7 +127,6 @@ integration("Run attempts", () => {
           .where("runId", "=", runId)
           .orderBy("createdAt", "asc")
           .execute(),
-        events: await eventTypes(active, runId),
         run: await database
           .selectFrom("runs")
           .selectAll()
@@ -170,7 +161,6 @@ integration("Run attempts", () => {
       .executeTakeFirst();
     const journey: Journey = {
       attempts: listed.data.attempts as RunAttempt[],
-      events: await eventTypes(active, runId),
       inputs,
       name,
       reply: reply ? textOf(reply.content) : null,
@@ -230,9 +220,11 @@ integration("Run attempts", () => {
         stated.reduce((sum, usage) => sum + usage.inputTokens, 0),
       );
       // The interrupted attempt's end is the restart, not the Run's.
-      expect(journey.events).toContain("run.restarted");
-      expect(journey.events).not.toContain("run.interrupted");
-      expect(journey.events.filter((type) => type === "run.completed")).toHaveLength(1);
+      expect(journey.attempts.map((attempt) => attempt.outcome)).toEqual([
+        "interrupted",
+        "completed",
+      ]);
+      expect(journey.runStatus).toBe("completed");
       expect(journey.inputs).toEqual([
         {
           cancelReason: null,
@@ -253,17 +245,14 @@ integration("Run attempts", () => {
         .execute();
       expect(grants[0]?.revokedReason).toBe("superseded");
 
-      // A client folding the Thread's history sees one Run, on its second
-      // attempt, that consumed what both attempts did.
-      const entries = await foldedThread(active, threadId);
-      const run = entries.find((entry) => entry.kind === "run" && entry.runId === runId);
-      expect(run).toMatchObject({
-        attempt: 2,
-        kind: "run",
-        status: "completed",
-      });
-      if (run?.kind !== "run") throw new Error("The Run has no transcript entry");
-      expect(run.usage?.inputTokens).toBe(Number(journey.runUsage.inputTokens));
+      const [card] = await active.host.store.database
+        .selectFrom("transcriptItems")
+        .select(["kind", "view"])
+        .where("threadId", "=", threadId)
+        .where("runId", "=", runId)
+        .where("kind", "=", "run")
+        .execute();
+      expect(card).toMatchObject({ kind: "run", view: { status: "completed" } });
     },
   );
   it(
@@ -327,8 +316,11 @@ integration("Run attempts", () => {
         [1, "interrupted"],
         [2, "cancelled"],
       ]);
-      expect(journey.attempts[1]?.dispatchedAt).toBeNull();
-      expect(journey.events).not.toContain("run.restarted");
+      expect(journey.attempts[1]).toMatchObject({
+        reason: "steer_restart",
+        dispatchedAt: null,
+        startedAt: null,
+      });
       expect(journey.inputs).toEqual([
         {
           cancelReason: "steer-not-delivered",
@@ -389,8 +381,7 @@ integration("Run attempts", () => {
       timeout: 120_000,
     },
     async () => {
-      const capture = join(await mkdtemp(join(tmpdir(), "opensteer-held-turn-")), "capture.jsonl");
-      const { active, threadId } = await start(["--hold-ms=2500", `--capture=${capture}`]);
+      const { active, threadId } = await start(["--hold-ms=2500"]);
       const runId = await heldRun(active, threadId);
 
       // The Runner cannot hear the interrupt until its turn has finished.
@@ -399,10 +390,13 @@ integration("Run attempts", () => {
         text: "Use the blue palette",
         threadId,
       });
-      await waitFor(
-        async () =>
-          (await readFile(capture, "utf8").catch(() => "")).includes('"held-turn-finished"'),
-        "the held turn to finish by itself",
+      await vi.waitFor(
+        () =>
+          expect(
+            active.settledRunEvent(runId)?.type,
+            "The disconnected Runner never finished and journaled the original turn",
+          ).toBe("run.completed"),
+        { timeout: 15_000 },
       );
       active.network.unblock();
       await settled(active, runId);
@@ -415,7 +409,11 @@ integration("Run attempts", () => {
         [1, "completed"],
         [2, "cancelled"],
       ]);
-      expect(journey.events).not.toContain("run.restarted");
+      expect(journey.attempts[1]).toMatchObject({
+        reason: "steer_restart",
+        dispatchedAt: null,
+        startedAt: null,
+      });
       expect(journey.inputs).toEqual([
         {
           cancelReason: "steer-not-delivered",
@@ -440,39 +438,6 @@ function runRow(active: VerticalStack, runId: RunId) {
     .where("id", "=", runId)
     .executeTakeFirstOrThrow();
 }
-async function eventTypes(active: VerticalStack, runId: RunId): Promise<string[]> {
-  const rows = await active.host.store.database
-    .selectFrom("deploymentEvents")
-    .select("type")
-    .where("runId", "=", runId)
-    .orderBy("sequence", "asc")
-    .execute();
-  return rows.map((row) => row.type);
-}
-async function foldedThread(active: VerticalStack, threadId: ThreadId) {
-  const rows = await active.host.store.database
-    .selectFrom("deploymentEvents")
-    .selectAll()
-    .where("threadId", "=", threadId)
-    .orderBy("sequence", "asc")
-    .execute();
-  let entries: TranscriptEntry[] = [];
-  for (const row of rows) {
-    const event = AgentEventSchema.parse({
-      createdAt: row.createdAt.toISOString(),
-      data: row.data,
-      environmentId: row.environmentId,
-      eventId: row.eventId,
-      runId: row.runId,
-      sequence: String(row.sequence),
-      threadId: row.threadId,
-      type: row.type,
-    });
-    entries = foldTranscriptEvent(entries, event);
-  }
-  return entries;
-}
-
 /** The message bodies a fake turn was asked, in order, from its `Answered:` reply. */
 function answeredWith(reply: string | null): string[] {
   if (!reply?.startsWith("Answered: ")) throw new Error(`Not an answer: ${reply}`);

@@ -1,7 +1,5 @@
 import { expectedMutationSessionHeader } from "@opensteer/protocol";
 import { unwrapRpcResult } from "@opensteer/client/host";
-import { BootstrapNoticeDiagnostics } from "@opensteer/shared/bootstrapDiagnostics";
-import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import {
   forEachBoundedResponseChunk,
   readBoundedResponse,
@@ -96,7 +94,6 @@ const forwardedRequestHeaders = {
   accept: "accept",
   "content-type": "contentType",
   "idempotency-key": "idempotencyKey",
-  [bootstrapDiagnosticHeader]: "bootstrapDiagnostics",
   [hostApiVersionHeader]: "apiVersion",
   [teamApiVersionHeader]: "apiVersion",
   [hostApiCurrentHeader]: "apiCurrent",
@@ -182,7 +179,6 @@ export class DesktopHostTransport extends HostTransport {
   readonly #cancelledEarly = new Set<string>();
   #selectedDeploymentId: DeploymentId | null = null;
   #disposed = false;
-  readonly #bootstrapDiagnostics = new BootstrapNoticeDiagnostics();
 
   constructor(options: {
     readonly catalog: Pick<
@@ -392,7 +388,6 @@ export class DesktopHostTransport extends HostTransport {
     }
     const teamUpload = request.headers.get("x-opensteer-team-upload");
     const expectedSession = request.headers.get(expectedMutationSessionHeader);
-    if (pathname === "/v1/rpc/bootstrap.get") this.#reportBootstrap(headers.bootstrapDiagnostics);
     const summary =
       request.method === "POST" &&
       (pathname === "/v1/rpc/attention.get" || pathname === "/v1/rpc/teams.links.list");
@@ -517,20 +512,6 @@ export class DesktopHostTransport extends HostTransport {
     return this.#withPreparedEnrollment
       ? this.#withPreparedEnrollment(deploymentId, command, exchange)
       : exchange();
-  }
-
-  #reportBootstrap(header: string | undefined): void {
-    const diagnostic = this.#bootstrapDiagnostics.report(header);
-    if (!diagnostic) return;
-    try {
-      this.#log?.("host.bootstrap.loop", {
-        windowMs: diagnostic.windowMs,
-        triggers: diagnostic.triggers,
-        starts: diagnostic.starts,
-      });
-    } catch {
-      /* Diagnostics cannot prevent a read. */
-    }
   }
 
   /** Main-process app traffic keeps the attachment fence until its streamed body ends. */

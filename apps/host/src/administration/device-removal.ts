@@ -10,7 +10,7 @@ import {
 import type { OpensteerStore } from "@opensteer/database";
 import type { AdministrationDependencies } from "./administration-service.js";
 import type { HostAuthenticator } from "../identity/auth.js";
-import { notifyMachinesChanged } from "../shell/machine-access-events.js";
+import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
 
 type Dependencies = AdministrationDependencies & { readonly authenticator: HostAuthenticator };
 const membershipTurns = new WeakMap<OpensteerStore, KeyedMutationQueue>();
@@ -46,13 +46,19 @@ export async function finishDeviceRemoval(
   for (const sessionId of removed.closedBrowserSessions)
     dependencies.browser.abandonSession(sessionId);
   await dependencies.browser.profilesRemoved(removed.deletedBrowserProfiles);
-  for (const event of [...removed.events, ...removed.requestEvents])
-    dependencies.publishDeploymentEvent(event);
-  if (removed.cancelledRequestIds.length) dependencies.integrations.continuations.notify();
   dependencies.authenticator.identity.announceSessionsEnded(removed.endedSessionIds, afterResponse);
-  notifyMachinesChanged(dependencies.realtime, "machine.command");
-  if (removed.revokedComputerConnectionIds.length)
-    dependencies.realtime.broadcast({ type: "host.plugins-changed" });
+  await commitPersonalMutation(dependencies.store.database, async (_tx, mutation) => {
+    for (const kind of [
+      "machine",
+      "environment",
+      "browser-placement",
+      "browser-home",
+      "browser-availability",
+      "tab",
+    ] as const)
+      mutation.bumpResource(kind);
+    if (removed.revokedComputerConnectionIds.length) mutation.bumpResource("plugin");
+  });
 }
 function withRemovalAdmission<T>(
   dependencies: Dependencies,
@@ -119,7 +125,6 @@ export async function removeSignedDevice(
     );
     if (result.removed)
       await finishDeviceRemoval(dependencies, result.runnerId, result.removed, afterResponse);
-    else notifyMachinesChanged(dependencies.realtime, "machine.command");
   });
 }
 export async function signOutDeviceSession(

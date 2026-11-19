@@ -92,7 +92,6 @@ export function projectSavedTasks(snapshot: HostSnapshot): SavedTask[] {
     ...snapshot,
     waitingRequests: [],
     needsYou: null,
-    requests: {},
     runQueue: [],
     machines: [],
   });

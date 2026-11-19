@@ -8,7 +8,7 @@ import {
   type Request,
 } from "@opensteer/core";
 import type {
-  HostSnapshot,
+  TranscriptFixtureSnapshot,
   MessageEntry,
   NodeEntry,
   ToolEntry,
@@ -466,7 +466,7 @@ function scene(name: MockSubagentScene): readonly Turn[] {
  * its transcript, the questions its subagents ask, and each subagent's own
  * steps for its opened view.
  */
-export function seedMockSubagentScene<Snapshot extends HostSnapshot>(
+export function seedMockSubagentScene<Snapshot extends TranscriptFixtureSnapshot>(
   snapshot: Snapshot,
   name: MockSubagentScene,
   now: Date,

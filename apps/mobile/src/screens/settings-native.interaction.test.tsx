@@ -27,6 +27,7 @@ vi.mock("@react-navigation/native", () => ({
 vi.mock("../ui/sheet.js", () => ({
   Sheet: ({ children, open }: { children: ReactNode; open: boolean }) => (open ? children : null),
 }));
+vi.mock("./device-app-setup-sheet.js", () => ({ DeviceAppSetupSheet: () => null }));
 vi.mock("./native-settings-page.js", () => ({
   NativeSettingsPage: (props: NativeSettingsPageProps) => {
     const id = useId();

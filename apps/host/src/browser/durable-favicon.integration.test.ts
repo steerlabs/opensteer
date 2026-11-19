@@ -1,3 +1,4 @@
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
 import { DeviceIdSchema } from "@opensteer/core";
 import { TabStore } from "@opensteer/database";
 import { TabIdSchema } from "@opensteer/core";
@@ -5,7 +6,6 @@ import { randomUUID } from "node:crypto";
 import { browserRows } from "./browser-rows.test-support.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { zeroSequence } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -76,25 +76,27 @@ async function listen(host: MachineAccessHost, headers = host.ownerHeaders) {
   });
   const messages: Record<string, unknown>[] = [];
   socket.on("message", (frame: WebSocket.RawData) => {
-    const message = JSON.parse(frame.toString()) as Record<string, unknown> & {
-      readonly events?: readonly { readonly sequence?: string }[];
-    };
+    const message = JSON.parse(frame.toString()) as Record<string, unknown>;
     messages.push(message);
-    const latest = message.events?.at(-1);
-    if (message.type === "host.events" && latest?.sequence)
-      socket.send(JSON.stringify({ sequence: latest.sequence, type: "client.ack" }));
+    const scoped = ScopedHostMessageSchema.safeParse(message);
+    if (
+      scoped.success &&
+      (scoped.data.type === "host.snapshot" || scoped.data.type === "host.changes")
+    ) {
+      const { generation, subscriptionId, throughSequence } = scoped.data;
+      socket.send(
+        JSON.stringify({ type: "client.ack", generation, subscriptionId, throughSequence }),
+      );
+    }
   });
   const synchronized = waitForMessage(socket, (message) => message.type === "host.synchronized");
   socket.send(
     JSON.stringify({
-      cursor: {
-        deploymentId: (await host.store.getDeployment())!.id,
-        apiVersion: hostApiVersion,
-        afterSequence: zeroSequence,
-      },
+      type: "client.attach",
       apiVersion: hostApiVersion,
-      threadId: null,
-      type: "client.subscribe",
+      generation: 1,
+      interests: [],
+      installed: {},
     }),
   );
   await synchronized;
@@ -141,7 +143,12 @@ integration("Durable tab icons", () => {
       token: await host.hostingRunnerEnrollmentToken,
     });
     cleanups.push(() => caller.close());
-    await testRpcData(host.origin, "bootstrap.get", {}, { headers: host.ownerHeaders });
+    await testRpcData(
+      host.origin,
+      "resources.detail.get",
+      { kind: "browser-placement" },
+      { headers: host.ownerHeaders },
+    );
     const profile = await host.store.createBrowserProfile({
       homeRunnerId: runtime.runnerId,
       ownerId: host.ownerId,
@@ -871,15 +878,14 @@ integration("Durable tab icons", () => {
     steps.push({ step: "navigation cleared then settled", revision: await revision() });
 
     const coldTabs = async (currentHost = host) => {
-      const bootstrap = await testRpcData(
-        host.origin,
-        "bootstrap.get",
+      const group = await testRpcData(
+        currentHost.origin,
+        "tabs.state",
         {},
         {
-          headers: host.ownerHeaders,
+          headers: currentHost.ownerHeaders,
         },
       );
-      const group = bootstrap.tabs;
       const read = await browserRows(currentHost.runtime.browser, currentHost.ownerId, sessionId);
       expect(JSON.stringify(group)).not.toContain("data:image");
       expect(JSON.stringify(read)).not.toContain("data:image");

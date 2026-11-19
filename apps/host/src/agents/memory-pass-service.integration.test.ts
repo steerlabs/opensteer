@@ -88,6 +88,7 @@ function service(
   f: StoreFixture,
   options: {
     off?: boolean;
+    clock?: import("@opensteer/shared/clock").Clock;
   } = {},
 ) {
   const preview = vi.fn(async () =>
@@ -103,9 +104,9 @@ function service(
     store: f.store,
     runners,
     readAgentInstructions: preview,
-    onEvent: vi.fn(),
     onChanged: vi.fn(),
     onError,
+    ...(options.clock ? { clock: options.clock } : {}),
   });
   return {
     instance,
@@ -216,7 +217,7 @@ async function claudeAccount(f: StoreFixture, base: Awaited<ReturnType<typeof fi
 /** Holds a row so `work` can stop an admission at a known lock, then releases it. */
 async function holdingRow(
   f: StoreFixture,
-  table: "threads" | "personalSettings",
+  table: "threads" | "syncFence",
   id: string,
   work: (release: () => void) => Promise<void>,
 ) {
@@ -225,10 +226,9 @@ async function holdingRow(
   let held!: () => void;
   const holding = new Promise<void>((resolve) => (held = resolve));
   const blocker = f.database.transaction().execute(async (transaction) => {
-    if (table === "personalSettings")
-      await sql`select singleton_key from personal_settings where singleton_key = 'personal' for no key update`.execute(
-        transaction,
-      );
+    // Every personal commit takes the `client_sync_state` fence first.
+    if (table === "syncFence")
+      await sql`select deployment_id from client_sync_state for no key update`.execute(transaction);
     else await sql`select id from threads where id = ${id} for no key update`.execute(transaction);
     held();
     await released;
@@ -441,7 +441,7 @@ describeStore("managed memory passes", (it) => {
     storeFixture: f,
   }) => {
     const base = await fixture(f, "rollback");
-    const tables = ["threads", "providerSessions", "commands", "deploymentEvents"] as const;
+    const tables = ["threads", "providerSessions", "commands", "clientChanges"] as const;
     const counts = () =>
       Promise.all(
         tables.map((table) =>
@@ -519,6 +519,8 @@ describeStore("managed memory passes", (it) => {
         ownerId: base.userId,
       }),
     ).toEqual([]);
+    // Unsettled, so the Host asks again on the next Runner registration or finished Run.
+    expect(s.instance.settled).toBe(false);
     // An offline computer or an account without a light model does not
     // defer creation: each pass chooses its model when it is admitted.
     s.runners.isAvailable.mockReturnValue(false);
@@ -528,6 +530,42 @@ describeStore("managed memory passes", (it) => {
       pauseReason: null,
     });
     expect((await role(f, base.userId, "memory-nightly")).trigger.status).toBe("active");
+    await s.instance.ensureForPersonal();
+    expect(s.instance.settled).toBe(true);
+  });
+  it("retries provisioning after a transient failure with no further Run or registration", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "transient", { light: false });
+    let now = Date.now();
+    const timers = new Set<{ at: number; run: () => void }>();
+    const clock = {
+      now: () => now,
+      schedule(run: () => void, milliseconds: number) {
+        const timer = { at: now + milliseconds, run };
+        timers.add(timer);
+        return () => timers.delete(timer);
+      },
+    };
+    const s = service(f, { clock });
+    s.preview.mockRejectedValueOnce(new Error("Runner busy"));
+    s.instance.wake();
+    await s.instance.idle();
+    expect(await f.triggers.listForOwner({ ownerId: base.userId })).toEqual([]);
+    expect(s.instance.settled).toBe(false);
+    // The failed pass left a deadline: nothing else wakes it.
+    expect([...timers].map((timer) => timer.at - now)).toEqual([5_000]);
+    now += 5_000;
+    const due = [...timers].filter((timer) => timer.at <= now);
+    for (const timer of due) {
+      timers.delete(timer);
+      timer.run();
+    }
+    await s.instance.idle();
+    expect((await role(f, base.userId)).trigger.status).toBe("active");
+    expect(s.instance.settled).toBe(true);
+    expect(timers.size).toBe(0);
+    await s.instance.close();
   });
   it("creates both identities paused, with one reason, when memory is off", async ({
     storeFixture: f,
@@ -1023,12 +1061,18 @@ describeStore("managed memory passes", (it) => {
       nativeModelId: "native-light",
       options: {},
     });
-    const admitted = await wake(f, light, first.occurrence.id, "first-pass", {
+    await wake(f, light, first.occurrence.id, "first-pass", {
       harnessInstanceId: base.harnessInstance.id,
       harnessRevision: base.harnessInstance.runtimeRevision,
       modelSelection: lightModel,
     });
-    expect(admitted.events.map(({ type }) => type)).toContain("thread.execution-updated");
+    await expect(
+      f.database
+        .selectFrom("threads")
+        .select("modelSelection")
+        .where("id", "=", light.anchorThreadId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ modelSelection: lightModel });
     const [firstRun] = await runs();
     const firstSession = (await sessions()).find(({ active }) => active);
     expect(firstRun).toMatchObject({
@@ -1334,7 +1378,7 @@ describeStore("managed memory passes", (it) => {
       backgroundModels: { excludedAccounts: [base.harnessInstance.id] },
     });
     // Admission holds the occurrence until the personal mutation fence is released.
-    await holdingRow(f, "personalSettings", "personal", async (release) => {
+    await holdingRow(f, "syncFence", "personal", async (release) => {
       const admission = wake(f, light.trigger, occurrence.id, "in-flight");
       await lockWaiters(f, 1);
       const retry = s.instance.admissionSelection(occurrence.id, light.anchorThread!);
@@ -1447,7 +1491,6 @@ describeStore("managed memory passes", (it) => {
       store: f.store,
       runners: s.runners,
       readAgentInstructions: s.preview,
-      onEvent: vi.fn(),
       onChanged,
       onError: vi.fn(),
     });

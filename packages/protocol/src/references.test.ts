@@ -35,7 +35,7 @@ it("keeps nullable file context and all three opaque resources without changing 
   for (const resource of [
     { kind: "home", key: "opaque", revision: "revision" },
     { kind: "attachment", attachmentId: createId("attachment"), revision: "revision" },
-    { kind: "output-image", sequence: "12", index: 0, revision: "revision" },
+    { kind: "output-image", imageId: "call:fixture:0", revision: "revision" },
   ]) {
     expect(FileResourceSchema.parse(resource)).toEqual(resource);
     expect(TranscriptFileContentInputSchema.parse({ threadId: null, resource }).resource).toEqual(

@@ -13,7 +13,6 @@ import {
   ExecutionNodeIdSchema,
   SequenceSchema,
   ThreadIdSchema,
-  type AgentEvent,
   type EnvironmentId,
   type ThreadId,
   type UserId,
@@ -152,7 +151,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #browser: Pick<BrowserService, "hasBrowserProfiles">;
   readonly #browserCdpUrl: string;
   readonly #egress: EgressService;
-  readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #onTriggerChanged: () => void;
   readonly #runners: RunnerRegistry;
   readonly #runnerRegistrationPending: (environmentId: EnvironmentId) => boolean;
@@ -171,7 +169,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly requestResponseVault: RequestResponseVault;
     readonly runToolTokens: RunToolTokenService;
     readonly browser: Pick<BrowserService, "hasBrowserProfiles">;
-    readonly onDeploymentEvent: (event: AgentEvent) => void;
     readonly onTriggerChanged?: () => void;
     readonly pluginVersions: (
       ownerUserId: UserId,
@@ -210,7 +207,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#browser = options.browser;
     this.#browserCdpUrl = new URL("/internal/v1/trigger-cdp", options.publicUrl).toString();
     this.#egress = options.egress;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#onTriggerChanged = options.onTriggerChanged ?? (() => undefined);
     this.#runners = options.runners;
     this.#runnerRegistrationPending = options.runnerRegistrationPending ?? (() => false);
@@ -474,17 +470,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       .catch(async (error: unknown) => {
         if (!(error instanceof OpensteerError) || error.reason !== "earlier-boots-not-contained")
           throw error;
-        for (const event of await this.#store.failCommand(
-          command.id,
-          error.message,
-          "seed-input",
-          "runner_restarted",
-        ))
-          this.#onDeploymentEvent(event);
+        await this.#store.failCommand(command.id, error.message, "seed-input", "runner_restarted");
         return undefined;
       });
     if (!binding) return;
-    if (binding.continuationEvent) this.#onDeploymentEvent(binding.continuationEvent);
     const teamsAvailable = await this.#teamsAvailable();
     const knowledge = context.personalContext && teamsAvailable;
     const toolsToken = this.#runToolTokens.issue({
@@ -753,17 +742,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       connectionGeneration: identity.connectionGeneration,
     };
     if (command.authoritySource.kind === "channel-ingress") {
-      for (const event of await this.#store.dispatchChannelCommand(
-        command.id,
-        async (beforeAck) => {
-          await this.#runners.dispatch(runnerCommand, signal, {
-            ...dispatch,
-            beforeAck,
-          });
-        },
-      )) {
-        this.#onDeploymentEvent(event);
-      }
+      await this.#store.dispatchChannelCommand(command.id, async (beforeAck) => {
+        await this.#runners.dispatch(runnerCommand, signal, {
+          ...dispatch,
+          beforeAck,
+        });
+      });
     } else {
       await this.#runners.dispatch(runnerCommand, signal, dispatch);
     }
@@ -935,11 +919,14 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         {
           const responsePayload = payload.data;
           const encryptedResponse = command.encryptedRequestResponse;
-          for (const event of await this.#store.dispatchRequestResponse(
+          await this.#store.dispatchRequestResponse(
             command.id,
-            async (beforeAck) => {
+            async (beforeAck, fenceRequestSend, bindingGeneration) => {
+              const identity = this.#runners.identityForEnvironment(base.environmentId);
+              if (!identity) throw new CommandDispatchError("Runner is offline", "retry");
               const runnerCommand: RunnerCommand = {
                 ...base,
+                bindingGeneration,
                 requestId: responsePayload.requestId,
                 response: await openRequestResponse(this.#requestResponseVault, encryptedResponse, {
                   requestId: responsePayload.requestId,
@@ -951,11 +938,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
               };
               await this.#runners.dispatch(runnerCommand, signal, {
                 beforeAck,
+                fenceRequestSend,
+                connectionGeneration: identity.connectionGeneration,
               });
             },
-          )) {
-            this.#onDeploymentEvent(event);
-          }
+          );
           return;
         }
       case "run.steer": {
@@ -1008,9 +995,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       }
     }
     await this.#runners.dispatch(runnerCommand, signal);
-    for (const event of await this.#store.succeedCommand(command.id)) {
-      this.#onDeploymentEvent(event);
-    }
+    await this.#store.succeedCommand(command.id);
   }
 
   /**
@@ -1031,32 +1016,23 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     try {
       await validate();
       if (command.authoritySource.kind === "channel-ingress") {
-        for (const event of await this.#store.dispatchChannelCommand(
-          command.id,
-          async (beforeAck) => {
-            await this.#runners.dispatch(runnerCommand, signal, {
-              beforeAck,
-            });
-          },
-        )) {
-          this.#onDeploymentEvent(event);
-        }
+        await this.#store.dispatchChannelCommand(command.id, async (beforeAck) => {
+          await this.#runners.dispatch(runnerCommand, signal, {
+            beforeAck,
+          });
+        });
         return;
       }
       await this.#runners.dispatch(runnerCommand, signal);
     } catch (error) {
       if (!(error instanceof CommandDispatchError) || error.disposition !== "failed") throw error;
-      for (const event of await this.#store.refuseSteer(
+      await this.#store.refuseSteer(
         command.id,
         error.message,
         ProtocolErrorSchema.safeParse(error.cause).data?.reason,
-      )) {
-        this.#onDeploymentEvent(event);
-      }
+      );
       return;
     }
-    for (const event of await this.#store.succeedCommand(command.id)) {
-      this.#onDeploymentEvent(event);
-    }
+    await this.#store.succeedCommand(command.id);
   }
 }

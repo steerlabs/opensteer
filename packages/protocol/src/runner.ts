@@ -358,6 +358,7 @@ const InterruptTriggerExecutionSchema = runnerCommandBase.extend({
 });
 
 const ResolveRequestSchema = runnerCommandBase.extend({
+  bindingGeneration: z.number().int().positive().optional(),
   type: z.literal("request.resolve"),
   requestId: RequestIdSchema,
   response: RequestResponseSchema,
@@ -414,36 +415,52 @@ function pendingEventVariant<T extends keyof typeof runnerEventDataSchemas>(type
 
 export const pendingAgentEventMaxSerializedBytes = 480 * 1_024;
 
+const pendingEventVariants = [
+  pendingEventVariant("request.cancelled"),
+  pendingEventVariant("request.opened"),
+  pendingEventVariant("assistant.message"),
+  pendingEventVariant("voice.heard"),
+  pendingEventVariant("message.injected"),
+  pendingEventVariant("reasoning.completed"),
+  pendingEventVariant("run.completed"),
+  pendingEventVariant("run.failed"),
+  pendingEventVariant("run.interrupted"),
+  pendingEventVariant("run.started"),
+  pendingEventVariant("run.status"),
+  pendingEventVariant("run.context-measured"),
+  pendingEventVariant("run.compaction"),
+  pendingEventVariant("run.usage"),
+  pendingEventVariant("run.phase"),
+  pendingEventVariant("node.started"),
+  pendingEventVariant("node.updated"),
+  pendingEventVariant("node.completed"),
+  pendingEventVariant("node.message"),
+  pendingEventVariant("tool.completed"),
+] as const;
+
+const currentToolStart = pendingEventVariant("tool.started");
+function pendingEventFits(event: unknown) {
+  return utf8ByteLength(JSON.stringify(event)) <= pendingAgentEventMaxSerializedBytes;
+}
+const pendingEventLimit = `Pending agent event must not exceed ${pendingAgentEventMaxSerializedBytes} serialized bytes`;
+
 export const PendingAgentEventSchema = z
+  .discriminatedUnion("type", [...pendingEventVariants, currentToolStart])
+  .refine(pendingEventFits, pendingEventLimit);
+
+export const runEventsVersion = 2;
+export const runEventsCapability = "run-events-v2";
+export const runEventsUpdateReason = "Update Opensteer on the Host and this computer to run tasks.";
+export const PendingAgentEventV2Schema = z
   .discriminatedUnion("type", [
-    pendingEventVariant("request.cancelled"),
-    pendingEventVariant("request.opened"),
-    pendingEventVariant("assistant.message"),
-    pendingEventVariant("voice.heard"),
-    pendingEventVariant("message.injected"),
-    pendingEventVariant("reasoning.completed"),
-    pendingEventVariant("run.completed"),
-    pendingEventVariant("run.failed"),
-    pendingEventVariant("run.interrupted"),
-    pendingEventVariant("run.started"),
-    pendingEventVariant("run.status"),
-    pendingEventVariant("run.context-measured"),
-    pendingEventVariant("run.compaction"),
-    pendingEventVariant("run.usage"),
-    pendingEventVariant("run.phase"),
-    pendingEventVariant("node.started"),
-    pendingEventVariant("node.updated"),
-    pendingEventVariant("node.completed"),
-    pendingEventVariant("node.message"),
-    pendingEventVariant("tool.completed"),
-    pendingEventVariant("tool.started"),
+    ...pendingEventVariants,
+    currentToolStart.extend({
+      data: currentToolStart.shape.data.extend({ provisional: z.literal(true).optional() }),
+    }),
   ])
-  .refine(
-    (event) =>
-      new TextEncoder().encode(JSON.stringify(event)).byteLength <=
-      pendingAgentEventMaxSerializedBytes,
-    `Pending agent event must not exceed ${pendingAgentEventMaxSerializedBytes} serialized bytes`,
-  );
+  .refine(pendingEventFits, pendingEventLimit);
+export type PendingAgentEventV2 = z.infer<typeof PendingAgentEventV2Schema>;
+
 export type PendingAgentEvent = z.infer<typeof PendingAgentEventSchema>;
 
 /**
@@ -1597,6 +1614,7 @@ export const RunnerChallengeSchema = z.object({
   nonce: z.string().regex(/^[A-Za-z0-9_-]{32,255}$/),
   // Missing on a pre-v2 Host, so the producer can report an actionable refusal.
   proofFormatVersion: z.number().int().positive().optional(),
+  runEventsVersion: z.number().int().positive().optional(),
   type: z.literal("host.challenge"),
 });
 export type RunnerChallenge = z.infer<typeof RunnerChallengeSchema>;
@@ -1811,7 +1829,7 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     ...fencedMessageBase,
     type: z.literal("runner.event"),
-    event: PendingAgentEventSchema,
+    event: PendingAgentEventV2Schema,
   }),
   /**
    * What a Run's streams are saying before they complete. Live progress is
@@ -1823,6 +1841,7 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     bindingGeneration: z.number().int().positive(),
     environmentId: EnvironmentIdSchema,
     progress: LiveRunProgressSchema,
+    assistantMessageId: MessageIdSchema.optional(),
     type: z.literal("runner.live"),
   }),
   z.strictObject({
@@ -1948,6 +1967,8 @@ export const RunnerToHostMessageSchema = z.discriminatedUnion("type", [
 export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 
 export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
+  z.strictObject({ ...fencedMessageBase, type: z.literal("host.shell.probe-full-disk-access") }),
+  z.strictObject({ ...fencedMessageBase, type: z.literal("host.live.resync"), runId: RunIdSchema }),
   HostBackgroundTextSchema,
   RunnerChallengeSchema,
   HostAppsSyncSchema,
@@ -2053,7 +2074,7 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
       )
       .min(1)
       .max(1_000),
-    type: z.literal("host.events.acked"),
+    type: z.literal("host.executions.acked"),
   }),
   /**
    * The Host renewed these Runs' leases for `leaseMs` from the heartbeat sent

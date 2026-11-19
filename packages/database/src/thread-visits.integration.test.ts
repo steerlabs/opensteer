@@ -1,15 +1,22 @@
 import { createId } from "@opensteer/core";
-import { NotificationStore } from "./notification-store.js";
+import { sql } from "kysely";
 import { expect } from "vitest";
 import { describeStore, pendingEvent } from "./store.integration.test-support.js";
 
 describeStore("thread visits", (it) => {
+  const databaseTime = async (db: Parameters<typeof count>[0]) =>
+    (await sql<{ now: Date }>`select clock_timestamp() as now`.execute(db)).rows[0]!.now.getTime();
+
+  const count = async (db: import("kysely").Kysely<import("./schema.js").DatabaseSchema>) =>
+    (await db.selectFrom("clientSyncState").select("unreadTaskCount").executeTakeFirstOrThrow())
+      .unreadTaskCount;
+
   it("keeps concurrent visits monotonic, clamps the future and rejects anyone except the owner", async ({
     storeFixture: f,
   }) => {
     const task = await f.startRunFixture("visit-owner");
     const visit = (visitedAt: string) =>
-      f.store.notificationState.visit({ threadId: task.thread.id, userId: task.userId, visitedAt });
+      f.store.recordThreadVisit({ threadId: task.thread.id, userId: task.userId, visitedAt });
     const before = await f.store.getThreadForOwner(task.thread.id, task.userId);
     await Promise.all([visit("2026-01-02T00:00:00.000Z"), visit("2026-01-01T00:00:00.000Z")]);
     expect((await f.store.getThreadForOwner(task.thread.id, task.userId))?.lastVisitedAt).toBe(
@@ -27,7 +34,7 @@ describeStore("thread visits", (it) => {
       askedAt: before!.askedAt,
     });
     await expect(
-      f.store.notificationState.visit({
+      f.store.recordThreadVisit({
         threadId: task.thread.id,
         userId: createId("user"),
         visitedAt: future.lastVisitedAt,
@@ -41,7 +48,7 @@ describeStore("thread visits", (it) => {
     "makes an empty $0 completion readable, with Host time and a newer active run hiding it",
     async (status, { storeFixture: f }) => {
       const task = await f.startRunFixture(`visit-${status}`);
-      const lower = Date.now();
+      const lower = await databaseTime(f.database);
       const common = {
         environmentId: task.environmentId,
         threadId: task.thread.id,
@@ -68,14 +75,16 @@ describeStore("thread visits", (it) => {
       });
       const thread = (await f.store.getThreadForOwner(task.thread.id, task.userId))!;
       expect(Date.parse(thread.latestRunCompletedAt!)).toBeGreaterThanOrEqual(lower);
-      expect(Date.parse(thread.latestRunCompletedAt!)).toBeLessThanOrEqual(Date.now());
-      expect((await f.store.notificationState.attention(task.userId)).unread).toBe(true);
-      await f.store.notificationState.visit({
+      expect(Date.parse(thread.latestRunCompletedAt!)).toBeLessThanOrEqual(
+        await databaseTime(f.database),
+      );
+      expect(await count(f.database)).toBe(1);
+      await f.store.recordThreadVisit({
         threadId: thread.id,
         userId: task.userId,
         visitedAt: thread.latestRunCompletedAt!,
       });
-      expect((await f.store.notificationState.attention(task.userId)).unread).toBe(false);
+      expect(await count(f.database)).toBe(0);
       await f.store.enqueueThreadInput({
         threadId: thread.id,
         requestedBy: task.userId,
@@ -87,10 +96,10 @@ describeStore("thread visits", (it) => {
       expect(
         (await f.store.getThreadForOwner(thread.id, task.userId))?.latestRunCompletedAt,
       ).toBeNull();
-      expect((await f.store.notificationState.attention(task.userId)).unread).toBe(false);
+      expect(await count(f.database)).toBe(0);
     },
   );
-  it("uses Host publication time for replies and push even when the Runner clock is wrong", async ({
+  it("uses Host time for reply publication and completion even when the Runner clock is wrong", async ({
     storeFixture: f,
   }) => {
     const task = await f.startRunFixture("visit-clock");
@@ -117,15 +126,16 @@ describeStore("thread visits", (it) => {
         runnerBootId: task.runnerBootId,
         event,
       });
-    const accepted = await commit();
-    expect(Date.parse(accepted.event.createdAt)).toBeLessThanOrEqual(Date.now());
-    expect((await commit()).wasDuplicate).toBe(true);
+    expect((await commit()).replayed).toBe(false);
+    expect((await commit()).replayed).toBe(true);
     const message = await f.database
       .selectFrom("messages")
       .select("createdAt")
       .where("id", "=", messageId)
       .executeTakeFirstOrThrow();
-    const completed = await f.store.commitRunnerEvent({
+    expect(message.createdAt.getTime()).toBeLessThanOrEqual(Date.now());
+    const beforeFinish = await databaseTime(f.database);
+    await f.store.commitRunnerEvent({
       environmentId: task.environmentId,
       runnerId: task.runnerId,
       runnerBootId: task.runnerBootId,
@@ -139,15 +149,13 @@ describeStore("thread visits", (it) => {
         emittedAt: "2001-01-01T00:00:00.000Z",
       },
     });
-    const notifications = new NotificationStore(f.database);
-    const replies = await notifications.decide(completed.event);
-    expect(replies).toHaveLength(1);
-    expect(replies[0]!.view.occurredAt).toBe(message.createdAt.toISOString());
-    await f.store.notificationState.visit({
-      threadId: task.thread.id,
-      userId: task.userId,
-      visitedAt: message.createdAt.toISOString(),
-    });
-    expect(await notifications.decide(completed.event)).toEqual([]);
+    const run = await f.database
+      .selectFrom("runs")
+      .select(["completedAt", "terminalReplyMessageId"])
+      .where("id", "=", task.run.id)
+      .executeTakeFirstOrThrow();
+    expect(run.terminalReplyMessageId).toBe(messageId);
+    expect(run.completedAt!.getTime()).toBeGreaterThanOrEqual(beforeFinish);
+    expect(run.completedAt!.getTime()).toBeLessThanOrEqual(await databaseTime(f.database));
   });
 });

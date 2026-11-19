@@ -20,6 +20,7 @@ const harness = vi.hoisted(() => ({
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 0 }));
 vi.mock("@react-navigation/native", () => ({
   StackActions: { push: () => ({}) },
+  useIsFocused: () => true,
   useNavigation: () => ({ dispatch: () => undefined, isFocused: () => true }),
 }));
 vi.mock("../ui/composer-editor.js", () => ({ dismissKeyboard: () => undefined }));
@@ -40,6 +41,7 @@ vi.mock("./deployment-gate.js", () => ({
   useAttachedHost: () =>
     harness.attached
       ? {
+          watchPersonalResource: () => () => undefined,
           connection: {
             getSnapshot: () => ({ readyRevision: harness.readyRevision }),
             subscribe: () => () => undefined,

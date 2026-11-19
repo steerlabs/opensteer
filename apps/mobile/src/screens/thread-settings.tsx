@@ -1,3 +1,5 @@
+import { canRespondToRequests } from "@opensteer/client/host";
+import { useThreadTranscript } from "@opensteer/client/react";
 import type { ClientSession } from "@opensteer/client/connections";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import {
@@ -116,13 +118,18 @@ function SubscribedThreadSettings(props: {
   readonly threadId: string;
 }): ReactNode {
   const { snapshot } = useHostSnapshot(props.hostClient);
+  const { runQueue } = useThreadTranscript(props.hostClient, props.threadId);
   const navigation = useNavigation();
   const userId = snapshot.user?.id ?? null;
   const thread = snapshot.threads.find(({ id }) => id === props.threadId) ?? null;
   if (thread === null) {
+    const loading =
+      snapshot.connection !== "offline" && snapshot.threadLookups[props.threadId] === undefined;
     return (
       <UnavailableSheet
-        detail="It may have been deleted, or it belongs to another deployment."
+        {...(loading
+          ? {}
+          : { detail: "It may have been deleted, or it belongs to another deployment." })}
         onDone={() => navigation.goBack()}
       />
     );
@@ -130,6 +137,7 @@ function SubscribedThreadSettings(props: {
   return (
     <ModelPickerForUser
       {...props}
+      hasRun={runQueue.length > 0}
       key={`${props.deploymentId}:${userId ?? "signed-out"}:${props.threadId}`}
       snapshot={snapshot}
       thread={thread}
@@ -140,6 +148,7 @@ function SubscribedThreadSettings(props: {
 interface PickerForUserProps {
   readonly conversation: boolean;
   readonly deploymentId: string;
+  readonly hasRun: boolean;
   readonly hostClient: HostClient;
   readonly snapshot: HostSnapshot;
   readonly thread: ThreadSummary;
@@ -186,8 +195,8 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
     [props.snapshot, props.thread],
   );
   const disabledReason = settingsDisabledReason({
-    canRespond: true,
-    hasRun: props.snapshot.runQueue.some((run) => run.threadId === props.threadId),
+    canRespond: canRespondToRequests(props.snapshot),
+    hasRun: props.hasRun,
     mutationOwner: owner,
     kind: "thread",
     thread: props.thread,
@@ -248,8 +257,8 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
     const thread = snapshot.threads.find(({ id }) => id === props.threadId);
     if (thread === undefined) return { error: "This thread is no longer here." };
     const reason = settingsDisabledReason({
-      canRespond: true,
-      hasRun: snapshot.runQueue.some((run) => run.threadId === props.threadId),
+      canRespond: canRespondToRequests(snapshot),
+      hasRun: runningHere(props.hostClient, props.threadId),
       mutationOwner: null,
       kind: "thread",
       thread,
@@ -555,7 +564,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
       setFailure("This AI is not available right now, so it cannot be started fresh.");
       return;
     }
-    if (runningHere(props.hostClient.getSnapshot(), props.threadId)) {
+    if (runningHere(props.hostClient, props.threadId)) {
       setFailure("Finish or stop this response before starting fresh.");
       return;
     }
@@ -676,8 +685,8 @@ interface ExecutionSwitchReview {
 }
 
 /** A Run that has not finished is what a switch has to wait for. */
-function runningHere(snapshot: HostSnapshot, threadId: string): boolean {
-  return snapshot.runQueue.some((run) => run.threadId === threadId);
+function runningHere(client: HostClient, threadId: string): boolean {
+  return (client.getThreadTranscript(threadId)?.getSnapshot().runQueue.length ?? 0) > 0;
 }
 
 /**
@@ -1474,13 +1483,19 @@ function changeFailure(error: unknown): string | null {
 }
 
 function UnavailableSheet(props: {
-  readonly detail: string;
+  readonly detail?: string;
   readonly onDone: () => void;
 }): ReactNode {
   return (
     <ScrollView contentContainerStyle={[styles.unavailable, styles.content]}>
       <SheetBar onBack={null} onClose={props.onDone} subtitle={null} title="Model" />
-      <Notice detail={props.detail} title="The model picker is unavailable" tone="neutral" />
+      {props.detail === undefined ? (
+        <AppText role="secondary" tone="muted">
+          Opening this thread…
+        </AppText>
+      ) : (
+        <Notice detail={props.detail} title="The model picker is unavailable" tone="neutral" />
+      )}
     </ScrollView>
   );
 }

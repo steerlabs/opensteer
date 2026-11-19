@@ -4,8 +4,16 @@ import {
   type ExecutionNodeId,
   type RunAttemptId,
   type RunId,
+  type ThreadId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { republishAskerAttention } from "./personal-attention-store.js";
+import { writeExecutionItem } from "./execution-changes.js";
+import { transcriptPreview } from "./transcript-store.js";
+import { itemView } from "./personal-sync-store.js";
+import { executionNodeFromRow } from "./thread-row-mappers.js";
+import { isOfflineSettlement } from "./personal-transaction.js";
 import type { DatabaseSchema, ExecutionNodeTable } from "./schema.js";
 
 export type ExecutionNodeRow = Selectable<ExecutionNodeTable>;
@@ -50,6 +58,7 @@ export async function startExecutionNode(
       title: node.title,
     })
     .execute();
+  await publishExecutionNode(transaction, node.nodeId);
 }
 
 export async function updateExecutionNode(
@@ -58,6 +67,11 @@ export async function updateExecutionNode(
   update: EventData<"node.updated">,
 ): Promise<void> {
   await requireRunNode(transaction, runId, update.nodeId);
+  const before = await transaction
+    .selectFrom("executionNodes")
+    .select(["title", "parentNodeId"])
+    .where("id", "=", update.nodeId)
+    .executeTakeFirstOrThrow();
   if (update.stopping !== undefined)
     throw new OpensteerError({
       code: "conflict",
@@ -102,6 +116,15 @@ export async function updateExecutionNode(
     })
     .where("id", "=", update.nodeId)
     .execute();
+  await publishExecutionNode(transaction, update.nodeId);
+  // Only a real change to what a waiting Request shows of its asker moves its list.
+  const retitled = update.title !== undefined && update.title !== before.title;
+  const reparented =
+    update.parentNodeId !== undefined && update.parentNodeId !== before.parentNodeId;
+  if (retitled || reparented)
+    await commitPersonalMutation(transaction, (tx, mutation) =>
+      republishAskerAttention(tx, mutation, update.nodeId, retitled),
+    );
 }
 
 /** Records how a subagent ended, once; a repeat of a finished node changes nothing. */
@@ -115,7 +138,7 @@ export async function completeExecutionNode(
 ): Promise<void> {
   const { completion } = input;
   await requireRunNode(transaction, input.runId, completion.nodeId);
-  await transaction
+  const ended = await transaction
     .updateTable("executionNodes")
     .set({
       cacheWriteTokens: completion.usage?.cacheWriteTokens ?? null,
@@ -130,7 +153,8 @@ export async function completeExecutionNode(
     })
     .where("id", "=", completion.nodeId)
     .where("status", "=", "running")
-    .execute();
+    .executeTakeFirst();
+  if (ended.numUpdatedRows > 0n) await publishExecutionNode(transaction, completion.nodeId);
 }
 
 /**
@@ -139,14 +163,21 @@ export async function completeExecutionNode(
  */
 export async function endLiveExecutionNodes(
   transaction: Transaction<DatabaseSchema>,
-  input: { readonly attemptId?: RunAttemptId; readonly endedAt: Date; readonly runId: RunId },
+  input: {
+    readonly attemptId?: RunAttemptId;
+    readonly endedAt: Date;
+    readonly runId: RunId;
+    readonly ids?: readonly ExecutionNodeId[];
+  },
 ): Promise<void> {
+  if (input.ids?.length === 0) return;
   const live = await transaction
     .selectFrom("executionNodes")
     .select("id")
     .where("runId", "=", input.runId)
     .$if(input.attemptId !== undefined, (query) => query.where("attemptId", "=", input.attemptId!))
     .where("status", "=", "running")
+    .$if(input.ids !== undefined, (query) => query.where("id", "in", [...input.ids!]))
     .orderBy("id", "asc")
     .forNoKeyUpdate()
     .execute();
@@ -160,6 +191,88 @@ export async function endLiveExecutionNodes(
       live.map(({ id }) => id),
     )
     .execute();
+  for (const { id } of live) await publishExecutionNode(transaction, id);
+}
+
+export async function publishExecutionNode(
+  transaction: Transaction<DatabaseSchema>,
+  id: ExecutionNodeId,
+) {
+  if (isOfflineSettlement(transaction)) return;
+  await commitPersonalMutation(transaction, async (tx, mutation) => {
+    const row = await tx
+      .selectFrom("executionNodes")
+      .innerJoin("runs", "runs.id", "executionNodes.runId")
+      .selectAll("executionNodes")
+      .select("runs.threadId")
+      .where("executionNodes.id", "=", id)
+      .executeTakeFirstOrThrow();
+    mutation.react({
+      type: "nodeProgressPlacement",
+      runId: row.runId,
+      attemptId: row.attemptId,
+      nodeId: row.id,
+      parentNodeId: row.parentNodeId,
+      active: row.status === "running",
+    });
+    await writeExecutionItem(
+      tx,
+      mutation,
+      {
+        id: `node:${row.id}`,
+        kind: "node",
+        executionNodeId: row.id,
+        threadId: row.threadId,
+        runId: row.runId,
+        attemptId: row.attemptId,
+        nodeId: row.parentNodeId,
+        createdAt: row.startedAt,
+        visible: true,
+        isTurnStart: false,
+        // A settled subagent's row says what it found, as its card did on main.
+        view: transcriptPreview({
+          title: row.title,
+          status: row.stopping && row.status === "running" ? "stopping" : row.status,
+          ...(row.status !== "running" && row.result ? { preview: row.result } : {}),
+        }),
+      },
+      undefined,
+      row,
+    );
+    // Runs after the card's own staged write, so the subject carries its new revision.
+    mutation.stageTranscript(`node:${row.id}`, undefined, async () => {
+      const subject = await nodeSubjectView(tx, row.threadId, row.id);
+      if (subject)
+        mutation.change(
+          { scopeKey: `node:${row.id}`, entityKind: "node", entityId: row.id, operation: "upsert" },
+          () => subject,
+        );
+    });
+  });
+}
+
+/** A node scope's subject: the node's card with its full node view. */
+export async function nodeSubjectView(
+  tx: Transaction<DatabaseSchema>,
+  threadId: ThreadId,
+  nodeId: ExecutionNodeId,
+) {
+  const node = await tx
+    .selectFrom("executionNodes as node")
+    .innerJoin("runs as run", "run.id", "node.runId")
+    .selectAll("node")
+    .where("node.id", "=", nodeId)
+    .where("run.threadId", "=", threadId)
+    .executeTakeFirst();
+  const card = await tx
+    .selectFrom("transcriptItems")
+    .selectAll()
+    .where("id", "=", `node:${nodeId}`)
+    .where("threadId", "=", threadId)
+    .executeTakeFirst();
+  if (!node || !card) return undefined;
+  const subject = itemView(card);
+  return subject.kind === "node" ? { ...subject, node: executionNodeFromRow(node) } : undefined;
 }
 
 /** A node the Runner names must be one this Run's engine reported. */
@@ -167,12 +280,14 @@ export async function requireRunNode(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   runId: RunId,
   nodeId: ExecutionNodeId,
+  attemptId?: RunAttemptId,
 ): Promise<void> {
   const node = await database
     .selectFrom("executionNodes")
     .select("id")
     .where("id", "=", nodeId)
     .where("runId", "=", runId)
+    .$if(attemptId !== undefined, (query) => query.where("attemptId", "=", attemptId!))
     .executeTakeFirst();
   if (!node) {
     throw new OpensteerError({

@@ -1,3 +1,4 @@
+import { useUnreadableResources } from "@opensteer/client/react";
 import { useState } from "react";
 import { Link } from "react-router";
 import type { MachineSummary, OtherDevice } from "@opensteer/protocol";
@@ -18,7 +19,12 @@ import { HerePin } from "../computers/here-pin.js";
 import { useHereId } from "../computers/here.js";
 import { Icon, type IconName } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
-import { SectionHeader, SettingsError, SettingsSignOut } from "../settings/primitives.js";
+import {
+  SectionHeader,
+  SettingsError,
+  SettingsSignOut,
+  SettingsUnreadable,
+} from "../settings/primitives.js";
 import { useSettingsRead } from "../settings/use-settings-read.js";
 import { useThreadPath } from "../start-task.js";
 import { useToast } from "../toast.js";
@@ -34,6 +40,8 @@ export const otherDeviceIcon: Record<OtherDevice["kind"], IconName> = {
   speaker: "speaker",
   tv: "tv",
 };
+
+const deviceKinds = ["machine"] as const;
 
 export function DevicesSection() {
   const { desktopBridge, hostClient, snapshot } = useShell();
@@ -57,6 +65,7 @@ export function DevicesSection() {
     otherDevices: overview.data?.otherDevices ?? [],
   });
   const homeName = snapshot.machines.find(hostsDeployment)?.name ?? "Home";
+  const machinesRead = useUnreadableResources(hostClient, deviceKinds);
 
   function signOut(row: SignedInDeviceRow) {
     if (signingOut) return;
@@ -96,11 +105,19 @@ export function DevicesSection() {
         lead={`Everywhere you’re signed in. Your agent runs on ${homeName} and reaches the rest.`}
         title="Devices"
       />
-      <ul className="card devices-list">
-        {view.devices.map((row) => (
-          <DeviceListRow here={row.machine.id === hereId} key={row.machine.id} row={row} />
-        ))}
-      </ul>
+      {/* With devices held they stay, with their controls, under the error. */}
+      {machinesRead.unreadable && machinesRead.held ? (
+        <SettingsUnreadable held label="your devices" onRetry={machinesRead.retry} />
+      ) : null}
+      {machinesRead.unreadable && !machinesRead.held ? (
+        <SettingsUnreadable label="your devices" onRetry={machinesRead.retry} />
+      ) : (
+        <ul className="card devices-list">
+          {view.devices.map((row) => (
+            <DeviceListRow here={row.machine.id === hereId} key={row.machine.id} row={row} />
+          ))}
+        </ul>
+      )}
       {sessions.data === null && !sessions.error ? (
         <LoadingRows label="Loading devices" rows={1} />
       ) : view.alsoSignedIn.length > 0 ? (

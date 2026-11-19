@@ -68,6 +68,7 @@ export interface ConnectionAttempt {
 export interface ConnectionLease {
   readonly closed: Promise<ClientFailure>;
   lastProgressAt?(): number;
+  reconnectOnForeground?(): boolean;
   probe(signal: AbortSignal): Promise<void>;
   close(): void;
 }
@@ -88,9 +89,18 @@ export interface ConnectionControllerOptions {
   readonly random?: () => number;
   readonly presentation?: ConnectionPresentation;
   readonly keepAliveInBackground?: boolean | (() => boolean);
+  readonly idleProbes?: boolean;
   readonly liveness?: { readonly idleMs: number; readonly deadlineMs: number };
   readonly backoff?: { readonly baseMs: number; readonly maximumMs: number };
 }
+
+/** Abort reasons that end a probe without failing the lease. */
+const probeAnsweredByProgress = new Error("A frame arrived while the probe was outstanding");
+/** A probe ended because frames arrived: the socket is alive, whatever became of its pong. */
+export function probeAnsweredByFrames(signal: AbortSignal): boolean {
+  return signal.aborted && signal.reason === probeAnsweredByProgress;
+}
+const probeSuspended = new Error("The app went to the background during the probe");
 
 export function createConnectionController(
   options: ConnectionControllerOptions,
@@ -110,9 +120,11 @@ class SessionConnectionController implements ConnectionController {
   #lease: ConnectionLease | null = null;
   #retry: ReturnType<typeof setTimeout> | null = null;
   #hold: ReturnType<typeof setTimeout> | null = null;
-  #idle: ReturnType<typeof setInterval> | null = null;
+  #idle: ReturnType<typeof setTimeout> | null = null;
   #probe: Promise<void> | null = null;
+  #probeAbort: AbortController | null = null;
   #probeFollowsNetwork = false;
+  #lastProbeAt = 0;
   #backgroundAt: number | null = null;
   #explicit = false;
   #retryNotBefore = 0;
@@ -190,11 +202,7 @@ class SessionConnectionController implements ConnectionController {
   wake = (): void => {
     if (this.#desired && this.#lease && !this.#suspended()) {
       this.#checkLease(false, true);
-      this.#idle ??= setInterval(
-        () => this.#checkLease(),
-        this.#options.liveness?.idleMs ?? realtimeIdleProbeMs,
-      );
-      unrefTimer(this.#idle);
+      this.#scheduleIdleProbe();
     }
     if (this.#desired && !this.#controller && this.#state.phase !== "blocked") this.#restart(false);
   };
@@ -250,7 +258,7 @@ class SessionConnectionController implements ConnectionController {
   }
   #cancel(clearScope = false): void {
     if (this.#retry) clearTimeout(this.#retry);
-    if (this.#idle) clearInterval(this.#idle);
+    if (this.#idle) clearTimeout(this.#idle);
     this.#retry = null;
     this.#idle = null;
     const controller = this.#controller,
@@ -325,11 +333,7 @@ class SessionConnectionController implements ConnectionController {
         readyRevision: this.#state.readyRevision + 1,
         lastConnectedAt: Date.now(),
       });
-      this.#idle = setInterval(
-        () => this.#checkLease(),
-        this.#options.liveness?.idleMs ?? realtimeIdleProbeMs,
-      );
-      unrefTimer(this.#idle);
+      this.#scheduleIdleProbe();
       void lease.closed.then(
         (failure) => {
           if (current()) this.#failed(failure);
@@ -464,8 +468,11 @@ class SessionConnectionController implements ConnectionController {
       if (this.#retry) clearTimeout(this.#retry);
       this.#retry = null;
       if (!this.#lease) this.#cancel();
-      if (this.#idle) clearInterval(this.#idle);
+      if (this.#idle) clearTimeout(this.#idle);
       this.#idle = null;
+      // A suspended app cannot answer; its probe ends here instead of failing
+      // the lease in the background or on resume, which probes afresh.
+      this.#probeAbort?.abort(probeSuspended);
     }
   }
   #foreground(): void {
@@ -476,16 +483,32 @@ class SessionConnectionController implements ConnectionController {
     if (!this.#desired || this.#state.phase === "blocked") return;
     if (
       this.#lease &&
+      !this.#lease.reconnectOnForeground?.() &&
       duration < (this.#options.lifecycle?.socketTrustWindowMs ?? socketTrustWindowMs) &&
       this.#state.network !== "offline"
     ) {
       this.#checkLease(false, true);
-      this.#idle ??= setInterval(
-        () => this.#checkLease(),
-        this.#options.liveness?.idleMs ?? realtimeIdleProbeMs,
-      );
-      unrefTimer(this.#idle);
+      this.#scheduleIdleProbe();
     } else this.#restart(false);
+  }
+  #scheduleIdleProbe(): void {
+    if (this.#options.idleProbes === false || this.#idle || !this.#lease || this.#suspended())
+      return;
+    const idleMs = this.#options.liveness?.idleMs ?? realtimeIdleProbeMs;
+    const last = Math.max(this.#lastProbeAt, this.#lease.lastProgressAt?.() ?? Date.now());
+    const remaining = Math.max(1, idleMs - (Date.now() - last));
+    this.#idle = setTimeout(() => {
+      this.#idle = null;
+      if (this.#probe) {
+        void this.#probe.finally(() => this.#scheduleIdleProbe());
+        return;
+      }
+      this.#checkLease();
+      const probe = this.#probe;
+      if (probe) void (probe as Promise<void>).finally(() => this.#scheduleIdleProbe());
+      else this.#scheduleIdleProbe();
+    }, remaining);
+    unrefTimer(this.#idle);
   }
   #checkLease(followsNetwork = false, force = false): void {
     this.#probeFollowsNetwork ||= followsNetwork;
@@ -502,10 +525,22 @@ class SessionConnectionController implements ConnectionController {
     const probe = new AbortController();
     const aborted = () => probe.abort(controller.signal.reason);
     controller.signal.addEventListener("abort", aborted, { once: true });
+    const sentAt = Date.now();
+    // A return to foreground or a network change is a moment the person is
+    // waiting, so its probe keeps the short deadline; only a quiet socket's
+    // routine probe gets the longer, weak-link allowance.
     const timer = setTimeout(
-      () => probe.abort(new HostTransportError("timed-out")),
-      this.#options.liveness?.deadlineMs ??
-        (force || followsNetwork ? socketProbeDeadlineMs : realtimeIdleProbeDeadlineMs),
+      () =>
+        // A frame that arrived after the ping proves the socket alive, however
+        // slow the link is to carry the matching pong.
+        probe.abort(
+          (lease.lastProgressAt?.() ?? 0) > sentAt
+            ? probeAnsweredByProgress
+            : new HostTransportError("timed-out"),
+        ),
+      force || followsNetwork
+        ? socketProbeDeadlineMs
+        : (this.#options.liveness?.deadlineMs ?? realtimeIdleProbeDeadlineMs),
     );
     unrefTimer(timer);
     const failed = new Promise<never>((_, reject) =>
@@ -513,6 +548,7 @@ class SessionConnectionController implements ConnectionController {
     );
     const pending = Promise.race([lease.probe(probe.signal), failed])
       .catch((error) => {
+        if (error === probeAnsweredByProgress || error === probeSuspended) return;
         if (this.#controller === controller) {
           if (this.#probeFollowsNetwork) {
             this.#publish({ pathRevision: this.#state.pathRevision + 1 });
@@ -528,10 +564,13 @@ class SessionConnectionController implements ConnectionController {
         controller.signal.removeEventListener("abort", aborted);
         if (this.#probe === pending) {
           this.#probe = null;
+          this.#probeAbort = null;
           this.#probeFollowsNetwork = false;
         }
       });
+    this.#lastProbeAt = Date.now();
     this.#probe = pending;
+    this.#probeAbort = probe;
   }
   #clearHold(): void {
     if (this.#hold) clearTimeout(this.#hold);

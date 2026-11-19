@@ -4,7 +4,6 @@ import WebSocket, { type RawData } from "ws";
 import {
   OpensteerError,
   browserSessionClosedReason,
-  type AgentEvent,
   type BrowserSourceId,
   type Request,
   type RequestId,
@@ -132,6 +131,7 @@ type DeliveryInput = {
   /** Create the site's grant on success (an owner's own click), rather than only use it. */
   readonly rememberSite: boolean;
   readonly requestId: RequestId | null;
+  readonly expectedRequestRevision?: string;
   readonly settlementSessionId?: string;
   /** A standing sign-in stops if the site stops being allowed before import. */
   readonly requireGrant: boolean;
@@ -171,8 +171,6 @@ export class BrowserSourceService {
   readonly #canonicalOrigin: string;
   readonly #extensionDirectory: string | null;
   readonly #currentRoute: () => Promise<PersonalHostAccessRouteEnvelope | null>;
-  readonly #onDeploymentEvent: (event: AgentEvent) => void;
-  readonly #onRequestResolved: () => void;
   readonly #onError: (error: unknown) => void;
   readonly #now: () => number;
   readonly #connections = new Map<BrowserSourceId, SourceSocket>();
@@ -199,9 +197,6 @@ export class BrowserSourceService {
     /** The unpacked extension folder the desktop app keeps current, when there is one. */
     readonly extensionDirectory?: string | null;
     readonly currentRoute: () => Promise<PersonalHostAccessRouteEnvelope | null>;
-    readonly onDeploymentEvent: (event: AgentEvent) => void;
-    /** A sign-in Request was fulfilled or declined, so its continuation can be sent. */
-    readonly onRequestResolved: () => void;
     readonly onError?: (error: unknown) => void;
     readonly now?: () => number;
   }) {
@@ -213,8 +208,6 @@ export class BrowserSourceService {
     this.#canonicalOrigin = options.canonicalOrigin;
     this.#extensionDirectory = options.extensionDirectory ?? null;
     this.#currentRoute = options.currentRoute;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
-    this.#onRequestResolved = options.onRequestResolved;
     this.#onError = options.onError ?? (() => {});
     this.#now = options.now ?? Date.now;
     this.#refusesSite = signInSiteRefusal({
@@ -672,6 +665,7 @@ export class BrowserSourceService {
     readonly ownerId: UserId;
     readonly settlementSessionId?: string;
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly decision: BrowserSignInDecision;
   }): Promise<BrowserSignInOutcome | null> {
     const request = await this.#requests.get(input.requestId);
@@ -686,15 +680,14 @@ export class BrowserSourceService {
     if (input.decision.decision === "decline") {
       // In the Request's turn, so a delivery already past its last check
       // finishes first and one that has not reached it sees the decline.
-      const declined = await this.#inTurn(`request\0${request.id}`, () =>
+      await this.#inTurn(`request\0${request.id}`, () =>
         this.#requests.declineBrowserSignInRequest({
           requestId: input.requestId,
           resolvedBy: input.ownerId,
+          expectedRevision: input.expectedRevision,
           ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
         }),
       );
-      for (const event of declined.events) this.#onDeploymentEvent(event);
-      this.#onRequestResolved();
       return null;
     }
     if (request.status !== "pending") {
@@ -733,8 +726,16 @@ export class BrowserSourceService {
       preferredSourceId: source.id,
       site,
       deploymentId: this.#deploymentId,
+      requestReview: {
+        requestId: input.requestId,
+        revision: input.expectedRevision,
+        browserSessionId: request.payload.sessionId,
+        ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
+      },
     });
-    const delivered = await this.#deliverRequest(request, source, input.settlementSessionId);
+    const delivered = await this.#inTurn(`request\0${request.id}`, () =>
+      this.#deliverRequestInTurn(request, source, input),
+    );
     if (delivered.status === "request-closed") {
       throw new OpensteerError({ code: "conflict", message: "The sign-in Request is closed." });
     }
@@ -869,14 +870,11 @@ export class BrowserSourceService {
         deploymentId: this.#deploymentId,
       });
       if (grant) return;
-      const settled = await this.#requests.fulfilBrowserSignInRequest({
+      await this.#requests.fulfilBrowserSignInRequest({
         ownerId,
         requestId: request.id,
         response,
       });
-      if (!settled) return;
-      for (const event of settled.events) this.#onDeploymentEvent(event);
-      this.#onRequestResolved();
     });
   }
 
@@ -935,20 +933,16 @@ export class BrowserSourceService {
   }
 
   /** One Request delivers at a time, and never alongside its decline. */
-  #deliverRequest(
-    request: Request,
-    source: BrowserSourceRecord,
-    settlementSessionId?: string,
-  ): Promise<RequestDelivery> {
+  #deliverRequest(request: Request, source: BrowserSourceRecord): Promise<RequestDelivery> {
     return this.#inTurn(`request\0${request.id}`, () =>
-      this.#deliverRequestInTurn(request, source, settlementSessionId),
+      this.#deliverRequestInTurn(request, source),
     );
   }
 
   async #deliverRequestInTurn(
     request: Request,
     source: BrowserSourceRecord,
-    settlementSessionId?: string,
+    review?: { readonly settlementSessionId?: string; readonly expectedRevision: string },
   ): Promise<RequestDelivery> {
     if (request.payload.kind !== "browser.sign-in") throw new Error("Not a sign-in Request");
     const { site } = request.payload;
@@ -965,8 +959,6 @@ export class BrowserSourceService {
         response: { outcome: "session-closed" },
       });
       if (!settled) return { status: "request-closed" };
-      for (const event of settled.events) this.#onDeploymentEvent(event);
-      this.#onRequestResolved();
       return problem("session-closed", site, null);
     };
     if (!target?.live || target.deploymentId !== this.#deploymentId) return closed();
@@ -974,7 +966,8 @@ export class BrowserSourceService {
     if (!this.#isConnected(source.id)) return problem("chrome-offline", site, source.name);
     const delivered = await this.#deliver({
       actor: "request",
-      ...(settlementSessionId ? { settlementSessionId } : {}),
+      ...(review?.settlementSessionId ? { settlementSessionId: review.settlementSessionId } : {}),
+      ...(review ? { expectedRequestRevision: review.expectedRevision } : {}),
       invocationId: invocationUuid(`request:${request.id}`),
       ownerId: request.requestedBy,
       rememberSite: false,
@@ -1038,7 +1031,6 @@ export class BrowserSourceService {
         throw error;
       });
     if (!created) return unavailable(input.site, "session-closed");
-    for (const event of created.events) this.#onDeploymentEvent(event);
     return this.#requestResult(
       created.request,
       input.target.sessionId,
@@ -1181,6 +1173,10 @@ export class BrowserSourceService {
       ownerId: input.ownerId,
       rememberSite: input.rememberSite,
       requestId: input.requestId,
+      ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
+      ...(input.expectedRequestRevision
+        ? { expectedRequestRevision: input.expectedRequestRevision }
+        : {}),
       requireGrant: input.requireGrant,
       sessionId: target.sessionId,
       site,
@@ -1222,10 +1218,6 @@ export class BrowserSourceService {
       sourceName: source.name,
       deploymentId: target.deploymentId,
     });
-    if (committed.events.length > 0) {
-      for (const event of committed.events) this.#onDeploymentEvent(event);
-      this.#onRequestResolved();
-    }
     return appliedOutcome(committed.receipt);
   }
 

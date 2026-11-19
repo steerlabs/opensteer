@@ -885,7 +885,6 @@ function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {
     modules: { integrations: { checkedAt: null, detail: null, readiness: "ready" } },
     name: "Mac mini",
     ownership: "mine",
-    pinnedThreads: 0,
     revocable: true,
     status: "online",
     unlinkedLocalFolders: 0,

@@ -1,5 +1,6 @@
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
+import { installPersonalMutationHooks } from "./personal-mutation.js";
 
 import {
   cloneTestDatabase,
@@ -361,7 +362,7 @@ integration.sequential("Trigger failure auto-pause", () => {
   it("creates an automation's own linked task with its Trigger, once per receipt", async ({
     storeFixture,
   }) => {
-    const { database, triggers, createFixture } = storeFixture;
+    const { database, triggers, createFixture, detail } = storeFixture;
     const f = await createFixture("own-task");
     await database
       .updateTable("threads")
@@ -402,8 +403,10 @@ integration.sequential("Trigger failure auto-pause", () => {
       purpose: "task",
       title: "Price monitor",
     });
-    expect(created.find(({ wasDuplicate }) => !wasDuplicate)).toMatchObject({
-      event: { type: "thread.created", threadId: child!.id },
+    const createdRevision = created.find(({ wasDuplicate }) => !wasDuplicate)!.revision;
+    expect(await detail(created[0]!.trigger.id, f.userId)).toMatchObject({
+      trigger: { id: created[0]!.trigger.id, anchorThreadId: child!.id },
+      revision: createdRevision,
     });
     expect(
       await database
@@ -985,6 +988,44 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     expect(archived.pauseReason).toBeNull();
   });
+  it("wakes the scheduler when a program repair makes a waiting schedule runnable", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, database, triggers } = storeFixture;
+    const fixture = await createFixture("program-repair-wake");
+    const created = await createScheduleTrigger(fixture, "program-repair-wake");
+    // An older program version: the schedule keeps its future time but cannot run.
+    await sql`update trigger_revisions set program = jsonb_set(program, '{toolContractVersion}', '4')
+      where id = ${created.revision.id}`.execute(database);
+    expect(await triggers.nextScheduleAt()).toBeNull();
+    const reactions: string[] = [];
+    const unhook = installPersonalMutationHooks(database, {
+      wake() {},
+      react: (reaction) => {
+        reactions.push(reaction.type);
+      },
+      onFailure(error) {
+        throw error;
+      },
+    });
+    try {
+      await triggers.update({
+        actorThreadId: null,
+        expectedRevisionId: created.revision.id,
+        ownerId: fixture.userId,
+        program: {
+          toolContractVersion: 5,
+          language: "javascript",
+          source: "export default async () => 'fixed'",
+        },
+        triggerId: created.trigger.id,
+      });
+    } finally {
+      unhook();
+    }
+    expect(await triggers.nextScheduleAt()).toEqual(expect.any(Date));
+    expect(reactions).toContain("triggerSchedulesChanged");
+  });
   it("resets failures on a program update but not a name-only update", async ({ storeFixture }) => {
     const { createFixture, createScheduleTrigger, failManual, triggers } = storeFixture;
     const fixture = await createFixture("revision-reset");
@@ -1388,7 +1429,7 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     const occurrenceChainId = steered.input.causalChainId;
     expect(olderSteer.input.causalChainId).toBe(occurrenceChainId);
-    const templateInput = await database
+    const { approvalSort: _approvalSort, ...templateInput } = await database
       .updateTable("threadInputs")
       .set({
         deliveredAt: new Date(),
@@ -1560,8 +1601,12 @@ integration.sequential("Trigger failure auto-pause", () => {
       .selectAll()
       .where("runId", "=", templateRun.id)
       .execute();
-    const humanInput = templateInputs.find((input) => input.policy === "queue")!;
-    const triggerInput = templateInputs.find((input) => input.policy === "steer")!;
+    const { approvalSort: _humanSort, ...humanInput } = templateInputs.find(
+      (input) => input.policy === "queue",
+    )!;
+    const { approvalSort: _triggerSort, ...triggerInput } = templateInputs.find(
+      (input) => input.policy === "steer",
+    )!;
     const templateMessages = await database
       .selectFrom("messages")
       .selectAll()

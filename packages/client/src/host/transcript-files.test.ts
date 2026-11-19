@@ -154,8 +154,7 @@ it("downloads schema-checked bytes on demand and coalesces identical resource re
   const { controller, openFile, readFile } = setup();
   const resource = {
     kind: "output-image" as const,
-    sequence: "123" as import("@opensteer/core").Sequence,
-    index: 1,
+    imageId: "transcript-image-1",
     revision: "revision",
   };
   const threadId = createId("thread");

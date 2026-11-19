@@ -1,3 +1,7 @@
+import { publishThreadCard } from "./message-visibility.js";
+import { itemView } from "./personal-sync-store.js";
+import { transcriptPreview } from "./transcript-store.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, relative } from "node:path";
 import {
@@ -6,7 +10,6 @@ import {
   OpensteerError,
   appMaxBytes,
   nonTerminalRunStatuses,
-  type AgentEvent,
   type AppId,
   type AppServerSpec,
   type ComputerFolder,
@@ -18,8 +21,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
-import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import type { DatabaseSchema } from "./schema.js";
 
 export const appPortFirst = 49_152;
@@ -210,7 +212,7 @@ export class AppStore {
     authorize?: AppAuthorization,
   ): Promise<AppReservation> {
     const name = AppNameSchema.parse(input.name);
-    return withPersonalTransaction(this.database, async (tx) => {
+    return commitPersonalMutation(this.database, async (tx) => {
       await authorize?.(tx);
       await authorizeRun(tx, input.scope, true);
       const existing = await tx
@@ -258,7 +260,7 @@ export class AppStore {
     },
     authorize?: AppAuthorization,
   ): Promise<AppReservation> {
-    return withPersonalTransaction(this.database, async (tx) => {
+    return commitPersonalMutation(this.database, async (tx) => {
       await authorize?.(tx);
       await authorizeRun(tx, input.scope, true);
       const app = await lockApp(tx, input.scope.userId, input.appId);
@@ -317,7 +319,7 @@ export class AppStore {
   ): Promise<{
     readonly appId: AppId;
     readonly version: number;
-    readonly event: AgentEvent;
+
     readonly retiredServer: { readonly generation: number } | null;
   }> {
     const name = AppNameSchema.parse(input.name);
@@ -329,7 +331,7 @@ export class AppStore {
         code: "bad_request",
         message: "App HTML exceeds the 5 MiB limit",
       });
-    return withPersonalTransaction(this.database, async (tx) => {
+    return commitPersonalMutation(this.database, async (tx, mutation) => {
       await authorize?.(tx);
       const { agentHome } = await authorizeRun(tx, input.scope, Boolean(input.server));
       if (!input.appId && !input.html)
@@ -345,7 +347,28 @@ export class AppStore {
           creationKey: `${input.scope.runId}:${input.publishKey}`,
           computerId: agentHome.computerId,
         }));
+      await tx
+        .selectFrom("threads")
+        .select("id")
+        .where("id", "=", input.scope.threadId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
       const app = await lockApp(tx, input.scope.userId, appId, true);
+      const replay = await tx
+        .selectFrom("appVersions")
+        .select(["appId", "version"])
+        .where("createdByRun", "=", input.scope.runId)
+        .where("publishKey", "=", input.publishKey)
+        .executeTakeFirst();
+      if (replay) {
+        if (replay.appId !== app.id)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Publication key already used for another app",
+          });
+        return { ...replay, retiredServer: null };
+      }
+
       if (input.server) {
         const inside = relative(agentHome.path, input.server.folder.path);
         if (
@@ -415,26 +438,70 @@ export class AppStore {
           .executeTakeFirst();
         if (retired) retiredServer = { generation: Number(retired.generation) };
       }
-      const event = await appendHostDeploymentEvent(tx, {
-        type: "app.published",
-        threadId: input.scope.threadId,
-        runId: input.scope.runId,
-        environmentId: input.scope.environmentId,
-        data: { appId: app.id, version, title: name },
-      });
-      return { appId: app.id, version, event, retiredServer };
+      const existingCard = await tx
+        .selectFrom("transcriptItems")
+        .select("id")
+        .where("threadId", "=", input.scope.threadId)
+        .where("appId", "=", app.id)
+        .executeTakeFirst();
+      await publishThreadCard(
+        tx,
+        mutation,
+        {
+          id:
+            existingCard?.id ??
+            (app.threadId === input.scope.threadId
+              ? `app:${app.id}`
+              : `app:${input.scope.threadId}:${app.id}`),
+          threadId: input.scope.threadId,
+          runId: input.scope.runId,
+          kind: "app",
+          appId: app.id,
+          createdAt: mutation.state.now,
+          view: transcriptPreview({ title: name, version }),
+        },
+        true,
+      );
+      mutation.bumpResource("tab");
+      return { appId: app.id, version, retiredServer };
     });
   }
 
   async rename(ownerId: UserId, appId: AppId, name: string): Promise<void> {
     const parsed = AppNameSchema.parse(name);
-    await withPersonalTransaction(this.database, async (tx) => {
+    await commitPersonalMutation(this.database, async (tx, mutation) => {
       const app = await lockApp(tx, ownerId, appId);
       await tx
         .updateTable("apps")
-        .set({ name: parsed, updatedAt: new Date() })
+        .set({ name: parsed, updatedAt: mutation.state.now })
         .where("id", "=", app.id)
         .execute();
+      await tx
+        .selectFrom("transcriptItems")
+        .select("id")
+        .where("appId", "=", app.id)
+        .where("visible", "=", true)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      const cards = await tx
+        .updateTable("transcriptItems")
+        .set({ view: transcriptPreview({ title: parsed }), revision: mutation.sequence })
+        .where("appId", "=", app.id)
+        .where("visible", "=", true)
+        .returningAll()
+        .execute();
+      for (const card of cards)
+        mutation.change(
+          {
+            scopeKey: `thread:${card.threadId}`,
+            entityKind: "item",
+            entityId: card.id,
+            operation: "upsert",
+          },
+          () => itemView(card),
+        );
+      mutation.bumpResource("tab");
     });
   }
 
@@ -445,7 +512,7 @@ export class AppStore {
     desiredState: "running" | "stopped",
     authorize?: AppAuthorization,
   ): Promise<PublishedApp & { readonly server: AppServerRecord }> {
-    return withPersonalTransaction(this.database, async (tx) => {
+    return commitPersonalMutation(this.database, async (tx) => {
       await authorize?.(tx);
       const app = await lockApp(tx, ownerId, appId);
       const [record] = await this.#records(tx, (query) => query.where("apps.id", "=", app.id));
@@ -487,7 +554,7 @@ export class AppStore {
 
   /** Withdraws only the failed generation's intent; newer lifecycle work keeps its authority. */
   async cancelStart(appId: AppId, generation: number): Promise<void> {
-    await withPersonalTransaction(this.database, async (tx) => {
+    await commitPersonalMutation(this.database, async (tx) => {
       await tx
         .updateTable("appServers")
         .set({ desiredState: "stopped", generation: generation + 1, lastError: null })
@@ -504,9 +571,20 @@ export class AppStore {
     removeTabs: (tx: Transaction<DatabaseSchema>, appId: AppId) => Promise<TabId[]>,
     authorize?: AppAuthorization,
   ): Promise<AppRecord> {
-    return withPersonalTransaction(this.database, async (tx) => {
+    return commitPersonalMutation(this.database, async (tx, mutation) => {
       await authorize?.(tx);
       await removeTabs(tx, appId);
+      const appCards = tx
+        .selectFrom("transcriptItems")
+        .where("appId", "=", appId)
+        .where("visible", "=", true);
+      await tx
+        .selectFrom("threads")
+        .select("id")
+        .where("id", "in", appCards.select("threadId"))
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
       const app = await lockApp(tx, ownerId, appId, true);
       await tx.updateTable("apps").set({ deleting: true }).where("id", "=", app.id).execute();
       await tx
@@ -514,6 +592,27 @@ export class AppStore {
         .set((eb) => ({ desiredState: "stopped", generation: eb("generation", "+", 1) }))
         .where("appId", "=", app.id)
         .execute();
+      await appCards.select("id").orderBy("id").forNoKeyUpdate().execute();
+      const cards = await tx
+        .updateTable("transcriptItems")
+        .set({ visible: false, position: null, revision: mutation.sequence })
+        .where("appId", "=", appId)
+        .where("visible", "=", true)
+        .returning(["id", "threadId"])
+        .execute();
+      if (cards.length) {
+        for (const card of cards)
+          mutation.change({
+            scopeKey: `thread:${card.threadId}`,
+            entityKind: "item",
+            entityId: card.id,
+            operation: "remove",
+          });
+      }
+      // Not a revocation: viewers see the cards and tabs go. Sign-ins and place authority re-check.
+      mutation.react({ type: "authorityChanged", scopes: new Set(["deployment"]) });
+      mutation.bumpResource("tab");
+      mutation.bumpResource("tab-layout");
       const [record] = await this.#records(tx, (query) => query.where("apps.id", "=", app.id));
       if (!record) throw missing();
       return record;
@@ -525,7 +624,7 @@ export class AppStore {
     appId: AppId,
     removeTabs: (tx: Transaction<DatabaseSchema>, appId: AppId) => Promise<TabId[]>,
   ): Promise<TabId[]> {
-    return withPersonalTransaction(this.database, async (tx) => {
+    return commitPersonalMutation(this.database, async (tx) => {
       const app = await tx
         .selectFrom("apps")
         .select(["id", "deleting"])
@@ -675,7 +774,9 @@ async function authorizeRun(
     .where("runs.id", "=", scope.runId)
     .where("threads.id", "=", scope.threadId)
     .where("runs.requestedBy", "=", scope.userId)
-    .where("threads.createdBy", "=", scope.userId);
+    .where("threads.createdBy", "=", scope.userId)
+    .where("threads.removedAt", "is", null)
+    .where("runs.finishIntent", "is", null);
   // Inside a publication's transaction the Run cannot end before commit.
   if (database.isTransaction) query = query.forShare("runs");
   const run = await query.executeTakeFirst();
@@ -698,7 +799,7 @@ async function lockApp(
   await requireOwner(tx, ownerId);
   const app = await tx
     .selectFrom("apps")
-    .select(["id", "computerId", "latestVersion", "deleting"])
+    .select(["id", "computerId", "latestVersion", "deleting", "threadId"])
     .where("id", "=", appId)
     .where("ownerId", "=", ownerId)
     .forNoKeyUpdate()

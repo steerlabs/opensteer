@@ -1,3 +1,5 @@
+import { ThreadAccessModeSchema } from "@opensteer/core";
+import { onTestFinished } from "vitest";
 import { DeviceIdSchema } from "@opensteer/core";
 import { WindowIdSchema, OpensteerError } from "@opensteer/core";
 import { productToolOutput } from "./tool-output.js";
@@ -9,6 +11,7 @@ import {
 import { personalBrowserRepository } from "@opensteer/database/test-support/store";
 import { personalTestExecution } from "./personal-execution.test-support.js";
 import { randomUUID } from "node:crypto";
+import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { expect, vi } from "vitest";
 import { sql } from "kysely";
@@ -19,10 +22,8 @@ import {
   formatReferenceLink,
   MessageIdSchema,
   BrowserSurfaceIdSchema,
-  type AgentEvent,
   type RunId,
   type PlaceIdentity,
-  ThreadAccessModeSchema,
   RequestKindSchema,
   PendingRequestSchema,
   type RequestPayload,
@@ -46,15 +47,11 @@ import {
 } from "@opensteer/agent-tools/tools";
 import { ThreadReadOutputSchema } from "@opensteer/agent-tools/outputs";
 import {
-  appendHostDeploymentEvent,
   needsYouPage,
   dispatchNodeStop,
-  withDatabaseTransaction,
   TabStore,
-  assignmentSummaryInTransaction,
   withDatabaseOperationSignal,
   AgentConnectionStore,
-  requestRevision,
   deliverTaskQuestionNotice,
   cancelSettledTaskQuestionNotice,
   requestInsert,
@@ -68,7 +65,6 @@ import {
   liveRequest,
   testContinuationIdentity,
   type StoreFixture,
-  readEmptyPersonalResources,
 } from "@opensteer/database/test-support/store";
 import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
 import {
@@ -88,13 +84,14 @@ type Fixture = Awaited<ReturnType<StoreFixture["startRunFixture"]>>;
 function setup(storeFixture: StoreFixture, f: Fixture) {
   const { store } = storeFixture;
   const frames: PersonShowMessage[] = [];
-  const realtime = new RealtimeHub({ store });
+  const realtime = new RealtimeHub();
+  const detach = storeFixture.observePersonalCommits((head, scopes) => realtime.wake(head, scopes));
+  onTestFinished(detach);
   const vault = new AesGcmSecretVault(
     new StaticEncryptionKeyProvider(new Map([[1, Buffer.alloc(32, 7)]]), 1),
   );
   const questionNotices = new TaskQuestionNotices({
     database: store.database,
-    publish: (event) => realtime.publish(event),
     wake: () => {},
     onError: (error) => {
       throw error;
@@ -108,7 +105,6 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
       maxQueuedCommands: 100,
     }),
     onExecutionQueued: () => {},
-    onDeploymentEvent: (event) => realtime.publish(event),
   });
   const browser = new BrowserService({
     deploymentId: f.deploymentId,
@@ -116,7 +112,6 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     signer: {} as never,
     hostOrigin: new URL("https://host.test"),
     onSessionsChanged: () => {},
-    onDeploymentEvent: (event) => realtime.publish(event),
   });
   const computerUse = {
     sessionsForRunner: vi.fn<
@@ -130,8 +125,8 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     browser,
     runners: {
       canRunHarness: () => true,
-      isAvailable: () => true,
       harnessAccessModes: () => ThreadAccessModeSchema.options,
+      isAvailable: () => true,
       identityForEnvironment: () => undefined,
       attachmentInputFailure: () => null,
     },
@@ -164,7 +159,6 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     },
     isEnvironmentConnected: () => true,
     canRunHarness: () => true,
-    onEvent: () => {},
     browserSources: {} as never,
     savedLogins: {} as never,
     deviceAccess: {} as never,
@@ -229,21 +223,7 @@ async function waitingTask(storeFixture: StoreFixture, suffix: string) {
   });
   const assignmentId = task.assignmentId!;
   const wake = async () => {
-    const event = await withDatabaseTransaction(storeFixture.database, async (tx) => {
-      const row = await tx
-        .selectFrom("delegations")
-        .selectAll()
-        .where("id", "=", assignmentId)
-        .executeTakeFirstOrThrow();
-      return appendHostDeploymentEvent(tx, {
-        type: "assignment.updated",
-        threadId: task.threadId,
-        environmentId: task.environmentId,
-        runId: null,
-        data: { assignment: await assignmentSummaryInTransaction(tx, row) },
-      });
-    });
-    s.realtime.publish(event);
+    s.realtime.wake("0", new Set([`thread:${task.threadId}`, `thread:${f.thread.id}`]));
   };
   const settle = async (result = "42") => {
     await storeFixture.database
@@ -351,7 +331,7 @@ async function questionTask(
       ],
     },
   });
-  const opened = await storeFixture.store.commitRunnerEvent({
+  await storeFixture.store.commitRunnerEvent({
     environmentId: s.f.environmentId,
     runnerBootId: s.f.runnerBootId,
     runnerId: s.f.runnerId,
@@ -365,6 +345,12 @@ async function questionTask(
       data: { request },
     }),
   });
+  const revision = (await storeFixture.store.requests.revision(request.id))!;
+  const opened = storeFixture.reactions.findLast(
+    (reaction) => reaction.type === "requestChanged" && reaction.requestId === request.id,
+  );
+  if (opened?.type !== "requestChanged")
+    throw new Error("Opening the Request emitted no current-state reaction");
   const readRequest = (actor: AgentCaller = s.caller, requestId = request.id) =>
     s.product.opensteer_request_answer({
       caller: actor,
@@ -373,7 +359,7 @@ async function questionTask(
     });
   const respond = (
     actor: AgentCaller = s.caller,
-    expectedRevision = requestRevision(request),
+    expectedRevision = revision,
     requestId = request.id,
   ) =>
     s.product.opensteer_request_answer({
@@ -398,31 +384,26 @@ async function questionTask(
       .executeTakeFirstOrThrow();
     await storeFixture.store.claimCommand(command.id, `${suffix}-response`);
     let received: RequestResponse | undefined;
-    const events = await storeFixture.store.dispatchRequestResponse(
-      command.id,
-      async (beforeAck) => {
-        received = await openRequestResponse(s.vault, command.encryptedRequestResponse!, {
-          requestId: request.id,
-          runId: s.task.runId!,
-          threadId: s.task.threadId,
-        });
-        await beforeAck();
-      },
-    );
-    return { events, received, command };
+    await storeFixture.store.dispatchRequestResponse(command.id, async (beforeAck) => {
+      received = await openRequestResponse(s.vault, command.encryptedRequestResponse!, {
+        requestId: request.id,
+        runId: s.task.runId!,
+        threadId: s.task.threadId,
+      });
+      await beforeAck();
+    });
+    return { received, command };
   };
   const stored = (await storeFixture.store.requests.get(request.id))!;
   return {
     ...s,
     request: stored,
     opened,
+    revision,
     binding,
     readRequest,
-    respond: (
-      actor: AgentCaller = s.caller,
-      expectedRevision = requestRevision(stored),
-      requestId = request.id,
-    ) => respond(actor, expectedRevision, requestId),
+    respond: (actor: AgentCaller = s.caller, expectedRevision = revision, requestId = request.id) =>
+      respond(actor, expectedRevision, requestId),
     dispatch,
   };
 }
@@ -494,13 +475,20 @@ describeStore("agents answering task questions", (it) => {
   }) => {
     const s = await questionTask(storeFixture, "question-answer");
     expect(await s.readRequest()).toMatchObject({
-      request: { presentation: s.request.presentation, revision: requestRevision(s.request) },
+      request: { presentation: s.request.presentation, revision: s.revision },
     });
     await s.respond();
-    const { received, events, command } = await s.dispatch();
+    const { received, command } = await s.dispatch();
     expect(received).toEqual({ kind: "form", answers: { format: ["CSV"] } });
     expect(command.authoritySource).toMatchObject({ kind: "thread-agent", runId: s.f.run.id });
-    expect(events.filter((event) => event.type === "request.resolved")).toHaveLength(1);
+    expect(
+      storeFixture.reactions.filter(
+        (reaction) =>
+          reaction.type === "requestChanged" &&
+          reaction.requestId === s.request.id &&
+          reaction.status === "fulfilled",
+      ),
+    ).toHaveLength(1);
     const settled = await storeFixture.store.requests.get(s.request.id);
     expect(settled).toMatchObject({
       status: "fulfilled",
@@ -609,7 +597,7 @@ describeStore("agents answering task questions", (it) => {
       const read = await s.readRequest(s.caller, request.id);
       expect(read).not.toHaveProperty("request.presentation");
       await expect(
-        s.respond(s.caller, requestRevision(request), request.id),
+        s.respond(s.caller, (await storeFixture.store.requests.revision(request.id))!, request.id),
         kind,
       ).rejects.toMatchObject({ code: "forbidden" });
     }
@@ -630,14 +618,17 @@ describeStore("agents answering task questions", (it) => {
       },
     };
     await expect(s.respond(worker)).rejects.toMatchObject({ code: "forbidden" });
-    await storeFixture.database
-      .updateTable("requests")
-      .set({
-        presentation: sql`${JSON.stringify({ ...s.request.presentation, title: "Updated export question" })}::jsonb`,
-      })
-      .where("id", "=", s.request.id)
-      .execute();
-    await expect(s.respond(s.caller, requestRevision(s.request))).rejects.toMatchObject({
+    await commitPersonalMutation(storeFixture.database, (tx, mutation) =>
+      tx
+        .updateTable("requests")
+        .set({
+          revision: mutation.sequence,
+          presentation: sql`${JSON.stringify({ ...s.request.presentation, title: "Updated export question" })}::jsonb`,
+        })
+        .where("id", "=", s.request.id)
+        .execute(),
+    );
+    await expect(s.respond(s.caller, s.revision)).rejects.toMatchObject({
       code: "conflict",
     });
     expect((await storeFixture.store.requests.get(s.request.id))?.status).toBe("pending");
@@ -681,6 +672,7 @@ describeStore("agents answering task questions", (it) => {
       s.commands.sendControl({
         type: "request.respond",
         requestId: s.request.id,
+        expectedRevision: s.revision,
         runId: s.task.runId!,
         threadId: s.task.threadId,
         requestedBy: s.f.userId,
@@ -702,11 +694,17 @@ describeStore("agents answering task questions", (it) => {
     storeFixture,
   }) => {
     const s = await questionTask(storeFixture, "question-notice");
-    const notices = await Promise.all([
+    await Promise.all([
       deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false),
       deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false),
     ]);
-    expect(notices.flat().filter((event) => event.type === "message.created")).toHaveLength(1);
+    expect(
+      await storeFixture.database
+        .selectFrom("taskQuestionNotices")
+        .select("messageId")
+        .where("requestId", "=", s.request.id)
+        .execute(),
+    ).toEqual([{ messageId: expect.any(String) }]);
     const row = await storeFixture.database
       .selectFrom("taskQuestionNotices")
       .innerJoin("messages", "messages.id", "taskQuestionNotices.messageId")
@@ -725,9 +723,7 @@ describeStore("agents answering task questions", (it) => {
         .where("messageId", "=", row.id)
         .executeTakeFirstOrThrow(),
     ).toEqual({ state: "cancelled" });
-    expect(
-      await deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false),
-    ).toEqual([]);
+    await deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false);
   });
 
   it("delivers a waiting parent's question through opensteer_task_wait without a second notice", async ({
@@ -735,11 +731,19 @@ describeStore("agents answering task questions", (it) => {
   }) => {
     let waiting: ReturnType<Awaited<ReturnType<typeof waitingTask>>["wait"]> | undefined;
     const s = await questionTask(storeFixture, "question-notice-wait", async (task) => {
+      const registered = Promise.withResolvers<void>();
+      const wait = task.questionNotices.wait.bind(task.questionNotices);
+      vi.spyOn(task.questionNotices, "wait").mockImplementationOnce((...args) => {
+        const finish = wait(...args);
+        registered.resolve();
+        return finish;
+      });
       waiting = task.wait();
-      await vi.waitFor(() => expect(task.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
+      await withTimeout(registered.promise, 1_000, {
+        timeoutError: () => new Error("The parent wait never registered for question delivery"),
+      });
     });
-    s.questionNotices.observe(s.opened.event);
-    s.realtime.publish(s.opened.event);
+    s.questionNotices.requestChanged(s.opened);
     expect(await waiting).toMatchObject({ pendingRequest: { id: s.request.id } });
     await s.questionNotices.close();
     expect(
@@ -749,9 +753,7 @@ describeStore("agents answering task questions", (it) => {
         .where("requestId", "=", s.request.id)
         .executeTakeFirstOrThrow(),
     ).toEqual({ requestId: s.request.id, messageId: null });
-    expect(
-      await deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false),
-    ).toEqual([]);
+    await deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false);
   });
 
   it("creates no parent notice for a program task", async ({ storeFixture }) => {
@@ -762,9 +764,7 @@ describeStore("agents answering task questions", (it) => {
       .set({ origin: "trigger", parentRunId: null, parentOccurrenceId: occurrence.id })
       .where("id", "=", s.assignmentId)
       .execute();
-    expect(
-      await deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false),
-    ).toEqual([]);
+    await deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false);
     expect(
       await storeFixture.database.selectFrom("taskQuestionNotices").selectAll().execute(),
     ).toEqual([]);
@@ -775,7 +775,7 @@ describeStore("agents answering task questions", (it) => {
   }) => {
     const s = await questionTask(storeFixture, "question-notice-timeout");
     const finish = s.questionNotices.wait(s.f.thread.id, s.task.threadId);
-    s.questionNotices.observe(s.opened.event);
+    s.questionNotices.requestChanged(s.opened);
     finish();
     await s.questionNotices.close();
     expect(
@@ -829,10 +829,10 @@ describeStore("agents answering task questions", (it) => {
       runnerId: s.f.runnerId,
       event: pendingEvent({ ...base, ordinal: 3, type: "request.opened", data: { request } }),
     });
-    expect(await deliverTaskQuestionNotice(storeFixture.database, request.id, () => false)).toEqual(
-      [],
-    );
-    await expect(s.respond(s.caller, requestRevision(request), request.id)).rejects.toMatchObject({
+    await deliverTaskQuestionNotice(storeFixture.database, request.id, () => false);
+    await expect(
+      s.respond(s.caller, (await storeFixture.store.requests.revision(request.id))!, request.id),
+    ).rejects.toMatchObject({
       code: "forbidden",
     });
   });
@@ -937,59 +937,83 @@ async function place(
     },
     randomUUID(),
   );
-  return withDatabaseTransaction(storeFixture.database, (tx) =>
-    appendHostDeploymentEvent(tx, {
-      type: "place.entered",
-      threadId: f.thread.id,
-      runId: f.run.id,
-      environmentId: f.environmentId,
-      data: {
-        tabId:
-          value.kind === "browser"
-            ? value.surfaceId
-            : BrowserSurfaceIdSchema.parse(
-                value.kind === "app"
-                  ? `window:${value.machineId}:${value.appKey}`
-                  : `phone:${value.machineId}`,
-              ),
-        title,
-        site: null,
-      },
-    }),
-  );
+  await commitPersonalMutation(storeFixture.database, async (tx, mutation) => {
+    const { nextTranscriptPosition: position } = await tx
+      .updateTable("threads")
+      .set({ nextTranscriptPosition: sql<string>`next_transcript_position + 1` })
+      .where("id", "=", f.thread.id)
+      .returning("nextTranscriptPosition")
+      .executeTakeFirstOrThrow();
+    await tx
+      .insertInto("transcriptItems")
+      .values({
+        id: `place:${f.run.id}:${position}`,
+        threadId: f.thread.id,
+        runId: f.run.id,
+        attemptId: null,
+        nodeId: null,
+        kind: "place",
+        position,
+        revision: mutation.sequence,
+        visible: true,
+        isTurnStart: false,
+        createdAt: new Date(),
+        body: { tabId: id, title, site: null },
+        view: { title },
+      })
+      .execute();
+  });
 }
-async function tool(
-  storeFixture: StoreFixture,
-  f: Fixture,
-  name: string,
-  subject?: Extract<AgentEvent, { type: "tool.started" }>["data"]["integration"],
-) {
+async function tool(storeFixture: StoreFixture, f: Fixture, name: string) {
   const callId = randomUUID();
   const base = {
+    bindingGeneration: f.bindingGeneration,
     threadId: f.thread.id,
     runId: f.run.id,
     environmentId: f.environmentId,
   };
-  const started = await withDatabaseTransaction(storeFixture.database, (tx) =>
-    appendHostDeploymentEvent(tx, {
+  const run = await storeFixture.database
+    .selectFrom("runs")
+    .select("nextRunnerOrdinal")
+    .where("id", "=", f.run.id)
+    .executeTakeFirstOrThrow();
+  const commit = (event: PendingAgentEvent) =>
+    storeFixture.store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      runnerId: f.runnerId,
+      runnerBootId: f.runnerBootId,
+      event,
+    });
+  await commit(
+    pendingEvent({
       ...base,
+      ordinal: run.nextRunnerOrdinal,
       type: "tool.started",
       data: {
         callId,
         tool: { namespace: "opensteer", name },
         arguments: { secret: "typed-value" },
-        ...(subject ? { integration: subject } : {}),
       },
     }),
   );
-  const completed = await withDatabaseTransaction(storeFixture.database, (tx) =>
-    appendHostDeploymentEvent(tx, {
-      ...base,
-      type: "tool.completed",
-      data: { callId, isError: false, output: { text: "output-secret ".repeat(100) } },
-    }),
-  );
-  return { started, completed };
+  const row = await storeFixture.database
+    .selectFrom("toolCalls")
+    .select("id")
+    .where("runId", "=", f.run.id)
+    .where("callId", "=", callId)
+    .executeTakeFirstOrThrow();
+  return {
+    itemId: `tool:${row.id}`,
+    complete: () =>
+      commit(
+        pendingEvent({
+          ...base,
+          ordinal: run.nextRunnerOrdinal + 1,
+          type: "tool.completed",
+          data: { callId, isError: false, output: { text: "output-secret ".repeat(100) } },
+        }),
+      ),
+  };
 }
 
 describeStore("shaped agent task tools", (it) => {
@@ -1005,9 +1029,7 @@ describeStore("shaped agent task tools", (it) => {
         });
         return { database, close: () => database.destroy() };
       });
-      const store = new OpensteerStore(database, {
-        readPersonalResources: readEmptyPersonalResources,
-      });
+      const store = new OpensteerStore(database);
       const locked = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       const blocker = storeFixture.database.transaction().execute(async (tx) => {
@@ -1174,18 +1196,18 @@ describeStore("shaped agent task tools", (it) => {
       stopSupported: true,
       stopping: false,
     });
-    expect(page.items.map((item) => item.text)).toEqual([null, null]);
-    expect(JSON.stringify(page)).not.toContain("NEVER_RETURN");
-    const older = await read({ cursor: page.nextBefore });
-    expect(older.items[0]).toMatchObject({
+    expect(page.items).toHaveLength(2);
+    expect(page.items[0]).toMatchObject({ type: "tool.completed", text: null });
+    expect(page.items[1]).toMatchObject({
       type: "tool.completed",
       text: "😀".repeat(500),
       textTruncated: true,
       nextTextOffset: 500,
     });
-    const full = await read({ itemId: older.items[0]!.itemId, textOffset: 500 });
+    expect(JSON.stringify(page)).not.toContain("NEVER_RETURN");
+    const full = await read({ itemId: page.items[1]!.itemId, textOffset: 500 });
     expect(full.items[0]).toMatchObject({ text: "😀".repeat(200), textTruncated: false });
-    const oldest = await read({ cursor: older.nextBefore });
+    const oldest = await read({ cursor: page.nextBefore });
     expect(oldest.items).toHaveLength(1);
     expect(oldest.items[0]).toMatchObject({ type: "node.message", text: "Child reply 😀" });
     expect(oldest.hasMore).toBe(false);
@@ -1380,7 +1402,7 @@ describeStore("shaped agent task tools", (it) => {
     });
     expect(queuedWhileWaiting).toEqual([]);
     expect(await s.returns()).toEqual([]);
-    expect(await storeFixture.store.drainAssignmentReturn(s.assignmentId)).toEqual([]);
+    await storeFixture.store.drainAssignmentReturn(s.assignmentId);
   });
 
   it("hands the result once to a Run that waits on its own task's task", async ({
@@ -1402,7 +1424,7 @@ describeStore("shaped agent task tools", (it) => {
       task: { result: "42", status: "completed" },
     });
     expect(await s.returns()).toEqual([]);
-    expect(await storeFixture.store.drainAssignmentReturn(s.assignmentId)).toEqual([]);
+    await storeFixture.store.drainAssignmentReturn(s.assignmentId);
   });
 
   it("holds its task's return while a Run watches that task's messages", async ({
@@ -1450,24 +1472,48 @@ describeStore("shaped agent task tools", (it) => {
       storeFixture,
     }) => {
       const s = await waitingTask(storeFixture, `wait-held-${ending}`);
+      const read = Promise.withResolvers<void>();
+      const releaseRead = Promise.withResolvers<void>();
+      if (ending === "abort") {
+        s.checkLive.mockImplementationOnce(async () => {
+          read.resolve();
+          await releaseRead.promise;
+        });
+      } else {
+        s.checkLive
+          .mockImplementationOnce(async () => {})
+          .mockImplementationOnce(async () => read.resolve());
+      }
       const abort = new AbortController();
-      const pending = withDatabaseOperationSignal(abort.signal, Date.now() + 10_000, () =>
-        s.wait(2_000, s.caller, abort.signal),
-      );
-      const outcome = pending.then(
-        (value) => ({ value }),
-        (error) => ({ error }),
-      );
-      await vi.waitFor(() => expect(s.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
-      await s.settle();
-      await storeFixture.store.drainAssignmentReturn(s.assignmentId);
-      const during = await s.returns();
-      if (ending === "abort") abort.abort(new Error("Tool call cut off"));
-      const result = await outcome;
-      if (ending === "abort")
-        expect(result).toMatchObject({ error: new Error("Tool call cut off") });
-      else expect(result).toMatchObject({ value: { status: "timed_out" } });
-      expect(during).toEqual([]);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const pending = withDatabaseOperationSignal(abort.signal, Date.now() + 10_000, () =>
+          s.wait(2_000, s.caller, abort.signal),
+        );
+        const outcome = pending.then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
+        await withTimeout(read.promise, 1_000, {
+          signal: AbortSignal.timeout(1_000),
+          timeoutError: () => new Error("Task result wait did not read its initial state"),
+        });
+        await s.settle();
+        await storeFixture.store.drainAssignmentReturn(s.assignmentId);
+        expect(await s.returns()).toEqual([]);
+        if (ending === "abort") {
+          abort.abort(new Error("Tool call cut off"));
+          releaseRead.resolve();
+        } else await vi.advanceTimersByTimeAsync(2_000);
+        const result = await outcome;
+        if (ending === "abort")
+          expect(result).toMatchObject({ error: new Error("Tool call cut off") });
+        else expect(result).toMatchObject({ value: { status: "timed_out" } });
+      } finally {
+        abort.abort();
+        releaseRead.resolve();
+        vi.useRealTimers();
+      }
       await storeFixture.store.drainPendingAssignmentReturns();
       expect(await s.returns()).toHaveLength(1);
     });
@@ -1586,7 +1632,7 @@ describeStore("shaped agent task tools", (it) => {
     });
     const assignmentId = delegated.assignment.id;
     expect(assignmentId).not.toBe(s.assignmentId);
-    const { terminal } = await storeFixture.runDelegatedTurn(
+    await storeFixture.runDelegatedTurn(
       s.f,
       { id: delegated.run.id, threadId: delegated.thread.id },
       {
@@ -1595,13 +1641,13 @@ describeStore("shaped agent task tools", (it) => {
         suffix: "delegate-wait-mode",
       },
     );
-    for (const event of terminal.compensatingEvents) s.realtime.publish(event);
+    await storeFixture.store.drainRunFinish(delegated.run.id);
     expect(await pending).toMatchObject({
       result: "84",
       status: "completed",
       wait: { status: "settled" },
     });
-    expect(await storeFixture.store.drainAssignmentReturn(assignmentId)).toEqual([]);
+    await expect(storeFixture.store.drainAssignmentReturn(assignmentId)).resolves.toBe("settled");
   });
 
   it("returns a task's Request promptly and reads it without exposing its payload", async ({
@@ -1630,7 +1676,6 @@ describeStore("shaped agent task tools", (it) => {
         subject: { kind: "thread", id: s.f.thread.id },
       },
     });
-    for (const event of created.events) s.realtime.publish(event);
     expect(await pending).toMatchObject({
       status: "running",
       pendingRequest: { id: created.request.id },
@@ -1829,7 +1874,7 @@ describeStore("shaped agent task tools", (it) => {
     ).toBe(true);
   });
 
-  it("withholds sensitive tools even by itemId and resolves starts outside a completion-only page", async ({
+  it("withholds sensitive tools and reads a tool through one stable item before and after completion", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("shaped-tools");
@@ -1842,41 +1887,48 @@ describeStore("shaped agent task tools", (it) => {
       "computer_use.type",
     ]) {
       const t = await tool(storeFixture, f, name);
-      for (const event of [t.started, t.completed])
-        expect((await s.read({ view: "activity", itemId: event.sequence })).items[0]).toMatchObject(
-          { title: name, text: null, textTruncated: false },
-        );
+      const point = () => s.read({ view: "activity", itemId: t.itemId });
+      expect((await point()).items[0]).toMatchObject({
+        itemId: t.itemId,
+        type: "tool.started",
+        title: name,
+        text: null,
+        textTruncated: false,
+      });
+      await t.complete();
+      expect((await point()).items[0]).toMatchObject({
+        itemId: t.itemId,
+        type: "tool.completed",
+        title: name,
+        text: null,
+        textTruncated: false,
+      });
       expect((await s.read({ view: "activity", limit: 1 })).items[0]).toMatchObject({
         title: name,
         text: null,
       });
     }
     const safe = await tool(storeFixture, f, "shell");
+    expect((await s.read({ itemId: safe.itemId })).items[0]!.text).toContain("typed-value");
+    await safe.complete();
     const clipped = (await s.read({ view: "activity", limit: 1 })).items[0]!;
-    expect(clipped).toMatchObject({ title: "shell", textTruncated: true, nextTextOffset: 500 });
+    expect(clipped).toMatchObject({
+      itemId: safe.itemId,
+      title: "shell",
+      textTruncated: true,
+      nextTextOffset: 500,
+    });
     expect(clipped.text).toHaveLength(500);
-    expect(
-      (await s.read({ view: "activity", itemId: safe.completed.sequence })).items[0]!.text,
-    ).toBe("output-secret ".repeat(100));
-    expect(
-      (await s.read({ view: "activity", itemId: safe.started.sequence })).items[0]!.text,
-    ).toContain("typed-value");
-    await storeFixture.database
-      .deleteFrom("deploymentEvents")
-      .where("sequence", "=", safe.started.sequence)
-      .execute();
-    expect(
-      (await s.read({ view: "activity", itemId: safe.completed.sequence })).items[0]!.text,
-    ).toBeNull();
+    expect((await s.read({ itemId: safe.itemId })).items[0]!.text).toContain("output-secret");
   });
 
-  it("orders activity messages with events, pages by event sequence, and omits reasoning, node text and Request payloads", async ({
+  it("orders retained activity items, pages by item position, and omits reasoning, node text and Request payloads", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("shaped-events");
     const s = setup(storeFixture, f);
     const requestId = createId("request");
-    const request = await storeFixture.openLiveRequest(f, requestId);
+    await storeFixture.openLiveRequest(f, requestId);
     const base = {
       bindingGeneration: f.bindingGeneration,
       environmentId: f.environmentId,
@@ -1942,13 +1994,18 @@ describeStore("shaped agent task tools", (it) => {
       earlier.items
         .filter((i) => i.type.startsWith("node."))
         .map((i) => ({ title: i.title, status: i.status, text: i.text })),
-    ).toEqual([
-      { title: "Research", status: "completed", text: null },
-      { title: "Research", status: "started", text: null },
-    ]);
-    expect(earlier.items.find((i) => i.type === "request.opened")).toMatchObject({
-      title: "Approval required",
-      link: formatReferenceLink(requestId, "Approval required"),
+    ).toEqual([{ title: "Research", status: "completed", text: null }]);
+    expect(earlier.items.some((item) => item.type === "request.opened")).toBe(false);
+    const pending = await s.product.opensteer_request_answer({
+      caller: s.caller,
+      input: { ...opensteer_request_read.input.parse({ requestId }), action: "read", limit: 50 },
+      operationKey: randomUUID(),
+    });
+    expect(pending).toMatchObject({
+      request: {
+        title: "Approval required",
+        link: formatReferenceLink(requestId, "Approval required"),
+      },
     });
     const serialized = JSON.stringify(earlier);
     for (const secret of [
@@ -1960,9 +2017,11 @@ describeStore("shaped agent task tools", (it) => {
     ])
       expect(serialized).not.toContain(secret);
     expect((await s.read({ view: "activity", itemId: messageId })).items).toEqual(page.items);
-    expect(
-      (await s.read({ view: "activity", itemId: request.event.sequence })).items[0],
-    ).toMatchObject({ title: "Approval required" });
+    await expect(
+      s.read({ view: "activity", itemId: `request:${requestId}` }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
   });
 
   it("pages projected text and large messages within the agent byte limit without splitting a surrogate pair", async ({

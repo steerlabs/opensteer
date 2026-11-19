@@ -1,6 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type {
-  AgentEvent,
   ThreadAccessMode,
   ThreadId,
   TriggerId,
@@ -20,10 +19,10 @@ import {
   type TriggerProgramRunnerStore,
 } from "./trigger-program-compatibility.js";
 import type { SignedTokenService } from "../identity/host-keys.js";
+import type { Clock } from "@opensteer/shared/clock";
+import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
 interface TriggerServiceOptions {
   readonly onChanged?: () => void;
-  /** The task an automation created to run in, published as it commits. */
-  readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
   readonly onWatchChanged?: (triggerId: TriggerId) => void;
   readonly publicUrl: URL;
@@ -34,7 +33,6 @@ interface TriggerServiceOptions {
 }
 export class TriggerService {
   readonly #onChanged: TriggerServiceOptions["onChanged"];
-  readonly #onDeploymentEvent: TriggerServiceOptions["onDeploymentEvent"];
   readonly #onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
   readonly #onWatchChanged: TriggerServiceOptions["onWatchChanged"];
   readonly #publicUrl: URL;
@@ -44,7 +42,6 @@ export class TriggerService {
   readonly #tokens: Pick<SignedTokenService, "deriveSecret">;
   constructor(options: TriggerServiceOptions) {
     this.#onChanged = options.onChanged;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#onOccurrenceQueued = options.onOccurrenceQueued;
     this.#onWatchChanged = options.onWatchChanged;
     this.#publicUrl = options.publicUrl;
@@ -74,7 +71,7 @@ export class TriggerService {
     const webhookRouteKey =
       input.source.kind === "webhook" ? `wh_${randomBytes(24).toString("base64url")}` : undefined;
     const webhookSecret = webhookRouteKey ? this.#webhookSecret(webhookRouteKey) : undefined;
-    const created = await this.#store.create({
+    const { trigger, revision, wasDuplicate } = await this.#store.create({
       actorThreadId,
       ...(actorAccessMode ? { actorAccessMode } : {}),
       anchorThreadId: input.anchorThreadId,
@@ -91,9 +88,8 @@ export class TriggerService {
           }
         : {}),
     });
-    const { event, ...result } = created;
-    if (event) this.#onDeploymentEvent?.(event);
     this.#onChanged?.();
+    const result = { trigger, revision, wasDuplicate };
     if (result.trigger.kind === "watch") this.#onWatchChanged?.(result.trigger.id);
     if (result.trigger.kind !== "webhook") return result;
     const stableRouteKey = required(result.trigger.webhookRouteKey ?? undefined);
@@ -376,54 +372,55 @@ export class TriggerService {
     return `oswh_${this.#tokens.deriveSecret("webhook", routeKey)}`;
   }
 }
+/**
+ * Fires due schedules at the earliest armed `next_fire_at`, and again whenever
+ * a commit moves one (`triggerSchedulesChanged`). Nothing polls.
+ */
 export class TriggerScheduleLoop {
   readonly #onChanged: () => void;
   readonly #onError: (error: unknown) => void;
   readonly #onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
-  readonly #store: Pick<TriggerStore, "claimDueSchedules">;
-  #closed = false;
-  #running: Promise<void> | undefined;
-  #timer: NodeJS.Timeout | undefined;
+  readonly #store: Pick<TriggerStore, "claimDueSchedules" | "nextScheduleAt">;
+  readonly #drain: DeadlineDrain;
   constructor(options: {
     /** A due Trigger was paused or moved on to its next instant. */
     readonly onChanged: () => void;
     readonly onError: (error: unknown) => void;
     readonly onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
-    readonly store: Pick<TriggerStore, "claimDueSchedules">;
+    readonly store: Pick<TriggerStore, "claimDueSchedules" | "nextScheduleAt">;
+    readonly clock?: Clock;
   }) {
     this.#onChanged = options.onChanged;
     this.#onError = options.onError;
     this.#onOccurrenceQueued = options.onOccurrenceQueued;
     this.#store = options.store;
+    this.#drain = new DeadlineDrain({
+      drain: () => this.#tick(),
+      onError: options.onError,
+      ...(options.clock ? { clock: options.clock } : {}),
+    });
   }
   start(): void {
-    if (this.#closed || this.#timer || this.#running) return;
-    this.#schedule(0);
+    this.#drain.start();
+  }
+  wake(): void {
+    this.#drain.wake();
   }
   async close(): Promise<void> {
-    this.#closed = true;
-    if (this.#timer) clearTimeout(this.#timer);
-    this.#timer = undefined;
-    await this.#running?.catch(() => undefined);
+    await this.#drain.close();
   }
-  #schedule(delayMs: number): void {
-    this.#timer = setTimeout(() => {
-      this.#timer = undefined;
-      this.#running = this.#tick().finally(() => {
-        this.#running = undefined;
-        if (!this.#closed) this.#schedule(1_000);
-      });
-    }, delayMs);
-    this.#timer.unref();
-  }
-  async #tick(): Promise<void> {
-    try {
-      const { occurrences, changed } = await this.#store.claimDueSchedules();
-      for (const occurrence of occurrences) this.#onOccurrenceQueued(occurrence);
-      if (changed) this.#onChanged();
-    } catch (error) {
-      this.#onError(error);
-    }
+  async #tick(): Promise<Date | typeof retryWithBackoff | null> {
+    const now = Date.now();
+    // One time for the claim and the "still due" comparison below.
+    const { occurrences, changed, failures } = await this.#store.claimDueSchedules(new Date(now));
+    // A schedule that could not be claimed rolled back alone; the rest committed.
+    for (const failure of failures) this.#onError(failure);
+    for (const occurrence of occurrences) this.#onOccurrenceQueued(occurrence);
+    if (changed) this.#onChanged();
+    const next = await this.#store.nextScheduleAt();
+    // A due schedule this pass could not claim (another transaction holds it)
+    // backs off rather than spinning; one that it moved on is simply re-armed.
+    return next && next.getTime() <= now && !changed ? retryWithBackoff : next;
   }
 }
 function hashSecret(value: string): string {

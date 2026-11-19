@@ -1,10 +1,11 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { clientScopeKey } from "@opensteer/client/connections";
 import { assertMessageLogin, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { browserNoticeDismissals } from "./usage-notice.js";
 import { isPluginRequest } from "@opensteer/client/plugins";
 import { ThreadPluginAction } from "./plugins/plugin-request-action.js";
-import { useCompactionOffer } from "@opensteer/client/react";
+import { useCompactionOffer, useRequestAsker } from "@opensteer/client/react";
 import { cardUseTitle } from "@opensteer/client/host";
 import { threadMark, type TaskMark as ResolvedTaskMark } from "@opensteer/client/host";
 import { assignmentTitle } from "@opensteer/client/host";
@@ -48,7 +49,6 @@ import {
   deriveSurface,
   isQuestionRequest,
   mutationIdempotencyKey,
-  requestAsker,
   requestsWaitingOn,
   waitingRequestSource,
   waitingRequestPresentationSource,
@@ -518,9 +518,9 @@ function RequestPager({
  * subagent it runs inside when it is nested. It opens the asker.
  */
 function AskerByline({ pager, request }: { pager: ReactNode; request: Request }) {
-  const { snapshot } = useShell();
+  const { hostClient } = useShell();
   const workspace = useOptionalWorkspace();
-  const asker = requestAsker(snapshot, request);
+  const asker = useRequestAsker(hostClient, request);
   if (!asker) return pager ? <div className="request-card__by">{pager}</div> : null;
   return (
     <div className="request-card__by">
@@ -630,9 +630,9 @@ function RequestPanel({
   /** The task on screen, whose composer sits below. */
   viewThreadId: string;
 }) {
-  const { snapshot } = useShell();
+  const { hostClient } = useShell();
   const { request } = surface;
-  const asker = requestAsker(snapshot, request);
+  const asker = useRequestAsker(hostClient, request);
   // An agent's app request reads as the title and the model's own reason; the
   // card below says where it is answered.
   // A sign-in card names the site itself, whatever wording the Request carries.
@@ -706,6 +706,7 @@ function ActionBody({
         hostClient.dispatch({
           idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
           requestId: request.id,
+          ...requestDecisionRevision(request),
           response,
           type: "request.respond",
         }),

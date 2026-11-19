@@ -1,5 +1,6 @@
 import { DeviceIdSchema } from "@opensteer/core";
-import { HostToClientMessageSchema } from "@opensteer/protocol";
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
+import { testResourceData } from "../server/test-host-api-request.js";
 import { browserRows } from "./browser-rows.test-support.js";
 import {
   BrowserActionRequestSchema,
@@ -10,7 +11,6 @@ import {
   type BrowserActionResult,
 } from "@opensteer/protocol/browser-actions";
 import { BrowserSurfaceIdSchema, createBrowserSessionId } from "@opensteer/protocol/browser";
-import { zeroSequence } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { TabStore } from "@opensteer/database";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
@@ -217,25 +217,37 @@ integration("session-scoped browser agent backends", () => {
       `ws://127.0.0.1:${f.host.hostPort}/v1/realtime`,
       f.host.ownerHeaders,
     );
-    const synchronized = waitForMessage(
+    realtime.on("message", (raw) => {
+      const decoded = ScopedHostMessageSchema.safeParse(JSON.parse(raw.toString()));
+      if (!decoded.success) return;
+      const frame = decoded.data;
+      if (frame.type === "host.snapshot" || frame.type === "host.changes") {
+        const { generation, subscriptionId, throughSequence } = frame;
+        realtime.send(
+          JSON.stringify({ type: "client.ack", generation, subscriptionId, throughSequence }),
+        );
+      }
+    });
+    const initial = waitForMessage(
       realtime,
-      (message) => message.type === "host.synchronized",
+      (message) =>
+        message.type === "host.resource" &&
+        "revisions" in message &&
+        typeof message.revisions === "object" &&
+        message.revisions !== null &&
+        "tab" in message.revisions,
       2000,
     );
     realtime.send(
       JSON.stringify({
-        cursor: {
-          deploymentId: (await f.host.store.getDeployment())!.id,
-          apiVersion: hostApiVersion,
-          afterSequence: zeroSequence,
-        },
+        type: "client.attach",
         apiVersion: hostApiVersion,
-        threadId: null,
-        type: "client.subscribe",
+        generation: 1,
+        interests: ["tab"],
+        installed: {},
       }),
     );
-    await synchronized;
-    realtime.send(JSON.stringify({ type: "client.browser.resync" }));
+    await initial;
     const viewer = await connect(
       `ws://127.0.0.1:${f.host.hostPort}/v1/browser-sessions/${f.sessionId}/connect?surfaceState=1&mode=watch`,
       f.host.ownerHeaders,
@@ -244,19 +256,11 @@ integration("session-scoped browser agent backends", () => {
       const noticed = waitForMessage(
         realtime,
         (message) => {
-          const parsed = HostToClientMessageSchema.safeParse(message);
-          if (!parsed.success || parsed.data.type !== "host.tabs") return false;
-          const stream = parsed.data.stream;
+          const parsed = ScopedHostMessageSchema.safeParse(message);
           return (
-            stream.op === "rows"
-              ? stream.rows
-              : stream.op === "change"
-                ? [...(stream.add ?? []), ...(stream.update ?? [])]
-                : []
-          ).some(
-            (row) =>
-              ("tabId" in row ? row.tabId : undefined) === tabId &&
-              row.state === (state === "suspended" ? "asleep" : "open"),
+            parsed.success &&
+            parsed.data.type === "host.resource" &&
+            parsed.data.revisions.tab !== undefined
           );
         },
         2000,
@@ -275,6 +279,12 @@ integration("session-scoped browser agent backends", () => {
         ],
       });
       await noticed;
+      const catalog = await testResourceData(f.host.origin, "tab", {
+        headers: f.host.ownerHeaders,
+      });
+      expect(catalog.tabs.tabs.find((row) => row.tabId === tabId)?.state).toBe(
+        state === "suspended" ? "asleep" : "open",
+      );
       expect((await group()).tabs?.[0]?.state).toBe(state);
       expect(
         (await browserRows(f.host.runtime.browser, f.host.ownerId, f.sessionId)).tabs[0]?.state,

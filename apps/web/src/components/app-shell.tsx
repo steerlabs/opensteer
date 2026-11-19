@@ -267,7 +267,8 @@ const sidebarWidthRange: PaneSizeRange = {
 const selectHostSnapshot = (snapshot: HostSnapshot) => snapshot;
 const selectNothing = () => null;
 /** Tasks that need the reader, each once: what the sidebar's count and the app's badge both say. */
-const selectAttentionCount = (snapshot: HostSnapshot) => taskAttention(snapshot).length;
+const selectAttentionCount = (snapshot: HostSnapshot) =>
+  snapshot.needsYouCount ?? taskAttention(snapshot).length;
 
 export function AppShell({
   deploymentAccess = null,

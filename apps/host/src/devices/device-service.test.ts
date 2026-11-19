@@ -39,14 +39,7 @@ import {
   type DeviceComputerAppAccessDecision as ComputerAppAccessDecision,
   type IntegrationPlatformStore,
 } from "@opensteer/database";
-import {
-  TabIdSchema,
-  WindowIdSchema,
-  createToolOutput,
-  createId,
-  type AgentEvent,
-  type Request,
-} from "@opensteer/core";
+import { TabIdSchema, WindowIdSchema, createToolOutput, createId } from "@opensteer/core";
 import {
   computerUseUpdateSentence,
   mintComputerUseSessionId,
@@ -104,7 +97,6 @@ describe("DeviceService computer connections", () => {
           created: false,
           fulfilledRequestIds: [],
           grants: [],
-          requestEvents: [],
           reissuedSetupRequestId: null,
           sessionReset: null,
         };
@@ -148,10 +140,9 @@ describe("DeviceService computer connections", () => {
     expect(setComputerConnection).toHaveBeenCalledTimes(2);
   });
 
-  it("revokes a computer connection inside Runner admission and publishes cancellations", async () => {
+  it("revokes a computer connection inside Runner admission", async () => {
     const callable = computerCallable();
     const runnerId = createId("runner");
-    const requestEvent = { type: "request.cancelled" } as AgentEvent;
     let admitted = false;
     const revokeComputerConnection = vi.fn(async () => {
       expect(admitted).toBe(true);
@@ -159,10 +150,8 @@ describe("DeviceService computer connections", () => {
         cancelledRequestIds: [createId("request")],
         connectionIds: [callable.grant.connectionId!],
         removedApps: [],
-        requestEvents: [requestEvent],
       };
     });
-    const onDeploymentEvent = vi.fn();
     const service = platform({
       computerApps: {
         appStatus: vi.fn(),
@@ -177,7 +166,6 @@ describe("DeviceService computer connections", () => {
           }
         }),
       },
-      onDeploymentEvent,
       store: {
         getComputerConnectionForCall: vi.fn(async () => ({
           access: "read" as const,
@@ -197,7 +185,7 @@ describe("DeviceService computer connections", () => {
         requestId: "disconnect-computer",
       }),
     ).resolves.toEqual({ notice: null, revokedUpstream: false });
-    expect(onDeploymentEvent).toHaveBeenCalledWith(requestEvent);
+    expect(revokeComputerConnection).toHaveBeenCalledOnce();
   });
 });
 
@@ -533,7 +521,6 @@ describe("DeviceService computer invocation", () => {
             cancelledRequestIds: [],
             connectionIds: [connection.id],
             removedApps: [],
-            requestEvents: [],
             reissuedSetupRequestId: null,
             sessionReset: null,
           };
@@ -549,7 +536,6 @@ describe("DeviceService computer invocation", () => {
             created: false,
             fulfilledRequestIds: [],
             grants: [],
-            requestEvents: [],
             reissuedSetupRequestId: null,
             sessionReset: null,
           };
@@ -563,7 +549,6 @@ describe("DeviceService computer invocation", () => {
             removedConnectionIds: [connection.id],
             removedApps: [],
             removedServerIds: [callable.server.id],
-            requestEvents: [],
           };
         }),
       };
@@ -1203,143 +1188,6 @@ describe("DeviceService computer discovery", () => {
 });
 
 describe("DeviceService computer app setup expiry", () => {
-  it("publishes replacement and opened events with one continuation wake", async () => {
-    const guiDefinitionCandidate = computerAppIntegrations.find(({ id }) => id === "macos-app");
-    if (!guiDefinitionCandidate || !isComputerAppDefinition(guiDefinitionCandidate)) {
-      throw new Error("The macos-app definition is missing from the catalog.");
-    }
-    const ownerUserId = createId("user");
-    const runnerId = createId("runner");
-    const threadId = createId("thread");
-
-    const runId = createId("run");
-    const requestId = createId("request");
-    const notes = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };
-    const request = {
-      callId: "computer-app-live-event",
-      cancellationReason: null,
-      createdAt: now,
-      id: requestId,
-      kind: "computer.app.access",
-      mode: "durable",
-      originatingOccurrenceId: null,
-      originatingRunId: runId,
-      originatingThreadId: threadId,
-
-      payload: {
-        access: "read",
-        app: notes,
-        definitionId: "macos-app",
-        kind: "computer.app.access",
-        deviceId: DeviceIdSchema.parse(runnerId),
-        setupRequestId: "setup-request",
-      },
-      presentation: {
-        kind: "external",
-        subject: { id: "setup-request", kind: "computer-app-setup" },
-        title: "Wants to use Notes",
-      },
-      requestedBy: ownerUserId,
-      requiredActor: "requester",
-      resolvedAt: null,
-      resolvedBy: null,
-      response: null,
-      status: "pending",
-    } as Request;
-    const openedEvent = {
-      createdAt: now,
-      data: { request },
-      id: createId("event"),
-      runId,
-      threadId,
-      type: "request.opened",
-    } as unknown as AgentEvent;
-    const replacementEvent = {
-      createdAt: now,
-      data: { requestId: createId("request") },
-      id: createId("event"),
-      runId,
-      threadId,
-      type: "request.resolved",
-    } as unknown as AgentEvent;
-    const onDeploymentEvent = vi.fn();
-    const onRequestsChanged = vi.fn();
-    const requestComputerAppAccess = vi.fn(async (): Promise<ComputerAppAccessDecision> => ({
-      kind: "computer",
-      replayed: false,
-      request,
-      requestEvents: [replacementEvent, openedEvent],
-      setupRequest: {} as never,
-    }));
-    const service = platform({
-      computerApps: {
-        attached: () => true,
-        withRunnerAdmission: async (_id, task) => task(),
-        appStatus: () => null,
-        send: vi.fn(),
-      },
-      computerUse: {
-        eligibleMachines: async (_owner: unknown, definitionId: string) =>
-          definitionId === "macos-app"
-            ? [{ runnerId, name: "Alex's Mac", state: "ready", ready: true }]
-            : [],
-        threadTitle: async () => "Read my notes",
-        resolveApp: vi.fn(async () => ({
-          allowed: true,
-          identity: notes,
-          path: "/System/Applications/Notes.app",
-          reason: null,
-          risk: "standard",
-          running: false,
-        })),
-      } as unknown as ComputerUseGateway,
-      definitions: [guiDefinitionCandidate],
-      onRequestsChanged,
-      onDeploymentEvent,
-      store: {
-        requestDeviceComputerAppAccess: requestComputerAppAccess,
-        getDeviceComputerUsePolicy: async () => ({
-          appApproval: "ask",
-          approvalKeyId: null,
-          revision: 0,
-        }),
-      },
-    });
-
-    await service.devices.computerAppApprovals.requestComputerAppAccess({
-      reason: "Read my notes",
-      access: "read",
-      app: "Notes",
-      originatingRunId: runId,
-      ownerUserId,
-      runnerId,
-      threadId,
-    });
-
-    expect(onDeploymentEvent).toHaveBeenNthCalledWith(1, replacementEvent);
-    expect(onDeploymentEvent).toHaveBeenNthCalledWith(2, openedEvent);
-    expect(onRequestsChanged).toHaveBeenCalledOnce();
-
-    requestComputerAppAccess.mockResolvedValueOnce({
-      kind: "computer",
-      replayed: true,
-      request,
-      requestEvents: [],
-      setupRequest: {} as never,
-    });
-    await service.devices.computerAppApprovals.requestComputerAppAccess({
-      reason: "Read my notes",
-      access: "read",
-      app: "Notes",
-      originatingRunId: runId,
-      ownerUserId,
-      runnerId,
-      threadId,
-    });
-    expect(onDeploymentEvent).toHaveBeenCalledTimes(2);
-    expect(onRequestsChanged).toHaveBeenCalledOnce();
-  });
-
   it.each(["offline", "connecting", "absent", "reported"] as const)(
     "only asks an iPhone for an app it reports: %s",
     async (availability) => {
@@ -1347,7 +1195,7 @@ describe("DeviceService computer app setup expiry", () => {
       const runnerId = createId("runner");
       const requestComputerAppSetup = vi.fn(async () => ({
         request: { id: "setup-request", runnerId } as never,
-        settlement: { grants: [], requestEvents: [], requestIds: [] },
+        settlement: { grants: [], requestIds: [] },
       }));
       let insideAdmission = false;
       const reportsApp = vi.fn(() => {
@@ -1412,93 +1260,31 @@ describe("DeviceService computer app setup expiry", () => {
     },
   );
 
-  it("publishes request settlements produced by setup replacement and cancellation", async () => {
-    const replacementEvent = { type: "request.resolved" } as AgentEvent;
-    const cancellationEvent = { type: "request.resolved" } as AgentEvent;
-    const requestComputerAppSetup = vi.fn(async () => ({
-      request: { id: "setup-request" } as never,
-      settlement: {
-        grants: [],
-        requestEvents: [replacementEvent],
-        requestIds: [createId("request")],
-      },
-    }));
-    const cancelComputerAppSetup = vi.fn(async () => ({
-      grants: [],
-      requestEvents: [cancellationEvent],
-      requestIds: [createId("request")],
-      deviceId: null,
-    }));
-    const onDeploymentEvent = vi.fn();
-    const onRequestsChanged = vi.fn();
-    const service = platform({
-      definitions: [computerDefinition],
-      onRequestsChanged,
-      onDeploymentEvent,
-      store: {
-        cancelDeviceComputerAppSetup: cancelComputerAppSetup,
-        requestDeviceComputerAppSetup: requestComputerAppSetup,
-      },
-    });
-
-    await service.devices.computerAppApprovals.requestComputerAppSetup({
-      kind: "app",
-      app: null,
-      access: "read",
-      actorUserId: createId("user"),
-      definitionId: computerDefinition.id,
-      runnerId: createId("runner"),
-    });
-    await service.devices.computerAppApprovals.cancelComputerAppSetup({
-      ownerUserId: createId("user"),
-      requestId: "setup-request",
-    });
-
-    expect(onDeploymentEvent).toHaveBeenNthCalledWith(1, replacementEvent);
-    expect(onDeploymentEvent).toHaveBeenNthCalledWith(2, cancellationEvent);
-    expect(onRequestsChanged).toHaveBeenCalledTimes(2);
-  });
-
-  it("declines the Requests of approvals nobody answered and delivers their continuations", async () => {
-    const requestEvent = {
-      createdAt: now,
-      data: { requestId: createId("request") },
-      id: createId("event"),
-      type: "request.declined",
-    } as unknown as AgentEvent;
+  it("invalidates devices when an approval expires", async () => {
     const expireComputerAppSetupRequests = vi.fn(async () => ({
       grants: [],
-      requestEvents: [requestEvent],
       requestIds: [createId("request")],
       deviceIds: [],
     }));
-    const onDeploymentEvent = vi.fn();
-    const onRequestsChanged = vi.fn();
     const onConnectionsChanged = vi.fn();
     const service = platform({
       onConnectionsChanged,
-      onRequestsChanged,
-      onDeploymentEvent,
       store: { expireDeviceComputerAppSetupRequests: expireComputerAppSetupRequests },
     });
 
     await service.devices.computerAppApprovals.expireComputerAppSetupRequests();
 
     expect(expireComputerAppSetupRequests).toHaveBeenCalledOnce();
-    expect(onDeploymentEvent).toHaveBeenCalledWith(requestEvent);
-    // The same two a cancel fires: the Thread hears, and the list is stale.
-    expect(onRequestsChanged).toHaveBeenCalledOnce();
     expect(onConnectionsChanged).toHaveBeenCalledOnce();
   });
 
-  it("says nothing when no approval had expired", async () => {
-    const onRequestsChanged = vi.fn();
+  it("leaves the devices view current when no approval had expired", async () => {
+    const onConnectionsChanged = vi.fn();
     const service = platform({
-      onRequestsChanged,
+      onConnectionsChanged,
       store: {
         expireDeviceComputerAppSetupRequests: vi.fn(async () => ({
           grants: [],
-          requestEvents: [],
           requestIds: [],
           deviceIds: [],
         })),
@@ -1507,7 +1293,7 @@ describe("DeviceService computer app setup expiry", () => {
 
     await service.devices.computerAppApprovals.expireComputerAppSetupRequests();
 
-    expect(onRequestsChanged).not.toHaveBeenCalled();
+    expect(onConnectionsChanged).not.toHaveBeenCalled();
   });
 });
 
@@ -2507,16 +2293,14 @@ describe("computer app request matrix", () => {
             return {
               connection: deviceConnection(connection),
               kind: "approved",
-              requestEvents: [],
             };
           case "personal-grant":
-            return { kind: "personal-grant", replayed: false, request, requestEvents: [] };
+            return { kind: "personal-grant", replayed: false, request };
           case "computer":
             return {
               kind: "computer",
               replayed: false,
               request,
-              requestEvents: [],
               setupRequest: setupRequest as never,
             };
         }

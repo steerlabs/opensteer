@@ -112,6 +112,26 @@ integration("Expo external engine sign-in recovery", () => {
         Array.from(document.querySelectorAll("button")).find((item) =>
           item.textContent?.includes(label),
         );
+      const catalogStatus = () =>
+        client!
+          .getSnapshot()
+          .environments.flatMap((environment) => environment.harnessCatalogs)
+          .find((catalog) => catalog.harnessInstanceId === active.harnessInstanceId)?.status;
+      await act(async () => {
+        await expect
+          .poll(
+            () => {
+              const snapshot = client!.getSnapshot();
+              return {
+                catalog: catalogStatus(),
+                harness: snapshot.harnesses.some(({ id }) => id === active.harnessInstanceId),
+                thread: context === "new" || snapshot.threads.some(({ id }) => id === threadId),
+              };
+            },
+            { timeout: 10_000 },
+          )
+          .toEqual({ catalog: "authentication-required", harness: true, thread: true });
+      });
       expect(refresh).not.toHaveBeenCalled();
       const engine = Array.from(document.querySelectorAll("button")).find((item) =>
         item.textContent?.startsWith("Cursor"),
@@ -128,16 +148,7 @@ integration("Expo external engine sign-in recovery", () => {
         checkAgain!.click();
       });
       await act(async () => {
-        await expect
-          .poll(
-            () =>
-              client!
-                .getSnapshot()
-                .environments.flatMap((environment) => environment.harnessCatalogs)
-                .find((catalog) => catalog.harnessInstanceId === active.harnessInstanceId)?.status,
-            { timeout: 10_000 },
-          )
-          .toBe("ready");
+        await expect.poll(catalogStatus, { timeout: 10_000 }).toBe("ready");
       });
       if (!button(model.displayName)) {
         const account = button("Cursor");

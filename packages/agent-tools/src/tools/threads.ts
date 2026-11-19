@@ -13,6 +13,7 @@ import {
   ThreadIdSchema,
   ThreadTitleSchema,
 } from "@opensteer/core";
+import { TranscriptItemIdSchema } from "@opensteer/protocol/transcript";
 
 import { z } from "zod";
 
@@ -63,7 +64,12 @@ const readInput = z
       .max(50000)
       .default(20000)
       .describe("Max characters per item."),
-    itemId: z.string().trim().min(1).max(255).optional().describe("Read this one item."),
+    itemId: z
+      .string()
+      .trim()
+      .pipe(TranscriptItemIdSchema)
+      .optional()
+      .describe("Read one item using its returned itemId."),
     textOffset: z
       .number()
       .int()
@@ -84,7 +90,7 @@ export const opensteer_task_read = defineAgentTool({
   targetFields: ["taskId"],
   title: "Read a task",
   description:
-    "Read a task with its current AI account, model and access mode; omit taskId for this task. The messages view returns published messages, newest first; activity adds its tools, places, apps and Requests. A message from a team carries teamSource, its channel and audience. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its tabId goes to show_to_person. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their `link`, verbatim.",
+    "Read a task with its current AI account, model and access mode; omit taskId for this task. The messages view returns published messages, newest first; activity adds places, apps, Requests and one item per tool call. A message from a team carries teamSource, its channel and audience. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its tabId goes to show_to_person. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their `link`, verbatim.",
   input: readInput,
   output: ThreadReadOutputSchema,
   access: "read",
@@ -357,7 +363,8 @@ export const opensteer_delegation_wait = defineAgentTool({
 export const opensteer_subagent_read = defineAgentTool({
   name: "opensteer_subagent_read",
   title: "Read a subagent",
-  description: "Read a reachable subagent's messages and activity without reasoning.",
+  description:
+    "Read a reachable subagent's messages and activity without reasoning. Each tool call has one itemId.",
   input: z
     .strictObject(readInput.shape)
     .omit({ taskId: true, query: true, aroundMessageId: true })

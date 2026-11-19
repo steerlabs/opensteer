@@ -264,7 +264,6 @@ function machine(id: string, name: string): MachineSummary {
     modules: {},
     name,
     ownership: "mine",
-    pinnedThreads: 0,
     revocable: true,
     status: "online",
   } as MachineSummary;

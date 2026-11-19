@@ -1,3 +1,4 @@
+import { readTestResource } from "../server/test-host-api-request.js";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, mkdir, rm, writeFile } from "node:fs/promises";
@@ -667,8 +668,10 @@ async function stagedPiModelsText(stack: VerticalStack): Promise<string> {
 
 /** The account's catalog as the next bootstrap reports it. */
 async function stackCatalog(stack: VerticalStack) {
-  const bootstrap = await stack.api["bootstrap.get"]({});
-  if (!bootstrap.ok) throw new Error(bootstrap.error.message);
+  const bootstrap = {
+    ok: true as const,
+    data: await readTestResource(stack.api, "harness-catalog"),
+  };
   const catalog = bootstrap.data.environments
     .find((environment) => environment.id === stack.environmentId)
     ?.harnessCatalogs.find((entry) => entry.harnessInstanceId === stack.harnessInstanceId);
@@ -766,11 +769,15 @@ qualification("local endpoint qualification", () => {
             await stack!.interruptRun(threadId, runId);
           },
         });
-        expect(interrupted.events.map((event) => event.type)).toContain("run.interrupted");
+        expect(interrupted.status).toBe("interrupted");
         await vi.waitFor(
           async () => {
-            const snapshot = await stack!.host.store.deploymentSnapshot();
-            expect(snapshot.threads.find((thread) => thread.id === threadId)?.status).toBe("idle");
+            const thread = await stack!.host.store.database
+              .selectFrom("threads")
+              .select("status")
+              .where("id", "=", threadId)
+              .executeTakeFirstOrThrow();
+            expect(thread.status).toBe("idle");
           },
           {
             interval: 100,
@@ -828,10 +835,11 @@ qualification("local endpoint qualification", () => {
         evidence.completionModels = fixture.completionModels;
         evidence.turn = {
           assistantText: turn.assistantText,
-          events: turn.events.map((e) => e.type),
+          status: turn.status,
+          items: turn.items,
         };
-        evidence.interrupted = interrupted.events.map((event) => event.type);
-        evidence.resumed = resumed.events.map((event) => event.type);
+        evidence.interrupted = { status: interrupted.status, items: interrupted.items };
+        evidence.resumed = { status: resumed.status, items: resumed.items };
         evidence.requests = fixture.requests;
         evidence.status = "passed";
       } catch (error) {
@@ -1121,24 +1129,6 @@ qualification("local endpoint qualification", () => {
               .select(["runId", "state"])
               .where("messageId", "=", messageId as never)
               .executeTakeFirstOrThrow();
-          const phases = (
-            events: readonly {
-              readonly type: string;
-              readonly data: unknown;
-            }[],
-          ) =>
-            events.flatMap((event) =>
-              event.type === "run.phase"
-                ? [
-                    (
-                      event.data as {
-                        readonly phase: string;
-                      }
-                    ).phase,
-                  ]
-                : [],
-            );
-
           // Sent while Pi waits on its tool: Pi takes it before its next model
           // call, in the same run, through the prompt that steers.
           let duringTool = "";
@@ -1160,7 +1150,8 @@ qualification("local endpoint qualification", () => {
             state: "delivered",
           });
           evidence.duringTool = {
-            phases: phases(toolRun.events),
+            status: toolRun.status,
+            tools: toolRun.tools.map(({ tool, status }) => ({ tool, status })),
             reply: toolRun.assistantText,
           };
 
@@ -1207,7 +1198,7 @@ qualification("local endpoint qualification", () => {
           }
           evidence.lateFollowUp = {
             answeredIn: lateInput.runId === quick.runId ? "same run" : "next run",
-            phases: phases(quick.events),
+            status: quick.status,
             state: lateInput.state,
           };
           evidence.status = "passed";
@@ -1411,7 +1402,8 @@ qualification("local endpoint qualification", () => {
         }));
         evidence.turn = {
           assistantText: turn.assistantText,
-          events: turn.events.map((e) => e.type),
+          status: turn.status,
+          items: turn.items,
         };
         evidence.runShowModels = runShows.map((request) => request.model);
         evidence.requests = redact(fixture.requests);
@@ -1606,7 +1598,8 @@ qualification("local endpoint qualification", () => {
         };
         evidence.turns = [turn, afterRotation].map((entry) => ({
           assistantText: entry.assistantText,
-          events: entry.events.map((event) => event.type),
+          status: entry.status,
+          items: entry.items,
         }));
         evidence.requests = redact(fixture.requests);
         evidence.status = "passed";
@@ -1769,33 +1762,19 @@ qualification("local endpoint qualification", () => {
           });
           evidence.firstTurn = {
             assistantText: first.assistantText,
-            events: first.events.map((event) => event.type),
+            status: first.status,
+            items: first.items,
             prompt,
-            tools: first.events.flatMap<Record<string, unknown>>((event) => {
-              if (event.type === "tool.started") {
-                return [
-                  {
-                    phase: "started",
-                    callId: event.data.callId,
-                    tool: event.data.tool,
-                    arguments: evidencePreview(event.data.arguments, target.apiKey),
-                  },
-                ];
-              }
-              if (event.type === "tool.completed") {
-                return [
-                  {
-                    phase: "completed",
-                    callId: event.data.callId,
-                    isError: event.data.isError,
-                    output: evidencePreview(event.data.output.text, target.apiKey),
-                  },
-                ];
-              }
-              return [];
-            }),
+            tools: first.tools.map((call) => ({
+              callId: call.callId,
+              tool: call.tool,
+              arguments: evidencePreview(call.arguments, target.apiKey),
+              status: call.status,
+              isError: call.isError,
+              output: evidencePreview(call.output?.text, target.apiKey),
+            })),
           };
-          expect(first.events.map((event) => event.type)).toContain("tool.completed");
+          expect(first.tools.some((call) => call.status === "completed")).toBe(true);
           evidence.workspaceEntries = await readdir(stack.agentHome.path, {
             recursive: true,
           });
@@ -1812,7 +1791,8 @@ qualification("local endpoint qualification", () => {
           });
           evidence.secondTurn = {
             assistantText: second.assistantText,
-            events: second.events.map((event) => event.type),
+            status: second.status,
+            items: second.items,
             prompt: secondPrompt,
           };
           expect(second.assistantText).toContain(marker);

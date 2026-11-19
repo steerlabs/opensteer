@@ -20,7 +20,8 @@ import { OpensteerStore } from "./store.js";
 import type { DatabaseSchema } from "./schema.js";
 import { testRunnerDescriptor } from "./runner-fixture.test-support.js";
 import { personalReachableGrant } from "./runner-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
+import { readMachineResourceKeys } from "./device-inventory-store.js";
 
 let clone: TestDatabase;
 let db: Kysely<DatabaseSchema>;
@@ -30,6 +31,13 @@ beforeEach(async () => {
   clone = await cloneTestDatabase("host");
   db = createDatabase({ connectionString: clone.url });
   fixture = await seedPersonalFixture(db, "/tmp/device-test-home");
+  installPersonalMutationHooks(db, {
+    wake() {},
+    suspend: () => ({ committed() {}, rolledBack() {} }),
+    onFailure(error) {
+      throw error;
+    },
+  });
   store = new OpensteerStore(db);
   await db
     .insertInto("personalRemoteAccess")
@@ -313,7 +321,7 @@ it("serializes a binding behind removal and refuses to bind the tombstone", asyn
   const login = await session();
   const locked = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const removal = withPersonalTransaction(db, async (transaction) => {
+  const removal = commitPersonalMutation(db, async (transaction) => {
     locked.resolve();
     await withTimeout(release.promise, 3000, {
       timeoutError: () => new Error("removal transaction was not released"),
@@ -391,8 +399,30 @@ it("retires a prepared key even when issuance never committed and refuses a late
 it("cancels only the prepared self-setup enrollment before first redemption", async () => {
   const target = await enrollment();
   const generic = await enrollment(undefined, identity(), false);
+  const asOf = new Date();
+  const [first] = await readMachineResourceKeys(db, fixture.userId, { asOf, limit: 1 });
+  const next = await readMachineResourceKeys(db, fixture.userId, {
+    asOf,
+    limit: 10,
+    after: first!.id,
+  });
+  const entries = [first!, ...next];
+  expect(entries.map(({ id }) => id)).toEqual(entries.map(({ id }) => id).sort());
+  expect(entries).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: target.request.id, source: "pending" }),
+      expect.objectContaining({ id: generic.request.id, source: "pending" }),
+    ]),
+  );
   await leave(target);
   await leave(target);
+  await expect(
+    readMachineResourceKeys(db, fixture.userId, {
+      asOf: new Date(),
+      limit: 1,
+      id: target.request.id,
+    }),
+  ).resolves.toEqual([]);
   await expect(store.enrollRunnerConnection(target.connection)).rejects.toMatchObject({
     reason: "runner-enrollment-expired",
   });
@@ -407,7 +437,7 @@ it("publishes the runner tombstone and bound-session deletion in one commit", as
   await bind(target, login);
   const written = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const removing = withPersonalTransaction(db, async (transaction) => {
+  const removing = commitPersonalMutation(db, async (transaction) => {
     const removed = await new OpensteerStore(transaction).revokeRunner(
       target.runnerId,
       fixture.userId,
@@ -442,7 +472,7 @@ it.each(["cancel", "redeem"] as const)(
     const target = await enrollment();
     const written = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
-    const first = withPersonalTransaction(db, async (transaction) => {
+    const first = commitPersonalMutation(db, async (transaction) => {
       const transactional = new OpensteerStore(transaction);
       if (winner === "cancel") {
         const proof = {

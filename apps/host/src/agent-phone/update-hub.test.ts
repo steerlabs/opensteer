@@ -53,6 +53,7 @@ it.each(["awaiting-user", "closed-awaiting-user", "reconnected", "installing"] a
     const hub = new AgentPhoneUpdateHub({ authenticator, store, release: () => release, changed });
     const socket = new UpdateSocket();
     try {
+      expect(vi.getTimerCount()).toBe(0);
       hub.attach(socket as unknown as WebSocket, vi.fn());
       socket.message({
         type: "runner.authenticate",
@@ -79,12 +80,14 @@ it.each(["awaiting-user", "closed-awaiting-user", "reconnected", "installing"] a
       expect(hub.projection(runnerId, 3, false)).toBe(state === "awaiting-user" ? state : "failed");
       if (scenario === "reconnected") {
         expect(hub.projection(runnerId, 4, true)).toBeNull();
+        expect(vi.getTimerCount()).toBe(0);
         return;
       }
       const count = changed.mock.calls.length;
       await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
       expect(hub.projection(runnerId, 3, false)).toBeNull();
       expect(changed.mock.calls.length).toBeGreaterThan(count);
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
       hub.close();
     }

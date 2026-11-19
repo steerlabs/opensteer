@@ -1,5 +1,5 @@
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
@@ -158,7 +158,7 @@ export class PluginStore {
         .where("id", "=", input.id)
         .execute();
     };
-    return transaction ? persist(transaction) : withPersonalTransaction(this.database, persist);
+    return transaction ? persist(transaction) : commitPersonalMutation(this.database, persist);
   }
   async update(
     input: {
@@ -215,7 +215,7 @@ export class PluginStore {
         .where("id", "=", plugin.id)
         .execute();
     };
-    return transaction ? persist(transaction) : withPersonalTransaction(this.database, persist);
+    return transaction ? persist(transaction) : commitPersonalMutation(this.database, persist);
   }
 
   /**
@@ -230,7 +230,9 @@ export class PluginStore {
     readonly digest: string;
     readonly packageFormat: string;
   }) {
-    await withPersonalTransaction(this.database, async (tx) => {
+    // The single personal write path: the new version, installations and launches
+    // reach clients as one plugin change.
+    await commitPersonalMutation(this.database, async (tx, mutation) => {
       const plugin = await tx
         .selectFrom("plugins")
         .select(["id", "currentVersionId"])
@@ -261,6 +263,7 @@ export class PluginStore {
         .set({ currentVersionId: id, updatedAt: now })
         .where("id", "=", plugin.id)
         .execute();
+      mutation.bumpResource("plugin");
       // Plugin writes precede installation locks, as they do on install and update.
       const installations = await tx
         .selectFrom("integrationInstallations")
@@ -331,7 +334,7 @@ export class PluginStore {
       .execute();
   }
   async remove(pluginId: string, administration?: AdministrationCommandIdentity | undefined) {
-    await withPersonalTransaction(this.database, async (tx) =>
+    await commitPersonalMutation(this.database, async (tx) =>
       administrationCommand(tx, administration, async () => {
         await tx
           .updateTable("plugins")

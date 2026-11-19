@@ -144,7 +144,12 @@ export function App({
   // Setup stays on screen through the session and settings waits below, and
   // hands back only once the app it continues into can draw.
   const [continuingSetup, setContinuingSetup] = useState(openSetup);
-  const shellReady = snapshot.session === "authenticated" && snapshot.personalSettings !== null;
+  // The Host writes this person's settings (the agent's home folder) on first sign-in: settings
+  // read and still absent are that first-run moment. Settings not read yet are only unknown, and
+  // the workspace mounts on the shell with its settings-dependent parts in their neutral state.
+  const settingsAbsent =
+    snapshot.loadedResources.includes("settings") && snapshot.personalSettings === null;
+  const shellReady = snapshot.session === "authenticated" && !settingsAbsent;
   useEffect(() => {
     if (!continuingSetup || !shellReady) return;
     setContinuingSetup(false);
@@ -450,9 +455,8 @@ export function App({
     );
   }
 
-  // The Host writes this person's settings (the agent's home folder) on first
-  // sign-in, so their absence is a moment on a first run, never an empty app.
-  if (snapshot.personalSettings === null) {
+  // A first run's moment before the Host has written the agent's home, never an empty app.
+  if (settingsAbsent) {
     if (continuingSetup && !interrupted) return <SetupOpening />;
     return interrupted ? gate : <Splash detail="Preparing your agent’s home…" />;
   }

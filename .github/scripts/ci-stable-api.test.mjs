@@ -56,6 +56,23 @@ void test("each minimum admits the latest published Stable, selected numerically
       () => checkStableApi(root),
       /minimumHostApiVersion 60.*desktop-v0.1.11.*hostApiVersion 59/s,
     );
+    write(4, 4, [63, 63]);
+    assert.throws(
+      () => checkStableApi(root),
+      /minimumHostApiVersion 63.*desktop-v0.1.11.*hostApiVersion 59/s,
+    );
+    write(4, 4, [64, 64]);
+    assert.deepEqual(checkStableApi(root).personal, { published: 59, minimum: 64 });
+    write(4, 4, [65, 65]);
+    assert.throws(
+      () => checkStableApi(root),
+      /minimumHostApiVersion 65.*desktop-v0.1.11.*hostApiVersion 59/s,
+    );
+    write(5, 5, [64, 64]);
+    assert.throws(
+      () => checkStableApi(root),
+      /minimumTeamApiVersion 5.*desktop-v0.1.11.*teamApiVersion 4/s,
+    );
     writeFileSync(authority, "export const minimumTeamApiVersion = unknown;\n");
     assert.throws(() => checkStableApi(root), /Cannot read minimumTeamApiVersion/);
     git("tag", "-d", "desktop-v0.1.9", "desktop-v0.1.10", "desktop-v0.1.11");

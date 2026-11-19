@@ -7,7 +7,12 @@ import {
 } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import type { BrowserSessionSummary, HostSnapshot, MessageEntry, ThreadSummary } from "./client.js";
+import type {
+  BrowserSessionSummary,
+  TranscriptFixtureSnapshot,
+  MessageEntry,
+  ThreadSummary,
+} from "./client.js";
 import { applyOptimisticCommandPatch, withThreadState } from "./optimistic-command-patches.js";
 
 const now = "2026-08-09T20:00:00.000Z";
@@ -75,7 +80,7 @@ describe("task mark patches", () => {
       const assignment = {
         workerThread: { id: thread.id, title: thread.title, icon: "hotel", color: "blue" },
         status: "completed",
-      } as unknown as HostSnapshot["assignments"][string];
+      } as unknown as TranscriptFixtureSnapshot["assignments"][string];
       const snapshot = {
         ...base,
         threads: [thread],
@@ -246,19 +251,20 @@ function queuedItem(text: string): ThreadInputQueue["items"][number] {
 }
 
 function withQueue(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   queue: Pick<ThreadInputQueue, "items" | "steerRunId">,
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   return {
     ...snapshot,
     inputQueues: { ...snapshot.inputQueues, [threadId]: { ...queue, paused: false, threadId } },
   };
 }
 
-function baseSnapshot(): HostSnapshot {
+function baseSnapshot(): TranscriptFixtureSnapshot {
   return {
     tabs: tabStoreFixture([]),
     appsRevision: 0,
+    loadedResources: [],
     doneTasks: {},
     quietTaskDays: null,
     threadRenameAvailable: true,

@@ -2771,13 +2771,22 @@ it("keeps a delivery-only turn visible after a Run ends without a reply", () => 
   ).toHaveLength(1);
 });
 
-it("keeps completed maintenance visible as a summary even without a message or work", () => {
-  const entry = run({
-    status: "completed",
-    replyMessageId: null,
-    compaction: { status: "created", reason: "idle" },
-  });
-  expect(
-    conversationRows(groupTranscriptEntries([entry]), { live: false, atComputer: () => false }),
-  ).toHaveLength(1);
+it("keeps one maintenance summary for completed, failed and interrupted Runs", () => {
+  for (const [status, compaction] of [
+    ["completed", "created"],
+    ["failed", "failed"],
+    ["interrupted", "stopped"],
+  ] as const) {
+    const entry = run({
+      status,
+      replyMessageId: null,
+      compaction: { status: compaction, reason: "idle" },
+    });
+    expect(
+      conversationRows(groupTranscriptEntries([entry]), {
+        live: false,
+        atComputer: () => false,
+      }).map(({ group }) => group.kind === "turn" && group.turn.run?.compaction),
+    ).toEqual([entry.compaction]);
+  }
 });

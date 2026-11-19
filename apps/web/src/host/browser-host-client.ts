@@ -2,11 +2,20 @@ import { initializeBrowserMessageOutbox } from "./message-outbox.js";
 import type { ClientLifecycle, HttpHostClientOptions } from "@opensteer/client/host";
 import {
   HttpHostClient,
+  createPersonalStreamCache,
+  personalCacheFormat,
   type BrowserPreferencesStorage,
   type WebSocketClient,
 } from "@opensteer/client/host";
 import { desktopBridge } from "../desktop/desktop-bridge.js";
 import { browserClientLifecycle } from "./browser-lifecycle.js";
+import {
+  checkpointDatabaseName,
+  checkpointSessionMarker,
+  dropOtherCheckpointFormats,
+  indexedDbCheckpointStorage,
+  keepCheckpointSession,
+} from "./personal-checkpoint-storage.js";
 
 export interface BrowserHostClientOptions {
   readonly desktopMedia?: boolean;
@@ -21,6 +30,7 @@ export interface BrowserHostClientOptions {
   readonly baseUrl?: string;
   readonly fetch?: typeof globalThis.fetch;
   readonly pacedUploads?: HttpHostClientOptions["pacedUploads"];
+  readonly realtimeLiveness?: HttpHostClientOptions["realtimeLiveness"];
   /** The Desktop renderer states how long its hidden sockets last; a browser tab cannot. */
   readonly lifecycle?: ClientLifecycle;
   readonly webSocketFactory?: (url: string) => WebSocketClient;
@@ -33,6 +43,23 @@ export interface BrowserHostClientOptions {
  * so this is the one place the web app hands them over.
  */
 export function createBrowserHostClient(options: BrowserHostClientOptions): HttpHostClient {
+  const baseUrl = options.baseUrl ?? window.location.origin;
+  const origin = new URL(baseUrl).origin;
+  // The format before per-scope keys lived in this tab's sessionStorage; it is dropped, not read.
+  for (const key of Object.keys(window.sessionStorage))
+    if (key.startsWith("opensteer.personal-stream.v")) window.sessionStorage.removeItem(key);
+  void dropOtherCheckpointFormats(personalCacheFormat, origin);
+  // Saved private state is kept and read only under the session the Host last confirmed here.
+  const session = checkpointSessionMarker(origin);
+  const savedState =
+    typeof indexedDB === "undefined"
+      ? undefined
+      : indexedDbCheckpointStorage(
+          checkpointDatabaseName(personalCacheFormat, origin),
+          session.current,
+          session.holds,
+        );
+  const streamCache = savedState === undefined ? undefined : createPersonalStreamCache(savedState);
   const client = new HttpHostClient({
     ...(options.assetRoute ? { assetRoute: options.assetRoute } : {}),
     ...(options.desktopMedia ? { desktopMedia: true } : {}),
@@ -48,14 +75,14 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
           }
         : null;
     },
-    bindMutationsToSession: true,
-    deviceAccessRequests: "include",
     ...(options.passkeys ? { passkeys: options.passkeys } : {}),
     ...(options.iphoneSetup ? { iphoneSetup: options.iphoneSetup } : {}),
     capabilities: options.capabilities ?? null,
-    baseUrl: options.baseUrl ?? window.location.origin,
+    baseUrl,
+    ...(streamCache ? { streamCache } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.pacedUploads ? { pacedUploads: true } : {}),
+    ...(options.realtimeLiveness ? { realtimeLiveness: options.realtimeLiveness } : {}),
     lifecycle: options.lifecycle ?? browserClientLifecycle(),
     browserPreferencesStorage,
     reportRealtimeFrame: (record) =>
@@ -67,6 +94,8 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
     ...(options.webSocketFactory ? { webSocketFactory: options.webSocketFactory } : {}),
   });
   initializeBrowserMessageOutbox(client);
+  keepCheckpointSession(client, session, savedState);
+  window.addEventListener("pagehide", () => client.flushSavedState());
   void client.load().catch(() => undefined);
   return client;
 }

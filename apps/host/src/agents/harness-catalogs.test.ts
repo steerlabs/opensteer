@@ -1,9 +1,7 @@
 import {
-  AgentEventSchema,
   HarnessIdSchema,
   createId,
   harnessUsageLimitFailureCode,
-  type AgentEvent,
   type EnvironmentId,
   type HarnessInstanceId,
 } from "@opensteer/core";
@@ -13,9 +11,13 @@ import { describe, expect, it, vi } from "vitest";
 import {
   HarnessCatalogReconciliationOwner,
   harnessCatalogMaxAgeMs,
+  harnessCatalogRetryMs,
   inspectHarnessCatalogsAfterUsageLimit,
-  notifyingHarnessCatalogRecorder,
   reconcileHarnessCatalogs,
+  recaptureInvalidatedHarnessCatalog,
+  harnessInspectionDefinition,
+  inspectAndRecordHarnessCatalogs,
+  createHarnessCatalogConvergence,
   type HarnessCatalogConvergenceStore,
   type HarnessCatalogInspector,
 } from "./harness-catalogs.js";
@@ -112,9 +114,7 @@ describe("harness catalog convergence", () => {
     await reconcileHarnessCatalogs({
       catalogs,
       connectedEnvironmentIds: [harnessEnvironmentId],
-      runners: {
-        inspectHarnesses,
-      },
+      runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
       signal: AbortSignal.timeout(1_000),
       onCommitted,
     });
@@ -128,9 +128,7 @@ describe("harness catalog convergence", () => {
     await reconcileHarnessCatalogs({
       catalogs,
       connectedEnvironmentIds: [environmentId],
-      runners: {
-        inspectHarnesses,
-      },
+      runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
       signal: AbortSignal.timeout(1_000),
     });
     expect(inspectHarnesses).toHaveBeenCalledTimes(1);
@@ -138,16 +136,327 @@ describe("harness catalog convergence", () => {
     expect(recorded).toEqual([[readyCatalog()]]);
     expect(revisions).toEqual([new Map([[harnessInstanceId, harness.runtimeRevision]])]);
   });
-  it("re-inspects a stored error, because that is the answer looking again can change", async () => {
+  it("answers when the oldest ready catalog goes stale, so a deadline can refresh it", async () => {
+    const now = Date.now();
     const { catalogs, inspectHarnesses } = convergence({
+      capturedAt: new Date(now - 10 * 60_000),
+      stored: readyCatalog(),
+    });
+    await expect(
+      reconcileHarnessCatalogs({
+        catalogs,
+        connectedEnvironmentIds: [harnessEnvironmentId],
+        now,
+        runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
+        signal: AbortSignal.timeout(1_000),
+      }),
+    ).resolves.toMatchObject({ staleAt: new Date(now - 10 * 60_000 + harnessCatalogMaxAgeMs) });
+    expect(inspectHarnesses).not.toHaveBeenCalled();
+  });
+  it("asks again thirty seconds after inspecting an error", async () => {
+    const now = Date.now();
+    const { catalogs, inspectHarnesses } = convergence({ stored: null });
+    inspectHarnesses.mockResolvedValueOnce([errorCatalog()]);
+    await expect(
+      reconcileHarnessCatalogs({
+        catalogs,
+        connectedEnvironmentIds: [harnessEnvironmentId],
+        now,
+        runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
+        signal: AbortSignal.timeout(1_000),
+      }),
+    ).resolves.toMatchObject({ staleAt: new Date(now + harnessCatalogRetryMs) });
+  });
+  it("leaves convergence owed after an invalidation whose recapture fails", async () => {
+    let stored: HarnessInstanceCatalog | null = {
+      ...errorCatalog(),
+      status: "authentication-required",
+      detail: "Sign in to use this engine",
+    };
+    const settled = convergence({ stored });
+    // Sign-in required is settled: convergence alone would never ask again.
+    await reconcileHarnessCatalogs({
+      catalogs: settled.catalogs,
+      connectedEnvironmentIds: [harnessEnvironmentId],
+      runners: { inspectHarnesses: settled.inspectHarnesses, connectionGenerationFor: () => 1 },
+      signal: AbortSignal.timeout(1_000),
+    });
+    expect(settled.inspectHarnesses).not.toHaveBeenCalled();
+    const onFailed = vi.fn();
+    await recaptureInvalidatedHarnessCatalog({
+      catalogs: settled.catalogs,
+      connectionGeneration: 1,
+      environmentIds: [harnessEnvironmentId],
+      harnessInstanceId,
+      runners: {
+        connectionGenerationFor: () => 1,
+        inspectHarnesses: vi.fn(async () => {
+          throw new Error("Runner did not answer");
+        }),
+      },
+      signal: AbortSignal.timeout(1_000),
+      store: {
+        getHarnessInstance: async () => harness,
+        discardHarnessCatalog: async () => {
+          stored = null;
+        },
+      },
+      onCaptured: vi.fn(),
+      onFailed,
+    });
+    expect(onFailed).toHaveBeenCalledTimes(1);
+    // What the woken convergence then finds: no stored catalog, so it asks.
+    const after = convergence({ stored });
+    await reconcileHarnessCatalogs({
+      catalogs: after.catalogs,
+      connectedEnvironmentIds: [harnessEnvironmentId],
+      runners: { inspectHarnesses: after.inspectHarnesses, connectionGenerationFor: () => 1 },
+      signal: AbortSignal.timeout(1_000),
+    });
+    expect(after.inspectHarnesses).toHaveBeenCalledTimes(1);
+  });
+  describe("the convergence owner after an invalidation", () => {
+    function manual() {
+      let now = Date.now();
+      const timers = new Set<{ at: number; run: () => void }>();
+      return {
+        clock: {
+          now: () => now,
+          schedule(run: () => void, milliseconds: number) {
+            const timer = { at: now + milliseconds, run };
+            timers.add(timer);
+            return () => timers.delete(timer);
+          },
+        },
+        armed: () => [...timers].map((timer) => timer.at - now),
+        advance(milliseconds: number) {
+          now += milliseconds;
+          for (const timer of [...timers].filter((t) => t.at <= now)) {
+            timers.delete(timer);
+            timer.run();
+          }
+        },
+      };
+    }
+    const signIn = {
+      ...errorCatalog(),
+      status: "authentication-required" as const,
+      detail: "Sign in to use this engine",
+    };
+    it("owes a recapture when the invalidation fails before its discard", async () => {
+      const time = manual();
+      const stored = convergence({ stored: signIn });
+      const owner = createHarnessCatalogConvergence({
+        catalogs: stored.catalogs,
+        runners: { inspectHarnesses: stored.inspectHarnesses, connectionGenerationFor: () => 1 },
+        captureTimeoutMs: 1_000,
+        connectedEnvironmentIds: async () => [harnessEnvironmentId],
+        onCommitted: vi.fn(),
+        onError: vi.fn(),
+        clock: time.clock,
+      });
+      await recaptureInvalidatedHarnessCatalog({
+        catalogs: stored.catalogs,
+        connectionGeneration: 1,
+        environmentIds: [harnessEnvironmentId],
+        harnessInstanceId,
+        runners: { inspectHarnesses: stored.inspectHarnesses, connectionGenerationFor: () => 1 },
+        signal: AbortSignal.timeout(1_000),
+        store: {
+          getHarnessInstance: async () => {
+            throw new Error("database connection lost");
+          },
+          discardHarnessCatalog: vi.fn(),
+        },
+        onCaptured: vi.fn(),
+        onFailed: () => owner.owe(harnessInstanceId),
+      });
+      await owner.settled();
+      // The stored answer still says sign-in required, but the invalidation is honoured.
+      expect(stored.inspectHarnesses).toHaveBeenCalledTimes(1);
+      await owner.close();
+    });
+    it("keeps a debt when the Runner leaves before answering: an empty answer is not a capture", async () => {
+      const time = manual();
+      const stored = convergence({ stored: signIn });
+      // The registry answers an empty list once the environment's Runner has gone.
+      stored.inspectHarnesses.mockResolvedValueOnce([]);
+      const owner = createHarnessCatalogConvergence({
+        catalogs: stored.catalogs,
+        runners: { inspectHarnesses: stored.inspectHarnesses, connectionGenerationFor: () => 1 },
+        captureTimeoutMs: 1_000,
+        connectedEnvironmentIds: async () => [harnessEnvironmentId],
+        onCommitted: vi.fn(),
+        onError: vi.fn(),
+        clock: time.clock,
+      });
+      owner.owe(harnessInstanceId);
+      await owner.settled();
+      expect(stored.recorded).toEqual([]);
+      // The pass failed and backs off; the debt is still there for the retry.
+      expect(time.armed()).toEqual([5_000]);
+      time.advance(5_000);
+      await owner.settled();
+      expect(stored.inspectHarnesses).toHaveBeenCalledTimes(2);
+      expect(stored.recorded).toHaveLength(1);
+      await owner.close();
+    });
+    it("records a capture under the connection generation that answered", async () => {
+      const stored = convergence({ stored: null });
+      const record = vi.fn(stored.catalogs.recordHarnessCatalogs);
+      await inspectAndRecordHarnessCatalogs({
+        catalogs: { recordHarnessCatalogs: record },
+        environmentId: harnessEnvironmentId,
+        harnesses: [harnessInspectionDefinition(harness)],
+        runners: { inspectHarnesses: stored.inspectHarnesses, connectionGenerationFor: () => 7 },
+        signal: AbortSignal.timeout(1_000),
+      });
+      expect(record).toHaveBeenCalledWith(expect.objectContaining({ connectionGeneration: 7 }));
+      // With no connection there is no authority to record anything.
+      await expect(
+        inspectAndRecordHarnessCatalogs({
+          catalogs: { recordHarnessCatalogs: record },
+          environmentId: harnessEnvironmentId,
+          harnesses: [harnessInspectionDefinition(harness)],
+          runners: {
+            inspectHarnesses: stored.inspectHarnesses,
+            connectionGenerationFor: () => undefined,
+          },
+          signal: AbortSignal.timeout(1_000),
+        }),
+      ).rejects.toThrow("not connected");
+    });
+    it("clears a committed profile's debt even when another Runner fails in the same pass", async () => {
+      const time = manual();
+      const otherEnvironment = createId("environment");
+      const other: HarnessInstanceRecord = {
+        ...harness,
+        environmentId: otherEnvironment,
+        id: createId("harnessInstance"),
+      };
+      const inspectHarnesses = vi.fn<HarnessCatalogInspector["inspectHarnesses"]>(
+        async (environmentId) => {
+          if (environmentId === otherEnvironment) throw new Error("Computer disconnected");
+          return [readyCatalog()];
+        },
+      );
+      // Both stored answers say sign-in required: only a debt makes a pass ask.
+      const catalogs: HarnessCatalogConvergenceStore = {
+        listHarnessCatalogs: async () =>
+          [harness, other].map((record) => ({
+            capturedAt: new Date(),
+            catalog: { ...signIn, harnessInstanceId: record.id },
+            environmentId: record.environmentId,
+            harnessInstanceId: record.id,
+          })),
+        listHarnessInstances: async () => [harness, other],
+        recordHarnessCatalogs: async ({ catalogs: captured }) => captured,
+      };
+      const owner = createHarnessCatalogConvergence({
+        catalogs,
+        runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
+        captureTimeoutMs: 1_000,
+        connectedEnvironmentIds: async () => [harnessEnvironmentId, otherEnvironment],
+        onCommitted: vi.fn(),
+        onError: vi.fn(),
+        clock: time.clock,
+      });
+      // The failing Runner's debt first: its pass is still running when A's
+      // debt arrives, so the rerun owes both and fails on B.
+      owner.owe(other.id);
+      owner.owe(harnessInstanceId);
+      await owner.settled();
+      expect(time.armed()).toHaveLength(1);
+      time.advance(time.armed()[0]!);
+      await owner.settled();
+      const asked = inspectHarnesses.mock.calls.map(([environmentId]) => environmentId);
+      // A's capture committed in the failing pass: the backoff retry asks only for B.
+      expect(asked.filter((id) => id === harnessEnvironmentId)).toHaveLength(1);
+      expect(asked.filter((id) => id === otherEnvironment)).toHaveLength(3);
+      await owner.close();
+    });
+    it("keeps a newer invalidation owed when an older pass finishes after it", async () => {
+      const time = manual();
+      const stored = convergence({ stored: signIn });
+      const recording = Promise.withResolvers<void>();
+      const reached = Promise.withResolvers<void>();
+      const record = stored.catalogs.recordHarnessCatalogs.bind(stored.catalogs);
+      let held = true;
+      stored.catalogs.recordHarnessCatalogs = async (input) => {
+        if (held) {
+          held = false;
+          reached.resolve();
+          await recording.promise;
+        }
+        return record(input);
+      };
+      const owner = createHarnessCatalogConvergence({
+        catalogs: stored.catalogs,
+        runners: { inspectHarnesses: stored.inspectHarnesses, connectionGenerationFor: () => 1 },
+        captureTimeoutMs: 1_000,
+        connectedEnvironmentIds: async () => [harnessEnvironmentId],
+        onCommitted: vi.fn(),
+        onError: vi.fn(),
+        clock: time.clock,
+      });
+      owner.owe(harnessInstanceId);
+      await reached.promise;
+      // A second invalidation fails while the first pass is still recording.
+      owner.owe(harnessInstanceId);
+      recording.resolve();
+      await owner.settled();
+      // The older pass did not clear the newer debt: the profile is asked again.
+      expect(stored.inspectHarnesses).toHaveBeenCalledTimes(2);
+      await owner.close();
+    });
+    it("arms a deadline after a recapture that comes back unsettled", async () => {
+      const time = manual();
+      const stored = convergence({
+        capturedAt: new Date(time.clock.now()),
+        stored: { ...errorCatalog(), status: "preparing", detail: "Preparing Codex…" },
+      });
+      const owner = createHarnessCatalogConvergence({
+        catalogs: stored.catalogs,
+        runners: { inspectHarnesses: stored.inspectHarnesses, connectionGenerationFor: () => 1 },
+        captureTimeoutMs: 1_000,
+        connectedEnvironmentIds: async () => [harnessEnvironmentId],
+        onCommitted: vi.fn(),
+        onError: vi.fn(),
+        clock: time.clock,
+      });
+      // What the invalidation's capture callback does with the preparing answer it recorded.
+      owner.wake();
+      await owner.settled();
+      expect(time.armed()).toEqual([harnessCatalogRetryMs]);
+      time.advance(harnessCatalogRetryMs);
+      await owner.settled();
+      expect(stored.inspectHarnesses).toHaveBeenCalledTimes(1);
+      await owner.close();
+    });
+  });
+  it("re-inspects a stored error once its retry time has passed, and not right after it was recorded", async () => {
+    const now = Date.now();
+    const fresh = convergence({ capturedAt: new Date(now - 1_000), stored: errorCatalog() });
+    // The capture that recorded it just asked; asking again at once only rewrites it.
+    await expect(
+      reconcileHarnessCatalogs({
+        catalogs: fresh.catalogs,
+        connectedEnvironmentIds: [harnessEnvironmentId],
+        now,
+        runners: { inspectHarnesses: fresh.inspectHarnesses, connectionGenerationFor: () => 1 },
+        signal: AbortSignal.timeout(1_000),
+      }),
+    ).resolves.toMatchObject({ staleAt: new Date(now - 1_000 + harnessCatalogRetryMs) });
+    expect(fresh.inspectHarnesses).not.toHaveBeenCalled();
+    const { catalogs, inspectHarnesses } = convergence({
+      capturedAt: new Date(now - harnessCatalogRetryMs),
       stored: errorCatalog(),
     });
     await reconcileHarnessCatalogs({
+      now,
       catalogs,
       connectedEnvironmentIds: [harnessEnvironmentId],
-      runners: {
-        inspectHarnesses,
-      },
+      runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
       signal: AbortSignal.timeout(1_000),
     });
     expect(inspectHarnesses).toHaveBeenCalledTimes(1);
@@ -168,9 +477,7 @@ describe("harness catalog convergence", () => {
         catalogs,
         connectedEnvironmentIds: [harnessEnvironmentId],
         now,
-        runners: {
-          inspectHarnesses,
-        },
+        runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
         signal: AbortSignal.timeout(1_000),
       });
       expect(inspectHarnesses).not.toHaveBeenCalled();
@@ -179,6 +486,7 @@ describe("harness catalog convergence", () => {
   );
   it("converges a preparing catalog to the Runner's completed result", async () => {
     const { catalogs, inspectHarnesses, recorded } = convergence({
+      capturedAt: new Date(Date.now() - harnessCatalogRetryMs),
       stored: {
         ...errorCatalog(),
         status: "preparing",
@@ -188,9 +496,7 @@ describe("harness catalog convergence", () => {
     await reconcileHarnessCatalogs({
       catalogs,
       connectedEnvironmentIds: [harnessEnvironmentId],
-      runners: {
-        inspectHarnesses,
-      },
+      runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
       signal: AbortSignal.timeout(1_000),
     });
     expect(inspectHarnesses).toHaveBeenCalledTimes(1);
@@ -203,9 +509,7 @@ describe("harness catalog convergence", () => {
     await reconcileHarnessCatalogs({
       catalogs,
       connectedEnvironmentIds: [harnessEnvironmentId],
-      runners: {
-        inspectHarnesses,
-      },
+      runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
       signal: AbortSignal.timeout(1_000),
     });
     expect(inspectHarnesses).not.toHaveBeenCalled();
@@ -223,9 +527,7 @@ describe("harness catalog convergence", () => {
     await reconcileHarnessCatalogs({
       catalogs,
       connectedEnvironmentIds: [harnessEnvironmentId],
-      runners: {
-        inspectHarnesses,
-      },
+      runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
       signal: AbortSignal.timeout(1_000),
     });
     expect(inspectHarnesses).not.toHaveBeenCalled();
@@ -242,9 +544,7 @@ describe("harness catalog convergence", () => {
         catalogs,
         connectedEnvironmentIds: [harnessEnvironmentId],
         now,
-        runners: {
-          inspectHarnesses,
-        },
+        runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
         signal: AbortSignal.timeout(1_000),
       });
       expect(inspectHarnesses).toHaveBeenCalledTimes(1);
@@ -261,9 +561,7 @@ describe("harness catalog convergence", () => {
       catalogs,
       connectedEnvironmentIds: [harnessEnvironmentId],
       now,
-      runners: {
-        inspectHarnesses,
-      },
+      runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
       signal: AbortSignal.timeout(1_000),
     });
     expect(inspectHarnesses).not.toHaveBeenCalled();
@@ -288,9 +586,7 @@ describe("harness catalog convergence", () => {
       reconcileHarnessCatalogs({
         catalogs,
         connectedEnvironmentIds: [harnessEnvironmentId, other],
-        runners: {
-          inspectHarnesses,
-        },
+        runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
         signal: AbortSignal.timeout(1_000),
       }),
     ).rejects.toThrow("AI model catalog refresh failed");
@@ -334,6 +630,7 @@ describe("mutation-owned harness catalog reconciliation", () => {
       },
       runners: {
         isAvailable: () => true,
+        connectionGenerationFor: () => 1,
         reconcileHarnesses,
       },
     });
@@ -369,6 +666,7 @@ describe("mutation-owned harness catalog reconciliation", () => {
       onError: () => undefined,
       runners: {
         isAvailable: () => true,
+        connectionGenerationFor: () => 1,
         reconcileHarnesses,
       },
     });
@@ -396,6 +694,7 @@ describe("mutation-owned harness catalog reconciliation", () => {
     expect(reconcileHarnesses.mock.calls[1]?.[3]).toBeUndefined();
     expect(recordHarnessCatalogs).toHaveBeenCalledWith({
       catalogs: [],
+      connectionGeneration: 1,
       environmentId: harnessEnvironmentId,
       expectedRevisions: new Map(),
     });
@@ -426,6 +725,7 @@ describe("mutation-owned harness catalog reconciliation", () => {
       onError: () => undefined,
       runners: {
         isAvailable: () => true,
+        connectionGenerationFor: () => 1,
         reconcileHarnesses,
       },
     });
@@ -446,6 +746,7 @@ describe("mutation-owned harness catalog reconciliation", () => {
       onError: () => undefined,
       runners: {
         isAvailable: () => true,
+        connectionGenerationFor: () => 1,
         reconcileHarnesses,
       },
     });
@@ -457,92 +758,6 @@ describe("mutation-owned harness catalog reconciliation", () => {
     expect(reconcileHarnesses).not.toHaveBeenCalled();
   });
 });
-describe("catalog commit notifications", () => {
-  it("publishes only committed catalogs, without an observer, and skips empty records", async () => {
-    const commit = Promise.withResolvers<void>();
-    let stored: readonly HarnessInstanceCatalog[] = [];
-    let accept = true;
-    const rereads: (readonly HarnessInstanceCatalog[])[] = [];
-    const broadcast = vi.fn(() => {
-      rereads.push(stored);
-    });
-    const recorder = notifyingHarnessCatalogRecorder(
-      {
-        recordHarnessCatalogs: async ({ catalogs }) => {
-          await commit.promise;
-          if (!accept) return [];
-          stored = catalogs;
-          return stored;
-        },
-      },
-      {
-        broadcast,
-      },
-    );
-    const input = {
-      catalogs: [readyCatalog()],
-      environmentId: harnessEnvironmentId,
-      expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
-    };
-    const recording = recorder.recordHarnessCatalogs(input);
-    expect(broadcast).not.toHaveBeenCalled();
-    commit.resolve();
-    await recording;
-    expect(broadcast).toHaveBeenCalledWith(
-      {
-        type: "host.machines.changed",
-      },
-      "harness.catalog",
-    );
-    expect(rereads).toEqual([[readyCatalog()]]);
-    await recorder.recordHarnessCatalogs({
-      ...input,
-      catalogs: [],
-    });
-    accept = false;
-    await recorder.recordHarnessCatalogs(input);
-    expect(broadcast).toHaveBeenCalledTimes(1);
-  });
-});
-function runEvent(
-  environmentId: EnvironmentId,
-  outcome: {
-    readonly data: object;
-    readonly type: "run.completed" | "run.failed";
-  },
-): AgentEvent {
-  return AgentEventSchema.parse({
-    createdAt: "2026-09-05T00:00:00.000Z",
-    data: {
-      ...outcome.data,
-      startedAt: "2026-08-09T09:00:00.000Z",
-      personWaiting: true,
-      startedBy: {
-        displayName: "Alex",
-        kind: "human",
-        userId: createId("user"),
-        principalId: "test-principal",
-      },
-    },
-    environmentId,
-    eventId: createId("event"),
-    runId: createId("run"),
-    sequence: "1",
-    threadId: createId("thread"),
-    type: outcome.type,
-  });
-}
-function runFailure(environmentId: EnvironmentId, code: string): AgentEvent {
-  return runEvent(environmentId, {
-    data: {
-      code,
-      message: "You've hit your usage limit.",
-      retryable: false,
-      status: "failed",
-    },
-    type: "run.failed",
-  });
-}
 describe("harness catalog re-inspection after a usage limit", () => {
   it("re-reads the failing work location, because the Run just proved the stored answer wrong", async () => {
     const { catalogs, inspectHarnesses, recorded } = convergence({
@@ -550,10 +765,9 @@ describe("harness catalog re-inspection after a usage limit", () => {
     });
     await inspectHarnessCatalogsAfterUsageLimit({
       catalogs,
-      event: runFailure(harnessEnvironmentId, harnessUsageLimitFailureCode),
-      runners: {
-        inspectHarnesses,
-      },
+      environmentId: harnessEnvironmentId,
+      failureCode: harnessUsageLimitFailureCode,
+      runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
       signal: AbortSignal.timeout(1_000),
     });
     expect(inspectHarnesses).toHaveBeenCalledTimes(1);
@@ -565,22 +779,12 @@ describe("harness catalog re-inspection after a usage limit", () => {
     const { catalogs, inspectHarnesses } = convergence({
       stored: readyCatalog(),
     });
-    for (const event of [
-      runFailure(harnessEnvironmentId, "codex_harness_error"),
-      runEvent(harnessEnvironmentId, {
-        data: {
-          replyMessageId: null,
-          status: "completed",
-        },
-        type: "run.completed",
-      }),
-    ]) {
+    for (const failureCode of ["codex_harness_error", undefined]) {
       await inspectHarnessCatalogsAfterUsageLimit({
         catalogs,
-        event,
-        runners: {
-          inspectHarnesses,
-        },
+        environmentId: harnessEnvironmentId,
+        failureCode,
+        runners: { inspectHarnesses, connectionGenerationFor: () => 1 },
         signal: AbortSignal.timeout(1_000),
       });
     }

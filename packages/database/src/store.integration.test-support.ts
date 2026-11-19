@@ -91,9 +91,22 @@ export async function createStoreFixture() {
       return { database, close: () => database.destroy() };
     });
     const { OpensteerStore } = await import("./store.js");
-    const store = new OpensteerStore(database, {
-      readPersonalResources: readEmptyPersonalResources,
+    const reactions: import("./personal-mutation.js").PersonalCommitReaction[] = [];
+    const commitListeners = new Set<(head: string, scopes: ReadonlySet<string>) => void>();
+    const { installPersonalMutationHooks } = await import("./personal-mutation.js");
+    installPersonalMutationHooks(database, {
+      wake(notice) {
+        for (const listener of commitListeners) listener(notice.head, notice.changedScopes);
+      },
+      react(reaction) {
+        reactions.push(reaction);
+      },
+      onFailure(error) {
+        throw error;
+      },
+      suspend: () => ({ committed() {}, rolledBack() {} }),
     });
+    const store = new OpensteerStore(database);
     const { createPersonalRunFixturePort } = await import("./personal-run-fixture.test-support.js");
     const personalRuns = createPersonalRunFixturePort(store);
     let personal: Awaited<ReturnType<typeof seedPersonalFixture>> | undefined;
@@ -375,7 +388,9 @@ export async function createStoreFixture() {
           kind: "status",
           lastError: input.status === "retryable-failed" ? "Temporary provider failure" : null,
           messageId: null,
-          nextAttemptAt: new Date(),
+          // Due by the database's clock, which claimDelivery compares against; a container's
+          // clock can trail the host's by tens of milliseconds.
+          nextAttemptAt: sql<Date>`statement_timestamp()`,
           receipt: null,
           sentAt: null,
           status: input.status,
@@ -726,6 +741,13 @@ export async function createStoreFixture() {
       createRunFixture,
       startRunFixture,
       close: clone.drop,
+      reactions,
+      observePersonalCommits(listener: (head: string, scopes: ReadonlySet<string>) => void) {
+        commitListeners.add(listener);
+        return () => {
+          commitListeners.delete(listener);
+        };
+      },
     });
   } catch (error) {
     await clone.drop();
@@ -924,32 +946,6 @@ export function testChannelAccessPolicy(mode: "anyone" | "approved" | "owner") {
     directMessages: sender,
   };
 }
-
-export const readEmptyPersonalResources: import("./snapshot-store.js").PersonalSnapshotResourcesReader =
-  async ({ database }) => {
-    const [app, tab, profile] = await Promise.all([
-      database.selectFrom("apps").select("id").limit(1).executeTakeFirst(),
-      database
-        .selectFrom("personalTabs")
-        .select("id")
-        .where("closedAt", "is", null)
-        .limit(1)
-        .executeTakeFirst(),
-      database.selectFrom("browserProfiles").select("id").limit(1).executeTakeFirst(),
-    ]);
-    if (app || tab || profile)
-      throw new Error(
-        "This fixture needs a resource snapshot collaborator for its private resources",
-      );
-    return {
-      tabs: { tabs: [], layout: { revision: 0, items: [] }, complete: true },
-      browser: {
-        available: false,
-        placements: [],
-        profiles: [],
-      },
-    };
-  };
 
 export const testMessagingRunnerId = RunnerIdSchema.parse(
   "rnr_00000000-0000-4000-8000-000000000001",

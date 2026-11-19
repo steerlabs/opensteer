@@ -28,7 +28,7 @@
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { HostSnapshot, TranscriptEntry } from "@opensteer/client/host";
+import type { TranscriptFixtureSnapshot, TranscriptEntry } from "@opensteer/client/host";
 import type { MockHostClient } from "@opensteer/client/mock";
 import type { BrowserContext, Locator, Page } from "playwright-core";
 import { expectThat, finishJourney, journeyChecks, openMockWeb } from "./mock-web-journey.js";
@@ -195,8 +195,8 @@ async function installFixture(context: BrowserContext, working: boolean, family:
   await context.addInitScript(
     ({ entries, family, threadId, title, working }) => {
       let client: MockHostClient | undefined;
-      let base: HostSnapshot | undefined;
-      let projected: HostSnapshot | undefined;
+      let base: TranscriptFixtureSnapshot | undefined;
+      let projected: TranscriptFixtureSnapshot | undefined;
       Object.defineProperty(window, "opensteerMock", {
         configurable: true,
         get: () => client,
@@ -230,7 +230,7 @@ async function installFixture(context: BrowserContext, working: boolean, family:
           Object.defineProperty(value, "loadTranscriptAround", { value: async () => undefined });
           const read = value.getSnapshot;
           Object.defineProperty(value, "getSnapshot", {
-            value: (): HostSnapshot => {
+            value: (): TranscriptFixtureSnapshot => {
               const next = read()!;
               if (next === base && projected) return projected;
               base = next;

@@ -45,7 +45,11 @@ import {
   nativeFsHelperBinary,
   startPersonalMachineHost,
 } from "../apps/host/src/runtime/personal-machine.test-support.js";
-import { testRpcData, testRpcRequest } from "../apps/host/src/server/test-host-api-request.js";
+import {
+  testRpcData,
+  testRpcRequest,
+  testResourceData,
+} from "../apps/host/src/server/test-host-api-request.js";
 import { integrationBundleEntrySync } from "@opensteer/shared/test-support/integrationRunnerBuild";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 
@@ -875,15 +879,12 @@ it("keeps person and Guest placement while Browser is off and continues a pendin
       {},
       { headers: home.ownerHeaders },
     );
-    const bootstrap = await testRpcData(
-      home.origin,
-      "bootstrap.get",
-      {},
-      { headers: home.ownerHeaders },
-    );
+    const { homes } = await testResourceData(home.origin, "browser-home", {
+      headers: home.ownerHeaders,
+    });
     expect(
       newTabTarget(
-        { machines: machines.machines, browserProfileHomes: bootstrap.browser.profileHomes },
+        { machines: machines.machines, browserProfileHomes: homes },
         { kind: "guest" },
         browser.runnerId,
       ),

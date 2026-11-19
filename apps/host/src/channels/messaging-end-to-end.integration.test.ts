@@ -198,7 +198,7 @@ integration("messaging end to end", () => {
       channels,
       credentials,
       onExecutionQueued: () => undefined,
-      onDeploymentEvent: () => undefined,
+
       relay: hub,
       runners: {
         canRunHarness: (candidate) => candidate === environmentId,

@@ -3,7 +3,12 @@ import { dataAppName } from "../devices/access-requests.js";
 import { localTargetBlocked } from "../devices/target-blocked.js";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { createHash } from "node:crypto";
-import { BrowserRequestOutcomeSchema, OpensteerError, type Request } from "@opensteer/core";
+import {
+  BrowserRequestOutcomeSchema,
+  OpensteerError,
+  type Request,
+  type RunId,
+} from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import {
   integrationAccountLabel,
@@ -16,18 +21,18 @@ import {
   type PasswordSignInRequestResponse,
 } from "@opensteer/protocol";
 import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-sources";
-import { CoalescedWake } from "@opensteer/shared/coalescedWake";
+import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
 import { z } from "zod";
 import type { PasswordSignInContinuationState } from "../browser/password-sign-in-service.js";
 import type { ComputerAppApprovalService } from "../devices/computer-app-approval-service.js";
 import type { DeviceService } from "../devices/device-service.js";
-const defaultIntervalMs = 5_000;
+const retryMs = 5_000;
 const cancelledContinuationReason = "Continuation delivery was cancelled by Thread input admission";
 const triggerOriginatedContinuationReason =
   "Trigger-originated Requests receive no continuation: there is no Run or turn to resume, and the next Trigger occurrence observes the resolved state";
 type RequestContinuationStore = Pick<
   OpensteerStore["requests"],
-  "listPendingContinuations" | "recordContinuationAttempt" | "get"
+  "listPendingContinuations" | "nextContinuationDeadline" | "recordContinuationAttempt" | "get"
 >;
 type ThreadInputDisposition = Awaited<
   ReturnType<CommandService["enqueueThreadInput"]>
@@ -50,24 +55,20 @@ type IntegrationInventoryEntry = Awaited<
 export class ContinuationService {
   readonly #commands: Pick<CommandService, "enqueueThreadInput">;
   readonly #integrations: IntegrationInventorySource;
-  readonly #intervalMs: number;
   readonly #onError: (error: unknown) => void;
   readonly #requests: RequestContinuationStore;
   readonly #passwordSignIn: (operationId: string) => PasswordSignInContinuationState;
   #closed = false;
-  readonly #drains: CoalescedWake;
-  #timer: NodeJS.Timeout | undefined;
+  readonly #drains: DeadlineDrain;
   constructor(options: {
     readonly commands: Pick<CommandService, "enqueueThreadInput">;
     readonly integrations: IntegrationInventorySource;
-    readonly intervalMs?: number;
     readonly onError: (error: unknown) => void;
     readonly requests: RequestContinuationStore;
     readonly passwordSignIn?: (operationId: string) => PasswordSignInContinuationState;
   }) {
     this.#commands = options.commands;
     this.#integrations = options.integrations;
-    this.#intervalMs = options.intervalMs ?? defaultIntervalMs;
     this.#onError = options.onError;
     this.#requests = options.requests;
     this.#passwordSignIn =
@@ -76,26 +77,20 @@ export class ContinuationService {
         publishing: false,
         loginRef: undefined,
       }));
-    this.#drains = new CoalescedWake({
-      run: () => this.#drainOnce(),
+    this.#drains = new DeadlineDrain({
+      drain: () => this.#drainOnce(),
       onError: this.#onError,
     });
   }
   start(): void {
-    if (this.#closed || this.#timer) return;
-    this.#timer = setInterval(() => this.notify(), this.#intervalMs);
-    this.#timer.unref();
-    this.notify();
+    this.#drains.start();
   }
   notify(): void {
-    if (this.#closed) return;
     this.#drains.wake();
   }
   async close(): Promise<void> {
     this.#closed = true;
-    if (this.#timer) clearInterval(this.#timer);
-    this.#timer = undefined;
-    await this.#drains.stop();
+    await this.#drains.close();
   }
   async outcome(request: Request): Promise<{
     readonly request: Request;
@@ -146,19 +141,53 @@ export class ContinuationService {
         : {}),
     };
   }
-  async #drainOnce(): Promise<void> {
-    const continuations = await this.#requests.listPendingContinuations();
-    const groups = new Map<string, Request[]>();
+  async #drainOnce(): Promise<Date | null | typeof retryWithBackoff> {
+    const publishingRuns = new Set<RunId>();
+    for (;;) {
+      // One time per round for both the listing and the "still due" comparison.
+      const now = Date.now();
+      const continuations = await this.#requests.listPendingContinuations(
+        undefined,
+        new Date(now - retryMs),
+        publishingRuns,
+      );
+      await this.#deliver(continuations, publishingRuns);
+      if (this.#closed) return null;
+      const next = await this.#requests.nextContinuationDeadline(
+        retryMs,
+        publishingRuns,
+        new Date(now),
+      );
+      if (!next || next.getTime() > now) return next;
+      // Each listed row was attempted (its attempt is recorded) or held for a
+      // publishing Run, so a round that listed some made progress; one that
+      // listed none while something is due would only spin.
+      if (continuations.length === 0) return retryWithBackoff;
+    }
+  }
+
+  async #deliver(
+    continuations: Awaited<ReturnType<RequestContinuationStore["listPendingContinuations"]>>,
+    publishingRuns: Set<RunId>,
+  ): Promise<void> {
+    const groups = new Map<RunId, Request[]>();
+    const writeFailures: unknown[] = [];
+    const record = (input: Parameters<RequestContinuationStore["recordContinuationAttempt"]>[0]) =>
+      this.#requests.recordContinuationAttempt(input).catch((error: unknown) => {
+        writeFailures.push(error);
+      });
+    const undeliverable = (request: Request, reason: string) =>
+      record({ requestId: request.id, reason, status: "undeliverable" });
     for (const { request } of continuations) {
       if (request.originatingRunId === null) {
-        await this.#settleUndeliverable(request, triggerOriginatedContinuationReason);
+        await undeliverable(request, triggerOriginatedContinuationReason);
       } else {
         const group = groups.get(request.originatingRunId) ?? [];
         group.push(request);
         groups.set(request.originatingRunId, group);
       }
     }
-    for (const group of groups.values()) {
+    for (const [runId, group] of groups) {
       const requests = group.toSorted(
         (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
       );
@@ -179,7 +208,10 @@ export class ContinuationService {
           );
         }
       }
-      if (publishing) continue;
+      if (publishing) {
+        publishingRuns.add(runId);
+        continue;
+      }
       const request =
         requests.find(
           (row) =>
@@ -213,27 +245,17 @@ export class ContinuationService {
         disposition = delivered.disposition;
       } catch (error) {
         if (isPermanentContinuationFailure(error)) {
-          for (const row of requests)
-            await this.#settleUndeliverable(row, continuationFailureReason(error));
+          for (const row of requests) await undeliverable(row, continuationFailureReason(error));
         } else {
-          try {
-            for (const row of requests)
-              await this.#requests.recordContinuationAttempt({
-                reason: null,
-                requestId: row.id,
-                status: "waiting",
-              });
-          } catch (recordError) {
-            this.#onError(recordError);
-          }
+          for (const row of requests)
+            await record({ reason: null, requestId: row.id, status: "waiting" });
           this.#onError(error);
         }
         continue;
       }
       switch (disposition) {
         case "cancelled":
-          for (const row of requests)
-            await this.#settleUndeliverable(row, cancelledContinuationReason);
+          for (const row of requests) await undeliverable(row, cancelledContinuationReason);
           continue;
         case "pending":
         case "run-queued":
@@ -244,28 +266,11 @@ export class ContinuationService {
           throw new Error(`Unsupported Thread input disposition: ${unsupportedDisposition}`);
         }
       }
-      try {
-        for (const row of requests)
-          await this.#requests.recordContinuationAttempt({
-            reason: null,
-            requestId: row.id,
-            status: "queued",
-          });
-      } catch (error) {
-        this.#onError(error);
-      }
+      for (const row of requests)
+        await record({ reason: null, requestId: row.id, status: "queued" });
     }
-  }
-  async #settleUndeliverable(request: Request, reason: string): Promise<void> {
-    try {
-      await this.#requests.recordContinuationAttempt({
-        reason,
-        requestId: request.id,
-        status: "undeliverable",
-      });
-    } catch (recordError) {
-      this.#onError(recordError);
-    }
+    if (writeFailures.length)
+      throw new AggregateError(writeFailures, "Recording continuation attempts failed");
   }
 }
 const IntegrationAccessAccountSchema = z.strictObject({

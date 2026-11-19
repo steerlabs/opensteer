@@ -16,16 +16,13 @@ import {
   notificationTitleMaxCharacters,
   NotificationViewSchema,
   OpensteerError,
-  RequestSchema,
   requestTitleText,
-  type AgentEvent,
   type ContentPart,
   type EventId,
   type MessageId,
   type NotificationId,
   type NotificationKind,
   type NotificationView,
-  type Request,
   type RequestId,
   type RequestRequiredActor,
   type RunId,
@@ -36,6 +33,8 @@ import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { runWasStopped } from "./run-grants.js";
 import type { DatabaseSchema } from "./schema.js";
+import type { PersonalCommitReaction } from "./personal-mutation.js";
+import { requestFromRow } from "./request-persistence.js";
 
 /** Process-local decided alert; only sealed text crosses the Account boundary. */
 export interface NotificationPublication {
@@ -74,33 +73,19 @@ export function requestNotificationAudience(input: {
   return input.requestedBy === input.ownerId ? [input.ownerId] : [];
 }
 
-/**
- * Whether an event can become a notification. It reads only what the event
- * carries; the current personal owner facts decide the rest.
- */
-export function mayNotify(event: AgentEvent): boolean {
-  switch (event.type) {
-    case "message.created":
-      return event.data.addressedToUserId !== undefined;
-    case "request.opened":
-    case "run.failed":
-    case "run.interrupted":
-      return true;
-    case "run.completed":
-    case "run.phase":
-      return replyMessageIdOf(event) !== null;
-    default:
-      return false;
-  }
-}
+export type NotificationTransition =
+  | Extract<PersonalCommitReaction, { type: "requestChanged" | "runFinished" }>
+  | {
+      readonly type: "replyPublished";
+      readonly runId: RunId;
+      readonly threadId: ThreadId;
+      readonly messageId: MessageId;
+      readonly addressedToUserId?: UserId;
+    };
 
-/**
- * How long a reply waits before push. A person reading the Thread on another
- * screen marks it read within this window, and the publisher rereads that
- * before sending, so their phone does not buzz about what they just saw.
- * Requests are not held: they wait on the person until answered.
- */
-export const replyPushGraceMilliseconds = 5_000;
+export function mayNotify(change: NotificationTransition): boolean {
+  return change.type !== "requestChanged" || (change.opened && change.status === "pending");
+}
 
 /** Reads current facts after an event commits; no notification state is persisted. */
 export class NotificationStore {
@@ -141,8 +126,10 @@ export class NotificationStore {
       return null;
     const settings = await personalSettings(this.#database);
     const state = await this.#database
-      .selectFrom("deploymentEventState")
-      .selectAll()
+      .selectFrom("clientSyncState")
+      .select("sequence")
+      .where("ready", "=", true)
+      .limit(1)
       .executeTakeFirstOrThrow();
     const digest = createHash("sha256").update(`${teamId}:${requestId}`).digest("hex");
     return {
@@ -169,14 +156,15 @@ export class NotificationStore {
     };
   }
 
-  async decide(event: AgentEvent): Promise<readonly DecidedNotification[]> {
-    if (!mayNotify(event)) return [];
+  async decide(
+    change: NotificationTransition,
+  ): Promise<readonly (DecidedNotification & { sequence: string })[]> {
+    if (!mayNotify(change)) return [];
     return withPersonalReadTransaction(this.#database, async (transaction) =>
-      (await candidatesFor(transaction, event))
+      (await candidatesFor(transaction, change))
         .filter(
           (candidate) =>
-            Date.parse(candidate.occurredAt ?? event.createdAt) +
-              notificationPushWindowMilliseconds >
+            Date.parse(candidate.occurredAt) + notificationPushWindowMilliseconds >
             this.#now().getTime(),
         )
         .map((candidate) => {
@@ -203,15 +191,15 @@ export class NotificationStore {
             `ntf_${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
           );
           return {
-            ...(event.type === "request.opened" && event.data.request.kind === "device.access"
+            ...(change.type === "requestChanged" && change.kind === "device.access"
               ? { deviceAccessRequests: "include" as const }
               : {}),
             userId: candidate.userId,
+            sequence: candidate.sequence,
             view: NotificationViewSchema.parse({
               ...candidate,
               id,
-              occurredAt: candidate.occurredAt ?? event.createdAt,
-              threadId: event.threadId,
+              threadId: change.threadId,
             }),
           };
         }),
@@ -285,7 +273,8 @@ export class NotificationStore {
   }
 }
 interface NotificationCandidate {
-  readonly occurredAt?: string;
+  readonly occurredAt: string;
+  readonly sequence: string;
   readonly body: string;
   readonly kind: NotificationKind;
   readonly messageId: MessageId | null;
@@ -298,51 +287,62 @@ interface NotificationCandidate {
 /** The people one event notifies, and what each is told. */
 async function candidatesFor(
   transaction: Transaction<DatabaseSchema>,
-  event: AgentEvent,
+  change: NotificationTransition,
 ): Promise<readonly NotificationCandidate[]> {
-  switch (event.type) {
-    case "message.created":
-      return event.data.addressedToUserId
-        ? replyCandidates(transaction, event, event.data.message.id)
-        : [];
-    case "request.opened":
-      return requestCandidates(transaction, event);
-    case "run.completed":
-    case "run.phase": {
-      const replyMessageId = replyMessageIdOf(event);
-      return replyMessageId ? replyCandidates(transaction, event, replyMessageId) : [];
-    }
-    case "run.failed":
-      // An engine that errors while winding down a stop somebody asked for
-      // reports a failure the person did not wait on.
-      return event.runId && (await runWasStopped(transaction, event.runId))
-        ? []
-        : failureCandidates(transaction, event, failureBody(event.data.message));
-    case "run.interrupted":
-      return interruptionCandidates(transaction, event);
-    default:
-      return [];
+  if (change.type === "requestChanged") return requestCandidates(transaction, change);
+  if (change.type === "replyPublished")
+    return replyCandidates(transaction, change, change.messageId, change.addressedToUserId);
+
+  const run = await transaction
+    .selectFrom("runs")
+    .select([
+      "status",
+      "revision",
+      "terminalReplyMessageId",
+      "completedAt",
+      "failure",
+      "startedAt",
+      "backgroundDeadlineAt",
+    ])
+    .where("id", "=", change.runId)
+    .where("threadId", "=", change.threadId)
+    .executeTakeFirst();
+  if (!run?.completedAt || change.outcome !== run.status) return [];
+  if (run.status === "completed") {
+    return run.terminalReplyMessageId
+      ? replyCandidates(transaction, change, run.terminalReplyMessageId)
+      : [];
   }
+  if (await runWasStopped(transaction, change.runId)) return [];
+  if (
+    run.status === "interrupted" &&
+    (!run.startedAt || (run.backgroundDeadlineAt && run.backgroundDeadlineAt <= run.completedAt))
+  )
+    return [];
+  return failureCandidates(
+    transaction,
+    change,
+    run.status === "failed"
+      ? failureBody(run.failure?.message ?? "")
+      : "Opensteer stopped before it finished.",
+    run.completedAt.toISOString(),
+    run.revision,
+  );
 }
+
 async function requestCandidates(
   transaction: Transaction<DatabaseSchema>,
-  event: Extract<
-    AgentEvent,
-    {
-      readonly type: "request.opened";
-    }
-  >,
+  change: Extract<NotificationTransition, { type: "requestChanged" }>,
 ): Promise<readonly NotificationCandidate[]> {
-  const parsed = RequestSchema.safeParse(event.data.request);
-  if (!parsed.success) return [];
-  const request: Request = parsed.data;
-  // A Request answered between commit and this decision is no longer news.
-  const current = await transaction
+  const row = await transaction
     .selectFrom("requests")
-    .select("status")
-    .where("id", "=", request.id)
+    .selectAll()
+    .where("id", "=", change.requestId)
+    .where("originatingThreadId", "=", change.threadId)
+    .where("status", "=", "pending")
     .executeTakeFirst();
-  if (current?.status !== "pending") return [];
+  if (!row) return [];
+  const request = requestFromRow(row);
   const { ownerId } = await personalSettings(transaction);
   const userIds = requestNotificationAudience({
     ownerId,
@@ -356,7 +356,7 @@ async function requestCandidates(
     .where("id", "in", userIds)
     .where("disabledAt", "is", null)
     .execute();
-  const title = await threadTitle(transaction, event.threadId);
+  const title = await threadTitle(transaction, change.threadId);
   if (!title) return [];
   const body =
     plainTextExcerpt(requestTitleText(request.presentation), notificationBodyMaxCharacters) ??
@@ -364,6 +364,8 @@ async function requestCandidates(
   return recipients.map(({ id: userId }) => ({
     body,
     kind: "request-opened",
+    occurredAt: request.createdAt,
+    sequence: row.revision,
     messageId: null,
     requestId: request.id,
     runId: null,
@@ -375,11 +377,11 @@ async function requestCandidates(
 /** A reply alerts only the person the Run answers directly. */
 async function replyCandidates(
   transaction: Transaction<DatabaseSchema>,
-  event: AgentEvent,
+  change: Pick<NotificationTransition, "threadId" | "runId">,
   replyMessageId: MessageId,
+  addressed?: UserId,
 ): Promise<readonly NotificationCandidate[]> {
-  const addressed = event.type === "message.created" ? event.data.addressedToUserId : undefined;
-  const recipient = await personAnswered(transaction, event, addressed);
+  const recipient = await personAnswered(transaction, change, addressed);
   if (!recipient) return [];
   const reply = await transaction
     .selectFrom("messages")
@@ -393,16 +395,18 @@ async function replyCandidates(
       "messages.createdAt",
       "messages.addressedToUserId",
       "messages.runId",
+      "messages.sequence",
       "threadVisits.lastVisitedAt as lastVisitedAt",
     ])
     .where("messages.kind", "=", "assistant")
     .where("messages.id", "=", replyMessageId)
-    .where("messages.threadId", "=", event.threadId)
+    .where("messages.threadId", "=", change.threadId)
+    .where("messages.published", "=", true)
     .executeTakeFirst();
   if (
     !reply ||
     (addressed !== undefined &&
-      (reply.addressedToUserId !== addressed || reply.runId !== event.runId))
+      (reply.addressedToUserId !== addressed || reply.runId !== change.runId))
   )
     return [];
   if (reply.lastVisitedAt !== null && reply.lastVisitedAt >= reply.createdAt) {
@@ -417,9 +421,10 @@ async function replyCandidates(
       body,
       kind: "reply-published",
       occurredAt: reply.createdAt.toISOString(),
+      sequence: recipient.revision,
       messageId: replyMessageId,
       requestId: null,
-      runId: event.runId,
+      runId: change.runId,
       title: recipient.title,
       userId: recipient.userId,
     },
@@ -427,45 +432,26 @@ async function replyCandidates(
 }
 async function failureCandidates(
   transaction: Transaction<DatabaseSchema>,
-  event: AgentEvent,
+  change: Pick<NotificationTransition, "threadId" | "runId">,
   body: string,
+  occurredAt: string,
+  sequence: string,
 ): Promise<readonly NotificationCandidate[]> {
-  const recipient = await personAnswered(transaction, event);
+  const recipient = await personAnswered(transaction, change);
   if (!recipient) return [];
   return [
     {
       body,
       kind: "run-failed",
+      occurredAt,
+      sequence,
       messageId: null,
       requestId: null,
-      runId: event.runId,
+      runId: change.runId,
       title: recipient.title,
       userId: recipient.userId,
     },
   ];
-}
-
-/**
- * A stop somebody asked for — the person, the task that assigned the work, or
- * the deadline on work left running — is not news. An interruption nobody
- * asked for, such as the Runner going away mid-turn, leaves a person waiting
- * on a reply that will not come, which is a failure as far as they can tell.
- */
-async function interruptionCandidates(
-  transaction: Transaction<DatabaseSchema>,
-  event: AgentEvent,
-): Promise<readonly NotificationCandidate[]> {
-  if (!event.runId) return [];
-  const run = await transaction
-    .selectFrom("runs")
-    .select(["backgroundDeadlineAt", "startedAt"])
-    .where("id", "=", event.runId)
-    .executeTakeFirst();
-  if (!run?.startedAt || (await runWasStopped(transaction, event.runId))) return [];
-  // A recovery can end work past its deadline with no stop to record: no
-  // Runner held it to be told.
-  if (run.backgroundDeadlineAt && run.backgroundDeadlineAt <= new Date(event.createdAt)) return [];
-  return failureCandidates(transaction, event, "Opensteer stopped before it finished.");
 }
 
 /**
@@ -475,19 +461,21 @@ async function interruptionCandidates(
  */
 async function personAnswered(
   transaction: Transaction<DatabaseSchema>,
-  event: AgentEvent,
+  change: Pick<NotificationTransition, "threadId" | "runId">,
   addressedToUserId?: UserId,
 ): Promise<{
   readonly title: string;
   readonly userId: UserId;
+  readonly revision: string;
 } | null> {
-  if (!event.runId) return null;
+  if (!change.runId) return null;
   const run = await transaction
     .selectFrom("runs")
     .innerJoin("threads", "threads.id", "runs.threadId")
     .innerJoin("users", "users.id", "runs.requestedBy")
     .select([
       "runs.personWaited",
+      "runs.revision",
       "runs.assignmentId",
       "runs.replyTarget",
       "runs.requestedBy",
@@ -499,9 +487,10 @@ async function personAnswered(
       (input.id = runs.seed_input_id or (input.run_id = runs.id and input.kind = 'input'))
       and input.author->>'kind' = 'human')`.as("personInput"),
     )
-    .where("runs.id", "=", event.runId)
+    .where("runs.id", "=", change.runId)
     .where("runs.maintenance", "is", null)
-    .where("runs.threadId", "=", event.threadId)
+    .where("threads.removedAt", "is", null)
+    .where("runs.threadId", "=", change.threadId)
     .where("users.disabledAt", "is", null)
     .executeTakeFirst();
   if (
@@ -514,11 +503,12 @@ async function personAnswered(
       : run.assignmentId !== null || run.replyTarget !== null)
   )
     return null;
-  const title = await threadTitle(transaction, event.threadId);
+  const title = await threadTitle(transaction, change.threadId);
   if (!title) return null;
   return {
     title,
     userId: run.requestedBy,
+    revision: run.revision,
   };
 }
 
@@ -531,20 +521,13 @@ async function threadTitle(
     .selectFrom("threads")
     .select(["threads.title", "threads.purpose"])
     .where("threads.id", "=", threadId)
+    .where("threads.removedAt", "is", null)
     .executeTakeFirst();
   if (!thread) return null;
   if (thread.purpose === "voice") return "Opensteer";
   return plainTextExcerpt(thread.title, notificationTitleMaxCharacters) ?? "Opensteer";
 }
 
-/** The reply a completed Run, or a turn that left work running, ended with. */
-function replyMessageIdOf(event: AgentEvent): MessageId | null {
-  if (event.type === "run.completed") return event.data.replyMessageId;
-  if (event.type === "run.phase" && event.data.phase === "background") {
-    return event.data.replyMessageId ?? null;
-  }
-  return null;
-}
 function failureBody(message: string): string {
   const summary = plainTextExcerpt(
     message,

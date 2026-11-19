@@ -3,6 +3,8 @@ import {
   createMessageOutboxStorage,
   disposeMessageOutbox,
   initializeMessageOutbox,
+  realtimeIdleProbeDeadlineMs,
+  realtimeIdleProbeMs,
   type MessageOutboxStorage,
 } from "@opensteer/client/host";
 import {
@@ -433,6 +435,13 @@ export class MobileClient {
         await options.privateFiles.removeFile(`${outboxDirectory}/${key}.json`);
       },
     });
+    // A build of this branch kept unsent waiting edits in a file beside the drafts; nothing
+    // reads it any more, so it goes.
+    void options.privateFiles
+      .removeFile(
+        `${options.draftsFilePath.slice(0, options.draftsFilePath.lastIndexOf("/"))}/unsent-edits-v1.json`,
+      )
+      .catch(() => undefined);
     this.drafts = createThreadDraftStore({
       filePath: options.draftsFilePath,
       ...(options.forgetDraftFiles ? { forgetDraftFiles: options.forgetDraftFiles } : {}),
@@ -1466,7 +1475,11 @@ export class MobileClient {
     const selected = this.#state.catalog.deployments.find(
       (row) => row.authority.document.deploymentId === id,
     );
+    // A phone on a weak link can sit on a dead socket; a quiet foreground
+    // socket is probed and replaced within idle + deadline (35 s). Background
+    // pauses the probe.
     const connection = createConnectionController({
+      liveness: { idleMs: realtimeIdleProbeMs, deadlineMs: realtimeIdleProbeDeadlineMs },
       ...(this.#lifecycle ? { lifecycle: this.#lifecycle } : {}),
       presentation: {
         name: this.#state.rows.find((row) => row.deploymentId === id)?.name ?? null,
@@ -1914,6 +1927,8 @@ export class MobileClient {
       else {
         if (options.revoke) await this.#revokePersonalSession(connection, options.removed);
         await this.sessions.clear(id);
+        if (this.#attachedDeploymentId === id) this.#disposeHostClient();
+        await this.#host.clearPersonalStreamCache?.(id);
       }
     } catch (error) {
       await this.#republish();
@@ -1940,6 +1955,8 @@ export class MobileClient {
       else {
         if (options.revoke) await this.#revokePersonalSession(connection, options.removed);
         await this.sessions.clear(id);
+        if (this.#attachedDeploymentId === id) this.#disposeHostClient();
+        await this.#host.clearPersonalStreamCache?.(id);
       }
     } catch (error) {
       await this.#republish();
@@ -2087,7 +2104,14 @@ export class MobileClient {
       this.#state = { ...this.#state, selection: { ...this.#state.selection, hostClient: null } };
       for (const listener of this.#listeners) listener();
     }
-    return this.#savedViewCache.invalidate(id);
+    // Every path that ends a session or authority comes here: the saved private cuts go too.
+    const parsed = DeploymentIdSchema.safeParse(id);
+    return Promise.all([
+      this.#savedViewCache.invalidate(id),
+      parsed.success
+        ? this.#host.clearPersonalStreamCache?.(parsed.data).catch(() => undefined)
+        : undefined,
+    ]).then(() => undefined);
   }
 
   #invalidateAccountSavedViews(): Promise<void> {
@@ -2544,15 +2568,9 @@ export class MobileClient {
       const resolved = resolveConnection(connection, null, { authorization });
       const verified = await this.#host.verifyEpoch(resolved, connection);
       if (typeof verified === "string") return null;
-      const result = await withTimeout(
-        client.rpc["attention.get"](
-          verified.capabilities.includes("devices-v1") ? { deviceAccessRequests: "include" } : {},
-        ),
-        deadlineMs,
-        {
-          timeoutError: () => new Error("The computer did not answer in time."),
-        },
-      );
+      const result = await withTimeout(client.rpc["attention.get"]({}), deadlineMs, {
+        timeoutError: () => new Error("The computer did not answer in time."),
+      });
       return result.ok ? result.data : null;
     } catch {
       return null;
@@ -2635,6 +2653,7 @@ export class MobileClient {
       // Discovery refusal erases saved authority without starting a login change.
       this.savedViews.block();
       void this.#savedViewCache.invalidate(deploymentId);
+      void this.#host.clearPersonalStreamCache?.(deploymentId).catch(() => undefined);
       this.#verification.set(deploymentId, agreement);
       // Keep the selected Deployment and its repair, but revoke this attachment's
       // transports and authorization, including credential reads already awaiting storage.

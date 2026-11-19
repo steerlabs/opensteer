@@ -1,5 +1,6 @@
 import { RunnerIdSchema } from "@opensteer/core";
 import { withDeviceSwitch as withSwitch } from "@opensteer/client/computers";
+import { mockDeviceMachine } from "@opensteer/client/mock";
 import type { MachineAccessPolicy, MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import { deviceRemoval, deviceSwitches, homeFixed } from "./device-page-model.js";
@@ -13,7 +14,7 @@ const policy: MachineAccessPolicy = {
   shares: [{ mode: "read", path: "/Users/alex/Projects" }],
 };
 const machine = (overrides: Partial<MachineSummary>) =>
-  ({
+  mockDeviceMachine({
     access: { activeSessions: [], ownerReachAvailable: true, policy, revision: 3 },
     allowedModules: ["browser", "integrations", "shell"],
     computerUse: null,
@@ -27,7 +28,7 @@ const machine = (overrides: Partial<MachineSummary>) =>
     revocable: true,
     status: "online",
     ...overrides,
-  }) as MachineSummary;
+  } as MachineSummary);
 
 describe("a device page's switches", () => {
   it("offers only what the enrollment's ceiling lends, with Home's fixed rows", () => {

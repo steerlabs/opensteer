@@ -5,7 +5,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AppIdSchema, TabIdSchema, createId } from "@opensteer/core";
 import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
-import type { AppEntry, HostSnapshot } from "@opensteer/client/host";
+import type { AppEntry, TranscriptFixtureSnapshot } from "@opensteer/client/host";
 import { useAppView } from "@opensteer/client/react";
 import { MockHostClient } from "@opensteer/client/mock";
 import { AppCard } from "./app-card.js";
@@ -385,7 +385,7 @@ it("retains a running origin across reconnect tickets and refreshes it on every 
   const { appOriginKey } = await import("@opensteer/shared/appFrame");
   let origin = `http://${appOriginKey(appId)}.localhost:4310`;
   const client = new MockHostClient();
-  let snapshot: HostSnapshot = { ...client.getSnapshot(), connection: "connected" };
+  let snapshot: TranscriptFixtureSnapshot = { ...client.getSnapshot(), connection: "connected" };
   const listeners = new Set<() => void>();
   vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
   vi.spyOn(client, "subscribe").mockImplementation((listener) => {

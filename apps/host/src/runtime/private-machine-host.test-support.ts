@@ -20,6 +20,7 @@ import {
   RunnerChallengeSchema,
   RunnerDescriptorSchema,
   RunnerEnrollmentCredentialSchema,
+  runEventsCapability,
   runnerProofFormatVersion,
   type HostToRunnerMessage,
   type MachineAccessRunContext,
@@ -102,7 +103,10 @@ export async function startPrivateMachineHost(
     | "logger"
     | "phoneUpdateRelease"
     | "browserActivityClock"
+    | "executionClock"
     | "integrationFetch"
+    | "onPersonalScopeCut"
+    | "onPersonalReaction"
     | "runCapabilityLifetimeSeconds"
     | "runCapabilityNow"
   > & {
@@ -160,7 +164,7 @@ export async function startPrivateMachineHost(
       config.port,
       RunnerDescriptorSchema.parse({
         bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
-        capabilities: [],
+        capabilities: [runEventsCapability],
         modules: {
           agents: {
             environmentIds: [config.personal!.environmentId],
@@ -177,7 +181,7 @@ export async function startPrivateMachineHost(
       { token },
     );
     try {
-      await testRpcData(origin, "bootstrap.get", {}, { headers: ownerHeaders });
+      await testRpcData(origin, "personal.shell.get", {}, { headers: ownerHeaders });
     } finally {
       primary.socket.close();
       await closed(primary.socket);
@@ -438,6 +442,7 @@ export async function connectCallerMachine(
       "requester-time-zone-v1",
       "agent-tools-plan-v1",
       "execution-plane-v2",
+      runEventsCapability,
       ...(input.voice ? ["voice-run-v1"] : []),
       ...(input.restartsRuns ? ["attempts-v1"] : []),
     ],
@@ -557,18 +562,10 @@ export async function connectCallerMachine(
   });
   const harnessInstanceId = await vi.waitFor(
     async () => {
-      const bootstrap = await testRpcData(
-        host.origin,
-        "bootstrap.get",
-        {},
-        { headers: host.ownerHeaders },
-      );
-      const harness = bootstrap.harnesses.find(
-        (harness) => harness.driverKind === "codex" && harness.environmentId === environmentId,
-      );
-      const catalog = bootstrap.environments
-        .find((environment) => environment.id === environmentId)
-        ?.harnessCatalogs.find((catalog) => catalog.harnessInstanceId === harness?.id);
+      const harness = (
+        await host.store.listHarnessInstances({ environmentIds: [environmentId] })
+      ).find((harness) => harness.driverKind === "codex");
+      const catalog = harness && (await host.store.getHarnessCatalog(environmentId, harness.id));
       if (
         !harness ||
         catalog?.status !== "ready" ||
@@ -897,7 +894,7 @@ function eventAcknowledged(socket: WebSocket, runId: RunId, ordinal: number): Pr
     const receive = (frame: WebSocket.RawData) => {
       const message = JSON.parse(frame.toString()) as HostToRunnerMessage;
       const acknowledged =
-        message.type === "host.events.acked" &&
+        message.type === "host.executions.acked" &&
         message.acks.some((ack) => ack.runId === runId && ack.throughOrdinal >= ordinal);
       const revoked =
         message.type === "host.runs.revoked" &&

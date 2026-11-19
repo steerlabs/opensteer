@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   mutationIdempotencyKey,
@@ -137,6 +138,7 @@ function PasswordsOnThisMac({
           declineKeys.current.set(request.id, key);
           return client.dispatch({
             idempotencyKey: key,
+            ...requestDecisionRevision(request),
             requestId: request.id,
             type: "browser.password-sign-in.respond",
             decision: { kind: "decline" },

@@ -1,4 +1,6 @@
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { sql } from "kysely";
 import { startEchoTestServer as startEchoServer } from "@opensteer/shared/test-support/tcpServer";
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -7,8 +9,9 @@ import { connect } from "node:net";
 import { mkdir, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MachineAccessPolicy } from "@opensteer/protocol";
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
 import type { MachineAccessSetup } from "@opensteer/runner";
 import {
   activeSessionId,
@@ -28,7 +31,9 @@ import {
   waitForCondition,
   type ShellAccessScenario,
 } from "./machine-access-protocol.test-support.js";
+import { PersonalResources } from "../server/personal-resources.js";
 import { testRpcData } from "../server/test-host-api-request.js";
+import { ResourceRevisions } from "./personal-resource-revisions.js";
 
 /** What the Host recorded about the traffic it carried, and who was told. */
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -355,8 +360,8 @@ integration("Machine access audit, transfer and realtime", () => {
     });
     const { alias, host, launch, target } = scenario;
     const otherOwnerHeaders = await additionalOwnerSession(host);
-    const ownerFeed = await openRealtime(host, host.ownerHeaders);
-    const bystanderFeed = await openRealtime(host, otherOwnerHeaders);
+    const ownerFeed = await openRealtime(host, host.ownerHeaders, []);
+    const bystanderFeed = await openRealtime(host, otherOwnerHeaders, []);
     try {
       expect(await runShim(launch, "ssh", [alias, "echo watched"])).toMatchObject({ code: 0 });
       const started = await waitForValueOf(async () =>
@@ -426,26 +431,93 @@ integration("Machine access audit, transfer and realtime", () => {
     }
   }, 180_000);
 
-  it("tells every connected client the computers list changed, and names nothing", async () => {
+  it("publishes the machine resource revision to both owner sessions", async () => {
     scenario = await startShellAccessScenario(databaseUrl, {
       policy: { commands: true, forwarding: false, reach: "owner", shares: [] },
     });
     const { host, target } = scenario;
     const otherOwnerHeaders = await additionalOwnerSession(host);
-    const ownerFeed = await openRealtime(host, host.ownerHeaders);
-    const bystanderFeed = await openRealtime(host, otherOwnerHeaders);
-    const changes = (feed: { readonly messages: readonly Record<string, unknown>[] }) =>
-      feed.messages.filter((message) => message.type === "host.machines.changed");
-    const settle = async (atLeast: number) => {
-      await waitForCondition(async () => changes(ownerFeed).length >= atLeast);
-      return changes(ownerFeed).length;
+    const ownerFeed = await openRealtime(host, host.ownerHeaders, ["machine"]);
+    const bystanderFeed = await openRealtime(host, otherOwnerHeaders, ["machine"]);
+    const revision = (feed: typeof ownerFeed) => {
+      let latest: string | undefined;
+      for (const value of feed.messages) {
+        const parsed = ScopedHostMessageSchema.safeParse(value);
+        if (parsed.success && parsed.data.type === "host.resource")
+          latest = parsed.data.revisions.machine ?? latest;
+      }
+      return latest;
+    };
+    // A viewer who is not this Opensteer's owner reads no resource.
+    const outsider = await host.store.createUser("Outsider");
+    await expect(
+      new PersonalResources(
+        { store: host.store, resourceRevisions: new ResourceRevisions(() => undefined) } as never,
+        async () => [],
+      ).detail({ user: { id: outsider } } as never, { kind: "machine" }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    let seen = revision(ownerFeed);
+    const settle = async (change: string) => {
+      seen = await vi.waitFor(
+        () => {
+          const ownerRevision = revision(ownerFeed);
+          expect(ownerRevision, `Owner machine revision did not change after ${change}`).not.toBe(
+            seen,
+          );
+          expect(revision(bystanderFeed), `Second owner fell behind after ${change}`).toBe(
+            ownerRevision,
+          );
+          return ownerRevision;
+        },
+        { timeout: 15_000 },
+      );
     };
     try {
       // A Runner disconnecting and reconnecting are both changes to the list.
       await target.disconnect();
-      let seen = await settle(1);
+      await settle("disconnect");
       await target.reconnect();
-      seen = await settle(seen + 1);
+      await settle("reconnect");
+
+      // A readiness change is a runtime fact: both devices hear it, and read it,
+      // while another writer holds the deployment fence that every commit takes.
+      const shellReadiness = async () => {
+        const { data } = await testRpcData(
+          host.origin,
+          "resources.detail.get",
+          { kind: "machine" },
+          { headers: host.ownerHeaders },
+        );
+        if (data.kind !== "machine") throw new Error("Expected the machine detail");
+        return data.machines.find(({ selfRunnerId }) => selfRunnerId === target.runnerId)?.modules
+          .shell?.readiness;
+      };
+      await vi.waitFor(async () => expect(await shellReadiness()).toBe("ready"), {
+        timeout: 15_000,
+      });
+      const fenced = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const fence = host.store.database.transaction().execute(async (tx) => {
+        await sql`select deployment_id from client_sync_state for no key update`.execute(tx);
+        fenced.resolve();
+        await withTimeout(release.promise, 20_000, {
+          timeoutError: () => new Error("The held deployment fence was never released"),
+        });
+      });
+      void fence.catch(fenced.reject);
+      try {
+        await withTimeout(fenced.promise, 5_000, {
+          timeoutError: () => new Error("The deployment fence was never acquired"),
+        });
+        target.reportShellReadiness("unavailable");
+        await settle("a readiness change under a held deployment fence");
+        await vi.waitFor(async () => expect(await shellReadiness()).toBe("unavailable"), {
+          timeout: 15_000,
+        });
+      } finally {
+        release.resolve();
+        await fence;
+      }
 
       // Minting a pending computer, renaming one, writing an access policy,
       // and removing one: each is a row the list now reads differently.
@@ -454,7 +526,7 @@ integration("Machine access audit, transfer and realtime", () => {
         idempotencyKey: "changed-enrollment",
         name: "Pending computer",
       });
-      seen = await settle(seen + 1);
+      await settle("enrollment");
 
       await testRpcData(
         host.origin,
@@ -467,7 +539,7 @@ integration("Machine access audit, transfer and realtime", () => {
         },
         { headers: host.ownerHeaders },
       );
-      seen = await settle(seen + 1);
+      await settle("rename");
 
       await updateAccessPolicy(host, {
         expectedRevision: 2,
@@ -475,19 +547,10 @@ integration("Machine access audit, transfer and realtime", () => {
         policy: { commands: true, forwarding: false, reach: "deployment", shares: [] },
         runnerId: target.runnerId,
       });
-      seen = await settle(seen + 1);
+      await settle("access policy update");
 
       await revokeMachine(host, { key: "changed-revoke", runnerId: target.runnerId });
-      seen = await settle(seen + 1);
-
-      // It names nothing: the machine, the person, and what happened are all
-      // absent, because every client answers it by rereading the list.
-      expect(changes(ownerFeed)).toEqual(
-        Array.from({ length: seen }, () => ({ type: "host.machines.changed" })),
-      );
-      // And it goes to everybody, unlike the two session messages, which are
-      // facts about one machine and reach only its managers.
-      await waitForCondition(async () => changes(bystanderFeed).length === seen);
+      await settle("revocation");
       expect(
         bystanderFeed.messages.filter((message) =>
           String(message.type).startsWith("host.machine.access."),

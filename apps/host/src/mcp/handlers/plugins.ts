@@ -48,8 +48,6 @@ export class PluginToolHandlers {
       authorize: () => Promise<void>,
       signal?: AbortSignal,
     ) => Promise<void>;
-    publish: (event: import("@opensteer/core").AgentEvent) => void;
-    notify: () => void;
     /** Tells the owner's clients their plugins changed. */
     changed?: (owner: UserId, change?: PluginChange) => void;
     removed?: (plugin: string) => void;
@@ -347,7 +345,6 @@ export class PluginToolHandlers {
         },
       },
     });
-    for (const event of created.events) this.options.publish(event);
     return requestResult(
       created.request,
       created.request.status === "pending"
@@ -402,15 +399,13 @@ export class PluginToolHandlers {
         p.consent.digest !== input.consent.digest
       )
         continue;
-      const result = await this.options.store.requests.settlePluginRequest({
+      await this.options.store.requests.settlePluginRequest({
         requestId: row.id,
         resolvedBy: input.owner,
         decision: "fulfilled",
         ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       });
-      for (const event of result.events) this.options.publish(event);
     }
-    this.options.notify();
     this.options.changed?.(input.owner);
   }
   handlers(): Partial<AgentToolHandlers> {

@@ -1,7 +1,12 @@
 export * from "./use-host-snapshot.js";
 export * from "./use-computer-use-stop.js";
 export * from "./use-thread-input-queue.js";
+export * from "./use-thread-transcript.js";
+export * from "./use-running-now.js";
+export * from "./use-request-asker.js";
 export * from "./use-waiting-inputs.js";
+export * from "./use-waiting-body.js";
+export * from "./use-worker-transcripts.js";
 export * from "./use-conversation-surfaces.js";
 export * from "./use-browser-popup-follow.js";
 export * from "./use-places.js";
@@ -45,7 +50,10 @@ export * from "./use-idle-compaction.js";
 
 export * from "./use-asset-image.js";
 export * from "./use-reference.js";
+
+export * from "./use-transcript-message.js";
 export * from "./use-plugin-engine.js";
+export * from "./use-plugin-icon.js";
 export * from "./use-plugin-section.js";
 export * from "./use-plugin-sign-in.js";
 export * from "./use-plugin-workflow-runs.js";
@@ -56,3 +64,4 @@ export * from "./use-client-read.js";
 export * from "./use-client-action.js";
 export * from "./use-message-outbox.js";
 export * from "./use-quiet-moment.js";
+export * from "./use-unreadable-resources.js";

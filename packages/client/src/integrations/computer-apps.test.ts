@@ -2,7 +2,9 @@ import type { IntegrationConnectionSummary } from "@opensteer/integration-core/m
 import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
 import type { MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
+import { mockDeviceMachine } from "../mock/mock-device-machine.js";
 import {
+  computerAppCatalogMatches,
   computerAppConnectionLabel,
   computerAppPermissionNotice,
   computerAppPlatformName,
@@ -382,6 +384,23 @@ describe("computer app targets", () => {
   });
 });
 
+describe("device apps in the plugin catalog", () => {
+  const ids = (search: string) =>
+    computerAppCatalogMatches([display(), messages()], search).map(({ id }) => id);
+
+  it("finds an app by what people call it, by its device or by its own words", () => {
+    expect(ids("")).toEqual(["apple-messages"]);
+    expect(ids(" iMessage ")).toEqual(["apple-messages"]);
+    expect(ids("mac")).toEqual(["apple-messages"]);
+    expect(ids("send")).toEqual(["apple-messages"]);
+    expect(ids("gmail")).toEqual([]);
+  });
+
+  it("leaves out a phone screen, which is set up on its own page", () => {
+    expect(ids("android")).toEqual([]);
+  });
+});
+
 /*
  * An Android phone among computer apps fails when its whole-screen definition
  * becomes a generic on/off app row, when it is named "a Android phone", when
@@ -390,27 +409,42 @@ describe("computer app targets", () => {
  */
 describe("an Android phone among computer apps", () => {
   const pixelId = "rnr_22222222-2222-4222-8222-222222222222";
-  const pixel = machine({
-    allowedModules: ["integrations"],
-    apps: [
-      {
-        definitionId: "android-phone",
-        operations: [
-          {
-            operation: "observe",
-            detail: null,
-            remedy: "accessibility",
-            state: "permission-required",
-          },
-          { operation: "act", detail: null, remedy: "accessibility", state: "permission-required" },
-          { operation: "release", detail: null, remedy: null, state: "ready" },
-        ],
+  const pixel = mockDeviceMachine(
+    machine({
+      allowedModules: ["integrations"],
+      apps: [
+        {
+          definitionId: "android-phone",
+          operations: [
+            {
+              operation: "observe",
+              detail: null,
+              remedy: "accessibility",
+              state: "permission-required",
+            },
+            {
+              operation: "act",
+              detail: null,
+              remedy: "accessibility",
+              state: "permission-required",
+            },
+            { operation: "release", detail: null, remedy: null, state: "ready" },
+          ],
+        },
+      ],
+      device: { form: "phone", platform: "android" },
+      computerUse: {
+        appApproval: "ask",
+        detail: null,
+        displayStreamSupported: true,
+        permissions: null,
+        sessions: [],
+        state: "permission-required",
       },
-    ],
-    device: { form: "phone", platform: "android" },
-    id: pixelId,
-    name: "Pixel",
-  });
+      id: pixelId,
+      name: "Pixel",
+    }),
+  );
   const screen = {
     ...connection("read-write", pixelId),
     computer: {
@@ -561,7 +595,6 @@ function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {
     modules: {},
     name: "Mac mini",
     ownership: "mine",
-    pinnedThreads: 0,
     revocable: true,
     status: "online",
     unlinkedLocalFolders: 0,

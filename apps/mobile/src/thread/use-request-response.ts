@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import type { CardChoice } from "@opensteer/protocol";
 import {
   browserSiteLabel,
@@ -83,6 +84,9 @@ export function useRequestResponse(input: {
       mounted.current = false;
     };
   }, []);
+  const reviewed = requestDecisionRevision(request);
+  const currentRevision = useRef(reviewed.expectedRevision);
+  currentRevision.current = reviewed.expectedRevision;
   const answerable = surface.denied === null && request.status === "pending";
   const stillAnswerable = useRef(answerable);
   stillAnswerable.current = answerable;
@@ -128,7 +132,14 @@ export function useRequestResponse(input: {
     last.current = () => attempt(busyId, options, act, describe);
     if (session.responding || !answerable || !canStartResponse()) return;
     if (options.shareWithAi && !(await authorizeAiSharing(aiSharing, hostClient))) return;
-    if (!mounted.current || session.responding || !canStartResponse()) return;
+    if (
+      !mounted.current ||
+      session.responding ||
+      !stillAnswerable.current ||
+      currentRevision.current !== reviewed.expectedRevision ||
+      !canStartResponse()
+    )
+      return;
     const claim = gate.acquire("request");
     if (claim === null) return;
     updateRequestSession(session, { failure: null, pendingId: busyId, responding: true });
@@ -171,6 +182,7 @@ export function useRequestResponse(input: {
       session.held = submission;
       await hostClient.dispatch({
         idempotencyKey: submission.idempotencyKey,
+        ...reviewed,
         requestId: request.id,
         response: submission.response,
         type: "request.respond",
@@ -198,6 +210,7 @@ export function useRequestResponse(input: {
       const result = await hostClient.dispatch({
         decision,
         idempotencyKey: held.key,
+        ...reviewed,
         requestId: request.id,
         type: "browser.sign-in.respond",
       });
@@ -262,9 +275,15 @@ export function useRequestResponse(input: {
         )
           return;
         authenticated = true;
-        if (!mounted.current || !stillAnswerable.current) return;
+        if (
+          !mounted.current ||
+          !stillAnswerable.current ||
+          currentRevision.current !== reviewed.expectedRevision
+        )
+          return;
         const result = await hostClient.dispatch({
           idempotencyKey: session.heldPasswordKey,
+          ...reviewed,
           requestId: request.id,
           type: "browser.password-sign-in.respond",
           decision: approval

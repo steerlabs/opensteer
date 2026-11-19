@@ -154,6 +154,7 @@ export const RunnerCapabilitySchema = z.enum([
   // exactly the execution an interrupt names.
   "attempts-v1",
   "earlier-boots-contained-v1",
+  "run-events-v2",
   // Accepts a `browser-page` content part in a Run's inputs; an older Runner's
   // strict input schema refuses the whole Run.
   "browser-page-input-v1",
@@ -182,6 +183,9 @@ export const RunnerCapabilitySchema = z.enum([
   "thread-state-v1",
   "task-done-v1",
   "person-show-v1",
+  // Accepts `host.shell.probe-full-disk-access`; an older Runner's strict
+  // frame parser drops its connection on an unknown Host frame.
+  "full-disk-access-probe-v1",
 ]);
 export type RunnerCapability = z.infer<typeof RunnerCapabilitySchema>;
 
@@ -421,18 +425,19 @@ export const PlaceContentPartSchema = z.discriminatedUnion("type", [
   PhoneContentPartSchema,
 ]);
 export type PlaceContentPart = z.infer<typeof PlaceContentPartSchema>;
+export const ArtifactContentPartSchema = z.object({
+  type: z.literal("artifact"),
+  artifactId: z.string().min(1).max(255),
+  mediaType: z.string().min(1).max(255),
+  name: z.string().min(1).max(1_024),
+  sizeBytes: z.number().int().nonnegative().optional(),
+});
 export const ContentPartSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), text: z.string().max(messageTextPartMaxLength) }),
   BrowserPageContentPartSchema,
   ComputerAppContentPartSchema,
   PhoneContentPartSchema,
-  z.object({
-    type: z.literal("artifact"),
-    artifactId: z.string().min(1).max(255),
-    mediaType: z.string().min(1).max(255),
-    name: z.string().min(1).max(1_024),
-    sizeBytes: z.number().int().nonnegative().optional(),
-  }),
+  ArtifactContentPartSchema,
 ]);
 export type ContentPart = z.infer<typeof ContentPartSchema>;
 export function isPlaceContentPart(part: ContentPart): part is PlaceContentPart {
@@ -1214,3 +1219,33 @@ export const ThreadExecutionBindingSchema = z.object({
   threadId: ThreadIdSchema,
 });
 export type ThreadExecutionBinding = z.infer<typeof ThreadExecutionBindingSchema>;
+
+export function threadInputDelivery(input: {
+  readonly cancelReason: string | null;
+  readonly policy: ThreadInputPolicy;
+  readonly state: "cancelled" | "delivered" | "unknown";
+}): { status: "failed" | "unconfirmed"; reason: string } | null {
+  if (input.state === "delivered") return null;
+  if (input.state === "unknown") {
+    return { reason: "Message delivery could not be confirmed.", status: "unconfirmed" };
+  }
+  return { reason: cancellationReason(input), status: "failed" };
+}
+
+/**
+ * A cancelled steer never reached its Run, and a promoted queue input whose
+ * Run ended before receipt is the same story. A message a Stop cancelled
+ * before its reply read it was stopped by the reader. Any other cancelled
+ * queue input simply never got its turn, and the conversation has to say so
+ * rather than show it as sent.
+ */
+function cancellationReason(input: {
+  readonly cancelReason: string | null;
+  readonly policy: ThreadInputPolicy;
+}): string {
+  if (input.cancelReason === "stopped") return "Not sent: you stopped the reply.";
+  const detail = input.cancelReason?.replaceAll("-", " ");
+  const wasSteer = input.policy === "steer" || input.cancelReason === "run-ended-delivery-unknown";
+  if (wasSteer) return detail ? `Steer was not delivered: ${detail}.` : "Steer was not delivered.";
+  return detail ? `Not sent: ${detail}.` : "Not sent.";
+}

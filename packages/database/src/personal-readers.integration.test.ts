@@ -1,7 +1,7 @@
 import { BrowserHistoryStore } from "./browser-history-store.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { readAgentRequest } from "./request-agent-response.js";
-import { createId } from "@opensteer/core";
+import { createId, ModelIdSchema } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
 import { expect } from "vitest";
 import type { DatabaseSchema } from "./schema.js";
@@ -20,6 +20,8 @@ import { readThreadWaitSnapshot } from "./thread-wait.js";
 import { RequestStore } from "./request-store.js";
 import { assertActiveExecutionBinding, assertActiveGrant } from "./execution-store.js";
 import { NotificationStore } from "./notification-store.js";
+import { readHarnessCatalogModelPage } from "./harness-store.js";
+import { testReadyHarnessCatalog } from "./store.integration.test-support.js";
 
 type Fixture = Awaited<ReturnType<StoreFixture["startRunFixture"]>>;
 const readers: Record<string, (tx: Transaction<DatabaseSchema>, f: Fixture) => Promise<unknown>> = {
@@ -102,6 +104,36 @@ const readers: Record<string, (tx: Transaction<DatabaseSchema>, f: Fixture) => P
 };
 
 describeStore("Personal readers", (it) => {
+  it("seeks consecutive model rows within one authorized harness catalog", async ({
+    storeFixture,
+  }) => {
+    const { database, store, createRunFixture } = storeFixture;
+    const f = await createRunFixture("catalog-model-page");
+    const ready = testReadyHarnessCatalog(f.harnessInstance.id);
+    const models = ["zulu", "alpha", "beta"].map((modelId) => ({
+      ...ready.models[0]!,
+      modelId: ModelIdSchema.parse(modelId),
+    }));
+    await store.recordHarnessCatalogs({
+      environmentId: f.environmentId,
+      catalogs: [{ ...ready, models }],
+      expectedRevisions: new Map([[f.harnessInstance.id, f.harnessInstance.runtimeRevision]]),
+    });
+    const first = await readHarnessCatalogModelPage(database, f.userId, { limit: 2 });
+    const last = first.at(-1)!;
+    expect(first.map(({ ordinal, catalog }) => [ordinal, catalog.models])).toEqual([
+      [1, [models[0]]],
+      [2, [models[1]]],
+    ]);
+    const next = await readHarnessCatalogModelPage(database, f.userId, {
+      after: [last.environmentId, last.harnessInstanceId, last.ordinal],
+      limit: 2,
+    });
+    expect(next.map(({ ordinal, catalog }) => [ordinal, catalog.models])).toEqual([
+      [3, [models[2]]],
+    ]);
+    expect(await readHarnessCatalogModelPage(database, createId("user"), { limit: 2 })).toEqual([]);
+  });
   it("reads profile history and icon bytes in a read-only transaction", async ({
     storeFixture,
   }) => {

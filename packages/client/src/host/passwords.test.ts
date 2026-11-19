@@ -1,10 +1,4 @@
-import {
-  createId,
-  normalizeToolOutput,
-  RunnerIdSchema,
-  type AgentEventView as AgentEvent,
-  type Request,
-} from "@opensteer/core";
+import { createId, normalizeToolOutput, RunnerIdSchema, type Request } from "@opensteer/core";
 import type { PasswordSignInRequestResponse } from "@opensteer/protocol";
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import { describe, expect, it } from "vitest";
@@ -29,7 +23,7 @@ import {
   passwordsWaitingDetail,
   type PasswordSignInAccount,
 } from "./passwords.js";
-import { foldTranscriptEvent } from "./transcript.js";
+import { requestReceipt } from "./transcript.js";
 
 /*
  * How the shared words and decisions could mislead the person:
@@ -124,28 +118,16 @@ describe("passwordSignInOutcome", () => {
     expect(passwordSignInOutcome(request)).toEqual({ signedIn: false, text: "Answered" });
   });
 
-  it("folds a settled sign-in into the transcript in the card's words", () => {
+  it("presents the settled sign-in with the card's words", () => {
     const request = passwordRequest("fulfilled", { outcome: "authorized", account: "p•••" });
-    const event = {
-      createdAt: "2026-10-11T12:00:00.000Z",
-      data: { request },
-      environmentId: createId("environment"),
-      eventId: createId("event"),
-      runId: request.originatingRunId,
-      sequence: "1",
-      threadId: request.originatingThreadId,
-      type: "request.resolved",
-    } as AgentEvent;
-    expect(foldTranscriptEvent([], event)).toEqual([
-      expect.objectContaining({
-        outcome: "Allowed agents to sign in to example.com as p•••",
-        requestKind: "browser.password-sign-in",
-      }),
-    ]);
-    const declined = { ...event, data: { request: passwordRequest("declined", null) } };
-    expect(foldTranscriptEvent([], declined as AgentEvent)).toEqual([
-      expect.objectContaining({ outcome: "Not allowed" }),
-    ]);
+    if (request.status === "pending") throw new Error("Expected a settled Request");
+    expect(requestReceipt(request)).toMatchObject({
+      outcome: "Allowed agents to sign in to example.com as p•••",
+      requestKind: "browser.password-sign-in",
+    });
+    const declined = passwordRequest("declined", null);
+    if (declined.status === "pending") throw new Error("Expected a settled Request");
+    expect(requestReceipt(declined)).toMatchObject({ outcome: "Not allowed" });
   });
 });
 

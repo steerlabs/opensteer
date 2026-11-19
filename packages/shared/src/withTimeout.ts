@@ -3,6 +3,7 @@
 interface TimeoutOptions {
   readonly abortFallback?: string;
   readonly signal?: AbortSignal;
+  readonly refreshOn?: (refresh: () => void) => () => void;
   readonly timeoutError: () => Error;
 }
 
@@ -18,13 +19,19 @@ export async function withTimeout<T>(
       : new Error(options.abortFallback ?? "Operation aborted");
   }
   let timer: (ReturnType<typeof setTimeout> & { unref?: () => void }) | undefined;
+  let stopRefreshing: (() => void) | undefined;
   let relayAbort: (() => void) | undefined;
   try {
     return await Promise.race([
       operation,
       new Promise<never>((_resolvePromise, rejectPromise) => {
-        timer = setTimeout(() => rejectPromise(options.timeoutError()), timeoutMs);
-        timer.unref?.();
+        const refresh = () => {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => rejectPromise(options.timeoutError()), timeoutMs);
+          timer.unref?.();
+        };
+        refresh();
+        stopRefreshing = options.refreshOn?.(refresh);
         if (signal) {
           relayAbort = () =>
             rejectPromise(
@@ -37,6 +44,7 @@ export async function withTimeout<T>(
       }),
     ]);
   } finally {
+    stopRefreshing?.();
     if (timer) clearTimeout(timer);
     if (signal && relayAbort) signal.removeEventListener("abort", relayAbort);
   }

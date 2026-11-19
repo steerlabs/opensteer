@@ -1,3 +1,6 @@
+import type { MessageEntry } from "@opensteer/client/host";
+import { engineInspectionViewer } from "./engine-inspection.test-support.js";
+import { readTestResource } from "../server/test-host-api-request.js";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { randomUUID } from "node:crypto";
@@ -6,6 +9,7 @@ import { Client as PgClient } from "pg";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
   advanceExecutionClock,
+  executionConnected,
   executionDisconnected,
   executionLeaseExpiresAt,
 } from "./execution-clock.test-support.js";
@@ -274,29 +278,50 @@ integration("Runs that outlive their connection", () => {
       .executeTakeFirstOrThrow();
     return BigInt(row.connectionGeneration);
   }
+  const liveViewers = new Map<ThreadId, ReturnType<typeof engineInspectionViewer>>();
+  afterEach(() => {
+    for (const viewer of liveViewers.values()) viewer.dispose();
+    liveViewers.clear();
+  });
   async function liveAssistant(active: VerticalStack, threadId: ThreadId) {
-    const read = await active.api["thread.live.get"]({
-      threadId,
-    });
-    if (!read.ok) throw new Error(read.error.message);
-    return read.data.runs
-      .flatMap((entry) => entry.progress.items)
-      .find((item) => item.stream === "assistant")?.text;
+    let viewer = liveViewers.get(threadId);
+    if (!viewer) {
+      viewer = engineInspectionViewer(active);
+      liveViewers.set(threadId, viewer);
+      await viewer.load();
+      viewer.activateThread(threadId);
+    }
+    const item = viewer
+      .getThreadTranscript(threadId)
+      ?.getSnapshot()
+      .entries.find(
+        (entry): entry is MessageEntry =>
+          entry.kind === "message" && entry.messageKind === "assistant" && entry.streaming === true,
+      );
+    return item?.itemId ? viewer.getThreadItemText(threadId)?.get(item.itemId)?.text : undefined;
   }
-  async function storedRunnerEvents(active: VerticalStack, runId: RunId) {
+  function assistantRows(active: VerticalStack, runId: RunId) {
     return active.host.store.database
-      .selectFrom("deploymentEvents")
-      .select(["runnerOrdinal", "type"])
+      .selectFrom("messages")
+      .select("id")
       .where("runId", "=", runId)
-      .where("runnerOrdinal", "is not", null)
-      .orderBy("runnerOrdinal", "asc")
+      .where("kind", "=", "assistant")
+      .where("published", "=", true)
+      .execute();
+  }
+  async function storedRunnerReceipts(active: VerticalStack, runId: RunId) {
+    return active.host.store.database
+      .selectFrom("runnerEventReceipts")
+      .select(["ordinal", "disposition", "bindingGeneration", "reportedDigest"])
+      .where("runId", "=", runId)
+      .orderBy("ordinal", "asc")
       .execute();
   }
   async function expectCompletedExactlyOnce(active: VerticalStack, runId: RunId): Promise<void> {
-    const stored = await storedRunnerEvents(active, runId);
-    expect(stored.map((row) => row.runnerOrdinal)).toEqual(stored.map((_row, index) => index));
-    expect(stored.filter((row) => row.type === "run.completed")).toHaveLength(1);
-    expect(stored.filter((row) => row.type === "assistant.message")).toHaveLength(messages);
+    // A terminal Run keeps no receipts; its replies prove each statement applied once.
+    expect(await storedRunnerReceipts(active, runId)).toEqual([]);
+    expect(await run(active, runId)).toEqual({ failure: null, status: "completed" });
+    expect(await assistantRows(active, runId)).toHaveLength(messages);
   }
   it("finishes a turn whose Runner connection dropped mid-stream, exactly once", async () => {
     const outputDirectory =
@@ -334,7 +359,7 @@ integration("Runs that outlive their connection", () => {
             before: String(before),
           },
           runId,
-          storedRunnerEvents: (await storedRunnerEvents(active, runId)).length,
+          storedRunnerReceipts: (await storedRunnerReceipts(active, runId)).length,
           verifiedAt: new Date().toISOString(),
         },
         null,
@@ -385,7 +410,7 @@ integration("Runs that outlive their connection", () => {
         ],
       },
     });
-    const lostEvents = await storedRunnerEvents(active, runId);
+    const lostEvents = await storedRunnerReceipts(active, runId);
 
     // Reattach retires the old binding and resumes this same Run before the next input.
     active.network.unblock();
@@ -403,14 +428,13 @@ integration("Runs that outlive their connection", () => {
     ).runId!;
     await waitFor(async () => (await run(active, next)).status === "completed", signal, "next");
     expect((await run(active, runId)).status).toBe("completed");
-    expect((await storedRunnerEvents(active, runId)).slice(0, lostEvents.length)).toEqual(
-      lostEvents,
-    );
-    const recoveredEvents = await storedRunnerEvents(active, runId);
-    expect(recoveredEvents).toHaveLength(lostEvents.length + completedStreamEventTypes.length);
-    expect(recoveredEvents.slice(lostEvents.length).map((event) => event.type)).toEqual(
-      completedStreamEventTypes,
-    );
+    const recovered = await active.host.store.database
+      .selectFrom("runs")
+      .select(["nextRunnerOrdinal", "bindingGeneration"])
+      .where("id", "=", runId)
+      .executeTakeFirstOrThrow();
+    expect(recovered.nextRunnerOrdinal).toBe(lostEvents.length + completedStreamEventTypes.length);
+    expect(recovered.bindingGeneration).toBeGreaterThan(lostEvents.at(-1)!.bindingGeneration);
     await expectCompletedExactlyOnce(active, runId);
   }, 180_000);
   it("recovers at once after a lost lease, though the engine never ended the stopped turn", async () => {
@@ -465,7 +489,7 @@ integration("Runs that outlive their connection", () => {
         ],
       },
     });
-    const lostEvents = await storedRunnerEvents(active, runId);
+    const lostEvents = await storedRunnerReceipts(active, runId);
     // The Runner stops the lost engine before recovering the same conversation.
     const reconnectedAt = Date.now();
     active.network.unblock();
@@ -490,12 +514,13 @@ integration("Runs that outlive their connection", () => {
     expect(Date.now() - reconnectedAt).toBeLessThan(requestTimeoutMs / 2);
     const [stuck, resumed] = await turnPids();
     expect(resumed).not.toBe(stuck);
-    const events = await storedRunnerEvents(active, runId);
-    expect(events).toHaveLength(lostEvents.length + completedStreamEventTypes.length);
-    expect(events.slice(lostEvents.length).map((event) => event.type)).toEqual(
-      completedStreamEventTypes,
-    );
-    expect(events.slice(0, lostEvents.length)).toEqual(lostEvents);
+    const ended = await active.host.store.database
+      .selectFrom("runs")
+      .select(["nextRunnerOrdinal", "bindingGeneration"])
+      .where("id", "=", runId)
+      .executeTakeFirstOrThrow();
+    expect(ended.nextRunnerOrdinal).toBe(lostEvents.length + completedStreamEventTypes.length);
+    expect(ended.bindingGeneration).toBeGreaterThan(lostEvents.at(-1)!.bindingGeneration);
     await expectCompletedExactlyOnce(active, runId);
   }, 180_000);
   it("keeps a turn running through a Host restart and finishes it exactly once", async () => {
@@ -655,7 +680,7 @@ integration("Runs that outlive their connection", () => {
             .orderBy("sequence", "asc")
             .execute(),
           notifications: active.notifications.filter((entry) => entry.runId === runId),
-          events: await storedRunnerEvents(active, runId),
+          events: await storedRunnerReceipts(active, runId),
           verifiedAt: new Date().toISOString(),
         },
         null,
@@ -848,10 +873,9 @@ integration("Runs that outlive their connection", () => {
     await preparingReceived.promise;
     preparingMayCommit.resolve();
     await preparingCommitted.promise;
-    const bootstrap = await active.api["bootstrap.get"]({});
-    if (!bootstrap.ok) throw new Error(bootstrap.error.message);
+    const { environments } = await readTestResource(active.api, "harness-catalog");
     expect(
-      bootstrap.data.environments
+      environments
         .find((environment) => environment.id === active.environmentId)
         ?.harnessCatalogs.find((catalog) => catalog.harnessInstanceId === active.harnessInstanceId)
         ?.status,
@@ -870,7 +894,7 @@ integration("Runs that outlive their connection", () => {
     );
     const heldSnapshots: Awaited<ReturnType<typeof observation.snapshot>>[] = [];
     const holdStartedAt = Date.now();
-    // Absence of churn must span several real coordinator polls.
+    // Keep preparation held long enough to observe any dispatch churn.
     await vi.waitUntil(
       async () => {
         const current = await observation.snapshot(command.id);
@@ -909,16 +933,13 @@ integration("Runs that outlive their connection", () => {
     const holdDurationMs = Date.now() - holdStartedAt;
     expect(heldSnapshots.at(-1)!.run.status).toBe("queued");
     expect(heldSnapshots.at(-1)!.command.status).toBe("pending");
-    const heldEvents = await active.host.store.database
-      .selectFrom("deploymentEvents")
-      .select(["sequence", "type", "data"])
+    const heldAttempt = await active.host.store.database
+      .selectFrom("runAttempts")
+      .select(["firstEventAt", "endedAt"])
       .where("runId", "=", recoveringRunId)
-      .where("createdAt", ">=", recoveryInput.createdAt)
-      .orderBy("sequence", "asc")
-      .execute();
-    // At most the one claim and requeue of a dispatch that raced the attach-time inspection.
-    expect(heldEvents.filter((event) => event.type === "run.status").length).toBeLessThanOrEqual(2);
-    expect(heldEvents.filter((event) => event.type === "run.failed")).toEqual([]);
+      .where("status", "=", "current")
+      .executeTakeFirstOrThrow();
+    expect(heldAttempt).toEqual({ firstEventAt: null, endedAt: null });
     expect((await captured()).filter((record) => record.dispatchReadinessTurn)).toHaveLength(2);
     const frozenContext =
       heldSnapshots.find((snapshot) => snapshot.run.reportContext !== null)?.run ??
@@ -972,18 +993,7 @@ integration("Runs that outlive their connection", () => {
       await waitFor(gate.isEntered, 5_000, "prompt dispatch after preparation settled");
       readyDispatchDelayMs = Date.now() - preparationReleasedAt;
       active.network.block();
-      await waitFor(
-        async () => {
-          const state = await active.api["bootstrap.get"]({});
-          return (
-            state.ok &&
-            state.data.environments.find((environment) => environment.id === active.environmentId)
-              ?.connected === false
-          );
-        },
-        30_000,
-        "runner disconnected",
-      );
+      await waitFor(() => executionConnected(active, false), 30_000, "runner disconnected");
     } finally {
       gate.release();
     }
@@ -1026,18 +1036,7 @@ integration("Runs that outlive their connection", () => {
     ]);
     expect(offlineRetry.runAttempts).toHaveLength(2);
     active.network.unblock();
-    await waitFor(
-      async () => {
-        const state = await active.api["bootstrap.get"]({});
-        return (
-          state.ok &&
-          state.data.environments.find((environment) => environment.id === active.environmentId)
-            ?.connected === true
-        );
-      },
-      30_000,
-      "runner reconnected",
-    );
+    await waitFor(() => executionConnected(active, true), 30_000, "runner reconnected");
     const reconnectedAt = Date.now();
     await waitFor(
       async () => (await liveAssistant(active, childThread.id)) === heldText,
@@ -1134,17 +1133,16 @@ integration("Runs that outlive their connection", () => {
       runId: recoveringRunId,
     });
     const events = await active.host.store.database
-      .selectFrom("deploymentEvents")
-      .select(["sequence", "type", "runId", "data"])
-      .where("runId", "in", [parentSeedRunId, childRun.id, recoveringRunId])
-      .orderBy("sequence", "asc")
+      .selectFrom("runs")
+      .select(["id", "status", "completedAt", "failure"])
+      .where("id", "in", [parentSeedRunId, childRun.id, recoveringRunId])
+      .orderBy("id")
       .execute();
-    expect(
-      events.filter((event) => event.runId === recoveringRunId && event.type === "run.failed"),
-    ).toEqual([]);
-    expect(
-      events.filter((event) => event.runId === recoveringRunId && event.type === "run.completed"),
-    ).toHaveLength(1);
+    expect(events.find(({ id }) => id === recoveringRunId)).toMatchObject({
+      status: "completed",
+      failure: null,
+      completedAt: expect.any(Date),
+    });
     const evidenceDirectory = join(tmpdir(), "opensteer-e2e-artifacts", randomUUID());
     await mkdir(evidenceDirectory, {
       recursive: true,
@@ -1165,7 +1163,7 @@ integration("Runs that outlive their connection", () => {
           childFailure: (await run(active, childRun.id)).failure,
           holdDurationMs,
           heldSnapshots,
-          heldEvents,
+          heldAttempt,
           readyDispatchDelayMs,
           engineStartDelayAfterReconnectMs,
           events,
@@ -1221,7 +1219,7 @@ integration("Runs that outlive their connection", () => {
     const request = await waitForValue(30_000, async () =>
       active.host.store.database
         .selectFrom("requests")
-        .select(["id", "presentation"])
+        .select(["id", "presentation", "revision"])
         .where("originatingRunId", "=", runId)
         .where("status", "=", "pending")
         .executeTakeFirst(),
@@ -1240,6 +1238,7 @@ integration("Runs that outlive their connection", () => {
       "commands.dispatch",
       {
         idempotencyKey: key,
+        expectedRevision: request.revision,
         requestId: request.id,
         response: {
           kind: "choice",
@@ -1293,16 +1292,13 @@ integration("Runs that outlive their connection", () => {
     const request = await waitForValue(30_000, async () =>
       active.host.store.database
         .selectFrom("requests")
-        .select(["id", "presentation"])
+        .select(["id", "presentation", "revision"])
         .where("originatingRunId", "=", askingRun)
         .where("status", "=", "pending")
         .executeTakeFirst(),
     );
     await waitFor(
-      async () =>
-        (await storedRunnerEvents(active, streamingRun)).filter(
-          ({ type }) => type === "assistant.message",
-        ).length === 1,
+      async () => (await assistantRows(active, streamingRun)).length === 1,
       30_000,
       "sibling streaming",
     );
@@ -1314,17 +1310,13 @@ integration("Runs that outlive their connection", () => {
       }[];
     };
     const allow = presentation.options.find((option) => option.hint !== "reject-once")!;
-    await waitFor(
-      async () => {
-        const pending = await active.host.store.database
-          .selectFrom("threadStatePending")
-          .select("threadId")
-          .execute();
-        return pending.length === 0;
-      },
-      30_000,
-      "initial projections",
-    );
+    await expect(
+      active.host.store.database
+        .selectFrom("personalAttention")
+        .select("requestId")
+        .where("requestId", "=", request.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ requestId: request.id });
     // Observe each writer's own backend without changing its SQL or lock acquisition.
     const writer = new AsyncLocalStorage<"answer" | "sibling">();
     const backendPids = new Map<"answer" | "sibling", number>();
@@ -1338,7 +1330,8 @@ integration("Runs that outlive their connection", () => {
       if (
         role &&
         !backendPids.has(role) &&
-        statement === "select deployment_id from deployment_event_state for no key update"
+        statement?.includes('from "client_sync_state"') &&
+        statement.includes("for no key update")
       ) {
         backendPids.set(role, (this as PgClient & { processID: number }).processID);
       }
@@ -1360,7 +1353,7 @@ integration("Runs that outlive their connection", () => {
     const unlock = Promise.withResolvers<void>();
     const blocker = active.host.store.database.transaction().execute(async (transaction) => {
       await transaction
-        .selectFrom("deploymentEventState")
+        .selectFrom("clientSyncState")
         .select("deploymentId")
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
@@ -1405,6 +1398,7 @@ integration("Runs that outlive their connection", () => {
       "commands.dispatch",
       {
         idempotencyKey: key,
+        expectedRevision: request.revision,
         requestId: request.id,
         response: {
           kind: "choice",

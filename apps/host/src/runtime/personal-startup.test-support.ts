@@ -1,3 +1,5 @@
+import { readVerticalRunTools } from "../agents/vertical-stack.test-support.js";
+import type { VerticalTurn } from "../agents/vertical-stack.test-support.js";
 import { forkRunnerChild } from "../agents/runner-child.test-support.js";
 import { integrationBundleEntry } from "@opensteer/shared/test-support/integrationRunnerBuild";
 import { ExecutionContainment, executionScopeVariable } from "@opensteer/runner";
@@ -12,7 +14,6 @@ import { HarnessIdSchema } from "@opensteer/core";
 import type { HarnessInstanceCatalog } from "@opensteer/protocol";
 import type { HostApiClient } from "@opensteer/protocol";
 import type { EnvironmentId, HarnessInstanceId, RunId } from "@opensteer/core";
-import { eventFromRow } from "@opensteer/database";
 import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,7 +21,6 @@ import { join, resolve } from "node:path";
 import {
   createId,
   MessageContentSchema,
-  type AgentEvent,
   type MessageId,
   type ComputerFolder,
 } from "@opensteer/core";
@@ -68,11 +68,7 @@ export interface PersonalRuntime {
     messageId: MessageId,
     signal: AbortSignal,
     replacementRunId?: RunId,
-  ): Promise<{
-    readonly runId: RunId;
-    readonly events: readonly AgentEvent[];
-    readonly assistantText: string;
-  }>;
+  ): Promise<VerticalTurn>;
   crashRunner(beforeRestart?: () => Promise<void>): Promise<void>;
   restartHost(outage?: {
     readonly downForMs?: number;
@@ -87,6 +83,8 @@ export async function startPersonalRuntime(input: {
   readonly engineArguments?: readonly string[];
   readonly vertical?: VerticalStackOptions;
   readonly hostLog?: (line: string) => void;
+  readonly onPersonalScopeCut?: import("./runtime.js").HostRuntimeOptions["onPersonalScopeCut"];
+  readonly onPersonalReaction?: import("./runtime.js").HostRuntimeOptions["onPersonalReaction"];
   readonly runnerWire?: import("../agents/runner-wire.test-support.js").RunnerWireOptions;
   readonly maxConcurrentRuns?: number;
   readonly webDistribution?: NonNullable<ReturnType<typeof parseHostConfig>["webDistribution"]>;
@@ -145,7 +143,7 @@ export async function startPersonalRuntime(input: {
   let catalogState = "not received";
   let cookie = "",
     closed = false;
-  const events = new Set<(event: AgentEvent) => void>();
+  const events = new Set<() => void>();
   async function startHost() {
     const runtime = await createHostRuntime(
       { ...config, ...(vertical?.account ? { account: vertical.account } : {}) },
@@ -196,8 +194,10 @@ export async function startPersonalRuntime(input: {
           )
             catalogs.resolve();
         },
-        onDeploymentEvent: (event) => {
-          for (const listener of events) listener(event);
+        ...(input.onPersonalScopeCut ? { onPersonalScopeCut: input.onPersonalScopeCut } : {}),
+        onPersonalReaction: (reaction) => {
+          input.onPersonalReaction?.(reaction);
+          for (const listener of events) listener();
           for (const notify of changes) notify();
         },
       },
@@ -235,7 +235,7 @@ export async function startPersonalRuntime(input: {
       runnerStop?.abort();
       connection?.close();
       await connecting;
-      runnerIntegrations?.close?.();
+      await runnerIntegrations?.close?.();
     }
   }
   async function startRunner() {
@@ -531,15 +531,20 @@ export async function startPersonalRuntime(input: {
               .select(["id", "status"])
               .where("id", "=", replacementRunId ?? inputRow.runId!)
               .executeTakeFirstOrThrow();
-            if (["completed", "failed", "interrupted"].includes(run.status)) {
-              const selected = (
-                await host!.store.database
-                  .selectFrom("deploymentEvents")
-                  .selectAll()
-                  .where("runId", "=", run.id)
-                  .orderBy("sequence")
-                  .execute()
-              ).map(eventFromRow);
+            if (
+              run.status === "completed" ||
+              run.status === "failed" ||
+              run.status === "interrupted"
+            ) {
+              const items = await host!.store.database
+                .selectFrom("transcriptItems")
+                .select(["id", "kind", "position"])
+                .where("runId", "=", run.id)
+                .where("visible", "=", true)
+                .orderBy("position", "desc")
+                .orderBy("id", "desc")
+                .limit(100)
+                .execute();
               const messages = await host!.store.database
                 .selectFrom("messages")
                 .select("content")
@@ -547,9 +552,12 @@ export async function startPersonalRuntime(input: {
                 .where("kind", "=", "assistant")
                 .orderBy("sequence")
                 .execute();
+              const tools = await readVerticalRunTools(host!.store.database, run.id);
               return {
+                tools,
                 runId: run.id,
-                events: selected,
+                status: run.status,
+                items: items.reverse(),
                 assistantText: messages
                   .flatMap((row) => MessageContentSchema.parse(row.content))
                   .filter((part) => part.type === "text")

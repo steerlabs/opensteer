@@ -1,12 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import type { HostClient, HostSnapshot } from "./client.js";
+import type { HostClient, TranscriptFixtureSnapshot } from "./client.js";
 import { sameStableHostSnapshot } from "./host-snapshot-selectors.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import {
   createHostSelection,
   hostSnapshotStore,
   type HostSelection,
-  type HostSnapshotStore,
 } from "./host-snapshot-store.js";
 
 describe("Host snapshot selectors", () => {
@@ -14,7 +13,7 @@ describe("Host snapshot selectors", () => {
     const harness = clientHarness();
     const store = hostSnapshotStore(harness.client);
     const selection = createHostSelection(store, (snapshot) => snapshot, sameStableHostSnapshot);
-    const observer = observeSelection(store, selection);
+    const observer = observeSelection(selection);
     harness.publish({ ...harness.snapshot(), network: "offline" });
     expect(observer.renderCount()).toBe(2);
     expect(observer.value().network).toBe("offline");
@@ -25,7 +24,7 @@ describe("Host snapshot selectors", () => {
     const harness = clientHarness();
     const store = hostSnapshotStore(harness.client);
     const selection = createHostSelection(store, (snapshot) => snapshot, sameStableHostSnapshot);
-    const observer = observeSelection(store, selection);
+    const observer = observeSelection(selection);
     try {
       for (const state of ["pending-computer", "pending-restart"] as const) {
         const browserProfileDeletions = [
@@ -68,7 +67,7 @@ describe("Host snapshot selectors", () => {
     const harness = clientHarness();
     const store = hostSnapshotStore(harness.client);
     const selection = createHostSelection(store, (snapshot) => snapshot, sameStableHostSnapshot);
-    const observer = observeSelection(store, selection);
+    const observer = observeSelection(selection);
 
     const activity = transcriptActivity(harness.snapshot());
     harness.publish(activity);
@@ -78,7 +77,7 @@ describe("Host snapshot selectors", () => {
     const thread = activity.threads[0];
     expect(thread).toBeDefined();
     const status = thread?.status === "failed" ? "idle" : "failed";
-    const semanticChange: HostSnapshot = {
+    const semanticChange: TranscriptFixtureSnapshot = {
       ...activity,
       revision: activity.revision + 1,
       threads: activity.threads.map((candidate, index) =>
@@ -92,13 +91,34 @@ describe("Host snapshot selectors", () => {
     observer.unsubscribe();
   });
 
+  it("notifies only the selections whose slice one shell change moved", () => {
+    const harness = clientHarness();
+    const store = hostSnapshotStore(harness.client);
+    const visits = vi.fn();
+    const machines = vi.fn();
+    const counts = vi.fn();
+    const releases = [
+      createHostSelection(store, (snapshot) => snapshot.threadVisits).subscribe(visits),
+      createHostSelection(store, (snapshot) => snapshot.machines).subscribe(machines),
+      createHostSelection(store, (snapshot) => snapshot.needsYouCount ?? 0).subscribe(counts),
+    ];
+    harness.publish({
+      ...harness.snapshot(),
+      threadVisits: { ...harness.snapshot().threadVisits, thr_seen: "2026-11-18T00:00:00.000Z" },
+    });
+    expect(visits).toHaveBeenCalledTimes(1);
+    expect(machines).not.toHaveBeenCalled();
+    expect(counts).not.toHaveBeenCalled();
+    for (const release of releases) release();
+  });
+
   it("updates a stable shell consumer when the authenticated surface changes", () => {
     const harness = clientHarness();
     const store = hostSnapshotStore(harness.client);
     const selection = createHostSelection(store, (snapshot) => snapshot, sameStableHostSnapshot);
-    const observer = observeSelection(store, selection);
+    const observer = observeSelection(selection);
 
-    const remote: HostSnapshot = {
+    const remote: TranscriptFixtureSnapshot = {
       ...harness.snapshot(),
       revision: harness.snapshot().revision + 1,
       sessionSurface: "personal-remote",
@@ -111,16 +131,12 @@ describe("Host snapshot selectors", () => {
   });
 });
 
-function observeSelection<Selection>(
-  store: HostSnapshotStore,
-  selection: HostSelection<Selection>,
-) {
+function observeSelection<Selection>(selection: HostSelection<Selection>) {
   let value = selection.getSnapshot();
   let renderCount = 1;
-  const unsubscribe = store.subscribe(() => {
-    const next = selection.getSnapshot();
-    if (Object.is(next, value)) return;
-    value = next;
+  // A notification is a render: the selection calls back only when its value changed.
+  const unsubscribe = selection.subscribe(() => {
+    value = selection.getSnapshot();
     renderCount += 1;
   });
   return {
@@ -130,7 +146,7 @@ function observeSelection<Selection>(
   };
 }
 
-function transcriptActivity(snapshot: HostSnapshot): HostSnapshot {
+function transcriptActivity(snapshot: TranscriptFixtureSnapshot): TranscriptFixtureSnapshot {
   const timestamp = new Date(
     Date.parse(snapshot.threads[0]?.updatedAt ?? "2026-01-01") + 1,
   ).toISOString();
@@ -164,7 +180,7 @@ function clientHarness() {
   return {
     client,
     initialSnapshot,
-    publish: (next: HostSnapshot) => {
+    publish: (next: TranscriptFixtureSnapshot) => {
       snapshot = next;
       for (const listener of listeners) listener();
     },

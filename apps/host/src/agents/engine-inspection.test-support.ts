@@ -4,16 +4,11 @@ import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import { HarnessRegistry, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CursorHarnessDriver } from "@opensteer/harness-cursor";
 import WebSocket from "ws";
-import type { Clock } from "@opensteer/shared/clock";
 import { setFileMode } from "@opensteer/shared/privateFiles";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
 /** A repository-owned CLI, isolated from every installed engine and account. */
-export async function startEngineInspectionStack(
-  databaseUrl: string,
-  scratch: string,
-  workspaceReconcileClock?: Clock,
-) {
+export async function startEngineInspectionStack(databaseUrl: string, scratch: string) {
   const state = join(scratch, "scenario");
   const executable = join(scratch, "agent");
   const fixture = new URL(
@@ -43,7 +38,6 @@ await import(${JSON.stringify(fixture)});
     harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
     catalogTimeoutMs: 10_000,
     runTimeoutMs: 10_000,
-    ...(workspaceReconcileClock ? { workspaceReconcileClock } : {}),
   });
   return { stack, state };
 }

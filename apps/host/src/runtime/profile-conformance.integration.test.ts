@@ -1,3 +1,4 @@
+import { testResourceData } from "../server/test-host-api-request.js";
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
 import { createId, opensteerDesktopOAuthClientId } from "@opensteer/core";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
@@ -79,22 +80,17 @@ integration("Personal configuration conformance", () => {
 
   it("requires a session and projects one owner, hosting computer, folder and current session", async () => {
     const anonymous = await host.runtime.app.inject({
-      url: "/v1/rpc/bootstrap.get?input=%7B%7D",
+      url: "/v1/rpc/personal.shell.get?input=%7B%7D",
       headers: { [hostApiVersionHeader]: String(hostApiVersion) },
     });
     expect(anonymous.statusCode).toBe(401);
-    const bootstrap = await testRpcData(
-      host.origin,
-      "bootstrap.get",
-      {},
-      { headers: host.ownerHeaders },
-    );
-    expect(bootstrap.user.id).toBe(host.ownerId);
-    expect(bootstrap.personalSettings).toMatchObject({
-      ownerId: host.ownerId,
-      agentHome: host.agentHome,
-    });
-    expect(bootstrap.environments).toContainEqual(
+    const auth = { headers: host.ownerHeaders };
+    const shell = await testRpcData(host.origin, "personal.shell.get", {}, auth);
+    const { settings } = await testResourceData(host.origin, "settings", auth);
+    const { environments } = await testResourceData(host.origin, "environment", auth);
+    expect(shell.session.user.id).toBe(host.ownerId);
+    expect(settings).toMatchObject({ ownerId: host.ownerId, agentHome: host.agentHome });
+    expect(environments).toContainEqual(
       expect.objectContaining({ id: host.ownerEnvironmentId, connected: true }),
     );
     const sessions = await testRpcData(
@@ -104,7 +100,7 @@ integration("Personal configuration conformance", () => {
       { headers: host.ownerHeaders },
     );
     expect(sessions.sessions.filter((row) => row.current)).toHaveLength(1);
-    expect(JSON.stringify(bootstrap)).not.toContain(host.config.authSecret);
+    expect(JSON.stringify({ shell, settings, environments })).not.toContain(host.config.authSecret);
     expect(JSON.stringify(sessions)).not.toContain(host.config.identity.localOwnerClaimToken);
   });
 

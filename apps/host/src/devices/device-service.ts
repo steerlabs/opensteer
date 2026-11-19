@@ -29,7 +29,6 @@ import {
   ToolBlockedError,
   refused,
   UserIdSchema,
-  type AgentEvent,
   type RunId,
   type RunnerId,
   type UserId,
@@ -209,8 +208,6 @@ export class DeviceService {
   readonly #definitions: readonly IntegrationDefinition[];
   readonly #store: IntegrationPlatformStore;
   readonly #localServers: Pick<LocalServerService, "availability" | "clients" | "endRun">;
-  readonly #onDeploymentEvent: (event: AgentEvent) => void;
-  readonly #onRequestsChanged: () => void;
   readonly #onSettingsChanged: (input: {
     installationId?: string;
     ownerUserId?: UserId;
@@ -290,14 +287,12 @@ export class DeviceService {
       LocalServerService,
       "availability" | "clients" | "discoverServer" | "endRun" | "launchReview" | "secrets"
     >;
-    readonly onDeploymentEvent: (event: AgentEvent) => void;
     readonly onConnectionsChanged: () => void;
     readonly onSettingsChanged?: (input: {
       installationId?: string;
       ownerUserId?: UserId;
     }) => Promise<void>;
     readonly onInputAccessWithdrawn?: (runnerId: RunnerId) => void;
-    readonly onRequestsChanged: () => void;
     readonly isRunnerConnected: (runnerId: RunnerId) => boolean;
     readonly store: IntegrationPlatformStore;
   }) {
@@ -309,8 +304,6 @@ export class DeviceService {
     this.#computerApps = options.computerApps;
     this.#definitions = options.definitions;
     this.#localServers = options.localServers;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
-    this.#onRequestsChanged = options.onRequestsChanged;
     this.#onSettingsChanged = options.onSettingsChanged ?? (async () => undefined);
     this.#isRunnerConnected = options.isRunnerConnected;
     this.#computerUse =
@@ -359,7 +352,6 @@ export class DeviceService {
             console.warn("An approved MCP server could not be started", error),
           );
       },
-      publishRequestEvents: (events) => this.#publishRequestEvents(events),
       store: this.#store,
     });
   }
@@ -1191,7 +1183,8 @@ export class DeviceService {
         );
     }
     let lease: ComputerUseLease | undefined;
-    let started: Extract<AgentEvent, { type: "tool.started" }> | undefined;
+    let started:
+      Awaited<ReturnType<IntegrationPlatformStore["computerOperations"]["start"]>> | undefined;
     let result: DeviceComputerResult | undefined;
     let released = false;
     let audit: Promise<readonly string[]> | undefined;
@@ -1228,7 +1221,7 @@ export class DeviceService {
         subject,
         ...(typeof args.window === "number" ? { window: args.window } : {}),
       });
-      const callId = started.data.callId;
+      const callId = started.toolCallId;
       let resolve!: () => void;
       let reject!: (error: unknown) => void;
       const done = new Promise<void>((yes, no) => {
@@ -1244,7 +1237,6 @@ export class DeviceService {
         if (error === undefined) resolve();
         else reject(error);
       };
-      this.#onDeploymentEvent(started);
     };
     const membershipRevision =
       operation === "bind" ? await this.#nativeTabs?.captureMembership(ownerUserId) : undefined;
@@ -1323,12 +1315,11 @@ export class DeviceService {
               stoppedBecause,
             });
       if (started) {
-        const event = await this.#store.computerOperations.complete(started, {
+        await this.#store.computerOperations.complete(started, {
           status: signal?.aborted ? "cancelled" : result?.error ? "failed" : "succeeded",
           headline,
           performed,
         });
-        if (event) this.#onDeploymentEvent(event);
       }
       const content: ReplContent[] = performed.map((text) => ({ type: "text", text }));
       if (result?.observation && operation !== "bind" && args.emit !== false) {
@@ -1421,7 +1412,7 @@ export class DeviceService {
         // Run-end finalization waits for this bounded, fenced audit lifetime.
         auditCompletion = (async () => {
           const performed = (await audit) ?? known;
-          const event = await this.#store.computerOperations.complete(record, {
+          await this.#store.computerOperations.complete(record, {
             status: signal?.aborted ? "cancelled" : "failed",
             headline: computerUseActHeadline({
               performed,
@@ -1429,7 +1420,6 @@ export class DeviceService {
             }),
             performed,
           });
-          if (event) this.#onDeploymentEvent(event);
         })();
       }
       throw error;
@@ -1642,8 +1632,7 @@ export class DeviceService {
         .filter((record) => record.runId === runId)
         .map((record) => record.done),
     );
-    for (const event of await this.#store.computerOperations.finalize(runId))
-      this.#onDeploymentEvent(event);
+    await this.#store.computerOperations.finalize(runId);
   }
 
   resetComputerGeneration(runId: RunId, generation: number): void {
@@ -1665,11 +1654,6 @@ export class DeviceService {
     task: () => Promise<Result>,
   ): Promise<Result> {
     return this.#deviceApps.withAdmissions(deviceIds, task);
-  }
-
-  #publishRequestEvents(events: readonly AgentEvent[]): void {
-    for (const event of events) this.#onDeploymentEvent(event);
-    if (events.length > 0) this.#onRequestsChanged();
   }
 
   /**
@@ -1848,7 +1832,6 @@ export class DeviceService {
       requestId: input.requestId,
     });
     await this.#onSettingsChanged({ installationId: mutation.installation.id });
-    this.#publishRequestEvents(mutation.requestEvents);
     this.#localServers.clients.invalidateInstallation(mutation.installation.id);
     return mutation.installation;
   }

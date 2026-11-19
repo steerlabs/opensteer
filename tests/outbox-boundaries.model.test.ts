@@ -236,7 +236,6 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
       session.change({ phase: "recovering" });
       const host = new HttpHostClient({
         baseUrl: "https://host.test",
-        bindMutationsToSession: true,
         fetch: async (url, init) => {
           if (!String(url).endsWith("/commands.dispatch")) return Response.error();
           await wire.promise;

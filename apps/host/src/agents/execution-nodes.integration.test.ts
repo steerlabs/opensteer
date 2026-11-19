@@ -1,3 +1,10 @@
+import {
+  conversationSubagents,
+  HttpHostClient,
+  requestDecisionRevision,
+  type NodeEntry,
+  type WebSocketClient,
+} from "@opensteer/client/host";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,6 +31,7 @@ import {
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { OpencodeHarnessDriver } from "@opensteer/harness-opencode";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
@@ -73,7 +81,7 @@ const codexSelection = ModelSelectionSchema.parse({
 });
 interface Journey {
   readonly engine: string;
-  readonly events: readonly string[];
+  readonly activity: Awaited<ReturnType<typeof nodeActivity>>;
   readonly name: string;
   readonly nodes: readonly unknown[];
   readonly requests: readonly unknown[];
@@ -83,10 +91,51 @@ interface Journey {
 integration("Execution nodes", () => {
   let stack: VerticalStack | undefined;
   const journeys: Journey[] = [];
+  const viewers: HttpHostClient[] = [];
+  const sockets: WebSocket[] = [];
   afterEach(async () => {
+    for (const client of viewers.splice(0)) client.dispose();
+    for (const socket of sockets.splice(0)) socket.terminate();
     await stack?.close();
     stack = undefined;
   });
+  /** The shared client every surface draws from, attached to the stack and showing this task. */
+  async function viewer(active: VerticalStack, threadId: ThreadId) {
+    const client = new HttpHostClient({
+      baseUrl: active.hostOrigin,
+      fetch: (input, init) => {
+        const headers = new Headers(init?.headers);
+        headers.set("cookie", active.sessionCookie);
+        headers.set("origin", active.hostOrigin.origin);
+        return fetch(input, { ...init, headers });
+      },
+      webSocketFactory: (url) => {
+        const socket = new WebSocket(url, {
+          headers: { cookie: active.sessionCookie, origin: active.hostOrigin.origin },
+        });
+        sockets.push(socket);
+        return socket as unknown as WebSocketClient;
+      },
+    });
+    viewers.push(client);
+    await client.load();
+    client.activateThread(threadId);
+    return client;
+  }
+  /** The task as its screen reads it: its transcript, its Requests and its subagents' cards. */
+  function screen(client: HttpHostClient, threadId: ThreadId) {
+    const view = client.getThreadTranscript(threadId)?.getSnapshot();
+    const entries = view?.entries ?? [];
+    const agents = conversationSubagents(
+      { ...client.getSnapshot(), transcripts: { [threadId]: entries } },
+      threadId,
+    );
+    return {
+      cards: [...agents.now, ...agents.earlier],
+      nodes: entries.filter((entry): entry is NodeEntry => entry.kind === "node"),
+      requests: view?.requests ?? [],
+    };
+  }
   afterAll(async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-execution-nodes-"));
     const artifact = join(directory, "nodes.json");
@@ -151,7 +200,7 @@ integration("Execution nodes", () => {
     const database = active.host.store.database;
     const journey: Journey = {
       engine,
-      events: await eventTypes(active, runId),
+      activity: await nodeActivity(active, runId),
       name,
       nodes: listed.data.nodes,
       requests: await database
@@ -176,11 +225,52 @@ integration("Execution nodes", () => {
     },
     async () => {
       const { active, captureFile, threadId } = await startCodex("subagents", ["--token-usage"]);
+      const client = await viewer(active, threadId);
       const runId = await queue(active, threadId, "Research the release notes");
       const request = await pendingRequest(active, runId);
       expect(request.originatingNodeId).not.toBeNull();
-      await answer(active, request);
+      // The subagent's question is answered on the task's screen: its card names it, and the
+      // task's Requests, which the composer and the subagent's pane answer from, hold it.
+      await vi.waitFor(
+        () => {
+          const shown = screen(client, threadId);
+          expect(
+            shown.cards.find((card) => card.nodeId === request.originatingNodeId),
+          ).toMatchObject({ tone: "needs-you", requestId: request.id });
+          expect(shown.requests.map(({ id }) => id)).toEqual([request.id]);
+        },
+        { timeout: 20_000, interval: 50 },
+      );
+      const asked = screen(client, threadId).requests[0]!;
+      const allow = (
+        asked.presentation as { readonly options: readonly { hint?: string; id: string }[] }
+      ).options.find((option) => option.hint !== "reject-once")!;
+      await client.dispatch({
+        type: "request.respond",
+        idempotencyKey: `respond-${randomUUID()}`,
+        requestId: asked.id,
+        ...requestDecisionRevision(asked),
+        response: { kind: "choice", optionId: allow.id },
+      });
       await settled(active, runId);
+      // A settled subagent's card keeps the time it ended, not the time it is read: as it settles,
+      // and when a task opened later reads it from the Host, as an upgraded install's cards are.
+      const ended = (await nodeRows(active, runId)).map((node) => ({
+        nodeId: node.id,
+        completedAt: node.endedAt!.toISOString(),
+      }));
+      const later = await viewer(active, threadId);
+      for (const reader of [client, later])
+        await vi.waitFor(
+          () =>
+            expect(
+              screen(reader, threadId).nodes.map(({ nodeId, completedAt }) => ({
+                nodeId,
+                completedAt,
+              })),
+            ).toEqual(ended),
+          { timeout: 20_000, interval: 50 },
+        );
 
       // The root's two responses and each invocation's own; the child thread's
       // running total carries from its first invocation into its second.
@@ -247,14 +337,21 @@ integration("Execution nodes", () => {
           status: "fulfilled",
         },
       ]);
+      expect(
+        await active.host.store.database
+          .selectFrom("transcriptItems")
+          .select(["nodeId", "attemptId"])
+          .where("requestId", "=", request.id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ nodeId: nodes[0]!.id, attemptId: nodes[0]!.attemptId });
       // The child's command is its step, not the Run's own.
       const childTool = await active.host.store.database
-        .selectFrom("deploymentEvents")
-        .select("data")
+        .selectFrom("toolCalls")
+        .select(["callId", "nodeId", "tool"])
         .where("runId", "=", runId)
-        .where("type", "=", "tool.started")
+        .where("startedAt", "is not", null)
         .executeTakeFirstOrThrow();
-      expect(childTool.data).toMatchObject({
+      expect(childTool).toMatchObject({
         callId: "child-command-1",
         nodeId: nodes[0]!.id,
       });
@@ -294,10 +391,13 @@ integration("Execution nodes", () => {
         id: request.originatingNodeId,
         title: "researcher",
       });
-      expect(journey.events.indexOf("node.started")).toBeLessThan(
-        journey.events.indexOf("request.opened"),
+      expect(journey.activity.map((item) => item.kind)).toEqual(
+        expect.arrayContaining(["node", "request"]),
       );
-      expect(journey.events).toContain("node.updated");
+      const nodeCard = journey.activity.find((item) => item.kind === "node")!;
+      const requestCard = journey.activity.find((item) => item.kind === "request")!;
+      expect(BigInt(nodeCard.position!)).toBeLessThan(BigInt(requestCard.position!));
+      expect(requestCard.nodeId).toBe(nodeCard.executionNodeId);
     },
   );
   async function startClaude(script: ClaudeScript, control?: ClaudeStopControl) {
@@ -367,12 +467,12 @@ integration("Execution nodes", () => {
         originCallId: "agent-call-1",
       });
       const childTool = await active.host.store.database
-        .selectFrom("deploymentEvents")
-        .select("data")
+        .selectFrom("toolCalls")
+        .select(["callId", "nodeId", "tool"])
         .where("runId", "=", runId)
-        .where("type", "=", "tool.started")
+        .where("startedAt", "is not", null)
         .execute();
-      expect(childTool.map((row) => row.data)).toEqual(
+      expect(childTool).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             callId: "agent-call-1",
@@ -975,7 +1075,8 @@ async function queue(active: VerticalStack, threadId: ThreadId, text: string): P
 async function pendingRequest(active: VerticalStack, runId: RunId) {
   let found:
     | {
-        readonly id: string;
+        readonly id: RequestId;
+        readonly revision: string;
         readonly originatingNodeId: string | null;
         readonly presentation: unknown;
       }
@@ -983,7 +1084,7 @@ async function pendingRequest(active: VerticalStack, runId: RunId) {
   await waitFor(async () => {
     found = await active.host.store.database
       .selectFrom("requests")
-      .select(["id", "originatingNodeId", "presentation"])
+      .select(["id", "revision", "originatingNodeId", "presentation"])
       .where("originatingRunId", "=", runId)
       .where("status", "=", "pending")
       .executeTakeFirst();
@@ -996,7 +1097,8 @@ async function pendingRequest(active: VerticalStack, runId: RunId) {
 async function answer(
   active: VerticalStack,
   request: {
-    readonly id: string;
+    readonly id: RequestId;
+    readonly revision: string;
     readonly presentation: unknown;
   },
 ) {
@@ -1016,6 +1118,7 @@ async function answer(
     {
       idempotencyKey: key,
       requestId: request.id,
+      expectedRevision: request.revision,
       response: {
         kind: "choice",
         optionId: allow.id,
@@ -1039,7 +1142,7 @@ async function settled(active: VerticalStack, runId: RunId) {
     "the Run to end",
   ).catch(async (error: unknown) => {
     const state = {
-      events: await eventTypes(active, runId),
+      activity: await nodeActivity(active, runId),
       requests: await active.host.store.database
         .selectFrom("requests")
         .select(["status", "originatingNodeId"])
@@ -1073,12 +1176,12 @@ function nodeRows(active: VerticalStack, runId: RunId) {
     .orderBy("startedAt", "asc")
     .execute();
 }
-async function eventTypes(active: VerticalStack, runId: RunId): Promise<string[]> {
-  const rows = await active.host.store.database
-    .selectFrom("deploymentEvents")
-    .select("type")
+function nodeActivity(active: VerticalStack, runId: RunId) {
+  return active.host.store.database
+    .selectFrom("transcriptItems")
+    .select(["kind", "position", "nodeId", "executionNodeId"])
     .where("runId", "=", runId)
-    .orderBy("sequence", "asc")
+    .where("visible", "=", true)
+    .orderBy("position")
     .execute();
-  return rows.map((row) => row.type);
 }

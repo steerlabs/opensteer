@@ -4,6 +4,7 @@ import {
   PluginAccountReadinessSchema,
   PluginOAuthClientChoiceSchema,
   PluginResourceCategorySchema,
+  pluginIconsMaxRefs,
 } from "@opensteer/protocol";
 import { z } from "zod";
 import {
@@ -251,6 +252,13 @@ export const operations = {
   },
   catalogList: { input: CatalogPageInputSchema, output: CatalogPageSchema },
   catalogDetail: { input: z.strictObject({ id }), output: CatalogEntrySchema },
+  /** Images for refs the owner's plugins and the catalog list; a ref with none is left out. */
+  icons: {
+    input: z.strictObject({ refs: z.array(id).min(1).max(pluginIconsMaxRefs) }),
+    output: z.strictObject({
+      icons: z.array(z.strictObject({ ref: id, image: z.string() })).max(pluginIconsMaxRefs),
+    }),
+  },
   list: { input: z.strictObject({}), output: z.array(PluginSummarySchema) },
   installed: {
     input: z.strictObject({

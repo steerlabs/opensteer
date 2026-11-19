@@ -1,7 +1,9 @@
+import type { HostNetwork } from "@opensteer/client/connections";
+import type { HostClient } from "@opensteer/client/host";
 import { ModelSelectionSchema, createId, type ThreadId } from "@opensteer/core";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
-import { hostApiVersionHeader } from "@opensteer/protocol";
+import { hostApiCurrentHeader, hostApiVersionHeader } from "@opensteer/protocol";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -40,7 +42,17 @@ const modelSelection = ModelSelectionSchema.parse({
 });
 const canonicalOrigin = "https://home.connect.opensteer.test";
 const routeOrigin = "https://route.connect.opensteer.test";
+/**
+ * How long a broken socket may take to be replaced and its reply drawn. It is
+ * far under the client's default silence threshold, so only the scenario that
+ * shortens that threshold can pass by being probed.
+ */
 const recoveryBudgetMs = 6_000;
+/** A silence threshold short enough that a quiet socket is questioned within the budget. */
+const quickLiveness = {
+  deadlineMs: 400,
+  idleMs: 400,
+};
 interface JourneyStep {
   readonly atMs: number;
   readonly step: string;
@@ -52,26 +64,16 @@ interface SocketRecord {
   closedAtMs: number | null;
   closeCode: number | null;
   closeReason: string | null;
+  silenced: boolean;
   readonly socket: WebSocket;
   readonly events: {
     readonly message: (data: string | Uint8Array) => void;
   };
 }
-interface ViewerClient {
-  activateThread(threadId: string): void;
-  dispose(): void;
-  getSnapshot(): {
-    readonly connection: string;
-    readonly transcripts: Record<
-      string,
-      readonly {
-        readonly kind: string;
-        readonly messageKind?: string;
-      }[]
-    >;
-  };
-  load(): Promise<void>;
-}
+type ViewerClient = Pick<
+  HostClient,
+  "activateThread" | "dispose" | "getSnapshot" | "getThreadTranscript" | "load"
+>;
 interface DesktopTransport {
   openWebSocket(
     ownerId: number,
@@ -96,12 +98,18 @@ interface DesktopApp {
   restoreRoute(): Promise<void>;
   /** Delivers one frame the shipped client cannot read, as if the Host had sent it. */
   injectUnreadableFrame(): void;
+  /**
+   * Keeps the realtime socket open while nothing from the Host reaches the app,
+   * and does the same to the next `replacements` sockets from the moment they open.
+   */
+  silenceRealtime(replacements?: number): void;
   realtimeOpens(): number;
 }
 interface Scenario {
   readonly name: string;
   /** Why each replaced realtime socket ended, in order: the mechanism that recovered it. */
   readonly closes: readonly string[];
+  readonly liveness?: typeof quickLiveness;
   /** Breaks the app's channel once the first reply has been drawn. */
   readonly fault: (app: DesktopApp) => Promise<void>;
   /** Runs once the second reply is committed, before the app must draw it. */
@@ -164,6 +172,22 @@ integration("Personal realtime stream through the Desktop bridge", () => {
       name: "unreadable-frame",
     });
   }, 90_000);
+  it("replays a reply committed while the open channel was silent", async () => {
+    await journey(stack!, apps, {
+      closes: ["Liveness probe unanswered"],
+      fault: async (app) => app.silenceRealtime(),
+      liveness: quickLiveness,
+      name: "silent-channel",
+    });
+  }, 90_000);
+  it("gives up on a replacement that opens but never synchronizes, and backs off to one that does", async () => {
+    await journey(stack!, apps, {
+      closes: ["Liveness probe unanswered", "Realtime channel silent"],
+      fault: async (app) => app.silenceRealtime(1),
+      liveness: quickLiveness,
+      name: "silent-replacement",
+    });
+  }, 90_000);
 });
 
 /**
@@ -197,7 +221,7 @@ async function journey(
       modelSelection,
       title: `Realtime ${scenario.name}`,
     });
-    app = await desktopApp(stack, startedAt);
+    app = await desktopApp(stack, startedAt, scenario.liveness);
     apps.push(app);
     const client = app.client;
     await client.load();
@@ -266,7 +290,7 @@ async function journey(
   }
 }
 function assistantReplies(client: ViewerClient, threadId: ThreadId): number {
-  return (client.getSnapshot().transcripts[threadId] ?? []).filter(
+  return (client.getThreadTranscript(threadId)?.getSnapshot().entries ?? []).filter(
     (entry) => entry.kind === "message" && entry.messageKind === "assistant",
   ).length;
 }
@@ -277,9 +301,13 @@ function assistantReplies(client: ViewerClient, threadId: ThreadId): number {
  * asynchronously, and main's socket events reach the renderer in order on a
  * later turn. The network is the one stand-in — a tunnel that carries both of
  * the app's origins to the stack's Host — and it is where a socket is
- * interrupted.
+ * silenced.
  */
-async function desktopApp(stack: VerticalStack, startedAt: number): Promise<DesktopApp> {
+async function desktopApp(
+  stack: VerticalStack,
+  startedAt: number,
+  liveness: typeof quickLiveness | undefined,
+): Promise<DesktopApp> {
   // Host's project cannot statically import Desktop's or Web's source trees.
   // Vitest resolves the production modules at runtime while Host typechecks
   // remain scoped.
@@ -423,25 +451,13 @@ async function desktopApp(stack: VerticalStack, startedAt: number): Promise<Desk
     subscribe: () => () => undefined,
   };
   const sockets: SocketRecord[] = [];
+  let silenceReplacements = 0;
   const tunnel = (url: string) => {
     const target = new URL(url);
     return new URL(`${target.pathname}${target.search}`, stack.hostOrigin);
   };
-  const network = {
-    request: async (input: {
-      readonly url: string;
-      readonly signal: AbortSignal;
-      readonly request: {
-        readonly body?: string | Blob;
-        readonly method: string;
-        readonly headers: {
-          readonly accept?: string;
-          readonly apiVersion?: string;
-          readonly contentType?: string;
-          readonly idempotencyKey?: string;
-        };
-      };
-    }) => {
+  const network: HostNetwork = {
+    request: async (input) => {
       const headers = new Headers({
         accept: input.request.headers.accept ?? "application/json",
         cookie: stack.sessionCookie,
@@ -449,6 +465,8 @@ async function desktopApp(stack: VerticalStack, startedAt: number): Promise<Desk
       });
       if (input.request.headers.apiVersion)
         headers.set(hostApiVersionHeader, input.request.headers.apiVersion);
+      if (input.request.headers.apiCurrent)
+        headers.set(hostApiCurrentHeader, input.request.headers.apiCurrent);
       if (input.request.headers.contentType)
         headers.set("content-type", input.request.headers.contentType);
       if (input.request.headers.idempotencyKey)
@@ -491,11 +509,16 @@ async function desktopApp(stack: VerticalStack, startedAt: number): Promise<Desk
         openedAtMs: Date.now() - startedAt,
         path: target.pathname,
         events,
+        silenced: target.pathname === "/v1/realtime" && silenceReplacements > 0,
         socket,
       };
       sockets.push(record);
+      if (record.silenced) silenceReplacements -= 1;
       socket.on("open", () => events.open());
       socket.on("message", (data, isBinary) => {
+        // A silenced socket still answers the Host's protocol pings, as a
+        // stalled path that keeps its connection does.
+        if (record.silenced) return;
         const bytes = Buffer.isBuffer(data)
           ? data
           : Array.isArray(data)
@@ -562,7 +585,14 @@ async function desktopApp(stack: VerticalStack, startedAt: number): Promise<Desk
         transport,
       ),
     ),
+    ...(liveness
+      ? {
+          realtimeLiveness: liveness,
+        }
+      : {}),
     pacedUploads: true,
+    reconnectBaseDelayMs: 20,
+    reconnectMaxDelayMs: 200,
     webSocketFactory: web.createDesktopHostWebSocketFactory(bridge, canonicalOrigin, deploymentId),
   });
   const realtimeSockets = () => sockets.filter((record) => record.path === "/v1/realtime");
@@ -593,6 +623,12 @@ async function desktopApp(stack: VerticalStack, startedAt: number): Promise<Desk
       await transport.selection();
     },
     realtimeOpens: () => realtimeSockets().length,
+    silenceRealtime: (replacements = 0) => {
+      const current = realtimeSockets().at(-1);
+      if (!current) throw new Error("No realtime socket is open.");
+      current.silenced = true;
+      silenceReplacements = replacements;
+    },
     sockets,
   };
 }

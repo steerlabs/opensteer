@@ -1,13 +1,14 @@
 import { stripRefs } from "@opensteer/shared/stripRefs";
 import { OpensteerError, type DeploymentId, type RunId, type TeamBlobId } from "@opensteer/core";
-import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
-import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
+import type { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
+import type { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import { TeamMarkdownSchema, TeamSearchInputSchema } from "@opensteer/protocol";
 import { teamMentionHandles } from "@opensteer/shared/teamMentions";
 import type { z } from "zod";
 import {
   linkError,
   type TeamLinkCallInput,
+  type TeamLinkResult,
   type TeamLinkRpc,
 } from "../team-link-endpoint/contracts.js";
 import type { TeamToolPort, TeamToolRun } from "../mcp/team-tool-port.js";
@@ -60,12 +61,35 @@ export class TeamRunTools {
   }
 
   async context(runId: RunId) {
+    // Admission commits, and can dispatch, before the mirror is recorded and the team has the accept.
+    // Only that window retries; any other refusal stays as the team or link gave it.
+    const unconfirmed = () =>
+      new OpensteerError({
+        code: "conflict",
+        message: "The team hasn't confirmed this request yet",
+        retryable: true,
+      });
     const request = await this.requests.forRun(runId);
-    if (!request) throw linkError();
-    const result = await this.rpc(request.teamId).call({
-      type: "context",
-      requestId: request.requestId,
-    });
+    if (!request) {
+      if (await this.requests.repliesToTeam(runId)) throw unconfirmed();
+      throw linkError();
+    }
+    let result: TeamLinkResult;
+    try {
+      result = await this.rpc(request.teamId).call({
+        type: "context",
+        requestId: request.requestId,
+      });
+    } catch (error) {
+      if (
+        request.terminalState === null &&
+        request.remoteState === "queued" &&
+        error instanceof OpensteerError &&
+        !error.retryable
+      )
+        throw unconfirmed();
+      throw error;
+    }
     if (result.kind !== "context") throw linkError("bad_request");
     return {
       ...result.context,

@@ -1,7 +1,7 @@
 import { createIntegrationId } from "@opensteer/integration-core";
 import { upsertSelfDeviceInTransaction } from "@opensteer/database";
 import { DeviceIdSchema } from "@opensteer/core";
-import { createId, TabIdSchema, WindowIdSchema } from "@opensteer/core";
+import { createId, TabIdSchema, WindowIdSchema, type TabId } from "@opensteer/core";
 import { TabStore } from "@opensteer/database";
 import { createStoreFixture } from "@opensteer/database/test-support/store";
 import { sql } from "kysely";
@@ -16,7 +16,6 @@ import {
   tabReadAuthority,
 } from "./tab-authority.js";
 import { TabService } from "./tab-service.js";
-import type { TabStreamMessage } from "./tab-streams.js";
 import type { NativeTargetAcquiredHandler, TabActor } from "./ports.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 
@@ -458,7 +457,7 @@ integration("production tab authority", () => {
 });
 
 integration("tab projection database cost", () => {
-  it("uses one batched owner projection and one native RPC for a changed row across two subscribers", async () => {
+  it("uses one batched owner projection and one native RPC for a changed row across two reads", async () => {
     const f = await createStoreFixture(),
       run = await f.startRunFixture("tab-projection-cost");
     let queries = 0,
@@ -471,7 +470,7 @@ integration("tab projection database cost", () => {
       transformResult: async ({ result }) => result,
     });
     const store = new TabStore(database),
-      rows = [];
+      rows: TabId[] = [];
     const snapshots = vi.spyOn(store, "snapshot"),
       targeted = vi.spyOn(store, "rows");
     for (let index = 0; index < 40; index++) {
@@ -537,16 +536,11 @@ integration("tab projection database cost", () => {
         throw error;
       },
     });
-    const messages: TabStreamMessage[][] = [[], []];
-    const devices = messages.map((sent) =>
-      service.streams.subscribe(run.userId, async (message) => {
-        sent.push(message);
-      }),
-    );
+    const actor = { kind: "person", ownerId: run.userId } as const;
+    const projectForDevices = () => Promise.all([service.project(actor), service.project(actor)]);
     try {
-      await Promise.all(devices.map((device) => device.ready));
+      await projectForDevices();
       expect(nativeRPCs).toBe(40);
-      for (const sent of messages) sent.length = 0;
       await database
         .updateTable("personalTabs")
         .set({ title: "Changed", updatedAt: new Date() })
@@ -557,21 +551,18 @@ integration("tab projection database cost", () => {
       snapshots.mockClear();
       targeted.mockClear();
       service.changed(run.userId, [rows[0]!]);
-      await Promise.all(devices.map((device) => device.flush()));
+      const projections = await projectForDevices();
       expect(snapshots).not.toHaveBeenCalled();
       expect(targeted).toHaveBeenCalledExactlyOnceWith(run.userId, [rows[0]!]);
       expect(await targeted.mock.results[0]!.value).toHaveLength(1);
       expect(nativeRPCs, "rows projected through the native state port").toBe(1);
+      // Each resource read rechecks its viewer before sharing the changed row projection: the
+      // owner check reads the Deployment and its first user in one query (4 reads), then one
+      // device lookup, one ownership lookup and the one changed row.
       expect(queries).toBe(7);
-      for (const sent of messages)
-        expect(sent).toMatchObject([
-          {
-            type: "host.tabs",
-            stream: { op: "change", update: [{ tabId: rows[0], title: "Changed" }] },
-          },
-        ]);
+      for (const { tabs } of projections)
+        expect(tabs.find((tab) => tab.tabId === rows[0])).toMatchObject({ title: "Changed" });
     } finally {
-      for (const device of devices) device.close();
       service.dispose();
       await f.close();
     }

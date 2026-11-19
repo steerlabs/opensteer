@@ -73,7 +73,6 @@ describe("Device projection and commands", () => {
       modules: {},
       name: "Phone",
       ownership: "mine",
-      pinnedThreads: 0,
       revocable: true,
       status: "offline",
     };

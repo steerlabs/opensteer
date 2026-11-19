@@ -43,7 +43,6 @@ integration("explicit show_to_person", () => {
       machineFullDiskAccess: {} as never,
       canRunHarness: () => true,
       isEnvironmentConnected: () => true,
-      onEvent: () => {},
       execution: {} as never,
       tabs: {
         get: async () => {

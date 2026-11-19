@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { isLocalProviderId } from "./provider-names.js";
+import { pluginIconRefOf } from "./plugin-icons.js";
 import {
   ownerManagementResults,
   EngineScheduledRunSchema,
@@ -12,7 +13,6 @@ import {
 } from "./engine-feature-schemas.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import {
-  PluginIconSchema,
   pluginDetailPreview,
   pluginLocalToolsMax,
   pluginReads,
@@ -63,6 +63,7 @@ type Service = Pick<
   | "scheduleApprovals"
   | "catalogList"
   | "catalogDetail"
+  | "icons"
   | "install"
   | "activate"
   | "remove"
@@ -124,18 +125,6 @@ export function pluginEngineStateView(state: PluginServiceState): PluginEngineSt
   };
 }
 
-const icon = z.object({ src: z.string(), theme: z.string().optional() });
-function pickIcon(value: unknown): string | null {
-  const icons = z.array(icon).safeParse(value);
-  if (!icons.success) return null;
-  const ordered = [...icons.data].sort(
-    (a, b) => Number(a.theme === "dark") - Number(b.theme === "dark"),
-  );
-  for (const candidate of ordered)
-    if (PluginIconSchema.safeParse(candidate.src).success) return candidate.src;
-  return null;
-}
-
 const requirementSchema = z.object({
   scope: z.enum(["app", "user"]),
   provider: z.string(),
@@ -177,7 +166,8 @@ function summary(
     id: plugin.id,
     name: plugin.name.slice(0, 240),
     slug: plugin.slug.slice(0, 240),
-    icon: pickIcon(plugin.requirements.icons),
+    icon: null,
+    iconRef: pluginIconRefOf(plugin.requirements.icons, "plugin"),
     author: authorOf(row, plugin.activeVersion),
     access: row?.access ?? "all",
     activeVersion: plugin.activeVersion,
@@ -314,6 +304,9 @@ function sections(detail: EngineDetail, row: Settings | undefined) {
 }
 
 export class PluginOwnerApi {
+  engineState(): PluginEngineStateView {
+    return pluginEngineStateView(this.#options.service.state());
+  }
   readonly #options: PluginOwnerApiOptions;
   readonly pages: PluginOwnerApiOptions["pages"];
   readonly webhooks: PluginOwnerApiOptions["webhooks"];
@@ -840,6 +833,10 @@ export class PluginOwnerApi {
           catalogEntry(await this.#call(service.catalogDetail({ id: input.catalogId }, owner))),
         );
       },
+      "plugins.icons.get": async (input, context) => {
+        await this.#owner(context);
+        return rpcSuccess(await this.#call(service.icons({ refs: input.refs }, owner)));
+      },
       "plugins.accounts.list": async (_input, context) => {
         await this.#owner(context);
         const [accounts, installed] = await Promise.all([
@@ -1250,7 +1247,8 @@ function catalogEntry(entry: {
     id: entry.id.slice(0, 240),
     name: entry.name.slice(0, 240),
     description: clip(entry.description, 1_000),
-    icon: pickIcon(entry.icons),
+    icon: null,
+    iconRef: pluginIconRefOf(entry.icons, "catalog"),
     auth: each(
       entry.auth,
       z.object({

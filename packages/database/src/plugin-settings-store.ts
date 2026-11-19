@@ -21,7 +21,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSchema } from "./schema.js";
 import { getSelfDeviceId } from "./device-inventory-store.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   findCommandByIdempotency,
   lockCommandIdempotency,
@@ -175,7 +175,8 @@ export class PluginSettingsStore {
   ) {
     const command = SettingsPluginEnableCommandSchema.parse(input);
     const { target } = command;
-    return withPersonalTransaction(this.database, async (tx) => {
+    return commitPersonalMutation(this.database, async (tx, mutation) => {
+      mutation.bumpResource("plugin");
       await requirePersonalOwner(tx, owner);
       if (target.kind === "device-app")
         throw new OpensteerError({

@@ -1,3 +1,4 @@
+import { setBackgroundDeadline } from "../agents/execution-clock.test-support.js";
 import { callMcpTool } from "../mcp/call-tool.test-support.js";
 
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
@@ -30,7 +31,6 @@ import {
   connectTargetMachine,
   dispatchCallerRun,
   enrollmentToken,
-  followPersonalDeployment,
   setUpCallerLaunchDirectory,
   startMachineAccessWireHost,
   type ShellAccessScenario,
@@ -141,11 +141,20 @@ integration("Machine access session lifecycle", () => {
           detail: "Read Mail",
         },
       });
-      const feed = await openRealtime(host, host.ownerHeaders);
+      const feed = await openRealtime(host, host.ownerHeaders, ["machine"]);
       closers.unshift(() => feed.close());
+      const firstChange = feed.messages.length;
       target.reportFullDiskAccess(true);
       await waitForCondition(async () =>
-        feed.messages.some((message) => message.type === "host.machines.changed"),
+        feed.messages
+          .slice(firstChange)
+          .some(
+            (message) =>
+              message.type === "host.resource" &&
+              typeof message.revisions === "object" &&
+              message.revisions !== null &&
+              "machine" in message.revisions,
+          ),
       );
       await waitForCondition(
         async () => (await host.store.requests.get(requestId))?.status === "fulfilled",
@@ -360,6 +369,20 @@ integration("Machine access session lifecycle", () => {
     }
   }, 180_000);
 
+  it("marks a computer refused for an older agent protocol as needing an update", async () => {
+    scenario = await startShellAccessScenario(databaseUrl, { policy: openPolicy });
+    const { host, target } = scenario;
+    await target.disconnect();
+    // Its descriptor now runs agents without the current run-events protocol,
+    // as an older Opensteer on that computer would.
+    await target.observeRefusal({ runsAgents: true });
+    const machine = async () =>
+      (
+        await testRpcData(host.origin, "machines.list", {}, { headers: host.ownerHeaders })
+      ).machines.find(({ id }) => id === target.runnerId);
+    expect(await machine()).toMatchObject({ status: "needs-update" });
+  }, 180_000);
+
   it("closes the Run's relay and ends its sessions when the Run ends", async () => {
     scenario = await startShellAccessScenario(databaseUrl, {
       policy: openPolicy,
@@ -546,10 +569,10 @@ integration("Machine access across a Run's authority", () => {
     const grants = await runGrants(host, runId);
     const rows = await shellSessionRows(host);
     const terminal = await host.store.database
-      .selectFrom("deploymentEvents")
-      .select(["createdAt", "type"])
-      .where("runId", "=", runId)
-      .where("type", "in", ["run.completed", "run.failed", "run.interrupted"])
+      .selectFrom("runs")
+      .select(["completedAt", "status"])
+      .where("id", "=", runId)
+      .where("completedAt", "is not", null)
       .executeTakeFirst();
     const journey: AuthorityJourney = {
       grants: grants.map((grant) => ({
@@ -573,13 +596,15 @@ integration("Machine access across a Run's authority", () => {
           endedAfterRevocationMs:
             endedAt !== null && revokedAt !== null ? endedAt - revokedAt : null,
           endedBeforeTerminalMs:
-            endedAt !== null && terminal ? terminal.createdAt.getTime() - endedAt : null,
+            endedAt !== null && terminal?.completedAt
+              ? terminal.completedAt.getTime() - endedAt
+              : null,
           id: session.id,
           openedUnderBindingGeneration: session.openedUnderBindingGeneration,
           shimExitCode: session.shimExitCode,
         };
       }),
-      terminalEvent: terminal?.type ?? null,
+      terminalEvent: terminal ? `run.${terminal.status}` : null,
     };
     journeys.push(journey);
     return journey;
@@ -591,13 +616,10 @@ integration("Machine access across a Run's authority", () => {
       .select(["bindingGeneration", "status"])
       .where("id", "=", runId)
       .executeTakeFirstOrThrow();
-    const terminal = await host.store.database
-      .selectFrom("deploymentEvents")
-      .select("type")
-      .where("runId", "=", runId)
-      .where("type", "in", ["run.completed", "run.failed", "run.interrupted"])
-      .execute();
-    return { ...run, terminalEvents: terminal.map((event) => event.type) };
+    const terminalEvents = ["completed", "failed", "interrupted"].includes(run.status)
+      ? [`run.${run.status}`]
+      : [];
+    return { ...run, terminalEvents };
   }
 
   it("ends a stopped Run's command and forward at the revocation, before the Run reports its end", async () => {
@@ -892,16 +914,10 @@ integration("Machine access across a Run's authority", () => {
       // The first Run's engine is also waiting on its requester, so its stop
       // has something to tell the clients following its Workspace.
       const request = await first.openLiveRequest();
-      const feed = await followPersonalDeployment(host);
-      closers.push(() => feed.close());
-      await host.store.database
-        .updateTable("runs")
-        .set({ backgroundDeadlineAt: new Date(Date.now() - 1_000) })
-        .where("id", "in", [first.runId, second.runId])
-        .execute();
       // The second Run's stop cannot commit while its command's key is taken,
       // so the sweep fails after the first Run's stop has committed.
       const occupied = await occupyBackgroundDeadlineKey(host, second.runId);
+      await setBackgroundDeadline(host, [first.runId, second.runId], new Date(Date.now() - 1_000));
 
       await waitForCondition(
         async () => (await sessionRow(firstSession))?.state === "ended",
@@ -916,13 +932,18 @@ integration("Machine access across a Run's authority", () => {
       const firstExit = await firstShim.exited;
       expect(firstExit.code).not.toBe(0);
       expect(firstExit.stdout).not.toContain("late");
-      // Its clients heard the stop live, though the sweep failed after it.
+      // The committed removal is visible even though the sweep failed after this stop.
       await waitForCondition(async () =>
-        feed.live.some(
-          (event) =>
-            event.type === "request.cancelled" &&
-            event.runId === first.runId &&
-            (event.data as { readonly requestId?: unknown }).requestId === request,
+        Boolean(
+          await host.store.database
+            .selectFrom("clientChanges")
+            .select("sequence")
+            .where("scopeKey", "=", `thread:${first.threadId}`)
+            .where("entityKind", "=", "request")
+            .where("entityId", "=", request)
+            .where("operation", "=", "remove")
+            .limit(1)
+            .executeTakeFirst(),
         ),
       );
       expect(await grantStates(second)).toEqual([["active", null]]);

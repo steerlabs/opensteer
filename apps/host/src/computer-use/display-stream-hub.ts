@@ -264,14 +264,12 @@ export class DisplayStreamHub {
   readonly #byTarget = new Map<string, Stream>();
   readonly #resolving = new Map<string, Promise<MacWindowTarget>>();
   readonly #now: () => number;
-  readonly #timer: NodeJS.Timeout;
+  #timer: NodeJS.Timeout | undefined;
   #closed = false;
   readonly #inputRevisions = new Map<ComputerTargetId, number>();
   constructor(options: DisplayStreamHubOptions) {
     this.#options = options;
     this.#now = options.now ?? Date.now;
-    this.#timer = setInterval(() => this.sweep(), 100);
-    this.#timer.unref();
   }
 
   async authorize(source: DisplaySource, actor: UserId): Promise<DeviceDisplayAuthorization> {
@@ -496,6 +494,10 @@ export class DisplayStreamHub {
         pending: new Map(),
       };
       this.#streams.set(streamId, stream);
+      if (!this.#timer) {
+        this.#timer = setInterval(() => this.sweep(), 100);
+        this.#timer.unref();
+      }
       this.#byTarget.set(key, stream);
       this.#options.onState?.(runnerId, streamId, stream.state);
       start = {
@@ -1973,6 +1975,10 @@ export class DisplayStreamHub {
         ...(ended === undefined ? {} : { reason: ended }),
       });
     this.#streams.delete(stream.streamId);
+    if (!this.#streams.size) {
+      clearInterval(this.#timer);
+      this.#timer = undefined;
+    }
     if (this.#byTarget.get(stream.key) === stream) this.#byTarget.delete(stream.key);
     this.#resetInput(stream);
     this.#send(stream, {
@@ -1994,7 +2000,6 @@ export class DisplayStreamHub {
     for (const stream of this.#streams.values())
       this.#end(stream, displayViewerCloseCodes.hostShutdown, "Host stopping");
     this.#closed = true;
-    clearInterval(this.#timer);
   }
 }
 

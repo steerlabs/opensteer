@@ -6,6 +6,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { HttpHostClient } from "@opensteer/client/host";
+import { PersonalDetailSnapshotSchema } from "@opensteer/protocol/personal-sync";
+import { TranscriptItemSchema } from "@opensteer/protocol/transcript";
 import type {
   MessageEntry,
   PlaceEntry,
@@ -16,6 +19,7 @@ import type {
 } from "@opensteer/client/host";
 import {
   MockHostClient,
+  MockPersonalHost,
   mockComputerUseToolRefs,
   mockComputerUseTurn,
 } from "@opensteer/client/mock";
@@ -993,45 +997,114 @@ it("draws nothing for a silent automatic turn, and its source and failure when i
 });
 
 it("loads output only on expansion, retries a failure, and reuses it when reopened", async () => {
-  const mock = new MockHostClient();
-  const read = vi
-    .fn()
-    .mockRejectedValueOnce(new Error("offline"))
-    .mockResolvedValue({ ok: true, data: { output: { text: "whole lazy output" } } });
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  roots.push(root);
-  Object.defineProperty(mock, "rpc", {
-    value: new Proxy(mock.rpc, {
-      get(target, key, receiver) {
-        return key === "tool.output.get" ? read : Reflect.get(target, key, receiver);
-      },
+  const seed = new MockHostClient({ latencyMs: 0, places: "absent" });
+  const host = new MockPersonalHost(seed);
+  const threadId = seed
+    .getSnapshot()
+    .threads.find(({ title }) => title === "Subagents everywhere")!.id;
+  const thread = seed.scopedDetail(threadId)!.thread;
+  const revision = String(seed.getSnapshot().revision);
+  const item = TranscriptItemSchema.parse({
+    id: "tool:check",
+    kind: "tool",
+    toolCallId: "check",
+    tool: { name: "shell", namespace: "codex" },
+    view: { status: "done", truncated: true },
+    runId: createId("run"),
+    attemptId: createId("runAttempt"),
+    nodeId: null,
+    position: "1",
+    revision,
+    createdAt: "2026-08-16T10:00:01.000Z",
+    isTurnStart: false,
+  });
+  vi.spyOn(seed, "scopedDetail").mockReturnValue(
+    PersonalDetailSnapshotSchema.parse({
+      thread,
+      items: [item],
+      activeItems: [],
+      pendingRequests: [],
+      nextBefore: null,
     }),
-  });
-  const entry = tool({
-    output: { text: "whole" },
-    outputPreview: { bytes: 17, cut: true, digest: "unused" },
-  });
-  await act(async () =>
-    root.render(
-      <MemoryRouter>
-        <AgentTranscript entries={[entry]} attachmentReader={mock} threadId="thread-1" />
-      </MemoryRouter>,
-    ),
   );
-  expect(read).not.toHaveBeenCalled();
-  click(status(container));
-  expect(read).not.toHaveBeenCalled();
-  await act(async () => click(container.querySelector(".trace-step__head")));
-  expect(read).toHaveBeenCalledTimes(1);
-  expect(container.textContent).toContain("Couldn't load this output.");
-  await act(async () => click(button(container, "Try again")));
-  expect(container.textContent).toContain("whole lazy output");
-  click(container.querySelector(".trace-step__head"));
-  await act(async () => click(container.querySelector(".trace-step__head")));
-  expect(container.textContent).toContain("whole lazy output");
-  expect(read).toHaveBeenCalledTimes(2);
+  const read = vi
+    .fn<typeof globalThis.fetch>()
+    .mockResolvedValueOnce(
+      Response.json(
+        {
+          ok: false,
+          error: { code: "internal", message: "The item could not be read", retryable: false },
+        },
+        { status: 500 },
+      ),
+    )
+    .mockImplementation(async () =>
+      Response.json({
+        ok: true,
+        data: {
+          item,
+          threadId,
+          nodeId: null,
+          truncated: false,
+          body: {
+            kind: "tool",
+            arguments: { command: "pnpm test" },
+            output: { text: "whole lazy output" },
+          },
+        },
+      }),
+    );
+  const client = new HttpHostClient({
+    baseUrl: "http://fixture",
+    webSocketFactory: host.connect,
+    fetch: (input, options) =>
+      new URL(String(input)).pathname.endsWith("/transcript.item.get")
+        ? read(input, options)
+        : host.fetch(input, options),
+  });
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    const entry = await vi.waitFor(() => {
+      const held = client
+        .getThreadTranscript(threadId)
+        ?.getSnapshot()
+        .entries.find(({ id }) => id === item.id);
+      if (held?.kind !== "tool") throw new Error("Missing scoped tool card");
+      return held;
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () =>
+      root.render(
+        <MemoryRouter>
+          <AgentTranscript entries={[entry]} attachmentReader={client} threadId={threadId} />
+        </MemoryRouter>,
+      ),
+    );
+    expect(read).not.toHaveBeenCalled();
+    click(status(container));
+    expect(read).not.toHaveBeenCalled();
+    await act(async () => click(container.querySelector(".trace-step__head")));
+    expect(read).toHaveBeenCalledTimes(1);
+    const route = new URL(String(read.mock.calls[0]?.[0]));
+    expect(JSON.parse(route.searchParams.get("input")!)).toMatchObject({
+      threadId,
+      itemId: item.id,
+    });
+    expect(container.textContent).toContain("Couldn't load this output.");
+    await act(async () => click(button(container, "Try again")));
+    expect(container.textContent).toContain("whole lazy output");
+    click(container.querySelector(".trace-step__head"));
+    await act(async () => click(container.querySelector(".trace-step__head")));
+    expect(container.textContent).toContain("whole lazy output");
+    expect(read).toHaveBeenCalledTimes(2);
+  } finally {
+    client.dispose();
+    host.dispose();
+  }
 });
 
 it("keeps an edited message's history a click away after a Run took it", async () => {
@@ -1163,5 +1236,59 @@ describe("a message still on this device", () => {
       disposeMessageOutbox(mock);
       mock.dispose();
     }
+  });
+});
+
+describe("a long transcript's bodies", () => {
+  it("keep older rows' words as plain text until they near view, and parse the newest at once", async () => {
+    const observed: { element: Element; notify: () => void }[] = [];
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        readonly #callback: IntersectionObserverCallback;
+        constructor(callback: IntersectionObserverCallback) {
+          this.#callback = callback;
+        }
+        observe(element: Element) {
+          observed.push({
+            element,
+            notify: () =>
+              this.#callback(
+                [{ isIntersecting: true, target: element } as IntersectionObserverEntry],
+                this as unknown as IntersectionObserver,
+              ),
+          });
+        }
+        disconnect() {}
+      },
+    );
+    const entries: MessageEntry[] = Array.from({ length: 100 }, (_, index) => ({
+      ...note,
+      runId: null,
+      body: `Update **${index}**`,
+      createdAt: new Date(Date.UTC(2026, 7, 16, 10, index)).toISOString(),
+      id: `message-${index}`,
+    }));
+    const scroller = document.createElement("div");
+    document.body.append(scroller);
+    const root = createRoot(scroller);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/tasks/thread-1"]}>
+          <AgentTranscript entries={entries} scroller={() => scroller} />
+        </MemoryRouter>,
+      );
+      await import("./markdown.js");
+    });
+    const body = (index: number) => scroller.querySelector(`[data-message-id="message-${index}"]`)!;
+    // The newest rows are parsed; an older one holds its words, plain, for Find and reading.
+    await vi.waitFor(() => expect(body(99).querySelector("strong")?.textContent).toBe("99"));
+    expect(body(3).querySelector("strong")).toBeNull();
+    expect(body(3).textContent).toContain("Update **3**");
+    const near = observed.find(({ element }) => body(3).contains(element))!;
+    await act(async () => near.notify());
+    await vi.waitFor(() => expect(body(3).querySelector("strong")?.textContent).toBe("3"));
+    vi.unstubAllGlobals();
   });
 });

@@ -63,3 +63,28 @@ export function AssetImage({ path, alt = "" }: { path: string; alt?: string }) {
     </span>
   );
 }
+
+export function RetainedToolImage({ imageId }: { imageId: string }) {
+  const frame = useRef<HTMLSpanElement | null>(null);
+  const near = useNearViewport(frame);
+  const preview = useAssetImage({ kind: "transcript-image", imageId }, "preview", {
+    enabled: near,
+  });
+  return (
+    <span className="asset-image" ref={frame}>
+      {preview.image ? (
+        <img
+          key={preview.retry}
+          alt="Tool image"
+          src={preview.image.source}
+          width={preview.image.width ?? 320}
+          height={preview.image.height ?? 240}
+          loading="lazy"
+          onError={preview.onError}
+        />
+      ) : preview.failed ? (
+        "Image unavailable"
+      ) : null}
+    </span>
+  );
+}

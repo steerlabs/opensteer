@@ -1,4 +1,14 @@
-import type { AssignmentId, CausalChainId, RunId, ThreadId, RequestId } from "@opensteer/core";
+import {
+  nonTerminalRunStatuses,
+  type AssignmentId,
+  type CausalChainId,
+  type CommandId,
+  type MessageId,
+  type ProviderSessionId,
+  type RunId,
+  type ThreadId,
+  type RequestId,
+} from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
@@ -10,7 +20,9 @@ type ProjectionScope = {
   readonly forRemoval?: boolean;
   readonly runIds: readonly RunId[];
   readonly requestIds?: readonly RequestId[];
+  readonly commandIds?: readonly CommandId[];
   readonly threadIds: readonly ThreadId[];
+  readonly inputMessageIds?: readonly MessageId[];
   readonly assignmentIds?: readonly AssignmentId[];
   readonly causalChainIds?: readonly CausalChainId[];
 };
@@ -24,26 +36,29 @@ function projectionInputs(transaction: Transaction<DatabaseSchema>, input: Proje
         eb.or([
           eb("state", "in", ["awaiting-approval", "pending", "claimed", "unknown"]),
           eb("editLeaseId", "is not", null),
+          ...(input.inputMessageIds?.length
+            ? [eb("messageId", "in", [...input.inputMessageIds])]
+            : []),
         ]),
       ),
     );
 }
 
-/**
- * A Thread can hold several provider sessions (fresh context, engine switches), and projection
- * locks take them all in ID order; lock them together before reading the Run's own.
- */
-export function lockThreadProviderSessions(
+export function lockThreadProviderSession(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
+  sessionId?: ProviderSessionId | null,
 ) {
+  if (sessionId === null) return Promise.resolve(undefined);
   return transaction
     .selectFrom("providerSessions")
     .selectAll()
     .where("threadId", "=", threadId)
-    .orderBy("id", "asc")
+    .$call((query) =>
+      sessionId ? query.where("id", "=", sessionId) : query.where("active", "=", true),
+    )
     .forNoKeyUpdate()
-    .execute();
+    .executeTakeFirst();
 }
 
 /** Fence projection parents before Assignment/input mutations; see ./lock-order.ts.
@@ -73,13 +88,27 @@ export async function lockThreadProjectionParents(
       .selectFrom("runs")
       .select("id")
       .where("assignmentId", "in", assignmentIds)
+      .where("status", "in", nonTerminalRunStatuses)
       .execute())
       if (!runIds.includes(id)) runIds.push(id);
   }
   await transaction
     .selectFrom("providerSessions")
     .select("id")
-    .where("threadId", "in", [...input.threadIds])
+    .where((eb) =>
+      eb.or([
+        eb.and([eb("threadId", "in", [...input.threadIds]), eb("active", "=", true)]),
+        ...(runIds.length
+          ? [
+              eb(
+                "id",
+                "in",
+                eb.selectFrom("runs").select("providerSessionId").where("id", "in", runIds),
+              ),
+            ]
+          : []),
+      ]),
+    )
     .orderBy("id", "asc")
     .forNoKeyUpdate()
     .execute();
@@ -169,14 +198,24 @@ export async function lockRunProjectionRows(
 ): Promise<void> {
   if (!input.threadIds.length) return;
   const runIds = await lockThreadProjectionParents(transaction, input);
-  if (runIds.length || input.forRemoval) {
+  if (runIds.length || input.commandIds?.length || input.forRemoval) {
     await transaction
       .selectFrom("commands")
       .select("id")
       .where((eb) =>
         input.forRemoval
           ? eb("threadId", "in", [...input.threadIds])
-          : eb("runId", "in", [...runIds]),
+          : eb.or([
+              ...(runIds.length
+                ? [
+                    eb.and([
+                      eb("runId", "in", [...runIds]),
+                      eb("status", "in", ["pending", "dispatched", "unknown"]),
+                    ]),
+                  ]
+                : []),
+              ...(input.commandIds?.length ? [eb("id", "in", [...input.commandIds])] : []),
+            ]),
       )
       .orderBy("id", "asc")
       .forNoKeyUpdate()

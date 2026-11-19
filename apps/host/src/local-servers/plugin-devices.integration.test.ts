@@ -51,9 +51,8 @@ describeStore("plugin devices", (test) => {
       secretVault: new AesGcmSecretVault(
         new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
       ),
-      onDeploymentEvent: () => undefined,
+
       onConnectionsChanged: changed,
-      onRequestsChanged: () => undefined,
     });
     try {
       const pluginDirectory = join(directory, "source");
@@ -306,9 +305,8 @@ describeStore("plugin devices", (test) => {
       secretVault: new AesGcmSecretVault(
         new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
       ),
-      onDeploymentEvent: () => undefined,
+
       onConnectionsChanged: () => undefined,
-      onRequestsChanged: () => undefined,
     });
     try {
       const source = join(directory, "source");

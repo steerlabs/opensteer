@@ -1,3 +1,7 @@
+import {
+  installPersonalMutationHooks,
+  type PersonalCommitReaction,
+} from "../packages/database/src/personal-mutation.js";
 import { beforeAll, afterAll, afterEach, test, expect, vi } from "vitest";
 import { mkdtemp, rm, mkdir, writeFile, readFile, rename, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -147,6 +151,7 @@ async function answer(
   const request = await store.requests.get(id);
   return executions.respond({
     requestId: id,
+    expectedRevision: (await store.requests.revision(id))!,
     resolvedBy: personal.userId,
     response:
       request?.kind === "plugin.approval"
@@ -204,20 +209,25 @@ beforeAll(async () => {
     onState: (s) => events.emit(s.status),
   });
   await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));
-  const publish = (event: import("../packages/core/src/index.js").AgentEvent) => {
-    events.emit(event.type, event);
-    executions.observe(event);
-  };
   executions = new PluginExecutions({
     service,
     store,
     records,
     authority,
-    publish,
-    notify: () => {},
     onError: (e) => errors.push(e),
-    onStopped: (s) => {
-      for (const e of s.events) publish(e);
+  });
+  installPersonalMutationHooks(database, {
+    wake: () => {},
+    onFailure: (error) => errors.push(error),
+    react: (reaction) => {
+      if (
+        reaction.type === "requestChanged" ||
+        reaction.type === "runChanged" ||
+        reaction.type === "runFinished"
+      ) {
+        events.emit(reaction.type, reaction);
+        executions.observe(reaction);
+      }
     },
   });
   await executions.recover();
@@ -264,8 +274,6 @@ beforeAll(async () => {
     executions,
     store,
     settings: records,
-    publish,
-    notify: () => {},
     folder: async (_c, d) =>
       withFolderPluginPackage({ directory: d, files: homeFiles, install: pluginSourceFiles }),
     exportFiles: async (_c, d, f, authorize, signal) => {
@@ -1290,14 +1298,13 @@ test("Stop discards an execution and cancels its Request", async () => {
   const pending = await call(caller, "plugin_call", {
     calls: { path: "tools.fixture.reviewed", input: { amount: 9 } },
   });
-  const stopped = await store.enqueueRunnerControl({
+  await store.enqueueRunnerControl({
     type: "run.interrupt",
     runId: caller.claims.runId,
     threadId: caller.thread.id,
     requestedBy: personal.userId,
     idempotencyKey: randomUUID(),
   });
-  for (const event of stopped.events) executions.observe(event);
   await vi.waitFor(
     async () =>
       expect(await records.execution(z.string().parse(pending.executionId))).toMatchObject({
@@ -1570,14 +1577,15 @@ test("engine interaction expiry ends both the execution and its Request with tha
     calls: { path: "tools.fixture.reviewed", input: { amount: 1 } },
   });
   const expired = Promise.withResolvers<void>();
-  const listener = (event: import("../packages/core/src/index.js").AgentEvent) => {
-    if ("requestId" in event.data && event.data.requestId === pending.requestId) expired.resolve();
+  const listener = (reaction: Extract<PersonalCommitReaction, { type: "requestChanged" }>) => {
+    if (reaction.status === "cancelled" && reaction.requestId === pending.requestId)
+      expired.resolve();
   };
-  events.on("request.cancelled", listener);
+  events.on("requestChanged", listener);
   try {
     await deadline(expired.promise, "Engine interaction did not expire");
   } finally {
-    events.off("request.cancelled", listener);
+    events.off("requestChanged", listener);
   }
   expect(await store.requests.get(z.custom<RequestId>().parse(pending.requestId))).toMatchObject({
     status: "cancelled",

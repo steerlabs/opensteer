@@ -1,3 +1,4 @@
+import type { OpensteerStore } from "./store.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   emptyExecutionPreferences,
@@ -22,6 +23,13 @@ import {
   testContinuationIdentity,
   pendingEvent,
 } from "./store.integration.test-support.js";
+async function initializeDeployment(store: OpensteerStore) {
+  await store.ensureDeployment({
+    canonicalOrigin: "http://127.0.0.1:4310",
+    hostInstanceId: createId("hostInstance"),
+    deploymentShape: { kind: "personal" },
+  });
+}
 describeStore("PostgreSQL store", (it) => {
   it("trims a person's execution history to the limit, dropping the oldest", async ({
     storeFixture,
@@ -50,10 +58,50 @@ describeStore("PostgreSQL store", (it) => {
     expect(preferences.history.at(-1)).toEqual(selectionFor(1));
     await expect(store.getExecutionPreferences(userId)).resolves.toEqual(preferences);
   });
+  it("lets no superseded Runner connection erase or overwrite a newer catalog", async ({
+    storeFixture,
+  }) => {
+    const { store, database, createRunFixture } = storeFixture;
+    const f = await createRunFixture("catalog-generation");
+    const { connectionGeneration } = await database
+      .selectFrom("executionEnvironments")
+      .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
+      .select("runners.connectionGeneration")
+      .where("executionEnvironments.id", "=", f.environmentId)
+      .executeTakeFirstOrThrow();
+    const current = Number(connectionGeneration);
+    const catalog = (modelId: string) =>
+      HarnessInstanceCatalogSchema.parse({
+        continuationIdentity: testContinuationIdentity,
+        driverKind: f.harnessInstance.driverKind,
+        harnessInstanceId: f.harnessInstance.id,
+        models: [
+          { displayName: modelId, isDefault: true, modelId, options: [], providerId: "openai" },
+        ],
+        status: "ready",
+      });
+    const record = (modelId: string, generation: number) =>
+      store.recordHarnessCatalogs({
+        catalogs: [catalog(modelId)],
+        environmentId: f.environmentId,
+        expectedRevisions: new Map([[f.harnessInstance.id, f.harnessInstance.runtimeRevision]]),
+        connectionGeneration: generation,
+      });
+    await expect(record("newer", current)).resolves.toHaveLength(1);
+    // The older registration's follow-up arrives after the newer one recorded.
+    await expect(record("older", current - 1)).resolves.toEqual([]);
+    await store.discardHarnessCatalog(f.environmentId, f.harnessInstance.id, current - 1);
+    await expect(
+      store.getHarnessCatalog(f.environmentId, f.harnessInstance.id),
+    ).resolves.toMatchObject({
+      models: [expect.objectContaining({ modelId: "newer" })],
+    });
+  });
   it("does not publish a catalog after its profile revision changes or is removed", async ({
     storeFixture,
   }) => {
     const { store } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -175,6 +223,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { store } = storeFixture;
+    await initializeDeployment(store);
     const firstEnvironmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -265,6 +314,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { store } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Model Mac",
@@ -328,6 +378,7 @@ describeStore("PostgreSQL store", (it) => {
   });
   it("turns a disabled profile's stale catalog off with it", async ({ storeFixture }) => {
     const { store } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -525,6 +576,7 @@ describeStore("PostgreSQL store", (it) => {
   });
   it("admits one existing-CLI profile per driver on a work location", async ({ storeFixture }) => {
     const { store, database } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -612,6 +664,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { store } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -796,6 +849,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { store, database } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -925,6 +979,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { store, database } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -1004,6 +1059,7 @@ describeStore("PostgreSQL store", (it) => {
   });
   it("serializes concurrent profile creation at the wire cap", async ({ storeFixture }) => {
     const { store, database } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -1084,6 +1140,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { store, database } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -1255,7 +1312,7 @@ describeStore("PostgreSQL store", (it) => {
   it("defaults access to full, inherits it for children, and snapshots it per Run", async ({
     storeFixture,
   }) => {
-    const { createRunFixture, enqueueHumanTrigger, store } = storeFixture;
+    const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
     const fixture = await createRunFixture("access-mode");
     expect(fixture.thread.accessMode).toBe("full-access");
     const beforeUpdate = await enqueueHumanTrigger({
@@ -1276,13 +1333,19 @@ describeStore("PostgreSQL store", (it) => {
       threadId: fixture.thread.id,
     });
     expect(updated.thread.accessMode).toBe("auto");
-    expect(updated.event).toMatchObject({
-      data: {
-        accessMode: "auto",
-      },
-      threadId: fixture.thread.id,
-      type: "thread.access-mode-updated",
-    });
+    expect(
+      await database
+        .selectFrom("clientChanges")
+        .select([
+          "entityKind",
+          "operation",
+          sql<string>`payload->'thread'->>'accessMode'`.as("accessMode"),
+        ])
+        .where("scopeKey", "=", `thread:${fixture.thread.id}`)
+        .where("sequence", "=", updated.asOfSequence)
+        .where("entityKind", "=", "thread")
+        .execute(),
+    ).toEqual([{ entityKind: "thread", operation: "upsert", accessMode: "auto" }]);
     await store.claimCommand(beforeUpdate.command.id, "access-mode-dispatcher");
     await store.failCommand(beforeUpdate.command.id, "Complete the original access snapshot");
     const afterUpdate = await enqueueHumanTrigger({
@@ -1308,12 +1371,16 @@ describeStore("PostgreSQL store", (it) => {
       title: "Inherited access",
     });
     expect(child.thread.accessMode).toBe("auto");
+    const { sequence: beforeNoChange } = await database
+      .selectFrom("clientSyncState")
+      .select("sequence")
+      .executeTakeFirstOrThrow();
     const noChange = await store.updateThreadAccessMode({
       accessMode: "auto",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
     });
-    expect(noChange.event).toBeUndefined();
+    expect(noChange.asOfSequence).toBe(beforeNoChange);
   });
   it("creates one stable Deployment identity and rejects incidental authority changes", async ({
     storeFixture,

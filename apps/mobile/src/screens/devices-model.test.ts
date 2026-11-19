@@ -1,7 +1,7 @@
 import type { AuthSessionSummary } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
-import { mockIphoneScreenDevice } from "@opensteer/client/mock";
+import { mockDeviceMachine, mockIphoneScreenDevice } from "@opensteer/client/mock";
 import { deviceListSections } from "./devices-model.js";
 
 const home = "rnr_11111111-1111-4111-8111-111111111111";
@@ -81,12 +81,14 @@ describe("Devices on the phone", () => {
           name: "Pixel 9",
           device: { app: "opensteer", form: "phone", platform: "android" },
         }),
-        machine({
-          id: "rnr_66666666-6666-4666-8666-666666666666",
-          kind: "agent-phone",
-          name: "Pixel 7",
-          device: { form: "phone", platform: "android" },
-        }),
+        mockDeviceMachine(
+          machine({
+            id: "rnr_66666666-6666-4666-8666-666666666666",
+            kind: "agent-phone",
+            name: "Pixel 7",
+            device: { form: "phone", platform: "android" },
+          }),
+        ),
         // A Mac-driven iPhone names its Mac only as the controller, never as an Agent Phone.
         mockIphoneScreenDevice("ready"),
       ],

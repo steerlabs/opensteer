@@ -1,11 +1,10 @@
 import { personalSettings } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   nonTerminalRunStatuses,
   OpensteerError,
   voiceCallSeed,
   voiceModelSelection,
-  type AgentEvent,
   type EnvironmentId,
   type HarnessInstanceId,
   type RunId,
@@ -58,7 +57,6 @@ async function ensureVoiceThread(
   readonly threadId: ThreadId;
   readonly environmentId: EnvironmentId;
   readonly harnessInstanceId: HarnessInstanceId;
-  readonly events: readonly AgentEvent[];
 }> {
   const settings = await personalSettings(tx);
   if (settings.ownerId !== input.ownerId)
@@ -72,7 +70,7 @@ async function ensureVoiceThread(
       .select(["environmentId", "harnessInstanceId"])
       .where("id", "=", settings.voiceThreadId)
       .executeTakeFirstOrThrow();
-    return { threadId: settings.voiceThreadId, ...thread, events: [] };
+    return { threadId: settings.voiceThreadId, ...thread };
   }
   const catalog = await tx
     .selectFrom("harnessCatalogs")
@@ -111,7 +109,6 @@ async function ensureVoiceThread(
     threadId: created.thread.id,
     environmentId: input.environmentId,
     harnessInstanceId: input.harnessInstanceId,
-    events: created.event ? [created.event] : [],
   };
 }
 
@@ -120,7 +117,7 @@ export async function openVoiceThread(
   database: Kysely<DatabaseSchema>,
   input: Parameters<typeof ensureVoiceThread>[1],
 ) {
-  return withPersonalTransaction(database, async (tx) => {
+  return commitPersonalMutation(database, async (tx) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${`voice:${input.ownerId}`}, 0))`.execute(
       tx,
     );
@@ -145,7 +142,7 @@ export async function startVoiceCall(
     origin?: MessageOrigin;
   },
 ) {
-  return withPersonalTransaction(database, async (tx) => {
+  return commitPersonalMutation(database, async (tx) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${`voice:${input.ownerId}`}, 0))`.execute(
       tx,
     );
@@ -155,11 +152,9 @@ export async function startVoiceCall(
         busy: false as const,
         ...existing,
         revokedGrants: [],
-        events: [],
       };
     await lockCommandIdempotency(tx, input.ownerId, `voice-seed:${input.sessionId}`);
     const opened = await ensureVoiceThread(tx, input);
-    const events: AgentEvent[] = [...opened.events];
     const thread = await tx
       .selectFrom("threads")
       .select(["id", "environmentId", "harnessInstanceId"])
@@ -186,12 +181,10 @@ export async function startVoiceCall(
       for (const { id } of running) {
         const stopped = await stopLiveRun(tx, links, input.ownerId, thread.id, id);
         revokedGrants.push(...stopped.revokedGrants);
-        events.push(...stopped.events);
       }
       return {
         busy: true as const,
         revokedGrants,
-        events,
       };
     }
     const seed = await enqueueThreadInputInTransaction(tx, {
@@ -210,7 +203,6 @@ export async function startVoiceCall(
       policy: "queue",
       idempotencyKey: `voice-seed:${input.sessionId}`,
     });
-    events.push(...seed.events);
     const queued = await tx
       .selectFrom("runs")
       .select("id")
@@ -234,7 +226,6 @@ export async function startVoiceCall(
       busy: false as const,
       ...(await resolveVoiceCall(tx, input.ownerId, input.sessionId))!,
       revokedGrants: seed.revokedGrants,
-      events,
     };
   });
 }
@@ -270,7 +261,6 @@ async function stopLiveRun(
   if (!liveRunStatuses.includes(run.status))
     return {
       revokedGrants: [],
-      events: [],
     };
   return stopRun(tx, links, ownerId, threadId, runId);
 }
@@ -280,7 +270,7 @@ export async function stopVoiceCall(
   ownerId: UserId,
   sessionId: string,
 ) {
-  return withPersonalTransaction(database, async (tx) => {
+  return commitPersonalMutation(database, async (tx) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${`voice:${ownerId}`}, 0))`.execute(tx);
     const call = await resolveVoiceCall(tx, ownerId, sessionId);
     if (!call) return;

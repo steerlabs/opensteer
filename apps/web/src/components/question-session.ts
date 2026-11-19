@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { outcomeWords, requestAnswer, runAction } from "./use-action.js";
 import {
   mutationIdempotencyKey,
@@ -72,7 +73,8 @@ async function respond(
 ): Promise<void> {
   const session = read(request.id);
   if (session.sending) return;
-  const signature = JSON.stringify(response);
+  const reviewed = requestDecisionRevision(request);
+  const signature = JSON.stringify([reviewed.expectedRevision, response]);
   const key =
     session.held?.response === signature
       ? session.held.key

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { AgentEventViewSchema, createId } from "@opensteer/core";
+import { createId } from "@opensteer/core";
 import { NeedsYouTeamAskEntrySchema } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
@@ -39,7 +39,7 @@ afterEach(() => {
  * waiting in its own task. `lose` drops the answer to the next command of
  * that type after the Host has carried it out.
  */
-async function setup() {
+async function setup(holdBody?: (response: Response) => Promise<Response>) {
   const mock = new MockHostClient({ latencyMs: 0, teamAsks: [ask] });
   const host = new MockPersonalHost(mock);
   const sent: string[] = [];
@@ -47,6 +47,7 @@ async function setup() {
   const client = new HttpHostClient({
     baseUrl: "http://mock-host",
     webSocketFactory: host.connect,
+
     fetch: async (input, init) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;
@@ -57,6 +58,7 @@ async function setup() {
       sent.push(type);
       const response = await host.fetch(input, init);
       if (lost.delete(type)) throw new TypeError("The connection was lost.");
+      if (holdBody && type === "/v1/rpc/thread.message.revisions.list") return holdBody(response);
       return response;
     },
   });
@@ -69,15 +71,13 @@ async function setup() {
   await vi.waitFor(
     () =>
       expect(
-        client.getSnapshot().inputQueues[threadId]?.items,
+        client.getThreadTranscript(threadId)?.getSnapshot().inputQueue?.items,
         "the ask's task never read its queue",
       ).toHaveLength(1),
     { timeout: 1000 },
   );
   const waiting = () =>
-    waitingInputs(client.getSnapshot().inputQueues[threadId]!, {
-      ownsLease: (leaseId) => client.ownsEditLease(leaseId),
-    })[0];
+    waitingInputs(client.getThreadTranscript(threadId)?.getSnapshot().inputQueue!, {})[0];
   return { client, host, lost, messageId, mock, sent, threadId, waiting };
 }
 
@@ -88,7 +88,7 @@ it("edits a waiting message in place under this device's lease, renewing it only
 
   const editor = await client.editWaitingMessage(threadId, messageId);
   expect(editor.revision).toBe(0);
-  expect(waiting()!.lease).toEqual({ kind: "mine", leaseId: editor.leaseId });
+  expect(waiting()!.lease).toEqual({ kind: "mine" });
 
   const renewals = () => sent.filter((type) => type === "thread.input.lease.renew").length;
   editor.touch();
@@ -112,6 +112,7 @@ it("edits a waiting message in place under this device's lease, renewing it only
   });
   expect(client.ownsEditLease(editor.leaseId)).toBe(false);
   // Needs you approves the version the task now holds.
+  await client.loadEarlierNeedsYou();
   expect(
     client
       .getSnapshot()
@@ -136,7 +137,7 @@ it("lets go of a take whose answer was lost, and retries a lost save as the same
     "could not be reached",
   );
   // The Host took that lease; nothing may wait two minutes on an editor that never opened.
-  expect(mock.getSnapshot().inputQueues[threadId]?.items[0]?.lease).toBeNull();
+  expect(mock.getThreadTranscript(threadId)?.getSnapshot().inputQueue?.items[0]?.lease).toBeNull();
 
   const editor = await client.editWaitingMessage(threadId, messageId);
   const words = [{ text: "Check the 9am ferry", type: "text" as const }];
@@ -162,7 +163,7 @@ it("holds a message another device is editing until this one takes it over, and 
     code: "conflict",
   });
   const editor = await client.editWaitingMessage(threadId, messageId, { takeOver: true });
-  expect(waiting()!.lease).toEqual({ kind: "mine", leaseId: editor.leaseId });
+  expect(waiting()!.lease).toEqual({ kind: "mine" });
 
   mock.mockOtherDeviceEdit(threadId, messageId, "Alex's iPad");
   await expect(
@@ -176,63 +177,58 @@ it("holds a message another device is editing until this one takes it over, and 
   expect(client.ownsEditLease(editor.leaseId)).toBe(false);
 });
 
-it("patches a lease change and an edit from another device in place, and drops a removed task", async () => {
-  const { client, host, messageId, sent, threadId, waiting } = await setup();
-  const thread = client.getSnapshot().threads.find(({ id }) => id === threadId)!;
-  let sequence = 100_000;
-  const publish = (type: string, data: object) => {
-    sequence += 1;
-    host.publish(
-      [
-        AgentEventViewSchema.parse({
-          createdAt: "2026-11-14T12:05:00.000Z",
-          data,
-          environmentId: thread.environmentId,
-          eventId: createId("event"),
-          runId: null,
-          sequence: String(sequence),
-          threadId,
-          type,
+it("refuses to open an editor when another device takes the lease during the body read", async () => {
+  const body = Promise.withResolvers<Response>();
+  const returnBody = Promise.withResolvers<void>();
+  const { client, messageId, mock, threadId, waiting } = await setup(async (response) => {
+    body.resolve(response);
+    await returnBody.promise;
+    return response;
+  });
+  const editing = client.editWaitingMessage(threadId, messageId);
+  void editing.catch(() => undefined);
+  try {
+    let bodyReady = false;
+    void body.promise.then(() => {
+      bodyReady = true;
+    });
+    await vi.waitFor(() => expect(bodyReady, "the edit body was never read").toBe(true), {
+      timeout: 1000,
+    });
+    expect((await body.promise).ok).toBe(true);
+    mock.mockOtherDeviceEdit(threadId, messageId, "Alex's iPad");
+    await vi.waitFor(
+      () =>
+        expect(waiting()?.lease).toMatchObject({
+          kind: "other",
+          deviceLabel: "Alex's iPad",
         }),
-      ],
-      String(sequence),
+      { timeout: 1000 },
     );
-  };
-  const reads = () => sent.filter((type) => type.endsWith("/thread.inputQueue.get")).length;
-  const before = reads();
+  } finally {
+    returnBody.resolve();
+  }
+  await expect(editing).rejects.toMatchObject({ code: "conflict" });
+  expect(waiting()?.lease).toMatchObject({ kind: "other", deviceLabel: "Alex's iPad" });
+});
 
-  publish("thread-input.lease-changed", {
-    lease: {
-      deviceLabel: "Alex's iPhone",
-      expiresAt: "2026-11-14T12:07:00.000Z",
-      leaseId: "phone-lease-0000001",
-    },
-    messageId,
-  });
-  await vi.waitFor(() => expect(waiting()!.lease).toMatchObject({ kind: "other" }), {
-    timeout: 1000,
-  });
-
-  const item = client.getSnapshot().inputQueues[threadId]!.items[0]!;
-  const edit = { editedAt: "2026-11-14T12:06:00.000Z", ownerEdited: true, revision: 1 };
-  publish("thread-input.lease-changed", { lease: null, messageId });
-  publish("message.updated", {
-    edit,
-    input: item.input,
-    message: { ...item.message, content: [{ text: "Edited on the phone", type: "text" }], edit },
-  });
+it("reloads a revised lease only for the observed queue and purges the removed scope", async () => {
+  const { client, mock, messageId, threadId, waiting } = await setup();
+  mock.mockOtherDeviceEdit(threadId, messageId, "Alex's iPhone");
   await vi.waitFor(
-    () =>
-      expect(waiting()).toMatchObject({
-        lease: { kind: "none" },
-        revision: 1,
-        text: "Edited on the phone",
-      }),
+    () => expect(waiting()?.lease).toMatchObject({ kind: "other", deviceLabel: "Alex's iPhone" }),
     { timeout: 1000 },
   );
-  expect(reads(), "a lease or edit event reread the queue").toBe(before);
-
-  publish("task.removed", {});
+  await client.loadEarlierNeedsYou();
+  const review = client
+    .getSnapshot()
+    .needsYou?.entries.find((row) => row.kind === "team-ask" && row.task?.threadId === threadId);
+  if (!review || review.kind !== "team-ask") throw new Error("The task has no waiting ask.");
+  await client.decideTeamAsk({
+    decision: "decline",
+    requestId: review.requestId,
+    teamId: review.teamId,
+  });
   await vi.waitFor(
     () =>
       expect(client.getSnapshot().threadLookups[threadId], "the task was never removed").toBe(
@@ -242,12 +238,10 @@ it("patches a lease change and an edit from another device in place, and drops a
   );
   const snapshot = client.getSnapshot();
   expect(snapshot.threads.some(({ id }) => id === threadId)).toBe(false);
-  expect(snapshot.inputQueues[threadId]).toBeUndefined();
+  expect(client.getThreadTranscript(threadId)?.getSnapshot().inputQueue).toBeNull();
   expect(
     snapshot.needsYou?.entries.some(
       (row) => row.kind === "team-ask" && row.task?.threadId === threadId,
     ),
   ).toBe(false);
-  client.activateThread(threadId);
-  expect(client.getSnapshot().threadLookups[threadId]).toBe("missing");
 });

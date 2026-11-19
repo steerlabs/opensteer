@@ -43,6 +43,7 @@ describeStore("Continuation paging", (it) => {
       rows.push(opened.request.id);
       await store.requests.resolveBrowserRequest({
         requestId: opened.request.id,
+        expectedRevision: (await store.requests.revision(opened.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
@@ -82,7 +83,10 @@ describeStore("Continuation paging", (it) => {
     const service = new ContinuationService({
       requests: {
         get: (id) => store.requests.get(id),
-        listPendingContinuations: () => store.requests.listPendingContinuations(2),
+        listPendingContinuations: (_limit, retryBefore, excludedRuns) =>
+          store.requests.listPendingContinuations(2, retryBefore, excludedRuns),
+        nextContinuationDeadline: (retryMs, excludedRuns, asOf) =>
+          store.requests.nextContinuationDeadline(retryMs, excludedRuns, asOf),
         recordContinuationAttempt: (input) => store.requests.recordContinuationAttempt(input),
       },
       commands: {
@@ -122,6 +126,22 @@ describeStore("Continuation paging", (it) => {
     expect(JSON.stringify(message.content)).toContain(second);
     expect(
       (await store.requests.listPendingContinuations(2)).map(({ request }) => request.id),
+    ).toEqual([later]);
+
+    await store.requests.recordContinuationAttempt({
+      requestId: later!,
+      reason: null,
+      status: "waiting",
+    });
+    const retryMs = 5_000;
+    const next = (await store.requests.nextContinuationDeadline(retryMs, new Set(), new Date()))!;
+    expect(
+      await store.requests.listPendingContinuations(2, new Date(next.getTime() - retryMs - 1)),
+    ).toEqual([]);
+    expect(
+      (await store.requests.listPendingContinuations(2, new Date(next.getTime() - retryMs))).map(
+        ({ request }) => request.id,
+      ),
     ).toEqual([later]);
   });
 });

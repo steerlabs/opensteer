@@ -1575,13 +1575,20 @@ describe("phone display Host sockets", () => {
       expect(await viewer.closed).toBe(1013);
     },
   );
-  it("uses ended when a sweep observes a terminated session", async () => {
+  it("sweeps a terminated session and stops its timer with no streams left", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const f = await fixture();
+    const sweep = vi.spyOn(f.hub, "sweep");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sweep).not.toHaveBeenCalled();
     const viewer = await f.viewer();
     await f.phone();
     f.expireSession();
-    f.hub.sweep();
+    await vi.advanceTimersByTimeAsync(100);
     expect(await viewer.closed).toBe(1000);
+    expect(sweep).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sweep).toHaveBeenCalledOnce();
   });
   it("uses access-ended when the integrations authorization is revoked", async () => {
     const f = await fixture();

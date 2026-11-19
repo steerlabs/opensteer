@@ -1,4 +1,4 @@
-import { type PlaceEnteredEventView } from "@opensteer/core";
+import type { RunPlace } from "./run-place.js";
 import {
   computerDisplayAuthorityKey,
   computerDisplayScope,
@@ -12,7 +12,7 @@ import { browserTabPicture, rememberBrowserLastPicture } from "./browser-last-pi
 import type { HostClient } from "./client.js";
 import { hostSnapshotStore } from "./host-snapshot-store.js";
 import { runPlaceSessionId, runPlacePictureSession } from "./run-place.js";
-import { computerAppIdentityKey } from "@opensteer/protocol";
+import { computerAppIdentityKey } from "@opensteer/integration-core";
 import type { NativeViewerSource } from "./surfaces.js";
 import {
   emptyRunPlacePicture,
@@ -37,7 +37,7 @@ class PictureOwner {
   #runId: string | null = null;
   #holds = 0;
   #displayHolds = 0;
-  #entry: PlaceEnteredEventView | null = null;
+  #entry: RunPlace | null = null;
   #stops: (() => void)[] = [];
   #streamStops: (() => void)[] = [];
   #streamKey: string | null = null;

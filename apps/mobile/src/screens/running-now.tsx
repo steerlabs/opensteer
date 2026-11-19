@@ -8,10 +8,12 @@ import { useMobileState } from "../ui/mobile-client-context.js";
 import { useContentInsets } from "../ui/pane.js";
 import { AppText } from "../ui/primitives.js";
 import { useGutter } from "../ui/screen.js";
-import { RunningCommandView, RunningRowView, useRunningNow } from "../thread/running-now.js";
+import { useRunningNow } from "@opensteer/client/react";
+import { RunningCommandView, RunningRowView } from "../thread/running-now.js";
 import { AgentEngine, AgentGround, threadEngine } from "../thread/agent-mark.js";
 import { AgentsLive } from "../thread/subagent-rows.js";
 import { useShowsLive } from "../ui/connection-live.js";
+import { useScreenShowing } from "../thread/screen-showing.js";
 
 export type RunningNowScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -77,7 +79,7 @@ function RunningList(props: {
     hostClient,
     useCallback((snapshot) => threadEngine(snapshot, threadId), [threadId]),
   );
-  const model = useRunningNow(hostClient, threadId, reachable);
+  const model = useRunningNow(hostClient, threadId, reachable, useScreenShowing());
   const empty = model === null;
   useEffect(() => {
     if (empty && navigation.isFocused()) navigation.goBack();

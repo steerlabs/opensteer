@@ -817,6 +817,7 @@ export class PluginService {
   readonly health = this.#method("health");
   readonly catalogList = this.#method("catalogList");
   readonly catalogDetail = this.#method("catalogDetail");
+  readonly icons = this.#method("icons");
   readonly list = this.#method("list");
   readonly installed = this.#method("installed");
   readonly detail = this.#method("detail");

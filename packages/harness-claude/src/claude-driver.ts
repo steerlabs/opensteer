@@ -3067,7 +3067,12 @@ class ClaudeHarnessSession implements HarnessSession {
           this.#startedToolCalls.add(callId);
           this.#streamedArgumentToolCalls.add(callId);
           this.#publish({
-            data: { arguments: contentBlock.input ?? {}, callId, tool: claudeToolIdentity(name) },
+            data: {
+              arguments: contentBlock.input ?? {},
+              callId,
+              provisional: true,
+              tool: claudeToolIdentity(name),
+            },
             type: "tool.started",
           });
         }

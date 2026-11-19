@@ -18,6 +18,7 @@ function client(lastVisitedAt: string | null, task: string | null = taskId) {
     visitThread,
     threadTask,
     rpc: { "teams.replyTask.get": threadTask } as never,
+    watchPersonalResource: () => () => undefined,
     getSnapshot: () =>
       ({
         threadVisits: lastVisitedAt ? { [taskId]: lastVisitedAt } : {},

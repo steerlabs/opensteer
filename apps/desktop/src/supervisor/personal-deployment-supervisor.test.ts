@@ -6,7 +6,11 @@ import path from "node:path";
 import type { DeploymentConnection } from "@opensteer/client/connections";
 import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
 import { createId, type RunnerId } from "@opensteer/core";
-import type { DesktopPersonalDeploymentStatus } from "@opensteer/protocol/desktop";
+import {
+  personalUpgradeHeartbeatLine,
+  personalUpgradeProgressLine,
+  type DesktopPersonalDeploymentStatus,
+} from "@opensteer/protocol/desktop";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:net";
 import { PassThrough } from "node:stream";
@@ -20,6 +24,7 @@ import type {
   PersonalDeploymentFilesystemPort,
   PersonalDeploymentManifest,
   PersonalDeploymentPreparedPaths,
+  PersonalRuntimeIdentity,
 } from "../secrets/personal-deployment-store.js";
 import {
   NativePersonalDeploymentFilesystem,
@@ -193,6 +198,188 @@ describe("PersonalDeploymentSupervisor", () => {
     });
     expect(fixture.release).not.toHaveBeenCalled();
     expect(fixture.processes.specs).toHaveLength(0);
+  });
+
+  it("waits past the normal Host deadline while upgrade batches commit", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const fixture = supervisorFixture(
+      deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+    );
+    const entered = deferred<void>();
+    const finish = deferred<void>();
+    const verify = fixture.host.waitForHost.getMockImplementation()!;
+    fixture.host.waitForHost.mockImplementationOnce(async (...args) => {
+      entered.resolve();
+      await finish.promise;
+      return verify(...args);
+    });
+    try {
+      const starting = fixture.supervisor.resumeIfConfigured();
+      await entered.promise;
+      const host = childrenOf(fixture, "host")[0]!;
+      await vi.advanceTimersByTimeAsync(400);
+      host.stdout.write(`${personalUpgradeProgressLine}\n`);
+      expect(fixture.supervisor.status.step).toBe("upgrading-database");
+      await vi.advanceTimersByTimeAsync(400);
+      host.stdout.write(`${personalUpgradeProgressLine}\n`);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(fixture.processes.kills).toEqual([]);
+      finish.resolve();
+      await expect(starting).resolves.toMatchObject({ state: "ready" });
+    } finally {
+      await fixture.supervisor.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a long upgrade statement alive until the overall startup limit", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const fixture = supervisorFixture(
+      deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+    );
+    const entered = deferred<void>();
+    fixture.host.waitForHost.mockImplementationOnce(async () => {
+      entered.resolve();
+      return new Promise(() => undefined);
+    });
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    try {
+      const starting = fixture.supervisor.resumeIfConfigured();
+      const rejected = expect(starting).rejects.toThrow("The Personal database upgrade timed out.");
+      await entered.promise;
+      const host = childrenOf(fixture, "host")[0]!;
+      heartbeat = setInterval(() => host.stdout.write(`${personalUpgradeHeartbeatLine}\n`), 400);
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect(fixture.supervisor.status.step).toBe("upgrading-database");
+      expect(fixture.processes.kills).toEqual([]);
+      await vi.advanceTimersByTimeAsync(30 * 60_000 - 60_001);
+      await rejected;
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
+      await fixture.supervisor.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["crash", "stall"] as const)("relaunches after an upgrade %s", async (failure) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const fixture = supervisorFixture(
+      deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+    );
+    const entered = deferred<void>();
+    fixture.host.waitForHost.mockImplementationOnce(async () => {
+      entered.resolve();
+      return new Promise(() => undefined);
+    });
+    try {
+      const starting = fixture.supervisor.resumeIfConfigured();
+      const rejected = expect(starting).rejects.toThrow(
+        failure === "stall" ? /stopped making progress/u : /Host stopped unexpectedly \(exit 1\)/u,
+      );
+      await entered.promise;
+      const host = childrenOf(fixture, "host")[0]!;
+      host.stdout.write(`${personalUpgradeProgressLine}\n`);
+      expect(fixture.supervisor.status.step).toBe("upgrading-database");
+      if (failure === "crash") host.emit("exit", 1, null);
+      else await vi.advanceTimersByTimeAsync(500);
+      await rejected;
+      await expect(fixture.supervisor.start()).resolves.toMatchObject({ state: "ready" });
+      expect(childrenOf(fixture, "host")).toHaveLength(2);
+    } finally {
+      await fixture.supervisor.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["the converter's own failure", "diagnostic"],
+    ["a Host exit with no diagnostic", "crash"],
+    ["no progress", "stall"],
+    ["the overall ceiling", "ceiling"],
+  ] as const)("shows the conversion failure screen after %s", async (_, failure) => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
+    const fixture = supervisorFixture(
+      deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+    );
+    fixture.files.pinnedFrom = "1.2.3";
+    const entered = deferred<void>();
+    fixture.host.waitForHost.mockImplementationOnce(async () => {
+      entered.resolve();
+      return new Promise(() => undefined);
+    });
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    try {
+      const starting = fixture.supervisor.resumeIfConfigured();
+      const rejected = expect(starting).rejects.toThrow(/step "ledger"/u);
+      await entered.promise;
+      const host = childrenOf(fixture, "host")[0]!;
+      host.stdout.write(`${personalUpgradeProgressLine}: ledger\n`);
+      expect(fixture.supervisor.status.step).toBe("upgrading-database");
+      if (failure === "diagnostic") {
+        host.stderr.write(
+          'PersonalStateConversionError: Personal state conversion failed at step "ledger": parity\n',
+        );
+        host.stderr.end();
+        host.emit("exit", 1, null);
+      } else if (failure === "crash") host.emit("exit", 1, null);
+      else if (failure === "stall") await vi.advanceTimersByTimeAsync(500);
+      else {
+        heartbeat = setInterval(() => host.stdout.write(`${personalUpgradeHeartbeatLine}\n`), 400);
+        await vi.advanceTimersByTimeAsync(30 * 60_000);
+      }
+      await rejected;
+      expect(fixture.supervisor.status).toMatchObject({
+        canStart: true,
+        issue: { code: "personal-conversion-failed", repairAction: "restart-opensteer" },
+        state: "repair-required",
+      });
+      expect(fixture.supervisor.status.issue?.detail).toContain('step "ledger"');
+      expect(fixture.supervisor.status.issue?.detail).toContain("Opensteer 1.2.3 can open it");
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
+      await fixture.supervisor.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["only a migration heartbeat, then no progress", "heartbeat"],
+    ["a stage, then a crash, with no kept copy", "stage-no-copy"],
+  ] as const)("does not claim a kept copy it cannot show: %s", async (_, scenario) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const fixture = supervisorFixture(
+      deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+    );
+    fixture.files.pinnedFrom = null;
+    const entered = deferred<void>();
+    fixture.host.waitForHost.mockImplementationOnce(async () => {
+      entered.resolve();
+      return new Promise(() => undefined);
+    });
+    try {
+      const starting = fixture.supervisor.resumeIfConfigured();
+      const rejected = expect(starting).rejects.toThrow();
+      await entered.promise;
+      const host = childrenOf(fixture, "host")[0]!;
+      if (scenario === "heartbeat") {
+        host.stdout.write(`${personalUpgradeHeartbeatLine}\n`);
+        await vi.advanceTimersByTimeAsync(500);
+      } else {
+        host.stdout.write(`${personalUpgradeProgressLine}: ledger\n`);
+        host.emit("exit", 1, null);
+      }
+      await rejected;
+      const detail = fixture.supervisor.status.issue?.detail ?? "";
+      expect(detail).not.toContain("is kept");
+      if (scenario === "heartbeat")
+        expect(fixture.supervisor.status.issue?.code).not.toBe("personal-conversion-failed");
+      else expect(detail).toContain("No copy from before this update was found");
+    } finally {
+      await fixture.supervisor.stop();
+      vi.useRealTimers();
+    }
   });
 
   it("resumes a returning Personal deployment through Host readiness", async () => {
@@ -633,7 +820,7 @@ describe("PersonalDeploymentSupervisor", () => {
     await fixture.supervisor.stop();
   });
 
-  it("snapshots the stopped database before an app update commits, and never blocks the update", async () => {
+  it("after the conversion, snapshots the stopped database before an app update commits and never blocks it", async () => {
     const configured = deploymentManifest({ databaseInitialized: true, ownerInitialized: true });
     const nextRelease = verifiedRelease({ hostVersion: "1.2.4", runnerVersion: "2.3.5" });
     const fixture = supervisorFixture(configured, undefined, nextRelease);
@@ -653,6 +840,7 @@ describe("PersonalDeploymentSupervisor", () => {
       configured,
       nextRelease.identity,
       expect.any(Date),
+      false,
     );
     // Before the cutover and before PostgreSQL or the Host ran.
     expect(atSnapshot).toEqual([{ revision: configured.revision, processes: 0 }]);
@@ -849,6 +1037,87 @@ describe("PersonalDeploymentSupervisor", () => {
     await expect(starting).rejects.toThrow(/invalid Host configuration/u);
     expect(fixture.supervisor.status.issue?.detail).toContain("credential=[redacted]");
     expect(fixture.supervisor.status.issue?.detail).not.toContain("private-value");
+  });
+
+  it("keeps a pinned copy before converting, and refuses the update when it cannot", async () => {
+    const configured = deploymentManifest({ databaseInitialized: true, ownerInitialized: true });
+    const nextRelease = verifiedRelease({ hostVersion: "1.2.4", runnerVersion: "2.3.5" });
+
+    const refused = supervisorFixture(configured, undefined, nextRelease);
+    refused.files.converted = false;
+    refused.files.snapshotDatabase.mockRejectedValue(new Error("ENOSPC: no space left"));
+    await expect(refused.supervisor.resumeIfConfigured()).rejects.toThrow(/couldn't keep a copy/u);
+    expect(refused.supervisor.status).toMatchObject({
+      canStart: true,
+      issue: { code: "disk-space-insufficient", repairAction: "free-disk-space" },
+      state: "repair-required",
+    });
+    // No copy, no conversion: the old release is still the committed one and nothing ran.
+    expect(refused.files.manifest?.release).toEqual(configured.release);
+    expect(refused.processes.specs).toEqual([]);
+
+    const pinned = supervisorFixture(configured, undefined, nextRelease);
+    pinned.files.converted = false;
+    await expect(pinned.supervisor.resumeIfConfigured()).resolves.toMatchObject({
+      state: "ready",
+    });
+    expect(pinned.files.snapshotDatabase).toHaveBeenCalledWith(
+      configured,
+      nextRelease.identity,
+      expect.any(Date),
+      true,
+    );
+    // The first healthy start releases the pin.
+    expect(pinned.files.markPersonalStateConverted).toHaveBeenCalledTimes(1);
+    expect(pinned.files.converted).toBe(true);
+    await pinned.supervisor.stop();
+
+    // A failed conversion, then another build before any healthy start: the
+    // cluster may be partly converted, so it is not pinned over the pristine copy.
+    const later = supervisorFixture(
+      configured,
+      undefined,
+      verifiedRelease({ hostVersion: "1.2.5", runnerVersion: "2.3.6" }),
+    );
+    later.files.converted = false;
+    later.files.pinnedFrom = "1.2.3";
+    await expect(later.supervisor.resumeIfConfigured()).resolves.toMatchObject({
+      state: "ready",
+    });
+    expect(later.files.snapshotDatabase).not.toHaveBeenCalled();
+    expect(later.files.pinnedFrom).toBe("1.2.3");
+    await later.supervisor.stop();
+  });
+
+  it("names the failed conversion step and the version that opens the kept copy", async () => {
+    const fixture = supervisorFixture(null);
+    fixture.files.pinnedFrom = "1.2.3";
+    fixture.host.waitForHost.mockImplementationOnce(() => new Promise(() => undefined));
+    const starting = fixture.supervisor.start();
+    await vi.waitFor(() => {
+      expect(
+        fixture.processes.children.find(({ component }) => component === "host"),
+      ).toBeDefined();
+    });
+    const host = fixture.processes.children.find(({ component }) => component === "host")!;
+    host.stderr.write(
+      'PersonalStateConversionError: Personal state conversion failed at step "verify": Personal conversion parity check failed\n',
+    );
+    host.stderr.end();
+    host.emit("exit", 1, null);
+
+    await expect(starting).rejects.toThrow(/step "verify"/u);
+    expect(fixture.supervisor.status).toMatchObject({
+      canStart: true,
+      issue: {
+        code: "personal-conversion-failed",
+        component: "host",
+        repairAction: "restart-opensteer",
+      },
+      state: "repair-required",
+    });
+    expect(fixture.supervisor.status.issue?.detail).toContain("Opensteer 1.2.3 can open it");
+    expect(fixture.files.markPersonalStateConverted).not.toHaveBeenCalled();
   });
 
   it("includes redacted service diagnostics when readiness times out", async () => {
@@ -1775,7 +2044,26 @@ class MemoryPersonalFiles implements PersonalDeploymentFilesystemPort {
     return this.databasePresent ? "initialized" : "empty";
   }
 
-  readonly snapshotDatabase = vi.fn(async () => "20261028T120000Z-1.2.3");
+  /** The version the pinned pre-conversion copy came from, once one exists. */
+  pinnedFrom: string | null = null;
+  readonly snapshotDatabase = vi.fn(
+    async (
+      manifest: PersonalDeploymentManifest,
+      _toRelease: PersonalRuntimeIdentity,
+      _createdAt: Date,
+      pinned?: boolean,
+    ) => {
+      if (pinned) this.pinnedFrom = manifest.release.hostVersion;
+      return "20261028T120000Z-1.2.3";
+    },
+  );
+  /** Existing fixtures predate the gate; the conversion tests turn it off. */
+  converted = true;
+  readonly personalStateConverted = vi.fn(async () => this.converted);
+  readonly markPersonalStateConverted = vi.fn(async () => {
+    this.converted = true;
+  });
+  readonly pinnedSnapshotSourceVersion = vi.fn(async (): Promise<string | null> => this.pinnedFrom);
 
   readonly stageDatabaseInitPassword = vi.fn(
     async (_: PersonalDeploymentManifest, password: string) => {

@@ -1,5 +1,5 @@
 import type { AesGcmCredentialVault } from "@opensteer/access/host";
-import type { AgentEvent, DeploymentId, RunId, ThreadId, UserId } from "@opensteer/core";
+import type { DeploymentId, RunId, ThreadId, UserId } from "@opensteer/core";
 import type { DatabaseSchema } from "@opensteer/database";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
@@ -27,16 +27,12 @@ export function createPersonalTeamLinkServices(options: {
   readonly admission: TaskAdmissionPort;
   readonly runs: PersonalTeamRunPort;
   readonly attachments: PersonalTeamAttachmentPort;
-  readonly onDeliveryEvent: (event: AgentEvent) => void;
   readonly onPublished: (taskId: ThreadId) => Promise<void>;
   readonly onConsentChanged?: PersonalTeamRequestsOptions["onConsentChanged"];
+  readonly onLinkReady?: (teamId: DeploymentId) => void;
 }) {
   const linksStore = new PersonalTeamLinksStore(options.database);
-  const requestsStore = new PersonalTeamRequestsStore(
-    options.database,
-    options.onPublished,
-    options.onDeliveryEvent,
-  );
+  const requestsStore = new PersonalTeamRequestsStore(options.database, options.onPublished);
   const vault = new PersonalTeamVault(options.credentialVault, options.database, options.ownerId);
   const network = new TeamLinkNetwork();
   const requests = new PersonalTeamRequests({
@@ -54,6 +50,7 @@ export function createPersonalTeamLinkServices(options: {
     vault,
     network,
     requests,
+    ...(options.onLinkReady ? { onReady: options.onLinkReady } : {}),
   });
   const files = new TeamRunFileTransfers({
     links: linksStore,

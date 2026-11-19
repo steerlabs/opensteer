@@ -1,15 +1,8 @@
-import type {
-  MessageEdit,
-  MessageRevisionView,
-  TeamAudience,
-  ThreadInputQueue,
-} from "@opensteer/core";
-import type { NeedsYouPage } from "@opensteer/protocol";
+import type { MessageEdit, MessageRevisionView, TeamAudience } from "@opensteer/core";
+import type { NeedsYouPage, PersonalInputQueue } from "@opensteer/protocol";
 import type { MessageEntry } from "./client.js";
 import { messageAuthorName } from "./conversation-presentation.js";
-import { messageBody, toMessageEntry } from "./transcript.js";
-
-type QueueItem = ThreadInputQueue["items"][number];
+import { messageBody } from "./transcript.js";
 
 /**
  * Who is editing a waiting message, as this device sees it. Another device's
@@ -18,10 +11,9 @@ type QueueItem = ThreadInputQueue["items"][number];
  */
 export type WaitingInputLease =
   | { readonly kind: "none" }
-  | { readonly kind: "mine"; readonly leaseId: string }
+  | { readonly kind: "mine" }
   | {
       readonly kind: "other";
-      readonly leaseId: string;
       /** The device it is open on, as the Host names it ("Tim's iPhone"). */
       readonly deviceLabel: string;
       readonly expiresAt: string;
@@ -45,8 +37,6 @@ interface WaitingInputCommon {
   /** The Host takes an edit from this person (`editWaitingMessage`). */
   readonly canEdit: boolean;
   readonly lease: WaitingInputLease;
-  /** The item as the Host read it. */
-  readonly item: QueueItem;
 }
 
 /** A message in line for the agent: the person's own, or a teammate's ask already approved. */
@@ -103,41 +93,54 @@ export interface WaitingAskConsent {
  * the order it will go: their messages in line, then teammates' asks awaiting
  * their answer. Opensteer follow-ups, delegation results and automation runs
  * wait in the same queue, but they are nobody's words to edit or take back,
- * and each has its own place in the conversation. `ownsLease` is
- * `HostClient.ownsEditLease`; `needsYou` adds each ask's consent deadline.
+ * and each has its own place in the conversation. `needsYou` adds
+ * each ask's consent deadline.
  */
 export function waitingInputs(
-  queue: ThreadInputQueue,
+  queue: PersonalInputQueue,
   viewer: {
-    readonly ownsLease: (leaseId: string) => boolean;
     readonly needsYou?: NeedsYouPage | null;
   },
 ): WaitingInput[] {
   const first = queue.items[0];
   return queue.items.flatMap((item): WaitingInput[] => {
     const { input, message } = item;
-    const entry = toMessageEntry(message, input.policy, input);
-    if (entry === null) return [];
+    const entry: MessageEntry = {
+      author: message.author,
+      body: message.preview,
+      ...(message.clientSendKey ? { clientSendKey: message.clientSendKey } : {}),
+      ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+      createdAt: message.createdAt,
+      id: message.id,
+      kind: "message",
+      messageKind: "input",
+      policy: "queue",
+      previewTruncated: message.truncated,
+      published: false,
+      runId: null,
+    };
     const common: WaitingInputCommon = {
       canEdit: item.canEdit,
       edit: message.edit ?? null,
       entry,
-      item,
       lease:
         item.lease === null
           ? { kind: "none" }
-          : viewer.ownsLease(item.lease.leaseId)
-            ? { kind: "mine", leaseId: item.lease.leaseId }
-            : { kind: "other", ...item.lease },
+          : item.lease.ownedBySession
+            ? { kind: "mine" }
+            : {
+                kind: "other",
+                deviceLabel: item.lease.deviceLabel,
+                expiresAt: item.lease.expiresAt,
+              },
       messageId: message.id,
-      revision: message.edit?.revision ?? 0,
-      text: messageBody(message.content) || "Attachment",
+      revision: message.revision,
+      text: message.preview || "Attachment",
       threadId: queue.threadId,
     };
     if (input.state === "awaiting-approval") {
-      if (input.teamRequestId === null || input.teamSource === null) return [];
-      const { teamId } = input.teamSource;
-      const requestId = input.teamRequestId;
+      if (!item.ask) return [];
+      const { teamId, requestId, audience } = item.ask;
       const listed = viewer.needsYou?.entries.find(
         (row) => row.kind === "team-ask" && row.teamId === teamId && row.requestId === requestId,
       );
@@ -148,7 +151,7 @@ export function waitingInputs(
           // The Host closes edits to an ask once its approval is under way.
           approving: !item.canEdit,
           asker: messageAuthorName(message.author),
-          consent: waitingAskConsent(input.teamSource.audience),
+          consent: waitingAskConsent(audience),
           consentExpiresAt: listed?.kind === "team-ask" ? listed.consentExpiresAt : null,
           requestId,
           teamId,

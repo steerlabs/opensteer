@@ -239,7 +239,8 @@ export type HarnessDurableEventType = Extract<
 export type HarnessDurableEvent = {
   [Type in HarnessDurableEventType]: {
     readonly type: Type;
-    readonly data: RunnerEventData<Type>;
+    readonly data: RunnerEventData<Type> &
+      (Type extends "tool.started" ? { readonly provisional?: true } : unknown);
   };
 }[HarnessDurableEventType];
 

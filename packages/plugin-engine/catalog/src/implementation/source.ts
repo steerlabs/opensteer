@@ -30,7 +30,7 @@ const decodeManifest = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ name: Schema.String })),
 );
 
-/** Icons load in the user's browser, so only web and inline image addresses are kept. */
+/** The Host reads icons for its clients, so only web and inline image addresses are kept. */
 const iconUrl = (src: string, base: string) => {
   if (!URL.canParse(src, base)) return undefined;
   const url = new URL(src, base);

@@ -56,6 +56,26 @@ describe("computer REPL worker boundary", () => {
       output(await service.execute({ runId: runId(), generation: 1 }, "return typeof n")),
     ).toBe('"undefined"');
   });
+  it("expires the last idle VM at its deadline and disarms the timer", async () => {
+    vi.useFakeTimers({
+      toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
+    const idle = new ComputerReplService({ invoke: async () => ({ value: [] }) });
+    const context = { runId: runId(), generation: 1 };
+    try {
+      expect(vi.getTimerCount()).toBe(0);
+      expect(output(await idle.execute(context, "globalThis.saved = 7; return saved"))).toBe("7");
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(computerReplLimits.idleMs);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(output(await idle.execute(context, "return typeof saved"))).toBe('"undefined"');
+      await idle.endRun(context.runId);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await idle.close();
+      vi.useRealTimers();
+    }
+  });
   it("preserves a device refusal through the worker and its strict result envelope", async () => {
     const machineId = createId("runner");
     const { run } = setup(async () => {

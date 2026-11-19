@@ -1,5 +1,4 @@
 import { personalReachableGrant, phoneRunnerGrant } from "./runner-store.js";
-import { NotificationStore } from "./notification-store.js";
 import { runReply } from "./run-reply.js";
 import type { StoreFixture } from "./store.integration.test-support.js";
 
@@ -46,6 +45,10 @@ describeStore("PostgreSQL store", (it) => {
       runId: source.run.id,
       sourceThreadId: fixture.thread.id,
     };
+    const notices: import("./person-message-store.js").PersonMessageReady[] = [];
+    const stopWake = store.onPersonMessageReady((notice) => {
+      notices.push(notice);
+    });
     const results = await Promise.all(
       Array.from(
         {
@@ -59,14 +62,24 @@ describeStore("PostgreSQL store", (it) => {
       ),
     );
     expect(new Set(results.map((result) => result.message.id)).size).toBe(1);
-    expect(results.flatMap((result) => result.events)).toHaveLength(1);
-    expect(results.flatMap((result) => result.events)[0]).toMatchObject({
-      type: "message.created",
-      data: {
+    stopWake();
+    expect(results.filter(({ wasDuplicate }) => !wasDuplicate)).toHaveLength(1);
+    expect(notices).toEqual([
+      {
+        messageId: results[0]!.message.id,
+        threadId: fixture.thread.id,
+        runId: source.run.id,
+        type: "replyPublished",
         addressedToUserId: fixture.userId,
-        input: null,
       },
-    });
+    ]);
+    expect(
+      await database
+        .selectFrom("transcriptItems")
+        .select(["id", "visible"])
+        .where("messageId", "=", results[0]!.message.id)
+        .execute(),
+    ).toEqual([{ id: results[0]!.message.id, visible: true }]);
     const row = await database
       .selectFrom("messages")
       .selectAll()
@@ -81,19 +94,6 @@ describeStore("PostgreSQL store", (it) => {
         }),
       ),
     ).toBeNull();
-    const notifications = await new NotificationStore(database).decide(
-      results.flatMap((result) => result.events)[0]!,
-    );
-    expect(notifications).toMatchObject([
-      {
-        userId: fixture.userId,
-        view: {
-          kind: "reply-published",
-          messageId: row.id,
-          body: "Milestone passed.",
-        },
-      },
-    ]);
     const history = await store.threadMessagePageForOwner({
       ownerId: fixture.userId,
       threadId: fixture.thread.id,
@@ -160,7 +160,6 @@ describeStore("PostgreSQL store", (it) => {
       message: {
         id: row.id,
       },
-      events: [],
     });
     await database
       .updateTable("runs")
@@ -1217,7 +1216,7 @@ describeStore("PostgreSQL store", (it) => {
         outcome: "updated",
         replayed: false,
         changed: { shell: true, browser: false, apps: false },
-        requestEvents: [],
+        fulfilledRequestIds: [],
         revision: 2,
       });
       // A second editor still holding revision 1 changes nothing at all.
@@ -1253,7 +1252,7 @@ describeStore("PostgreSQL store", (it) => {
         outcome: "updated",
         replayed: false,
         changed: { shell: false, browser: false, apps: false },
-        requestEvents: [],
+        fulfilledRequestIds: [],
         revision: 3,
       });
     });
@@ -1282,7 +1281,7 @@ describeStore("PostgreSQL store", (it) => {
         outcome: "updated",
         replayed: false,
         changed: { shell: true, browser: false, apps: false },
-        requestEvents: [],
+        fulfilledRequestIds: [],
         revision: 2,
       });
       // The retried click: the same answer, the revision does not move, and it
@@ -1292,7 +1291,7 @@ describeStore("PostgreSQL store", (it) => {
         outcome: "updated",
         replayed: true,
         changed: { shell: false, browser: false, apps: false },
-        requestEvents: [],
+        fulfilledRequestIds: [],
         revision: 2,
       });
       await expect(store.getMachineAccessTarget(runnerId)).resolves.toMatchObject({

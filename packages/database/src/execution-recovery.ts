@@ -1,8 +1,12 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { deleteTerminalRunReceipts } from "./personal-runner-receipts.js";
+import { drainAssignmentCancellation } from "./assignment-store.js";
+import { drainRevokedChannelInputs } from "./channel-store.js";
+import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
+import { executionDate } from "./personal-transaction.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
-import { lockRunProjectionRows, lockThreadProviderSessions } from "./run-projection-locks.js";
+import { lockRunProjectionRows, lockThreadProviderSession } from "./run-projection-locks.js";
 import "./connection.js";
 import * as commandStore from "./command-store.js";
 import { resendableControlCommandTypes } from "./command-delivery.js";
@@ -11,7 +15,6 @@ import {
   type RunId,
   type ThreadId,
   type Sequence,
-  type AgentEvent,
   type RunFailure,
   type RunnerId,
   createId,
@@ -35,10 +38,8 @@ import {
 import { endStoppedUnconfirmedRun, finalizeRunTransaction } from "./run-finalization.js";
 import { revokeRunGrants, runWasStopped, type RevokedRunGrant } from "./run-grants.js";
 import { cancelPending } from "./request-store.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
-import { threadInputFromRow } from "./thread-row-mappers.js";
+import { publishExecutionInput, updateExecutionThread } from "./execution-changes.js";
 import { ensureQueuedRun } from "./thread-inbox.js";
-import { projectThreadState } from "./thread-status.js";
 export interface RecoveredRunTarget {
   readonly environmentId: EnvironmentId;
   readonly runId: RunId;
@@ -73,7 +74,7 @@ export type ExecutionAttachment =
     };
 export interface RunRecoveryOutcome {
   readonly revokedGrants?: readonly RevokedRunGrant[];
-  readonly events: readonly AgentEvent[];
+
   /** Exactly the Runs terminalized by this recovery call, never inferred from projection events. */
   readonly terminatedRuns: readonly RecoveredRunTarget[];
 }
@@ -115,10 +116,9 @@ async function recoverAbandonedRuns(
     .where("providerSessions.status", "in", sessionStatuses)
     .orderBy("runs.id")
     .execute();
-  const events: AgentEvent[] = [];
   const terminatedRuns: RecoveredRunTarget[] = [];
   for (const candidate of candidates) {
-    const recovered = await withPersonalTransaction(database, async (transaction) => {
+    const recovered = await commitPersonalMutation(database, async (transaction) => {
       // Runner events and recovery both lock the Run first. Whichever terminal
       // outcome wins that lock is the only one projected or published. Recover
 
@@ -140,8 +140,10 @@ async function recoverAbandonedRuns(
         return null;
       }
       await lockThreadRow(transaction, run.threadId);
-      const session = (await lockThreadProviderSessions(transaction, run.threadId)).find(
-        ({ id }) => id === run.providerSessionId,
+      const session = await lockThreadProviderSession(
+        transaction,
+        run.threadId,
+        run.providerSessionId,
       );
       if (
         recovery.kind === "runner-disconnect" &&
@@ -158,7 +160,7 @@ async function recoverAbandonedRuns(
         retryable: false,
         status: "failed" as const,
       };
-      const events = await finalizeRunTransaction(transaction, {
+      await finalizeRunTransaction(transaction, {
         requestCancellationReason: "process-lost",
         completedAt: new Date(),
         failure,
@@ -169,7 +171,6 @@ async function recoverAbandonedRuns(
         status: "failed",
       });
       return {
-        events,
         target: {
           environmentId: run.environmentId,
           runId: run.id,
@@ -178,12 +179,10 @@ async function recoverAbandonedRuns(
       };
     });
     if (recovered) {
-      events.push(...recovered.events);
       terminatedRuns.push(recovered.target);
     }
   }
   return {
-    events,
     terminatedRuns,
   };
 }
@@ -198,7 +197,6 @@ export async function failActiveRunsForRunnerDisconnect(
 ): Promise<RunRecoveryOutcome> {
   if (input.activeRunIds.length === 0)
     return {
-      events: [],
       terminatedRuns: [],
     };
   return recoverAbandonedRuns(database, links, {
@@ -227,8 +225,8 @@ export async function failRunForRefusedRunnerEvent(
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   },
-): Promise<readonly AgentEvent[]> {
-  return withPersonalTransaction(database, async (transaction) => {
+): Promise<void> {
+  return commitPersonalMutation(database, async (transaction) => {
     const run = await transaction
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
@@ -236,10 +234,12 @@ export async function failRunForRefusedRunnerEvent(
       .where("runs.id", "=", input.runId)
       .forNoKeyUpdate("runs")
       .executeTakeFirst();
-    if (!run || !["starting", "running", "waiting"].includes(run.status)) return [];
+    if (!run || !["starting", "running", "waiting"].includes(run.status)) return;
     await lockThreadRow(transaction, run.threadId);
-    const session = (await lockThreadProviderSessions(transaction, run.threadId)).find(
-      ({ id }) => id === run.providerSessionId,
+    const session = await lockThreadProviderSession(
+      transaction,
+      run.threadId,
+      run.providerSessionId,
     );
     if (
       !session?.active ||
@@ -248,8 +248,11 @@ export async function failRunForRefusedRunnerEvent(
       session.bindingGeneration !== input.bindingGeneration ||
       !["starting", "ready", "running"].includes(session.status)
     ) {
-      return [];
+      return;
     }
+    // A lease that ran out is the lease sweep's to classify. A report still being
+    // committed when it ran out is refused for that alone and must not fail the Run first.
+    if (session.leaseExpiresAt && session.leaseExpiresAt <= executionDate(database)) return;
     return finalizeRunTransaction(transaction, {
       completedAt: new Date(),
       failure: {
@@ -269,9 +272,8 @@ export async function failRunForRefusedRunnerEvent(
     });
   });
 }
-export async function recoverThreadWorkQueues(
-  database: Kysely<DatabaseSchema>,
-): Promise<readonly AgentEvent[]> {
+export async function recoverThreadWorkQueues(database: Kysely<DatabaseSchema>): Promise<void> {
+  await drainRevokedChannelInputs(database);
   const obsolete = await database
     .selectFrom("runs")
     .innerJoin("threadInputs", "threadInputs.messageId", "runs.seedInputId")
@@ -280,116 +282,91 @@ export async function recoverThreadWorkQueues(
     .where("threadInputs.policy", "=", "report")
     .orderBy("runs.id", "asc")
     .execute();
-  const events: AgentEvent[] = [];
   for (const candidate of obsolete) {
-    events.push(
-      ...(await withPersonalTransaction(database, async (transaction) => {
-        const run = await transaction
-          .selectFrom("runs")
-          .selectAll()
-          .where("id", "=", candidate.id)
-          .forNoKeyUpdate()
-          .executeTakeFirstOrThrow();
-        if (run.status !== "queued") return [];
-        await lockThreadRow(transaction, run.threadId);
-        await lockRunProjectionRows(transaction, {
-          runIds: [run.id],
-          threadIds: [run.threadId],
-        });
-        const now = new Date();
-        await recordPersonWaited(transaction, run.id);
+    await commitPersonalMutation(database, async (transaction, mutation) => {
+      const run = await transaction
+        .selectFrom("runs")
+        .selectAll()
+        .where("id", "=", candidate.id)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      if (run.status !== "queued") return;
+      await lockThreadRow(transaction, run.threadId);
+      await lockRunProjectionRows(transaction, {
+        runIds: [run.id],
+        threadIds: [run.threadId],
+      });
+      const now = new Date();
+      await recordPersonWaited(transaction, run.id);
+      await transaction
+        .updateTable("runs")
+        .set({
+          status: "interrupted",
+          completedAt: now,
+        })
+        .where("id", "=", run.id)
+        .execute();
+      deleteTerminalRunReceipts(transaction, mutation, run.id);
+      await transaction
+        .updateTable("commands")
+        .set({
+          status: "failed",
+          updatedAt: now,
+          lastError: jsonValue({
+            message: "Replaced a legacy report-driven Run with the actual queued task",
+          }),
+        })
+        .where("runId", "=", run.id)
+        .where("type", "=", "run.execute")
+        .where("status", "in", ["pending", "dispatched", "unknown"])
+        .execute();
+      const seedMessage = await transaction
+        .selectFrom("messages")
+        .select("kind")
+        .where("id", "=", run.seedInputId)
+        .executeTakeFirstOrThrow();
+      if (seedMessage.kind !== "run-result" && seedMessage.kind !== "continuation") {
         await transaction
-          .updateTable("runs")
+          .updateTable("causalChains")
           .set({
-            status: "interrupted",
-            completedAt: now,
+            usedAutonomousRuns: sql`greatest(used_autonomous_runs - 1, 0)`,
           })
-          .where("id", "=", run.id)
+          .where("id", "=", run.causalChainId)
           .execute();
-        await transaction
-          .updateTable("commands")
-          .set({
-            status: "failed",
-            updatedAt: now,
-            lastError: jsonValue({
-              message: "Replaced a legacy report-driven Run with the actual queued task",
-            }),
-          })
-          .where("runId", "=", run.id)
-          .where("type", "=", "run.execute")
-          .where("status", "in", ["pending", "dispatched", "unknown"])
-          .execute();
-        const seedMessage = await transaction
-          .selectFrom("messages")
-          .select("kind")
-          .where("id", "=", run.seedInputId)
-          .executeTakeFirstOrThrow();
-        if (seedMessage.kind !== "run-result" && seedMessage.kind !== "continuation") {
-          await transaction
-            .updateTable("causalChains")
-            .set({
-              usedAutonomousRuns: sql`greatest(used_autonomous_runs - 1, 0)`,
-            })
-            .where("id", "=", run.causalChainId)
-            .execute();
-        }
-        const event = await appendHostDeploymentEvent(transaction, {
-          data: {
-            status: "interrupted",
-          },
-          environmentId: run.environmentId,
-          runId: run.id,
-          threadId: run.threadId,
-          type: "run.interrupted",
-        });
-        const reportAuthorityCurrent = await threadExecutionIsAvailableToUser(
-          transaction,
-          run.threadId,
-          run.requestedBy,
-        );
-        const unconfirmedReports = await transaction
-          .updateTable("threadInputs")
-          .set(
-            reportAuthorityCurrent
-              ? {
-                  state: "unknown",
-                  updatedAt: now,
-                }
-              : {
-                  cancelReason: "owner-unavailable",
-                  state: "cancelled",
-                  updatedAt: now,
-                },
-          )
-          .where("runId", "=", run.id)
-          .where("policy", "=", "report")
-          .where("state", "=", "claimed")
-          .returningAll()
-          .execute();
-        const receiptEvents: AgentEvent[] = [];
-        for (const report of unconfirmedReports) {
-          receiptEvents.push(
-            await appendHostDeploymentEvent(transaction, {
-              data: {
-                input: threadInputFromRow(report),
+      }
+      const reportAuthorityCurrent = await threadExecutionIsAvailableToUser(
+        transaction,
+        run.threadId,
+        run.requestedBy,
+      );
+      const unconfirmedReports = await transaction
+        .updateTable("threadInputs")
+        .set(
+          reportAuthorityCurrent
+            ? {
+                state: "unknown",
+                updatedAt: now,
+              }
+            : {
+                cancelReason: "owner-unavailable",
+                state: "cancelled",
+                updatedAt: now,
               },
-              environmentId: run.environmentId,
-              runId: run.id,
-              threadId: run.threadId,
-              type: "thread-input.updated",
-            }),
-          );
-        }
-        const thread = await transaction
-          .selectFrom("threads")
-          .selectAll()
-          .where("id", "=", run.threadId)
-          .executeTakeFirstOrThrow();
-        const queued = await ensureQueuedRun(transaction, thread);
-        const statusEvents = await projectThreadState(transaction, thread.id, now);
-        return [event, ...receiptEvents, ...queued.events, ...statusEvents];
-      })),
-    );
+        )
+        .where("runId", "=", run.id)
+        .where("policy", "=", "report")
+        .where("state", "=", "claimed")
+        .returningAll()
+        .execute();
+      for (const report of unconfirmedReports) await publishExecutionInput(transaction, report);
+      const thread = await transaction
+        .selectFrom("threads")
+        .selectAll()
+        .where("id", "=", run.threadId)
+        .executeTakeFirstOrThrow();
+      await ensureQueuedRun(transaction, thread);
+      await updateExecutionThread(transaction, thread.id, now);
+    });
   }
   // Pending work is itself the durable wake obligation. Reports are absent
   // from this view, including when a Host restarts with a large backlog.
@@ -400,19 +377,16 @@ export async function recoverThreadWorkQueues(
     .where("state", "=", "pending")
     .execute();
   for (const { threadId } of pending) {
-    events.push(
-      ...(await withPersonalTransaction(database, async (transaction) => {
-        await lockThreadRow(transaction, threadId);
-        const thread = await transaction
-          .selectFrom("threads")
-          .selectAll()
-          .where("id", "=", threadId)
-          .executeTakeFirstOrThrow();
-        return (await ensureQueuedRun(transaction, thread)).events;
-      })),
-    );
+    await commitPersonalMutation(database, async (transaction) => {
+      await lockThreadRow(transaction, threadId);
+      const thread = await transaction
+        .selectFrom("threads")
+        .selectAll()
+        .where("id", "=", threadId)
+        .executeTakeFirstOrThrow();
+      await ensureQueuedRun(transaction, thread);
+    });
   }
-  return events;
 }
 
 /**
@@ -424,32 +398,55 @@ export async function recoverThreadWorkQueues(
 export async function recoverCommandsAfterHostRestart(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
-): Promise<readonly AgentEvent[]> {
-  await database
-    .updateTable("commands")
-    .set({
-      dispatcherId: null,
-      status: "pending",
-      updatedAt: new Date(),
-    })
-    .where("status", "=", "dispatched")
-    .where("type", "in", resendableControlCommandTypes)
-    .execute();
+): Promise<void> {
+  await drainAssignmentCancellation(database, links);
+
+  await commitPersonalMutation(database, async (tx) => {
+    await tx
+      .updateTable("commands")
+      .set({
+        dispatcherId: null,
+        status: "pending",
+        updatedAt: new Date(),
+      })
+      .where("status", "=", "dispatched")
+      .where("type", "in", resendableControlCommandTypes)
+      .where((eb) =>
+        eb.not(
+          eb.exists(
+            eb
+              .selectFrom("runs")
+              .select("id")
+              .whereRef("runs.id", "=", "commands.runId")
+              .where("finishIntent", "is not", null),
+          ),
+        ),
+      )
+      .execute();
+  });
   const steers = await database
     .selectFrom("commands")
     .select("id")
     .where("status", "=", "dispatched")
     .where("type", "=", "run.steer")
+    .where((eb) =>
+      eb.not(
+        eb.exists(
+          eb
+            .selectFrom("runs")
+            .select("id")
+            .whereRef("runs.id", "=", "commands.runId")
+            .where("finishIntent", "is not", null),
+        ),
+      ),
+    )
     .orderBy("id", "asc")
     .execute();
-  const events: AgentEvent[] = [];
   for (const steer of steers) {
-    events.push(
-      ...(await commandStore.markSteerUnknown(
-        database,
-        steer.id,
-        "The Host restarted before the Runner confirmed the steer",
-      )),
+    await commandStore.markSteerUnknown(
+      database,
+      steer.id,
+      "The Host restarted before the Runner confirmed the steer",
     );
   }
   // A Run the stopped Host claimed but never bound has no lease and no
@@ -463,7 +460,7 @@ export async function recoverCommandsAfterHostRestart(
     .orderBy("id", "asc")
     .execute();
   for (const { id } of claimed) {
-    const requeued = await withPersonalTransaction(database, async (transaction) => {
+    await commitPersonalMutation(database, async (transaction) => {
       const command = await transaction
         .selectFrom("commands")
         .select("runId")
@@ -479,16 +476,19 @@ export async function recoverCommandsAfterHostRestart(
           "runs.id",
           "runs.providerSessionId",
           "runs.status",
+          "runs.finishIntent",
           "runs.threadId",
           "runs.voiceSessionId",
         ])
         .where("runs.id", "=", command.runId)
         .forNoKeyUpdate("runs")
         .executeTakeFirst();
-      if (run?.status !== "starting") return null;
+      if (run?.status !== "starting" || run.finishIntent) return null;
       await lockThreadRow(transaction, run.threadId);
-      const session = (await lockThreadProviderSessions(transaction, run.threadId)).find(
-        ({ id }) => id === run.providerSessionId,
+      const session = await lockThreadProviderSession(
+        transaction,
+        run.threadId,
+        run.providerSessionId,
       );
       if (
         session &&
@@ -534,9 +534,7 @@ export async function recoverCommandsAfterHostRestart(
         run,
       });
     });
-    if (requeued) events.push(...requeued);
   }
-  return events;
 }
 
 /**
@@ -566,20 +564,17 @@ export async function attachRunnerExecutions(
   executionNow: () => number = Date.now,
 ): Promise<{
   readonly revokedGrants: readonly RevokedRunGrant[];
-  readonly events: readonly AgentEvent[];
 
   readonly resumed: readonly ResumedExecution[];
   readonly results: readonly ExecutionAttachment[];
 }> {
   const now = new Date(executionNow());
-  const events: AgentEvent[] = [];
   const revokedGrants: RevokedRunGrant[] = [];
   const resumed: ResumedExecution[] = [];
   const results: ExecutionAttachment[] = [];
   for (const execution of input.executions) {
-    const settled = await withPersonalTransaction(database, async (transaction) => {
-      const revoked = (reason: string, terminal: readonly AgentEvent[] = []) => ({
-        events: terminal,
+    const settled = await commitPersonalMutation(database, async (transaction) => {
+      const revoked = (reason: string) => ({
         revokedGrants: [] as readonly RevokedRunGrant[],
         result: {
           reason,
@@ -664,37 +659,33 @@ export async function attachRunnerExecutions(
           runId: execution.runId,
         });
         return {
-          ...revoked("The Run's execution lease expired", recovered.events),
+          ...revoked("The Run's execution lease expired"),
           revokedGrants: recovered.revokedGrants,
         };
       }
       if (!(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))) {
-        return revoked(
-          "The Run's execution authority ended",
-          await fail(
-            "owner_unavailable",
-            "Personal execution authority ended before the Run reached a terminal event",
-          ),
+        await fail(
+          "owner_unavailable",
+          "Personal execution authority ended before the Run reached a terminal event",
         );
+        return revoked("The Run's execution authority ended");
       }
       // The Runner numbers events densely from zero, so it can never have
       // fewer than the Host committed; one that does is not this Run's.
       if (execution.nextOrdinal < run.nextRunnerOrdinal) {
-        return revoked(
-          "The Runner holds fewer events than the Host committed",
-          await fail("runner_state_lost", "The Runner lost events this Run had reported"),
-        );
+        await fail("runner_state_lost", "The Runner lost events this Run had reported");
+        return revoked("The Runner holds fewer events than the Host committed");
       }
       await transaction
         .updateTable("providerSessions")
         .set({
-          leaseExpiresAt: input.leaseExpiresAt,
+          leaseExpiresAt: sql<Date>`greatest(lease_expires_at, ${input.leaseExpiresAt})`,
           updatedAt: now,
         })
         .where("id", "=", run.providerSessionId)
         .executeTakeFirstOrThrow();
       const state = await transaction
-        .selectFrom("deploymentEventState")
+        .selectFrom("clientSyncState")
         .select("sequence")
         .executeTakeFirstOrThrow();
       return {
@@ -703,7 +694,7 @@ export async function attachRunnerExecutions(
           runId: execution.runId,
           threadId: run.threadId,
         },
-        events: [],
+
         revokedGrants: [],
         result: {
           nextOrdinal: run.nextRunnerOrdinal,
@@ -714,7 +705,6 @@ export async function attachRunnerExecutions(
     });
     onRevoked(settled.revokedGrants);
     if ("resumed" in settled) resumed.push(settled.resumed);
-    events.push(...settled.events);
     revokedGrants.push(...settled.revokedGrants);
     results.push(settled.result);
   }
@@ -728,10 +718,8 @@ export async function attachRunnerExecutions(
     onRevoked,
     executionNow,
   );
-  events.push(...lost.events);
   revokedGrants.push(...lost.revokedGrants);
   return {
-    events,
     resumed,
     results,
     revokedGrants,
@@ -746,7 +734,6 @@ async function recoverLostExecutions(
   onRevoked: (grants: readonly RevokedRunGrant[]) => void,
   executionNow: () => number = Date.now,
 ): Promise<{
-  readonly events: readonly AgentEvent[];
   readonly revokedGrants: readonly RevokedRunGrant[];
 }> {
   const candidates = await database
@@ -761,10 +748,9 @@ async function recoverLostExecutions(
     .$if(excludedRunIds.length > 0, (query) => query.where("runs.id", "not in", excludedRunIds))
     .orderBy("runs.id", "asc")
     .execute();
-  const events: AgentEvent[] = [];
   const revokedGrants: RevokedRunGrant[] = [];
   for (const candidate of candidates) {
-    const recovered = await withPersonalTransaction(database, async (transaction) => {
+    const recovered = await commitPersonalMutation(database, async (transaction) => {
       const run = await transaction
         .selectFrom("runs")
         .innerJoin("threads", "threads.id", "runs.threadId")
@@ -785,13 +771,15 @@ async function recoverLostExecutions(
         !executingRunStatuses.includes(run.status as (typeof executingRunStatuses)[number])
       ) {
         return {
-          events: [],
           revokedGrants: [],
         };
       }
       await lockThreadRow(transaction, run.threadId);
-      const sessions = await lockThreadProviderSessions(transaction, run.threadId);
-      const session = sessions.find(({ id }) => id === run.providerSessionId);
+      const session = await lockThreadProviderSession(
+        transaction,
+        run.threadId,
+        run.providerSessionId,
+      );
       if (
         !session?.active ||
         session.runnerId !== runnerId ||
@@ -800,7 +788,6 @@ async function recoverLostExecutions(
         !boundSessionStatuses.includes(session.status as (typeof boundSessionStatuses)[number])
       ) {
         return {
-          events: [],
           revokedGrants: [],
         };
       }
@@ -826,13 +813,11 @@ async function recoverLostExecutions(
           .where("status", "=", "dispatched")
           .executeTakeFirst();
         if (unconfirmed && (await runWasStopped(transaction, run.id))) {
-          return {
-            events: await endStoppedUnconfirmedRun(transaction, {
-              links,
-              runId: run.id,
-            }),
-            revokedGrants: [],
-          };
+          await endStoppedUnconfirmedRun(transaction, {
+            links,
+            runId: run.id,
+          });
+          return { revokedGrants: [] };
         }
         if (unconfirmed) {
           await lockRunProjectionRows(transaction, {
@@ -857,12 +842,10 @@ async function recoverLostExecutions(
             })
             .where("id", "=", unconfirmed.id)
             .executeTakeFirstOrThrow();
-          return {
-            events: await returnRunToQueue(transaction, {
-              run,
-            }),
-            revokedGrants: [],
-          };
+          await returnRunToQueue(transaction, {
+            run,
+          });
+          return { revokedGrants: [] };
         }
       }
       return recoverLostRunTransaction(transaction, {
@@ -873,11 +856,9 @@ async function recoverLostExecutions(
       });
     });
     onRevoked(recovered.revokedGrants);
-    events.push(...recovered.events);
     revokedGrants.push(...recovered.revokedGrants);
   }
   return {
-    events,
     revokedGrants,
   };
 }
@@ -915,10 +896,56 @@ export async function restartExecutionLeases(
     .execute();
 }
 
+function unstoppedBackgroundRuns(database: Kysely<DatabaseSchema>) {
+  return database
+    .selectFrom("runs")
+    .where("phase", "=", "background")
+    .where("finishIntent", "is", null)
+    .where("status", "in", ["queued", "starting", "running", "waiting"])
+    .where(({ not, exists, selectFrom }) =>
+      not(
+        exists(
+          selectFrom("commands")
+            .select("commands.id")
+            .whereRef("commands.runId", "=", "runs.id")
+            .where("commands.type", "=", "run.interrupt"),
+        ),
+      ),
+    );
+}
+
+function leasedRuns(database: Kysely<DatabaseSchema>) {
+  return database
+    .selectFrom("runs")
+    .innerJoin("providerSessions", "providerSessions.id", "runs.providerSessionId")
+    .where("runs.status", "in", ["starting", "running", "waiting"])
+    .where("runs.finishIntent", "is", null)
+    .where("providerSessions.active", "=", true)
+    .whereRef("runs.bindingGeneration", "=", "providerSessions.bindingGeneration");
+}
+
+export async function nextExecutionDeadline(
+  database: Kysely<DatabaseSchema>,
+): Promise<Date | null> {
+  const row = await leasedRuns(database)
+    .select("providerSessions.leaseExpiresAt as deadline")
+    .where("providerSessions.leaseExpiresAt", "is not", null)
+    .unionAll(
+      unstoppedBackgroundRuns(database)
+        .select("backgroundDeadlineAt as deadline")
+        .where("backgroundDeadlineAt", "is not", null),
+    )
+    .orderBy("deadline")
+    .limit(1)
+    .executeTakeFirst();
+  // Both recovery sweeps consider the stored instant itself inside the lease.
+  return row?.deadline ? new Date(row.deadline.getTime() + 1) : null;
+}
+
 /** One overdue Run whose stop committed, and everything it owes after commit. */
 export interface BackgroundDeadlineStop {
   readonly commandId: CommandRow["id"] | null;
-  readonly events: readonly AgentEvent[];
+
   readonly revokedGrants: readonly RevokedRunGrant[];
 }
 
@@ -929,31 +956,33 @@ export interface BackgroundDeadlineStop {
  * nobody asked to hold the Thread.
  *
  * Each Run is stopped in a transaction of its own and handed to `onStopped`
- * as soon as that transaction commits: a later Run's failure ends the sweep,
- * and must not hide a stop that already happened.
+ * as soon as that transaction commits. A Run whose stop fails does not end the
+ * sweep: every overdue Run gets its turn, so one that keeps failing cannot
+ * starve the rest, and the failures are thrown together at the end.
  */
 export async function stopRunsPastBackgroundDeadline(
   database: Kysely<DatabaseSchema>,
   onStopped: (stop: BackgroundDeadlineStop) => void,
   links: ChannelLinks,
   now = new Date(),
-): Promise<void> {
-  const candidates = await database
-    .selectFrom("runs")
-    .select("id")
-    .where("phase", "=", "background")
+): Promise<number> {
+  const candidates = await unstoppedBackgroundRuns(database)
+    .select("runs.id")
     .where("backgroundDeadlineAt", "<", now)
-    .where("status", "in", ["queued", "starting", "running", "waiting"])
-    .orderBy("id", "asc")
+    .orderBy("runs.id")
     .execute();
+  // How many this sweep itself stopped: its owner's measure of progress.
+  let settled = 0;
+  const failures: unknown[] = [];
   for (const candidate of candidates) {
-    const stopped = await withPersonalTransaction(database, async (transaction) => {
+    const stopped = await commitPersonalMutation(database, async (transaction) => {
       const run = await transaction
         .selectFrom("runs")
         .innerJoin("threads", "threads.id", "runs.threadId")
         .select([
           "runs.bindingGeneration",
           "runs.backgroundDeadlineAt",
+          "runs.finishIntent",
           "runs.environmentId",
           "runs.id",
           "runs.phase",
@@ -967,6 +996,7 @@ export async function stopRunsPastBackgroundDeadline(
         .executeTakeFirst();
       if (
         !run ||
+        run.finishIntent !== null ||
         run.phase !== "background" ||
         !["queued", "starting", "running", "waiting"].includes(run.status) ||
         run.backgroundDeadlineAt === null ||
@@ -986,9 +1016,18 @@ export async function stopRunsPastBackgroundDeadline(
         },
         `background-deadline:${run.id}`,
       );
+    }).catch((error: unknown) => {
+      failures.push(error);
+      return null;
     });
-    if (stopped) onStopped(stopped);
+    if (stopped) {
+      onStopped(stopped);
+      settled += 1;
+    }
   }
+  if (failures.length > 0)
+    throw new AggregateError(failures, "Stopping Runs past their background deadline failed");
+  return settled;
 }
 export async function stopHeldRun(
   database: Kysely<DatabaseSchema>,
@@ -997,7 +1036,7 @@ export async function stopHeldRun(
   links: ChannelLinks,
   executionNow: () => number = Date.now,
 ): Promise<BackgroundDeadlineStop | null> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     const run = await transaction
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
@@ -1049,26 +1088,21 @@ async function stopRunWithoutPausing(
 ): Promise<BackgroundDeadlineStop> {
   await lockThreadRow(transaction, run.threadId);
   if (run.status === "queued" || (run.status === "starting" && run.bindingGeneration === null)) {
-    return {
-      commandId: null,
-      events: await finalizeRunTransaction(transaction, {
-        completedAt: now,
-        links,
-        queuedInputCancellation: "seed-input",
-        runId: run.id,
-        source: "host",
-        status: "interrupted",
-      }),
-      revokedGrants: [],
-    };
-  }
-  const runEvents = [
-    ...(await cancelPending(transaction, {
-      reason: "run-ended",
-      resolvedAt: now,
+    await finalizeRunTransaction(transaction, {
+      completedAt: now,
+      links,
+      queuedInputCancellation: "seed-input",
       runId: run.id,
-    })),
-  ];
+      source: "host",
+      status: "interrupted",
+    });
+    return { commandId: null, revokedGrants: [] };
+  }
+  await cancelPending(transaction, {
+    reason: "run-ended",
+    resolvedAt: now,
+    runId: run.id,
+  });
   await transaction
     .updateTable("runs")
     .set({
@@ -1077,7 +1111,7 @@ async function stopRunWithoutPausing(
     .where("id", "=", run.id)
     .where("status", "=", "waiting")
     .execute();
-  runEvents.push(...(await projectThreadState(transaction, run.threadId, now)));
+  await updateExecutionThread(transaction, run.threadId, now);
   const command = await transaction
     .insertInto("commands")
     .values({
@@ -1101,9 +1135,9 @@ async function stopRunWithoutPausing(
     })
     .returning("id")
     .executeTakeFirstOrThrow();
+  await wakeExecutionCommands(transaction);
   return {
     commandId: command.id,
-    events: runEvents,
     revokedGrants: await revokeRunGrants(transaction, [run.id], "stopped"),
   };
 }
@@ -1112,25 +1146,22 @@ export async function recoverRunsWithExpiredExecutionBindings(
   links: ChannelLinks,
   onRevoked: (grants: readonly RevokedRunGrant[]) => void,
   now = new Date(),
-): Promise<RunRecoveryOutcome> {
-  const candidates = await database
-    .selectFrom("runs")
-    .innerJoin("providerSessions", "providerSessions.id", "runs.providerSessionId")
+): Promise<RunRecoveryOutcome & { readonly settled: number }> {
+  // A session keeps its last Run's lease after that Run ends; only the Run
+  // that acquired the current binding is judged by it.
+  const candidates = await leasedRuns(database)
     .select("runs.id")
-    .distinct()
-    .where("runs.status", "in", ["starting", "running", "waiting"])
-    .where("providerSessions.active", "=", true)
     .where("providerSessions.leaseExpiresAt", "<", now)
-    // A session keeps its last Run's lease after that Run ends; only the Run
-    // that acquired the current binding is judged by it.
-    .whereRef("runs.bindingGeneration", "=", "providerSessions.bindingGeneration")
-    .orderBy("runs.id", "asc")
+    .orderBy("runs.id")
     .execute();
-  const events: AgentEvent[] = [];
   const revokedGrants: RevokedRunGrant[] = [];
   const terminatedRuns: RecoveredRunTarget[] = [];
+  // Every expired binding this sweep itself recovered, requeued or ended. A
+  // Run whose recovery fails does not end the sweep, so it cannot starve the rest.
+  let settled = 0;
+  const failures: unknown[] = [];
   for (const candidate of candidates) {
-    const terminal = await withPersonalTransaction(database, async (transaction) => {
+    const terminal = await commitPersonalMutation(database, async (transaction) => {
       const run = await transaction
         .selectFrom("runs")
         .innerJoin("threads", "threads.id", "runs.threadId")
@@ -1149,14 +1180,18 @@ export async function recoverRunsWithExpiredExecutionBindings(
       if (!run || !["starting", "running", "waiting"].includes(run.status)) return null;
       if (run.bindingGeneration === null) return null;
       await lockThreadRow(transaction, run.threadId);
-      const expired = (await lockThreadProviderSessions(transaction, run.threadId)).find(
-        (session) =>
-          session.id === run.providerSessionId &&
-          session.bindingGeneration === run.bindingGeneration &&
-          session.leaseExpiresAt !== null &&
-          session.leaseExpiresAt < now,
+      const session = await lockThreadProviderSession(
+        transaction,
+        run.threadId,
+        run.providerSessionId,
       );
-      if (!expired) return null;
+      if (
+        !session ||
+        session.bindingGeneration !== run.bindingGeneration ||
+        session.leaseExpiresAt === null ||
+        session.leaseExpiresAt >= now
+      )
+        return null;
       const recovered = await recoverLostRunTransaction(transaction, {
         now,
         failure: {
@@ -1176,18 +1211,23 @@ export async function recoverRunsWithExpiredExecutionBindings(
           threadId: run.threadId,
         },
       };
+    }).catch((error: unknown) => {
+      failures.push(error);
+      return null;
     });
     if (terminal) {
+      settled += 1;
       onRevoked(terminal.revokedGrants);
-      events.push(...terminal.events);
       revokedGrants.push(...terminal.revokedGrants);
       if (terminal.status === "terminal") terminatedRuns.push(terminal.target);
     }
   }
+  if (failures.length > 0)
+    throw new AggregateError(failures, "Recovering expired execution bindings failed");
   return {
-    events,
     terminatedRuns,
     revokedGrants,
+    settled,
   };
 }
 

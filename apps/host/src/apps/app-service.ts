@@ -8,7 +8,6 @@ import {
   OpensteerError,
   appFolderSegments,
   appMaxBytes,
-  type AgentEvent,
   type App,
   type AppId,
   type AppListItem,
@@ -77,7 +76,6 @@ interface AppServiceOptions {
   readonly tabs: Pick<AppTabPort, "removeTabs">;
   /** The owner's Apps page and app tabs reread these apps. */
   readonly changed: (ownerId: UserId, appIds: AppId[]) => void;
-  readonly publishEvent: (event: AgentEvent) => void;
 }
 
 interface Actual {
@@ -139,7 +137,6 @@ export class AppService {
               previous,
               lifetime,
             );
-      this.#options.publishEvent(result.event);
       this.#options.changed(scope.requestedBy, [result.appId]);
       return { appId: result.appId, version: result.version };
     });

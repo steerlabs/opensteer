@@ -177,7 +177,8 @@ export class ScheduleResource<Wire, Data> {
       wire: Wire,
       snapshot: HostSnapshot,
     ) => readonly ({ id: string } & ScheduleAnchorState)[] = () => [],
-    relatedRuns: (wire: Wire) => readonly string[] = () => [],
+    /** The threads its Runs work in; a Run starting or finishing there rereads it. */
+    relatedThreads: (wire: Wire) => readonly string[] = () => [],
     discoverRuns: (wire: Wire) => boolean = () => false,
   ) {
     this.client = client;
@@ -234,15 +235,16 @@ export class ScheduleResource<Wire, Data> {
                   accessMode,
                 ],
               ),
+            // Running and waiting tasks are shell rows on every client.
             this.#wire !== undefined && (detail || discoverRuns(this.#wire))
-              ? snapshot.runQueue
+              ? snapshot.activeTasks
                   .filter(
-                    (row) =>
+                    ({ thread }) =>
                       (detail && this.#wire !== undefined && discoverRuns(this.#wire)) ||
-                      this.#anchors.anchors.has(row.threadId) ||
-                      (this.#wire !== undefined && relatedRuns(this.#wire).includes(row.id)),
+                      this.#anchors.anchors.has(thread.id) ||
+                      (this.#wire !== undefined && relatedThreads(this.#wire).includes(thread.id)),
                   )
-                  .map(({ id, status }) => [id, status])
+                  .map(({ thread }) => [thread.id, thread.status])
               : null,
           ]);
           if (next !== signature) {
@@ -366,7 +368,7 @@ export class SchedulesClient {
               id: wire.trigger.anchorThreadId,
             },
         ],
-        (wire) => wire.downstreamRuns.map(({ run }) => run.id),
+        (wire) => wire.downstreamRuns.map(({ run }) => run.threadId),
         (wire) => wire.trigger.systemRole == null,
       );
       this.#details.set(triggerId, resource);

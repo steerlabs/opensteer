@@ -1,5 +1,9 @@
 import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import {
+  commitPersonalMutation,
+  wakeExecutionCommands,
+  wakeTriggerSchedules,
+} from "./personal-mutation.js";
 import { TransactionScopeChanged } from "./connection.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
 import { createHash } from "node:crypto";
@@ -322,6 +326,7 @@ export async function createTriggerInTransaction(
       webhookSecretHash: source.kind === "webhook" ? required(input.webhookSecretHash) : null,
     })
     .execute();
+  if (nextFireAt) await wakeTriggerSchedules(transaction);
   await transaction
     .insertInto("triggerRevisions")
     .values({
@@ -357,7 +362,6 @@ export async function createTriggerInTransaction(
       .executeTakeFirstOrThrow(),
   ]);
   return {
-    ...(ownTask?.event ? { event: ownTask.event } : {}),
     revision: revisionFromRow(revision),
     trigger: triggerFromRow(trigger),
     wasDuplicate: false,
@@ -435,7 +439,7 @@ export class TriggerStore {
     this.#database = database;
   }
   async create(input: CreateTriggerInput) {
-    return withPersonalTransaction(this.#database, (transaction) =>
+    return commitPersonalMutation(this.#database, (transaction) =>
       createTriggerInTransaction(transaction, input),
     );
   }
@@ -475,7 +479,7 @@ export class TriggerStore {
         message: "Automation update requires at least one of name, program, or source",
       });
     }
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       await lockWatchCapacityForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(transaction, input, "define");
       if (!systemProgram) await requireTriggerExecutionAuthority(transaction, trigger);
@@ -561,6 +565,10 @@ export class TriggerStore {
         .where("id", "=", trigger.id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      // A new program can make a waiting schedule runnable at its existing time,
+      // so any update that leaves one armed re-arms the scheduler.
+      if (updated.kind === "schedule" && updated.status === "active" && updated.nextFireAt)
+        await wakeTriggerSchedules(transaction);
       if (trigger.kind === "watch") {
         await stopActiveWatchActivation(transaction, trigger.id, now);
         if (updated.status === "active") {
@@ -596,7 +604,7 @@ export class TriggerStore {
     readonly status: "active" | "paused" | "archived";
     readonly triggerId: TriggerId;
   }): Promise<Trigger> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       await lockWatchCapacityForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(
         transaction,
@@ -651,6 +659,7 @@ export class TriggerStore {
         .where("id", "=", trigger.id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      if (nextFireAt) await wakeTriggerSchedules(transaction);
       if (trigger.kind === "watch") {
         await stopActiveWatchActivation(transaction, trigger.id, updated.updatedAt);
         if (input.status === "active") {
@@ -686,7 +695,7 @@ export class TriggerStore {
       });
     }
     const nextFireAt = new Date(parsed.data);
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const trigger = await lockTriggerForMutation(transaction, input, "control");
       await requireTriggerExecutionAuthority(transaction, trigger);
       if (nextFireAt.getTime() <= Date.now()) {
@@ -717,6 +726,7 @@ export class TriggerStore {
         .where("id", "=", trigger.id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      await wakeTriggerSchedules(transaction);
       return triggerFromRow(updated);
     });
   }
@@ -855,7 +865,7 @@ export class TriggerStore {
     readonly activations: readonly WatchActivationContext[];
     readonly reconcileGeneration: number;
   }> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const rows = await transaction
         .selectFrom("triggerWatchActivations")
         .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
@@ -983,7 +993,7 @@ export class TriggerStore {
     readonly activation: TriggerWatchActivation;
     readonly autoPaused: boolean;
   }> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const identity = await transaction
         .selectFrom("triggerWatchActivations")
         .select("triggerId")
@@ -1256,7 +1266,7 @@ export class TriggerStore {
     readonly occurrence: TriggerOccurrence;
     readonly wasDuplicate: boolean;
   }> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const trigger = await transaction
         .selectFrom("triggers")
         .selectAll()
@@ -1295,7 +1305,7 @@ export class TriggerStore {
     readonly payload?: unknown;
     readonly triggerId: TriggerId;
   }): Promise<TriggerOccurrence> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const trigger = await lockTriggerForMutation(transaction, input, "define");
       if (trigger.status === "archived") throw conflict("Archived automation cannot run");
       if (trigger.kind === "watch") {
@@ -1337,7 +1347,7 @@ export class TriggerStore {
   ): Promise<{
     readonly canceledOccurrenceIds: readonly TriggerOccurrenceId[];
   }> {
-    return withPersonalTransaction(
+    return commitPersonalMutation(
       this.#database,
       async (transaction) => {
         const observedPending = await transaction
@@ -1416,9 +1426,21 @@ export class TriggerStore {
           canceledOccurrenceIds,
         };
       },
-      undefined,
       (error) => error instanceof TriggerOccurrenceSetChanged,
     );
+  }
+
+  /** When the earliest active, runnable schedule is due; null when none is armed. */
+  async nextScheduleAt(): Promise<Date | null> {
+    const row = await this.#database
+      .selectFrom("triggers")
+      .innerJoin("triggerRevisions", "triggerRevisions.id", "triggers.currentRevisionId")
+      .select((eb) => eb.fn.min("triggers.nextFireAt").as("next"))
+      .where("triggers.kind", "=", "schedule")
+      .where("triggers.status", "=", "active")
+      .where(executableProgram)
+      .executeTakeFirst();
+    return row?.next ? new Date(row.next) : null;
   }
 
   /**
@@ -1432,6 +1454,8 @@ export class TriggerStore {
   ): Promise<{
     readonly occurrences: readonly TriggerOccurrence[];
     readonly changed: boolean;
+    /** Schedules this claim could not process; each was rolled back alone. */
+    readonly failures: readonly unknown[];
   }> {
     const dueSchedules = (database: Kysely<DatabaseSchema>) =>
       database
@@ -1445,8 +1469,8 @@ export class TriggerStore {
       .select("triggers.id")
       .limit(1)
       .executeTakeFirst();
-    if (!candidate) return { occurrences: [], changed: false };
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    if (!candidate) return { occurrences: [], changed: false, failures: [] };
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const due = await dueSchedules(transaction)
         .selectAll("triggers")
         .orderBy("triggers.nextFireAt", "asc")
@@ -1456,8 +1480,16 @@ export class TriggerStore {
         .skipLocked()
         .execute();
       const occurrences: TriggerOccurrence[] = [];
-      for (const trigger of due) {
-        if (!trigger.nextFireAt) continue;
+      const failures: unknown[] = [];
+      let claimed = 0;
+      // Each schedule is claimed under its own savepoint: one that cannot be
+      // claimed rolls back alone and is reported, instead of failing the whole
+      // batch and starving every schedule behind it on every pass.
+      const claim = async (
+        trigger: (typeof due)[number],
+      ): Promise<TriggerOccurrence | undefined> => {
+        if (!trigger.nextFireAt) return undefined;
+        let occurrence: TriggerOccurrence | undefined;
         if (!(await triggerExecutionAuthorityAvailable(transaction, trigger))) {
           // Authority can be unavailable transiently — an offline Runner. Pausing keeps the Trigger recoverable by
           // its owner; archiving would be a permanent answer to a temporary
@@ -1472,7 +1504,7 @@ export class TriggerStore {
             })
             .where("id", "=", trigger.id)
             .execute();
-          continue;
+          return undefined;
         }
         const revision = await transaction
           .selectFrom("triggerRevisions")
@@ -1499,7 +1531,7 @@ export class TriggerStore {
               },
             },
           );
-          occurrences.push(enqueued.occurrence);
+          occurrence = enqueued.occurrence;
         }
         const next = nextTriggerFireAfter(
           source.schedule,
@@ -1513,10 +1545,24 @@ export class TriggerStore {
           })
           .where("id", "=", trigger.id)
           .execute();
+        return occurrence;
+      };
+      for (const trigger of due) {
+        await sql`savepoint claim_schedule`.execute(transaction);
+        try {
+          const occurrence = await claim(trigger);
+          await sql`release savepoint claim_schedule`.execute(transaction);
+          if (occurrence) occurrences.push(occurrence);
+          claimed += 1;
+        } catch (error) {
+          await sql`rollback to savepoint claim_schedule`.execute(transaction);
+          failures.push(error);
+        }
       }
       return {
         occurrences,
-        changed: due.length > 0,
+        changed: claimed > 0,
+        failures,
       };
     });
   }
@@ -1565,7 +1611,7 @@ export class TriggerStore {
     readonly context: TriggerDispatchContext;
     readonly executionGeneration: number;
   }> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const occurrence = await transaction
         .selectFrom("triggerOccurrences")
         .innerJoin("commands", "commands.id", "triggerOccurrences.commandId")
@@ -1620,7 +1666,7 @@ export class TriggerStore {
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   }): Promise<TriggerOccurrence> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const occurrence = await transaction
         .selectFrom("triggerOccurrences")
         .selectAll()
@@ -1766,7 +1812,7 @@ export class TriggerStore {
     readonly runnerBootId?: string;
     readonly runnerId?: RunnerId;
   }): Promise<number> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       let query = transaction
         .selectFrom("triggerOccurrences")
         .select(["commandId", "event", "id", "revisionId", "triggerId"])
@@ -1961,6 +2007,7 @@ async function enqueueOccurrence(
       type: "trigger.execute",
     })
     .execute();
+  await wakeExecutionCommands(transaction);
   const row = await transaction
     .insertInto("triggerOccurrences")
     .values({

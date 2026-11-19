@@ -125,20 +125,20 @@ export async function startPersonalVertical(options: VerticalStackOptions): Prom
       { headers: { cookie: current.sessionCookie, origin: current.hostOrigin.origin } },
     );
     socket.on("message", (data) => {
-      const frame = HostToClientMessageSchema.parse(JSON.parse(data.toString()));
-      if (frame.type === "host.notification") notifications.push(frame.notification);
+      const frame = HostToClientMessageSchema.safeParse(JSON.parse(data.toString()));
+      if (frame.success && frame.data.type === "host.notification")
+        notifications.push(frame.data.notification);
     });
     await withTimeout(once(socket, "open"), options.catalogTimeoutMs, {
       timeoutError: () => new Error("Notification socket never opened"),
     });
-    const deploymentId = current.host.deployment.id;
     socket.send(
       JSON.stringify({
-        type: "client.subscribe",
-        cursor: { deploymentId, apiVersion: hostApiVersion, afterSequence: "0" },
-        threadId: null,
+        type: "client.attach",
         apiVersion: hostApiVersion,
-        snapshotMessages: "omit",
+        generation: 1,
+        interests: [],
+        installed: {},
       }),
     );
     const basic = createPersonalVerticalStack(agentHome, current);
@@ -250,13 +250,14 @@ export async function startPersonalVertical(options: VerticalStackOptions): Prom
       },
       async waitForToolStart(runId, count = 1) {
         await observe(async () => {
-          const events = await current.host.store.database
-            .selectFrom("deploymentEvents")
-            .select("eventId")
+          const calls = await current.host.store.database
+            .selectFrom("toolCalls")
+            .select("id")
             .where("runId", "=", runId)
-            .where("type", "=", "tool.started")
+            .where("startedAt", "is not", null)
+            .limit(count)
             .execute();
-          return events.length >= count ? true : undefined;
+          return calls.length >= count ? true : undefined;
         }, `Run never started ${count} tools`);
       },
       async steerMessage({ threadId, text, attachments }) {

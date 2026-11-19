@@ -9,6 +9,7 @@ import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/proto
 import { describe, expect, it, vi } from "vitest";
 import { computerAppRows } from "./computer-apps.js";
 import { DeviceMachineSummarySchema, MachineSummarySchema } from "@opensteer/protocol";
+import { mockDeviceMachine } from "../mock/mock-device-machine.js";
 import {
   canWatchComputer,
   computerAppAccessApproval,
@@ -63,7 +64,6 @@ describe("Host-projected phone displays", () => {
       allowedModules: [],
       modules: {},
       ownership: "mine",
-      pinnedThreads: 0,
       revocable: true,
       selfRunnerId: null,
       drivers: [],
@@ -648,7 +648,7 @@ describe("an Android phone", () => {
       });
     expect(view(held, true)?.session?.threadTitle).toBe("Plan the week");
     expect(view(held, false)?.session).toBeNull();
-    const away = view({ ...held, status: "offline" }, true);
+    const away = view(phone({ computerUse: held.computerUse, status: "offline" }), true);
     expect(away?.session).toBeNull();
     expect(away && phoneUseStatusLine(away, "Pixel")).toBe("Pixel is offline.");
   });
@@ -703,7 +703,9 @@ describe("an Android phone", () => {
       }),
     });
     expect(canWatchComputer(held)).toBe(true);
-    expect(canWatchComputer({ ...held, status: "offline" })).toBe(false);
+    expect(canWatchComputer(phone({ computerUse: held.computerUse, status: "offline" }))).toBe(
+      false,
+    );
     expect(
       canWatchComputer(phone({ computerUse: report("ready", { displayStreamSupported: false }) })),
     ).toBe(false);
@@ -864,14 +866,16 @@ function display(): IntegrationDefinitionSummary {
 }
 
 function phone(overrides: Partial<MachineSummary>): MachineSummary {
-  return machine({
-    kind: overrides.device?.app === "opensteer" ? "phone" : "agent-phone",
-    device: { form: "phone", platform: "android" },
-    allowedModules: ["integrations"],
-    id: pixel,
-    name: "Pixel",
-    ...overrides,
-  });
+  return mockDeviceMachine(
+    machine({
+      kind: overrides.device?.app === "opensteer" ? "phone" : "agent-phone",
+      device: { form: "phone", platform: "android" },
+      allowedModules: ["integrations"],
+      id: pixel,
+      name: "Pixel",
+      ...overrides,
+    }),
+  );
 }
 
 function phoneConnection(

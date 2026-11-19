@@ -154,12 +154,19 @@ export const MachineSummarySchema = z.object({
   }),
   name: z.string(),
   ownership: z.enum(["mine", "deployment"]),
-  /** Threads placed here, which lose the computer they run on with it. */
-  pinnedThreads: z.number().int().nonnegative().max(1_000_000),
   revocable: z.boolean(),
   status: z.enum(["online", "offline", "pending", "needs-update", "updating", "update-pending"]),
 });
 export type MachineSummary = z.infer<typeof MachineSummarySchema>;
+/**
+ * `machines.list` reads each computer with the tasks placed on it, counted in that read. The
+ * `machine` resource leaves the count out: task writes do not move its revision.
+ */
+export const MachineListSummarySchema = MachineSummarySchema.extend({
+  /** Threads placed here, which lose the computer they run on with it. */
+  pinnedThreads: z.number().int().nonnegative().max(1_000_000),
+});
+export type MachineListSummary = z.infer<typeof MachineListSummarySchema>;
 
 export const DeviceMachineSummarySchema = MachineSummarySchema.extend({
   ...DeviceViewSchema.shape,
@@ -171,8 +178,7 @@ export const DeviceMachineSummarySchema = MachineSummarySchema.extend({
       (machine.allowedModules.length === 0 &&
         Object.keys(machine.modules).length === 0 &&
         machine.runtimeVersion === null &&
-        machine.fullDiskAccess === null &&
-        machine.pinnedThreads === 0),
+        machine.fullDiskAccess === null),
     "A Device without a self Runner has no execution modules or runtime",
   );
 export type DeviceMachineSummary = z.infer<typeof DeviceMachineSummarySchema>;

@@ -252,6 +252,11 @@ export function passwordsAnywhereJourneys() {
               const account = card.accounts[0]!;
               if (name.includes("after-read")) await run.complete();
               expect((await held).isError, "ending the origin Run ends its held call").toBe(true);
+              const current = await host.store.database
+                .selectFrom("requests")
+                .select("revision")
+                .where("id", "=", request.id)
+                .executeTakeFirstOrThrow();
               const approve = () =>
                 testRpcData(
                   host.origin,
@@ -260,6 +265,7 @@ export function passwordsAnywhereJourneys() {
                     type: "browser.password-sign-in.respond",
                     idempotencyKey: "fixture-password-approval",
                     requestId: request.id,
+                    expectedRevision: current.revision,
                     decision: {
                       kind: "approve",
                       loginId: account.id,
@@ -287,15 +293,15 @@ export function passwordsAnywhereJourneys() {
                 value: { outcome: "authorized", account: passwordFixture.account },
               });
               expect(JSON.stringify(fulfilled)).not.toContain(start.loginRef);
+              const resumed = await acceptCallerRun(host, caller, await executed);
+              expect(resumed.threadId).toBe(run.threadId);
+              expect(resumed.runId).not.toBe(run.runId);
               const continuation = await waitForValue(async () =>
                 (await host.store.readThreadForOwner(run.threadId, host.ownerId))?.messages.find(
                   (m) => JSON.stringify(m.content).includes(start.loginRef),
                 ),
               );
               expect(JSON.stringify(continuation.content)).toContain("fillLogin");
-              const resumed = await acceptCallerRun(host, caller, await executed);
-              expect(resumed.threadId).toBe(run.threadId);
-              expect(resumed.runId).not.toBe(run.runId);
               const continuedClient = await connect(resumed.toolsToken);
               expect(
                 (

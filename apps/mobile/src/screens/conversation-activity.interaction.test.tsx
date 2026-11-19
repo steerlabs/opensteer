@@ -1,8 +1,9 @@
+import { testHostConnection } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 
 import type {
   HostClient,
-  HostSnapshot,
+  TranscriptFixtureSnapshot,
   MessageEntry,
   ReasoningEntry,
   RunEntry,
@@ -10,7 +11,11 @@ import type {
   TranscriptEntry,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { tabFixture, tabStoreFixture, testHostConnection } from "@opensteer/client/test-support";
+import {
+  scopedTranscriptFixture,
+  tabFixture,
+  tabStoreFixture,
+} from "@opensteer/client/test-support";
 import { createId, RunIdSchema, TabIdSchema, ThreadIdSchema } from "@opensteer/core";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -270,7 +275,7 @@ const preambleB = wrote("Drafting it now.", runB);
 const draftingB = command(runB, "draft note", true);
 const replying: TranscriptEntry[] = [...answered, askB, ran(runB), preambleB, draftingB];
 
-function snapshotWith(entries: readonly TranscriptEntry[]): HostSnapshot {
+function snapshotWith(entries: readonly TranscriptEntry[]): TranscriptFixtureSnapshot {
   return {
     ...base,
     connection: "connected",
@@ -281,23 +286,25 @@ function snapshotWith(entries: readonly TranscriptEntry[]): HostSnapshot {
   };
 }
 
-function fakeHost(initial: HostSnapshot) {
+function fakeHost(initial: TranscriptFixtureSnapshot) {
   let snapshot = initial;
   const listeners = new Set<() => void>();
+  const subscribe = (listener: () => void) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
   const client = {
+    ...scopedTranscriptFixture(() => snapshot, subscribe),
     getSnapshot: () => snapshot,
     load: vi.fn(async () => undefined),
     refresh: vi.fn(async () => undefined),
-    subscribe: (listener: () => void) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
+    subscribe,
   } as unknown as HostClient;
   Object.assign(client, { connection: testHostConnection(client) });
   harness.hostClient = client;
   return {
     client,
-    move(next: HostSnapshot) {
+    move(next: TranscriptFixtureSnapshot) {
       snapshot = next;
       act(() => {
         for (const listener of listeners) listener();
@@ -477,7 +484,8 @@ describe("Run details", () => {
     const host = fakeHost(snapshotWith(replying.slice(answered.length)));
     let loaded = () => undefined as void;
     const around = vi.fn(
-      (_threadId: string, _messageId: string) => new Promise<void>((resolve) => (loaded = resolve)),
+      (_threadId: string, _messageId: string) =>
+        new Promise<boolean>((resolve) => (loaded = () => resolve(true))),
     );
     Object.assign(host.client, {
       loadTranscriptAround: around,
@@ -501,7 +509,7 @@ describe("Run details", () => {
   it("says a linked Run isn't available once the Host has nothing around it", async () => {
     const host = fakeHost(snapshotWith(replying.slice(answered.length)));
     Object.assign(host.client, {
-      loadTranscriptAround: async () => undefined,
+      loadTranscriptAround: async () => true,
       observeThread: () => () => undefined,
     });
     const sheet = render(

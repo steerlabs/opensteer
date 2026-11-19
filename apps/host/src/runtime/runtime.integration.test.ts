@@ -1,3 +1,5 @@
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
+import { testResourceData } from "../server/test-host-api-request.js";
 import {
   connectCallerMachine,
   type CallerMachine,
@@ -21,8 +23,8 @@ import {
   HarnessIdSchema,
   ModelSelectionSchema,
   createId,
-  zeroSequence,
   type EnvironmentId,
+  type ThreadId,
 } from "@opensteer/core";
 import { AccountDirectoryStore, OpensteerStore, createDatabase } from "@opensteer/database";
 import { HostDescriptorSchema, hostApiVersion } from "@opensteer/deployment-authority";
@@ -174,7 +176,7 @@ integration("Host vertical slice", () => {
     const origin = config.runtimeOrigin.origin;
     await initializeOwnerSession(origin);
 
-    const unauthorized = await testRpcRequest(origin, "bootstrap.get", {});
+    const unauthorized = await testRpcRequest(origin, "personal.shell.get", {});
     expect(unauthorized.status).toBe(401);
 
     const runnerId = createId("runner");
@@ -229,36 +231,38 @@ integration("Host vertical slice", () => {
     );
     const bootstrap = await testRpcData(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       {
         headers: authorization(accessToken),
       },
     );
-    expect(bootstrap.user.displayName).toBe("You");
+    expect(bootstrap.session.user.displayName).toBe("You");
     // This Host names no apex portal, so the config every client reads on boot
     // reports none and the web UI renders no way "up" out of a self-hosted
     // Deployment.
-    expect(bootstrap.identityConfig).toMatchObject({
+    const identity = await testResourceData(origin, "identity", {
+      headers: authorization(accessToken),
+    });
+    expect(identity.identity).toMatchObject({
       deployment: { kind: "personal", name: null },
       portalOrigin: null,
     });
-    let harnessInstanceId = "";
-    await waitForCondition(async () => {
-      const connectedBootstrap = await testRpcData(
-        origin,
-        "bootstrap.get",
-        {},
-        {
-          headers: authorization(accessToken),
-        },
-      );
-      harnessInstanceId =
-        (connectedBootstrap.harnesses.find(
-          (harness: { driverKind: string }) => harness.driverKind === "codex",
-        )?.id as string | undefined) ?? "";
-      return harnessInstanceId.length > 0;
-    });
+    const harness = await seededHarness(runtime.store, environmentId);
+    // The durable default can exist while the Runner is still reporting its models.
+    await vi.waitFor(
+      async () => {
+        const captured = await runtime!.store.database
+          .selectFrom("harnessCatalogs")
+          .select("catalog")
+          .where("environmentId", "=", environmentId)
+          .where("harnessInstanceId", "=", harness.id)
+          .executeTakeFirst();
+        expect(captured?.catalog.status).toBe("ready");
+      },
+      { timeout: 10_000 },
+    );
+    const harnessInstanceId = harness.id;
 
     const threadResult = await testRpcData(
       origin,
@@ -274,7 +278,7 @@ integration("Host vertical slice", () => {
       { headers: authorization(accessToken) },
     );
     if (threadResult.type !== "thread.create") throw new Error("Thread command mismatch.");
-    const threadId = threadResult.thread.id as string;
+    const threadId = threadResult.thread.id;
     expect(threadResult.thread.accessMode).toBe("full-access");
     const accessModeUpdate = await testRpcData(
       origin,
@@ -292,61 +296,9 @@ integration("Host vertical slice", () => {
     expect(accessModeUpdate.thread.accessMode).toBe("auto");
 
     realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
-    realtimeSocket.send(
-      JSON.stringify({
-        apiVersion: hostApiVersion,
-        threadId: null,
-        type: "client.subscribe",
-        cursor: {
-          deploymentId: runtime.deployment.id,
-          apiVersion: hostApiVersion,
-          afterSequence: zeroSequence,
-        },
-      }),
-    );
-    await waitForMessage(realtimeSocket, (message) => message.type === "host.synchronized");
-
-    const terminalEvents = new Promise<unknown[]>((resolve, reject) => {
-      const collected: unknown[] = [];
-      const timeout = setTimeout(
-        () =>
-          reject(
-            new Error(
-              `timed out waiting for terminal event; received ${JSON.stringify(collected)}`,
-            ),
-          ),
-        10_000,
-      );
-      realtimeSocket?.on("message", (frame) => {
-        const message = JSON.parse(frame.toString()) as {
-          type: string;
-          events?: Array<{
-            sequence: string;
-            type: string;
-            data?: { status?: string };
-          }>;
-        };
-        if (message.type !== "host.events" || !message.events) return;
-        collected.push(...message.events);
-        const latest = message.events.at(-1);
-        if (latest) {
-          realtimeSocket?.send(
-            JSON.stringify({
-              sequence: latest.sequence,
-              type: "client.ack",
-            }),
-          );
-        }
-        if (
-          message.events.some(
-            (event) => event.type === "thread.state-changed" && event.data?.status === "idle",
-          )
-        ) {
-          clearTimeout(timeout);
-          resolve(collected);
-        }
-      });
-    });
+    await attachThreadSocket(realtimeSocket, threadId);
+    const terminal = waitForRunItem(realtimeSocket, "completed");
+    void terminal.catch(() => undefined);
 
     let resolveRunnerCommand!: () => void;
     let rejectRunnerCommand!: (error: unknown) => void;
@@ -437,27 +389,35 @@ integration("Host vertical slice", () => {
         timeout.unref();
       }),
     ]);
-    const events = (await terminalEvents) as Array<{ type: string }>;
-    expect(events.map((event) => event.type)).toEqual([
-      "message.created",
-      "message.placed",
-      "run.queued",
-      "thread.state-changed",
-      "thread-input.updated",
-      "run.status",
-      "thread.continuation-established",
-      "run.started",
-      "thread-input.updated",
-      "assistant.message",
-      "message.created",
-      "run.completed",
-      "thread.state-changed",
-    ]);
-    const snapshot = await runtime.store.deploymentSnapshot();
-    expect(snapshot.messages.at(-1)?.content).toEqual([
+    const completed = await terminal;
+    expect(completed).toMatchObject({ runId: turn.run.id, view: { status: "completed" } });
+    const history = await testRpcData(
+      origin,
+      "thread.messages.list",
+      { threadId },
+      { headers: authorization(accessToken) },
+    );
+    expect(history.messages.at(-1)?.content).toEqual([
       { text: "Finished through the Runner.", type: "text" },
     ]);
-    expect(snapshot.threads[0]?.status).toBe("idle");
+    expect(
+      (await runtime.store.getThreadForOwner(threadId, bootstrap.session.user.id))?.status,
+    ).toBe("idle");
+    const receipts = await runtime.store.database
+      .selectFrom("runnerEventReceipts")
+      .select("ordinal")
+      .where("runId", "=", turn.run.id)
+      .orderBy("ordinal")
+      .execute();
+    // The completed Run admitted three statements and keeps no receipts.
+    expect(receipts).toEqual([]);
+    expect(
+      await runtime.store.database
+        .selectFrom("runs")
+        .select("nextRunnerOrdinal")
+        .where("id", "=", turn.run.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ nextRunnerOrdinal: 3 });
     const inventory = await testRpcData(
       origin,
       "machines.list",
@@ -504,28 +464,20 @@ integration("Host vertical slice", () => {
 
     const bootstrap = await testRpcData(
       `http://127.0.0.1:${hostPort}`,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       {
         headers: authorization(accessToken),
       },
     );
-    expect(bootstrap.tabs).toEqual({
-      tabs: [],
-      layout: { revision: 0, items: [] },
-      complete: true,
-    });
-    expect(
-      await testRpcData(
-        `http://127.0.0.1:${hostPort}`,
-        "tabs.state",
-        {},
-        { headers: authorization(accessToken) },
-      ),
-    ).toEqual(bootstrap.tabs);
-    expect(bootstrap.environments).toEqual([]);
-    expect(bootstrap.personalSettings).toBeNull();
-    expect(bootstrap.can).toMatchObject({ createTasks: false, useVoice: false });
+    const noHome = { headers: authorization(accessToken) };
+    const origin = `http://127.0.0.1:${hostPort}`;
+    const { tabs } = await testResourceData(origin, "tab", noHome);
+    expect(tabs).toEqual({ tabs: [], layout: { revision: 0, items: [] }, complete: true });
+    expect(await testRpcData(origin, "tabs.state", {}, noHome)).toEqual(tabs);
+    expect((await testResourceData(origin, "environment", noHome)).environments).toEqual([]);
+    expect((await testResourceData(origin, "settings", noHome)).settings).toBeNull();
+    expect(bootstrap.session.can).toMatchObject({ createTasks: false, useVoice: false });
   });
 
   it("restarts Host and local Runner identity without the enrollment token", async () => {
@@ -613,7 +565,7 @@ integration("Host vertical slice", () => {
     expect(welcome).toMatchObject({ connectionGeneration: 2, runnerId, type: "host.welcome" });
   });
 
-  it("converges after Runner invalidation's first catalog recapture fails", async () => {
+  it("refreshes a catalog after Runner invalidation's first recapture fails", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-invalidation-recovery-"));
     const hostPort = await freePort();
     runtime = await createHostRuntime(
@@ -715,27 +667,19 @@ integration("Host vertical slice", () => {
       }),
     );
     await expect.poll(() => capture.mock.calls.length, { timeout: 10_000 }).toBeGreaterThan(0);
-    expect(await catalogs()).toEqual([]);
-    const heartbeat = setInterval(
-      () =>
-        runnerSocket?.send(
-          JSON.stringify({
-            ...fence,
-            activeRunIds: [],
-            activeTriggerOccurrenceIds: [],
-            activeWatchActivationIds: [],
-            sentAt: new Date().toISOString(),
-            type: "runner.heartbeat",
-          }),
-        ),
-      5_000,
-    );
+    // The failed recapture leaves a retry owed, so the catalog returns without a person asking.
+    await expect
+      .poll(async () => (await catalogs())[0]?.catalog.status, { timeout: 10_000 })
+      .toBe("ready");
     try {
-      await expect
-        .poll(async () => (await catalogs())[0]?.catalog.status, { interval: 250, timeout: 45_000 })
-        .toBe("ready");
+      await testRpcData(
+        `http://127.0.0.1:${hostPort}`,
+        "harness.catalog.refresh",
+        { environmentId, harnessInstanceId: stored.harnessInstanceId },
+        { headers: authorization(accessToken) },
+      );
+      expect((await catalogs())[0]?.catalog.status).toBe("ready");
     } finally {
-      clearInterval(heartbeat);
       stopCatalogResponder();
     }
     const artifactDirectory =
@@ -942,14 +886,9 @@ integration("Host vertical slice", () => {
     });
 
     await waitForCondition(async () => {
-      const candidate = await testRpcData(
-        origin,
-        "bootstrap.get",
-        {},
-        {
-          headers: authorization(accessToken),
-        },
-      );
+      const candidate = await testResourceData(origin, "harness-catalog", {
+        headers: authorization(accessToken),
+      });
       // Only the seeded Claude account is ever inspected: the Codex driver is
       // unavailable, so its account has no catalog to wait for.
       return candidate.environments.some(
@@ -957,14 +896,9 @@ integration("Host vertical slice", () => {
           environment.id === environmentId && environment.harnessCatalogs.length === 1,
       );
     });
-    const bootstrap = await testRpcData(
-      origin,
-      "bootstrap.get",
-      {},
-      {
-        headers: authorization(accessToken),
-      },
-    );
+    const bootstrap = await testResourceData(origin, "harness-catalog", {
+      headers: authorization(accessToken),
+    });
     expect(bootstrap.environments).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1119,21 +1053,15 @@ integration("Host vertical slice", () => {
       }),
     ]);
 
+    realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
+    const { connected, disconnected } = observeRunnerDisconnect(
+      realtimeSocket,
+      environmentId,
+      origin,
+    );
+    await connected;
     runnerSocket.close();
-    await waitForCondition(async () => {
-      const refreshed = await testRpcData(
-        origin,
-        "bootstrap.get",
-        {},
-        {
-          headers: authorization(accessToken),
-        },
-      );
-      return refreshed.environments.some(
-        (environment: { connected: boolean; id: string }) =>
-          environment.id === environmentId && !environment.connected,
-      );
-    });
+    await disconnected;
     const exactRetry = await testRpcRequest(
       origin,
       "commands.dispatch",
@@ -1386,20 +1314,8 @@ integration("Host vertical slice", () => {
       });
 
       realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
-      realtimeSocket.send(
-        JSON.stringify({
-          apiVersion: hostApiVersion,
-          threadId: thread.id,
-          type: "client.subscribe",
-          cursor: {
-            deploymentId: runtime.deployment.id,
-            apiVersion: hostApiVersion,
-            afterSequence: zeroSequence,
-          },
-        }),
-      );
-      await waitForMessage(realtimeSocket, (message) => message.type === "host.synchronized");
-      const terminalEvent = waitForDeploymentEvent(realtimeSocket, "run.failed");
+      await attachThreadSocket(realtimeSocket, thread.id);
+      const terminalItem = waitForRunItem(realtimeSocket, "failed");
       const commandPromise = waitForRunnerExecution(runnerSocket);
       const turn = await runtime.store.enqueueThreadInput({
         content: [{ text: "This must fail durably", type: "text" }],
@@ -1429,15 +1345,9 @@ integration("Host vertical slice", () => {
         }),
       );
 
-      await expect(terminalEvent).resolves.toMatchObject({
-        data: {
-          code: "dispatch_failed",
-          message: "The AI engine could not be started.",
-          retryable: false,
-          status: "failed",
-        },
+      await expect(terminalItem).resolves.toMatchObject({
         runId: admittedRun.id,
-        type: "run.failed",
+        view: { status: "failed" },
       });
       await waitForCondition(async () => {
         const row = await runtime?.store.database
@@ -1464,15 +1374,22 @@ integration("Host vertical slice", () => {
           .where("id", "=", thread.id)
           .executeTakeFirstOrThrow(),
       ).resolves.toEqual({ status: "failed" });
-      const persistedEvents = await runtime.store.database
-        .selectFrom("deploymentEvents")
-        .select(["data", "runnerOrdinal", "type"])
-        .where("runId", "=", admittedRun.id)
-        .where("type", "=", "run.failed")
-        .execute();
-      expect(persistedEvents).toHaveLength(1);
-      expect(persistedEvents[0]).toMatchObject({ runnerOrdinal: null, type: "run.failed" });
-      expect(JSON.stringify(persistedEvents)).not.toContain(privateProviderError);
+      const persisted = await runtime.store.database
+        .selectFrom("runs")
+        .select(["status", "failure", "runnerSafetyTerminal"])
+        .where("id", "=", admittedRun.id)
+        .executeTakeFirstOrThrow();
+      expect(persisted).toMatchObject({
+        status: "failed",
+        runnerSafetyTerminal: false,
+        failure: {
+          code: "dispatch_failed",
+          message: "The AI engine could not be started.",
+          retryable: false,
+          status: "failed",
+        },
+      });
+      expect(JSON.stringify(persisted)).not.toContain(privateProviderError);
     } finally {
       publication.abort();
       stopCatalogResponder();
@@ -1592,18 +1509,15 @@ integration("Host vertical slice", () => {
 
     const disconnectRecovery = vi.spyOn(runtime.store, "failActiveRunsForRunnerDisconnect");
     stopCatalogResponder();
+    realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
+    const { connected, disconnected } = observeRunnerDisconnect(
+      realtimeSocket,
+      environmentId,
+      `http://127.0.0.1:${hostPort}`,
+    );
+    await connected;
     runnerSocket.terminate();
-    await waitForCondition(async () => {
-      const read = await testRpcData(
-        `http://127.0.0.1:${hostPort}`,
-        "bootstrap.get",
-        {},
-        { headers: authorization(accessToken) },
-      );
-      return read.environments.some(
-        (environment) => environment.id === environmentId && !environment.connected,
-      );
-    });
+    await disconnected;
     const runStatus = async () =>
       (
         await runtime?.store.database
@@ -1617,16 +1531,8 @@ integration("Host vertical slice", () => {
     const disconnectedAt = clock.now();
     const priorPasses = await runtime.settleExecutionLeases();
     await advanceExecutionClock(clock, runtime, 2_000);
-    // A healthy sweep is jittered up to 3.75 s; observe its completion while
-    // retaining the entire original 2 s pre-expiry interval.
-    for (
-      let extra = 0;
-      extra < 4 && (await runtime.settleExecutionLeases()) === priorPasses;
-      extra += 1
-    )
-      await advanceExecutionClock(clock, runtime, 500);
     const preExpiryPasses = await runtime.settleExecutionLeases();
-    expect(preExpiryPasses).toBeGreaterThan(priorPasses);
+    expect(preExpiryPasses).toBe(priorPasses);
     expect(clock.now() - disconnectedAt).toBeGreaterThanOrEqual(2_000);
     expect(clock.now()).toBeLessThan(expiry.getTime());
     expect(await runStatus()).toBe("running");
@@ -1637,11 +1543,10 @@ integration("Host vertical slice", () => {
       completedPasses: preExpiryPasses,
       disconnectRecoveryCalls: disconnectRecovery.mock.calls.length,
     };
-    // Settle at expiry before spending the post-expiry interval: a sweep samples
-    // time before its async query, and reschedules from the end of the clock step.
-    // Straddling expiry could otherwise put its next jittered pass past our stop.
     await advanceExecutionClock(clock, runtime, expiry.getTime() - clock.now());
-    await advanceExecutionClock(clock, runtime, 4_000);
+    expect(await runtime.settleExecutionLeases()).toBe(preExpiryPasses);
+    await advanceExecutionClock(clock, runtime, 1);
+    expect(await runtime.settleExecutionLeases()).toBeGreaterThan(preExpiryPasses);
     await waitForCondition(async () => (await runStatus()) === "failed", 30_000);
     const evidence = await mkdtemp(join(tmpdir(), "opensteer-disconnect-clock-"));
     await writeFile(
@@ -1671,15 +1576,14 @@ integration("Host vertical slice", () => {
     ).resolves.toEqual({ status: "succeeded" });
     await expect(
       runtime.store.database
-        .selectFrom("deploymentEvents")
-        .select(["data", "runnerOrdinal", "type"])
-        .where("runId", "=", admittedRun.id)
-        .where("type", "=", "run.failed")
+        .selectFrom("runs")
+        .select(["status", "failure", "runnerSafetyTerminal"])
+        .where("id", "=", admittedRun.id)
         .executeTakeFirstOrThrow(),
     ).resolves.toMatchObject({
-      data: { code: "execution_binding_expired", status: "failed" },
-      runnerOrdinal: null,
-      type: "run.failed",
+      status: "failed",
+      failure: { code: "execution_binding_expired" },
+      runnerSafetyTerminal: false,
     });
   }, 60_000);
 
@@ -1743,14 +1647,10 @@ integration("Host vertical slice", () => {
       publicKeyFingerprint: runnerPublicKeyFingerprint(seedKeys.publicKey),
       publicKeyPem: canonicalRunnerPublicKeyPem(seedKeys.publicKey),
     });
-    await initializePersonalState(
-      seedStore.database,
-      {
-        environmentId,
-        agentHome: join(dataDirectory, "home"),
-      },
-      { sendToUsers: () => undefined },
-    );
+    await initializePersonalState(seedStore.database, {
+      environmentId,
+      agentHome: join(dataDirectory, "home"),
+    });
     const harness = await seedStore.createHarnessInstance({
       config: { model: "test" },
       driverKind: HarnessIdSchema.parse("native"),
@@ -1822,14 +1722,6 @@ integration("Host vertical slice", () => {
       modelSelection: testModelSelection,
       title: "Stranded projection",
     });
-    await seedDatabase
-      .updateTable("threads")
-      .set({ pendingRequestCount: 7 })
-      .where("id", "=", idleThread.id)
-      .execute();
-    await sql`insert into thread_state_pending (thread_id, requested_at) values (${idleThread.id}, now())`.execute(
-      seedDatabase,
-    );
     await seedDatabase.destroy();
 
     runtime = await createHostRuntime(
@@ -1838,68 +1730,16 @@ integration("Host vertical slice", () => {
     await expect(runtime.store.getThreadForOwner(idleThread.id, ownerId)).resolves.toMatchObject({
       pendingRequests: 0,
     });
-    expect(
-      (
-        await sql`select * from thread_state_pending where thread_id = ${idleThread.id}`.execute(
-          runtime.store.database,
-        )
-      ).rows,
-    ).toEqual([]);
-    const firstRepair = await runtime.store.getThreadForOwner(idleThread.id, ownerId);
-    await runtime.store.database
-      .updateTable("threads")
-      .set({ pendingRequestCount: 9 })
-      .where("id", "=", idleThread.id)
-      .execute();
-    await sql`insert into thread_state_pending (thread_id, requested_at) values (${idleThread.id}, now())`.execute(
-      runtime.store.database,
-    );
-    await vi.waitFor(
-      async () => {
-        expect(
-          (await runtime!.store.getThreadForOwner(idleThread.id, ownerId))?.pendingRequests,
-        ).toBe(0);
-      },
-      { timeout: 5000 },
-    );
-    const secondRepair = await runtime.store.getThreadForOwner(idleThread.id, ownerId);
-    const repaired = await runtime.store.database
-      .selectFrom("deploymentEvents")
-      .select("data")
-      .where("threadId", "=", idleThread.id)
-      .where("type", "=", "thread.state-changed")
-      .orderBy("sequence", "asc")
-      .execute();
-    expect(repaired).toEqual([
-      {
-        data: {
-          updatedAt: firstRepair!.updatedAt,
-          returnHint: null,
-          latestRunCompletedAt: null,
-          pendingRequests: 0,
-          inputQueuePaused: false,
-          status: "idle",
-          title: idleThread.title,
-          icon: idleThread.icon,
-          doneAt: null,
-          doneReason: null,
-        },
-      },
-      {
-        data: {
-          updatedAt: secondRepair!.updatedAt,
-          returnHint: null,
-          latestRunCompletedAt: null,
-          pendingRequests: 0,
-          inputQueuePaused: false,
-          status: "idle",
-          title: idleThread.title,
-          icon: idleThread.icon,
-          doneAt: null,
-          doneReason: null,
-        },
-      },
-    ]);
+    const cut = await (
+      await import("@opensteer/database")
+    ).readPersonalDetailSnapshot(runtime.store.database, {
+      viewerId: ownerId,
+      scope: { kind: "thread", threadId: idleThread.id },
+    });
+    expect(cut).toMatchObject({
+      kind: "snapshot",
+      snapshot: { thread: { status: "idle", pendingRequestCount: 0, title: idleThread.title } },
+    });
     await expect(
       runtime.store.database
         .selectFrom("browserSessions")
@@ -1916,14 +1756,6 @@ integration("Host vertical slice", () => {
         .where("id", "=", admittedRun.id)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({ status: "running" });
-    await expect(
-      runtime.store.database
-        .selectFrom("deploymentEvents")
-        .select("type")
-        .where("runId", "=", admittedRun.id)
-        .where("type", "=", "run.failed")
-        .execute(),
-    ).resolves.toEqual([]);
   });
 
   it("opens a browser module stream beside the primary connection, once per ticket", async () => {
@@ -2220,7 +2052,7 @@ integration("Host vertical slice", () => {
         name: "Hosting computer",
         runnerKind: "main",
         runtimeVersion: "integration",
-        capabilities: [],
+        capabilities: ["execution-plane-v2", "run-events-v2"],
         modules: {
           agents: {
             environmentIds: [ownerEnvironmentId],
@@ -2259,11 +2091,17 @@ integration("Host vertical slice", () => {
       cookie: responseCookies(claimed).join("; "),
       origin,
     };
-    const bootstrap = await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
-    expect(bootstrap.user.displayName).toBe("You");
-    expect(bootstrap.sessionSurface).toBe("canonical");
-    expect(bootstrap.sessionId).toMatch(/^ses_/u);
-    expect(bootstrap.personalSettings?.agentHome).toEqual({
+    const bootstrap = await testRpcData(
+      origin,
+      "personal.shell.get",
+      {},
+      { headers: sessionHeaders },
+    );
+    expect(bootstrap.session.user.displayName).toBe("You");
+    expect(bootstrap.session.sessionSurface).toBe("canonical");
+    expect(bootstrap.session.sessionId).toMatch(/^ses_/u);
+    const settings = await testResourceData(origin, "settings", { headers: sessionHeaders });
+    expect(settings.settings?.agentHome).toEqual({
       computerId: mainRunner.fence.runnerId,
       path: await realpath(join(dataDirectory, "home")),
     });
@@ -2304,7 +2142,7 @@ integration("Host vertical slice", () => {
     expect((await restored.json()) as object).toMatchObject({
       data: {
         session: expect.objectContaining({
-          user: expect.objectContaining({ id: bootstrap.user.id }),
+          user: expect.objectContaining({ id: bootstrap.session.user.id }),
         }),
       },
       ok: true,
@@ -2425,13 +2263,13 @@ integration("Host vertical slice", () => {
     };
     const remoteBootstrap = await testRpcData(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       { headers: remoteHeaders },
     );
-    expect(remoteBootstrap).toMatchObject({
+    expect(remoteBootstrap.session).toMatchObject({
       sessionSurface: "personal-remote",
-      user: expect.objectContaining({ id: bootstrap.user.id }),
+      user: expect.objectContaining({ id: bootstrap.session.user.id }),
     });
     const remoteMinted = await fetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
       body: "{}",
@@ -2477,10 +2315,12 @@ integration("Host vertical slice", () => {
       authorization: `PersonalRemote ${nativeSession.credential.token}`,
     };
     await expect(
-      testRpcData(origin, "bootstrap.get", {}, { headers: nativeHeaders }),
+      testRpcData(origin, "personal.shell.get", {}, { headers: nativeHeaders }).then(
+        ({ session }) => session,
+      ),
     ).resolves.toMatchObject({
       sessionSurface: "personal-remote",
-      user: expect.objectContaining({ id: bootstrap.user.id }),
+      user: expect.objectContaining({ id: bootstrap.session.user.id }),
     });
 
     const nativeMinted = await fetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
@@ -2532,7 +2372,7 @@ integration("Host vertical slice", () => {
     // authorization header the Host cannot read never reaches the cookie arm.
     const wrongFamily = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       {
         headers: {
@@ -2545,7 +2385,7 @@ integration("Host vertical slice", () => {
     const remoteCredential = decodeURIComponent(remoteCookies[0]?.split("=", 2)[1] ?? "");
     const cookieAsHeader = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       { headers: { authorization: `PersonalRemote ${remoteCredential}` } },
     );
@@ -2565,7 +2405,7 @@ integration("Host vertical slice", () => {
     ] as const) {
       const renamed = await testRpcRequest(
         origin,
-        "bootstrap.get",
+        "personal.shell.get",
         {},
         { headers: { cookie, origin } },
       );
@@ -2574,7 +2414,7 @@ integration("Host vertical slice", () => {
     for (const authorization of ["Foo x", "PersonalRemote"]) {
       const unreadable = await testRpcRequest(
         origin,
-        "bootstrap.get",
+        "personal.shell.get",
         {},
         { headers: { ...sessionHeaders, authorization } },
       );
@@ -2601,7 +2441,7 @@ integration("Host vertical slice", () => {
     });
     const revokedBootstrap = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       {
         headers: remoteHeaders,
@@ -2611,7 +2451,7 @@ integration("Host vertical slice", () => {
     // Rotation is delivery-blind: the phone's credential dies with the cookie.
     const revokedNative = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       { headers: nativeHeaders },
     );
@@ -3024,7 +2864,7 @@ integration("Host vertical slice", () => {
     expect(connectCookieHeader).toBeDefined();
     const revokedConnect = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       {
         headers: { cookie: connectCookieHeader!, origin: connectOrigin },
@@ -3052,7 +2892,7 @@ integration("Host vertical slice", () => {
         refreshTokenExpiresAt: null,
         scope: "openid",
         updatedAt: new Date(),
-        userId: bootstrap.user.id,
+        userId: bootstrap.session.user.id,
       })
       .executeTakeFirstOrThrow();
     await runtime.store.database
@@ -3566,31 +3406,129 @@ function waitForRunnerExecution(socket: WebSocket): Promise<
   });
 }
 
-function waitForDeploymentEvent(
-  socket: WebSocket,
-  eventType: string,
-): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(
-      () => reject(new Error(`timed out waiting for deployment event ${eventType}`)),
-      10_000,
+async function attachThreadSocket(socket: WebSocket, threadId: ThreadId) {
+  socket.on("message", (data) => {
+    const parsed = ScopedHostMessageSchema.safeParse(JSON.parse(data.toString()));
+    if (!parsed.success) return;
+    const frame = parsed.data;
+    if (!("throughSequence" in frame)) return;
+    const { subscriptionId, generation, throughSequence } = frame;
+    socket.send(
+      JSON.stringify({ type: "client.ack", subscriptionId, generation, throughSequence }),
     );
-    const receive = (frame: WebSocket.RawData) => {
-      const message = JSON.parse(frame.toString()) as {
-        events?: Array<Record<string, unknown> & { type?: string }>;
-        type: string;
-      };
-      if (message.type !== "host.events") return;
-      const event = message.events?.find((candidate) => candidate.type === eventType);
-      if (!event) return;
-      clearTimeout(timeout);
-      socket.off("message", receive);
-      resolve(event);
-    };
-    socket.on("message", receive);
   });
+  const ready = waitForMessage(socket, (raw) => {
+    const frame = ScopedHostMessageSchema.safeParse(raw);
+    return (
+      frame.success &&
+      frame.data.type === "host.synchronized" &&
+      frame.data.subscriptionId === "detail:0"
+    );
+  });
+  socket.send(
+    JSON.stringify({
+      type: "client.attach",
+      apiVersion: hostApiVersion,
+      generation: 1,
+      interests: [],
+      installed: {},
+      selected: { subscriptionId: "detail:0", generation: 1, scope: { kind: "thread", threadId } },
+    }),
+  );
+  await ready;
 }
 
+function observeRunnerDisconnect(socket: WebSocket, environmentId: EnvironmentId, origin: string) {
+  const connected = Promise.withResolvers<void>();
+  const disconnected = Promise.withResolvers<void>();
+  const deadline = setTimeout(
+    () => disconnected.reject(new Error("timed out waiting for the environment to disconnect")),
+    10_000,
+  );
+  let reading = Promise.resolve();
+  const read = async () => {
+    const { data } = await testRpcData(
+      origin,
+      "resources.detail.get",
+      { kind: "environment" },
+      { headers: authorization(accessToken) },
+    );
+    const status =
+      data.kind === "environment"
+        ? data.environments.find(({ id }) => id === environmentId)?.status
+        : undefined;
+    if (status === "connected") connected.resolve();
+    if (status === "disconnected") disconnected.resolve();
+  };
+  const receive = (raw: WebSocket.RawData) => {
+    const parsed = ScopedHostMessageSchema.safeParse(JSON.parse(raw.toString()));
+    if (!parsed.success) return;
+    const frame = parsed.data;
+    if (frame.type === "host.snapshot" || frame.type === "host.changes") {
+      const { subscriptionId, generation, throughSequence } = frame;
+      socket.send(
+        JSON.stringify({ type: "client.ack", subscriptionId, generation, throughSequence }),
+      );
+    }
+    if (frame.type === "host.resource" && frame.revisions.environment)
+      reading = reading.then(read).catch((cause: unknown) => disconnected.reject(cause));
+  };
+  socket.on("message", receive);
+  socket.send(
+    JSON.stringify({
+      type: "client.attach",
+      apiVersion: hostApiVersion,
+      generation: 1,
+      interests: ["environment"],
+      installed: {},
+    }),
+  );
+  const outcome = disconnected.promise
+    .catch((cause: unknown) => {
+      const error = new Error(`No disconnected observation arrived for ${environmentId}`, {
+        cause,
+      });
+      connected.reject(error);
+      throw error;
+    })
+    .finally(() => {
+      clearTimeout(deadline);
+      socket.off("message", receive);
+    });
+  void outcome.catch(() => undefined);
+  return { connected: connected.promise, disconnected: outcome };
+}
+
+async function waitForRunItem(socket: WebSocket, status: "failed" | "completed") {
+  const observed = new Set<string>();
+  const runIn = (frame: import("@opensteer/protocol/personal-sync").ScopedHostMessage) => {
+    if (frame.type === "host.text" || frame.subscriptionId !== "detail:0") return;
+    const cards =
+      frame.type === "host.changes"
+        ? frame.changes.flatMap((change) =>
+            change.entityKind === "item" && change.operation === "upsert" ? [change.value] : [],
+          )
+        : frame.type === "host.snapshot" && "items" in frame.snapshot
+          ? frame.snapshot.items
+          : [];
+    return cards.find((item) => item.kind === "run" && item.view.status === status);
+  };
+  const raw = await waitForMessage(socket, (raw) => {
+    const parsed = ScopedHostMessageSchema.safeParse(raw);
+    if (!parsed.success) {
+      observed.add(raw.type);
+      return false;
+    }
+    const frame = parsed.data;
+    observed.add(`${"subscriptionId" in frame ? frame.subscriptionId : "live"} ${frame.type}`);
+    return runIn(frame) !== undefined;
+  }).catch((error: unknown) => {
+    throw new Error(`No ${status} Run card arrived. Frames observed: ${[...observed].join(", ")}`, {
+      cause: error,
+    });
+  });
+  return runIn(ScopedHostMessageSchema.parse(raw));
+}
 async function waitForCondition(
   predicate: () => Promise<boolean>,
   timeoutMs = 10_000,
@@ -3680,6 +3618,7 @@ function agentsRunnerDescriptor(input: {
         "requester-time-zone-v1",
         "agent-tools-plan-v1",
         "execution-plane-v2",
+        "run-events-v2",
       ]),
     ],
     ...(input.device === undefined ? {} : { device: input.device }),

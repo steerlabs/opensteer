@@ -11,7 +11,11 @@ import {
   type AssignmentSummary,
   type WaitingRequest,
 } from "@opensteer/core";
-import type { ActionReview, AssignmentEntry, HostSnapshot } from "@opensteer/client/host";
+import type {
+  ActionReview,
+  AssignmentEntry,
+  TranscriptFixtureSnapshot,
+} from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 
 vi.mock("./settings/engine-mark.js", () => ({ EngineMark: () => null }));
@@ -138,7 +142,7 @@ async function linesFor(
   const base = client.getSnapshot();
   const seeded = Object.values(base.assignments).find(({ status }) => status === "open")!;
   const made = tasks(seeded);
-  const snapshot: HostSnapshot = {
+  const snapshot: TranscriptFixtureSnapshot = {
     ...base,
     assignments: Object.fromEntries(made.map((assignment) => [assignment.id, assignment])),
     connection: "connected",

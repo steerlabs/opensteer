@@ -1,8 +1,8 @@
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Insertable, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
 
 export type PluginAgentAccess = "all" | "read-only" | "off";
 export type PluginExecutionRecord = Selectable<DatabaseSchema["pluginExecutions"]>;
@@ -42,11 +42,11 @@ export class PluginAgentStore {
     );
   }
   async setAccess(owner: UserId, plugin: string, access: PluginAgentAccess) {
-    await withPersonalTransaction(this.database, async (transaction) => {
-      await requirePersonalOwner(transaction, owner);
-      if (!["all", "read-only", "off"].includes(access))
-        throw new OpensteerError({ code: "bad_request", message: "Choose all, read-only or off." });
-      await transaction
+    if (!["all", "read-only", "off"].includes(access))
+      throw new OpensteerError({ code: "bad_request", message: "Choose all, read-only or off." });
+    await commitPersonalMutation(this.database, async (tx, mutation) => {
+      await requirePersonalOwner(tx, owner);
+      const changed = await tx
         .insertInto("pluginAgentSettings")
         .values({
           ownerUserId: owner,
@@ -55,9 +55,24 @@ export class PluginAgentStore {
           author: "agent",
           versionAuthors: {},
         })
-        .onConflict((c) => c.columns(["ownerUserId", "pluginId"]).doUpdateSet({ access }))
-        .execute();
+        .onConflict((c) =>
+          c
+            .columns(["ownerUserId", "pluginId"])
+            .doUpdateSet({ access })
+            .where("pluginAgentSettings.access", "!=", access),
+        )
+        .returning("pluginId")
+        .executeTakeFirst();
+      if (changed) mutation.bumpResource("plugin");
     });
+  }
+  unfinishedRequest(requestId: import("@opensteer/core").RequestId) {
+    return this.database
+      .selectFrom("pluginExecutions")
+      .selectAll()
+      .where("requestId", "=", requestId)
+      .where("state", "in", ["running", "waiting", "answered"])
+      .executeTakeFirst();
   }
   execution(id: string) {
     return this.database

@@ -8,7 +8,7 @@ import {
   element,
   history,
   mount,
-  settle,
+  until,
 } from "./workspace.interaction.test-support.js";
 
 /*
@@ -39,11 +39,12 @@ const groupId = () => {
   if (group?.kind !== "group") throw new Error("Missing seeded group");
   return group.group.groupId;
 };
-async function key(init: KeyboardEventInit) {
+/** Presses a shortcut and waits until `done` holds: what the shortcut is for. */
+async function key(init: KeyboardEventInit, done: () => void) {
   await act(async () => {
     window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, ...init }));
   });
-  await settle(60);
+  await until(`${JSON.stringify(init)} never took effect`, done);
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -78,22 +79,19 @@ describe("one tab list", () => {
     const visible = strip().visible;
     await click(main(visible[0]!));
     expect(shown()).toBe(visible[0]);
-    await key({ key: "Tab", ctrlKey: true });
-    expect(shown()).toBe(visible[1]);
-    await key({ key: "Tab", ctrlKey: true, shiftKey: true });
-    expect(shown()).toBe(visible[0]);
-    await key({ key: "9", metaKey: true });
-    expect(shown()).toBe(visible.at(-1));
-    await key({ key: "3", metaKey: true });
-    expect(shown()).toBe(visible[2]);
+    await key({ key: "Tab", ctrlKey: true }, () => expect(shown()).toBe(visible[1]));
+    await key({ key: "Tab", ctrlKey: true, shiftKey: true }, () =>
+      expect(shown()).toBe(visible[0]),
+    );
+    await key({ key: "9", metaKey: true }, () => expect(shown()).toBe(visible.at(-1)));
+    await key({ key: "3", metaKey: true }, () => expect(shown()).toBe(visible[2]));
 
     await click(element(`[data-tab-group-id="${groupId()}"] .side-tab-group__main`));
     const collapsed = strip().visible;
     expect(collapsed.length).toBeLessThan(visible.length);
     expect(drawnRows()).toEqual(expectedRows());
-    await key({ key: "1", metaKey: true });
-    await key({ key: "Tab", ctrlKey: true });
-    expect(shown()).toBe(collapsed[1]);
+    await key({ key: "1", metaKey: true }, () => expect(shown()).toBe(collapsed[0]));
+    await key({ key: "Tab", ctrlKey: true }, () => expect(shown()).toBe(collapsed[1]));
   });
 
   it("closing the tab in the middle shows the tab after it, else before it, and ⌘⇧T puts it back", async () => {
@@ -113,14 +111,14 @@ describe("one tab list", () => {
     expect(history.length).toBe(before + 1);
     expect(history.at(-1)?.type).toBe("REPLACE");
 
-    await key({ key: "t", metaKey: true, shiftKey: true });
-    expect(strip().visible).toEqual(visible);
-    expect(shown()).toBe(middle);
+    await key({ key: "t", metaKey: true, shiftKey: true }, () => {
+      expect(strip().visible).toEqual(visible);
+      expect(shown()).toBe(middle);
+    });
 
     const last = visible.at(-1)!;
     await click(main(last));
-    await key({ key: "w", metaKey: true });
-    expect(shown()).toBe(visible.at(-2));
+    await key({ key: "w", metaKey: true }, () => expect(shown()).toBe(visible.at(-2)));
   });
 
   it("a group's menu renames and ungroups it, keeping every tab where it was", async () => {
@@ -132,8 +130,9 @@ describe("one tab list", () => {
         new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
       );
     });
-    await settle();
-    const title = element<HTMLInputElement>('[aria-label="Group title"]');
+    const title = await until("The group's menu never offered its title", () =>
+      element<HTMLInputElement>('[aria-label="Group title"]'),
+    );
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
         title,
@@ -142,22 +141,27 @@ describe("one tab list", () => {
       title.dispatchEvent(new Event("input", { bubbles: true }));
       title.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
     });
-    await settle(60);
-    expect(element(`[data-tab-group-id="${group}"] .side-tab-group__chip`).textContent).toBe(
-      "Launch week",
+    await until("The group never took its new title", () =>
+      expect(element(`[data-tab-group-id="${group}"] .side-tab-group__chip`).textContent).toBe(
+        "Launch week",
+      ),
     );
     await act(async () => {
       element(`[data-tab-group-id="${group}"]`).dispatchEvent(
         new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
       );
     });
-    await settle();
-    const ungroup = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) =>
-      item.textContent?.includes("Ungroup"),
-    )!;
+    const ungroup = await until("The group's menu never offered Ungroup", () => {
+      const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((node) =>
+        node.textContent?.includes("Ungroup"),
+      );
+      expect(item).toBeDefined();
+      return item!;
+    });
     await click(ungroup);
-    await settle(60);
-    expect(document.querySelector(`[data-tab-group-id="${group}"]`)).toBeNull();
+    await until("Ungroup never removed the group", () =>
+      expect(document.querySelector(`[data-tab-group-id="${group}"]`)).toBeNull(),
+    );
     expect(strip().ordered).toEqual(order);
     expect(drawnRows()).toEqual(order);
   });

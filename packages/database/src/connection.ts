@@ -7,6 +7,7 @@ import {
   type IsolationLevel,
   type Transaction,
 } from "kysely";
+import { addAbortListener } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { Client, Pool, type PoolClient } from "pg";
 import {
@@ -20,6 +21,8 @@ import { applyDatabaseOperationBudget } from "./operation-budget-executor.js";
 interface DatabaseConnectionOptions {
   readonly connectionString: string;
   readonly maxConnections?: number;
+  readonly minConnections?: number;
+  readonly idleTimeoutMs?: number;
   readonly applicationName?: string;
 }
 
@@ -84,6 +87,8 @@ export function createDatabase<Schema = DatabaseSchema>(
       application_name: options.applicationName ?? "opensteer-host",
       connectionString: options.connectionString,
       max: options.maxConnections ?? 10,
+      ...(options.minConnections === undefined ? {} : { min: options.minConnections }),
+      ...(options.idleTimeoutMs === undefined ? {} : { idleTimeoutMillis: options.idleTimeoutMs }),
     });
 
   const holders = new Map<object, { origin: Error; started: number; state: string }>();
@@ -108,16 +113,30 @@ export function createDatabase<Schema = DatabaseSchema>(
       controlClient: Client,
       onCreateConnection: async (connection) => {
         const execute = connection.executeQuery.bind(connection);
-        connection.executeQuery = async (query) => {
+        connection.executeQuery = async <R>(query: CompiledQuery) => {
           const operation = databaseOperation();
-          if (operation?.transaction) {
-            operation.signal.throwIfAborted();
-            // Set the remaining absolute budget before each statement. The server
-            // cancels lock waits before Kysely can enqueue a rollback over them.
-            const remaining = Math.max(1, Math.ceil(operation.expiresAt - Date.now()));
-            await execute(CompiledQuery.raw(`set local statement_timeout = ${remaining}`));
+          if (!operation?.transaction) return execute<R>(query);
+          operation.signal.throwIfAborted();
+          const remaining = Math.max(1, Math.ceil(operation.expiresAt - Date.now()));
+          await execute(CompiledQuery.raw(`set local statement_timeout = ${remaining}`));
+          await connection.collectSessionInfo?.();
+          operation.signal.throwIfAborted();
+          const pending = execute<R>(query);
+          let cancellation: Promise<void> | undefined;
+          const abort = addAbortListener(operation.signal, () => {
+            cancellation = connection
+              .cancelQuery?.(async () => {
+                throw new Error("PostgreSQL control connection is unavailable");
+              })
+              .catch(() => undefined);
+          });
+          try {
+            return await pending;
+          } finally {
+            abort[Symbol.dispose]();
+            // Join the cancellation before the transaction rolls back or releases this session.
+            await cancellation;
           }
-          return execute(query);
         };
       },
       pool: {

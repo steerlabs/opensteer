@@ -1,6 +1,5 @@
-import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
 
 import {
   cloneTestDatabase,
@@ -9,7 +8,6 @@ import {
 } from "./test-database.test-support.js";
 import { randomUUID } from "node:crypto";
 import {
-  AgentEventSchema,
   HarnessIdSchema,
   MessageAuthorSchema,
   ModelSelectionSchema,
@@ -302,6 +300,7 @@ integration.sequential("automation failure notices", () => {
             ]),
             id,
             kind: "assistant",
+            published: true,
             runId,
             sequence: context.nextMessageSequence,
             threadId: fixture.threadId,
@@ -317,15 +316,19 @@ integration.sequential("automation failure notices", () => {
           .executeTakeFirstOrThrow();
         return id;
       });
-      await withPersonalTransaction(database, (transaction) =>
-        appendHostDeploymentEvent(transaction, {
-          type: "run.completed",
-          environmentId: fixture.environmentId,
-          threadId: fixture.threadId,
-          runId,
-          data: { status: "completed", replyMessageId: messageId },
-        }),
-      );
+      await commitPersonalMutation(database, async (tx, mutation) => {
+        await tx
+          .updateTable("runs")
+          .set({
+            status: "completed",
+            completedAt: new Date(),
+            terminalReplyMessageId: messageId,
+            revision: mutation.sequence,
+          })
+          .where("id", "=", runId)
+          .execute();
+        mutation.resetScope(`thread:${fixture.threadId}`);
+      });
       return messageId;
     }
     return Object.freeze({
@@ -727,25 +730,52 @@ integration.sequential("automation failure notices", () => {
     const fixture = await createFixture("bounded");
     const created = await createOneShotTrigger(fixture, "bounded");
     const occurrence = await fireOneShot(created.trigger.id);
-    for (const detailText of ["x".repeat(3_000), "a second record of the same Occurrence"]) {
-      await withPersonalTransaction(database, (transaction) =>
+    const reactions: string[] = [];
+    const removeHooks = installPersonalMutationHooks(database, {
+      wake() {},
+      react: (reaction) => {
+        if (reaction.type === "automationFailuresChanged") reactions.push(reaction.type);
+      },
+      onFailure: (error) => {
+        throw error;
+      },
+    });
+    try {
+      await expect(
+        commitPersonalMutation(database, async (tx) => {
+          await recordAutomationFailure(tx, {
+            detail: "This insert rolls back",
+            occurrenceId: occurrence.id,
+            reason: "final-occurrence-failed",
+            triggerId: created.trigger.id,
+          });
+          throw new Error("rollback");
+        }),
+      ).rejects.toThrow("rollback");
+      expect(reactions).toEqual([]);
+      for (const detailText of ["x".repeat(3_000), "a second record of the same Occurrence"]) {
+        await commitPersonalMutation(database, (transaction) =>
+          recordAutomationFailure(transaction, {
+            detail: detailText,
+            occurrenceId: occurrence.id,
+            reason: "final-occurrence-failed",
+            triggerId: created.trigger.id,
+          }),
+        );
+      }
+      const manual = await fireManual(fixture, created.trigger.id);
+      await commitPersonalMutation(database, (transaction) =>
         recordAutomationFailure(transaction, {
-          detail: detailText,
-          occurrenceId: occurrence.id,
-          reason: "final-occurrence-failed",
+          detail: "   ",
+          occurrenceId: manual.id,
+          reason: "paused",
           triggerId: created.trigger.id,
         }),
       );
+      expect(reactions).toEqual(["automationFailuresChanged", "automationFailuresChanged"]);
+    } finally {
+      removeHooks();
     }
-    const manual = await fireManual(fixture, created.trigger.id);
-    await withPersonalTransaction(database, (transaction) =>
-      recordAutomationFailure(transaction, {
-        detail: "   ",
-        occurrenceId: manual.id,
-        reason: "paused",
-        triggerId: created.trigger.id,
-      }),
-    );
     expect((await storedNotices()).map(({ detail: text }) => text)).toEqual([
       "x".repeat(2_000),
       "No error was reported.",
@@ -770,6 +800,7 @@ integration.sequential("automation failure notices", () => {
       .select([
         "attempts",
         "lastError",
+        "nextAttemptAt",
         sql<number>`extract(epoch from next_attempt_at - now())`.as("delaySeconds"),
       ])
       .where("id", "=", due!.id)
@@ -778,6 +809,12 @@ integration.sequential("automation failure notices", () => {
       attempts: 1,
       lastError: "Thread busy",
     });
+    // The deadline is the database's remaining wait, measured on the Host's clock.
+    const asked = Date.now();
+    const deadline = (await notices.nextDeadline())!.getTime();
+    const wait = Number(backedOff.delaySeconds) * 1000;
+    expect(deadline).toBeLessThanOrEqual(Date.now() + wait);
+    expect(deadline).toBeGreaterThan(asked + wait - 1_000);
     expect(Number(backedOff.delaySeconds)).toBeGreaterThan(0);
     expect(Number(backedOff.delaySeconds)).toBeLessThanOrEqual(3_600);
     await database
@@ -806,6 +843,7 @@ integration.sequential("automation failure notices", () => {
       id: due!.id,
     });
     await expect(notices.listDue()).resolves.toEqual([]);
+    await expect(notices.nextDeadline()).resolves.toBeNull();
     await expect(
       database
         .selectFrom("automationFailureNotices")
@@ -889,16 +927,14 @@ integration.sequential("automation failure notices", () => {
     });
     const notifications = new NotificationStore(database);
     const reply = await appendCompletedReply(fixture, delivered.run.id, "Your reminder failed.");
-    const row = await database
-      .selectFrom("deploymentEvents")
-      .selectAll()
-      .where("runId", "=", delivered.run.id)
-      .where("type", "=", "run.completed")
-      .executeTakeFirstOrThrow();
-    const event = AgentEventSchema.parse({
-      ...row,
-      createdAt: row.createdAt.toISOString(),
-    });
+    const event = {
+      type: "runFinished" as const,
+      runId: delivered.run.id,
+      threadId: delivered.run.threadId,
+      attemptId: null,
+      bindingGeneration: null,
+      outcome: "completed" as const,
+    };
     expect(await notifications.decide(event)).toEqual([
       expect.objectContaining({
         userId: fixture.userId,

@@ -2,11 +2,13 @@ import { MenuView, type MenuAction } from "@expo/ui/community/menu";
 import {
   waitingMessageRows,
   type HostClient,
+  type WaitingAsk,
   type MessageEntry,
   type TranscriptEntry,
   type WaitingInput,
 } from "@opensteer/client/host";
 import type { ContentPart } from "@opensteer/core";
+import { useWaitingBody } from "@opensteer/client/react";
 import * as Haptics from "expo-haptics";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Platform, Pressable, StyleSheet, View } from "react-native";
@@ -29,6 +31,7 @@ import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { EditedMark } from "./edited-mark.js";
 import type { LinkAction } from "./link-context.js";
 import { Message } from "./transcript.js";
+import { useShowAsk } from "./ask-shown.js";
 import type { WaitingEdit, WaitingEditController } from "./waiting-edit.js";
 import { failureWords } from "../ui/client-feedback.js";
 
@@ -189,6 +192,8 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
               <>
                 <WaitingBubble
                   actions={actions}
+                  ask={item?.kind === "ask" ? item : null}
+                  hostClient={hostClient}
                   message={entry}
                   queued={item !== null || entry.queuePending === true}
                   onAction={item ? (id) => choose(item, id) : undefined}
@@ -284,6 +289,9 @@ function menuActions(item: WaitingInput, editable: boolean): WaitingAction[] {
 
 function WaitingBubble(props: {
   readonly actions: readonly LinkAction[];
+  /** A teammate's ask, whose whole text replaces its clipped preview once read. */
+  readonly ask: WaitingAsk | null;
+  readonly hostClient: HostClient;
   readonly message: MessageEntry;
   readonly queued: boolean;
   readonly onAction: ((id: string) => void) | undefined;
@@ -291,7 +299,14 @@ function WaitingBubble(props: {
   readonly onOpenThread: React.ComponentProps<typeof Message>["onOpenThread"];
   readonly viewerUserId: string | null;
 }): ReactNode {
-  const [open, setOpen] = useState(!props.queued);
+  // An ask opens unfolded: the dock's Answer approves only an ask shown whole.
+  const [open, setOpen] = useState(!props.queued || props.ask !== null);
+  const body = useWaitingBody(props.hostClient, props.ask);
+  const message =
+    props.ask && body.status === "complete" && props.message.previewTruncated
+      ? { ...props.message, body: body.text, previewTruncated: false }
+      : props.message;
+  useShowAsk(props.ask?.messageId ?? null, body.status === "complete" && open);
   return (
     <Message
       queued={props.queued}
@@ -302,7 +317,7 @@ function WaitingBubble(props: {
         onPress: props.onEdit ?? ignoreAction,
       }}
       onReply={undefined}
-      message={props.message}
+      message={message}
       open={open}
       onToggle={() => setOpen(!open)}
       onOpenThread={props.onOpenThread}
@@ -366,7 +381,7 @@ function WaitingEditor(props: {
   const { edit, editing } = props;
   const { draft } = edit;
   const input = editing.field;
-  const locked = edit.phase === "saving";
+  const locked = edit.phase === "saving" || edit.draft.loading;
   const notice = editNotice(edit);
   // Android drops a keyboard asked for while the menu that opened this still
   // holds the window, and focusing a field that already has focus does

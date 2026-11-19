@@ -1,3 +1,4 @@
+import { useThreadTranscript } from "@opensteer/client/react";
 import { classifyClientFailure, isMissingClientResource } from "@opensteer/client/connections";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { TranscriptImageContext } from "@opensteer/client/react";
@@ -89,22 +90,21 @@ function useRunLoad(
   threadId: string,
   run: { readonly anchorMessageId: string; readonly runId: string } | null,
   found: boolean,
+  synchronized: boolean,
 ): { readonly state: RunLoad; readonly retry: () => void } {
   const [state, setState] = useState<RunLoad>(run === null || found ? "loaded" : "loading");
   const [attempt, setAttempt] = useState(0);
   const foundNow = useRef(found);
   foundNow.current = found;
-  useEffect(
-    () => (run === null ? undefined : hostClient.observeThread(threadId)),
-    [hostClient, run, threadId],
-  );
   const anchor = run?.anchorMessageId ?? null;
   useEffect(() => {
-    if (anchor === null || foundNow.current) return;
+    if (!synchronized || anchor === null || foundNow.current) return;
     let current = true;
     setState("loading");
     hostClient.loadTranscriptAround(threadId, anchor).then(
-      () => current && setState("loaded"),
+      // A newer move of the reader's took over before this one landed: the Run's window is not
+      // what is loaded, so the sheet offers to read it again rather than claiming it loaded.
+      (landed) => current && setState(landed ? "loaded" : "failed"),
       // Gone or not the reader's is a fact about the run; anything else may pass.
       (error: unknown) =>
         current &&
@@ -113,7 +113,7 @@ function useRunLoad(
     return () => {
       current = false;
     };
-  }, [anchor, attempt, hostClient, threadId]);
+  }, [anchor, attempt, hostClient, synchronized, threadId]);
   return { state, retry: () => setAttempt((count) => count + 1) };
 }
 
@@ -130,7 +130,7 @@ function ReplyActivity(props: {
   const { snapshot } = useHostSnapshot(hostClient);
   const queue = useThreadInputQueue(hostClient, threadId);
   const thread = snapshot.threads.find(({ id }) => id === threadId) ?? null;
-  const entries = snapshot.transcripts[threadId];
+  const { entries, synchronized } = useThreadTranscript(hostClient, threadId);
   const inputQueuePaused = thread?.inputQueuePaused ?? false;
   // The conversation's own turns, so a key its rows hand over finds its reply.
   const groups = useMemo(
@@ -156,7 +156,7 @@ function ReplyActivity(props: {
       ),
     [groups, run, turnKey],
   );
-  const load = useRunLoad(hostClient, threadId, run, activity !== null);
+  const load = useRunLoad(hostClient, threadId, run, activity !== null, synchronized);
   const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
   const engine = threadEngine(snapshot, threadId);
   const live = useShowsLive(hostClient.connection) && environment?.status === "connected";

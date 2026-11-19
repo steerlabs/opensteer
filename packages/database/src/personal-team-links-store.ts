@@ -1,11 +1,25 @@
 import { createId, type DeploymentId, type TeamTaskOrigin, type ThreadId } from "@opensteer/core";
 import { PersonalTeamLinkSchema, type PersonalTeamLink } from "@opensteer/protocol";
 import type { Insertable, Kysely, Selectable } from "kysely";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
+import { updateAttentionLinkContribution } from "./personal-attention-store.js";
 import type { DatabaseSchema } from "./schema.js";
 
 export type StoredPersonalTeamLink = Selectable<DatabaseSchema["personalTeamLinks"]>;
 export type PersonalTeamCredential = Insertable<DatabaseSchema["credentials"]>;
+
+function linkChanged(
+  mutation: PersonalMutation,
+  before: StoredPersonalTeamLink | undefined,
+  after: StoredPersonalTeamLink["state"],
+) {
+  if (before)
+    updateAttentionLinkContribution(mutation, {
+      before: before.state,
+      after,
+      bucket: before.approvalAttentionCount,
+    });
+}
 
 export class PersonalTeamLinksStore {
   readonly database: Kysely<DatabaseSchema>;
@@ -25,8 +39,8 @@ export class PersonalTeamLinksStore {
     return row?.id ?? null;
   }
 
-  get(teamId: DeploymentId) {
-    return this.database
+  get(teamId: DeploymentId, database = this.database) {
+    return database
       .selectFrom("personalTeamLinks")
       .selectAll()
       .where("teamDeploymentId", "=", teamId)
@@ -43,10 +57,14 @@ export class PersonalTeamLinksStore {
   }
 
   async begin(
-    input: Omit<Insertable<DatabaseSchema["personalTeamLinks"]>, "id" | "createdAt">,
+    input: Omit<
+      Insertable<DatabaseSchema["personalTeamLinks"]>,
+      "id" | "createdAt" | "approvalAttentionCount"
+    >,
     credential: PersonalTeamCredential,
   ): Promise<void> {
-    await withPersonalTransaction(this.database, async (tx) => {
+    await commitPersonalMutation(this.database, async (tx, mutation) => {
+      const before = await this.get(input.teamDeploymentId, tx);
       await tx.insertInto("credentials").values(credential).execute();
       const id = createId("credential");
       await tx
@@ -67,41 +85,56 @@ export class PersonalTeamLinksStore {
         .deleteFrom("personalTeamPosts")
         .where("teamDeploymentId", "=", input.teamDeploymentId)
         .execute();
+      linkChanged(mutation, before, input.state);
     });
   }
 
   async state(teamId: DeploymentId, state: StoredPersonalTeamLink["state"]): Promise<void> {
-    await withPersonalTransaction(this.database, async (tx) => {
+    await commitPersonalMutation(this.database, async (tx, mutation) => {
+      const before = await this.get(teamId, tx);
+      if (!before || before.state === state) return;
       await tx
         .updateTable("personalTeamLinks")
         .set({ state })
         .where("teamDeploymentId", "=", teamId)
         .execute();
+      linkChanged(mutation, before, state);
     });
   }
 
   async versionMismatch(teamId: DeploymentId, behind: "personal" | "team"): Promise<void> {
-    const link = await this.get(teamId);
-    if (!link || ["leaving", "revoked"].includes(link.state)) return;
-    await this.database
-      .updateTable("personalTeamLinks")
-      .set({
-        state: "needs_update",
-        authorityEnvelope: { ...link.authorityEnvelope, updateRequiredBy: behind },
-      })
-      .where("teamDeploymentId", "=", teamId)
-      .where("state", "not in", ["leaving", "revoked"])
-      .execute();
+    await commitPersonalMutation(this.database, async (tx, mutation) => {
+      const link = await this.get(teamId, tx);
+      if (
+        !link ||
+        link.state === "leaving" ||
+        link.state === "revoked" ||
+        (link.state === "needs_update" && link.authorityEnvelope.updateRequiredBy === behind)
+      )
+        return;
+      await tx
+        .updateTable("personalTeamLinks")
+        .set({
+          state: "needs_update",
+          authorityEnvelope: { ...link.authorityEnvelope, updateRequiredBy: behind },
+        })
+        .where("teamDeploymentId", "=", teamId)
+        .execute();
+      linkChanged(mutation, link, "needs_update");
+    });
   }
 
   async observeName(teamId: DeploymentId, teamName: string): Promise<void> {
-    const link = await this.get(teamId);
-    if (!link || link.authorityEnvelope.teamName === teamName) return;
-    await this.database
-      .updateTable("personalTeamLinks")
-      .set({ authorityEnvelope: { ...link.authorityEnvelope, teamName } })
-      .where("teamDeploymentId", "=", teamId)
-      .execute();
+    await commitPersonalMutation(this.database, async (tx, mutation) => {
+      const link = await this.get(teamId, tx);
+      if (!link || link.authorityEnvelope.teamName === teamName) return;
+      await tx
+        .updateTable("personalTeamLinks")
+        .set({ authorityEnvelope: { ...link.authorityEnvelope, teamName } })
+        .where("teamDeploymentId", "=", teamId)
+        .execute();
+      linkChanged(mutation, link, link.state);
+    });
   }
 
   async active(
@@ -111,7 +144,9 @@ export class PersonalTeamLinksStore {
       readonly ownerUserId: NonNullable<PersonalTeamLink["ownerUserId"]>;
     },
   ): Promise<void> {
-    await withPersonalTransaction(this.database, async (tx) => {
+    await commitPersonalMutation(this.database, async (tx, mutation) => {
+      const before = await this.get(teamId, tx);
+      if (!before || before.state === "leaving" || before.state === "revoked") return;
       await tx
         .updateTable("personalTeamLinks")
         .set({
@@ -123,6 +158,7 @@ export class PersonalTeamLinksStore {
         .where("teamDeploymentId", "=", teamId)
         .where("state", "not in", ["leaving", "revoked"])
         .execute();
+      linkChanged(mutation, before, "active");
     });
   }
 

@@ -1,9 +1,11 @@
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { publishThreadSummary } from "./thread-status.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { runDeliverySelection } from "./thread-row-mappers.js";
 import { freshContextBoundary } from "./fresh-context.js";
 import { runAllowsPersonalContext } from "./run-personal-context.js";
 import { personalSettings } from "./personal-settings-store.js";
-import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import "./connection.js";
 import { issueRunGrant, type RevokedRunGrant } from "./run-grants.js";
 import { pendingReplacementAttempt } from "./run-attempts.js";
@@ -29,7 +31,6 @@ import {
   type ProviderContinuationIdentity,
   type HarnessInstanceId,
   type ThreadId,
-  type AgentEvent,
   type GrantId,
   ProviderContinuationIdentitySchema,
   sameProviderContinuationIdentity,
@@ -60,14 +61,14 @@ import {
   threadFromRow,
 } from "./thread-row-mappers.js";
 import { readRunThreadState } from "./run-thread-state.js";
-import { type DurableWindowReadOptions } from "./snapshot-store.js";
 import { newestMessageWindow } from "./message-window.js";
 
 import { channelRunAuthorityIsCurrent } from "./channel-execution.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { hasUncertainEarlierExecution } from "./personal-run-state.js";
 import {
   assertActiveExecutionBinding as assertActiveExecutionBindingInStore,
   assertActiveGrant as assertActiveGrantInStore,
+  assignmentWasCancelled,
 } from "./execution-authority.js";
 
 /**
@@ -149,7 +150,7 @@ export async function renewActiveExecutionBindings(
   executionNow: () => number = Date.now,
 ): Promise<readonly RunId[]> {
   if (!input.activeRunIds.length) return [];
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     const runs = await transaction
       .selectFrom("runs")
       .innerJoin("personalSettings", "personalSettings.ownerId", "runs.requestedBy")
@@ -184,7 +185,10 @@ export async function renewActiveExecutionBindings(
         .execute();
       await transaction
         .updateTable("providerSessions")
-        .set({ leaseExpiresAt: input.leaseExpiresAt, updatedAt: new Date() })
+        .set({
+          leaseExpiresAt: sql<Date>`greatest(lease_expires_at, ${input.leaseExpiresAt})`,
+          updatedAt: new Date(),
+        })
         .where("id", "in", sessionIds)
         .execute();
     }
@@ -218,7 +222,7 @@ export async function finalizeRunInitialContext(
   | null
 > {
   const selectedIds = MessageIdSchema.array().max(runHistoryMaxMessages).parse(input.messageIds);
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("commands")
       .select(["id", "runId", "threadId", "type"])
@@ -332,7 +336,7 @@ export function loadRunThreadState(
 export async function loadRunDispatchContext(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
-  options: DurableWindowReadOptions = {},
+  options: { readonly maxItems?: number; readonly maxBytes?: number } = {},
 ): Promise<RunDispatchContext> {
   const maxHistoryItems = boundedWindowLimit(options.maxItems, runHistoryMaxMessages);
   const maxHistoryBytes = boundedWindowBytes(options.maxBytes, runHistoryMaxSerializedBytes);
@@ -570,12 +574,11 @@ export async function acquireExecutionBinding(
   },
 ): Promise<
   ThreadExecutionBinding & {
-    readonly continuationEvent?: AgentEvent;
     readonly grantId: GrantId;
     readonly revokedGrants: readonly RevokedRunGrant[];
   }
 > {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     const continuationIdentity = ProviderContinuationIdentitySchema.parse(
       input.continuationIdentity,
     );
@@ -590,6 +593,8 @@ export async function acquireExecutionBinding(
         "runs.providerSessionId",
         "runs.requestedBy",
         "runs.status",
+        "runs.finishIntent",
+        "runs.assignmentId",
         "runs.threadId",
         "runs.runOrdinal",
       ])
@@ -607,13 +612,16 @@ export async function acquireExecutionBinding(
         message: "Run does not match thread",
       });
     }
-    if (run.status !== "starting") {
+    if (run.status !== "starting" || run.finishIntent !== null) {
       throw new OpensteerError({
         code: "conflict",
         message: "Run is not awaiting an execution binding",
       });
     }
-    if (!(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))) {
+    if (
+      (await assignmentWasCancelled(transaction, run.assignmentId)) ||
+      !(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))
+    ) {
       throw new OpensteerError({
         code: "forbidden",
         message: "Run execution authority is no longer active",
@@ -743,59 +751,15 @@ export async function acquireExecutionBinding(
     // Runner terminal or proof that dispatch never began: a Run that was never
     // bound, or whose execute was never claimed. Without a reference, even a
     // confirmed start cannot be resumed.
-    const unsafeRun = await transaction
-      .selectFrom("runs")
-      .select("id")
-      .$if(session.stateLayout === "session", (query) =>
-        query.where("providerSessionId", "=", session.id),
-      )
-      .$if(session.stateLayout === "thread", (query) =>
-        query.where("threadId", "=", session.threadId),
-      )
-      .where("runOrdinal", "<", run.runOrdinal)
-      .where((eb) =>
-        eb.or([
-          ...(session.providerSessionReference === null ? [eb("startedAt", "is not", null)] : []),
-          eb.and([
-            eb("startedAt", "is", null),
-            eb("bindingGeneration", "is not", null),
-            eb.not(
-              eb.exists(
-                eb
-                  .selectFrom("deploymentEvents")
-                  .select("eventId")
-                  .whereRef("deploymentEvents.runId", "=", "runs.id")
-                  .where("runnerOrdinal", "is not", null)
-                  .where("type", "in", ["run.failed", "run.interrupted"]),
-              ),
-            ),
-            eb.not(
-              eb.exists(
-                eb
-                  .selectFrom("commands")
-                  .select("commands.id")
-                  .whereRef("commands.runId", "=", "runs.id")
-                  .where("commands.type", "=", "run.execute")
-                  .where("attempts", "=", 0),
-              ),
-            ),
-          ]),
-        ]),
-      )
-      .limit(1)
-      .executeTakeFirst();
-    const priorReference =
-      session.providerSessionReference === null && session.stateLayout === "thread"
-        ? await transaction
-            .selectFrom("providerSessions")
-            .select("id")
-            .where("threadId", "=", session.threadId)
-            .where("id", "!=", session.id)
-            .where("providerSessionReference", "is not", null)
-            .limit(1)
-            .executeTakeFirst()
-        : null;
-    if (unsafeRun || priorReference) {
+    if (
+      await hasUncertainEarlierExecution(transaction, {
+        threadId: session.threadId,
+        providerSessionId: session.id,
+        runOrdinal: run.runOrdinal,
+        stateLayout: session.stateLayout,
+        hasNativeReference: session.providerSessionReference !== null,
+      })
+    ) {
       throw new OpensteerError({
         code: "conflict",
         message:
@@ -828,7 +792,6 @@ export async function acquireExecutionBinding(
         });
       }
     }
-    let continuationEvent: AgentEvent | undefined;
     if (!session.continuationIdentity) {
       await transaction
         .updateTable("providerSessions")
@@ -839,15 +802,7 @@ export async function acquireExecutionBinding(
         .where("id", "=", session.id)
         .where("continuationIdentity", "is", null)
         .executeTakeFirstOrThrow();
-      continuationEvent = await appendHostDeploymentEvent(transaction, {
-        data: {
-          continuationIdentity,
-        },
-        environmentId: thread.environmentId,
-        runId: input.runId,
-        threadId: thread.threadId,
-        type: "thread.continuation-established",
-      });
+      await publishThreadSummary(transaction, input.threadId);
     }
     const row = await transaction
       .updateTable("providerSessions")
@@ -870,6 +825,7 @@ export async function acquireExecutionBinding(
       })
       .where("id", "=", input.runId)
       .executeTakeFirstOrThrow();
+    mutation.react({ type: "executionDeadlinesChanged" });
     const { grantId, revokedGrants } = await issueRunGrant(transaction, {
       bindingGeneration: row.bindingGeneration,
       modelSelection: run.modelSelection,
@@ -881,11 +837,6 @@ export async function acquireExecutionBinding(
       ...executionBindingFromRow(row),
       grantId,
       revokedGrants,
-      ...(continuationEvent
-        ? {
-            continuationEvent,
-          }
-        : {}),
     };
   });
 }
@@ -912,7 +863,7 @@ export async function renewExecutionBinding(
   const result = await database
     .updateTable("providerSessions")
     .set({
-      leaseExpiresAt: input.leaseExpiresAt,
+      leaseExpiresAt: sql<Date>`greatest(lease_expires_at, ${input.leaseExpiresAt})`,
       updatedAt: new Date(),
     })
     .where("active", "=", true)
@@ -985,7 +936,7 @@ export async function bindProviderSession(
     readonly threadId: ThreadId;
   },
 ): Promise<void> {
-  await withPersonalTransaction(database, async (transaction) => {
+  await commitPersonalMutation(database, async (transaction) => {
     const run = await transaction
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
@@ -1089,6 +1040,8 @@ export async function runCapabilityScope(
       "runs.threadId",
     ])
     .where("runs.id", "=", runId)
+    .where("runs.finishIntent", "is", null)
+    .where("runs.status", "in", ["starting", "running", "waiting"])
     .executeTakeFirst();
   if (!row) return null;
   return {

@@ -18,11 +18,11 @@ import {
   type DisplayViewerFrameHeader,
   type DisplayViewerServerMessage,
   type DisplayViewerState,
-  type MachineSummary,
-} from "@opensteer/protocol";
+} from "@opensteer/protocol/display-stream";
+import type { MachineSummary } from "@opensteer/protocol";
 import type { HostClient, HostSnapshot } from "../host/client.js";
 import type { WebSocketClient } from "../host/host-session-client.js";
-import { canStreamComputerDisplay } from "./computer-use.js";
+import { canWatchComputer } from "./computer-reasons.js";
 import type { DisplayUnavailableReason } from "./computer-watch-status.js";
 
 /** The contract's bound on one input batch (`DisplayInputEventsSchema`). */
@@ -841,18 +841,21 @@ export class DisplayStreams {
     if (
       display &&
       (display.input.state !== "ready" ||
-        parsed.some((event) =>
-          event.kind === "nav"
-            ? !display.actions.includes("navigate") ||
-              !display.navigationButtons.some(({ id }) => id === event.to)
-            : event.kind === "text"
-              ? !display.actions.includes("type")
-              : event.kind === "scroll"
-                ? !display.actions.includes("scroll")
-                : event.kind === "pointer"
-                  ? !display.actions.includes("tap")
-                  : true,
-        ))
+        parsed.some((event) => {
+          switch (event.kind) {
+            case "nav":
+              return (
+                !display.actions.includes("navigate") ||
+                !display.navigationButtons.some(({ id }) => id === event.to)
+              );
+            case "scroll":
+              return !display.actions.includes("scroll");
+            case "pointer":
+              return !display.actions.includes("tap");
+            default:
+              return !display.actions.includes("type");
+          }
+        }))
     )
       return false;
     if (
@@ -1026,7 +1029,7 @@ export function computerDisplayScope(
   if (!source || snapshot.session !== "authenticated" || !snapshot.user) return null;
   const machine = snapshot.machines.find(
     (candidate) =>
-      canStreamComputerDisplay(candidate) &&
+      canWatchComputer(candidate) &&
       !captureRefused(candidate) &&
       (source.kind === "task-session"
         ? candidate.computerUse?.sessions.some(
@@ -1060,7 +1063,10 @@ export function computerDisplayScope(
 }
 
 function captureRefused(machine: MachineSummary): boolean {
-  if (machine.phoneDisplay) return machine.phoneDisplay.view.state !== "ready";
+  if (machine.phoneDisplay) {
+    const { state, reason } = machine.phoneDisplay.view;
+    return state !== "ready" && reason?.kind !== "driver-offline";
+  }
   return (
     machine.computerUse?.permissions?.screenRecording === "denied" ||
     machine.computerUse?.state === "permission-required"
