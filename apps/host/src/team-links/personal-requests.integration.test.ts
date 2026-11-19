@@ -868,42 +868,38 @@ describeStore("personal team consent and returns", (it) => {
       if (adopted) expect(await pendingBadge(f.database, mirror.taskId!)).toEqual([0, 0]);
     });
 
-  it("decides an ask's expiry on PostgreSQL's clock, and Needs you never waits for it", async ({
+  it("shows an expired ask in Needs you until the owner settles it, on the Host's clock", async ({
     storeFixture,
   }) => {
     const f = await consentFixture(storeFixture);
     await f.publisher.deliver(f.origin.teamId, f.frame);
     const { requestId } = (await f.store.mirror(f.origin.teamId, f.frame.request.id))!;
-    const expireAt = (offset: string) =>
+    const expireAt = (at: Date) =>
       f.database
         .updateTable("personalTeamRequests")
-        .set({ consentExpiresAt: sql<Date>`clock_timestamp() + ${offset}::interval` })
+        .set({ consentExpiresAt: at })
         .where("requestId", "=", requestId)
         .execute();
-    const skew = (ms: number) => {
+    const kinds = async () =>
+      (await needsYouPage(f.database, { userId: f.userId })).entries.map((entry) => entry.kind);
+    // PostgreSQL's clock plays no part: this Host runs an hour behind it.
+    const hostNow = () => Date.now() - 3_600_000;
+    for (const database of new Set([f.database, storeFixture.store.database]))
+      setExecutionClock(database, hostNow);
+    onTestFinished(() => {
       for (const database of new Set([f.database, storeFixture.store.database]))
-        setExecutionClock(database, () => Date.now() + ms);
-    };
-    onTestFinished(() => skew(0));
-    // This Host runs an hour ahead: PostgreSQL says the ask has ten minutes left.
-    await expireAt("10 minutes");
-    skew(3_600_000);
+        setExecutionClock(database, Date.now);
+    });
+    const open = new Date(hostNow() + 600_000);
+    await expireAt(open);
     expect(await f.store.expiredUndecidedAsks()).toEqual([]);
-    const ahead = await storeFixture.store.requests.nextDeadline();
-    expect(ahead!.getTime()).toBeGreaterThan(Date.now() + 3_600_000 + 9 * 60_000);
-    // This Host runs an hour behind: PostgreSQL says the ask is due.
-    await expireAt("-1 second");
-    skew(-3_600_000);
-    const page = await needsYouPage(f.database, { userId: f.userId });
-    expect(page.entries.map((entry) => entry.kind)).toContain("team-ask");
-    expect((await f.store.expiredUndecidedAsks()).map((ask) => ask.requestId)).toEqual([requestId]);
-    const behind = await storeFixture.store.requests.nextDeadline();
-    expect(behind!.getTime()).toBeLessThanOrEqual(Date.now() - 3_600_000);
+    expect(await storeFixture.store.requests.nextDeadline()).toEqual(open);
+    // Past its expiry on the Host's clock: Needs you still reads, showing it until it is settled.
+    await expireAt(new Date(hostNow() - 1_000));
+    expect(await kinds()).toContain("team-ask");
     await f.publisher.expireUndecidedAsks();
     expect((await f.store.mirror(f.origin.teamId, requestId))?.terminalState).toBe("cancelled");
-    expect(
-      (await needsYouPage(f.database, { userId: f.userId })).entries.map((entry) => entry.kind),
-    ).not.toContain("team-ask");
+    expect(await kinds()).not.toContain("team-ask");
   });
 
   it("admits consent-gated work on arrival, replays approval after a lost ack, and resolves device races", async ({

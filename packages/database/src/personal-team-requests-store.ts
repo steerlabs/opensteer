@@ -309,7 +309,7 @@ export class PersonalTeamRequestsStore {
       .where("kind", "=", "ask")
       .where("localDecision", "is", null)
       .where("terminalState", "is", null)
-      .where("consentExpiresAt", "<=", sql<Date>`clock_timestamp()`)
+      .where("consentExpiresAt", "<=", executionDate(this.database))
       .orderBy("consentExpiresAt")
       .orderBy("teamDeploymentId")
       .orderBy("requestId")
@@ -381,7 +381,7 @@ export class PersonalTeamRequestsStore {
         row.remoteState !== "awaiting_approval" ||
         row.terminalState ||
         !row.consentExpiresAt ||
-        row.consentExpiresAt <= mutation.state.now
+        row.consentExpiresAt <= executionDate(tx)
       )
         throw new OpensteerError({
           code: "conflict",

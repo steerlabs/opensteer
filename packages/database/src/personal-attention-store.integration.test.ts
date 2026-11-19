@@ -10,7 +10,6 @@ import { commitPersonalMutation } from "./personal-mutation.js";
 import { createPersonalStateFixture } from "./personal-state.test-support.js";
 import { buildPersonalShellSnapshot } from "./personal-snapshot-store.js";
 import { PersonalTeamLinksStore } from "./personal-team-links-store.js";
-import { setExecutionClock } from "./personal-transaction.js";
 import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
 
 test("parks ordinary asks by link while retaining failed asks and dropping expired consent", async () => {
@@ -61,20 +60,19 @@ test("parks ordinary asks by link while retaining failed asks and dropping expir
     await flip("active");
     expect(await fetchKinds()).toEqual(["failed-ask", "team-ask"]);
 
-    // PostgreSQL says the ask is due; this Host's clock runs an hour behind it.
-    const dueOnDatabase = sql<Date>`clock_timestamp() - interval '1 second'`;
+    // The ask's expiry has passed and its owner has not settled it yet.
+    const expired = new Date(Date.now() - 1_000);
     await database
       .updateTable("personalTeamRequests")
-      .set({ consentExpiresAt: dueOnDatabase })
+      .set({ consentExpiresAt: expired })
       .where("teamDeploymentId", "=", teamId)
       .where("requestId", "=", ordinary)
       .execute();
     await database
       .updateTable("personalAttention")
-      .set({ expiresAt: dueOnDatabase })
+      .set({ expiresAt: expired })
       .where("id", "=", `team:${teamId}:${ordinary}`)
       .execute();
-    setExecutionClock(database, () => Date.now() - 3_600_000);
     // An attach never waits on the owner: it shows the ask until the owner settles it.
     expect(await fetchKinds()).toEqual(["failed-ask", "team-ask"]);
     const shell = await withPersonalSyncRead(database, async (tx) =>

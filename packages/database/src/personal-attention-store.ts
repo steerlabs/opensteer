@@ -10,6 +10,7 @@ import {
 import { sql, type Insertable } from "kysely";
 import type { PersonalMutation, PersonalMutationTransaction } from "./personal-mutation.js";
 import type { PersonalAttentionTable } from "./personal-state-schema.js";
+import { executionDate } from "./personal-transaction.js";
 import { publishThreadSummary } from "./thread-status.js";
 
 type Tx = PersonalMutationTransaction;
@@ -253,7 +254,8 @@ export async function refreshTeamAskAttention(
     source.localDecision === null &&
     source.terminalState === null &&
     source.consentExpiresAt !== null &&
-    source.consentExpiresAt > mutation.state.now;
+    // A team ask's expiry arrives as a time the Host compares on its own clock.
+    source.consentExpiresAt > executionDate(tx);
   const bucketDelta = Number(ordinary) - Number(previous === "team-ask");
   if (bucketDelta) {
     await tx
