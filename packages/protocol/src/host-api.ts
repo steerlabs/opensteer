@@ -7,7 +7,6 @@ import {
 import {
   PersonalResourceDetailSchema,
   PersonalResourceKindSchema,
-  PersonalResourceRevisionSchema,
   PersonalRevisionSchema,
 } from "./resources.js";
 import {
@@ -25,7 +24,7 @@ import {
 } from "./plugin-oauth.js";
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
 import { DeviceIdSchema, DeviceDriverGenerationSchema } from "@opensteer/core";
-import { MachineListSummarySchema, MachineSummarySchema } from "./machines.js";
+import { MachineListSummarySchema } from "./machines.js";
 import { OwnerWindowInfoSchema } from "./computer-use.js";
 import {
   TabCommandSchema,
@@ -199,11 +198,7 @@ import { AppIdSchema } from "@opensteer/core";
 import { AgentPhoneHostTargetViewSchema } from "./android-phone.js";
 import { AssetUrlsInputSchema, AssetUrlsSchema } from "./assets.js";
 import { AttachmentContentSchema, AttachmentReferenceInputSchema } from "./attachments.js";
-import {
-  HostBootstrapEnvironmentSchema,
-  IdentityConfigViewSchema,
-  OwnerProfileViewSchema,
-} from "./bootstrap.js";
+import { IdentityConfigViewSchema, OwnerProfileViewSchema } from "./bootstrap.js";
 import {
   BrowserSignInDecisionSchema,
   BrowserSignInOutcomeSchema,
@@ -2326,24 +2321,6 @@ const workspaceHostApi = defineRpc({
       cursor: z.string().max(4096).optional(),
     }),
     PersonalResourceDetailSchema,
-  ),
-  /**
-   * One computer whole: its heavy sections (apps, access, computer use) as of the `machine`
-   * revision it reports, for that computer's own page. Removal never needs it.
-   */
-  "machine.detail.get": declaration(
-    "GET",
-    z.strictObject({ machineId: z.string().min(1).max(255) }),
-    z.object({ revision: PersonalResourceRevisionSchema, machine: MachineSummarySchema }),
-  ),
-  /** One environment whole, engines included, as of the `environment` revision it reports. */
-  "environment.detail.get": declaration(
-    "GET",
-    z.strictObject({ environmentId: z.string().min(1).max(255) }),
-    z.object({
-      revision: PersonalResourceRevisionSchema,
-      environment: HostBootstrapEnvironmentSchema,
-    }),
   ),
   "machines.list": declaration(
     "GET",

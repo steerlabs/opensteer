@@ -42,6 +42,18 @@ describe("Settings → Browser profiles", () => {
     expect(rows(page)).toEqual(["Shopping", "Work"]);
   });
 
+  it("says it could not load the profiles, with Try again, instead of an empty or old list", async () => {
+    const { page, retry } = await mount({ unreadable: true });
+    expect(page.textContent).toContain("Couldn't load your browser profiles.");
+    expect(page.textContent).not.toContain("No profiles yet");
+    expect(rows(page)).toEqual([]);
+    const again = [...page.querySelectorAll("button")].find(
+      (button) => button.textContent === "Try again",
+    );
+    await act(async () => again!.click());
+    expect(retry).toHaveBeenCalledWith(["browser-profile"]);
+  });
+
   it("keeps both pending disk erasure states visible without profile actions", async () => {
     const { page, setDeletions } = await mount({
       deletions: [
@@ -113,9 +125,19 @@ async function mount(
     readonly manageable?: boolean;
     readonly path?: string;
     readonly deletions?: HostSnapshot["browserProfileDeletions"];
+    readonly unreadable?: boolean;
   } = {},
 ) {
   const hostClient = new MockHostClient({ latencyMs: 0 });
+  const retry = vi.fn();
+  if (input.unreadable) {
+    const held = hostClient.getSnapshot();
+    vi.spyOn(hostClient, "getSnapshot").mockReturnValue({
+      ...held,
+      unreadableResources: ["browser-profile"],
+    });
+    Object.assign(hostClient, { retryResources: retry });
+  }
   // Each command's effect on the snapshot is the client's, covered with its patches.
   const dispatch = vi.spyOn(hostClient, "dispatch").mockResolvedValue(undefined as never);
   const base = hostClient.getSnapshot();
@@ -165,6 +187,7 @@ async function mount(
     },
     dispatch,
     page: container,
+    retry,
     scope: { deploymentId: snapshot.deploymentId, userId: snapshot.user?.id ?? null },
   };
 }

@@ -1217,3 +1217,53 @@ test("encodes a shared cut once and still refuses it on a socket that lost autho
     for (const socket of sockets) socket.close("test finished");
   }
 });
+
+test("answers an attach and a watch that arrives before the attach's answer each in turn", async () => {
+  const held = Promise.withResolvers<void>();
+  const frames: ScopedHostMessage[] = [];
+  const socket = new PersonalSyncSocket({
+    read: async () => {
+      // The shell cut is slow: the watch arrives before the attach is answered.
+      await held.promise;
+      return {
+        throughSequence: "1",
+        cursor,
+        frames: [{ type: "host.snapshot" as const, scope, snapshot, throughSequence: "1" }],
+      };
+    },
+    resourceRevisions: (kinds) => Object.fromEntries(kinds.map((kind) => [kind, "5"])),
+    async send(raw, guard) {
+      if (!guard()) return false;
+      frames.push(ScopedHostMessageSchema.parse(JSON.parse(raw)));
+      return true;
+    },
+    close() {},
+  });
+  try {
+    socket.attach({
+      type: "client.attach",
+      apiVersion: 64,
+      generation: 1,
+      interests: ["settings"],
+      installed: {},
+    });
+    socket.watchResources({
+      type: "client.resources.watch",
+      subscriptionId: "shell",
+      generation: 1,
+      interests: ["settings", "machine"],
+      installed: {},
+    });
+    held.resolve();
+    const resources = () => frames.filter((frame) => frame.type === "host.resource");
+    await vi.waitFor(() => expect(resources()).toHaveLength(2));
+    // One marked answer per request, in order: the first says what moved, the second has nothing
+    // more to say. No live push is mistaken for either.
+    expect(resources()).toMatchObject([
+      { reply: true, revisions: { settings: "5", machine: "5" } },
+      { reply: true, revisions: {} },
+    ]);
+  } finally {
+    socket.close("test finished");
+  }
+});

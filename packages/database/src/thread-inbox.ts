@@ -5820,7 +5820,7 @@ export async function delegateThreadInTransaction(
         (await unreadTaskContribution(tx, threadId)) - unreadBeforeListing,
       );
     });
-    await republishPendingRequestsShowing(transaction, threadId);
+    await republishPendingRequestsShowing(transaction, threadId, "listing");
   }
   if (reusedRow === null || listedNow) {
     await publishThreadSummary(transaction, threadId);

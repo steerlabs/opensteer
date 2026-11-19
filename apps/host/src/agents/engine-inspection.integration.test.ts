@@ -1,8 +1,4 @@
-import {
-  readTestResource,
-  joinEnvironmentCatalogs,
-  testEnvironmentReads,
-} from "../server/test-host-api-request.js";
+import { readTestResource } from "../server/test-host-api-request.js";
 import { testResourceData } from "../server/test-host-api-request.js";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -98,14 +94,14 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
         },
       );
     const read = async () => {
-      const environments = await joinEnvironmentCatalogs(
-        testEnvironmentReads(active.hostOrigin, { headers }),
-      );
-      const catalog = environments
+      const bootstrap = await testResourceData(active.hostOrigin, "harness-catalog", {
+        headers,
+      });
+      const catalog = bootstrap.environments
         .flatMap((environment) => environment.harnessCatalogs)
         .find((candidate) => candidate.harnessInstanceId === active.harnessInstanceId);
       const { harnesses } = await testResourceData(active.hostOrigin, "harness", { headers });
-      const placement = threadPlacementOptions(environments, harnesses).find(
+      const placement = threadPlacementOptions(bootstrap.environments, harnesses).find(
         (candidate) => candidate.harnessInstanceId === active.harnessInstanceId,
       );
       if (!catalog || !placement) throw new Error("Engine state missing from bootstrap");
@@ -248,7 +244,7 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
           timeout: 45_000,
         })
         .toBe("ready");
-      const environments = await joinEnvironmentCatalogs(active.api);
+      const { environments } = await readTestResource(active.api, "harness-catalog");
       const { harnesses } = await readTestResource(active.api, "harness");
       const placement = threadPlacementOptions(environments, harnesses).find(
         (candidate) => candidate.harnessInstanceId === active.harnessInstanceId,

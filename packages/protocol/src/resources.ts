@@ -4,13 +4,12 @@ import {
   utf8ByteLength,
 } from "@opensteer/core";
 import { z } from "zod";
-import { MachineInventoryEntrySchema } from "./machines.js";
 import {
-  EnvironmentInventoryEntrySchema,
-  HostBootstrapEnvironmentSchema,
   IdentityConfigViewSchema,
   OwnerProfileViewSchema,
+  PersonalEnvironmentsViewSchema,
   PersonalHarnessesViewSchema,
+  PersonalMachinesViewSchema,
   PersonalSettingsViewSchema,
 } from "./bootstrap.js";
 import {
@@ -52,37 +51,6 @@ export const personalResourceKinds = [
   "team-replies",
 ] as const;
 
-const mebibyte = 1024 * 1024;
-/**
- * The most a complete inventory of each kind may hold, as the serialized `data` of every page of
- * one `resources.detail.get` read added together. A client refuses a read past it; a Host admits
- * nothing that would take a kind past it. One place, so the two cannot drift.
- */
-export const personalInventoryBytes: Readonly<Partial<Record<string, number>>> = {
-  "harness-catalog": 8 * mebibyte,
-  tab: 4 * mebibyte,
-  "tab-layout": mebibyte,
-  machine: 4 * mebibyte,
-  environment: 2 * mebibyte,
-  harness: 2 * mebibyte,
-  "browser-profile": 2 * mebibyte,
-  "browser-placement": mebibyte,
-  "browser-home": mebibyte,
-};
-/** One `resources.detail.get` response holds as many rows as fit this many bytes. */
-export const personalResourcePageBytes = 64 * 1024;
-/**
- * A row too large to share a page travels alone, up to this: a model whose options fill every
- * declared limit is larger than a page, and refusing it would refuse the whole inventory.
- */
-export const personalResourceSingleRowBytes = 1024 * 1024;
-
-/** Settings, identity, profile, availability and every plugin signal are a single small value. */
-export const personalSmallInventoryBytes = 256 * 1024;
-export function personalInventoryBound(kind: string): number {
-  return personalInventoryBytes[kind] ?? personalSmallInventoryBytes;
-}
-
 export const PersonalRevisionSchema = z
   .string()
   .regex(/^(0|[1-9][0-9]{0,18})$/u)
@@ -122,14 +90,13 @@ export const PersonalResourceInterestsSchema = z
 export type PersonalResourceKind = z.infer<typeof PersonalResourceKindSchema>;
 export type PersonalResourceRevisions = z.infer<typeof InstalledResourceRevisionsSchema>;
 
-export const PersonalEnvironmentCatalogsViewSchema = z
-  .array(
-    z.object({
-      id: HostBootstrapEnvironmentSchema.shape.id,
-      harnessCatalogs: HostBootstrapEnvironmentSchema.shape.harnessCatalogs,
-    }),
-  )
-  .max(400);
+/** One `resources.detail.get` response holds as many rows as fit this many bytes. */
+export const personalResourcePageBytes = 64 * 1024;
+/**
+ * A row too large to share a page travels alone, up to this: a large model, account or computer
+ * is loadable rather than refusing its whole inventory.
+ */
+export const personalResourceSingleRowBytes = 1024 * 1024;
 
 export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -143,24 +110,12 @@ export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
     kind: z.literal("owner-profile"),
     ownerProfile: OwnerProfileViewSchema.nullable(),
   }),
-  /** Each environment's bounded summary; its engines are `environment.detail.get`. */
-  z.object({
-    kind: z.literal("environment"),
-    environments: z.array(EnvironmentInventoryEntrySchema).max(400),
-  }),
-  /** Each computer's bounded summary; its heavy sections are `machine.detail.get`. */
-  z.object({
-    kind: z.literal("machine"),
-    machines: z.array(MachineInventoryEntrySchema).max(400),
-  }),
+  z.object({ kind: z.literal("environment"), environments: PersonalEnvironmentsViewSchema }),
+  z.object({ kind: z.literal("machine"), machines: PersonalMachinesViewSchema }),
   z.object({ kind: z.literal("harness"), harnesses: PersonalHarnessesViewSchema }),
   z.object({
     kind: z.literal("harness-catalog"),
-    /**
-     * Each environment's account catalogs, by environment id only: the environment's own detail is
-     * the `environment` resource, so a catalog page carries nothing that is not a catalog.
-     */
-    environments: PersonalEnvironmentCatalogsViewSchema,
+    environments: PersonalEnvironmentsViewSchema,
   }),
   z.object({ kind: z.enum(["tab", "tab-layout"]), tabs: TabBootstrapSchema }),
   z.object({

@@ -20,12 +20,7 @@ import {
   spawnSupervised,
   type SupervisedProcess,
 } from "../packages/harness/src/process-supervisor.js";
-import {
-  joinEnvironmentCatalogs,
-  testEnvironmentReads,
-  testResourceData,
-  testRpcData,
-} from "../apps/host/src/server/test-host-api-request.js";
+import { testResourceData, testRpcData } from "../apps/host/src/server/test-host-api-request.js";
 import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
 import { generatedShims } from "@opensteer/shared/test-support/commandShims";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
@@ -444,9 +439,8 @@ describe("the personal stack from source", () => {
     // through it, read for its version and signed in on its default account.
     const engines = await vi.waitFor(
       async () => {
-        // Each environment as the client holds it: summary, engines and account catalogs.
-        const [environments, { harnesses }] = await Promise.all([
-          joinEnvironmentCatalogs(testEnvironmentReads(origin, { headers })),
+        const [{ environments }, { harnesses }] = await Promise.all([
+          testResourceData(origin, "harness-catalog", { headers }),
           testResourceData(origin, "harness", { headers }),
         ]);
         const computer = environments.find((value) => value.id === stack.environmentId);

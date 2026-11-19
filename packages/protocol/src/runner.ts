@@ -584,8 +584,7 @@ const runnableHarnessDriver = z.object({
         .object({
           maxBytes: z.number().int().positive(),
           maxPixels: z.number().int().positive(),
-          // Drivers name the few image types they read (four today).
-          mediaTypes: z.array(z.string().min(1).max(255)).min(1).max(32),
+          mediaTypes: z.array(z.string().min(1)).min(1),
           steering: z.boolean(),
         })
         .nullable(),

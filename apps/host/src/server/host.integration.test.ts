@@ -1,8 +1,4 @@
-import {
-  injectTestResource,
-  joinEnvironmentCatalogs,
-  injectEnvironmentReads,
-} from "./test-host-api-request.js";
+import { injectTestResource } from "./test-host-api-request.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
 import {
@@ -3111,7 +3107,7 @@ describe("durable harness catalogs", () => {
     try {
       await settings.setQuietTaskDays({ userId: fixtureOwnerId, quietTaskDays: 3 });
       expect(await injectTestResource(app, "settings")).toMatchObject({ quietTaskDays: 3 });
-      expect(await joinEnvironmentCatalogs(injectEnvironmentReads(app))).toContainEqual(
+      expect((await injectTestResource(app, "harness-catalog")).environments).toContainEqual(
         expect.objectContaining({
           id: harness.environmentId,
           status: "disconnected",
@@ -3159,7 +3155,7 @@ describe("durable harness catalogs", () => {
     });
     const app = await fixture.server;
     try {
-      const environments = await joinEnvironmentCatalogs(injectEnvironmentReads(app));
+      const { environments } = await injectTestResource(app, "harness-catalog");
       const { harnesses } = await injectTestResource(app, "harness");
       expect(environments[0]?.harnessDrivers).toEqual([
         {

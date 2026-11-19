@@ -70,25 +70,7 @@ describe("Desktop preview Host simulation", () => {
     expect(details.data.kind).toBe("environment");
     if (details.data.kind !== "environment") throw new Error("Missing environment details");
     expect(details.data.environments).toHaveLength(1);
-    const [listed] = details.data.environments;
-    expect(listed).toMatchObject({ name: "This Computer", sections: { harnessDrivers: 0 } });
-    expect(listed).not.toHaveProperty("harnessDrivers");
-    // The environment whole is its own read, as on the real Host.
-    const whole = unwrapRpcResult(
-      await rpc["environment.detail.get"]({ environmentId: listed!.id }),
-    );
-    expect(whole.environment).toMatchObject({ id: listed!.id, name: "This Computer" });
-    expect(whole.environment.harnessDrivers).toEqual([]);
-    const machines = unwrapRpcResult(await rpc["resources.detail.get"]({ kind: "machine" }));
-    if (machines.data.kind !== "machine") throw new Error("Missing machine details");
-    const [computer] = machines.data.machines;
-    expect(computer).toMatchObject({ name: "Preview MacBook", sections: { apps: null } });
-    const machine = unwrapRpcResult(await rpc["machine.detail.get"]({ machineId: computer!.id }));
-    expect(machine.machine).toMatchObject({ id: computer!.id, name: "Preview MacBook" });
-    await expect(rpc["machine.detail.get"]({ machineId: "rnr_missing" })).resolves.toMatchObject({
-      ok: false,
-      error: { code: "not_found" },
-    });
+    expect(details.data.environments[0]?.name).toBe("This Computer");
     // An attach is always answered, marked, even when every installed revision is current.
     const frames: unknown[] = [];
     const stop = bridge.onHostWebSocketEvent((event) => {

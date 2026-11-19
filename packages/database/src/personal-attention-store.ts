@@ -143,32 +143,59 @@ export async function republishAskerAttention(
 }
 
 /**
- * A task's title or listing changed. The Waiting Requests list names the tasks a pending Request
- * sits in, the work it holds up and the listed task above it, so if any pending Request is at or
- * below this task, the list changed. Walks up from pending Requests only.
+ * A task's title or listing changed. The Waiting Requests list shows, for each pending Request,
+ * the title of every worker task in the delegation chain it holds up, and, when it sits outside any
+ * listed task, the title of the task just below the nearest listed one (`via`). So a rename moves
+ * the list only if this task is one of those, and a listing change only if this task lies on a
+ * pending Request's way up to its nearest listed task. Walks up from pending Requests only.
  */
-export async function republishPendingRequestsShowing(tx: Tx, threadId: ThreadId) {
+export async function republishPendingRequestsShowing(
+  tx: Tx,
+  threadId: ThreadId,
+  change: "title" | "listing",
+) {
   const shown = await sql<{ shown: boolean }>`
     with recursive pending as materialized (
-      select requests.originating_thread_id,runs.assignment_id from requests
-      left join runs on runs.id=requests.originating_run_id
+      select requests.id as request_id,requests.originating_thread_id,runs.assignment_id
+      from requests left join runs on runs.id=requests.originating_run_id
       where requests.status='pending'
-    ), chain(id) as (
-      select assignment_id from pending where assignment_id is not null
-      union
-      select held.parent_assignment_id from chain join delegations held on held.id=chain.id
-      where held.parent_assignment_id is not null
-    ), above(thread_id) as (
-      (select originating_thread_id from pending where originating_thread_id is not null
-       union
-       select held.child_thread_id from chain join delegations held on held.id=chain.id
-       union
-       select held.parent_thread_id from chain join delegations held on held.id=chain.id)
-      union
-      select t.parent_thread_id from above join threads t on t.id=above.thread_id
-      where t.parent_thread_id is not null
+    ), chain(request_id, id, depth) as (
+      select request_id, assignment_id, 0 from pending where assignment_id is not null
+      union all
+      select chain.request_id, held.parent_assignment_id, chain.depth + 1
+      from chain join delegations held on held.id=chain.id
+      where held.parent_assignment_id is not null and chain.depth < 64
+    ), links as materialized (
+      select chain.request_id, chain.depth, held.child_thread_id, held.parent_thread_id
+      from chain join delegations held on held.id=chain.id
+    ), outermost as (
+      select pending.request_id, coalesce((
+        select links.parent_thread_id from links where links.request_id=pending.request_id
+        order by links.depth desc limit 1
+      ), pending.originating_thread_id) as thread_id
+      from pending
+    ), lineage(request_id, thread_id, listed, parent_id, depth) as (
+      select outermost.request_id, t.id, t.listed, t.parent_thread_id, 0
+      from outermost join threads t on t.id=outermost.thread_id
+      union all
+      select lineage.request_id, t.id, t.listed, t.parent_thread_id, lineage.depth + 1
+      from lineage join threads t on t.id=lineage.parent_id
+      where not lineage.listed and lineage.depth < 64
+    ), stops as (
+      select request_id, min(depth) as depth from lineage
+      where listed or parent_id is null group by request_id
+    ), via as (
+      select lineage.thread_id from lineage join stops using (request_id)
+      where lineage.depth = stops.depth - 1
     )
-    select exists (select 1 from above where thread_id=${threadId}) as shown
+    select exists (
+      ${
+        change === "title"
+          ? sql`select 1 from links where child_thread_id=${threadId}
+              union all select 1 from via where thread_id=${threadId}`
+          : sql`select 1 from lineage where thread_id=${threadId}`
+      }
+    ) as shown
   `.execute(tx);
   if (!shown.rows[0]?.shown) return;
   await commitPersonalMutation(tx, async (_tx, mutation) => mutation.pendingRequestsChanged());

@@ -1,4 +1,3 @@
-import { requireMachineRoom } from "./personal-inventory-limits.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import {
   lockDeviceRemovalInTransaction,
@@ -1633,7 +1632,6 @@ export async function createRunnerEnrollment(
         }
       }
     }
-    await requireMachineRoom(transaction, new Date());
     await transaction
       .insertInto("runnerEnrollments")
       .values({
