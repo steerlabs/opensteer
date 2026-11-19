@@ -682,14 +682,12 @@ export class PluginService {
    * for every plugin (without `plugins`). A plugin whose refresh fails keeps its entry until then.
    */
   async reconcileSkills(plugins?: readonly string[], signal?: AbortSignal) {
-    const targets =
-      plugins ??
-      (await Promise.resolve().then(async () => [
-        ...new Set([
-          ...(await engineActiveVersions(this.#options.databaseUrl)).keys(),
-          ...(await this.skillCache.plugins()),
-        ]),
-      ]));
+    const targets = plugins ?? [
+      ...new Set([
+        ...(await engineActiveVersions(this.#options.databaseUrl)).keys(),
+        ...(await this.skillCache.plugins()),
+      ]),
+    ];
     await Promise.all(targets.map((plugin) => this.#refreshSkills(plugin, signal)));
   }
   /** The plugin's skill record, only while it names the active version; never wakes the engine. */
@@ -710,10 +708,7 @@ export class PluginService {
         else if ((await this.skillCache.get(plugin))?.version !== version) {
           const context: PluginCaller = { caller: this.#options.owner, mode: "automatic" };
           // Written only while the version it read is still the active one.
-          await this.skillCache.record(
-            await this.skillFiles({ plugin }, context, signal),
-            active,
-          );
+          await this.skillCache.record(await this.skillFiles({ plugin }, context, signal), active);
         }
       } catch {
         this.#options.onDiagnostic?.("skill-record-refresh-failed");

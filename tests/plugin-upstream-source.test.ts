@@ -149,9 +149,7 @@ test("renames a reserved route only where a literal starts with it, as the parse
     content[6]!.replace(`fetch("${route.from}`, `fetch("${route.to}`),
     content[7],
   ]);
-  expect(lines[8]).toBe(
-    content[8]!.replace(`href="${route.from}`, `href="${route.to}`),
-  );
+  expect(lines[8]).toBe(content[8]!.replace(`href="${route.from}`, `href="${route.to}`));
 });
 
 test("renames a reserved route in a page's attributes, inline scripts and styles, and nowhere else", () => {

@@ -99,9 +99,7 @@ const stylesheetStarts = (text: string, prefix: string) =>
 const pageStarts = (text: string, prefix: string) => {
   const offsets: number[] = [];
   for (const tag of text.matchAll(/<(?!!--)[A-Za-z][^>]*>/gu)) {
-    for (const value of tag[0].matchAll(
-      new RegExp(`=\\s*["']?(?=${escape(prefix)})`, "gu"),
-    ))
+    for (const value of tag[0].matchAll(new RegExp(`=\\s*["']?(?=${escape(prefix)})`, "gu")))
       offsets.push(tag.index + value.index + value[0].length);
   }
   for (const element of text.matchAll(/<(script|style)\b[^>]*>([\s\S]*?)<\/\1\s*>/giu)) {

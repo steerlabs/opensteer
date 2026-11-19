@@ -129,7 +129,13 @@ it("writes no skill record for a version a later change replaced while it was re
       type: "result",
       id: read.id,
       operation: "skillFiles",
-      result: { plugin, slug: "fixture", version: read.version, hasPage: read.version === "v1", files: [] },
+      result: {
+        plugin,
+        slug: "fixture",
+        version: read.version,
+        hasPage: read.version === "v1",
+        files: [],
+      },
     });
   vi.mocked(fork).mockReturnValue(child as unknown as ChildProcess);
   const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-cache-race-"));

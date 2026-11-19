@@ -38,11 +38,12 @@ const lines = (child: ChildProcess) => {
 test("one process holds an engine directory until it ends, and its child never holds it", async (context) => {
   const work = await mkdtemp(join(tmpdir(), "opensteer-engine-ownership-"));
   context.onTestFinished(() => rm(work, { recursive: true, force: true }));
-  const script = join(work, "holder.mts");
+  const script = join(work, "holder.mjs");
   await writeFile(script, holder);
   const directory = join(work, "runtime");
   const start = () =>
-    spawn(process.execPath, ["--import", "tsx", script, directory], {
+    // Node runs the module's TypeScript as it is: it has only types to strip.
+    spawn(process.execPath, [script, directory], {
       stdio: ["ignore", "pipe", "inherit"],
     });
   const first = start();
@@ -56,7 +57,7 @@ test("one process holds an engine directory until it ends, and its child never h
       expect(line).toBeDefined();
       return Number(line!.slice(5));
     },
-    { timeout: 30_000, interval: 50 },
+    { timeout: 4_000, interval: 20 },
   );
   context.onTestFinished(() => {
     if (alive(held)) process.kill(held, "SIGKILL");
@@ -68,13 +69,13 @@ test("one process holds an engine directory until it ends, and its child never h
     second.kill("SIGKILL");
   });
   await vi.waitFor(() => expect(secondLines).toContain("waiting"), {
-    timeout: 30_000,
+    timeout: 4_000,
     interval: 50,
   });
   // The first engine ends while its child lives on; the second takes the directory.
   first.kill("SIGKILL");
   await vi.waitFor(() => expect(secondLines.some((line) => line.startsWith("held "))).toBe(true), {
-    timeout: 30_000,
+    timeout: 4_000,
     interval: 50,
   });
   expect(alive(held)).toBe(true);
@@ -85,4 +86,4 @@ test("one process holds an engine directory until it ends, and its child never h
   await holdEngineDirectory(join(work, "own"), () => {
     throw new Error("waited on itself");
   });
-}, 60_000);
+});
