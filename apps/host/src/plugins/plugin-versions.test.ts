@@ -1,5 +1,5 @@
 import { Deferred, Effect, Fiber } from "effect";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import {
   OwnerId,
   StorageError,
@@ -87,6 +87,7 @@ function engine(
           deployed.push({ app, files, rebuiltFrom: options.rebuiltFrom });
           expected.push(expectedVersion);
           if (apps[app]!.build) yield* apps[app]!.build;
+          log.push(`built:${app}`);
           const outcome = apps[app]!.deploy;
           if (outcome) return yield* outcome;
           const commit = options.commit ?? ((_app, work) => work);
@@ -250,7 +251,7 @@ test("a rebuild whose version was changed while it built commits nothing and rea
   fixture.frameworks.set("build-owner", host);
   Effect.runSync(Deferred.succeed(building, undefined));
   await Effect.runPromise(Fiber.join(run));
-  expect(fixture.log).toEqual(["commit:stale"]);
+  expect(fixture.log).toEqual(["built:stale", "commit:stale"]);
   expect(fixture.active.get("stale")).toBe("owner");
   expect(fixture.published).toEqual([]);
   expect(fixture.rebuilds.pending()).toBe(false);
@@ -273,7 +274,7 @@ test("a build holds nothing; only its commit holds the plugin, with its executio
   await Effect.runPromise(
     fixture.rebuilds.activate("other" as AppId, "version-other" as VersionId),
   );
-  expect(fixture.log).toEqual(["commit:other", "published:other"]);
+  expect(fixture.log).toEqual(["built:other", "commit:other", "published:other"]);
   // An execution of the slow plugin that runs when its commit starts is waited for, and none
   // starts until the commit ends.
   const executing = Effect.runSync(Deferred.make<void>());
@@ -288,13 +289,15 @@ test("a build holds nothing; only its commit holds the plugin, with its executio
   );
   await until(() => fixture.log.includes("execution"));
   Effect.runSync(Deferred.succeed(building, undefined));
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  // Once built, its commit waits for the execution.
+  await until(() => fixture.log.includes("built:slow"));
   expect(fixture.log).not.toContain("commit:slow");
   Effect.runSync(Deferred.succeed(executing, undefined));
   await Effect.runPromise(Fiber.join(execution));
   await Effect.runPromise(Fiber.join(run));
-  expect(fixture.log.slice(2)).toEqual([
+  expect(fixture.log.slice(3)).toEqual([
     "execution",
+    "built:slow",
     "execution done",
     "commit:slow",
     "published:slow",
@@ -344,9 +347,5 @@ test("removing a plugin is its only change and forgets its rebuild", async () =>
   expect(fixture.rebuilds.held()).toEqual([]);
 });
 
-/** Wait until `done` holds, polling. */
-async function until(done: () => boolean) {
-  for (let attempt = 0; attempt < 500 && !done(); attempt++)
-    await new Promise((resolve) => setTimeout(resolve, 2));
-  expect(done()).toBe(true);
-}
+/** Wait until `done` holds. */
+const until = (done: () => boolean) => vi.waitFor(() => expect(done()).toBe(true));
