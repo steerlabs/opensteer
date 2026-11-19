@@ -537,23 +537,24 @@ function canonicalSource(kind: Exclude<CanonicalKind, "message" | "request">, ke
   switch (kind) {
     case "run":
       return sql`select id as source_id,thread_id,id as run_id,created_at,status,
-        null::text as attempt_id,null::text as node_id,null::text as title,true as visible
+        null::text as attempt_id,null::text as node_id,null::text as title,true as visible,null::text as preview
         from runs where id > ${key} order by id limit ${batchSize}`;
     case "node":
       return sql`select n.id as source_id,r.thread_id,n.run_id,n.started_at as created_at,n.status,
-        n.attempt_id,n.parent_node_id as node_id,left(n.title,192) as title,true as visible
+        n.attempt_id,n.parent_node_id as node_id,left(n.title,192) as title,true as visible,
+        case when n.status<>'running' then regexp_replace(n.result,'[[:cntrl:]]',' ','g') end as preview
         from execution_nodes n join runs r on r.id=n.run_id where n.id > ${key} order by n.id limit ${batchSize}`;
     case "assignment":
       return sql`select id as source_id,child_thread_id as thread_id,child_run_id as run_id,created_at,status,
-        null::text as attempt_id,null::text as node_id,left(objective,192) as title,true as visible
+        null::text as attempt_id,null::text as node_id,left(objective,192) as title,true as visible,null::text as preview
         from delegations where id > ${key} order by id limit ${batchSize}`;
     case "delegation":
       return sql`select id as source_id,parent_thread_id as thread_id,parent_run_id as run_id,coalesce(completed_at,created_at) as created_at,status,
-        null::text as attempt_id,null::text as node_id,left(objective,192) as title,true as visible
+        null::text as attempt_id,null::text as node_id,left(objective,192) as title,true as visible,null::text as preview
         from delegations where id > ${key} and result_status <> 'pending' order by id limit ${batchSize}`;
     case "app":
       return sql`select id as source_id,thread_id,run_id,created_at,null::text as status,
-        null::text as attempt_id,null::text as node_id,left(name,192) as title,true as visible
+        null::text as attempt_id,null::text as node_id,left(name,192) as title,true as visible,null::text as preview
         from apps where id > ${key} and thread_id is not null and latest_version > 0 and not deleting order by id limit ${batchSize}`;
   }
 }
@@ -576,7 +577,13 @@ async function deriveCards(
         jsonb_strip_nulls(jsonb_build_object('status',status,'title',
           case when octet_length(title)<=192 then title
           else (select left(title,n) from generate_series(48,192) n
-            where octet_length(left(title,n))<=192 order by n desc limit 1) end))
+            where octet_length(left(title,n))<=192 order by n desc limit 1) end,
+          -- A settled subagent's card says what it found, bounded as the live card is.
+          'preview',case when preview is null or preview='' then null
+            when octet_length(preview)<=512 then preview
+            else (select left(preview,n) from generate_series(1,512) n
+              where octet_length(left(preview,n))<=512 order by n desc limit 1) end,
+          'truncated',case when octet_length(preview)>512 then true end))
         from (${canonicalSource(kind, cursor.key)}) source order by source_id returning id
   `.execute(tx);
   const ids = page.rows.map((row) => row.id.slice(kind.length + 1));

@@ -694,6 +694,11 @@ test("resumes offline settlement of a Run with a large live node set", async () 
       from run_attempts cross join generate_series(1,140) n where run_id=${run.runId} and status='current'`.execute(
       database,
     );
+    await sql`insert into execution_nodes(id,run_id,attempt_id,kind,title,native_ref,status,started_at,ended_at,phases,result)
+      select 'nod_90000000-0000-4000-8000-000000000999', run_id, id, 'subagent', 'Trace the tap',
+        'fixture:done', 'completed', clock_timestamp(), clock_timestamp(), '[]'::jsonb,
+        ${"Lost in PayButton.tsx:42.\n" + "x".repeat(480)}
+      from run_attempts where run_id=${run.runId} and status='current'`.execute(database);
     await preparePersonalConversion(database);
     const stopped = new Error("Stop after the first node batch");
     await expect(
@@ -715,8 +720,16 @@ test("resumes offline settlement of a Run with a large live node set", async () 
     expect(await active()).toEqual({ count: "0" });
     const cards = await sql<{ count: string; maxBytes: number }>`select
       count(*)::text as count, max(octet_length(view->>'title')) as max_bytes
-      from transcript_items where run_id=${run.runId} and kind='node'`.execute(database);
+      from transcript_items where run_id=${run.runId} and kind='node'
+        and id<>'node:nod_90000000-0000-4000-8000-000000000999'`.execute(database);
     expect(cards.rows).toEqual([{ count: "140", maxBytes: 192 }]);
+    // A subagent that had settled before conversion keeps what it found on its card.
+    const found = await sql<{ view: { preview?: string; truncated?: boolean } }>`select view
+      from transcript_items where id='node:nod_90000000-0000-4000-8000-000000000999'`.execute(
+      database,
+    );
+    expect(found.rows[0]?.view.preview).toBe(`Lost in PayButton.tsx:42. ${"x".repeat(480)}`);
+    expect(found.rows[0]?.view.truncated).toBeUndefined();
   } finally {
     await fixture.close();
   }

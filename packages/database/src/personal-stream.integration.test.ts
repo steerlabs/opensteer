@@ -5,6 +5,7 @@ import { sql } from "kysely";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, test } from "vitest";
 import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
+import { publishExecutionNode } from "./execution-nodes.js";
 import { refreshRequestAttention } from "./personal-attention-store.js";
 import { refreshRequestState, requestInsert } from "./request-persistence.js";
 import { liveRequest, pendingEvent } from "./store.integration.test-support.js";
@@ -821,6 +822,49 @@ test("names a nested asker and the subagent it runs inside on the waiting Reques
       id: child.id,
       title: "Check webhook retries",
       within: { id: parent.id, title: "Trace the payment flow" },
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a settled subagent's card carries what it found", async () => {
+  const fixture = await createPersonalStateFixture("node-result-card");
+  const { database, run, attemptId } = fixture;
+  try {
+    const nodeId = createId("executionNode");
+    await database
+      .insertInto("executionNodes")
+      .values({
+        id: nodeId,
+        attemptId,
+        runId: run.runId,
+        status: "completed",
+        kind: "subagent",
+        effort: null,
+        phaseIndex: null,
+        phases: sql`'[]'::jsonb`,
+        title: "Trace the payment flow",
+        startedAt: new Date(),
+        endedAt: new Date(),
+        nativeRef: "fixture",
+        originCallId: null,
+        parentNodeId: null,
+        prompt: null,
+        result: "The tap is lost in PayButton.tsx:42, before Stripe confirm runs.",
+        sessionRef: null,
+        model: null,
+      })
+      .execute();
+    await commitPersonalMutation(database, (tx) => publishExecutionNode(tx, nodeId));
+    const card = await database
+      .selectFrom("transcriptItems")
+      .select("view")
+      .where("id", "=", `node:${nodeId}`)
+      .executeTakeFirstOrThrow();
+    expect(card.view).toMatchObject({
+      status: "completed",
+      preview: "The tap is lost in PayButton.tsx:42, before Stripe confirm runs.",
     });
   } finally {
     await fixture.close();

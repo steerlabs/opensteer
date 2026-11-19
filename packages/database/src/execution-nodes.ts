@@ -194,6 +194,7 @@ export async function publishExecutionNode(
         "executionNodes.status",
         "executionNodes.stopping",
         "executionNodes.title",
+        "executionNodes.result",
         "executionNodes.startedAt",
         "executionNodes.parentNodeId",
         "executionNodes.runId",
@@ -221,9 +222,11 @@ export async function publishExecutionNode(
       createdAt: row.startedAt,
       visible: true,
       isTurnStart: false,
+      // A settled subagent's row says what it found, as its card did on main.
       view: transcriptPreview({
         title: row.title,
         status: row.stopping && row.status === "running" ? "stopping" : row.status,
+        ...(row.status !== "running" && row.result ? { preview: row.result } : {}),
       }),
     });
     // Runs after the card's own staged write, so the subject carries its new revision.
