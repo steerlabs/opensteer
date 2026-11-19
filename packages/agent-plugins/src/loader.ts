@@ -169,23 +169,7 @@ export async function snapshotLocalServerPackage(input: {
   await mkdir(pluginData, { mode: 0o700, recursive: true });
   const issues: LocalServerPackageIssue[] = [];
   const launch = registration.launch;
-  const server = launch
-    ? await materializeStdio(
-        registration.name,
-        {
-          ...StdioServerSchema.parse({
-            type: "stdio",
-            command: launch.command,
-            args: launch.args,
-            env: launch.env,
-            cwd: launch.cwd,
-          }),
-        },
-        root,
-        await realpath(pluginData),
-        launch.secrets,
-      )
-    : materializeRemote(registration.name, { type: "streamable-http", url: registration.url! });
+  const server = await registeredServer(registration, root, await realpath(pluginData));
   const extension = {
     ...(registration.device ? { device: registration.device } : {}),
     ...(launch?.secrets ? { secrets: { [registration.name]: launch.secrets } } : {}),
@@ -202,6 +186,44 @@ export async function snapshotLocalServerPackage(input: {
       ...(Object.keys(extension).length ? { extensions: { "com.opensteer": extension } } : {}),
     }),
   });
+}
+
+/** The server a registration names, as it runs from `root` with its data in `pluginData`. */
+function registeredServer(
+  registration: LocalServerPackageRegistration,
+  root: string,
+  pluginData: string,
+): Promise<LocalServerPackageServer> | LocalServerPackageServer {
+  const launch = registration.launch;
+  return launch
+    ? materializeStdio(
+        registration.name,
+        StdioServerSchema.parse({
+          type: "stdio",
+          command: launch.command,
+          args: launch.args,
+          env: launch.env,
+          cwd: launch.cwd,
+        }),
+        root,
+        pluginData,
+        launch.secrets,
+      )
+    : materializeRemote(registration.name, { type: "streamable-http", url: registration.url! });
+}
+
+/**
+ * The server a local-server package registers in its own registration file, as it runs from
+ * `root`, a copy of the package written from verified bytes, with its data in `pluginData`.
+ */
+export async function packageRegisteredServer(
+  root: string,
+  pluginData: string,
+): Promise<LocalServerPackageServer> {
+  const registration = LocalServerPackageRegistrationSchema.parse(
+    JSON.parse(await readFile(join(root, localServerRegistrationFile), "utf8")),
+  );
+  return registeredServer(registration, root, pluginData);
 }
 
 async function loadSkills(

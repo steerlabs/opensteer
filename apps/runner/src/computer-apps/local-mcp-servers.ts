@@ -4,6 +4,7 @@ import { mergeEnvironment, selectEnvironment } from "@opensteer/shared/userEnvir
 import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { launchPluginPackage } from "../skills/plugin-cache.js";
+import { packageRegisteredServer, type LocalServerPackageServer } from "@opensteer/agent-plugins";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { spawnSupervised, type SupervisedProcess } from "@opensteer/harness";
 import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -132,7 +133,10 @@ export class LocalMcpServers {
         releasePackage = copy.remove;
         const data = path.join(this.#stateDirectory, "plugin-data", launch.pluginId);
         await mkdir(data, { recursive: true, mode: 0o700 });
-        launch = resolvePluginLaunch(launch, copy.root, data);
+        const root = await realpath(copy.root);
+        launch = resolvePluginLaunch(launch, root, data);
+        // What runs is what the verified package registers, however it was sent.
+        requireRegisteredLaunch(launch, await packageRegisteredServer(root, data));
       } catch (error) {
         await releasePackage?.();
         await this.#closed(
@@ -320,6 +324,38 @@ export function resolvePluginLaunch(
       PLUGIN_DATA: data,
     },
   };
+}
+
+/**
+ * Refuses a launch unless it is the one its package registers: the same program, arguments,
+ * folder and environment, or the same loopback address. The owner's secret values may fill only
+ * the environment slots the registration declares.
+ */
+export function requireRegisteredLaunch(
+  launch: LocalMcpLaunch,
+  registered: LocalServerPackageServer,
+): void {
+  const matches = (() => {
+    if (launch.type !== "stdio" || registered.type !== "stdio")
+      return (
+        launch.type === "streamable-http" &&
+        registered.type === "streamable-http" &&
+        launch.url === registered.url &&
+        Object.keys(launch.headers).length === 0
+      );
+    const slots = new Set((registered.secrets ?? []).map(({ name }) => name));
+    return (
+      launch.command === registered.command &&
+      launch.cwd === registered.cwd &&
+      launch.args.length === registered.args.length &&
+      launch.args.every((arg, index) => arg === registered.args[index]) &&
+      Object.entries(registered.env).every(([name, value]) => launch.env[name] === value) &&
+      Object.keys(launch.env).every(
+        (name) => Object.hasOwn(registered.env, name) || slots.has(name),
+      )
+    );
+  })();
+  if (!matches) throw new Error("This launch is not the one its package registers.");
 }
 
 function launchTransport(launch: LocalMcpLaunch): Session["transport"] {

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi, type Mock } from "vitest";
-import { pluginSnapshotDigest } from "@opensteer/agent-plugins";
+import { localServerRegistrationFile, pluginSnapshotDigest } from "@opensteer/agent-plugins";
 import { LocalMcpServers } from "../computer-apps/local-mcp-servers.js";
 
 /** State directories the fixtures made; each test file removes them after each test. */
@@ -41,8 +41,28 @@ export async function launchFixture(extra: { path: string; mode: number; bytes: 
       'require("node:fs").writeFileSync(process.env.PLUGIN_DATA+"/observed.json",JSON.stringify({cwd:process.cwd(),root:process.env.PLUGIN_ROOT,arg:process.argv[2]})); require("node:fs").writeFileSync(process.env.PLUGIN_ROOT+"/bin/server.cjs","rewritten by the server"); process.stdin.resume();',
     ),
   };
+  // The launch the package registers, as the Host writes it into every local-server package.
+  const registration = {
+    path: localServerRegistrationFile,
+    mode: 0o600,
+    bytes: Buffer.from(
+      JSON.stringify({
+        name: "test",
+        launch: {
+          command: "node",
+          args: ["${PLUGIN_ROOT}/bin/server.cjs", "${PLUGIN_DATA}/arg"],
+          secrets: [{ name: "TEST_TOKEN", title: "Test token" }],
+        },
+      }),
+    ),
+  };
   // `bin.cjs` sorts before `bin/` by path and after `bin` by name.
-  const files = [script, { path: "bin.cjs", mode: 0o600, bytes: Buffer.from("") }, ...extra];
+  const files = [
+    script,
+    { path: "bin.cjs", mode: 0o600, bytes: Buffer.from("") },
+    registration,
+    ...extra,
+  ];
   const digest = pluginSnapshotDigest(files);
   const snapshot = files.map(({ path, mode, bytes }) => ({
     path,
@@ -59,7 +79,14 @@ export async function launchFixture(extra: { path: string; mode: number; bytes: 
   mcp.attach(async (frame) => {
     frames.push(frame as (typeof frames)[number]);
   });
-  const open = (sessionId: string) =>
+  /** Opens a session of the registered launch, or of one changed from it. */
+  const open = (
+    sessionId: string,
+    changed: {
+      readonly args?: readonly string[];
+      readonly env?: Readonly<Record<string, string>>;
+    } = {},
+  ) =>
     mcp.open({
       type: "host.integrations.mcp.open" as const,
       serverId: "server_test",
@@ -68,10 +95,11 @@ export async function launchFixture(extra: { path: string; mode: number; bytes: 
         type: "stdio" as const,
         pluginId: "test",
         packageDigest: digest,
-        command: process.execPath,
+        command: "node",
         cwd: "${PLUGIN_ROOT}",
         args: ["${PLUGIN_ROOT}/bin/server.cjs", "${PLUGIN_DATA}/arg"],
         env: {},
+        ...changed,
       },
       packageSource: { url: "https://host/package", token: "test" },
     } as Parameters<typeof mcp.open>[0]);

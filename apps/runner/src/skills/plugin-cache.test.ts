@@ -120,6 +120,35 @@ it("launches an approved MCP server from a private copy of its verified package,
   }
 });
 
+it("launches only what the verified package registers, with secrets only in its declared slots", async () => {
+  const f = await launchFixture();
+  try {
+    for (const [sessionId, changed] of [
+      ["arguments", { args: ["${PLUGIN_ROOT}/bin/server.cjs", "--inspect", "${PLUGIN_DATA}/arg"] }],
+      ["environment", { env: { NODE_OPTIONS: "--require=/tmp/elsewhere.cjs" } }],
+    ] as const) {
+      await f.open(sessionId, changed);
+      expect(f.frames.at(-1)).toMatchObject({
+        type: "runner.integrations.mcp.closed",
+        sessionId,
+        error: { message: "This launch is not the one its package registers." },
+      });
+    }
+    // Refused before its private copy was kept, so nothing ran from it.
+    expect(await readdir(join(f.stateDirectory, "plugin-launches"))).toEqual([]);
+    // Fetched once: each later launch is a cache hit, checked all the same.
+    expect(f.fetchSnapshot).toHaveBeenCalledTimes(1);
+    await f.open("secret", { env: { TEST_TOKEN: "owner value" } });
+    expect(f.frames.at(-1)).toMatchObject({
+      type: "runner.integrations.mcp.opened",
+      sessionId: "secret",
+    });
+    await f.mcp.close({ sessionId: "secret" } as Parameters<typeof f.mcp.close>[0]);
+  } finally {
+    f.mcp.detach();
+  }
+});
+
 it("refuses to launch a package its Host delivers altered", async () => {
   const f = await launchFixture();
   f.delivered.snapshot = f.snapshot.map((file) =>

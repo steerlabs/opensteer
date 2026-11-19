@@ -13,7 +13,8 @@ afterEach(async () => {
 
 // Writes and verifies over 30,000 real files, which takes the integration lane's time.
 it("launches a package of the most files a package may hold", async () => {
-  const extra = Array.from({ length: maximumPluginPackageFiles - 2 }, (_, index) => ({
+  // The launch fixture's own files are its server, bin.cjs and its registration.
+  const extra = Array.from({ length: maximumPluginPackageFiles - 3 }, (_, index) => ({
     path: `files/${index}`,
     mode: 0o600,
     bytes: Buffer.alloc(0),
