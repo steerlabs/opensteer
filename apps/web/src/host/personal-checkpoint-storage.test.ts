@@ -1,11 +1,13 @@
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
-import { createPersonalStreamCache } from "@opensteer/client/host";
+import { createPersonalStreamCache, type HostSnapshot } from "@opensteer/client/host";
 import {
   checkpointDatabaseName,
   checkpointSessionMarker,
   dropOtherCheckpointFormats,
+  checkpointSessionMaxAgeMs,
   indexedDbCheckpointStorage,
+  keepCheckpointSession,
 } from "./personal-checkpoint-storage.js";
 
 const guard = { deploymentId: "dep", viewerId: "viewer", fence: 0 };
@@ -209,4 +211,148 @@ test("a late write from a window of an ended session never lands under the next 
   );
   expect(await storage.read(key("shell"))).toBeNull();
   expect(await storage.write(key("shell"), "mine", { ...guard, session: "session-2" })).toBe(true);
+});
+
+/** A window whose localStorage is this map, as every window of one origin shares it. */
+function sharedLocalStorage() {
+  const stored = new Map<string, string>();
+  vi.stubGlobal("window", {
+    localStorage: {
+      getItem: (name: string) => stored.get(name) ?? null,
+      setItem: (name: string, value: string) => void stored.set(name, value),
+      removeItem: (name: string) => void stored.delete(name),
+    },
+  });
+  return stored;
+}
+/** What the database holds on disk, read beside the storage: values and index entries. */
+async function onDisk(name = "checkpoints") {
+  return new Promise<{ values: number; index: number }>((resolve, reject) => {
+    const request = indexedDB.open(name, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("checkpoints");
+      request.result.createObjectStore("index");
+      request.result.createObjectStore("fences");
+    };
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const transaction = request.result.transaction(["checkpoints", "index"]);
+      const values = transaction.objectStore("checkpoints").count();
+      const index = transaction.objectStore("index").count();
+      transaction.oncomplete = () => {
+        request.result.close();
+        resolve({ values: values.result, index: index.result });
+      };
+    };
+  });
+}
+type Snapshot = Pick<HostSnapshot, "session" | "connection" | "deploymentId" | "sessionId">;
+const confirmedAt = Date.parse("2026-11-19T12:00:00Z");
+
+test("a marker past the session's longest life, or dated after now, loads nothing and sweeps", async () => {
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  sharedLocalStorage();
+  let now = confirmedAt;
+  const marker = checkpointSessionMarker("http://host", () => now);
+  marker.held("dep", "session-1");
+  const storage = indexedDbCheckpointStorage("checkpoints", marker.current, marker.holds);
+  expect(await storage.write(key("shell"), "private", guard)).toBe(true);
+  expect(await storage.read(key("shell"))).toBe("private");
+  // The device was offline while the session expired; the Host never said so.
+  now = confirmedAt + checkpointSessionMaxAgeMs;
+  expect(marker.current("dep")).toBeNull();
+  expect(await storage.read(key("shell"))).toBeNull();
+  expect(await storage.list()).toEqual([]);
+  expect(await storage.write(key("thread:a"), "late", guard)).toBe(false);
+  await storage.sweep();
+  expect(await onDisk()).toEqual({ values: 0, index: 0 });
+  // A clock set back makes a marker's age unknown: no session either.
+  now = confirmedAt - 1;
+  expect(marker.current("dep")).toBeNull();
+});
+
+test("the session ending by a 401 on any request removes the marker and sweeps at once", async () => {
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  sharedLocalStorage();
+  let now = confirmedAt;
+  const marker = checkpointSessionMarker("http://host", () => now);
+  const storage = indexedDbCheckpointStorage("checkpoints", marker.current, marker.holds);
+  let snapshot: Snapshot = { session: "checking", connection: "connecting", deploymentId: null };
+  const listeners = new Set<() => void>();
+  const emit = (next: Partial<Snapshot>) => {
+    snapshot = { ...snapshot, ...next };
+    for (const listener of listeners) listener();
+  };
+  keepCheckpointSession(
+    {
+      getSnapshot: () => snapshot,
+      subscribe: (listener) => (listeners.add(listener), () => listeners.delete(listener)),
+    },
+    marker,
+    storage,
+    () => now,
+  );
+  // Only a connection the Host confirmed records the session.
+  emit({
+    session: "authenticated",
+    connection: "offline",
+    deploymentId: "dep",
+    sessionId: "session-1",
+  });
+  expect(marker.current("dep")).toBeNull();
+  emit({ connection: "connected" });
+  expect(marker.current("dep")).toBe("session-1");
+  // Each later confirmation renews it, so a session in use never ages out.
+  now = confirmedAt + checkpointSessionMaxAgeMs - 1_000;
+  emit({ connection: "connected" });
+  now = confirmedAt + checkpointSessionMaxAgeMs + 1_000;
+  expect(marker.current("dep")).toBe("session-1");
+  expect(await storage.write(key("shell"), "private", guard)).toBe(true);
+  // The client's answer to a 401 on any request (and to every other end) is this state.
+  emit({ session: "authentication-required" });
+  expect(marker.current("dep")).toBeNull();
+  await vi.waitFor(async () => expect(await onDisk()).toEqual({ values: 0, index: 0 }));
+});
+
+test("a start after the session expired offline deletes the database before anything reads it", async () => {
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  sharedLocalStorage();
+  let now = confirmedAt;
+  const marker = checkpointSessionMarker("http://host", () => now);
+  marker.held("dep", "session-1");
+  const before = indexedDbCheckpointStorage("checkpoints", marker.current, marker.holds);
+  expect(await before.write(key("shell"), "private", guard)).toBe(true);
+  expect(await onDisk()).toEqual({ values: 1, index: 1 });
+  now = confirmedAt + checkpointSessionMaxAgeMs;
+  const order: string[] = [];
+  const factory = indexedDB;
+  const deleteDatabase = factory.deleteDatabase.bind(factory);
+  const open = factory.open.bind(factory);
+  vi.spyOn(factory, "deleteDatabase").mockImplementation((name) => {
+    order.push(`delete ${name}`);
+    return deleteDatabase(name);
+  });
+  vi.spyOn(factory, "open").mockImplementation((name, version) => {
+    order.push(`open ${name}`);
+    return open(name, version);
+  });
+  const restarted = indexedDbCheckpointStorage("checkpoints", marker.current, marker.holds);
+  expect(await restarted.fences()).toBeDefined();
+  expect(order.slice(0, 2)).toEqual(["delete checkpoints", "open checkpoints"]);
+  vi.restoreAllMocks();
+  expect(await onDisk()).toEqual({ values: 0, index: 0 });
+});
+
+test("a write whose session ends before its transaction commits is refused there", async () => {
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  let asked = 0;
+  // The writer is asked once, then the sign-out in another window ends the session before the
+  // write's transaction runs (and that sign-out's own clear never lands).
+  const storage = indexedDbCheckpointStorage("checkpoints", () =>
+    asked++ === 0 ? "session-1" : null,
+  );
+  await storage.list().catch(() => undefined);
+  asked = 0;
+  expect(await storage.write(key("shell"), "late", guard)).toBe(false);
+  expect(await onDisk()).toEqual({ values: 0, index: 0 });
 });
