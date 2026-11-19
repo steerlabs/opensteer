@@ -96,10 +96,22 @@ const errors: unknown[] = [];
 const createdRequests: CreatePluginOAuthAttemptRequest[] = [];
 const providerEvents = new EventEmitter();
 
-type Kind = "managed" | "custom" | "mcp" | "metadata" | "confidential" | "unpinned";
-/** `confidential` declares `pkce: false` with a client secret; `unpinned` declares it without. */
+type Kind =
+  | "managed"
+  | "custom"
+  | "mcp"
+  | "metadata"
+  | "confidential"
+  | "unpinned"
+  | "discovered";
+/**
+ * `confidential` declares `pkce: false` with a client secret; `unpinned` declares it without;
+ * `discovered` declares it beside `discover`.
+ */
 const declared = (kind: Kind) =>
-  kind === "mcp" || kind === "metadata"
+  kind === "discovered"
+    ? `{discover: "${providerOrigin}/resource", scopes: ["read"], pkce: false, tokenEndpointAuthMethod: "client_secret_post"}`
+    : kind === "mcp" || kind === "metadata"
     ? `{discover: "${providerOrigin}/${kind === "metadata" ? "metadata-resource" : "resource"}", scopes: ["read"]}`
     : `{authorizationUrl: "${providerOrigin}/${kind}/authorize", tokenUrl: "${providerOrigin}/${kind}/token", scopes: ["read"]${kind === "confidential" ? `, pkce: false, tokenEndpointAuthMethod: "client_secret_post"` : kind === "unpinned" ? ", pkce: false" : ""}}`;
 const source = (kind: Kind, extraSite = false) => `
@@ -1137,6 +1149,13 @@ test("pkce: false signs in only with a client whose secret the Host holds, and s
   );
   expect(unpinned).toMatchObject({ status: "build-error" });
   expect(JSON.stringify(unpinned)).toContain("pkce: false needs a client secret");
+  // Discovery always signs in with PKCE: a discovered declaration that turns it off does not build.
+  const discovered = await service.install(
+    { kind: "files", name: `OAuth discovered ${randomUUID()}`, files: files("discovered") },
+    ownerContext,
+  );
+  expect(discovered).toMatchObject({ status: "build-error" });
+  expect(JSON.stringify(discovered)).toContain("pkce: false applies only to declared endpoints");
 
   const target = await install("confidential");
   const begin = async (client: { clientId: string; clientSecret?: string }) => {

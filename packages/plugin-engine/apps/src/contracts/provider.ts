@@ -162,6 +162,13 @@ export const OAuth2Config = Schema.Union([
     tokenUrl: Schema.optionalKey(Schema.Never),
     revocationUrl: Schema.optionalKey(Schema.Never),
     scopes: Schema.optionalKey(Schema.Array(Schema.String)),
+    /** A discovered server signs in with PKCE; only declared endpoints may turn it off. */
+    pkce: Schema.optionalKey(
+      Schema.Never.annotate({
+        message:
+          "pkce: false applies only to declared endpoints: declare authorizationUrl, tokenUrl and scopes with a secret tokenEndpointAuthMethod instead of discover.",
+      }),
+    ),
   }),
   Schema.Struct({
     ...oauthOptions,
