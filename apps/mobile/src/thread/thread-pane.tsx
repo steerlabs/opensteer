@@ -130,7 +130,6 @@ import { RunningNowCapsule } from "./running-now.js";
 import { RunPageSlot } from "./run-page.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { useWaitingEdit } from "./waiting-edit.js";
-import { KeptEdits } from "./kept-edits.js";
 import { useAskDecisions, WaitingAskDock, WaitingEditBar } from "./waiting-dock.js";
 import { AnswerPill } from "./answer-pill.js";
 import { WaitingInputs } from "./waiting-inputs.js";
@@ -474,20 +473,11 @@ function ThreadPaneForUser(
   const waiting = useWaitingInputs(hostClient, threadId, false);
   // A waiting message is held for editing only while its task is in front of
   // the reader: under another screen, out of view or in the background, it goes on.
-  // Unsent waiting edits are kept under this login until the person saves, moves or discards them.
-  const unsentRecords = useMemo(
-    () =>
-      client.unsentEdits && viewerUserId !== null
-        ? { edits: client.unsentEdits, scope: JSON.stringify([deploymentId, viewerUserId]) }
-        : null,
-    [client.unsentEdits, deploymentId, viewerUserId],
-  );
   const editing = useWaitingEdit(
     hostClient,
     threadId,
     waiting,
     navigationFocused && inView && appForeground,
-    unsentRecords,
   );
   const askDecisions = useAskDecisions(hostClient);
   const [focusDraft, setFocusDraft] = useState(0);
@@ -495,17 +485,14 @@ function ThreadPaneForUser(
   const waitingEdit = editing.edit;
   const editingReply = waitingEdit !== null && waitingEdit.messageId === replyEditMessage;
   const drafts = client.drafts;
-  const sendAsNewTo = useCallback(
-    async (
-      target: string,
-      words: { readonly parts: readonly ContentPart[]; readonly text: string },
-    ) => {
+  const sendAsNew = useCallback(
+    async (words: { readonly parts: readonly ContentPart[]; readonly text: string }) => {
       if (viewerUserId === null) return false;
       // Files go with it by reference; a page or app it named was this edit's alone.
       const attachments = words.parts.filter(
         (part): part is ArtifactContentPart => part.type === "artifact",
       );
-      const complete = drafts.reserveEdit(deploymentId, viewerUserId, target);
+      const complete = drafts.reserveEdit(deploymentId, viewerUserId, threadId);
       const kept = await complete((draft) => {
         const held = draft?.attachments ?? [];
         return {
@@ -527,15 +514,10 @@ function ThreadPaneForUser(
           ],
         };
       });
-      if (kept && target === threadId) setFocusDraft((value) => value + 1);
+      if (kept) setFocusDraft((value) => value + 1);
       return kept;
     },
     [deploymentId, drafts, threadId, viewerUserId],
-  );
-  const sendAsNew = useCallback(
-    (words: { readonly parts: readonly ContentPart[]; readonly text: string }) =>
-      sendAsNewTo(threadId, words),
-    [sendAsNewTo, threadId],
   );
 
   const thread = snapshot.thread;
@@ -1591,17 +1573,6 @@ function ThreadPaneForUser(
   const editingInPlace = editing.edit !== null;
   const dock = (
     <>
-      <KeptEdits
-        hostClient={hostClient}
-        moveToComposer={sendAsNew}
-        records={unsentRecords}
-        threadId={threadId}
-        waitingIds={
-          threadDetail.synchronized
-            ? (threadDetail.queueInputs ?? waiting?.map(({ messageId }) => messageId))
-            : undefined
-        }
-      />
       {/* An older window can't say what runs now; back at the latest, it returns. */}
       {snapshot.user === null || voiceThread || historical || editingInPlace ? null : (
         <RunningNowCapsule

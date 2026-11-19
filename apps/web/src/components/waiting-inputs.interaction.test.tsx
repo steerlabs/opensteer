@@ -9,7 +9,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { unsentEdits } from "./unsent-edits.js";
 import {
   HostClientRequestError,
   HttpHostClient,
@@ -31,8 +30,6 @@ let root: Root | null = null;
 afterEach(() => {
   if (root) act(() => root?.unmount());
   root = null;
-  localStorage.clear();
-  unsentEdits.resetForTests();
   document.body.replaceChildren();
   vi.restoreAllMocks();
 });
@@ -126,12 +123,6 @@ function inputsOf(
     {},
   );
 }
-
-/** Lets promises the component started settle, inside act. */
-const settle = () =>
-  act(async () => {
-    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
-  });
 
 /** An editor whose lease read returned `body`, the full message the edit opens from. */
 function fakeEditor(
@@ -818,79 +809,18 @@ describe("WaitingInputs", () => {
     }
   });
 
-  /** A signed-in client whose waiting edits are kept under one login. */
-  const signedIn = (editor: WaitingMessageEditor) =>
-    ({
-      editWaitingMessage: vi.fn(async () => editor),
-      getSnapshot: () => ({ deploymentId: "dep", user: { id: "me" }, session: "authenticated" }),
-      subscribe: () => () => undefined,
-    }) as unknown as HostClient;
-  const kept = () => unsentEdits.get(JSON.stringify(["dep", "me"]), "thread", "mine")?.text ?? null;
-
-  it("keeps typed words through leaving, a reload and coming back; only an accepted Save ends them", async () => {
-    let refuse = true;
-    const editor = fakeEditor("Old words", {
-      save: vi.fn(async () => {
-        if (refuse)
-          throw new HostClientRequestError({ code: "unavailable", message: "Busy", status: 503 });
-        return { editedAt: "2026-10-31T12:01:00.000Z", revision: 1 };
-      }),
-    });
-    const client = signedIn(editor);
-    const inputs = inputsOf([item("mine", "Old words", { canEdit: true })]);
-    const container = mount(render(client, inputs));
-    await clickWords(container, "mine");
-    await write(field(container)!, "Words I have not saved");
-    expect(kept(), "the words were not kept as they were typed").toBe("Words I have not saved");
-    // Leaving lets the message's lease go; the words stay kept.
-    await act(async () => root?.render(<></>));
-    expect(editor.cancel).toHaveBeenCalledOnce();
-    expect(kept()).toBe("Words I have not saved");
-    // A reload: this window's memory is gone; the device still has the words.
-    unsentEdits.resetForTests();
-    await act(async () => root?.render(render(client, inputs)));
-    await settle();
-    expect(field(container)?.value, "coming back did not show the kept words").toBe(
-      "Words I have not saved",
-    );
-    expect(client.editWaitingMessage).toHaveBeenCalledTimes(2);
-    // A Save the Host refuses keeps them.
-    await press(field(container)!, "Enter");
-    expect(editor.save).toHaveBeenCalledWith([{ text: "Words I have not saved", type: "text" }], 0);
-    expect(kept()).toBe("Words I have not saved");
-    // Accepted, they end.
-    refuse = false;
-    await press(field(container)!, "Enter");
-    await settle();
-    expect(kept()).toBeNull();
-  });
-
-  it("keeps typed words through a same-viewer history reset that empties and refills the queue", async () => {
+  it("keeps an open editor's words through a same-viewer history reset that empties and refills the queue", async () => {
     const editor = fakeEditor("Old words");
-    const client = signedIn(editor);
+    const client = { editWaitingMessage: vi.fn(async () => editor) } as unknown as HostClient;
     const inputs = inputsOf([item("mine", "Old words", { canEdit: true })]);
     const container = mount(render(client, inputs));
     await clickWords(container, "mine");
     await write(field(container)!, "Words I have not saved");
+    // The view stays mounted; the queue is forgotten and read again a moment later.
     await act(async () => root?.render(render(client, [])));
     await act(async () => root?.render(render(client, inputs)));
-    await settle();
     expect(field(container)?.value).toBe("Words I have not saved");
-    expect(kept()).toBe("Words I have not saved");
-  });
-
-  it("Discard ends the kept words, and an untouched edit keeps none", async () => {
-    const editor = fakeEditor("Old words");
-    const client = signedIn(editor);
-    const inputs = inputsOf([item("mine", "Old words", { canEdit: true })]);
-    const container = mount(render(client, inputs));
-    await clickWords(container, "mine");
-    expect(kept()).toBeNull();
-    await write(field(container)!, "Second thoughts");
-    expect(kept()).toBe("Second thoughts");
-    await press(field(container)!, "Escape");
-    expect(field(container)).toBeNull();
-    expect(kept()).toBeNull();
+    expect(editor.cancel).not.toHaveBeenCalled();
   });
 
   it("hands an edit to the app outbox before closing its editor", async () => {

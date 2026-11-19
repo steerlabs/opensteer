@@ -85,7 +85,6 @@ import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { Icon } from "./icon.js";
 import type { ComposerQuote } from "./composer.js";
 import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
-import { KeptEdits } from "./kept-edits.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
 import { useVoiceOn } from "@opensteer/client/react";
 import { VoiceStart } from "./voice.js";
@@ -186,7 +185,6 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
           runQueue={transcript.runQueue}
           detailCurrent={transcript.synchronized}
           repairs={transcript.repairs ?? 0}
-          queueInputs={transcript.queueInputs}
         />
       ) : null}
     </Gated>
@@ -207,8 +205,6 @@ interface ThreadViewProps {
   detailCurrent?: boolean;
   /** Counts the Host's repairs of this conversation: each replaced the rows on screen. */
   repairs?: number;
-  /** Every waiting message's id, as the Host's queue lists them, once the conversation is current. */
-  queueInputs?: readonly string[] | undefined;
   runQueue?: readonly import("@opensteer/client/host").RunQueueEntry[];
   environmentStatus: EnvironmentStatus;
   executionPlacements: ThreadPlacementOption[];
@@ -243,7 +239,6 @@ function ThreadView({
   runQueue = noRuns,
   detailCurrent = true,
   repairs = 0,
-  queueInputs,
   thread,
 }: ThreadViewProps) {
   const teamSource = useTaskSourceView(thread.teamOrigin);
@@ -1042,16 +1037,6 @@ function ThreadView({
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
 
-  /* ---- Words kept from a waiting message no longer waiting ---- */
-
-  // Every waiting message's id once the conversation is current: kept words whose message is not
-  // among them are shown with their choices (send as new, move to the message box, discard).
-  const waitingIds = useMemo(
-    () =>
-      detailCurrent ? (queueInputs ?? inputQueue?.items.map((item) => item.message.id)) : undefined,
-    [detailCurrent, inputQueue, queueInputs],
-  );
-
   /* ---- Quoting a reply ---- */
 
   /** Quotes a message into this conversation's own composer, focused and unsent. */
@@ -1629,7 +1614,6 @@ function ThreadView({
                     }
                   />
                 ) : null}
-                <KeptEdits client={hostClient} threadId={thread.id} waitingIds={waitingIds} />
                 {voiceThread ? null : (
                   <InputSurface
                     autoContext={false}
