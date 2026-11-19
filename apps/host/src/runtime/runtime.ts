@@ -529,6 +529,7 @@ export async function createHostRuntime(
   let executionLeaseLoop: DeadlineDrain | undefined;
   let finishLoop: DeadlineDrain | undefined;
   let assignmentReturns: DeadlineDrain | undefined;
+  let reconcileMemoryPasses: (() => void) | undefined;
   let catalogConvergence: DeadlineDrain | undefined;
   let taskQuestions: TaskQuestionNotices | undefined;
   let pluginService: PluginService | undefined;
@@ -1761,6 +1762,7 @@ export async function createHostRuntime(
           liveText.finish(reaction, syncHead);
           realtime.wake(syncHead, new Set(["authority"]));
           if (reaction.attemptOnly) break;
+          reconcileMemoryPasses?.();
           teamRunEvents?.observe(reaction);
           notificationDispatcher?.dispatch(reaction);
           void toolActivity
@@ -2330,6 +2332,7 @@ export async function createHostRuntime(
             } finally {
               watchService?.runnerRegistered(identity);
               catalogConvergence?.wake();
+              reconcileMemoryPasses?.();
             }
           },
         ),
@@ -3262,6 +3265,9 @@ export async function createHostRuntime(
       });
     }
     await memoryPasses.reconcileMissing();
+    reconcileMemoryPasses = () => {
+      if (!memoryPasses.settled) void memoryPasses.reconcileMissing();
+    };
     void naming.reconcile().catch(reportThreadNamingError);
     await taskQuestions.reconcile();
     coordinator.start();
