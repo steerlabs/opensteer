@@ -4180,6 +4180,11 @@ export class HttpHostClient {
       this.#pageSessions.clear();
       this.#viewers.clear();
       this.#tabs.clear();
+      // The tab inventory a read installed went with the store: read it again for this viewer,
+      // or a read that landed before the viewer was known leaves the catalog empty until a push.
+      this.#resources.forget("tab");
+      this.#resources.forget("tab-layout");
+      this.#resources.resume();
       snapshot = { ...snapshot, browserSessions: [] };
     }
     // A dropped connection pauses the views being watched; it does not end them.
