@@ -27,9 +27,20 @@ export interface FencedReadsOptions {
   readonly maxBackoffMs?: number;
 }
 
+/** How a request runs: whether a retryable failure tries again by itself. */
+export interface FencedRequestOptions {
+  readonly observed?: () => boolean;
+  /**
+   * True (the default) for reads nobody waits on, which recover by themselves. False for a read a
+   * person asked for and is watching: a failure settles its request so the screen can say so.
+   */
+  readonly retry?: boolean;
+}
+
 interface Slot {
   job: FencedJob;
   observed: () => boolean;
+  retry: boolean;
   controller: AbortController | null;
   /** Something changed, or a newer request came, while it flew: run again when it lands. */
   dirty: boolean;
@@ -60,13 +71,16 @@ export class FencedReads {
    * once the current run lands. The promise settles when the key has no newer need left: it
    * rejects only on a failure that will not be retried.
    */
-  request(key: string, job: FencedJob, observed: () => boolean = () => true): Promise<void> {
+  request(key: string, job: FencedJob, options: FencedRequestOptions = {}): Promise<void> {
     if (this.#disposed) return Promise.resolve();
+    const observed = options.observed ?? (() => true);
+    const retry = options.retry ?? true;
     const promise = new Promise<void>((resolve, reject) => {
       const slot = this.#slots.get(key);
       if (slot) {
         slot.job = job;
         slot.observed = observed;
+        slot.retry = retry;
         slot.waiters.push({ resolve, reject });
         // A newer need supersedes what flies: its result is not installed.
         if (slot.controller) {
@@ -82,6 +96,7 @@ export class FencedReads {
       const created: Slot = {
         job,
         observed,
+        retry,
         controller: null,
         dirty: false,
         attempt: 0,
@@ -170,7 +185,8 @@ export class FencedReads {
         slot.controller = null;
         if (!slot.observed()) return this.#settle(key, slot);
         if (stale()) return this.#start(key, slot);
-        if (!classifyClientFailure(error).retryable) return this.#settle(key, slot, error);
+        if (!slot.retry || !classifyClientFailure(error).retryable)
+          return this.#settle(key, slot, error);
         const delay = Math.min(
           this.#options.maxBackoffMs,
           this.#options.minBackoffMs * 2 ** slot.attempt++,

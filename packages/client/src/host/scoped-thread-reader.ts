@@ -228,7 +228,7 @@ export class ScopedThreadReader implements ThreadViewSource {
       this.#reads.changed("requests");
       if (state.synchronized && pending?.length)
         void this.#reads
-          .request("requests", (read) => this.#readRequests(read), this.#observed)
+          .request("requests", (read) => this.#readRequests(read), { observed: this.#observed })
           .catch(() => undefined);
     }
     if (
@@ -359,7 +359,9 @@ export class ScopedThreadReader implements ThreadViewSource {
     if (state.synchronized && state.inputQueue && !missingQueueEntries(state))
       return state.inputQueue;
     if (!this.#observed()) throw new Error("This conversation is syncing.");
-    await this.#reads.request("queue", (read) => this.#readQueue(read), this.#observed);
+    await this.#reads.request("queue", (read) => this.#readQueue(read), {
+      observed: this.#observed,
+    });
     const now = this.#detail.transcript.getSnapshot();
     if (!now.inputQueue) throw new Error("The conversation changed while reading its queue.");
     return now.inputQueue;
@@ -404,10 +406,12 @@ export class ScopedThreadReader implements ThreadViewSource {
       (anchor !== undefined ? !state.items.has(anchor) : !state.newest)
     )
       void this.#reads
-        .request("history", (read) => this.#readHistory(read, { mode: "anchor" }), this.#observed)
+        .request("history", (read) => this.#readHistory(read, { mode: "anchor" }), {
+          observed: this.#observed,
+        })
         .catch(() => undefined);
     for (const [kind, depth] of this.#overlayDepth)
-      if (depth > 0) void this.#requestOverlays(kind).catch(() => undefined);
+      if (depth > 0) void this.#requestOverlays(kind, true).catch(() => undefined);
   }
 
   setAnchor(itemId: string | undefined) {
@@ -421,10 +425,11 @@ export class ScopedThreadReader implements ThreadViewSource {
   history(mode: "earlier" | "newer" | "around" | "latest", aroundMessageId?: string) {
     const state = this.#detail.transcript.getSnapshot();
     if (!this.#observed() || !state.snapshot) return Promise.resolve();
+    // The person waits on this read: a failure is theirs to see and retry.
     return this.#reads.request(
       "history",
       (read) => this.#readHistory(read, { mode, aroundMessageId }),
-      this.#observed,
+      { observed: this.#observed, retry: false },
     );
   }
 
@@ -604,15 +609,14 @@ export class ScopedThreadReader implements ThreadViewSource {
     const loaded = this.#overlayLoaded.get(kind);
     const pages = loaded?.epoch === readEpoch(state) ? loaded.pages : 0;
     this.#overlayDepth.set(kind, Math.max(this.#overlayDepth.get(kind) ?? 0, pages + 1));
-    await this.#requestOverlays(kind);
+    await this.#requestOverlays(kind, false);
   }
 
-  #requestOverlays(kind: Overlay) {
-    return this.#reads.request(
-      `overlay:${kind}`,
-      (read) => this.#readOverlays(read, kind),
-      this.#observed,
-    );
+  #requestOverlays(kind: Overlay, retry: boolean) {
+    return this.#reads.request(`overlay:${kind}`, (read) => this.#readOverlays(read, kind), {
+      observed: this.#observed,
+      retry,
+    });
   }
 
   /** Reads `kind`'s pages past the cut until the depth the person loaded, or the end. */

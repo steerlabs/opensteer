@@ -62,7 +62,7 @@ it("retries a failed read with backoff while observed, and stops when it is not"
   vi.useFakeTimers();
   const { reads, answers, installed, job, settle } = harness();
   let observed = true;
-  void reads.request("requests", job(1), () => observed);
+  void reads.request("requests", job(1), { observed: () => observed });
   await settle();
   answers[0]!.reject(busy());
   await settle();
@@ -78,7 +78,7 @@ it("retries a failed read with backoff while observed, and stops when it is not"
   await settle();
   expect(installed).toEqual([1]);
 
-  void reads.request("requests", job(2), () => observed);
+  void reads.request("requests", job(2), { observed: () => observed });
   await settle();
   answers[3]!.reject(busy());
   await settle();
@@ -91,6 +91,15 @@ it("retries a failed read with backoff while observed, and stops when it is not"
     throw new HostClientRequestError({ code: "not_found", message: "Gone", status: 404 });
   });
   await expect(refused).rejects.toThrow("Gone");
+  // A read a person is watching reports a failure instead of retrying by itself.
+  const watched = reads.request(
+    "history",
+    async () => {
+      throw busy();
+    },
+    { retry: false },
+  );
+  await expect(watched).rejects.toThrow("Busy");
 });
 
 it("owns a multi-page read as one job that restarts from the first page after a repair", async () => {

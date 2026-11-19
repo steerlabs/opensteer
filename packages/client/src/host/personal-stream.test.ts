@@ -2281,6 +2281,7 @@ function taskPageResponse(
     doneAt?: string | null;
     title?: string;
     status?: "idle" | "running";
+    doneReason?: "quiet";
   }[],
   window: { nextBefore: string | null; totalItems: number },
 ) {
@@ -2299,6 +2300,7 @@ function taskPageResponse(
             status: row.status ?? "idle",
             doneAt: (row.doneAt ?? null) as null,
           }).thread,
+          doneReason: row.doneReason ?? null,
           askedAt: row.askedAt,
           environmentId,
         },
@@ -2430,52 +2432,157 @@ describe("task lists from the shell and its pages", () => {
       const ids = () => client.getSnapshot().tasks?.entries.map(({ thread }) => thread.id) ?? [];
       expect(ids()).toHaveLength(325);
       expect(ids()[0]).toBe(settled[0]!.id);
-      // The Host repairs the shell inline: the loaded window is read again, not dropped.
+      // The Host repairs the shell inline: the loaded window stays on screen and is read again.
       reads.length = 0;
       host.repairShell(settled, lists);
+      expect(ids()).toHaveLength(325);
       await vi.waitFor(() =>
-        expect(ids(), "the loaded window was not read again").toHaveLength(325),
+        expect(reads, "the loaded window was not read again").toEqual(
+          Array.from({ length: 12 }, (_, page) => `page-${page}`),
+        ),
       );
-      expect(reads).toEqual(Array.from({ length: 12 }, (_, page) => `page-${page}`));
+      await vi.waitFor(() => expect(ids()).toHaveLength(325));
     } finally {
       client.dispose();
     }
   });
 
-  it("a Done page read before a pushed move keeps the move, with its quiet reason and count", async () => {
-    const quiet = { ...task, id: createId("thread"), status: "idle" as const };
-    const host = scriptedHost({ tasks: [quiet], lists: { recentTaskIds: [quiet.id] } });
-    let answer!: (response: Response) => void;
+  it("pages every running task past the shell's window, however many continuations", async () => {
+    const shown = { ...task, id: createId("thread") };
+    const host = scriptedHost({
+      tasks: [shown],
+      lists: { activeTaskIds: [shown.id], activeNextBefore: "active-0" },
+    });
+    const reads: string[] = [];
     const client = scriptedClient(host, async (input) => {
       const url = new URL(String(input));
       if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
-      return new Promise<Response>((resolve) => (answer = resolve));
+      const before = JSON.parse(url.searchParams.get("input") ?? "{}").before as string;
+      reads.push(before);
+      const page = Number(before.split("-")[1]);
+      return taskPageResponse(
+        host,
+        Array.from({ length: 3 }, (_, index) => ({
+          id: createId("thread"),
+          askedAt: minutesBefore(10 + page * 3 + index),
+          status: "running" as const,
+        })),
+        { nextBefore: page < 2 ? `active-${page + 1}` : null, totalItems: 10 },
+      );
     });
     try {
       await client.load();
-      const opening = client.loadDoneTasks();
-      await vi.waitFor(() => expect(answer, "the Done page was never read").toBeDefined());
-      const page = taskPageResponse(
-        host,
-        [{ id: createId("thread"), askedAt: minutesBefore(500), doneAt: minutesBefore(400) }],
-        { nextBefore: null, totalItems: 1 },
+      await vi.waitFor(() =>
+        expect(client.getSnapshot().activeTasks, "the active pages stopped early").toHaveLength(10),
       );
+      expect(reads).toEqual(["active-0", "active-1", "active-2"]);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("a Load earlier in flight across a shell repair still reads to the depth asked for", async () => {
+    const settled = Array.from({ length: 25 }, (_, index) => ({
+      ...task,
+      id: createId("thread"),
+      status: "idle" as const,
+      askedAt: minutesBefore(index),
+    }));
+    const lists = { recentTaskIds: settled.map(({ id }) => id), nextBefore: "page-0" };
+    const host = scriptedHost({ tasks: settled, lists });
+    const answers: ((response: Response) => void)[] = [];
+    const pageIds = Array.from({ length: 100 }, () => createId("thread"));
+    const page = (index: number) =>
+      taskPageResponse(
+        host,
+        Array.from({ length: 25 }, (_, row) => ({
+          id: pageIds[index * 25 + row]!,
+          askedAt: minutesBefore(1_000 + index * 25 + row),
+        })),
+        { nextBefore: index < 3 ? `page-${index + 1}` : null, totalItems: 125 },
+      );
+    const client = scriptedClient(host, async (input) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+      return new Promise<Response>((resolve) => answers.push(resolve));
+    });
+    try {
+      await client.load();
+      const loading = client.loadEarlierTasks();
+      await vi.waitFor(() => expect(answers).toHaveLength(1));
+      host.repairShell(settled, lists);
+      answers[0]!(page(0));
+      // The page read before the repair is read again from the new cut, to the same depth.
+      for (let index = 0; index < 2; index++) {
+        await vi.waitFor(() => expect(answers.length).toBe(index + 2));
+        answers[index + 1]!(page(index));
+      }
+      await loading;
+      expect(client.getSnapshot().tasks?.entries).toHaveLength(75);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("Done follows pushed moves under any interleaving, and its count is the Host's", async () => {
+    const quiet = { ...task, id: createId("thread"), status: "idle" as const };
+    const older = {
+      id: createId("thread"),
+      askedAt: minutesBefore(500),
+      doneAt: minutesBefore(400),
+    };
+    const host = scriptedHost({ tasks: [quiet], lists: { recentTaskIds: [quiet.id] } });
+    const answers: ((response: Response) => void)[] = [];
+    const client = scriptedClient(host, async (input) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+      return new Promise<Response>((resolve) => answers.push(resolve));
+    });
+    const done = () => Object.values(client.getSnapshot().doneTasks)[0];
+    try {
+      await client.load();
+      const opening = client.loadDoneTasks();
+      await vi.waitFor(() => expect(answers, "the Done page was never read").toHaveLength(1));
       // The task goes quietly to Done after the page's cut, before its answer arrives.
       host.commit([
-        upsert("task", quiet.id, {
-          ...quiet,
-          revision: "2",
-          doneAt: time,
-          doneReason: "quiet",
-        }),
+        upsert("task", quiet.id, { ...quiet, revision: "2", doneAt: time, doneReason: "quiet" }),
       ]);
-      answer(page);
+      answers[0]!(taskPageResponse(host, [older], { nextBefore: null, totalItems: 1 }));
+      // The page from before the move is not shown: Done is read again.
+      await vi.waitFor(() => expect(answers, "Done was never read again").toHaveLength(2));
+      expect(done()).toBeUndefined();
+      const current = [
+        { id: quiet.id, askedAt: quiet.askedAt, doneAt: time, doneReason: "quiet" as const },
+        older,
+      ];
+      answers[1]!(taskPageResponse(host, current, { nextBefore: null, totalItems: 2 }));
       await opening;
-      const done = Object.values(client.getSnapshot().doneTasks)[0]!;
-      expect(done.entries.find(({ thread }) => thread.id === quiet.id)?.thread.doneReason).toBe(
+      expect(done()!.entries.find(({ thread }) => thread.id === quiet.id)?.thread.doneReason).toBe(
         "quiet",
       );
-      expect(done.window.totalItems).toBe(2);
+      expect(done()!.window.totalItems).toBe(2);
+
+      // An edit to a Done task leaves the count to the Host, which still says two.
+      host.commit([
+        upsert("task", older.id, {
+          ...task,
+          id: older.id,
+          status: "idle",
+          revision: "3",
+          askedAt: older.askedAt,
+          doneAt: older.doneAt,
+          title: "Renamed",
+        }),
+      ]);
+      await vi.waitFor(() => expect(answers).toHaveLength(3));
+      answers[2]!(taskPageResponse(host, current, { nextBefore: null, totalItems: 2 }));
+      await vi.waitFor(() => expect(done()!.window.totalItems).toBe(2));
+      // Reopened, it leaves Done at once; the Host's count follows on the next read.
+      host.commit([upsert("task", quiet.id, { ...quiet, revision: "4", doneAt: null })]);
+      expect(done()!.entries.some(({ thread }) => thread.id === quiet.id)).toBe(false);
+      await vi.waitFor(() => expect(answers).toHaveLength(4));
+      answers[3]!(taskPageResponse(host, [older], { nextBefore: null, totalItems: 1 }));
+      await vi.waitFor(() => expect(done()!.window.totalItems).toBe(1));
     } finally {
       client.dispose();
     }
