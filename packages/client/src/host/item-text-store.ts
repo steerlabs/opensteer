@@ -158,7 +158,7 @@ export class ItemTextStore {
    */
   keep(open: readonly { readonly runId: string; readonly streamId: string }[]) {
     const kept = new Set(open.map(({ runId, streamId }) => JSON.stringify([runId, streamId])));
-    for (const id of [...this.#items.keys()]) {
+    for (const id of this.#items.keys()) {
       const identity = this.#identities.get(id);
       const [, runId, , , streamId] = identity ? (JSON.parse(identity.key) as string[]) : [];
       if (kept.has(JSON.stringify([runId, streamId]))) continue;

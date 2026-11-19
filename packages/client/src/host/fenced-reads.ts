@@ -139,7 +139,7 @@ export class FencedReads {
 
   dispose() {
     this.#disposed = true;
-    for (const key of [...this.#slots.keys()]) this.stop(key);
+    for (const key of this.#slots.keys()) this.stop(key);
   }
 
   #bump(key: string) {
