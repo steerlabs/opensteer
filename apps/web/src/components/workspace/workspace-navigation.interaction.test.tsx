@@ -17,6 +17,7 @@ import {
   type TaskRow,
 } from "@opensteer/client/host";
 import {
+  BrowserProfileIdSchema,
   createId,
   TeamAgentRequestIdSchema,
   ThreadIdSchema,
@@ -298,7 +299,7 @@ describe("nothing but the person navigates", () => {
       client.openTab({
         kind: "page",
         url: "https://churn.example/",
-        profileId: client.getSnapshot().browserProfiles[0]!.id,
+        profileId: BrowserProfileIdSchema.parse(client.getSnapshot().browserProfiles[0]!.id),
       }),
     );
     await until("The new tab never joined the sidebar", () =>
