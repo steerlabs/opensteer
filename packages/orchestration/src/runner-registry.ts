@@ -1324,6 +1324,9 @@ export class RunnerRegistry {
     const revision = ++connection.catalogRequestRevision;
     const requestId = CorrelationIdSchema.parse(`catalog:${randomUUID()}`);
     const pending = deferred<readonly HarnessInstanceCatalog[]>();
+    // Abandonment can reject this while the send is still in flight, before the
+    // capture below awaits it; it must never be an unobserved rejection.
+    pending.promise.catch(() => undefined);
     let settled = false;
     connection.pendingCatalogs.set(requestId, {
       expected: new Map(inspected.map((harness) => [harness.id, harness.driverKind])),
@@ -1394,6 +1397,7 @@ export class RunnerRegistry {
         if (settled) return;
         if (connection.inFlightCatalogs.get(fingerprint) === entry)
           connection.inFlightCatalogs.delete(fingerprint);
+        connection.pendingCatalogs.delete(requestId);
         connection.abandonedCatalogs.add(requestId);
         if (connection.abandonedCatalogs.size > 64)
           connection.abandonedCatalogs.delete(connection.abandonedCatalogs.values().next().value!);

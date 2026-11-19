@@ -2248,6 +2248,35 @@ describe("Runner connection registry", () => {
       expect(connection.catalogs()).toHaveLength(2);
       await registry.close();
     });
+    it("abandons a catalog request whose send is still pending without an unobserved rejection", async () => {
+      const { catalogs, environmentId, peer, registry } = await attached();
+      const unhandled: unknown[] = [];
+      const record = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", record);
+      try {
+        const write = Promise.withResolvers<void>();
+        peer.sendGate = write.promise;
+        const caller = new AbortController();
+        const inspection = registry.inspectHarnesses(
+          environmentId,
+          [definition(createId("harnessInstance"))],
+          caller.signal,
+        );
+        await waitFor(() => catalogs().length === 1);
+        caller.abort(new Error("caller deadline"));
+        await expect(inspection).rejects.toThrow("caller deadline");
+        // The socket's write callback arrives in a later task, as in production.
+        await new Promise((resolve) => setImmediate(resolve));
+        write.resolve();
+        // Let any rejection that nobody observes surface before checking.
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", record);
+        await registry.close();
+      }
+    });
     it("abandons a catalog request whose only waiter gave up, and drops its late reply", async () => {
       const { answer, catalogs, environmentId, registry } = await attached();
       const harnesses = [definition(createId("harnessInstance"))];
@@ -2351,6 +2380,8 @@ class MemoryRunnerPeer implements RunnerPeer {
       }
     | undefined;
   readonly #onSend: (() => void) | undefined;
+  /** Holds every send until it resolves, as a socket whose write callback is late. */
+  sendGate: Promise<void> | undefined;
   constructor(id: string, onSend?: () => void) {
     this.id = id;
     this.#onSend = onSend;
@@ -2364,6 +2395,7 @@ class MemoryRunnerPeer implements RunnerPeer {
   async send(message: HostToRunnerMessage): Promise<void> {
     this.messages.push(message);
     this.#onSend?.();
+    await this.sendGate;
   }
 }
 class RejectingRunnerPeer implements RunnerPeer {
