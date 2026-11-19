@@ -440,7 +440,7 @@ integration("MCP servers on a computer", () => {
       });
       await waitForCondition(async () => !alive(edited), 15_000);
       const file = await allowAgain(
-        /^Changed since you allowed it: server\.cjs [\d.]+ KB → [\d.]+ KB, line \d+ now “\/\/ tuned”\. Allowing it covers/u,
+        /^Changed since you allowed it: changed server\.cjs \([\d.]+ KB → [\d.]+ KB\)\. Allowing it covers/u,
       );
       expect(said(await call("echo", { text: "edited" }))).toBe("echo: edited");
       record("installed with a changed file", { edited, ...file });

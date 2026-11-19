@@ -108,12 +108,19 @@ describe("the approval Request of a local server", () => {
     );
   });
 
-  it("says which files changed since it was allowed, by how much, and the first changed line", async () => {
-    const approved = await registered({ "server.py": server, "lib/util.py": util, "old.py": "x" });
+  it("says which files changed since it was allowed and their sizes, never what they say", async () => {
+    const approved = await registered({
+      "server.py": server,
+      "lib/util.py": util,
+      "old.py": "x",
+      ".env": "TOKEN=old-secret-value\n",
+    });
     const edited = await registered({
       "server.py": "import tv\nprint('on')\ntv.reboot()\n",
       "lib/util.py": "def volume(level):\n    return min(level, 40)\n",
-      "new.py": "import os\n",
+      "new.py": "API_KEY = 'sk-live-new-secret'\n",
+      ".env": "TOKEN=new-secret-value\n",
+      "bad\u202ename.py": "",
     });
     const packages = new Map([
       [approved.digest, approved.files],
@@ -126,7 +133,30 @@ describe("the approval Request of a local server", () => {
       files: async (digest) => packages.get(digest) ?? null,
     });
     expect(review).toBe(
-      "Changed since you allowed it: lib/util.py 36 B → 45 B, line 2 now “return min(level, 40)” (was “return level”); added new.py (10 B); removed old.py; server.py 22 B → 34 B, line 3 now “tv.reboot()”. Allowing it covers this command and the 3 files in its folder (89 B); a program it starts from elsewhere on this computer is covered by its command only.",
+      "Changed since you allowed it: changed .env (23 B → 23 B); added bad?name.py (0 B); changed lib/util.py (36 B → 45 B); added new.py (31 B); removed old.py (1 B); changed server.py (22 B → 34 B). Allowing it covers this command and the 5 files in its folder (133 B); a program it starts from elsewhere on this computer is covered by its command only.",
+    );
+    for (const said of ["secret", "TOKEN", "API_KEY", "reboot", "min(level"])
+      expect(review).not.toContain(said);
+  });
+
+  it("names at most eight changes, and how many more", async () => {
+    const files = (content: string) =>
+      Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`f${index}.py`, content]));
+    const approved = await registered(files("a"));
+    const edited = await registered(files("b"));
+    const packages = new Map([
+      [approved.digest, approved.files],
+      [edited.digest, edited.files],
+    ]);
+    expect(
+      await launchReview({
+        launch: edited.launch,
+        approvedLaunchDigest: localMcpLaunchDigest(approved.launch),
+        versions: [approved.digest, edited.digest],
+        files: async (digest) => packages.get(digest) ?? null,
+      }),
+    ).toMatch(
+      /^Changed since you allowed it: (changed f\d\.py \(1 B → 1 B\); ){7}changed f7\.py \(1 B → 1 B\); and 2 more\. /u,
     );
   });
 

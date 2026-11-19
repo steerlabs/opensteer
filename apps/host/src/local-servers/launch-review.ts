@@ -7,14 +7,15 @@ import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import { OpensteerError } from "@opensteer/core";
 
 const shownChanges = 8;
-const lineChars = 60;
-const textBytes = 1024 * 1024;
+const nameChars = 80;
 
 /**
  * What a person allows by allowing a local server's launch, and what changed since they last
- * allowed it, in terms they can judge: which files changed, by how much, and the first line that
- * did. An approval names one launch by digest, and the launch names its package by the digest
- * of its files (see pluginPackageManifest), so only a change to those reaches here.
+ * allowed it, in terms they can judge: which files were added, removed or changed, and their
+ * sizes. Never anything a file says: a changed line can hold a credential, and this text reaches
+ * the owner's review and approval card. An approval names one launch by digest, and the launch
+ * names its package by the digest of its files (see pluginPackageManifest), so only a change to
+ * those reaches here.
  */
 export async function launchReview(input: {
   readonly launch: LocalMcpLaunch;
@@ -62,7 +63,7 @@ export async function launchReview(input: {
   );
 }
 
-/** Each file added, removed or changed between two packages, in path order. */
+/** Each file added, removed or changed between two packages, in path order, by name and size. */
 export function fileChanges(
   before: readonly SnapshotFile[],
   after: readonly SnapshotFile[],
@@ -73,46 +74,26 @@ export function fileChanges(
   return paths.flatMap((path) => {
     const was = old.get(path);
     const now = next.get(path);
-    const name = path === registrationFile ? "its registration" : path;
+    const name = path === registrationFile ? "its registration" : fileName(path);
     if (!was) return [`added ${name} (${size(now!.bytes.byteLength)})`];
-    if (!now) return [`removed ${name}`];
-    if (was.bytes.equals(now.bytes))
-      return was.mode === now.mode
-        ? []
-        : [`${name} is now ${now.mode & 0o111 ? "executable" : "not executable"}`];
-    const line = firstChangedLine(was.bytes, now.bytes);
+    if (!now) return [`removed ${name} (${size(was.bytes.byteLength)})`];
+    const changed = !was.bytes.equals(now.bytes);
+    const mode = was.mode !== now.mode;
+    if (!changed && !mode) return [];
     return [
-      `${name} ${size(was.bytes.byteLength)} → ${size(now.bytes.byteLength)}${line ? `, ${line}` : ""}`,
+      `${changed ? "changed" : "mode changed"} ${name} (${
+        changed
+          ? `${size(was.bytes.byteLength)} → ${size(now.bytes.byteLength)}`
+          : size(now.bytes.byteLength)
+      }${changed && mode ? ", mode changed" : ""})`,
     ];
   });
 }
 
-function firstChangedLine(before: Buffer, after: Buffer): string | undefined {
-  const old = text(before);
-  const next = text(after);
-  if (old === undefined || next === undefined) return undefined;
-  const lines = (content: string) => content.replace(/\n$/u, "").split("\n");
-  const oldLines = lines(old);
-  const newLines = lines(next);
-  const index = newLines.findIndex((line, at) => line !== oldLines[at]);
-  if (index === -1) return `lines removed after line ${newLines.length}`;
-  return `line ${index + 1} now “${clip(newLines[index]!)}”${
-    index < oldLines.length ? ` (was “${clip(oldLines[index]!)}”)` : ""
-  }`;
-}
-
-function text(bytes: Buffer): string | undefined {
-  if (bytes.byteLength > textBytes || bytes.includes(0)) return undefined;
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return undefined;
-  }
-}
-
-function clip(line: string): string {
-  const flat = line.replace(/\s+/gu, " ").trim();
-  return flat.length > lineChars ? `${flat.slice(0, lineChars - 1)}…` : flat;
+/** A file's path as a person reads it: no control or direction characters, and bounded. */
+function fileName(path: string): string {
+  const shown = path.replace(/[\p{Cc}\p{Cf}]/gu, "?");
+  return shown.length > nameChars ? `…${shown.slice(-(nameChars - 1))}` : shown;
 }
 
 function size(bytes: number): string {
