@@ -1912,6 +1912,37 @@ describe("Runner connection registry", () => {
       expect(catalogs()).toHaveLength(1);
       await registry.close();
     });
+    it("abandons a request every caller gave up on, so the next one asks again", async () => {
+      const { answer, catalogs, environmentId, registry } = await attached();
+      const harnesses = [definition(createId("harnessInstance"))];
+      try {
+        const first = new AbortController();
+        const joined = new AbortController();
+        const dropped = registry.inspectHarnesses(environmentId, harnesses, first.signal);
+        const joining = registry.inspectHarnesses(environmentId, harnesses, joined.signal);
+        await waitFor(() => catalogs().length === 1);
+        first.abort(new Error("first deadline"));
+        await expect(dropped).rejects.toThrow("first deadline");
+        // One waiter remains, so the request still stands for it.
+        joined.abort(new Error("second deadline"));
+        await expect(joining).rejects.toThrow("second deadline");
+        const retry = registry.inspectHarnesses(
+          environmentId,
+          harnesses,
+          new AbortController().signal,
+          {
+            fresh: true,
+          },
+        );
+        await waitFor(() => catalogs().length === 2);
+        // The slow Runner's late reply to the abandoned request is dropped, not a fault.
+        await answer(0);
+        await answer(1);
+        await expect(retry).resolves.toHaveLength(1);
+      } finally {
+        await registry.close();
+      }
+    });
     it("keeps sign-in required across cache expiry but refreshes on request and profile changes", async () => {
       const { answer, catalogs, environmentId, registry } = await attached();
       const harness = definition(createId("harnessInstance"));
@@ -2173,7 +2204,7 @@ describe("Runner connection registry", () => {
       expect(connection.catalogs()).toHaveLength(2);
       await registry.close();
     });
-    it("cancels one catalog waiter without canceling connection-owned startup", async () => {
+    it("abandons a catalog request whose only waiter gave up, and drops its late reply", async () => {
       const { answer, catalogs, environmentId, registry } = await attached();
       const harnesses = [definition(createId("harnessInstance"))];
       const abandoned = new AbortController();
@@ -2181,14 +2212,16 @@ describe("Runner connection registry", () => {
       await waitFor(() => catalogs().length === 1);
       abandoned.abort(new Error("Settings view closed"));
       await expect(first).rejects.toThrow("Settings view closed");
-      const joined = registry.inspectHarnesses(
+      // Joining it would wait on a reply that may never come; a new request is sent.
+      const next = registry.inspectHarnesses(
         environmentId,
         harnesses,
         new AbortController().signal,
       );
-      expect(catalogs()).toHaveLength(1);
+      await waitFor(() => catalogs().length === 2);
       await answer(0);
-      await expect(joined).resolves.toHaveLength(1);
+      await answer(1);
+      await expect(next).resolves.toHaveLength(1);
       await registry.close();
     });
     it("settles connection-owned catalog startup when the registry closes", async () => {

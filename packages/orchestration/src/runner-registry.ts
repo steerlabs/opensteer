@@ -464,7 +464,12 @@ interface RunnerConnection {
    * about. Dispatch inspects live on every run, so a burst of runs on one
    * environment collapses into a single Runner round trip instead of N.
    */
-  readonly inFlightCatalogs: Map<string, Promise<readonly HarnessInstanceCatalog[]>>;
+  readonly inFlightCatalogs: Map<string, InFlightCatalog>;
+  /**
+   * Requests every waiter gave up on. A late reply to one is dropped instead of
+   * refused as stale, which would otherwise fault a Runner that was only slow.
+   */
+  readonly abandonedCatalogs: Set<string>;
   readonly catalogCache: Map<
     string,
     {
@@ -631,6 +636,7 @@ export class RunnerRegistry {
       },
       identity,
       inFlightCatalogs: new Map(),
+      abandonedCatalogs: new Set(),
       catalogCache: new Map(),
       preparingHarnesses: new Set(),
       catalogGeneration: 0,
@@ -1303,10 +1309,11 @@ export class RunnerRegistry {
     const generation = connection.catalogGeneration;
     const joined = connection.inFlightCatalogs.get(fingerprint);
     // A reconciliation always issues its own request; only a read may join one.
-    if (joined && type === "host.inspect-harnesses") return await withAbort(joined, signal);
+    if (joined && type === "host.inspect-harnesses") return await awaitCatalog(joined, signal);
     const revision = ++connection.catalogRequestRevision;
     const requestId = CorrelationIdSchema.parse(`catalog:${randomUUID()}`);
     const pending = deferred<readonly HarnessInstanceCatalog[]>();
+    let settled = false;
     connection.pendingCatalogs.set(requestId, {
       expected: new Map(inspected.map((harness) => [harness.id, harness.driverKind])),
       reject: pending.reject,
@@ -1330,6 +1337,7 @@ export class RunnerRegistry {
         // shared attempt against its own signal below.
         return await withAbort(pending.promise, this.#lifetime.signal);
       } finally {
+        settled = true;
         connection.pendingCatalogs.delete(requestId);
       }
     })();
@@ -1366,16 +1374,31 @@ export class RunnerRegistry {
     // Nothing must observe an unhandled rejection on the shared promise while
     // its only awaiters are racing it.
     attempt.catch(() => undefined);
+    const entry: InFlightCatalog = {
+      attempt,
+      waiters: 0,
+      // Every caller's own deadline passed with no reply: the request is
+      // abandoned, so the next attempt sends a new one instead of joining it.
+      abandon: () => {
+        if (settled) return;
+        if (connection.inFlightCatalogs.get(fingerprint) === entry)
+          connection.inFlightCatalogs.delete(fingerprint);
+        connection.abandonedCatalogs.add(requestId);
+        if (connection.abandonedCatalogs.size > 64)
+          connection.abandonedCatalogs.delete(connection.abandonedCatalogs.values().next().value!);
+        pending.reject(new Error("Harness catalog request abandoned"));
+      },
+    };
     if (!joined) {
-      connection.inFlightCatalogs.set(fingerprint, attempt);
+      connection.inFlightCatalogs.set(fingerprint, entry);
       const forget = () => {
-        if (connection.inFlightCatalogs.get(fingerprint) === attempt) {
+        if (connection.inFlightCatalogs.get(fingerprint) === entry) {
           connection.inFlightCatalogs.delete(fingerprint);
         }
       };
       void attempt.then(forget, forget);
     }
-    return await withAbort(attempt, signal);
+    return await awaitCatalog(entry, signal);
   }
   catalogForHarness(
     environmentId: EnvironmentId,
@@ -2425,6 +2448,7 @@ export class RunnerRegistry {
         break;
       case "runner.harness-catalog": {
         const pending = connection.pendingCatalogs.get(message.requestId);
+        if (!pending && connection.abandonedCatalogs.delete(message.requestId)) break;
         if (!pending) {
           throw new OpensteerError({
             code: "conflict",
@@ -3012,6 +3036,25 @@ async function withDeadline<T>(
     if (timer) clearTimeout(timer);
   }
 }
+interface InFlightCatalog {
+  readonly attempt: Promise<readonly HarnessInstanceCatalog[]>;
+  waiters: number;
+  abandon(): void;
+}
+
+/** Waits for a shared catalog request; the last waiter to give up abandons it. */
+async function awaitCatalog(
+  entry: InFlightCatalog,
+  signal: AbortSignal,
+): Promise<readonly HarnessInstanceCatalog[]> {
+  entry.waiters++;
+  try {
+    return await withAbort(entry.attempt, signal);
+  } finally {
+    if (--entry.waiters === 0) entry.abandon();
+  }
+}
+
 function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Aborted"));
   return new Promise<T>((resolve, reject) => {
