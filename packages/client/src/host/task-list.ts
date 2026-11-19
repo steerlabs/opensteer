@@ -543,6 +543,8 @@ export function taskWaitingReason(
     readonly requests?: Readonly<Record<string, readonly import("@opensteer/core").Request[]>>;
   },
   threadId: string,
+  /** The thread's own Runs, from its detail; the snapshot holds only optimistic ones. */
+  runs: readonly import("./client.js").RunQueueEntry[] = snapshot.runQueue,
 ): TaskWaitingReason | null {
   const thread =
     snapshot.threads.find((thread) => thread.id === threadId) ??
@@ -567,11 +569,11 @@ export function taskWaitingReason(
   if (helper && thread.status === "waiting")
     return { kind: "open-helper", label: `Waiting for ${assignmentTitle(helper, snapshot)}` };
   if (thread.inputQueuePaused) return { kind: "paused-queue", label: "Queue paused" };
-  const queued = snapshot.runQueue.some((entry) => entry.threadId === threadId);
+  const queued = runs.some((entry) => entry.threadId === threadId);
   if (!queued) return null;
   const preparing = threadStartHold({
     thread,
-    runQueue: snapshot.runQueue,
+    runQueue: runs,
     environments: snapshot.environments,
   });
   if (preparing) return { kind: "account-preparing", label: preparing };

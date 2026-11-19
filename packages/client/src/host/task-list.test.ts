@@ -20,9 +20,11 @@ import {
   taskAfter,
   taskRowLabel,
   taskTime,
+  taskWaitingReason,
   threadRequester,
   type TaskRow,
 } from "./task-list.js";
+import { withAccountPreparing } from "../test-support/thread-activity-scenarios.js";
 import { liveWork } from "./surfaces.js";
 
 const now = Date.parse("2026-10-15T12:00:00.000Z");
@@ -559,4 +561,44 @@ it("keeps Needs you visible when its decision is outside the loaded page", () =>
     [...rows.working, ...rows.ready, ...rows.done].find((row) => row.threadId === task.thread.id)
       ?.tone,
   ).toBe("needs-you");
+});
+
+describe("taskWaitingReason", () => {
+  it("says the account is getting ready from the thread's own Runs, which a real snapshot lacks", async () => {
+    const client = new MockHostClient({ latencyMs: 0 });
+    await client.load();
+    const base = client.getSnapshot();
+    const thread = base.threads.find(
+      ({ id, harnessInstanceId }) =>
+        base.harnesses.some((harness) => harness.id === harnessInstanceId) &&
+        !Object.values(base.assignments).some(({ parentThreadId }) => parentThreadId === id) &&
+        !base.waitingRequests.some(({ request }) => request.originatingThreadId === id),
+    )!;
+    const harness = base.harnesses.find(({ id }) => id === thread.harnessInstanceId)!;
+    const snapshot: HostSnapshot = {
+      ...base,
+      runQueue: [],
+      environments: withAccountPreparing(
+        base.environments.map((environment) => ({ ...environment, connected: true })),
+        harness,
+      ),
+      threads: base.threads.map((candidate) =>
+        candidate.id === thread.id
+          ? { ...candidate, status: "waiting" as const, inputQueuePaused: false }
+          : candidate,
+      ),
+    };
+    const queued = {
+      id: createId("run"),
+      threadId: thread.id,
+      status: "queued" as const,
+      createdAt: new Date().toISOString(),
+      runOrdinal: 1,
+    };
+    expect(taskWaitingReason(snapshot, thread.id)).toBeNull();
+    expect(taskWaitingReason(snapshot, thread.id, [queued])).toMatchObject({
+      kind: "account-preparing",
+    });
+    client.dispose();
+  });
 });
