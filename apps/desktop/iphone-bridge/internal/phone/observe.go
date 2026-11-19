@@ -3,6 +3,7 @@ package phone
 import (
 	"context"
 	"encoding/base64"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -146,7 +147,6 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	if err = before.safe(); err != nil {
 		return nil, err
 	}
-	foreground, _ := s.backend.Foreground(ctx)
 	png, err := s.backend.Capture(ctx, before.uniqueID)
 	if err != nil {
 		return nil, err
@@ -158,6 +158,10 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	g.DisplayID = before.DisplayID
 	g.DisplayUniqueID = before.uniqueID
 	g.Rotation = before.Rotation
+	foreground, err := s.backend.Foreground(ctx)
+	if err != nil {
+		slog.Debug("bridge.native-error", "err", err, "reason", string(Classify(err, wire.NativeServiceFailed).Code))
+	}
 	axCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	ax, axErr := s.backend.AX(axCtx)
 	cancel()
@@ -167,16 +171,7 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	if axErr != nil {
 		ax = AXSnapshot{Nodes: []AXNode{}, Coverage: AXCoverage{CoordinateSpace: "unqualified", Status: "unavailable", Reason: "accessibility-unavailable"}}
 	}
-	current, _ := s.backend.Foreground(ctx)
-	if foreground != nil && current != nil && foreground.AppID != current.AppID {
-		return nil, wire.Fail(wire.StaleObservation)
-	}
-	for _, reading := range []*Foreground{foreground, current} {
-		if reading != nil && ax.Foreground != nil && ax.Foreground.AppID != reading.AppID {
-			return nil, wire.Fail(wire.StaleObservation)
-		}
-	}
-	if foreground == nil || current == nil {
+	if foreground == nil {
 		foreground = ax.Foreground
 	}
 	after, err := s.backend.State(ctx)

@@ -145,15 +145,6 @@ func (s *screenSession) perform(ctx context.Context, p *wire.PerformParams, guar
 			result.CompletedSteps++
 			continue
 		}
-		if a.Target != nil {
-			image, err := s.backend.Capture(ctx, state.uniqueID)
-			if err != nil {
-				return fail(err)
-			}
-			if !captureMatches(image, o.Geometry) {
-				return fail(wire.Fail(wire.StaleObservation))
-			}
-		}
 		conn, close, err := openInput(ctx, s.backend)
 		if err != nil {
 			return fail(err)

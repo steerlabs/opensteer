@@ -50,8 +50,9 @@ func scrub(value string) string {
 }
 
 func Open(path string) (*slog.Logger, io.Closer, error) {
+	// By default diagnostics go to stderr, which the desktop writes to its own rotating log.
 	if path == "" {
-		return slog.New(slog.NewJSONHandler(io.Discard, nil)), io.NopCloser(strings.NewReader("")), nil
+		return newLogger(os.Stderr), io.NopCloser(strings.NewReader("")), nil
 	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
 	if err != nil {
@@ -71,7 +72,11 @@ func Open(path string) (*slog.Logger, io.Closer, error) {
 		f.Close()
 		return nil, nil, errors.New("cannot restrict debug log")
 	}
-	handler := slog.NewJSONHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug, ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+	return newLogger(f), f, nil
+}
+
+func newLogger(w io.Writer) *slog.Logger {
+	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug, ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
 		switch a.Key {
 		case slog.TimeKey, slog.LevelKey:
 			return a
@@ -94,5 +99,5 @@ func Open(path string) (*slog.Logger, io.Closer, error) {
 			return slog.Attr{}
 		}
 	}})
-	return slog.New(handler), f, nil
+	return slog.New(handler)
 }

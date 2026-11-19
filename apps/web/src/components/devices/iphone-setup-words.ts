@@ -394,10 +394,13 @@ export function iphoneSetupWords(
     case "phone-in-use":
     case "input-media-conflict":
       return {
-        cue: "On this Mac",
-        detail: "Quit Xcode or any other tool connected to the iPhone.",
+        detail: "Something else is using the iPhone, such as Xcode or an earlier setup.",
         recovery: "check",
-        title: "Another app is using the iPhone",
+        steps: [
+          "Quit Xcode or any other app connected to the iPhone, then try again.",
+          "Still busy? Restart the iPhone, unlock it, and try again.",
+        ],
+        title: "The iPhone is busy",
         waiting: "Waiting for the iPhone to be free…",
         yours: true,
       };

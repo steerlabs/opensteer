@@ -601,7 +601,7 @@ describe("iPhone screen driver", () => {
     expect(f.bridge.effects[0]?.actions).toEqual([{ kind: "launch", appId: "example.app" }]);
   });
 
-  it("hides unknown lock state and self-app content, and maps native readiness reasons", async () => {
+  it("hides unknown lock state and self-app content but not an unknown front app, and maps native readiness reasons", async () => {
     const f = fixture();
     const context = f.context();
     f.bridge.observation = native({
@@ -622,6 +622,12 @@ describe("iPhone screen driver", () => {
       (await f.connection.observe(context, observeParams)).observation.screenshotUnavailable,
     ).toBe("opensteer-app");
     expect(f.events.at(-1)).toMatchObject({ actions: ["navigate", "wait"] });
+    f.bridge.observation = native({ foreground: null });
+    expect((await f.connection.observe(context, observeParams)).observation).toMatchObject({
+      foreground: null,
+      screenshot: { mime: "image/jpeg" },
+      screenshotUnavailable: null,
+    });
     f.bridge.target(f.a.deviceId, 1, "phone-locked");
     expect(f.events.at(-1)).toMatchObject({
       type: "runner.integrations.device-status",

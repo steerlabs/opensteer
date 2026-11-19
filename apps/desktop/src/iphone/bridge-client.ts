@@ -47,15 +47,20 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
   #closing: Promise<void> | undefined;
   #bootId: string | undefined;
   #sequence = 0;
-  constructor(process: SupervisedProcess) {
+  constructor(process: SupervisedProcess, log: (line: string) => void = () => undefined) {
     this.#process = process;
     process.child.stdin.on("error", () => this.#fail());
     void this.#read().catch(() => this.#fail());
-    // Native diagnostics are deliberately discarded, including on malformed IPC.
+    // The bridge scrubs device identifiers from its diagnostics before writing them.
     void (async () => {
-      for await (const _chunk of process.stderr) {
-        /* drain */
+      const text = new TextDecoder();
+      let partial = "";
+      for await (const chunk of process.stderr) {
+        const lines = (partial + text.decode(chunk as Uint8Array, { stream: true })).split("\n");
+        partial = lines.pop()!.slice(0, 16_384);
+        for (const line of lines) if (line) log(line);
       }
+      if (partial) log(partial);
     })().catch(() => this.#fail());
     void process.exited.then(
       () => this.#fail(),
@@ -68,6 +73,7 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
     privateRoot: string;
     imageRoots: readonly string[];
     environment: Readonly<Record<string, string>>;
+    log?: (line: string) => void;
   }): Promise<{ client: IphoneBridgeClient; images: { handle: string; build: string }[] }> {
     const process = spawnSupervised({
       executable: options.binary,
@@ -78,7 +84,7 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
       output: "raw",
       stdin: "pipe",
     });
-    const client = new IphoneBridgeClient(process);
+    const client = new IphoneBridgeClient(process, options.log);
     try {
       const hello = await client.request("hello", {}, iphoneNativeHelloSchema);
       client.#bootId = hello.bootId;

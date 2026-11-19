@@ -13,6 +13,7 @@ import (
 )
 
 const instrumentsService = "com.apple.instruments.dtservicehub"
+const springBoard = "/System/Library/CoreServices/SpringBoard.app/SpringBoard"
 
 func instrumentCall(conn *dtx.RawConnection, id, channel int, selector string, args ...interface{}) error {
 	payload, err := nskeyedarchiver.ArchiveBin(selector)
@@ -95,27 +96,29 @@ func runningProcesses(ctx context.Context, dial ServiceDialer) ([]interface{}, e
 	}
 	return processes, nil
 }
-func foregroundProcess(processes []interface{}) (string, error) {
-	found := ""
+
+// foregroundExecutables lists every process iOS flags as running in the
+// foreground. On iOS 27 that is SpringBoard plus system UI services and any
+// visible app, so the list alone never names the front app.
+func foregroundExecutables(processes []interface{}) []string {
+	found := []string{}
 	for _, value := range processes {
-		process, ok := value.(map[string]interface{})
-		if !ok {
-			return "", wire.Fail(wire.ProtocolUnsupported)
-		}
-		foreground, ok := process["foregroundRunning"].(bool)
-		if !ok || !foreground {
+		process, _ := value.(map[string]interface{})
+		if foreground, _ := process["foregroundRunning"].(bool); !foreground {
 			continue
 		}
-		executable, ok := process["realAppName"].(string)
-		if !ok || len(executable) > 4096 || executable == "" || found != "" {
-			return "", wire.Fail(wire.ProtocolUnsupported)
+		if executable := processPath(stringValue(process["realAppName"])); executable != "" {
+			found = append(found, executable)
 		}
-		found = executable
 	}
-	if found == "" {
-		return "", wire.Fail(wire.ProtocolUnsupported)
+	return found
+}
+func stringValue(v interface{}) string {
+	s, _ := v.(string)
+	if len(s) > 4096 {
+		return ""
 	}
-	return found, nil
+	return s
 }
 func processPath(value string) string {
 	if strings.HasPrefix(value, "file://") {
@@ -139,9 +142,6 @@ func resolveForeground(executable string, apps []InstalledApp) *Foreground {
 	if executable == "" {
 		return nil
 	}
-	if executable == "/System/Library/CoreServices/SpringBoard.app/SpringBoard" {
-		return &Foreground{AppID: "com.apple.springboard", Label: "Home Screen"}
-	}
 	var found *Foreground
 	for _, app := range apps {
 		if app.executable != "" && processPath(app.executable) == executable {
@@ -153,6 +153,10 @@ func resolveForeground(executable string, apps []InstalledApp) *Foreground {
 	}
 	return found
 }
+
+// readForeground names the front app when the flags make it unambiguous: one
+// launchable app, or the Home Screen when no app is flagged. Anything else is
+// unknown (nil); callers treat the result as a label, never as a gate.
 func readForeground(ctx context.Context, dial ServiceDialer) (*Foreground, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -160,20 +164,38 @@ func readForeground(ctx context.Context, dial ServiceDialer) (*Foreground, error
 	if err != nil {
 		return nil, err
 	}
-	executable, err := foregroundProcess(processes)
-	if err != nil {
-		return nil, err
+	executables := foregroundExecutables(processes)
+	home := false
+	others := []string{}
+	for _, executable := range executables {
+		if executable == springBoard {
+			home = true
+		} else {
+			others = append(others, executable)
+		}
 	}
-	if foreground := resolveForeground(executable, nil); foreground != nil {
-		return foreground, nil
+	var apps []InstalledApp
+	if len(others) > 0 {
+		if apps, err = readInstalledApps(ctx, dial); err != nil {
+			return nil, err
+		}
 	}
-	apps, err := readInstalledApps(ctx, dial)
-	if err != nil {
-		return nil, err
+	return pickForeground(home, others, apps), nil
+}
+func pickForeground(home bool, executables []string, apps []InstalledApp) *Foreground {
+	var found *Foreground
+	for _, executable := range executables {
+		app := resolveForeground(executable, apps)
+		if app == nil {
+			continue
+		}
+		if found != nil && found.AppID != app.AppID {
+			return nil
+		}
+		found = app
 	}
-	foreground := resolveForeground(executable, apps)
-	if foreground == nil {
-		return nil, wire.Fail(wire.ProtocolUnsupported)
+	if found == nil && home {
+		return &Foreground{AppID: "com.apple.springboard", Label: "Home Screen"}
 	}
-	return foreground, nil
+	return found
 }

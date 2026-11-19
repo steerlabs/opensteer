@@ -2,6 +2,7 @@ package phone
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"testing"
@@ -11,27 +12,44 @@ import (
 	"github.com/danielpaulus/go-ios/ios/nskeyedarchiver"
 )
 
-func TestForegroundRequiresExplicitUnambiguousProcessAndExactAppPath(t *testing.T) {
-	process := map[string]interface{}{"foregroundRunning": true, "realAppName": "/private/var/containers/Example.app/Example"}
-	path, err := foregroundProcess([]interface{}{map[string]interface{}{"realAppName": "/another.app/App"}, process})
-	if err != nil {
-		t.Fatal(err)
+func TestForegroundNamesOneLaunchableAppAmongIOS27Flags(t *testing.T) {
+	flagged := func(paths ...string) []interface{} {
+		list := []interface{}{map[string]interface{}{"realAppName": "/var/containers/Background.app/Background"}}
+		for _, p := range paths {
+			list = append(list, map[string]interface{}{"foregroundRunning": true, "realAppName": p})
+		}
+		return list
 	}
-	apps := []InstalledApp{{AppID: "example.app", Label: "Example", executable: "/var/containers/Example.app/Example"}}
-	if f := resolveForeground(path, apps); f == nil || f.AppID != "example.app" {
-		t.Fatal("foreground process was not resolved")
+	example := eligibleForegroundFixture(t, "example.app", "/private/var/containers/Example.app", "Example")
+	other := eligibleForegroundFixture(t, "other.app", "/var/containers/Other.app", "Other")
+	apps := []InstalledApp{example, other}
+	// iOS 27 flags SpringBoard and system UI services alongside the visible app.
+	system := []string{springBoard, "/Applications/InputUI.app/InputUI", "/Applications/DockFolderViewService.app/DockFolderViewService"}
+	pick := func(processes []interface{}) *Foreground {
+		home, others := false, []string{}
+		for _, e := range foregroundExecutables(processes) {
+			if e == springBoard {
+				home = true
+			} else {
+				others = append(others, e)
+			}
+		}
+		return pickForeground(home, others, apps)
+	}
+	if f := pick(flagged(append(system, "file:///var/containers/Example.app/Example")...)); f == nil || f.AppID != "example.app" {
+		t.Fatalf("visible app not named: %+v", f)
+	}
+	if f := pick(flagged(system...)); f == nil || f.AppID != "com.apple.springboard" {
+		t.Fatalf("Home Screen not named: %+v", f)
+	}
+	if f := pick(flagged(append(system, "/var/containers/Example.app/Example", "/var/containers/Other.app/Other")...)); f != nil {
+		t.Fatalf("two flagged apps named one: %+v", f)
+	}
+	if f := pick(flagged("/var/containers/Unknown.app/Unknown")); f != nil {
+		t.Fatalf("guessed an app that isn't installed: %+v", f)
 	}
 	if resolveForeground("/elsewhere/Example.app/Example", apps) != nil {
 		t.Fatal("guessed identity from app name")
-	}
-	for _, list := range [][]interface{}{{}, {map[string]interface{}{"isApplication": true, "realAppName": path}}, {process, process}} {
-		if _, err := foregroundProcess(list); err == nil {
-			t.Fatal("accepted unknown or ambiguous foreground")
-		}
-	}
-	self := eligibleForegroundFixture(t, "com.opensteer.opensteer", "/var/Opensteer.app", "Opensteer")
-	if f := resolveForeground("file:///var/Opensteer.app/Opensteer", []InstalledApp{self}); f == nil || f.AppID != "com.opensteer.opensteer" {
-		t.Fatal("self-screen identity lost")
 	}
 }
 func eligibleForegroundFixture(t *testing.T, id, root, executable string) InstalledApp {
@@ -61,6 +79,27 @@ func TestRunningProcessesUsesBoundedTunnelDTX(t *testing.T) {
 	served := make(chan error, 1)
 	go func() {
 		conn := dtx.NewRawConnection(peer)
+		// A real phone first announces its own capabilities. On iOS 27 that message
+		// is about 9 KB and its auxiliary header carries a buffer capacity other than 496.
+		capabilities := dtx.NewPrimitiveDictionary()
+		for i := 0; i < 200; i++ {
+			capabilities.AddBytes([]byte(fmt.Sprintf("com.apple.instruments.server.services.capability%03d", i)))
+		}
+		var data []byte
+		announcement, err := nskeyedarchiver.ArchiveBin("_notifyOfPublishedCapabilities:")
+		if err == nil {
+			data, err = dtx.Encode(1, 0, 0, false, dtx.Methodinvocation, announcement, capabilities)
+			if err == nil {
+				binary.LittleEndian.PutUint32(data[48:], 9200)
+			}
+		}
+		if err != nil {
+			served <- err
+			return
+		}
+		// net.Pipe is unbuffered and the client writes before it reads.
+		announced := make(chan error, 1)
+		go func() { announced <- conn.Send(data) }()
 		for index := 1; index <= 3; index++ {
 			request, err := conn.Read()
 			if err != nil {
@@ -74,6 +113,12 @@ func TestRunningProcessesUsesBoundedTunnelDTX(t *testing.T) {
 			}
 			if index == 1 {
 				continue
+			}
+			if index == 2 {
+				if err := <-announced; err != nil {
+					served <- err
+					return
+				}
 			}
 			var value interface{} = nil
 			if index == 3 {
@@ -98,8 +143,7 @@ func TestRunningProcessesUsesBoundedTunnelDTX(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	executable, err := foregroundProcess(processes)
-	if err != nil || resolveForeground(executable, nil) == nil {
+	if f := pickForeground(true, nil, nil); len(foregroundExecutables(processes)) != 1 || f == nil {
 		t.Fatal("tunnel reply did not identify home screen")
 	}
 	select {
