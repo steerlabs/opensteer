@@ -136,7 +136,11 @@ export class PersonalResourceReads implements PersonalResourcePort {
     return { interests, installed };
   }
 
-  changed(revisions: PersonalResourceRevisions) {
+  /**
+   * `reply` marks the Host's answer to this client's attach or watch: what moved while it was
+   * away, read at once, never held in the settle window. Every other frame is a live push.
+   */
+  changed(revisions: PersonalResourceRevisions, reply = false) {
     for (const [kind, revision] of Object.entries(revisions) as [PersonalResourceKind, string][]) {
       this.#known.set(kind, revision);
       if (signalKinds.has(kind)) this.#installed.set(kind, revision);
@@ -144,32 +148,23 @@ export class PersonalResourceReads implements PersonalResourcePort {
         this.#options.behind?.(kind);
       // What flies is judged when it lands: older than this push, it installs nothing.
       const installed = this.#installed.get(kind);
-      // Only a live push of a Runner kind waits; what the Host says in answer to an attach is
-      // read at once.
+      // Only a live push of a Runner kind waits; the Host's reply to an attach is read at once.
       if (
         runnerKinds.has(kind) &&
         installed !== undefined &&
         sameBoot(installed, revision) &&
-        !this.#attachReplyPending
+        !reply
       )
         this.#settle(kind);
       else this.#read(kind);
       for (const listener of this.#listeners.get(kind) ?? []) listener();
     }
-    // The Host answers an attach with one frame of every revision that moved meanwhile.
-    this.#attachReplyPending = false;
   }
 
   /** Read every watched kind that is behind, as after attaching or returning to the front. */
-  resume(attached = false) {
-    // The first revision frame after this client's attach is the Host's answer to it, however late
-    // it comes: read at once, never held in the settle window. When nothing moved the Host sends
-    // none, and the next live push is then read at once too: sooner, never later.
-    if (attached) this.#attachReplyPending = true;
+  resume() {
     for (const kind of this.#listeners.keys()) this.#read(kind);
   }
-
-  #attachReplyPending = false;
 
   abort() {
     for (const kind of personalResourceKinds) this.#reads.stop(kind);

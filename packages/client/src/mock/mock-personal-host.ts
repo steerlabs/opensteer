@@ -58,6 +58,8 @@ interface SocketState {
   /** The last live handle this socket named; the mock names every frame afresh. */
   handles: number;
   interests: readonly PersonalResourceKind[];
+  /** An attach or watch is owed its one `reply: true` frame, sent even when nothing moved. */
+  replyOwed?: boolean;
   selected?: string;
 }
 
@@ -175,6 +177,7 @@ export class MockPersonalHost {
           return;
         }
         state.interests = frame.interests;
+        state.replyOwed = true;
         const sameLogin =
           frame.expectedSessionId === undefined || frame.expectedSessionId === viewer.sessionId;
         const selected = frame.selected;
@@ -209,6 +212,7 @@ export class MockPersonalHost {
         const shell = state.subscriptions.get("shell");
         if (shell?.generation !== frame.generation) return;
         state.interests = frame.interests;
+        state.replyOwed = true;
         this.#resources(socket, shell, state, frame.installed);
         break;
       }
@@ -306,13 +310,16 @@ export class MockPersonalHost {
         installed[kind] === this.#through ? [] : [[kind, this.#through]],
       ),
     );
-    if (Object.keys(revisions).length)
-      socket.deliver({
-        type: "host.resource",
-        subscriptionId: "shell",
-        generation: shell.generation,
-        revisions,
-      });
+    const reply = state.replyOwed === true;
+    if (!Object.keys(revisions).length && !reply) return;
+    state.replyOwed = false;
+    socket.deliver({
+      type: "host.resource",
+      subscriptionId: "shell",
+      generation: shell.generation,
+      revisions,
+      ...(reply ? { reply: true as const } : {}),
+    });
   }
 
   /** Sends every shell subscription the Host's inline repair: a fresh snapshot in place. */

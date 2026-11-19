@@ -95,7 +95,8 @@ export interface ObservedDetail {
 /** The session's resource reads: what it watches, and the revisions the Host says changed. */
 export interface PersonalResourcePort {
   interests(): { interests: PersonalResourceKind[]; installed: PersonalResourceRevisions };
-  changed(revisions: PersonalResourceRevisions): void;
+  /** `reply`: the Host's answer to this client's attach or watch, not a live push. */
+  changed(revisions: PersonalResourceRevisions, reply?: boolean): void;
 }
 
 type Identity = ScopedPersonalIdentity;
@@ -503,7 +504,7 @@ export class ScopedPersonalStream {
       this.#settleCandidate(frame);
     const previous = this.shell.getSnapshot();
     if (frame.type === "host.resource") {
-      this.#resources?.changed(frame.revisions);
+      this.#resources?.changed(frame.revisions, frame.reply === true);
       return;
     }
     if (

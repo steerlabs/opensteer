@@ -115,7 +115,13 @@ interface Subscription {
   /** Queued live state overflowed: it was dropped and the scope is repaired, then live is reread. */
   liveReset?: boolean;
   checkCredit?: () => void;
-  resources?: { interests: Watch["interests"]; installed: Watch["installed"]; dirty: boolean };
+  resources?: {
+    interests: Watch["interests"];
+    installed: Watch["installed"];
+    dirty: boolean;
+    /** An attach or watch is owed its one `reply: true` frame, sent even when nothing moved. */
+    reply: boolean;
+  };
 }
 
 const scopeBudget = 256 * 1024;
@@ -183,7 +189,7 @@ export class PersonalSyncSocket {
         generation: shell.generation,
         ...(shell.cursor ? { cursor: shell.cursor } : {}),
       },
-      { interests: shell.interests, installed: shell.installed },
+      { interests: shell.interests, installed: shell.installed, reply: true },
     );
     if (selected) this.subscribe({ ...selected, type: "client.subscribe" });
   }
@@ -198,11 +204,19 @@ export class PersonalSyncSocket {
   watchResources(message: Watch) {
     const current = this.#subscriptions.get("shell");
     if (!current || current.request.generation !== message.generation) return;
-    current.resources = { interests: message.interests, installed: message.installed, dirty: true };
+    current.resources = {
+      interests: message.interests,
+      installed: message.installed,
+      dirty: true,
+      reply: true,
+    };
     this.#schedule(current);
   }
 
-  subscribe(request: Subscribe, resources?: Pick<Watch, "interests" | "installed">) {
+  subscribe(
+    request: Subscribe,
+    resources?: Pick<Watch, "interests" | "installed"> & { readonly reply: boolean },
+  ) {
     if (this.#closed || request.generation <= (this.#generations.get(request.subscriptionId) ?? 0))
       return;
     const peers = [...this.#subscriptions.values()].filter(
@@ -664,21 +678,27 @@ export class PersonalSyncSocket {
     const watch = current.resources;
     if (!watch?.dirty) return;
     watch.dirty = false;
-    if (!this.#port.resourceRevisions || !watch.interests.length) return;
-    const latest = this.#port.resourceRevisions(watch.interests);
+    const latest =
+      this.#port.resourceRevisions && watch.interests.length
+        ? this.#port.resourceRevisions(watch.interests)
+        : {};
     const revisions = Object.fromEntries(
       watch.interests.flatMap((kind) =>
         latest[kind] && latest[kind] !== watch.installed[kind] ? [[kind, latest[kind]]] : [],
       ),
     );
-    if (!Object.keys(revisions).length) return;
+    // A live push only when something moved; the answer to an attach or watch always, marked.
+    const reply = watch.reply;
+    if (!Object.keys(revisions).length && !reply) return;
     const sent = await this.#send(
       current,
-      { type: "host.resource", revisions },
+      { type: "host.resource", revisions, ...(reply ? { reply: true as const } : {}) },
       () => current.resources === watch,
     );
-    if (sent) watch.installed = { ...watch.installed, ...revisions };
-    else watch.dirty = true;
+    if (sent) {
+      watch.installed = { ...watch.installed, ...revisions };
+      if (reply) watch.reply = false;
+    } else watch.dirty = true;
   }
 
   #hasCredit(current: Subscription, bytes: number, changes: number) {
