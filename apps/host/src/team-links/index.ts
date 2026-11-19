@@ -29,6 +29,7 @@ export function createPersonalTeamLinkServices(options: {
   readonly attachments: PersonalTeamAttachmentPort;
   readonly onPublished: (taskId: ThreadId) => Promise<void>;
   readonly onConsentChanged?: PersonalTeamRequestsOptions["onConsentChanged"];
+  readonly onLinkReady?: (teamId: DeploymentId) => void;
 }) {
   const linksStore = new PersonalTeamLinksStore(options.database);
   const requestsStore = new PersonalTeamRequestsStore(options.database, options.onPublished);
@@ -49,6 +50,7 @@ export function createPersonalTeamLinkServices(options: {
     vault,
     network,
     requests,
+    ...(options.onLinkReady ? { onReady: options.onLinkReady } : {}),
   });
   const files = new TeamRunFileTransfers({
     links: linksStore,

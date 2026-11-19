@@ -60,6 +60,7 @@ import { DeadlineDrain } from "./deadline-drain.js";
 import { assignmentReturnPass } from "./assignment-return-pass.js";
 import { executionLeaseDrain } from "./execution-leases.js";
 import { TeamRunEvents } from "./team-run-events.js";
+import { teamPublicationPass } from "./team-publication-pass.js";
 import { initializePersonalState } from "./personal-state.js";
 import { OwnerProfileService } from "../administration/owner-profile.js";
 import { createTeamHostRuntime } from "./team-runtime.js";
@@ -568,6 +569,7 @@ export async function createHostRuntime(
     }
     const personalConfig = config.personal!;
     let teamRunEvents: TeamRunEvents | undefined;
+    let teamPublications: DeadlineDrain | undefined;
     let linkServices: ReturnType<typeof createPersonalTeamLinkServices> | undefined;
     let linkStarting: Promise<ReturnType<typeof createPersonalTeamLinkServices>> | undefined;
     let initializedPersonal: Awaited<ReturnType<typeof initializePersonalState>> = null;
@@ -2974,6 +2976,7 @@ export async function createHostRuntime(
           runs: personalTeamRunPort(database),
 
           onPublished: async () => undefined,
+          onLinkReady: () => teamPublications?.wake(),
           onConsentChanged: async (teamId, requestId, opened) => {
             if (opened) notificationDispatcher?.dispatchTeamAsk(teamId, requestId);
           },
@@ -2988,24 +2991,36 @@ export async function createHostRuntime(
         });
         await links.links.start();
         linkServices = links;
+        teamPublications = new DeadlineDrain({
+          ...(options.executionClock ? { clock: options.executionClock } : {}),
+          onError: reportMutationFailure,
+          drain: () =>
+            teamPublicationPass(
+              () => links.requests.options.requests.owedTerminalPublications(),
+              (request) => links.requests.reconcileOne(request),
+              (error) =>
+                app.log.warn(
+                  { err: error },
+                  "A finished team Run's answer is still owed; retrying",
+                ),
+            ),
+        });
+        teamPublications.start();
         teamRunEvents = new TeamRunEvents({
           publish: async (runId, steps) => {
             const request = await links.requests.options.requests.forRun(runId);
             if (!request) return;
             const outcome = await links.requests.options.runs.outcome(request);
             const live = outcome.state === "working" || outcome.state === "needs_you";
-            await links.requests.runChanged(
-              runId,
-              live ? { state: outcome.state, steps } : undefined,
-            );
-            if (live) return;
-            // A finished Run's reply and status are delivered once the request
-            // records its terminal state; until then it is owed a retry.
-            const current = await links.requests.options.requests.get(
-              request.teamId,
-              request.requestId,
-            );
-            return current && current.terminalState === null ? "pending" : undefined;
+            try {
+              await links.requests.runChanged(
+                runId,
+                live ? { state: outcome.state, steps } : undefined,
+              );
+            } finally {
+              // A finished Run's answer is owed until its request records it.
+              if (!live) teamPublications?.wake();
+            }
           },
           onError: () =>
             app.log.warn("Team Run publication failed; the durable reply remains pending"),
@@ -3392,6 +3407,7 @@ export async function createHostRuntime(
         tabs?.dispose();
         await step("agent tools", () => agentTools.close());
         await step("team Run publication", () => teamRunEvents?.close());
+        await step("team Run answers", () => teamPublications?.close());
         await step("team links", async () => {
           await linkStarting;
           await linkServices?.links.stop();
