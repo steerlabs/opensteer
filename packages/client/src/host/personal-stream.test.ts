@@ -3095,3 +3095,58 @@ test("after a repair the reader reads again the latest page, its loaded overlay 
     reader.dispose();
   }
 });
+
+test("a stream sent again after a live reset replaces the text already held", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const attempt = createId("runAttempt");
+  const frame = (update: object) => ({
+    ...f.address,
+    type: "host.live" as const,
+    liveBootId: "00000000-0000-4000-8000-000000000001",
+    runId,
+    attemptId: attempt,
+    bindingGeneration: 1,
+    handle: 9,
+    streamId: "reply",
+    itemId: "live-reply",
+    afterSequence: "1",
+    update,
+  });
+  f.stream.receive(frame({ operation: "append", text: "Hello", offset: 0, totalLength: 5 }));
+  // Frames were dropped under pressure; the Host sends the whole open stream again.
+  const resent = "Hello, the rest of the reply";
+  f.stream.receive(
+    frame({
+      operation: "replace",
+      text: resent,
+      offset: 0,
+      totalLength: resent.length,
+      incomplete: false,
+    }),
+  );
+  expect(f.detail.text.get("live-reply")?.text).toBe(resent);
+  // The same text sent once more changes nothing and asks for nothing.
+  const sent = f.sent.length;
+  f.stream.receive(
+    frame({
+      operation: "replace",
+      text: resent,
+      offset: 0,
+      totalLength: resent.length,
+      incomplete: false,
+    }),
+  );
+  expect(f.detail.text.get("live-reply")?.text).toBe(resent);
+  f.stream.receive(
+    frame({
+      operation: "append",
+      text: "!",
+      offset: resent.length,
+      totalLength: resent.length + 1,
+    }),
+  );
+  expect(f.detail.text.get("live-reply")?.text).toBe(`${resent}!`);
+  expect(f.sent.slice(sent).some((message) => message.type === "client.live.resync")).toBe(false);
+});
