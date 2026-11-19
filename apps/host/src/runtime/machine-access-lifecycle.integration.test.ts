@@ -363,6 +363,20 @@ integration("Machine access session lifecycle", () => {
     }
   }, 180_000);
 
+  it("marks a computer refused for an older agent protocol as needing an update", async () => {
+    scenario = await startShellAccessScenario(databaseUrl, { policy: openPolicy });
+    const { host, target } = scenario;
+    await target.disconnect();
+    // Its descriptor now runs agents without the current run-events protocol,
+    // as an older Opensteer on that computer would.
+    await target.observeRefusal({ runsAgents: true });
+    const machine = async () =>
+      (
+        await testRpcData(host.origin, "machines.list", {}, { headers: host.ownerHeaders })
+      ).machines.find(({ id }) => id === target.runnerId);
+    expect(await machine()).toMatchObject({ status: "needs-update" });
+  }, 180_000);
+
   it("closes the Run's relay and ends its sessions when the Run ends", async () => {
     scenario = await startShellAccessScenario(databaseUrl, {
       policy: openPolicy,

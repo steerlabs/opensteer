@@ -250,7 +250,7 @@ describe("TriggerService", () => {
     expect(enqueueWebhook).toHaveBeenCalledTimes(1);
     expect(onOccurrenceQueued).toHaveBeenCalledTimes(1);
   });
-  it("wakes dispatch only when the schedule transaction creates occurrences", async () => {
+  it("fires schedules at their deadline or a wake, wakes dispatch only for new occurrences, and never polls", async () => {
     vi.useFakeTimers();
     const onChanged = vi.fn();
     const onOccurrenceQueued = vi.fn();
@@ -271,23 +271,37 @@ describe("TriggerService", () => {
         occurrences: [],
         changed: false,
       });
+    // The next schedule is a minute out, and then none is armed.
+    const nextScheduleAt = vi
+      .fn<() => Promise<Date | null>>()
+      .mockImplementationOnce(async () => new Date(Date.now() + 60_000))
+      .mockResolvedValue(null);
     const loop = new TriggerScheduleLoop({
       onChanged,
       onError: vi.fn(),
       onOccurrenceQueued,
       store: {
         claimDueSchedules,
-      } as Pick<TriggerStore, "claimDueSchedules">,
+        nextScheduleAt,
+      } as Pick<TriggerStore, "claimDueSchedules" | "nextScheduleAt">,
     });
     loop.start();
     await vi.advanceTimersByTimeAsync(0);
     expect(claimDueSchedules).toHaveBeenCalledTimes(1);
     expect(onOccurrenceQueued).toHaveBeenCalledTimes(1);
     expect(onChanged.mock.calls).toEqual([[]]);
-    await vi.advanceTimersByTimeAsync(1_000);
+    // No polling before the deadline.
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(claimDueSchedules).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
     expect(claimDueSchedules).toHaveBeenCalledTimes(2);
     expect(onOccurrenceQueued).toHaveBeenCalledTimes(1);
     expect(onChanged).toHaveBeenCalledTimes(1);
+    // Nothing armed: idle until a commit moves a schedule.
+    expect(vi.getTimerCount()).toBe(0);
+    loop.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(claimDueSchedules).toHaveBeenCalledTimes(3);
     await loop.close();
   });
 });

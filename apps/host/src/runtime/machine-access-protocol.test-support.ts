@@ -416,7 +416,7 @@ export interface TargetMachine {
    * Tries to come back and records everything the Host said, for the refusals
    * whose whole content is the close frame.
    */
-  observeRefusal(): Promise<RunnerRefusal>;
+  observeRefusal(options?: { readonly runsAgents?: boolean }): Promise<RunnerRefusal>;
   /** Replaces its SSH host key and comes back advertising the new one. */
   rotateHostKey(): Promise<void>;
   close(): Promise<void>;
@@ -539,8 +539,12 @@ export async function connectTargetMachine(
       return prepared.descriptor.hostPublicKey;
     },
     reported,
-    observeRefusal: async () =>
-      observeRunnerRefusal(host.hostPort, descriptorFor(false, environmentId), primary.privateKey),
+    observeRefusal: async (options) =>
+      observeRunnerRefusal(
+        host.hostPort,
+        descriptorFor(options?.runsAgents ?? false, environmentId),
+        primary.privateKey,
+      ),
     reconnect,
     rotateHostKey: async () => {
       await disconnect();
@@ -733,6 +737,8 @@ export async function connectCallerMachine(
     readonly longRequestHold?: boolean;
     readonly runFiles?: boolean;
     readonly runnerKind?: "local" | "main";
+    /** Accepts Trigger programs, so the Host's coordinator dispatches them here. */
+    readonly triggerPrograms?: boolean;
   } & (
     | { readonly token: string; readonly previous?: undefined }
     /** Reattach the same computer and disk after its Host restarts. */
@@ -759,6 +765,7 @@ export async function connectCallerMachine(
       "run-events-v2",
       ...(input.voice ? ["voice-run-v1"] : []),
       ...(input.restartsRuns ? ["attempts-v1"] : []),
+      ...(input.triggerPrograms ? ["trigger-program-v5"] : []),
     ],
     modules: {
       ...(input.integrations ? { integrations: input.integrations } : {}),

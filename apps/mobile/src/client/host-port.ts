@@ -14,6 +14,8 @@ import {
 } from "@opensteer/client/connections";
 import {
   HttpHostClient,
+  realtimeIdleProbeDeadlineMs,
+  realtimeIdleProbeMs,
   type ClientLifecycle,
   type HostClient,
   type HostCapabilityReader,
@@ -173,6 +175,8 @@ export function createNetworkHostPort(options: {
         lifecycle: options.lifecycle,
         origin: options.origin,
         prepareSocket: () => authorization.current(),
+        // Frames count as progress, so only a quiet socket is probed.
+        realtimeLiveness: { idleMs: realtimeIdleProbeMs, deadlineMs: realtimeIdleProbeDeadlineMs },
         webSocketFactory: network.webSocketFactory,
       });
       registerPhoneEnrollmentHost(client, {

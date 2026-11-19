@@ -36,8 +36,18 @@ interface MemoryPassServiceOptions {
 
 export class MemoryPassService {
   readonly options: MemoryPassServiceOptions;
+  #settled = false;
   constructor(options: MemoryPassServiceOptions) {
     this.options = options;
+  }
+
+  /**
+   * Both memory passes exist. Until then their prerequisites (settings, the
+   * hosting computer, a first task's model) arrive with Runner registration
+   * and finished Runs, which ask again; afterwards nothing does.
+   */
+  get settled(): boolean {
+    return this.#settled;
   }
 
   async reconcileMissing(): Promise<void> {
@@ -99,7 +109,10 @@ export class MemoryPassService {
     const missing = (["memory-light", "memory-nightly"] as const).filter(
       (role) => !present.some((row) => row.systemRole === role),
     );
-    if (!missing.length) return;
+    if (!missing.length) {
+      this.#settled = true;
+      return;
+    }
     const environment = await store.database
       .selectFrom("executionEnvironments")
       .select("id")

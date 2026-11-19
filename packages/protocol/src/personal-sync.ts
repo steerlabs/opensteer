@@ -12,7 +12,6 @@ import {
   ThreadStatusSchema,
   ThreadViewSchema,
   UserIdSchema,
-  utf8ByteLength,
 } from "@opensteer/core";
 import { z } from "zod";
 import {
@@ -44,15 +43,20 @@ export const personalShellFrameMaxBytes = 128 * 1024;
 export const personalDetailFrameMaxBytes = 128 * 1024;
 export const personalControlFrameMaxBytes = 4 * 1024;
 
-export function personalHostFrameMaxBytes(frame: ScopedHostMessage): number {
+/** A frame's encoded size limit; senders and receivers measure the encoded bytes against it. */
+export function personalHostFrameMaxBytes(frame: {
+  readonly type: ScopedHostMessage["type"];
+  readonly scope?: PersonalScope;
+}): number {
   switch (frame.type) {
     case "host.snapshot":
-      return frame.scope.kind === "shell"
+      return frame.scope?.kind === "shell"
         ? personalShellFrameMaxBytes
         : personalDetailFrameMaxBytes;
     case "host.changes":
       return personalChangesFrameMaxBytes;
     case "host.live":
+    case "host.text":
       return personalLiveFrameMaxBytes;
     case "host.resource":
       return personalResourceFrameMaxBytes;
@@ -342,30 +346,26 @@ const durableAddress = {
   scope: PersonalScopeSchema,
   throughSequence: PersonalRevisionSchema,
 };
-const liveAddress = {
-  ...address,
-  subscriptionId: detailId,
-  scope: detailScope,
-  liveBootId: z.uuid(),
-  runId: RunIdSchema,
-  attemptId: RunAttemptIdSchema,
-  bindingGeneration: z.int().positive(),
-  streamId: z.string().min(1).max(600),
-  itemId: TranscriptItemIdSchema,
-  afterSequence: PersonalRevisionSchema,
-  item: TranscriptItemSchema.optional(),
-};
+const liveHandle = z.int().positive();
 const liveText = {
   text: z.string().max(16 * 1024),
   offset: z.int().nonnegative(),
   totalLength: z.int().nonnegative(),
 };
 /**
- * A personal scope frame's structure and addressing, without its encoded size. A receiver that
- * holds the wire text checks `personalHostFrameMaxBytes` against those bytes instead of
- * re-encoding the frame.
+ * More text for a live stream its `host.live` frame named: `h` is that frame's `handle`, `o` the
+ * offset of `t` and `n` the total length. With `incomplete` it replaces the text; otherwise it
+ * appends. A stream's close is always a full `host.live` frame.
  */
-export const ScopedHostFrameSchema = z
+const liveTextFrame = z.strictObject({
+  type: z.literal("host.text"),
+  h: liveHandle,
+  o: z.int().nonnegative(),
+  n: z.int().nonnegative(),
+  t: z.string().max(16 * 1024),
+  incomplete: z.boolean().optional(),
+});
+export const ScopedHostMessageSchema = z
   .discriminatedUnion("type", [
     z
       .strictObject({
@@ -412,18 +412,31 @@ export const ScopedHostFrameSchema = z
       revision: PersonalRevisionSchema,
       view: PersonalResourceViewSchema,
     }),
+    /** Names a live stream on this socket with `handle`; later text for it is `host.text`. */
     z.strictObject({
       type: z.literal("host.live"),
-      ...liveAddress,
+      subscriptionId: detailId,
+      generation: address.generation,
+      handle: liveHandle,
+      scope: detailScope,
+      liveBootId: z.uuid(),
+      runId: RunIdSchema,
+      attemptId: RunAttemptIdSchema,
+      bindingGeneration: z.int().positive(),
+      streamId: z.string().min(1).max(600),
+      itemId: TranscriptItemIdSchema,
+      afterSequence: PersonalRevisionSchema,
+      item: TranscriptItemSchema.optional(),
       update: z.discriminatedUnion("operation", [
         z.strictObject({ operation: z.literal("append"), ...liveText }),
         z.strictObject({ operation: z.literal("replace"), ...liveText, incomplete: z.boolean() }),
         z.strictObject({ operation: z.literal("close") }),
       ]),
     }),
+    liveTextFrame,
   ])
   .refine((frame) => {
-    if (frame.type === "host.resource") return true;
+    if (frame.type === "host.resource" || frame.type === "host.text") return true;
     const isShell = frame.scope.kind === "shell";
     if ((frame.subscriptionId === "shell") !== isShell) return false;
     if ("shellProgress" in frame && frame.shellProgress && !isShell) return false;
@@ -485,11 +498,6 @@ export const ScopedHostFrameSchema = z
       personalChangeFitsScope(frame.scope, row, frame.throughSequence),
     );
   });
-
-/** A personal scope frame within its encoded size limit. */
-export const ScopedHostMessageSchema = ScopedHostFrameSchema.refine(
-  (frame) => utf8ByteLength(JSON.stringify(frame)) <= personalHostFrameMaxBytes(frame),
-);
 
 /** Whether a change may appear in a scope's feed at a cut. */
 export function personalChangeFitsScope(
@@ -574,7 +582,7 @@ function withinCut(revision: string, through: string) {
 export type PersonalScope = z.infer<typeof PersonalScopeSchema>;
 export type PersonalResumeCursor = z.infer<typeof PersonalResumeCursorSchema>;
 export type PersonalChange = z.infer<typeof PersonalChangeSchema>;
-export type ScopedHostMessage = z.infer<typeof ScopedHostFrameSchema>;
+export type ScopedHostMessage = z.infer<typeof ScopedHostMessageSchema>;
 export type ScopedClientMessage = z.infer<typeof ScopedClientMessageSchema>;
 
 const authorityChanged = "Personal authority changed";

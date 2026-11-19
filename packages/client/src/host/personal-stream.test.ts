@@ -181,7 +181,11 @@ test("buffers selected detail until shell authority is synchronized and rejects 
     view: { preview: "🦊".repeat(490) },
     author: { kind: "human" as const, principalId: "a".repeat(255), displayName: "ℝ".repeat(150) },
   }));
-  expect(f.stream.receive(f.detailSnapshot(big))).toBe(false);
+  const oversized = f.detailSnapshot(big);
+  // The Host measures encoded frames; the client checks the bytes it received.
+  expect(() =>
+    f.stream.receive(oversized, new TextEncoder().encode(JSON.stringify(oversized)).length),
+  ).toThrow("exceeds its encoded limit");
   f.syncShell();
   expect(f.detail.transcript.getSnapshot().items.get(item.id)).toEqual(item);
   expect(
@@ -1221,6 +1225,7 @@ test.each(["message", "reasoning"] as const)(
     const address = {
       ...f.address,
       type: "host.live" as const,
+      handle: 1,
       liveBootId: crypto.randomUUID(),
       runId,
       attemptId,
@@ -2075,6 +2080,7 @@ function scriptedHost(
       socket.deliver({
         ...address,
         type: "host.live",
+        handle: 1,
         liveBootId: "00000000-0000-4000-8000-000000000001",
         runId,
         attemptId: createId("runAttempt"),
@@ -2407,6 +2413,7 @@ test("acknowledges live text about every 32 KiB so a long reply keeps flowing, a
     f.stream.receive({
       ...f.address,
       type: "host.live",
+      handle: 1,
       liveBootId: "00000000-0000-4000-8000-000000000001",
       runId,
       attemptId: attempt,
@@ -2424,6 +2431,15 @@ test("acknowledges live text about every 32 KiB so a long reply keeps flowing, a
   // 640 KB of text, far past the Host's 256 KiB pause, arrived and was acknowledged as it came.
   expect(f.detail.text.get("live-reply")?.totalLength).toBe(offset);
   expect(acks() - before).toBeGreaterThanOrEqual(18);
+  // Compact text frames for the named stream spend the same credit, by their wire bytes.
+  const compact = acks();
+  for (let index = 0; index < 40; index++) {
+    const frame = { type: "host.text", h: 1, o: offset, n: offset + chunk.length, t: chunk };
+    f.stream.receive(frame, JSON.stringify(frame).length);
+    offset += chunk.length;
+  }
+  expect(f.detail.text.get("live-reply")?.totalLength).toBe(offset);
+  expect(acks() - compact).toBeGreaterThanOrEqual(4);
   f.stream.setBackground(true);
   const background = acks();
   for (let index = 0; index < 20; index++) live();
@@ -2683,6 +2699,7 @@ test("a subagent progress tick notifies only that row's text subscriber, not the
     f.stream.receive({
       ...f.address,
       type: "host.live",
+      handle: 1,
       liveBootId: "00000000-0000-4000-8000-000000000001",
       runId,
       attemptId,
@@ -2704,4 +2721,74 @@ test("a subagent progress tick notifies only that row's text subscriber, not the
   expect(view).not.toHaveBeenCalled();
   expect(reader.getSnapshot().entries).toBe(entries);
   reader.dispose();
+});
+
+test("reads handle frames through the stream its host.live named, repairs a gap by its identity and drops a replaced generation's handles", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const attempt = createId("runAttempt");
+  const name = (address: typeof f.address, handle: number, text: string) =>
+    f.stream.receive({
+      ...address,
+      type: "host.live",
+      handle,
+      liveBootId: "00000000-0000-4000-8000-000000000001",
+      runId,
+      attemptId: attempt,
+      bindingGeneration: 1,
+      streamId: "reply",
+      itemId: "live-reply",
+      afterSequence: "1",
+      update: {
+        operation: "replace",
+        text,
+        offset: 0,
+        totalLength: text.length,
+        incomplete: false,
+      },
+    });
+  const text = () => f.detail.text.get("live-reply")?.text;
+  name(f.address, 7, "Hel");
+  expect(f.stream.receive({ type: "host.text", h: 7, o: 3, n: 5, t: "lo" })).toBe(true);
+  expect(text()).toBe("Hello");
+  // A handle this socket never named is not anyone's stream.
+  expect(f.stream.receive({ type: "host.text", h: 99, o: 5, n: 6, t: "!" })).toBe(true);
+  expect(text()).toBe("Hello");
+
+  // A lost append leaves a gap; the repair asks for the stream the handle named.
+  f.stream.receive({ type: "host.text", h: 7, o: 9, n: 12, t: "rld" });
+  expect(f.sent.at(-1)).toEqual({
+    type: "client.live.resync",
+    subscriptionId: f.address.subscriptionId,
+    generation: f.address.generation,
+    runId,
+    streamIds: ["reply"],
+  });
+  expect(text()).toBe("Hello");
+
+  // A new generation mid-stream: the old handle no longer reaches the scope.
+  f.stream.select(undefined);
+  f.stream.select(threadScope);
+  const subscribe = f.sent.findLast((frame) => frame.type === "client.subscribe");
+  if (subscribe?.type !== "client.subscribe" || subscribe.scope.kind !== "thread")
+    throw new Error("The detail did not resubscribe");
+  const next = {
+    subscriptionId: subscribe.subscriptionId as typeof f.address.subscriptionId,
+    generation: subscribe.generation,
+    scope: subscribe.scope,
+  };
+  expect(next.generation).toBeGreaterThan(f.address.generation);
+  f.stream.receive({
+    ...next,
+    type: "host.snapshot",
+    throughSequence: "1",
+    snapshot: f.detailSnapshot().snapshot,
+  });
+  f.stream.receive({ ...next, type: "host.synchronized", throughSequence: "1" });
+  f.stream.receive({ type: "host.text", h: 7, o: 0, n: 3, t: "old", incomplete: false });
+  expect(text()).toBeUndefined();
+  name(next, 8, "Hello wor");
+  f.stream.receive({ type: "host.text", h: 8, o: 9, n: 11, t: "ld" });
+  expect(text()).toBe("Hello world");
 });

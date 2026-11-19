@@ -1764,6 +1764,11 @@ describeStore("PostgreSQL store", (it) => {
       code: "not_found",
     });
     await store.revokeRunner(localRunnerId, ownerId);
+    // The Host's in-memory heartbeat fence learns of a revocation from its commit.
+    expect(storeFixture.reactions).toContainEqual({
+      type: "runnerRevoked",
+      runnerId: localRunnerId,
+    });
     await expect(store.authenticateRunnerConnection(localDescriptor)).rejects.toMatchObject({
       code: "forbidden",
     });

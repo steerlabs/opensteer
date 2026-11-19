@@ -3466,7 +3466,7 @@ function observeRunnerDisconnect(socket: WebSocket, environmentId: EnvironmentId
 async function waitForRunItem(socket: WebSocket, status: "failed" | "completed") {
   const observed = new Set<string>();
   const runIn = (frame: import("@opensteer/protocol/personal-sync").ScopedHostMessage) => {
-    if (frame.subscriptionId !== "detail:0") return;
+    if (frame.type === "host.text" || frame.subscriptionId !== "detail:0") return;
     const cards =
       frame.type === "host.changes"
         ? frame.changes.flatMap((change) =>
@@ -3484,7 +3484,7 @@ async function waitForRunItem(socket: WebSocket, status: "failed" | "completed")
       return false;
     }
     const frame = parsed.data;
-    observed.add(`${frame.subscriptionId} ${frame.type}`);
+    observed.add(`${"subscriptionId" in frame ? frame.subscriptionId : "live"} ${frame.type}`);
     return runIn(frame) !== undefined;
   }).catch((error: unknown) => {
     throw new Error(`No ${status} Run card arrived. Frames observed: ${[...observed].join(", ")}`, {

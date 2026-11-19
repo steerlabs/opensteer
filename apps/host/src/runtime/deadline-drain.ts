@@ -1,14 +1,23 @@
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 
 const maxTimerMs = 2 ** 31 - 1;
+const firstRetryMs = 5_000;
+const maxRetryMs = 5 * 60_000;
+
+/** A pass that left durable work undone without failing: try again after the backoff. */
+export const retryWithBackoff = Symbol("retryWithBackoff");
 
 interface DeadlineDrainOptions {
   readonly clock?: Clock;
-  readonly drain: () => Promise<Date | null>;
+  readonly drain: () => Promise<Date | null | typeof retryWithBackoff>;
   readonly onError?: (error: unknown) => void;
 }
 
-/** Runs after a wake or at the next durable deadline. A wake during a pass runs again. */
+/**
+ * Runs after a wake or at the next durable deadline. A wake during a pass runs
+ * again. A failed pass, or one that returns `retryWithBackoff`, retries after
+ * 5 s doubling to 5 min; any clean pass resets the backoff.
+ */
 export class DeadlineDrain {
   readonly #options: DeadlineDrainOptions;
   readonly #clock: Clock;
@@ -18,6 +27,7 @@ export class DeadlineDrain {
   #started = false;
   #closed = false;
   #completedPasses = 0;
+  #failedPasses = 0;
 
   constructor(options: DeadlineDrainOptions) {
     this.#options = options;
@@ -59,10 +69,15 @@ export class DeadlineDrain {
     while (this.#dirty) {
       this.#dirty = false;
       try {
-        next = await this.#options.drain();
+        const result = await this.#options.drain();
+        if (result === retryWithBackoff) next = this.#backoff();
+        else {
+          this.#failedPasses = 0;
+          next = result;
+        }
       } catch (error) {
         // A failed read cannot establish that the durable queue is empty.
-        next = new Date(this.#clock.now() + 5_000);
+        next = this.#backoff();
         this.#options.onError?.(error);
       } finally {
         this.#completedPasses++;
@@ -73,5 +88,11 @@ export class DeadlineDrain {
         () => this.wake(),
         Math.min(maxTimerMs, Math.max(0, next.getTime() - this.#clock.now())),
       );
+  }
+
+  #backoff(): Date {
+    const delay = Math.min(maxRetryMs, firstRetryMs * 2 ** Math.min(this.#failedPasses, 16));
+    this.#failedPasses++;
+    return new Date(this.#clock.now() + delay);
   }
 }

@@ -378,7 +378,7 @@ describe("ExecutionCoordinator", () => {
   });
   it("paces a command's retryable rejections instead of redispatching at poll speed", async () => {
     const command = pendingCommand();
-    let clock = 1_700_000_000_000;
+    const time = manualClock();
     const store = backoffStore(() => [command]);
     const dispatch = vi.fn(async () => {
       throw new CommandDispatchError("Runner is offline", "retry");
@@ -393,16 +393,18 @@ describe("ExecutionCoordinator", () => {
       maxConcurrentTriggerPrograms: 1,
       maxQueuedBytes: 10_000,
       maxQueuedCommands: 10,
-      now: () => clock,
+      clock: time.clock,
       pollIntervalMs: 1,
       store: store.value,
     });
     coordinator.start();
     await waitFor(() => dispatch.mock.calls.length === 1);
-    const polls = store.listPendingCommands.mock.calls.length;
-    await waitFor(() => store.listPendingCommands.mock.calls.length >= polls + 5);
+    await wakeRepeatedly(coordinator, () => store.listPendingCommands.mock.calls.length);
     expect(dispatch).toHaveBeenCalledTimes(1);
-    clock += 1_000;
+    // Backoff arms one timer for when the command is eligible; it never polls.
+    await waitFor(() => time.timers().length > 0);
+    expect(time.timers()).toEqual([1_000]);
+    time.advance(1_000);
     await waitFor(() => dispatch.mock.calls.length === 2);
     await coordinator.stop();
     expect(store.retryCommand).toHaveBeenCalledTimes(2);
@@ -448,7 +450,7 @@ describe("ExecutionCoordinator", () => {
   });
   it("keeps pacing a command that polls cannot see while it is being dispatched", async () => {
     const command = pendingCommand();
-    let clock = 1_700_000_000_000;
+    const time = manualClock();
     // A claimed command leaves the pending listing until its retry commits.
     // Other admissions may wake a read during that time.
     let listed = true;
@@ -486,7 +488,7 @@ describe("ExecutionCoordinator", () => {
       maxConcurrentTriggerPrograms: 1,
       maxQueuedBytes: 10_000,
       maxQueuedCommands: 10,
-      now: () => clock,
+      clock: time.clock,
       pollIntervalMs: 1,
       store: {
         claimCommand,
@@ -502,22 +504,23 @@ describe("ExecutionCoordinator", () => {
       coordinator.wake();
       await waitFor(() => listPendingCommands.mock.calls.length > reads);
       releaseRetry();
-      const settled = listPendingCommands.mock.calls.length;
-      await waitFor(() => listPendingCommands.mock.calls.length >= settled + 5);
+      await wakeRepeatedly(coordinator, () => listPendingCommands.mock.calls.length);
     };
     coordinator.start();
     await waitFor(() => dispatch.mock.calls.length === 1);
     await settleWhileUnlisted();
     expect(dispatch).toHaveBeenCalledTimes(1);
-    clock += 1_000;
+    await waitFor(() => time.timers().length > 0);
+    time.advance(1_000);
     await waitFor(() => dispatch.mock.calls.length === 2);
     await settleWhileUnlisted();
-    clock += 1_000;
-    const polls = listPendingCommands.mock.calls.length;
-    await waitFor(() => listPendingCommands.mock.calls.length >= polls + 5);
+    await waitFor(() => time.timers().length > 0);
+    time.advance(1_000);
+    await wakeRepeatedly(coordinator, () => listPendingCommands.mock.calls.length);
     // The second rejection doubled the wait instead of starting over.
     expect(dispatch).toHaveBeenCalledTimes(2);
-    clock += 1_000;
+    await waitFor(() => time.timers().length > 0);
+    time.advance(1_000);
     await waitFor(() => dispatch.mock.calls.length === 3);
     await settleWhileUnlisted();
     await coordinator.stop();
@@ -525,7 +528,7 @@ describe("ExecutionCoordinator", () => {
   it("keeps the backoff a command records while a listing that missed it is read", async () => {
     const first = pendingCommand();
     const second = pendingCommand();
-    const clock = 1_700_000_000_000;
+    const time = manualClock();
     let secondAvailable = false;
     let releaseFirst = () => {};
     let finishListing = (_commands: readonly PendingCommandRow[]) => {};
@@ -562,7 +565,7 @@ describe("ExecutionCoordinator", () => {
       maxConcurrentTriggerPrograms: 1,
       maxQueuedBytes: 10_000,
       maxQueuedCommands: 10,
-      now: () => clock,
+      clock: time.clock,
       pollIntervalMs: 1,
       store: {
         claimCommand: vi.fn(async (id: CommandId) => ({
@@ -587,14 +590,14 @@ describe("ExecutionCoordinator", () => {
     releaseFirst();
     await waitFor(() => dispatch.mock.calls.length === 2);
     finishListing([]);
-    await waitFor(() => listings >= 8);
+    await wakeRepeatedly(coordinator, () => listings);
     // The clock never moves, so only a lost backoff could dispatch it again.
     expect(dispatch).toHaveBeenCalledTimes(2);
     await coordinator.stop();
   });
   it("keeps the backoff of a retry that commits while a listing that missed it is read", async () => {
     const command = pendingCommand();
-    const clock = 1_700_000_000_000;
+    const time = manualClock();
     let releaseRetry = () => {};
     let finishListing = (_commands: readonly PendingCommandRow[]) => {};
     let listings = 0;
@@ -627,7 +630,7 @@ describe("ExecutionCoordinator", () => {
       maxConcurrentTriggerPrograms: 1,
       maxQueuedBytes: 10_000,
       maxQueuedCommands: 10,
-      now: () => clock,
+      clock: time.clock,
       pollIntervalMs: 1,
       store: {
         claimCommand: vi.fn(async () => ({
@@ -650,7 +653,7 @@ describe("ExecutionCoordinator", () => {
     releaseRetry();
     await waitFor(() => !coordinator.dispatchingRunIds().includes(command.runId!));
     finishListing([]);
-    await waitFor(() => listings >= 8);
+    await wakeRepeatedly(coordinator, () => listings);
     // The clock never moves, so only a lost backoff could dispatch it again.
     expect(dispatch).toHaveBeenCalledTimes(1);
     await coordinator.stop();
@@ -662,7 +665,7 @@ describe("ExecutionCoordinator", () => {
       },
       type: "run.interrupt",
     });
-    const clock = 1_700_000_000_000;
+    const time = manualClock();
     let listed = true;
     let resumeRetry = () => {};
     const claimCommand = vi.fn(async () => {
@@ -701,7 +704,7 @@ describe("ExecutionCoordinator", () => {
       maxConcurrentTriggerPrograms: 1,
       maxQueuedBytes: 10_000,
       maxQueuedCommands: 10,
-      now: () => clock,
+      clock: time.clock,
       pollIntervalMs: 1,
       store: {
         claimCommand,
@@ -718,15 +721,14 @@ describe("ExecutionCoordinator", () => {
     await waitFor(() => listPendingCommands.mock.calls.length > reads);
     expect(claimCommand).toHaveBeenCalledTimes(1);
     resumeRetry();
-    const settled = listPendingCommands.mock.calls.length;
-    await waitFor(() => listPendingCommands.mock.calls.length >= settled + 5);
+    await wakeRepeatedly(coordinator, () => listPendingCommands.mock.calls.length);
     // The clock never moves: the recorded backoff still holds it.
     expect(dispatch).toHaveBeenCalledTimes(1);
     await coordinator.stop();
   });
   it("drops the backoff of a command that has left the pending listing", async () => {
     const command = pendingCommand();
-    const clock = 1_700_000_000_000;
+    const time = manualClock();
     let pending: readonly PendingCommandRow[] = [command];
     const store = backoffStore(() => pending);
     const dispatch = vi.fn(async () => {
@@ -742,7 +744,7 @@ describe("ExecutionCoordinator", () => {
       maxConcurrentTriggerPrograms: 1,
       maxQueuedBytes: 10_000,
       maxQueuedCommands: 10,
-      now: () => clock,
+      clock: time.clock,
       pollIntervalMs: 1,
       store: store.value,
     });
@@ -750,6 +752,7 @@ describe("ExecutionCoordinator", () => {
     await waitFor(() => dispatch.mock.calls.length === 1);
     pending = [];
     const reads = store.listPendingCommands.mock.calls.length;
+    coordinator.wake();
     await waitFor(() => store.listPendingCommands.mock.calls.length > reads);
     pending = [command];
     coordinator.wake();
@@ -847,6 +850,44 @@ function pendingCommand(overrides: Partial<PendingCommandRow> = {}): PendingComm
     updatedAt: now,
     ...overrides,
   };
+}
+
+/** Time that moves only when the test says so, with the timers it armed. */
+function manualClock(start = 1_700_000_000_000) {
+  let now = start;
+  const scheduled = new Set<{ readonly at: number; readonly run: () => void }>();
+  return {
+    clock: {
+      now: () => now,
+      schedule(run: () => void, milliseconds: number) {
+        const timer = { at: now + milliseconds, run };
+        scheduled.add(timer);
+        return () => scheduled.delete(timer);
+      },
+    },
+    advance(milliseconds: number) {
+      now += milliseconds;
+      for (const timer of [...scheduled].sort((left, right) => left.at - right.at)) {
+        if (timer.at > now) continue;
+        scheduled.delete(timer);
+        timer.run();
+      }
+    },
+    timers: () => [...scheduled].map((timer) => timer.at - now),
+  };
+}
+
+/** Other commits wake the queue meanwhile; a held backoff must survive each read. */
+async function wakeRepeatedly(
+  coordinator: ExecutionCoordinator,
+  reads: () => number,
+  times = 5,
+): Promise<void> {
+  for (let wake = 0; wake < times; wake += 1) {
+    const before = reads();
+    coordinator.wake();
+    await waitFor(() => reads() > before);
+  }
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {

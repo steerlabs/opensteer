@@ -1,7 +1,6 @@
 import { utf8ByteLength, type AuthSessionId } from "@opensteer/core";
 import {
   scopedPersonalApiVersion,
-  ScopedHostFrameSchema,
   ScopedHostMessageSchema,
   personalHostFrameMaxBytes,
   PersonalResumeCursorSchema,
@@ -34,6 +33,11 @@ type DetailScope = Exclude<PersonalScope, { kind: "shell" }>;
 type DetailId = Extract<ScopedClientMessage, { type: "client.live.resync" }>["subscriptionId"];
 type Subscribe = Extract<ScopedClientMessage, { type: "client.subscribe" }>;
 type Live = Extract<ScopedHostMessage, { type: "host.live" }>;
+/** A frame as the stream handles it: `host.text` resolves to the `host.live` its handle names. */
+type Frame = Exclude<ScopedHostMessage, { type: "host.text" }>;
+type LiveIdentity = Omit<Live, "update">;
+/** More than the Host keeps per socket (64 streams in each of four detail slots). */
+const maxLiveHandles = 512;
 export type ScopedPersonalIdentity = Pick<
   PersonalResumeCursor,
   "deploymentId" | "epoch" | "viewerId"
@@ -114,7 +118,9 @@ export class ScopedPersonalStream {
   #earlyBytes = 0;
   #attachment = 0;
   #watchPending = false;
-  readonly #early: ScopedHostMessage[] = [];
+  readonly #early: Frame[] = [];
+  /** Live stream identities this socket's Host named, by handle. */
+  readonly #handles = new Map<number, LiveIdentity>();
   readonly #deferred = new Set<ObservedDetail>();
   #selected: string | undefined;
 
@@ -273,6 +279,7 @@ export class ScopedPersonalStream {
 
   disconnect() {
     this.#send = undefined;
+    this.#handles.clear();
     this.#shellReady = false;
     this.#early.length = 0;
     this.#earlyBytes = 0;
@@ -349,25 +356,24 @@ export class ScopedPersonalStream {
   }
 
   /**
-   * Applies one frame. `wireBytes` is the received text's size, checked against the frame's limit
-   * instead of re-encoding it; a frame from the socket must also carry its shell's session.
+   * Applies one frame. `wireBytes` is the received text's size, checked against the frame's limit;
+   * a frame from the socket must also carry its shell's session.
    */
   receive(input: unknown, wireBytes?: number) {
-    const parsed = (
-      wireBytes === undefined ? ScopedHostMessageSchema : ScopedHostFrameSchema
-    ).safeParse(input);
+    const parsed = ScopedHostMessageSchema.safeParse(input);
     if (!parsed.success) return false;
-    const frame = parsed.data;
-    if (wireBytes !== undefined && wireBytes > personalHostFrameMaxBytes(frame))
+    if (wireBytes !== undefined && wireBytes > personalHostFrameMaxBytes(parsed.data))
       throw new Error("Personal scope frame exceeds its encoded limit.");
     if (
       wireBytes !== undefined &&
-      frame.type === "host.snapshot" &&
-      "tasks" in frame.snapshot &&
-      !frame.snapshot.session
+      parsed.data.type === "host.snapshot" &&
+      "tasks" in parsed.data.snapshot &&
+      !parsed.data.snapshot.session
     )
       throw new Error("The Host omitted its authenticated shell identity.");
     if (!this.#send) return true;
+    const frame = this.#resolveLive(parsed.data);
+    if (!frame) return true;
     if (frame.type === "host.live") this.#creditLive(frame, wireBytes ?? bytes(frame));
     if (frame.subscriptionId === "shell") this.#receiveShell(frame);
     else if (this.#shellReady || frame.type === "host.live") this.#receiveDetail(frame);
@@ -375,9 +381,32 @@ export class ScopedPersonalStream {
     return true;
   }
 
+  #resolveLive(frame: ScopedHostMessage): Frame | undefined {
+    if (frame.type === "host.live") {
+      const { update: _update, ...identity } = frame;
+      this.#handles.set(frame.handle, identity);
+      if (this.#handles.size > maxLiveHandles)
+        this.#handles.delete(this.#handles.keys().next().value!);
+      return frame;
+    }
+    if (frame.type !== "host.text") return frame;
+    const identity = this.#handles.get(frame.h);
+    if (!identity) return undefined;
+    this.#handles.delete(frame.h);
+    this.#handles.set(frame.h, identity);
+    const text = { offset: frame.o, totalLength: frame.n, text: frame.t };
+    return {
+      ...identity,
+      update:
+        frame.incomplete === undefined
+          ? { operation: "append", ...text }
+          : { operation: "replace", ...text, incomplete: frame.incomplete },
+    };
+  }
+
   // Durable detail waits for the socket's first shell cut, which carries the viewer identity.
   // Past the buffer cap the detail is set aside and resubscribed once the shell is ready.
-  #hold(frame: ScopedHostMessage, size: number) {
+  #hold(frame: Frame, size: number) {
     const detail = this.#currentDetail(frame);
     if (!detail || this.#deferred.has(detail)) return;
     if (this.#earlyBytes + size <= 256 * 1024 && this.#early.length < 128) {
@@ -408,7 +437,7 @@ export class ScopedPersonalStream {
     this.#watchResources();
   }
 
-  #receiveShell(frame: ScopedHostMessage) {
+  #receiveShell(frame: Frame) {
     if (frame.generation !== this.shell.getSnapshot().generation) return;
     if (
       this.#candidate &&
@@ -557,7 +586,7 @@ export class ScopedPersonalStream {
     }
   }
 
-  #currentDetail(frame: ScopedHostMessage): ObservedDetail | undefined {
+  #currentDetail(frame: Frame): ObservedDetail | undefined {
     if (frame.subscriptionId === "shell") return;
     const detail = this.#slots.get(frame.subscriptionId);
     if (
@@ -571,7 +600,7 @@ export class ScopedPersonalStream {
     return undefined;
   }
 
-  #receiveDetail(frame: ScopedHostMessage) {
+  #receiveDetail(frame: Frame) {
     if (frame.subscriptionId === "shell") return;
     const detail = this.#currentDetail(frame);
     if (!detail) return;
@@ -688,7 +717,7 @@ export class ScopedPersonalStream {
     });
   }
 
-  #ack(frame: Extract<ScopedHostMessage, { throughSequence: string }>) {
+  #ack(frame: Extract<Frame, { throughSequence: string }>) {
     if (frame.type !== "host.snapshot" && frame.type !== "host.changes") return;
     if (frame.subscriptionId !== "shell") {
       const detail = this.#slots.get(frame.subscriptionId);

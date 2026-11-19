@@ -37,7 +37,7 @@ async function listen(host: MachineAccessHost, threadId: ThreadId) {
     const decoded = ScopedHostMessageSchema.safeParse(JSON.parse(frame.toString()));
     if (!decoded.success) return;
     const message = decoded.data;
-    if (message.subscriptionId === "detail:0") {
+    if (message.type !== "host.text" && message.subscriptionId === "detail:0") {
       if (message.type === "host.snapshot" && "items" in message.snapshot) {
         items.clear();
         for (const item of message.snapshot.items) items.set(item.id, item);

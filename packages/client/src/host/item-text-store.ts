@@ -1,7 +1,8 @@
 import type { ScopedHostMessage } from "@opensteer/protocol/personal-sync";
 import { utf8Tail } from "@opensteer/core";
 
-type LiveFrame = Extract<ScopedHostMessage, { type: "host.live" }>;
+/** A live stream's frame; the socket handle that named it does not matter here. */
+type LiveFrame = Omit<Extract<ScopedHostMessage, { type: "host.live" }>, "handle">;
 
 export function liveFrameKey(frame: LiveFrame) {
   return JSON.stringify([

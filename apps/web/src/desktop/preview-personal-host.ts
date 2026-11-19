@@ -134,9 +134,13 @@ export function previewPersonalHost(
     },
     tasks: [],
     activeTaskIds: [],
+    activeHasMore: false,
     recentTaskIds: [],
+    nextBefore: null,
+    taskCounts: { active: 0, open: 0 },
     visits: [],
     attention: [],
+    attentionHasMore: false,
     counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
     resourceRevisions: PersonalResourceRevisionsSchema.parse(
       Object.fromEntries(personalResourceKinds.map((kind) => [kind, "0"])),

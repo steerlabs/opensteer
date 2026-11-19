@@ -53,7 +53,7 @@ async function watch(host: PrivateMachineHost, threadId: ThreadId) {
                   .reverse()
                   .find(
                     (seen): seen is Extract<ScopedHostMessage, { throughSequence: string }> =>
-                      seen.subscriptionId === frame.subscriptionId && "throughSequence" in seen,
+                      "throughSequence" in seen && seen.subscriptionId === frame.subscriptionId,
                   )!.throughSequence
               : frame.throughSequence,
         }),

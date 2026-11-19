@@ -323,7 +323,11 @@ export async function inspectHarnessCatalogsAfterUsageLimit(options: {
  * thirty minutes. Provider inventories change independently of profile
  * configuration; dispatch and sign-in are not the only reasons to look again.
  * Sign-in required is settled: only an explicit refresh, profile change, sign-in
- * action or Runner invalidation may ask it again, never this periodic pass.
+ * action or Runner invalidation may ask it again, never this pass.
+ *
+ * Returns when the oldest ready catalog goes stale, and whether any answer is
+ * still unsettled (preparing, unavailable or error), so the caller can arm a
+ * deadline instead of polling.
  */
 export async function reconcileHarnessCatalogs(options: {
   readonly catalogs: HarnessCatalogConvergenceStore;
@@ -335,8 +339,8 @@ export async function reconcileHarnessCatalogs(options: {
     environmentId: EnvironmentId,
     catalogs: readonly HarnessInstanceCatalog[],
   ) => void;
-}): Promise<void> {
-  if (options.connectedEnvironmentIds.length === 0) return;
+}): Promise<HarnessCatalogConvergence> {
+  if (options.connectedEnvironmentIds.length === 0) return { staleAt: null, unsettled: false };
   const now = options.now ?? Date.now();
   const [harnesses, stored] = await Promise.all([
     options.catalogs.listHarnessInstances({ environmentIds: options.connectedEnvironmentIds }),
@@ -345,6 +349,11 @@ export async function reconcileHarnessCatalogs(options: {
   const captured = new Map(stored.map((record) => [record.harnessInstanceId, record]));
   const pending = new Map<EnvironmentId, HarnessInspectionDefinitions[number][]>();
   const connected = new Set(options.connectedEnvironmentIds);
+  const next: { staleAt: number | null; unsettled: boolean } = { staleAt: null, unsettled: false };
+  const settleReady = (capturedAt: number) => {
+    const at = capturedAt + harnessCatalogMaxAgeMs;
+    next.staleAt = next.staleAt === null ? at : Math.min(next.staleAt, at);
+  };
   for (const harness of harnesses) {
     if (!harness.enabled || harness.removedAt !== null || !connected.has(harness.environmentId)) {
       continue;
@@ -357,6 +366,7 @@ export async function reconcileHarnessCatalogs(options: {
           record.capturedAt.getTime() <= now &&
           now - record.capturedAt.getTime() < harnessCatalogMaxAgeMs))
     ) {
+      if (record.catalog.status === "ready") settleReady(record.capturedAt.getTime());
       continue;
     }
     const definitions = pending.get(harness.environmentId) ?? [];
@@ -375,14 +385,28 @@ export async function reconcileHarnessCatalogs(options: {
         runners: options.runners,
         signal: options.signal,
       });
-      const onCommitted = options.onCommitted;
-      return onCommitted
-        ? capture.then((catalogs) => onCommitted(environmentId, catalogs))
-        : capture;
+      return capture.then((catalogs) => {
+        for (const catalog of catalogs) {
+          if (catalog.status === "ready") settleReady(now);
+          else if (catalog.status !== "authentication-required") next.unsettled = true;
+        }
+        options.onCommitted?.(environmentId, catalogs);
+      });
     }),
   );
   const failures = results.flatMap((result) =>
     result.status === "rejected" ? [result.reason] : [],
   );
   if (failures.length > 0) throw new AggregateError(failures, "AI model catalog refresh failed");
+  return {
+    staleAt: next.staleAt === null ? null : new Date(next.staleAt),
+    unsettled: next.unsettled,
+  };
+}
+
+export interface HarnessCatalogConvergence {
+  /** When the oldest ready catalog of a connected environment needs looking at again. */
+  readonly staleAt: Date | null;
+  /** Some answer is still preparing, unavailable or an error; look again after a backoff. */
+  readonly unsettled: boolean;
 }
