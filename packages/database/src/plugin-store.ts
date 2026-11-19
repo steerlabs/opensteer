@@ -113,7 +113,9 @@ export class PluginStore {
     const now = new Date();
     const persist = async (tx: Transaction<DatabaseSchema>) => {
       await requirePersonalOwner(tx, input.actorUserId);
-      await tx
+      // One plugin per person and name: a registration of the same name that committed first,
+      // even one still committing, is the plugin, and this one is refused rather than a second.
+      const inserted = await tx
         .insertInto("plugins")
         .values({
           id: input.id,
@@ -126,7 +128,15 @@ export class PluginStore {
           createdAt: now,
           updatedAt: now,
         })
-        .execute();
+        .onConflict((conflict) => conflict.columns(["installedBy", "name"]).doNothing())
+        .returning("id")
+        .executeTakeFirst();
+      if (!inserted)
+        throw new OpensteerError({
+          code: "conflict",
+          message: `${input.name} was registered by another call at the same time.`,
+          next: "Register it again to update that one.",
+        });
       await tx
         .insertInto("pluginVersions")
         .values({

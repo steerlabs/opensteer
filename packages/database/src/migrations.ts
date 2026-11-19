@@ -246,6 +246,20 @@ update trigger_revisions set program = jsonb_set(program, '{toolContractVersion}
   where program->'toolContractVersion' = '4'::jsonb
     and program->>'source' !~ 'integration_(call|describe|list|remove|request|search)';
 `;
+/**
+ * One plugin per person and name. Two first registrations of one name at once could each create a
+ * plugin; the later of any such pair keeps its rows under its name with the end of its id added.
+ */
+export const onePluginPerOwnerNameMigrationName = "0036_one_plugin_per_owner_name";
+const ONE_PLUGIN_PER_OWNER_NAME_SQL = `
+update plugins set name = rtrim(left(plugins.name, 55), '-.') || '-' || right(plugins.id, 8)
+  from (
+    select id, row_number() over (partition by installed_by, name order by created_at, id) as rank
+    from plugins
+  ) duplicate
+  where plugins.id = duplicate.id and duplicate.rank > 1;
+create unique index plugins_owner_name on plugins(installed_by, name);
+`;
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -518,6 +532,11 @@ export function migrationProvider(): MigrationProvider {
         [dropStoredDefinitionApiKeyMigrationName]: {
           async up(database) {
             await sql.raw(DROP_STORED_DEFINITION_API_KEY_SQL).execute(database);
+          },
+        },
+        [onePluginPerOwnerNameMigrationName]: {
+          async up(database) {
+            await sql.raw(ONE_PLUGIN_PER_OWNER_NAME_SQL).execute(database);
           },
         },
       };

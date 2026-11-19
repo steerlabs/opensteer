@@ -263,6 +263,8 @@ export class LocalServerRegistry {
       ? await store.plugins.setupThread(input.threadId)
       : undefined;
     const updating = currentPlugin !== undefined;
+    // A first registration's id is chosen here; if another of the same name commits first, the
+    // database keeps that one and this registration is refused inside its transaction.
     const pluginId = currentPlugin?.id ?? createIntegrationId("installation");
     const previous = updating
       ? (await store.listInstallations()).find((i) => i.pluginId === pluginId)

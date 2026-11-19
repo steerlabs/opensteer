@@ -13,10 +13,12 @@ import {
 import { sql, type Kysely } from "kysely";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
+import { jsonValue } from "./store-primitives.js";
 import {
   tabsAndAppsMigrationName,
   agentHomeSettingsMigrationName,
   dropSpecialistsMigrationName,
+  onePluginPerOwnerNameMigrationName,
   MigrationLineageError,
   migrateToLatest,
   migrationProvider,
@@ -768,6 +770,40 @@ describe("fresh personal/team lineage", () => {
       ).rows,
     ).toEqual([]);
     expect(await database.selectFrom("agentHomeSettings").selectAll().execute()).toEqual([]);
+  });
+  it("keeps both plugins a person registered under one name, the later under a numbered name", async () => {
+    await migrateToLatest(database, migrationsBefore(onePluginPerOwnerNameMigrationName));
+    const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    const plugin = (id: string, createdAt: string) => ({
+      id,
+      name: "office-light",
+      scope: "deployment" as const,
+      source: jsonValue({}),
+      installedBy: userId,
+      currentVersionId: null,
+      createdAt: new Date(createdAt),
+      updatedAt: new Date(createdAt),
+    });
+    await database
+      .insertInto("plugins")
+      .values([
+        plugin("iin_00000000-0000-4000-8000-0000000000aa", "2026-11-01T00:00:00Z"),
+        plugin("iin_00000000-0000-4000-8000-0000000000bb", "2026-11-01T00:00:01Z"),
+      ])
+      .execute();
+    await migrateToLatest(database);
+    expect(
+      await database.selectFrom("plugins").select(["id", "name"]).orderBy("id").execute(),
+    ).toEqual([
+      { id: "iin_00000000-0000-4000-8000-0000000000aa", name: "office-light" },
+      { id: "iin_00000000-0000-4000-8000-0000000000bb", name: "office-light-000000bb" },
+    ]);
+    await expect(
+      database
+        .insertInto("plugins")
+        .values(plugin("iin_00000000-0000-4000-8000-0000000000cc", "2026-11-02T00:00:00Z"))
+        .execute(),
+    ).rejects.toThrow(/plugins_owner_name/u);
   });
   it("drops specialist storage and settings from databases made before specialists were removed", async () => {
     await migrateToLatest(database, migrationsBefore(dropSpecialistsMigrationName));

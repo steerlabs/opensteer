@@ -37,6 +37,31 @@ describeStore("personal plugin packages", (test) => {
     expect((await plugins.list())[0]!.versions).toHaveLength(2);
   });
 
+  test("keeps one plugin per person and name, however many first registrations race", async ({
+    storeFixture: f,
+  }) => {
+    const owner = await f.createRunFixture("plugin-one-name");
+    const plugins = new PluginStore(f.database);
+    const install = () =>
+      plugins.install({
+        id: randomUUID(),
+        name: "office-light",
+        actorUserId: owner.userId,
+        source: {},
+        digest: "first",
+        manifest: { name: "office-light" },
+      });
+    const settled = await Promise.allSettled([install(), install(), install()]);
+    expect(settled.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    for (const result of settled.filter(({ status }) => status === "rejected"))
+      expect((result as PromiseRejectedResult).reason).toMatchObject({
+        code: "conflict",
+        message: "office-light was registered by another call at the same time.",
+      });
+    expect((await plugins.list()).filter(({ name }) => name === "office-light")).toHaveLength(1);
+    await expect(install()).rejects.toMatchObject({ code: "conflict" });
+  });
+
   test("reads growing inventories with a fixed number of queries", async ({ storeFixture: f }) => {
     const owner = await f.createRunFixture("plugin-query-count");
     let queries = 0;
