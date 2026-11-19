@@ -70,6 +70,16 @@ const methods = [
   "integration.platform.get",
   "integration.computer.setup.list",
 ] as const;
+/** A `host.resource` push names each changed kind's revision (e522ce7fd); apps live in `machine`. */
+function machineRevision(message: Record<string, unknown>) {
+  const revisions = message.revisions;
+  return (
+    message.type === "host.resource" &&
+    typeof revisions === "object" &&
+    revisions !== null &&
+    "machine" in revisions
+  );
+}
 const envelope = z.object({ ok: z.literal(true), data: z.unknown() });
 const apps = ["apple-calendar", "apple-contacts", "apple-reminders"];
 const iphoneAppAccess = {
@@ -1004,9 +1014,7 @@ integration.sequential("iPhone integrations Host contract", () => {
       "corpus",
       "apple-calendar",
     );
-    await waitForCondition(async () =>
-      realtime.messages.some(({ type, kind }) => type === "host.resource" && kind === "machine"),
-    );
+    await waitForCondition(async () => realtime.messages.some(machineRevision));
     const rpc: { method: (typeof methods)[number]; data: unknown }[] = [];
     for (const method of methods) {
       const response = await testRpcRequest(
@@ -1029,9 +1037,7 @@ integration.sequential("iPhone integrations Host contract", () => {
           iphoneMachineId: phone.runnerId,
           setupRequestId: pending.id,
           rpc,
-          frames: realtime.messages.filter(
-            ({ type, kind }) => type === "host.resource" && kind === "machine",
-          ),
+          frames: realtime.messages.filter(machineRevision),
         },
         null,
         2,
