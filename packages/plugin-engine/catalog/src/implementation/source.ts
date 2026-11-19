@@ -74,10 +74,11 @@ const hex = (digest: ArrayBuffer) =>
  * not downloaded or decoded again. Listings that start while one is reading share its read.
  *
  * Preparing reads the index the same way, then the chosen entry's `source` document, and installs
- * it only when it is what the index lists: listed once, below the index, its bytes matching the
+ * it only when it is what the index lists: below the index, its bytes matching the
  * entry's `sha256` when it has one, and its package, its `package.json` name and the entry's
- * package the same. A `verified` feed, Opensteer's own, must list a valid hash for every entry it
- * installs. Each refusal is `CatalogSourceUnverified`, with its reason logged.
+ * package the same. A `verified` feed, Opensteer's own, must list each id once and a valid hash
+ * for every entry it installs; another feed's first entry with an id is the one listed and
+ * installed. Each refusal is `CatalogSourceUnverified`, with its reason logged.
  */
 export const catalogSource = (
   client: HttpClient.HttpClient,
@@ -147,11 +148,25 @@ export const catalogSource = (
       );
     },
   );
+  /**
+   * The entry each id lists and installs. Opensteer's own feed lists each id once, so an id it
+   * repeats is a fault: it maps to none, is not listed and installs nothing. Another feed's first
+   * entry with an id is the one listed and installed.
+   */
+  const installable = (entries: readonly CatalogFeedEntry[]) => {
+    const byId = new Map<string, CatalogFeedEntry | undefined>();
+    for (const entry of entries)
+      if (!byId.has(entry.id)) byId.set(entry.id, entry);
+      else if (options.verified) byId.set(entry.id, undefined);
+    return byId;
+  };
   const list = listed.pipe(
     Effect.map((entries) =>
-      entries.map(({ source: _source, sha256: _sha256, ...entry }) =>
-        CatalogEntry.make({ ...entry, icons: resolveIcons(entry.icons, feedUrl) }),
-      ),
+      [...installable(entries).values()].flatMap((entry) => {
+        if (entry === undefined) return [];
+        const { source: _source, sha256: _sha256, ...listing } = entry;
+        return [CatalogEntry.make({ ...listing, icons: resolveIcons(listing.icons, feedUrl) })];
+      }),
     ),
   );
   const refuse = (id: string, reason: string) =>
@@ -165,12 +180,15 @@ export const catalogSource = (
       Effect.gen(function* () {
         // Feed entry ids are never URLs, so one is refused without reading the feed.
         if (URL.canParse(id)) return yield* entryMissing(id);
-        const matches = (yield* listed).filter((candidate) => candidate.id === id);
-        const entry = matches[0];
-        if (entry === undefined) return yield* entryMissing(id);
+        const entries = installable(yield* listed);
+        const entry = entries.get(id);
+        if (entry === undefined) {
+          if (!entries.has(id)) return yield* entryMissing(id);
+          yield* Effect.annotateCurrentSpan({ "catalog.entry.id": id });
+          return yield* refuse(id, "Opensteer's feed lists this id more than once");
+        }
         // Only a listed catalog identifier is recorded, never an arbitrary lookup input.
         yield* Effect.annotateCurrentSpan({ "catalog.entry.id": id });
-        if (matches.length > 1) return yield* refuse(id, "the index lists this id more than once");
         const reference = sourceAddress(entry.source, feedUrl);
         if (reference === undefined)
           return yield* refuse(id, "the entry's source is not a document below the index");

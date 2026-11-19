@@ -91,12 +91,25 @@ test("an install refuses a source the index does not uniquely list, hash and nam
       sha256: hashOf("/feed/apps/listed.json"),
     });
     expect(tag(await prepare(verified, "elsewhere"))).toBe("ok");
-    for (const refused of ["changed", "bad-hash", "twice", "replaced"])
+    for (const refused of ["changed", "bad-hash", "replaced"])
       expect(tag(await prepare(verified, refused)), refused).toBe("CatalogSourceUnverified");
     for (const escaping of ["up", "absolute", "away", "encoded"])
       expect(tag(await prepare(verified, escaping)), escaping).toBe("CatalogSourceUnverified");
     expect(tag(await prepare(verified, "absent"))).toBe("CatalogImportFailed");
   }
+  // Opensteer's own feed lists each id once: an id it repeats is neither listed nor installed.
+  // Another feed lists the id once and installs the entry it lists.
+  expect(tag(await prepare(true, "twice"))).toBe("CatalogSourceUnverified");
+  expect(tag(await prepare(false, "twice"))).toBe("ok");
+  const listing = (verified: boolean) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const client = yield* HttpClient.HttpClient;
+        return yield* catalogSource(client, feed, { verified }).list;
+      }).pipe(Effect.provide(FetchHttpClient.layer)),
+    ).then((entries) => entries.filter((entry) => entry.id === "twice").length);
+  expect(await listing(true)).toBe(0);
+  expect(await listing(false)).toBe(1);
   // Opensteer's own feed proves every install; a development feed may list no hash, and the
   // install still records the document's.
   expect(tag(await prepare(true, "unhashed"))).toBe("CatalogSourceUnverified");
