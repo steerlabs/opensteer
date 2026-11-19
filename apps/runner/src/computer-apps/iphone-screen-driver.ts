@@ -62,7 +62,6 @@ type Phone = {
   tail: Promise<unknown>;
   revision: number;
   work: Set<Work>;
-  apps: Set<string>;
   closing?: Promise<void>;
 };
 
@@ -134,13 +133,17 @@ function nativeError(code: string, effect: string) {
           ? parsed.data
           : code === "cancelled"
             ? ("stopped-by-user" as const)
-            : code === "stale-native-epoch"
-              ? ("stale-observation" as const)
-              : ("failed" as const),
+            : code === "app-not-launchable"
+              ? ("app-not-found" as const)
+              : code === "stale-native-epoch"
+                ? ("stale-observation" as const)
+                : ("failed" as const),
     message:
       effect !== "not-started"
         ? "iPhone input may have been sent; observe before continuing."
-        : `iPhone: ${code}.`,
+        : code === "app-not-launchable"
+          ? "No installed app with that appId can be opened on this iPhone."
+          : `iPhone: ${code}.`,
   };
 }
 function ref(context: PhoneScreenContext): Session {
@@ -264,7 +267,6 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
           tail: Promise.resolve(),
           revision: 0,
           work: new Set(),
-          apps: new Set(),
         };
         this.#phones.set(assignment.deviceId, phone);
         this.#status(phone, "phone-disconnected");
@@ -672,8 +674,6 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
           return [{ kind: "navigate", button }];
         }
         case "launch":
-          if (!phone.apps.has(action.appId))
-            failure("app-not-found", "Choose an appId returned by this iPhone's installed_apps.");
           return [{ kind: "launch", appId: action.appId }];
         case "wake":
           if (snapshot.native.state.display !== "on")
@@ -688,7 +688,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     });
   }
   async installedApps(context: PhoneScreenContext, input: PhoneDisplayInstalledAppsParams) {
-    return this.#run(context, async (phone, work, check) => {
+    return this.#run(context, async (_phone, work, check) => {
       const params = PhoneDisplayInstalledAppsParamsSchema.parse(input);
       if (params.query.length > 200)
         failure("unsupported", "The iPhone app query must be at most 200 characters.");
@@ -710,7 +710,6 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
         appId: a.appId,
         label: phoneLabel(a.label, 199) || a.appId,
       }));
-      for (const app of apps) phone.apps.add(app.appId);
       return { apps, total: page.total };
     });
   }
@@ -843,7 +842,6 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
   #invalidate(phone: Phone, cancel: boolean) {
     ++phone.revision;
     phone.latest = undefined;
-    phone.apps.clear();
     for (const work of phone.work) work.abort.abort();
     if (cancel) this.#cancelSession(phone);
     else phone.session = undefined;

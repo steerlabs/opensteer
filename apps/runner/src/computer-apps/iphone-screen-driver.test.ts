@@ -450,7 +450,6 @@ describe("iPhone screen driver", () => {
     { type: "type", text: "synthetic secret", submit: false },
     { type: "clear", target: { x: 1, y: 2 } },
     { type: "navigate", to: "back" },
-    { type: "launch", appId: "unknown.app" },
     { ...tap, target: { x: 100, y: 20 } },
   ])("preflights the whole batch before effects: $type", async (action) => {
     const f = fixture();
@@ -586,7 +585,7 @@ describe("iPhone screen driver", () => {
     },
   );
 
-  it("pages app inventory without a screen session and launches only returned opaque ids", async () => {
+  it("pages app inventory without a screen session and leaves launchability to the phone", async () => {
     const f = fixture();
     const context = f.context();
     const page = await f.connection.installedApps(context, { query: "", limit: 1, offset: 0 });
@@ -595,10 +594,21 @@ describe("iPhone screen driver", () => {
     const { observation } = await f.connection.observe(context, observeParams);
     await f.connection.act(context, {
       observationId: observation.observationId,
-      actions: [{ type: "launch", appId: page.apps[0]!.appId }],
+      actions: [{ type: "launch", appId: "unlisted.app" }],
       includeScreenshot: false,
     });
-    expect(f.bridge.effects[0]?.actions).toEqual([{ kind: "launch", appId: "example.app" }]);
+    expect(f.bridge.effects[0]?.actions).toEqual([{ kind: "launch", appId: "unlisted.app" }]);
+    f.bridge.replies.set("iphone.perform", async () => ({
+      error: { code: "app-not-launchable", effect: "not-started", completedSteps: 0 },
+    }));
+    const next = await f.connection.observe(context, observeParams);
+    const refused = await f.connection.act(context, {
+      observationId: next.observation.observationId,
+      actions: [{ type: "launch", appId: "missing.app" }],
+      includeScreenshot: false,
+    });
+    expect(refused.error?.code).toBe("app-not-found");
+    expect(refused.performed).toEqual([]);
   });
 
   it("hides unknown lock state and self-app content but not an unknown front app, and maps native readiness reasons", async () => {
