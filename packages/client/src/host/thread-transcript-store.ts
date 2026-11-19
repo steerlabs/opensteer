@@ -428,7 +428,10 @@ export class ThreadTranscriptStore {
       snapshot,
       synchronized: state.synchronized,
       removed: false,
-      liveItems: repair ? state.liveItems : emptyState.liveItems,
+      // Live text stays through a repair; a provisional card the cut finalized gives way to it.
+      liveItems: repair
+        ? new Map([...state.liveItems].filter(([id]) => !items.has(id)))
+        : emptyState.liveItems,
       items,
       historyIds,
       activeIds: new Set(next.activeItems.map(({ id }) => id)),

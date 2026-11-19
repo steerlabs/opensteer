@@ -482,7 +482,7 @@ test("history pages land during a Run and keep an unhide or removal made while t
   expect(store.getSnapshot().historyIds).toEqual(all.slice(0, 3).map(({ id }) => id));
 });
 
-test("an inline repair replaces the scope in place and keeps earlier pages that still meet it", () => {
+test("a repair replaces the scope: no stale history, no older page, no omitted queue entry", () => {
   const store = new ThreadTranscriptStore();
   store.begin(1, false);
   const address = { subscriptionId, generation: 1, scope };
@@ -499,7 +499,27 @@ test("an inline repair replaces the scope in place and keeps earlier pages that 
     beforeId: boundary.id,
     beforePosition: boundary.position,
   });
-  const cut = (items: typeof all, throughSequence: string) =>
+  const waiting = (id: string) =>
+    ({
+      message: {
+        id,
+        revision: 0,
+        author: { kind: "human", principalId: "me", displayName: "Me" },
+        createdAt,
+        preview: "Next",
+        truncated: false,
+      },
+      input: { messageId: id, state: "pending", queueRank: "1" },
+      ask: null,
+      canEdit: true,
+      canCancel: true,
+      canMove: true,
+      canSteer: true,
+      lease: null,
+    }) as never;
+  const first = createId("message");
+  const second = createId("message");
+  const cut = (items: typeof all, throughSequence: string, entries: string[], inputs: string[]) =>
     store.apply({
       ...address,
       type: "host.snapshot",
@@ -510,9 +530,11 @@ test("an inline repair replaces the scope in place and keeps earlier pages that 
         activeItems: [],
         pendingRequests: [],
         nextBefore: cursor(items[0]!),
-      },
+        queue: { revision: throughSequence, runs: [], paused: false, steerRunId: null, inputs },
+        inputQueue: entries.map(waiting),
+      } as never,
     });
-  cut(all.slice(30, 80), "1");
+  cut(all.slice(30, 80), "1", [first, second], [first, second as string]);
   store.apply({ ...address, type: "host.synchronized", throughSequence: "1" });
   store.installPage(
     {
@@ -528,15 +550,41 @@ test("an inline repair replaces the scope in place and keeps earlier pages that 
     1,
     "earlier",
   );
-  const edited = { ...all[79]!, revision: "9", view: { preview: "Edited while away" } };
-  // The Host could not replay the gap and sends the latest window on the same subscription.
-  expect(cut([...all.slice(31, 79), edited], "9")).toBe(true);
+  const late = store.beginRead();
+  store.liveItem({ ...all[79]!, revision: "1" }, "provisional", false);
+  // The Host could not replay: the latest window, without a card it had hidden meanwhile, and
+  // a queue whose second entry did not fit.
+  expect(
+    cut(
+      [...all.slice(31, 79), { ...all[79]!, id: "provisional" as never }],
+      "9",
+      [first],
+      [first, second],
+    ),
+  ).toBe(true);
   const state = store.getSnapshot();
   expect(state.synchronized).toBe(true);
-  expect(state.through).toBe("9");
-  expect(state.historyIds).toEqual(
-    [...all.slice(0, 31), ...all.slice(31, 79), edited].map(({ id }) => id),
-  );
-  expect(state.items.get(edited.id)).toBe(edited);
-  expect(state.snapshot?.nextBefore).toBeNull();
+  expect(state.historyIds[0]).toBe(all[31]!.id);
+  expect(state.items.has(all[0]!.id)).toBe(false);
+  expect(state.liveItems.has("provisional")).toBe(false);
+  expect([...state.queueEntries.keys()]).toEqual([first]);
+  expect(state.repairs).toBe(1);
+  // A page read begun before the repair cannot bring old rows back.
+  expect(
+    store.installPage(
+      {
+        kind: "page",
+        threadId: scope.threadId,
+        nodeId: null,
+        revision: "1",
+        items: all.slice(0, 30),
+        hasMore: false,
+        nextBefore: null,
+        nextAfter: cursor(all[29]!),
+      },
+      1,
+      "earlier",
+      late,
+    ),
+  ).toBe(false);
 });

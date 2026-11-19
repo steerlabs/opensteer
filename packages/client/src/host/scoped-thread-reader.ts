@@ -114,13 +114,13 @@ export class ScopedThreadReader implements ThreadViewSource {
   readonly #cards = new WeakMap<TranscriptItem, TranscriptEntry | undefined>();
   readonly #liveCards = new WeakMap<TranscriptItem, TranscriptEntry | undefined>();
   readonly #overlayReads = new Map<Overlay, number>();
-  #queue:
-    | { generation: number; repairs: number; promise: Promise<PersonalInputQueue> }
-    | undefined;
+  #queue: { generation: number; repairs: number; promise: Promise<PersonalInputQueue> } | undefined;
   /** Overlay pages the person loaded past the cut, read again after a repair. */
   readonly #overlayPages = new Map<Overlay, number>();
   #overlayGeneration = 0;
   #repairs = 0;
+  /** The queue cut last read to fill omitted entries: read once per queue revision and repair. */
+  #queueFilled: string | undefined;
   #queueFailure: { generation: number; revision: string; error: unknown } | undefined;
   #requestCut: RequestSummaries | undefined;
   /** A failed Request read tries again, backing off, while the same pending cut stands. */
@@ -242,7 +242,8 @@ export class ScopedThreadReader implements ThreadViewSource {
       this.#detail.controller &&
       missingQueueEntries(state) &&
       inputQueueError === undefined &&
-      (this.#queue?.generation !== state.generation || this.#queue.repairs !== state.repairs)
+      this.#queue === undefined &&
+      this.#queueFilled !== queueCut(state)
     )
       void this.queue().catch(() => undefined);
     if (this.#overlayGeneration !== state.generation) {
@@ -435,6 +436,7 @@ export class ScopedThreadReader implements ThreadViewSource {
       if (queue.threadId !== this.#detail.scope.threadId)
         throw new Error("The Host returned a misaddressed input queue.");
       this.#queueFailure = undefined;
+      this.#queueFilled = queueCut(this.#detail.transcript.getSnapshot());
       this.#detail.transcript.installQueueEntries(queue.items, generation);
       return this.#detail.transcript.getSnapshot().inputQueue ?? queue;
     } catch (error) {
@@ -734,6 +736,10 @@ export class ScopedThreadReader implements ThreadViewSource {
     this.#bodies.put(key, value);
     return value;
   }
+}
+
+function queueCut(state: TranscriptState) {
+  return `${state.generation}:${state.repairs}:${state.snapshot?.queue?.revision ?? ""}`;
 }
 
 function missingQueueEntries(state: TranscriptState) {

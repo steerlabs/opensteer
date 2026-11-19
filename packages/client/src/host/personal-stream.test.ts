@@ -3010,3 +3010,88 @@ describe("task lists from the shell and its pages", () => {
     }
   });
 });
+
+test("after a repair the reader reads again the latest page, its loaded overlay pages and the queue tail", async () => {
+  const f = fixture();
+  f.syncShell();
+  const base = f.detailSnapshot();
+  f.stream.receive({
+    ...base,
+    snapshot: { ...base.snapshot, nextBefore: null, overlayCursors: { requests: "more" } },
+  });
+  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+  const request = (id: string) => ({
+    id,
+    revision: "1",
+    status: "pending",
+    kind: "person.question",
+    title: "Question",
+    threadId,
+  });
+  const extra = createId("request");
+  const missing = createId("message");
+  const rpc = {
+    "thread.overlays.page": vi.fn(async () => ({
+      ok: true,
+      data: {
+        threadId,
+        nodeId: null,
+        kind: "requests",
+        revision: "1",
+        entries: [request(extra)],
+        next: null,
+      },
+    })),
+    "thread.items.page": vi.fn(async () => ({
+      ok: true,
+      data: {
+        kind: "page",
+        threadId,
+        nodeId: null,
+        revision: "2",
+        items: [item],
+        hasMore: false,
+        nextBefore: null,
+        nextAfter: null,
+      },
+    })),
+    "thread.inputQueue.get": vi.fn(async () => ({
+      ok: true,
+      data: { threadId, revision: "2", paused: false, steerRunId: null, items: [] },
+    })),
+    "thread.requests.list": vi.fn(async () => ({
+      ok: true,
+      data: { threadId, reviewedRevisions: {}, requests: [] },
+    })),
+  } as unknown as import("@opensteer/protocol").HostApiClient;
+  const reader = new ScopedThreadReader(f.detail, rpc, new TranscriptBodies());
+  try {
+    await reader.loadMoreOverlays("requests");
+    expect(f.detail.transcript.getSnapshot().snapshot?.pendingRequests.map(({ id }) => id)).toEqual(
+      [extra],
+    );
+    // The Host's repair is centred on an older position and its queue had no room for one entry.
+    f.stream.receive({
+      ...base,
+      throughSequence: "2",
+      snapshot: {
+        ...base.snapshot,
+        nextBefore: null,
+        nextAfter: { ...cursor, beforeId: item.id },
+        anchorItemId: item.id,
+        overlayCursors: { requests: "more" },
+        queue: { revision: "2", runs: [], paused: false, steerRunId: null, inputs: [missing] },
+        inputQueue: [],
+      },
+    });
+    expect(f.detail.transcript.getSnapshot().snapshot?.pendingRequests).toEqual([]);
+    await vi.waitFor(() => {
+      expect(rpc["thread.items.page"]).toHaveBeenCalledWith({ threadId }, expect.anything());
+      expect(rpc["thread.overlays.page"]).toHaveBeenCalledTimes(2);
+      expect(rpc["thread.inputQueue.get"]).toHaveBeenCalledTimes(1);
+    });
+    expect(f.detail.transcript.getSnapshot().newest).toBe(true);
+  } finally {
+    reader.dispose();
+  }
+});
