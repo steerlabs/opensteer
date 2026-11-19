@@ -3385,6 +3385,10 @@ export class HttpHostClient {
     if (this.#disposed) return;
     this.#disposed = true;
     if (this.#doneCountTimer) clearTimeout(this.#doneCountTimer);
+    // Their retries are gated on observation already; this also lets their timers go now.
+    this.#taskReads.dispose();
+    this.#assignmentReads.dispose();
+    this.#waitingRequestReads.dispose();
     disposeMessageOutbox(this);
     if (this.#ownsConnection) this.connection.dispose();
     this.#closeSocket();
