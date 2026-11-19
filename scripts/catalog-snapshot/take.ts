@@ -5,7 +5,6 @@
  */
 import { lstat, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { officialCatalogUrl } from "@opensteer/plugin-engine-catalog/contracts";
 import { buildSnapshot, iconPath, legacySourcePath, servableId, sha256 } from "./core.ts";
 import {
   holdLock,
@@ -28,7 +27,7 @@ const userAgent = "catalog-snapshot";
 export interface SnapshotOptions {
   readonly out: string;
   readonly cache?: string | undefined;
-  /** The feed's `index.json` URL; the engine's `officialCatalogUrl` by default. */
+  /** The `index.json` URL of the feed to copy; required unless `offline`. */
   readonly feed?: string | undefined;
   /** A rule file's path. */
   readonly rules?: string | undefined;
@@ -200,7 +199,11 @@ async function build(
   }
 
   const started = performance.now();
-  if (!values.offline) await download(values.feed ?? officialCatalogUrl);
+  if (!values.offline) {
+    // No default: the Host's own default feed is the copy these tools publish, never its source.
+    if (!values.feed) throw new Error("--feed <index.json URL> is required unless --offline");
+    await download(values.feed);
+  }
   // Replace only an earlier snapshot, never a directory this tool did not write.
   if ((await exists(out)) && !(await exists(join(out, "manifest.json"))))
     throw new Error(`${out} exists and is not a snapshot`);

@@ -1,8 +1,8 @@
 /**
  * Copy a plugin catalog feed into a directory that serves as the same feed from any base URL.
  *
- *   pnpm catalog:snapshot --out <dir> [--cache <dir>] [--feed <index.json URL>]
- *                         [--rules <rules.json>] [--concurrency <n>] [--offline]
+ *   pnpm catalog:snapshot --out <dir> (--feed <index.json URL> | --offline) [--cache <dir>]
+ *                         [--rules <rules.json>] [--concurrency <n>]
  *
  * Downloads go to the cache (default `<out>.download`) exactly as served, one file per document,
  * so an interrupted run resumes where it stopped and `--offline` rebuilds from the cache alone, for

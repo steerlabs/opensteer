@@ -1,10 +1,8 @@
 # Plugin catalog snapshot
 
-Opensteer will serve its own copy of the plugin catalog at
-`https://catalog.opensteer.com/index.json`. Until that address is live, the Host's default feed stays
-upstream's (`officialCatalogUrl` in `apps/host/src/plugins/engine-runtime.ts`); switching it is a
-separate change made after the copy is published and verified there. These scripts take the copy,
-check it, publish it, and check what is served.
+Opensteer serves its own copy of the plugin catalog at `https://catalog.opensteer.com/index.json`,
+the Host's default feed (`officialCatalogUrl` in `@opensteer/plugin-engine-catalog`). These scripts
+take the copy, check it, publish it, and check what is served.
 
 Snapshots hold third-party plugin source and run to about 290 MB. Keep them outside this
 repository: every tool resolves its paths through symlinks and refuses one inside it.
@@ -12,7 +10,7 @@ repository: every tool resolves its paths through symlinks and refuses one insid
 ## Take a snapshot
 
 ```sh
-pnpm catalog:snapshot --out ~/catalog/2026-11-18 [--rules <rules.json>] [--feed <index.json URL>]
+pnpm catalog:snapshot --out ~/catalog/2026-11-18 (--feed <index.json URL> | --offline) [--rules <rules.json>]
 ```
 
 - Downloads go to `<out>.download` (`--cache` to choose), exactly as served, eight at a time
@@ -41,7 +39,8 @@ pnpm catalog:snapshot --out ~/catalog/2026-11-18 [--rules <rules.json>] [--feed 
   recovery never takes a running build or its set-aside snapshot for leftovers. A second run
   refuses, naming the holder. A lock left by a stopped run is not taken over: the refusal says its
   process is gone, and the operator removes the file.
-- `--feed` defaults to the engine's `officialCatalogUrl`, where the copy is taken from.
+- `--feed` is the `index.json` URL the copy is taken from, required unless `--offline`. It has no
+  default: the Host's own default feed is the copy, never its source.
 
 ### Layout
 
