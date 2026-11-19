@@ -264,3 +264,36 @@ it("lists every pending Request however many pages the Host serves them in", asy
   await vi.waitFor(() => expect(f.ids()).toHaveLength(2_001), { timeout: 3_000 });
   expect(f.control.listCalls).toBe(21);
 });
+
+it("rereads the list on attach and return to the front only when the Host's Requests revision moved", async () => {
+  const f = await harness();
+  await f.client.load();
+  await vi.waitFor(() => expect(f.ids()).toHaveLength(f.all.length));
+  const reattach = async () => {
+    const before = [...f.personal.sockets];
+    for (const socket of f.personal.sockets) socket.close();
+    await vi.waitFor(
+      () => {
+        expect([...f.personal.sockets].some((socket) => !before.includes(socket))).toBe(true);
+        expect(f.client.getSnapshot().connection).toBe("connected");
+      },
+      { timeout: 3_000 },
+    );
+    await f.roundTrip();
+  };
+  const calls = f.control.listCalls;
+  // Nothing changed: neither a reconnect nor a return to the front asks again.
+  await reattach();
+  f.background();
+  f.foreground();
+  await f.roundTrip();
+  expect(f.control.listCalls).toBe(calls);
+  // A Request was answered elsewhere while away (the Host's sequence moved): one read on reattach.
+  f.host.pending = f.all.slice(1);
+  for (const socket of f.personal.sockets) socket.close();
+  f.personal.publish(String(BigInt(f.client.getSnapshot().revision) + 1_000n));
+  await reattach();
+  await vi.waitFor(() => expect(f.ids()).toHaveLength(f.all.length - 1));
+  await f.roundTrip();
+  expect(f.control.listCalls).toBe(calls + 1);
+});

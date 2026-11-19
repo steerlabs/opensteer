@@ -1640,6 +1640,7 @@ export class HttpHostClient {
     this.#invalidateAttention();
     this.#waitingRequestReads.stop("waiting-requests");
     this.#waitingRequestWanted = "";
+    this.#waitingRequestInstalled = "";
     this.#answeredRequests.clear();
     this.#resources.reset();
     this.#update({ ...emptySnapshot(this.#tabs), ...keep });
@@ -1974,7 +1975,7 @@ export class HttpHostClient {
       (attached || attentionChanged)
     )
       this.#invalidateAttention(true);
-    if (state.synchronized) this.#syncWaitingRequests(attached);
+    if (state.synchronized) this.#syncWaitingRequests(attached ? "resume" : false);
   }
 
   /** The Host's pending Requests as the shell states them: their count and each row's revision. */
@@ -1997,13 +1998,24 @@ export class HttpHostClient {
    * lands; it never adds another waiter. Unrelated shell frames leave the stamp, and the read,
    * alone. A count of zero needs no read.
    */
-  #syncWaitingRequests(force = false) {
+  #syncWaitingRequests(force: boolean | "resume" = false) {
     const stamp = this.#requestStamp();
     if (stamp === undefined || this.#disposed) return;
     const key = "waiting-requests";
+    // An attach or a return to the front asks again only when the Host's pending count or
+    // Requests revision moved since the list held was read; the Host's revision is the whole news.
+    if (
+      force === "resume" &&
+      stamp === this.#waitingRequestInstalled &&
+      !this.#waitingRequestReads.busy(key)
+    ) {
+      this.#waitingRequestWanted = stamp;
+      return;
+    }
     if (stamp.startsWith("0|")) {
       this.#waitingRequestReads.stop(key);
       this.#waitingRequestWanted = stamp;
+      this.#waitingRequestInstalled = stamp;
       if (this.#snapshot.waitingRequests.length)
         this.#update({ ...this.#snapshot, waitingRequests: [] });
       return;
@@ -2018,6 +2030,8 @@ export class HttpHostClient {
 
   /** The stamp the list was last asked to match; each run reads it as it starts. */
   #waitingRequestWanted = "";
+  /** The stamp the installed list was read at; empty while none is held for this viewer. */
+  #waitingRequestInstalled = "";
   /** Each run of the list read, counted, so an answer confirmed after a run began outlives it. */
   #waitingRequestRuns = 0;
   /** Requests answered here: hidden from any list read that began before the answer was confirmed. */
@@ -2056,6 +2070,7 @@ export class HttpHostClient {
         "waiting-requests",
         async (read) => {
           const run = ++this.#waitingRequestRuns;
+          const asked = this.#waitingRequestWanted;
           const read_: HostSnapshot["waitingRequests"][number][] = [];
           const revisions = new Set<string>();
           let before: string | null = null;
@@ -2099,6 +2114,9 @@ export class HttpHostClient {
           const waitingRequests = read_.filter(
             ({ request }) => !this.#answeredRequests.has(request.id),
           );
+          // Read at the stamp it was asked for only when the Host's pages carry that revision.
+          const [revision] = revisions;
+          this.#waitingRequestInstalled = asked.endsWith(`|${revision}`) ? asked : "";
           this.#update({ ...this.#snapshot, waitingRequests });
         },
         { observed: () => !this.#disposed && this.#visibility !== "background" },
@@ -4323,7 +4341,7 @@ export class HttpHostClient {
             this.#invalidateAttention(true);
           this.#resources.resume();
           // A list read given up in the background, or a change heard there, is read now.
-          this.#syncWaitingRequests(true);
+          this.#syncWaitingRequests("resume");
         }
       },
     };
