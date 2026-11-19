@@ -158,7 +158,7 @@ export class ExecutionCoordinator {
   }
   async #poll(): Promise<void> {
     this.#claimFailed = false;
-    for (const [commandId, write] of [...this.#owedSettlements]) {
+    for (const [commandId, write] of this.#owedSettlements) {
       try {
         await write();
         this.#owedSettlements.delete(commandId);
