@@ -31,6 +31,7 @@ import {
   type WaitingInput,
   type WaitingMessageEditor,
 } from "@opensteer/client/host";
+import { useWaitingBody } from "@opensteer/client/react";
 import { TranscriptMessage } from "./agent-activity.js";
 import { ComposerEditor, type ComposerEditorControl } from "./composer-editor.js";
 import { personalReferenceCandidates, useReferencePicker } from "./composer-reference-picker.js";
@@ -498,6 +499,13 @@ function WaitingRow({
   const editable =
     input?.canEdit && otherDevice === null && !disabled && !gone && edit.draft === null;
   const ask = input?.kind === "ask" ? input : null;
+  // A long ask's preview is clipped: Answer waits until its whole text is on screen.
+  const body = useWaitingBody(client, ask);
+  const shown =
+    ask && body.status === "complete" && message.previewTruncated
+      ? { ...message, body: body.text, previewTruncated: false }
+      : message;
+  const seen = edit.draft ? !edit.draft.loading : !ask || body.status === "complete";
 
   const startEditing = () => {
     if (editable && !blocked) edit.open();
@@ -520,6 +528,7 @@ function WaitingRow({
           return;
         }
         // Consent names the version on screen: the editor's, saved first when changed.
+        if (!seen) return;
         const revision = edit.draft ? await edit.save() : ask.revision;
         if (revision === null) return;
         await client.decideTeamAsk({
@@ -590,7 +599,7 @@ function WaitingRow({
         />
       ) : (
         <TranscriptMessage
-          message={message}
+          message={shown}
           queued={input !== null || message.queuePending === true}
           reveal={null}
           viewerUserId={viewerUserId}
@@ -628,8 +637,24 @@ function WaitingRow({
                 }
               >
                 <span aria-hidden className="waiting-ask__dot" />
-                {otherDevice ? `Being edited on ${otherDevice}` : ask.consent.line}
+                {otherDevice
+                  ? `Being edited on ${otherDevice}`
+                  : body.status === "loading" && !edit.draft
+                    ? "Loading the whole ask…"
+                    : body.status === "failed" && !edit.draft
+                      ? "Couldn’t load the whole ask."
+                      : ask.consent.line}
               </span>
+              {body.status === "failed" && !edit.draft && !otherDevice ? (
+                <button
+                  className="queued__action"
+                  disabled={blocked}
+                  onClick={body.retry}
+                  type="button"
+                >
+                  Try again
+                </button>
+              ) : null}
               <span className="waiting-ask__actions">
                 {otherDevice ? (
                   <ReleaseAction
@@ -669,7 +694,7 @@ function WaitingRow({
                     otherDevice !== null ||
                     edit.saving ||
                     edit.draft?.conflict != null ||
-                    edit.draft?.loading === true
+                    !seen
                   }
                   onClick={() => decide("approve", ask)}
                   title={

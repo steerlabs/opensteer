@@ -1661,6 +1661,7 @@ function ThreadPaneForUser(
                     ask={dockedAsk}
                     canRespond={canRespond}
                     decisions={askDecisions}
+                    hostClient={hostClient}
                   />
                 </Animated.View>
               )}

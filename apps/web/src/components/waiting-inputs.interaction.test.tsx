@@ -620,6 +620,50 @@ describe("WaitingInputs", () => {
     });
   });
 
+  it("Answer on a long ask waits until its whole text is read and shown", async () => {
+    const whole =
+      "Is CI green on main, and if not, revert the last three merges and page the on-call";
+    let read!: (value: unknown) => void;
+    const revisions = vi.fn(() => new Promise((resolve) => (read = resolve)));
+    const decideTeamAsk = vi.fn(async () => undefined);
+    const client = {
+      decideTeamAsk,
+      rpc: { "thread.message.revisions.list": revisions },
+    } as unknown as HostClient;
+    const [clipped] = inputsOf([ask("asked", whole)]).map((input) => ({
+      ...input,
+      entry: { ...input.entry, body: "Is CI green on main, and if not", previewTruncated: true },
+    }));
+    const container = mount(render(client, [clipped!]));
+    expect(button(container, "Answer").disabled).toBe(true);
+    expect(container.textContent).not.toContain("page the on-call");
+    expect(revisions).toHaveBeenCalledWith({
+      threadId: "thread",
+      messageId: "asked",
+      expectedRevision: 0,
+    });
+    await act(async () =>
+      read({
+        ok: true,
+        data: {
+          hasMore: false,
+          revisions: [
+            {
+              revision: 0,
+              content: [{ type: "text", text: whole }],
+              author: clipped!.entry.author,
+              deviceLabel: null,
+              createdAt: "2026-10-31T12:00:00.000Z",
+            },
+          ],
+        },
+      }),
+    );
+    expect(container.textContent).toContain("page the on-call");
+    await act(async () => button(container, "Answer").click());
+    expect(decideTeamAsk).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 0 }));
+  });
+
   it("binds an open edit to the version it shows: untouched words follow a save made elsewhere", async () => {
     let opened!: (editor: WaitingMessageEditor) => void;
     const opening = new Promise<WaitingMessageEditor>((resolve) => {

@@ -5,6 +5,7 @@ export * from "./use-thread-transcript.js";
 export * from "./use-running-now.js";
 export * from "./use-request-asker.js";
 export * from "./use-waiting-inputs.js";
+export * from "./use-waiting-body.js";
 export * from "./use-conversation-surfaces.js";
 export * from "./use-browser-popup-follow.js";
 export * from "./use-places.js";

@@ -2,11 +2,13 @@ import { MenuView, type MenuAction } from "@expo/ui/community/menu";
 import {
   waitingMessageRows,
   type HostClient,
+  type WaitingAsk,
   type MessageEntry,
   type TranscriptEntry,
   type WaitingInput,
 } from "@opensteer/client/host";
 import type { ContentPart } from "@opensteer/core";
+import { useWaitingBody } from "@opensteer/client/react";
 import * as Haptics from "expo-haptics";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Platform, Pressable, StyleSheet, View } from "react-native";
@@ -189,6 +191,8 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
               <>
                 <WaitingBubble
                   actions={actions}
+                  ask={item?.kind === "ask" ? item : null}
+                  hostClient={hostClient}
                   message={entry}
                   queued={item !== null || entry.queuePending === true}
                   onAction={item ? (id) => choose(item, id) : undefined}
@@ -284,6 +288,9 @@ function menuActions(item: WaitingInput, editable: boolean): WaitingAction[] {
 
 function WaitingBubble(props: {
   readonly actions: readonly LinkAction[];
+  /** A teammate's ask, whose whole text replaces its clipped preview once read. */
+  readonly ask: WaitingAsk | null;
+  readonly hostClient: HostClient;
   readonly message: MessageEntry;
   readonly queued: boolean;
   readonly onAction: ((id: string) => void) | undefined;
@@ -292,6 +299,11 @@ function WaitingBubble(props: {
   readonly viewerUserId: string | null;
 }): ReactNode {
   const [open, setOpen] = useState(!props.queued);
+  const body = useWaitingBody(props.hostClient, props.ask);
+  const message =
+    props.ask && body.status === "complete" && props.message.previewTruncated
+      ? { ...props.message, body: body.text, previewTruncated: false }
+      : props.message;
   return (
     <Message
       queued={props.queued}
@@ -302,7 +314,7 @@ function WaitingBubble(props: {
         onPress: props.onEdit ?? ignoreAction,
       }}
       onReply={undefined}
-      message={props.message}
+      message={message}
       open={open}
       onToggle={() => setOpen(!open)}
       onOpenThread={props.onOpenThread}

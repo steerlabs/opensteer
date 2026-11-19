@@ -1318,6 +1318,31 @@ function fakeHost(initial: FixtureHostSnapshot) {
     data: {},
     ok: true,
   }));
+  // The whole of a waiting message, read at the version the tray shows.
+  const revisions = vi.fn(
+    async (input: { threadId: string; messageId: string; expectedRevision?: number }) => {
+      const held = snapshot.inputQueues[input.threadId]?.items.find(
+        ({ message }) => message.id === input.messageId,
+      );
+      if (!held)
+        return { ok: false, error: { code: "not_found", message: "Gone", retryable: false } };
+      return {
+        ok: true,
+        data: {
+          hasMore: false,
+          revisions: [
+            {
+              revision: held.message.edit?.revision ?? 0,
+              content: held.message.content,
+              author: held.message.author,
+              deviceLabel: null,
+              createdAt: held.message.createdAt,
+            },
+          ],
+        },
+      };
+    },
+  );
   // The one waiting message open in place, as the client's editor holds it.
   const editor = {
     cancel: vi.fn(async () => undefined),
@@ -1333,7 +1358,23 @@ function fakeHost(initial: FixtureHostSnapshot) {
     const queue = value.inputQueues[id];
     let inputQueue = queue ? queueViews.get(queue) : undefined;
     if (queue && !inputQueue) {
-      inputQueue = mockInputQueue(queue, String(value.revision), (id) => id === editor.leaseId);
+      const full = mockInputQueue(queue, String(value.revision), (id) => id === editor.leaseId);
+      // The Host clips each waiting message's preview, as here past 80 characters.
+      inputQueue = {
+        ...full,
+        items: full.items.map((item) =>
+          item.message.preview.length > 80
+            ? {
+                ...item,
+                message: {
+                  ...item.message,
+                  preview: item.message.preview.slice(0, 80),
+                  truncated: true,
+                },
+              }
+            : item,
+        ),
+      };
       queueViews.set(queue, inputQueue);
     }
     return {
@@ -1443,7 +1484,10 @@ function fakeHost(initial: FixtureHostSnapshot) {
     moveThreadInput: vi.fn(async () => undefined),
     refresh: vi.fn(async () => undefined),
     resumeThreadInputQueue,
-    rpc: { "integration.computer.session.stop": stopComputerSession },
+    rpc: {
+      "integration.computer.session.stop": stopComputerSession,
+      "thread.message.revisions.list": revisions,
+    },
     steerThreadInput: vi.fn(async () => undefined),
     stopRun,
     subscribe: (listener: () => void) => {
@@ -1459,6 +1503,7 @@ function fakeHost(initial: FixtureHostSnapshot) {
     dispatch,
     editWaitingMessage: client.editWaitingMessage,
     editor,
+    revisions,
     releaseWaitingMessage: client.releaseWaitingMessage,
     runPlaces,
     placeActivity,
@@ -4062,6 +4107,35 @@ describe("a task", () => {
     });
     expect(host.editor.save.mock.invocationCallOrder[0]!).toBeLessThan(
       host.decideTeamAsk.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("answers a long ask only once its whole text is read and shown", async () => {
+    const whole =
+      "@My agent is CI green on main, and if it is not, revert the last three merges and page whoever is on call tonight";
+    const ask = teammateAsk(whole);
+    const host = fakeHost(
+      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
+    );
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    host.revisions.mockImplementationOnce(async (input) => {
+      await held;
+      return host.revisions.getMockImplementation()!(input);
+    });
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain("Loading the whole ask…");
+    expect(button(container, "Answer").disabled).toBe(true);
+    expect(text(container)).not.toContain("whoever is on call tonight");
+    await act(async () => release());
+    await settle();
+    expect(text(container)).toContain("whoever is on call tonight");
+    // Past the guard that ignores a tap on a decision as it arrives.
+    const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+    await press(container, "Answer");
+    later.mockRestore();
+    expect(host.decideTeamAsk).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: "approve", expectedRevision: 0 }),
     );
   });
 
