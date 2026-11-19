@@ -49,8 +49,11 @@ function owner(kind: "requests" | "leases", exit: Exit) {
       : executionLeaseDrain(
           {
             nextExecutionDeadline: next,
-            recoverRunsWithExpiredExecutionBindings: settle,
-            stopRunsPastBackgroundDeadline: async () => undefined,
+            recoverRunsWithExpiredExecutionBindings: async () => ({
+              terminatedRuns: [],
+              settled: await settle(),
+            }),
+            stopRunsPastBackgroundDeadline: async () => 0,
           } as never,
           () => undefined,
           () => undefined,
@@ -84,14 +87,17 @@ describe.each(["requests", "leases"] as const)("%s deadline owner", (kind) => {
   });
 });
 
-it("drains every capped page of due Requests at once while each pass makes progress", async () => {
-  const { drain, settle } = owner("requests", "capped-progress");
-  drain.start();
-  await drain.settled();
-  // Well inside the first backoff (5 s): only immediate reruns can reach page three.
-  await vi.advanceTimersByTimeAsync(100);
-  // Three pages settled without waiting for a backoff, then nothing armed.
-  expect(settle).toHaveBeenCalledTimes(3);
-  expect(vi.getTimerCount()).toBe(0);
-  await drain.close();
-});
+it.each(["requests", "leases"] as const)(
+  "%s: a pass that settled something while more is still due runs again at once",
+  async (kind) => {
+    const { drain, settle } = owner(kind, "capped-progress");
+    drain.start();
+    await drain.settled();
+    // Well inside the first backoff (5 s): only immediate reruns can reach page three.
+    await vi.advanceTimersByTimeAsync(100);
+    // Three pages settled without waiting for a backoff, then nothing armed.
+    expect(settle).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(0);
+    await drain.close();
+  },
+);

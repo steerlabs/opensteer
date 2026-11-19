@@ -1624,8 +1624,8 @@ export class OpensteerStore {
   async stopRunsPastBackgroundDeadline(
     onStopped: (stop: BackgroundDeadlineStop) => void,
     now = new Date(),
-  ): Promise<void> {
-    await executionRecovery.stopRunsPastBackgroundDeadline(
+  ): Promise<number> {
+    return executionRecovery.stopRunsPastBackgroundDeadline(
       this.#database,
       (stop) => {
         this.#announce(stop.revokedGrants);
@@ -1637,7 +1637,7 @@ export class OpensteerStore {
   }
   async recoverRunsWithExpiredExecutionBindings(
     now = new Date(this.#executionNow()),
-  ): Promise<RunRecoveryOutcome> {
+  ): Promise<RunRecoveryOutcome & { readonly settled: number }> {
     return executionRecovery.recoverRunsWithExpiredExecutionBindings(
       this.#database,
       this.#links,

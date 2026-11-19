@@ -20,11 +20,15 @@ export function executionLeaseDrain(
       const next = await store.nextExecutionDeadline();
       const now = new Date(clock?.now() ?? Date.now());
       if (!next || next > now) return next;
-      await store.recoverRunsWithExpiredExecutionBindings(now);
-      await store.stopRunsPastBackgroundDeadline(wakeExecution, now);
-      // Both handle everything due; a deadline still due made no progress, so back off.
+      // Progress is what these sweeps themselves settled, never an inference
+      // from what is left: a due deadline after a pass that settled something
+      // (a Run another transaction held, say) runs again at once.
+      const settled =
+        (await store.recoverRunsWithExpiredExecutionBindings(now)).settled +
+        (await store.stopRunsPastBackgroundDeadline(wakeExecution, now));
       const after = await store.nextExecutionDeadline();
-      return after && after <= now ? retryWithBackoff : after;
+      if (!after || after > now) return after;
+      return settled > 0 ? after : retryWithBackoff;
     },
   });
 }
