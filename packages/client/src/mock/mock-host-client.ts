@@ -4931,6 +4931,11 @@ export class MockHostClient implements HostClient {
     return this.#state.mockLongThread(turns);
   }
 
+  /** Rewrites one message's words in place, as a durable update or a streamed token would. */
+  mockMessageBody(threadId: string, messageId: string, body: string): void {
+    this.#state.mockMessageBody(threadId, messageId, body);
+  }
+
   readonly #editLeases = new Set<string>();
 
   editWaitingMessage(
@@ -7248,6 +7253,12 @@ class MockHostState {
           : machine,
       ),
     });
+  }
+
+  mockMessageBody(threadId: string, messageId: string, body: string): void {
+    const entry = this.snapshot.transcripts[threadId]?.find(({ id }) => id === messageId);
+    if (entry?.kind !== "message") throw new Error("No such message.");
+    this.replaceEntryById(threadId, messageId, { ...entry, body });
   }
 
   mockLongThread(turns: number): string {
