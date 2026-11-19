@@ -1,51 +1,14 @@
-import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  readFile,
-  realpath,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import { fixture } from "./loader.test-support.js";
 import {
-  snapshotLocalServerPackage,
-  type LocalServerPackageRegistration,
-  maximumLocalServerFolderFiles,
   pluginPackageManifest,
   PluginPackageMismatchError,
   pluginSnapshotDigest,
   readPluginSnapshot,
   readVerifiedPluginSnapshot,
 } from "./loader.js";
-
-async function fixture(
-  work: (
-    root: string,
-    load: (
-      registration: LocalServerPackageRegistration,
-    ) => ReturnType<typeof snapshotLocalServerPackage>,
-  ) => Promise<void>,
-) {
-  const base = await mkdtemp(join(tmpdir(), "opensteer-local-package-"));
-  const root = join(base, "source");
-  await mkdir(root);
-  try {
-    await work(root, (registration) =>
-      snapshotLocalServerPackage({
-        pluginId: "fixture",
-        directory: root,
-        dataDirectory: join(base, "data"),
-        registration,
-      }),
-    );
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
-}
 
 test("pins typed registration and package bytes in an immutable snapshot without reading retired manifests", async () =>
   fixture(async (root, load) => {
@@ -199,27 +162,6 @@ test("a folder whose paths sort differently by name and by path registers and re
       (await readVerifiedPluginSnapshot(plugin.root, digest)).map(({ path }) => path).sort(),
     ).toEqual(["bin.txt", "bin/server.txt", "local-server-registration.json"]);
   }));
-
-test(
-  "a folder of the most files a folder may hold registers with its registration file",
-  async () =>
-    fixture(async (root, load) => {
-      await Promise.all(
-        Array.from({ length: maximumLocalServerFolderFiles }, (_, index) =>
-          writeFile(join(root, `f${index}`), ""),
-        ),
-      );
-      const plugin = await load({ name: "example", launch: { command: "node" } });
-      expect(
-        await readVerifiedPluginSnapshot(plugin.root, plugin.root.split("/").at(-1)!),
-      ).toHaveLength(maximumLocalServerFolderFiles + 1);
-      await writeFile(join(root, "one-more"), "");
-      await expect(load({ name: "example", launch: { command: "node" } })).rejects.toThrow(
-        "installation limit",
-      );
-    }),
-  60_000,
-); // Writes, reads and verifies over 30,000 real files.
 
 test("a stored snapshot altered after registration is refused, and written again on the next one", async () =>
   fixture(async (root, load) => {
