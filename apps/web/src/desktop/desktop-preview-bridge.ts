@@ -1038,24 +1038,6 @@ export function desktopPreviewBridge(
         data: hostApi[shellMember].success.parse(previewHostData(selected).shell),
       });
     }
-    for (const member of ["environment.detail.get", "machine.detail.get"] as const) {
-      if (request.method !== hostApi[member].method || path !== `/v1/rpc/${member}`) continue;
-      const input = JSON.parse(url.searchParams.get("input") ?? "{}") as Record<string, unknown>;
-      const data = previewHostData(selected);
-      const found =
-        member === "environment.detail.get"
-          ? data.environmentDetail(hostApi[member].payload.parse(input).environmentId)
-          : data.machineDetail(hostApi["machine.detail.get"].payload.parse(input).machineId);
-      if (!found)
-        return Response.json(
-          {
-            error: { code: "not_found", message: "Not in this preview.", retryable: false },
-            ok: false,
-          },
-          { status: 404 },
-        );
-      return Response.json({ ok: true, data: hostApi[member].success.parse(found) });
-    }
     if (request.method === hostApi[resourceMember].method && path === `/v1/rpc/${resourceMember}`) {
       const { kind } = hostApi[resourceMember].payload.parse(
         JSON.parse(url.searchParams.get("input") ?? "{}"),

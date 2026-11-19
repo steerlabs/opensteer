@@ -82,7 +82,12 @@ export async function authorizedSyncState(tx: Read, viewerId: UserId) {
           eb(
             "owner.id",
             "=",
-            eb.selectFrom("users").select("users.id").orderBy("users.createdAt", "asc").limit(1),
+            eb
+              .selectFrom("users")
+              .select("users.id")
+              .orderBy("users.createdAt", "asc")
+              .orderBy("users.id", "asc")
+              .limit(1),
           ),
         ]),
       ]),
@@ -412,6 +417,15 @@ export function readTranscriptPage(
     readonly limit?: number;
     readonly maxBytes?: number;
     readonly maxTurns?: number;
+    /** Already authorized in this read (a detail snapshot): its cut and its task, not read again. */
+    readonly authorized?: {
+      readonly state: {
+        readonly deploymentId: DeploymentId;
+        readonly epoch: string;
+        readonly sequence: string;
+      };
+      readonly thread: { readonly id: ThreadId; readonly revision: string };
+    };
   },
 ) {
   return withPersonalSyncRead(database, async (tx) => {
@@ -420,8 +434,9 @@ export function readTranscriptPage(
         code: "bad_request",
         message: "Choose one transcript page boundary",
       });
-    const state = await authorizedSyncState(tx, input.viewerId);
-    const thread = await authorizedDetail(tx, input.viewerId, input.scope);
+    const state = input.authorized?.state ?? (await authorizedSyncState(tx, input.viewerId));
+    const thread =
+      input.authorized?.thread ?? (await authorizedDetail(tx, input.viewerId, input.scope));
     if (!thread) return { kind: "unavailable" as const };
     const scope = input.scope;
     const nodeId = scope.kind === "node" ? scope.nodeId : null;

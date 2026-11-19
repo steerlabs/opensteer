@@ -1,6 +1,5 @@
 import { utf8ByteLength } from "@opensteer/core";
 import {
-  personalInventoryBound,
   personalResourceKinds,
   pluginChangeResources,
   type PersonalResourceKind,
@@ -22,14 +21,12 @@ const signalKinds: ReadonlySet<PersonalResourceKind> = new Set([
   "team-replies",
 ]);
 /**
- * The most a complete inventory of each kind may hold (`personalInventoryBytes`, shared with the
- * Host, which admits nothing past it), checked as each page arrives so a phone never accumulates
- * more. A read past its bound stops, installs nothing, keeps the last complete inventory, and is
- * reported (`unreadable`); the next revision reads again.
+ * A safety net only: the most one read of an inventory may accumulate, as its pages arrive, before
+ * it is taken for a runaway. Past it the read installs nothing, the last complete inventory stays,
+ * and the kind is reported unreadable, so the screen offers "Couldn't load… Try again". Real
+ * inventories are a few KiB an entry; this is far above any of them.
  */
-export function inventoryBound(kind: PersonalResourceKind): number {
-  return personalInventoryBound(kind);
-}
+export const inventoryReadCeilingBytes = 32 * 1024 * 1024;
 /**
  * The kinds a Runner's connection moves. The Host bumps them on every connect and disconnect; a
  * reread waits this long after the first such push, so a Runner that drops and comes back costs
@@ -384,7 +381,8 @@ export class PersonalResourceReads implements PersonalResourcePort {
       if (page.data.data.kind !== kind)
         throw this.#unreadable(kind, `answered a ${page.data.data.kind}`);
       bytes += utf8ByteLength(JSON.stringify(page.data));
-      if (bytes > inventoryBound(kind)) throw this.#unreadable(kind, "exceeds its bound");
+      if (bytes > inventoryReadCeilingBytes)
+        throw this.#unreadable(kind, "exceeds the read ceiling");
       if (page.data.next && cursors.has(page.data.next))
         throw this.#unreadable(kind, "repeats a cursor");
       pages.push(page.data);

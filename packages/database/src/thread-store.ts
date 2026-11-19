@@ -1778,7 +1778,7 @@ export async function renameThread(
       if (thread.title !== title) {
         await publishThreadSummary(transaction, row.id);
         await refreshAssignmentWorkerSummaries(transaction, row.id);
-        await republishPendingRequestsShowing(transaction, row.id);
+        await republishPendingRequestsShowing(transaction, row.id, "title");
       }
       const actorPrincipalId = await principalIdForUser(transaction, input.requestedBy);
       await transaction
@@ -2012,7 +2012,7 @@ export async function applyGeneratedThreadName(
         .executeTakeFirstOrThrow();
       await publishThreadSummary(transaction, row.id);
       await refreshAssignmentWorkerSummaries(transaction, row.id);
-      if (renamed) await republishPendingRequestsShowing(transaction, row.id);
+      if (renamed) await republishPendingRequestsShowing(transaction, row.id, "title");
       return row.id;
     },
     (error) => error instanceof TransactionScopeChanged,

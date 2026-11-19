@@ -1,4 +1,3 @@
-import { requireMachineRoom } from "./personal-inventory-limits.js";
 import {
   createId,
   DeviceIdSchema,
@@ -192,7 +191,6 @@ export async function attachIphoneScreen(
             input.userId
         )
           throw refused();
-        if (target.kind === "new") await requireMachineRoom(transaction, new Date());
         if (target.kind === "new")
           await transaction
             .insertInto("devices")

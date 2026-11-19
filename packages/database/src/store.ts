@@ -1056,21 +1056,7 @@ export class OpensteerStore {
     environmentIds: readonly EnvironmentId[],
   ): Promise<ReadonlyMap<EnvironmentId, number>> {
     if (environmentIds.length === 0) return new Map();
-    // Bounded per environment through its partial index; a long history reads as the cap.
-    const rows = await sql<{ environmentId: EnvironmentId; count: string }>`
-      select environment.id as "environmentId", (
-        select count(*) from (
-          select 1 from threads where threads.environment_id = environment.id
-            and threads.status <> 'archived' limit ${pinnedThreadsCountCap}
-        ) pinned
-      ) as count
-      from unnest(${[...new Set(environmentIds)]}::text[]) as environment(id)
-    `.execute(this.#database);
-    return new Map(
-      rows.rows.flatMap((row) =>
-        Number(row.count) ? [[row.environmentId, Number(row.count)] as const] : [],
-      ),
-    );
+    return countPlacedThreads(this.#database, environmentIds);
   }
 
   async listThreadsForOwner(ownerId: UserId, limit = 10_000): Promise<readonly Thread[]> {
@@ -1776,3 +1762,38 @@ export type { ReachableMachineRecord } from "./machine-store.js";
 export type { ShellSessionHistoryRecord } from "./machine-store.js";
 export type { ShellSessionRecord } from "./machine-store.js";
 export { assertRequestResponse } from "./command-store.js";
+
+/**
+ * How many live tasks each environment holds, each count stopping at `pinnedThreadsCountCap`.
+ * One statement, one capped read per environment, each naming its environment as a value: the
+ * planner then plans each from that environment's own statistics (the partial index for a computer
+ * with few tasks, an early-stopping scan for the one that hosts nearly all of them). Correlated
+ * on a column instead, every environment was planned as the dominant one and scanned the table.
+ */
+export function placedThreadsQuery(ids: readonly EnvironmentId[]) {
+  return sql<{ environmentId: EnvironmentId; count: string }>`${sql.join(
+    ids.map(
+      (id) => sql`select ${id}::text as "environmentId", (
+        select count(*) from (
+          select 1 from threads where environment_id = ${id} and status <> 'archived'
+          limit ${pinnedThreadsCountCap}
+        ) pinned
+      ) as count`,
+    ),
+    sql` union all `,
+  )}`;
+}
+
+export async function countPlacedThreads(
+  database: Kysely<DatabaseSchema>,
+  environmentIds: readonly EnvironmentId[],
+): Promise<ReadonlyMap<EnvironmentId, number>> {
+  const ids = [...new Set(environmentIds)];
+  if (!ids.length) return new Map();
+  const rows = await placedThreadsQuery(ids).execute(database);
+  return new Map(
+    rows.rows.flatMap((row) =>
+      Number(row.count) ? [[row.environmentId, Number(row.count)] as const] : [],
+    ),
+  );
+}

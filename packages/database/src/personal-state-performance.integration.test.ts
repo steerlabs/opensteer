@@ -2,6 +2,7 @@ import type { DatabaseSchema } from "./schema.js";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EnvironmentIdSchema } from "@opensteer/core";
 import { sql } from "kysely";
 import { expect, test } from "vitest";
 import { createDatabase } from "./connection.js";
@@ -15,6 +16,7 @@ import {
   buildPersonalDetailSnapshot,
 } from "./personal-snapshot-store.js";
 import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
+import { countPlacedThreads, pinnedThreadsCountCap, placedThreadsQuery } from "./store.js";
 import { createStoreFixture } from "./store.integration.test-support.js";
 import { ownTestDatabaseProducer } from "./test-database.test-support.js";
 
@@ -181,6 +183,38 @@ async function measure(events: number) {
       );
       settingsMs.push(performance.now() - started);
     }
+    // Every statement one task-open read makes, timed: median of five reads, in order.
+    const statementTimes = new Map<string, number[]>();
+    const started = new Map<unknown, { at: number; sql: string }>();
+    const profiled = target.withPlugin({
+      transformQuery({ node, queryId }) {
+        const compiled = target.getExecutor().compileQuery(node, queryId).sql;
+        started.set(queryId, {
+          at: performance.now(),
+          sql: compiled.replace(/\s+/g, " ").slice(0, 200),
+        });
+        return node;
+      },
+      async transformResult({ queryId, result }) {
+        const begun = started.get(queryId);
+        if (begun) {
+          const times = statementTimes.get(begun.sql) ?? [];
+          times.push(performance.now() - begun.at);
+          statementTimes.set(begun.sql, times);
+        }
+        return result;
+      },
+    });
+    for (let i = 0; i < 5; i++)
+      await withPersonalSyncRead(profiled, async (tx) => {
+        const state = await authorizedSyncState(tx, run.userId);
+        return buildPersonalDetailSnapshot(tx, state, run.userId, detailScope);
+      });
+    const detailStatements = [...statementTimes].map(([statement, times]) => ({
+      statement,
+      perRead: times.length / 5,
+      medianMs: Number((distribution(times).p50 ?? 0).toFixed(3)),
+    }));
     // A task keeps one input row per message it was ever sent.
     await sql`insert into thread_inputs(message_id,thread_id,actor_principal_id,authority_source,causal_chain_id,
         idempotency_key,policy,queue_rank,request_fingerprint,requested_by,state,delivered_at)
@@ -210,6 +244,18 @@ async function measure(events: number) {
       select ${sql.join(copied)} from threads t cross join generate_series(1,${Math.min(events, 100_000)}) n
       where t.id=${run.threadId}`.execute(target);
     await sql`analyze thread_inputs, messages, transcript_items, threads`.execute(target);
+    const placedIds = [
+      run.environmentId,
+      ...Array.from({ length: 63 }, (_, index) =>
+        EnvironmentIdSchema.parse(`env_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`),
+      ),
+    ];
+    const placedMs: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const started = performance.now();
+      await countPlacedThreads(target, placedIds);
+      placedMs.push(performance.now() - started);
+    }
     const explain = async (query: ReturnType<typeof sql>) =>
       (await sql`explain(analyze,buffers,format json) ${query}`.execute(target)).rows;
     const plans = {
@@ -252,6 +298,8 @@ async function measure(events: number) {
       toolCard: await explain(
         sql`select id from transcript_items where tool_call_id=(select id from tool_calls limit 1)`,
       ),
+      // machines.list for 64 computers: the hosting one holds every task, the rest none.
+      placedCount: await explain(placedThreadsQuery(placedIds)),
     };
     expect(JSON.stringify(plans.channelAuthority)).toContain("thread_inputs_channel_authority");
     expect(JSON.stringify(plans.runReply)).toContain("messages_run_sequence");
@@ -262,6 +310,13 @@ async function measure(events: number) {
       expect(JSON.stringify(plans.settledCount)).toContain("threads_current_recent");
     }
     expect(JSON.stringify(plans.detail)).toContain("transcript_root");
+    // Each computer's count stops at the cap: the hosting computer's scan ends after 1,000 rows,
+    // and every other computer reads the partial index.
+    expect(JSON.stringify(plans.placedCount)).toContain("threads_environment_live");
+    const scans = JSON.stringify(plans.placedCount).match(/"Actual Rows":\d+/g) ?? [];
+    expect(Math.max(...scans.map((each) => Number(each.split(":")[1])))).toBeLessThanOrEqual(
+      pinnedThreadsCountCap,
+    );
     expect(shellBytes).toBeLessThanOrEqual(96 * 1024);
     expect(detailBytes).toBeLessThanOrEqual(128 * 1024);
     return {
@@ -272,7 +327,9 @@ async function measure(events: number) {
         shell: distribution(windowMs),
         detail: distribution(detailMs),
         settingsCommit: distribution(settingsMs),
+        placedCount: distribution(placedMs),
       },
+      detailStatements,
       shellBytes,
       detailBytes,
       plans,

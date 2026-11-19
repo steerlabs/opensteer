@@ -55,14 +55,7 @@ import { familyAutomations } from "./task-family.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import type { NodeDetailSubscription, NodeDetailSnapshot } from "./node-detail.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
-import type {
-  EnvironmentInventoryEntry,
-  MachineInventoryEntry,
-  MachineSectionCounts,
-  MachineSummary,
-  PersonShowMessage,
-  PluginEngineStateView,
-} from "@opensteer/protocol";
+import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
@@ -1623,9 +1616,6 @@ export class HttpHostClient {
     this.#targetedControl.clear();
     this.#computerViews.clear();
     this.#ownerViews.clear();
-    this.#machineSections.clear();
-    this.#environmentDrivers.clear();
-    this.#pendingEnvironments.clear();
     this.#pageSessions.clear();
     this.#viewers.clear();
     this.#tabs.clear();
@@ -2159,165 +2149,6 @@ export class HttpHostClient {
     if (first.kind === "machine")
       snapshot = { ...snapshot, machineRevision: this.#snapshot.machineRevision + 1 };
     if (snapshot !== this.#snapshot) this.#update(snapshot);
-    if (first.kind === "machine") this.#syncMachineDetails();
-    if (first.kind === "environment") this.#syncEnvironmentDetails();
-  }
-
-  /** How many engines the inventory said each environment has, by environment. */
-  readonly #environmentDrivers = new Map<string, number>();
-  readonly #environmentDetailReads = new FencedReads({
-    epoch: () => String(this.#viewerGeneration),
-  });
-
-  /**
-   * An environment from its inventory summary; its engines are what this client last read for
-   * it until `environment.detail.get` answers.
-   */
-  #environmentFromEntry(entry: EnvironmentInventoryEntry): EnvironmentSummary {
-    const { sections, ...summary } = entry;
-    this.#environmentDrivers.set(entry.id, sections.harnessDrivers);
-    const prior = this.#snapshot.environments.find(({ id }) => id === entry.id);
-    return {
-      ...summary,
-      harnessDrivers: sections.harnessDrivers ? (prior?.harnessDrivers ?? []) : [],
-      harnessCatalogs: [],
-    };
-  }
-
-  /**
-   * Reads each listed environment's engines, each on its own: an environment whose engines
-   * cannot be read stays listed with its status.
-   */
-  #syncEnvironmentDetails() {
-    const listed = new Set([
-      ...this.#snapshot.environments.map(({ id }) => id),
-      ...this.#pendingEnvironments.keys(),
-    ]);
-    for (const id of this.#environmentDrivers.keys())
-      if (!listed.has(id)) {
-        this.#environmentDrivers.delete(id);
-        this.#environmentDetailReads.stop(`environment:${id}`);
-      }
-    for (const [id, drivers] of this.#environmentDrivers) {
-      if (!drivers) continue;
-      const key = `environment:${id}`;
-      if (this.#environmentDetailReads.busy(key)) {
-        this.#environmentDetailReads.changed(key);
-        continue;
-      }
-      void this.#environmentDetailReads
-        .request(key, async (read) => {
-          const { environment } = unwrapRpcResult(
-            await this.rpc["environment.detail.get"](
-              { environmentId: id },
-              { signal: read.signal },
-            ),
-          );
-          if (!read.current()) return;
-          this.#installEnvironmentDrivers(id, environment.harnessDrivers);
-        })
-        // Its engines cannot be read: it is listed without them rather than not at all.
-        .catch(() => this.#installEnvironmentDrivers(id, null));
-    }
-  }
-
-  /** Environments listed with engines this client has not read yet; they join once read. */
-  readonly #pendingEnvironments = new Map<string, EnvironmentSummary>();
-
-  /** One environment's engines, as read; `null` when they could not be read. */
-  #installEnvironmentDrivers(id: string, drivers: EnvironmentSummary["harnessDrivers"] | null) {
-    const pending = this.#pendingEnvironments.get(id);
-    if (pending) {
-      this.#pendingEnvironments.delete(id);
-      this.#update({
-        ...this.#snapshot,
-        environments: mergeResourceRows(
-          this.#snapshot.environments,
-          [this.#withEnvironmentCatalogs({ ...pending, harnessDrivers: drivers ?? [] })],
-          (row) => row.id,
-        ),
-      });
-      return;
-    }
-    if (!drivers || !this.#snapshot.environments.some((held) => held.id === id)) return;
-    this.#update({
-      ...this.#snapshot,
-      environments: this.#snapshot.environments.map((held) =>
-        held.id === id ? { ...held, harnessDrivers: drivers } : held,
-      ),
-    });
-  }
-
-  /** What the inventory said each computer's heavy sections hold, by computer. */
-  readonly #machineSections = new Map<string, MachineSectionCounts>();
-  readonly #machineDetailReads = new FencedReads({
-    epoch: () => String(this.#viewerGeneration),
-  });
-
-  /**
-   * A computer from its inventory summary. Its heavy sections are what this client last read for
-   * it (until `machine.detail.get` answers), and null where the summary says this viewer is not
-   * shown them.
-   */
-  #machineFromEntry(entry: MachineInventoryEntry): MachineSummary {
-    const { sections, ...summary } = entry;
-    this.#machineSections.set(entry.id, sections);
-    const prior = this.#snapshot.machines.find(({ id }) => id === entry.id);
-    const computerUseShown = sections.computerUseSessions !== null || sections.ownerViews !== null;
-    return {
-      ...summary,
-      apps: sections.apps === null ? null : (prior?.apps ?? null),
-      access: sections.accessSessions === null ? null : (prior?.access ?? null),
-      computerUse: computerUseShown ? (prior?.computerUse ?? null) : null,
-    };
-  }
-
-  /**
-   * Reads each listed computer's heavy sections that this viewer is shown, one computer at a
-   * time, each read on its own: a computer whose sections cannot be read leaves the list, its
-   * status and its removal untouched.
-   */
-  #syncMachineDetails() {
-    const listed = new Set(this.#snapshot.machines.map(({ id }) => id));
-    for (const id of this.#machineSections.keys())
-      if (!listed.has(id)) {
-        this.#machineSections.delete(id);
-        this.#machineDetailReads.stop(`machine:${id}`);
-      }
-    for (const [id, sections] of this.#machineSections) {
-      if (Object.values(sections).every((count) => count === null)) continue;
-      const key = `machine:${id}`;
-      if (this.#machineDetailReads.busy(key)) {
-        this.#machineDetailReads.changed(key);
-        continue;
-      }
-      void this.#machineDetailReads
-        .request(key, async (read) => {
-          const revision = this.#ownerViews.revision;
-          const { machine } = unwrapRpcResult(
-            await this.rpc["machine.detail.get"]({ machineId: id }, { signal: read.signal }),
-          );
-          if (!read.current()) return;
-          const current = this.#snapshot.machines.find((held) => held.id === id);
-          if (!current) return;
-          const merged = this.#ownerViews.reread(
-            {
-              ...current,
-              apps: machine.apps,
-              access: machine.access,
-              computerUse: machine.computerUse,
-            },
-            current,
-            revision,
-          );
-          this.#update({
-            ...this.#snapshot,
-            machines: this.#snapshot.machines.map((held) => (held.id === id ? merged : held)),
-            machineRevision: this.#snapshot.machineRevision + 1,
-          });
-        })
-        .catch(() => undefined);
-    }
   }
 
   /** The tab rows or layout of one read, replacing what the tab store holds in one step. */
@@ -2378,28 +2209,15 @@ export class HttpHostClient {
         return { ...snapshot, identityConfig: data.identity };
       case "owner-profile":
         return { ...snapshot, ownerProfile: data.ownerProfile };
-      case "environment": {
-        if (!append) this.#pendingEnvironments.clear();
-        const rows = data.environments.flatMap((entry) => {
-          const environment = this.#withEnvironmentCatalogs(this.#environmentFromEntry(entry));
-          // An environment with engines nobody here has read yet waits for them: listed without
-          // them, every engine would read as missing from it.
-          const known = this.#snapshot.environments.some(({ id }) => id === entry.id);
-          if (entry.sections.harnessDrivers && !known) {
-            this.#pendingEnvironments.set(entry.id, environment);
-            return [];
-          }
-          return [environment];
-        });
+      case "environment":
         return {
           ...snapshot,
           environments: mergeResourceRows(
             append ? snapshot.environments : [],
-            rows,
+            data.environments.map((row) => this.#withEnvironmentCatalogs(row)),
             (row) => row.id,
           ),
         };
-      }
       case "harness-catalog":
         // Staged in the catalog map; the snapshot takes it once every page is in.
         if (!append) this.#environmentCatalogs.clear();
@@ -2424,7 +2242,7 @@ export class HttpHostClient {
           ...snapshot,
           machines: mergeResourceRows(
             append ? snapshot.machines : [],
-            data.machines.map((entry) => this.#machineFromEntry(entry)),
+            data.machines,
             (row) => row.id,
           ),
         };
@@ -3617,8 +3435,6 @@ export class HttpHostClient {
     this.#taskReads.dispose();
     this.#assignmentReads.dispose();
     this.#waitingRequestReads.dispose();
-    this.#machineDetailReads.dispose();
-    this.#environmentDetailReads.dispose();
     disposeMessageOutbox(this);
     if (this.#ownsConnection) this.connection.dispose();
     this.#closeSocket();

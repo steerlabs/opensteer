@@ -12,6 +12,7 @@ import {
   type RunnerModuleName,
 } from "@opensteer/protocol";
 import { sql, type Transaction } from "kysely";
+import { firstUser } from "./deployment-store.js";
 import { personalDeploymentOwner } from "./machine-store.js";
 import type { DatabaseSchema } from "./schema.js";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
@@ -39,6 +40,28 @@ async function personalDeployment({ store }: StoreFixture): Promise<void> {
   });
 }
 describeStore("PostgreSQL store", (it) => {
+  it("every read of the first user names the same person when two were created at once", async ({
+    storeFixture,
+  }) => {
+    const { store, database } = storeFixture;
+    await personalDeployment(storeFixture);
+    const ids = [await store.createUser("One"), await store.createUser("Two")];
+    await database
+      .updateTable("users")
+      .set({ createdAt: new Date("2026-01-01T00:00:00.000Z") })
+      .where("id", "in", ids)
+      .execute();
+    const first = (await firstUser(database))?.id;
+    expect(ids).toContain(first);
+    await expect(personalDeploymentOwner(database)).resolves.toBe(first);
+    const [answered] = (
+      await sql<{ id: string }>`select id from users order by created_at, id limit 1`.execute(
+        database,
+      )
+    ).rows;
+    expect(answered?.id).toBe(first);
+  });
+
   it("names only the first, enabled user of a Personal Deployment as its owner", async ({
     storeFixture,
   }) => {

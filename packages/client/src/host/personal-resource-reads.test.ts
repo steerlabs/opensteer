@@ -3,7 +3,7 @@ import { expect, test, vi } from "vitest";
 import {
   PersonalResourceReads,
   type PersonalResourceReadOptions,
-  inventoryBound,
+  inventoryReadCeilingBytes,
   readerGraceMs,
   runnerSettleMs,
 } from "./personal-resource-reads.js";
@@ -341,7 +341,7 @@ test("a kind is watched exactly while some reader that read it is mounted, or wi
   }
 });
 
-test("an inventory past its kind's bound stops as it arrives, keeps the last complete one, and says so", async () => {
+test("a runaway inventory stops at the read ceiling as it arrives, keeps the last complete one, and says so", async () => {
   let pagesRead = 0;
   let large = false;
   const applied: unknown[][] = [];
@@ -350,13 +350,13 @@ test("an inventory past its kind's bound stops as it arrives, keeps the last com
     read: async (kind, cursor) => {
       pagesRead++;
       const revision = reads.revision(kind) ?? "1";
-      // Past the first revision the Host pages without end, 60 KiB at a time.
+      // Past the first revision the Host pages without end, 1 MiB at a time.
       return {
         ok: true,
         data: {
           revision,
           next: large ? String(Number(cursor ?? 0) + 1) : null,
-          data: { kind, padding: large ? "m".repeat(60 * 1024) : "", revision } as never,
+          data: { kind, padding: large ? "m".repeat(1024 * 1024) : "", revision } as never,
         },
       };
     },
@@ -371,8 +371,8 @@ test("an inventory past its kind's bound stops as it arrives, keeps the last com
   pagesRead = 0;
   reads.changed({ harness: "2" });
   await vi.waitFor(() => expect(unreadable).toEqual([["harness", true]]));
-  // It stopped at the bound: about 2 MiB of 60 KiB pages, not more.
-  expect(pagesRead).toBeLessThanOrEqual(Math.ceil(inventoryBound("harness") / (60 * 1024)) + 1);
+  // It stopped at the ceiling: 32 MiB of 1 MiB pages, not more.
+  expect(pagesRead).toBeLessThanOrEqual(Math.ceil(inventoryReadCeilingBytes / (1024 * 1024)) + 1);
   expect(applied).toHaveLength(1);
   expect(reads.interests().installed).toEqual({ harness: "1" });
   // The next revision reads again, and a complete answer clears the report.

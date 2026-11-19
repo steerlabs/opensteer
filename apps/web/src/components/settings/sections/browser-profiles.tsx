@@ -1,3 +1,4 @@
+import { useUnreadableResources } from "@opensteer/client/react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
 import {
@@ -10,6 +11,7 @@ import {
   type ProfileHomeChoice,
 } from "@opensteer/client/host";
 import { act, failureWords } from "../../use-action.js";
+import { SettingsUnreadable } from "../primitives.js";
 import { useShell } from "../../app-shell.js";
 import { DeviceLabel } from "../../computers/device-label.js";
 import { useHereId } from "../../computers/here.js";
@@ -23,8 +25,12 @@ import { lastBrowsingChoice, rememberBrowsingChoice } from "../../workspace/star
  * Settings → Browser profiles. Each profile is its own browser with its own
  * sign-ins; your agent may browse as any of them.
  */
+const profileKinds = ["browser-profile"] as const;
+
 export function BrowserProfilesSection() {
-  const { snapshot } = useShell();
+  const { hostClient, snapshot } = useShell();
+  // A profile list that could not be read says so, rather than showing none or an old list.
+  const profilesRead = useUnreadableResources(hostClient, profileKinds);
   const hereId = useHereId();
   const rows = browserProfileSettingsRows(snapshot, hereId);
   const deletions = browserProfileDeletionRows(snapshot);
@@ -37,46 +43,50 @@ export function BrowserProfilesSection() {
         <h2 className="settings-group__title" id="browser-profiles-title">
           Opensteer browsers
         </h2>
-        <div className="card">
-          {rows.length === 0 && deletions.length === 0 ? (
-            <div className="card__form">
-              <p className="browser-profile-settings__empty">
-                No profiles yet. Create one, then open it to sign in to your sites.
-              </p>
-            </div>
-          ) : (
-            rows.map((row) => <BrowserProfileRow key={row.profile.id} row={row} />)
-          )}
-          {deletions.map((deletion) => (
-            <div className="settings-item" key={deletion.profileId}>
-              <div className="card__row">
-                <span className="card__row-body">
-                  <span className="card__row-title">Deleted profile</span>
-                  <span className="card__row-detail" role="status">
-                    {deletion.status}
-                  </span>
-                </span>
+        {profilesRead.unreadable ? (
+          <SettingsUnreadable label="your browser profiles" onRetry={profilesRead.retry} />
+        ) : (
+          <div className="card">
+            {rows.length === 0 && deletions.length === 0 ? (
+              <div className="card__form">
+                <p className="browser-profile-settings__empty">
+                  No profiles yet. Create one, then open it to sign in to your sites.
+                </p>
               </div>
-            </div>
-          ))}
-          <div className="card__form">
-            {creating ? (
-              <NewProfileForm
-                homes={profileHomeChoice(snapshot, hereId)}
-                onDone={() => setCreating(false)}
-              />
             ) : (
-              <button
-                className="btn btn--small browser-profile-settings__new"
-                onClick={() => setCreating(true)}
-                type="button"
-              >
-                <Icon name="plus" />
-                New profile
-              </button>
+              rows.map((row) => <BrowserProfileRow key={row.profile.id} row={row} />)
             )}
+            {deletions.map((deletion) => (
+              <div className="settings-item" key={deletion.profileId}>
+                <div className="card__row">
+                  <span className="card__row-body">
+                    <span className="card__row-title">Deleted profile</span>
+                    <span className="card__row-detail" role="status">
+                      {deletion.status}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            ))}
+            <div className="card__form">
+              {creating ? (
+                <NewProfileForm
+                  homes={profileHomeChoice(snapshot, hereId)}
+                  onDone={() => setCreating(false)}
+                />
+              ) : (
+                <button
+                  className="btn btn--small browser-profile-settings__new"
+                  onClick={() => setCreating(true)}
+                  type="button"
+                >
+                  <Icon name="plus" />
+                  New profile
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </section>
     </>
   );

@@ -119,8 +119,11 @@ interface Subscription {
     interests: Watch["interests"];
     installed: Watch["installed"];
     dirty: boolean;
-    /** An attach or watch is owed its one `reply: true` frame, sent even when nothing moved. */
-    reply: boolean;
+    /**
+     * `reply: true` frames owed, one per attach or watch not yet answered, sent in order even when
+     * nothing moved. A newer watch takes over what an older one still owed.
+     */
+    replies: number;
   };
 }
 
@@ -189,7 +192,7 @@ export class PersonalSyncSocket {
         generation: shell.generation,
         ...(shell.cursor ? { cursor: shell.cursor } : {}),
       },
-      { interests: shell.interests, installed: shell.installed, reply: true },
+      { interests: shell.interests, installed: shell.installed, replies: 1 },
     );
     if (selected) this.subscribe({ ...selected, type: "client.subscribe" });
   }
@@ -208,14 +211,14 @@ export class PersonalSyncSocket {
       interests: message.interests,
       installed: message.installed,
       dirty: true,
-      reply: true,
+      replies: (current.resources?.replies ?? 0) + 1,
     };
     this.#schedule(current);
   }
 
   subscribe(
     request: Subscribe,
-    resources?: Pick<Watch, "interests" | "installed"> & { readonly reply: boolean },
+    resources?: Pick<Watch, "interests" | "installed"> & { readonly replies: number },
   ) {
     if (this.#closed || request.generation <= (this.#generations.get(request.subscriptionId) ?? 0))
       return;
@@ -687,18 +690,31 @@ export class PersonalSyncSocket {
         latest[kind] && latest[kind] !== watch.installed[kind] ? [[kind, latest[kind]]] : [],
       ),
     );
-    // A live push only when something moved; the answer to an attach or watch always, marked.
-    const reply = watch.reply;
-    if (!Object.keys(revisions).length && !reply) return;
-    const sent = await this.#send(
-      current,
-      { type: "host.resource", revisions, ...(reply ? { reply: true as const } : {}) },
-      () => current.resources === watch,
-    );
-    if (sent) {
-      watch.installed = { ...watch.installed, ...revisions };
-      if (reply) watch.reply = false;
-    } else watch.dirty = true;
+    // A live push only when something moved; each attach or watch is answered, marked, in order.
+    // The first answer carries what moved; any further owed answers find nothing more to say.
+    const owed = watch.replies;
+    if (!Object.keys(revisions).length && !owed) return;
+    watch.replies = 0;
+    let answered = 0;
+    let pending = revisions;
+    do {
+      const reply = answered < owed;
+      const sent = await this.#send(
+        current,
+        { type: "host.resource", revisions: pending, ...(reply ? { reply: true as const } : {}) },
+        () => current.resources === watch,
+      );
+      if (!sent) {
+        // Not delivered: what is still owed passes to whichever watch holds the socket now.
+        const holder = current.resources ?? watch;
+        holder.replies += owed - answered;
+        holder.dirty = true;
+        return;
+      }
+      watch.installed = { ...watch.installed, ...pending };
+      pending = {};
+      answered += reply ? 1 : 0;
+    } while (answered < owed);
   }
 
   #hasCredit(current: Subscription, bytes: number, changes: number) {

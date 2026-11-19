@@ -710,12 +710,32 @@ describeStore("Deployment snapshot history", (it) => {
     if (shell.kind !== "snapshot") throw new Error("Expected a shell snapshot");
     expect(shell.snapshot.counts.pendingRequestsRevision).toBe(opened.pendingRequestsRevision);
     // A task no pending Request sits in: the shell moves, the stamp does not.
-    await rename(other.threadId, "Elsewhere");
+    const top = await startRunFixture("pending-revision-top");
+    await rename(top.threadId, "Elsewhere");
     const unrelated = await state();
     expect(BigInt(unrelated.sequence)).toBeGreaterThan(BigInt(opened.sequence));
     expect(unrelated.pendingRequestsRevision).toBe(opened.pendingRequestsRevision);
-    // The task the Request sits in is named on its list row.
+    // The listed task a Request sits in is not named on its row: the client names it from its own
+    // task list. Renaming it leaves the stamp alone.
     await rename(f.threadId, "Where it asks");
+    expect((await state()).pendingRequestsRevision).toBe(opened.pendingRequestsRevision);
+    // Asked from an unlisted task under a listed one, the row names that unlisted task (`via`):
+    // renaming it moves the stamp; renaming the listed one above it, or anything higher, does not.
+    await database
+      .updateTable("threads")
+      .set({ parentThreadId: top.threadId, lineageRootThreadId: top.threadId })
+      .where("id", "=", other.threadId)
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ listed: false, parentThreadId: other.threadId, lineageRootThreadId: top.threadId })
+      .where("id", "=", f.threadId)
+      .execute();
+    const placed = await state();
+    await rename(other.threadId, "The listed task above");
+    await rename(top.threadId, "Higher still");
+    expect((await state()).pendingRequestsRevision).toBe(placed.pendingRequestsRevision);
+    await rename(f.threadId, "The unlisted task it asks from");
     const shown = await state();
     expect(shown.pendingRequestsRevision).toBe(shown.sequence);
   });
