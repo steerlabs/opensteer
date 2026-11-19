@@ -1,5 +1,6 @@
 import { utf8ByteLength } from "@opensteer/core";
 import {
+  personalInventoryBound,
   personalResourceKinds,
   pluginChangeResources,
   type PersonalResourceKind,
@@ -21,30 +22,13 @@ const signalKinds: ReadonlySet<PersonalResourceKind> = new Set([
   "team-replies",
 ]);
 /**
- * The most a complete inventory of each kind may hold, in serialized bytes, checked as each page
- * arrives so a phone never accumulates more. Each is several times what the kind can legitimately
- * hold: tabs are at most 1,000 plus 200 groups (about 2 KiB each) and a 128 KiB layout; one model
- * catalog is at most 8,192 descriptors. Machines, environments and harnesses are not bounded per
- * owner on the Host; a person with hundreds of each still fits. A read past its bound stops,
- * installs nothing, keeps the last complete inventory, and is reported (`unreadable`); the next
- * revision reads again.
+ * The most a complete inventory of each kind may hold (`personalInventoryBytes`, shared with the
+ * Host, which admits nothing past it), checked as each page arrives so a phone never accumulates
+ * more. A read past its bound stops, installs nothing, keeps the last complete inventory, and is
+ * reported (`unreadable`); the next revision reads again.
  */
-const mebibyte = 1024 * 1024;
-const inventoryBounds: Partial<Record<PersonalResourceKind, number>> = {
-  "harness-catalog": 8 * mebibyte,
-  tab: 4 * mebibyte,
-  "tab-layout": mebibyte,
-  machine: 4 * mebibyte,
-  environment: 2 * mebibyte,
-  harness: 2 * mebibyte,
-  "browser-profile": 2 * mebibyte,
-  "browser-placement": mebibyte,
-  "browser-home": mebibyte,
-};
-/** Settings, identity, profile, availability and every plugin signal are a single small value. */
-const smallInventoryBytes = 256 * 1024;
 export function inventoryBound(kind: PersonalResourceKind): number {
-  return inventoryBounds[kind] ?? smallInventoryBytes;
+  return personalInventoryBound(kind);
 }
 /**
  * The kinds a Runner's connection moves. The Host bumps them on every connect and disconnect; a

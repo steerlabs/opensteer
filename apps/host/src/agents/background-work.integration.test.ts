@@ -1,6 +1,6 @@
 import { setBackgroundDeadline } from "./execution-clock.test-support.js";
 import { openVerticalViewer } from "./vertical-stack.test-support.js";
-import { readTestResource } from "../server/test-host-api-request.js";
+import { readTestResource, joinEnvironmentCatalogs } from "../server/test-host-api-request.js";
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -569,11 +569,10 @@ integration("Background work", () => {
           stopped.mockRestore();
         }
         const environment = async () => {
-          const result = {
-            ok: true as const,
-            data: await readTestResource(active.api, "harness-catalog"),
-          };
-          return result.data.environments.find((entry) => entry.id === active.environmentId);
+          const environments = await joinEnvironmentCatalogs((kind) =>
+            readTestResource(active.api, kind),
+          );
+          return environments.find((entry) => entry.id === active.environmentId);
         };
         await within(
           waitFor(

@@ -5,6 +5,7 @@ import {
 } from "@opensteer/core";
 import { z } from "zod";
 import {
+  HostBootstrapEnvironmentSchema,
   IdentityConfigViewSchema,
   OwnerProfileViewSchema,
   PersonalEnvironmentsViewSchema,
@@ -51,6 +52,29 @@ export const personalResourceKinds = [
   "team-replies",
 ] as const;
 
+const mebibyte = 1024 * 1024;
+/**
+ * The most a complete inventory of each kind may hold, as the serialized `data` of every page of
+ * one `resources.detail.get` read added together. A client refuses a read past it; a Host admits
+ * nothing that would take a kind past it. One place, so the two cannot drift.
+ */
+export const personalInventoryBytes: Readonly<Partial<Record<string, number>>> = {
+  "harness-catalog": 8 * mebibyte,
+  tab: 4 * mebibyte,
+  "tab-layout": mebibyte,
+  machine: 4 * mebibyte,
+  environment: 2 * mebibyte,
+  harness: 2 * mebibyte,
+  "browser-profile": 2 * mebibyte,
+  "browser-placement": mebibyte,
+  "browser-home": mebibyte,
+};
+/** Settings, identity, profile, availability and every plugin signal are a single small value. */
+export const personalSmallInventoryBytes = 256 * 1024;
+export function personalInventoryBound(kind: string): number {
+  return personalInventoryBytes[kind] ?? personalSmallInventoryBytes;
+}
+
 export const PersonalRevisionSchema = z
   .string()
   .regex(/^(0|[1-9][0-9]{0,18})$/u)
@@ -90,6 +114,15 @@ export const PersonalResourceInterestsSchema = z
 export type PersonalResourceKind = z.infer<typeof PersonalResourceKindSchema>;
 export type PersonalResourceRevisions = z.infer<typeof InstalledResourceRevisionsSchema>;
 
+export const PersonalEnvironmentCatalogsViewSchema = z
+  .array(
+    z.object({
+      id: HostBootstrapEnvironmentSchema.shape.id,
+      harnessCatalogs: HostBootstrapEnvironmentSchema.shape.harnessCatalogs,
+    }),
+  )
+  .max(400);
+
 export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("settings"),
@@ -107,7 +140,11 @@ export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("harness"), harnesses: PersonalHarnessesViewSchema }),
   z.object({
     kind: z.literal("harness-catalog"),
-    environments: PersonalEnvironmentsViewSchema,
+    /**
+     * Each environment's account catalogs, by environment id only: the environment's own detail is
+     * the `environment` resource, so a catalog page carries nothing that is not a catalog.
+     */
+    environments: PersonalEnvironmentCatalogsViewSchema,
   }),
   z.object({ kind: z.enum(["tab", "tab-layout"]), tabs: TabBootstrapSchema }),
   z.object({

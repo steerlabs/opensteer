@@ -1,4 +1,4 @@
-import { injectTestResource } from "./test-host-api-request.js";
+import { injectTestResource, joinEnvironmentCatalogs } from "./test-host-api-request.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
 import {
@@ -3151,7 +3151,7 @@ describe("durable harness catalogs", () => {
     });
     const app = await fixture.server;
     try {
-      const { environments } = await injectTestResource(app, "harness-catalog");
+      const environments = await joinEnvironmentCatalogs((kind) => injectTestResource(app, kind));
       const { harnesses } = await injectTestResource(app, "harness");
       expect(environments[0]?.harnessDrivers).toEqual([
         {

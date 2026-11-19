@@ -143,3 +143,4 @@ export { isEligibleBrowserRunner } from "./browser-home-store.js";
 export { decorateQueueEntries, readQueueLeaseHolders } from "./personal-queue-view.js";
 export { republishThreads } from "./thread-status.js";
 export { returnHintResources } from "./personal-snapshot-store.js";
+export * from "./personal-inventory-limits.js";
