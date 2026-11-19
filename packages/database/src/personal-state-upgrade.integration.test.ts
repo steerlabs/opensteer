@@ -492,45 +492,59 @@ test.each(["missing card", "invalid preview", "invalid visible timestamp"] as co
   },
 );
 
-test("a display-only difference in imported history is reported and the conversion finishes", async () => {
-  const fixture = await createStoreFixture();
-  const { database } = fixture;
-  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-  try {
-    const { deploymentId, threadId } = await fixture.startRunFixture("migration-display-drift");
-    await preparePersonalConversion(database, 1);
-    await sql`insert into deployment_events (deployment_id,sequence,event_id,thread_id,type,data)
-      values (${deploymentId},1,${createId("event")},${threadId},'thread.created','{}')`.execute(
-      database,
-    );
-    const stopBeforeVerify = new Error("Stop before verification");
-    await expect(
-      finishPersonalStateUpgrade(database, {
-        afterBatch(stage) {
-          if (stage === "attention-links") throw stopBeforeVerify;
-        },
-      }),
-    ).rejects.toBe(stopBeforeVerify);
-    // The ledger said there were more imported tool and reasoning rows than arrived.
-    await sql`update client_sync_state set upgrade_cursor = jsonb_set(jsonb_set(upgrade_cursor,
-      '{counts,tools}', to_jsonb((upgrade_cursor#>>'{counts,tools}')::int + 1)),
-      '{counts,reasoning}', to_jsonb((upgrade_cursor#>>'{counts,reasoning}')::int + 2))`.execute(
-      database,
-    );
-    await finishPersonalStateUpgrade(database);
-    expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
-    const drift = warn.mock.calls.map(([line]) => JSON.parse(String(line)));
-    expect(drift).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ event: "personal-conversion-display-drift", check: "tools" }),
-        expect.objectContaining({ event: "personal-conversion-display-drift", check: "reasoning" }),
-      ]),
-    );
-  } finally {
-    warn.mockRestore();
-    await fixture.close();
-  }
-});
+test.each([
+  ["reasoning", 2, "finishes"],
+  ["tools", 1, "fails"],
+  ["images", 1, "fails"],
+  ["nodeMessages", 1, "fails"],
+] as const)(
+  "a difference in imported %s rows: the conversion %s",
+  async (counter, missing, outcome) => {
+    const fixture = await createStoreFixture();
+    const { database } = fixture;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const { deploymentId, threadId } = await fixture.startRunFixture(
+        `migration-drift-${counter}`,
+      );
+      await preparePersonalConversion(database, 1);
+      await sql`insert into deployment_events (deployment_id,sequence,event_id,thread_id,type,data)
+        values (${deploymentId},1,${createId("event")},${threadId},'thread.created','{}')`.execute(
+        database,
+      );
+      const stopBeforeVerify = new Error("Stop before verification");
+      await expect(
+        finishPersonalStateUpgrade(database, {
+          afterBatch(stage) {
+            if (stage === "attention-links") throw stopBeforeVerify;
+          },
+        }),
+      ).rejects.toBe(stopBeforeVerify);
+      // The ledger said more rows of this kind were imported than arrived.
+      await sql`update client_sync_state set upgrade_cursor = jsonb_set(upgrade_cursor,
+        ${`{counts,${counter}}`}::text[],
+        to_jsonb((upgrade_cursor#>>${`{counts,${counter}}`}::text[])::int + ${missing}))`.execute(
+        database,
+      );
+      if (outcome === "fails") {
+        // An agent reads these rows back, or a file reference resolves through them.
+        await expect(finishPersonalStateUpgrade(database)).rejects.toThrow(
+          'step "verify": Personal conversion parity check failed',
+        );
+        expect(await legacyState(database)).toEqual({ legacy: true, cursor: true });
+        return;
+      }
+      await finishPersonalStateUpgrade(database);
+      expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
+      expect(warn.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual(
+        expect.objectContaining({ event: "personal-conversion-display-drift", check: counter }),
+      );
+    } finally {
+      warn.mockRestore();
+      await fixture.close();
+    }
+  },
+);
 
 test("conversion rebuilds pending Requests without moving an idle task into Active", async () => {
   const fixture = await createStoreFixture();
