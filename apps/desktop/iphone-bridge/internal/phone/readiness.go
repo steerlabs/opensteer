@@ -19,6 +19,16 @@ func reasonPointer(reason wire.Reason) *wire.Reason {
 func unavailableCapabilities(reason wire.Reason) wire.Capabilities {
 	return wire.Capabilities{Observe: reasonPointer(reason), Act: reasonPointer(reason), Launch: reasonPointer(reason), InstalledApps: reasonPointer(reason), Text: wire.UnsupportedText, Clear: wire.UnsupportedClear, IndexedTargets: wire.GeometryUnavailable, LiveVideo: wire.Unsupported}
 }
+func (s *Session) setDDIReason(reason wire.Reason) {
+	s.mu.Lock()
+	s.ddiReason = reason
+	s.mu.Unlock()
+}
+func (s *Session) hasDDIReason() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ddiReason != ""
+}
 func (s *Session) capabilities() wire.Capabilities {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -31,10 +41,14 @@ func (s *Session) capabilities() wire.Capabilities {
 	if s.services.Udid != s.identity {
 		return unavailableCapabilities(wire.IdentityMismatch)
 	}
+	missingReason := wire.ServiceMissing
+	if s.ddiReason != "" {
+		missingReason = s.ddiReason
+	}
 	available := func(unlocked bool, names ...string) *wire.Reason {
 		for _, name := range names {
 			if s.services.GetPort(name) < 1 {
-				return reasonPointer(wire.ServiceMissing)
+				return reasonPointer(missingReason)
 			}
 		}
 		if unlocked {
@@ -89,18 +103,26 @@ func (m *Manager) probe(ctx context.Context, token string) error {
 	ref := wire.PhoneRef{LocalPhoneID: p.id, NativeEpoch: p.epoch}
 	m.mu.Unlock()
 	_, err := m.withPhone(ctx, ref, func(ctx context.Context, p *localPhone) (interface{}, error) {
+		var readinessReason wire.Reason
 		s, err := m.ensureTransport(ctx, p)
-		if err == nil {
+		if err != nil {
+			readinessReason = Classify(err, wire.NativeServiceFailed).Code
+		} else {
 			err = m.ensureDeveloperServices(ctx, p, s)
-			if err == nil {
+			if err != nil {
+				if !s.hasDDIReason() {
+					readinessReason = Classify(err, wire.NativeServiceFailed).Code
+				}
+			} else {
 				err = s.Probe(ctx)
 			}
 		}
 		m.mu.Lock()
-		p.readinessReason = ""
-		if err != nil {
-			p.readinessReason = Classify(err, wire.NativeServiceFailed).Code
+		if p.epoch != ref.NativeEpoch || p.binding != token {
+			m.mu.Unlock()
+			return wire.Empty{}, wire.Fail(wire.StaleEpoch)
 		}
+		p.readinessReason = readinessReason
 		m.revision++
 		m.mu.Unlock()
 		if m.publish != nil {

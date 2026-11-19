@@ -104,8 +104,11 @@ export function iphoneSetupWords(
     case "developer-image-incompatible":
       return {
         cue: "On this Mac",
-        detail:
-          "The iPhone runs a newer iOS than this Mac’s Xcode knows. Update Xcode in the App Store, then open it once.",
+        detail: `${context.osVersion ? `This iPhone runs iOS ${context.osVersion}` : "This iPhone runs a newer iOS"}, which is newer than this Mac’s Xcode. Setup carries on by itself once Xcode is updated.`,
+        steps: [
+          "Update Xcode in the App Store.",
+          "Open Xcode once so it finishes installing iPhone support.",
+        ],
         recovery: "check",
         title: "Update Xcode",
         waiting: "Waiting for the newer Xcode…",
@@ -394,10 +397,10 @@ export function iphoneSetupWords(
     case "phone-in-use":
     case "input-media-conflict":
       return {
-        detail: "Something else is using the iPhone, such as Xcode or an earlier setup.",
+        detail: "Another setup or app on this Mac is actively controlling this iPhone.",
         recovery: "check",
         steps: [
-          "Quit Xcode or any other app connected to the iPhone, then try again.",
+          "Finish or close the other setup or app using the iPhone, then try again.",
           "Still busy? Restart the iPhone, unlock it, and try again.",
         ],
         title: "The iPhone is busy",
@@ -407,7 +410,8 @@ export function iphoneSetupWords(
     case "native-service-missing":
     case "protocol-unsupported":
       return {
-        detail: "Update the iPhone and Xcode, then try again.",
+        detail:
+          "Restart the iPhone, unlock it, and update iOS or Xcode on this Mac if updates are available, then try again.",
         recovery: "check",
         title: "This iPhone doesn’t offer what screen control needs",
         yours: false,

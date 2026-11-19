@@ -251,6 +251,21 @@ it("opens Local Network settings through the Mac's offered help action", async (
   });
 });
 
+it("offers Update Xcode and Check again when the iPhone runs a newer iOS than Xcode", async () => {
+  const port = setupPort("xcode-update");
+  await render(port);
+  expect(text()).toContain("iOS 27.1");
+  await click("Update Xcode");
+  expect(port.help).toHaveBeenCalledExactlyOnceWith({
+    setupId: port.current!.setupId,
+    action: "get-xcode",
+  });
+  await click("Check again");
+  expect(port.retry).toHaveBeenCalledExactlyOnceWith({
+    setupId: port.current!.setupId,
+  });
+});
+
 it("retries a failed Host attach with the original command and finishes", async () => {
   const unanswered = new HostClientRequestError({
     code: "internal",

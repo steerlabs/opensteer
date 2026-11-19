@@ -36,6 +36,29 @@ describe("a Mac-driven phone's status", () => {
       }),
     ).toBeNull();
   });
+
+  it("distinguishes Local Network permission from Xcode/developer tools setup", () => {
+    const ready = mockIphoneScreenDevice("ready");
+    const withReason = (kind: "permission-required" | "setup-required") =>
+      phoneScreenStatus({
+        ...ready,
+        phoneDisplay: {
+          ...ready.phoneDisplay!,
+          control: { state: "unavailable" as const, reason: { kind } },
+        },
+      })!;
+    expect(withReason("permission-required")).toMatchObject({
+      label: "Needs Local Network access",
+      needsSetup: true,
+    });
+    expect(withReason("permission-required").fix).toContain("Local Network");
+    expect(withReason("setup-required")).toMatchObject({
+      label: "Needs setup",
+      needsSetup: true,
+    });
+    expect(withReason("setup-required").fix).toContain("Xcode");
+    expect(withReason("setup-required").fix).toContain("USB");
+  });
 });
 
 it("does not prescribe an on-phone update for an unsupported iPhone view", () => {

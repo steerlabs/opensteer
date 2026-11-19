@@ -17,7 +17,6 @@
     "result": {
       "images": [
         {
-          "handle": "refreshed-image",
           "build": "27B52"
         }
       ]
@@ -38,5 +37,32 @@
     "kind": "response",
     "id": 31,
     "result": {}
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 32,
+    "timeoutMs": 120000,
+    "method": "setup.prepareDeveloperServices",
+    "params": {
+      "localPhoneId": "fixture-phone",
+      "nativeEpoch": 3
+    }
+  },
+  {
+    "kind": "response",
+    "id": 32,
+    "result": {
+      "pairing": "paired",
+      "developerMode": "enabled",
+      "image": "mounted",
+      "tunnel": "ready",
+      "lock": "unknown",
+      "name": "Fixture iPhone",
+      "model": "iPhone19,4",
+      "osVersion": "27.2",
+      "build": "24B91020",
+      "reason": "qualification-required"
+    }
   }
 ]

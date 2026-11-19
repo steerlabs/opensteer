@@ -111,10 +111,6 @@ type ForgetParams struct {
 	PhoneRef
 	BindingToken string `json:"bindingToken"`
 }
-type PrepareParams struct {
-	PhoneRef
-	ImageHandle string `json:"imageHandle"`
-}
 type CancelParams struct {
 	RequestID uint64 `json:"requestId"`
 }
@@ -211,12 +207,10 @@ func Params(r Request) (interface{}, error) {
 		v = &IdentityParams{}
 	case "binding.forget", "setup.withdrawWifi":
 		v = &ForgetBindingParams{}
-	case "setup.inspect", "setup.pair", "setup.revealDeveloperMode":
+	case "setup.inspect", "setup.pair", "setup.revealDeveloperMode", "setup.prepareDeveloperServices":
 		v = &PhoneRef{}
 	case "phone.forget":
 		v = &ForgetParams{}
-	case "setup.prepareDeveloperServices":
-		v = &PrepareParams{}
 	case "request.cancel":
 		v = &CancelParams{}
 	case "binding.acquire":
@@ -257,10 +251,6 @@ func Params(r Request) (interface{}, error) {
 		}
 	case *ForgetParams:
 		if !validRef(p.PhoneRef) || !validID(p.BindingToken) {
-			return nil, ErrProtocol
-		}
-	case *PrepareParams:
-		if !validRef(p.PhoneRef) || !validID(p.ImageHandle) {
 			return nil, ErrProtocol
 		}
 	case *InitParams:
@@ -306,7 +296,7 @@ func DecodeRequest(b []byte) (Request, error) {
 	if r.Kind != "request" || r.ProtocolVersion != 1 || r.ID == 0 || r.ID > 9007199254740991 || r.TimeoutMs < 1 || r.TimeoutMs > MaxTimeoutMs {
 		return r, ErrProtocol
 	}
-	if r.Method != "setup.prepareDeveloperServices" && r.TimeoutMs > 30000 {
+	if r.Method != "setup.prepareDeveloperServices" && r.Method != "binding.probe" && r.Method != "session.open" && r.TimeoutMs > 30000 {
 		return r, ErrProtocol
 	}
 	_, err := Params(r)

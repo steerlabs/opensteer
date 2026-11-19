@@ -21,11 +21,32 @@ import {
   type DesktopIphoneWifiStatusSchema,
 } from "@opensteer/protocol/desktop";
 import { IphoneStore, IphoneServiceError, type IphoneMapping } from "./iphone-store.js";
+import type { IphoneMacSupport } from "./mac-support.js";
 
 const empty = z.strictObject({});
+const imageItemSchema = z.strictObject({
+  build: z.string(),
+  version: z.string().optional(),
+});
+const imagesResultSchema = z.strictObject({
+  images: z.array(imageItemSchema).max(8),
+});
+const recoverableImageReasons = new Set<string>([
+  "developer-image-missing",
+  "developer-image-incompatible",
+]);
 type Candidate = z.infer<typeof iphoneNativeRosterSchema>["candidates"][number];
 type Assignment = IphoneRunnerParams<"iphone.targets">["assignments"][number];
 type Binding = { token: string; epoch: number; record: IphoneMapping };
+type ProbeWork = {
+  work: Promise<void>;
+  controller: AbortController;
+  generation: number;
+  localPhoneId: string;
+  nativeEpoch: number;
+  imageRevision: number;
+  rerun: boolean;
+};
 type Session = {
   key: object;
   binding: Binding;
@@ -39,8 +60,9 @@ export interface IphoneServiceOptions {
   readonly store: IphoneStore;
   readonly startNative: () => Promise<{
     client: IphoneNativeTransport;
-    images: { handle: string; build: string }[];
+    images: { build: string; version?: string | undefined }[];
   }>;
+  readonly mac?: IphoneMacSupport;
   readonly supported?: boolean;
 }
 function sameOwner(a: IphoneRunnerOwner, b: IphoneRunnerOwner): boolean {
@@ -62,12 +84,17 @@ export class IphoneService {
   readonly #listeners = new Set<(deploymentId: string, event: IphoneRunnerEvent) => void>();
   readonly #cleanups = new Set<Promise<unknown>>();
   readonly #wifiWork = new Map<string, Promise<void>>();
+  readonly #probeWork = new Map<string, ProbeWork>();
+  readonly #probedImageRevision = new Map<string, number>();
   #records: IphoneMapping[] = [];
   #roster: Candidate[] = [];
   #revision = -1;
   #native: IphoneNativeTransport | undefined;
   #starting: Promise<IphoneNativeTransport> | undefined;
-  #images: { handle: string; build: string }[] = [];
+  #imageCatalogKey = "";
+  #imageRevision = 0;
+  #macWatch: (() => void) | undefined;
+  #macRefreshWork: Promise<void> | undefined;
   #suspended = false;
   #nativeGeneration = 0;
   #stopped = false;
@@ -79,6 +106,9 @@ export class IphoneService {
   }
   get supported(): boolean {
     return this.#options.supported !== false;
+  }
+  get imageRevision(): number {
+    return this.#imageRevision;
   }
   async start(): Promise<void> {
     this.#records = await this.store.records();
@@ -97,19 +127,43 @@ export class IphoneService {
       this.#changed.delete(listener);
     };
   }
-  async refreshImages(imageRoots: string[], signal: AbortSignal): Promise<boolean> {
+  refreshImages(imageRoots: string[], signal?: AbortSignal): Promise<readonly string[]> {
+    return this.#refreshImages(imageRoots, signal);
+  }
+  async #refreshImages(
+    imageRoots: string[],
+    signal?: AbortSignal,
+    excludeUdid?: string,
+  ): Promise<readonly string[]> {
     const native = await this.#connect();
     const { images } = await native.request(
       "images.refresh",
       { imageRoots },
-      z.strictObject({
-        images: z.array(z.strictObject({ handle: z.string(), build: z.string() })).max(8),
-      }),
-      { signal },
+      imagesResultSchema,
+      signal ? { signal } : {},
     );
-    if (signal.aborted || native !== this.#native) throw new IphoneServiceError("cancelled");
-    this.#images = images;
-    return images.length > 0;
+    if (signal?.aborted || native !== this.#native) throw new IphoneServiceError("cancelled");
+    const changed = this.#recordImageCatalog(images);
+    if (changed) this.#retryRecoverablePhones(excludeUdid);
+    return images.map((image) => image.build);
+  }
+  #recordImageCatalog(images: readonly { build: string; version?: string | undefined }[]): boolean {
+    const key = JSON.stringify(images);
+    if (key === this.#imageCatalogKey) return false;
+    this.#imageCatalogKey = key;
+    this.#imageRevision++;
+    return true;
+  }
+  #retryRecoverablePhones(excludeUdid?: string): void {
+    if (this.#stopped || this.#suspended || !this.#native) return;
+    for (const record of this.#records) {
+      if (record.udid === excludeUdid) continue;
+      if (
+        this.#needsImageRecovery(record) &&
+        this.#probedImageRevision.get(record.udid) !== this.#imageRevision
+      )
+        this.#cleanup(this.#probe(record));
+    }
   }
   async revealDeveloperMode(record: IphoneMapping, signal: AbortSignal): Promise<void> {
     await (
@@ -321,25 +375,13 @@ export class IphoneService {
     }
   }
   async prepare(record: IphoneMapping, signal: AbortSignal): Promise<void> {
-    await this.#connect();
-    if (!this.#images.length) throw new IphoneServiceError("developer-image-missing");
-    for (const image of this.#images) {
-      try {
-        await (
-          await this.#connect()
-        ).request(
-          "setup.prepareDeveloperServices",
-          { ...this.#ref(record), imageHandle: image.handle },
-          iphoneNativeInspectionSchema,
-          { signal, timeoutMs: 120000 },
-        );
-        return;
-      } catch (error) {
-        if (!(error instanceof IphoneServiceError) || error.code !== "developer-image-incompatible")
-          throw error;
-      }
-    }
-    throw new IphoneServiceError("developer-image-incompatible");
+    const native = await this.#connect();
+    await native.request(
+      "setup.prepareDeveloperServices",
+      this.#ref(record),
+      iphoneNativeInspectionSchema,
+      { signal, timeoutMs: 120000 },
+    );
   }
 
   async firstObserve(record: IphoneMapping, signal: AbortSignal): Promise<void> {
@@ -351,7 +393,7 @@ export class IphoneService {
         "session.open",
         { bindingToken: binding.token, sessionId, runId: sessionId, access: "observe" },
         iphoneNativePhoneRefSchema,
-        { signal },
+        { signal, timeoutMs: 120000 },
       );
       binding.epoch = ref.nativeEpoch;
       const observation = await native.request(
@@ -403,7 +445,7 @@ export class IphoneService {
         (a) => a.deviceId === record.deviceId && a.generation === record.driverGeneration,
       )
     )
-      await this.#probe(record);
+      this.#cleanup(this.#probe(record));
   }
   async finishSetup(record: IphoneMapping): Promise<void> {
     await this.#release(record, true);
@@ -436,6 +478,7 @@ export class IphoneService {
     record.phase = "pending-detach";
     record.detachKey ??= randomUUID();
     this.#invalidate(record, "cancelled");
+    this.#syncMacWatch();
     await this.save(record);
     await this.#release(record, true);
     return record;
@@ -558,7 +601,8 @@ export class IphoneService {
                     (a) => a.deviceId === r.deviceId && a.generation === r.driverGeneration,
                   ),
               ))
-                await this.#probe(record);
+                this.#cleanup(this.#probe(record));
+              this.#syncMacWatch();
               for (const listener of this.#changed) listener();
               return iphoneRunnerResults[method].parse({
                 targets: await this.targets(deploymentId),
@@ -579,6 +623,9 @@ export class IphoneService {
             this.#closeOwner(key);
             if (this.#slots.get(deploymentId)?.key === key) {
               this.#slots.delete(deploymentId);
+              for (const record of this.#records)
+                if (record.deploymentId === deploymentId) this.#cancelProbe(record.udid);
+              this.#syncMacWatch();
               for (const listener of this.#invalidatedSlots) listener(deploymentId);
             }
           },
@@ -608,7 +655,8 @@ export class IphoneService {
     );
     if (!record || slot?.key !== key) throw new IphoneServiceError("no-session");
     if (method === "iphone.media") return { available: false, reason: "unsupported" };
-    const timeoutMs = Math.min(30000, Math.floor(options.deadline - Date.now()));
+    const maxTimeoutMs = method === "iphone.session.open" ? 120000 : 30000;
+    const timeoutMs = Math.min(maxTimeoutMs, Math.floor(options.deadline - Date.now()));
     if (timeoutMs <= 0 || options.signal?.aborted)
       throw new IphoneServiceError("deadline-exceeded");
     let session = this.#sessions.get(record.udid);
@@ -661,7 +709,7 @@ export class IphoneService {
       );
     };
     if (!authorized()) throw new IphoneServiceError("no-session");
-    const remaining = Math.min(30000, Math.floor(options.deadline - Date.now()));
+    const remaining = Math.min(maxTimeoutMs, Math.floor(options.deadline - Date.now()));
     if (remaining <= 0 || options.signal?.aborted)
       throw new IphoneServiceError("deadline-exceeded");
     const callOptions = {
@@ -780,16 +828,167 @@ export class IphoneService {
       driverGeneration: record.driverGeneration ?? 1,
     };
   }
-  async #probe(record: IphoneMapping): Promise<void> {
-    try {
-      const binding = await this.#binding(record);
-      await (
-        await this.#connect()
-      ).request("binding.probe", { bindingToken: binding.token }, empty, { timeoutMs: 5000 });
-      await this.discover();
-    } catch {
-      // Native roster carries the failed probe's typed reason.
+  #isAssignedBoundRecord(record: IphoneMapping, generation: number): boolean {
+    if (
+      this.#stopped ||
+      this.#suspended ||
+      this.#nativeGeneration !== generation ||
+      !this.#native ||
+      record.phase !== "bound"
+    )
+      return false;
+    const live = this.#records.find(
+      (r) =>
+        r.udid === record.udid &&
+        r.phase === "bound" &&
+        r.setupId === record.setupId &&
+        r.deviceId === record.deviceId &&
+        r.driverGeneration === record.driverGeneration &&
+        sameOwner(r, record),
+    );
+    if (!live) return false;
+    const slot = this.#slots.get(record.deploymentId);
+    return Boolean(
+      slot &&
+      sameOwner(record, slot.owner) &&
+      slot.assignments.some(
+        (a) => a.deviceId === record.deviceId && a.generation === record.driverGeneration,
+      ),
+    );
+  }
+  #cancelProbe(udid: string): void {
+    const pending = this.#probeWork.get(udid);
+    if (!pending) return;
+    pending.rerun = false;
+    pending.controller.abort();
+    this.#probeWork.delete(udid);
+  }
+  #cancelAllProbes(): void {
+    for (const pending of this.#probeWork.values()) {
+      pending.rerun = false;
+      pending.controller.abort();
     }
+    this.#probeWork.clear();
+  }
+  #probe(record: IphoneMapping): Promise<void> {
+    const generation = this.#nativeGeneration;
+    if (!this.#isAssignedBoundRecord(record, generation)) return Promise.resolve();
+    const candidate = this.#roster.find((c) => c.localPhoneId === record.localPhoneId);
+    if (!candidate) return Promise.resolve();
+    const pending = this.#probeWork.get(record.udid);
+    if (pending) {
+      if (
+        pending.generation === generation &&
+        pending.localPhoneId === candidate.localPhoneId &&
+        pending.nativeEpoch === candidate.nativeEpoch &&
+        pending.imageRevision === this.#imageRevision
+      )
+        return pending.work;
+      pending.rerun = true;
+      if (
+        pending.generation !== generation ||
+        pending.localPhoneId !== candidate.localPhoneId ||
+        pending.nativeEpoch !== candidate.nativeEpoch
+      )
+        pending.controller.abort();
+      return pending.work;
+    }
+    const controller = new AbortController();
+    const entry: ProbeWork = {
+      work: Promise.resolve(),
+      controller,
+      generation,
+      localPhoneId: candidate.localPhoneId,
+      nativeEpoch: candidate.nativeEpoch,
+      imageRevision: this.#imageRevision,
+      rerun: false,
+    };
+    const work = (async () => {
+      try {
+        if (this.#needsImageRecovery(record) && this.#options.mac) {
+          const support = await this.#options.mac.inspect();
+          if (controller.signal.aborted || !this.#isAssignedBoundRecord(record, generation)) return;
+          await this.#refreshImages(support.imageRoots, controller.signal, record.udid).catch(
+            () => undefined,
+          );
+          if (controller.signal.aborted || !this.#isAssignedBoundRecord(record, generation)) return;
+          entry.imageRevision = this.#imageRevision;
+        }
+        const attemptImageRevision = entry.imageRevision;
+        const binding = await this.#binding(record, controller.signal);
+        if (controller.signal.aborted || !this.#isAssignedBoundRecord(record, generation)) return;
+        const native = await this.#connect();
+        if (controller.signal.aborted || !this.#isAssignedBoundRecord(record, generation)) return;
+        await native.request("binding.probe", { bindingToken: binding.token }, empty, {
+          timeoutMs: 120000,
+          signal: controller.signal,
+        });
+        if (!controller.signal.aborted && this.#isAssignedBoundRecord(record, generation)) {
+          this.#probedImageRevision.set(record.udid, attemptImageRevision);
+          await this.discover();
+        }
+      } catch {
+        if (!controller.signal.aborted && this.#isAssignedBoundRecord(record, generation))
+          this.#probedImageRevision.set(record.udid, entry.imageRevision);
+        // Native roster carries the failed probe's typed reason.
+      }
+    })();
+    entry.work = work;
+    this.#probeWork.set(record.udid, entry);
+    void work
+      .finally(() => {
+        if (this.#probeWork.get(record.udid) === entry) this.#probeWork.delete(record.udid);
+        if (entry.rerun && !this.#stopped && !this.#suspended) {
+          const latest = this.#records.find((r) => r.udid === record.udid && r.phase === "bound");
+          if (latest && this.#isAssignedBoundRecord(latest, this.#nativeGeneration))
+            this.#cleanup(this.#probe(latest));
+        }
+        this.#syncMacWatch();
+      })
+      .catch(() => undefined);
+    return work;
+  }
+  #needsImageRecovery(record: IphoneMapping): boolean {
+    if (!this.#isAssignedBoundRecord(record, this.#nativeGeneration)) return false;
+    const candidate = this.#roster.find((c) => c.localPhoneId === record.localPhoneId);
+    const reason = candidate?.reason ?? candidate?.capabilities?.observe ?? null;
+    return reason !== null && recoverableImageReasons.has(reason);
+  }
+  #stopMacWatch(): void {
+    this.#macWatch?.();
+    this.#macWatch = undefined;
+  }
+  #syncMacWatch(): void {
+    if (this.#stopped || this.#suspended || !this.#options.mac || !this.#native) {
+      this.#stopMacWatch();
+      return;
+    }
+    const needed = this.#records.some((record) => this.#needsImageRecovery(record));
+    if (needed && !this.#macWatch) {
+      this.#macWatch = this.#options.mac.watch(() => {
+        void this.#handleMacImageChange();
+      });
+    } else if (!needed && this.#macWatch) {
+      this.#stopMacWatch();
+    }
+  }
+  #handleMacImageChange(): Promise<void> {
+    if (this.#macRefreshWork) return this.#macRefreshWork;
+    const work = (async () => {
+      if (this.#stopped || this.#suspended || !this.#options.mac || !this.#native) return;
+      const support = await this.#options.mac.inspect();
+      if (this.#stopped || this.#suspended || !this.#native) return;
+      await this.#refreshImages(support.imageRoots).catch(() => null);
+      this.#retryRecoverablePhones();
+    })();
+    this.#macRefreshWork = work;
+    this.#cleanup(work);
+    void work
+      .finally(() => {
+        if (this.#macRefreshWork === work) this.#macRefreshWork = undefined;
+      })
+      .catch(() => undefined);
+    return work;
   }
   #binding(record: IphoneMapping, signal?: AbortSignal): Promise<Binding> {
     const existing = this.#bindings.get(record.udid);
@@ -814,6 +1013,7 @@ export class IphoneService {
       );
       if (signal?.aborted) throw new IphoneServiceError("cancelled");
       if (identity.udid !== record.udid) throw new IphoneServiceError("identity-mismatch");
+      // Keep binding.acquire alive so a late token reply is always received and released on abort.
       const result = await native.request(
         "binding.acquire",
         {
@@ -825,11 +1025,18 @@ export class IphoneService {
           driverGeneration: record.driverGeneration ?? 1,
         },
         z.strictObject({ bindingToken: z.string().min(1).max(128) }),
-        signal ? { signal } : {},
       );
       const binding = { token: result.bindingToken, epoch: ref.nativeEpoch, record };
       if (this.#stopped || this.#native !== native)
         throw new IphoneServiceError("phone-disconnected");
+      if (signal?.aborted) {
+        await native
+          .request("binding.release", { bindingToken: result.bindingToken, forget: false }, empty, {
+            timeoutMs: 2000,
+          })
+          .catch(() => undefined);
+        throw new IphoneServiceError("cancelled");
+      }
       this.#bindings.set(record.udid, binding);
       return binding;
     })();
@@ -898,6 +1105,7 @@ export class IphoneService {
     record: IphoneMapping,
     reason: "cancelled" | "no-session" | "phone-disconnected",
   ): void {
+    this.#cancelProbe(record.udid);
     const session = this.#sessions.get(record.udid);
     if (session) this.#end(session, reason);
     if (record.deviceId && record.driverGeneration)
@@ -951,6 +1159,7 @@ export class IphoneService {
     this.#revision = roster.revision;
     if (changed) for (const listener of this.#changed) listener();
     for (const record of probe) this.#cleanup(this.#probe(record));
+    this.#syncMacWatch();
     const generation = this.#nativeGeneration;
     for (const slot of this.#slots.keys())
       void this.targets(slot).then((targets) => {
@@ -972,7 +1181,9 @@ export class IphoneService {
         throw new IphoneServiceError("cancelled");
       }
       this.#native = result.client;
-      this.#images = result.images;
+      this.#imageCatalogKey = JSON.stringify(result.images);
+      this.#imageRevision++;
+      this.#probedImageRevision.clear();
       this.#detachNative = [
         result.client.onGap?.(() => {
           for (const record of this.#records) this.#invalidate(record, "phone-disconnected");
@@ -982,11 +1193,14 @@ export class IphoneService {
         result.client.onEvent((event) => this.#reconcile(event.roster)),
         result.client.onLost(() => {
           if (this.#native !== result.client) return;
+          this.#stopMacWatch();
+          this.#cancelAllProbes();
           for (const record of this.#records) this.#invalidate(record, "phone-disconnected");
           this.#native = undefined;
           this.#roster = [];
           this.#revision = -1;
           this.#bindings.clear();
+          this.#probedImageRevision.clear();
           for (const listener of this.#changed) listener();
           for (const detach of this.#detachNative.splice(0)) detach();
         }),
@@ -1032,16 +1246,21 @@ export class IphoneService {
       this.#invalidate(record, "no-session");
       await this.#release(record, false);
     }
+    this.#syncMacWatch();
     await this.#drain();
   }
   suspend(): void {
     this.#suspended = true;
+    this.#stopMacWatch();
+    this.#cancelAllProbes();
     this.#nativeGeneration++;
     for (const detach of this.#detachNative.splice(0)) detach();
     for (const record of this.#records) this.#invalidate(record, "phone-disconnected");
     const native = this.#native;
     this.#native = undefined;
     this.#bindings.clear();
+    this.#probedImageRevision.clear();
+    this.#imageCatalogKey = "";
     this.#roster = [];
     this.#revision = -1;
     if (native) this.#cleanup(native.close());
@@ -1074,6 +1293,8 @@ export class IphoneService {
   stop(): Promise<void> {
     this.#stopping ??= (async () => {
       this.#stopped = true;
+      this.#stopMacWatch();
+      this.#cancelAllProbes();
       for (const session of Array.from(this.#sessions.values())) this.#end(session, "cancelled");
       await this.#starting?.catch(() => undefined);
       await this.#drain();
@@ -1082,6 +1303,8 @@ export class IphoneService {
       for (const detach of this.#detachNative.splice(0)) detach();
       await native?.close();
       this.#bindings.clear();
+      this.#probedImageRevision.clear();
+      this.#imageCatalogKey = "";
       this.#roster = [];
       this.#revision = -1;
       this.#slots.clear();

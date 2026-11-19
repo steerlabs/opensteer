@@ -157,14 +157,14 @@ it("detects missing Xcode before any phone, opens the offered helper, and resume
   expect(await required).toMatchObject({ action: "open-xcode" });
   await f.setup.help(initial.setupId, "open-xcode");
   await stage(f, initial.setupId, "mac");
-  f.native.images = [{ handle: "fresh", build: "test" }];
+  f.native.images = [{ build: "27B52" }];
   const ready = stage(f, initial.setupId, "wifi");
   f.mac.changed();
   await ready;
   expect(f.mac.helps).toEqual(["get-xcode", "open-xcode"]);
-  expect(
-    f.native.calls.find((c) => c.method === "setup.prepareDeveloperServices")?.params,
-  ).toMatchObject({ imageHandle: "fresh" });
+  expect(f.native.calls.find((c) => c.method === "setup.prepareDeveloperServices")?.params).toEqual(
+    { localPhoneId: "candidate", nativeEpoch: 1 },
+  );
 });
 
 it("waits for a USB roster event and automatically chooses the only usable phone while trust is checking", async () => {
@@ -583,18 +583,64 @@ it("shows ineligible USB phones instead of asking to plug one in", async () => {
   expect(await f.store.records()).toEqual([]);
 });
 
-it("refreshes developer images in a blocked prepare stage before retrying", async () => {
+it("waits with Update Xcode during prepare, auto-resumes when Xcode updates, and supports manual retry", async () => {
   const f = await harness();
   f.native.failures.set(
     "setup.prepareDeveloperServices",
     new IphoneServiceError("developer-image-incompatible"),
   );
   const initial = await f.setup.begin(ownerA);
-  await stage(f, initial.setupId, "prepare");
-  f.native.images = [{ handle: "updated-xcode", build: "new" }];
+  const waiting = await until(
+    f.setup,
+    initial.setupId,
+    (s) => s.stage === "prepare" && s.state === "waiting",
+  );
+  expect(waiting).toMatchObject({
+    reason: "developer-image-incompatible",
+    action: "get-xcode",
+  });
+  // Does not poll prepare every 2s while waiting for a large Xcode update.
+  expect(vi.getTimerCount()).toBe(0);
+
+  // Clicking Update Xcode opens the App Store without losing the prepare stage or reason.
+  expect(await f.setup.help(initial.setupId, "get-xcode")).toMatchObject({
+    stage: "prepare",
+    state: "waiting",
+    reason: "developer-image-incompatible",
+    action: "get-xcode",
+  });
+  expect(f.mac.helps).toEqual(["get-xcode"]);
+
+  // An unchanged macWatch tick does not re-run prepare.
+  const prepareCallsBefore = f.native.calls.filter(
+    (c) => c.method === "setup.prepareDeveloperServices",
+  ).length;
+  f.mac.changed();
+  await vi.waitFor(() =>
+    expect(f.native.calls.filter((c) => c.method === "images.refresh").length).toBeGreaterThan(2),
+  );
+  expect(f.native.calls.filter((c) => c.method === "setup.prepareDeveloperServices").length).toBe(
+    prepareCallsBefore,
+  );
+
+  // Once Xcode updates to a newer DDI build, macWatch detects it and auto-resumes into wifi.
+  f.native.images = [{ build: "27B52" }];
+  f.native.failures.clear();
+  const ready = stage(f, initial.setupId, "wifi");
+  f.mac.changed();
+  expect(await ready).toMatchObject({ stage: "wifi" });
+  expect(f.mac.listeners.size).toBe(0);
+});
+
+it("refreshes developer images on manual retry while waiting in prepare", async () => {
+  const f = await harness();
+  f.native.failures.set(
+    "setup.prepareDeveloperServices",
+    new IphoneServiceError("developer-image-incompatible"),
+  );
+  const initial = await f.setup.begin(ownerA);
+  await until(f.setup, initial.setupId, (s) => s.stage === "prepare" && s.state === "waiting");
+  f.native.images = [{ build: "27B52" }];
   f.native.failures.clear();
   expect(await f.setup.retry(initial.setupId)).toMatchObject({ stage: "wifi" });
-  expect(
-    f.native.calls.filter((c) => c.method === "setup.prepareDeveloperServices").at(-1)?.params,
-  ).toMatchObject({ imageHandle: "updated-xcode" });
 });

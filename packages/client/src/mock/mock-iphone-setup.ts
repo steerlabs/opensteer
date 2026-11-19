@@ -92,6 +92,13 @@ export const mockIphoneSetupScenes = {
   },
   restarting: { stage: "developer-mode", state: "waiting", reason: "waiting-for-phone", phone },
   preparing: { stage: "prepare", state: "working", phone },
+  "xcode-update": {
+    stage: "prepare",
+    state: "waiting",
+    reason: "developer-image-incompatible",
+    action: "get-xcode",
+    phone,
+  },
   "prepare-failed": {
     stage: "prepare",
     state: "blocked",
@@ -326,12 +333,21 @@ export function createMockIphoneSetupPort(
     },
     help: async ({ setupId, action }) => {
       const status = owned(setupId);
-      return action === "get-xcode" ? show("xcode-installing") : status;
+      return action === "get-xcode" && status.stage === "mac" ? show("xcode-installing") : status;
     },
     retry: async ({ setupId }) => {
       const status = owned(setupId);
       if (status.stage === "add" && !status.deviceId) return add({ setupId });
-      if (status.state !== "blocked") return status;
+      if (
+        status.state !== "blocked" &&
+        !(
+          status.stage === "prepare" &&
+          status.state === "waiting" &&
+          (status.reason === "developer-image-incompatible" ||
+            status.reason === "developer-image-missing")
+        )
+      )
+        return status;
       return show(
         status.stage === "add" ? "name" : status.stage === "prepare" ? "preparing" : "mac-checking",
       );

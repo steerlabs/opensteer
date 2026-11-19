@@ -304,7 +304,7 @@ const paramsByMethod = {
   "roster.subscribe": empty,
   "setup.inspect": iphoneNativePhoneRefSchema,
   "setup.pair": iphoneNativePhoneRefSchema,
-  "setup.prepareDeveloperServices": z.object({ ...phoneRef, imageHandle: id }).strict(),
+  "setup.prepareDeveloperServices": iphoneNativePhoneRefSchema,
   "binding.acquire": z
     .object({
       ...phoneRef,
@@ -482,7 +482,7 @@ const iphoneNativeBaseRequestSchema = z
       .object({
         ...requestBase,
         method: z.literal("session.open"),
-        timeoutMs: positive.max(30000),
+        timeoutMs: positive.max(120000),
         params: paramsByMethod["session.open"],
       })
       .strict(),
@@ -539,7 +539,7 @@ export const iphoneNativeRequestSchema = z.union([
   z.strictObject({
     ...requestBase,
     method: z.literal("binding.probe"),
-    timeoutMs: positive.max(30000),
+    timeoutMs: positive.max(120000),
     params: z.strictObject({ bindingToken: id }),
   }),
   z.strictObject({
@@ -629,7 +629,16 @@ export const iphoneNativeResponseSchema = z
       z.object({ bindingToken: id }).strict(),
       z
         .object({
-          images: z.array(z.object({ handle: id, build: z.string().max(160) }).strict()).max(8),
+          images: z
+            .array(
+              z
+                .object({
+                  build: z.string().max(160),
+                  version: z.string().max(160).optional(),
+                })
+                .strict(),
+            )
+            .max(8),
         })
         .strict(),
       empty,
