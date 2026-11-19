@@ -848,6 +848,21 @@ export const makeApps = (
               if (lifecycle?.versionPrepared)
                 yield* lifecycle.versionPrepared(appId, version.id, options.rebuildOf ?? null);
             }),
+          ).pipe(
+            // A commit whose outcome is unknown is decided by the record a completion reads: a
+            // version saved as pending goes on to its migration and activation.
+            Effect.catchTag("StorageError", (error) =>
+              query(() =>
+                db.findFirst("apps", {
+                  select: ["pendingDeployment"],
+                  where: (b) => b("id", "=", appId),
+                }),
+              ).pipe(
+                Effect.flatMap((row) =>
+                  row?.pendingDeployment === version.id ? Effect.void : Effect.fail(error),
+                ),
+              ),
+            ),
           );
           // Steps 2 and 3.
           return yield* completeVersion(input.owner, appId, version.id, before === null);

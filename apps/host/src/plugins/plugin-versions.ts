@@ -113,7 +113,6 @@ export const pluginVersions = (input: {
   /** What follows every activation, whoever made it, outside the plugin's hold. */
   const promoted = (app: AppId) =>
     Effect.gen(function* () {
-      settle(app);
       yield* store
         .cleared(app)
         .pipe(
@@ -124,6 +123,8 @@ export const pluginVersions = (input: {
           ),
         );
       yield* input.published(app);
+      // The plugin stops waiting once what follows its activation has finished too.
+      settle(app);
     });
   /** The plugin's change saved a version it did not activate: serve nothing until it is. */
   const awaitCompletion = (app: AppId, reason = completing) =>
@@ -247,9 +248,9 @@ export const pluginVersions = (input: {
           yield* engine.apps.deactivate({ owner, app: id, expectedVersion: active.id });
         }),
       );
-      settle(id);
       // What the Host keeps beside the active version follows: there is none now.
       yield* input.published(id);
+      settle(id);
       yield* Effect.logWarning("Plugin source does not build for the Host's framework").pipe(
         Effect.annotateLogs({ ...annotations, stage: failure.stage ?? "unknown" }),
       );
@@ -311,8 +312,7 @@ export const pluginVersions = (input: {
         // Taken before the pass, so a plugin that starts waiting during it wakes the loop again.
         const signal = Promise.withResolvers<void>();
         wake = signal;
-        for (const [id, state] of updating)
-          if (state.retryAt <= Date.now()) yield* attempt(id);
+        for (const [id, state] of updating) if (state.retryAt <= Date.now()) yield* attempt(id);
         const due = [...updating.values()].map(({ retryAt }) => retryAt);
         const next = due.length === 0 ? undefined : Math.max(0, Math.min(...due) - Date.now());
         if (next === 0) continue;
