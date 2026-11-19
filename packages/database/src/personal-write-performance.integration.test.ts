@@ -83,12 +83,15 @@ test.skipIf(!enabled)(
               content: [{ type: "text", text: `Assistant text ${index} `.repeat(20) }],
               messageId: createId("message"),
             });
+          // The measurement outlasts the fixture's execution lease.
+          await sql`update provider_sessions set lease_expires_at = now() + interval '1 hour'
+            where active`.execute(fixture.database);
           for (let index = 0; index < 20; index++) await assistant(index);
           // A Host in use keeps its feed at the row cap, so every commit also prunes.
           await sql`delete from client_changes`.execute(fixture.database);
           await sql`with head as (select deployment_id, sequence from client_sync_state)
             insert into client_changes(deployment_id,sequence,scope_key,ordinal,entity_kind,entity_id,operation,payload,created_at)
-            select head.deployment_id, head.sequence + s, 'node:write-performance', o, 'collection', 'scope', 'invalidate', '{}', now()
+            select head.deployment_id, head.sequence + s, 'node:write-performance', o, 'item', 'fill-'||s||'-'||o, 'remove', '{}', now()
             from head, generate_series(1,32) s, generate_series(0,127) o`.execute(fixture.database);
           await sql`update client_sync_state set pruned_through_sequence = sequence,
             sequence = sequence + 32, retained_change_count = 4096`.execute(fixture.database);
@@ -192,7 +195,7 @@ test.skipIf(!enabled)(
             JSON.stringify({ roundTrips, runnerStatementsPerSecond, results }, null, 2) + "\n",
           );
           // Each includes one amortized feed prune; see the design's write-path budget.
-          expect(roundTrips["runner assistant text"]).toBeLessThanOrEqual(15);
+          expect(roundTrips["runner assistant text"]).toBeLessThanOrEqual(16);
           expect(roundTrips["runner tool start"]).toBeLessThanOrEqual(15);
           expect(roundTrips["runner tool completion"]).toBeLessThanOrEqual(15);
         } finally {

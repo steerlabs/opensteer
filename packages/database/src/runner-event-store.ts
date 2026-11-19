@@ -171,25 +171,29 @@ async function publishRunnerMessage(
   if (published !== row.published)
     await tx.updateTable("messages").set({ published }).where("id", "=", row.id).execute();
   const reply = message.kind === "assistant" && contentSaysSomething(message.content);
-  // One task update takes the message's sequence, its transcript position and the last reply.
-  const thread = await tx
-    .updateTable("threads")
-    .set({
-      nextMessageSequence: sql`next_message_sequence + 1`,
-      updatedAt: new Date(),
-      ...(visible
-        ? {
-            nextTranscriptPosition: sql<string>`next_transcript_position + 1`,
-            revision: mutation.sequence,
-          }
-        : {}),
-      ...(reply
-        ? { lastReplyMessageId: message.id, lastReplyPreview: replyPreview(message.content) }
-        : {}),
-    })
-    .where("id", "=", row.threadId)
-    .returning("nextTranscriptPosition")
-    .executeTakeFirstOrThrow();
+  // One task update takes the message's sequence, its transcript position and the last reply,
+  // and publishes the task when the reply changed it.
+  const changes = {
+    nextMessageSequence: sql<string>`next_message_sequence + 1`,
+    updatedAt: new Date(),
+    ...(visible
+      ? {
+          nextTranscriptPosition: sql<string>`next_transcript_position + 1`,
+          revision: mutation.sequence,
+        }
+      : {}),
+    ...(reply
+      ? { lastReplyMessageId: message.id, lastReplyPreview: replyPreview(message.content) }
+      : {}),
+  };
+  const thread = reply
+    ? await publishThreadSummary(tx, row.threadId, changes)
+    : await tx
+        .updateTable("threads")
+        .set(changes)
+        .where("id", "=", row.threadId)
+        .returning("nextTranscriptPosition")
+        .executeTakeFirstOrThrow();
   await writeExecutionItem(
     tx,
     mutation,
@@ -209,7 +213,6 @@ async function publishRunnerMessage(
     },
     { position: visible ? thread.nextTranscriptPosition : null },
   );
-  if (reply) await publishThreadSummary(tx, row.threadId);
 }
 
 async function applyEventProjection(

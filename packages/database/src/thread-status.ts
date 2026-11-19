@@ -11,7 +11,7 @@ import {
 } from "@opensteer/core";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { taskLineMaxLength } from "@opensteer/protocol";
-import { sql, type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type Transaction, type UpdateObject } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { isOfflineSettlement } from "./personal-transaction.js";
@@ -22,14 +22,26 @@ import { publishThreadQueues } from "./personal-queue-view.js";
 
 type Tx = Transaction<DatabaseSchema>;
 
-export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<void> {
-  if (isOfflineSettlement(tx)) return;
-  await commitPersonalMutation(tx, async (tx, mutation) => {
+/** `changes` lets a caller fold its own task update into the one that publishes it. */
+export async function publishThreadSummary(
+  tx: Tx,
+  threadId: ThreadId,
+  changes: UpdateObject<DatabaseSchema, "threads"> = {},
+): Promise<{ readonly nextTranscriptPosition: string }> {
+  if (isOfflineSettlement(tx))
+    return tx
+      .updateTable("threads")
+      .set(changes)
+      .where("id", "=", threadId)
+      .returning("nextTranscriptPosition")
+      .executeTakeFirstOrThrow();
+  return commitPersonalMutation(tx, async (tx, mutation) => {
     const row = await tx
       .updateTable("threads")
-      .set({ revision: mutation.sequence })
+      .set({ ...changes, revision: mutation.sequence })
       .where("id", "=", threadId)
       .returning([
+        "nextTranscriptPosition",
         "id",
         "title",
         "revision",
@@ -91,6 +103,7 @@ export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<
         operation: "remove",
       });
     }
+    return row;
   });
 }
 
