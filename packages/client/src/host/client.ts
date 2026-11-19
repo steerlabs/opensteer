@@ -1276,6 +1276,8 @@ export interface HostClient extends TabsClient {
   messageOrigin?(): import("@opensteer/core").MessageOrigin | undefined;
   dispose(): void;
   getSnapshot(): HostSnapshot;
+  /** A reader of its own (see `SnapshotReader`), for a client whose fields are read on demand. */
+  readonly snapshotReader?: () => import("./host-snapshot-store.js").SnapshotReader;
   load(): Promise<void>;
   loadEarlierTranscript(threadId: string): Promise<void>;
   loadNewerTranscript(threadId: string): Promise<void>;
