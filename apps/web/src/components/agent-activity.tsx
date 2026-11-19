@@ -473,15 +473,19 @@ export function AgentTranscript({
   const rowKeys = useMemo(() => rows.map(({ key }) => key), [rows]);
   const revealRow = revealMessage ? transcriptRowOf(rows, revealMessage.id) : null;
   const ownerRow = activityOwner?.turnKey ?? null;
-  const keepRows = useMemo(
-    () =>
-      new Set(
-        [...(windowing?.keep ?? []), revealRow, ownerRow].filter(
-          (key): key is string => key !== null,
+  // A kept name is a row's key or an entry's id; an earlier page can rename the row an entry is in.
+  const keepRows = useMemo(() => {
+    const held = new Set(rowKeys);
+    return new Set(
+      [
+        ...(windowing?.keep ?? []).map((name) =>
+          held.has(name) ? name : transcriptRowOf(rows, name),
         ),
-      ),
-    [ownerRow, revealRow, windowing?.keep],
-  );
+        revealRow,
+        ownerRow,
+      ].filter((key): key is string => key !== null),
+    );
+  }, [ownerRow, revealRow, rowKeys, rows, windowing?.keep]);
   const rowWindow = useTranscriptWindow({
     keys: rowKeys,
     scroller: windowing?.scroller ?? null,

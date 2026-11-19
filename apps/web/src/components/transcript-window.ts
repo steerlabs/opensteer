@@ -15,7 +15,9 @@ export type TranscriptSegment =
  * Which rows to draw, as runs of rows and the gaps between them. A row is drawn when it is within
  * `overscan` of the viewport, among the pinned tail, or kept (with the row above it, so a page
  * prepended above a kept anchor has a neighbour to measure). `sizes` are measured row heights
- * including the gap after each row; an unmeasured row counts as the average measured one.
+ * including the gap after each row. An unmeasured row counts as the average measured one when
+ * first seen, and keeps that guess in `assumed` until it is measured, so later measurements of
+ * other rows never resize the gaps the reader is scrolled past.
  */
 export function transcriptWindow(input: {
   readonly keys: readonly string[];
@@ -25,8 +27,10 @@ export function transcriptWindow(input: {
   readonly height: number;
   readonly overscan: number;
   readonly keep: ReadonlySet<string>;
+  readonly assumed?: Map<string, number>;
 }): readonly TranscriptSegment[] {
   const { keys, sizes } = input;
+  const assumed = input.assumed ?? new Map<string, number>();
   if (keys.length <= transcriptWindowMinimum) return [{ kind: "rows", from: 0, to: keys.length }];
   let measured = 0;
   let total = 0;
@@ -37,7 +41,15 @@ export function transcriptWindow(input: {
     total += size;
   }
   const estimate = measured ? total / measured : estimatedRowHeight;
-  const size = (index: number) => sizes.get(keys[index]!) ?? estimate;
+  const size = (index: number) => {
+    const key = keys[index]!;
+    const measuredSize = sizes.get(key);
+    if (measuredSize !== undefined) return measuredSize;
+    const guess = assumed.get(key);
+    if (guess !== undefined) return guess;
+    assumed.set(key, estimate);
+    return estimate;
+  };
   let length = 0;
   for (let index = 0; index < keys.length; index++) length += size(index);
   const top = input.top ?? Math.max(0, length - input.height);
@@ -107,6 +119,7 @@ export function useTranscriptWindow(input: {
 }) {
   const { keys, scroller, keep } = input;
   const sizes = useRef(new Map<string, number>());
+  const assumed = useRef(new Map<string, number>());
   const [view, setView] = useState<{ top: number | null; height: number; revision: number }>({
     top: null,
     height: typeof window === "undefined" ? 800 : window.innerHeight,
@@ -127,6 +140,7 @@ export function useTranscriptWindow(input: {
             height: view.height,
             overscan: view.height,
             keep: withReaderHeld(keep),
+            assumed: assumed.current,
           })
         : [{ kind: "rows" as const, from: 0, to: keys.length }],
     // A new `view` is how a scroll or a measurement reaches the window.
@@ -159,6 +173,7 @@ export function useTranscriptWindow(input: {
         height: read.height,
         overscan: read.height,
         keep: kept(),
+        assumed: assumed.current,
       });
       if (!measuredChange && sameSegments(next, segmentsRef.current)) return;
       setView((previous) => ({
@@ -213,7 +228,7 @@ export function useTranscriptWindow(input: {
         sizes.current.set(key, size);
         changed = true;
         if (target.getBoundingClientRect().bottom <= viewportTop)
-          above += size - (previous ?? size);
+          above += size - (previous ?? assumed.current.get(key) ?? size);
       }
       // A browser without scroll anchoring would let a row measured above the reader push them.
       if (above && element && !CSS.supports("overflow-anchor", "auto")) element.scrollTop += above;
@@ -228,9 +243,10 @@ export function useTranscriptWindow(input: {
 
   // Forgets rows no longer in the conversation.
   useLayoutEffect(() => {
-    if (sizes.current.size <= keys.length * 2) return;
+    if (sizes.current.size + assumed.current.size <= keys.length * 2) return;
     const held = new Set(keys);
     for (const key of sizes.current.keys()) if (!held.has(key)) sizes.current.delete(key);
+    for (const key of assumed.current.keys()) if (!held.has(key)) assumed.current.delete(key);
   }, [keys]);
 
   const measure = useCallback(

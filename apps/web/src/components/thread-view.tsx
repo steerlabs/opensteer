@@ -794,7 +794,11 @@ function ThreadView({
       };
     if (scroller && button && document.activeElement === button)
       earlierFocus.current = { button, scroller };
-    if (anchorRow?.dataset.transcriptRow) setEarlierKeep([anchorRow.dataset.transcriptRow]);
+    setEarlierKeep(
+      [anchorRow?.dataset.transcriptRow, anchorMessage?.dataset.messageId].filter(
+        (name): name is string => name !== undefined,
+      ),
+    );
     setFollows(false);
     setLoadingEarlier(true);
     try {

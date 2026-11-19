@@ -548,6 +548,7 @@ jobs:
             echo "OPENSTEER_EXTENSION_REPORT=$RUNNER_TEMP/evidence/extension.json"
             echo "OPENSTEER_EXTENSION_SCREENSHOTS=$RUNNER_TEMP/evidence/extension-screenshots"
             echo "OPENSTEER_TRANSCRIPT_LINKS_E2E_ARTIFACT_DIR=$RUNNER_TEMP/evidence/transcript-links"
+            echo "OPENSTEER_LONG_THREAD_E2E_ARTIFACT_DIR=$RUNNER_TEMP/evidence/long-thread"
             echo "OPENSTEER_START_PAGE_COMPUTERS_E2E_ARTIFACT_DIR=$RUNNER_TEMP/evidence/start-page-computers"
           } >> "$GITHUB_ENV"
         shell: bash
@@ -571,6 +572,7 @@ jobs:
             pnpm --filter @opensteer/browser-extension build
             pnpm --filter @opensteer/browser-extension test:integration
             pnpm --filter @opensteer/web test:transcript-links
+            pnpm --filter @opensteer/web test:long-thread
             pnpm --filter @opensteer/web test:start-page-computers
           } 2>&1 | tee "$RUNNER_TEMP/evidence/browser-journeys.log"
       - name: Collect browser journey evidence

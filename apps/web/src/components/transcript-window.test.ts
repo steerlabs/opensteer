@@ -99,6 +99,30 @@ describe("transcriptWindow", () => {
   });
 });
 
+describe("transcriptWindow's guesses", () => {
+  it("keeps a row's first guess while other rows are measured", () => {
+    const rows = keys(200);
+    const assumed = new Map<string, number>();
+    const gapBelow = (sizes: Map<string, number>) =>
+      gaps(
+        transcriptWindow({
+          keys: rows,
+          sizes,
+          top: 0,
+          height: 500,
+          overscan: 500,
+          keep: new Set(),
+          assumed,
+        }),
+      )[0];
+    const before = gapBelow(measured(rows.slice(0, 10), 100));
+    // A long reply at the tail is measured: the rows between must not change size.
+    const after = gapBelow(new Map([...measured(rows.slice(0, 10), 100), ["r199", 5_000]]));
+    expect(before).toBe(186 * 100);
+    expect(after).toBe(before);
+  });
+});
+
 describe("transcriptRowOf", () => {
   const message = (id: string) => ({ id, kind: "message" }) as never;
   const rows: { key: string; group: TranscriptGroup }[] = [
