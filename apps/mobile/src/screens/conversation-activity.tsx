@@ -102,7 +102,9 @@ function useRunLoad(
     let current = true;
     setState("loading");
     hostClient.loadTranscriptAround(threadId, anchor).then(
-      () => current && setState("loaded"),
+      // A newer move of the reader's took over before this one landed: the Run's window is not
+      // what is loaded, so the sheet offers to read it again rather than claiming it loaded.
+      (landed) => current && setState(landed ? "loaded" : "failed"),
       // Gone or not the reader's is a fact about the run; anything else may pass.
       (error: unknown) =>
         current &&

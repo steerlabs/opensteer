@@ -1,5 +1,6 @@
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import {
+  UnsentEdits,
   createMessageOutboxStorage,
   disposeMessageOutbox,
   initializeMessageOutbox,
@@ -262,6 +263,8 @@ export class MobileClient {
   readonly usageNotices: UsageNoticeDismissals;
   /** Unsent message text, per Thread, kept where a killed app cannot lose it. */
   readonly drafts: ThreadDraftStore;
+  /** Unsent waiting-message edits, kept beside the drafts until the person saves, moves or discards them. */
+  readonly unsentEdits: UnsentEdits;
   readonly #messageStorage: MessageOutboxStorage;
   readonly oauth: NativeOAuthManager;
   readonly sessionExchange: HostSessionExchange;
@@ -434,6 +437,14 @@ export class MobileClient {
       remove: async (key) => {
         await options.privateFiles.removeFile(`${outboxDirectory}/${key}.json`);
       },
+    });
+    const unsentEditsPath = `${options.draftsFilePath.slice(0, options.draftsFilePath.lastIndexOf("/"))}/unsent-edits-v1.json`;
+    this.unsentEdits = new UnsentEdits({
+      read: async () => {
+        const bytes = await options.privateFiles.readFile(unsentEditsPath, 4 * 1024 * 1024);
+        return bytes === null ? null : new TextDecoder().decode(bytes);
+      },
+      write: (document) => options.privateFiles.writeFileAtomic(unsentEditsPath, document),
     });
     this.drafts = createThreadDraftStore({
       filePath: options.draftsFilePath,

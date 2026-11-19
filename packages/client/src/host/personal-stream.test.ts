@@ -780,16 +780,18 @@ describe("the reader's intended position", () => {
     const pending: {
       query: { aroundMessageId?: string; anchorItemId?: string };
       answer: () => void;
+      fail: () => void;
     }[] = [];
     const read = vi.fn(
       (query: { aroundMessageId?: string; anchorItemId?: string }) =>
-        new Promise((resolve) => {
+        new Promise((resolve, reject) => {
           const target = targets.find(
             ({ messageId, id }) => messageId === query.aroundMessageId || id === query.anchorItemId,
           );
           const items = target ? [target, item] : [item];
           pending.push({
             query,
+            fail: () => reject(new TypeError("The connection was lost.")),
             answer: () =>
               resolve({
                 ok: true,
@@ -835,6 +837,29 @@ describe("the reader's intended position", () => {
     reader.dispose();
   });
 
+  it("a jump whose read fails after the reader scrolled away reports nothing; one still current reports its failure", async () => {
+    const { f, targets, pending, reader } = positioned();
+    const jump = reader.history("around", targets[0]!.messageId);
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    reader.setAnchor(targets[2]!.id);
+    pending[0]!.fail();
+    await expect(jump, "a superseded jump's failure reached its caller").resolves.toBe(false);
+    expect(f.detail.anchor).toBe(targets[2]!.id);
+    // Return to latest, overtaken by a scroll, says it did not land, so no caller acts on it.
+    const latest = reader.history("latest");
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    reader.setAnchor(targets[1]!.id);
+    pending[1]!.answer();
+    await expect(latest).resolves.toBe(false);
+    expect(f.detail.anchor).toBe(targets[1]!.id);
+    // A failure of the move still current is the caller's to show.
+    const current = reader.history("around", targets[3]!.messageId);
+    await vi.waitFor(() => expect(pending).toHaveLength(3));
+    pending[2]!.fail();
+    await expect(current).rejects.toThrow("connection was lost");
+    reader.dispose();
+  });
+
   it("a resubscription's first cut does not erase a scroll made after it subscribed", async () => {
     const { f, targets, reader } = positioned();
     // Back from the background: a subscription that asked for no anchor.
@@ -855,36 +880,40 @@ describe("the reader's intended position", () => {
     reader.dispose();
   });
 
-  it("under any interleaving of jumps, scrolls, repairs and resubscribes, only the latest move lands", async () => {
+  it("under any interleaving of jumps, returns to latest, scrolls, failures, repairs and resubscribes, only the latest move speaks", async () => {
     let seed = 11;
     const next = (limit: number) => {
       seed = (seed * 1103515245 + 12345) % 2 ** 31;
       return seed % limit;
     };
-    for (let run = 0; run < 60; run++) {
+    for (let run = 0; run < 80; run++) {
       const { f, targets, pending, reader, settle } = positioned();
-      const jumps: { promise: Promise<boolean>; target: number; move: number }[] = [];
+      const asked: { promise: Promise<boolean>; move: number }[] = [];
       let moves = 0;
-      let last: { kind: "jump" | "scroll"; target: number } | null = null;
-      for (let step = 0; step < 12; step++) {
-        const action = next(6);
+      let last: { kind: "jump" | "latest" | "scroll"; target: number } | null = null;
+      for (let step = 0; step < 14; step++) {
+        const action = next(8);
         if (action <= 1) {
           const target = next(targets.length);
           moves++;
           last = { kind: "jump", target };
-          jumps.push({
+          asked.push({
             promise: reader.history("around", targets[target]!.messageId),
-            target,
             move: moves,
           });
         } else if (action === 2) {
+          moves++;
+          last = { kind: "latest", target: -1 };
+          // Expo's and web's Return to latest: the same call, judged by what it resolves.
+          asked.push({ promise: reader.history("latest"), move: moves });
+        } else if (action === 3) {
           const target = next(targets.length);
           moves++;
           last = { kind: "scroll", target };
           reader.setAnchor(targets[target]!.id);
-        } else if (action === 3) {
-          f.stream.receive(f.detailSnapshot());
         } else if (action === 4) {
+          f.stream.receive(f.detailSnapshot());
+        } else if (action === 5) {
           f.stream.setBackground(true);
           f.stream.setBackground(false);
           const subscribe = f.sent.at(-1) as Extract<
@@ -904,26 +933,100 @@ describe("the reader's intended position", () => {
           });
           f.stream.receive({ ...address, type: "host.synchronized", throughSequence: "1" });
         } else if (pending.length) {
-          pending.splice(next(pending.length), 1)[0]!.answer();
+          // Some reads fail: a failure, too, may speak only for the latest move.
+          const read = pending.splice(next(pending.length), 1)[0]!;
+          if (action === 6) read.answer();
+          else read.fail();
         }
         await settle();
       }
-      // Everything still asked for is answered.
       for (let guard = 0; guard < 50 && pending.length; guard++) {
         pending.shift()!.answer();
         await settle();
       }
-      const outcomes = await Promise.all(jumps.map(({ promise }) => promise));
+      const outcomes = await Promise.allSettled(asked.map(({ promise }) => promise));
       const label = `run ${run}`;
-      for (const [index, jump] of jumps.entries())
-        expect(outcomes[index], `${label}: jump ${index}`).toBe(
-          last?.kind === "jump" && jump.move === moves,
-        );
-      if (last?.kind === "jump") expect(f.detail.anchor, label).toBe(targets[last.target]!.id);
+      for (const [index, { move }] of asked.entries()) {
+        const outcome = outcomes[index]!;
+        const latest = last?.kind !== "scroll" && move === moves;
+        if (outcome.status === "rejected")
+          expect(latest, `${label}: a superseded move ${index} reported a failure`).toBe(true);
+        else if (outcome.value)
+          expect(latest, `${label}: a superseded move ${index} landed`).toBe(true);
+      }
+      const final = outcomes.at(-1);
+      const landed = final?.status === "fulfilled" && final.value === true;
       if (last?.kind === "scroll") expect(f.detail.anchor, label).toBe(targets[last.target]!.id);
+      if (last?.kind === "jump" && landed)
+        expect(f.detail.anchor, label).toBe(targets[last.target]!.id);
+      if (last?.kind === "latest" && landed) expect(f.detail.anchor, label).toBeUndefined();
       reader.dispose();
     }
   });
+});
+
+test("a conversation's Request reads under churn wait for quiet like every other read, and land once it comes", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const requestId = createId("request");
+  const reads: ((value: unknown) => void)[] = [];
+  const list = vi.fn(() => new Promise((resolve) => reads.push(resolve)));
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.requests.list": list } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  const pend = (revision: number) =>
+    f.stream.receive({
+      ...f.address,
+      type: "host.changes",
+      fromSequence: String(revision - 1),
+      throughSequence: String(revision),
+      changes: [
+        {
+          entityKind: "request",
+          entityId: requestId,
+          ordinal: 0,
+          sequence: String(revision),
+          operation: "upsert",
+          value: {
+            id: requestId,
+            revision: String(revision),
+            status: "pending",
+            kind: "person.question",
+            title: "Question",
+            threadId,
+          },
+        },
+      ],
+    } as never);
+  const answer = () => {
+    for (const resolve of reads.splice(0))
+      resolve({
+        ok: true,
+        data: {
+          threadId,
+          requests: [],
+          window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null },
+        },
+      });
+  };
+  vi.useFakeTimers();
+  try {
+    // The Request changes every 50 ms while each read is out: faster than a read answers.
+    for (let revision = 2; revision < 22; revision++) {
+      pend(revision);
+      await vi.advanceTimersByTimeAsync(50);
+      answer();
+    }
+    expect(list.mock.calls.length, "every change restarted the Request read").toBeLessThan(6);
+    // Quiet again: it reads once more for the current Request.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(reads.length).toBe(1);
+  } finally {
+    reader.dispose();
+  }
 });
 
 test("bounds explicitly loaded bodies", () => {
@@ -3413,11 +3516,14 @@ describe("task lists from the shell and its pages", () => {
         }),
       ]);
       expect(done()!.window.totalItems).toBe(2);
-      // Reopened, a task this client holds leaves Done at once, and the count with it.
+      // Reopened, a task this client holds leaves the Done rows at once. The count is the Host's
+      // last answer until the Host is asked again, once the pushes rest.
       host.commit([upsert("task", quiet.id, { ...quiet, revision: "4", doneAt: null })]);
       expect(done()!.entries.some(({ thread }) => thread.id === quiet.id)).toBe(false);
-      expect(done()!.window.totalItems).toBe(1);
-      expect(answers, "a move the client could place read Done again").toHaveLength(2);
+      expect(done()!.window.totalItems).toBe(2);
+      await vi.waitFor(() => expect(answers).toHaveLength(3), { timeout: 2_000 });
+      answers[2]!(taskPageResponse(host, [older], { nextBefore: null, totalItems: 1 }));
+      await vi.waitFor(() => expect(done()!.window.totalItems).toBe(1));
     } finally {
       client.dispose();
     }
@@ -3467,7 +3573,8 @@ describe("task lists from the shell and its pages", () => {
         58,
       );
 
-      // Done just now: newer than every held Done task, so it was not Done before. Counted at once.
+      // Done just now: the row is placed in the held list at once; the number still waits for the
+      // Host, which here already counted it when its read took its cut (HTTP ahead of the push).
       host.commit([
         upsert("task", offPage.id, {
           ...offPage,
@@ -3476,10 +3583,38 @@ describe("task lists from the shell and its pages", () => {
           doneReason: "quiet",
         }),
       ]);
-      expect(done()!.window.totalItems).toBe(59);
       expect(done()!.entries[0]!.thread.id).toBe(offPage.id);
+      expect(done()!.window.totalItems).toBe(58);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reads).toHaveLength(3);
+      reads[2]!.resolve(
+        taskPageResponse(host, held.slice(0, 1), { nextBefore: "x", totalItems: 59 }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      // The number always equals the Host's last answer: no push is added on top of it.
+      expect(done()!.window.totalItems).toBe(59);
       await vi.advanceTimersByTimeAsync(5_000);
-      expect(reads, "a move the client could place read Done again").toHaveLength(2);
+      expect(done()!.window.totalItems).toBe(59);
+      // C4: a held row reopened elsewhere, whose push arrives after a count that already left it out.
+      reads.length = 0;
+      host.commit([
+        upsert("task", held[1]!.id, {
+          ...task,
+          id: held[1]!.id,
+          status: "idle",
+          revision: "4",
+          askedAt: held[1]!.askedAt,
+          doneAt: null,
+        }),
+      ]);
+      expect(done()!.entries.some(({ thread }) => thread.id === held[1]!.id)).toBe(false);
+      expect(done()!.window.totalItems, "a push was taken off the Host's count").toBe(59);
+      await vi.advanceTimersByTimeAsync(1_000);
+      reads[0]!.resolve(
+        taskPageResponse(host, held.slice(0, 1), { nextBefore: "x", totalItems: 58 }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(done()!.window.totalItems).toBe(58);
     } finally {
       client.dispose();
     }

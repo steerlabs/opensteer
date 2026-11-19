@@ -484,7 +484,8 @@ describe("Run details", () => {
     const host = fakeHost(snapshotWith(replying.slice(answered.length)));
     let loaded = () => undefined as void;
     const around = vi.fn(
-      (_threadId: string, _messageId: string) => new Promise<void>((resolve) => (loaded = resolve)),
+      (_threadId: string, _messageId: string) =>
+        new Promise<boolean>((resolve) => (loaded = () => resolve(true))),
     );
     Object.assign(host.client, {
       loadTranscriptAround: around,
@@ -508,7 +509,7 @@ describe("Run details", () => {
   it("says a linked Run isn't available once the Host has nothing around it", async () => {
     const host = fakeHost(snapshotWith(replying.slice(answered.length)));
     Object.assign(host.client, {
-      loadTranscriptAround: async () => undefined,
+      loadTranscriptAround: async () => true,
       observeThread: () => () => undefined,
     });
     const sheet = render(

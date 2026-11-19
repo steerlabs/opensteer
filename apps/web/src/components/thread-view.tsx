@@ -85,7 +85,7 @@ import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { Icon } from "./icon.js";
 import type { ComposerQuote } from "./composer.js";
 import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
-import { heldEditScope, returnGoneWaitingEdits } from "./held-waiting-edits.js";
+import { KeptEdits } from "./kept-edits.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
 import { useVoiceOn } from "@opensteer/client/react";
 import { VoiceStart } from "./voice.js";
@@ -1042,26 +1042,15 @@ function ThreadView({
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
 
-  /* ---- Words held across a view that went away ---- */
+  /* ---- Words kept from a waiting message no longer waiting ---- */
 
-  // An edit held while this view was away, whose message is no longer waiting now the conversation
-  // is current again: its words come back to the composer as a draft instead of being lost.
+  // Every waiting message's id once the conversation is current: kept words whose message is not
+  // among them are shown with their choices (send as new, move to the message box, discard).
   const waitingIds = useMemo(
     () =>
       detailCurrent ? (queueInputs ?? inputQueue?.items.map((item) => item.message.id)) : undefined,
     [detailCurrent, inputQueue, queueInputs],
   );
-  useEffect(() => {
-    const scope = heldEditScope(hostClient);
-    const key = composerDraftKeyFor(snapshot.deploymentId, snapshot.user?.id, {
-      kind: "thread",
-      threadId: thread.id,
-    });
-    if (!waitingIds || !scope || !key) return;
-    returnGoneWaitingEdits(scope, thread.id, waitingIds, (returned) => {
-      void composerDrafts.handBack(key, returned).catch(reportActionError);
-    });
-  }, [waitingIds, hostClient, snapshot.deploymentId, snapshot.user?.id, thread.id]);
 
   /* ---- Quoting a reply ---- */
 
@@ -1640,6 +1629,7 @@ function ThreadView({
                     }
                   />
                 ) : null}
+                <KeptEdits client={hostClient} threadId={thread.id} waitingIds={waitingIds} />
                 {voiceThread ? null : (
                   <InputSurface
                     autoContext={false}
