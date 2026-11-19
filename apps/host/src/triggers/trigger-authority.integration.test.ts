@@ -1982,7 +1982,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
       .execute();
     const pending = await store.listPendingCommands();
     vi.setSystemTime(new Date(nextHour));
-    expect(await triggerStore.claimDueSchedules()).toEqual({ changed: false, occurrences: [] });
+    expect(await triggerStore.claimDueSchedules()).toEqual({
+      changed: false,
+      occurrences: [],
+      failures: [],
+    });
     const blocked = {
       status: "paused",
       nextFireAt: null,
@@ -2034,7 +2038,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
       automation: { status: "active", pauseReason: null, nextFireAt: next },
       revision: { program },
     });
-    expect(await triggerStore.claimDueSchedules()).toEqual({ changed: false, occurrences: [] });
+    expect(await triggerStore.claimDueSchedules()).toEqual({
+      changed: false,
+      occurrences: [],
+      failures: [],
+    });
     expect((await triggerStore.claimDueSchedules(new Date(next))).occurrences).toEqual([
       expect.objectContaining({ triggerId, revisionId: repaired.revision!.id }),
     ]);
