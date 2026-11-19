@@ -25,6 +25,7 @@ import type {
   PluginVersionView,
   PluginWorkflowRunView,
 } from "@opensteer/protocol";
+import { pluginStaleRunText } from "@opensteer/protocol";
 import { isHostRefusal, type HostClient } from "../host/client.js";
 import { clientScopeKey } from "../connections/connection-controller.js";
 import { ClientOperationError } from "../connections/operation-error.js";
@@ -647,6 +648,7 @@ export function pluginScheduledRunLabel(run: PluginScheduledRunView) {
     case "succeeded":
       return "Done";
     case "failed":
+      if (run.failure === "stale") return pluginStaleRunText.schedule;
       return run.failure ? `Failed: ${run.failure}` : "Failed";
     case "denied":
       return "Declined";
@@ -665,6 +667,7 @@ export function pluginWorkflowRunLabel(run: PluginWorkflowRunView) {
     case "complete":
       return "Done";
     case "errored":
+      if (run.failure === "stale") return pluginStaleRunText.workflow;
       return run.failure ? `Failed: ${run.failure}` : "Failed";
     case "terminated":
       return "Stopped";

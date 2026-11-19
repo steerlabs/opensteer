@@ -5,7 +5,14 @@ import {
 } from "@opensteer/protocol";
 import { CurrentPluginRequest } from "./engine-authority.js";
 import { projectDirectPluginTools } from "./local-tool-results.js";
-import { agentDefinitions, detailSection, detailPreview, previewOutput } from "./engine-detail.js";
+import {
+  agentDefinitions,
+  agentScheduledRun,
+  agentWorkflowRun,
+  detailSection,
+  detailPreview,
+  previewOutput,
+} from "./engine-detail.js";
 import {
   backgroundResourceChanges,
   engineOAuthAttempt,
@@ -1603,8 +1610,8 @@ export async function startEngine(
                           app,
                           run: Schema.decodeUnknownSync(WorkflowTarget.fields.run)(run.id),
                         })
-                        .pipe(Effect.map(previewOutput))
-                    : Effect.succeed(run),
+                        .pipe(Effect.map((view) => agentWorkflowRun(previewOutput(view))))
+                    : Effect.succeed(agentWorkflowRun(run)),
                 ),
                 ...(page.next ? { next: page.next } : {}),
                 ...(yield* definitions("workflows.list")),
@@ -1620,7 +1627,7 @@ export async function startEngine(
             return {
               ...(yield* definitions("schedules.definitions")),
               ...(input.cursor ? {} : { schedules: yield* engine.schedules.list({ app, owner }) }),
-              runs: page.runs,
+              runs: page.runs.map(agentScheduledRun),
               ...(page.next ? { next: page.next } : {}),
             };
           }

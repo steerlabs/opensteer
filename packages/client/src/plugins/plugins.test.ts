@@ -30,6 +30,8 @@ import {
   pluginWebhookSetupCompletion,
   pluginWebhookSetupForm,
   PluginWorkflowRuns,
+  pluginScheduledRunLabel,
+  pluginWorkflowRunLabel,
   type PluginCatalogEntryView,
   type PluginsHost,
 } from "./index.js";
@@ -490,6 +492,33 @@ describe("finishing a manual webhook setup", () => {
     expect(pluginWebhookSetupCompletion("plg_stripe", after, {}, "")).toEqual({
       problem: "This webhook isn't waiting for setup anymore.",
     });
+  });
+});
+
+describe("run labels", () => {
+  it("says what to do about a run that ended stale, and shows any other failure's reason", () => {
+    const workflow = {
+      id: "wfr_1",
+      workflow: "Import",
+      status: "errored" as const,
+      createdAt: "2026-11-01T10:00:00.000Z",
+    };
+    expect(pluginWorkflowRunLabel({ ...workflow, failure: "stale" })).toBe(
+      "Not run because the plugin changed after this was started; start it again.",
+    );
+    expect(pluginWorkflowRunLabel({ ...workflow, failure: "execution" })).toBe("Failed: execution");
+    const scheduled = {
+      id: "run_1",
+      scheduleId: "sch_1",
+      name: "Daily",
+      status: "failed" as const,
+      scheduledAt: null,
+      expiresAt: null,
+      approval: null,
+    } as unknown as Parameters<typeof pluginScheduledRunLabel>[0];
+    expect(pluginScheduledRunLabel({ ...scheduled, failure: "stale" })).toBe(
+      "Not run because the plugin changed after this was saved; approve it again when it next asks.",
+    );
   });
 });
 

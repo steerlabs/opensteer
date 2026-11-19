@@ -388,6 +388,16 @@ export const PluginScheduledRunViewSchema = z.object({
 });
 export type PluginScheduledRunView = z.infer<typeof PluginScheduledRunViewSchema>;
 
+/**
+ * What a run that ended `stale` says, for people and agents: the plugin changed after the work was
+ * saved, so none of it ran, and what to do about it.
+ */
+export const pluginStaleRunText = {
+  schedule:
+    "Not run because the plugin changed after this was saved; approve it again when it next asks.",
+  workflow: "Not run because the plugin changed after this was started; start it again.",
+} as const;
+
 export const PluginWorkflowRunViewSchema = z.object({
   id: name,
   workflow: name,
