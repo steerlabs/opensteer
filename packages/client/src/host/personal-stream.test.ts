@@ -2290,3 +2290,42 @@ test("keeps a visit that arrives before its task", () => {
   expect(state.tasks.has(later)).toBe(true);
   expect(state.visits.get(later)?.lastVisitedAt).toBe(time);
 });
+
+test("acknowledges live text about every 32 KiB so a long reply keeps flowing, and stops once unobserved", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const chunk = "x".repeat(4000);
+  const attempt = createId("runAttempt");
+  let offset = 0;
+  const live = () => {
+    f.stream.receive({
+      ...f.address,
+      type: "host.live",
+      liveBootId: "00000000-0000-4000-8000-000000000001",
+      runId,
+      attemptId: attempt,
+      bindingGeneration: 1,
+      streamId: "reply",
+      itemId: "live-reply",
+      afterSequence: "1",
+      update: { operation: "append", text: chunk, offset, totalLength: offset + chunk.length },
+    });
+    offset += chunk.length;
+  };
+  const acks = () => f.sent.filter((frame) => frame.type === "client.ack").length;
+  const before = acks();
+  for (let index = 0; index < 160; index++) live();
+  // 640 KB of text, far past the Host's 256 KiB pause, arrived and was acknowledged as it came.
+  expect(f.detail.text.get("live-reply")?.totalLength).toBe(offset);
+  expect(acks() - before).toBeGreaterThanOrEqual(18);
+  f.stream.setBackground(true);
+  const background = acks();
+  for (let index = 0; index < 20; index++) live();
+  expect(acks()).toBe(background);
+  f.stream.setBackground(false);
+  f.stream.select(undefined);
+  const released = acks();
+  for (let index = 0; index < 20; index++) live();
+  expect(acks()).toBe(released);
+});

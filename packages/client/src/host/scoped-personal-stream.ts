@@ -55,8 +55,13 @@ export interface ObservedDetail {
   controller?: AbortController | undefined;
   held?: Map<string, Live> | undefined;
   heldBytes: number;
+  /** Live bytes received since this scope last acknowledged anything. */
+  liveBytes: number;
   revision: number;
 }
+
+/** The Host pauses a scope after 256 KiB of unacknowledged live text; ack well before that. */
+const liveAckBytes = 32 * 1024;
 
 function bytes(value: unknown) {
   return utf8ByteLength(JSON.stringify(value));
@@ -104,6 +109,7 @@ export class ScopedPersonalStream {
       text: new ItemTextStore(),
       observers: 0,
       heldBytes: 0,
+      liveBytes: 0,
       revision: 0,
     };
     this.#details.set(key, detail);
@@ -367,6 +373,7 @@ export class ScopedPersonalStream {
     if (wireBytes !== undefined && wireBytes > personalHostFrameMaxBytes(frame))
       throw new Error("Personal scope frame exceeds its encoded limit.");
     if (!this.#send) return true;
+    if (frame.type === "host.live") this.#creditLive(frame, wireBytes ?? bytes(frame));
     if (frame.subscriptionId === "shell") this.#receiveShell(frame);
     else if (this.#shellReady || frame.type === "host.live") this.#receiveDetail(frame);
     else this.#hold(frame, wireBytes ?? bytes(frame));
@@ -595,6 +602,22 @@ export class ScopedPersonalStream {
     }
   }
 
+  // Live frames spend the socket's credit; any ack after them returns it.
+  #creditLive(frame: Live, size: number) {
+    const detail = this.#currentDetail(frame);
+    if (!detail || this.#background) return;
+    detail.liveBytes += size;
+    const through = detail.transcript.getSnapshot().through;
+    if (detail.liveBytes < liveAckBytes || through === null) return;
+    detail.liveBytes = 0;
+    this.#send?.({
+      type: "client.ack",
+      subscriptionId: frame.subscriptionId,
+      generation: frame.generation,
+      throughSequence: through,
+    });
+  }
+
   #resync(frame: Live) {
     this.#send?.({
       type: "client.live.resync",
@@ -607,6 +630,10 @@ export class ScopedPersonalStream {
 
   #ack(frame: Extract<ScopedHostMessage, { throughSequence: string }>) {
     if (frame.type !== "host.snapshot" && frame.type !== "host.changes") return;
+    if (frame.subscriptionId !== "shell") {
+      const detail = this.#slots.get(frame.subscriptionId);
+      if (detail) detail.liveBytes = 0;
+    }
     this.#send?.({
       type: "client.ack",
       subscriptionId: frame.subscriptionId,
@@ -681,6 +708,7 @@ export class ScopedPersonalStream {
     detail.revision++;
     detail.held = undefined;
     detail.heldBytes = 0;
+    detail.liveBytes = 0;
     detail.slot = slot;
     this.#slots.set(slot, detail);
     detail.transcript.begin(generation, true);
