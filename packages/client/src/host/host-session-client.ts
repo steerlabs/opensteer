@@ -3492,17 +3492,25 @@ export class HttpHostClient {
     const page = unwrapRpcResult(
       await this.rpc["tasks.page"]({ ...input, limit: taskPageSize }, { signal: read.signal }),
     );
+    // A page from a cut since replaced touches nothing, the shared thread state included.
+    if (!read.current()) return { entries: [], window: page.window };
     const rows = this.#stream.shell.getSnapshot().tasks;
     const asOf = BigInt(page.asOfSequence);
     const entries = page.tasks.flatMap((entry): TaskEntry[] => {
       if (this.#removedTasks.has(entry.thread.id)) return [];
       const row = rows.get(entry.thread.id);
       if (row && BigInt(row.revision) > asOf) return [this.#shellEntry(row)];
+      const thread = toThreadSummary(
+        entry.thread,
+        this.#snapshot.environments,
+        this.#snapshot.harnesses,
+      );
       return [
         {
           ...entry,
           thread: this.#reconcilePageThread(
-            toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
+            // The queued-account reason rides beside the Thread on the page, as on the shell row.
+            entry.runQueued === undefined ? thread : { ...thread, runQueued: entry.runQueued },
             page.asOfSequence,
           ),
         },

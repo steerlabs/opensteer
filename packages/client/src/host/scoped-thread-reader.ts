@@ -582,7 +582,9 @@ export class ScopedThreadReader implements ThreadViewSource {
     args: Parameters<ThreadTranscriptStore["installPage"]>,
     aroundMessageId: string | undefined,
   ) {
-    if (!this.#detail.transcript.installPage(...args)) return;
+    // The store refused it (its change journal overflowed, or the cut moved): the read is not done
+    // and runs again, rather than reporting a page that never landed.
+    if (!this.#detail.transcript.installPage(...args)) return this.#reads.changed("history");
     const state = this.#detail.transcript.getSnapshot();
     for (const item of args[0].items) {
       const current = state.items.get(item.id);
@@ -717,7 +719,9 @@ export class ScopedThreadReader implements ThreadViewSource {
           (page.next !== null && (page.next === cursor || page.entries.length === 0))
         )
           throw new Error("The Host returned an overlay page for the wrong scope or cut.");
-        if (!this.#detail.transcript.installOverlays(kind, page, state.generation, token)) return;
+        // A refused install leaves the depth unread: the key runs again rather than settling.
+        if (!this.#detail.transcript.installOverlays(kind, page, state.generation, token))
+          return this.#reads.changed(`overlay:${kind}`);
         this.#overlayLoaded.set(kind, { epoch, pages: pages + 1 });
       } finally {
         this.#detail.transcript.endRead(token);

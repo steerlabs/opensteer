@@ -704,6 +704,66 @@ test("a live reset keeps only the streams it names: every other stream's text an
   expect(f.detail.text.get("node:c"), "a held frame of a closed stream applied").toBeUndefined();
 });
 
+test("a history page the store refused (its change journal overflowed) is read again, not reported done", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const linked = { ...item, id: "linked", messageId: createId("message"), position: "0" };
+  const answers: ((value: unknown) => void)[] = [];
+  const read = vi.fn(() => new Promise((resolve) => answers.push(resolve)));
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  const page = {
+    ok: true,
+    data: {
+      kind: "page",
+      threadId,
+      nodeId: null,
+      revision: "1",
+      hasMore: false,
+      nextBefore: null,
+      nextAfter: null,
+      items: [linked, item],
+    },
+  };
+  let settled = false;
+  const jump = reader.history("around", linked.messageId).then(() => (settled = true));
+  await vi.waitFor(() => expect(answers).toHaveLength(1));
+  // More changes land while the page flies than the store keeps for it.
+  for (let frame = 0; frame < 16; frame++) {
+    const accepted = f.stream.receive({
+      ...f.address,
+      type: "host.changes",
+      fromSequence: String(1 + frame),
+      throughSequence: String(2 + frame),
+      changes: Array.from({ length: 128 }, (_, index) => ({
+        entityKind: "item",
+        entityId: `busy:${frame}:${index}`,
+        operation: "upsert",
+        sequence: String(2 + frame),
+        ordinal: index,
+        value: {
+          ...item,
+          id: `busy:${frame}:${index}`,
+          messageId: createId("message"),
+          position: String(10 + frame * 128 + index),
+        },
+      })),
+    } as never);
+    expect(accepted).toBe(true);
+  }
+  answers[0]!(page);
+  await vi.waitFor(() => expect(answers, "the refused page was never read again").toHaveLength(2));
+  expect(settled).toBe(false);
+  answers[1]!(page);
+  await jump;
+  expect(f.detail.transcript.getSnapshot().items.has(linked.id)).toBe(true);
+  reader.dispose();
+});
+
 test("bounds explicitly loaded bodies", () => {
   const bodies = new TranscriptBodies();
   const big = {
@@ -2613,6 +2673,7 @@ function taskPageResponse(
     title?: string;
     status?: "idle" | "running";
     doneReason?: "quiet";
+    runQueued?: boolean;
   }[],
   window: { nextBefore: string | null; totalItems?: number },
 ) {
@@ -2637,6 +2698,7 @@ function taskPageResponse(
         },
         lastReply: null,
         failure: null,
+        ...(row.runQueued === undefined ? {} : { runQueued: row.runQueued }),
       })),
       window: {
         nextBefore: window.nextBefore,
@@ -2797,6 +2859,8 @@ describe("task lists from the shell and its pages", () => {
           id: createId("thread"),
           askedAt: minutesBefore(10 + page * 3 + index),
           status: "running" as const,
+          // A Run waits on its account getting ready: the page says so beside the Thread.
+          runQueued: index === 0,
         })),
         { nextBefore: page < 2 ? `active-${page + 1}` : null, totalItems: 10 },
       );
@@ -2807,6 +2871,54 @@ describe("task lists from the shell and its pages", () => {
         expect(client.getSnapshot().activeTasks, "the active pages stopped early").toHaveLength(10),
       );
       expect(reads).toEqual(["active-0", "active-1", "active-2"]);
+      expect(
+        client.getSnapshot().activeTasks.filter(({ thread }) => thread.runQueued),
+        "a continued task lost its queued-account reason",
+      ).toHaveLength(3);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("a task page dropped for a newer cut leaves no trace in the task's state", async () => {
+    const settled = Array.from({ length: 25 }, (_, index) => ({
+      ...task,
+      id: createId("thread"),
+      status: "idle" as const,
+      askedAt: minutesBefore(index),
+    }));
+    const lists = { recentTaskIds: settled.map(({ id }) => id), nextBefore: "page-0" };
+    const host = scriptedHost({ tasks: settled, lists });
+    const older = createId("thread");
+    const answers: ((response: Response) => void)[] = [];
+    const client = scriptedClient(host, async (input) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+      return new Promise<Response>((resolve) => answers.push(resolve));
+    });
+    /** The page, answered as of `asOf`: the older task at work, or settled. */
+    const page = async (asOf: string, status: "running" | "idle") => {
+      const response = taskPageResponse(
+        host,
+        [{ id: older, askedAt: minutesBefore(1_000), status }],
+        { nextBefore: null, totalItems: 1 },
+      );
+      const body = (await response.json()) as { data: { asOfSequence: string } };
+      body.data.asOfSequence = asOf;
+      return Response.json(body);
+    };
+    try {
+      await client.load();
+      const loading = client.loadEarlierTasks();
+      await vi.waitFor(() => expect(answers).toHaveLength(1));
+      host.repairShell(settled, lists);
+      // An answer read against the replaced cut, far ahead of the next: it must not be recorded.
+      answers[0]!(await page("900", "running"));
+      await vi.waitFor(() => expect(answers).toHaveLength(2));
+      answers[1]!(await page(host.head(), "idle"));
+      await loading;
+      const shown = client.getSnapshot().tasks?.entries.find(({ thread }) => thread.id === older);
+      expect(shown?.thread.status, "a dropped page's state outranked the current one").toBe("idle");
     } finally {
       client.dispose();
     }
