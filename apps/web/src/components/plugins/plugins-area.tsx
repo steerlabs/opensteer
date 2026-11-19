@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from "react-router";
 import {
   installPlugin,
   pluginCatalogInstalled,
+  pluginCatalogListView,
   pluginCatalogReader,
   pluginEngineNotice,
   pluginEngineRefusal,
@@ -274,6 +275,7 @@ function PluginCatalog() {
     `catalog:${search}`,
     hostClient,
   );
+  const view = pluginCatalogListView(list, search);
   const [adding, setAdding] = useState<PluginCatalogEntryView | null>(null);
   return (
     <div className="plugins-area">
@@ -297,13 +299,31 @@ function PluginCatalog() {
         />
       </label>
       <EngineNotice engine={list.loading ? engine : null} />
-      <SettingsError message={readWords(list.error)} />
-      {list.loading ? (
+      <SettingsError
+        message={
+          view.kind === "failed"
+            ? view.text
+            : view.kind === "entries"
+              ? (view.issue?.text ?? null)
+              : null
+        }
+      />
+      {view.kind === "entries" && view.issue?.retry ? (
+        // Entries already shown stay; a recoverable failed read can still be retried.
+        <button className="btn plugins-retry" onClick={list.reload} type="button">
+          Try again
+        </button>
+      ) : null}
+      {view.kind === "loading" ? (
         <LoadingRows label="Loading the catalog" rows={4} />
-      ) : list.items.length === 0 && !list.error ? (
-        <p className="settings-catalog__empty">
-          {search ? `Nothing in the catalog matches “${search}”.` : "The catalog is empty."}
-        </p>
+      ) : view.kind === "failed" ? (
+        view.retry ? (
+          <button className="btn plugins-retry" onClick={list.reload} type="button">
+            Try again
+          </button>
+        ) : null
+      ) : view.kind === "empty" ? (
+        <p className="settings-catalog__empty">{view.text}</p>
       ) : (
         <div className="card plugins-catalog" role="list">
           {list.items.map((entry) => {
@@ -339,7 +359,7 @@ function PluginCatalog() {
           {list.loadingMore ? "Loading…" : "Show more"}
         </button>
       ) : null}
-      {list.error && list.items.length ? (
+      {view.kind === "entries" && view.issue ? (
         <button className="btn" onClick={list.reload} type="button">
           Start the list again
         </button>

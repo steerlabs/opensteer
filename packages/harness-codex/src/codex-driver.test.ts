@@ -396,6 +396,7 @@ describe("Codex app-server harness", () => {
   it.each([
     ["host_only_tool"],
     ["opensteer_task_read", "plugin_call", "computer_use"],
+    ["plugin_search", "plugin_describe", "plugin_call", "plugin_execute", "plugin_resume"],
     [
       "opensteer_task_read",
       "opensteer_task_wait",
@@ -420,13 +421,26 @@ describe("Codex app-server harness", () => {
           (threadStart?.params as { config: Record<string, unknown> } | undefined)?.config ?? {};
         const directTools = tools.filter(
           (tool) =>
-            tool === "opensteer_task_wait" ||
-            tool === "opensteer_delegation_wait" ||
-            requestToolNames.some((name) => name === tool),
+            [
+              "opensteer_task_wait",
+              "opensteer_delegation_wait",
+              "plugin_call",
+              "plugin_execute",
+              "plugin_resume",
+            ].includes(tool) || requestToolNames.some((name) => name === tool),
         );
         expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(
           tools.filter((tool) => !directTools.includes(tool)),
         );
+        // Plugin calls hold for the person and plugin_execute is a program: neither is wrapped.
+        if (tools.includes("plugin_search"))
+          expect([
+            config["mcp_servers.opensteer.enabled_tools"],
+            config["mcp_servers.opensteer-direct.enabled_tools"],
+          ]).toEqual([
+            ["plugin_search", "plugin_describe"],
+            ["plugin_call", "plugin_execute", "plugin_resume"],
+          ]);
         if (directTools.length > 0) {
           expect(config).toMatchObject({
             "mcp_servers.opensteer-direct.enabled_tools": directTools,

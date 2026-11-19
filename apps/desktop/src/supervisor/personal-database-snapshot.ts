@@ -6,7 +6,7 @@
  * migration, not a failing disk.
  *
  * Until this Deployment has once started healthy on an app that converts
- * Personal state (migration 0036), the copy is a gate and is pinned: no copy,
+ * Personal state (migration 0038), the copy is a gate and is pinned: no copy,
  * no update, and later updates do not age it out until that first healthy
  * start writes the converted marker.
  */

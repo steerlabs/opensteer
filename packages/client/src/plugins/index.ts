@@ -28,6 +28,8 @@ import type {
 } from "@opensteer/protocol";
 import { isHostRefusal, type HostClient } from "../host/client.js";
 import { clientScopeKey } from "../connections/connection-controller.js";
+import { ClientOperationError } from "../connections/operation-error.js";
+import { presentClientIssue, type ClientIssue } from "../feedback/client-issue.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "../host/host-session-client.js";
 import type { KeysetPage } from "../team/paged-list.js";
 import { pluginInputForm, type PluginInputForm } from "./input-form.js";
@@ -139,7 +141,9 @@ export function readPluginWebhookSetup(client: PluginsHost, pluginId: string, we
 export const pluginCatalogPageSize = 30;
 /**
  * The catalog read page by page for one search. The Host pages it; a blank
- * search lists everything in the catalog's own order.
+ * search lists everything in the catalog's own order. A catalog the Host
+ * can't reach fails the read with `pluginCatalogUnavailable`, so it is never
+ * shown as an empty catalog.
  */
 export function pluginCatalogReader(
   client: PluginsHost,
@@ -152,7 +156,55 @@ export function pluginCatalogReader(
       ...(text ? { search: text } : {}),
       ...(cursor ? { cursor } : {}),
     }).then(unwrapRpcResult);
+    if (page.catalog === "unavailable")
+      throw new ClientOperationError("The plugin catalog can't be reached.", "blocked", {
+        kind: "service",
+        provenance: "host",
+        code: "unavailable",
+        reason: pluginCatalogUnavailable,
+        retryable: false,
+      });
     return { items: page.items, nextCursor: page.cursor };
+  };
+}
+
+/** The reason a catalog read failed because the Host can't reach the catalog. */
+export const pluginCatalogUnavailable = "plugin-catalog-unavailable";
+
+/**
+ * What the catalog list shows, the same on every screen: loading, a failed
+ * read with nothing to show (with Try again when trying again can help), an
+ * empty result, or the entries, with a line when a later read failed and the
+ * entries shown are the ones already loaded.
+ */
+export type PluginCatalogListView =
+  | { readonly kind: "loading" }
+  | { readonly kind: "failed"; readonly text: string; readonly retry: boolean }
+  | { readonly kind: "empty"; readonly text: string }
+  | {
+      readonly kind: "entries";
+      readonly issue: { readonly text: string; readonly retry: boolean } | null;
+    };
+export function pluginCatalogListView(
+  list: {
+    readonly loading: boolean;
+    readonly items: readonly unknown[];
+    readonly error: ClientIssue | null;
+  },
+  search: string,
+): PluginCatalogListView {
+  if (list.loading) return { kind: "loading" };
+  const issue = list.error
+    ? (() => {
+        const presented = presentClientIssue({ ...list.error, resource: "the catalog" });
+        return { text: presented.title, retry: presented.action === "retry" };
+      })()
+    : null;
+  if (list.items.length) return { kind: "entries", issue };
+  if (issue) return { kind: "failed", ...issue };
+  return {
+    kind: "empty",
+    text: search ? `Nothing in the catalog matches “${search}”.` : "The catalog is empty.",
   };
 }
 

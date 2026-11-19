@@ -823,6 +823,8 @@ export class PluginOwnerApi {
         return rpcSuccess({
           items: page.items.map(catalogEntry),
           cursor: page.cursor && page.cursor.length <= 2_048 ? page.cursor : null,
+          // The engine lists an unread feed as empty; the person must not read that as no plugins.
+          catalog: page.feed.status === "listed" ? ("listed" as const) : ("unavailable" as const),
         });
       },
       "plugins.catalog.get": async (input, context) => {

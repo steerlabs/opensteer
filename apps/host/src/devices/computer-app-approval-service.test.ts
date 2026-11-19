@@ -105,6 +105,7 @@ function fixture(pending = request, compatibilityReason: string | null = null) {
     listCallableTools: vi.fn(async () => []),
     listConnections: vi.fn(async () => []),
     localMcpSecrets: { saved: vi.fn(async () => []), update: vi.fn(() => async () => null) },
+    localServerReview: vi.fn(async () => ""),
     onConnectionsChanged: changed,
     onLocalServerApproved: vi.fn(),
     store: store as unknown as IntegrationPlatformStore,

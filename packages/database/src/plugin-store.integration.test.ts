@@ -19,6 +19,7 @@ describeStore("personal plugin packages", (test) => {
       actorUserId: owner.userId,
       source: {},
       digest: "old",
+      packageFormat: "test",
       manifest: { name: "mine" },
     });
     await settings.setEnabled(owner.userId, {
@@ -28,13 +29,49 @@ describeStore("personal plugin packages", (test) => {
       expectedRevision: 0,
       idempotencyKey: "off",
     });
-    await plugins.update({ pluginId, digest: "new", manifest: { name: "mine" } });
+    await plugins.update({
+      pluginId,
+      digest: "new",
+      packageFormat: "test",
+      manifest: { name: "mine" },
+    });
     expect((await plugins.list())[0]!.versions).toHaveLength(2);
     expect(await plugins.current(owner.userId)).toEqual([]);
     await expect(
-      plugins.update({ pluginId, digest: "renamed", manifest: { name: "changed" } }),
+      plugins.update({
+        pluginId,
+        digest: "renamed",
+        packageFormat: "test",
+        manifest: { name: "changed" },
+      }),
     ).rejects.toThrow("keep its name");
     expect((await plugins.list())[0]!.versions).toHaveLength(2);
+  });
+
+  test("keeps one plugin per person and name, however many first registrations race", async ({
+    storeFixture: f,
+  }) => {
+    const owner = await f.createRunFixture("plugin-one-name");
+    const plugins = new PluginStore(f.database);
+    const install = () =>
+      plugins.install({
+        id: randomUUID(),
+        name: "office-light",
+        actorUserId: owner.userId,
+        source: {},
+        digest: "first",
+        packageFormat: "test",
+        manifest: { name: "office-light" },
+      });
+    const settled = await Promise.allSettled([install(), install(), install()]);
+    expect(settled.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    for (const result of settled.filter(({ status }) => status === "rejected"))
+      expect((result as PromiseRejectedResult).reason).toMatchObject({
+        code: "conflict",
+        message: "office-light was registered by another call at the same time.",
+      });
+    expect((await plugins.list()).filter(({ name }) => name === "office-light")).toHaveLength(1);
+    await expect(install()).rejects.toMatchObject({ code: "conflict" });
   });
 
   test("reads growing inventories with a fixed number of queries", async ({ storeFixture: f }) => {
@@ -57,6 +94,7 @@ describeStore("personal plugin packages", (test) => {
         actorUserId: owner.userId,
         source: {},
         digest: name,
+        packageFormat: "test",
         manifest: { name },
       });
     await install("first");
@@ -80,6 +118,7 @@ describeStore("personal plugin packages", (test) => {
         actorUserId,
         source: {},
         digest: name,
+        packageFormat: "test",
         manifest: { name },
       });
     await expect(install("opensteer")).rejects.toThrow("reserved");
