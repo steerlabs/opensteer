@@ -19,10 +19,14 @@ export const DispatchRefusals = Context.Reference<{ refusal?: DispatchRefusal } 
   { defaultValue: () => undefined },
 );
 
-/** Run `work`, with how it ended and the refusal of any dispatch it reached. */
+/**
+ * Run `work`, with how it ended and the refusal of any dispatch it reached. Within a request that
+ * already notices refusals the request's own record is shared, so an outer answer sees what an
+ * inner one answered.
+ */
 export const noticingRefusal = <A, E, R>(work: Effect.Effect<A, E, R>) =>
-  Effect.suspend(() => {
-    const cell: { refusal?: DispatchRefusal } = {};
+  Effect.flatMap(DispatchRefusals, (outer) => {
+    const cell: { refusal?: DispatchRefusal } = outer ?? {};
     return work.pipe(
       Effect.provideService(DispatchRefusals, cell),
       Effect.exit,

@@ -528,6 +528,7 @@ export async function startEngine(
           webhook: (input) => dispatch(input, true, nativeRuntime.webhook(input)),
           workflow: (input) =>
             dispatch(input, input.command.operation !== "workflows", nativeRuntime.workflow(input)),
+          admit,
           inspect: (input) => execution(input, nativeRuntime.inspect(input)),
           index: (input) => execution(input, nativeRuntime.index(input)),
           skills: (input) => execution(input, nativeRuntime.skills(input)),

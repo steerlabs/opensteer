@@ -412,6 +412,16 @@ export interface Runtime<Requirements = never> {
    * version's exact source, and otherwise ends stale. Without it every build is current.
    */
   readonly current?: (build: BuildId) => Effect.Effect<boolean, never, Requirements>;
+  /**
+   * The host's check that a build selected for an app may run, which every method that runs the
+   * build applies too. The SDK calls it before work it does ahead of running a build, such as
+   * reading a webhook delivery's saved state, so a refused build costs nothing. Without it every
+   * build may run.
+   */
+  readonly admit?: (input: {
+    readonly app: string;
+    readonly build: BuildId;
+  }) => Effect.Effect<void, RuntimeBuildUnavailable, Requirements>;
   /** Sources build with the `apps` package they declare; sources without one are rejected. */
   /**
    * Build the code files only. `public` lists the paths, relative to `ui/public/`, of the public

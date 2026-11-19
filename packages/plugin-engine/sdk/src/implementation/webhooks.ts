@@ -1166,20 +1166,30 @@ export const makeWebhooks = (
           yield* refused("inactive");
           return yield* new WebhookFailed({ reason: "inactive" });
         }
+        // The version the delivery runs on, admitted before anything is read for it.
+        const state = yield* subscriptionState(row);
+        if (runtime.admit !== undefined)
+          yield* runtime
+            .admit({ app: row.app, build: state.version.build })
+            .pipe(Effect.mapError(() => new WebhookFailed({ reason: "delivery" })));
         const saved = yield* decrypt(row);
         const url = new URL(row.callbackUrl);
         url.search = new URL(parsed.request.url).search;
-        const value = yield* invoke(row, {
-          operation: "webhook-handle",
-          name: row.name,
-          subscriptionId: row.id,
-          sourceAccount: row.sourceAccount,
-          config: saved.config,
-          state: saved.state,
-          secret: saved.secret,
-          callbackUrl: row.callbackUrl,
-          request: { ...parsed.request, url: url.href },
-        });
+        const value = yield* invoke(
+          row,
+          {
+            operation: "webhook-handle",
+            name: row.name,
+            subscriptionId: row.id,
+            sourceAccount: row.sourceAccount,
+            config: saved.config,
+            state: saved.state,
+            secret: saved.secret,
+            callbackUrl: row.callbackUrl,
+            request: { ...parsed.request, url: url.href },
+          },
+          state,
+        );
         const response = yield* Schema.decodeUnknownEffect(WebhookResponseData)(value).pipe(
           Effect.tapError(() => refused("invalid-response")),
           Effect.mapError(() => new WebhookFailed({ reason: "delivery" })),

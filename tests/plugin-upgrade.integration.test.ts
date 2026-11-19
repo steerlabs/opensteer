@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { sql } from "kysely";
-import { expect, test, vi } from "vitest";
+import { expect, test, vi, type TestContext } from "vitest";
 import { Schema } from "effect";
 import { UiUpdating } from "apps/ui/contracts";
 import { PluginService } from "../apps/host/src/plugins/plugin-service.js";
@@ -18,6 +18,7 @@ import {
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
 import { pluginFixtureRegistry } from "../scripts/plugin-engine/fixture.ts";
+import { rewriteUpstreamSource } from "@opensteer/plugin-engine-catalog";
 import names from "../packages/plugin-engine/upstream-names.json" with { type: "json" };
 
 // The old names come from the rules data; this file names none itself.
@@ -51,7 +52,7 @@ const source = (framework: string, dependency: string) => [
   {
     path: "index.ts",
     content: `
-import { defineApp, defineProvider, secrets, object, string, query, mutation, router, userInterval, workflow } from "apps";
+import { defineApp, defineProvider, secrets, object, string, query, mutation, router, dynamicRouter, userInterval, workflow } from "apps";
 import { always } from "apps/operations/approval";
 import { label } from "${dependency}";
 const service = defineProvider({ name: "Upgrade fixture", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
@@ -69,6 +70,10 @@ export default defineApp({ user: { accounts: { service } } }, {
     add,
     reviewed,
     count,
+    evaluated: dynamicRouter({
+      list: () => [{ name: "runtime", description: "evaluated:" + Date.now(), readOnly: true, inputSchema: { type: "object" } }],
+      resolve: () => count,
+    }),
     notes: query({ input: object({}) }, async (ctx) => ({
       notes: ctx.sql.exec("SELECT body FROM notes ORDER BY rowid").toArray().map((row) => row.body),
       applied: ctx.sql.exec("SELECT count(*) AS applied FROM ${old("reserved-table", "_migrations")}").one().applied,
@@ -226,169 +231,213 @@ async function archive(directory: string, name: string, content: string, file: s
   return readFile(join(directory, file));
 }
 
+/**
+ * The baseline Host's plugins in a cloned database, and the upgraded Host's service over them with
+ * a registry that is down until `outage.down` is false.
+ */
+async function upgraded(context: TestContext) {
+  const baseline = await baselineCheckout();
+  const clone = await cloneTestDatabase("host");
+  const database = createDatabase({ connectionString: clone.url });
+  context.onTestFinished(() => database.destroy());
+  const work = await mkdtemp(join(tmpdir(), "opensteer-plugin-upgrade-run-"));
+  context.onTestFinished(() => rm(work, { recursive: true, force: true }));
+  const dataDirectory = join(work, "plugins");
+  const baselineFramework = JSON.parse(
+    await readFile(
+      createRequire(join(baseline.directory, "apps/host/package.json")).resolve(
+        "apps/package.json",
+      ),
+      "utf8",
+    ),
+  ).version as string;
+  const label = await archive(
+    work,
+    "upgrade-label",
+    'export const label = "from the registry";',
+    "label.tgz",
+  );
+  // The baseline's registry serves this one; the driver reads it from `work`.
+  await archive(work, "upgrade-broken", 'export const label = "then";', "broken.tgz");
+  // The same package as the registry serves it after the upgrade: it no longer has the export.
+  const changed = await archive(
+    work,
+    "upgrade-broken",
+    'export const other = "now";',
+    "changed.tgz",
+  );
+  await writeFile(
+    join(work, "upgrade.json"),
+    JSON.stringify(source(baselineFramework, "upgrade-label")),
+  );
+  await writeFile(
+    join(work, "broken.json"),
+    JSON.stringify(source(baselineFramework, "upgrade-broken")),
+  );
+  await writeFile(join(baseline.directory, "plugin-upgrade-driver.ts"), driver);
+  execFileSync(
+    join(baseline.directory, "node_modules/.bin/tsx"),
+    [
+      "plugin-upgrade-driver.ts",
+      clone.url,
+      dataDirectory,
+      join(work, "registry"),
+      work,
+      join(work, "before.json"),
+    ],
+    { cwd: baseline.directory, stdio: "inherit" },
+  );
+  const before = JSON.parse(await readFile(join(work, "before.json"), "utf8"));
+  expect(before.added.result).toMatchObject({ execution: { value: { ok: true } } });
+  expect(before.detail.webhooks).toMatchObject([{ id: before.webhook, status: "active" }]);
+  const plugin = before.plugin as string;
+  const queued = async () =>
+    (
+      await sql<{
+        status: string;
+        failure: string | null;
+        deployment: string;
+      }>`select status, failure, deployment from plugin_engine.plugin_engine_workflow_runs where id = ${before.queued}`.execute(
+        database,
+      )
+    ).rows[0];
+  expect(await queued()).toMatchObject({ status: "queued", deployment: before.version });
+  const approvalState = async () =>
+    (
+      await sql<{
+        status: string;
+        failure: string | null;
+      }>`select status, failure from plugin_engine.plugin_engine_scheduled_runs where id = ${before.approval}`.execute(
+        database,
+      )
+    ).rows[0];
+  expect(await approvalState()).toMatchObject({ status: "awaiting-approval" });
+  // The person's access settings live with the Host, beside the engine's own store, with who
+  // wrote each version.
+  const personal = await seedPersonalFixture(database, work);
+  const settings = new PluginAgentStore(database);
+  await settings.setAccess(personal.userId, plugin, "read-only");
+  await recordPluginAuthor(database, personal.userId, plugin, before.version, "catalog");
+  const authorOf = async (version: string) =>
+    (await settings.versionAuthors(personal.userId, [{ pluginId: plugin, version }])).get(
+      `${plugin}\u0000${version}`,
+    );
+
+  // The upgraded Host: the same database and plugin store, and a registry that is down at first.
+  const outage = { down: true };
+  const packages: Record<string, Buffer> = { "upgrade-label": label, "upgrade-broken": changed };
+  const registry = await pluginFixtureRegistry(undefined, undefined, (request, response) => {
+    const name = (request.url ?? "").slice(1).replace(/\.tgz$/u, "");
+    const tarball = packages[name];
+    if (tarball === undefined) return false;
+    if (outage.down) {
+      response.statusCode = 503;
+      response.end("temporarily unavailable");
+    } else if (request.url?.endsWith(".tgz")) response.end(tarball);
+    else
+      response.end(
+        JSON.stringify({
+          name,
+          "dist-tags": { latest: "1.0.0" },
+          versions: {
+            "1.0.0": {
+              name,
+              version: "1.0.0",
+              dist: {
+                tarball: `${registry.origin}/${name}.tgz`,
+                integrity: "sha512-" + createHash("sha512").update(tarball).digest("base64"),
+              },
+            },
+          },
+        }),
+      );
+    return true;
+  });
+  context.onTestFinished(() => registry.close());
+  const open = async (onDiagnostic?: (phase: string) => void) => {
+    const service = new PluginService({
+      processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
+      bridge: resolve("apps/host/dist/plugin-engine-bridge.json"),
+      databaseUrl: clone.url,
+      dataDirectory,
+      owner: "owner",
+      credentialKey: new Uint8Array(32).fill(1),
+      origin: "https://fixture.invalid",
+      webhookOrigin: async () => "https://hooks.fixture.invalid",
+      npmRegistry: registry.origin,
+      catalogUrl: registry.origin + "/catalog",
+      idleMs: 0,
+      ...(onDiagnostic === undefined ? {} : { onDiagnostic }),
+    });
+    await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));
+    context.onTestFinished(() => service.close());
+    await service.start();
+    await service.health({}, caller);
+    return service;
+  };
+  /** Wait until the engine has no plugin waiting for its rebuild. */
+  const settle = (service: PluginService) =>
+    vi.waitFor(() => expect(service.rebuilding()).toBe(false), {
+      timeout: 120_000,
+      interval: 100,
+    });
+  const installed = async (service: PluginService, id: string) =>
+    (await service.installed({ plugins: [id] }, caller))[0]!;
+  const notes = (service: PluginService) =>
+    service.call({ calls: { path: "tools.upgrade.notes", input: {} } }, caller);
+  const runs = async () =>
+    Number(
+      (
+        await sql<{
+          count: string;
+        }>`select count(*) as count from plugin_engine.plugin_engine_scheduled_runs where app = ${plugin} and name = 'tick'`.execute(
+          database,
+        )
+      ).rows[0]!.count,
+    );
+
+  return {
+    before,
+    plugin,
+    database,
+    registry,
+    outage,
+    open,
+    settle,
+    installed,
+    notes,
+    runs,
+    queued,
+    approvalState,
+    authorOf,
+    settings,
+    personal,
+    baselineFramework,
+  };
+}
+
 test(
   "rebuilds plugins installed by the baseline Host for this Host's framework, serving none until then",
   async (context) => {
-    const baseline = await baselineCheckout();
-    const clone = await cloneTestDatabase("host");
-    const database = createDatabase({ connectionString: clone.url });
-    context.onTestFinished(() => database.destroy());
-    const work = await mkdtemp(join(tmpdir(), "opensteer-plugin-upgrade-run-"));
-    context.onTestFinished(() => rm(work, { recursive: true, force: true }));
-    const dataDirectory = join(work, "plugins");
-    const baselineFramework = JSON.parse(
-      await readFile(
-        createRequire(join(baseline.directory, "apps/host/package.json")).resolve(
-          "apps/package.json",
-        ),
-        "utf8",
-      ),
-    ).version as string;
-    const label = await archive(
-      work,
-      "upgrade-label",
-      'export const label = "from the registry";',
-      "label.tgz",
-    );
-    // The baseline's registry serves this one; the driver reads it from `work`.
-    await archive(work, "upgrade-broken", 'export const label = "then";', "broken.tgz");
-    // The same package as the registry serves it after the upgrade: it no longer has the export.
-    const changed = await archive(
-      work,
-      "upgrade-broken",
-      'export const other = "now";',
-      "changed.tgz",
-    );
-    await writeFile(
-      join(work, "upgrade.json"),
-      JSON.stringify(source(baselineFramework, "upgrade-label")),
-    );
-    await writeFile(
-      join(work, "broken.json"),
-      JSON.stringify(source(baselineFramework, "upgrade-broken")),
-    );
-    await writeFile(join(baseline.directory, "plugin-upgrade-driver.ts"), driver);
-    execFileSync(
-      join(baseline.directory, "node_modules/.bin/tsx"),
-      [
-        "plugin-upgrade-driver.ts",
-        clone.url,
-        dataDirectory,
-        join(work, "registry"),
-        work,
-        join(work, "before.json"),
-      ],
-      { cwd: baseline.directory, stdio: "inherit" },
-    );
-    const before = JSON.parse(await readFile(join(work, "before.json"), "utf8"));
-    expect(before.added.result).toMatchObject({ execution: { value: { ok: true } } });
-    expect(before.detail.webhooks).toMatchObject([{ id: before.webhook, status: "active" }]);
-    const plugin = before.plugin as string;
-    const queued = async () =>
-      (
-        await sql<{
-          status: string;
-          failure: string | null;
-          deployment: string;
-        }>`select status, failure, deployment from plugin_engine.plugin_engine_workflow_runs where id = ${before.queued}`.execute(
-          database,
-        )
-      ).rows[0];
-    expect(await queued()).toMatchObject({ status: "queued", deployment: before.version });
-    const approvalState = async () =>
-      (
-        await sql<{
-          status: string;
-        }>`select status from plugin_engine.plugin_engine_scheduled_runs where id = ${before.approval}`.execute(
-          database,
-        )
-      ).rows[0];
-    expect(await approvalState()).toMatchObject({ status: "awaiting-approval" });
-    // The person's access settings live with the Host, beside the engine's own store, with who
-    // wrote each version.
-    const personal = await seedPersonalFixture(database, work);
-    const settings = new PluginAgentStore(database);
-    await settings.setAccess(personal.userId, plugin, "read-only");
-    await recordPluginAuthor(database, personal.userId, plugin, before.version, "catalog");
-    const authorOf = async (version: string) =>
-      (await settings.versionAuthors(personal.userId, [{ pluginId: plugin, version }])).get(
-        `${plugin}\u0000${version}`,
-      );
-
-    // The upgraded Host: the same database and plugin store, and a registry that is down at first.
-    let outage = true;
-    const packages: Record<string, Buffer> = { "upgrade-label": label, "upgrade-broken": changed };
-    const registry = await pluginFixtureRegistry(undefined, undefined, (request, response) => {
-      const name = (request.url ?? "").slice(1).replace(/\.tgz$/u, "");
-      const tarball = packages[name];
-      if (tarball === undefined) return false;
-      if (outage) {
-        response.statusCode = 503;
-        response.end("temporarily unavailable");
-      } else if (request.url?.endsWith(".tgz")) response.end(tarball);
-      else
-        response.end(
-          JSON.stringify({
-            name,
-            "dist-tags": { latest: "1.0.0" },
-            versions: {
-              "1.0.0": {
-                name,
-                version: "1.0.0",
-                dist: {
-                  tarball: `${registry.origin}/${name}.tgz`,
-                  integrity: "sha512-" + createHash("sha512").update(tarball).digest("base64"),
-                },
-              },
-            },
-          }),
-        );
-      return true;
-    });
-    context.onTestFinished(() => registry.close());
-    const open = async (onDiagnostic?: (phase: string) => void) => {
-      const service = new PluginService({
-        processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
-        bridge: resolve("apps/host/dist/plugin-engine-bridge.json"),
-        databaseUrl: clone.url,
-        dataDirectory,
-        owner: "owner",
-        credentialKey: new Uint8Array(32).fill(1),
-        origin: "https://fixture.invalid",
-        webhookOrigin: async () => "https://hooks.fixture.invalid",
-        npmRegistry: registry.origin,
-        catalogUrl: registry.origin + "/catalog",
-        idleMs: 0,
-        ...(onDiagnostic === undefined ? {} : { onDiagnostic }),
-      });
-      await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));
-      context.onTestFinished(() => service.close());
-      await service.start();
-      await service.health({}, caller);
-      return service;
-    };
-    /** Wait until the engine has no plugin waiting for its rebuild. */
-    const settle = (service: PluginService) =>
-      vi.waitFor(() => expect(service.rebuilding()).toBe(false), {
-        timeout: 120_000,
-        interval: 100,
-      });
-    const installed = async (service: PluginService, id: string) =>
-      (await service.installed({ plugins: [id] }, caller))[0]!;
-    const notes = (service: PluginService) =>
-      service.call({ calls: { path: "tools.upgrade.notes", input: {} } }, caller);
-    const runs = async () =>
-      Number(
-        (
-          await sql<{
-            count: string;
-          }>`select count(*) as count from plugin_engine.plugin_engine_scheduled_runs where app = ${plugin} and name = 'tick'`.execute(
-            database,
-          )
-        ).rows[0]!.count,
-      );
-
+    const {
+      before,
+      plugin,
+      database,
+      registry,
+      outage,
+      open,
+      settle,
+      installed,
+      notes,
+      runs,
+      queued,
+      approvalState,
+      authorOf,
+      settings,
+      personal,
+    } = await upgraded(context);
     // The upgraded Host starts while the registry is down.
+    const upgradedAt = Date.now();
     const first = await open();
     expect(first.rebuilding()).toBe(true);
     // A plugin waiting for its rebuild keeps its version and serves nothing: each refusal is typed
@@ -402,6 +451,54 @@ test(
     );
     expect((await installed(first, plugin)).plugin.activeVersion).toBe(before.version);
     expect(JSON.stringify((await notes(first)).result)).toContain("plugin_updating");
+    // A batched call is refused call by call.
+    const batch = await first.call(
+      {
+        calls: [
+          { path: "tools.upgrade.notes", input: {} },
+          { path: "tools.upgrade.add", input: { body: "during" } },
+        ],
+      },
+      caller,
+    );
+    expect(JSON.stringify(batch.result).match(/plugin_updating/gu)).toHaveLength(2);
+    // The owner's detail evaluates no dynamic tool on the build that waits for its rebuild.
+    const tools = await first.detailSection({ plugin, section: "tools" }, caller);
+    for (const tool of tools.items) {
+      const stamp = /^evaluated:(\d+)$/u.exec(String(tool.description ?? ""))?.[1];
+      if (stamp !== undefined) expect(Number(stamp)).toBeLessThan(upgradedAt);
+    }
+    // A webhook delivery runs nothing of it, and the service is told to deliver again.
+    const delivered = await first.webhook(
+      {
+        plugin,
+        subscription: before.webhook,
+        request: {
+          url: "https://hooks.fixture.invalid/delivery",
+          method: "POST",
+          headers: {},
+          body: "",
+        },
+      },
+      caller,
+    );
+    if (delivered.stream) first.discardStream(delivered.stream);
+    expect([delivered.status, delivered.headers["retry-after"]]).toEqual([503, "60"]);
+    // Nor is an asset of its build served.
+    const asset = await first.page(
+      {
+        plugin,
+        request: {
+          url: `http://plugin-page.internal/_plugin-engine/assets/${before.version}/main.js`,
+          method: "GET",
+          headers: {},
+          body: "",
+        },
+      },
+      caller,
+    );
+    if (asset.stream) first.discardStream(asset.stream);
+    expect(asset.status).toBe(503);
     // The person answers the scheduled call meanwhile; it waits, answered, for the rebuild.
     await first.manage(
       { operation: "schedules.answer", input: { run: before.approval, action: "accept" } },
@@ -502,7 +599,7 @@ test(
     expect(phases).toContain("database");
 
     // The registry recovers: each plugin is rebuilt once.
-    outage = false;
+    outage.down = false;
     await settle(second);
     const versions = await second.versions({ plugin }, caller);
     expect(versions).toHaveLength(2);
@@ -644,6 +741,80 @@ test(
     expect(await installed(again, before.broken)).toMatchObject({
       plugin: { activeVersion: null },
       buildFailure: { message: expect.stringContaining("No matching export") },
+    });
+  },
+  15 * 60_000,
+);
+
+test(
+  "ends the work saved for a held plugin's build when its owner replaces the plugin with other source",
+  async (context) => {
+    const { before, plugin, open, installed, notes, queued, approvalState, baselineFramework } =
+      await upgraded(context);
+    const first = await open();
+    await vi.waitFor(
+      async () =>
+        expect((await installed(first, plugin)).updating?.reason).toContain("dependencies stage"),
+      { timeout: 60_000, interval: 250 },
+    );
+    // While the plugin waits for its rebuild, its owner installs changed source into it: its
+    // reviewed tool writes something else, its approval policy denies every call, and its
+    // workflow answers differently.
+    const replacement = rewriteUpstreamSource(source(baselineFramework, "upgrade-label")).files.map(
+      (file) => {
+        if (file.path === "package.json") {
+          const manifest = JSON.parse(file.content);
+          delete manifest.dependencies["upgrade-label"];
+          return { ...file, content: JSON.stringify(manifest) };
+        }
+        if (file.path !== "index.ts") return file;
+        return {
+          ...file,
+          content: file.content
+            .replace('import { label } from "upgrade-label";', 'const label = "owner replacement";')
+            .replace(
+              'ctx.sql.exec("INSERT INTO notes (body) VALUES (?)", body);\n  return body;\n});\nconst count',
+              'ctx.sql.exec("INSERT INTO notes (body) VALUES (?)", `replacement:${body}`);\n  return body;\n});\nconst count',
+            )
+            .replace("approval: always()", 'approval: () => "denied"')
+            .replace('async (ctx) => ctx.step.runQuery("count", count, {})', "async () => 949"),
+        };
+      },
+    );
+    expect(
+      await first.install({ kind: "files", plugin, files: replacement }, caller),
+    ).toMatchObject({
+      status: "installed",
+    });
+    expect((await installed(first, plugin)).updating).toBeUndefined();
+    // The call approved for the replaced build is not the replacement's to run: it ends stale.
+    await first.manage(
+      { operation: "schedules.answer", input: { run: before.approval, action: "accept" } },
+      caller,
+    );
+    await vi.waitFor(
+      async () =>
+        expect(await approvalState()).toMatchObject({ status: "failed", failure: "stale" }),
+      { timeout: 30_000, interval: 250 },
+    );
+    // So does the run queued for it, which the replacement's handler never answers.
+    await vi.waitFor(
+      async () =>
+        expect(await queued()).toMatchObject({
+          status: "errored",
+          failure: "stale",
+          deployment: before.version,
+        }),
+      { timeout: 30_000, interval: 250 },
+    );
+    expect(
+      await first.manage(
+        { operation: "workflowRuns.get", input: { app: plugin, run: before.queued } },
+        caller,
+      ),
+    ).not.toMatchObject({ output: 949 });
+    expect((await notes(first)).result).toMatchObject({
+      execution: { value: { ok: true, value: { notes: ["before"], label: "owner replacement" } } },
     });
   },
   15 * 60_000,

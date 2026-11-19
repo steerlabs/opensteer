@@ -220,6 +220,12 @@ export const toEffectRuntime = (
     ...(runtime.current === undefined
       ? {}
       : { current: (build: BuildId) => runtime.current!(build).pipe(provide) }),
+    ...(runtime.admit === undefined
+      ? {}
+      : {
+          admit: (input: { readonly app: string; readonly build: BuildId }) =>
+            runtime.admit!(input).pipe(provide),
+        }),
     build: (input) => runtime.build(input).pipe(provide),
     ...(asset === undefined
       ? {}

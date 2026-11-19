@@ -98,6 +98,8 @@ export function enginePages(
             rest.join("/"),
           );
         }
+        // Everything else serves the active version's build, or calls it: only one that may run.
+        yield* admit({ app, build: current.build });
         if ([routes.queryPath, routes.mutatePath, routes.subscribePath].includes(path)) {
           if (incoming.method !== "POST") return HttpServerResponse.empty({ status: 405 });
           yield* accounts.standing(app);
@@ -130,7 +132,6 @@ export function enginePages(
             { contentType: "text/event-stream" },
           );
         }
-        yield* admit({ app, build: current.build });
         const file = yield* appFile({
           origin: new URL(input.request.url).origin,
           asset: (path) => asset(current.build, path),
