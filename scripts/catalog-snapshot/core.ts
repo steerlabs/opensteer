@@ -109,7 +109,8 @@ export function iconProblem(extension: string, bytes: Uint8Array): string | unde
   } catch {
     return "not an SVG image (not UTF-8)";
   }
-  const prolog = /^(?:\s+|<\?xml[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[^[>]*(?:\[[\s\S]*?\])?\s*>)/iu;
+  const prolog =
+    /^(?:\s+|<\?xml[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[^[>]*(?:\[[\s\S]*?\])?\s*>)/iu;
   for (let match = prolog.exec(text); match; match = prolog.exec(text))
     text = text.slice(match[0].length);
   return /^<svg[\s/>]/u.test(text) ? undefined : "not an SVG image (no <svg> root)";
