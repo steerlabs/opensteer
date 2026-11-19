@@ -146,3 +146,45 @@ it("installs nothing after the key stops or the owner is disposed", async () => 
   expect(installed).toEqual([]);
   expect(answers.every(({ read }) => read.signal.aborted)).toBe(true);
 });
+
+it("under churn a superseded read waits for a quiet moment rather than restarting on every change, and still lands", async () => {
+  vi.useFakeTimers();
+  const reads = new FencedReads({ epoch: () => "1" });
+  let runs = 0;
+  const installed: number[] = [];
+  const job = async (read: FencedRead) => {
+    runs++;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (read.current()) installed.push(runs);
+  };
+  const done = reads.request("done", job);
+  // A change lands every 50 ms for two seconds: faster than the read can answer.
+  for (let tick = 0; tick < 40; tick++) {
+    await vi.advanceTimersByTimeAsync(50);
+    reads.changed("done");
+  }
+  expect(runs, "every change restarted the read").toBeLessThan(5);
+  expect(installed).toEqual([]);
+  // Quiet again: one more read, which lands.
+  await vi.advanceTimersByTimeAsync(1_000);
+  await done;
+  expect(installed).toHaveLength(1);
+});
+
+it("bounds the wait for quiet, so a read under endless churn still runs", async () => {
+  vi.useFakeTimers();
+  const reads = new FencedReads({ epoch: () => "1", maxBackoffMs: 1_000 });
+  let runs = 0;
+  void reads.request("done", async () => {
+    runs++;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  });
+  for (let tick = 0; tick < 100; tick++) {
+    await vi.advanceTimersByTimeAsync(50);
+    reads.changed("done");
+  }
+  // Five seconds of churn with a one-second bound: it ran again about once a second.
+  expect(runs).toBeGreaterThanOrEqual(4);
+  expect(runs).toBeLessThan(10);
+  reads.dispose();
+});
