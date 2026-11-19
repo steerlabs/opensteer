@@ -4347,23 +4347,17 @@ export class HttpHostClient {
   }
 
   /**
-   * The Host's notices are not replayed. After a gap, everything kept current only by one counts
-   * as changed: the apps directory and open apps, schedules and automations, browser usage and
-   * connected agents. Kinds with a resource revision compare it instead (`resume`); browser
-   * history, references and remote access reread on their own reconnect.
+   * The Host's notices are not replayed. After a gap, the one list kept current only by a notice
+   * and nothing else, the apps directory (`appsRevision`: `AppsList`, `useApp`), counts as changed,
+   * so each mounted reader reads once. Every other notice-fed reader already rereads on reattach on
+   * its own, and is not touched here so one reattach costs one read: schedules, automations and
+   * connected agents are `ClientRead`s, which reread on the connection's new ready revision; an open
+   * app view re-keys on its connection; browser usage and thread automations reread with the
+   * thread's new detail subscription; browser history, references and remote access on reconnect;
+   * resource kinds compare revisions.
    */
   #noticesMissed() {
-    const appVersions = Object.fromEntries(
-      Object.entries(this.#snapshot.appVersions ?? {}).map(([appId, version]) => [
-        appId,
-        version + 1,
-      ]),
-    );
-    this.#update({ ...this.#snapshot, appsRevision: this.#snapshot.appsRevision + 1, appVersions });
-    const deploymentId = this.#snapshot.deploymentId;
-    if (deploymentId) this.#triggersChanged(deploymentId);
-    this.#browserUsageChanged([...this.#browserUsageRead.keys()]);
-    for (const listener of this.#connectionsListeners) listener();
+    this.#update({ ...this.#snapshot, appsRevision: this.#snapshot.appsRevision + 1 });
   }
 
   #applyNotice(message: HostToClientMessage) {
