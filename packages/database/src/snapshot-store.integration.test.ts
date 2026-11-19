@@ -528,6 +528,46 @@ describeStore("Deployment snapshot history", (it) => {
     ).toBeLessThanOrEqual(24 * 1024);
   });
 
+  it("resumes a detail with its current thread value after its computer's capabilities changed", async ({
+    storeFixture,
+  }) => {
+    const { database, store, startRunFixture } = storeFixture;
+    const f = await startRunFixture("capability-resume");
+    const descriptor = testRunnerDescriptor({
+      environmentId: f.environmentId,
+      runnerId: f.runnerId,
+      runnerKind: "main",
+      name: "Hosting computer",
+    });
+    await store.authenticateRunnerConnection(descriptor);
+    const state = await database
+      .selectFrom("clientSyncState")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    const cursor = {
+      deploymentId: state.deploymentId,
+      epoch: state.epoch,
+      viewerId: f.userId,
+      scopeKey: `thread:${f.thread.id}` as const,
+      afterSequence: state.sequence,
+    };
+    await store.authenticateRunnerConnection({
+      ...descriptor,
+      bootId: `rbt_${crypto.randomUUID()}` as typeof descriptor.bootId,
+      capabilities: [...descriptor.capabilities, "claude-compaction-v1"],
+    });
+    // A fresh read (as after a Host restart) of the durable feed carries the hint's new value.
+    const resumed = await readPersonalDetailSnapshot(database, {
+      viewerId: f.userId,
+      scope: { kind: "thread", threadId: f.thread.id },
+      cursor,
+    });
+    if (resumed.kind !== "replay") throw new Error("Expected a replay");
+    expect(resumed.commits.flatMap(({ changes }) => changes)).toContainEqual(
+      expect.objectContaining({ entityKind: "thread", entityId: f.thread.id, operation: "upsert" }),
+    );
+  });
+
   it("builds addressed shell and detail cuts within their budgets without reading message bodies", async ({
     storeFixture,
   }) => {

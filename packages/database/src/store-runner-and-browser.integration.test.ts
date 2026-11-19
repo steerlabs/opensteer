@@ -2005,6 +2005,52 @@ describeStore("PostgreSQL store", (it) => {
         message: "Only reachable computers can join a Personal Deployment.",
       });
     });
+    it("records a changed capability advertisement as a durable machine change", async ({
+      storeFixture,
+    }) => {
+      const { enablePersonalRemoteAccess, store, database } = storeFixture;
+      await personalDeployment(storeFixture);
+      await enablePersonalRemoteAccess();
+      const ownerId = await store.createUser("Alex");
+      const runnerId = createId("runner");
+      const environmentId = createId("environment");
+      const shape = {
+        environmentId,
+        modules: reachOnlyModules,
+        name: "Reachable laptop",
+        runnerId,
+        runnerKind: "local" as const,
+      };
+      await enrollTestRunner(store, {
+        ...shape,
+        allowedModules: ["browser", "integrations", "messaging", "shell"],
+        createdBy: ownerId,
+        tokenSuffix: "capability-change",
+      });
+      const machine = async () =>
+        (
+          await database
+            .selectFrom("clientSyncState")
+            .select("resourceRevisions")
+            .executeTakeFirstOrThrow()
+        ).resourceRevisions.machine;
+      const descriptor = testRunnerDescriptor(shape);
+      await store.authenticateRunnerConnection(descriptor);
+      const settled = await machine();
+      // Reconnecting with the same advertisement is not a change.
+      await store.authenticateRunnerConnection({
+        ...descriptor,
+        bootId: `rbt_${crypto.randomUUID()}` as typeof descriptor.bootId,
+      });
+      expect(await machine()).toBe(settled);
+      // A capability the return hint reads changes with no other commit: viewers must hear of it.
+      await store.authenticateRunnerConnection({
+        ...descriptor,
+        bootId: `rbt_${crypto.randomUUID()}` as typeof descriptor.bootId,
+        capabilities: [...descriptor.capabilities, "claude-compaction-v1"],
+      });
+      expect(BigInt(await machine())).toBeGreaterThan(BigInt(settled));
+    });
     it("admits a non-Main Personal computer only while remote access is on", async ({
       storeFixture,
     }) => {
