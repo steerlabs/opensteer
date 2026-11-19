@@ -556,7 +556,8 @@ describeStore("managed memory passes", (it) => {
     // The failed pass left a deadline: nothing else wakes it.
     expect([...timers].map((timer) => timer.at - now)).toEqual([5_000]);
     now += 5_000;
-    for (const timer of [...timers]) {
+    const due = [...timers].filter((timer) => timer.at <= now);
+    for (const timer of due) {
       timers.delete(timer);
       timer.run();
     }
