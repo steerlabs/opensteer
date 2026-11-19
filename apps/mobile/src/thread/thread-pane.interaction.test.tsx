@@ -1423,6 +1423,7 @@ function fakeHost(initial: FixtureHostSnapshot) {
     setTranscriptPosition: vi.fn(
       (_threadId: string, _measure: (() => string | undefined) | null) => {},
     ),
+    revealedTranscriptMove: vi.fn((_threadId: string) => {}),
     watchPersonalResource: () => () => {},
     getThreadTranscript: (id: string) => {
       return {
@@ -2581,6 +2582,8 @@ describe("a link into Chat", () => {
 
     expect(harness.navigate).not.toHaveBeenCalled();
     expect(harness.scrollToIndex).toHaveBeenCalledWith(expect.objectContaining({ index: 1 }));
+    // Only once the linked reply is on screen has the reader's move landed.
+    expect(host.client.revealedTranscriptMove).toHaveBeenCalledWith(conversationId);
   });
 });
 

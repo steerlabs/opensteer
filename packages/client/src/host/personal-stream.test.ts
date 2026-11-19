@@ -604,7 +604,8 @@ test("scrolling tells nobody; a jump is told at once, and paging keeps the reade
   // A jump is the reader's move: the Host hears its target at once, then the row it landed on.
   await reader.history("around", linked.messageId);
   expect(anchors()).toEqual([linked.messageId, linked.id]);
-  // A repair with the jump done measures the row in view, once, and centres there.
+  // Once the view has revealed the jump, a repair measures the row in view and centres there.
+  reader.revealed();
   inView = linked.id;
   const repair = f.detailSnapshot();
   f.stream.receive({ ...repair, snapshot: { ...repair.snapshot, anchorItemId: linked.id } });
@@ -909,6 +910,33 @@ describe("the reader's intended position", () => {
     pending.shift()!.answer();
     await expect(jump).resolves.toBe(true);
     expect(f.detail.anchor).toBe(targets[3]!.id);
+    reader.dispose();
+  });
+
+  it("a jump read but not yet revealed keeps the position: a repair rereads its target, and only the reveal ends it", async () => {
+    const { f, targets, pending, reader } = positioned();
+    // The view, asked, would name the row the reader was on before the jump.
+    reader.setMeasure(() => targets[0]!.id);
+    const jump = reader.history("around", targets[3]!.messageId);
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    pending.shift()!.answer();
+    await expect(jump).resolves.toBe(true);
+    // Before the view has scrolled to it, a repair prepared around the old place replaces the page.
+    const repair = f.detailSnapshot();
+    f.stream.receive({ ...repair, snapshot: { ...repair.snapshot, anchorItemId: null } });
+    expect(f.detail.anchor, "the repair measured over the jump").toBe(targets[3]!.messageId);
+    // The jump's target is read again, and installs, so the view can still reveal it.
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    expect(pending[0]!.query.aroundMessageId).toBe(targets[3]!.messageId);
+    pending.shift()!.answer();
+    await vi.waitFor(() =>
+      expect(f.detail.transcript.getSnapshot().items.has(targets[3]!.id)).toBe(true),
+    );
+    // The view reveals it: the move has landed, and the next repair measures again.
+    reader.revealed();
+    const later = f.detailSnapshot();
+    f.stream.receive({ ...later, snapshot: { ...later.snapshot, anchorItemId: null } });
+    expect(f.detail.anchor).toBe(targets[0]!.id);
     reader.dispose();
   });
 

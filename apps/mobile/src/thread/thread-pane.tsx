@@ -745,6 +745,7 @@ function ThreadPaneForUser(
         setHistorical(false);
         follow(true);
         scrollToLatest(false);
+        hostClient.revealedTranscriptMove(threadId);
       })
       .catch(() =>
         setFailure({ key: Date.now(), resource: "the latest messages", retry: returnToLatest }),
@@ -938,7 +939,10 @@ function ThreadPaneForUser(
     if (anchor.activityKey !== null && !focused) return;
     anchorShown.current = anchorMessageId;
     reveal(anchor, anchorMessageId);
-  }, [anchor, anchorMessageId, focused, reveal]);
+    // The linked message is on screen: the reader's move has landed. Until it is (a repair
+    // replaced the rows), the move holds the position and its message is read again.
+    hostClient.revealedTranscriptMove(threadId);
+  }, [anchor, anchorMessageId, focused, hostClient, reveal, threadId]);
   useEffect(() => {
     if (requestId === null || revealed.current === requestId) return;
     // A Request still waiting is shown in the composer, and that spends the

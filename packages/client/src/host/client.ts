@@ -1208,6 +1208,12 @@ export interface HostClient extends TabsClient {
    * scrolling is never reported. Null releases it.
    */
   setTranscriptPosition(threadId: string, measure: (() => string | undefined) | null): void;
+  /**
+   * The view has revealed the target of the reader's move under way (the linked message is on
+   * screen, or the foot after Return to latest): the move has landed and gives up the position.
+   * Until then a repair keeps centring on the move's target, and its page is read again.
+   */
+  revealedTranscriptMove(threadId: string): void;
   watchPersonalResource(
     kind: import("@opensteer/protocol/resources").PersonalResourceKind,
     listener: () => void,

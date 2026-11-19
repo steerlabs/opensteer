@@ -4857,6 +4857,8 @@ export class MockHostClient implements HostClient {
   }
 
   setTranscriptPosition(_threadId: string, _measure: (() => string | undefined) | null) {}
+
+  revealedTranscriptMove(_threadId: string) {}
   async loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes") {
     const key = `${threadId}:${kind}`;
     const cursor =

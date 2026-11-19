@@ -851,6 +851,35 @@ function ThreadView({
     return () => setThreadReading(null);
   }, [atTail, historical, thread.id]);
 
+  // A move's reveal, pending until its target is on screen (a repair in between replaces the rows,
+  // and the move's page is read again). Done, it tells the client the move has landed. A newer
+  // move replaces it.
+  const [pendingReveal, setPendingReveal] = useState<{
+    readonly messageId: string | null;
+    readonly move: number;
+    /** A found message is marked, as a link's target is. */
+    readonly found: boolean;
+  } | null>(null);
+  useLayoutEffect(() => {
+    if (!pendingReveal) return;
+    if (pendingReveal.move !== moves.current) return setPendingReveal(null);
+    if (pendingReveal.messageId === null) {
+      keepTailInView();
+    } else {
+      const target = currentScroller()?.querySelector<HTMLElement>(
+        `[data-message-id="${CSS.escape(pendingReveal.messageId)}"]`,
+      );
+      if (!target) return;
+      target.scrollIntoView({ block: "center" });
+      if (pendingReveal.found) {
+        target.classList.add("transcript__found");
+        window.setTimeout(() => target.classList.remove("transcript__found"), 2400);
+      }
+    }
+    hostClient.revealedTranscriptMove(thread.id);
+    setPendingReveal(null);
+  }, [pendingReveal, conversation]);
+
   /**
    * Moves the reader to one exact message, and leaves them there. A message
    * still waiting to be taken is at the foot, not in the history; one the
@@ -863,12 +892,7 @@ function ThreadView({
       // A waiting message stands at the conversation's foot: getting there is a return to the
       // latest, a move of the reader's like any other, so an older jump cannot undo it.
       if (!(await moveToLatest(move))) return false;
-      requestAnimationFrame(() => {
-        if (move !== moves.current) return;
-        currentScroller()
-          ?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`)
-          ?.scrollIntoView({ block: "center" });
-      });
+      setPendingReveal({ messageId, move, found: false });
       return true;
     }
     setHistorical(true);
@@ -897,17 +921,8 @@ function ThreadView({
       )
     )
       return missing(false);
-    requestAnimationFrame(() => {
-      // A newer move in the frame since this one landed owns the position.
-      if (move !== moves.current) return;
-      const target = currentScroller()?.querySelector<HTMLElement>(
-        `[data-message-id="${CSS.escape(messageId)}"]`,
-      );
-      if (!target) return;
-      target.scrollIntoView({ block: "center" });
-      target.classList.add("transcript__found");
-      window.setTimeout(() => target.classList.remove("transcript__found"), 2400);
-    });
+    // The move has landed only once its message is on screen: until then it holds the position.
+    setPendingReveal({ messageId, move, found: true });
     return true;
   };
 
@@ -976,9 +991,7 @@ function ThreadView({
     setRevealMessage(null);
     setHistorical(false);
     setFollows(true);
-    requestAnimationFrame(() => {
-      if (move === moves.current) keepTailInView();
-    });
+    setPendingReveal({ messageId: null, move, found: false });
     return true;
   };
 

@@ -437,8 +437,24 @@ export class ScopedThreadReader implements ThreadViewSource {
           observed: this.#observed,
         })
         .catch(() => undefined);
+    // A move whose page was read but not yet revealed lost that page to the repair: its target is
+    // read again under the same move, and the view still reveals it.
+    const moving = this.#detail.moving;
+    if (moving?.read && !this.#reads.busy("history")) {
+      const ask = moving.target
+        ? ({ mode: "around", aroundMessageId: moving.target, intent: moving.intent } as const)
+        : ({ mode: "latest", intent: moving.intent } as const);
+      void this.#reads
+        .request("history", (read) => this.#readHistory(read, ask), { observed: this.#observed })
+        .catch(() => undefined);
+    }
     for (const [kind, depth] of this.#overlayDepth)
       if (depth > 0) void this.#requestOverlays(kind, true).catch(() => undefined);
+  }
+
+  /** The view revealed the target of the move under way: the move has landed and gives way. */
+  revealed() {
+    if (this.#detail.moving?.read) this.#detail.moving = undefined;
   }
 
   /** The view's one-shot measurement of the row in view, asked only when the position is needed. */
@@ -494,7 +510,13 @@ export class ScopedThreadReader implements ThreadViewSource {
    */
   #settled(intent: number | undefined, succeeded: boolean) {
     if (intent === undefined) return true;
-    if (this.#detail.moving?.intent === intent) this.#detail.moving = undefined;
+    const moving = this.#detail.moving;
+    if (moving?.intent === intent) {
+      // Read and installed: with a view, the move holds the position until the view reveals its
+      // target (`revealed`); without one, it has landed. A failure ends it.
+      if (succeeded && this.#landed === intent && this.#detail.measure) moving.read = true;
+      else this.#detail.moving = undefined;
+    }
     if (this.#detail.intent !== intent) return false;
     return succeeded ? this.#landed === intent : true;
   }

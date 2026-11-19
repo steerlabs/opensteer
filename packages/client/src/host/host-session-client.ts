@@ -1348,6 +1348,10 @@ export class HttpHostClient {
     }
   }
 
+  revealedTranscriptMove(threadId: string) {
+    this.#reader(threadId)?.revealed();
+  }
+
   setTranscriptPosition(threadId: string, measure: (() => string | undefined) | null) {
     // Kept for the task's reader, which may be made after the view mounts.
     if (measure) this.#positionMeasures.set(threadId, measure);

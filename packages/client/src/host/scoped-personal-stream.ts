@@ -65,8 +65,13 @@ export interface ObservedDetail {
    * only when the position is needed (a repair, a subscription) and no move is under way.
    */
   measure?: (() => string | undefined) | undefined;
-  /** A move under way owns the position until it lands or fails: its target is the anchor. */
-  moving?: { readonly intent: number; readonly target: string | undefined } | undefined;
+  /**
+   * A move under way owns the position until it has landed (the view revealed its target) or
+   * failed: its target is the anchor. `read` once its page is installed and the view is to reveal.
+   */
+  moving?:
+    | { readonly intent: number; readonly target: string | undefined; read?: boolean }
+    | undefined;
   /**
    * The reader's explicit moves, numbered (a jump, a link, Return to latest). A jump's page, a
    * repair's reread and a subscription's first cut act only for the move they began under.
