@@ -9,7 +9,11 @@ import {
 } from "@opensteer/client/host";
 import { desktopBridge } from "../desktop/desktop-bridge.js";
 import { browserClientLifecycle } from "./browser-lifecycle.js";
-import { indexedDbCheckpointStorage } from "./personal-checkpoint-storage.js";
+import {
+  checkpointDatabaseName,
+  dropOtherCheckpointFormats,
+  indexedDbCheckpointStorage,
+} from "./personal-checkpoint-storage.js";
 
 export interface BrowserHostClientOptions {
   readonly desktopMedia?: boolean;
@@ -42,11 +46,12 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
   // The format before per-scope keys lived in this tab's sessionStorage; it is dropped, not read.
   for (const key of Object.keys(window.sessionStorage))
     if (key.startsWith("opensteer.personal-stream.v")) window.sessionStorage.removeItem(key);
+  void dropOtherCheckpointFormats(personalCacheFormat);
   const streamCache =
     typeof indexedDB === "undefined"
       ? undefined
       : createPersonalStreamCache(
-          indexedDbCheckpointStorage(`opensteer-personal-stream-v${personalCacheFormat}:${origin}`),
+          indexedDbCheckpointStorage(checkpointDatabaseName(personalCacheFormat, origin)),
         );
   const client = new HttpHostClient({
     ...(options.assetRoute ? { assetRoute: options.assetRoute } : {}),

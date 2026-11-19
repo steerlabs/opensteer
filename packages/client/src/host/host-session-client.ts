@@ -250,6 +250,9 @@ type AttachmentRead = {
   callers: number;
 };
 
+/** How long an opened socket waits for the saved start before attaching without it. */
+const savedStartWaitMs = 150;
+
 export class HttpHostClient {
   readonly browserPasskeys: BrowserPasskeys;
   readonly iphoneSetup: IphoneSetupPort | undefined;
@@ -281,7 +284,6 @@ export class HttpHostClient {
   readonly #realtimeLiveness: HttpHostClientOptions["realtimeLiveness"];
   #lastRealtimeFrameAt = 0;
   #attachDeadline: Timer | undefined;
-  readonly #cacheDeploymentId: string | undefined;
   readonly #reportRealtimeFrame: HttpHostClientOptions["reportRealtimeFrame"];
   #socket: WebSocketClient | null = null;
   readonly connection: ConnectionController;
@@ -653,7 +655,6 @@ export class HttpHostClient {
     this.#origin = options.origin;
     this.#prepareSocket = options.prepareSocket;
     this.#realtimeLiveness = options.realtimeLiveness;
-    this.#cacheDeploymentId = options.cacheDeploymentId;
     this.#reportRealtimeFrame = options.reportRealtimeFrame;
     this.#resources = new PersonalResourceReads({
       read: (kind, cursor, signal) =>
@@ -664,7 +665,11 @@ export class HttpHostClient {
       // Rows stay on screen; the inventory is only no longer known to be complete.
       behind: (kind) => kind === "tab" && this.#tabs.markInventoryStale(),
     });
-    this.#stream = new ScopedPersonalStream(options.streamCache, this.#resources);
+    this.#stream = new ScopedPersonalStream(
+      options.streamCache,
+      this.#resources,
+      options.cacheDeploymentId,
+    );
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.iphoneSetup = options.iphoneSetup
       ? createIphoneSetupPort(options.iphoneSetup, (command) => this.dispatch(command))
@@ -3802,7 +3807,9 @@ export class HttpHostClient {
     await this.#prepareSocket?.();
     attempt.signal.throwIfAborted();
     // The saved state is read while the socket opens; the attach reply decides whether it is ours.
-    const restored = this.#stream.restore(this.#cacheDeploymentId).catch(() => undefined);
+    // Storage never holds the attach: past a short wait the socket attaches without a cursor, and
+    // a read that lands later is dropped.
+    const restored = this.#stream.restore().catch(() => undefined);
     let socket: WebSocketClient;
     try {
       socket = this.#webSocketFactory(this.#webSocketUrl("/v1/realtime"));
@@ -3824,7 +3831,13 @@ export class HttpHostClient {
       liveness ? Math.min(15_000, liveness.idleMs + liveness.deadlineMs) : 15_000,
     );
     socket.addEventListener("open", () => {
-      void restored.then(() => {
+      let waited: ReturnType<typeof setTimeout> | undefined;
+      const ready = new Promise<void>((resolve) => {
+        waited = setTimeout(resolve, savedStartWaitMs);
+        void restored.then(resolve);
+      });
+      void ready.then(() => {
+        clearTimeout(waited);
         if (this.#socket !== socket) return;
         try {
           this.#stream.attach((message) => socket.send(JSON.stringify(message)));

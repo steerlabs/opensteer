@@ -67,6 +67,11 @@ export interface ObservedDetail {
   subscriptions: number;
   /** The saved checkpoint for this scope was read, or is being read (`"reading"`). */
   saved?: "reading" | "read";
+  /**
+   * A saved cut whose task the current shell did not list: it only supplies the resume cursor, and
+   * is installed once the Host's first reply on `generation` confirms the scope.
+   */
+  unconfirmed?: { readonly saved: DetailCheckpoint; generation: number };
 }
 
 /** The session's resource reads: what it watches, and the revisions the Host says changed. */
@@ -111,8 +116,6 @@ export class ScopedPersonalStream {
   readonly #dirty = new Map<string, ObservedDetail | undefined>();
   #flushTimer: ReturnType<typeof setTimeout> | undefined;
   #candidate: ShellCandidate | undefined;
-  /** Details subscribed at attach with a saved cursor, installed once the attach reply confirms it. */
-  readonly #candidateDetails = new Map<ObservedDetail, DetailCheckpoint & { generation: number }>();
   #identity: ScopedPersonalIdentity | undefined;
   #sessionId: AuthSessionId | undefined;
   #generation = 0;
@@ -130,9 +133,19 @@ export class ScopedPersonalStream {
   #selected: string | undefined;
 
   readonly cache: PersonalStreamCache | undefined;
-  constructor(cache?: PersonalStreamCache, resources?: PersonalResourcePort) {
+  /** The Deployment a saved start is read for, also cleared when no viewer is known yet. */
+  readonly #cacheDeploymentId: string | undefined;
+  /** The cache fence this stream's identity was confirmed under; its writes carry it. */
+  #fence: Promise<number> | undefined;
+
+  constructor(
+    cache?: PersonalStreamCache,
+    resources?: PersonalResourcePort,
+    cacheDeploymentId?: string,
+  ) {
     this.cache = cache;
     this.#resources = resources;
+    this.#cacheDeploymentId = cacheDeploymentId;
   }
 
   peekDetail(scope: DetailScope) {
@@ -200,10 +213,10 @@ export class ScopedPersonalStream {
    * from them is shown until the socket's attach reply confirms the same viewer, Deployment, epoch
    * and session; until then they only supply the resume cursors.
    */
-  async restore(deploymentId?: string) {
+  async restore() {
     if (!this.cache || this.#send || this.#identity) return;
     const authority = this.#authority;
-    const shell = await this.cache.latestShell(deploymentId).catch(() => null);
+    const shell = await this.cache.latestShell(this.#cacheDeploymentId).catch(() => null);
     const candidate = shell && validShellCheckpoint(shell);
     if (!candidate || this.#authority !== authority || this.#send || this.#identity) return;
     const details = new Map<string, DetailCheckpoint>();
@@ -247,9 +260,9 @@ export class ScopedPersonalStream {
       this.#selected && !this.#background ? this.#details.get(this.#selected) : undefined;
     const subscription = selected && !this.#mustLoad(selected) && this.#subscribe(selected, true);
     const saved = subscription && candidate?.details.get(scopeKey(subscription.scope));
-    this.#candidateDetails.clear();
+    // The selected task's saved cut waits for the Host's reply on its own subscription.
     if (selected && subscription && saved)
-      this.#candidateDetails.set(selected, { ...saved, generation: subscription.generation });
+      selected.unconfirmed = { saved, generation: subscription.generation };
     const interests = this.#interests();
     send({
       type: "client.attach",
@@ -317,11 +330,32 @@ export class ScopedPersonalStream {
     return scopes;
   }
 
+  /**
+   * Clears a viewer's saved state, durably against any other writer. With no viewer known yet (a
+   * refusal before the saved start was read), the whole Deployment's, or everything this storage
+   * holds when the Deployment is not known either. The cache orders it before any later fence.
+   */
   #purge(identity: ScopedPersonalIdentity | undefined) {
-    if (!identity || !this.cache) return;
-    this.#enqueue(JSON.stringify([identity.deploymentId, identity.viewerId]), () =>
-      this.cache!.removeViewer(identity),
-    );
+    if (!this.cache) return;
+    this.#fence = undefined;
+    const cleared = identity
+      ? this.cache.removeViewer(identity)
+      : this.#cacheDeploymentId !== undefined
+        ? this.cache.removeDeployment(this.#cacheDeploymentId)
+        : this.cache.clear();
+    void cleared.catch(() => undefined);
+  }
+
+  /** This viewer is the socket's: its writes from now on carry the cache's current fence. */
+  #confirm(identity: ScopedPersonalIdentity) {
+    const changed =
+      !this.#identity ||
+      this.#identity.deploymentId !== identity.deploymentId ||
+      this.#identity.viewerId !== identity.viewerId ||
+      this.#identity.epoch !== identity.epoch;
+    this.#identity = identity;
+    if (this.cache && (changed || !this.#fence))
+      this.#fence = this.cache.fence(identity).catch(() => -1);
   }
 
   setBackground(background: boolean) {
@@ -336,9 +370,9 @@ export class ScopedPersonalStream {
     this.#authority++;
     const identity = this.#identity ?? this.#candidate?.identity;
     this.#identity = undefined;
+    this.#fence = undefined;
     this.#sessionId = undefined;
     this.#candidate = undefined;
-    this.#candidateDetails.clear();
     this.#dirty.clear();
     if (this.#flushTimer) clearTimeout(this.#flushTimer);
     this.#flushTimer = undefined;
@@ -347,6 +381,7 @@ export class ScopedPersonalStream {
       detail.transcript.begin(++this.#generation, false);
       detail.text.clear();
       delete detail.saved;
+      delete detail.unconfirmed;
     }
     if (removeCheckpoints) this.#purge(identity);
     this.#evict();
@@ -473,7 +508,7 @@ export class ScopedPersonalStream {
         this.#discardViewerCheckpoints();
         for (const detail of this.#slots.values()) this.#subscribe(detail, false, true);
       }
-      this.#identity = { deploymentId, viewerId, epoch };
+      this.#confirm({ deploymentId, viewerId, epoch });
       this.#sessionId = sessionId;
     }
     // Readiness is set before the shell publishes its first synchronized cut on this socket.
@@ -487,6 +522,15 @@ export class ScopedPersonalStream {
       this.repairShell();
       return;
     }
+    const gone =
+      frame.type === "host.changes"
+        ? frame.changes.flatMap((change) =>
+            change.entityKind === "task" && change.operation === "remove" ? [change.entityId] : [],
+          )
+        : frame.type === "host.snapshot"
+          ? [...previous.tasks.keys()].filter((id) => !this.shell.getSnapshot().tasks.has(id))
+          : [];
+    for (const threadId of gone) this.#forgetTask(threadId);
     this.#ack(frame);
     this.#checkpoint(shellScope);
     if (firstCut) {
@@ -508,8 +552,6 @@ export class ScopedPersonalStream {
   ) {
     const candidate = this.#candidate!;
     this.#candidate = undefined;
-    const pending = [...this.#candidateDetails];
-    this.#candidateDetails.clear();
     if (frame.type === "host.snapshot") {
       if (!("tasks" in frame.snapshot)) return;
       const { deploymentId, viewerId, epoch, session } = frame.snapshot;
@@ -521,11 +563,12 @@ export class ScopedPersonalStream {
       ) {
         // Another viewer, session or history: the saved state was never shown and is removed.
         this.#purge(candidate.identity);
+        for (const detail of this.#details.values()) delete detail.unconfirmed;
         return;
       }
     }
     // A reply that is not a snapshot resumed from the saved cursor under the saved session.
-    this.#identity = candidate.identity;
+    this.#confirm(candidate.identity);
     this.#sessionId = candidate.sessionId;
     if (frame.type !== "host.snapshot") {
       this.shell.apply({
@@ -537,11 +580,6 @@ export class ScopedPersonalStream {
         snapshot: candidate.shell.state,
       });
     }
-    for (const [detail, saved] of pending)
-      if (detail.slot && detail.transcript.getSnapshot().generation === saved.generation) {
-        this.#installDetail(detail, saved, saved.generation);
-        detail.saved = "read";
-      }
   }
 
   #discardViewerCheckpoints() {
@@ -554,7 +592,31 @@ export class ScopedPersonalStream {
       detail.transcript.begin(++this.#generation, false);
       detail.text.clear();
       delete detail.saved;
+      delete detail.unconfirmed;
     }
+  }
+
+  /** Whether the socket's current synchronized shell lists this task. */
+  #listsTask(threadId: string) {
+    const shell = this.shell.getSnapshot();
+    return this.#shellReady && shell.synchronized && shell.tasks.has(threadId);
+  }
+
+  /** A task the shell no longer holds: its saved and retained cuts go, here and on disk. */
+  #forgetTask(threadId: string) {
+    for (const [key, detail] of this.#details) {
+      if (detail.scope.threadId !== threadId) continue;
+      delete detail.unconfirmed;
+      if (detail.slot) continue;
+      this.#dirty.delete(key);
+      if (detail.observers > 0 || key === this.#selected) {
+        detail.transcript.begin(++this.#generation, false);
+        delete detail.saved;
+      } else this.#details.delete(key);
+    }
+    const identity = this.#identity;
+    if (identity && this.cache)
+      this.#enqueue(`thread-cache:${threadId}`, () => this.cache!.removeThread(identity, threadId));
   }
 
   #currentDetail(frame: Frame): ObservedDetail | undefined {
@@ -578,6 +640,18 @@ export class ScopedPersonalStream {
     if (frame.type === "host.live") {
       this.#live(detail, frame);
       return;
+    }
+    // The Host's first reply confirms a saved cut it resumed from; a snapshot or removal replaces it.
+    const unconfirmed = detail.unconfirmed;
+    if (unconfirmed) {
+      delete detail.unconfirmed;
+      if (
+        unconfirmed.generation === frame.generation &&
+        (frame.type === "host.changes" || frame.type === "host.synchronized")
+      ) {
+        this.#installDetail(detail, unconfirmed.saved, frame.generation);
+        detail.saved = "read";
+      }
     }
     // A cut that says the anchor is gone ends it; one centred elsewhere, sent before the Host
     // heard the reader's newest anchor, is answered by reading around that anchor.
@@ -778,9 +852,12 @@ export class ScopedPersonalStream {
         detail.saved = "read";
         const saved = held && validDetailCheckpoint(held, detail.scope, identity);
         if (saved && !detail.slot && !detail.transcript.getSnapshot().snapshot) {
-          const generation = ++this.#generation;
-          detail.transcript.begin(generation, false);
-          this.#installDetail(detail, saved, generation);
+          // Painted now only for a task the current shell lists; otherwise the Host confirms it.
+          if (this.#listsTask(detail.scope.threadId)) {
+            const generation = ++this.#generation;
+            detail.transcript.begin(generation, false);
+            this.#installDetail(detail, saved, generation);
+          } else detail.unconfirmed = { saved, generation: 0 };
         }
         if (this.#details.get(scopeKey(detail.scope)) === detail) this.#reconcile();
       });
@@ -831,10 +908,12 @@ export class ScopedPersonalStream {
     this.#slots.set(slot, detail);
     detail.transcript.begin(generation, true);
     detail.text.generation(generation);
+    if (repair) delete detail.unconfirmed;
+    if (detail.unconfirmed) detail.unconfirmed.generation = generation;
     const cursor =
       !repair && detail.transcript.canCheckpoint()
         ? this.#cursor(detail.scope, detail.transcript.getSnapshot().through)
-        : undefined;
+        : detail.unconfirmed?.saved.cursor;
     const subscription = {
       subscriptionId: slot,
       scope: detail.scope,
@@ -913,7 +992,9 @@ export class ScopedPersonalStream {
       const fence = () => (detail ? detail.subscriptions : this.shell.getSnapshot().generation);
       const taken = fence();
       const current = () => authority === this.#authority && fence() === taken;
-      this.#enqueue(key, () => this.cache!.commit(checkpoint, current));
+      const written = this.#fence;
+      if (!written) continue;
+      this.#enqueue(key, async () => this.cache!.commit(checkpoint, current, await written));
     }
   }
 

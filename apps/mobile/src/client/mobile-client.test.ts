@@ -95,7 +95,12 @@ function testPort(options: {
   const verified: string[] = [];
   /** Makes the most recent attachment answer the way a refused Host does. */
   const refusals: (() => void)[] = [];
+  /** Every Deployment whose saved stream state was cleared. */
+  const streamCleared: string[] = [];
   const factory: MobileHostPortFactory = ({ oauth, sessions }): MobileHostPort => ({
+    clearPersonalStreamCache: async (deploymentId) => {
+      streamCleared.push(deploymentId);
+    },
     credentials:
       options.realCredentials === true
         ? createDeploymentCredentials({ now: () => new Date(), oauth, sessions })
@@ -205,6 +210,7 @@ function testPort(options: {
     factory,
     refusals,
     scopes,
+    streamCleared,
     verified,
   };
 }
@@ -1438,6 +1444,9 @@ describe("MobileClient Account directory state", () => {
     await client.clearAccountSavedViews();
     // Push unregistration still needs the Account credential; keys leave first.
     expect(invalidated).toContain(serverId);
+    // The Account's Deployments lose their saved private stream state with it.
+    expect(port.streamCleared).toContain(serverId);
+    expect(port.streamCleared).not.toContain(otherId);
     expect(client.getSnapshot().selection.hostClient).toBeNull();
     await client.signOutAccount();
     await settle();

@@ -66,27 +66,19 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Every loaded row stays in the document for Find, Tab, selection and assistive reading; the
+     browser skips laying out and painting the ones off screen, sized as last drawn. */
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 160px;
+}
+
+/* A row holding an inline dialog lets it escape the containment that would trap a fixed layer. */
+.transcript__row:has(.dialog-layer) {
+  content-visibility: visible;
 }
 
 .transcript__row:empty {
   display: none;
-}
-
-/* A long transcript draws rows near the viewport in units, each its time and its row, and stands
-   measured gaps in for the rest. A unit lays out its children as the transcript would. */
-.transcript__unit {
-  display: flex;
-  flex-direction: column;
-  gap: inherit;
-  min-width: 0;
-}
-
-.transcript__unit:not(:has(> :not(:empty))) {
-  display: none;
-}
-
-.transcript__gap {
-  flex: none;
 }
 
 .transcript__load-earlier {

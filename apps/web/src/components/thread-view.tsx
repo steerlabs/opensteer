@@ -188,7 +188,6 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
 
 const threadResourceKinds = ["environment", "harness", "harness-catalog", "settings"] as const;
 const noRuns: readonly import("@opensteer/client/host").RunQueueEntry[] = [];
-const noRows: readonly string[] = [];
 
 interface ThreadViewProps {
   requests: readonly Request[];
@@ -263,11 +262,6 @@ function ThreadView({
   const phoneStageRef = useRef(phoneStage);
   phoneStageRef.current = phoneStage;
   const currentScroller = () => (phoneStageRef.current ? bodyRef.current : scrollRef.current);
-  // The transcript's window reads the scroller on screen; a new stage is a new scroller.
-  const transcriptScroller = useCallback(
-    () => (phoneStage ? bodyRef.current : scrollRef.current),
-    [phoneStage],
-  );
   const composerInputRef = useRef<HTMLElement | null>(null);
   // Whether new content keeps the reader at the foot, and where the scroller stood when last read.
   const tailRef = useRef<TailReading>({ follows: true, offset: 0 });
@@ -287,15 +281,8 @@ function ThreadView({
     readonly top: number;
     readonly rows: ReadonlySet<string>;
   } | null>(null);
-  // The row an earlier page is anchored to stays drawn until the page has landed under it.
-  const [earlierKeep, setEarlierKeep] = useState<readonly string[]>(noRows);
-  // A reading position being restored: its row stays drawn and is put back as rows measure.
+  // A reading position being restored: its row is put back as the rows around it lay out.
   const restoring = useRef<ReadingAnchor | null>(null);
-  const [restoreKeep, setRestoreKeep] = useState<readonly string[]>(noRows);
-  const transcriptWindowing = useMemo(
-    () => ({ scroller: transcriptScroller, keep: [...earlierKeep, ...restoreKeep] }),
-    [earlierKeep, restoreKeep, transcriptScroller],
-  );
   const earlierFocus = useRef<{ button: HTMLElement; scroller: HTMLElement } | null>(null);
   const earlierMotion = useRef<Animation | null>(null);
   useEffect(() => () => earlierMotion.current?.cancel(), []);
@@ -525,7 +512,6 @@ function ThreadView({
       scroller.scrollTop = saved.scrollTop;
       // The row the reader stood on, not the pixel: rows above it may measure differently now.
       restoring.current = saved.anchor;
-      if (saved.anchor) setRestoreKeep([saved.anchor.key]);
       restoreReading();
     }
     return () => {
@@ -548,7 +534,7 @@ function ThreadView({
     };
   }, [composerKey]);
 
-  /** Puts a restoring reader's anchor row back where it stood, once it is drawn. */
+  /** Puts a restoring reader's anchor row back where it stood. */
   const restoreReading = () => {
     const anchor = restoring.current;
     const scroller = currentScroller();
@@ -564,16 +550,14 @@ function ThreadView({
     );
     if (delta) scroller.scrollTop += delta;
   };
-  useLayoutEffect(restoreReading, [conversation, restoreKeep]);
-  // The reader moving on ends the restore; until then it is re-applied as rows are measured.
+  useLayoutEffect(restoreReading, [conversation]);
+  // The reader moving on ends the restore; until then it is re-applied as rows lay out.
   useEffect(() => {
     const scrollers = [scrollRef.current, bodyRef.current].filter(
       (element): element is HTMLDivElement => element !== null,
     );
     const stop = () => {
-      if (!restoring.current) return;
       restoring.current = null;
-      setRestoreKeep(noRows);
     };
     const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
     for (const scroller of scrollers)
@@ -666,7 +650,6 @@ function ThreadView({
 
   const abandonEarlier = () => {
     earlierAnchor.current = null;
-    setEarlierKeep(noRows);
     earlierMotion.current?.cancel();
   };
 
@@ -696,7 +679,6 @@ function ThreadView({
     if (element) scroller.scrollTop += element.getBoundingClientRect().top - top;
     if (loadingEarlier) return;
     earlierAnchor.current = null;
-    setEarlierKeep(noRows);
     if (!element) return;
     const rows = [...scroller.querySelectorAll<HTMLElement>("[data-transcript-row]:not(:empty)")];
     const newestEarlier = rows.findLast(
@@ -788,11 +770,6 @@ function ThreadView({
       };
     if (scroller && button && document.activeElement === button)
       earlierFocus.current = { button, scroller };
-    setEarlierKeep(
-      [anchorRow?.dataset.transcriptRow, anchorMessage?.dataset.messageId].filter(
-        (name): name is string => name !== undefined,
-      ),
-    );
     setFollows(false);
     setLoadingEarlier(true);
     try {
@@ -1333,7 +1310,6 @@ function ThreadView({
                       <AgentTranscript
                         teamChannelName={teamSource?.channel.name ?? null}
                         revealMessage={revealMessage}
-                        windowing={transcriptWindowing}
                         key={thread.id}
                         attachmentReader={hostClient}
                         activity={activity}
