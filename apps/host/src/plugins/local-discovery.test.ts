@@ -334,7 +334,7 @@ describe("local apps an agent cannot use now", () => {
     });
     expect(await search({ query: "gmail" })).toMatchObject({ unavailableApps: [] });
     expect(await call(off.id, "list_events")).toMatchObject({
-      value: { value: { kind: "blocked", blocked: { code: "access_denied" } }, toolError: true },
+      failed: { code: "access_denied", description: "This plugin is Off for agents." },
     });
     expect(calls).toEqual([]);
   });
@@ -355,7 +355,7 @@ describe("local apps an agent cannot use now", () => {
       blocked: { code: "access_denied", message: "This plugin is set to Read-only." },
     });
     expect(await call(offlineMac.id, "create_event", "mutation")).toMatchObject({
-      value: { value: { kind: "blocked", blocked: { code: "access_denied" } } },
+      failed: { code: "access_denied", description: "This plugin is set to Read-only." },
     });
   });
 
@@ -477,6 +477,34 @@ describe("local apps an agent cannot use now", () => {
         },
       },
     });
+  });
+
+  it("fail a program's call refused by the person's setting as a refusal by the Host is failed", async () => {
+    for (const [access, name, message] of [
+      ["read-only", "create_event", "This plugin is set to Read-only."],
+      ["off", "list_events", "This plugin is Off for agents."],
+    ] as const) {
+      const { program, calls } = fixture({
+        providers: [offlineMac],
+        grants: { [offlineMac.id]: access },
+      });
+      const result = await program(`return await ${namespaceOf(offlineMac)}.${name}({});`);
+      expect(result).toMatchObject({
+        status: "completed",
+        execution: {
+          ok: false,
+          error: {
+            kind: "ToolFailure",
+            response: {
+              code: "access_denied",
+              message,
+              recovery: { instructions: expect.any(String) },
+            },
+          },
+        },
+      });
+      expect(calls).toEqual([]);
+    }
   });
 
   it("name a tool the caller is kept from without its input type or signature", async () => {

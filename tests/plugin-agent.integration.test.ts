@@ -602,12 +602,24 @@ test("plugin access settings keep known tools visible with typed refusals", asyn
     expect(await call(caller, "plugin_call", { calls: { path, input } }, true)).toMatchObject({
       error: blocked,
     });
+    // Inside a program the refused call fails with the Host's code, as every refusal there does.
     expect(
       await call(caller, "plugin_execute", {
-        code: `return await ${path}(${JSON.stringify(input)})`,
+        code: `try { return await ${path}(${JSON.stringify(input)}); } catch (error) { return { refused: JSON.parse(error.message) }; }`,
       }),
     ).toMatchObject({
-      result: { execution: { value: { kind: "blocked", blocked } } },
+      result: {
+        execution: {
+          ok: true,
+          value: {
+            refused: {
+              code: blocked.code,
+              message: blocked.message,
+              recovery: { instructions: blocked.next },
+            },
+          },
+        },
+      },
     });
   }
   expect(await call(caller, "opensteer_plugin_list", {})).toEqual({

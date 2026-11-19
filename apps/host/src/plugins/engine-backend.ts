@@ -142,6 +142,25 @@ export function compositeBackend(
     provider.tools.map((tool) =>
       Schema.decodeUnknownSync(Tool)({ ...tool, app: provider.id, version: provider.version }),
     );
+  /**
+   * A call the Host refuses: a direct call answers with the blocker as its value; inside a program
+   * the call fails with the Host's code, message and next step, so the program cannot read a
+   * refusal as a result.
+   */
+  const refused = (blocked: Blocked) =>
+    direct
+      ? Effect.succeed({
+          status: "completed" as const,
+          value: { kind: "blocked" as const, blocked },
+          toolError: true as const,
+        })
+      : Effect.fail(
+          new HostToolFailed({
+            explanation: blocked.message,
+            next: blocked.next,
+            reason: blocked.code,
+          }),
+        );
   const wrapDirectResult = <T extends { status: string }>(result: T): T =>
     direct && result.status === "completed" && "value" in result
       ? { ...result, value: { kind: "value", value: result.value } }
@@ -331,8 +350,7 @@ export function compositeBackend(
       Effect.gen(function* () {
         const permission = yield* permissionFor("callTool", input.app, input.tool);
         const blocked = pluginAccessBlocked(permission.grants?.[input.app], input.kind !== "query");
-        if (blocked)
-          return { status: "completed", value: { kind: "blocked", blocked }, toolError: true };
+        if (blocked) return yield* refused(blocked);
         if (!permission.allowed) return yield* Effect.fail(forbidden());
         const local = yield* provider(input.app);
         if (local) {
@@ -367,13 +385,7 @@ export function compositeBackend(
             .pipe(Effect.mapError(hostFailure));
           switch (result.kind) {
             case "blocked":
-              if (!direct)
-                return yield* new HostToolFailed({
-                  explanation: result.blocked.message,
-                  next: result.blocked.next,
-                  reason: result.blocked.code,
-                });
-              return { status: "completed", value: result, toolError: true };
+              return yield* refused(result.blocked);
             case "mcp":
               return {
                 status: "completed",
