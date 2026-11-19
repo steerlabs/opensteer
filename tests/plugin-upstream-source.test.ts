@@ -123,6 +123,64 @@ test("renames a reserved route only in the plugin's own root-relative paths", ()
   ]);
 });
 
+test("renames a reserved route only where a literal starts with it, as the parser reads the script", () => {
+  const route = rule("route-path");
+  const content = [
+    // A quoted path inside a comment is prose.
+    `// Call "${route.from}api/query" from the page.`,
+    `/* see '${route.from}assets/main.js' */`,
+    // An escaped quote inside a string starts nothing.
+    `const escaped = "say \\"${route.from}api\\" aloud";`,
+    // A quote nested in a differently quoted string starts nothing either.
+    `const nested = '"${route.from}api"';`,
+    `const backtick = "\`${route.from}api\`";`,
+    // A template's later parts are not its start; its head and a nested literal are.
+    `const later = \`\${base}${route.from}api\`;`,
+    `const inner = \`\${fetch("${route.from}api/query")}\`;`,
+    // A regular expression is not a string.
+    `const pattern = /"${route.from}api"/u;`,
+    // JSX attributes are strings.
+    `const link = <a href="${route.from}assets/x.png">"${route.from}"</a>;`,
+  ];
+  const { files } = rewriteUpstreamSource([{ path: "page.tsx", content: content.join("\n") }]);
+  const lines = (files[0] as { content: string }).content.split("\n");
+  expect(lines.slice(0, 8)).toEqual([
+    ...content.slice(0, 6),
+    content[6]!.replace(`fetch("${route.from}`, `fetch("${route.to}`),
+    content[7],
+  ]);
+  expect(lines[8]).toBe(
+    content[8]!.replace(`href="${route.from}`, `href="${route.to}`),
+  );
+});
+
+test("renames a reserved route in a page's attributes, inline scripts and styles, and nowhere else", () => {
+  const route = rule("route-path");
+  const page = [
+    `<link rel="stylesheet" href="${route.from}assets/a.css">`,
+    `<img src='${route.from}assets/b.png' alt="x">`,
+    `<p>Paste "${route.from}api" into the form.</p>`,
+    `<script>fetch("${route.from}api/query"); // "${route.from}"</script>`,
+    `<style>body { background: url(${route.from}assets/c.png); }</style>`,
+  ].join("\n");
+  const css = `@import "${route.from}assets/base.css";\n.a { background: url('${route.from}x.png'); }\n/* "${route.from}" */`;
+  const { files } = rewriteUpstreamSource([
+    { path: "ui/index.html", content: page },
+    { path: "ui/style.css", content: css },
+  ]);
+  const [html, sheet] = files.map((file) => (file as { content: string }).content);
+  expect(html!.split("\n")).toEqual([
+    `<link rel="stylesheet" href="${route.to}assets/a.css">`,
+    `<img src='${route.to}assets/b.png' alt="x">`,
+    `<p>Paste "${route.from}api" into the form.</p>`,
+    `<script>fetch("${route.to}api/query"); // "${route.from}"</script>`,
+    `<style>body { background: url(${route.to}assets/c.png); }</style>`,
+  ]);
+  expect(sheet).toBe(
+    `@import "${route.to}assets/base.css";\n.a { background: url('${route.to}x.png'); }\n/* "${route.from}" */`,
+  );
+});
+
 test("renames package.json's top-level name and keys, whatever is nested before them", () => {
   const nested = `{
   "metadata": { "name": "unrelated", "${key.from}": "nested" },

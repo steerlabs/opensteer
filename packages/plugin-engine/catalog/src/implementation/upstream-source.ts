@@ -6,8 +6,15 @@
  * scope covers); a file no rule changes keeps its exact bytes, so rewriting is idempotent and
  * rewritten source rewrites to itself. Prose and comments are not touched.
  */
+import { createRequire } from "node:module";
+import type * as TypeScript from "typescript-5";
 import { renameReservedTables } from "apps/contracts";
 import upstreamNames from "../../../upstream-names.json" with { type: "json" };
+
+let compiler: typeof TypeScript | undefined;
+/** The TypeScript compiler, loaded with the first script a route rule reads. */
+const typescript = () =>
+  (compiler ??= createRequire(import.meta.url)("typescript-5") as typeof TypeScript);
 
 interface Rule {
   readonly scope: string;
@@ -36,16 +43,98 @@ const signingSecret = (text: string) =>
     text,
   );
 
-/**
- * A reserved route only where it is one of the plugin's own routes: a root-relative path literal,
- * a string that starts with the route. Absolute and protocol-relative URLs, which name another
- * site's paths, comments and other strings keep their bytes.
- */
-const route = (text: string, rule: Rule) =>
-  text.replace(new RegExp(`(?<=["'\`])${escape(rule.from)}`, "gu"), () => rule.to);
+/** Replace `from` by `to` at each offset, which `text` has `from` at. */
+const replaceAt = (text: string, offsets: readonly number[], from: string, to: string) => {
+  let result = text;
+  for (const offset of [...offsets].sort((a, b) => b - a))
+    result = result.slice(0, offset) + to + result.slice(offset + from.length);
+  return result;
+};
 
-const code = (text: string) => {
-  let current = scoped("route-path").reduce((value, rule) => route(value, rule), text);
+const scriptFile = /\.[cm]?[jt]sx?$/u;
+/**
+ * Where a string or template literal of a script starts with `prefix`, as the TypeScript parser
+ * reads the script: a string, a template without substitutions, or a template's head. A quote in
+ * a comment, an escaped quote and a quote inside another string start nothing.
+ */
+const literalStarts = (path: string, text: string, prefix: string) => {
+  const ts = typescript();
+  const kind = /\.[cm]?tsx$/u.test(path)
+    ? ts.ScriptKind.TSX
+    : /\.[cm]?jsx$/u.test(path)
+      ? ts.ScriptKind.JSX
+      : /\.[cm]?js$/u.test(path)
+        ? ts.ScriptKind.JS
+        : ts.ScriptKind.TS;
+  const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, false, kind);
+  const offsets: number[] = [];
+  const visit = (node: TypeScript.Node) => {
+    if (
+      node.kind === ts.SyntaxKind.StringLiteral ||
+      node.kind === ts.SyntaxKind.NoSubstitutionTemplateLiteral ||
+      node.kind === ts.SyntaxKind.TemplateHead
+    ) {
+      // After the opening quote or backtick.
+      const start = node.getStart(file) + 1;
+      if (text.startsWith(prefix, start)) offsets.push(start);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return offsets;
+};
+
+/** In a stylesheet: where a `url(…)` or an `@import` string starts with `prefix`. */
+const stylesheetStarts = (text: string, prefix: string) =>
+  [
+    ...text.matchAll(
+      new RegExp(`(?:\\burl\\(\\s*["']?|@import\\s+["'])(?=${escape(prefix)})`, "giu"),
+    ),
+  ].map((match) => match.index + match[0].length);
+
+/**
+ * In a page: where an attribute value of a tag starts with `prefix`, and the literals of its
+ * inline scripts and stylesheets as above. Text between tags is prose.
+ */
+const pageStarts = (text: string, prefix: string) => {
+  const offsets: number[] = [];
+  for (const tag of text.matchAll(/<(?!!--)[A-Za-z][^>]*>/gu)) {
+    for (const value of tag[0].matchAll(
+      new RegExp(`=\\s*["']?(?=${escape(prefix)})`, "gu"),
+    ))
+      offsets.push(tag.index + value.index + value[0].length);
+  }
+  for (const element of text.matchAll(/<(script|style)\b[^>]*>([\s\S]*?)<\/\1\s*>/giu)) {
+    const body = element[2]!;
+    const at = element.index + element[0].indexOf(">") + 1;
+    const found =
+      element[1]!.toLowerCase() === "script"
+        ? literalStarts("inline.js", body, prefix)
+        : stylesheetStarts(body, prefix);
+    offsets.push(...found.map((offset) => at + offset));
+  }
+  return offsets;
+};
+
+/**
+ * A reserved route only where it is one of the plugin's own routes: a literal that starts with the
+ * route, which is a root-relative path. Absolute and protocol-relative URLs, which name another
+ * site's paths, comments and other text keep their bytes.
+ */
+const route = (path: string, text: string, rule: Rule) => {
+  if (!text.includes(rule.from)) return text;
+  const offsets = scriptFile.test(path)
+    ? literalStarts(path, text, rule.from)
+    : /\.html?$/u.test(path)
+      ? pageStarts(text, rule.from)
+      : path.endsWith(".css")
+        ? stylesheetStarts(text, rule.from)
+        : [];
+  return offsets.length === 0 ? text : replaceAt(text, offsets, rule.from, rule.to);
+};
+
+const code = (path: string, text: string) => {
+  let current = scoped("route-path").reduce((value, rule) => route(path, value, rule), text);
   current = scoped("element-id", "event", "ui-marker", "error-code").reduce(
     (value, rule) => literal(value, rule),
     current,
@@ -177,7 +266,7 @@ export const rewriteUpstreamFile = (
 ): string | { readonly problem: string } => {
   if (path === "package.json") return manifest(text);
   if (migration.test(path)) return renameReservedTables(text);
-  if (codeFile.test(path)) return code(text);
+  if (codeFile.test(path)) return code(path, text);
   return text;
 };
 
