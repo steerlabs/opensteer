@@ -2,7 +2,7 @@ import { createId, TeamMessageIdSchema } from "@opensteer/core";
 import { expect, test, vi } from "vitest";
 import { ItemTextStore } from "./item-text-store.js";
 import { transcriptCard } from "./transcript-item-view.js";
-import { ThreadTranscriptStore } from "./thread-transcript-store.js";
+import { displayedItemIds, ThreadTranscriptStore } from "./thread-transcript-store.js";
 import { detailThread } from "../test-support/scoped-transcript-fixture.js";
 
 const scope = { kind: "thread" as const, threadId: createId("thread") };
@@ -588,3 +588,65 @@ test("a repair replaces the scope: no stale history, no older page, no omitted q
     ),
   ).toBe(false);
 });
+
+test("a held provisional card takes a new face and its place; a window of history shows none", () => {
+  const store = new ThreadTranscriptStore();
+  store.begin(1, false);
+  const base = { subscriptionId, generation: 1, scope };
+  const second = {
+    ...item,
+    id: createId("message"),
+    messageId: createId("message"),
+    position: "3",
+  };
+  const snapshot = (anchorItemId: string | null, nextAfter: object | null) => ({
+    thread: detailThread(thread),
+    items: [item, second],
+    pendingRequests: [],
+    activeItems: [],
+    nextBefore: null,
+    nextAfter,
+    anchorItemId,
+  });
+  store.apply({
+    ...base,
+    type: "host.snapshot",
+    throughSequence: "1",
+    snapshot: snapshot(null, null),
+  } as never);
+  store.apply({ ...base, type: "host.synchronized", throughSequence: "1" });
+  const order = () => {
+    const state = store.getSnapshot();
+    return displayedItemIds(state).map((id) =>
+      id === "live" ? "live" : state.items.get(id)!.position,
+    );
+  };
+  // A reply under way, first placed after both rows.
+  const face = { ...item, id: "live" as never, position: "4" };
+  store.liveItem(face, "live", false);
+  expect(order()).toEqual(["1", "3", "live"]);
+  // The stream was reidentified: the same card now stands between them.
+  store.liveItem({ ...face, position: "2" }, "live", false);
+  expect(order()).toEqual(["1", "live", "3"]);
+  // The reader is held in a window of history: the card is not drawn into it.
+  store.apply({
+    ...base,
+    type: "host.snapshot",
+    throughSequence: "1",
+    snapshot: snapshot(item.id, { ...cursorOf(second) }),
+  } as never);
+  expect(store.getSnapshot().newest).toBe(false);
+  expect(displayedItemIds(store.getSnapshot())).not.toContain("live");
+});
+
+function cursorOf(row: { id: string; position: string }) {
+  return {
+    deploymentId: createId("deployment"),
+    epoch: "00000000-0000-4000-8000-000000000001",
+    viewerId: createId("user"),
+    threadId: scope.threadId,
+    nodeId: null,
+    beforeId: row.id,
+    beforePosition: row.position,
+  };
+}

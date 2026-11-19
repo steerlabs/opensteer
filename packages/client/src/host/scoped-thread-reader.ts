@@ -146,6 +146,7 @@ export class ScopedThreadReader implements ThreadViewSource {
 
   getSnapshot = () => this.#view;
   #disposed = false;
+  #newest = true;
 
   subscribe = (listener: () => void) => {
     this.#listeners.add(listener);
@@ -174,7 +175,12 @@ export class ScopedThreadReader implements ThreadViewSource {
       this.#bodyGeneration = state.generation;
     }
     let entries = this.#view.entries;
-    if (this.#rows !== state.items || this.#liveRows !== state.liveItems) {
+    if (
+      this.#rows !== state.items ||
+      this.#liveRows !== state.liveItems ||
+      this.#newest !== state.newest
+    ) {
+      this.#newest = state.newest;
       for (const [id, item] of this.#rows ?? [])
         if (state.items.get(id) !== item) this.#bodies.remove(this.#bodyKey(id));
       this.#rows = state.items;

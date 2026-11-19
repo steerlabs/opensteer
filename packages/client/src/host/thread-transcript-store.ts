@@ -88,7 +88,8 @@ function newer(held: { readonly revision: string } | undefined, revision: string
 }
 
 export function displayedItemIds(state: TranscriptState): readonly string[] {
-  if (!state.liveItems.size) return state.ids;
+  // A provisional card belongs at the tail: a window of history never shows one.
+  if (!state.liveItems.size || !state.newest) return state.ids;
   const ids = [...state.ids];
   const items = { get: (id: string) => state.items.get(id) ?? state.liveItems.get(id) };
   for (const item of state.liveItems.values()) insertId(ids, item, items);
@@ -465,9 +466,10 @@ export class ThreadTranscriptStore {
       this.#set({ ...state, liveItems });
       return;
     }
-    if (!item || state.items.has(itemId) || state.liveItems.has(itemId)) return;
+    // A replacement or reidentified frame brings a new face: the card takes it, and its place.
+    if (!item || state.items.has(itemId) || state.liveItems.get(itemId) === item) return;
     const liveItems = new Map(state.liveItems);
-    if (liveItems.size >= 16) {
+    if (!liveItems.has(itemId) && liveItems.size >= 16) {
       const oldest = liveItems.keys().next();
       if (!oldest.done) liveItems.delete(oldest.value);
     }

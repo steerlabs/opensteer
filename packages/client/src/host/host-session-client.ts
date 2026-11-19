@@ -1567,6 +1567,7 @@ export class HttpHostClient {
         const structureChanged =
           previous?.items !== state.items ||
           previous.liveItems !== state.liveItems ||
+          previous.newest !== state.newest ||
           (view.status === "missing") !== (status === "missing");
         const subject = state.snapshot?.nodeSubject;
         const node =
