@@ -52,6 +52,8 @@ export function hostSnapshotStore(hostClient: HostClient): HostSnapshotStore {
 
 export interface HostSelection<Selection> {
   readonly getSnapshot: () => Selection;
+  /** Calls the listener only when this selection, not the whole snapshot, changed. */
+  readonly subscribe: (listener: () => void) => () => void;
 }
 
 /**
@@ -65,14 +67,22 @@ export function createHostSelection<Selection>(
 ): HostSelection<Selection> {
   let initialized = false;
   let value: Selection;
+  const getSnapshot = () => {
+    const next = selector(store.getSnapshot());
+    if (initialized && isEqual(value, next)) return value;
+    initialized = true;
+    value = next;
+    return value;
+  };
 
   return {
-    getSnapshot: () => {
-      const next = selector(store.getSnapshot());
-      if (initialized && isEqual(value, next)) return value;
-      initialized = true;
-      value = next;
-      return value;
+    getSnapshot,
+    subscribe: (listener) => {
+      getSnapshot();
+      return store.subscribe(() => {
+        const previous = value;
+        if (getSnapshot() !== previous) listener();
+      });
     },
   };
 }

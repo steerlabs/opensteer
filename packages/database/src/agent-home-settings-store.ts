@@ -86,7 +86,7 @@ export async function reportAgentHomeSettings(
     );
     const after = written.rows[0];
     if (!after || (before && isDeepStrictEqual(before, after))) return null;
-    mutation.bumpResource("agent-home-settings");
+    mutation.bumpResource("settings");
     mutation.bumpResource("harness");
     return owner.ownerId;
   });

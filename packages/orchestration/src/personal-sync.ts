@@ -6,7 +6,10 @@ import {
   type ScopedClientMessage,
   type ScopedHostMessage,
 } from "@opensteer/protocol/personal-sync";
-import type { PersonalResourceKind } from "@opensteer/protocol/resources";
+import type {
+  PersonalResourceKind,
+  PersonalResourceRevisions,
+} from "@opensteer/protocol/resources";
 
 type Subscribe = Extract<ScopedClientMessage, { type: "client.subscribe" }>;
 type Address = Pick<Subscribe, "subscriptionId" | "generation">;
@@ -27,7 +30,6 @@ type Unaddressed<T> = T extends AddressedFrame ? Omit<T, keyof Address> : never;
 /** A frame before the socket addresses it; `host.text` carries a handle instead. */
 export type PersonalOutgoingFrame = Unaddressed<AddressedFrame> | TextFrame;
 type ShellProgress = Extract<ScopedHostMessage, { type: "host.synchronized" }>["shellProgress"];
-type Resource = Omit<Extract<ScopedHostMessage, { type: "host.resource" }>, "type" | keyof Address>;
 
 interface ScopeCut {
   readonly throughSequence: string;
@@ -47,12 +49,8 @@ interface PersonalSyncPort {
     atLeast: string,
   ): Promise<ScopeCut>;
   send(encoded: string, dispatchGuard: () => boolean, signal: AbortSignal): Promise<boolean>;
-  readResources?(
-    interests: readonly PersonalResourceKind[],
-    installed: Watch["installed"],
-    signal: AbortSignal,
-  ): Promise<readonly Resource[]>;
-  isResourceCurrent?(kind: PersonalResourceKind, revision: string): boolean;
+  /** Current revisions, from memory; a detail read checks access. */
+  resourceRevisions?(kinds: readonly PersonalResourceKind[]): PersonalResourceRevisions;
   readLive?(scope: DetailScope, request?: LiveResync): readonly PersonalLiveUpdate[];
   onFailure?(error: unknown): void;
   close(reason: string): void;
@@ -187,6 +185,13 @@ export class PersonalSyncSocket {
       { interests: shell.interests, installed: shell.installed },
     );
     if (selected) this.subscribe({ ...selected, type: "client.subscribe" });
+  }
+
+  resourcesChanged(kinds: ReadonlySet<PersonalResourceKind>) {
+    const current = this.#subscriptions.get("shell");
+    if (!current?.resources?.interests.some((kind) => kinds.has(kind))) return;
+    current.resources.dirty = true;
+    this.#schedule(current);
   }
 
   watchResources(message: Watch) {
@@ -601,13 +606,6 @@ export class PersonalSyncSocket {
       const sent = await this.#send(current, frame);
       if (!sent) return;
       if (!cut.cursor) throw new Error("A durable personal cut needs a cursor");
-      if (frame.type === "host.snapshot" && "tasks" in frame.snapshot && current.resources) {
-        for (const resource of frame.snapshot.resources ?? [])
-          current.resources.installed = {
-            ...current.resources.installed,
-            [resource.kind]: resource.revision,
-          };
-      }
       current.cursor = { ...cut.cursor, afterSequence: frame.throughSequence };
     }
     if (!this.#matches(current) || current.pauseCount > 0 || !cut.cursor) return;
@@ -617,13 +615,6 @@ export class PersonalSyncSocket {
       if (request.scope.kind !== "shell")
         for (const update of this.#port.readLive?.(request.scope) ?? [])
           this.#queueLive(current, update, { replace: true }, true);
-    }
-    const watched = current.resources;
-    if (watched && cut.shellProgress) {
-      const revisions = cut.shellProgress.resourceRevisions;
-      watched.dirty ||= watched.interests.some(
-        (kind) => watched.installed[kind] !== revisions[kind],
-      );
     }
     if (!current.synchronized) {
       const sent = await this.#send(current, {
@@ -653,35 +644,21 @@ export class PersonalSyncSocket {
     const watch = current.resources;
     if (!watch?.dirty) return;
     watch.dirty = false;
-    if (!this.#port.readResources || !watch.interests.length) return;
-    const views = await this.#port.readResources(
-      watch.interests,
-      watch.installed,
-      current.controller.signal,
+    if (!this.#port.resourceRevisions || !watch.interests.length) return;
+    const latest = this.#port.resourceRevisions(watch.interests);
+    const revisions = Object.fromEntries(
+      watch.interests.flatMap((kind) =>
+        latest[kind] && latest[kind] !== watch.installed[kind] ? [[kind, latest[kind]]] : [],
+      ),
     );
-    for (const view of views) {
-      if (current.resources !== watch || !this.#matches(current)) return;
-      if (!watch.interests.includes(view.kind)) continue;
-      const isCurrent = () => this.#port.isResourceCurrent?.(view.kind, view.revision) ?? true;
-      if (!isCurrent()) {
-        watch.dirty = true;
-        continue;
-      }
-      const sent = await this.#send(
-        current,
-        { type: "host.resource", ...view },
-        () => current.resources === watch && isCurrent(),
-      );
-      if (!sent) {
-        if (!isCurrent()) {
-          watch.dirty = true;
-          continue;
-        }
-        watch.dirty = true;
-        return;
-      }
-      watch.installed = { ...watch.installed, [view.kind]: view.revision };
-    }
+    if (!Object.keys(revisions).length) return;
+    const sent = await this.#send(
+      current,
+      { type: "host.resource", revisions },
+      () => current.resources === watch,
+    );
+    if (sent) watch.installed = { ...watch.installed, ...revisions };
+    else watch.dirty = true;
   }
 
   #hasCredit(current: Subscription, bytes: number, changes: number) {

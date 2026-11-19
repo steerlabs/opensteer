@@ -27,12 +27,9 @@ import {
   affectedPersonalSubscriptions,
   personalShellSettledTasks,
 } from "@opensteer/protocol/personal-sync";
-import {
-  pluginCategoryResources,
-  pluginChangeResources,
-  type PersonalResourceKind,
-} from "@opensteer/protocol/resources";
+import { pluginCategoryResources, type PersonalResourceKind } from "@opensteer/protocol/resources";
 import type { PersonalShellStore } from "./personal-shell-store.js";
+import { PersonalResourceReads } from "./personal-resource-reads.js";
 import { ScopedPersonalStream } from "./scoped-personal-stream.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { HostClient } from "./client.js";
@@ -246,7 +243,6 @@ export interface HttpHostClientOptions {
 
 // Keep thumbnails across remounts without retaining unbounded file bytes on phones.
 const attachmentCacheByteBudget = 32 * 1024 * 1024;
-const resourceInventoryByteBudget = 1024 * 1024;
 
 type AttachmentRead = {
   readonly controller: AbortController;
@@ -297,18 +293,10 @@ export class HttpHostClient {
   #backgroundShellGeneration: number | undefined;
   #load: Promise<void> | undefined;
   #resolveLoad: (() => void) | undefined;
-  readonly #resourceReads = new Map<
-    PersonalResourceKind,
-    { controller: AbortController; revision: string }
-  >();
+  readonly #resources: PersonalResourceReads;
   readonly #environmentCatalogs = new Map<string, EnvironmentSummary["harnessCatalogs"]>();
-  readonly #environmentAuth = new Map<string, boolean>();
   readonly #scopeReaders = new Map<string, ScopedThreadReader>();
   readonly #bodies = new TranscriptBodies();
-  readonly #resourceRevisions = new Map<
-    PersonalResourceKind,
-    { revision: string; complete: boolean }
-  >();
   readonly #threadReaders = new Map<string, () => void>();
   readonly #shellEntries = new WeakMap<Parameters<typeof compactThread>[0], TaskEntry>();
   /** Where the open-task list continues once the person or a refill has read past the shell. */
@@ -657,9 +645,16 @@ export class HttpHostClient {
     this.#realtimeLiveness = options.realtimeLiveness;
     this.#cacheDeploymentId = options.cacheDeploymentId;
     this.#reportRealtimeFrame = options.reportRealtimeFrame;
-    this.#stream = new ScopedPersonalStream(options.streamCache, (kind) =>
-      this.#resourceChanged(kind),
-    );
+    this.#resources = new PersonalResourceReads({
+      read: (kind, cursor, signal) =>
+        this.rpc["resources.detail.get"]({ kind, ...(cursor ? { cursor } : {}) }, { signal }),
+      apply: (data, append, hasMore) => this.#applyResource(data, append, hasMore),
+      canRead: () => this.#visibility !== "background",
+      watchChanged: () => this.#stream.watchResources(),
+      // Rows stay on screen; the inventory is only no longer known to be complete.
+      behind: (kind) => kind === "tab" && this.#tabs.markInventoryStale(),
+    });
+    this.#stream = new ScopedPersonalStream(options.streamCache, this.#resources);
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.iphoneSetup = options.iphoneSetup
       ? createIphoneSetupPort(options.iphoneSetup, (command) => this.dispatch(command))
@@ -1598,17 +1593,8 @@ export class HttpHostClient {
     };
   }
 
-  readonly watchPersonalResource = (kind: PersonalResourceKind, listener: () => void) => {
-    const release = this.#stream.watchResource(kind, listener);
-    this.#readResource(kind);
-    return () => {
-      release();
-      if (!this.#stream.resources.isObserved(kind)) {
-        this.#resourceReads.get(kind)?.controller.abort();
-        this.#resourceReads.delete(kind);
-      }
-    };
-  };
+  readonly watchPersonalResource = (kind: PersonalResourceKind, listener: () => void) =>
+    this.#resources.watch(kind, listener);
 
   #shellEntry(row: Parameters<typeof compactThread>[0]): TaskEntry {
     const cached = this.#shellEntries.get(row);
@@ -1642,16 +1628,13 @@ export class HttpHostClient {
       this.#threadState.clear();
       this.#threadRenames.clear();
       this.#threadIcons.clear();
-      this.#resourceRevisions.clear();
+      this.#resources.reset();
       this.#environmentCatalogs.clear();
-      this.#environmentAuth.clear();
       this.#bodies.clear();
       this.#clearAttachmentReads();
       this.#threadDeployment.clear();
       this.#clearViewerReads();
       this.#invalidateAttention();
-      for (const { controller } of this.#resourceReads.values()) controller.abort();
-      this.#resourceReads.clear();
       const { connection, connectionInterrupted, network } = this.#snapshot;
       this.#update({ ...emptySnapshot(this.#tabs), connection, connectionInterrupted, network });
     }
@@ -1713,6 +1696,8 @@ export class HttpHostClient {
               doneAt: row.doneAt,
               doneReason: row.doneAt === held.doneAt ? held.doneReason : null,
               latestRunCompletedAt: row.latestRunCompletedAt,
+              inputQueuePaused: row.inputQueuePaused ?? held.inputQueuePaused,
+              runQueued: row.runQueued,
             },
             SequenceSchema.parse(row.revision),
             undefined,
@@ -1747,7 +1732,6 @@ export class HttpHostClient {
       taskChanges ||
       visitsChanged ||
       attentionChanged ||
-      state.teamReplyRevision !== old?.teamReplyRevision ||
       connection !== this.#snapshot.connection
     ) {
       let taskLists: Pick<HostSnapshot, "tasks" | "activeTasks"> | undefined;
@@ -1790,7 +1774,6 @@ export class HttpHostClient {
           connectionInterrupted: attached ? false : this.#snapshot.connectionInterrupted,
           ...taskLists,
           doneTasks,
-          teamReplyRevision: state.teamReplyRevision,
           ...(attentionChanged
             ? {
                 attentionSummaries: [...state.attention.values()],
@@ -1815,8 +1798,7 @@ export class HttpHostClient {
       this.references.reconnect();
       this.#invalidatePersonalRemoteAccess();
       this.#reverifyCapabilities();
-      const { interests } = this.#stream.resources.getInterests();
-      for (const kind of interests) this.#readResource(kind);
+      this.#resources.resume();
     }
     if (state.synchronized) this.#refreshStaleDoneTasks();
     if (
@@ -1825,6 +1807,63 @@ export class HttpHostClient {
       (attached || attentionChanged)
     )
       this.#invalidateAttention(true);
+    const requestRows = [...state.attention.values()]
+      .filter(({ kind }) => kind === "request")
+      .map(({ id, revision }) => `${id}@${revision}`)
+      .join(",");
+    if (
+      state.synchronized &&
+      (attached || requestRows !== this.#waitingRequestRows) &&
+      (requestRows !== "" || this.#snapshot.waitingRequests.length > 0)
+    )
+      this.#readWaitingRequests();
+    this.#waitingRequestRows = requestRows;
+  }
+
+  #waitingRequestRows = "";
+  #waitingRequestRead: { again: boolean } | undefined;
+
+  /**
+   * The pending Requests this person answers, with the work each holds up. The shell lists them
+   * as bounded attention rows; the full Request (its question, choices and presentation) is read
+   * here whenever those rows change.
+   */
+  #readWaitingRequests() {
+    if (this.#waitingRequestRead) {
+      this.#waitingRequestRead.again = true;
+      return;
+    }
+    const read = { again: false };
+    this.#waitingRequestRead = read;
+    const generation = this.#viewerGeneration;
+    const userId = this.#snapshot.user?.id;
+    void (async () => {
+      const waitingRequests: HostSnapshot["waitingRequests"][number][] = [];
+      let before: string | null = null;
+      for (let pages = 0; pages < 4; pages++) {
+        const page: {
+          requests: HostSnapshot["waitingRequests"];
+          window: import("@opensteer/protocol").DurableWindow;
+        } = unwrapRpcResult(
+          await this.rpc["requests.list"]({
+            ...(before ? { before } : {}),
+            limit: 100,
+            deviceAccessRequests: "include",
+          }),
+        );
+        if (!this.#viewerStillCurrent(generation, userId)) return;
+        waitingRequests.push(...page.requests);
+        before = page.window.hasMore ? page.window.nextBefore : null;
+        if (!before) break;
+      }
+      if (!read.again) this.#update({ ...this.#snapshot, waitingRequests });
+    })()
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.#waitingRequestRead !== read) return;
+        this.#waitingRequestRead = undefined;
+        if (read.again) this.#readWaitingRequests();
+      });
   }
 
   #attentionRead: { controller: AbortController; promise: Promise<void> } | undefined;
@@ -1839,170 +1878,6 @@ export class HttpHostClient {
       return;
     }
     if (this.#attentionTarget) void this.#readAttention(true).catch(() => undefined);
-  }
-
-  #resourceChanged(kind: PersonalResourceKind) {
-    if (pluginChangeResources.some((resource) => resource === kind)) return;
-    const installed = this.#stream.resources.get(kind);
-    const revision = this.#stream.resources.getKnownRevision(kind);
-    const summary =
-      installed && BigInt(installed.revision) >= BigInt(revision ?? "0")
-        ? installed.view
-        : undefined;
-    if (this.#snapshot.resourceSummaries?.[kind] !== summary) {
-      const summaries = { ...this.#snapshot.resourceSummaries };
-      if (summary) summaries[kind] = summary;
-      else delete summaries[kind];
-      this.#update({ ...this.#snapshot, resourceSummaries: summaries });
-    }
-    const read = this.#resourceReads.get(kind);
-    if (read && (!summary || read.revision !== installed?.revision)) {
-      read.controller.abort();
-      this.#resourceReads.delete(kind);
-    }
-    const details = this.#resourceRevisions.get(kind)?.revision;
-    if (
-      details &&
-      (!installed ||
-        BigInt(details) < BigInt(revision ?? "0") ||
-        BigInt(details) < BigInt(installed.revision))
-    ) {
-      this.#resourceRevisions.delete(kind);
-      if (kind === "tab" && installed) this.#tabs.markInventoryStale();
-      else this.#clearResource(kind);
-    }
-    this.#readResource(kind);
-  }
-
-  #clearResource(kind: PersonalResourceKind) {
-    const snapshot = this.#snapshot;
-    switch (kind) {
-      case "machine":
-        this.#update({ ...snapshot, machines: [], machineRevision: snapshot.machineRevision + 1 });
-        break;
-      case "environment":
-        this.#update({ ...snapshot, environments: [] });
-        break;
-      case "harness":
-        this.#update({ ...snapshot, harnesses: [] });
-        break;
-      case "harness-catalog":
-        this.#environmentCatalogs.clear();
-        this.#update({
-          ...snapshot,
-          environments: snapshot.environments.map((row) => ({ ...row, harnessCatalogs: [] })),
-        });
-        break;
-      case "harness-auth":
-        this.#environmentAuth.clear();
-        this.#update({
-          ...snapshot,
-          environments: snapshot.environments.map((row) => ({
-            ...row,
-            harnessAuthenticationAllowed: false,
-          })),
-        });
-        break;
-      case "browser-placement":
-        this.#update({ ...snapshot, browserPlacements: [] });
-        break;
-      case "browser-profile":
-        this.#update({ ...snapshot, browserProfiles: [], browserProfileDeletions: [] });
-        break;
-      case "browser-home":
-        this.#update({ ...snapshot, browserProfileHomes: [] });
-        break;
-      case "browser-availability":
-        this.#update({ ...snapshot, browserAvailable: false });
-        break;
-      case "identity":
-        this.#update({ ...snapshot, identityConfig: null });
-        break;
-      case "owner-profile":
-        this.#update({ ...snapshot, ownerProfile: null });
-        break;
-      case "settings":
-        this.#update({
-          ...snapshot,
-          personalSettings: null,
-          quietTaskDays: null,
-          executionPreferences: emptyExecutionPreferences,
-          voiceThreadId: null,
-        });
-        break;
-      case "tab":
-        this.#tabs.invalidateInventory();
-        break;
-      case "tab-layout":
-        this.#tabs.invalidateLayout();
-        break;
-    }
-  }
-
-  #readResource(kind: PersonalResourceKind) {
-    if (pluginChangeResources.some((resource) => resource === kind)) return;
-    const installed = this.#stream.resources.get(kind);
-    const loaded = this.#resourceRevisions.get(kind);
-    if (
-      !installed ||
-      !this.#stream.resources.isObserved(kind) ||
-      !this.#stream.ready ||
-      BigInt(installed.revision) < BigInt(this.#stream.resources.getKnownRevision(kind) ?? "0") ||
-      this.#visibility === "background" ||
-      this.#resourceReads.has(kind) ||
-      (loaded?.complete && loaded.revision === installed.revision)
-    )
-      return;
-    const controller = new AbortController();
-    const request = { controller, revision: installed.revision };
-    this.#resourceReads.set(kind, request);
-    const scope = this.#stream.shell.getSnapshot().generation;
-    const current = () =>
-      !controller.signal.aborted &&
-      this.#resourceReads.get(kind) === request &&
-      this.#stream.shell.getSnapshot().generation === scope &&
-      this.#stream.resources.get(kind)?.revision === installed.revision &&
-      BigInt(installed.revision) >= BigInt(this.#stream.resources.getKnownRevision(kind) ?? "0");
-    const read = async () => {
-      let cursor: string | undefined;
-      let retainedBytes = 0;
-      const cursors = new Set<string>();
-      do {
-        const result = await this.rpc["resources.detail.get"](
-          { kind, expectedRevision: installed.revision, ...(cursor ? { cursor } : {}) },
-          { signal: controller.signal },
-        );
-        if (
-          !result.ok ||
-          !current() ||
-          result.data.data.kind !== kind ||
-          result.data.revision !== installed.revision ||
-          (result.data.next && cursors.has(result.data.next))
-        )
-          return;
-        retainedBytes += utf8ByteLength(JSON.stringify(result.data));
-        if (retainedBytes > resourceInventoryByteBudget) return;
-        this.#resourceRevisions.set(kind, {
-          revision: result.data.revision,
-          complete: result.data.next === null,
-        });
-        this.#applyResource(result.data.data, cursor !== undefined, result.data.next !== null);
-        cursor = result.data.next ?? undefined;
-        if (cursor) cursors.add(cursor);
-      } while (cursor);
-    };
-    void read()
-      .catch(() => undefined)
-      .finally(() => {
-        if (this.#resourceReads.get(kind) === request) {
-          this.#resourceReads.delete(kind);
-          if (
-            this.#stream.resources.get(kind)?.revision !== installed.revision ||
-            this.#stream.shell.getSnapshot().generation !== scope
-          )
-            this.#readResource(kind);
-        }
-      });
   }
 
   #applyResource(
@@ -2037,37 +1912,31 @@ export class HttpHostClient {
           ...snapshot,
           environments: mergeResourceRows(
             append ? snapshot.environments : [],
-            data.environments.map((row) => this.#withEnvironmentCapabilities(row)),
+            data.environments.map((row) => this.#withEnvironmentCatalogs(row)),
             (row) => row.id,
           ),
         });
         break;
       case "harness-catalog":
-      case "harness-auth":
-        if (data.kind === "harness-catalog") {
-          if (!append) this.#environmentCatalogs.clear();
-          for (const row of data.environments) {
-            const held = this.#environmentCatalogs.get(row.id) ?? [];
-            const page = row.harnessCatalogs.map((catalog) => {
-              const previous = held.find(
-                ({ harnessInstanceId }) => harnessInstanceId === catalog.harnessInstanceId,
-              );
-              return previous?.status === "ready" && catalog.status === "ready"
-                ? { ...catalog, models: [...previous.models, ...catalog.models] }
-                : catalog;
-            });
-            this.#environmentCatalogs.set(
-              row.id,
-              mergeResourceRows(held, page, (catalog) => catalog.harnessInstanceId),
+        if (!append) this.#environmentCatalogs.clear();
+        for (const row of data.environments) {
+          const held = this.#environmentCatalogs.get(row.id) ?? [];
+          const page = row.harnessCatalogs.map((catalog) => {
+            const previous = held.find(
+              ({ harnessInstanceId }) => harnessInstanceId === catalog.harnessInstanceId,
             );
-          }
-        } else {
-          for (const row of data.environments)
-            this.#environmentAuth.set(row.id, row.harnessAuthenticationAllowed);
+            return previous?.status === "ready" && catalog.status === "ready"
+              ? { ...catalog, models: [...previous.models, ...catalog.models] }
+              : catalog;
+          });
+          this.#environmentCatalogs.set(
+            row.id,
+            mergeResourceRows(held, page, (catalog) => catalog.harnessInstanceId),
+          );
         }
         this.#update({
           ...snapshot,
-          environments: snapshot.environments.map((row) => this.#withEnvironmentCapabilities(row)),
+          environments: snapshot.environments.map((row) => this.#withEnvironmentCatalogs(row)),
         });
         break;
       case "machine":
@@ -2159,17 +2028,11 @@ export class HttpHostClient {
       case "browser-availability":
         this.#update({ ...snapshot, browserAvailable: data.available });
         break;
-      case "agent-home-settings":
-        break;
     }
   }
 
-  #withEnvironmentCapabilities(row: EnvironmentSummary): EnvironmentSummary {
-    return {
-      ...row,
-      harnessCatalogs: this.#environmentCatalogs.get(row.id) ?? [],
-      harnessAuthenticationAllowed: this.#environmentAuth.get(row.id) ?? false,
-    };
+  #withEnvironmentCatalogs(row: EnvironmentSummary): EnvironmentSummary {
+    return { ...row, harnessCatalogs: this.#environmentCatalogs.get(row.id) ?? [] };
   }
 
   async getAssignment(assignmentId: string): Promise<AssignmentView> {
@@ -2630,11 +2493,10 @@ export class HttpHostClient {
   subscribePluginsChanged(
     listener: (message: { type: "host.plugins-changed" } & PluginChange) => void,
   ): () => void {
-    const resource = this.#stream.resources;
     const watch = (kind: PersonalResourceKind, category?: PluginResourceCategory) => {
-      let seen = resource.getKnownRevision(kind);
-      return this.#stream.watchResource(kind, () => {
-        const revision = resource.getKnownRevision(kind);
+      let seen = this.#resources.revision(kind);
+      return this.#resources.watch(kind, () => {
+        const revision = this.#resources.revision(kind);
         if (revision === undefined || revision === seen) return;
         seen = revision;
         listener({ type: "host.plugins-changed", ...(category ? { categories: [category] } : {}) });
@@ -2654,7 +2516,7 @@ export class HttpHostClient {
     return () => {
       this.#pluginEngineListeners.delete(listener);
       release();
-      if (!this.#pluginEngineListeners.size) this.#resourceRevisions.delete("plugin-engine");
+      if (!this.#pluginEngineListeners.size) this.#resources.forget("plugin-engine");
     };
   }
   subscribePersonalRemoteAccess(listener: () => void): () => void {
@@ -3644,8 +3506,7 @@ export class HttpHostClient {
       this.#backgroundShellGeneration = this.#stream.shell.getSnapshot().generation;
       this.#stream.setBackground(true);
       this.#invalidateAttention();
-      for (const { controller } of this.#resourceReads.values()) controller.abort();
-      this.#resourceReads.clear();
+      this.#resources.abort();
     }
     this.#targetedControl.suspend(this.#reconnectSuspended(), state.network !== "offline");
     this.#targetedWatch.suspend(this.#reconnectSuspended());
@@ -3718,8 +3579,7 @@ export class HttpHostClient {
           this.#refreshStaleDoneTasks();
           if (this.#snapshot.needsYouCount || this.#snapshot.needsYou)
             this.#invalidateAttention(true);
-          const { interests } = this.#stream.resources.getInterests();
-          for (const kind of interests) this.#readResource(kind);
+          this.#resources.resume();
         }
       },
     };
@@ -3894,7 +3754,7 @@ export class HttpHostClient {
           if (affected.length === 0 || affected.includes("shell")) {
             this.#viewerGeneration++;
             this.#stream.clear(true);
-            this.#resourceRevisions.clear();
+            this.#resources.reset();
             this.#clearViewerReads();
             this.#update({ ...emptySnapshot(this.#tabs), connection: "connecting" });
           } else {
@@ -3944,8 +3804,7 @@ export class HttpHostClient {
     this.#socket = null;
     this.#stream.disconnect();
     this.#invalidateAttention();
-    for (const { controller } of this.#resourceReads.values()) controller.abort();
-    this.#resourceReads.clear();
+    this.#resources.abort();
     this.#finishLoad();
     socket?.close(1000, reason);
   }
@@ -3993,9 +3852,17 @@ export class HttpHostClient {
       case "host.browser-history-changed":
         this.browserHistory.changed(message.profileId);
         break;
-      case "host.apps.changed":
-        this.#update({ ...this.#snapshot, appsRevision: this.#snapshot.appsRevision + 1 });
+      case "host.apps.changed": {
+        // An open app view rereads when its own app changed, as when the agent publishes it.
+        const appVersions = { ...this.#snapshot.appVersions };
+        for (const appId of message.appIds) appVersions[appId] = (appVersions[appId] ?? 0) + 1;
+        this.#update({
+          ...this.#snapshot,
+          appsRevision: this.#snapshot.appsRevision + 1,
+          appVersions,
+        });
         break;
+      }
       case "host.place-activity":
       case "host.place-activity-cleared":
         this.#placeActivity.apply(message);
@@ -4050,9 +3917,8 @@ export class HttpHostClient {
     this.#closeSocket();
     this.#stream.clear(true);
     this.#bodies.clear();
-    this.#resourceRevisions.clear();
+    this.#resources.reset();
     this.#environmentCatalogs.clear();
-    this.#environmentAuth.clear();
     this.#clearViewerReads();
     this.#threadDeployment.clear();
     this.#threadState.clear();
@@ -4472,8 +4338,9 @@ function compactThread(
     accessMode: "approval-required",
     continuationIdentity: null,
     providerSessionId: null,
-    environmentId: "",
-    harnessInstanceId: "",
+    environmentId: row.environmentId,
+    harnessInstanceId: row.harnessInstanceId,
+    runQueued: row.runQueued,
     modelSelection: unknownModelSelection,
     harnessLabel: "",
     modelLabel: "",

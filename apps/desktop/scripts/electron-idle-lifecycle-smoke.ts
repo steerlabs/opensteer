@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { personalResourceKinds } from "@opensteer/protocol/resources";
 import { createServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -50,7 +49,6 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     attention: [],
     attentionHasMore: false,
     counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
-    resourceRevisions: Object.fromEntries(personalResourceKinds.map((kind) => [kind, "0"])),
     session: {
       sessionId: createId("authSession"),
       sessionSurface: "canonical",

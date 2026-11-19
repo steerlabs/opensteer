@@ -77,7 +77,7 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
       const address = server.address();
       if (address === null || typeof address === "string") throw new Error("No HTTP address");
       const origin = `http://127.0.0.1:${address.port}`;
-      const settingsResource = new URL("/v1/rpc/resources.get", origin);
+      const settingsResource = new URL("/v1/rpc/resources.detail.get", origin);
       settingsResource.searchParams.set("input", JSON.stringify({ kind: "settings" }));
       let agreement: HostEpochAgreement = { status: "compatible", capabilities: [] };
       let pending: Promise<HostEpochAgreement> | null = null;
@@ -186,7 +186,9 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         });
         await vi.waitFor(() => expect(observed.every(({ closed }) => closed)).toBe(true));
         const afterRevocation = traffic.length;
-        await expect(retained.rpc["resources.get"]({ kind: "settings" })).resolves.toMatchObject({
+        await expect(
+          retained.rpc["resources.detail.get"]({ kind: "settings" }),
+        ).resolves.toMatchObject({
           ok: false,
         });
         await expect(network!.fetch(settingsResource)).rejects.toThrow();

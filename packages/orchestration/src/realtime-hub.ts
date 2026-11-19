@@ -1,6 +1,7 @@
 import type { AuthSessionId, ThreadId, UserId } from "@opensteer/core";
 import type { HostToClientMessage } from "@opensteer/protocol";
 import type { PersonalScope } from "@opensteer/protocol/personal-sync";
+import type { PersonalResourceKind } from "@opensteer/protocol/resources";
 import type {
   LiveDeliveryOptions,
   PersonalSyncSocket,
@@ -71,6 +72,10 @@ export class RealtimeHub {
         observer.scopes.some((scope) => changedScopes.has(scope))
       )
         observer.wake();
+  }
+
+  resourcesChanged(kinds: ReadonlySet<PersonalResourceKind>): void {
+    for (const { sync } of this.#connections) sync.resourcesChanged(kinds);
   }
 
   guardRead(scopes: readonly string[]) {

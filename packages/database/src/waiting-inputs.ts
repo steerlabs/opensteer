@@ -171,6 +171,8 @@ export async function inputEditEligibility(
   row: InputRow,
   message: Pick<Selectable<MessageTable>, "kind" | "author">,
   requestedBy: UserId,
+  /** Whether the message seeds an unfinished Run, when the caller already read it for a queue. */
+  seedsActiveRun?: boolean,
 ): Promise<boolean> {
   if (
     thread.createdBy !== requestedBy ||
@@ -181,13 +183,14 @@ export async function inputEditEligibility(
   )
     return false;
   if (
-    await transaction
+    seedsActiveRun ??
+    (await transaction
       .selectFrom("runs")
       .select("id")
       .where("seedInputId", "=", row.messageId)
       .where("status", "in", nonTerminalRunStatuses)
       .limit(1)
-      .executeTakeFirst()
+      .executeTakeFirst())
   )
     return false;
   const mirror = row.teamRequestId

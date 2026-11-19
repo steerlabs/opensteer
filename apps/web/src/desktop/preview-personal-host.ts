@@ -2,9 +2,7 @@ import { createId, emptyExecutionPreferences } from "@opensteer/core";
 import type { DesktopDeploymentSummary } from "@opensteer/protocol/desktop";
 import { PersonalNetworkShellSnapshotSchema } from "@opensteer/protocol/personal-sync";
 import {
-  personalResourceKinds,
   PersonalResourceDetailSchema,
-  PersonalResourceRevisionsSchema,
   type PersonalResourceKind,
 } from "@opensteer/protocol/resources";
 
@@ -71,21 +69,6 @@ export function previewPersonalHost(
     setupState: "complete",
     signupPolicy: "closed",
   };
-  const previews = {
-    environment: [{ id: environment.id, label: environment.name, status: environment.status }],
-    machine: [{ id: machine.id, label: machine.name, status: machine.status }],
-  };
-  function summary(kind: PersonalResourceKind) {
-    return {
-      kind,
-      revision: "0",
-      view: {
-        entries: kind === "environment" || kind === "machine" ? previews[kind] : [],
-        complete: true,
-        hasMore: false,
-      },
-    };
-  }
   const details = {
     settings: { settings, quietTaskDays: 7, executionPreferences: emptyExecutionPreferences },
     identity: { identity },
@@ -94,8 +77,6 @@ export function previewPersonalHost(
     machine: { machines: [machine] },
     harness: { harnesses: [] },
     "harness-catalog": { environments: [environment] },
-    "harness-auth": { environments: [environment] },
-    "agent-home-settings": { settings },
     tab: { tabs: previewTabs },
     "tab-layout": { tabs: previewTabs },
     "browser-profile": { profiles: [] },
@@ -109,6 +90,7 @@ export function previewPersonalHost(
     "plugin-webhook-sources": {},
     "plugin-schedules": {},
     "plugin-engine": { engine: { status: "idle" } },
+    "team-replies": {},
   } satisfies Record<PersonalResourceKind, object>;
   const shell = PersonalNetworkShellSnapshotSchema.parse({
     deploymentId: selected.id,
@@ -142,14 +124,9 @@ export function previewPersonalHost(
     attention: [],
     attentionHasMore: false,
     counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
-    resourceRevisions: PersonalResourceRevisionsSchema.parse(
-      Object.fromEntries(personalResourceKinds.map((kind) => [kind, "0"])),
-    ),
-    resources: [summary("machine"), summary("environment")],
   });
   return {
     shell,
-    summary,
     resource: (kind: PersonalResourceKind) =>
       PersonalResourceDetailSchema.parse({
         revision: "0",

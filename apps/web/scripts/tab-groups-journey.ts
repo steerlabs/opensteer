@@ -195,12 +195,7 @@ try {
   await check("the tab resource reports the resulting layout without browser errors", async () => {
     const layout = await page.evaluate(async () => {
       const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-      const summary = await client.rpc["resources.get"]({ kind: "tab-layout" });
-      if (!summary.ok) throw new Error(summary.error.message);
-      const result = await client.rpc["resources.detail.get"]({
-        kind: "tab-layout",
-        expectedRevision: summary.data.revision,
-      });
+      const result = await client.rpc["resources.detail.get"]({ kind: "tab-layout" });
       if (!result.ok) throw new Error(result.error.message);
       if (result.data.data.kind !== "tab-layout") throw new Error("Wrong tab resource");
       return {

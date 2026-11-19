@@ -1,6 +1,4 @@
-import { PersonalRunnerObservations } from "./personal-runner-observations.js";
-import { PersonalResourceObservations } from "./personal-resource-observations.js";
-import { sameRunnerAuxiliaryFence } from "@opensteer/protocol";
+import { ResourceRevisions } from "./personal-resource-revisions.js";
 import { PersonalLiveText } from "./personal-live-text.js";
 import {
   commitPersonalMutation,
@@ -611,7 +609,10 @@ export async function createHostRuntime(
       links: { threadUrl: (threadId) => `${config.canonicalOrigin.origin}/tasks/${threadId}` },
     });
     const realtime = new RealtimeHub();
-    const resourceObservations = new PersonalResourceObservations();
+    const resourceRevisions = new ResourceRevisions((kinds) => {
+      realtime.resourcesChanged(kinds);
+      refreshReturnHints(kinds);
+    });
     const readLiveTail = (threadId: import("@opensteer/core").ThreadId) =>
       void database
         .selectFrom("threads")
@@ -679,13 +680,13 @@ export async function createHostRuntime(
     });
     removeMutationHooks = installPersonalMutationHooks(database, {
       wake: (notice) => {
-        resourceObservations.committed(notice.resourceKinds, notice.head);
         if (BigInt(notice.head) > BigInt(syncHead)) syncHead = notice.head;
         realtime.wake(notice.head, notice.changedScopes);
         refreshReturnHints(notice.resourceKinds);
         // A durable card can pass an on-screen provisional one: move that card to the new tail.
         for (const threadId of liveText.provisionalThreads())
           if (notice.changedScopes.has(`thread:${threadId}`)) readLiveTail(threadId);
+        resourceRevisions.committed(notice.resourceKinds, notice.head);
       },
       suspend: (scopes) => realtime.suspendAuthority(scopes),
       react: (reaction) => {
@@ -693,24 +694,19 @@ export async function createHostRuntime(
         options.onPersonalReaction?.(reaction);
       },
       onFailure: (error, operation) => {
-        if (operation === "wake" || operation === "authority" || operation === "observation")
+        if (operation === "wake" || operation === "authority")
           realtime.closeAll("Personal state delivery failed");
         reportMutationFailure(error);
       },
     });
-    const bumpResources = (...kinds: PersonalResourceKind[]) =>
-      commitPersonalMutation(database, async (_tx, mutation) => {
-        for (const kind of kinds) mutation.bumpResource(kind);
-      });
-    const announceResources = (...kinds: PersonalResourceKind[]) => {
-      const finish = resourceObservations.begin(kinds);
-      void commitPersonalMutation(database, async (_tx, mutation) => {
-        for (const kind of kinds) mutation.bumpResource(kind);
-        mutation.observation(finish);
-      })
-        .finally(finish)
-        .catch(reportMutationFailure);
-    };
+    const seeded = await database
+      .selectFrom("clientSyncState")
+      .select("resourceRevisions")
+      .where("deploymentId", "=", deployment.id)
+      .executeTakeFirst();
+    if (seeded) resourceRevisions.seed(seeded.resourceRevisions);
+    const announceResources = (...kinds: PersonalResourceKind[]) =>
+      resourceRevisions.bump(...kinds);
     await recoverAssignmentResultWaits(database);
     const harnessCatalogs = {
       recordHarnessCatalogs: (...args: Parameters<typeof store.recordHarnessCatalogs>) =>
@@ -1090,66 +1086,12 @@ export async function createHostRuntime(
         await browser.fenceLocalProfile(profileId);
       },
     });
-    const browserPlacementObservations = new Map<
-      RunnerId,
-      {
-        readonly revision: bigint;
-        readonly generation: string;
-        readonly placement: import("@opensteer/protocol").BrowserPlacement;
-      }
-    >();
-    const pendingBrowserPlacements = new Map<RunnerId, object>();
     const runnerBrowsers = new RunnerBrowserRuntimeRouter({
       registry: browserRelay,
       localProfiles,
-      onDeletionsChanged: async () => bumpResources("browser-profile", "browser-home"),
-      onPlacementChanged: (id) => {
-        const kinds = ["browser-placement", "browser-availability", "tab"] as const;
-        const finish = resourceObservations.begin(kinds);
-        const token = {};
-        pendingBrowserPlacements.set(id, token);
-        const stream = browserRelay.stream(id);
-        const placement = browser.resourcePlacements([id])[0];
-        const current = () => {
-          const latest = browserRelay.stream(id);
-          return (
-            pendingBrowserPlacements.get(id) === token &&
-            (stream && latest
-              ? sameRunnerAuxiliaryFence(latest.fence, stream.fence)
-              : latest === stream)
-          );
-        };
-        void commitPersonalMutation(database, async (tx, mutation) => {
-          const runner = await tx
-            .selectFrom("runners")
-            .select(["connectionGeneration", "revokedAt"])
-            .where("id", "=", id)
-            .executeTakeFirst();
-          if (!current()) return;
-          const generation = stream ? String(stream.identity.connectionGeneration) : null;
-          for (const kind of kinds) mutation.bumpResource(kind);
-          mutation.observation(() => {
-            finish();
-            if (!current()) return;
-            const revision = BigInt(mutation.sequence);
-            const previous = browserPlacementObservations.get(id);
-            if (previous && previous.revision >= revision) return;
-            if (
-              placement &&
-              generation &&
-              !runner?.revokedAt &&
-              runner?.connectionGeneration === generation
-            )
-              browserPlacementObservations.set(id, { revision, generation, placement });
-            else browserPlacementObservations.delete(id);
-          });
-        })
-          .finally(() => {
-            finish();
-            if (pendingBrowserPlacements.get(id) === token) pendingBrowserPlacements.delete(id);
-          })
-          .catch(reportMutationFailure);
-      },
+      onDeletionsChanged: async () => announceResources("browser-profile", "browser-home"),
+      onPlacementChanged: () =>
+        announceResources("browser-placement", "browser-availability", "tab"),
     });
     let reportBrowserUsageError: (error: unknown) => void = (error) => {
       console.warn("Browser usage recording failed", error);
@@ -2048,12 +1990,20 @@ export async function createHostRuntime(
       shell: (runnerId, reason) => shellHub?.detachRunner(runnerId, reason),
     };
     let naming: ThreadNaming | undefined;
-    const runnerObservations = new PersonalRunnerObservations(
-      database,
-      resourceObservations,
-      (id) => runnerRegistry?.identityForRunner(id),
-      (id, module) => runnerRegistry?.moduleReadiness(id, module),
-    );
+    // What a Runner's connection, modules and readiness change, read live from the registry.
+    const runnerChanged = (readinessOnly = false) =>
+      resourceRevisions.bump(
+        ...(readinessOnly
+          ? (["machine", "environment", "tab"] as const)
+          : ([
+              "machine",
+              "environment",
+              "harness-catalog",
+              "browser-availability",
+              "browser-placement",
+              "tab",
+            ] as const)),
+      );
     const runners: RunnerRegistry = new RunnerRegistry({
       ...(options.executionClock ? { now: executionNow } : {}),
       executionLeaseMs: config.executionLeaseMs,
@@ -2099,7 +2049,7 @@ export async function createHostRuntime(
           // hear about it from here, because no socket event will arrive.
           auxiliaryModuleOwners[stream.fence.module](stream.identity.runnerId, reason);
         },
-        onModuleReadiness: (identity) => runnerObservations.publish(identity, true, true),
+        onModuleReadiness: async () => runnerChanged(true),
         onShellFullDiskAccess: async (identity, value) => {
           const changed = await store.setRunnerShellFullDiskAccess(
             identity.runnerId,
@@ -2187,7 +2137,7 @@ export async function createHostRuntime(
           // Before the recovery work, which is retried until it succeeds: the
           // row is already offline, and a repeated "reread the list" costs a
           // reader nothing.
-          await runnerObservations.publish(identity, false);
+          runnerChanged();
           notices.notify({ runnerId: identity.runnerId });
           // A lost connection costs a Run nothing: it keeps executing on its
           // lease and reattaches. A revoked Runner can never come back, so its
@@ -2257,7 +2207,7 @@ export async function createHostRuntime(
           () => idleCompactionService?.reconcile() ?? Promise.resolve(),
         ),
         onRunDispatchAvailable: () => wakeExecutionCoordinator(),
-        onHarnessInstallation: runnerObservations.onHarnessInstallation,
+        onHarnessInstallation: async () => runnerChanged(),
         onHarnessCatalogInvalidated: async (identity, invalidation) => {
           try {
             const harness = await store.getHarnessInstance(invalidation.harnessInstanceId);
@@ -2296,7 +2246,7 @@ export async function createHostRuntime(
             if (await initializePersonal()) await ensureLinks();
             // A computer is online the moment it registers, whatever its
             // inventory reconciliation goes on to do.
-            await runnerObservations.publish(identity, true);
+            runnerChanged();
             tabs?.changed();
             void apps
               ?.onRunnerConnected(identity.runnerId)
@@ -3117,9 +3067,7 @@ export async function createHostRuntime(
           .digest(),
         appRealOrigins: hostAppRealOrigins(config.deploymentShape),
         liveText,
-        runnerObservations,
-        resourceObservations,
-        browserPlacementObservations,
+        resourceRevisions,
         ...(options.onPersonalScopeCut ? { onPersonalScopeCut: options.onPersonalScopeCut } : {}),
         deviceAccess: deviceAccessService,
         machineFullDiskAccess,

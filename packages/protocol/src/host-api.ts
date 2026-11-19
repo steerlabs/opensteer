@@ -7,7 +7,6 @@ import {
 import {
   PersonalResourceDetailSchema,
   PersonalResourceKindSchema,
-  PersonalResourceViewSchema,
   PersonalRevisionSchema,
 } from "./resources.js";
 import {
@@ -2312,20 +2311,11 @@ const workspaceHostApi = defineRpc({
       next: z.string().max(4096).nullable(),
     }),
   ),
-  "resources.get": declaration(
-    "GET",
-    z.strictObject({
-      kind: PersonalResourceKindSchema,
-      knownRevision: PersonalRevisionSchema.optional(),
-    }),
-    z.object({ revision: PersonalRevisionSchema, view: PersonalResourceViewSchema }),
-  ),
   "resources.detail.get": declaration(
     "GET",
     z.strictObject({
       kind: PersonalResourceKindSchema,
       id: z.string().max(255).optional(),
-      expectedRevision: PersonalRevisionSchema,
       cursor: z.string().max(4096).optional(),
     }),
     PersonalResourceDetailSchema,

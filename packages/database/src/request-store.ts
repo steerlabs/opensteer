@@ -771,12 +771,25 @@ export class RequestStore {
         const askingNodes = new Map(
           (askingNodeIds.length
             ? await transaction
-                .selectFrom("executionNodes")
-                .select(["id", "title"])
-                .where("id", "in", askingNodeIds)
+                .selectFrom("executionNodes as node")
+                .leftJoin("executionNodes as parent", "parent.id", "node.parentNodeId")
+                .select([
+                  "node.id",
+                  "node.title",
+                  "parent.id as parentId",
+                  "parent.title as parentTitle",
+                ])
+                .where("node.id", "in", askingNodeIds)
                 .execute()
             : []
-          ).map((node) => [node.id, node]),
+          ).map(({ id, title, parentId, parentTitle }) => [
+            id,
+            {
+              id,
+              title,
+              within: parentId && parentTitle ? { id: parentId, title: parentTitle } : null,
+            },
+          ]),
         );
         const presented = await waitingRequestPresentations(transaction, requests, held);
         return {

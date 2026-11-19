@@ -143,7 +143,6 @@ export function createPersonalReads(
         viewerId: session.user.id,
         ...(cursor ? { cursor } : {}),
         ...(selectedThreadId ? { selectedThreadId } : {}),
-        readResources: (sql, viewerId) => resources.initial(sql, viewerId),
       });
       if (cut.kind !== "snapshot") return cut;
       const opened = (await findPersonalSettings(tx)) !== null;
@@ -270,7 +269,6 @@ export function createPersonalReads(
               needsYouCount: state.needsYouCount,
               unreadTaskCount: state.unreadTaskCount,
             },
-            resourceRevisions: state.resourceRevisions,
           }
         : undefined;
     const frames: UnaddressedFrame<CutFrame>[] = [];
@@ -535,8 +533,6 @@ export function createPersonalReads(
         }),
       );
     },
-    "resources.get": async (input, context) =>
-      rpcSuccess(await resources.get(requireSession(context), input.kind)),
     "resources.detail.get": async (input, context) =>
       rpcSuccess(await resources.detail(requireSession(context), input)),
   } satisfies Pick<
@@ -549,7 +545,6 @@ export function createPersonalReads(
     | "node.items.page"
     | "thread.overlays.page"
     | "transcript.item.get"
-    | "resources.get"
     | "resources.detail.get"
   >;
 

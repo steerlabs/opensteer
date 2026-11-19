@@ -172,18 +172,20 @@ test.each([false, true])(
           type: "host.changes",
           fromSequence,
           changes: [],
-          shellProgress: { counts: snapshot.counts, resourceRevisions: snapshot.resourceRevisions },
+          shellProgress: { counts: snapshot.counts },
         });
       }
-      for (const kind of ["tab", "tab-layout", "browser-placement"] as const)
-        realtime.deliver({
-          type: "host.resource",
-          subscriptionId: "shell",
-          generation,
-          kind,
-          revision: throughSequence,
-          view: { entries: [], complete: true, hasMore: false },
-        });
+      realtime.deliver({
+        type: "host.resource",
+        subscriptionId: "shell",
+        generation,
+        revisions: Object.fromEntries(
+          (["tab", "tab-layout", "browser-placement"] as const).map((kind) => [
+            kind,
+            throughSequence,
+          ]),
+        ),
+      });
     };
     const dispatch = vi.fn(async () => {
       // The Host restores the sleeping page on the phone that keeps it.
@@ -233,7 +235,7 @@ test.each([false, true])(
             return Response.json({
               ok: true,
               data: {
-                revision: detail.expectedRevision,
+                revision: String(sequence),
                 next: null,
                 data: { kind: detail.kind, placements: browser().placements },
               },
@@ -242,7 +244,7 @@ test.each([false, true])(
             return Response.json({
               ok: true,
               data: {
-                revision: detail.expectedRevision,
+                revision: String(sequence),
                 next: null,
                 data: { kind: detail.kind, tabs: tabs() },
               },

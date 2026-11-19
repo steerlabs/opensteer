@@ -41,7 +41,6 @@ export const hostApiScopes = {
   "node.items.page": "session",
   "thread.overlays.page": "session",
   "transcript.item.get": "session",
-  "resources.get": "session",
   "resources.detail.get": "session",
   "attention.get": "session",
   "needsYou.get": "session",

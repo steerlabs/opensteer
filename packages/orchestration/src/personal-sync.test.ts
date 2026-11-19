@@ -311,6 +311,9 @@ test("a commit too large for one frame is repaired inline by a snapshot on the s
         lastReplyPreview: "\u0001".repeat(1050),
         failurePreview: null,
         latestRunCompletedAt: null,
+        environmentId: createId("environment"),
+        harnessInstanceId: createId("harnessInstance"),
+        runQueued: false,
       },
     };
   });
@@ -368,15 +371,9 @@ test("a synchronized socket does no state or resource work during five idle minu
     cursor,
     frames: [{ type: "host.snapshot" as const, scope, snapshot, throughSequence: "1" }],
   }));
-  const readResources = vi.fn(async () => [
-    {
-      kind: "settings" as const,
-      revision: "0",
-      view: { entries: [], complete: true, hasMore: false },
-    },
-  ]);
+  const resourceRevisions = vi.fn(() => ({ settings: "0" }));
   const send = vi.fn(async (_raw: string, guard: () => boolean) => guard());
-  const socket = new PersonalSyncSocket({ read, readResources, send, close() {} });
+  const socket = new PersonalSyncSocket({ read, resourceRevisions, send, close() {} });
   try {
     socket.attach({
       type: "client.attach",
@@ -387,17 +384,96 @@ test("a synchronized socket does no state or resource work during five idle minu
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(read).toHaveBeenCalledTimes(1);
-    expect(readResources).toHaveBeenCalledTimes(1);
+    expect(resourceRevisions).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(3);
     socket.ack({ subscriptionId: "shell", generation: 1, throughSequence: "1" });
     await vi.advanceTimersByTimeAsync(5 * 60_000);
     expect(read).toHaveBeenCalledTimes(1);
-    expect(readResources).toHaveBeenCalledTimes(1);
+    expect(resourceRevisions).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(3);
   } finally {
     socket.close("test finished");
     vi.useRealTimers();
   }
+});
+
+test("pushes only watched revisions that differ from what the client installed", async () => {
+  const current = new Map<string, string>([
+    ["settings", "4"],
+    ["machine", "9.0123456789abcdef.2"],
+  ]);
+  const frames: ScopedHostMessage[] = [];
+  const sent = Promise.withResolvers<void>();
+  const socket = new PersonalSyncSocket({
+    read: async () => ({
+      throughSequence: "1",
+      cursor,
+      frames: [{ type: "host.snapshot" as const, scope, snapshot, throughSequence: "1" }],
+    }),
+    resourceRevisions: (kinds) =>
+      Object.fromEntries(kinds.map((kind) => [kind, current.get(kind) ?? "0"])),
+    async send(raw, guard) {
+      if (!guard()) return false;
+      const frame = ScopedHostMessageSchema.parse(JSON.parse(raw));
+      frames.push(frame);
+      if (frame.type === "host.resource") sent.resolve();
+      return true;
+    },
+    close() {},
+  });
+  const resources = () => frames.filter((frame) => frame.type === "host.resource");
+  try {
+    // A resume whose installed revisions are all current is told nothing.
+    socket.attach({
+      type: "client.attach",
+      apiVersion: 64,
+      generation: 1,
+      interests: ["settings", "machine"],
+      installed: { settings: "4", machine: "9.0123456789abcdef.2" },
+    });
+    await vi.waitFor(() =>
+      expect(frames.some((frame) => frame.type === "host.synchronized")).toBe(true),
+    );
+    expect(resources()).toEqual([]);
+    // A kind nobody watches never reaches the socket.
+    current.set("tab", "5");
+    socket.resourcesChanged(new Set(["tab"]));
+    // A runtime fact moves one watched kind; only that kind is sent.
+    current.set("machine", "9.0123456789abcdef.3");
+    socket.resourcesChanged(new Set(["machine", "tab"]));
+    await deadline(sent.promise, "The changed revision was never pushed");
+    expect(resources()).toMatchObject([
+      { type: "host.resource", generation: 1, revisions: { machine: "9.0123456789abcdef.3" } },
+    ]);
+    expect(Object.keys((resources()[0] as { revisions: object }).revisions)).toEqual(["machine"]);
+  } finally {
+    socket.close("test finished");
+  }
+});
+
+test("a socket whose shell read is refused hears no resource revision", async () => {
+  const resourceRevisions = vi.fn(() => ({ settings: "4" }));
+  const send = vi.fn(async () => true);
+  const closed = Promise.withResolvers<string>();
+  const socket = new PersonalSyncSocket({
+    read: async () => {
+      throw Object.assign(new Error("Deployment subscription forbidden"), { code: "forbidden" });
+    },
+    resourceRevisions,
+    send,
+    close: (reason) => closed.resolve(reason),
+  });
+  socket.attach({
+    type: "client.attach",
+    apiVersion: 64,
+    generation: 1,
+    interests: ["settings"],
+    installed: {},
+  });
+  socket.resourcesChanged(new Set(["settings"]));
+  await deadline(closed.promise, "The refused socket was never closed");
+  expect(resourceRevisions).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
 });
 
 test("coalesces live text for its synchronized detail after the durable barrier", async () => {

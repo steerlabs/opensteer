@@ -10,10 +10,7 @@ import {
   listIntegrationConnections,
 } from "@opensteer/database";
 import { DeviceIdSchema } from "@opensteer/core";
-import {
-  commitPersonalMutation,
-  type PersonalMutationTransaction,
-} from "@opensteer/database/personal-mutation";
+import { type PersonalMutationTransaction } from "@opensteer/database/personal-mutation";
 import { personalClientFrameMaxBytes } from "@opensteer/protocol/personal-sync";
 import { attachPersonalSocket } from "./server/personal-socket.js";
 import { readThreadHistory } from "@opensteer/database";
@@ -437,16 +434,7 @@ export interface HostServerDependencies {
   readonly settleRequestDeadlines?: () => Promise<void>;
   readonly runnerAuthenticator: RunnerAuthenticator;
   readonly runners: RunnerRegistry;
-  readonly runnerObservations?: import("./runtime/personal-runner-observations.js").PersonalRunnerObservations;
-  readonly resourceObservations?: import("./runtime/personal-resource-observations.js").PersonalResourceObservations;
-  readonly browserPlacementObservations?: ReadonlyMap<
-    RunnerId,
-    {
-      readonly revision: bigint;
-      readonly generation: string;
-      readonly placement: import("@opensteer/protocol").BrowserPlacement;
-    }
-  >;
+  readonly resourceRevisions: import("./runtime/personal-resource-revisions.js").ResourceRevisions;
   /** The Host's end of every `shell` module control stream. */
   readonly shellControl: ShellControlStreamHandler;
   /** Present when web distribution is packaged. */
@@ -465,13 +453,6 @@ export async function createHostServer(
   dependencies: HostServerDependencies,
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
 ): Promise<FastifyInstance> {
-  const markMachine = () => {
-    const finish = dependencies.resourceObservations?.begin(["machine"]);
-    return commitPersonalMutation(dependencies.store.database, async (_tx, mutation) => {
-      mutation.bumpResource("machine");
-      if (finish) mutation.observation(finish);
-    }).finally(finish);
-  };
   const threadService = new ThreadService(dependencies);
   const app = Fastify({
     routerOptions: { maxParamLength: 8192 },
@@ -559,7 +540,7 @@ export async function createHostServer(
     release:
       dependencies.phoneUpdateRelease ??
       (() => dependencies.staticDistribution?.service.agentPhoneRelease ?? null),
-    changed: () => void markMachine().catch(() => undefined),
+    changed: () => dependencies.resourceRevisions.bump("machine"),
   });
   app.addHook("onClose", async () => phoneUpdates.close());
   const auxiliaryChallenges = new RunnerChallengeAdmission(maxChallengedChannelRuntimeConnections);
@@ -690,9 +671,7 @@ export async function createHostServer(
   const deviceRpcOptions: DeviceRpcOptions = {
     pluginsChanged: (viewers) => {
       if (!viewers.length) return;
-      void commitPersonalMutation(dependencies.store.database, async (_tx, mutation) => {
-        mutation.bumpResource("plugin");
-      }).catch((error: unknown) => app.log.warn({ err: error }, "Plugin revision update failed"));
+      dependencies.resourceRevisions.bump("plugin");
     },
     authenticator: dependencies.authenticator,
     definitions: dependencies.integrations.definitions,
@@ -991,7 +970,6 @@ export async function createHostServer(
       readonly runnerIds: readonly RunnerId[];
       readonly pendingIds: readonly string[];
       readonly asOf: Date;
-      readonly revision: string;
     },
   ): Promise<Omit<MachineProjectionInput, "deploymentOwnsMainComputer">> => {
     const ownerId = session.user.id;
@@ -1124,19 +1102,7 @@ export async function createHostServer(
       computerUsePolicies,
       pendingRunners,
       runners: runnerPage.runners.map((runner) => {
-        const observation =
-          page && dependencies.runnerObservations
-            ? dependencies.runnerObservations.readRunner(
-                runner.id,
-                page.revision,
-                String(runner.connectionGeneration),
-                true,
-              )
-            : undefined;
-        const live =
-          page && dependencies.runnerObservations
-            ? observation?.identity
-            : dependencies.runners.identityForRunner(runner.id);
+        const live = dependencies.runners.identityForRunner(runner.id);
         return {
           updateRequired: runner.updateRequired,
           phoneUpdate: phoneUpdates.projection(runner.id, runner.connectionGeneration, !!live),
@@ -1154,11 +1120,7 @@ export async function createHostServer(
           deviceProfile: runner.deviceProfile,
           ownedByViewer: runner.ownerUserId === ownerId,
           readiness: live
-            ? moduleReadiness(
-                runner.id,
-                runner.moduleDescriptors.browser?.wireVersion,
-                observation?.readiness,
-              )
+            ? moduleReadiness(runner.id, runner.moduleDescriptors.browser?.wireVersion)
             : new Map(),
           revokedAt: runner.revokedAt,
           // Only a live connection says which build it runs.
@@ -1174,18 +1136,10 @@ export async function createHostServer(
    * connection has an answer, so a disconnected computer reports nothing and
    * the projection shows its modules as unavailable rather than as ready.
    */
-  const moduleReadiness = (
-    runnerId: RunnerId,
-    browserSnapshotVersion: number | undefined,
-    observed?: NonNullable<
-      ReturnType<NonNullable<HostServerDependencies["runnerObservations"]>["readRunner"]>
-    >["readiness"],
-  ) => {
+  const moduleReadiness = (runnerId: RunnerId, browserSnapshotVersion: number | undefined) => {
     const readiness = new Map<RunnerModuleName, MachineModuleSummary>();
     for (const module of RunnerModuleNameSchema.options) {
-      const reported = observed
-        ? observed.get(module)
-        : dependencies.runners.moduleReadiness(runnerId, module);
+      const reported = dependencies.runners.moduleReadiness(runnerId, module);
       if (reported === undefined) continue;
       const browserIncompatibility =
         module === "browser" ? browserRuntimeCompatibilityReason(browserSnapshotVersion) : null;
@@ -1209,7 +1163,6 @@ export async function createHostServer(
       readonly deviceIds: readonly string[];
       readonly pendingIds: readonly string[];
       readonly asOf: Date;
-      readonly revision: string;
     },
   ) => {
     const store = page ? new OpensteerStore(page.tx) : dependencies.store;
@@ -1232,7 +1185,6 @@ export async function createHostServer(
         ],
         pendingIds: page.pendingIds,
         asOf: page.asOf,
-        revision: page.revision,
       },
     );
     const connections = ids

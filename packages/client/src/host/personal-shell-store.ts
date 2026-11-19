@@ -21,7 +21,6 @@ interface ShellState {
   readonly history: number;
   readonly generation: number;
   readonly through: string | null;
-  readonly teamReplyRevision: string | null;
   readonly synchronized: boolean;
   readonly snapshot: ShellSnapshot | null;
   readonly tasks: ReadonlyMap<string, Task>;
@@ -34,7 +33,6 @@ const emptyShell: ShellState = {
   history: 0,
   generation: 0,
   through: null,
-  teamReplyRevision: null,
   synchronized: false,
   snapshot: null,
   tasks: new Map(),
@@ -113,7 +111,6 @@ export class PersonalShellStore {
         this.#replace({
           ...old,
           through: frame.throughSequence,
-          teamReplyRevision: frame.throughSequence,
           snapshot,
           tasks,
           taskChanges: emptyShell.taskChanges,
@@ -132,7 +129,6 @@ export class PersonalShellStore {
         const taskChanges: TaskChange[] = [];
         let visits: Map<string, Visit> | undefined;
         let attention: Map<string, Attention> | undefined;
-        let teamReplyRevision = old.teamReplyRevision;
         for (const change of frame.changes) {
           const id = change.entityId;
           switch (change.entityKind) {
@@ -163,15 +159,11 @@ export class PersonalShellStore {
                 (attention ??= new Map(old.attention)).set(id, change.value);
               break;
             }
-            case "signal":
-              if (id === "team-replies") teamReplyRevision = frame.throughSequence;
-              break;
           }
         }
         this.#replace({
           ...old,
           through: frame.throughSequence,
-          teamReplyRevision,
           snapshot:
             old.snapshot && frame.shellProgress
               ? { ...old.snapshot, ...frame.shellProgress }

@@ -12,14 +12,11 @@ import {
   type ScopedClientMessage,
   type ScopedHostMessage,
 } from "@opensteer/protocol/personal-sync";
-import {
-  PersonalResourceViewSchema,
-  PersonalResourceKindSchema,
-  PersonalRevisionSchema,
-  type PersonalResourceKind,
+import type {
+  PersonalResourceKind,
+  PersonalResourceRevisions,
 } from "@opensteer/protocol/resources";
 import { ItemTextStore, liveFrameKey } from "./item-text-store.js";
-import { PersonalResourceStore } from "./personal-resource-store.js";
 import { PersonalShellStore } from "./personal-shell-store.js";
 import {
   personalCacheFormat,
@@ -69,6 +66,12 @@ export interface ObservedDetail {
   saved?: "reading" | "read";
 }
 
+/** The session's resource reads: what it watches, and the revisions the Host says changed. */
+export interface PersonalResourcePort {
+  interests(): { interests: PersonalResourceKind[]; installed: PersonalResourceRevisions };
+  changed(revisions: PersonalResourceRevisions): void;
+}
+
 type Identity = ScopedPersonalIdentity;
 type DetailCheckpoint = {
   readonly cursor: PersonalResumeCursor;
@@ -80,7 +83,6 @@ type ShellCandidate = {
   readonly shell: {
     readonly cursor: PersonalResumeCursor;
     readonly state: import("zod").infer<typeof PersonalShellSnapshotSchema>;
-    readonly resources: Extract<PersonalStreamCheckpoint, { kind: "shell" }>["resources"];
   };
   readonly details: ReadonlyMap<string, DetailCheckpoint>;
 };
@@ -97,7 +99,7 @@ function bytes(value: unknown) {
 
 export class ScopedPersonalStream {
   readonly shell = new PersonalShellStore();
-  readonly resources: PersonalResourceStore;
+  readonly #resources: PersonalResourcePort | undefined;
   readonly #details = new Map<string, ObservedDetail>();
   readonly #slots = new Map<DetailId, ObservedDetail>();
   readonly #writes = new Map<string, () => Promise<void>>();
@@ -125,9 +127,9 @@ export class ScopedPersonalStream {
   #selected: string | undefined;
 
   readonly cache: PersonalStreamCache | undefined;
-  constructor(cache?: PersonalStreamCache, onResource?: (kind: PersonalResourceKind) => void) {
+  constructor(cache?: PersonalStreamCache, resources?: PersonalResourcePort) {
     this.cache = cache;
-    this.resources = new PersonalResourceStore(onResource);
+    this.#resources = resources;
   }
 
   peekDetail(scope: DetailScope) {
@@ -179,13 +181,14 @@ export class ScopedPersonalStream {
     };
   }
 
-  watchResource(kind: PersonalResourceKind, listener: () => void) {
-    const release = this.resources.watch(kind, listener);
-    this.#scheduleWatch();
-    return () => {
-      release();
-      this.#scheduleWatch();
-    };
+  /** The watched kinds changed; tell the Host once this task settles. */
+  watchResources() {
+    if (!this.#send || this.#watchPending) return;
+    this.#watchPending = true;
+    queueMicrotask(() => {
+      this.#watchPending = false;
+      this.#watchResources();
+    });
   }
 
   /**
@@ -232,7 +235,6 @@ export class ScopedPersonalStream {
     this.#attachment++;
     const generation = ++this.#generation;
     this.shell.begin(generation, true);
-    this.resources.begin(generation);
     const candidate = this.#candidate;
     const cursor = candidate
       ? candidate.shell.cursor
@@ -244,7 +246,7 @@ export class ScopedPersonalStream {
     this.#candidateDetails.clear();
     if (selected && subscription && saved)
       this.#candidateDetails.set(selected, { ...saved, generation: subscription.generation });
-    const interests = this.resources.getInterests();
+    const interests = this.#interests();
     send({
       type: "client.attach",
       apiVersion: scopedPersonalApiVersion,
@@ -254,15 +256,7 @@ export class ScopedPersonalStream {
           ? { expectedSessionId: this.#sessionId }
           : {}),
       generation,
-      interests: interests.interests,
-      installed: candidate
-        ? Object.fromEntries(
-            interests.interests.flatMap((kind) => {
-              const held = candidate.shell.resources[kind];
-              return held ? [[kind, held.revision]] : [];
-            }),
-          )
-        : interests.installed,
+      ...interests,
       ...(cursor ? { cursor } : {}),
       ...(subscription && subscription.scope.kind === "thread"
         ? {
@@ -345,7 +339,6 @@ export class ScopedPersonalStream {
     if (this.#flushTimer) clearTimeout(this.#flushTimer);
     this.#flushTimer = undefined;
     this.shell.begin(++this.#generation, false);
-    this.resources.clear();
     for (const detail of this.#details.values()) {
       detail.transcript.begin(++this.#generation, false);
       detail.text.clear();
@@ -425,7 +418,6 @@ export class ScopedPersonalStream {
     if (!this.#send) return;
     const generation = ++this.#generation;
     this.shell.begin(generation, true);
-    this.resources.begin(generation);
     this.#send({
       type: "client.subscribe",
       subscriptionId: "shell",
@@ -448,7 +440,7 @@ export class ScopedPersonalStream {
       this.#settleCandidate(frame);
     const previous = this.shell.getSnapshot();
     if (frame.type === "host.resource") {
-      if (this.resources.install(frame)) this.#checkpoint(shellScope);
+      this.#resources?.changed(frame.revisions);
       return;
     }
     if (frame.type === "host.live" || frame.type === "host.removed") return;
@@ -464,7 +456,7 @@ export class ScopedPersonalStream {
       for (const detail of this.#slots.values()) this.#subscribe(detail, false, true);
     }
     if (frame.type === "host.snapshot" && "tasks" in frame.snapshot) {
-      const { deploymentId, viewerId, epoch, resourceRevisions } = frame.snapshot;
+      const { deploymentId, viewerId, epoch } = frame.snapshot;
       const old = this.#identity;
       const sessionId = frame.snapshot.session?.sessionId;
       if (
@@ -479,7 +471,6 @@ export class ScopedPersonalStream {
       }
       this.#identity = { deploymentId, viewerId, epoch };
       this.#sessionId = sessionId;
-      this.resources.updateRevisions(frame.generation, resourceRevisions);
     }
     // Readiness is set before the shell publishes its first synchronized cut on this socket.
     const firstCut =
@@ -492,17 +483,6 @@ export class ScopedPersonalStream {
       this.repairShell();
       return;
     }
-    if (frame.type === "host.snapshot" && "tasks" in frame.snapshot) {
-      for (const resource of frame.snapshot.resources ?? [])
-        this.resources.install({
-          ...resource,
-          type: "host.resource",
-          subscriptionId: "shell",
-          generation: frame.generation,
-        });
-    }
-    const progress = "shellProgress" in frame ? frame.shellProgress : undefined;
-    if (progress) this.resources.updateRevisions(frame.generation, progress.resourceRevisions);
     this.#ack(frame);
     this.#checkpoint(shellScope);
     if (firstCut) {
@@ -537,8 +517,6 @@ export class ScopedPersonalStream {
       ) {
         // Another viewer, session or history: the saved state was never shown and is removed.
         this.#purge(candidate.identity);
-        // The attach named saved resource revisions; ask for every watched resource again.
-        this.#scheduleWatch();
         return;
       }
     }
@@ -554,17 +532,7 @@ export class ScopedPersonalStream {
         throughSequence: candidate.shell.cursor.afterSequence,
         snapshot: candidate.shell.state,
       });
-      this.resources.updateRevisions(frame.generation, candidate.shell.state.resourceRevisions);
     }
-    for (const [kind, resource] of Object.entries(candidate.shell.resources))
-      if (resource)
-        this.resources.install({
-          ...resource,
-          kind: kind as PersonalResourceKind,
-          type: "host.resource",
-          subscriptionId: "shell",
-          generation: frame.generation,
-        });
     for (const [detail, saved] of pending)
       if (detail.slot && detail.transcript.getSnapshot().generation === saved.generation) {
         this.#installDetail(detail, saved, saved.generation);
@@ -578,7 +546,6 @@ export class ScopedPersonalStream {
     this.#dirty.clear();
     this.#early.length = 0;
     this.#earlyBytes = 0;
-    this.resources.clear();
     for (const detail of this.#details.values()) {
       detail.transcript.begin(++this.#generation, false);
       detail.text.clear();
@@ -731,13 +698,8 @@ export class ScopedPersonalStream {
     });
   }
 
-  #scheduleWatch() {
-    if (!this.#send || this.#watchPending) return;
-    this.#watchPending = true;
-    queueMicrotask(() => {
-      this.#watchPending = false;
-      this.#watchResources();
-    });
+  #interests() {
+    return this.#resources?.interests() ?? { interests: [], installed: {} };
   }
 
   #watchResources() {
@@ -745,7 +707,7 @@ export class ScopedPersonalStream {
       type: "client.resources.watch",
       subscriptionId: "shell",
       generation: this.shell.getSnapshot().generation,
-      ...this.resources.getInterests(),
+      ...this.#interests(),
     });
   }
 
@@ -972,7 +934,6 @@ export class ScopedPersonalStream {
       cursor,
       kind: "shell",
       state: snapshot,
-      resources: this.resources.checkpoint(),
     };
   }
 
@@ -1026,19 +987,10 @@ function validShellCheckpoint(held: PersonalStreamCheckpoint): ShellCandidate | 
     state.session.user.id !== identity.viewerId
   )
     return;
-  const resources = Object.fromEntries(
-    Object.entries(held.resources ?? {}).filter(
-      ([kind, resource]) =>
-        resource &&
-        PersonalResourceKindSchema.safeParse(kind).success &&
-        PersonalRevisionSchema.safeParse(resource.revision).success &&
-        PersonalResourceViewSchema.safeParse(resource.view).success,
-    ),
-  );
   return {
     identity,
     sessionId: state.session.sessionId,
-    shell: { cursor: cursor.data, state, resources },
+    shell: { cursor: cursor.data, state },
     details: new Map(),
   };
 }

@@ -95,6 +95,7 @@ const taskListSourceKeys = [
   "needsYou",
   "threads",
   "environments",
+  "harnesses",
   "runQueue",
 ] as const satisfies readonly (keyof HostSnapshot)[];
 
@@ -536,6 +537,7 @@ export function taskWaitingReason(
     | "tasks"
     | "activeTasks"
     | "environments"
+    | "harnesses"
     | "runQueue"
     | "waitingRequests"
     | "assignments"
@@ -543,6 +545,8 @@ export function taskWaitingReason(
     readonly requests?: Readonly<Record<string, readonly import("@opensteer/core").Request[]>>;
   },
   threadId: string,
+  /** The thread's own Runs, from its detail; the snapshot holds only optimistic ones. */
+  runs: readonly import("./client.js").RunQueueEntry[] = snapshot.runQueue,
 ): TaskWaitingReason | null {
   const thread =
     snapshot.threads.find((thread) => thread.id === threadId) ??
@@ -567,11 +571,25 @@ export function taskWaitingReason(
   if (helper && thread.status === "waiting")
     return { kind: "open-helper", label: `Waiting for ${assignmentTitle(helper, snapshot)}` };
   if (thread.inputQueuePaused) return { kind: "paused-queue", label: "Queue paused" };
-  const queued = snapshot.runQueue.some((entry) => entry.threadId === threadId);
-  if (!queued) return null;
+  // Without the thread's own Runs, its shell row says whether one waits to start.
+  const shellRow = mergeTaskEntries(snapshot.tasks?.entries ?? [], snapshot.activeTasks).find(
+    (entry) => entry.thread.id === threadId,
+  )?.thread;
+  const own = runs.some((entry) => entry.threadId === threadId)
+    ? runs
+    : (thread.runQueued ?? shellRow?.runQueued)
+      ? [queuedRun(thread)]
+      : [];
+  if (own.length === 0) return null;
   const preparing = threadStartHold({
-    thread,
-    runQueue: snapshot.runQueue,
+    thread: {
+      ...thread,
+      harnessLabel:
+        thread.harnessLabel ||
+        snapshot.harnesses.find(({ id }) => id === thread.harnessInstanceId)?.name ||
+        "",
+    },
+    runQueue: own,
     environments: snapshot.environments,
   });
   if (preparing) return { kind: "account-preparing", label: preparing };
@@ -670,4 +688,14 @@ export function quietSeenScope(
   return snapshot.deploymentId && snapshot.user
     ? `${snapshot.deploymentId}:${snapshot.user.id}`
     : null;
+}
+
+function queuedRun(thread: Pick<HostSnapshot["threads"][number], "id" | "askedAt">) {
+  return {
+    id: `queued:${thread.id}`,
+    threadId: thread.id,
+    status: "queued" as const,
+    createdAt: thread.askedAt,
+    runOrdinal: 0,
+  };
 }

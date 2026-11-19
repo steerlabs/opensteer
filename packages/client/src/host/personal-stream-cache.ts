@@ -3,7 +3,6 @@ import type {
   PersonalResumeCursor,
   PersonalShellSnapshotSchema,
 } from "@opensteer/protocol/personal-sync";
-import type { PersonalResourceKind, PersonalResourceView } from "@opensteer/protocol/resources";
 import type { TranscriptState } from "./thread-transcript-store.js";
 
 export const personalCacheFormat = 65;
@@ -16,11 +15,6 @@ export interface PersonalCacheScope {
   readonly format: typeof personalCacheFormat;
 }
 
-export interface InstalledResource {
-  readonly revision: string;
-  readonly view: PersonalResourceView;
-}
-
 export type PersonalStreamCheckpoint = {
   readonly scope: PersonalCacheScope;
   readonly cursor: PersonalResumeCursor;
@@ -29,7 +23,6 @@ export type PersonalStreamCheckpoint = {
       readonly kind: "shell";
       /** Keeps its `session`: a cold start resumes the socket with it before any read. */
       readonly state: import("zod").infer<typeof PersonalShellSnapshotSchema>;
-      readonly resources: Partial<Record<PersonalResourceKind, InstalledResource>>;
     }
   | { readonly kind: "detail"; readonly state: NonNullable<TranscriptState["snapshot"]> }
 );

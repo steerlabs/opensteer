@@ -36,12 +36,18 @@ const taskFields = [
   "lastReplyPreview",
   "failurePreview",
   "latestRunCompletedAt",
+  "environmentId",
+  "harnessInstanceId",
 ] as const;
+
+/** A Run of this thread waits to start and none is executing (the task row's `runQueued`). */
+export const threadRunQueued = sql<boolean>`(exists (select 1 from runs where runs.thread_id = threads.id and runs.status = 'queued') and not exists (select 1 from runs where runs.thread_id = threads.id and runs.status in ('starting','running','waiting')))`;
 
 export function currentTasks(tx: PersonalMutationTransaction, viewerId: UserId) {
   return tx
     .selectFrom("threads")
     .select(taskFields)
+    .select(threadRunQueued.as("runQueued"))
     .where("createdBy", "=", viewerId)
     .where("removedAt", "is", null);
 }
@@ -155,16 +161,29 @@ export async function readTaskPageThreads(
   const rows = await tx
     .selectFrom("threads")
     .selectAll("threads")
-    .select([
-      threadContinuationIdentitySelection,
-      threadPendingRequestsSelection,
-      threadProviderSessionSelection,
-      threadVisitSelection,
-    ])
+    .select(taskPageThreadSelections())
     .where("threads.createdBy", "=", viewerId)
     .where("threads.removedAt", "is", null)
     .where("threads.id", "in", ids)
     .execute();
+  return taskPageThreadsFromRows(tx, rows);
+}
+
+/** The derived columns a task row needs besides its own, selectable or returnable. */
+// A function: this module and thread-status import each other, so a constant can be undefined.
+export function taskPageThreadSelections() {
+  return [
+    threadContinuationIdentitySelection,
+    threadPendingRequestsSelection,
+    threadProviderSessionSelection,
+    threadVisitSelection,
+  ] as const;
+}
+
+export async function taskPageThreadsFromRows(
+  tx: PersonalMutationTransaction,
+  rows: Parameters<typeof threadsFromRows>[0],
+) {
   const returnHints = await compactionReturnHints(
     tx,
     rows.filter((row) => row.providerSessionId !== null).map((row) => row.id),

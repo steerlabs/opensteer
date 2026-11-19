@@ -93,12 +93,7 @@ export class MockPersonalHost {
               throughSequence: revision,
               changes,
               ...(snapshot && "tasks" in snapshot
-                ? {
-                    shellProgress: {
-                      counts: snapshot.counts,
-                      resourceRevisions: snapshot.resourceRevisions,
-                    },
-                  }
+                ? { shellProgress: { counts: snapshot.counts } }
                 : {}),
             });
           if (frame && frame.success && snapshot) {
@@ -288,17 +283,18 @@ export class MockPersonalHost {
     state: SocketState,
     installed: Partial<Record<PersonalResourceKind, string>> = {},
   ) {
-    for (const kind of state.interests) {
-      if (installed[kind] === this.#through) continue;
+    const revisions = Object.fromEntries(
+      state.interests.flatMap((kind) =>
+        installed[kind] === this.#through ? [] : [[kind, this.#through]],
+      ),
+    );
+    if (Object.keys(revisions).length)
       socket.deliver({
         type: "host.resource",
         subscriptionId: "shell",
         generation: shell.generation,
-        kind,
-        revision: this.#through,
-        view: this.client.scopedResource(kind),
+        revisions,
       });
-    }
   }
 
   /** Sends every shell subscription the Host's inline repair: a fresh snapshot in place. */

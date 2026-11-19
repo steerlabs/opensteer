@@ -42,7 +42,7 @@ function menuAction(action: AiEngineAction): readonly AiAccountAction[] {
     : [];
 }
 
-const aiAccountKinds = ["harness", "harness-auth", "harness-catalog"] as const;
+const aiAccountKinds = ["harness", "environment", "harness-catalog"] as const;
 
 export function useAiAccounts(host: HostClient): {
   readonly form: AiAccountsForm;

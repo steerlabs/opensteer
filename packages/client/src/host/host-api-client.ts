@@ -70,7 +70,6 @@ const scopedReadLimits = {
   "transcript.item.get": 1024 * 1024,
   "thread.inputQueue.get": 96 * 1024,
   "thread.overlays.page": 16 * 1024,
-  "resources.get": 32 * 1024,
   "resources.detail.get": 64 * 1024,
   "tasks.page": 64 * 1024,
   "needsYou.get": 64 * 1024,

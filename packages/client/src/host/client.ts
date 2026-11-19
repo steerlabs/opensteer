@@ -221,6 +221,8 @@ export interface ThreadSummary {
   environmentId: string;
   harnessInstanceId: string;
   harnessLabel: string;
+  /** A Run waits to start and none is executing, as the shell's task row says. */
+  runQueued?: boolean;
   id: string;
   inputQueuePaused: boolean;
   /** One of the person's tasks in navigation lists; see the Host's `Thread.listed`. */
@@ -803,7 +805,6 @@ export interface HostSnapshot {
   readonly tabs: import("./tab-store.js").TabStore;
   /** Bumped by host.apps.changed and every reconnect; an Apps page rereads on change. */
   readonly appsRevision: number;
-  readonly teamReplyRevision?: string | null;
   readonly appVersions?: Readonly<Record<string, number>>;
   readonly savedViewReadiness?: SavedViewReadiness;
   /**
@@ -865,12 +866,6 @@ export interface HostSnapshot {
   attentionSummaries?: readonly import("zod").infer<
     typeof import("@opensteer/protocol/personal-sync").PersonalShellSnapshotSchema
   >["attention"][number][];
-  resourceSummaries?: Partial<
-    Record<
-      import("@opensteer/protocol/resources").PersonalResourceKind,
-      import("@opensteer/protocol/resources").PersonalResourceView
-    >
-  >;
   pendingRequestCount?: number;
   needsYouCount?: number;
   environments: EnvironmentSummary[];

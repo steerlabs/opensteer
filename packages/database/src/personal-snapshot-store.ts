@@ -1,10 +1,10 @@
 import type { ThreadId, UserId } from "@opensteer/core";
+import type { DurablePersonalResourceKind } from "@opensteer/protocol/resources";
 import { utf8Prefix } from "@opensteer/core";
 import {
   PersonalDetailSnapshotSchema,
   PersonalShellSnapshotSchema,
 } from "@opensteer/protocol/personal-sync";
-import type { PersonalResourceKind, PersonalResourceView } from "@opensteer/protocol/resources";
 import { encodeOverlayCursor, overlayPage } from "./personal-overlay-store.js";
 import { threadQueueView } from "./personal-queue-view.js";
 import { nodeSubjectView } from "./execution-nodes.js";
@@ -50,20 +50,17 @@ export function taskView(task: Task) {
     lastReplyPreview: task.lastReplyPreview,
     failurePreview: task.failurePreview,
     latestRunCompletedAt: task.latestRunCompletedAt?.toISOString() ?? null,
+    environmentId: task.environmentId,
+    harnessInstanceId: task.harnessInstanceId,
+    runQueued: task.runQueued,
   };
 }
-
-export type InitialPersonalResourcesReader = (
-  tx: Tx,
-  viewerId: UserId,
-) => Promise<readonly { kind: PersonalResourceKind; view: PersonalResourceView }[]>;
 
 export async function buildPersonalShellSnapshot(
   tx: Tx,
   state: SyncState,
   viewerId: UserId,
   selectedThreadId?: ThreadId,
-  readResources?: InitialPersonalResourcesReader,
 ) {
   const window = await readInitialTaskWindows(tx, {
     viewerId,
@@ -72,16 +69,6 @@ export async function buildPersonalShellSnapshot(
   await requireFreshPersonalAttention(tx);
   const attention = await readPendingAttention(tx);
   const { pendingRequestCount, needsYouCount, unreadTaskCount } = state;
-  const resources: { kind: PersonalResourceKind; revision: string; view: PersonalResourceView }[] =
-    [];
-  let resourceBytes = 2;
-  for (const { kind, view } of await (readResources?.(tx, viewerId) ?? [])) {
-    const entry = { kind, revision: state.resourceRevisions[kind], view };
-    const size = Buffer.byteLength(JSON.stringify(entry)) + 1;
-    if (resourceBytes + size > 24 * 1024) continue;
-    resourceBytes += size;
-    resources.push(entry);
-  }
   return PersonalShellSnapshotSchema.parse({
     deploymentId: state.deploymentId,
     viewerId,
@@ -100,8 +87,6 @@ export async function buildPersonalShellSnapshot(
     attention: attention.items,
     attentionHasMore: attention.hasMore,
     counts: { pendingRequestCount, needsYouCount, unreadTaskCount },
-    resourceRevisions: state.resourceRevisions,
-    ...(readResources ? { resources } : {}),
   });
 }
 
@@ -111,7 +96,7 @@ const inputQueueSnapshotBytes = 24 * 1024;
  * Resources a task's compaction return hint reads besides the task itself: the owner's idle
  * compaction policy, the harness, its environment and the hosting computer's capabilities.
  */
-export const returnHintResources: ReadonlySet<PersonalResourceKind> = new Set([
+export const returnHintResources: ReadonlySet<DurablePersonalResourceKind> = new Set([
   "settings",
   "environment",
   "machine",

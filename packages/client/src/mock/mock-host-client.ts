@@ -3,7 +3,6 @@ import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import {
   mockMessageContent,
   mockOverlayRows,
-  mockResourceView,
   mockRequestRevision,
   mockScopedShell,
   mockScopedDetail,
@@ -366,7 +365,7 @@ import {
   type MockTriggerRecord,
 } from "./mock-automations.js";
 import { MockChromeSignIns } from "./mock-chrome-sign-ins.js";
-import { mockComputerUseTurn } from "./mock-computer-use-transcript.js";
+import { mockComputerUseMessageId, mockComputerUseTurn } from "./mock-computer-use-transcript.js";
 import { MockComputerViews } from "./mock-computer-views.js";
 import {
   createInitialIntegrationState,
@@ -2498,13 +2497,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           }),
         );
       return rpcNotFound("Item has no body.");
-    },
-    "resources.get": async ({ kind }) => {
-      const snapshot = client.getSnapshot();
-      return rpcSuccess({
-        revision: String(snapshot.revision),
-        view: mockResourceView(snapshot, kind),
-      });
     },
     "resources.detail.get": async ({ kind }) =>
       rpcSuccess(
@@ -4700,10 +4692,6 @@ export class MockHostClient implements HostClient {
     return mockScopedShell(this.getSnapshot(), mockThread, selected, revision);
   }
 
-  scopedResource(kind: import("@opensteer/protocol/resources").PersonalResourceKind) {
-    return mockResourceView(this.getSnapshot(), kind);
-  }
-
   scopedDetail(threadId: string, nodeId?: string, anchor?: string, revision?: string) {
     return mockScopedDetail(
       this.getSnapshot(),
@@ -5008,6 +4996,11 @@ export class MockHostClient implements HostClient {
       type: "teams.ask.decide",
       ...(input.decision === "approve" ? { expectedRevision: input.expectedRevision } : {}),
     });
+  }
+
+  /** Scripted: a task's next Run waits while its AI account is still getting ready. */
+  mockAccountPreparing(threadId: string): void {
+    this.#state.queueBehindPreparingAccount(threadId);
   }
 
   /** Scripted: a teammate mentions the person's agent, and the Host admits the ask into a task. */
@@ -7662,6 +7655,56 @@ class MockHostState {
    * task for that team thread, or in a new task named for the asker, gated
    * until the person answers. An ask the Host could not admit keeps no task.
    */
+  queueBehindPreparingAccount(threadId: string): void {
+    const snapshot = this.snapshot;
+    const thread = snapshot.threads.find(({ id }) => id === threadId);
+    const harness = snapshot.harnesses.find(({ id }) => id === thread?.harnessInstanceId);
+    if (!thread || !harness) throw new Error("The mock task needs an account.");
+    const waiting = { ...thread, status: "waiting" as const, inputQueuePaused: false };
+    const preparing = HarnessInstanceCatalogSchema.parse({
+      detail: `Preparing ${harness.name}…`,
+      driverKind: harness.driverKind,
+      harnessInstanceId: harness.id,
+      models: [],
+      status: "preparing",
+    });
+    this.update({
+      ...snapshot,
+      revision: snapshot.revision + 1,
+      threads: snapshot.threads.map((candidate) =>
+        candidate.id === threadId ? waiting : candidate,
+      ),
+      activeTasks: [
+        ...snapshot.activeTasks.filter((entry) => entry.thread.id !== threadId),
+        { thread: waiting, lastReply: null, failure: null },
+      ],
+      runQueue: [
+        ...snapshot.runQueue.filter((run) => run.threadId !== threadId),
+        {
+          id: createId("run"),
+          threadId,
+          status: "queued",
+          createdAt: this.now().toISOString(),
+          runOrdinal: 1,
+        },
+      ],
+      environments: snapshot.environments.map((environment) =>
+        environment.id === harness.environmentId
+          ? {
+              ...environment,
+              connected: true,
+              harnessCatalogs: [
+                ...environment.harnessCatalogs.filter(
+                  ({ harnessInstanceId }) => harnessInstanceId !== harness.id,
+                ),
+                preparing,
+              ],
+            }
+          : environment,
+      ),
+    });
+  }
+
   receiveTeamAsk(entry: import("@opensteer/protocol").NeedsYouTeamAskEntry): void {
     this.update(this.withTeamAsk(this.snapshot, entry));
   }
@@ -13179,11 +13222,27 @@ class MockHostState {
             ? this.assignments.get(assignment.parentAssignmentId)
             : undefined;
         }
+        // As the Host does: the asking subagent, and the one it runs inside.
+        const nodes = (this.snapshot.transcripts[request.originatingThreadId] ?? []).filter(
+          (entry): entry is import("../host/client.js").NodeEntry => entry.kind === "node",
+        );
+        const asker = nodes.find(({ nodeId }) => nodeId === request.originatingNodeId);
+        const within = asker?.parentNodeId
+          ? nodes.find(({ nodeId }) => nodeId === asker.parentNodeId)
+          : undefined;
         return {
           assignments: held,
           presentation: null,
           request: PendingRequestSchema.parse(request),
-          subagent: null,
+          subagent: asker
+            ? {
+                id: ExecutionNodeIdSchema.parse(asker.nodeId),
+                title: asker.title,
+                within: within
+                  ? { id: ExecutionNodeIdSchema.parse(within.nodeId), title: within.title }
+                  : null,
+              }
+            : null,
         };
       })
       .sort((left, right) => right.request.createdAt.localeCompare(left.request.createdAt));
@@ -13304,7 +13363,7 @@ function mockComputerUseThreadTranscript(
       author: mockHumanAuthor(),
       body: "Ok can you click on the opensteer org in slack for me",
       createdAt: "2026-08-06T23:28:03.000Z",
-      id: `msg_cu_${runId}_input`,
+      id: mockComputerUseMessageId(runId, "input"),
       kind: "message",
       messageKind: "input",
       runId: null,

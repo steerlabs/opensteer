@@ -202,14 +202,16 @@ export function requestAsker(
   const waiting = reader.waitingRequests.find((entry) => entry.request.id === request.id);
   const title = waiting?.subagent?.title ?? node?.title;
   if (title === undefined) return null;
-  const parent = node?.parentNodeId
-    ? nodes.find((candidate) => candidate.nodeId === node.parentNodeId)
-    : undefined;
+  // A nested asker's card lives in its parent's scope, so the Request names the parent too.
+  const parent =
+    (node?.parentNodeId
+      ? nodes.find((candidate) => candidate.nodeId === node.parentNodeId)?.title
+      : undefined) ?? waiting?.subagent?.within?.title;
   return {
     threadId: request.originatingThreadId,
     nodeId,
     title: subagentTitle(title),
-    byline: parent ? `in ${subagentTitle(parent.title)}` : "subagent",
+    byline: parent ? `in ${subagentTitle(parent)}` : "subagent",
   };
 }
 

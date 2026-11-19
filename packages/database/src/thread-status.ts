@@ -16,9 +16,13 @@ import { sql, type Kysely, type Transaction, type UpdateObject } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { activePersonalMutation, commitPersonalMutation } from "./personal-mutation.js";
 import { isOfflineSettlement } from "./personal-transaction.js";
-import { refreshLatestRunCompletion, unreadTaskContribution } from "./personal-attention-store.js";
+import { refreshLatestRunCompletion, unreadTaskSql } from "./personal-attention-store.js";
 import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
-import { readTaskPageThreads } from "./personal-task-store.js";
+import {
+  taskPageThreadSelections,
+  taskPageThreadsFromRows,
+  threadRunQueued,
+} from "./personal-task-store.js";
 import { detailThreadValue } from "./personal-snapshot-store.js";
 import { publishThreadQueues } from "./personal-queue-view.js";
 
@@ -49,25 +53,10 @@ export async function writeThreadSummary(
       .updateTable("threads")
       .set({ ...changes, revision: mutation.sequence })
       .where("id", "=", threadId)
-      .returning([
-        "nextTranscriptPosition",
-        "id",
-        "title",
-        "revision",
-        "status",
-        "inputQueuePaused",
-        "purpose",
-        "askedAt",
-        "doneAt",
-        "doneReason",
-        "pendingRequestCount",
-        "lastReplyPreview",
-        "failurePreview",
-        "latestRunCompletedAt",
-        "listed",
-        "removedAt",
-        "createdBy",
-      ])
+      // The task row and the derived columns its `thread` value needs, in the one update.
+      .returningAll()
+      .returning(taskPageThreadSelections())
+      .returning(threadRunQueued.as("runQueued"))
       .executeTakeFirstOrThrow();
     const threadScope = `thread:${threadId}` as const;
     const view = {
@@ -84,10 +73,13 @@ export async function writeThreadSummary(
       lastReplyPreview: row.lastReplyPreview,
       failurePreview: row.failurePreview,
       latestRunCompletedAt: row.latestRunCompletedAt?.toISOString() ?? null,
+      environmentId: row.environmentId,
+      harnessInstanceId: row.harnessInstanceId,
+      runQueued: row.runQueued,
     };
     const thread = row.removedAt
       ? undefined
-      : (await readTaskPageThreads(tx, row.createdBy, [threadId])).get(threadId);
+      : (await taskPageThreadsFromRows(tx, [row])).get(threadId);
     if (!thread) {
       mutation.change({
         scopeKey: threadScope,
@@ -201,28 +193,56 @@ export async function projectThreadState(
 ): Promise<void> {
   if (isOfflineSettlement(tx)) return;
   await commitPersonalMutation(tx, async (tx, mutation) => {
-    const before = await unreadTaskContribution(tx, threadId);
-    const thread = await tx
+    // The task, whether it counts as unread, its earliest active Run and its last Run: one read.
+    const row = await tx
       .selectFrom("threads")
-      .select(["status", "inputQueuePaused", "failurePreview", "latestRunCompletedAt"])
-      .where("id", "=", threadId)
+      .leftJoinLateral(
+        (eb) =>
+          eb
+            .selectFrom("runs")
+            .select("runs.status as activeStatus")
+            .where("runs.threadId", "=", threadId)
+            .where("runs.maintenance", "is", null)
+            .where("runs.status", "in", nonTerminalRunStatuses)
+            .orderBy("runs.runOrdinal")
+            .limit(1)
+            .as("active"),
+        (join) => join.onTrue(),
+      )
+      .leftJoinLateral(
+        (eb) =>
+          eb
+            .selectFrom("runs")
+            .select([
+              "runs.status as lastStatus",
+              "runs.maintenance as lastMaintenance",
+              "runs.failure as lastFailure",
+            ])
+            .where("runs.threadId", "=", threadId)
+            .orderBy("runs.runOrdinal", "desc")
+            .limit(1)
+            .as("last"),
+        (join) => join.onTrue(),
+      )
+      .select([
+        "threads.status",
+        "threads.inputQueuePaused",
+        "threads.failurePreview",
+        "threads.latestRunCompletedAt",
+        "active.activeStatus",
+        "last.lastStatus",
+        "last.lastMaintenance",
+        "last.lastFailure",
+        unreadTaskSql.as("unread"),
+      ])
+      .where("threads.id", "=", threadId)
       .executeTakeFirstOrThrow();
-    const active = await tx
-      .selectFrom("runs")
-      .select("status")
-      .where("threadId", "=", threadId)
-      .where("maintenance", "is", null)
-      .where("status", "in", nonTerminalRunStatuses)
-      .orderBy("runOrdinal")
-      .limit(1)
-      .executeTakeFirst();
-    const last = await tx
-      .selectFrom("runs")
-      .select(["status", "maintenance", "failure"])
-      .where("threadId", "=", threadId)
-      .orderBy("runOrdinal", "desc")
-      .limit(1)
-      .executeTakeFirst();
+    const before = Number(row.unread ?? false);
+    const thread = row;
+    const active = row.activeStatus ? { status: row.activeStatus } : undefined;
+    const last = row.lastStatus
+      ? { status: row.lastStatus, maintenance: row.lastMaintenance, failure: row.lastFailure }
+      : undefined;
     const failed = last?.status === "failed" && last.maintenance === null;
     const status =
       thread.status === "archived"
@@ -247,12 +267,10 @@ export async function projectThreadState(
         .where("id", "=", threadId)
         .execute();
     }
-    await refreshLatestRunCompletion(tx, mutation, threadId, before);
-    const current = await tx
-      .selectFrom("threads")
-      .select("latestRunCompletedAt")
-      .where("id", "=", threadId)
-      .executeTakeFirstOrThrow();
+    // Status never moves to or from archived here, so unread can only follow the completion.
+    const current = (await refreshLatestRunCompletion(tx, mutation, threadId, before, true)) ?? {
+      latestRunCompletedAt: thread.latestRunCompletedAt,
+    };
     if (
       changed ||
       force ||

@@ -2,7 +2,9 @@ import {
   AssignmentSummarySchema,
   AuthSessionIdSchema,
   DeploymentIdSchema,
+  EnvironmentIdSchema,
   ExecutionNodeIdSchema,
+  HarnessInstanceIdSchema,
   MessageIdSchema,
   RequestIdSchema,
   RunAttemptIdSchema,
@@ -24,9 +26,7 @@ import { WaitingInputViewSchema } from "./personal-input-queue.js";
 import {
   InstalledResourceRevisionsSchema,
   PersonalResourceInterestsSchema,
-  PersonalResourceKindSchema,
   PersonalResourceRevisionsSchema,
-  PersonalResourceViewSchema,
   PersonalRevisionSchema,
 } from "./resources.js";
 import {
@@ -39,7 +39,6 @@ export const scopedPersonalApiVersion = 64;
 export const personalClientFrameMaxBytes = 32 * 1024;
 export const personalChangesFrameMaxBytes = 64 * 1024;
 export const personalLiveFrameMaxBytes = 16 * 1024;
-export const personalResourceFrameMaxBytes = 32 * 1024;
 export const personalShellFrameMaxBytes = 128 * 1024;
 export const personalDetailFrameMaxBytes = 128 * 1024;
 export const personalControlFrameMaxBytes = 4 * 1024;
@@ -59,8 +58,6 @@ export function personalHostFrameMaxBytes(frame: {
     case "host.live":
     case "host.text":
       return personalLiveFrameMaxBytes;
-    case "host.resource":
-      return personalResourceFrameMaxBytes;
     default:
       return personalControlFrameMaxBytes;
   }
@@ -182,6 +179,11 @@ const task = z.object({
   lastReplyPreview: z.string().max(1120).nullable(),
   failurePreview: z.string().max(1120).nullable(),
   latestRunCompletedAt: z.iso.datetime().nullable(),
+  /** Where it runs and on which account: a task list says when that account is getting ready. */
+  environmentId: EnvironmentIdSchema,
+  harnessInstanceId: HarnessInstanceIdSchema,
+  /** A Run waits to start and none is executing. */
+  runQueued: z.boolean(),
 });
 /** A task row plus the full Thread detail view, return hint included. */
 export const PersonalDetailThreadSchema = task.extend({ thread: ThreadViewSchema });
@@ -206,9 +208,6 @@ export const PersonalRequestSummarySchema = z.object({
   title: z.string().max(240),
   threadId: ThreadIdSchema,
 });
-/** Accepted team replies changed; clients reread the visible reply they wait on. */
-export const PersonalSignalIdSchema = z.enum(["team-replies"]);
-const signal = z.strictObject({ revision: PersonalRevisionSchema });
 export const personalInputQueueMaxEntries = 100;
 const queue = z.object({
   revision: PersonalRevisionSchema,
@@ -271,7 +270,6 @@ export const PersonalShellSnapshotSchema = z.object({
   attention: z.array(attention).max(200),
   attentionHasMore: z.boolean(),
   counts,
-  resourceRevisions: PersonalResourceRevisionsSchema,
   session: z
     .object({
       sessionId: AuthSessionIdSchema,
@@ -287,16 +285,6 @@ export const PersonalShellSnapshotSchema = z.object({
   recentTaskIds: z.array(ThreadIdSchema).max(personalShellSettledTasks),
   nextBefore: z.string().max(4096).nullable(),
   taskCounts: z.object({ active: z.int().nonnegative(), open: z.int().nonnegative() }),
-  resources: z
-    .array(
-      z.object({
-        kind: PersonalResourceKindSchema,
-        revision: PersonalRevisionSchema,
-        view: PersonalResourceViewSchema,
-      }),
-    )
-    .max(15)
-    .optional(),
 });
 
 export const PersonalNetworkShellSnapshotSchema = PersonalShellSnapshotSchema.extend({
@@ -308,7 +296,7 @@ const change = {
   ordinal: z.int().min(0).max(127),
   entityId: z.string().min(1).max(600),
 };
-export const personalShellEntityKinds = ["task", "visit", "attention", "signal"] as const;
+export const personalShellEntityKinds = ["task", "visit", "attention"] as const;
 export const personalDetailEntityKinds = [
   "thread",
   "run-queue",
@@ -342,7 +330,6 @@ export const PersonalChangeSchema = z.union([
   upsert("task", task),
   upsert("visit", visit),
   upsert("attention", attention),
-  upsert("signal", signal),
   upsert("thread", PersonalDetailThreadSchema),
   upsert("run-queue", queue),
   upsert("queue-entry", WaitingInputViewSchema),
@@ -352,10 +339,7 @@ export const PersonalChangeSchema = z.union([
   upsert("node", nodeSubject),
 ]);
 
-const shellProgress = z.strictObject({
-  counts,
-  resourceRevisions: PersonalResourceRevisionsSchema,
-});
+const shellProgress = z.strictObject({ counts });
 const durableAddress = {
   ...address,
   scope: PersonalScopeSchema,
@@ -423,9 +407,8 @@ export const ScopedHostMessageSchema = z
       type: z.literal("host.resource"),
       ...address,
       subscriptionId: z.literal("shell"),
-      kind: PersonalResourceKindSchema,
-      revision: PersonalRevisionSchema,
-      view: PersonalResourceViewSchema,
+      /** The current revision of each watched kind that differs from what the client installed. */
+      revisions: PersonalResourceRevisionsSchema,
     }),
     /** Names a live stream on this socket with `handle`; later text for it is `host.text`. */
     z.strictObject({
@@ -531,11 +514,6 @@ export function personalChangeFitsScope(
         return row.entityId === row.value.threadId && withinCut(row.value.revision, through);
       case "attention":
         return row.entityId === row.value.id && withinCut(row.value.revision, through);
-      case "signal":
-        return (
-          PersonalSignalIdSchema.safeParse(row.entityId).success &&
-          withinCut(row.value.revision, through)
-        );
       default:
         return false;
     }

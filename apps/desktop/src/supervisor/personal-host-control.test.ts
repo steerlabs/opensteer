@@ -1,4 +1,3 @@
-import { personalResourceKinds } from "@opensteer/protocol/resources";
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import { createId } from "@opensteer/core";
 import { hostApi } from "@opensteer/protocol";
@@ -561,7 +560,6 @@ function shellData(): Response {
       nextBefore: null,
       taskCounts: { active: 0, open: 0 },
       counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
-      resourceRevisions: Object.fromEntries(personalResourceKinds.map((kind) => [kind, "0"])),
     }),
   });
 }

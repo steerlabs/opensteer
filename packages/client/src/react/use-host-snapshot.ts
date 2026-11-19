@@ -17,8 +17,7 @@ export function useHostSelector<Selection>(
     () => createHostSelection(store, selector, isEqual),
     [isEqual, selector, store],
   );
-  const { getSnapshot } = selection;
-  return useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot);
+  return useSyncExternalStore(selection.subscribe, selection.getSnapshot, selection.getSnapshot);
 }
 
 const selectSnapshot = (snapshot: HostSnapshot) => snapshot;

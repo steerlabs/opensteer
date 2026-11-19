@@ -30,10 +30,12 @@ test("orders scoped mutations at the deployment fence and leaves no rollback gap
     const scopeKey = "shell" as const;
     const write = (hold?: boolean) =>
       commitPersonalMutation(database, async (_tx, mutation) => {
-        mutation.change(
-          { scopeKey, entityKind: "signal", entityId: "team-replies", operation: "upsert" },
-          () => ({ revision: mutation.sequence }),
-        );
+        mutation.change({
+          scopeKey,
+          entityKind: "visit",
+          entityId: "fence-order",
+          operation: "remove",
+        });
         if (hold) {
           ready.resolve();
           await withTimeout(release.promise, 5_000, {
@@ -60,10 +62,12 @@ test("orders scoped mutations at the deployment fence and leaves no rollback gap
     ]);
     await expect(
       commitPersonalMutation(database, async (_tx, mutation) => {
-        mutation.change(
-          { scopeKey, entityKind: "signal", entityId: "team-replies", operation: "upsert" },
-          () => ({ revision: mutation.sequence }),
-        );
+        mutation.change({
+          scopeKey,
+          entityKind: "visit",
+          entityId: "fence-order",
+          operation: "remove",
+        });
         throw new Error("rollback");
       }),
     ).rejects.toThrow("rollback");
@@ -72,12 +76,13 @@ test("orders scoped mutations at the deployment fence and leaves no rollback gap
       .selectFrom("clientChanges")
       .select(["sequence", "payload"])
       .where("scopeKey", "=", scopeKey)
+      .where("entityId", "=", "fence-order")
       .orderBy("sequence")
       .execute();
     expect(changes).toEqual(
       [1n, 2n, 3n].map((offset) => ({
         sequence: (initial + offset).toString(),
-        payload: { revision: (initial + offset).toString() },
+        payload: {},
       })),
     );
   } finally {
@@ -755,5 +760,69 @@ test("projects the exact decision and provenance on compact Request receipts", a
     }
   } finally {
     await f.close();
+  }
+});
+
+test("names a nested asker and the subagent it runs inside on the waiting Request", async () => {
+  const fixture = await createPersonalStateFixture("nested-asker");
+  const { database, run, attemptId } = fixture;
+  try {
+    const node = (
+      title: string,
+      parentNodeId: ReturnType<typeof createId<"executionNode">> | null,
+    ) => ({
+      id: createId("executionNode"),
+      attemptId,
+      runId: run.runId,
+      status: "running" as const,
+      kind: "subagent" as const,
+      effort: null,
+      phaseIndex: null,
+      phases: sql`'[]'::jsonb`,
+      title,
+      startedAt: new Date(),
+      endedAt: null,
+      nativeRef: title,
+      originCallId: null,
+      parentNodeId,
+      prompt: null,
+      result: null,
+      sessionRef: null,
+      model: null,
+    });
+    const parent = node("Trace the payment flow", null);
+    const child = node("Check webhook retries", parent.id);
+    await database
+      .insertInto("executionNodes")
+      .values([parent, child] as never)
+      .execute();
+    const request = liveRequest({
+      harnessInstanceId: run.harnessInstance.id,
+      id: createId("request"),
+      requestedBy: run.userId,
+      runId: run.runId,
+      threadId: run.threadId,
+      presentation: {
+        kind: "choice",
+        title: "Run stripe listen?",
+        options: [{ id: "allow", label: "Allow", hint: "allow-once" }],
+      },
+    });
+    await database
+      .insertInto("requests")
+      .values({ ...requestInsert(request), originatingNodeId: child.id })
+      .execute();
+    const { RequestStore } = await import("./request-store.js");
+    const page = await new RequestStore(database).waitingOnUserPage({
+      userId: run.userId,
+      limit: 10,
+    });
+    expect(page.requests.find(({ request: { id } }) => id === request.id)?.subagent).toEqual({
+      id: child.id,
+      title: "Check webhook retries",
+      within: { id: parent.id, title: "Trace the payment flow" },
+    });
+  } finally {
+    await fixture.close();
   }
 });

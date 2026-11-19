@@ -22,14 +22,15 @@ export async function executionConnected(
   stack: Pick<VerticalStack, "api" | "environmentId">,
   connected: boolean,
 ): Promise<boolean> {
-  const response = await stack.api["resources.get"]({ kind: "environment" });
-  if (!response.ok) {
-    if (response.error.code === "conflict") return false;
-    throw new Error(response.error.message);
-  }
-  return response.data.view.entries.some(
-    ({ id, status }) =>
-      id === stack.environmentId && status === (connected ? "connected" : "disconnected"),
+  const response = await stack.api["resources.detail.get"]({ kind: "environment" });
+  if (!response.ok) throw new Error(response.error.message);
+  const { data } = response.data;
+  return (
+    data.kind === "environment" &&
+    data.environments.some(
+      ({ id, status }) =>
+        id === stack.environmentId && status === (connected ? "connected" : "disconnected"),
+    )
   );
 }
 export function executionDisconnected(stack: Pick<VerticalStack, "api" | "environmentId">) {

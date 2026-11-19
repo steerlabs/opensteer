@@ -20,6 +20,9 @@ const thread = {
   lastReplyPreview: null,
   failurePreview: null,
   latestRunCompletedAt: null,
+  environmentId: createId("environment"),
+  harnessInstanceId: createId("harnessInstance"),
+  runQueued: false,
 };
 const runId = createId("run");
 const attemptId = createId("runAttempt");

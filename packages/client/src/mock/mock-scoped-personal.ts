@@ -22,12 +22,7 @@ import {
   PersonalDetailSnapshotSchema,
   type ScopedHostMessage,
 } from "@opensteer/protocol/personal-sync";
-import {
-  PersonalResourceRevisionsSchema,
-  personalResourceKinds,
-  type PersonalResourceKind,
-  type PersonalResourceView,
-} from "@opensteer/protocol/resources";
+import type { PersonalResourceKind } from "@opensteer/protocol/resources";
 import {
   TranscriptItemSchema,
   transcriptMessageRefLimits,
@@ -54,7 +49,9 @@ export function mockScopedTask(
   revision: string,
   lastReplyPreview: string | null,
   failurePreview: string | null,
+  runs: readonly { readonly threadId: string; readonly status: string }[] = [],
 ) {
+  const own = runs.filter(({ threadId }) => threadId === thread.id);
   return {
     title: thread.title,
     id: thread.id,
@@ -68,6 +65,11 @@ export function mockScopedTask(
     lastReplyPreview: lastReplyPreview?.slice(0, 500) ?? null,
     failurePreview: failurePreview?.slice(0, 500) ?? null,
     latestRunCompletedAt: thread.latestRunCompletedAt,
+    environmentId: thread.environmentId,
+    harnessInstanceId: thread.harnessInstanceId,
+    runQueued:
+      own.some(({ status }) => status === "queued") &&
+      !own.some(({ status }) => status !== "queued"),
   };
 }
 
@@ -87,7 +89,7 @@ export function mockScopedShell(
   const tasks = [...threads.values()]
     .slice(0, 256)
     .map(({ thread, lastReply, failure }) =>
-      mockScopedTask(toThread(thread), revision, lastReply, failure),
+      mockScopedTask(toThread(thread), revision, lastReply, failure, snapshot.runQueue),
     );
   const listed = new Set<string>(tasks.map(({ id }) => id));
   const activeIds = active.map(({ thread }) => thread.id).filter((id) => listed.has(id));
@@ -140,9 +142,6 @@ export function mockScopedShell(
     },
     attention,
     attentionHasMore: (snapshot.needsYou?.entries.length ?? 0) > attention.length,
-    resourceRevisions: PersonalResourceRevisionsSchema.parse(
-      Object.fromEntries(personalResourceKinds.map((kind) => [kind, revision])),
-    ),
   });
 }
 
@@ -410,7 +409,10 @@ export function mockScopedDetail(
   const start = Math.max(0, end - 50);
   const items = all.slice(start, end);
   return PersonalDetailSnapshotSchema.parse({
-    thread: { ...mockScopedTask(toThread(thread), revision, null, null), thread: toThread(thread) },
+    thread: {
+      ...mockScopedTask(toThread(thread), revision, null, null, snapshot.runQueue),
+      thread: toThread(thread),
+    },
     ...(anchor ? { anchorItemId: anchorIndex === -1 ? null : anchor } : {}),
     items,
     activeItems: [...tools, ...nodes].slice(0, 20),
@@ -465,59 +467,6 @@ export function mockOverlayRows(
   return mockScopedItems(snapshot, threadId, nodeId, revision, nodeEvents).filter(
     (item) => item.kind === (kind === "tools" ? "tool" : "node") && item.view.status === "running",
   );
-}
-
-export function mockResourceView(
-  snapshot: MockTranscriptSnapshot,
-  kind: PersonalResourceKind,
-): PersonalResourceView {
-  const view = (() => {
-    switch (kind) {
-      case "machine":
-        return snapshot.machines.map(({ id, name, status }) => ({ id, label: name, status }));
-      case "environment":
-      case "harness-catalog":
-      case "harness-auth":
-        return snapshot.environments.map(({ id, name, status }) => ({ id, label: name, status }));
-      case "harness":
-        return snapshot.harnesses.map(({ id, name, enabled }) => ({
-          id,
-          label: name,
-          status: enabled ? "enabled" : "disabled",
-        }));
-      case "tab":
-      case "tab-layout":
-        return [...snapshot.tabs.rows.values()].map(({ tabId, title }) => ({
-          id: tabId,
-          label: title.slice(0, 256),
-        }));
-      case "browser-profile":
-        return snapshot.browserProfiles.map(({ id, name }) => ({ id, label: name }));
-      case "browser-placement":
-        return snapshot.browserPlacements.flatMap(({ runtimeId, label }) =>
-          runtimeId ? [{ id: runtimeId, label }] : [],
-        );
-      case "browser-home":
-        return (snapshot.browserProfileHomes ?? []).map((id) => ({ id }));
-      case "plugin":
-      case "plugin-scheduled-runs":
-      case "plugin-workflow-runs":
-      case "plugin-webhooks":
-      case "plugin-webhook-sources":
-      case "plugin-schedules":
-      case "plugin-engine":
-        return [];
-      case "browser-availability":
-        return [{ id: "browser", status: snapshot.browserAvailable ? "available" : "unavailable" }];
-      case "owner-profile":
-        return snapshot.ownerProfile?.name
-          ? [{ id: "owner", label: snapshot.ownerProfile.name }]
-          : [];
-      default:
-        return [];
-    }
-  })();
-  return { entries: view.slice(0, 32), complete: view.length <= 32, hasMore: view.length > 32 };
 }
 
 function mockScopedNodeItems(
@@ -648,7 +597,6 @@ export function mockScopedResource(
       return { kind, ownerProfile: bootstrap.ownerProfile ?? null };
     case "environment":
     case "harness-catalog":
-    case "harness-auth":
       return { kind, environments: bootstrap.environments };
     case "harness":
       return { kind, harnesses: bootstrap.harnesses };
@@ -673,13 +621,12 @@ export function mockScopedResource(
     case "plugin-webhooks":
     case "plugin-webhook-sources":
     case "plugin-schedules":
+    case "team-replies":
       return { kind };
     case "plugin-engine":
       return { kind, engine: { status: "idle" } };
     case "browser-availability":
       return { kind, available: bootstrap.browser.available };
-    case "agent-home-settings":
-      return { kind, settings: bootstrap.personalSettings };
   }
 }
 

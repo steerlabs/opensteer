@@ -29,13 +29,7 @@ import { TasksHome } from "./tasks-home.js";
 import { belongsToPreviousLogin, heldTaskStart } from "./task-start.js";
 import { setAsideStagedFiles } from "../attachments/use-staged-attachments.js";
 
-const homeResources = [
-  "environment",
-  "harness",
-  "harness-catalog",
-  "harness-auth",
-  "settings",
-] as const;
+const homeResources = ["environment", "harness", "harness-catalog", "settings"] as const;
 
 /** Home: what should your agent do, and the composer that starts it. */
 export function HomeRoute() {

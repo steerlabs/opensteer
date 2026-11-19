@@ -186,13 +186,7 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
   );
 }
 
-const threadResourceKinds = [
-  "environment",
-  "harness",
-  "harness-catalog",
-  "harness-auth",
-  "settings",
-] as const;
+const threadResourceKinds = ["environment", "harness", "harness-catalog", "settings"] as const;
 const noRuns: readonly import("@opensteer/client/host").RunQueueEntry[] = [];
 const noRows: readonly string[] = [];
 
@@ -1079,8 +1073,9 @@ function ThreadView({
   const title = conversationName(thread.title);
   // Under the name only when the task is not plainly working, and only what is known.
   const waitingReason = useMemo(
-    () => (thread.status === "waiting" ? taskWaitingReason(snapshot, thread.id) : null),
-    [snapshot, thread.id, thread.status],
+    () =>
+      thread.status === "waiting" ? taskWaitingReason(snapshot, thread.id, threadRunQueue) : null,
+    [snapshot, thread.id, thread.status, threadRunQueue],
   );
   // What the task's own strip used to say beyond its state — offline, its
   // account preparing, a result that could not be returned — is said here.

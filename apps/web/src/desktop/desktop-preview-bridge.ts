@@ -644,15 +644,18 @@ export function desktopPreviewBridge(
         emit({ ...address, type: "host.snapshot", snapshot: data.shell });
         emit({ ...address, type: "host.synchronized" });
       }
-      if (message.type === "client.attach" || message.type === "client.resources.watch") {
-        for (const kind of message.interests)
-          emit({
-            type: "host.resource",
-            subscriptionId: "shell",
-            generation: message.generation,
-            ...data.summary(kind),
-          });
-      }
+      // Every preview resource is fixed at revision "0".
+      if (message.type !== "client.attach" && message.type !== "client.resources.watch") return;
+      const revisions = Object.fromEntries(
+        message.interests.flatMap((kind) => (message.installed[kind] === "0" ? [] : [[kind, "0"]])),
+      );
+      if (Object.keys(revisions).length)
+        emit({
+          type: "host.resource",
+          subscriptionId: "shell",
+          generation: message.generation,
+          revisions,
+        });
     },
 
     signOut: async () => {

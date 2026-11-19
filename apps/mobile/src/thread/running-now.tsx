@@ -1,14 +1,6 @@
-import {
-  agentCardLabel,
-  runningNow,
-  sameRunningNow,
-  SubagentCache,
-  type HostClient,
-  type HostSnapshot,
-  type RunningNow,
-} from "@opensteer/client/host";
-import { useHostSelector, useThreadTranscript } from "@opensteer/client/react";
-import { memo, useMemo, type ReactNode } from "react";
+import { agentCardLabel, type HostClient, type RunningNow } from "@opensteer/client/host";
+import { useRunningNow } from "@opensteer/client/react";
+import { memo, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
 import { dismissKeyboard } from "../ui/composer-editor.js";
 import Animated from "react-native-reanimated";
@@ -19,42 +11,10 @@ import { useKeyboardVisible } from "../ui/keyboard.js";
 import { enter, exit } from "../ui/motion.js";
 import { AppText, monoFontFamily } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { heldSelector } from "./agent-select.js";
 import { AgentGround, AgentMark } from "./agent-mark.js";
 import { AgentPhrases, Elapsed } from "./subagent-rows.js";
 import { SubagentStop, useSubagentStopLine } from "./subagent-stop.js";
 import { trace } from "./trace-styles.js";
-
-/**
- * What runs in one conversation now, read once per change through one cache,
- * so a row that did not change is the same object as before. Out of reach of
- * the conversation's computer, everything is what was last known.
- */
-export function useRunningNow(
-  hostClient: HostClient,
-  threadId: string,
-  reachable: boolean,
-  /** Whether its screen is in front; one stacked out of sight holds no subscription. */
-  observed: boolean,
-): RunningNow | null {
-  const { entries, requests } = useThreadTranscript(hostClient, threadId, observed);
-  const select = useMemo(() => {
-    const cache = new SubagentCache();
-    return heldSelector((snapshot: HostSnapshot) =>
-      runningNow(
-        {
-          ...snapshot,
-          connection: reachable ? snapshot.connection : "offline",
-          transcripts: { [threadId]: entries },
-          requests: { [threadId]: requests },
-        },
-        threadId,
-        cache,
-      ),
-    );
-  }, [entries, reachable, requests, threadId]);
-  return useHostSelector(hostClient, select, sameRunningNow);
-}
 
 /** Below this height the keyboard leaves the conversation too little room for the capsule too. */
 const shortWindow = 560;

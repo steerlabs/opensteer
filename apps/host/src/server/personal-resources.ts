@@ -9,14 +9,11 @@ import {
   tabsMaxPerOwner,
   excludedBackgroundAccounts,
   runnerAgentToolsFailure,
-  utf8Prefix,
   type AuthenticatedSession,
   type UserId,
-  type RunnerId,
 } from "@opensteer/core";
 import {
   findPersonalSettings,
-  hasEligibleBrowserPlacement,
   isEligibleBrowserRunner,
   readBrowserHomeResourcePage,
   OpensteerStore,
@@ -29,16 +26,12 @@ import { maxHarnessModelsPerCatalog, rpcSuccess, type MachineSummary } from "@op
 import {
   pluginChangeResources,
   PersonalResourceDetailSchema,
-  PersonalResourceViewSchema,
   type PersonalResourceKind,
-  type PersonalResourceRevisions,
-  type PersonalResourceView,
 } from "@opensteer/protocol/resources";
 import { z } from "zod";
 import { harnessView } from "../administration/authority.js";
 import type { HostServerDependencies } from "../server.js";
 
-type Summary = PersonalResourceView["entries"][number];
 type Detail = z.infer<typeof PersonalResourceDetailSchema>["data"];
 type DetailEnvironment = Extract<Detail, { kind: "environment" }>["environments"][number];
 type MachinePage = {
@@ -46,11 +39,9 @@ type MachinePage = {
   readonly deviceIds: readonly string[];
   readonly pendingIds: readonly string[];
   readonly asOf: Date;
-  readonly revision: string;
 };
 type ResourceInput = {
   readonly kind: PersonalResourceKind;
-  readonly expectedRevision: string;
   readonly id?: string | undefined;
   readonly cursor?: string | undefined;
 };
@@ -60,19 +51,6 @@ const catalogKey = z.tuple([
   z.int().positive().max(maxHarnessModelsPerCatalog),
 ]);
 const maxRows = 100;
-
-function summary(entries: readonly Summary[], incomplete = false): PersonalResourceView {
-  const kept: Summary[] = [];
-  let bytes = 512;
-  for (const entry of entries) {
-    const next = { ...entry, ...(entry.label ? { label: utf8Prefix(entry.label, 256) } : {}) };
-    bytes += Buffer.byteLength(JSON.stringify(next)) + 1;
-    if (kept.length === 32 || bytes > 32 * 1024) break;
-    kept.push(next);
-  }
-  const hasMore = incomplete || kept.length < entries.length;
-  return PersonalResourceViewSchema.parse({ entries: kept, complete: !hasMore, hasMore });
-}
 
 function conflict(): never {
   throw new OpensteerError({
@@ -112,239 +90,27 @@ export class PersonalResources {
     return authorizedSyncState(tx, viewerId);
   }
 
-  isCurrent(kind: PersonalResourceKind, revision: string) {
-    return this.#dependencies.resourceObservations?.isCurrent(kind, revision) ?? true;
+  revisions(kinds: readonly PersonalResourceKind[]) {
+    return this.#dependencies.resourceRevisions.read(kinds);
   }
 
-  async initial(tx: PersonalMutationTransaction, viewerId: UserId) {
-    const settings = await tx
-      .selectFrom("personalSettings")
-      .select(["ownerName", "agentHomeComputerId"])
-      .where("ownerId", "=", viewerId)
-      .limit(1)
-      .executeTakeFirst();
-    return [
-      { kind: "settings" as const, view: summary(settings ? [{ id: "personal" }] : []) },
-      {
-        kind: "owner-profile" as const,
-        view: summary(settings ? [{ id: viewerId, label: settings.ownerName ?? "You" }] : []),
-      },
-      {
-        kind: "agent-home-settings" as const,
-        view: summary(settings ? [{ id: settings.agentHomeComputerId }] : []),
-      },
-    ];
-  }
-
-  async get(session: AuthenticatedSession, kind: PersonalResourceKind) {
-    await this.#dependencies.resourceObservations?.waitForCurrent([kind]);
-    const result = await withPersonalSyncRead(this.#dependencies.store.database, async (tx) => {
-      const state = await authorizedSyncState(tx, session.user.id);
-      const revision = state.resourceRevisions[kind];
-      if (!this.isCurrent(kind, revision)) return conflict();
-      return {
-        revision,
-        view: await this.#summaryAt(tx, session, kind, revision),
-      };
-    });
-    return this.isCurrent(kind, result.revision) ? result : conflict();
-  }
-
-  async watched(
-    session: AuthenticatedSession,
-    interests: readonly PersonalResourceKind[],
-    installed: Partial<PersonalResourceRevisions>,
-    signal: AbortSignal,
-  ) {
-    await this.#dependencies.resourceObservations?.waitForCurrent(interests);
-    signal.throwIfAborted();
-    return withPersonalSyncRead(this.#dependencies.store.database, async (tx) => {
-      const state = await authorizedSyncState(tx, session.user.id);
-      const views = [];
-      for (const kind of interests) {
-        signal.throwIfAborted();
-        const revision = state.resourceRevisions[kind];
-        if (installed[kind] === revision) continue;
-        views.push({ kind, revision, view: await this.#summaryAt(tx, session, kind, revision) });
-      }
-      return views;
-    });
-  }
-
-  async #summaryAt(
-    tx: PersonalMutationTransaction,
-    session: AuthenticatedSession,
-    kind: PersonalResourceKind,
-    revision: string,
-  ) {
-    const ownerId = session.user.id;
-    switch (kind) {
-      case "identity":
-        return summary([{ id: "identity" }]);
-      case "settings":
-      case "owner-profile":
-      case "agent-home-settings":
-        return (await this.initial(tx, ownerId)).find((entry) => entry.kind === kind)!.view;
-      case "machine": {
-        const rows = await readMachineResourceKeys(tx, ownerId, { asOf: new Date(), limit: 33 });
-        return summary(rows.map(({ id, name, status }) => ({ id, label: name, status })));
-      }
-      case "tab":
-      case "tab-layout": {
-        const rows = await tx
-          .selectFrom("personalTabs")
-          .select(["id", "title"])
-          .where("ownerId", "=", ownerId)
-          .where("closedAt", "is", null)
-          .orderBy("id")
-          .limit(33)
-          .execute();
-        return summary(rows.map(({ id, title }) => ({ id, label: title })));
-      }
-      case "browser-home":
-      case "browser-placement": {
-        const rows = await readBrowserHomeResourcePage(tx, ownerId, { limit: 33 });
-        if (kind === "browser-home")
-          return summary(rows.map(({ id, name }) => ({ id, label: name })));
-        const placements = this.#placementsAt(rows, revision);
-        return summary(
-          placements.map(({ runnerId, available }) => ({
-            id: runnerId,
-            status: available ? "available" : "unavailable",
-          })),
-          rows.length > 32,
-        );
-      }
-      case "plugin":
-      case "plugin-scheduled-runs":
-      case "plugin-workflow-runs":
-      case "plugin-webhooks":
-      case "plugin-webhook-sources":
-      case "plugin-schedules":
-      case "plugin-engine":
-        return summary([]);
-      case "browser-availability":
-        return summary([
-          {
-            id: "browser",
-            status: (await this.#browserAvailable(tx, ownerId, revision))
-              ? "available"
-              : "unavailable",
-          },
-        ]);
-      case "environment":
-      case "harness-auth":
-      case "harness-catalog": {
-        const rows = await tx
-          .selectFrom("executionEnvironments as env")
-          .innerJoin("personalSettings as settings", "settings.agentHomeComputerId", "env.runnerId")
-          .innerJoin("runners", "runners.id", "env.runnerId")
-          .select(["env.id", "env.name", "runners.id as runnerId", "runners.connectionGeneration"])
-          .where("settings.ownerId", "=", ownerId)
-          .where("runners.revokedAt", "is", null)
-          .orderBy("env.id")
-          .limit(33)
-          .execute();
-        return summary(
-          rows.map(({ id, name, runnerId, connectionGeneration }) => ({
-            id,
-            label: name,
-            status: this.#runnerAt(id, runnerId, revision, connectionGeneration)
-              ? "connected"
-              : "disconnected",
-          })),
-        );
-      }
-      case "harness": {
-        const rows = await tx
-          .selectFrom("harnessInstances as harness")
-          .innerJoin("executionEnvironments as env", "env.id", "harness.environmentId")
-          .innerJoin("personalSettings as settings", "settings.agentHomeComputerId", "env.runnerId")
-          .innerJoin("runners", "runners.id", "env.runnerId")
-          .select(["harness.id", "harness.name", "harness.enabled"])
-          .where("settings.ownerId", "=", ownerId)
-          .where("harness.removedAt", "is", null)
-          .where("runners.revokedAt", "is", null)
-          .orderBy("harness.id")
-          .limit(33)
-          .execute();
-        return summary(
-          rows.map(({ id, name, enabled }) => ({
-            id,
-            label: name,
-            status: enabled ? "enabled" : "disabled",
-          })),
-        );
-      }
-      case "browser-profile": {
-        const rows = await tx
-          .selectFrom("browserProfiles")
-          .select(["id", "name"])
-          .where("ownerId", "=", ownerId)
-          .where("archivedAt", "is", null)
-          .orderBy("id")
-          .limit(33)
-          .execute();
-        return summary(rows.map(({ id, name }) => ({ id, label: name })));
-      }
-    }
-  }
-
-  #runnerAt(
-    id: import("@opensteer/core").EnvironmentId,
-    runnerId: RunnerId | null,
-    revision: string,
-    connectionGeneration: string | undefined,
-  ) {
-    const { runnerObservations, runners } = this.#dependencies;
-    if (runnerObservations)
-      return !runnerId || connectionGeneration === undefined
-        ? undefined
-        : runnerObservations.readRunner(runnerId, revision, connectionGeneration)?.identity;
-    return runners.identityForEnvironment(id);
-  }
-
-  #placementsAt(rows: readonly { id: RunnerId; connectionGeneration: string }[], revision: string) {
-    const observations = this.#dependencies.browserPlacementObservations;
-    if (!observations)
-      return this.#dependencies.browser.resourcePlacements(rows.map(({ id }) => id));
-    const cut = BigInt(revision);
-    return rows.flatMap(({ id, connectionGeneration }) => {
-      const observed = observations.get(id);
-      return observed && observed.revision <= cut && observed.generation === connectionGeneration
-        ? [observed.placement]
-        : [];
-    });
-  }
-
-  async #browserAvailable(tx: PersonalMutationTransaction, ownerId: UserId, revision: string) {
-    const observations = this.#dependencies.browserPlacementObservations;
-    if (observations) {
-      const cut = BigInt(revision);
-      return hasEligibleBrowserPlacement(
-        tx,
-        ownerId,
-        [...observations].flatMap(([id, observed]) =>
-          observed.revision <= cut && observed.placement.available
-            ? [{ id, generation: observed.generation }]
-            : [],
-        ),
+  #browserAvailable(tx: PersonalMutationTransaction, ownerId: UserId) {
+    return this.#dependencies.browser
+      .resourcePlacements()
+      .filter(({ available }) => available)
+      .reduce<Promise<boolean>>(
+        async (found, { runnerId }) =>
+          (await found) || isEligibleBrowserRunner(tx, ownerId, runnerId),
+        Promise.resolve(false),
       );
-    }
-    for (const placement of this.#dependencies.browser.resourcePlacements())
-      if (placement.available && (await isEligibleBrowserRunner(tx, ownerId, placement.runnerId)))
-        return true;
-    return false;
   }
 
   async detail(session: AuthenticatedSession, input: ResourceInput) {
-    await this.#dependencies.resourceObservations?.waitForCurrent([input.kind]);
-    const result = await withPersonalSyncRead(this.#dependencies.store.database, async (tx) => {
+    // Taken before the read opens, so the data is never older than the revision it reports.
+    const revision = this.#dependencies.resourceRevisions.get(input.kind);
+    return withPersonalSyncRead(this.#dependencies.store.database, async (tx) => {
       const ownerId = session.user.id;
-      const state = await authorizedSyncState(tx, ownerId);
-      const revision = state.resourceRevisions[input.kind];
-      if (revision !== input.expectedRevision || !this.isCurrent(input.kind, revision))
-        return conflict();
+      await authorizedSyncState(tx, ownerId);
       let after: string | undefined;
       if (input.cursor) {
         try {
@@ -438,7 +204,6 @@ export class PersonalResources {
         const values = await this.#machines(session, {
           tx,
           asOf,
-          revision,
           deviceIds: candidates.filter(({ source }) => source === "device").map(({ id }) => id),
           pendingIds: candidates.filter(({ source }) => source === "pending").map(({ id }) => id),
         });
@@ -502,7 +267,9 @@ export class PersonalResources {
             kind,
             homes: selected.map(({ id }) => id),
           }));
-        const placements = this.#placementsAt(rows.slice(0, maxRows), revision);
+        const placements = this.#dependencies.browser.resourcePlacements(
+          rows.slice(0, maxRows).map(({ id }) => id),
+        );
         const byId = new Map(placements.map((placement) => [placement.runnerId, placement]));
         return page(rows, (selected) => ({
           kind,
@@ -521,7 +288,7 @@ export class PersonalResources {
         const ids = [
           ...new Set(models.slice(0, maxRows).map(({ environmentId }) => environmentId)),
         ];
-        const environments = await this.#environments(store, tx, ownerId, revision, {
+        const environments = await this.#environments(store, ownerId, {
           ids,
           limit: maxRows,
         });
@@ -561,14 +328,13 @@ export class PersonalResources {
       }
       if (
         kind === "settings" ||
-        kind === "agent-home-settings" ||
         kind === "identity" ||
         kind === "owner-profile" ||
         kind === "browser-availability"
       ) {
         return PersonalResourceDetailSchema.parse({
           revision,
-          data: await this.#compactDetail(tx, store, session, kind, revision),
+          data: await this.#compactDetail(tx, store, session, kind),
           next: null,
         });
       }
@@ -630,44 +396,25 @@ export class PersonalResources {
           (harnesses) => ({ kind: "harness", harnesses }),
         );
       }
-      const environments = await this.#environments(store, tx, ownerId, revision, {
+      const environments = await this.#environments(store, ownerId, {
         ...(after ? { afterId: EnvironmentIdSchema.parse(after) } : {}),
         ...(input.id ? { id: EnvironmentIdSchema.parse(input.id) } : {}),
         limit: maxRows + 1,
       });
       return page(environments, (rows) => ({ kind, environments: rows }));
     });
-    return this.isCurrent(input.kind, result.revision) ? result : conflict();
   }
   async #environments(
     store: OpensteerStore,
-    tx: PersonalMutationTransaction,
     ownerId: UserId,
-    revision: string,
     {
       limit,
       ...options
     }: { limit: number } & NonNullable<Parameters<OpensteerStore["listEnvironmentsForUser"]>[2]>,
   ): Promise<DetailEnvironment[]> {
     const rows = await store.listEnvironmentsForUser(ownerId, limit, options);
-    const runnerIds = [...new Set(rows.flatMap(({ runnerId }) => (runnerId ? [runnerId] : [])))];
-    const runners = runnerIds.length
-      ? await tx
-          .selectFrom("runners")
-          .select(["id", "connectionGeneration"])
-          .where("id", "in", runnerIds)
-          .execute()
-      : [];
-    const generations = new Map(
-      runners.map(({ id, connectionGeneration }) => [id, connectionGeneration]),
-    );
     return rows.map((environment) => {
-      const runner = this.#runnerAt(
-        environment.id,
-        environment.runnerId,
-        revision,
-        environment.runnerId ? generations.get(environment.runnerId) : undefined,
-      );
+      const runner = this.#dependencies.runners.identityForEnvironment(environment.id);
       const toolFailure = runner && runnerAgentToolsFailure([...runner.capabilities]);
       return {
         ...environment,
@@ -698,9 +445,7 @@ export class PersonalResources {
     tx: PersonalMutationTransaction,
     store: OpensteerStore,
     session: AuthenticatedSession,
-    kind:
-      "identity" | "owner-profile" | "settings" | "agent-home-settings" | "browser-availability",
-    revision: string,
+    kind: "identity" | "owner-profile" | "settings" | "browser-availability",
   ): Promise<Detail> {
     const { authenticator, ownerProfile } = this.#dependencies;
     const ownerId = session.user.id;
@@ -713,14 +458,12 @@ export class PersonalResources {
         ]);
         return { kind, settings, executionPreferences, quietTaskDays };
       }
-      case "agent-home-settings":
-        return { kind, settings: await findPersonalSettings(tx) };
       case "owner-profile":
         return { kind, ownerProfile: (await ownerProfile?.view()) ?? null };
       case "identity":
         return { kind, identity: await authenticator.identity.configuration() };
       case "browser-availability":
-        return { kind, available: await this.#browserAvailable(tx, ownerId, revision) };
+        return { kind, available: await this.#browserAvailable(tx, ownerId) };
     }
   }
 }

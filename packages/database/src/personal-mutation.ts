@@ -26,8 +26,8 @@ import type {
   ClientChangeOperation,
   ClientEntityKind,
   ClientSyncStateTable,
+  DurablePersonalResourceKind,
   PersonalAttentionTable,
-  PersonalResourceKind,
   PersonalScopeKey,
   TranscriptItemTable,
 } from "./personal-state-schema.js";
@@ -93,7 +93,7 @@ interface CommitNotice {
   readonly head: string;
   readonly floor: string;
   readonly changedScopes: ReadonlySet<string>;
-  readonly resourceKinds: ReadonlySet<PersonalResourceKind>;
+  readonly resourceKinds: ReadonlySet<DurablePersonalResourceKind>;
 }
 
 export type PersonalCommitReaction =
@@ -177,7 +177,7 @@ interface PersonalMutationHooks {
     committed(): void;
     rolledBack(): void;
   };
-  onFailure(error: unknown, operation: "wake" | "authority" | "observation" | "reaction"): void;
+  onFailure(error: unknown, operation: "wake" | "authority" | "reaction"): void;
 }
 
 const hooks = new WeakMap<TargetDb, PersonalMutationHooks>();
@@ -220,13 +220,12 @@ type ProjectionWrite = () => Promise<void>;
 class Mutation {
   readonly state: State & { now: Date };
   readonly sequence: string;
-  readonly resourceKinds = new Set<PersonalResourceKind>();
+  readonly resourceKinds = new Set<DurablePersonalResourceKind>();
   readonly authorityScopes = new Set<ScopeAuthority>();
   readonly #scopes = new Map<PersonalScopeKey, Map<string, Change>>();
   readonly #resetScopes = new Set<PersonalScopeKey>();
   readonly #reactions = new Set<() => void | Promise<unknown>>();
   readonly #ownerReactions: PersonalCommitReaction[] = [];
-  readonly #observations = new Set<() => void>();
   readonly #transcript = new Map<
     string,
     { placement?: TranscriptPlacement; writes: ProjectionWrite[] }
@@ -370,7 +369,7 @@ class Mutation {
     this.#resetScopes.clear();
   }
 
-  bumpResource(kind: PersonalResourceKind) {
+  bumpResource(kind: DurablePersonalResourceKind) {
     this.resourceKinds.add(kind);
   }
 
@@ -388,9 +387,6 @@ class Mutation {
     this.authorityScopes.add(scope);
   }
 
-  observation(install: () => void) {
-    this.#observations.add(install);
-  }
   reaction(dispatch: () => void | Promise<unknown>) {
     this.#reactions.add(dispatch);
   }
@@ -532,9 +528,7 @@ class Mutation {
       resourceKinds: this.resourceKinds,
       changedScopes: new Set([
         ...this.#scopes.keys(),
-        ...(this.resourceKinds.size || Object.values(this.#counters).some(Boolean)
-          ? ["shell"]
-          : []),
+        ...(Object.values(this.#counters).some(Boolean) ? ["shell"] : []),
         ...this.authorityScopes,
         ...(this.authorityScopes.size ? ["authority"] : []),
         ...(this.#reset || this.#privacyPurge ? ["deployment"] : []),
@@ -543,7 +537,6 @@ class Mutation {
   }
 
   publish(listener: PersonalMutationHooks | undefined, notice: CommitNotice) {
-    for (const install of this.#observations) notify(listener, "observation", install);
     if (listener) notify(listener, "wake", () => listener.wake(notice));
     for (const dispatch of this.#reactions) notify(listener, "reaction", dispatch);
     if (listener?.react)
@@ -575,7 +568,6 @@ export type PersonalMutation = Pick<
   | "deferSummary"
   | "summaryPending"
   | "summaryWritten"
-  | "observation"
   | "reaction"
   | "react"
   | "transcriptPlacement"

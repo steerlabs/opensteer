@@ -70,7 +70,6 @@ export function createHostApiHandlers(
     | "node.items.page"
     | "thread.overlays.page"
     | "transcript.item.get"
-    | "resources.get"
     | "resources.detail.get"
     | "agentPhone.target.get"
     | "apps.list"

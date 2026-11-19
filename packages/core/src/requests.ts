@@ -845,7 +845,11 @@ const waitingRequestAssignments = z
  * Assignment's Run asked holds up nothing handed out.
  */
 /** The subagent that asked a Request, as its Run named it. */
-const askingSubagent = z.object({ id: ExecutionNodeIdSchema, title: z.string().min(1).max(240) });
+const subagentName = z.object({ id: ExecutionNodeIdSchema, title: z.string().min(1).max(240) });
+const askingSubagent = subagentName.extend({
+  /** The subagent it runs inside, when it is nested. */
+  within: subagentName.nullable().optional(),
+});
 
 export const WaitingRequestPresentationSchema = z.object({
   threadId: ThreadIdSchema,

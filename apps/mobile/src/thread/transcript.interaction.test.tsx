@@ -29,6 +29,7 @@ import {
 } from "@opensteer/client/host";
 import { mockComputerUseToolRefs, mockComputerUseTurn } from "@opensteer/client/mock";
 import { MockHostClient } from "@opensteer/client/mock";
+import { scopedTranscriptFixture } from "@opensteer/client/test-support";
 import { ThreadIdSchema } from "@opensteer/core";
 import {
   TranscriptAppTabsContext,
@@ -705,13 +706,16 @@ describe("a turn's subagents", () => {
     let current: TranscriptFixtureSnapshot = { ...loaded.getSnapshot(), connection: "connected" };
     loaded.dispose();
     const listeners = new Set<() => void>();
+    const subscribe = (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    };
+    // The drawn entries are the thread's transcript, as the real client holds them.
     const hostClient = {
+      ...scopedTranscriptFixture(() => current, subscribe),
       getSnapshot: () => current,
       getThreadItemText: () => undefined,
-      subscribe: (listener: () => void) => {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-      },
+      subscribe,
     } as unknown as HostClient;
     const onOpenSubagent = vi.fn();
     const container = document.createElement("div");

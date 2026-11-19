@@ -5,10 +5,7 @@ import {
   personalChangesFrameMaxBytes,
   type ScopedClientMessage,
 } from "@opensteer/protocol/personal-sync";
-import {
-  personalResourceKinds,
-  PersonalResourceRevisionsSchema,
-} from "@opensteer/protocol/resources";
+import type { PersonalResourceRevisions } from "@opensteer/protocol/resources";
 import type { TranscriptItem, TranscriptOrderCursor } from "@opensteer/protocol/transcript";
 import { MockPersonalHost, MockPersonalSocket } from "../mock/mock-personal-host.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
@@ -20,7 +17,7 @@ import {
   type PersonalStreamCache,
   type PersonalStreamCheckpoint,
 } from "./personal-stream-cache.js";
-import { ScopedPersonalStream } from "./scoped-personal-stream.js";
+import { ScopedPersonalStream, type PersonalResourcePort } from "./scoped-personal-stream.js";
 import { memoryCheckpointStorage } from "../test-support/memory-checkpoint-storage.js";
 import { ScopedThreadReader, TranscriptBodies } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard } from "./transcript-item-view.js";
@@ -62,6 +59,9 @@ const task = {
   lastReplyPreview: null,
   failurePreview: null,
   latestRunCompletedAt: null,
+  environmentId: createId("environment"),
+  harnessInstanceId: createId("harnessInstance"),
+  runQueued: false,
 } as const;
 const item = {
   id: messageId,
@@ -76,10 +76,6 @@ const item = {
   createdAt: time,
   view: { preview: "A" },
 } satisfies TranscriptItem;
-const revisions = (revision: string) =>
-  PersonalResourceRevisionsSchema.parse(
-    Object.fromEntries(personalResourceKinds.map((kind) => [kind, revision])),
-  );
 const counts = { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 };
 const shellLists = {
   activeTaskIds: [],
@@ -99,8 +95,8 @@ const cursor: TranscriptOrderCursor = {
   beforePosition: item.position,
 };
 
-function fixture(cache?: PersonalStreamCache) {
-  const stream = new ScopedPersonalStream(cache);
+function fixture(cache?: PersonalStreamCache, resources?: PersonalResourcePort) {
+  const stream = new ScopedPersonalStream(cache, resources);
   const sent: ScopedClientMessage[] = [];
   const detail = stream.detail(threadScope);
   stream.select(threadScope);
@@ -126,7 +122,6 @@ function fixture(cache?: PersonalStreamCache) {
       attention: [],
       counts,
       ...shellLists,
-      resourceRevisions: revisions("0"),
     },
   });
   const detailSnapshot = (items: TranscriptItem[] = [item]) => ({
@@ -321,27 +316,18 @@ test("fences a pending write at generation replacement and checkpoints installed
   expect(commits.at(-1)).toMatchObject({ cursor: { afterSequence: "2" }, state: { items: [] } });
 });
 
-test("restores matching resource watches on shell repair and ignores stale installed lists", () => {
-  const f = fixture();
+test("restores resource watches on shell repair and ignores revisions for an old generation", () => {
+  const changed: PersonalResourceRevisions[] = [];
+  const f = fixture(undefined, {
+    interests: () => ({ interests: ["machine"], installed: { machine: "2" } }),
+    changed: (revisions) => changed.push(revisions),
+  });
+  expect(f.sent[0]).toMatchObject({ interests: ["machine"], installed: { machine: "2" } });
   f.syncShell();
-  const release = f.stream.watchResource("machine", () => {});
-  const frame = {
-    type: "host.resource",
-    subscriptionId: "shell",
-    generation: f.shell.generation,
-    kind: "machine",
-  } as const;
-  f.stream.receive({
-    ...frame,
-    revision: "2",
-    view: { entries: [{ id: "a" }], complete: true, hasMore: false },
-  });
-  f.stream.receive({
-    ...frame,
-    revision: "1",
-    view: { entries: [{ id: "old" }], complete: true, hasMore: false },
-  });
-  expect(f.stream.resources.get("machine")?.view.entries[0]?.id).toBe("a");
+  const frame = { type: "host.resource", subscriptionId: "shell" } as const;
+  f.stream.receive({ ...frame, generation: f.shell.generation, revisions: { machine: "3" } });
+  expect(changed).toEqual([{ machine: "3" }]);
+  // A frame that does not follow the held cut resubscribes the shell and restates the watch.
   f.stream.receive({
     ...f.shell,
     type: "host.changes",
@@ -349,30 +335,15 @@ test("restores matching resource watches on shell repair and ignores stale insta
     throughSequence: "3",
     changes: [],
   });
-  expect(f.sent.at(-1)).toMatchObject({
+  const watch = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.resources.watch" }>;
+  expect(watch).toMatchObject({
     type: "client.resources.watch",
     interests: ["machine"],
     installed: { machine: "2" },
   });
-  const watch = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.resources.watch" }>;
   expect(watch.generation).toBeGreaterThan(f.shell.generation);
-  f.stream.receive({
-    ...f.shellSnapshot("3"),
-    generation: watch.generation,
-    snapshot: {
-      ...f.shellSnapshot("3").snapshot,
-      resourceRevisions: revisions("3"),
-    },
-  });
-  f.stream.receive({
-    ...frame,
-    generation: watch.generation,
-    revision: "2",
-    view: { complete: true, hasMore: false, entries: [{ id: "old" }] },
-  });
-  expect(f.stream.resources.getKnownRevision("machine")).toBe("3");
-  expect(f.stream.resources.getKnownRevision("tab")).toBe("3");
-  release();
+  f.stream.receive({ ...frame, generation: f.shell.generation, revisions: { machine: "4" } });
+  expect(changed).toEqual([{ machine: "3" }]);
 });
 
 test("background cancels detail reads and foreground resumes its still-observed scopes", () => {
@@ -547,7 +518,7 @@ test("retains the moved item's anchor across a history reset and refuses a respo
   reader.dispose();
 });
 
-test("bounds explicitly loaded bodies and inactive resource rows", () => {
+test("bounds explicitly loaded bodies", () => {
   const bodies = new TranscriptBodies();
   const big = {
     item,
@@ -559,24 +530,6 @@ test("bounds explicitly loaded bodies and inactive resource rows", () => {
   for (let index = 0; index < 10; index++) bodies.put(String(index), big);
   expect(bodies.get("0", "1")).toBeUndefined();
   expect(bodies.get("9", "1")).toBe(big);
-  const f = fixture();
-  f.syncShell();
-  for (const kind of personalResourceKinds)
-    f.stream.receive({
-      type: "host.resource",
-      subscriptionId: "shell",
-      generation: f.shell.generation,
-      kind,
-      revision: "1",
-      view: {
-        complete: true,
-        hasMore: false,
-        entries: Array.from({ length: 32 }, (_, index) => ({ id: String(index) })),
-      },
-    });
-  expect(
-    Object.values(f.stream.resources.checkpoint()).flatMap(({ view }) => view.entries),
-  ).toHaveLength(256);
 });
 
 test("carries a scoped task update into held rows and drops old task pages after a cursor reset", async () => {
@@ -631,7 +584,6 @@ test("carries a scoped task update into held rows and drops old task pages after
         attention: [],
         counts,
         ...shellLists,
-        resourceRevisions: revisions("0"),
       },
     });
   try {
@@ -865,7 +817,6 @@ test("a saved cut for another session is discarded on attach and never shown", a
           counts,
           ...shellLists,
           recentTaskIds: [otherTask.id],
-          resourceRevisions: revisions("0"),
         },
       });
       socket.deliver({ ...address, type: "host.synchronized", throughSequence: "7" });
@@ -914,18 +865,6 @@ test("uses no timers or network reads when an attached personal client is idle",
           attention: [],
           counts,
           ...shellLists,
-          resourceRevisions: revisions("0"),
-          resources: [
-            {
-              kind: "machine",
-              revision: "0",
-              view: {
-                entries: [{ id: "device", label: "Mac" }],
-                complete: true,
-                hasMore: false,
-              },
-            },
-          ],
         },
       });
       socket.deliver({ ...address, type: "host.synchronized", throughSequence: "0" });
@@ -940,7 +879,6 @@ test("uses no timers or network reads when an attached personal client is idle",
     await client.load();
     expect(client.getSnapshot().connection).toBe("connected");
     const frames = socket!.sent.length;
-    expect(client.getSnapshot().resourceSummaries?.machine?.entries[0]?.label).toBe("Mac");
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(300_000);
     expect(fetch).not.toHaveBeenCalled();
@@ -993,17 +931,17 @@ test("restarts an interrupted catalog read when the same revision is reopened", 
   let secondPageSignal: AbortSignal | null | undefined;
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
-    const { kind, cursor, expectedRevision } = JSON.parse(url.searchParams.get("input") ?? "{}");
+    const { kind, cursor } = JSON.parse(url.searchParams.get("input") ?? "{}");
     if (url.pathname !== "/v1/rpc/resources.detail.get" || kind !== "harness-catalog")
       return host.fetch(input, init);
-    if (!cursor) return reply(expectedRevision, "first-model", "next");
+    if (!cursor) return reply("1", "first-model", "next");
     if (firstRead) {
       secondPageSignal = init?.signal;
       return new Promise((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
       });
     }
-    return reply(expectedRevision, "second-model", null);
+    return reply("1", "second-model", null);
   };
   const client = new HttpHostClient({
     baseUrl: "http://scoped-host",
@@ -1065,15 +1003,13 @@ test("retains stale tab inventory until replacement and keeps its independent la
     revision: 1,
     items: tabsByPage.map(({ tabId }) => ({ kind: "tab" as const, tabId })),
   };
-  const view = { entries: [], complete: true, hasMore: false };
   let socket: MockPersonalSocket;
   let generation = 0;
+  let pushed = false;
   const replacement = Promise.withResolvers<Response>();
   const fetch = vi.fn<typeof globalThis.fetch>(async (url) => {
-    const { kind, expectedRevision, cursor } = JSON.parse(
-      new URL(String(url)).searchParams.get("input")!,
-    );
-    if (expectedRevision === "2") return replacement.promise;
+    const { kind, cursor } = JSON.parse(new URL(String(url)).searchParams.get("input")!);
+    if (pushed && kind === "tab") return replacement.promise;
     const page = Number(cursor ?? 0);
     const next = kind === "tab" && page + 1 < tabsByPage.length ? String(page + 1) : null;
     return Response.json({
@@ -1116,14 +1052,15 @@ test("retains stale tab inventory until replacement and keeps its independent la
             attention: [],
             counts,
             ...shellLists,
-            resourceRevisions: revisions("1"),
-            resources: [
-              { kind: "tab", revision: "1", view },
-              { kind: "tab-layout", revision: "1", view },
-            ],
           },
         });
         socket.deliver({ ...address, type: "host.synchronized", throughSequence: "1" });
+        socket.deliver({
+          type: "host.resource",
+          subscriptionId: "shell",
+          generation,
+          revisions: { tab: "1", "tab-layout": "1" },
+        });
       })),
   });
   const releaseTab = client.watchPersonalResource("tab", () => {});
@@ -1137,13 +1074,12 @@ test("retains stale tab inventory until replacement and keeps its independent la
       expect(tabs.layout).toEqual(layout);
     });
     const held = tabs.get(tab.tabId);
+    pushed = true;
     socket!.deliver({
       type: "host.resource",
       subscriptionId: "shell",
       generation,
-      kind: "tab",
-      revision: "2",
-      view,
+      revisions: { tab: "2" },
     });
     expect(tabs.get(tab.tabId)).toBe(held);
     expect(tabs.complete).toBe(false);
@@ -1388,7 +1324,6 @@ test("a saved cut whose epoch the attach reply does not confirm is never shown, 
       attention: [],
       counts,
       ...shellLists,
-      resourceRevisions: revisions("0"),
     },
   });
   fresh.receive({ ...shell, type: "host.synchronized", throughSequence: "1" });
@@ -1869,7 +1804,6 @@ test("a named socket close purges its task and resumes the unaffected scope", as
               attention: [],
               counts,
               ...shellLists,
-              resourceRevisions: revisions("0"),
             },
           });
         socket.deliver({ ...address, type: "host.synchronized" });
@@ -1985,7 +1919,6 @@ function scriptedHost(
         counts,
         ...shellLists,
         ...(options.lists as typeof shellLists | undefined),
-        resourceRevisions: revisions("0"),
       },
     });
     socket.deliver({ ...shell, type: "host.synchronized", throughSequence: String(head) });
@@ -2567,7 +2500,6 @@ test("a task observed after the socket opened paints its saved cut and resumes f
       attention: [],
       counts,
       ...shellLists,
-      resourceRevisions: revisions("0"),
     },
   });
   stream.receive({ ...shell, type: "host.synchronized", throughSequence: "1" });
@@ -2654,7 +2586,6 @@ test("opening a task reads each follow-up once, beside its snapshot, and the fam
             attention: [],
             counts,
             ...shellLists,
-            resourceRevisions: revisions("0"),
           },
         });
         socket.deliver({ ...shell, type: "host.synchronized" });
