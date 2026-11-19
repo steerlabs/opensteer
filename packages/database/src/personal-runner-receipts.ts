@@ -76,30 +76,44 @@ export interface RunnerStatementContext {
   readonly channelInputs: boolean;
 }
 
-async function advanceOrdinal(tx: Tx, receipt: Receipt, unlessFinishing: boolean) {
+function isTerminal(status: string) {
+  return !nonTerminalRunStatuses.some((current) => current === status);
+}
+
+/**
+ * Advances the Run's ordinal and keeps a receipt only while the Run can still change: a
+ * terminal Run's receipts are deleted, and any replay to it is acknowledged without one.
+ */
+async function recordReceipt(
+  tx: Tx,
+  mutation: PersonalMutation,
+  receipt: Receipt,
+  unlessFinishing: boolean,
+) {
   const advanced = await tx
     .updateTable("runs")
     .set({ nextRunnerOrdinal: receipt.ordinal + 1 })
     .where("id", "=", receipt.runId)
     .where("nextRunnerOrdinal", "=", receipt.ordinal)
     .$if(unlessFinishing, (query) => query.where("finishIntent", "is", null))
+    .returning("status")
     .executeTakeFirst();
-  return advanced.numUpdatedRows === 1n;
-}
-
-function stageReceipt(tx: Tx, mutation: PersonalMutation, receipt: Receipt) {
+  if (!advanced) return false;
+  if (isTerminal(advanced.status)) return true;
   mutation.receipt(async (committedHead) => {
     await tx
       .insertInto("runnerEventReceipts")
       .values({ ...receipt, committedHead })
       .execute();
   });
+  return true;
 }
 
-async function recordReceipt(tx: Tx, mutation: PersonalMutation, receipt: Receipt) {
-  if (!(await advanceOrdinal(tx, receipt, false)))
-    throw new Error("Runner ordinal changed before receipt");
-  stageReceipt(tx, mutation, receipt);
+/** Called when a Run becomes terminal; its Runner binding retires in the same commit. */
+export function deleteTerminalRunReceipts(tx: Tx, mutation: PersonalMutation, runId: RunId) {
+  mutation.receipt(async () => {
+    await tx.deleteFrom("runnerEventReceipts").where("runId", "=", runId).execute();
+  });
 }
 
 function matchFinish(intent: FinishIntent, statement: RunnerStatement, digest: Buffer) {
@@ -174,6 +188,10 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
       });
     return { throughOrdinal: run.nextRunnerOrdinal - 1, replayed: true };
   }
+  const terminal = isTerminal(run.status);
+  // Its receipt went when the Run ended; nothing a replay says can change a terminal Run.
+  if (terminal && statement.ordinal < run.nextRunnerOrdinal)
+    return { throughOrdinal: run.nextRunnerOrdinal - 1, replayed: true };
   if (run.nextRunnerOrdinal !== statement.ordinal)
     throw new OpensteerError({
       code: "conflict",
@@ -246,7 +264,6 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     .orderBy("runAttempts.ordinal", "desc")
     .limit(1)
     .executeTakeFirst();
-  const terminal = !nonTerminalRunStatuses.some((status) => status === run.status);
   const session =
     bound?.sessionId &&
     bound.sessionRunnerId === statement.runnerId &&
@@ -324,7 +341,7 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     reportedDigest: digest,
     disposition,
   };
-  if (!(await advanceOrdinal(tx, receipt, true))) {
+  if (!(await recordReceipt(tx, mutation, receipt, true))) {
     const { finishIntent } = await tx
       .selectFrom("runs")
       .select("finishIntent")
@@ -334,7 +351,6 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     matchFinish(finishIntent, statement, digest);
     return { finishing: true };
   }
-  stageReceipt(tx, mutation, receipt);
   return { throughOrdinal: statement.ordinal, replayed: false };
 }
 
@@ -359,13 +375,19 @@ export async function recordFinishedRunnerStatement(
   )
     throw new Error("Runner finish receipt requires the frozen terminal Run");
   const { ordinal, runnerId, runnerBootId, digest } = intent.statement;
-  await recordReceipt(tx, mutation, {
-    runId,
-    ordinal,
-    runnerId,
-    runnerBootId,
-    bindingGeneration: intent.bindingGeneration,
-    reportedDigest: Buffer.from(digest, "hex"),
-    disposition: "applied",
-  });
+  const recorded = await recordReceipt(
+    tx,
+    mutation,
+    {
+      runId,
+      ordinal,
+      runnerId,
+      runnerBootId,
+      bindingGeneration: intent.bindingGeneration,
+      reportedDigest: Buffer.from(digest, "hex"),
+      disposition: "applied",
+    },
+    false,
+  );
+  if (!recorded) throw new Error("Runner ordinal changed before receipt");
 }

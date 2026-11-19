@@ -2407,4 +2407,64 @@ describeStore("PostgreSQL store", (it) => {
       });
     },
   );
+  it("keeps no Runner receipts for a terminal Run and acknowledges its late replays", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, database, store } = storeFixture;
+    const task = await startRunFixture("terminal-receipts");
+    let { nextRunnerOrdinal: ordinal } = await database
+      .selectFrom("runs")
+      .select("nextRunnerOrdinal")
+      .where("id", "=", task.run.id)
+      .executeTakeFirstOrThrow();
+    const report = (type: string, data: unknown) => ({
+      environmentId: task.environmentId,
+      runnerId: task.runnerId,
+      runnerBootId: task.runnerBootId,
+      event: pendingEvent({
+        type,
+        environmentId: task.environmentId,
+        threadId: task.thread.id,
+        runId: task.run.id,
+        bindingGeneration: task.bindingGeneration,
+        ordinal: ordinal++,
+        data,
+      } as PendingAgentEvent),
+    });
+    const receipts = () =>
+      database
+        .selectFrom("runnerEventReceipts")
+        .select("ordinal")
+        .where("runId", "=", task.run.id)
+        .execute();
+    const reply = report("assistant.message", {
+      messageId: createId("message"),
+      content: [{ type: "text", text: "Done" }],
+    });
+    await store.commitRunnerEvent(reply);
+    expect((await receipts()).map((row) => Number(row.ordinal))).toContain(ordinal - 1);
+    const completed = report("run.completed", { status: "completed" });
+    expect(await store.commitRunnerEvent(completed)).toMatchObject({ replayed: false });
+    expect(await receipts()).toEqual([]);
+    // A lost acknowledgement replays both statements after the Run ended.
+    for (const replay of [reply, completed])
+      expect(await store.commitRunnerEvent(replay)).toMatchObject({
+        replayed: true,
+        throughOrdinal: ordinal - 1,
+      });
+    expect(
+      await store.commitRunnerEvent(
+        report("run.usage", { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 }),
+      ),
+    ).toMatchObject({ replayed: false, throughOrdinal: ordinal - 1 });
+    expect(await receipts()).toEqual([]);
+    expect(
+      await database
+        .selectFrom("messages")
+        .select("id")
+        .where("runId", "=", task.run.id)
+        .where("kind", "=", "assistant")
+        .execute(),
+    ).toHaveLength(1);
+  });
 });
