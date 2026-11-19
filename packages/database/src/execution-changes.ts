@@ -165,11 +165,6 @@ export async function writeExecutionItem(
           >`${JSON.stringify(body)}::jsonb`,
         };
   if (old?.visible && (!item.visible || old.nodeId !== item.nodeId)) {
-    await tx
-      .updateTable("threads")
-      .set({ transcriptOrderRevision: mutation.sequence })
-      .where("id", "=", item.threadId)
-      .execute();
     mutation.change({
       scopeKey: old.nodeId ? `node:${old.nodeId}` : `thread:${item.threadId}`,
       entityKind: "item",

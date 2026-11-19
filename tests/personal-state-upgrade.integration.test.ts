@@ -183,9 +183,19 @@ test("preserves message bodies, Request outcomes and Team delivery from a real 0
       if (result.kind !== "item") throw new Error("Missing message body");
       return transcriptCard(item(id), TranscriptItemBodySchema.parse(result.body));
     };
-    expect(card(answerId)).toMatchObject({ body: "", previewTruncated: true });
+    // The converter and the live path draw the same card: references ride on it, so an
+    // attachment that fits does not mark the preview cut.
+    expect(card(answerId)).toMatchObject({
+      body: "",
+      previewTruncated: false,
+      attachments: [attachment],
+    });
     expect(await hydrate(answerId)).toMatchObject({ attachments: [attachment], body: "" });
-    expect(card(mixedId)).toMatchObject({ body: "See this", previewTruncated: true });
+    expect(card(mixedId)).toMatchObject({
+      body: "See this",
+      previewTruncated: false,
+      attachments: [attachment],
+    });
     expect(await hydrate(mixedId)).toMatchObject({ attachments: [attachment], body: "See this" });
     expect(card(linesId)).toMatchObject({ body: "First\nSecond", previewTruncated: false });
     expect(card(uncertainId)).toMatchObject({

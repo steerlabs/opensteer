@@ -27,7 +27,7 @@ import { PluginService, PluginServiceError } from "../plugins/plugin-service.js"
 import { PluginOwnerApi, pluginEngineStateView } from "../plugins/plugin-owner-api.js";
 import { changeDeviceDrivers } from "../administration/device-removal.js";
 import { DeviceDriverResolver } from "../computer-use/device-drivers.js";
-import { DeviceIdSchema, ThreadIdSchema, type DeviceId } from "@opensteer/core";
+import { DeviceIdSchema, type DeviceId } from "@opensteer/core";
 import { TabStore, AgentToolActivityStore } from "@opensteer/database";
 import { TabService } from "../tabs/tab-service.js";
 import { NativeTabTargets } from "../computer-use/native-tab-targets.js";
@@ -56,7 +56,8 @@ import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import { runAllowsPersonalContext } from "@opensteer/database";
 import { resolveTeamTaskExecution } from "./team-task-execution.js";
-import { DeadlineDrain, retryWithBackoff } from "./deadline-drain.js";
+import { DeadlineDrain } from "./deadline-drain.js";
+import { assignmentReturnPass } from "./assignment-return-pass.js";
 import { executionLeaseDrain } from "./execution-leases.js";
 import { TeamRunEvents } from "./team-run-events.js";
 import { initializePersonalState } from "./personal-state.js";
@@ -176,7 +177,7 @@ import { ContinuationService } from "../agents/continuation-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
 import {
   harnessInspectionDefinition,
-  inspectAndRecordInvalidatedHarnessCatalog,
+  recaptureInvalidatedHarnessCatalog,
   inspectHarnessCatalogsAfterUsageLimit,
   reconcileAndRecordHarnessCatalogs,
   reconcileHarnessCatalogs,
@@ -674,18 +675,18 @@ export async function createHostRuntime(
         code: error instanceof OpensteerError ? error.code : "internal",
       });
     const refreshReturnHints = createReturnHintRefresh({
-      watched: () => realtime.watchedThreads(),
-      republish: (threadIds) =>
-        republishThreads(
-          database,
-          threadIds.map((id) => ThreadIdSchema.parse(id)),
-        ),
+      watched: () => realtime.watchedScopes(),
+      republish: (scopes) => republishThreads(database, scopes),
       onError: reportMutationFailure,
     });
     removeMutationHooks = installPersonalMutationHooks(database, {
       wake: (notice) => {
         if (BigInt(notice.head) > BigInt(syncHead)) syncHead = notice.head;
         realtime.wake(notice.head, notice.changedScopes);
+        refreshReturnHints(notice.resourceKinds);
+        // A durable card can pass an on-screen provisional one: move that card to the new tail.
+        for (const threadId of liveText.provisionalThreads())
+          if (notice.changedScopes.has(`thread:${threadId}`)) readLiveTail(threadId);
         resourceRevisions.committed(notice.resourceKinds, notice.head);
       },
       suspend: (scopes) => realtime.suspendAuthority(scopes),
@@ -1622,13 +1623,11 @@ export async function createHostRuntime(
     assignmentReturns = new DeadlineDrain({
       ...(options.executionClock ? { clock: options.executionClock } : {}),
       onError: reportMutationFailure,
-      drain: async () => {
-        const returns = await store.drainPendingAssignmentReturns();
-        for (const { assignmentId, error } of returns.failures) {
-          reportAssignmentReturnError(assignmentId, error);
-        }
-        return returns.failures.length > 0 || returns.waiting > 0 ? retryWithBackoff : null;
-      },
+      drain: () =>
+        assignmentReturnPass(
+          (limit) => store.drainPendingAssignmentReturns(limit),
+          (assignmentId, error) => reportAssignmentReturnError(assignmentId, error),
+        ),
     });
     store.onAssignmentReturnReady(() => assignmentReturns?.wake());
     store.onPersonMessageReady((message) => notificationDispatcher?.dispatch(message));
@@ -2208,30 +2207,21 @@ export async function createHostRuntime(
         ),
         onRunDispatchAvailable: () => wakeExecutionCoordinator(),
         onHarnessInstallation: async () => runnerChanged(),
-        onHarnessCatalogInvalidated: async (identity, invalidation) => {
-          try {
-            const harness = await store.getHarnessInstance(invalidation.harnessInstanceId);
-            if (
-              !harness ||
-              !harness.enabled ||
-              harness.removedAt !== null ||
-              !identity.environmentIds.includes(harness.environmentId)
-            ) {
-              return;
-            }
-            await store.discardHarnessCatalog(harness.environmentId, harness.id);
-            const captured = await inspectAndRecordInvalidatedHarnessCatalog({
-              catalogs: harnessCatalogs,
-              environmentId: harness.environmentId,
-              harnesses: [harnessInspectionDefinition(harness)],
-              runners,
-              signal: AbortSignal.timeout(harnessCatalogCaptureTimeoutMs),
-            });
-            observeRunnerCatalogs(identity, harness.environmentId, captured);
-          } catch (error) {
-            reportHarnessCatalogInvalidationError(invalidation.harnessInstanceId, error);
-          }
-        },
+        onHarnessCatalogInvalidated: (identity, invalidation) =>
+          recaptureInvalidatedHarnessCatalog({
+            catalogs: harnessCatalogs,
+            environmentIds: identity.environmentIds,
+            harnessInstanceId: invalidation.harnessInstanceId,
+            runners,
+            signal: AbortSignal.timeout(harnessCatalogCaptureTimeoutMs),
+            store,
+            onCaptured: (environmentId, captured) =>
+              observeRunnerCatalogs(identity, environmentId, captured),
+            onFailed: (error) => {
+              reportHarnessCatalogInvalidationError(invalidation.harnessInstanceId, error);
+              catalogConvergence?.wake();
+            },
+          }),
         onRegistered: runnerRegistrationHook(
           (identity: RunnerIdentity) => {
             registeringRunners.delete(identity.connectionId);
@@ -3233,9 +3223,10 @@ export async function createHostRuntime(
         store: accountDirectoryStore,
       });
     }
-    await memoryPasses.reconcileMissing();
+    memoryPasses.wake();
+    await memoryPasses.idle();
     reconcileMemoryPasses = () => {
-      if (!memoryPasses.settled) void memoryPasses.reconcileMissing();
+      if (!memoryPasses.settled) memoryPasses.wake();
     };
     void naming.reconcile().catch(reportThreadNamingError);
     await taskQuestions.reconcile();
@@ -3416,6 +3407,7 @@ export async function createHostRuntime(
         await step("admission", () => admission.close());
         await step("Run finishes", () => finishLoop?.close());
         await step("task result returns", () => assignmentReturns?.close());
+        await step("memory passes", () => memoryPasses.close());
         await step("Request deadlines", () => deadlines?.close());
         removeMutationHooks?.();
         await step("plugin change notices", () => notices.close());

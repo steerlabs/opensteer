@@ -666,7 +666,10 @@ async function askRemovalRevision(
   return eligible.rows[0]?.revision;
 }
 
-async function removeAskTask(database: Kysely<DatabaseSchema>, threadId: ThreadId): Promise<void> {
+export async function removeAskTask(
+  database: Kysely<DatabaseSchema>,
+  threadId: ThreadId,
+): Promise<void> {
   const verified = await withPersonalReadTransaction(database, (tx) =>
     askRemovalRevision(tx, threadId),
   );
@@ -681,6 +684,8 @@ async function removeAskTask(database: Kysely<DatabaseSchema>, threadId: ThreadI
       .execute();
     mutation.count("unreadTaskCount", -before);
     mutation.purge(`thread:${threadId}`);
+    // A shell cut read before this commit lists the task and its attention row: it must not send.
+    mutation.fence("shell");
     await publishThreadSummary(tx, threadId);
     return true;
   });

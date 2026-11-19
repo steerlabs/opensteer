@@ -981,11 +981,26 @@ async function isPersonalDeployment(database: Kysely<DatabaseSchema>): Promise<b
 export async function personalDeploymentOwner(
   database: Kysely<DatabaseSchema>,
 ): Promise<UserId | null> {
-  if (!(await isPersonalDeployment(database))) return null;
-  const owner = await database
-    .selectFrom("users")
-    .select(["id", "disabledAt"])
-    .orderBy("createdAt", "asc")
+  // One read: the Deployment's shape and its first user.
+  const row = await database
+    .selectFrom("deployments")
+    .leftJoinLateral(
+      (eb) =>
+        eb
+          .selectFrom("users")
+          .select(["users.id", "users.disabledAt"])
+          .orderBy("users.createdAt", "asc")
+          .limit(1)
+          .as("owner"),
+      (join) => join.onTrue(),
+    )
+    .select([
+      "deployments.deploymentShape",
+      "owner.id as ownerId",
+      "owner.disabledAt as ownerDisabledAt",
+    ])
+    .where("deployments.singletonKey", "=", "primary")
     .executeTakeFirst();
-  return owner && owner.disabledAt === null ? owner.id : null;
+  if (!row || !deploymentPolicy(row.deploymentShape).services.personal) return null;
+  return row.ownerId && row.ownerDisabledAt === null ? row.ownerId : null;
 }

@@ -36,6 +36,8 @@ type Stream = {
   readonly frame: PersonalLiveUpdate;
   readonly bytes: number;
   readonly paragraph?: Paragraph;
+  /** A provisional card waiting for its thread's tail before its first frame goes out. */
+  readonly held?: true;
 };
 type Binding = {
   readonly attemptId: RunAttemptId;
@@ -84,6 +86,10 @@ function boundFrame(frame: TextFrame): number {
   return bytes;
 }
 
+function provisional(stream: Stream) {
+  return stream.frame.item !== undefined && stream.frame.update.operation !== "close";
+}
+
 function matches(a: DetailScope, b: DetailScope) {
   return (
     a.threadId === b.threadId &&
@@ -116,12 +122,40 @@ export class PersonalLiveText {
     this.#readTail = readTail;
   }
 
-  /** Records a thread's last allocated transcript position. */
+  /** Threads with a provisional card on screen, whose tail must follow durable commits. */
+  provisionalThreads(): ReadonlySet<ThreadId> {
+    const threads = new Set<ThreadId>();
+    for (const [runId, streams] of this.#runs) {
+      const threadId = this.#bindings.get(runId)?.threadId;
+      if (threadId && [...streams.values()].some((stream) => provisional(stream)))
+        threads.add(threadId);
+    }
+    return threads;
+  }
+
+  /**
+   * Records a thread's last allocated transcript position. A provisional card always draws after
+   * every durable card the viewer holds: a held card goes out now, and a card the tail passed
+   * (a tool committed before the reply did) is sent again at the new tail.
+   */
   observeTail(threadId: ThreadId, lastPosition: string) {
     if (![...this.#bindings.values()].some((binding) => binding.threadId === threadId)) return;
     const next = (BigInt(lastPosition) + 1n).toString();
     const known = this.#tails.get(threadId);
-    if (known === undefined || BigInt(next) > BigInt(known)) this.#tails.set(threadId, next);
+    if (known !== undefined && BigInt(next) <= BigInt(known)) return;
+    this.#tails.set(threadId, next);
+    for (const [runId, streams] of this.#runs) {
+      if (this.#bindings.get(runId)?.threadId !== threadId) continue;
+      for (const [itemId, stream] of streams) {
+        const item = stream.frame.item;
+        if (!provisional(stream) || !item) continue;
+        if (!stream.held && BigInt(item.position) >= BigInt(next)) continue;
+        const frame = { ...stream.frame, item: { ...item, position: next } };
+        const { held: _held, ...rest } = stream;
+        streams.set(itemId, { ...rest, frame });
+        this.#hub.publishLive(stream.scope, frame, { replace: true, identify: true });
+      }
+    }
   }
 
   knows(runId: RunId, bindingGeneration: number) {
@@ -228,11 +262,12 @@ export class PersonalLiveText {
         afterSequence,
       };
       const createdAt = existing?.frame.item?.createdAt ?? new Date().toISOString();
-      if (!existing) this.#readTail(threadId);
+      const position =
+        existing && !existing.held ? existing.frame.item?.position : this.#tails.get(threadId);
       const card = {
         id: itemId,
         revision: afterSequence,
-        position: existing?.frame.item?.position ?? this.#tails.get(threadId) ?? "1",
+        position: position ?? "1",
         runId,
         attemptId,
         nodeId,
@@ -274,12 +309,14 @@ export class PersonalLiveText {
           : undefined;
       const subject: DetailScope | undefined =
         item.stream === "node" ? { kind: "node", threadId, nodeId: item.nodeId } : undefined;
+      const held = preview !== undefined && position === undefined;
       const stream: Stream = {
         scope,
         frame,
         bytes,
         ...(paragraph ? { paragraph } : {}),
         ...(subject ? { subject } : {}),
+        ...(held ? { held: true as const } : {}),
       };
       streams.set(itemId, stream);
       this.#bytes += bytes;
@@ -296,6 +333,10 @@ export class PersonalLiveText {
         this.#dropRun(oldest);
       }
       if (this.#runs.get(runId) !== streams) continue;
+      if (held) {
+        this.#readTail(threadId);
+        continue;
+      }
       if (paragraph) this.#flushParagraph(stream, now, !continuing);
       else {
         this.#hub.publishLive(scope, frame);
@@ -392,9 +433,16 @@ export class PersonalLiveText {
     let bytes = 0;
     const runs = request ? [this.#runs.get(request.runId)] : [...this.#runs.values()].reverse();
     for (const streams of runs) {
-      for (const { scope: owner, subject, frame, bytes: size, paragraph } of streams?.values() ??
-        []) {
+      for (const {
+        scope: owner,
+        subject,
+        frame,
+        bytes: size,
+        paragraph,
+        held,
+      } of streams?.values() ?? []) {
         if (
+          held ||
           (!matches(owner, scope) && (!subject || !matches(subject, scope))) ||
           frame.update.operation === "close" ||
           (request && !request.streamIds.includes(frame.streamId))

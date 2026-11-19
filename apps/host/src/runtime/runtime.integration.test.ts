@@ -667,7 +667,10 @@ integration("Host vertical slice", () => {
       }),
     );
     await expect.poll(() => capture.mock.calls.length, { timeout: 10_000 }).toBeGreaterThan(0);
-    expect(await catalogs()).toEqual([]);
+    // The failed recapture leaves a retry owed, so the catalog returns without a person asking.
+    await expect
+      .poll(async () => (await catalogs())[0]?.catalog.status, { timeout: 10_000 })
+      .toBe("ready");
     try {
       await testRpcData(
         `http://127.0.0.1:${hostPort}`,

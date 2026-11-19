@@ -70,7 +70,12 @@ import { agentThreadPageForOwner, createThread, enqueueThreadInput } from "./thr
 import { claimCommand } from "./command-store.js";
 import { acquireExecutionBinding, bindProviderSession } from "./execution-store.js";
 import { commitRunnerEvent } from "./runner-event-store.js";
-import { admitTeamTaskRequest, cancelTeamTaskRequest } from "./task-admission-store.js";
+import {
+  admitTeamTaskRequest,
+  cancelTeamTaskRequest,
+  removeAskTask,
+} from "./task-admission-store.js";
+import { installPersonalMutationHooks } from "./personal-mutation.js";
 import { openVoiceThread } from "./voice-store.js";
 import { createMemoryPass } from "./memory-pass-store.js";
 import { messageTeamSources } from "./message-team-sources.js";
@@ -1416,6 +1421,43 @@ it("keeps a reply that says nothing out of the transcript, and a file-only reply
     ).map(({ id }) => id),
   ).toEqual([file.messageId]);
   expect(await sequence()).toBe(before + 1);
+});
+
+it("fences shell sends when it removes a never-run ask task", async () => {
+  const f = await fixture();
+  const removable = await f.task("Removable ask");
+  await f.database
+    .updateTable("threads")
+    .set({ teamAskOrigin: true, titleSource: "provisional" })
+    .where("id", "=", removable.id)
+    .execute();
+  const fenced: string[][] = [];
+  const disconnect = installPersonalMutationHooks(f.database, {
+    wake() {},
+    onFailure(error) {
+      throw error;
+    },
+    suspend(scopes) {
+      fenced.push([...scopes].sort());
+      return { committed() {}, rolledBack() {} };
+    },
+  });
+  try {
+    await removeAskTask(f.database, removable.id);
+  } finally {
+    disconnect();
+  }
+  // The never-run ask is removed and then purged.
+  expect(
+    await f.database
+      .selectFrom("threads")
+      .select("id")
+      .where("id", "=", removable.id)
+      .where("removedAt", "is", null)
+      .executeTakeFirst(),
+  ).toBeUndefined();
+  // A shell cut held before the removal lists the task; it must not dispatch afterwards.
+  expect(fenced[0]).toEqual(["shell", `thread:${removable.id}`]);
 });
 
 it("says on the shell task row whether a Run waits to start with none executing", async () => {

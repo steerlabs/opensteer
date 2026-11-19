@@ -59,33 +59,37 @@ export async function publishThreadQueues(
   });
 }
 
-/** Lease ownership is per session, so the feed stores none and each reader adds its own. */
-export async function decorateQueueEntries(
-  database: Kysely<DatabaseSchema>,
+/** Who holds each waiting message's edit lease, read in the same cut as the values it decorates. */
+export async function readQueueLeaseHolders(
+  tx: Kysely<DatabaseSchema>,
+  messageIds: readonly string[],
+): Promise<ReadonlyMap<string, AuthSessionId>> {
+  if (!messageIds.length) return new Map();
+  const rows = await tx
+    .selectFrom("threadInputs")
+    .select(["messageId", "editLeaseSessionId"])
+    .where("messageId", "in", [...new Set(messageIds)] as MessageId[])
+    .where("editLeaseSessionId", "is not", null)
+    .execute();
+  return new Map(rows.map((row) => [row.messageId, row.editLeaseSessionId!]));
+}
+
+/** Lease ownership and send keys are per session, so the feed stores neither and each reader adds its own. */
+export function decorateQueueEntries(
   sessionId: AuthSessionId,
   entries: readonly WaitingInputView[],
   sendKeys: ReadonlyMap<string, string>,
-): Promise<WaitingInputView[]> {
-  const leased = entries.filter((entry) => entry.lease).map(({ message }) => message.id);
-  const owned = leased.length
-    ? new Set(
-        (
-          await database
-            .selectFrom("threadInputs")
-            .select("messageId")
-            .where("messageId", "in", leased)
-            .where("editLeaseSessionId", "=", sessionId)
-            .execute()
-        ).map(({ messageId }) => messageId),
-      )
-    : new Set<string>();
+  holders: ReadonlyMap<string, AuthSessionId>,
+): WaitingInputView[] {
   return entries.map((entry) => {
     const key = sendKeys.get(entry.message.id);
     const { clientSendKey: _discard, ...message } = entry.message;
     return {
       ...entry,
       message: key ? { ...message, clientSendKey: key } : message,
-      lease: entry.lease ? { ...entry.lease, ownedBySession: owned.has(entry.message.id) } : null,
+      lease: entry.lease
+        ? { ...entry.lease, ownedBySession: holders.get(entry.message.id) === sessionId }
+        : null,
     };
   });
 }

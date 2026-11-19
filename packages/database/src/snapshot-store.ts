@@ -3,6 +3,7 @@ import type { Kysely } from "kysely";
 import {
   buildPersonalDetailSnapshot,
   buildPersonalShellSnapshot,
+  resumedThreadValue,
 } from "./personal-snapshot-store.js";
 import {
   readPersonalScopeCut,
@@ -37,11 +38,13 @@ export function readPersonalDetailSnapshot(
     cursor?: PersonalResumeCursor;
   },
 ) {
-  return readPersonalScopeCut(database, {
+  return readPersonalScopeCut<Awaited<ReturnType<typeof buildPersonalDetailSnapshot>>>(database, {
     viewerId: input.viewerId,
     scope: input.scope,
     ...(input.cursor ? { cursor: input.cursor } : {}),
     snapshot: (tx, state) =>
       buildPersonalDetailSnapshot(tx, state, input.viewerId, input.scope, input.anchorItemId),
+    resume: (tx, state, after) =>
+      resumedThreadValue(tx, state, input.viewerId, input.scope.threadId, after),
   });
 }

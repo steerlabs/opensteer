@@ -169,7 +169,7 @@ it("keeps a watching device on one stream of values through a busy Run, an overs
     expect(new Set(shell.snapshot.activeTaskIds)).toEqual(
       new Set(runs.map(({ threadId }) => threadId)),
     );
-    expect(shell.snapshot).toMatchObject({ activeHasMore: false, taskCounts: { active: 12 } });
+    expect(shell.snapshot).toMatchObject({ activeNextBefore: null, taskCounts: { active: 12 } });
     const attachedAt = watcher.frames.length;
     const headBefore = BigInt(
       (
@@ -396,7 +396,10 @@ it("republishes the thread a device views when a return-hint input changes, and 
       .where("entityKind", "=", "thread")
       .where("sequence", ">", before)
       .execute();
-    expect(republished).toEqual([{ scopeKey: `thread:${viewed.threadId}` }]);
+    // Other runtime resource bumps may republish it again; no other task is ever republished.
+    expect(new Set(republished.map(({ scopeKey }) => scopeKey))).toEqual(
+      new Set([`thread:${viewed.threadId}`]),
+    );
     expect(other.threadId).not.toBe(viewed.threadId);
     expect(watcher.closes).toEqual([]);
   } finally {

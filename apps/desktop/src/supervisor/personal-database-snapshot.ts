@@ -96,10 +96,13 @@ export async function markPersonalStateConverted(deploymentRoot: string): Promis
   await replacePrivateFileAtomically(path.join(deploymentRoot, convertedMarker), "converted\n");
 }
 
-/** The app version that wrote the newest pinned copy: the one that can open it. */
+/**
+ * The app version that wrote the pre-conversion copy: the oldest pin, taken
+ * before any conversion batch ran, and the one that version can open.
+ */
 export async function pinnedSnapshotSourceVersion(deploymentRoot: string): Promise<string | null> {
   const snapshots = path.join(deploymentRoot, "snapshots");
-  for (const entry of (await snapshotNames(snapshots)).sort().toReversed()) {
+  for (const entry of (await snapshotNames(snapshots)).sort()) {
     const metadata = await readMetadata(snapshots, entry);
     if (metadata?.pinned === true) return metadata.fromRelease?.hostVersion ?? null;
   }

@@ -18,6 +18,20 @@ describeStore("waiting input edits", (it) => {
       idempotencyKey: "waiting-original",
       content: [{ type: "text", text: "Original" }],
     });
+    // Other devices learn queue values from the feed, written in the same commit as the card.
+    const published = () =>
+      f.database
+        .selectFrom("clientChanges")
+        .select("payload")
+        .where("entityKind", "=", "queue-entry")
+        .where("entityId", "=", sent.message.id)
+        .where("operation", "=", "upsert")
+        .orderBy("sequence", "desc")
+        .limit(1)
+        .executeTakeFirstOrThrow();
+    expect((await published()).payload).toMatchObject({
+      message: { preview: "Original", revision: 0 },
+    });
     const identity = {
       threadId: task.threadId,
       messageId: sent.message.id,
@@ -82,6 +96,9 @@ describeStore("waiting input edits", (it) => {
     expect(afterEdit.items[0]).toMatchObject({
       message: { id: sent.message.id, preview: "Edited", revision: 1 },
       lease: null,
+    });
+    expect((await published()).payload).toMatchObject({
+      message: { preview: "Edited", revision: 1 },
     });
     const retained = await f.database
       .selectFrom("transcriptItems")
