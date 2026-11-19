@@ -612,7 +612,6 @@ export async function createHostRuntime(
     const realtime = new RealtimeHub();
     const resourceRevisions = new ResourceRevisions((kinds) => {
       realtime.resourcesChanged(kinds);
-      refreshReturnHints(kinds);
     });
     const readLiveTail = (threadId: import("@opensteer/core").ThreadId) =>
       void database
@@ -3402,6 +3401,7 @@ export async function createHostRuntime(
         await step("task questions", () => taskQuestions?.close());
         transcriptFileServices.close();
         liveText.close();
+        refreshReturnHints.close();
         realtime.closeAll();
         await step("HTTP server", () => app.close());
         await step("admission", () => admission.close());

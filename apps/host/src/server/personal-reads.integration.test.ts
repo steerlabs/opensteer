@@ -173,9 +173,17 @@ it("gives a resumed detail the current thread value after a return-hint input ch
       userId: host.ownerId,
     });
     // The settings commit wrote no row to this scope; the resume still carries the value.
-    expect(threadRows(await resumed())).toMatchObject([
+    const head = (await f.state()).sequence;
+    const resumedRows = threadRows(await resumed());
+    expect(resumedRows).toMatchObject([
       { entityId: threadId, operation: "upsert", value: { thread: { id: threadId } } },
     ]);
+    // The task row is unchanged: only a value stamped past what the reader holds is taken.
+    const row = resumedRows[0];
+    if (row?.operation !== "upsert" || row.entityKind !== "thread")
+      throw new Error("Expected a thread value");
+    expect(row.value.revision).toBe(head);
+    expect(BigInt(row.value.revision)).toBeGreaterThan(BigInt(before.sequence));
 
     const nodeId = createId("executionNode");
     await republishThreads(host.store.database, [{ kind: "node", threadId, nodeId }]);

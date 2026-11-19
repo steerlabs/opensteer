@@ -146,7 +146,7 @@ export function republishThreads(
       for (const nodeId of value ? nodes : [])
         mutation.change(
           { scopeKey: `node:${nodeId}`, entityKind: "thread", entityId: id, operation: "upsert" },
-          () => value!,
+          () => ({ ...value!, revision: mutation.sequence }),
         );
     }
   });
