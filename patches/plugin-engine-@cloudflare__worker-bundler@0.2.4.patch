@@ -122,7 +122,7 @@ index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d324137199
  		installWarnings.push(...installResult.warnings);
  	}
 diff --git a/dist/installer-DDvaMqav.js b/dist/installer-DDvaMqav.js
-index 5ed55da1726ab87d1c11932262f972cf39c3dd45..daa298dc474c873a43aa41f286215ad97503f0cf 100644
+index 5ed55da1726ab87d1c11932262f972cf39c3dd45..2c1259949239c34929f944e5503a86d924f406f8 100644
 --- a/dist/installer-DDvaMqav.js
 +++ b/dist/installer-DDvaMqav.js
 @@ -49,11 +49,11 @@ function isTextFile(path) {
@@ -223,7 +223,7 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..daa298dc474c873a43aa41f286215ad9
  	if (!response.ok) {
  		const hint = response.status === 404 ? " (package not found — check the name in package.json or set the `registry` option if it lives on a private registry)" : "";
  		throw new Error(`Registry returned ${response.status} ${response.statusText} for "${name}" at ${url}${hint}`);
-@@ -475,82 +499,141 @@ function resolveVersion(range, metadata) {
+@@ -475,82 +499,144 @@ function resolveVersion(range, metadata) {
  	const versions = Object.keys(metadata.versions);
  	return semver.maxSatisfying(versions, range) ?? void 0;
  }
@@ -297,19 +297,20 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..daa298dc474c873a43aa41f286215ad9
 +async function fetchPackageFiles(name, metadata, options = {}) {
 +	const tarballUrl = metadata.dist?.tarball;
 +	if (!tarballUrl) throw new Error(`Registry metadata for ${name}@${metadata.version} is missing \`dist.tarball\` — the registry response is likely malformed or the version was unpublished.`);
++	const verify = tarballCheck(name, metadata);
 +	const response = await options.egress(tarballUrl, {}, DEFAULT_TIMEOUT_MS * 2);
 +	if (!response.ok) throw new Error(`Failed to fetch tarball for ${name}@${metadata.version}: ${response.status} ${response.statusText} (${tarballUrl})`);
 +	if (response.body === null) throw new Error(`Tarball for ${name}@${metadata.version} has no body (${tarballUrl})`);
 +	const keep = options.buildInputsOnly === true ? isBuildInput : isTextFile;
 +	const archive = new Uint8Array(await response.arrayBuffer());
-+	await verifyTarball(name, metadata, archive);
++	await verify(archive);
 +	return extractTarball(new Response(archive).body, keep);
  }
  /**
 -* Decompress gzip data using DecompressionStream.
-+* Check a registry tarball against the digest its version metadata publishes: the strongest
++* The check of a registry tarball against the digest its version metadata publishes: the strongest
 +* `dist.integrity` hash (SHA-512, SHA-384 or SHA-256), else the SHA-1 `dist.shasum`. A version
-+* that publishes neither is refused.
++* that publishes neither is refused here, before its archive is requested.
  */
 -async function decompress(data) {
 -	const ds = new DecompressionStream("gzip");
@@ -324,28 +325,31 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..daa298dc474c873a43aa41f286215ad9
 -		if (done) break;
 -		chunks.push(value);
 -		totalLength += value.length;
-+async function verifyTarball(name, metadata, archive) {
-+	const algorithms = { sha512: "SHA-512", sha384: "SHA-384", sha256: "SHA-256" };
-+	const published = (metadata.dist?.integrity ?? "").split(/\s+/).map((entry) => /^(sha512|sha384|sha256)-([A-Za-z0-9+/]+={0,2})$/.exec(entry)).filter((match) => match !== null).sort((a, b) => b[1].localeCompare(a[1]));
-+	const toBase64 = (bytes) => btoa(String.fromCharCode(...bytes));
-+	const toHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-+	const digest = async (algorithm) => new Uint8Array(await crypto.subtle.digest(algorithm, archive));
-+	if (published.length > 0) {
-+		const [, algorithm, expected] = published[0];
-+		if (toBase64(await digest(algorithms[algorithm])) === expected) return;
-+		throw new Error(`Tarball for ${name}@${metadata.version} does not match its published ${algorithm} integrity`);
- 	}
+-	}
 -	const result = new Uint8Array(totalLength);
 -	let offset = 0;
 -	for (const chunk of chunks) {
 -		result.set(chunk, offset);
 -		offset += chunk.length;
-+	const shasum = metadata.dist?.shasum;
-+	if (typeof shasum === "string" && /^[0-9a-f]{40}$/.test(shasum)) {
-+		if (toHex(await digest("SHA-1")) === shasum) return;
-+		throw new Error(`Tarball for ${name}@${metadata.version} does not match its published shasum`);
++function tarballCheck(name, metadata) {
++	const algorithms = { sha512: "SHA-512", sha384: "SHA-384", sha256: "SHA-256" };
++	const published = (metadata.dist?.integrity ?? "").split(/\s+/).map((entry) => /^(sha512|sha384|sha256)-([A-Za-z0-9+/]+={0,2})$/.exec(entry)).filter((match) => match !== null).sort((a, b) => b[1].localeCompare(a[1]));
++	const toBase64 = (bytes) => btoa(String.fromCharCode(...bytes));
++	const toHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
++	const digest = async (algorithm, archive) => new Uint8Array(await crypto.subtle.digest(algorithm, archive));
++	if (published.length > 0) {
++		const [, algorithm, expected] = published[0];
++		return async (archive) => {
++			if (toBase64(await digest(algorithms[algorithm], archive)) === expected) return;
++			throw new Error(`Tarball for ${name}@${metadata.version} does not match its published ${algorithm} integrity`);
++		};
  	}
 -	return result;
++	const shasum = metadata.dist?.shasum;
++	if (typeof shasum === "string" && /^[0-9a-f]{40}$/.test(shasum)) return async (archive) => {
++		if (toHex(await digest("SHA-1", archive)) === shasum) return;
++		throw new Error(`Tarball for ${name}@${metadata.version} does not match its published shasum`);
++	};
 +	throw new Error(`Registry metadata for ${name}@${metadata.version} publishes no tarball digest`);
 +}
 +/** Files a bundler never reads: source maps, type declarations and package documentation. */
@@ -422,7 +426,7 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..daa298dc474c873a43aa41f286215ad9
  	}
  	const archiveRoot = findSharedTarRootDirectory(regularFilePaths);
  	const files = {};
-@@ -560,6 +643,70 @@ function parseTar(data) {
+@@ -560,6 +646,70 @@ function parseTar(data) {
  	}
  	return files;
  }

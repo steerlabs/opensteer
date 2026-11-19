@@ -79,6 +79,20 @@ test("builds every plugin against the Host's framework and checks other packages
     },
   };
   const registry = await pluginFixtureRegistry(undefined, undefined, (request, response) => {
+    // A version that publishes no digest of its archive.
+    if (request.url === "/fixture-no-digest") {
+      const name = "fixture-no-digest";
+      response.end(
+        JSON.stringify({
+          name,
+          "dist-tags": { latest: "1.0.0" },
+          versions: {
+            "1.0.0": { name, version: "1.0.0", dist: { tarball: `${origin}/${name}.tgz` } },
+          },
+        }),
+      );
+      return true;
+    }
     // A redirect the registry's origin answers with, back to its own tarball.
     if (request.url === "/redirect.tgz") {
       response.writeHead(302, { location: "/fixture-label.tgz" }).end();
@@ -212,4 +226,13 @@ test("builds every plugin against the Host's framework and checks other packages
   expect(elsewhere).toMatchObject({ status: "build-error" });
   expect(JSON.stringify(elsewhere)).toContain("Refused to fetch");
   expect(registry.requests.map((request) => request.slice(host.length))).toEqual(["/redirect.tgz"]);
+
+  // A registry version that publishes no digest is refused before its archive is requested.
+  registry.requests.length = 0;
+  const undigested = await install("fixture-no-digest", "1.0.0");
+  expect(undigested).toMatchObject({ status: "build-error" });
+  expect(JSON.stringify(undigested)).toContain("publishes no tarball digest");
+  expect(registry.requests.map((request) => request.slice(host.length))).toEqual([
+    "/fixture-no-digest",
+  ]);
 });
