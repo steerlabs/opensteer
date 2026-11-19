@@ -565,11 +565,34 @@ export class PersonalTeamRequestsStore {
    * ended, but the request has not recorded its terminal state (the final
    * reply or terminal status was not delivered). Durable, so a restart or a
    * recovered link finds them again.
+   *
+   * Only teams whose link can publish right now (`teamIds`, the connected
+   * links) are read, so rows behind a link that is down never fill a page; a
+   * caller pages with `after` through all of them, so every owed row gets a
+   * turn in every pass and rows that fail cannot hold a page.
    */
-  async owedTerminalPublications(limit = 100): Promise<PersonalTeamRequest[]> {
+  async owedTerminalPublications(input: {
+    readonly teamIds: readonly DeploymentId[];
+    readonly after?: { readonly teamId: DeploymentId; readonly requestId: TeamAgentRequestId };
+    readonly limit?: number;
+  }): Promise<PersonalTeamRequest[]> {
+    if (input.teamIds.length === 0) return [];
+    const after = input.after;
     const rows = await this.database
       .selectFrom("personalTeamRequests")
       .selectAll()
+      .where("teamDeploymentId", "in", input.teamIds)
+      .$if(after !== undefined, (query) =>
+        query.where((eb) =>
+          eb.or([
+            eb("teamDeploymentId", ">", after!.teamId),
+            eb.and([
+              eb("teamDeploymentId", "=", after!.teamId),
+              eb("requestId", ">", after!.requestId),
+            ]),
+          ]),
+        ),
+      )
       .where("localTaskId", "is not", null)
       .where("localInputId", "is not", null)
       .where("terminalState", "is", null)
@@ -602,9 +625,9 @@ export class PersonalTeamRequestsStore {
             .where("personalTeamLinks.state", "not in", ["leaving", "revoked"]),
         ),
       )
-      .orderBy("createdAt")
+      .orderBy("teamDeploymentId")
       .orderBy("requestId")
-      .limit(limit)
+      .limit(input.limit ?? 100)
       .execute();
     return rows.map((row) => this.#view(row));
   }

@@ -1724,6 +1724,8 @@ export async function createHostRuntime(
           realtime.wake(syncHead, new Set(["authority"]));
           if (reaction.attemptOnly) break;
           reconcileMemoryPasses?.();
+          // Owed from the rows, whatever the live publication below does.
+          teamPublications?.wake();
           teamRunEvents?.observe(reaction);
           notificationDispatcher?.dispatch(reaction);
           void toolActivity
@@ -2995,15 +2997,16 @@ export async function createHostRuntime(
           ...(options.executionClock ? { clock: options.executionClock } : {}),
           onError: reportMutationFailure,
           drain: () =>
-            teamPublicationPass(
-              () => links.requests.options.requests.owedTerminalPublications(),
-              (request) => links.requests.reconcileOne(request),
-              (error) =>
+            teamPublicationPass({
+              readyTeams: () => links.links.readyTeams(),
+              owed: (input) => links.requests.options.requests.owedTerminalPublications(input),
+              reconcile: (request) => links.requests.reconcileOne(request),
+              report: (error) =>
                 app.log.warn(
                   { err: error },
                   "A finished team Run's answer is still owed; retrying",
                 ),
-            ),
+            }),
         });
         teamPublications.start();
         teamRunEvents = new TeamRunEvents({

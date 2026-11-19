@@ -198,6 +198,11 @@ export class PersonalTeamLinks {
     connection.start();
   }
 
+  /** Teams whose link connection is ready to carry calls now. */
+  readyTeams(): DeploymentId[] {
+    return [...this.#connections].filter(([, c]) => c.ready).map(([teamId]) => teamId);
+  }
+
   rpc(teamId: DeploymentId): TeamLinkRpc {
     const connection = this.#connections.get(teamId);
     if (!connection) throw linkError("runner_offline");

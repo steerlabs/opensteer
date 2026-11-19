@@ -593,10 +593,11 @@ export class PersonalTeamRequests {
     throw error;
   }
 
-  async reconcileOne(request: PersonalTeamRequest): Promise<void> {
+  /** Whether this call recorded the request's terminal state. */
+  async reconcileOne(request: PersonalTeamRequest): Promise<boolean> {
     const { requests, runs } = this.options;
     const outcome = await runs.outcome(request);
-    if (!["done", "failed", "stopped", "cancelled"].includes(outcome.state)) return;
+    if (!["done", "failed", "stopped", "cancelled"].includes(outcome.state)) return false;
     const terminalState = outcome.state as NonNullable<PersonalTeamRequest["terminalState"]>;
     this.#lastStatus.delete(`${request.teamId}:${request.requestId}`);
     const current = (await requests.get(request.teamId, request.requestId))!;
@@ -607,19 +608,23 @@ export class PersonalTeamRequests {
         outcome.answerMessageId,
       );
     if ((await requests.get(request.teamId, request.requestId))?.publicationState === "pending")
-      return;
+      return false;
     try {
       await this.options
         .rpc(request.teamId)
         .call({ type: "status", requestId: request.requestId, state: terminalState, steps: [] });
       await requests.terminal(request.teamId, request.requestId, outcome.runId, terminalState);
+      return true;
     } catch (error) {
       await this.#failure(current, error);
       if (
         error instanceof OpensteerError &&
         ["forbidden", "unauthorized", "not_found"].includes(error.code)
-      )
+      ) {
         await requests.terminal(request.teamId, request.requestId, outcome.runId, terminalState);
+        return true;
+      }
+      return false;
     }
   }
 
