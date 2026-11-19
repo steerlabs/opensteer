@@ -3103,7 +3103,7 @@ describe("durable harness catalogs", () => {
     try {
       await settings.setQuietTaskDays({ userId: fixtureOwnerId, quietTaskDays: 3 });
       expect(await injectTestResource(app, "settings")).toMatchObject({ quietTaskDays: 3 });
-      expect((await injectTestResource(app, "harness-catalog")).environments).toContainEqual(
+      expect(await joinEnvironmentCatalogs((kind) => injectTestResource(app, kind))).toContainEqual(
         expect.objectContaining({
           id: harness.environmentId,
           status: "disconnected",
