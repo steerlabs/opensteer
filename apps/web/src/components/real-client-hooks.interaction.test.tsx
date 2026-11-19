@@ -97,10 +97,14 @@ it("watches what a mounted screen reads, through re-renders, and lets go after i
   const root = mount();
   await vi.waitFor(() => expect(watched()).toContain("machine"));
   for (const label of ["b", "c", "d"]) act(() => root.render(<Machines label={label} />));
-  act(() => vi.advanceTimersByTime(60_000));
+  act(() => {
+    vi.advanceTimersByTime(60_000);
+  });
   expect(watched()).toContain("machine");
   act(() => root.unmount());
-  act(() => vi.advanceTimersByTime(10_000));
+  act(() => {
+    vi.advanceTimersByTime(10_000);
+  });
   await vi.waitFor(() => expect(watched()).not.toContain("machine"));
   roots.push(mount());
   await vi.waitFor(() => expect(watched()).toContain("machine"));
