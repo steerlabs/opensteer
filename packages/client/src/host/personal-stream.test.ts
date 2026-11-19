@@ -3812,6 +3812,46 @@ describe("reads that race a repair", () => {
     }
   });
 
+  it("two queue reads each overtaken by a repair install nothing; the third, current, fills the tail", async () => {
+    const head = createId("message");
+    const tail = createId("message");
+    const f = racing([head, tail], [head]);
+    const queue = held<unknown>();
+    const reader = new ScopedThreadReader(
+      f.detail,
+      { "thread.inputQueue.get": queue.fn } as never,
+      new TranscriptBodies(),
+    );
+    const answer = (preview: string, revision: string) => ({
+      ok: true,
+      data: {
+        threadId,
+        revision,
+        asOfSequence: revision,
+        paused: true,
+        steerRunId: null,
+        items: [waitingEntry(head, preview), waitingEntry(tail, preview)],
+      },
+    });
+    try {
+      await vi.waitFor(() => expect(queue.fn).toHaveBeenCalledTimes(1));
+      f.stream.receive(f.cut("2"));
+      queue.answers[0]!(answer("first", "1"));
+      await vi.waitFor(() => expect(queue.fn).toHaveBeenCalledTimes(2));
+      // Overtaken again before it answers.
+      f.stream.receive(f.cut("3"));
+      queue.answers[1]!(answer("second", "2"));
+      await vi.waitFor(() => expect(queue.fn).toHaveBeenCalledTimes(3));
+      expect(f.detail.transcript.getSnapshot().queueEntries.has(tail)).toBe(false);
+      queue.answers[2]!(answer("third", "3"));
+      await vi.waitFor(() =>
+        expect(reader.getSnapshot().inputQueue?.items.at(-1)?.message.preview).toBe("third"),
+      );
+    } finally {
+      reader.dispose();
+    }
+  });
+
   it("an overlay page in flight across a repair still leaves the loaded pages read again", async () => {
     const f = racing([], []);
     const pages = held<unknown>();
