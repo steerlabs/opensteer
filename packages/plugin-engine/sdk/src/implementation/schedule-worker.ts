@@ -3,6 +3,7 @@ import { WebhookSourceHost } from "../contracts/webhooks.ts";
 import { Effect, Queue, Schedule, Schema, Semaphore } from "effect";
 import { traceFailure } from "@opensteer/plugin-engine-telemetry/failed-span";
 import type { PluginEngine } from "../contracts/pluginEngine.ts";
+import type { AppId } from "../contracts/shared.ts";
 import type { ScheduleAuthority } from "../contracts/scheduler.ts";
 import { ScheduleHostReady, ScheduleWorkerOptions } from "../contracts/schedule-worker.ts";
 
@@ -11,6 +12,8 @@ export const startScheduleWorker = (
   pluginEngine: PluginEngine,
   authorize: (target: ScheduleAuthority) => Effect.Effect<void, Error>,
   options: ScheduleWorkerOptions,
+  /** Apps whose scheduled work waits, read at each pass; see the dispatcher's `held`. */
+  held: () => ReadonlyArray<AppId> = () => [],
 ) =>
   Effect.gen(function* () {
     const config = yield* Schema.decodeUnknownEffect(ScheduleWorkerOptions)(options);
@@ -19,10 +22,11 @@ export const startScheduleWorker = (
     // Coalesce writes while reconciliation runs. A queued wake survives until
     // the current pass completes; the same worker owns every pass.
     const sourcesChanged = yield* Queue.make<void>({ capacity: 1, strategy: "dropping" });
-    const tick = pluginEngine.scheduler
-      .tick({
+    const tick = Effect.suspend(() =>
+      pluginEngine.scheduler.tick({
         runner: config.runner,
         maxCandidates: config.concurrency,
+        held: held(),
         authorize,
         // Each operation a pass finds is one trace, rooted in a dispatch as a Cloud
         // coordinator's pass is.
@@ -32,16 +36,16 @@ export const startScheduleWorker = (
               operation.pipe(Effect.withSpan("schedule.dispatch"), Effect.withTracerEnabled(true)),
             )
             .pipe(Effect.asVoid),
-      })
-      .pipe(
-        // A pass runs every second; one that finds nothing to run records nothing. One that
-        // fails is still a trace of its own.
-        Effect.withTracerEnabled(false),
-        traceFailure("schedule.dispatch"),
-        Effect.catch(() => Effect.logError("Scheduled dispatch failed")),
-        Effect.forkIn(scope),
-        Effect.asVoid,
-      );
+      }),
+    ).pipe(
+      // A pass runs every second; one that finds nothing to run records nothing. One that
+      // fails is still a trace of its own.
+      Effect.withTracerEnabled(false),
+      traceFailure("schedule.dispatch"),
+      Effect.catch(() => Effect.logError("Scheduled dispatch failed")),
+      Effect.forkIn(scope),
+      Effect.asVoid,
+    );
     yield* Effect.gen(function* () {
       yield* Effect.flatten(ScheduleHostReady);
       return yield* Effect.forever(

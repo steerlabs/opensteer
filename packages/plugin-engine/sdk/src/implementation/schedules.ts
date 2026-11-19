@@ -732,7 +732,7 @@ export const makeSchedules = (
       );
       return dates.length === 0 ? null : new Date(Math.min(...dates.map((date) => date.getTime())));
     }),
-    tick: ({ runner, authorize, execute, maxCandidates }) =>
+    tick: ({ runner, authorize, execute, maxCandidates, held = [] }) =>
       Effect.gen(function* () {
         const time = yield* now;
         const waiting = yield* query(() =>
@@ -740,9 +740,12 @@ export const makeSchedules = (
             limit: maxCandidates,
             orderBy: ["startedAt", "asc"],
             where: (b) =>
-              b.or(
-                b("status", "=", "ready"),
-                b.and(b("status", "=", "awaiting-approval"), b("expiresAt", "<=", time)),
+              b.and(
+                b.or(
+                  b("status", "=", "ready"),
+                  b.and(b("status", "=", "awaiting-approval"), b("expiresAt", "<=", time)),
+                ),
+                held.length === 0 ? true : b("app", "not in", [...held]),
               ),
           }),
         ).pipe(Effect.flatMap((rows) => parse(Schema.Array(StoredScheduledRun), rows)));
@@ -822,7 +825,12 @@ export const makeSchedules = (
           db.findMany("schedules", {
             limit: maxCandidates,
             where: (b) =>
-              b.and(b("enabled", "=", true), b("activeRun", "is", null), b("nextAt", "<=", time)),
+              b.and(
+                b("enabled", "=", true),
+                b("activeRun", "is", null),
+                b("nextAt", "<=", time),
+                held.length === 0 ? true : b("app", "not in", [...held]),
+              ),
             orderBy: ["nextAt", "asc"],
           }),
         ).pipe(Effect.flatMap((rows) => parse(Schema.Array(ScheduleSettings), rows)));

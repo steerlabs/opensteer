@@ -26,7 +26,14 @@ import {
   WorkflowApp,
 } from "../contracts/workflows.ts";
 import { AccountScope, SelectedAccounts } from "../contracts/apps.ts";
-import { AppId, VersionId, OwnerId, StorageError, type Json } from "../contracts/shared.ts";
+import {
+  AppId,
+  VersionId,
+  OwnerId,
+  StorageError,
+  type BuildId,
+  type Json,
+} from "../contracts/shared.ts";
 import type { Credentials } from "../contracts/storage.ts";
 import type { Runtime } from "../contracts/runtime.ts";
 import type { PluginEngineDatabase } from "./storage.ts";
@@ -35,7 +42,7 @@ import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
 import { storedAccount } from "./accounts.ts";
 import { storedApp, storedVersion } from "./apps.ts";
-import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
+import { isContextChange, resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
 import { invocationScope, scopedSelection } from "./selection.ts";
 import type { Declarations } from "./declarations.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
@@ -231,6 +238,94 @@ export const makeWorkflowRuns = (
       version: row.version,
       captured: { accounts: row.accounts, scope: row.scope },
     }).pipe(Effect.provideService(CurrentActor, row.actor ?? undefined));
+  /** Whether the runtime runs this build as it is; see `Runtime.current`. */
+  const current = (build: BuildId) => runtime.current?.(build) ?? Effect.succeed(true);
+  /**
+   * A run pinned to a build the runtime no longer runs as it is, moved to the app's active version
+   * when that version takes the run as it was started: it declares the workflow, accepts the saved
+   * request, and runs with the accounts and scope the run captured. Otherwise the run ends stale.
+   * Only a queued run moves: one that started ran its steps on the build it names.
+   */
+  const rebind = (row: typeof StoredRun.Type) =>
+    Effect.gen(function* () {
+      const stale = failure("stale");
+      if (row.status !== "queued") return yield* stale;
+      const app = yield* storedApp(db, { app: row.app });
+      if (app.activeVersion === null || app.activeVersion === row.version) return yield* stale;
+      const state = yield* snapshot(db, {
+        app: row.app,
+        version: app.activeVersion,
+        captured: { accounts: row.accounts, scope: row.scope },
+      }).pipe(
+        Effect.provideService(CurrentActor, row.actor ?? undefined),
+        Effect.catchIf(isContextChange, () => Effect.fail(stale)),
+      );
+      if (
+        !Schema.toEquivalence(SelectedAccounts)(state.accounts, row.accounts) ||
+        !(yield* current(state.version.build))
+      )
+        return yield* stale;
+      const payload = yield* decrypt(row);
+      const bound = yield* resolve(state, resolveAccount).pipe(
+        Effect.provideService(CurrentActor, state.actor),
+      );
+      const parsed = yield* runtime
+        .workflow({
+          app: row.app,
+          build: state.version.build,
+          hostApi: declarations.hostApi(state.version),
+          ...bound,
+          command: { operation: "workflow-validate", name: row.name, input: payload.request },
+        })
+        .pipe(
+          // A build that could not load or answer says nothing about the run; the app's own
+          // refusal of the workflow or its input does.
+          Effect.catchTags({
+            RuntimeBuildUnavailable: () => Effect.fail(failure("engine", true)),
+            RuntimeProtocolFailed: () => Effect.fail(failure("engine", true)),
+          }),
+          Effect.catchIf(
+            (error) => !(Schema.is(WorkflowFailure)(error) && error.reason === "engine"),
+            () => Effect.fail(stale),
+          ),
+        );
+      const encrypted = yield* credentials.encrypt(
+        row.id,
+        Redacted.make({ input: parsed, request: payload.request }),
+      );
+      yield* query(() =>
+        db.updateMany("workflowRuns", {
+          where: (b) =>
+            b.and(
+              b("id", "=", row.id),
+              b("status", "=", "queued"),
+              b("deployment", "=", row.version),
+            ),
+          set: { deployment: state.version.id, encrypted },
+        }),
+      );
+      const rebound = yield* read(row.id);
+      if (rebound.version !== state.version.id) return yield* stale;
+      yield* Effect.logInfo("Workflow run moved to the active version").pipe(
+        Effect.annotateLogs({ run: row.id, from: row.version, to: rebound.version }),
+      );
+      return rebound;
+    });
+  /** The run as it may run now: pinned to a current build, or moved to one by `rebind`. */
+  const runnable = (row: typeof StoredRun.Type) =>
+    Effect.gen(function* () {
+      const state = yield* captured(row);
+      if (yield* current(state.version.build)) return { row, state };
+      // A stale run ends here, whichever host path reached it, so its view says why.
+      const rebound = yield* rebind(row).pipe(
+        Effect.tapError((error) =>
+          Schema.is(WorkflowFailure)(error) && error.reason === "stale"
+            ? finish(row.id, { ok: false, error: "stale" })
+            : Effect.void,
+        ),
+      );
+      return { row: rebound, state: yield* captured(rebound) };
+    });
   const context: WorkflowHost["context"] = (run) =>
     safe(
       Effect.gen(function* () {
@@ -255,10 +350,10 @@ export const makeWorkflowRuns = (
   const seed: WorkflowHost["seed"] = (run) =>
     safe(
       Effect.gen(function* () {
-        const row = yield* read(run);
-        if (row.status === "terminated" || row.status === "errored")
-          return yield* failure(row.status === "terminated" ? "terminated" : "conflict");
-        const state = yield* captured(row);
+        const saved = yield* read(run);
+        if (saved.status === "terminated" || saved.status === "errored")
+          return yield* failure(saved.status === "terminated" ? "terminated" : "conflict");
+        const { row, state } = yield* runnable(saved);
         const payload = yield* decrypt(row);
         if (row.status === "queued")
           yield* query(() =>

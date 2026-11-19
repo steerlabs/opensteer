@@ -441,7 +441,11 @@ export const workerdApps = (options: {
         }),
       ).pipe(Effect.mapError(protocolFailure));
     return {
-      ...(yield* connectedWorkerdApps(options.blobs, { rpc, changes, evaluated, backend })),
+      ...(yield* connectedWorkerdApps(
+        options.blobs,
+        { rpc, changes, evaluated, backend },
+        framework,
+      )),
       framework,
     };
   }).pipe(

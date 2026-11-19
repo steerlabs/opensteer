@@ -243,6 +243,7 @@ export const DeployAppInput = Schema.Union([
     files: SourceFiles,
     commit: Schema.optional(Schema.Never),
     name: Schema.optional(Schema.Never),
+    expectedVersion: Schema.optional(Schema.NullOr(VersionId)),
   }),
   Schema.Struct({
     owner: OwnerId,
@@ -250,6 +251,7 @@ export const DeployAppInput = Schema.Union([
     commit: SourceCommit,
     files: Schema.optional(Schema.Never),
     name: Schema.optional(Schema.Never),
+    expectedVersion: Schema.optional(Schema.NullOr(VersionId)),
   }),
 ]);
 
@@ -644,12 +646,13 @@ export const AppsGroup = HttpApiGroup.make("apps")
         AppNameTaken,
         AppSlugTaken,
         AppNotFound,
+        AppVersionChanged,
         AccountNotFound,
         AccountSelectionInvalid,
       ],
     }).annotate(
       OpenApi.Description,
-      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful version activates automatically. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
+      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. A successful version activates. A deploy to an existing app expects the version active when it started, or expectedVersion: one that finds another version activated meanwhile fails with AppVersionChanged before it migrates the app's database, and saves nothing. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
     ),
   )
   .add(

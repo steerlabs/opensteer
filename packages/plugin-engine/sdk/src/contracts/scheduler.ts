@@ -17,6 +17,11 @@ export interface ScheduleDispatcher {
   readonly tick: (options: {
     readonly runner: string;
     readonly maxCandidates: number;
+    /**
+     * Apps whose work waits, such as one being rebuilt. Their due occurrences and answered
+     * approvals are not picked at all, so they stay due and take no candidate from other apps.
+     */
+    readonly held?: ReadonlyArray<AppId>;
     readonly authorize: (target: ScheduleAuthority) => Effect.Effect<void, Error>;
     /** Host-owned admission gate. Skip the effect when full, leaving the occurrence unclaimed for the next wake. */
     readonly execute: (

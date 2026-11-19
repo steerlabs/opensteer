@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as PgClient from "@effect/sql-pg/PgClient";
 import { Deferred, Effect, Exit, Layer, ManagedRuntime, Redacted, Scope, Schema } from "effect";
@@ -28,7 +28,10 @@ import {
   type BrokeredOAuthResult,
   type OAuthBrokerPort,
   type PluginEngine,
+  runtimeAdapter,
+  toEffectRuntime,
 } from "@opensteer/plugin-engine-sdk/core";
+import { WorkflowFailure } from "apps/contracts";
 import { markdownRefusals } from "@opensteer/plugin-engine-sdk/markdown";
 import { filesystemRepositories } from "@opensteer/plugin-source";
 import { memoryRegistry } from "@opensteer/plugin-engine-sdk/testing";
@@ -85,7 +88,30 @@ export default defineApp({ user: { accounts: { service } } }, { tools: router({
   }),
 }) });`;
 
-function files(source: string, database = false) {
+/**
+ * A plugin whose workflows and reviewed tool are pinned to their version. `revision` tells the
+ * versions apart; `drop` leaves out the reviewed tool and the `moved` workflow; `extra` adds a
+ * second migration.
+ */
+const pinnedSource = (revision: number, drop = false) => `
+import { defineApp, query, mutation, router, object, number, workflow } from "apps";
+import { always } from "apps/operations/approval";
+const read = query({ input: object({}) }, async ({ sql }) => ({
+  value: sql.exec("SELECT value FROM counter").one().value,
+  revision: ${revision},
+  tables: sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'extra'").toArray().length,
+}));
+const reviewed = mutation({ input: object({ amount: number() }), approval: always() }, async ({ sql }, { amount }) =>
+  ({ value: sql.exec("UPDATE counter SET value = value + ? RETURNING value", amount).one().value, revision: ${revision} }));
+export default defineApp({}, {
+  tools: router({ read${drop ? "" : ", reviewed"} }),
+  workflows: {
+    ${drop ? "" : `moved: workflow({ input: object({ amount: number() }) }, async (ctx, { amount }) => ({ amount, revision: ${revision} })),`}
+    kept: workflow({ input: object({}) }, async (ctx) => ctx.step.runQuery("read", read, {})),
+  },
+});`;
+
+function files(source: string, database = false, extra = false) {
   return Schema.decodeUnknownSync(SourceFiles)([
     { path: "index.ts", content: source },
     {
@@ -106,6 +132,9 @@ function files(source: string, database = false) {
           },
         ]
       : []),
+    ...(extra
+      ? [{ path: "migrations/0002_extra.sql", content: "CREATE TABLE extra (id INTEGER);" }]
+      : []),
   ]);
 }
 
@@ -114,6 +143,7 @@ const fixtureFlows = [
   "brokered OAuth",
   "live schedule approvals",
   "scheduler authorization failures",
+  "work pinned to a build the runtime no longer runs",
 ] as const;
 
 test.for(fixtureFlows)(
@@ -156,6 +186,8 @@ test.for(fixtureFlows)(
       throw new Error("Fixture registry has no TCP address");
     origin = `http://127.0.0.1:${address.port}`;
     const scope = Scope.makeUnsafe();
+    const replaced = new Set<string>();
+    let holding = false;
     const schema = "plugin_fixture";
     const oauthRequests: string[] = [];
     const services = Layer.mergeAll(
@@ -331,6 +363,7 @@ test.for(fixtureFlows)(
           },
         });
         console.log("Plugin runtime", { coldStartMs: workerd.coldStartMs, idle: workerd.idle });
+        const native = toEffectRuntime(workerd.runtime, workerd.blobs);
         const engine = yield* createPluginEngine({
           database,
           secret: Redacted.make("a1".repeat(32)),
@@ -338,8 +371,19 @@ test.for(fixtureFlows)(
           git: filesystemRepositories(join(directory, "repositories")),
           markdown: markdownRefusals,
           blobs: workerd.blobs,
-          runtime: workerd.runtime,
-          workflows: workerd.workflows,
+          // A build named in `replaced` is one the runtime no longer runs, as after an upgrade.
+          runtime: runtimeAdapter({
+            ...native,
+            current: (build) => Effect.succeed(!replaced.has(build)),
+          }),
+          // While `holding`, a started run stays queued, as one waiting for its plugin's rebuild.
+          workflows: {
+            ...workerd.workflows,
+            start: (run) =>
+              holding
+                ? Effect.fail(new WorkflowFailure({ reason: "engine", retryable: true }))
+                : workerd.workflows.start(run),
+          },
           registry: memoryRegistry(),
           ...(brokerClient === undefined
             ? {}
@@ -374,6 +418,136 @@ test.for(fixtureFlows)(
       }).pipe(Effect.timeout("15 seconds")),
     );
     const owner = OwnerId.make("fixture-owner");
+    if (flow === "work pinned to a build the runtime no longer runs") {
+      const v1 = await run(
+        engine.apps.deploy({ owner, name: "Pinned", files: files(pinnedSource(1), true) }),
+      );
+      const app = v1.app.id;
+      const call = (tool: string, input: Schema.Json = {}) =>
+        run(engine.tools.call({ app, tool: ToolName.make(tool), input }));
+      const runs = (workflow: string, input: Schema.Json) =>
+        run(engine.apps.workflowRuns.start({ app, workflow, input }));
+      const stored = (id: string) =>
+        run(engineSql<{ status: string; failure: string | null; deployment: string }>`
+          SELECT status, failure, deployment FROM plugin_engine_workflow_runs WHERE id = ${id}`).then(
+          (rows) => rows[0],
+        );
+      // Work saved on the first version: two queued runs and two reviewed calls.
+      holding = true;
+      const moved = await runs("moved", { amount: 2 });
+      const dropped = await runs("moved", { amount: 3 });
+      const kept = await runs("kept", {});
+      const approval = await call("reviewed", { amount: 5 });
+      const refused = await call("reviewed", { amount: 6 });
+      if (approval.status !== "approval-required" || refused.status !== "approval-required")
+        throw new Error("The reviewed call did not ask for approval");
+      expect((await stored(moved.id))?.status).toBe("queued");
+
+      // The first version's build is replaced; the second declares the same workflows and tool.
+      replaced.add(v1.version.build);
+      const v2 = await run(engine.apps.deploy({ owner, app, files: files(pinnedSource(2), true) }));
+      holding = false;
+      // A queued run moves to the active version, which validates its saved input, and runs there.
+      const finished = (id: (typeof moved)["id"]) =>
+        vi.waitFor(
+          async () => {
+            const current = await run(engine.apps.workflowRuns.get({ app, run: id }));
+            if (current.status !== "complete" && current.status !== "errored")
+              throw new Error(`Run ${id} is ${current.status}`);
+            return current;
+          },
+          { timeout: 10_000, interval: 100 },
+        );
+      expect(await finished(moved.id)).toMatchObject({
+        status: "complete",
+        output: { amount: 2, revision: 2 },
+      });
+      expect(await stored(moved.id)).toMatchObject({ deployment: v2.version.id });
+      expect(await finished(kept.id)).toMatchObject({
+        status: "complete",
+        output: { revision: 2 },
+      });
+      // A reviewed call moves to the active version, which takes it as reviewed.
+      expect(
+        await run(
+          engine.tools.resume({ requestId: approval.requestId, response: { action: "accept" } }),
+        ),
+      ).toMatchObject({ status: "completed", value: { value: 5, revision: 2 } });
+
+      // The third version no longer declares the workflow or the tool: what waits for them is
+      // stale, and nothing of it runs on any build.
+      replaced.add(v2.version.build);
+      holding = true;
+      const waiting = await runs("kept", {});
+      await run(engine.apps.deploy({ owner, app, files: files(pinnedSource(3, true), true) }));
+      holding = false;
+      expect(await finished(dropped.id)).toMatchObject({ status: "errored", error: "stale" });
+      expect(await stored(dropped.id)).toMatchObject({
+        status: "errored",
+        failure: "stale",
+        deployment: v1.version.id,
+      });
+      expect(await finished(waiting.id)).toMatchObject({
+        status: "complete",
+        output: { revision: 3 },
+      });
+      expect(
+        await run(
+          engine.tools.resume({ requestId: refused.requestId, response: { action: "accept" } }),
+        ),
+      ).toMatchObject({ status: "failed", reason: "stale" });
+      expect(await call("read")).toMatchObject({ value: { value: 5, revision: 3 } });
+
+      // A deploy that expects another active version than the current one fails before it
+      // migrates the plugin's database, and saves nothing.
+      const versions = (await run(engine.apps.versions({ app, owner }))).length;
+      const lost = await run(
+        engine.apps
+          .deploy({
+            owner,
+            app,
+            files: files(pinnedSource(4), true, true),
+            expectedVersion: v2.version.id,
+          })
+          .pipe(Effect.flip),
+      );
+      expect(lost).toMatchObject({ _tag: "AppVersionChanged", expected: v2.version.id });
+      expect(await call("read")).toMatchObject({ value: { revision: 3, tables: 0 } });
+      expect(await run(engine.apps.versions({ app, owner }))).toHaveLength(versions);
+
+      // The scheduler does not pick the due work of an app whose work is held, so it takes no
+      // candidate from an app whose work is not.
+      const scheduled = async (name: string) => {
+        const deployed = await run(
+          engine.apps.deploy({ owner, name, files: files(fixtureSource(1), true) }),
+        );
+        const target = { app: deployed.app.id, owner, name: "reviewed", actor: owner };
+        await run(
+          engine.schedules.configure({ ...target, enabled: true, approvalMode: "browser" }),
+        );
+        return deployed.app.id;
+      };
+      const held = await scheduled("Held schedule");
+      const free = await scheduled("Free schedule");
+      await run(engineSql`UPDATE plugin_engine_schedules
+        SET next_at = (now() AT TIME ZONE 'UTC') - interval '1 minute' WHERE app = ${held}`);
+      await run(engineSql`UPDATE plugin_engine_schedules
+        SET next_at = (now() AT TIME ZONE 'UTC') - interval '1 second' WHERE app = ${free}`);
+      await run(
+        engine.scheduler.tick({
+          runner: "fixture",
+          maxCandidates: 1,
+          held: [held],
+          execute: (work) => work,
+          authorize: () => Effect.void,
+        }),
+      );
+      expect(await run(engine.schedules.runs({ app: held, owner }))).toEqual([]);
+      expect(await run(engine.schedules.runs({ app: free, owner }))).toMatchObject([
+        { status: "awaiting-approval" },
+      ]);
+      return;
+    }
     if (flow === "live schedule approvals" || flow === "scheduler authorization failures") {
       const {
         app: { id: app },

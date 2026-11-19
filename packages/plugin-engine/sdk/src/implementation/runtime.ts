@@ -217,6 +217,9 @@ export const toEffectRuntime = (
   const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => observe(store(effect));
   return {
     ...(runtime.changes === undefined ? {} : { changes: runtime.changes }),
+    ...(runtime.current === undefined
+      ? {}
+      : { current: (build: BuildId) => runtime.current!(build).pipe(provide) }),
     build: (input) => runtime.build(input).pipe(provide),
     ...(asset === undefined
       ? {}

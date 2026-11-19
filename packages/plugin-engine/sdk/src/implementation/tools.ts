@@ -62,6 +62,7 @@ import {
   CredentialsError,
   type AccountId,
   type AppId,
+  type BuildId,
   type VersionId,
 } from "../contracts/shared.ts";
 import type { Account } from "../contracts/account.ts";
@@ -648,7 +649,16 @@ function invocation(
  * Check failures that are answers: the saved call's app, version or accounts are now missing
  * or different. Anything else, such as storage failing, answers nothing.
  */
-const isContextChange = Schema.is(
+/** An app's refusals of a call that come before its tool's handler runs. */
+const refusedBeforeHandler = new Set([
+  "HostToolNotFound",
+  "HostOperationNotFound",
+  "HostInputInvalid",
+  "HostKindMismatch",
+  "HostToolApprovalRequired",
+]);
+
+export const isContextChange = Schema.is(
   Schema.Union([
     AppNotFound,
     AppNotDeployed,
@@ -939,6 +949,8 @@ export const makeTools = (
 ) => {
   const db = database(storage);
   const resolveAccount = oauth.resolveSelected;
+  /** Whether the runtime runs this build as it is; see `Runtime.current`. */
+  const runsAsIs = (build: BuildId) => runtime.current?.(build) ?? Effect.succeed(true);
   const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
   /** Renew an account the service refused without repeating what it refused; undefined when none was. */
   const renewOnce = (state: InvocationSnapshot, context: InvocationContext, error: unknown) =>
@@ -1895,19 +1907,53 @@ export const makeTools = (
             approvals.resume(input, options?.issuer, (saved, originalInput) =>
               Effect.gen(function* () {
                 // The saved identities name the accounts; their credentials are resolved again.
-                const checked = yield* snapshot(db, {
-                  app: saved.app,
-                  version: saved.version,
-                  accounts: invocationAccounts(saved),
-                }).pipe(
-                  Effect.withSpan("sdk.invocation.snapshot"),
-                  Effect.flatMap((state) =>
-                    invocation(state, saved.tool, saved.kind, saved.input).pipe(
-                      Effect.map((current) => ({ state, current })),
+                const reread = (version: VersionId | undefined) =>
+                  snapshot(db, {
+                    app: saved.app,
+                    version,
+                    accounts: invocationAccounts(saved),
+                  }).pipe(
+                    Effect.withSpan("sdk.invocation.snapshot"),
+                    Effect.flatMap((state) =>
+                      invocation(state, saved.tool, saved.kind, saved.input).pipe(
+                        Effect.map((current) => ({ state, current })),
+                      ),
                     ),
-                  ),
-                  Effect.result,
-                );
+                    Effect.result,
+                  );
+                let checked = yield* reread(saved.version);
+                // The reviewed call as it may run now. A call saved for a build the runtime no
+                // longer runs is never run on it: it moves to the app's active version when that
+                // version takes it as reviewed, with the same tool, input, kind and accounts, and
+                // the app's own check of the input and approval refuses anything else (`rebound`).
+                // Otherwise it is stale, and the person approves it again as a new request.
+                let reviewed: ToolInvocation = saved;
+                let rebound = false;
+                const stale = {
+                  status: "failed",
+                  requestId: input.requestId,
+                  reason: "stale",
+                } satisfies ToolResumeResult;
+                if (
+                  Result.isSuccess(checked) &&
+                  !(yield* runsAsIs(checked.success.state.version.build))
+                ) {
+                  const replaced = yield* reread(undefined);
+                  if (Result.isFailure(replaced)) {
+                    if (isContextChange(replaced.failure)) return stale;
+                    checked = replaced;
+                  } else {
+                    reviewed = { ...saved, version: replaced.success.state.version.id };
+                    if (
+                      reviewed.version === saved.version ||
+                      !(yield* runsAsIs(replaced.success.state.version.build)) ||
+                      !Schema.toEquivalence(ToolInvocation)(reviewed, replaced.success.current)
+                    )
+                      return stale;
+                    checked = replaced;
+                    rebound = true;
+                  }
+                }
                 // A failed read shows nothing about the context: only an answer that differs does.
                 if (Result.isFailure(checked) && !isContextChange(checked.failure)) {
                   yield* Effect.annotateCurrentSpan({
@@ -1924,7 +1970,7 @@ export const makeTools = (
                 }
                 if (
                   Result.isFailure(checked) ||
-                  !Schema.toEquivalence(ToolInvocation)(saved, checked.success.current)
+                  !Schema.toEquivalence(ToolInvocation)(reviewed, checked.success.current)
                 ) {
                   return {
                     status: "failed",
@@ -1936,7 +1982,7 @@ export const makeTools = (
                 return yield* Effect.gen(function* () {
                   yield* Effect.annotateCurrentSpan({
                     "pluginEngine.app.id": saved.app,
-                    "pluginEngine.deployment.id": saved.version,
+                    "pluginEngine.deployment.id": state.version.id,
                     "pluginEngine.build.id": state.version.build,
                     "pluginEngine.tool.name": saved.tool,
                     "pluginEngine.approval.id": input.requestId,
@@ -1995,10 +2041,12 @@ export const makeTools = (
                       execute,
                     );
                     if (Result.isFailure(result)) {
+                      // The active version's own refusal of the moved call, before its handler.
+                      if (rebound && refusedBeforeHandler.has(result.failure._tag)) return stale;
                       yield* observeFailure(failureSource(result.failure));
                       return yield* Effect.fail(
                         toolCallFailure(
-                          { app: saved.app, version: saved.version, tool: saved.tool },
+                          { app: saved.app, version: state.version.id, tool: saved.tool },
                           state,
                           renewal,
                         )(result.failure),

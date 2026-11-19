@@ -540,6 +540,24 @@ export const makeApps = (
       const retainedFiles: SourceFiles = [...codeFiles, ...publicFiles.retained];
       if (before !== null) yield* droppedMigrations(db, before.code);
       if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(appId, "deploy");
+      // A deploy that lost its place never changes the app's database: the version it started
+      // from must still be active, with nothing activated since, before it migrates and again
+      // when it promotes. The host serializes an app's version changes, so this only fails for a
+      // writer outside that.
+      const named = "expectedVersion" in input ? input.expectedVersion : undefined;
+      const expected = before === null ? null : named === undefined ? before.activeVersion : named;
+      const unchanged = (current: StoredApp) =>
+        before === null ||
+        (current.activeVersion === expected && current.activatedSequence < sequence)
+          ? Effect.void
+          : Effect.fail(
+              new AppVersionChanged({
+                app: current.id,
+                expected,
+                current: current.activeVersion,
+              }),
+            );
+      if (before !== null) yield* unchanged(yield* storedApp(db, { app: before.id }));
       // The active version's migrations as it retained them: one applied before the framework
       // renamed its reserved tables, which this build has only renamed, keeps its history.
       const originals =
@@ -602,6 +620,7 @@ export const makeApps = (
           if (existing !== undefined && input.app === undefined)
             return yield* Effect.fail(new AppNameTaken({ owner: input.owner, name: deployName }));
           if (existing !== undefined) yield* droppedMigrations(tx, existing.code);
+          if (existing !== undefined) yield* unchanged(existing);
           const createdAt = new Date(yield* Clock.currentTimeMillis);
           const promote = existing === undefined || sequence > existing.activatedSequence;
           for (const { provider } of entries) {
@@ -726,7 +745,10 @@ export const makeApps = (
             });
       const create = { owner: input.owner, name: input.name, files: snapshot.files };
       return snapshot.activation === "deploy" && reserved?.save !== true
-        ? (yield* deploy(create, snapshot.origin, snapshot.stored, reserved?.id)).app
+        ? (yield* deploy(create, snapshot.origin, snapshot.stored, reserved?.id).pipe(
+            // A copy is a new app: no version of it was active, so none changed.
+            Effect.catchTag("AppVersionChanged", (error) => Effect.die(error)),
+          )).app
         : yield* authoring.create(create, snapshot.origin, snapshot.stored, reserved?.id);
     }).pipe(Effect.withSpan("sdk.apps.copy"));
   return {

@@ -406,6 +406,12 @@ export interface Runtime<Requirements = never> {
    * A revision identifies all writes before that event; unversioned hosts emit void.
    */
   readonly changes?: (app: string) => Stream.Stream<number | void, RuntimeLoadError>;
+  /**
+   * Whether this runtime runs a retained build as it is. A build linked against a framework other
+   * than this runtime's is never run: work pinned to one is rebound to the app's active version, or
+   * ends stale. Without it every build is current.
+   */
+  readonly current?: (build: BuildId) => Effect.Effect<boolean, never, Requirements>;
   /** Sources build with the `apps` package they declare; sources without one are rejected. */
   /**
    * Build the code files only. `public` lists the paths, relative to `ui/public/`, of the public

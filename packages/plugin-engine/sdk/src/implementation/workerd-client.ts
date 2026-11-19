@@ -29,14 +29,19 @@ import {
   RuntimeBuildFailed,
   RuntimeProtocolFailed,
 } from "../contracts/runtime.ts";
-import { LoadedWorkerBuild } from "../contracts/worker-build.ts";
+import { LoadedWorkerBuild, type FrameworkIdentity } from "../contracts/worker-build.ts";
 import type { PluginEngine } from "../contracts/pluginEngine.ts";
 import { runtimeAdapter } from "./runtime.ts";
 import { appRuntime, buildLoadSpan } from "./app-runtime.ts";
 import { appWorker } from "./app-runner.ts";
 import { encodeLoadedBuild, runnerResult } from "./remote-app-runner.ts";
 import { invocationWorkflowControls } from "./worker-workflow-rpc.ts";
-import { loadWorkerBuild, retainWorkerBuild, workerBuildAsset } from "./worker-build-storage.ts";
+import {
+  linkedFramework,
+  loadWorkerBuild,
+  retainWorkerBuild,
+  workerBuildAsset,
+} from "./worker-build-storage.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
 import type { EvaluatedCommand } from "@opensteer/plugin-engine-app-data/evaluated";
 import { evaluatedDeclarations } from "./evaluated-declarations.ts";
@@ -218,7 +223,12 @@ export interface WorkerdTransport {
  * App execution for hosts whose runner lives in the trusted apps Worker. The product sends each
  * invocation there with its callbacks, and the runner asks for the build only on a cold start.
  */
-export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTransport) =>
+export const connectedWorkerdApps = (
+  blobs: BlobStorage,
+  transport: WorkerdTransport,
+  /** The framework the runner links; a build linked against another is not current. */
+  framework?: FrameworkIdentity,
+) =>
   Effect.gen(function* () {
     const provideBlobs = Effect.provideService(BlobStore, blobs);
     const rpc = transport.rpc;
@@ -308,7 +318,17 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
       changes: transport.changes,
     });
     return {
-      runtime: runtimeAdapter(runtime),
+      runtime: runtimeAdapter(
+        framework === undefined
+          ? runtime
+          : {
+              ...runtime,
+              current: (build) =>
+                linkedFramework(build).pipe(
+                  Effect.map((linked) => linked?.sha256 === framework.sha256),
+                ),
+            },
+      ),
       workflows: {
         start: (run: WorkflowRunId) => transport.backend("start", run).pipe(Effect.asVoid),
         status: (run: WorkflowRunId) => transport.backend("status", run),
