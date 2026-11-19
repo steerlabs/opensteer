@@ -484,3 +484,43 @@ test("any read that fails for good marks its kind unreadable, and a reset forget
   await vi.waitFor(() => expect(unreadable.at(-1)).toEqual(["environment", false]));
   release();
 });
+
+test("the Host's answer to an attach is read at once however late it comes, and a live push after it settles", async () => {
+  vi.useFakeTimers();
+  try {
+    const asked: string[] = [];
+    const reads = new PersonalResourceReads({
+      read: async (kind) => {
+        asked.push(reads.revision(kind) ?? "first");
+        return {
+          ok: true,
+          data: {
+            revision: reads.revision(kind) ?? "1.0123456789abcdef.1",
+            next: null,
+            data: { kind } as never,
+          },
+        };
+      },
+      apply: () => undefined,
+      canRead: () => true,
+      watchChanged: () => undefined,
+    });
+    const release = reads.watch("machine", () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    // Reattach after missing a push; the answer is held on a weak link well past two seconds.
+    reads.resume(true);
+    await vi.advanceTimersByTimeAsync(runnerSettleMs * 3);
+    reads.changed({ machine: "1.0123456789abcdef.4" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toEqual(["first", "1.0123456789abcdef.4"]);
+    // The live flap after it waits its window as usual.
+    reads.changed({ machine: "1.0123456789abcdef.5" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(runnerSettleMs);
+    expect(asked).toHaveLength(3);
+    release();
+  } finally {
+    vi.useRealTimers();
+  }
+});

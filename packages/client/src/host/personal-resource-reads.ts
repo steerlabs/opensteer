@@ -166,25 +166,26 @@ export class PersonalResourceReads implements PersonalResourcePort {
         runnerKinds.has(kind) &&
         installed !== undefined &&
         sameBoot(installed, revision) &&
-        Date.now() >= this.#attachAnswerUntil
+        !this.#attachReplyPending
       )
         this.#settle(kind);
       else this.#read(kind);
       for (const listener of this.#listeners.get(kind) ?? []) listener();
     }
-    // The revisions the Host sends in answer to an attach come in one frame.
-    this.#attachAnswerUntil = 0;
+    // The Host answers an attach with one frame of every revision that moved meanwhile.
+    this.#attachReplyPending = false;
   }
 
   /** Read every watched kind that is behind, as after attaching or returning to the front. */
   resume(attached = false) {
-    // The Host answers an attach with every revision that moved meanwhile; that answer is read at
-    // once, never held in the settle window. Bounded, in case nothing moved and no answer comes.
-    if (attached) this.#attachAnswerUntil = Date.now() + runnerSettleMs;
+    // The first revision frame after this client's attach is the Host's answer to it, however late
+    // it comes: read at once, never held in the settle window. When nothing moved the Host sends
+    // none, and the next live push is then read at once too: sooner, never later.
+    if (attached) this.#attachReplyPending = true;
     for (const kind of this.#listeners.keys()) this.#read(kind);
   }
 
-  #attachAnswerUntil = 0;
+  #attachReplyPending = false;
 
   abort() {
     for (const kind of personalResourceKinds) this.#reads.stop(kind);
