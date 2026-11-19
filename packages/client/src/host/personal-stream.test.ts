@@ -3642,6 +3642,81 @@ describe("task lists from the shell and its pages", () => {
     }
   });
 
+  it("the Done count is the Host's answer at the latest sequence, whatever order two reads and a push arrive in", async () => {
+    // Done read at sequence 1 holds 10; a push at sequence 2 makes it 9 on the Host.
+    const rows = Array.from({ length: 50 }, (_, index) => ({
+      id: createId("thread"),
+      askedAt: minutesBefore(500 + index),
+      doneAt: minutesBefore(400 + index),
+    }));
+    const cases = [];
+    for (const firstPageCut of [1, 2])
+      for (const firstPageAnswersFirst of [true, false])
+        for (const reopenBeforePush of [true, false])
+          cases.push({ firstPageCut, firstPageAnswersFirst, reopenBeforePush });
+    for (const { firstPageCut, firstPageAnswersFirst, reopenBeforePush } of cases) {
+      const label = JSON.stringify({ firstPageCut, firstPageAnswersFirst, reopenBeforePush });
+      const host = scriptedHost({ tasks: [task], lists: { recentTaskIds: [task.id] } });
+      const reads: { input: { limit?: number }; resolve: (response: Response) => void }[] = [];
+      const client = scriptedClient(host, async (input) => {
+        const url = new URL(String(input));
+        if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+        const query = JSON.parse(url.searchParams.get("input") ?? "{}") as { limit?: number };
+        return new Promise<Response>((resolve) => reads.push({ input: query, resolve }));
+      });
+      /** The Host's answer read at `cut`: the count is 10 before the push, 9 after. */
+      const answer = async (cut: number) => {
+        const response = taskPageResponse(host, rows, {
+          nextBefore: "done-1",
+          totalItems: cut >= 2 ? 9 : 10,
+        });
+        const body = (await response.json()) as { data: { asOfSequence: string } };
+        body.data.asOfSequence = String(cut);
+        return Response.json(body);
+      };
+      const done = () => Object.values(client.getSnapshot().doneTasks)[0];
+      try {
+        await client.load();
+        const opening = client.loadDoneTasks();
+        await vi.waitFor(() => expect(reads).toHaveLength(1));
+        reads[0]!.resolve(await answer(1));
+        await opening;
+        vi.useFakeTimers();
+        const reopened = createId("thread");
+        const push = () =>
+          host.commit([
+            upsert("task", reopened, { ...task, id: reopened, revision: "2", doneAt: null }),
+          ]);
+        // The person opens Done again (a first page), before or after the push arrives.
+        if (!reopenBeforePush) push();
+        void client.loadDoneTasks();
+        if (reopenBeforePush) push();
+        await vi.advanceTimersByTimeAsync(1_000);
+        const firstPage = reads.find(({ input }, index) => index > 0 && input.limit !== 1)!;
+        const count = reads.find(({ input }) => input.limit === 1)!;
+        expect(firstPage && count, `${label}: both reads should be out`).toBeTruthy();
+        const order = firstPageAnswersFirst
+          ? [
+              () => firstPage.resolve(answer(firstPageCut) as never),
+              () => count.resolve(answer(2) as never),
+            ]
+          : [
+              () => count.resolve(answer(2) as never),
+              () => firstPage.resolve(answer(firstPageCut) as never),
+            ];
+        for (const step of order) {
+          step();
+          await vi.advanceTimersByTimeAsync(0);
+        }
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(done()!.window.totalItems, label).toBe(9);
+      } finally {
+        client.dispose();
+        vi.useRealTimers();
+      }
+    }
+  });
+
   it("a Done continuation never sets the count: a fresher count read in between stands", async () => {
     const held = Array.from({ length: 50 }, (_, index) => ({
       id: createId("thread"),

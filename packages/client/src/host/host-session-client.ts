@@ -339,12 +339,13 @@ export class HttpHostClient {
   /** Counts pushes that may move Done membership: a Done read from before one is read again. */
   #doneCountTimer: ReturnType<typeof setTimeout> | undefined;
   /**
-   * Done's count: the Host's last answer, from a first page or the count-only read, each under its
-   * own read token. Stale from a membership push until a count read installs; a read that could
-   * not install (out of sight, say) leaves it stale, and the next foreground asks again.
+   * Done's count, with the Host sequence it was read at. One rule sets it: a count from the Host
+   * (a first page or the count-only read) replaces the held one when it was read at the same or
+   * a later sequence. Nothing else can set it, so no arrival order can put an older count back.
    */
-  #doneCount: number | undefined;
-  #doneCountStale = false;
+  #doneCount: { readonly count: number; readonly asOf: bigint } | undefined;
+  /** The latest sequence at which a pushed change may have moved Done's membership. */
+  #doneChangedAt = -1n;
   /** The held open and active lists, as last built, and what they were built from. */
   #openCache:
     | {
@@ -1591,7 +1592,7 @@ export class HttpHostClient {
     this.#activeCursor = null;
     this.#donePages = undefined;
     this.#doneCount = undefined;
-    this.#doneCountStale = false;
+    this.#doneChangedAt = -1n;
     this.#openDepth = personalShellSettledTasks;
     this.#doneDepth = 0;
     this.#removedTasks.clear();
@@ -1890,7 +1891,7 @@ export class HttpHostClient {
           );
       }
     }
-    if (doneMoves.length) this.#moveDone(doneMoves);
+    if (doneMoves.length) this.#moveDone(doneMoves, state.through);
     if (
       session &&
       (this.#snapshot.user?.id !== session.user.id ||
@@ -3805,7 +3806,7 @@ export class HttpHostClient {
     )
       void this.#requestDone().catch(() => undefined);
     // A count left stale (its read came while out of sight) is asked for again.
-    else if (this.#doneCountStale && this.#donePages && !this.#taskReads.busy("done-count"))
+    else if (this.#doneCountStale() && this.#donePages && !this.#taskReads.busy("done-count"))
       this.#countDoneSoon();
   }
 
@@ -3822,10 +3823,14 @@ export class HttpHostClient {
    * stale, and the count shown stays the Host's last answer until the count is read again, once
    * the pushes rest.
    */
-  #moveDone(moves: readonly DoneMove[]) {
+  #moveDone(moves: readonly DoneMove[], through: string | null) {
     // Pushes that can touch Done: into it, out of it, or a task this client cannot place.
     const touching = moves.filter(({ was, now }) => now || was !== false);
     if (!touching.length) return;
+    // The count is never worked out here: it is the Host's last answer. A change at this sequence
+    // leaves it stale until a count read at or after it, asked for once the pushes rest.
+    if (through !== null && BigInt(through) > this.#doneChangedAt)
+      this.#doneChangedAt = BigInt(through);
     // A Done read in flight from before them is read again.
     if (this.#taskReads.busy("done")) this.#taskReads.changed("done");
     const pages = this.#donePages;
@@ -3849,10 +3854,6 @@ export class HttpHostClient {
         ...pages,
         entries: [...entries].sort((left, right) => compareDoneOrder(left.thread, right.thread)),
       };
-    // The count is never worked out here: it is the Host's last answer, read again once the
-    // pushes rest. A count read in flight answers for before them, so it runs again.
-    if (this.#taskReads.busy("done-count")) this.#taskReads.changed("done-count");
-    this.#doneCountStale = true;
     this.#countDoneSoon();
   }
 
@@ -3874,11 +3875,21 @@ export class HttpHostClient {
     const page = unwrapRpcResult(
       await this.rpc["tasks.page"]({ done: true, limit: 1 }, { signal: read.signal }),
     );
-    const pages = this.#donePages;
-    if (!read.current() || !pages || page.window.totalItems === undefined) return;
-    this.#doneCount = page.window.totalItems;
-    this.#doneCountStale = false;
-    this.#publishTasks();
+    if (!read.current() || page.window.totalItems === undefined) return;
+    if (this.#offerDoneCount(page.window.totalItems, page.asOfSequence)) this.#publishTasks();
+  }
+
+  /** Takes a count from the Host if it was read at the held count's sequence or later. */
+  #offerDoneCount(count: number, asOfSequence: string) {
+    const asOf = BigInt(asOfSequence);
+    if (this.#doneCount && asOf < this.#doneCount.asOf) return false;
+    this.#doneCount = { count, asOf };
+    return true;
+  }
+
+  /** Stale while a pushed change is newer than the count the Host last gave. */
+  #doneCountStale() {
+    return this.#doneChangedAt > (this.#doneCount?.asOf ?? -1n);
   }
 
   #requestDone() {
@@ -3968,11 +3979,9 @@ export class HttpHostClient {
         // The count shown is `#doneCount`, never a page's.
         window: { ...page.window, totalItems: 0 },
       };
-      // Only the first page answers the count; a continuation never touches it.
-      if (before === undefined && page.window.totalItems !== undefined) {
-        this.#doneCount = page.window.totalItems;
-        this.#doneCountStale = false;
-      }
+      // A page that counts (only a first page does) offers its count, by its own sequence.
+      if (page.window.totalItems !== undefined)
+        this.#offerDoneCount(page.window.totalItems, page.asOfSequence);
       this.#donePages = held;
       this.#publishTasks();
     }
@@ -3987,7 +3996,8 @@ export class HttpHostClient {
       await this.rpc["tasks.page"]({ ...input, limit: taskPageSize }, { signal: read.signal }),
     );
     // A page from a cut since replaced touches nothing, the shared thread state included.
-    if (!read.current()) return { entries: [], window: page.window };
+    if (!read.current())
+      return { entries: [], window: page.window, asOfSequence: page.asOfSequence };
     const rows = this.#stream.shell.getSnapshot().tasks;
     const asOf = BigInt(page.asOfSequence);
     const entries = page.tasks.flatMap((entry): TaskEntry[] => {
@@ -4010,7 +4020,7 @@ export class HttpHostClient {
         },
       ];
     });
-    return { entries, window: page.window };
+    return { entries, window: page.window, asOfSequence: page.asOfSequence };
   }
 
   #publishTasks() {
@@ -4048,7 +4058,7 @@ export class HttpHostClient {
       doneTasks: done
         ? {
             [mainDoneTasks]: {
-              window: { ...done.window, totalItems: this.#doneCount ?? 0 },
+              window: { ...done.window, totalItems: this.#doneCount?.count ?? 0 },
               entries: done.entries.flatMap((entry) => {
                 if (this.#removedTasks.has(entry.thread.id)) return [];
                 // A held row takes a pushed change through the thread state.
