@@ -7,9 +7,16 @@ const maxRetryMs = 5 * 60_000;
 /** A pass that left durable work undone without failing: try again after the backoff. */
 export const retryWithBackoff = Symbol("retryWithBackoff");
 
+/** Backs off, but runs no later than a deadline the pass already knows about. */
+export interface BackoffNoLaterThan {
+  readonly backoffNoLaterThan: Date;
+}
+
+type DrainResult = Date | null | typeof retryWithBackoff | BackoffNoLaterThan;
+
 interface DeadlineDrainOptions {
   readonly clock?: Clock;
-  readonly drain: () => Promise<Date | null | typeof retryWithBackoff>;
+  readonly drain: () => Promise<DrainResult>;
   readonly onError?: (error: unknown) => void;
 }
 
@@ -71,7 +78,10 @@ export class DeadlineDrain {
       try {
         const result = await this.#options.drain();
         if (result === retryWithBackoff) next = this.#backoff();
-        else {
+        else if (result && !(result instanceof Date)) {
+          const backoff = this.#backoff();
+          next = result.backoffNoLaterThan < backoff ? result.backoffNoLaterThan : backoff;
+        } else {
           this.#failedPasses = 0;
           next = result;
         }

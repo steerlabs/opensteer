@@ -58,4 +58,23 @@ describe("DeadlineDrain", () => {
     expect(Math.max(...gaps)).toBe(5 * 60_000);
     await drain.close();
   });
+
+  it("backs off no later than a deadline the pass already knows", async () => {
+    const passes: number[] = [];
+    let first = true;
+    const drain = new DeadlineDrain({
+      drain: async () => {
+        passes.push(Date.now());
+        if (!first) return null;
+        first = false;
+        return { backoffNoLaterThan: new Date(Date.now() + 2_000) };
+      },
+    });
+    const start = Date.now();
+    drain.start();
+    await drain.settled();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(passes.map((at) => at - start)).toEqual([0, 2_000]);
+    await drain.close();
+  });
 });
