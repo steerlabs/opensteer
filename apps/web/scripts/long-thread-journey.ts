@@ -367,7 +367,11 @@ try {
 } catch (error) {
   abort(error);
 } finally {
-  await finishJourney(artifactDirectory, checks).finally(() => web.close());
+  try {
+    await finishJourney(artifactDirectory, checks);
+  } finally {
+    await web.close();
+  }
 }
 
 /** The finite animations, such as the slide an earlier page lands with, have finished. */
