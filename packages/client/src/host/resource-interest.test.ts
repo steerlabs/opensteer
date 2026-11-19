@@ -1,3 +1,4 @@
+import { createId } from "@opensteer/core";
 import type { PersonalResourceKind } from "@opensteer/protocol/resources";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
@@ -125,4 +126,35 @@ it("holds what a subscription's listener reads for as long as it is subscribed",
   unsubscribe();
   vi.advanceTimersByTime(readerGraceMs);
   await vi.waitFor(() => expect(watched()).not.toContain("browser-profile"));
+});
+
+it("keeps a new browser profile's home when the command comes before any read of the homes", async () => {
+  const host = new MockPersonalHost(new MockHostClient({ latencyMs: 0 }));
+  const sent: { type: string; input?: { homeRunnerId?: unknown } }[] = [];
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    capabilities: [],
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname.endsWith("/commands.dispatch")) sent.push(JSON.parse(String(init?.body)));
+      return host.fetch(input, init);
+    },
+    webSocketFactory: host.connect,
+  });
+  disposals.push(() => {
+    client.dispose();
+    host.dispose();
+  });
+  await client.load();
+  const home = createId("runner");
+  await client
+    .dispatch({
+      type: "browser.profile.create",
+      idempotencyKey: "profile:create:test",
+      input: { name: "Work", homeRunnerId: home },
+    })
+    .catch(() => undefined);
+  expect(sent.find(({ type }) => type === "browser.profile.create")?.input?.homeRunnerId).toBe(
+    home,
+  );
 });

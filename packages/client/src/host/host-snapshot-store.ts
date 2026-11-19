@@ -107,11 +107,12 @@ export function createHostSelection<Selection>(
   store: HostSnapshotStore,
   selector: HostSnapshotSelector<Selection>,
   isEqual: HostSelectionEquality<Selection> = Object.is,
+  /** The mounted reader this selection reads for; one of its own when none is given. */
+  reader: SnapshotReader | undefined = store.reader?.(),
 ): HostSelection<Selection> {
   let initialized = false;
   let value: Selection;
-  // The selection is the reader: what its selector and its consumer read through it is what it needs.
-  const reader = store.reader?.();
+  // What the selector and its consumer read through the reader's view is what the reader needs.
   const getSnapshot = () => {
     const snapshot = store.getSnapshot();
     const next = selector(reader ? reader.view(snapshot) : snapshot);

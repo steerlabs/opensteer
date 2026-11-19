@@ -85,6 +85,8 @@ export class PersonalResourceReads implements PersonalResourcePort {
     { release: () => void; timer: ReturnType<typeof setTimeout> }
   >();
   readonly #timers = new Set<ReturnType<typeof setTimeout>>();
+  /** Each kind's read in flight, settled once it installs or gives up. */
+  readonly #inFlight = new Map<PersonalResourceKind, Promise<void>>();
   /** A Runner kind's pending reread, from its first push within the settle window. */
   readonly #settling = new Map<PersonalResourceKind, ReturnType<typeof setTimeout>>();
   /** The older revision a read last answered after a newer push, so it is not reread forever. */
@@ -261,9 +263,23 @@ export class PersonalResourceReads implements PersonalResourcePort {
     )
       return;
     const observed = () => this.#listeners.has(kind) && this.#options.canRead();
-    void this.#reads
+    const flying: Promise<void> = this.#reads
       .request(kind, (read) => this.#job(kind, read), { observed })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.#inFlight.get(kind) === flying) this.#inFlight.delete(kind);
+      });
+    this.#inFlight.set(kind, flying);
+  }
+
+  /**
+   * For a command that needs a kind's value: settles once the kind holds a read for this viewer,
+   * or its read gave up (a Host without the kind), or none can run now (the app is behind).
+   */
+  async firstRead(kind: PersonalResourceKind) {
+    this.lease(kind);
+    if (this.#installed.has(kind)) return;
+    await this.#inFlight.get(kind);
   }
 
   /** Every page of one kind, installed together and only while nothing newer has arrived. */

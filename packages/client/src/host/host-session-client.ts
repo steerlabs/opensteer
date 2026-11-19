@@ -675,7 +675,9 @@ export class HttpHostClient {
       read: (kind, cursor, signal) =>
         this.rpc["resources.detail.get"]({ kind, ...(cursor ? { cursor } : {}) }, { signal }),
       apply: (pages) => this.#applyResource(pages),
-      canRead: () => this.#visibility !== "background",
+      // Signed out, nothing can be read; signing in attaches, which reads what is watched.
+      canRead: () =>
+        this.#visibility !== "background" && this.#snapshot.session !== "authentication-required",
       watchChanged: () => this.#stream.watchResources(),
       // Rows stay on screen; the inventory is only no longer known to be complete.
       behind: (kind) => kind === "tab" && this.#tabs.markInventoryStale(),
@@ -981,6 +983,12 @@ export class HttpHostClient {
     command: ClientCommandInput,
     options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
   ): Promise<HostApiCommandOutput> {
+    // A new browser profile's home is kept only once this client knows the Host's homes.
+    if (
+      command.type === "browser.profile.create" ||
+      (command.type === "request.respond" && command.response.kind === "external")
+    )
+      await this.#resources.firstRead("browser-home");
     const parsedCommand = clientCommandSchema.parse(
       options?.preserveOrigin
         ? browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)
