@@ -299,6 +299,12 @@ export const PluginCatalogPageViewSchema = z.object({
   items: z.array(PluginCatalogEntryViewSchema).max(pluginCatalogPageMax),
   /** Null on the last page. A cursor stops working once the catalog changes. */
   cursor: z.string().max(2_048).nullable(),
+  /**
+   * Whether the Host could read the catalog. `unavailable`: it can't be reached
+   * right now, `items` is empty and asking again later may list it. An older
+   * Host omits it.
+   */
+  catalog: z.enum(["listed", "unavailable"]).optional(),
 });
 export type PluginCatalogPageView = z.infer<typeof PluginCatalogPageViewSchema>;
 export const PluginCatalogPageInputSchema = z.strictObject({

@@ -212,8 +212,8 @@ function setup(
           auth: [{ method: "key", kind: "secrets" }],
         },
       ],
-      cursor: "next-page",
-      feed: {},
+      cursor: "next-page" as string | null,
+      feed: { status: "listed" },
     })),
     catalogDetail: vi.fn(),
     install: vi.fn(async (input: { kind: string }, _context: unknown) => ({
@@ -679,7 +679,17 @@ describe("the person's plugin API", () => {
         },
       ],
       cursor: "next-page",
+      catalog: "listed",
     });
+  });
+
+  it("says the catalog can't be reached when the engine could not read its feed", async () => {
+    const { api, service } = setup();
+    for (const status of ["unavailable", "off"] as const) {
+      service.catalogList.mockResolvedValueOnce({ items: [], cursor: null, feed: { status } });
+      const result = await api.reads()["plugins.catalog.list"]({}, context(ownerId));
+      expect(result.ok && result.data).toEqual({ items: [], cursor: null, catalog: "unavailable" });
+    }
   });
 
   it("offers the API-key methods it can draw, with their fields, and says a sign-in exists", async () => {
