@@ -12,9 +12,7 @@ through `tools.search`. Call `framework.search({ query: { text: "createAppClient
 then `framework.describe({ query: { symbol: "apps/client.createAppClient", version, digest } })`
 with the search result's `version` and `digest`. `examples` is an array of
 `{ id, title, files }`; read the complete entry whose `id` is `live-inbox`,
-including its `files`. Keep this reference
-identity when fetching it again; a different pinned package needs its own
-reference.
+including its `files`. Keep this reference identity when fetching it again.
 
 Adapt the table, shared row schema, operations and UI to the requested behavior.
 Keep the type-only server imports, stable query atom and shared output schemas.
@@ -37,11 +35,9 @@ the affected files. Submit the complete file list with its expected revision.
 An `execute` call does not retain variables for the next call; fetch the source
 again when needed. Preserve unrelated files and edits.
 
-With a shell and the CLI, read the same example from
-`node_modules/apps/framework-reference.json`, the `examples` entry whose `id`
-is `live-inbox`.
-Write its `files` into a local app directory once, then edit and deploy them
-with `pluginEngine apps` as described in [deploy.md](deploy.md). Over MCP only, keep one working copy and serialize its
-content with JSON when preparing a tool payload. Do not rewrite valid TypeScript just
+With a shell in Opensteer, write the example's `files` into a folder inside
+Agent home once, then edit them there and deploy the folder with
+`opensteer_plugin_install` (`source: "folder"`). Over MCP only, keep one working
+copy and serialize its content with JSON when preparing a tool payload. Do not rewrite valid TypeScript just
 to remove backticks or `${...}`. See the source transport guidance in
 [deploy.md](deploy.md).

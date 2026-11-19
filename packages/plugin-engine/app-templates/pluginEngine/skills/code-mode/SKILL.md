@@ -170,7 +170,8 @@ says so.
 These are the defaults. The source limit is fixed; a host can change the others.
 
 - Program source: 65,536 characters, including app source passed as data. With
-  a shell, deploy large apps with the `pluginEngine apps` CLI instead.
+  a shell in Opensteer, deploy large apps from a folder with
+  `opensteer_plugin_install` (`source: "folder"`) instead.
 - Output: none. The returned value and logs come back whole, however large, but
   they fill your context, so return only the fields, count or page you need.
   The runtime limits one value crossing between an app and PluginEngine, such as a
@@ -254,8 +255,7 @@ return {
 ```
 
 Never return, read, decode or describe base64 as text; return it as a block and
-look. The `pluginEngine` CLI writes each block to a file and prints its `path`
-beside its `contentIndex`.
+look.
 
 Send feedback with the PluginEngine app's `feedback.submit` tool when PluginEngine gets
 in your way or something works especially well; the `pluginEngine` skill says how.
