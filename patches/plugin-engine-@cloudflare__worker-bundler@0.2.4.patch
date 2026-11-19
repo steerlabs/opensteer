@@ -192,8 +192,8 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..2c1259949239c34929f944e5503a86d9
 +				return;
 +			}
 +			// Only the registry and integrity-pinned tarballs are installed: a Git, file or aliased
-+			// dependency has no digest to check.
-+			if (/^(?:git\+|git:|github:|gitlab:|bitbucket:|file:|link:|npm:|workspace:)|^[.\/~]|^[^\s@\/]+\/[^\s\/]+$/.test(versionRange)) throw new Error(`${name}@${versionRange} is not a registry package; a plugin build installs packages from the registry, or from a tarball URL with its integrity`);
++			// dependency has no digest to check. `~/` begins a path; `~1.2.3` is a registry range.
++			if (/^(?:git\+|git:|github:|gitlab:|bitbucket:|file:|link:|npm:|workspace:)|^[.\/]|^~\/|^[^\s@\/]+\/[^\s\/]+$/.test(versionRange)) throw new Error(`${name}@${versionRange} is not a registry package; a plugin build installs packages from the registry, or from a tarball URL with its integrity`);
 +			const metadata = await fetchPackageMetadata(name, registry, egress);
  			const version = resolveVersion(versionRange, metadata);
  			if (!version) {

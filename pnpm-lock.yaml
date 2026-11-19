@@ -137,7 +137,7 @@ patchedDependencies:
     hash: 1d30613a7216191fa8540fd90e104d5be88e4ac44528ed16072b384856a7beea
     path: patches/plugin-engine-@cfworker__json-schema@4.1.1.patch
   '@cloudflare/worker-bundler@0.2.4':
-    hash: ddd34b01e355a3ba0c50539623a383355f82c4ab226d85220788f8b9727b6007
+    hash: 1bf67aea08f50763f4c1a6540249b15f87f695618e9846bde5ec7dc4203166fc
     path: patches/plugin-engine-@cloudflare__worker-bundler@0.2.4.patch
   '@opencode-ai/codemode@0.0.0-dev-19272':
     hash: 4e5dc6ade4c19fe7447691ff96022e14c9a070fef7e4e7b01331e20d271e7798
@@ -2740,7 +2740,7 @@ importers:
         version: 4.1.1(patch_hash=1d30613a7216191fa8540fd90e104d5be88e4ac44528ed16072b384856a7beea)
       '@cloudflare/worker-bundler':
         specifier: 0.2.4
-        version: 0.2.4(patch_hash=ddd34b01e355a3ba0c50539623a383355f82c4ab226d85220788f8b9727b6007)
+        version: 0.2.4(patch_hash=1bf67aea08f50763f4c1a6540249b15f87f695618e9846bde5ec7dc4203166fc)
       '@distilled.cloud/cloudflare':
         specifier: 1.0.0-rc.13
         version: 1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))
@@ -11889,7 +11889,7 @@ snapshots:
     optionalDependencies:
       workerd: 1.20260918.1
 
-  '@cloudflare/worker-bundler@0.2.4(patch_hash=ddd34b01e355a3ba0c50539623a383355f82c4ab226d85220788f8b9727b6007)':
+  '@cloudflare/worker-bundler@0.2.4(patch_hash=1bf67aea08f50763f4c1a6540249b15f87f695618e9846bde5ec7dc4203166fc)':
     dependencies:
       '@typescript/vfs': 1.6.6(typescript@6.0.3)
       es-module-lexer: 2.3.1

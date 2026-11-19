@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,46 +36,53 @@ const lines = (child: ChildProcess) => {
   return seen;
 };
 
+/** The PID of the child a holder reported starting, if it has reported one. */
+const heldPid = (seen: readonly string[]) => {
+  const line = seen.find((entry) => entry.startsWith("held "));
+  return line === undefined ? undefined : Number(line.slice(5));
+};
+
 test("one process holds an engine directory until it ends, and its child never holds it", async (context) => {
   const work = await mkdtemp(join(tmpdir(), "opensteer-engine-ownership-"));
   context.onTestFinished(() => rm(work, { recursive: true, force: true }));
   const script = join(work, "holder.mjs");
   await writeFile(script, holder);
   const directory = join(work, "runtime");
-  const start = () =>
+  // Teardown stops each holder and waits until it has closed, then stops the detached child it
+  // reported, by that PID.
+  const start = () => {
     // Node runs the module's TypeScript as it is: it has only types to strip.
-    spawn(process.execPath, [script, directory], {
+    const child = spawn(process.execPath, [script, directory], {
       stdio: ["ignore", "pipe", "inherit"],
     });
-  const first = start();
-  const firstLines = lines(first);
-  context.onTestFinished(() => {
-    first.kill("SIGKILL");
-  });
+    const seen = lines(child);
+    const closed = once(child, "close");
+    context.onTestFinished(async () => {
+      child.kill("SIGKILL");
+      await closed;
+      const pid = heldPid(seen);
+      if (pid !== undefined && alive(pid)) process.kill(pid, "SIGKILL");
+    });
+    return { child, seen };
+  };
+  const { child: first, seen: firstLines } = start();
   const held = await vi.waitFor(
     () => {
-      const line = firstLines.find((entry) => entry.startsWith("held "));
-      expect(line).toBeDefined();
-      return Number(line!.slice(5));
+      const pid = heldPid(firstLines);
+      expect(pid).toBeDefined();
+      return pid!;
     },
     { timeout: 4_000, interval: 20 },
   );
-  context.onTestFinished(() => {
-    if (alive(held)) process.kill(held, "SIGKILL");
-  });
   // A second engine waits for the directory.
-  const second = start();
-  const secondLines = lines(second);
-  context.onTestFinished(() => {
-    second.kill("SIGKILL");
-  });
+  const { seen: secondLines } = start();
   await vi.waitFor(() => expect(secondLines).toContain("waiting"), {
     timeout: 4_000,
     interval: 50,
   });
   // The first engine ends while its child lives on; the second takes the directory.
   first.kill("SIGKILL");
-  await vi.waitFor(() => expect(secondLines.some((line) => line.startsWith("held "))).toBe(true), {
+  await vi.waitFor(() => expect(heldPid(secondLines)).toBeDefined(), {
     timeout: 4_000,
     interval: 50,
   });

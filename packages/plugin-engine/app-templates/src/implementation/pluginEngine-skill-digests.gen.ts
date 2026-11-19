@@ -11,9 +11,9 @@ export const pluginEngineSkillDigests: Readonly<Record<string, string>> = {
   "app-authoring/tools.md": "9e828854aa8377cbd2da63a67f8c5c2ff49d75a6bbcc86cec590e830c7850222",
   "app-authoring/ui.md": "03849fa8f8ef7e857e0b478315be99162be8aac133f3fca877a5e9e793aac0d7",
   "app-authoring/upgrades/0.0.1-beta.38.md":
-    "e4c22b95c63b37c036470a59019c5be4951b888605d11f1a79622e815ea3630d",
+    "3eb7f9e3105d3c50eeabbc3d3d826048763da98c54400454399ed26c0cd45cfd",
   "app-authoring/upgrades/0.0.1-beta.90.md":
-    "38c727888b2773efa1d83795e8704f7c38ad9ec27c62fcdd89b5177ec5e338c3",
+    "e0ef5543ee7692d8a6243c881c2ce0dbf8048fcad58ecfa7ffae3061bc174a3c",
   "app-authoring/webhooks.md": "4fbfeb7fedce86b420e1abaa7eb10e7cdb5fcd23aca9c25def44115eba21bed1",
   "app-authoring/workflows.md": "03cc4b55f2d848c98b5ced7b059296264938866b2b0ac4bcab29b2fe80500703",
   "code-mode/SKILL.md": "90af965960a1156b662f076be1bdc22ca3d0413be56e4b1e842079d7c5b2e679",

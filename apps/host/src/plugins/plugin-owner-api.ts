@@ -229,7 +229,12 @@ const webhookView = (w: z.infer<typeof EngineWebhookSchema>) => ({
   createdAt: w.createdAt,
 });
 
-/** Engine refusals keep their meaning on the wire; an engine that is starting says so. */
+/**
+ * Engine refusals keep their meaning on the wire; an engine that is starting says so. Two expected
+ * refusals of a version change are said plainly: a version whose migrations the plugin's data has
+ * moved past (the activation's migration check, the only `VersionBuildFailed` that is thrown rather
+ * than returned as a build error), and a change that lost to another one (`AppVersionChanged`).
+ */
 function hostError(error: unknown): never {
   if (error instanceof PluginServiceError) {
     const code =
@@ -247,7 +252,11 @@ function hostError(error: unknown): never {
           ? "Remove this plugin's webhook subscriptions before removing the plugin."
           : error.tag === "AppWorkflowsActive"
             ? "Stop this plugin's workflow runs before removing the plugin."
-            : error.message.slice(0, 1_000) || "The plugin engine refused this.",
+            : error.tag === "VersionBuildFailed"
+              ? "That older version isn't compatible with this plugin's data, so it can't be restored. The current version is still active."
+              : error.tag === "AppVersionChanged"
+                ? "Another change to this plugin finished first. Try again."
+                : error.message.slice(0, 1_000) || "The plugin engine refused this.",
       reason:
         error.tag === "AccountFieldsInvalid"
           ? "plugin-key-invalid"
@@ -255,9 +264,13 @@ function hostError(error: unknown): never {
             ? "plugin-webhooks-active"
             : error.tag === "AppWorkflowsActive"
               ? "plugin-workflows-active"
-              : error.code === "unavailable"
-                ? "plugin-engine-unavailable"
-                : `plugin-${error.code}`,
+              : error.tag === "VersionBuildFailed"
+                ? "plugin-version-incompatible"
+                : error.tag === "AppVersionChanged"
+                  ? "plugin-version-changed"
+                  : error.code === "unavailable"
+                    ? "plugin-engine-unavailable"
+                    : `plugin-${error.code}`,
     });
   }
   throw error;

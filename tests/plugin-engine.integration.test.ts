@@ -41,6 +41,8 @@ import {
   type BlobStorage,
   type BuildId,
   WorkflowTarget,
+  runtimeAdapter,
+  toEffectRuntime,
 } from "@opensteer/plugin-engine-sdk/core";
 import { WorkflowFailure } from "apps/contracts";
 import {
@@ -120,7 +122,7 @@ import { always } from "apps/operations/approval";
 const read = query({ input: object({}) }, async ({ sql }) => ({
   value: sql.exec("SELECT value FROM counter").one().value,
   revision: ${revision},
-  tables: sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('extra', 'first', 'second') ORDER BY name").toArray().map((row) => row.name),
+  tables: sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('extra', 'first', 'held', 'second') ORDER BY name").toArray().map((row) => row.name),
 }));
 const reviewed = mutation({ input: object({ amount: number() }), approval: always() }, async ({ sql }, { amount }) =>
   ({ value: sql.exec("UPDATE counter SET value = value + ? RETURNING value", amount).one().value, revision: ${revision} }));
@@ -372,6 +374,8 @@ test.for(fixtureFlows)(
         : undefined;
     // While `holding`, a started run stays queued, as one the native engine has not taken yet.
     let holding = false;
+    // While set, a build waits in compilation for `release` after announcing that it `reached` it.
+    let compiling: { readonly reached: () => void; readonly release: Promise<void> } | undefined;
     let blobs: BlobStorage | undefined;
     const engine = await run(
       Effect.gen(function* () {
@@ -391,6 +395,7 @@ test.for(fixtureFlows)(
           },
         });
         console.log("Plugin runtime", { coldStartMs: workerd.coldStartMs, idle: workerd.idle });
+        const native = toEffectRuntime(workerd.runtime, workerd.blobs);
         const engine = yield* createPluginEngine({
           database,
           secret: Redacted.make("a1".repeat(32)),
@@ -398,7 +403,18 @@ test.for(fixtureFlows)(
           git: filesystemRepositories(join(directory, "repositories")),
           markdown: markdownRefusals,
           blobs: workerd.blobs,
-          runtime: workerd.runtime,
+          runtime: runtimeAdapter({
+            ...native,
+            build: (input) => {
+              const held = compiling;
+              return held === undefined
+                ? native.build(input)
+                : Effect.promise(() => {
+                    held.reached();
+                    return held.release;
+                  }).pipe(Effect.andThen(native.build(input)));
+            },
+          }),
           workflows: {
             ...workerd.workflows,
             start: (run) =>
@@ -622,6 +638,38 @@ test.for(fixtureFlows)(
       ).toBe(v2.version.id);
       expect(await versions()).toBe(count);
       expect(await call("read")).toMatchObject({ value: { revision: 2 } });
+
+      // A deploy expects the activation it started from. Held in compilation while the owner
+      // switches to another version and back, it fails having changed nothing: no new table, no
+      // version and no change of the active one.
+      const reached = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      compiling = { reached: () => reached.resolve(), release: release.promise };
+      const obsolete = run(
+        engine.apps
+          .deploy({
+            owner,
+            app,
+            files: files(pinnedSource(6), true, {
+              ...extra,
+              "migrations/0003_held.sql": "CREATE TABLE held (id INTEGER);",
+            }),
+          })
+          .pipe(Effect.flip),
+      );
+      await reached.promise;
+      compiling = undefined;
+      await run(engine.apps.activate({ app, owner, version: v3.version.id }));
+      await run(engine.apps.activate({ app, owner, version: v2.version.id }));
+      release.resolve();
+      expect(await obsolete).toMatchObject({
+        _tag: "AppVersionChanged",
+        expected: v2.version.id,
+        current: v2.version.id,
+      });
+      expect(await active()).toBe(v2.version.id);
+      expect(await versions()).toBe(count);
+      expect(await call("read")).toMatchObject({ value: { revision: 2, tables: ["extra"] } });
 
       // Two changes at once, each expecting the active version: one wins, and the other fails
       // before it migrates the plugin's database, having changed nothing.

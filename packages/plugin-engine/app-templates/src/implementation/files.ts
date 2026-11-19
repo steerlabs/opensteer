@@ -5,8 +5,9 @@ import { TemplateError } from "../contracts/templates.ts";
 import apps from "apps/package.json" with { type: "json" };
 
 /**
- * The exact `apps` release this host ships. Every generated app declares it, so the app keeps this
- * framework across host upgrades until its own `package.json` changes.
+ * The exact `apps` release this host ships. Every generated app declares it. The declaration does
+ * not choose a framework: every new build links the host's own, and a stored build keeps the copy
+ * it was built with.
  */
 export const appsVersion = apps.version;
 

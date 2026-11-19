@@ -650,7 +650,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       ],
     }).annotate(
       OpenApi.Description,
-      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. A successful version activates. A deploy to an existing app expects the version active when it started: one that finds another version activated meanwhile fails with AppVersionChanged before it migrates the app's database, and saves nothing. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
+      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. A successful version activates. A deploy to an existing app expects the activation it started from: one that finds any activation committed meanwhile, even a switch back to the same version, fails with AppVersionChanged before it migrates the app's database, and saves nothing. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
     ),
   )
   .add(

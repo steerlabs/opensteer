@@ -63,6 +63,8 @@ test("builds every plugin against the Host's framework and checks other packages
     "fixture-wrapper",
     'export { label } from "fixture-label";',
   );
+  const tilde = await archive(directory, "fixture-tilde", 'export { label } from "fixture-label";');
+  const home = await archive(directory, "fixture-home", 'export { label } from "fixture-label";');
   let origin = "";
   const packages: Record<
     string,
@@ -76,6 +78,17 @@ test("builds every plugin against the Host's framework and checks other packages
       tarball: wrapper,
       integrity: integrity(wrapper),
       dependencies: () => ({ "fixture-label": `${origin}/fixture-label.tgz` }),
+    },
+    // Registry packages whose own dependency is a tilde range, and a home-relative path.
+    "fixture-tilde": {
+      tarball: tilde,
+      integrity: integrity(tilde),
+      dependencies: () => ({ "fixture-label": "~1.0.0" }),
+    },
+    "fixture-home": {
+      tarball: home,
+      integrity: integrity(home),
+      dependencies: () => ({ "fixture-label": "~/label" }),
     },
   };
   const registry = await pluginFixtureRegistry(undefined, undefined, (request, response) => {
@@ -201,6 +214,7 @@ test("builds every plugin against the Host's framework and checks other packages
     "github:example/label",
     "git+https://example.invalid/label.git",
     "file:../label",
+    "~/label",
   ])
     expect(JSON.stringify(await install("fixture-label", version)), version).toContain(
       "A plugin build installs packages from the npm registry",
@@ -235,4 +249,25 @@ test("builds every plugin against the Host's framework and checks other packages
   expect(registry.requests.map((request) => request.slice(host.length))).toEqual([
     "/fixture-no-digest",
   ]);
+
+  // A tilde range is a registry range, directly and in a registry package's own dependencies;
+  // only `~/` begins a path, and that path is never fetched.
+  registry.requests.length = 0;
+  expect(await install("fixture-label", "~1.0.0")).toMatchObject({ status: "installed" });
+  expect(await install("fixture-tilde", "1.0.0")).toMatchObject({ status: "installed" });
+  const homeRelative = await install("fixture-home", "1.0.0");
+  expect(homeRelative).toMatchObject({ status: "build-error" });
+  expect(JSON.stringify(homeRelative)).toContain("fixture-label@~/label is not a registry package");
+  expect(registry.requests.map((request) => request.slice(host.length)).sort()).toEqual(
+    [
+      "/fixture-label",
+      "/fixture-label.tgz",
+      "/fixture-tilde",
+      "/fixture-tilde.tgz",
+      "/fixture-label",
+      "/fixture-label.tgz",
+      "/fixture-home",
+      "/fixture-home.tgz",
+    ].sort(),
+  );
 });

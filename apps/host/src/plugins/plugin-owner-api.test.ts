@@ -321,6 +321,34 @@ type Unkeyed = PluginCommand extends infer C
 const run = (api: PluginOwnerApi, command: Unkeyed, key: string = crypto.randomUUID()) =>
   api.command({ ...command, idempotencyKey: key } as PluginCommand, context(ownerId));
 
+/** The owner API behind the Host's RPC routes, as a signed-in owner's client reaches it. */
+function hostWire(api: PluginOwnerApi) {
+  const authenticator = new HostAuthenticator({
+    identity: {
+      requireSession: async () => session(ownerId),
+      userSessionProfile: async () => session(ownerId).user,
+      authenticateNativeAccessToken: async () => {
+        const value = session(ownerId);
+        return {
+          sessionId: value.id,
+          subject: value.user.id,
+          createdAt: new Date(value.createdAt),
+          expiresAt: new Date(value.expiresAt),
+          absoluteExpiresAt: new Date(value.absoluteExpiresAt),
+        };
+      },
+    } as never,
+    publicUrl: new URL("http://127.0.0.1:4310"),
+  });
+  const app = Fastify();
+  registerHostApi(app, authenticator, {
+    ...api.reads(),
+    "commands.dispatch": async (command: HostApiCommand, ctx: HostApiServerContext) =>
+      rpcSuccess(isPluginCommand(command) ? await api.command(command, ctx) : { type: "x" }),
+  } as never);
+  return { app, headers: { authorization: "Bearer native" } };
+}
+
 describe("the person's plugin API", () => {
   it("refuses anyone but the personal owner before reaching the engine", async () => {
     const { api, service } = setup();
@@ -339,30 +367,7 @@ describe("the person's plugin API", () => {
 
   it("refuses a caller context a client tries to supply", async () => {
     const { api, service } = setup();
-    const authenticator = new HostAuthenticator({
-      identity: {
-        requireSession: async () => session(ownerId),
-        userSessionProfile: async () => session(ownerId).user,
-        authenticateNativeAccessToken: async () => {
-          const value = session(ownerId);
-          return {
-            sessionId: value.id,
-            subject: value.user.id,
-            createdAt: new Date(value.createdAt),
-            expiresAt: new Date(value.expiresAt),
-            absoluteExpiresAt: new Date(value.absoluteExpiresAt),
-          };
-        },
-      } as never,
-      publicUrl: new URL("http://127.0.0.1:4310"),
-    });
-    const app = Fastify();
-    registerHostApi(app, authenticator, {
-      ...api.reads(),
-      "commands.dispatch": async (command: HostApiCommand, ctx: HostApiServerContext) =>
-        rpcSuccess(isPluginCommand(command) ? await api.command(command, ctx) : { type: "x" }),
-    } as never);
-    const headers = { authorization: "Bearer native" };
+    const { app, headers } = hostWire(api);
     try {
       const smuggled = [
         injectRpcRequest(
@@ -758,6 +763,64 @@ describe("the person's plugin API", () => {
     expect(service.activate).toHaveBeenCalledWith({ plugin: "p0", version: "p0-v1" }, owner);
     // The engine records the author of the version that became active, with its activation.
     expect(changed).toHaveBeenCalledTimes(3);
+  });
+
+  it("says plainly why a version change was refused, and keeps other engine failures generic", async () => {
+    const { api, service } = setup();
+    const { app, headers } = hostWire(api);
+    // Each error arrives as the engine's IPC projection sends an SDK failure: its tag and a
+    // generic message.
+    const refusal = async (tag: string) => {
+      service.activate.mockRejectedValueOnce(
+        new PluginServiceError("engine", "Plugin engine operation failed", tag),
+      );
+      const response = await injectRpcRequest(
+        app,
+        "commands.dispatch",
+        {
+          type: "plugins.version.activate",
+          idempotencyKey: crypto.randomUUID(),
+          pluginId: "p0",
+          versionId: "p0-v1",
+        },
+        headers,
+      );
+      return { status: response.statusCode, body: JSON.parse(response.body) as unknown };
+    };
+    try {
+      const incompatible = await refusal("VersionBuildFailed");
+      expect(incompatible.status).toBe(409);
+      expect(incompatible.body).toMatchObject({
+        error: {
+          code: "conflict",
+          reason: "plugin-version-incompatible",
+          message:
+            "That older version isn't compatible with this plugin's data, so it can't be restored. The current version is still active.",
+        },
+      });
+      const changed = await refusal("AppVersionChanged");
+      expect(changed.status).toBe(409);
+      expect(changed.body).toMatchObject({
+        error: {
+          code: "conflict",
+          reason: "plugin-version-changed",
+          message: "Another change to this plugin finished first. Try again.",
+        },
+      });
+      for (const tag of ["StorageError", "RuntimeProtocolFailed"])
+        expect(await refusal(tag)).toMatchObject({
+          status: 409,
+          body: {
+            error: {
+              code: "conflict",
+              reason: "plugin-engine",
+              message: "Plugin engine operation failed",
+            },
+          },
+        });
+    } finally {
+      await app.close();
+    }
   });
 
   it("answers a retried command with the first attempt instead of repeating it", async () => {

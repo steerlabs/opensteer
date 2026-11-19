@@ -12,11 +12,14 @@ const Package = Schema.Struct({
   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 
-/** A registry version, range or tag, or a tarball URL that carries its integrity. */
+/**
+ * A registry version, range or tag, or a tarball URL that carries its integrity. A tilde range
+ * such as `~1.2.3` is a registry range; only `~/` begins a (home-relative) path.
+ */
 const registryOrPinned = (version: string) =>
   /^https?:\/\//u.test(version)
     ? /#(?:sha512|sha384|sha256)-[A-Za-z0-9+/]+={0,2}$/u.test(version)
-    : !/^(?:git\+|git:|github:|gitlab:|bitbucket:|file:|link:|npm:|workspace:)|^[./~]|^[^\s@/]+\/[^\s/]+$/u.test(
+    : !/^(?:git\+|git:|github:|gitlab:|bitbucket:|file:|link:|npm:|workspace:)|^[./]|^~\/|^[^\s@/]+\/[^\s/]+$/u.test(
         version,
       );
 
