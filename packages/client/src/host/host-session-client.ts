@@ -2776,6 +2776,11 @@ export class HttpHostClient {
     return () => this.#personalRemoteAccessListeners.delete(listener);
   }
 
+  /** Reads these kinds again, for a screen that said it could not load them. */
+  retryResources(kinds: readonly PersonalResourceKind[]) {
+    for (const kind of kinds) this.#resources.retry(kind);
+  }
+
   subscribeConnectionsChanged(listener: () => void): () => void {
     this.#connectionsListeners.add(listener);
     return () => this.#connectionsListeners.delete(listener);

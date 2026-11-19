@@ -452,3 +452,35 @@ test("a command waiting on a kind whose read fails for good fails with that erro
   expect(calls).toBe(2);
   reads.dispose();
 });
+
+test("any read that fails for good marks its kind unreadable, and a reset forgets it for the next history", async () => {
+  let refuse = true;
+  const unreadable: [PersonalResourceKind, boolean][] = [];
+  const reads = new PersonalResourceReads({
+    read: async (kind) =>
+      refuse
+        ? // A single row too large for the Host's page: refused before any byte reaches here.
+          { ok: false, error: { code: "resource_exhausted", message: "Too large" } }
+        : { ok: true, data: { revision: "1", next: null, data: { kind } as never } },
+    apply: () => undefined,
+    canRead: () => true,
+    watchChanged: () => undefined,
+    unreadable: (kind, value) => unreadable.push([kind, value]),
+  });
+  const release = reads.watch("environment", () => {});
+  await vi.waitFor(() => expect(unreadable).toEqual([["environment", true]]));
+  // A new history: the same failure there is reported again, not suppressed.
+  reads.reset();
+  reads.resume();
+  await vi.waitFor(() =>
+    expect(unreadable).toEqual([
+      ["environment", true],
+      ["environment", true],
+    ]),
+  );
+  // Try again, once the Host can answer.
+  refuse = false;
+  reads.retry("environment");
+  await vi.waitFor(() => expect(unreadable.at(-1)).toEqual(["environment", false]));
+  release();
+});

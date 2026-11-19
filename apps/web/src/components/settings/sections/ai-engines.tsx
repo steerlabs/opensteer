@@ -1,3 +1,4 @@
+import { useUnreadableResources } from "@opensteer/client/react";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
 import { harnessDriverLabel } from "@opensteer/core";
@@ -48,7 +49,13 @@ import { Popover } from "../../popover.js";
 import { engineProviderId, ProviderLogo } from "../../provider-brand.js";
 import { useToast } from "../../toast.js";
 import { UsageMeter } from "../../usage-meter.js";
-import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
+import {
+  SectionHeader,
+  SettingsError,
+  SettingsGroup,
+  SettingsRow,
+  SettingsUnreadable,
+} from "../primitives.js";
 import { useSettingsRead } from "../use-settings-read.js";
 import { AddAccountDialog } from "./add-account-dialog.js";
 import { ModelSettingsDialog } from "./model-settings-dialog.js";
@@ -60,11 +67,21 @@ import {
 
 type HarnessCatalog = EnvironmentSummary["harnessCatalogs"][number];
 
+const accountKinds = ["environment", "harness", "harness-catalog"] as const;
+
 export function AiEnginesSection() {
   const { addHarnessAccount, hostClient, openHarnessAuthentication, placements, snapshot } =
     useShell();
   const toast = useToast();
   const background = useSettingsRead(() => getAutomaticModels(hostClient), "automatic-models");
+  const accountsRead = useUnreadableResources(hostClient, accountKinds);
+  if (accountsRead.unreadable)
+    return (
+      <>
+        <SectionHeader lead="Connect the accounts that power your agents." title="AI services" />
+        <SettingsUnreadable label="your AI accounts" onRetry={accountsRead.retry} />
+      </>
+    );
   return (
     <>
       <SectionHeader lead="Connect the accounts that power your agents." title="AI services" />

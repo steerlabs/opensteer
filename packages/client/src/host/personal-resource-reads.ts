@@ -323,6 +323,9 @@ export class PersonalResourceReads implements PersonalResourcePort {
       // waiting on the kind, which then stops at once rather than asking again.
       .catch((error: unknown) => {
         this.#failures.set(kind, error);
+        // Whatever the cause (too large, malformed, refused by the Host), the screens that read
+        // this kind say they could not, instead of showing the last inventory as if current.
+        this.#markUnreadable(kind);
       })
       .finally(() => {
         if (this.#inFlight.get(kind) === flying) this.#inFlight.delete(kind);
@@ -369,11 +372,20 @@ export class PersonalResourceReads implements PersonalResourcePort {
   }
 
   /** A Host answer no retry can mend: reported, and read again on the kind's next revision. */
+  #markUnreadable(kind: PersonalResourceKind) {
+    if (this.#unreadableKinds.has(kind)) return;
+    this.#unreadableKinds.add(kind);
+    this.#options.unreadable?.(kind, true);
+  }
+
+  /** Try again, from a screen that said it could not load the kind. */
+  retry(kind: PersonalResourceKind) {
+    this.#failures.delete(kind);
+    this.#read(kind);
+  }
+
   #unreadable(kind: PersonalResourceKind, detail: string) {
-    if (!this.#unreadableKinds.has(kind)) {
-      this.#unreadableKinds.add(kind);
-      this.#options.unreadable?.(kind, true);
-    }
+    this.#markUnreadable(kind);
     return Object.assign(new Error(`The Host's ${kind} inventory ${detail}.`), {
       code: "invalid-response",
     });
