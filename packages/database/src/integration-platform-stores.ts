@@ -142,7 +142,7 @@ export type IntegrationDiscoveryRequester = IntegrationRequester & {
     { readonly serverId: IntegrationServerId } | { readonly connectionId: IntegrationConnectionId };
 };
 
-/** Installations one read of the discovery inventory takes at a time. */
+/** Installations one read of every installation takes at a time. */
 const discoveryInventoryPage = 1_000;
 
 export interface DiscoveredIntegrationServer {
@@ -1125,12 +1125,33 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     );
   }
 
+  /** Every installation, read a page at a time by id, in title order. */
   async listInstallations(): Promise<readonly IntegrationInstallation[]> {
+    const rows: Selectable<IntegrationInstallationTable>[] = [];
+    for (;;) {
+      const after = rows.at(-1)?.id;
+      const page = await this.database
+        .selectFrom("integrationInstallations")
+        .selectAll()
+        .$if(after !== undefined, (query) => query.where("id", ">", after!))
+        .orderBy("id", "asc")
+        .limit(discoveryInventoryPage)
+        .execute();
+      rows.push(...page);
+      if (page.length < discoveryInventoryPage) break;
+    }
+    return rows
+      .map(installationFromRow)
+      .sort((left, right) => (left.title < right.title ? -1 : left.title > right.title ? 1 : 0));
+  }
+
+  /** The installations of one plugin, however many installations there are. */
+  async installationsForPlugin(pluginId: string): Promise<readonly IntegrationInstallation[]> {
     const rows = await this.database
       .selectFrom("integrationInstallations")
       .selectAll()
-      .orderBy("title", "asc")
-      .limit(1_000)
+      .where("pluginId", "=", pluginId)
+      .orderBy("id", "asc")
       .execute();
     return rows.map(installationFromRow);
   }

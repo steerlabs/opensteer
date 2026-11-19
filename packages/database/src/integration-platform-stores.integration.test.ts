@@ -239,6 +239,45 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     expect(ids).toContain(installationId);
   });
 
+  it("reads every installation for management, and finds a plugin's by its id", async ({
+    storeFixture,
+  }) => {
+    const { database, platform, store } = storeFixture;
+    const fixture = await runningRunFixture(store, "management-pages");
+    const copied = createIntegrationId("installation");
+    await platform.install({
+      actorUserId: fixture.userId,
+      installation: localServerInstallation(copied),
+      requestId: "install-management-pages",
+      servers: [],
+    });
+    // A thousand like it, and one plugin's own, which sorts after all of them by title.
+    await sql`
+      insert into integration_installations
+      select (jsonb_populate_record(
+        null::integration_installations,
+        to_jsonb(installation) || jsonb_build_object(
+          'id', 'iin_' || gen_random_uuid(),
+          'name', 'plugin-' || gen_random_uuid()
+        )
+      )).*
+      from integration_installations installation, generate_series(1, 999)
+      where installation.id = ${copied}
+    `.execute(database);
+    const last = createIntegrationId("installation");
+    await platform.install({
+      actorUserId: fixture.userId,
+      installation: { ...localServerInstallation(last), pluginId: "plg_last", title: "Zebra" },
+      requestId: "install-management-last",
+      servers: [],
+    });
+    const all = await platform.listInstallations();
+    expect(all).toHaveLength(1001);
+    expect(new Set(all.map(({ id }) => id)).size).toBe(1001);
+    expect(all.at(-1)).toMatchObject({ id: last, title: "Zebra" });
+    expect((await platform.installationsForPlugin("plg_last")).map(({ id }) => id)).toEqual([last]);
+  });
+
   it("cancels pending access Requests and detaches resolved ones", async ({ storeFixture }) => {
     const { store, platform, database } = storeFixture;
     const fixture = await runningRunFixture(store, "uninstall-requests");

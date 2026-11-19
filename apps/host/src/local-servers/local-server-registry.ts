@@ -203,9 +203,7 @@ export class LocalServerRegistry {
   ) {
     const store = this.#options.store;
     if (administration && (await store.replayAdministration(administration))) return;
-    const installations = (await store.listInstallations()).filter(
-      (installation) => installation.pluginId === pluginId,
-    );
+    const installations = await store.installationsForPlugin(pluginId);
     const devices = (
       await Promise.all(installations.map(({ id }) => this.#installationDevices(id)))
     ).flat();
@@ -266,9 +264,7 @@ export class LocalServerRegistry {
     // A first registration's id is chosen here; if another of the same name commits first, the
     // database keeps that one and this registration is refused inside its transaction.
     const pluginId = currentPlugin?.id ?? createIntegrationId("installation");
-    const previous = updating
-      ? (await store.listInstallations()).find((i) => i.pluginId === pluginId)
-      : undefined;
+    const previous = updating ? (await store.installationsForPlugin(pluginId))[0] : undefined;
     const { computerId: _computer, folder: _folder, ...registration } = input.registration;
     const plugin = await snapshotLocalServerPackage({
       registration,
