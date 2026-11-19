@@ -20,7 +20,7 @@ export function useUnreadableResources(
     const wanted = key.split(",");
     const unreadable = (snapshot?.unreadableResources ?? []).some((kind) => wanted.includes(kind));
     const held = wanted.every((kind) =>
-      snapshot?.loadedResources.includes(kind as PersonalResourceKind),
+      (snapshot?.loadedResources ?? []).includes(kind as PersonalResourceKind),
     );
     return unreadable ? (held ? "held" : "none") : "readable";
   }, [hostClient, key]);
