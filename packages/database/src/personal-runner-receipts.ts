@@ -99,7 +99,10 @@ async function recordReceipt(
     .returning("status")
     .executeTakeFirst();
   if (!advanced) return false;
-  if (isTerminal(advanced.status)) return true;
+  if (isTerminal(advanced.status)) {
+    deleteTerminalRunReceipts(tx, mutation, receipt.runId);
+    return true;
+  }
   mutation.receipt(async (committedHead) => {
     await tx
       .insertInto("runnerEventReceipts")

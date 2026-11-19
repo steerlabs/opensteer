@@ -311,6 +311,23 @@ const retainedStateDdl = `
   alter table thread_inputs add column approval_sort smallint generated always as
     (case when state = 'awaiting-approval' then 1 else 0 end) stored;
 
+  create function opensteer_task_immutable() returns trigger language plpgsql as $$
+  begin
+    if TG_TABLE_NAME = 'requests' then
+      if new.originating_thread_id is distinct from old.originating_thread_id then
+        raise check_violation using message = 'Request task cannot change';
+      end if;
+    elsif new.thread_id is distinct from old.thread_id then
+      raise check_violation using message = 'Input task cannot change';
+    end if;
+    return new;
+  end;
+  $$;
+  create trigger request_task_immutable before update of originating_thread_id on requests
+    for each row execute function opensteer_task_immutable();
+  create trigger input_task_immutable before update of thread_id on thread_inputs
+    for each row execute function opensteer_task_immutable();
+
   create table tool_calls (
     id text primary key,
     thread_id text not null references threads(id) on delete cascade,

@@ -428,20 +428,13 @@ integration("Runs that outlive their connection", () => {
     ).runId!;
     await waitFor(async () => (await run(active, next)).status === "completed", signal, "next");
     expect((await run(active, runId)).status).toBe("completed");
-    expect((await storedRunnerReceipts(active, runId)).slice(0, lostEvents.length)).toEqual(
-      lostEvents,
-    );
-    const recoveredEvents = await storedRunnerReceipts(active, runId);
-    expect(recoveredEvents).toHaveLength(lostEvents.length + completedStreamEventTypes.length);
-    expect(
-      recoveredEvents
-        .slice(lostEvents.length)
-        .every(
-          (receipt) =>
-            receipt.bindingGeneration > lostEvents.at(-1)!.bindingGeneration &&
-            receipt.disposition === "applied",
-        ),
-    ).toBe(true);
+    const recovered = await active.host.store.database
+      .selectFrom("runs")
+      .select(["nextRunnerOrdinal", "bindingGeneration"])
+      .where("id", "=", runId)
+      .executeTakeFirstOrThrow();
+    expect(recovered.nextRunnerOrdinal).toBe(lostEvents.length + completedStreamEventTypes.length);
+    expect(recovered.bindingGeneration).toBeGreaterThan(lostEvents.at(-1)!.bindingGeneration);
     await expectCompletedExactlyOnce(active, runId);
   }, 180_000);
   it("recovers at once after a lost lease, though the engine never ended the stopped turn", async () => {

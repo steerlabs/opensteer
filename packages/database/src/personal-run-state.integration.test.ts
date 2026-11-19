@@ -217,13 +217,21 @@ test("a finishing Run resumes its bounded work and only acknowledges an exact te
         .limit(1)
         .execute(),
     ).toEqual([]);
-    const receipt = await database
-      .selectFrom("runnerEventReceipts")
-      .select("reportedDigest")
-      .where("runId", "=", run.runId)
-      .where("ordinal", "=", 1)
-      .executeTakeFirstOrThrow();
-    expect(receipt.reportedDigest.toString("hex")).toBe(digest);
+    // The finish admitted the frozen statement; the terminal Run keeps no receipts.
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("nextRunnerOrdinal")
+        .where("id", "=", run.runId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ nextRunnerOrdinal: 2 });
+    expect(
+      await database
+        .selectFrom("runnerEventReceipts")
+        .select("ordinal")
+        .where("runId", "=", run.runId)
+        .execute(),
+    ).toEqual([]);
   } finally {
     disconnect();
     await fixture.close();
