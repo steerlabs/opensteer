@@ -2985,12 +2985,19 @@ export async function createHostRuntime(
             const request = await links.requests.options.requests.forRun(runId);
             if (!request) return;
             const outcome = await links.requests.options.runs.outcome(request);
+            const live = outcome.state === "working" || outcome.state === "needs_you";
             await links.requests.runChanged(
               runId,
-              outcome.state === "working" || outcome.state === "needs_you"
-                ? { state: outcome.state, steps }
-                : undefined,
+              live ? { state: outcome.state, steps } : undefined,
             );
+            if (live) return;
+            // A finished Run's reply and status are delivered once the request
+            // records its terminal state; until then it is owed a retry.
+            const current = await links.requests.options.requests.get(
+              request.teamId,
+              request.requestId,
+            );
+            return current && current.terminalState === null ? "pending" : undefined;
           },
           onError: () =>
             app.log.warn("Team Run publication failed; the durable reply remains pending"),
