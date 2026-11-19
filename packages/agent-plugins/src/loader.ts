@@ -20,7 +20,14 @@ const maximumArguments = 256;
 const maximumEnvironmentEntries = 128;
 const maximumPackageBytes = 64 * 1_024 * 1_024;
 const maximumPackageFileBytes = 16 * 1_024 * 1_024;
-const maximumPackageFiles = 10_000;
+/** The files a registered folder may hold; its package adds one, the validated registration. */
+export const maximumLocalServerFolderFiles = 10_000;
+/** The files a package may hold, its generated registration file included. */
+export const maximumPluginPackageFiles = maximumLocalServerFolderFiles + 1;
+/** The definition of a package digest; a change to what it covers is a new format. */
+export const pluginPackageFormat = "opensteer.plugin-package/2";
+/** The validated registration the Host writes into every local-server package. */
+export const localServerRegistrationFile = "local-server-registration.json";
 
 const PluginNameSchema = z
   .string()
@@ -271,21 +278,29 @@ export interface SnapshotFile {
   readonly path: string;
 }
 
-export async function readPluginSnapshot(sourceRoot: string): Promise<SnapshotFile[]> {
+export async function readPluginSnapshot(
+  sourceRoot: string,
+  maximumFiles = maximumPluginPackageFiles,
+): Promise<SnapshotFile[]> {
   await requireRealDirectory(sourceRoot, "Local-server package snapshot");
-  const files: SnapshotFile[] = [];
+  const found: {
+    readonly mode: number;
+    readonly path: string;
+    readonly relativePath: string;
+    readonly size: number;
+  }[] = [];
   let totalBytes = 0;
   const visit = async (directory: string, relativeDirectory: string): Promise<void> => {
-    const entries = await readdir(directory, { withFileTypes: true });
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
-      const path = join(directory, entry.name);
+    const directories: [string, string][] = [];
+    await eachConcurrently(await readdir(directory), async (name) => {
+      const relativePath = relativeDirectory ? `${relativeDirectory}/${name}` : name;
+      const path = join(directory, name);
       const stat = await lstat(path);
       if (stat.isSymbolicLink())
         throw new Error(`Local-server package contains symlink ${relativePath}`);
       if (stat.isDirectory()) {
-        await visit(path, relativePath);
-        continue;
+        directories.push([path, relativePath]);
+        return;
       }
       if (!stat.isFile())
         throw new Error(`Local-server package contains unsupported entry ${relativePath}`);
@@ -294,24 +309,121 @@ export async function readPluginSnapshot(sourceRoot: string): Promise<SnapshotFi
           `Local-server package file ${relativePath} exceeds ${maximumPackageFileBytes} bytes`,
         );
       }
-      const bytes = await readFile(path);
-      totalBytes += bytes.byteLength;
-      if (files.length >= maximumPackageFiles || totalBytes > maximumPackageBytes) {
-        throw new Error("Local-server package package exceeds the installation limit");
+      totalBytes += stat.size;
+      if (found.length >= maximumFiles || totalBytes > maximumPackageBytes) {
+        throw new Error("Local-server package exceeds the installation limit");
       }
-      files.push({ bytes, mode: stat.mode & 0o777, path: relativePath });
-    }
+      found.push({ mode: stat.mode & 0o777, path, relativePath, size: stat.size });
+    });
+    for (const [path, relativePath] of directories) await visit(path, relativePath);
   };
   await visit(sourceRoot, "");
+  const files: SnapshotFile[] = [];
+  await eachConcurrently(found, async ({ mode, path, relativePath, size }) => {
+    const bytes = await readFile(path);
+    if (bytes.byteLength !== size)
+      throw new Error(`Local-server package file ${relativePath} changed while it was read`);
+    files.push({ bytes, mode, path: relativePath });
+  });
   return files;
 }
 
+/** Writes a package's files into a new private directory, each with its own mode. */
+export async function writePluginSnapshot(
+  root: string,
+  files: readonly SnapshotFile[],
+): Promise<void> {
+  await mkdir(root, { mode: 0o700 });
+  const directories = new Set(
+    files.flatMap(({ path }) => {
+      const parts = path.split("/").slice(0, -1);
+      return parts.map((_, index) => parts.slice(0, index + 1).join("/"));
+    }),
+  );
+  for (const directory of [...directories].sort((a, b) => a.length - b.length))
+    await mkdir(join(root, ...directory.split("/")), { mode: 0o700 });
+  await eachConcurrently(files, async (file) => {
+    const target = join(root, ...file.path.split("/"));
+    await writeFile(target, file.bytes, { flag: "wx", mode: file.mode });
+    await setFileMode(target, file.mode);
+  });
+}
+
+/** Runs `work` over every item, a bounded number at a time; the first failure fails the whole. */
+async function eachConcurrently<T>(
+  items: readonly T[],
+  work: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  let failed = false;
+  await Promise.all(
+    Array.from({ length: Math.min(32, items.length) }, async () => {
+      while (!failed && next < items.length) {
+        const item = items[next++]!;
+        try {
+          await work(item);
+        } catch (error) {
+          failed = true;
+          throw error;
+        }
+      }
+    }),
+  );
+}
+
+/**
+ * What a package digest names, as canonical JSON: the format, then every file once, ordered by
+ * the UTF-8 bytes of its path, as its path, mode, size and the SHA-256 of its bytes. The order the
+ * files were read in does not matter, and no two different file trees share one manifest.
+ */
+export function pluginPackageManifest(files: readonly SnapshotFile[]): string {
+  const entries = files
+    .map(({ path, mode, bytes }) => {
+      if (
+        !path ||
+        path.includes("\\") ||
+        path.includes("\0") ||
+        path.split("/").some((part) => !part || part === "." || part === "..")
+      )
+        throw new Error(`Plugin package path ${JSON.stringify(path)} is not a relative file path`);
+      if (!Number.isInteger(mode) || mode < 0 || mode > 0o777)
+        throw new Error(`Plugin package file ${path} has an invalid mode`);
+      return {
+        path,
+        mode,
+        size: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+    })
+    .sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
+  for (let index = 1; index < entries.length; index += 1)
+    if (entries[index]!.path === entries[index - 1]!.path)
+      throw new Error(`Plugin package lists ${entries[index]!.path} twice`);
+  return canonicalJson({ format: pluginPackageFormat, files: entries });
+}
+
+/** A package's digest: the SHA-256 of its manifest, the one definition every reader checks. */
 export function pluginSnapshotDigest(files: readonly SnapshotFile[]): string {
-  const hash = createHash("sha256");
-  for (const file of files) {
-    hash.update(file.path).update("\0").update(String(file.mode)).update("\0").update(file.bytes);
+  return createHash("sha256").update(pluginPackageManifest(files)).digest("hex");
+}
+
+/** A stored package's files, read once and refused unless they are exactly what `digest` names. */
+export async function readVerifiedPluginSnapshot(
+  root: string,
+  digest: string,
+): Promise<SnapshotFile[]> {
+  const files = await readPluginSnapshot(root);
+  if (pluginSnapshotDigest(files) === digest) return files;
+  for (const file of files) file.bytes.fill(0);
+  throw new PluginPackageMismatchError();
+}
+
+/** A stored package whose files are no longer what its digest names. */
+export class PluginPackageMismatchError extends Error {
+  constructor() {
+    super("Plugin package files do not match its digest");
+    this.name = "PluginPackageMismatchError";
   }
-  return hash.digest("hex");
 }
 
 async function snapshotPackage(
@@ -319,34 +431,30 @@ async function snapshotPackage(
   snapshotRoot: string,
   registration: LocalServerPackageRegistration,
 ): Promise<string> {
-  const files = await readPluginSnapshot(sourceRoot);
-  if (files.some(({ path }) => path === "local-server-registration.json"))
-    throw new Error("local-server-registration.json is reserved for the validated registration");
+  const files = await readPluginSnapshot(sourceRoot, maximumLocalServerFolderFiles);
+  if (files.some(({ path }) => path === localServerRegistrationFile))
+    throw new Error(`${localServerRegistrationFile} is reserved for the validated registration`);
   files.push({
-    path: "local-server-registration.json",
+    path: localServerRegistrationFile,
     mode: 0o600,
     // Canonical, so the package digest does not depend on the order its keys were given in.
     bytes: Buffer.from(canonicalJson(registration)),
   });
-  files.sort((a, b) => a.path.localeCompare(b.path));
   const digest = pluginSnapshotDigest(files);
   await mkdir(snapshotRoot, { mode: 0o700, recursive: true });
   const destination = join(snapshotRoot, digest);
   try {
     await requireRealDirectory(destination, "Local-server package snapshot");
-    return await realpath(destination);
+    return await verifiedSnapshot(destination, digest);
   } catch (error) {
-    if (!isRecord(error) || error.code !== "ENOENT") throw error;
+    // A stored snapshot that is no longer what its name says is written again from these files.
+    if (error instanceof PluginPackageMismatchError)
+      await rm(destination, { force: true, recursive: true });
+    else if (!isRecord(error) || error.code !== "ENOENT") throw error;
   }
   const temporary = join(snapshotRoot, `.install-${randomUUID()}`);
-  await mkdir(temporary, { mode: 0o700 });
   try {
-    for (const file of files) {
-      const target = join(temporary, ...file.path.split("/"));
-      await mkdir(resolve(target, ".."), { mode: 0o700, recursive: true });
-      await writeFile(target, file.bytes, { flag: "wx", mode: file.mode });
-      await setFileMode(target, file.mode);
-    }
+    await writePluginSnapshot(temporary, files);
     try {
       await rename(temporary, destination);
     } catch (error) {
@@ -356,7 +464,14 @@ async function snapshotPackage(
     await rm(temporary, { force: true, recursive: true });
     for (const file of files) file.bytes.fill(0);
   }
-  return realpath(destination);
+  // Read back as delivery and launch will, so nothing is approved that later fails verification.
+  return verifiedSnapshot(destination, digest);
+}
+
+async function verifiedSnapshot(destination: string, digest: string): Promise<string> {
+  const root = await realpath(destination);
+  for (const file of await readVerifiedPluginSnapshot(root, digest)) file.bytes.fill(0);
+  return root;
 }
 
 async function directoryDigest(root: string): Promise<string> {

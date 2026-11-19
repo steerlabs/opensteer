@@ -361,6 +361,9 @@ export class ComputerAppApprovalService {
       });
     if (request.kind === "server") {
       const server = request.server;
+      // What is allowed is the package the review showed; one altered since is refused here.
+      if (input.decision === "allow" && server)
+        await this.#localServerReview(server.serverId, server.launch);
       // Checked before admission; the values are sealed inside the approval.
       const secrets =
         input.decision === "allow" && server

@@ -14,8 +14,12 @@ import { expect, test } from "vitest";
 import {
   snapshotLocalServerPackage,
   type LocalServerPackageRegistration,
+  maximumLocalServerFolderFiles,
+  pluginPackageManifest,
+  PluginPackageMismatchError,
   pluginSnapshotDigest,
   readPluginSnapshot,
+  readVerifiedPluginSnapshot,
 } from "./loader.js";
 
 async function fixture(
@@ -157,4 +161,76 @@ test("validates skills and keeps approved text immutable", async () =>
     expect(await readFile(join(plugin.root, "skills/summarize-mail/SKILL.md"), "utf8")).toContain(
       "Original instructions",
     );
+  }));
+
+test("names a file tree by a manifest no other tree shares, whatever order it was read in", () => {
+  const file = (path: string, bytes: string) => ({ path, mode: 0o644, bytes: Buffer.from(bytes) });
+  // Under a digest of path, mode and bytes run together, these two trees hashed the same input.
+  const one = [file("a", "xb\u0000420\u0000y")];
+  const two = [file("a", "x"), file("b", "y")];
+  const concatenated = (files: typeof one) =>
+    Buffer.concat(
+      files.flatMap(({ path, mode, bytes }) => [Buffer.from(`${path}\0${mode}\0`), bytes]),
+    );
+  expect(concatenated(one)).toEqual(concatenated(two));
+  expect(pluginSnapshotDigest(one)).not.toBe(pluginSnapshotDigest(two));
+  const tree = [file("bin/server.txt", "server"), file("bin.txt", "text"), file("Z", "upper")];
+  expect(pluginSnapshotDigest(tree)).toBe(pluginSnapshotDigest([...tree].reverse()));
+  expect(JSON.parse(pluginPackageManifest(tree))).toEqual({
+    format: "opensteer.plugin-package/2",
+    files: [
+      { path: "Z", mode: 0o644, size: 5, sha256: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+      { path: "bin.txt", mode: 0o644, size: 4, sha256: expect.any(String) },
+      { path: "bin/server.txt", mode: 0o644, size: 6, sha256: expect.any(String) },
+    ],
+  });
+  expect(() => pluginSnapshotDigest([file("a", "1"), file("a", "2")])).toThrow("twice");
+  expect(() => pluginSnapshotDigest([file("../a", "1")])).toThrow("relative file path");
+});
+
+test("a folder whose paths sort differently by name and by path registers and reads back as its digest", async () =>
+  fixture(async (root, load) => {
+    await mkdir(join(root, "bin"));
+    await writeFile(join(root, "bin/server.txt"), "server");
+    await writeFile(join(root, "bin.txt"), "text");
+    const plugin = await load({ name: "example", launch: { command: "node" } });
+    const digest = plugin.root.split("/").at(-1)!;
+    expect(
+      (await readVerifiedPluginSnapshot(plugin.root, digest)).map(({ path }) => path).sort(),
+    ).toEqual(["bin.txt", "bin/server.txt", "local-server-registration.json"]);
+  }));
+
+test(
+  "a folder of the most files a folder may hold registers with its registration file",
+  async () =>
+    fixture(async (root, load) => {
+      await Promise.all(
+        Array.from({ length: maximumLocalServerFolderFiles }, (_, index) =>
+          writeFile(join(root, `f${index}`), ""),
+        ),
+      );
+      const plugin = await load({ name: "example", launch: { command: "node" } });
+      expect(
+        await readVerifiedPluginSnapshot(plugin.root, plugin.root.split("/").at(-1)!),
+      ).toHaveLength(maximumLocalServerFolderFiles + 1);
+      await writeFile(join(root, "one-more"), "");
+      await expect(load({ name: "example", launch: { command: "node" } })).rejects.toThrow(
+        "installation limit",
+      );
+    }),
+  60_000,
+); // Writes, reads and verifies over 30,000 real files.
+
+test("a stored snapshot altered after registration is refused, and written again on the next one", async () =>
+  fixture(async (root, load) => {
+    await writeFile(join(root, "server.js"), "approved");
+    const plugin = await load({ name: "example", launch: { command: "node" } });
+    const digest = plugin.root.split("/").at(-1)!;
+    await writeFile(join(plugin.root, "server.js"), "changed");
+    await expect(readVerifiedPluginSnapshot(plugin.root, digest)).rejects.toBeInstanceOf(
+      PluginPackageMismatchError,
+    );
+    const again = await load({ name: "example", launch: { command: "node" } });
+    expect(again.root).toBe(plugin.root);
+    expect(await readFile(join(plugin.root, "server.js"), "utf8")).toBe("approved");
   }));

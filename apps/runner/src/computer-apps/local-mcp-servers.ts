@@ -3,7 +3,7 @@ import { assertPluginDataId, removePluginData } from "@opensteer/shared/privateF
 import { mergeEnvironment, selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
-import { fetchPluginPackage, retainPluginPackages } from "../skills/plugin-cache.js";
+import { launchPluginPackage } from "../skills/plugin-cache.js";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { spawnSupervised, type SupervisedProcess } from "@opensteer/harness";
 import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -50,6 +50,7 @@ const notReadingSentence = "The MCP server stopped taking what it was sent, so i
 
 interface Session {
   readonly pluginId: string | undefined;
+  /** Removes the private copy of its package this session runs from. */
   readonly releasePackage?: (() => Promise<void>) | undefined;
   closing: boolean;
   error: Error | undefined;
@@ -107,11 +108,9 @@ export class LocalMcpServers {
       try {
         if (!this.#stateDirectory || !launch.pluginId)
           throw new Error("Plugin cache is unavailable");
-        releasePackage = await retainPluginPackages(this.#stateDirectory, [launch.packageDigest]);
-        const root = await fetchPluginPackage({
+        const copy = await launchPluginPackage({
           stateDirectory: this.#stateDirectory,
           digest: launch.packageDigest,
-          verify: true,
           fetchSnapshot: async () => {
             if (!frame.packageSource) throw new Error("Package source is unavailable");
             const response = await fetch(frame.packageSource.url, {
@@ -130,9 +129,10 @@ export class LocalMcpServers {
             ) as unknown;
           },
         });
+        releasePackage = copy.remove;
         const data = path.join(this.#stateDirectory, "plugin-data", launch.pluginId);
         await mkdir(data, { recursive: true, mode: 0o700 });
-        launch = resolvePluginLaunch(launch, root, data);
+        launch = resolvePluginLaunch(launch, copy.root, data);
       } catch (error) {
         await releasePackage?.();
         await this.#closed(

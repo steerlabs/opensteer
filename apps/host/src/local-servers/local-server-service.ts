@@ -2,7 +2,10 @@ import { readdir, realpath } from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { AesGcmSecretVault } from "@opensteer/access/host";
 import { createCredentialResponseRedactor } from "@opensteer/access/host";
-import { readPluginSnapshot, type LocalServerPackageServer } from "@opensteer/agent-plugins";
+import {
+  readVerifiedPluginSnapshot,
+  type LocalServerPackageServer,
+} from "@opensteer/agent-plugins";
 import {
   OpensteerError,
   UserIdSchema,
@@ -691,7 +694,8 @@ export class LocalServerService {
       versions:
         plugins.find(({ id }) => id === launch.pluginId)?.versions.map(({ digest }) => digest) ??
         [],
-      files: (digest) => readPluginSnapshot(`${packages}/${digest}`).catch(() => null),
+      files: (digest) =>
+        readVerifiedPluginSnapshot(`${packages}/${digest}`, digest).catch(() => null),
     });
   }
 

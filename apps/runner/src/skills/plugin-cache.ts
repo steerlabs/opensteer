@@ -2,11 +2,15 @@ import { lock } from "proper-lockfile";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, rename, rm, utimes, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { pluginSnapshotDigest, readPluginSnapshot } from "@opensteer/agent-plugins";
+import {
+  maximumPluginPackageFiles,
+  pluginSnapshotDigest,
+  readVerifiedPluginSnapshot,
+  writePluginSnapshot,
+} from "@opensteer/agent-plugins";
 import type { HarnessSkill } from "@opensteer/harness";
 import type { RunPluginsPlan } from "@opensteer/protocol";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
-import { setFileMode } from "@opensteer/shared/privateFiles";
 import { z } from "zod";
 
 const snapshotSchema = z
@@ -29,7 +33,7 @@ const snapshotSchema = z
         .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u),
     }),
   )
-  .max(10_000);
+  .max(maximumPluginPackageFiles);
 const pending = new Map<string, Promise<string>>();
 const verified = new Set<string>();
 const retentionMs = 30 * 24 * 60 * 60 * 1000;
@@ -45,7 +49,6 @@ export async function fetchPluginPackage(input: {
   readonly stateDirectory: string;
   readonly digest: string;
   readonly fetchSnapshot: () => Promise<unknown>;
-  readonly verify?: boolean;
 }): Promise<string> {
   if (!/^[a-f0-9]{64}$/u.test(input.digest)) throw new Error("Invalid plugin digest");
   const root = join(input.stateDirectory, "plugins", input.digest);
@@ -55,11 +58,10 @@ export async function fetchPluginPackage(input: {
       try {
         const stat = await lstat(root);
         if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Invalid cached package");
-        if (!input.verify && verified.has(root)) return root;
-        if (pluginSnapshotDigest(await readPluginSnapshot(root)) === input.digest) {
-          verified.add(root);
-          return root;
-        }
+        if (verified.has(root)) return root;
+        await readVerifiedPluginSnapshot(root, input.digest);
+        verified.add(root);
+        return root;
       } catch {
         // Missing or invalid entries, including symlinks, are rebuilt below.
       }
@@ -76,17 +78,10 @@ export async function fetchPluginPackage(input: {
         throw new Error("Plugin package digest mismatch or size limit exceeded");
       await mkdir(dirname(root), { recursive: true, mode: 0o700 });
       const stage = join(dirname(root), `.stage-${randomUUID()}`);
-      await mkdir(stage, { mode: 0o700 });
       try {
-        for (const file of files) {
-          const target = join(stage, file.path);
-          await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-          await writeFile(target, file.bytes, { flag: "wx", mode: file.mode });
-          await setFileMode(target, file.mode);
-        }
-        // Re-read with the install loader's limits and ordering before publishing.
-        if (pluginSnapshotDigest(await readPluginSnapshot(stage)) !== input.digest)
-          throw new Error("Plugin package digest mismatch");
+        // Re-read with the install loader's limits before publishing.
+        await writePluginSnapshot(stage, files);
+        await readVerifiedPluginSnapshot(stage, input.digest);
         try {
           await rename(stage, root);
         } catch (error) {
@@ -96,8 +91,7 @@ export async function fetchPluginPackage(input: {
       } finally {
         await rm(stage, { recursive: true, force: true });
       }
-      if (pluginSnapshotDigest(await readPluginSnapshot(root)) !== input.digest)
-        throw new Error("Plugin package digest mismatch");
+      await readVerifiedPluginSnapshot(root, input.digest);
       verified.add(root);
       return root;
     })();
@@ -105,13 +99,47 @@ export async function fetchPluginPackage(input: {
     void operation.finally(() => pending.delete(root)).catch(() => undefined);
   }
   const result = await operation;
-  if (input.verify && pluginSnapshotDigest(await readPluginSnapshot(result)) !== input.digest) {
-    verified.delete(root);
-    throw new Error("Plugin package digest mismatch");
-  }
   const now = new Date();
   await utimes(root, now, now);
   return result;
+}
+
+/**
+ * The folder one launch of a local server runs from: a private copy written from bytes read and
+ * checked against the digest just now, which no earlier process was given. The shared cache is
+ * never a server's root, so nothing a server writes to its own folder reaches another launch or a
+ * Run's skills; the copy goes when its session ends. Read-only modes would not do this: the
+ * server runs as the same user, who can change them back.
+ */
+export async function launchPluginPackage(input: {
+  readonly stateDirectory: string;
+  readonly digest: string;
+  readonly fetchSnapshot: () => Promise<unknown>;
+}): Promise<{ readonly root: string; readonly remove: () => Promise<void> }> {
+  const release = await retainPluginPackages(input.stateDirectory, [input.digest]);
+  try {
+    let cached = await fetchPluginPackage(input);
+    const files = await readVerifiedPluginSnapshot(cached, input.digest).catch(async () => {
+      // Changed since this process last checked it: fetched again from the Host.
+      verified.delete(cached);
+      cached = await fetchPluginPackage(input);
+      return readVerifiedPluginSnapshot(cached, input.digest);
+    });
+    const launches = join(input.stateDirectory, "plugin-launches");
+    await mkdir(launches, { recursive: true, mode: 0o700 });
+    const root = join(launches, `${process.pid}-${randomUUID()}`);
+    try {
+      await writePluginSnapshot(root, files);
+    } catch (error) {
+      await rm(root, { recursive: true, force: true });
+      throw error;
+    } finally {
+      for (const file of files) file.bytes.fill(0);
+    }
+    return { root, remove: () => rm(root, { recursive: true, force: true }) };
+  } finally {
+    await release();
+  }
 }
 
 async function cacheLock(stateDirectory: string) {
@@ -157,27 +185,31 @@ export async function retainPluginPackages(
 
 async function hasProcessReference(stateDirectory: string, digest: string): Promise<boolean> {
   const directory = join(stateDirectory, "plugin-cache-references", digest);
-  const leases = await readdir(directory).catch((error: NodeJS.ErrnoException) => {
+  let active = false;
+  for (const lease of await entriesOf(directory)) {
+    if (processAlive(lease)) active = true;
+    else await rm(join(directory, lease), { force: true });
+  }
+  return active;
+}
+
+/** Whether the process named by a `<pid>-…` entry may still be running. */
+function processAlive(entry: string): boolean {
+  const pid = Number(entry.split("-")[0]);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+async function entriesOf(directory: string): Promise<string[]> {
+  return readdir(directory).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [];
     throw error;
   });
-  let active = false;
-  for (const lease of leases) {
-    const pid = Number(lease.split("-")[0]);
-    if (!Number.isSafeInteger(pid) || pid <= 0) {
-      active = true;
-      continue;
-    }
-    try {
-      process.kill(pid, 0);
-      active = true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH")
-        await rm(join(directory, lease), { force: true });
-      else active = true;
-    }
-  }
-  return active;
 }
 
 export async function prunePluginCache(stateDirectory: string, now = Date.now()): Promise<void> {
@@ -210,6 +242,10 @@ async function pruneUnreferenced(stateDirectory: string, now: number): Promise<v
     await rm(path, { recursive: true, force: true });
     verified.delete(path);
   }
+  // A launch's copy outlives its session only when its Runner stopped first.
+  const launches = join(stateDirectory, "plugin-launches");
+  for (const launch of await entriesOf(launches))
+    if (!processAlive(launch)) await rm(join(launches, launch), { recursive: true, force: true });
 }
 
 export async function cacheRunPlugins(input: {

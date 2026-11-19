@@ -4,6 +4,7 @@ import { join, isAbsolute } from "node:path";
 import { refused } from "@opensteer/core";
 import type { AgentHomeFiles } from "../threads/agent-home-files.js";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
+import { maximumLocalServerFolderFiles } from "@opensteer/agent-plugins";
 
 /** Read through the owning Runner's no-follow file operations, never a Host path. */
 export async function withFolderPluginPackage<T>(input: {
@@ -18,7 +19,10 @@ export async function withFolderPluginPackage<T>(input: {
   )
     throw refused("bad_request", "Plugin directory must be a relative folder inside Agent home");
   const temporary = await mkdtemp(join(tmpdir(), "opensteer-plugin-"));
-  let count = 0;
+  // The same bound the package snapshot holds the folder to, which leaves room for its
+  // generated registration file.
+  let files = 0;
+  let directories = 0;
   let bytes = 0;
   const visit = async (parts: string[], target: string): Promise<void> => {
     const parentKey = Buffer.from(parts.join("\0")).toString("base64url");
@@ -30,7 +34,11 @@ export async function withFolderPluginPackage<T>(input: {
         ...(cursor ? { cursor } : {}),
       });
       for (const entry of page.entries) {
-        if (++count > 10000) throw refused("bad_request", "Plugin contains too many files");
+        if ((entry.kind === "directory" ? ++directories : ++files) > maximumLocalServerFolderFiles)
+          throw refused(
+            "bad_request",
+            `Plugin contains more than ${maximumLocalServerFolderFiles} files or folders`,
+          );
         if (entry.kind === "symlink" || entry.kind === "opaque")
           throw refused("bad_request", "Plugin packages cannot contain symlinks or special files");
         const rawName = Buffer.from(entry.key, "base64url").toString("utf8").split("\0").at(-1)!;

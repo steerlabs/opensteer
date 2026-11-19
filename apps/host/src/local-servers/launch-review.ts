@@ -1,9 +1,11 @@
-import type { SnapshotFile } from "@opensteer/agent-plugins";
+import {
+  localServerRegistrationFile as registrationFile,
+  type SnapshotFile,
+} from "@opensteer/agent-plugins";
 import type { LocalMcpLaunch } from "@opensteer/integration-core/local-mcp";
 import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
+import { OpensteerError } from "@opensteer/core";
 
-/** The validated registration the Host writes into every package; it is not one of the files. */
-const registrationFile = "local-server-registration.json";
 const shownChanges = 8;
 const lineChars = 60;
 const textBytes = 1024 * 1024;
@@ -12,7 +14,7 @@ const textBytes = 1024 * 1024;
  * What a person allows by allowing a local server's launch, and what changed since they last
  * allowed it, in terms they can judge: which files changed, by how much, and the first line that
  * did. An approval names one launch by digest, and the launch names its package by the digest
- * of its files (path, mode and bytes, sorted by path), so only a change to those reaches here.
+ * of its files (see pluginPackageManifest), so only a change to those reaches here.
  */
 export async function launchReview(input: {
   readonly launch: LocalMcpLaunch;
@@ -20,11 +22,19 @@ export async function launchReview(input: {
   readonly approvedLaunchDigest: string | null;
   /** The package digests this server's plugin has kept, oldest first. */
   readonly versions: readonly string[];
-  /** A kept package's files, or null when it is no longer on this Host. */
+  /** A kept package's files, or null when it is no longer on this Host as its digest names it. */
   readonly files: (digest: string) => Promise<readonly SnapshotFile[] | null>;
 }): Promise<string> {
   const { launch } = input;
   const current = launch.packageDigest ? await input.files(launch.packageDigest) : null;
+  // What would be allowed is the package its digest names; one that is not is never allowed.
+  if (launch.packageDigest && !current)
+    throw new OpensteerError({
+      code: "conflict",
+      message:
+        "Its files on this Host no longer match what was registered, so it can't be allowed.",
+      next: "Ask for it to be registered again from its folder.",
+    });
   const folder = current?.filter(({ path }) => path !== registrationFile) ?? [];
   const covers =
     launch.type !== "stdio"

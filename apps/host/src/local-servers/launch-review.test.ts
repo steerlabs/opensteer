@@ -1,8 +1,12 @@
 import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readPluginSnapshot, snapshotLocalServerPackage } from "@opensteer/agent-plugins";
+import {
+  readPluginSnapshot,
+  readVerifiedPluginSnapshot,
+  snapshotLocalServerPackage,
+} from "@opensteer/agent-plugins";
 import { createId } from "@opensteer/core";
 import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import type { LocalMcpLaunch } from "@opensteer/integration-core/local-mcp";
@@ -46,6 +50,7 @@ async function registered(
   const server = pendingLocalServer(plugin.servers[0]!, runnerId, basename(plugin.root), pluginId);
   if (server.transport.type !== "runner") throw new Error("A local server runs on a computer");
   return {
+    root: plugin.root,
     digest: basename(plugin.root),
     launch: server.transport.launch as LocalMcpLaunch,
     files: await readPluginSnapshot(plugin.root),
@@ -148,5 +153,20 @@ describe("the approval Request of a local server", () => {
         files,
       }),
     ).toMatch(/^Allowing it covers this command and the 1 file in its folder/u);
+  });
+
+  it("refuses a package altered on this Host since it was registered", async () => {
+    const first = await registered({ "server.py": server });
+    const files = (digest: string) =>
+      readVerifiedPluginSnapshot(join(dirname(first.root), digest), digest).catch(() => null);
+    const review = () =>
+      launchReview({ launch: first.launch, approvedLaunchDigest: null, versions: [], files });
+    await expect(review()).resolves.toMatch(/^Allowing it covers/u);
+    await writeFile(join(first.root, "server.py"), "import os\n");
+    await expect(review()).rejects.toMatchObject({
+      code: "conflict",
+      message:
+        "Its files on this Host no longer match what was registered, so it can't be allowed.",
+    });
   });
 });
