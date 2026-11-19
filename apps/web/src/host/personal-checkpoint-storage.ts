@@ -6,6 +6,7 @@ import {
   raiseCheckpointFence,
   type CheckpointFences,
   type CheckpointStorage,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 
 const values = "checkpoints";
@@ -18,9 +19,15 @@ type Stores = { values: IDBObjectStore; index: IDBObjectStore; fences: IDBObject
 /**
  * The session this origin's client holds now for a Deployment, or null when it holds none. On the
  * web the session cookie is out of the page's reach, so this is the Host-confirmed session the
- * client recorded (`checkpointSessionMarker`), cleared when the session ends.
+ * client recorded (`checkpointSessionMarker`), cleared when the session ends and treated as ended
+ * once it may have expired.
  */
 export type CurrentCheckpointSession = (deploymentId: string) => string | null;
+
+export interface IndexedDbCheckpointStorage extends CheckpointStorage {
+  /** Deletes, now, every entry not saved under its Deployment's current session. */
+  sweep(): Promise<void>;
+}
 
 /**
  * Saved personal checkpoints in IndexedDB, one record per scope.
@@ -35,12 +42,19 @@ export type CurrentCheckpointSession = (deploymentId: string) => string | null;
 export function indexedDbCheckpointStorage(
   name: string,
   currentSession: CurrentCheckpointSession,
-): CheckpointStorage {
+  /** Whether this origin holds any current session; without one nothing saved may outlive start. */
+  holdsSession: () => boolean = () => true,
+): IndexedDbCheckpointStorage {
   let opened: Promise<IDBDatabase> | null = null;
+  let started = false;
   const database = () =>
     (opened ??= new Promise<IDBDatabase>((resolve, reject) => {
       // Named before it can exist, so a later format can find it without enumeration.
       registerCheckpointDatabase(name);
+      // Started with no current session: the database goes before anything can open it. The open
+      // below is queued behind the deletion, and other windows close on its version change.
+      if (!started && !holdsSession()) indexedDB.deleteDatabase(name);
+      started = true;
       const request = indexedDB.open(name, 1);
       request.onupgradeneeded = () => {
         request.result.createObjectStore(values);
@@ -107,18 +121,21 @@ export function indexedDbCheckpointStorage(
         stores.index.delete(key);
       });
   };
-  // The first use deletes whatever another session left behind.
-  let swept: Promise<void> | undefined;
-  const started = () =>
-    (swept ??= run("readwrite", (stores) => {
+  const sweep = () =>
+    run("readwrite", (stores) => {
       sweepIn(stores, () => false);
       return () => undefined;
-    }).catch(() => {
+    });
+  // The first use deletes whatever another session left behind.
+  let swept: Promise<void> | undefined;
+  const ready = () =>
+    (swept ??= sweep().catch(() => {
       swept = undefined;
     }));
   return {
+    sweep,
     list: async () => {
-      await started();
+      await ready();
       return run("readonly", (stores) => {
         const keys = stores.index.getAllKeys();
         const entries = stores.index.getAll();
@@ -132,7 +149,7 @@ export function indexedDbCheckpointStorage(
       });
     },
     read: async (key) => {
-      await started();
+      await ready();
       return run("readonly", (stores) => {
         const value = stores.values.get(key);
         const entry = stores.index.get(key);
@@ -146,7 +163,7 @@ export function indexedDbCheckpointStorage(
         return () => (request.result as CheckpointFences | undefined) ?? noCheckpointFences;
       }),
     write: async (key, value, guard) => {
-      await started();
+      await ready();
       const session = sessionOf(key);
       // A writer from a session that has since ended (another window's late flush) is refused.
       if (session === null || (guard.session !== undefined && guard.session !== session))
@@ -155,6 +172,9 @@ export function indexedDbCheckpointStorage(
         let written = false;
         withFences(stores, (fences) => {
           if (checkpointFence(fences, guard) !== guard.fence) return;
+          // The session is asked again as the write commits: one that ended since it was asked
+          // above, even where that sign-out's own clear failed, takes no write.
+          if (sessionOf(key) !== session) return;
           written = true;
           stores.values.put(value, key);
           stores.index.put(
@@ -187,29 +207,54 @@ export function indexedDbCheckpointStorage(
 const sessionMarkerPrefix = "opensteer.personal-stream.session:";
 
 /**
- * Records the session this origin's client holds for a Host origin, as the Host confirmed it, or
- * clears it when the session ends. Kept apart from IndexedDB, so a sign-out whose IndexedDB clear
- * fails still ends what the saved state may be read under.
+ * How long a session the Host confirmed may still be current without another confirmation. The
+ * session cookie is HttpOnly and the Host's session read carries no expiry, so this is the Host's
+ * idle session lifetime (`idleSessionSeconds`, 7 days): a session not used for that long has
+ * expired, and every use of it from here is a confirmation that renews the marker. It is never
+ * longer than the session's absolute lifetime (30 days).
  */
-export function checkpointSessionMarker(origin: string) {
+export const checkpointSessionMaxAgeMs = 7 * 24 * 60 * 60 * 1_000;
+
+/**
+ * Records the session this origin's client holds for a Host origin, as and when the Host confirmed
+ * it, or clears it when the session ends. Kept apart from IndexedDB, so a sign-out whose IndexedDB
+ * clear fails still ends what the saved state may be read under. A marker older than
+ * `checkpointSessionMaxAgeMs`, or one dated after now (the clock went back, so its age is
+ * unknown), is no session.
+ */
+export function checkpointSessionMarker(origin: string, now: () => number = Date.now) {
   const key = `${sessionMarkerPrefix}${origin}`;
+  const read = (): { deploymentId: string; sessionId: string } | null => {
+    try {
+      const value: unknown = JSON.parse(window.localStorage.getItem(key) ?? "null");
+      if (!value || typeof value !== "object") return null;
+      const deploymentId = Reflect.get(value, "deploymentId");
+      const sessionId = Reflect.get(value, "sessionId");
+      const confirmedAt = Reflect.get(value, "confirmedAt");
+      const age = typeof confirmedAt === "number" ? now() - confirmedAt : Number.NaN;
+      return typeof deploymentId === "string" &&
+        typeof sessionId === "string" &&
+        age >= 0 &&
+        age < checkpointSessionMaxAgeMs
+        ? { deploymentId, sessionId }
+        : null;
+    } catch {
+      return null;
+    }
+  };
   return {
     current: (deploymentId: string): string | null => {
-      try {
-        const value: unknown = JSON.parse(window.localStorage.getItem(key) ?? "null");
-        return value &&
-          typeof value === "object" &&
-          Reflect.get(value, "deploymentId") === deploymentId &&
-          typeof Reflect.get(value, "sessionId") === "string"
-          ? (Reflect.get(value, "sessionId") as string)
-          : null;
-      } catch {
-        return null;
-      }
+      const held = read();
+      return held?.deploymentId === deploymentId ? held.sessionId : null;
     },
+    /** Whether any session is current here at all. */
+    holds: () => read() !== null,
     held: (deploymentId: string, sessionId: string) => {
       try {
-        window.localStorage.setItem(key, JSON.stringify({ deploymentId, sessionId }));
+        window.localStorage.setItem(
+          key,
+          JSON.stringify({ deploymentId, sessionId, confirmedAt: now() }),
+        );
       } catch {
         // Without the marker nothing is saved or read: writes need a current session.
       }
@@ -222,6 +267,54 @@ export function checkpointSessionMarker(origin: string) {
       }
     },
   };
+}
+
+/** How often a session confirmed again renews its marker; well inside the maximum age. */
+const markerRenewalMs = 60 * 60 * 1_000;
+
+/**
+ * Keeps the marker to what the client learns of its session. A Host-confirmed connection records
+ * or renews it. Every way the client learns the session ended reaches `authentication-required`:
+ * a 401 on any request, the socket's session-ended closes (4401, 4403, "Session ended"), sign-out,
+ * revocation and a dispatch refused for a changed login all go through the client's one
+ * `#expireSession`. Then the marker goes and the saved state is swept at once, whether or not the
+ * stream's own clear lands.
+ */
+export function keepCheckpointSession(
+  client: {
+    getSnapshot(): Pick<HostSnapshot, "session" | "connection" | "deploymentId" | "sessionId">;
+    subscribe(listener: () => void): () => void;
+  },
+  marker: Pick<ReturnType<typeof checkpointSessionMarker>, "held" | "ended">,
+  storage: Pick<IndexedDbCheckpointStorage, "sweep"> | undefined,
+  now: () => number = Date.now,
+): () => void {
+  let confirmed: { identity: string; at: number } | null = null;
+  let ended = false;
+  return client.subscribe(() => {
+    const snapshot = client.getSnapshot();
+    if (snapshot.session === "authentication-required") {
+      confirmed = null;
+      if (ended) return;
+      ended = true;
+      marker.ended();
+      void storage?.sweep().catch(() => undefined);
+      return;
+    }
+    if (
+      snapshot.session !== "authenticated" ||
+      snapshot.connection !== "connected" ||
+      !snapshot.deploymentId ||
+      !snapshot.sessionId
+    )
+      return;
+    ended = false;
+    const identity = JSON.stringify([snapshot.deploymentId, snapshot.sessionId]);
+    const at = now();
+    if (confirmed?.identity === identity && at - confirmed.at < markerRenewalMs) return;
+    confirmed = { identity, at };
+    marker.held(snapshot.deploymentId, snapshot.sessionId);
+  });
 }
 
 export const checkpointDatabasePrefix = "opensteer-personal-stream-v";
