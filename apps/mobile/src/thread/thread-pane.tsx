@@ -310,13 +310,7 @@ function sameThreadPaneSelection(left: ThreadPaneSelection, right: ThreadPaneSel
   });
 }
 
-const threadResourceKinds = [
-  "environment",
-  "harness",
-  "harness-catalog",
-  "harness-auth",
-  "settings",
-] as const;
+const threadResourceKinds = ["environment", "harness", "harness-catalog", "settings"] as const;
 
 export function ThreadPane(props: ThreadPaneProps): ReactNode {
   const threadId = props.threadId;

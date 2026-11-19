@@ -17,13 +17,7 @@ import { HeldNewTaskPane, NewTaskPane } from "./new-task.js";
 import { useNotificationsIntro } from "./notifications-intro.js";
 import { usePhoneSetup } from "../phone-setup/use-phone-setup.js";
 
-const homeResources = [
-  "environment",
-  "harness",
-  "harness-catalog",
-  "harness-auth",
-  "settings",
-] as const;
+const homeResources = ["environment", "harness", "harness-catalog", "settings"] as const;
 
 export type HomeScreenProps = StaticScreenProps<{
   readonly deploymentId: string;

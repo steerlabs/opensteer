@@ -64,18 +64,13 @@ describe("Desktop preview Host simulation", () => {
     const shell = unwrapRpcResult(await rpc["personal.shell.get"]({}));
     expect(shell.session.user.id).toBe(shell.viewerId);
     expect(shell.deploymentId).toBe(snapshot.deployments[0]?.id);
-    const expectedRevision = shell.resourceRevisions.environment;
-    const details = unwrapRpcResult(
-      await rpc["resources.detail.get"]({ kind: "environment", expectedRevision }),
-    );
-    expect(details.revision).toBe(expectedRevision);
+    const details = unwrapRpcResult(await rpc["resources.detail.get"]({ kind: "environment" }));
+    expect(details.revision).toBe("0");
     expect(details.next).toBeNull();
     expect(details.data.kind).toBe("environment");
     if (details.data.kind !== "environment") throw new Error("Missing environment details");
     expect(details.data.environments).toHaveLength(1);
-    expect(details.data.environments[0]?.id).toBe(
-      shell.resources?.find(({ kind }) => kind === "environment")?.view.entries[0]?.id,
-    );
+    expect(details.data.environments[0]?.name).toBe("This Computer");
     vi.useRealTimers();
   });
 });

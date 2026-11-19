@@ -185,13 +185,7 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
   );
 }
 
-const threadResourceKinds = [
-  "environment",
-  "harness",
-  "harness-catalog",
-  "harness-auth",
-  "settings",
-] as const;
+const threadResourceKinds = ["environment", "harness", "harness-catalog", "settings"] as const;
 const noRuns: readonly import("@opensteer/client/host").RunQueueEntry[] = [];
 
 interface ThreadViewProps {

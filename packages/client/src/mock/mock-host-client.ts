@@ -3,7 +3,6 @@ import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import {
   mockMessageContent,
   mockOverlayRows,
-  mockResourceView,
   mockRequestRevision,
   mockScopedShell,
   mockScopedDetail,
@@ -2499,13 +2498,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         );
       return rpcNotFound("Item has no body.");
     },
-    "resources.get": async ({ kind }) => {
-      const snapshot = client.getSnapshot();
-      return rpcSuccess({
-        revision: String(snapshot.revision),
-        view: mockResourceView(snapshot, kind),
-      });
-    },
     "resources.detail.get": async ({ kind }) =>
       rpcSuccess(
         hostApi["resources.detail.get"].success.parse({
@@ -4698,10 +4690,6 @@ export class MockHostClient implements HostClient {
 
   scopedShell(selected?: string, revision?: string) {
     return mockScopedShell(this.getSnapshot(), mockThread, selected, revision);
-  }
-
-  scopedResource(kind: import("@opensteer/protocol/resources").PersonalResourceKind) {
-    return mockResourceView(this.getSnapshot(), kind);
   }
 
   scopedDetail(threadId: string, nodeId?: string, anchor?: string, revision?: string) {

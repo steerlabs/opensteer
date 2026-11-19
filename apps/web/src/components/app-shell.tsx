@@ -279,7 +279,6 @@ const settingsResources = [
   "environment",
   "harness",
   "harness-catalog",
-  "harness-auth",
 ] as const;
 const placesResources = [
   "tab",

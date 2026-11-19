@@ -10,9 +10,7 @@ import {
   listIntegrationConnections,
 } from "@opensteer/database";
 import { DeviceIdSchema } from "@opensteer/core";
-import {
-  type PersonalMutationTransaction,
-} from "@opensteer/database/personal-mutation";
+import { type PersonalMutationTransaction } from "@opensteer/database/personal-mutation";
 import { personalClientFrameMaxBytes } from "@opensteer/protocol/personal-sync";
 import { attachPersonalSocket } from "./server/personal-socket.js";
 import { readThreadHistory } from "@opensteer/database";

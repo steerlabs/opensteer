@@ -1,6 +1,5 @@
 import { utf8ByteLength } from "@opensteer/core";
 import type { PersonalResumeCursor, ScopedHostMessage } from "@opensteer/protocol/personal-sync";
-import type { PersonalResourceKind, PersonalResourceView } from "@opensteer/protocol/resources";
 import type { TranscriptState } from "./thread-transcript-store.js";
 
 export const personalCacheFormat = 64;
@@ -18,20 +17,11 @@ type Shell = Extract<
   { tasks: unknown }
 >;
 
-export interface InstalledResource {
-  readonly revision: string;
-  readonly view: PersonalResourceView;
-}
-
 export type PersonalStreamCheckpoint = {
   readonly scope: PersonalCacheScope;
   readonly cursor: PersonalResumeCursor;
 } & (
-  | {
-      readonly kind: "shell";
-      readonly state: Shell;
-      readonly resources: Partial<Record<PersonalResourceKind, InstalledResource>>;
-    }
+  | { readonly kind: "shell"; readonly state: Shell }
   | { readonly kind: "detail"; readonly state: NonNullable<TranscriptState["snapshot"]> }
 );
 

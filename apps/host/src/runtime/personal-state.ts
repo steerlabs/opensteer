@@ -39,11 +39,7 @@ export async function initializePersonalState(
   if (!existing)
     await commitPersonalMutation(database, async (tx, mutation) => {
       if (await initializePersonalSettings(tx, ownerId, { computerId: hosting.id, path })) {
-        for (const kind of [
-          "settings",
-          "identity",
-          "owner-profile",
-        ] as const)
+        for (const kind of ["settings", "identity", "owner-profile"] as const)
           mutation.bumpResource(kind);
       }
     });

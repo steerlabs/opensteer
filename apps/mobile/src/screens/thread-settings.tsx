@@ -685,13 +685,7 @@ interface ExecutionSwitchReview {
   readonly expectedSelection: ExecutionSelection;
 }
 
-const settingsResources = [
-  "environment",
-  "harness",
-  "harness-catalog",
-  "harness-auth",
-  "agent-home-settings",
-] as const;
+const settingsResources = ["environment", "harness", "harness-catalog", "settings"] as const;
 
 /** A Run that has not finished is what a switch has to wait for. */
 function runningHere(client: HostClient, threadId: string): boolean {

@@ -43,7 +43,6 @@ export function DevicesSettingsController(): ReactNode {
   const leave = useLeaveSheets(selection.deploymentId, selection.hostClient);
   const host = selection.hostClient;
   usePersonalResources(host, deviceResources);
-  const machinePreview = useHostValue(host, (state) => state.resourceSummaries?.machine, undefined);
   const deploymentId = selection.deploymentId;
   const overview = useScreenRead(host, {
     key: "devices-overview",
@@ -184,19 +183,12 @@ export function DevicesSettingsController(): ReactNode {
     }
   };
 
-  const knownMachines = new Set<string>(snapshot?.machines.map(({ id }) => id));
-  const previewRows = machinePreview?.entries.flatMap(({ id, label }) =>
-    label && !knownMachines.has(id) ? [{ key: id, label, kind: "text" as const }] : [],
-  );
   const answer =
     failure === null
       ? settingsFooter(signOutDevice.line)
       : { text: failure, tone: "danger" as const };
   const missing = settingsFooter(readLine(sessions, sessions.refresh));
   const nativeSections: NativeSettingsSection[] = [
-    ...(previewRows?.length
-      ? [{ key: "machine-preview", title: "Other devices", rows: previewRows }]
-      : []),
     ...(answer === undefined ? [] : [{ key: "failure", title: "", rows: [], footer: answer }]),
     ...sections.map((section) => ({
       key: section.key,

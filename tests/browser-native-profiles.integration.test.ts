@@ -392,7 +392,7 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
 
   expect(await stack.host.store.getBrowserProfileStorage(profile.id)).toEqual(binding);
   // A reconnect may confirm established storage, never replace its immutable binding.
-  const beforeDelete = await stack.api["resources.get"]({ kind: "browser-profile" });
+  const beforeDelete = await stack.api["resources.detail.get"]({ kind: "browser-profile" });
   if (!beforeDelete.ok) throw new Error(beforeDelete.error.message);
   const deleted = await runtimeBrowserCommand(stack, {
     type: "browser.profile.delete",
@@ -430,9 +430,9 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
   await expect(
     access(path.join(browser.profileRoot, "profiles", profile.id)),
   ).rejects.toMatchObject({ code: "ENOENT" });
-  const afterDelete = await stack.api["resources.get"]({ kind: "browser-profile" });
+  const afterDelete = await stack.api["resources.detail.get"]({ kind: "browser-profile" });
   if (!afterDelete.ok) throw new Error(afterDelete.error.message);
-  expect(BigInt(afterDelete.data.revision)).toBeGreaterThan(BigInt(beforeDelete.data.revision));
+  expect(afterDelete.data.revision).not.toBe(beforeDelete.data.revision);
   const { deletions } = await readTestResource(stack.api, "browser-profile");
   expect((deletions ?? []).some((deletion) => deletion.profileId === profile.id)).toBe(false);
   const tombstone = JSON.parse(
