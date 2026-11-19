@@ -3625,6 +3625,64 @@ describe("task lists from the shell and its pages", () => {
     }
   });
 
+  it("a Done continuation never sets the count: a fresher count read in between stands", async () => {
+    const held = Array.from({ length: 50 }, (_, index) => ({
+      id: createId("thread"),
+      askedAt: minutesBefore(500 + index),
+      doneAt: minutesBefore(400 + index),
+    }));
+    const older = Array.from({ length: 50 }, (_, index) => ({
+      id: createId("thread"),
+      askedAt: minutesBefore(900 + index),
+      doneAt: minutesBefore(800 + index),
+    }));
+    const host = scriptedHost({ tasks: [task], lists: { recentTaskIds: [task.id] } });
+    const reads: {
+      input: { limit?: number; before?: string };
+      resolve: (response: Response) => void;
+    }[] = [];
+    const client = scriptedClient(host, async (input) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+      const query = JSON.parse(url.searchParams.get("input") ?? "{}") as {
+        limit?: number;
+        before?: string;
+      };
+      return new Promise<Response>((resolve) => reads.push({ input: query, resolve }));
+    });
+    const done = () => Object.values(client.getSnapshot().doneTasks)[0];
+    try {
+      await client.load();
+      const opening = client.loadDoneTasks();
+      await vi.waitFor(() => expect(reads).toHaveLength(1));
+      reads[0]!.resolve(taskPageResponse(host, held, { nextBefore: "done-1", totalItems: 100 }));
+      await opening;
+      expect(done()!.window.totalItems).toBe(100);
+      vi.useFakeTimers();
+      // An off-page task is reopened elsewhere: the count is read again once the pushes rest.
+      const reopened = createId("thread");
+      host.commit([
+        upsert("task", reopened, { ...task, id: reopened, revision: "2", doneAt: null }),
+      ]);
+      // Load earlier starts before that count read answers; its page is held.
+      void client.loadEarlierDoneTasks();
+      await vi.advanceTimersByTimeAsync(1_000);
+      const continuation = reads.find(({ input }) => input.before === "done-1")!;
+      const count = reads.find(({ input }) => input.limit === 1)!;
+      expect(continuation && count, "both reads should be out").toBeTruthy();
+      count.resolve(taskPageResponse(host, held.slice(0, 1), { nextBefore: "x", totalItems: 99 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(done()!.window.totalItems).toBe(99);
+      // The continuation answers after it, with no count of its own.
+      continuation.resolve(taskPageResponse(host, older, { nextBefore: null }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(done()!.entries.length).toBe(100);
+      expect(done()!.window.totalItems, "a continuation put back an older count").toBe(99);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("keeps Done's count from its first page; a continuation does not carry one", async () => {
     const host = scriptedHost({ tasks: [task], lists: { recentTaskIds: [task.id] } });
     const rows = Array.from({ length: 3 }, (_, index) => ({
