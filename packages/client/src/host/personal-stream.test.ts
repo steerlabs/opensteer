@@ -865,6 +865,23 @@ describe("the reader's intended position", () => {
     reader.dispose();
   });
 
+  it("a jump to a waiting message is a move: an older history jump answering after it lands nothing", async () => {
+    const { f, targets, pending, reader } = positioned();
+    const older = reader.history("around", targets[0]!.messageId);
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    // The waiting message stands at the foot: the web jumps to it by returning to the latest.
+    const waiting = reader.history("latest");
+    // The older jump's page answers first; it is for a move the reader no longer wants.
+    pending[0]!.answer();
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]!.answer();
+    await expect(waiting).resolves.toBe(true);
+    await expect(older, "the older jump spoke after the waiting-message jump").resolves.toBe(false);
+    expect(f.detail.anchor).toBeUndefined();
+    expect(f.detail.transcript.getSnapshot().items.has(targets[0]!.id)).toBe(false);
+    reader.dispose();
+  });
+
   it("a resubscription's first cut does not erase a scroll made after it subscribed", async () => {
     const { f, targets, reader } = positioned();
     // Back from the background: a subscription that asked for no anchor.

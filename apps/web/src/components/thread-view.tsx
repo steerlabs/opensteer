@@ -302,7 +302,11 @@ function ThreadView({
   // The live conversation is not being shown, so the foot of what is on screen
   // is not the conversation's tail and nothing here may claim it is.
   const [historical, setHistorical] = useState(false);
-  const [revealMessage, setRevealMessage] = useState<{ readonly id: string } | null>(null);
+  const [revealMessage, setRevealMessage] = useState<{
+    readonly id: string;
+    /** The move that asked for it: a newer move's frame owns the position instead. */
+    readonly move?: number;
+  } | null>(null);
   // A message a link named that this conversation no longer holds, or could not reach.
   const [missingMessage, setMissingMessage] = useState<{
     readonly id: string;
@@ -663,8 +667,13 @@ function ThreadView({
     },
     [],
   );
+  // The reader's moves (jumps, returns, their own scrolls), numbered: a frame scheduled for one
+  // never acts after a newer one. The client's intent decides what lands; this keeps the view's
+  // own follow-up to it.
+  const moves = useRef(0);
   const measureReading = () => {
     readingFrame.current = null;
+    moves.current++;
     const scroller = currentScroller();
     // A position being put back is not where the reader chose to be until it is in place.
     if (!scroller || restoring.current) return;
@@ -870,18 +879,23 @@ function ThreadView({
    * conversation no longer holds says so rather than doing nothing.
    */
   const jumpToMessage = async (messageId: string): Promise<boolean> => {
+    const move = ++moves.current;
     setMissingMessage(null);
     if (inputQueue?.items.some((item) => item.message.id === messageId)) {
-      requestAnimationFrame(() =>
+      // A waiting message stands at the conversation's foot: getting there is a return to the
+      // latest, a move of the reader's like any other, so an older jump cannot undo it.
+      if (!(await moveToLatest(move))) return false;
+      requestAnimationFrame(() => {
+        if (move !== moves.current) return;
         currentScroller()
           ?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`)
-          ?.scrollIntoView({ block: "center" }),
-      );
+          ?.scrollIntoView({ block: "center" });
+      });
       return true;
     }
     setHistorical(true);
     setFollows(false);
-    setRevealMessage({ id: messageId });
+    setRevealMessage({ id: messageId, move });
     const missing = async (unloaded: boolean) => {
       setMissingMessage({
         id: messageId,
@@ -912,6 +926,8 @@ function ThreadView({
     )
       return missing(false);
     requestAnimationFrame(() => {
+      // A newer move in the frame since this one landed owns the position.
+      if (move !== moves.current) return;
       const target = currentScroller()?.querySelector<HTMLElement>(
         `[data-message-id="${CSS.escape(messageId)}"]`,
       );
@@ -966,18 +982,21 @@ function ThreadView({
     openActivity({ key: revealedActivity.key, kind: "turn" }, null, revealMessage.id);
     const { replyId } = revealedActivity;
     if (replyId === null) return;
-    requestAnimationFrame(() =>
+    const { move } = revealMessage;
+    requestAnimationFrame(() => {
+      if (move !== undefined && move !== moves.current) return;
       currentScroller()
         ?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(replyId)}"]`)
-        ?.scrollIntoView({ block: "center" }),
-    );
+        ?.scrollIntoView({ block: "center" });
+    });
   }, [revealMessage, revealedActivity]);
 
-  /** Puts the live conversation back and returns the reader to its foot. */
-  const returnToLatest = async () => {
+  /** Puts the live conversation back and returns the reader to its foot: the person's own move. */
+  const returnToLatest = () => moveToLatest(++moves.current);
+  const moveToLatest = async (move: number): Promise<boolean> => {
     abandonEarlier();
     // A newer move superseded this one: it owns the reader's position and the address.
-    if (!(await hostClient.loadLatestTranscript(thread.id))) return;
+    if (!(await hostClient.loadLatestTranscript(thread.id)) || move !== moves.current) return false;
     // The anchor is spent. Releasing it from the address as well is what lets
     // the same update be opened again later as a fresh jump.
     anchored.current = null;
@@ -985,7 +1004,10 @@ function ThreadView({
     setRevealMessage(null);
     setHistorical(false);
     setFollows(true);
-    requestAnimationFrame(keepTailInView);
+    requestAnimationFrame(() => {
+      if (move === moves.current) keepTailInView();
+    });
+    return true;
   };
 
   // A notification or a link can name the exact update it is about. The router
