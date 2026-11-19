@@ -271,12 +271,15 @@ export function createPersonalReads(
         break;
       case "snapshot":
         if ("items" in cut.snapshot) {
-          frames.push({
-            type: "host.snapshot",
-            scope,
-            throughSequence,
-            snapshot: await decorateDetail(session, cut.snapshot),
-          });
+          const snapshot = await decorateDetail(session, cut.snapshot);
+          frames.push(
+            sharedFrame(cut.snapshot, snapshot === cut.snapshot, {
+              type: "host.snapshot" as const,
+              scope,
+              throughSequence,
+              snapshot,
+            }),
+          );
         } else
           frames.push({
             type: "host.snapshot",
@@ -329,15 +332,19 @@ export function createPersonalReads(
             return row;
           });
           frames.push(
-            sharedFrame(commit, {
-              type: "host.changes" as const,
-              scope,
-              ...commit,
-              changes,
-              ...(shellProgress && commit.throughSequence === throughSequence
-                ? { shellProgress }
-                : {}),
-            }),
+            sharedFrame(
+              commit,
+              changes.every((row, index) => row === commit.changes[index]),
+              {
+                type: "host.changes" as const,
+                scope,
+                ...commit,
+                changes,
+                ...(shellProgress && commit.throughSequence === throughSequence
+                  ? { shellProgress }
+                  : {}),
+              },
+            ),
           );
         }
         break;
@@ -552,17 +559,14 @@ function decorateItem(item: TranscriptItem, keys: ReadonlyMap<string, string>): 
 const sharedFrames = new WeakMap<object, object>();
 
 /**
- * One frame object per commit for every session it reads the same for, so the socket hub encodes
- * the body once. A session-specific row yields that session's own frame.
+ * One frame object per shared cut part for every session that reads it unchanged, so the socket
+ * hub encodes its body once. A session that decorates the part gets its own frame.
  */
-function sharedFrame<Frame extends { readonly changes: readonly unknown[] }>(
-  commit: { readonly changes: readonly unknown[] },
-  frame: Frame,
-): Frame {
-  if (frame.changes.some((row, index) => row !== commit.changes[index])) return frame;
-  const existing = sharedFrames.get(commit);
+function sharedFrame<Frame extends object>(part: object, unchanged: boolean, frame: Frame): Frame {
+  if (!unchanged) return frame;
+  const existing = sharedFrames.get(part);
   if (existing) return existing as Frame;
-  sharedFrames.set(commit, frame);
+  sharedFrames.set(part, frame);
   return frame;
 }
 
