@@ -188,6 +188,9 @@ export function attachPersonalSocket(options: {
         case "client.live.resync":
           sync.resyncLive(message);
           break;
+        case "client.anchor":
+          sync.anchor(message);
+          break;
       }
     } catch {
       socket.close(1008, "Invalid personal sync message");

@@ -68,6 +68,8 @@ interface Credit {
 export interface LiveDeliveryOptions {
   readonly immediate?: boolean;
   readonly replace?: boolean;
+  /** The stream's card changed: send its identity (`host.live`) again, not only its text. */
+  readonly identify?: boolean;
 }
 
 interface PendingLive {
@@ -100,6 +102,8 @@ interface Subscription {
   synchronized: boolean;
   /** The next read ignores the cursor, so the Host repairs this scope with a snapshot. */
   repair: boolean;
+  /** The reader's current anchor; a repair snapshot centres on it. */
+  anchorItemId: string | undefined;
   removed: boolean;
   pauseCount: number;
   readonly live: Map<string, PendingLive>;
@@ -107,6 +111,8 @@ interface Subscription {
   readonly sentLive: Map<string, SentLive>;
   liveTimer?: ReturnType<typeof setTimeout> | undefined;
   liveReady?: boolean;
+  /** Queued live state overflowed: it was dropped and the scope is repaired, then live is reread. */
+  liveReset?: boolean;
   checkCredit?: () => void;
   resources?: { interests: Watch["interests"]; installed: Watch["installed"]; dirty: boolean };
 }
@@ -224,6 +230,7 @@ export class PersonalSyncSocket {
       sending: false,
       synchronized: false,
       repair: false,
+      anchorItemId: request.anchorItemId,
       removed: false,
       live: new Map(),
       liveBytes: 0,
@@ -235,6 +242,12 @@ export class PersonalSyncSocket {
     this.#generations.set(request.subscriptionId, request.generation);
     this.#subscriptions.set(request.subscriptionId, current);
     this.#reschedule();
+  }
+
+  anchor(message: Address & { readonly anchorItemId?: string | undefined }) {
+    const current = this.#subscriptions.get(message.subscriptionId);
+    if (!current || current.request.generation !== message.generation) return;
+    current.anchorItemId = message.anchorItemId;
   }
 
   unsubscribe(address: Address) {
@@ -347,9 +360,9 @@ export class PersonalSyncSocket {
   }
 
   /** Threads with a detail subscription on this socket (at most four). */
-  watchedThreads() {
+  watchedScopes(): DetailScope[] {
     return [...this.#subscriptions.values()].flatMap(({ request, removed }) =>
-      request.scope.kind === "shell" || removed ? [] : [request.scope.threadId],
+      request.scope.kind === "shell" || removed ? [] : [request.scope],
     );
   }
 
@@ -375,7 +388,7 @@ export class PersonalSyncSocket {
         (subscribed.kind === "node" && scope.kind === "node" && subscribed.nodeId !== scope.nodeId)
       )
         continue;
-      this.#queueLive(current, update, options);
+      this.#queueLive(current, update, options, options?.identify === true);
     }
   }
 
@@ -405,6 +418,7 @@ export class PersonalSyncSocket {
     const barrier = BigInt(update.afterSequence);
     if (barrier > scopeHead && barrier <= this.#head)
       update = { ...update, afterSequence: scopeHead.toString() };
+    if (current.liveReset) return;
     const key = JSON.stringify([update.runId, update.attemptId, update.streamId]);
     const previous = current.live.get(key);
     if (previous) {
@@ -431,6 +445,16 @@ export class PersonalSyncSocket {
       if (pending.update.update.operation === "close") continue;
       current.live.delete(id);
       current.liveBytes -= pending.bytes;
+    }
+    // Only closes are left over the cap: the viewer stopped taking credit. Drop the queue and
+    // converge with one repair snapshot plus the streams still open, instead of growing.
+    if (current.liveBytes > liveQueueBytes) {
+      current.live.clear();
+      current.liveBytes = 0;
+      current.liveReset = true;
+      current.repair = true;
+      this.#schedule(current);
+      return;
     }
     if (entry.immediate) {
       this.#schedule(current);
@@ -564,11 +588,12 @@ export class PersonalSyncSocket {
     }
     const cursor = current.repair ? null : current.cursor;
     current.repair = false;
+    const liveReset = current.liveReset === true;
     const cut = await this.#port.read(
       request.scope,
       cursor,
       controller.signal,
-      request.anchorItemId,
+      current.anchorItemId,
       this.#selectedThreadId,
       current.pendingHead.toString(),
     );
@@ -585,6 +610,12 @@ export class PersonalSyncSocket {
     }
     if (!this.#matches(current) || current.pauseCount > 0 || !cut.cursor) return;
     current.cursor = cut.cursor;
+    if (liveReset && current.synchronized) {
+      current.liveReset = false;
+      if (request.scope.kind !== "shell")
+        for (const update of this.#port.readLive?.(request.scope) ?? [])
+          this.#queueLive(current, update, { replace: true }, true);
+    }
     if (!current.synchronized) {
       const sent = await this.#send(current, {
         type: "host.synchronized",

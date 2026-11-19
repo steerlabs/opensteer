@@ -12,6 +12,7 @@ import {
   TaskPurposeSchema,
   ThreadIdSchema,
   ThreadStatusSchema,
+  ThreadDoneReasonSchema,
   ThreadViewSchema,
   UserIdSchema,
 } from "@opensteer/core";
@@ -150,6 +151,16 @@ export const ScopedClientMessageSchema = z.discriminatedUnion("type", [
     runId: RunIdSchema,
     streamIds: z.array(z.string().min(1).max(600)).min(1).max(16),
   }),
+  /**
+   * Where the reader is: a later repair snapshot of this detail centres on this item, or on the
+   * latest messages when it is absent. Sends nothing back.
+   */
+  z.strictObject({
+    type: z.literal("client.anchor"),
+    ...address,
+    subscriptionId: detailId,
+    anchorItemId: TranscriptItemIdSchema.optional(),
+  }),
   z.strictObject({ type: z.literal("client.ping"), nonce: z.string().min(1).max(256) }),
 ]);
 
@@ -162,6 +173,8 @@ const task = z.object({
   purpose: TaskPurposeSchema,
   askedAt: z.iso.datetime(),
   doneAt: z.iso.datetime().nullable(),
+  /** `quiet` when the task moved to Done by itself rather than by a person or its agent. */
+  doneReason: ThreadDoneReasonSchema.nullable(),
   pendingRequestCount: z.int().nonnegative(),
   lastReplyPreview: z.string().max(1120).nullable(),
   failurePreview: z.string().max(1120).nullable(),
@@ -225,6 +238,8 @@ export const PersonalDetailSnapshotSchema = z.object({
   queue: queue.optional(),
   /** Values for `queue.inputs`, oldest first, while they fit the frame. */
   inputQueue: z.array(WaitingInputViewSchema).max(personalInputQueueMaxEntries).optional(),
+  /** False when `inputQueue` stops short of `queue.inputs`; read the rest with `thread.inputQueue.get`. */
+  inputQueueComplete: z.boolean().optional(),
   items: z.array(TranscriptItemSchema).max(50),
   pendingRequests: z.array(PersonalRequestSummarySchema).max(20),
   activeItems: z.array(TranscriptItemSchema).max(20),
@@ -263,10 +278,10 @@ export const PersonalShellSnapshotSchema = z.object({
       can: PersonalCapabilitiesViewSchema,
     })
     .optional(),
-  /** Every running and waiting task, newest first, unless `activeHasMore`. */
+  /** Running and waiting tasks, newest first; `activeNextBefore` pages any rest (`tasks.page` active). */
   activeTaskIds: z.array(ThreadIdSchema).max(200),
-  activeHasMore: z.boolean(),
-  /** The newest open tasks; `nextBefore` pages the rest with `tasks.page`. */
+  activeNextBefore: z.string().max(4096).nullable(),
+  /** The newest settled open tasks; `nextBefore` pages the rest with `tasks.page`. */
   recentTaskIds: z.array(ThreadIdSchema).max(personalShellSettledTasks),
   nextBefore: z.string().max(4096).nullable(),
   taskCounts: z.object({ active: z.int().nonnegative(), open: z.int().nonnegative() }),

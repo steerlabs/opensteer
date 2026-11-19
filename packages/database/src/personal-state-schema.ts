@@ -288,7 +288,6 @@ const retainedStateDdl = `
   alter table threads
     add column revision bigint not null default 0 check (revision >= 0),
     add column next_transcript_position bigint not null default 0 check (next_transcript_position >= 0),
-    add column transcript_order_revision bigint not null default 0 check (transcript_order_revision >= 0),
     add column input_queue_revision bigint not null default 0 check (input_queue_revision >= 0),
     add column last_reply_message_id text references messages(id) on delete set null,
     add column last_reply_preview text check (octet_length(last_reply_preview) <= 1120),
@@ -308,6 +307,7 @@ const retainedStateDdl = `
     add column runner_safety_terminal boolean not null default false,
     add column execute_claim_state text not null default 'not-created'
       check (execute_claim_state in ('not-created','unclaimed','claimed')),
+    add column last_runner_digest bytea check (octet_length(last_runner_digest) = 32),
     add column finish_intent jsonb check (jsonb_typeof(finish_intent) = 'object' and octet_length(finish_intent::text) <= 8192),
     add constraint runs_terminal_reply_fkey foreign key (terminal_reply_message_id,id,thread_id)
       references messages(id,run_id,thread_id) deferrable initially deferred,
@@ -543,7 +543,8 @@ const currentStateIndexes = `
   create index thread_inputs_current_channel_binding on thread_inputs((authority_source->>'bindingId'),message_id)
     where state in ('pending','unknown') and authority_source->>'kind'='channel-ingress';
   create index threads_current_recent on threads(asked_at desc,id desc)
-    where listed and removed_at is null and done_at is null and status <> 'archived';
+    where listed and removed_at is null and done_at is null
+      and status not in ('archived','running','waiting');
   create index threads_current_active on threads(asked_at desc,id desc)
     where listed and removed_at is null and done_at is null and status in ('running','waiting');
   create index threads_current_done on threads(done_at desc,id desc)

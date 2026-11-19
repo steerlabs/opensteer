@@ -957,6 +957,27 @@ it("reads fifty tasks with their continuation and return details within a fixed 
       pageTask.id,
       "Open a session",
     );
+    // A settled task: the open list beside the shell's active window lists settled tasks only.
+    const owner = await host.store.database
+      .selectFrom("executionEnvironments")
+      .select("runnerId")
+      .where("id", "=", pageTask.environmentId)
+      .executeTakeFirstOrThrow();
+    await host.store.commitRunnerEvent({
+      environmentId: pageTask.environmentId,
+      runnerId: owner.runnerId!,
+      runnerBootId: started.runnerBootId,
+      event: {
+        type: "run.completed",
+        data: { status: "completed" },
+        ordinal: 1,
+        runId: started.runId,
+        threadId: pageTask.id,
+        environmentId: pageTask.environmentId,
+        bindingGeneration: started.bindingGeneration,
+        emittedAt: new Date().toISOString(),
+      } as Parameters<typeof host.store.commitRunnerEvent>[0]["event"],
+    });
     await host.store.database
       .updateTable("providerSessions")
       .set({
@@ -1005,7 +1026,8 @@ it("reads fifty tasks with their continuation and return details within a fixed 
       continuationIdentity: selected!.continuationIdentity,
       returnHint: selected!.returnHint,
     });
-    expect(statements).toEqual(Array.from({ length: 4 }, () => "SelectQueryNode"));
+    // A fixed number of reads, the window's bounded count among them, however many tasks.
+    expect(statements).toEqual(Array.from({ length: 6 }, () => "SelectQueryNode"));
     expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(64 * 1024);
   } finally {
     await host?.close();

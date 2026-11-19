@@ -106,7 +106,7 @@ type DetailScope = Exclude<PersonalReadScope, { kind: "shell" }>;
 export async function authorizedDetail(tx: Read, viewerId: UserId, scope: DetailScope) {
   const thread = await tx
     .selectFrom("threads")
-    .select(["id", "revision", "transcriptOrderRevision"])
+    .select(["id", "revision"])
     .where("id", "=", scope.threadId)
     .where("removedAt", "is", null)
     .where("createdBy", "=", viewerId)
@@ -128,7 +128,7 @@ export async function authorizedDetail(tx: Read, viewerId: UserId, scope: Detail
 const replayMaxRows = 128;
 const replayMaxBytes = 256 * 1024;
 
-type ReplayChange = Pick<
+export type ReplayChange = Pick<
   Selectable<ClientChangesTable>,
   "sequence" | "ordinal" | "entityKind" | "entityId" | "operation"
 > & { readonly value?: Record<string, unknown> };
@@ -149,6 +149,12 @@ export async function readPersonalScopeCut<Snapshot>(
       tx: Read,
       state: Awaited<ReturnType<typeof authorizedSyncState>>,
     ) => Promise<Snapshot>;
+    /** Derived values a resumed reader must see even when no feed row carried them. */
+    readonly resume?: (
+      tx: Read,
+      state: Awaited<ReturnType<typeof authorizedSyncState>>,
+      after: string,
+    ) => Promise<Omit<ReplayChange, "sequence" | "ordinal"> | null>;
   },
 ) {
   return withPersonalSyncRead(database, async (tx) => {
@@ -211,6 +217,16 @@ export async function readPersonalScopeCut<Snapshot>(
     }
     if (previous !== state.sequence)
       commits.push({ fromSequence: previous, throughSequence: state.sequence, changes: [] });
+    const derived = await input.resume?.(tx, state, cursor.afterSequence);
+    if (derived) {
+      const final = commits.at(-1)!;
+      const ordinal = (final.changes.at(-1)?.ordinal ?? -1) + 1;
+      if (ordinal > replayMaxRows - 1) return snapshot();
+      commits[commits.length - 1] = {
+        ...final,
+        changes: [...final.changes, { ...derived, sequence: state.sequence, ordinal }],
+      };
+    }
     return { kind: "replay" as const, state, commits };
   });
 }

@@ -719,7 +719,6 @@ export interface ThreadTable {
   pendingRequestCount: Generated<number>;
   revision: Generated<string>;
   nextTranscriptPosition: Generated<string>;
-  transcriptOrderRevision: Generated<string>;
   inputQueueRevision: Generated<string>;
   lastReplyMessageId: Generated<MessageId | null>;
   lastReplyPreview: Generated<string | null>;
@@ -875,6 +874,8 @@ export interface RunTable {
   runnerSafetyTerminal: Generated<boolean>;
   executeClaimState: Generated<"not-created" | "unclaimed" | "claimed">;
   finishIntent: Generated<FinishIntent | null>;
+  /** The digest of the last Runner statement this Run admitted; it outlives the Run's receipts. */
+  lastRunnerDigest: Generated<Buffer | null>;
   maintenance: Generated<import("@opensteer/core").RunMaintenance | null>;
   personWaited: Generated<boolean>;
   doneWhenFinished: Generated<boolean>;

@@ -601,11 +601,6 @@ export class AppStore {
         .returning(["id", "threadId"])
         .execute();
       if (cards.length) {
-        await tx
-          .updateTable("threads")
-          .set({ transcriptOrderRevision: mutation.sequence })
-          .where("id", "in", [...new Set(cards.map(({ threadId }) => threadId))])
-          .execute();
         for (const card of cards)
           mutation.change({
             scopeKey: `thread:${card.threadId}`,

@@ -2057,11 +2057,15 @@ const hostApiGroup4 = defineRpc({
   ),
   "tasks.page": declaration(
     "GET",
-    z.strictObject({
-      done: z.boolean().optional(),
-      before: z.string().max(4096).optional(),
-      limit: z.int().min(1).max(50).optional(),
-    }),
+    z
+      .strictObject({
+        done: z.boolean().optional(),
+        /** Running and waiting tasks past the shell's active window. */
+        active: z.literal(true).optional(),
+        before: z.string().max(4096).optional(),
+        limit: z.int().min(1).max(50).optional(),
+      })
+      .refine((input) => !(input.done && input.active)),
     TaskPageSchema,
   ),
   /**

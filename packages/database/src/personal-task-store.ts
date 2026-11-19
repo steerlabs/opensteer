@@ -28,6 +28,7 @@ const taskFields = [
   "purpose",
   "askedAt",
   "doneAt",
+  "doneReason",
   "status",
   "inputQueuePaused",
   "revision",
@@ -51,7 +52,7 @@ export function currentTasks(tx: PersonalMutationTransaction, viewerId: UserId) 
     .where("removedAt", "is", null);
 }
 
-function taskWindow(
+function taskWindowQuery(
   tx: PersonalMutationTransaction,
   input: {
     readonly viewerId: UserId;
@@ -74,16 +75,43 @@ function taskWindow(
     .$if(input.window === "active", (part) =>
       part.where(sql<boolean>`status in ('running','waiting')`),
     )
-    .$if(input.window !== "active", (part) => part.where(sql<boolean>`status <> 'archived'`))
+    .$if(input.window === "done", (part) => part.where(sql<boolean>`status <> 'archived'`))
+    // The shell lists every active task, so the open list beside it is the settled ones.
+    .$if(input.window === "recent", (part) =>
+      part.where(sql<boolean>`status not in ('archived','running','waiting')`),
+    )
     .orderBy(date, "desc")
     .orderBy("id", "desc")
     .limit(input.limit);
   const before = input.before;
-  return (
-    before
-      ? query.where(sql<boolean>`(${date},id)<(${before.at}::timestamptz,${before.id})`)
-      : query
-  ).execute();
+  return before
+    ? query.where(sql<boolean>`(${date},id)<(${before.at}::timestamptz,${before.id})`)
+    : query;
+}
+
+function taskWindow(...args: Parameters<typeof taskWindowQuery>) {
+  return taskWindowQuery(...args).execute();
+}
+
+/** Counting stops here: a window this long is drawn as "10,000+". */
+export const taskWindowCountCap = 10_000;
+
+/** A window's length from its partial index, bounded so a long history costs a bounded scan. */
+async function countTaskWindow(
+  tx: PersonalMutationTransaction,
+  viewerId: UserId,
+  window: TaskWindow,
+) {
+  const counted = await tx
+    .selectFrom(
+      taskWindowQuery(tx, { viewerId, window, limit: taskWindowCountCap })
+        .clearSelect()
+        .select("id")
+        .as("window"),
+    )
+    .select(sql<string>`count(*)`.as("count"))
+    .executeTakeFirstOrThrow();
+  return Number(counted.count);
 }
 
 export function readPersonalTaskPage(
@@ -118,6 +146,7 @@ export function readPersonalTaskPage(
       tasks,
       hasMore,
       revision: state.sequence,
+      totalItems: await countTaskWindow(tx, input.viewerId, input.window),
       nextBefore: hasMore && last ? { at: last.cursorAt, id: last.id, window: input.window } : null,
     };
   });
@@ -132,16 +161,29 @@ export async function readTaskPageThreads(
   const rows = await tx
     .selectFrom("threads")
     .selectAll("threads")
-    .select([
-      threadContinuationIdentitySelection,
-      threadPendingRequestsSelection,
-      threadProviderSessionSelection,
-      threadVisitSelection,
-    ])
+    .select(taskPageThreadSelections())
     .where("threads.createdBy", "=", viewerId)
     .where("threads.removedAt", "is", null)
     .where("threads.id", "in", ids)
     .execute();
+  return taskPageThreadsFromRows(tx, rows);
+}
+
+/** The derived columns a task row needs besides its own, selectable or returnable. */
+// A function: this module and thread-status import each other, so a constant can be undefined.
+export function taskPageThreadSelections() {
+  return [
+    threadContinuationIdentitySelection,
+    threadPendingRequestsSelection,
+    threadProviderSessionSelection,
+    threadVisitSelection,
+  ] as const;
+}
+
+export async function taskPageThreadsFromRows(
+  tx: PersonalMutationTransaction,
+  rows: Parameters<typeof threadsFromRows>[0],
+) {
   const returnHints = await compactionReturnHints(
     tx,
     rows.filter((row) => row.providerSessionId !== null).map((row) => row.id),
@@ -224,7 +266,7 @@ export async function readInitialTaskWindows(
     tasks: [...tasks.values()],
     visits,
     active: activeWindow.map(({ id }) => id),
-    activeHasMore: activeWindow.length < active.length,
+    activeNextBefore: activeWindow.length < active.length ? (activeWindow.at(-1) ?? null) : null,
     recent: recentWindow.map(({ id }) => id),
     recentNextBefore: recentWindow.length < recent.length ? (recentWindow.at(-1) ?? null) : null,
     taskCounts: { active: Number(counts.active), open: Number(counts.open) },

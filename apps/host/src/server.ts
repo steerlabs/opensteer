@@ -1567,7 +1567,8 @@ export async function createHostServer(
       const ownerId = requireRpcSession(context).user.id;
       return rpcSuccess(await (await dependencies.teamLinks()).replyTask(ownerId, input));
     },
-    "tasks.list": async (input, context) => personalReads.handlers["tasks.page"](input, context),
+    "tasks.list": async ({ active: _active, deviceAccessRequests: _requests, ...input }, context) =>
+      personalReads.handlers["tasks.page"](input, context),
     ...personalReads.handlers,
   } satisfies Pick<
     HostApiHandlers,

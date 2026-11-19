@@ -169,7 +169,7 @@ it("keeps a watching device on one stream of values through a busy Run, an overs
     expect(new Set(shell.snapshot.activeTaskIds)).toEqual(
       new Set(runs.map(({ threadId }) => threadId)),
     );
-    expect(shell.snapshot).toMatchObject({ activeHasMore: false, taskCounts: { active: 12 } });
+    expect(shell.snapshot).toMatchObject({ activeNextBefore: null, taskCounts: { active: 12 } });
     const attachedAt = watcher.frames.length;
     const headBefore = BigInt(
       (
