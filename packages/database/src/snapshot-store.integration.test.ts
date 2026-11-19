@@ -15,6 +15,7 @@ import {
   testModelSelection,
   testContinuationIdentity,
   testRunnerDescriptor,
+  pendingEvent,
 } from "./store.integration.test-support.js";
 describeStore("Deployment snapshot history", (it) => {
   it("remembers a human hand-off returned to the queue at finalization", async ({
@@ -566,6 +567,69 @@ describeStore("Deployment snapshot history", (it) => {
     expect(resumed.commits.flatMap(({ changes }) => changes)).toContainEqual(
       expect.objectContaining({ entityKind: "thread", entityId: f.thread.id, operation: "upsert" }),
     );
+  });
+
+  it("moves a pending Request's attention forward when the subagent asking for it is renamed", async ({
+    storeFixture,
+  }) => {
+    const { database, store, startRunFixture, openLiveRequest } = storeFixture;
+    const f = await startRunFixture("asker-rename");
+    const emit = async (type: string, data: Record<string, unknown>) => {
+      const run = await database
+        .selectFrom("runs")
+        .select("nextRunnerOrdinal")
+        .where("id", "=", f.run.id)
+        .executeTakeFirstOrThrow();
+      await store.commitRunnerEvent({
+        environmentId: f.environmentId,
+        runnerBootId: f.runnerBootId,
+        runnerId: f.runnerId,
+        event: pendingEvent({
+          bindingGeneration: f.bindingGeneration,
+          data,
+          environmentId: f.environmentId,
+          ordinal: run.nextRunnerOrdinal,
+          runId: f.run.id,
+          threadId: f.threadId,
+          type,
+        } as Parameters<typeof pendingEvent>[0]),
+      });
+    };
+    const nodeId = createId("executionNode");
+    await emit("node.started", {
+      nodeId,
+      kind: "subagent",
+      effort: null,
+      model: null,
+      phaseIndex: 0,
+      nativeRef: nodeId,
+      sessionRef: null,
+      originCallId: null,
+      parentNodeId: null,
+      prompt: null,
+      title: "Research",
+    });
+    const requestId = createId("request");
+    await openLiveRequest(f, requestId);
+    await database
+      .updateTable("requests")
+      .set({ originatingNodeId: nodeId })
+      .where("id", "=", requestId)
+      .execute();
+    const attention = () =>
+      database
+        .selectFrom("clientChanges")
+        .select(["sequence", "operation"])
+        .where("scopeKey", "=", "shell")
+        .where("entityKind", "=", "attention")
+        .where("entityId", "=", `request:${requestId}`)
+        .orderBy("sequence", "desc")
+        .executeTakeFirstOrThrow();
+    const opened = await attention();
+    await emit("node.updated", { nodeId, title: "Research the queue" });
+    const renamed = await attention();
+    expect(renamed.operation).toBe("upsert");
+    expect(BigInt(renamed.sequence)).toBeGreaterThan(BigInt(opened.sequence));
   });
 
   it("builds addressed shell and detail cuts within their budgets without reading message bodies", async ({
