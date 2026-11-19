@@ -1,12 +1,11 @@
+import { useThreadTranscript } from "@opensteer/client/react";
 import { useVoiceValue } from "@opensteer/client/react";
 import type { VoiceAsk as VoiceAskValue, VoiceSnapshot } from "@opensteer/client/voice";
-import type { Request } from "@opensteer/core";
 import { ShellScope, useShell } from "./app-shell.js";
 import { RequestStack, useRequestDock } from "./input-surface.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { useDeviceGrantFollowUps } from "./thread-device-access-action.js";
 
-const noRequests: readonly Request[] = [];
 const selectAsk = ({ ask }: VoiceSnapshot) => ask;
 
 /**
@@ -36,8 +35,8 @@ function VoiceAskCards({ ask }: { readonly ask: VoiceAskValue }) {
 }
 
 function VoiceRequests({ threadId }: { readonly threadId: string }) {
-  const { snapshot } = useShell();
-  const dock = useRequestDock(threadId, snapshot.requests[threadId] ?? noRequests);
+  const { hostClient } = useShell();
+  const dock = useRequestDock(threadId, useThreadTranscript(hostClient, threadId).requests);
   return (
     <RequestStack
       disabled={false}

@@ -7,7 +7,8 @@ import { getSelfDeviceId, getDeviceSelfRunnerId } from "./device-inventory-store
 import { isPhoneDisplayDefinitionId, type DeviceId } from "@opensteer/core";
 import { deviceOwnershipIn } from "./machine-ownership.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
-import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
@@ -29,7 +30,6 @@ import {
 import {
   OpensteerError,
   createId,
-  type AgentEvent,
   type RequestId,
   type UserId,
   type RunnerId,
@@ -44,6 +44,7 @@ import {
   deleteComputerAppSetupRequestsInTransaction,
   insertComputerAppSetupRequestInTransaction,
   lockComputerAppSetupRequestInTransaction,
+  lockComputerApprovalRequestThreads,
 } from "./computer-app-setup.js";
 import {
   askForComputerAppApprovalInTransaction,
@@ -302,7 +303,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
         }
     ),
   ): Promise<{ readonly appApproval: "ask" | "automatic"; readonly revision: number }> {
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return commitPersonalMutation(this.database, async (transaction) => {
       await this.#computerUsePolicyOwner(transaction, input.deviceId, input.ownerUserId);
       const now = new Date();
       const deployment = await transaction
@@ -453,7 +454,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
           }
         : requestInput;
     assertComputerAppPresence(input);
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return commitPersonalMutation(this.database, async (transaction) => {
       const runner = await lockComputerApprovalScopeInTransaction(transaction, {
         deviceId: input.deviceId,
       });
@@ -522,7 +523,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
     readonly requestId: string;
     readonly ownerUserId: UserId;
   }): Promise<ComputerAppAccessSettlement & { readonly deviceId: DeviceId | null }> {
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return commitPersonalMutation(this.database, async (transaction) => {
       const request = await transaction
         .selectFrom("computerAppSetupRequests")
         .select("runnerId as deviceId")
@@ -537,6 +538,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
         input.ownerUserId,
         input.settlementSessionId,
       );
+      await lockComputerApprovalRequestThreads(transaction, [input.requestId]);
       const removed = await transaction
         .deleteFrom("computerAppSetupRequests")
         .where("id", "=", input.requestId)
@@ -568,16 +570,31 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
       .orderBy("runnerId", "asc")
       .execute();
     const grants: IntegrationGrant[] = [];
-    const requestEvents: AgentEvent[] = [];
+
     const requestIds: RequestId[] = [];
     const deviceIds: DeviceId[] = [];
     for (const { deviceId } of expiring) {
-      const settled = await withPersonalTransaction(this.database, async (transaction) => {
+      const settled = await commitPersonalMutation(this.database, async (transaction) => {
         await lockComputerApprovalScopeInTransaction(transaction, { deviceId });
+        const due = transaction
+          .selectFrom("computerAppSetupRequests")
+          .select("id")
+          .where("runnerId", "=", deviceId)
+          .where("expiresAt", "<=", now);
+        await lockComputerApprovalRequestThreads(transaction, due);
+        const rows = await due
+          .orderBy("id")
+          // FOR UPDATE: Deletes the expired approvals.
+          .forUpdate()
+          .execute();
+        if (!rows.length) return emptyComputerAppAccessSettlement;
         const expired = await transaction
           .deleteFrom("computerAppSetupRequests")
-          .where("runnerId", "=", deviceId)
-          .where("expiresAt", "<=", now)
+          .where(
+            "id",
+            "in",
+            rows.map(({ id }) => id),
+          )
           .returning("id")
           .execute();
         return declineComputerAppAccessRequestsInTransaction(transaction, {
@@ -585,17 +602,17 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
         });
       });
       grants.push(...settled.grants);
-      requestEvents.push(...settled.requestEvents);
+
       requestIds.push(...settled.requestIds);
       deviceIds.push(deviceId);
     }
-    return { grants, requestEvents, requestIds, deviceIds };
+    return { grants, requestIds, deviceIds };
   }
 
   async setDeviceComputerConnection(
     input: SetComputerConnectionInput,
   ): Promise<SetComputerConnectionResult> {
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return commitPersonalMutation(this.database, async (transaction) => {
       const runner = await lockComputerOwnerInTransaction(transaction, {
         ...input,
       });
@@ -651,7 +668,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
   async approveDeviceComputerAppAutomatically(
     input: AutomaticComputerAppApprovalInput,
   ): Promise<SetComputerConnectionResult> {
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return commitPersonalMutation(this.database, async (transaction) => {
       const runner = await lockComputerOwnerInTransaction(transaction, {
         ...input,
       });
@@ -676,7 +693,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<RevokeComputerConnectionsMutation> {
-    return withPersonalTransaction(this.database, async (transaction) =>
+    return commitPersonalMutation(this.database, async (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         const connection = await transaction
           .selectFrom("integrationConnections")
@@ -730,7 +747,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<RevokeComputerConnectionsMutation> {
-    return withPersonalTransaction(this.database, async (transaction) =>
+    return commitPersonalMutation(this.database, async (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         const named = await transaction
           .selectFrom("integrationConnections")

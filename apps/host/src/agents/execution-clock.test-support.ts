@@ -2,6 +2,7 @@ import type { ManualClock } from "@opensteer/shared/test-support/clock";
 import type { PersonalHostRuntime } from "../runtime/runtime.js";
 import type { VerticalStack } from "./vertical-stack.test-support.js";
 import type { RunId } from "@opensteer/core";
+import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
 
 export async function executionLeaseExpiresAt(
   host: Pick<PersonalHostRuntime, "store">,
@@ -17,16 +18,23 @@ export async function executionLeaseExpiresAt(
   return binding.leaseExpiresAt;
 }
 
-export async function executionDisconnected(
+export async function executionConnected(
   stack: Pick<VerticalStack, "api" | "environmentId">,
+  connected: boolean,
 ): Promise<boolean> {
-  const read = await stack.api["bootstrap.get"]({});
+  const response = await stack.api["resources.detail.get"]({ kind: "environment" });
+  if (!response.ok) throw new Error(response.error.message);
+  const { data } = response.data;
   return (
-    read.ok &&
-    read.data.environments.some(
-      (environment) => environment.id === stack.environmentId && !environment.connected,
+    data.kind === "environment" &&
+    data.environments.some(
+      ({ id, status }) =>
+        id === stack.environmentId && status === (connected ? "connected" : "disconnected"),
     )
   );
+}
+export function executionDisconnected(stack: Pick<VerticalStack, "api" | "environmentId">) {
+  return executionConnected(stack, false);
 }
 
 /** Advance a bounded interval, waiting for each async sweep before its next tick. */
@@ -44,4 +52,28 @@ export async function advanceExecutionClock(
     await host.settleExecutionLeases();
     remaining -= step;
   }
+}
+
+/** Tests shorten hours-long background deadlines through the same commit wake as phase changes. */
+export async function setBackgroundDeadline(
+  host: Pick<PersonalHostRuntime, "store">,
+  runIds: readonly RunId[],
+  at: Date,
+): Promise<void> {
+  await commitPersonalMutation(host.store.database, async (tx, mutation) => {
+    if (runIds.length)
+      await tx
+        .selectFrom("runs")
+        .select("id")
+        .where("id", "in", [...runIds])
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+    await tx
+      .updateTable("runs")
+      .set({ backgroundDeadlineAt: at })
+      .where("id", "in", [...runIds])
+      .execute();
+    mutation.react({ type: "executionDeadlinesChanged" });
+  });
 }

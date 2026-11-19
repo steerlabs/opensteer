@@ -25,13 +25,7 @@ import {
   integrationSchemaDigest,
 } from "@opensteer/integration-core/digest";
 import { type CallableIntegrationTool, type IntegrationPlatformStore } from "@opensteer/database";
-import {
-  DeviceIdSchema,
-  RunnerIdSchema,
-  createId,
-  type AgentEvent,
-  type Request,
-} from "@opensteer/core";
+import { DeviceIdSchema, RunnerIdSchema, createId, type Request } from "@opensteer/core";
 import { type MachineAppStatus } from "@opensteer/protocol";
 
 import { afterEach, beforeEach, vi } from "vitest";
@@ -120,10 +114,8 @@ export function platform(input: {
   readonly definitions?: readonly ReturnType<typeof IntegrationDefinitionSchema.parse>[];
   readonly isRunnerConnected?: (runnerId: ReturnType<typeof createId<"runner">>) => boolean;
   readonly mcpImageContent?: () => Promise<boolean>;
-  readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly onConnectionsChanged?: () => void;
   readonly onSettingsChanged?: DeviceServicesTestOptions["onSettingsChanged"];
-  readonly onRequestsChanged?: () => void;
   readonly store?: Partial<IntegrationPlatformStore>;
 }): DeviceServicesTestHarness {
   const service = createDeviceServices({
@@ -187,10 +179,8 @@ export function platform(input: {
     dataDirectory: testDataDirectory,
     ...(input.definitions ? { definitions: input.definitions } : { definitions: [] }),
     isRunnerConnected: input.isRunnerConnected ?? vi.fn(() => true),
-    onDeploymentEvent: input.onDeploymentEvent ?? vi.fn(),
     onConnectionsChanged: input.onConnectionsChanged ?? vi.fn(),
     onSettingsChanged: input.onSettingsChanged ?? vi.fn(async () => undefined),
-    onRequestsChanged: input.onRequestsChanged ?? vi.fn(),
     store: (input.store
       ? {
           connections: { assertOwner: vi.fn(async () => undefined) },

@@ -3,7 +3,6 @@ import { parseHostConfig } from "@opensteer/config";
 import {
   createId,
   PendingRequestSchema,
-  zeroSequence,
   type EnvironmentId,
   type RequestId,
   type RunId,
@@ -33,6 +32,8 @@ import {
   type RunnerDescriptor,
   type RunnerProof,
 } from "@opensteer/protocol";
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
+import type { PersonalResourceKind } from "@opensteer/protocol/resources";
 import {
   isMachineAccessRoutes,
   isMachineAccessSetup,
@@ -392,6 +393,8 @@ function primaryFence(message: RunnerConnectionFence): RunnerConnectionFence {
 
 export interface TargetMachine {
   reportFullDiskAccess(fullDiskAccess: boolean): void;
+  /** A readiness change on the live connection: a runtime fact, never a durable row. */
+  reportShellReadiness(readiness: "ready" | "unavailable"): void;
   /** The display name the Deployment knows this computer by; refusals name it. */
   readonly name: string;
   /** The environment this computer names whenever it is running agents. */
@@ -415,7 +418,7 @@ export interface TargetMachine {
    * Tries to come back and records everything the Host said, for the refusals
    * whose whole content is the close frame.
    */
-  observeRefusal(): Promise<RunnerRefusal>;
+  observeRefusal(options?: { readonly runsAgents?: boolean }): Promise<RunnerRefusal>;
   /** Replaces its SSH host key and comes back advertising the new one. */
   rotateHostKey(): Promise<void>;
   close(): Promise<void>;
@@ -533,13 +536,18 @@ export async function connectTargetMachine(
       primary.socket.send(
         JSON.stringify({ ...primary.fence, type: "runner.shell.full-disk-access", fullDiskAccess }),
       ),
+    reportShellReadiness: (readiness) => reportShellReadiness(primary, readiness),
     hostKeyPath: prepared.hostKeyPath,
     get hostPublicKey() {
       return prepared.descriptor.hostPublicKey;
     },
     reported,
-    observeRefusal: async () =>
-      observeRunnerRefusal(host.hostPort, descriptorFor(false, environmentId), primary.privateKey),
+    observeRefusal: async (options) =>
+      observeRunnerRefusal(
+        host.hostPort,
+        descriptorFor(options?.runsAgents ?? false, environmentId),
+        primary.privateKey,
+      ),
     reconnect,
     rotateHostKey: async () => {
       await disconnect();
@@ -581,13 +589,14 @@ export function acknowledgeCommands(
   });
 }
 
-function reportShellReadiness(primary: PrimaryConnection): void {
+function reportShellReadiness(
+  primary: PrimaryConnection,
+  readiness: "ready" | "unavailable" = "ready",
+): void {
   primary.socket.send(
     JSON.stringify({
       ...primary.fence,
-      modules: [
-        { checkedAt: new Date().toISOString(), detail: null, module: "shell", readiness: "ready" },
-      ],
+      modules: [{ checkedAt: new Date().toISOString(), detail: null, module: "shell", readiness }],
       type: "runner.modules.report",
     }),
   );
@@ -732,6 +741,8 @@ export async function connectCallerMachine(
     readonly longRequestHold?: boolean;
     readonly runFiles?: boolean;
     readonly runnerKind?: "local" | "main";
+    /** Accepts Trigger programs, so the Host's coordinator dispatches them here. */
+    readonly triggerPrograms?: boolean;
   } & (
     | { readonly token: string; readonly previous?: undefined }
     /** Reattach the same computer and disk after its Host restarts. */
@@ -755,8 +766,10 @@ export async function connectCallerMachine(
       "requester-time-zone-v1",
       "agent-tools-plan-v1",
       "execution-plane-v2",
+      "run-events-v2",
       ...(input.voice ? ["voice-run-v1"] : []),
       ...(input.restartsRuns ? ["attempts-v1"] : []),
+      ...(input.triggerPrograms ? ["trigger-program-v5"] : []),
     ],
     modules: {
       ...(input.integrations ? { integrations: input.integrations } : {}),
@@ -874,18 +887,12 @@ export async function connectCallerMachine(
   });
   const harnessInstanceId = await vi.waitFor(
     async () => {
-      const bootstrap = await testRpcData(
-        host.origin,
-        "bootstrap.get",
-        {},
-        { headers: host.ownerHeaders },
-      );
-      const harness = bootstrap.harnesses.find(
-        (harness) => harness.driverKind === "codex" && harness.environmentId === environmentId,
-      );
-      const catalog = bootstrap.environments
-        .find((environment) => environment.id === environmentId)
-        ?.harnessCatalogs.find((catalog) => catalog.harnessInstanceId === harness?.id);
+      const harness = (
+        await host.store.listHarnessInstances({ environmentIds: [environmentId] })
+      ).find(({ driverKind }) => driverKind === "codex");
+      const catalog = harness
+        ? await host.store.getHarnessCatalog(environmentId, harness.id)
+        : null;
       if (
         !harness ||
         catalog?.status !== "ready" ||
@@ -1043,6 +1050,7 @@ export async function acceptCallerRun(
     attempt: CallerAttempt,
     type: "request.opened" | "run.completed" | "run.interrupted" | "run.phase",
     data: Readonly<Record<string, unknown>>,
+    emittedAt = new Date().toISOString(),
   ): Promise<void> => {
     const acknowledged = eventAcknowledged(
       caller.primary.socket,
@@ -1055,7 +1063,7 @@ export async function acceptCallerRun(
         event: {
           bindingGeneration: attempt.bindingGeneration,
           data,
-          emittedAt: new Date().toISOString(),
+          emittedAt,
           environmentId: caller.environmentId,
           ordinal: attempt.nextOrdinal,
           runId: context.runId,
@@ -1081,6 +1089,7 @@ export async function acceptCallerRun(
     return attempt;
   };
   let current = await take(command);
+  const interruptions = new Map<number, string>();
   return {
     get toolsToken() {
       return current.toolsToken;
@@ -1122,7 +1131,9 @@ export async function acceptCallerRun(
     },
     reportInterrupted: (attempt = current) => {
       if (attempt === current) release();
-      return report(attempt, "run.interrupted", { status: "interrupted" });
+      const emittedAt = interruptions.get(attempt.bindingGeneration) ?? new Date().toISOString();
+      interruptions.set(attempt.bindingGeneration, emittedAt);
+      return report(attempt, "run.interrupted", { status: "interrupted" }, emittedAt);
     },
     openLiveRequest: async (kind = "harness.input") => {
       const requestId = createId("request");
@@ -1235,7 +1246,7 @@ function eventAcknowledged(socket: WebSocket, runId: RunId, ordinal: number): Pr
     const receive = (frame: WebSocket.RawData) => {
       const message = JSON.parse(frame.toString()) as HostToRunnerMessage;
       const acknowledged =
-        message.type === "host.events.acked" &&
+        message.type === "host.executions.acked" &&
         message.acks.some((ack) => ack.runId === runId && ack.throughOrdinal >= ordinal);
       const revoked =
         message.type === "host.runs.revoked" &&
@@ -1513,14 +1524,14 @@ export async function waitForValue<Value>(
 export async function openRealtime(
   host: MachineAccessHost,
   headers: Record<string, string>,
-  apiVersion = hostApiVersion,
+  interests?: readonly PersonalResourceKind[],
 ): Promise<{
   readonly messages: Record<string, unknown>[];
   readonly socket: WebSocket;
   close(): Promise<void>;
 }> {
   const socket = new WebSocket(
-    `ws://127.0.0.1:${host.hostPort}/v1/realtime?${apiVersionQueryParameter}=${apiVersion}`,
+    `ws://127.0.0.1:${host.hostPort}/v1/realtime?${apiVersionQueryParameter}=${hostApiVersion}`,
     { headers },
   );
   await new Promise<void>((resolve, reject) => {
@@ -1529,8 +1540,38 @@ export async function openRealtime(
   });
   const messages: Record<string, unknown>[] = [];
   socket.on("message", (frame: WebSocket.RawData) => {
-    messages.push(JSON.parse(frame.toString()) as Record<string, unknown>);
+    const message = JSON.parse(frame.toString()) as Record<string, unknown>;
+    messages.push(message);
+    if (!interests) return;
+    const decoded = ScopedHostMessageSchema.safeParse(message);
+    if (!decoded.success) return;
+    const data = decoded.data;
+    if (data.type === "host.snapshot" || data.type === "host.changes") {
+      const { generation, subscriptionId, throughSequence } = data;
+      socket.send(
+        JSON.stringify({ type: "client.ack", generation, subscriptionId, throughSequence }),
+      );
+    }
   });
+  if (interests) {
+    const ready = waitForMessage(socket, (message) => message.type === "host.synchronized");
+    socket.send(
+      JSON.stringify({
+        type: "client.attach",
+        apiVersion: hostApiVersion,
+        generation: 1,
+        interests,
+        installed: {},
+      }),
+    );
+    try {
+      await ready;
+    } catch (error) {
+      socket.terminate();
+      await closed(socket);
+      throw error;
+    }
+  }
   // Machine notifications belong to the authenticated owner session.
   return {
     close: async () => {
@@ -1821,52 +1862,6 @@ export async function runGrants(host: MachineAccessHost, runId: RunId) {
     .where("runId", "=", runId)
     .orderBy("bindingGeneration", "asc")
     .execute();
-}
-
-export async function followPersonalDeployment(host: MachineAccessHost) {
-  const socket = new WebSocket(
-    `ws://127.0.0.1:${host.hostPort}/v1/realtime?${apiVersionQueryParameter}=${hostApiVersion}`,
-    { headers: host.ownerHeaders },
-  );
-  await withTimeout(
-    new Promise<void>((resolve, reject) => {
-      socket.once("open", resolve);
-      socket.once("error", reject);
-    }),
-    15000,
-    { timeoutError: () => new Error("Personal event socket did not open") },
-  );
-  const live: Record<string, unknown>[] = [];
-  let synchronized = false;
-  socket.on("message", (raw) => {
-    const message = JSON.parse(raw.toString()) as {
-      type: string;
-      events?: Record<string, unknown>[];
-    };
-    if (message.type === "host.synchronized") synchronized = true;
-    if (message.type === "host.events" && synchronized) live.push(...(message.events ?? []));
-  });
-  const ready = waitForMessage(socket, (m) => m.type === "host.synchronized");
-  socket.send(
-    JSON.stringify({
-      type: "client.subscribe",
-      apiVersion: hostApiVersion,
-      cursor: {
-        deploymentId: host.runtime.deployment.id,
-        apiVersion: hostApiVersion,
-        afterSequence: zeroSequence,
-      },
-      threadId: null,
-    }),
-  );
-  await ready;
-  return {
-    live,
-    close: async () => {
-      socket.close();
-      await closed(socket);
-    },
-  };
 }
 
 export async function additionalOwnerSession(host: MachineAccessHost) {

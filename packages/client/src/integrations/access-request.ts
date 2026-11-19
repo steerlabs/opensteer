@@ -25,6 +25,7 @@ export interface LoadedAccessRequest {
   readonly dashboard: IntegrationDashboard;
   readonly platform: IntegrationPlatformDashboardView;
   readonly request: Extract<Request["payload"], { kind: "integration.access" }>;
+  readonly reviewedRevision?: string | undefined;
 }
 
 /**
@@ -99,6 +100,7 @@ export async function resolveIntegrationAccess(
     readonly accountsCount: number;
     readonly installationTitle: string;
     readonly requestId: string;
+    readonly expectedRevision?: string | undefined;
     readonly selectedAccount: {
       readonly accountIdentifier: string | null;
       readonly displayName: string;
@@ -110,6 +112,7 @@ export async function resolveIntegrationAccess(
   await hostClient.dispatch({
     idempotencyKey: mutationIdempotencyKey(`request:${requestId}`),
     requestId,
+    ...(input.expectedRevision === undefined ? {} : { expectedRevision: input.expectedRevision }),
     response: {
       kind: "external",
       value: {

@@ -1,7 +1,6 @@
 import { RunnerIdSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
-import { MockHostClient } from "@opensteer/client/mock";
-import type { MachineSummary } from "@opensteer/protocol";
+import { MockHostClient, mockDeviceMachine } from "@opensteer/client/mock";
 import { setUpThisDevice, type DeviceSetupPorts } from "./device-setup.js";
 import { appliedSetupAccess, deviceSwitchDetail, deviceSwitches } from "./device-access.js";
 import { deviceRemovalCopy } from "./device-page.js";
@@ -94,10 +93,14 @@ describe("setting up this Mac", () => {
 });
 
 describe("access switches", () => {
-  const laptop = () =>
-    new MockHostClient({ latencyMs: 0 })
+  const laptop = () => {
+    const client = new MockHostClient({ latencyMs: 0 });
+    const machine = client
       .getSnapshot()
       .machines.find((entry) => entry.id === "rnr_33333333-3333-4333-8333-333333333333")!;
+    client.dispose();
+    return machine;
+  };
 
   it("fixes Home's browser and files, and marks a switch waiting on macOS", () => {
     const client = new MockHostClient({ latencyMs: 0 });
@@ -127,8 +130,8 @@ describe("access switches", () => {
   });
 
   it("offers Apps wherever the Host granted integrations, with macOS remedies only on a Mac", () => {
-    const mac = laptop();
-    const server: MachineSummary = {
+    const { capabilities: _capabilities, ...mac } = laptop();
+    const server = mockDeviceMachine({
       ...mac,
       kind: "server",
       allowedModules: ["integrations", "shell"],
@@ -136,7 +139,7 @@ describe("access switches", () => {
       computerUse: null,
       fullDiskAccess: false,
       access: { ...mac.access!, policy: { ...mac.access!.policy, apps: true, reach: "owner" } },
-    };
+    });
     const switches = deviceSwitches(server, true);
     expect(switches).toEqual([
       { capability: "apps", kind: "switch", needsMacos: false, on: true },
@@ -146,10 +149,11 @@ describe("access switches", () => {
   });
 
   it("shows an older Host's Browser and Apps as always on, keeping only Files a switch", () => {
-    const mac: MachineSummary = {
-      ...laptop(),
+    const { capabilities: _capabilities, ...laptopFacts } = laptop();
+    const mac = mockDeviceMachine({
+      ...laptopFacts,
       allowedModules: ["browser", "integrations", "shell"],
-    };
+    });
     expect(
       deviceSwitches(mac, false).map((item) => [
         item.capability,

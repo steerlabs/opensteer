@@ -63,7 +63,6 @@ function fixture() {
       threadId: call.threadId,
       environmentId,
       harnessInstanceId,
-      events: [],
     })),
     getThreadForOwner: vi.fn(async () => thread),
     getHarnessCatalog: vi.fn(async () =>
@@ -158,7 +157,6 @@ describe("Host voice Run relay", () => {
     f.store.startVoiceCall.mockResolvedValueOnce({
       busy: true,
       revokedGrants: [],
-      events: [],
     } as never);
     expect((await f.handlers["voice.start"](f.input, f.context)).ok).toBe(true);
     expect(f.store.startVoiceCall).toHaveBeenCalledTimes(2);
@@ -202,7 +200,6 @@ describe("Host voice Run relay", () => {
       threadId: f.call.threadId,
       environmentId,
       harnessInstanceId: gone,
-      events: [],
     };
     f.store.openVoiceThread.mockResolvedValue(opened);
     f.store.listAgentHarnessInstancesForUser.mockImplementation(async (_owner, filter) =>

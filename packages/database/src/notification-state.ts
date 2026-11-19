@@ -1,6 +1,7 @@
-import { markThreadStatePending } from "./thread-state-pending.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
+import { recordThreadVisit } from "./thread-visits.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
@@ -17,10 +18,8 @@ import {
   type ThreadVisit,
   type UserId,
 } from "@opensteer/core";
-import { sql, type Kysely } from "kysely";
-import { latestRunCompletion, threadUnreadPredicate } from "./thread-visits.js";
+import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
-import { safeCount } from "./store-primitives.js";
 /** Durable per-person viewer state. */
 export class NotificationStateStore {
   readonly #database: Kysely<DatabaseSchema>;
@@ -31,19 +30,15 @@ export class NotificationStateStore {
     userId: UserId,
     input: { readonly deviceAccessRequests?: "include" } = {},
   ): Promise<{ needsYou: number; unread: boolean }> {
-    return withPersonalReadTransaction(this.#database, async (transaction) => {
-      await requirePersonalOwner(transaction, userId);
-      const {
-        rows: [row],
-      } = await sql<{ needsYou: string; unread: boolean }>`
-        select (select count(*) from requests where status = 'pending' and (${input.deviceAccessRequests === "include"} or kind <> 'device.access'))::text as needs_you,
-        exists (select 1 from threads thread
-          left join thread_visits visit on visit.thread_id = thread.id and visit.user_id = ${userId}
-          where thread.listed and thread.purpose = 'task' and thread.status <> 'archived'
-          and ${threadUnreadPredicate(latestRunCompletion(sql`thread.id`), sql`visit.last_visited_at`)}) as unread
-      `.execute(transaction);
-      if (!row) throw new Error("Personal attention summary was not returned");
-      return { needsYou: safeCount(row.needsYou), unread: row.unread };
+    return withPersonalSyncRead(this.#database, async (transaction) => {
+      const { pendingRequestCount, pendingDeviceAccessRequestCount, unreadTaskCount } =
+        await authorizedSyncState(transaction, userId);
+      return {
+        needsYou:
+          pendingRequestCount -
+          (input.deviceAccessRequests === "include" ? 0 : pendingDeviceAccessRequestCount),
+        unread: unreadTaskCount > 0,
+      };
     });
   }
   async visitPage(input: {
@@ -74,53 +69,23 @@ export class NotificationStateStore {
     readonly visitedAt: string;
     readonly userId: UserId;
   }): Promise<ThreadVisit> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
-      await requirePersonalOwner(transaction, input.userId);
-      const thread = await transaction
-        .selectFrom("threads")
-        .select("id")
-        .where("id", "=", input.threadId)
-        .executeTakeFirst();
-      if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      const visitedAt = new Date(Math.min(Date.parse(input.visitedAt), Date.now()));
-      const row = await transaction
-        .insertInto("threadVisits")
-        .values({
-          threadId: input.threadId,
-          userId: input.userId,
-          lastVisitedAt: visitedAt,
-          updatedAt: new Date(),
-        })
-        .onConflict((conflict) =>
-          conflict.columns(["threadId", "userId"]).doUpdateSet({
-            lastVisitedAt: sql`greatest(thread_visits.last_visited_at, excluded.last_visited_at)`,
-            updatedAt: sql`case when excluded.last_visited_at > thread_visits.last_visited_at then excluded.updated_at else thread_visits.updated_at end`,
-          }),
-        )
-        .returning(["threadId", "lastVisitedAt"])
-        .executeTakeFirstOrThrow();
-      return { threadId: row.threadId, lastVisitedAt: row.lastVisitedAt.toISOString() };
-    });
+    return recordThreadVisit(this.#database, input);
   }
 
   async setIdleCompactionPolicy(input: {
     readonly policy: IdleCompactionPolicy;
     readonly userId: UserId;
   }): Promise<IdleCompactionPolicy> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction, mutation) => {
       await requirePersonalOwner(transaction, input.userId);
       const policy = IdleCompactionPolicySchema.parse(input.policy);
-      await transaction
+      const updated = await transaction
         .updateTable("personalSettings")
         .set({ idleCompactionPolicy: policy })
         .where("ownerId", "=", input.userId)
+        .where("idleCompactionPolicy", "is distinct from", policy)
         .executeTakeFirstOrThrow();
-      const threads = await transaction
-        .selectFrom("threads")
-        .select("id")
-        .where("createdBy", "=", input.userId)
-        .execute();
-      for (const thread of threads) await markThreadStatePending(transaction, thread.id);
+      if (updated.numUpdatedRows) mutation.bumpResource("settings");
       return policy;
     });
   }
@@ -129,8 +94,9 @@ export class NotificationStateStore {
     readonly quietTaskDays: QuietTaskDays;
     readonly userId: UserId;
   }): Promise<QuietTaskDays> {
-    return withPersonalTransaction(this.#database, (transaction) =>
+    return commitPersonalMutation(this.#database, (transaction, mutation) =>
       administrationCommand(transaction, input.administration, async () => {
+        await requirePersonalOwner(transaction, input.userId);
         const quietTaskDays = QuietTaskDaysSchema.parse(input.quietTaskDays);
         const updated = await transaction
           .updateTable("personalSettings")
@@ -143,6 +109,7 @@ export class NotificationStateStore {
             message: "User not found",
           });
         }
+        mutation.bumpResource("settings");
         return quietTaskDays;
       }),
     );

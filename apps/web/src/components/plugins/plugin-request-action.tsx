@@ -57,7 +57,7 @@ function useRespond(request: Request) {
     {
       ...requestAnswer,
       execute: async (response: RequestResponse) => {
-        await respondToPluginRequest(hostClient, request.id, response);
+        await respondToPluginRequest(hostClient, request, response);
       },
       reconcile: async () =>
         (await integrationRequestStillPending(hostClient, request.originatingThreadId, request.id))

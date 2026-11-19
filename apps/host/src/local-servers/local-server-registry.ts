@@ -6,7 +6,6 @@ import { pluginPackageFormat, snapshotLocalServerPackage } from "@opensteer/agen
 import {
   OpensteerError,
   refused,
-  type AgentEvent,
   type DeviceId,
   type RunnerId,
   type ThreadId,
@@ -74,8 +73,6 @@ export class LocalServerRegistry {
     >;
     readonly files: () => Promise<Pick<AgentHomeFiles, "list" | "download">>;
     readonly onConnectionsChanged: () => void;
-    readonly onDeploymentEvent: (event: AgentEvent) => void;
-    readonly onRequestsChanged: () => void;
     readonly onProviderRemoved?: (owner: UserId, provider: string) => Promise<void>;
     readonly onSettingsChanged: (input: { installationId?: string }) => Promise<void>;
   };
@@ -318,7 +315,7 @@ export class LocalServerRegistry {
               await input.authorize?.();
               await scoped.plugins.recordSetupThread(pluginId, setupThreadId);
             }
-            return { installation: unchanged, requestEvents: [] };
+            return { installation: unchanged };
           })()
         : await scoped.install({
             beforeInstall: async (transaction) => {
@@ -374,7 +371,6 @@ export class LocalServerRegistry {
     if (applied && (!unchanged || setupThreadId !== undefined)) {
       if (!unchanged) {
         await this.#options.onSettingsChanged({ installationId: mutation.installation.id });
-        this.#publish(mutation.requestEvents);
         localServers.clients.invalidateInstallation(mutation.installation.id);
       }
       if (runnerId !== null) {
@@ -456,17 +452,11 @@ export class LocalServerRegistry {
     owner: UserId,
     mutation: Awaited<ReturnType<IntegrationPlatformStore["uninstall"]>>,
   ) {
-    this.#publish(mutation.requestEvents);
     for (const serverId of mutation.removedServerIds) {
       await this.#options.onProviderRemoved?.(owner, `app_server_${serverId}`);
       this.#options.localServers.clients.dropServer(serverId);
     }
     this.#options.onConnectionsChanged();
-  }
-
-  #publish(events: readonly AgentEvent[]) {
-    for (const event of events) this.#options.onDeploymentEvent(event);
-    if (events.length > 0) this.#options.onRequestsChanged();
   }
 }
 

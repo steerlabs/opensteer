@@ -1,3 +1,5 @@
+import type { WebSocket } from "ws";
+import { openVerticalViewer } from "../apps/host/src/agents/vertical-stack.test-support.js";
 import { join } from "node:path";
 import { sql } from "kysely";
 import {
@@ -11,8 +13,7 @@ import {
   watchTeamReplyRead,
 } from "../packages/client/src/host/personal-team-links.js";
 import { PersonalTeamRequestsStore } from "../packages/database/src/personal-team-requests-store.js";
-import { HttpHostClient } from "../packages/client/src/host/host-session-client.js";
-import type { WebSocketClient } from "../packages/client/src/host/host-session-client.js";
+import type { HttpHostClient } from "../packages/client/src/host/host-session-client.js";
 import { teamAgentIdentity } from "../packages/client/src/team/presentation.js";
 import {
   TeamLinkViewSchema,
@@ -24,7 +25,6 @@ import {
   teamApiVersionHeader,
 } from "../packages/deployment-authority/src/index.js";
 import type { KnowledgeTopicId, RequestResponse } from "../packages/core/src/index.js";
-import { WebSocket } from "ws";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { expect, it, vi } from "vitest";
 import { startTeamSystem, teamCondition, openMachineSocket } from "./team-system.test-support.js";
@@ -359,16 +359,17 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     const allow = choice.options.find(
       (row) => row.hint !== "reject-once" && row.hint !== "cancel",
     )!;
-    const answer = async (requestId: typeof approval.id, response: RequestResponse) => {
+    const answer = async (request: typeof approval, response: RequestResponse) => {
       const result = await personal.api["commands.dispatch"]({
         type: "request.respond",
         idempotencyKey: crypto.randomUUID(),
-        requestId,
+        requestId: request.id,
+        expectedRevision: request.revision,
         response,
       });
       if (!result.ok) throw new Error(JSON.stringify(result.error));
     };
-    await answer(approval.id, { kind: "choice", optionId: allow.id });
+    await answer(approval, { kind: "choice", optionId: allow.id });
     console.info("Z4: waiting private question");
     const question = await nextRequest("form");
     const originalPublication = PersonalTeamRequestsStore.prototype.publication;
@@ -384,7 +385,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     });
     const form = RequestPresentationSchema.parse(question.presentation);
     if (form.kind !== "form") throw new Error("Expected private question");
-    await answer(question.id, {
+    await answer(question, {
       kind: "form",
       answers: Object.fromEntries(
         form.fields.map((field) => [field.id, [field.choices?.[0]?.value ?? "PRIVATE_ANSWER_Z4"]]),
@@ -392,7 +393,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     });
     console.info("Z4: waiting completed");
     const completed = await personal.waitForInput(localInputId, AbortSignal.timeout(15000));
-    expect(completed.events.some((event) => event.type === "run.completed")).toBe(true);
+    expect(completed.status).toBe("completed");
     await teamCondition(
       session.client,
       () =>
@@ -450,28 +451,12 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     });
 
     console.info("Z4: reading local task");
-    personalClient = new HttpHostClient({
-      baseUrl: personal.hostOrigin,
-      fetch: (url, init) =>
-        fetch(url, {
-          ...init,
-          headers: {
-            ...Object.fromEntries(new Headers(init?.headers)),
-            cookie: personal.sessionCookie,
-            origin: personal.hostOrigin.origin,
-          },
-        }),
-      webSocketFactory: (url) =>
-        new WebSocket(url, {
-          headers: { cookie: personal.sessionCookie, origin: personal.hostOrigin.origin },
-        }) as unknown as WebSocketClient,
-    });
-    await personalClient.load();
-    await teamCondition(
+    personalClient = await openVerticalViewer(personal, localTaskId);
+    const completedAt = await teamCondition(
       personalClient,
       () =>
         personalClient!.getSnapshot().threads.find((thread) => thread.id === localTaskId)
-          ?.latestRunCompletedAt,
+          ?.latestRunCompletedAt ?? undefined,
       "Personal completion never arrived before the visible reply visit",
     );
     const unresolved = Promise.withResolvers<void>();
@@ -494,9 +479,6 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       timeoutError: () =>
         new Error("Visible reply never attempted to read before receipt persistence"),
     });
-    const completedAt = personalClient
-      .getSnapshot()
-      .threads.find((thread) => thread.id === localTaskId)!.latestRunCompletedAt!;
     expect((personalClient.getSnapshot().threadVisits[localTaskId] ?? "") < completedAt).toBe(true);
     releasePublication.resolve();
     await teamCondition(
@@ -708,7 +690,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       },
       { timeout: 10000 },
     );
-    expect((await personals[1]!.api["bootstrap.get"]({})).ok).toBe(true);
+    expect((await personals[1]!.api["resources.detail.get"]({ kind: "settings" })).ok).toBe(true);
   } finally {
     releasePublication.resolve();
     stopReplyRead?.();

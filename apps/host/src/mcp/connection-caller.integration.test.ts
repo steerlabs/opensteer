@@ -22,6 +22,7 @@ import {
 } from "@opensteer/core";
 import { AgentConnectionStore, type OpensteerStore } from "@opensteer/database";
 import {
+  createStoreFixture,
   describeStore,
   testModelSelection,
   testReadyHarnessCatalog,
@@ -62,7 +63,7 @@ afterEach(async () => {
 
 /** The real Host spine for connected agents: the store, resolver and MCP service. */
 async function serveMcp(
-  store: OpensteerStore,
+  fixture: Awaited<ReturnType<typeof createStoreFixture>>,
   options: {
     readonly connected?: () => boolean;
     readonly runScope?: import("../agents/run-tool-tokens.js").RunToolScope;
@@ -72,7 +73,6 @@ async function serveMcp(
     readonly notify?: { current?: () => void };
     readonly subscribed?: () => void;
     readonly unsubscribed?: () => void;
-    readonly publish?: { current?: (event: import("@opensteer/core").AgentEvent) => void };
   } = {},
 ) {
   const unavailable = new Proxy(
@@ -83,17 +83,20 @@ async function serveMcp(
       },
     },
   );
-  const realtime = new RealtimeHub({ store });
-  if (options.publish) options.publish.current = (event) => realtime.publish(event);
-  if (options.notify)
-    options.notify.current = () => realtime.broadcast({ type: "host.tasks-changed" });
+  const { store } = fixture;
+  const realtime = new RealtimeHub();
+  const stopMutationHooks = fixture.observePersonalCommits((head, scopes) =>
+    realtime.wake(head, scopes),
+  );
+  if (options.notify) options.notify.current = () => realtime.wake("0", new Set(["deployment"]));
   const observations = {
-    observe: (wake: Parameters<RealtimeHub["observe"]>[0]) => {
+    observe: realtime.observe.bind(realtime),
+    observeScopes: (...args: Parameters<RealtimeHub["observeScopes"]>) => {
       options.subscribed?.();
-      const detach = realtime.observe(wake);
+      const detach = realtime.observeScopes(...args);
       return () => {
-        detach();
         options.unsubscribed?.();
+        return detach();
       };
     },
   };
@@ -105,7 +108,6 @@ async function serveMcp(
       maxQueuedCommands: 100,
     }),
     onExecutionQueued: () => {},
-    onDeploymentEvent: (event) => realtime.publish(event),
   });
   const settings = await store.database
     .selectFrom("personalSettings")
@@ -130,7 +132,6 @@ async function serveMcp(
     browser: unavailable as never,
   });
   const product = new ProductToolHandlers({
-    onEvent: (event: import("@opensteer/core").AgentEvent) => realtime.publish(event),
     execution: personalTestExecution(store, {
       userId: settings.ownerId,
       environmentId: environment.id,
@@ -170,6 +171,7 @@ async function serveMcp(
     );
   });
   servers.push(server);
+  server.once("close", stopMutationHooks);
   await withTimeout(
     new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -293,7 +295,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("connection-tools");
-    const url = await serveMcp(storeFixture.store);
+    const url = await serveMcp(storeFixture);
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
@@ -331,7 +333,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       modelSelection: testModelSelection,
       title: "Full access",
     });
-    const url = await serveMcp(storeFixture.store);
+    const url = await serveMcp(storeFixture);
     const cautious = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
@@ -353,7 +355,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("connection-delegate");
-    const url = await serveMcp(storeFixture.store);
+    const url = await serveMcp(storeFixture);
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
@@ -481,7 +483,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("connection-delegate-defaults");
-    const url = await serveMcp(storeFixture.store);
+    const url = await serveMcp(storeFixture);
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
@@ -543,7 +545,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("connection-delegate-excluded");
-    const url = await serveMcp(storeFixture.store);
+    const url = await serveMcp(storeFixture);
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
@@ -592,7 +594,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("connection-read-write");
-    const url = await serveMcp(storeFixture.store);
+    const url = await serveMcp(storeFixture);
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
@@ -624,7 +626,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     storeFixture,
   }) => {
     const f = await storeFixture.createRunFixture("configure-connection");
-    const url = await serveMcp(storeFixture.store);
+    const url = await serveMcp(storeFixture);
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
@@ -693,7 +695,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("connection-queue");
-    const url = await serveMcp(storeFixture.store);
+    const url = await serveMcp(storeFixture);
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
@@ -767,12 +769,10 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const subscribed = vi.fn();
     const unsubscribed = vi.fn();
     let connected = true;
-    const publish: { current?: (event: import("@opensteer/core").AgentEvent) => void } = {};
-    const url = await serveMcp(storeFixture.store, {
+    const url = await serveMcp(storeFixture, {
       subscribed,
       unsubscribed,
       connected: () => connected,
-      publish,
     });
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
@@ -831,7 +831,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       arguments: { taskId: f.thread.id },
     });
     await vi.waitFor(() => expect(subscribed).toHaveBeenCalledTimes(4), { timeout: 2000 });
-    const terminal = await storeFixture.store.commitRunnerEvent({
+    await storeFixture.store.commitRunnerEvent({
       environmentId: f.environmentId,
       runnerId: f.runnerId,
       runnerBootId: f.runnerBootId,
@@ -845,8 +845,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         type: "run.completed",
       }),
     });
-    if (terminal.event) publish.current?.(terminal.event);
-    for (const event of terminal.compensatingEvents) publish.current?.(event);
     expect((await waiting).structuredContent).toMatchObject({
       status: "settled",
       run: { id: f.run.id, status: "completed" },
@@ -857,8 +855,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
   it("returns a pending Request without granting approval authority", async ({ storeFixture }) => {
     const f = await storeFixture.startRunFixture("connection-wait-request");
     const subscribed = vi.fn();
-    const publish: { current?: (event: import("@opensteer/core").AgentEvent) => void } = {};
-    const url = await serveMcp(storeFixture.store, { subscribed, publish });
+    const url = await serveMcp(storeFixture, { subscribed });
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
@@ -898,7 +895,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         subject: { kind: "thread", id: f.thread.id },
       },
     });
-    for (const event of created.events) publish.current?.(event);
     const result = await withTimeout(observed, 5000, {
       timeoutError: () => new Error("Pending Request never ended its task wait"),
     });
@@ -917,7 +913,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
   }) => {
     const f = await storeFixture.startRunFixture("connection-wait-message");
     const subscribed = vi.fn();
-    const url = await serveMcp(storeFixture.store, { subscribed });
+    const url = await serveMcp(storeFixture, { subscribed });
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
@@ -953,7 +949,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("self-interrupt");
-    const url = await serveMcp(storeFixture.store, {
+    const url = await serveMcp(storeFixture, {
       runScope: {
         aud: "opensteer-run-tools",
         exp: Math.floor(Date.now() / 1000) + 60,
@@ -1013,7 +1009,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const subscribed = vi.fn();
     const unsubscribed = vi.fn();
     const notify: { current?: () => void } = {};
-    const url = await serveMcp(storeFixture.store, { subscribed, unsubscribed, notify });
+    const url = await serveMcp(storeFixture, { subscribed, unsubscribed, notify });
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
@@ -1052,7 +1048,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     storeFixture,
   }) => {
     await storeFixture.createRunFixture("connection-challenge");
-    const url = await serveMcp(storeFixture.store);
+    const url = await serveMcp(storeFixture);
     const response = await fetch(url, {
       method: "POST",
       headers: {

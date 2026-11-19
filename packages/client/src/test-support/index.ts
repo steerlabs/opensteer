@@ -4,6 +4,7 @@ export * from "./memory-protected-auth-store.js";
 export * from "./session-exchange.js";
 export * from "./thread-activity-scenarios.js";
 export * from "./conversation-history.js";
+export * from "./scoped-transcript-fixture.js";
 export * from "./mcp-presentation-scenarios.js";
 export * from "./tab-fixtures.js";
 

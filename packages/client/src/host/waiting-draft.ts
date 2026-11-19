@@ -5,6 +5,11 @@ import { messageDraftParts } from "./pending-send.js";
 export interface WaitingDraftSource {
   readonly revision: number;
   readonly content: readonly ContentPart[];
+  /**
+   * The full body at `revision`, read under the edit lease. Anything else (the queue's clipped
+   * preview) only shows: a draft opened from it is locked until the full body is read.
+   */
+  readonly full?: boolean;
 }
 
 /**
@@ -33,10 +38,18 @@ export interface WaitingDraft {
   readonly conflict: WaitingDraftSource | null;
   /** The base version's words and how many parts it had, which `dirty` measures against. */
   readonly base: { readonly text: string; readonly parts: number };
+  /**
+   * Shown from the queue's clipped preview while the full body at `baseRevision` is read. Nothing
+   * edits or saves it: that full body replaces it whole (`hydrateWaitingDraft`). Every move to a
+   * new revision locks the field this way again, so a draft that can be saved was always built
+   * from the full body at the revision it names.
+   */
+  readonly loading: boolean;
 }
 
-/** A draft of `source` exactly as it stands. */
+/** A draft of `source` exactly as it stands; `loading` unless `source` is the full body. */
 export function openWaitingDraft(source: WaitingDraftSource): WaitingDraft {
+  const loading = source.full !== true;
   const text = messageDraftParts(source.content).body;
   const parts = source.content.filter((part) => part.type !== "text");
   return {
@@ -44,6 +57,7 @@ export function openWaitingDraft(source: WaitingDraftSource): WaitingDraft {
     baseRevision: source.revision,
     conflict: null,
     dirty: false,
+    loading,
     parts,
     text,
   };
@@ -51,11 +65,12 @@ export function openWaitingDraft(source: WaitingDraftSource): WaitingDraft {
 
 /** The person typed. */
 export function setWaitingDraftText(draft: WaitingDraft, text: string): WaitingDraft {
-  return measured({ ...draft, text });
+  return draft.loading ? draft : measured({ ...draft, text });
 }
 
 /** The person took a file, page or place off the message. */
 export function removeWaitingDraftPart(draft: WaitingDraft, index: number): WaitingDraft {
+  if (draft.loading) return draft;
   return measured({ ...draft, parts: draft.parts.filter((_, at) => at !== index) });
 }
 
@@ -70,19 +85,60 @@ export function removeWaitingDraftPart(draft: WaitingDraft, index: number): Wait
  */
 export function followWaitingDraft(draft: WaitingDraft, current: WaitingDraftSource): WaitingDraft {
   if (current.revision <= draft.baseRevision) return draft;
+  // Untouched words move to the new version, locked until its full body is read.
   if (!draft.dirty) return openWaitingDraft(current);
   return draft.conflict?.revision === current.revision ? draft : { ...draft, conflict: current };
 }
 
-/** Lets the person's words go for the newer version that arrived under them. */
+/**
+ * Installs a full body read under the lease. A locked draft is replaced whole by the body at its
+ * revision or a newer one: no words are ever kept from a preview, and an older body leaves it
+ * locked. An open draft (a lease taken again) follows it as `followWaitingDraft` does.
+ */
+export function hydrateWaitingDraft(
+  draft: WaitingDraft,
+  current: WaitingDraftSource & { readonly full: true },
+): WaitingDraft {
+  if (draft.loading)
+    return current.revision >= draft.baseRevision ? openWaitingDraft(current) : draft;
+  return followWaitingDraft(draft, current);
+}
+
+/** The revision whose full body a locked draft waits for; null when it can be edited. */
+export function waitingDraftAwaits(draft: WaitingDraft): number | null {
+  return draft.loading ? draft.baseRevision : null;
+}
+
+/**
+ * Lets the person's words go for the newer version that arrived under them; locked until that
+ * version's full body is read, unless the conflict carried it.
+ */
 export function reloadWaitingDraft(draft: WaitingDraft): WaitingDraft {
   return draft.conflict ? openWaitingDraft(draft.conflict) : draft;
 }
 
 /** What the draft sends: its trimmed words, then the parts it kept. Empty when nothing is left. */
-export function waitingDraftContent(draft: WaitingDraft): ContentPart[] {
+function waitingDraftContent(draft: WaitingDraft): ContentPart[] {
   const text = draft.text.trim();
   return [...(text ? [{ text, type: "text" as const }] : []), ...draft.parts];
+}
+
+/**
+ * The one way a waiting message's words leave its editor, for every action that does so: Save,
+ * saving before an approval, Send as new, a move to the composer. Only a draft built from the full
+ * body at its revision gives anything; a locked one (still the queue's clipped preview) gives null,
+ * as does a draft with nothing left in it.
+ */
+export function waitingDraftOutgoing(draft: WaitingDraft): {
+  readonly content: readonly ContentPart[];
+  readonly text: string;
+  readonly parts: readonly ContentPart[];
+  readonly revision: number;
+} | null {
+  if (draft.loading) return null;
+  const content = waitingDraftContent(draft);
+  if (content.length === 0) return null;
+  return { content, parts: draft.parts, revision: draft.baseRevision, text: draft.text.trim() };
 }
 
 /**
@@ -101,11 +157,10 @@ export function waitingDraftSave(draft: WaitingDraft):
     }
   | null {
   if (draft.conflict) return null;
-  if (!draft.dirty) return { kind: "unchanged", revision: draft.baseRevision };
-  const content = waitingDraftContent(draft);
-  return content.length === 0
-    ? null
-    : { content, expectedRevision: draft.baseRevision, kind: "edit" };
+  const outgoing = waitingDraftOutgoing(draft);
+  if (outgoing === null) return null;
+  if (!draft.dirty) return { kind: "unchanged", revision: outgoing.revision };
+  return { content: outgoing.content, expectedRevision: outgoing.revision, kind: "edit" };
 }
 
 function measured(draft: WaitingDraft): WaitingDraft {

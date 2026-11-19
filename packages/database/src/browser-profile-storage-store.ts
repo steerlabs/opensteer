@@ -1,4 +1,4 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import { OpensteerError, type BrowserProfileId, type RunnerId, type UserId } from "@opensteer/core";
 import {
@@ -196,7 +196,7 @@ export async function acknowledgeBrowserProfileDeletion(
   database: Kysely<DatabaseSchema>,
   input: { binding: LocalProfileBinding; deletionId: string; state: "pending-restart" | "deleted" },
 ) {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     await lockBrowserProfile(transaction, input.binding.profileId);
     const row = await transaction
       .selectFrom("browserProfileDeletions")
@@ -209,7 +209,7 @@ export async function acknowledgeBrowserProfileDeletion(
       !sameProfileBinding(deletionBinding(row), input.binding)
     )
       conflict("Browser profile erasure binding does not match.");
-    if (row.state === "deleted" || row.state === "unconfirmed") return;
+    if (row.state === "deleted" || row.state === "unconfirmed" || row.state === input.state) return;
     await transaction
       .updateTable("browserProfileDeletions")
       .set({
@@ -219,6 +219,7 @@ export async function acknowledgeBrowserProfileDeletion(
       })
       .where("deletionId", "=", row.deletionId)
       .execute(databaseOperationOptions());
+    mutation.bumpResource("browser-profile");
   });
 }
 
@@ -226,7 +227,7 @@ export async function reconcileBrowserProfileInventory(
   database: Kysely<DatabaseSchema>,
   claim: HeldLocalProfile,
 ) {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     await lockBrowserProfile(transaction, claim.binding.profileId);
     const row = await transaction
       .selectFrom("browserProfiles")
@@ -259,7 +260,7 @@ export async function reconcileBrowserProfileInventory(
         .executeTakeFirstOrThrow(databaseOperationOptions());
       if (deletion.deletionId !== claim.deletionId)
         conflict("This computer's deletion tombstone conflicts with the Host.");
-      if (deletion.state !== "deleted")
+      if (deletion.state !== "deleted" && deletion.state !== claim.erasure) {
         await transaction
           .updateTable("browserProfileDeletions")
           .set({
@@ -269,17 +270,23 @@ export async function reconcileBrowserProfileInventory(
           })
           .where("profileId", "=", row.id)
           .execute(databaseOperationOptions());
+        mutation.bumpResource("browser-profile");
+      }
       return;
     }
     if (row.archivedAt) {
       await recordBrowserProfileDeletion(transaction, claim.binding);
+      mutation.bumpResource("browser-profile");
       return;
     }
+    if (row.initialized) return;
     await transaction
       .updateTable("browserProfiles")
       .set({ initialized: true })
       .where("id", "=", row.id)
       .execute(databaseOperationOptions());
+    mutation.bumpResource("browser-profile");
+    mutation.bumpResource("browser-availability");
   });
 }
 
@@ -288,7 +295,7 @@ export async function bindBrowserProfile(
   database: Kysely<DatabaseSchema>,
   binding: LocalProfileBinding,
 ) {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     await lockBrowserProfile(transaction, binding.profileId);
     const row = await transaction
       .selectFrom("browserProfiles")
@@ -322,6 +329,10 @@ export async function bindBrowserProfile(
       .where("id", "=", row.id)
       .returningAll()
       .executeTakeFirstOrThrow(databaseOperationOptions());
+    mutation.bumpResource("browser-profile");
+    mutation.bumpResource("browser-home");
+    mutation.bumpResource("browser-placement");
+    mutation.bumpResource("browser-availability");
     return profileStorage(bound);
   });
 }
@@ -329,7 +340,7 @@ export async function acknowledgeBrowserProfileReady(
   database: Kysely<DatabaseSchema>,
   binding: LocalProfileBinding,
 ): Promise<void> {
-  await withPersonalTransaction(database, async (transaction) => {
+  await commitPersonalMutation(database, async (transaction, mutation) => {
     await lockBrowserProfile(transaction, binding.profileId);
     const row = await transaction
       .selectFrom("browserProfiles")
@@ -341,10 +352,13 @@ export async function acknowledgeBrowserProfileReady(
     if (storage.kind !== "local" || !sameProfileBinding(storage.binding, binding))
       conflict("The native browser profile binding does not match.");
     await validateBindingOwner(transaction, binding, row.ownerId);
+    if (row.initialized) return;
     await transaction
       .updateTable("browserProfiles")
       .set({ initialized: true, updatedAt: new Date() })
       .where("id", "=", row.id)
       .execute(databaseOperationOptions());
+    mutation.bumpResource("browser-profile");
+    mutation.bumpResource("browser-availability");
   });
 }

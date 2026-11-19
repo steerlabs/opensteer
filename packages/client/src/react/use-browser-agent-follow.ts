@@ -1,3 +1,4 @@
+import { useThreadTranscript } from "./use-thread-transcript.js";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TabId } from "@opensteer/core";
 import {
@@ -39,14 +40,15 @@ export function useThreadAgentTab(
   hostClient: HostClient,
   threadId: string | null,
 ): BrowserTabDestination | null {
+  const { runQueue } = useThreadTranscript(hostClient, threadId);
   const selectRunId = useCallback(
     (snapshot: HostSnapshot) => {
       const thread = threadId === null ? null : threadInDirectory(threadId, snapshot);
       return thread === null
         ? null
-        : (threadStopTarget({ runQueue: snapshot.runQueue, thread })?.id ?? null);
+        : (threadStopTarget({ runQueue: runQueue, thread })?.id ?? null);
     },
-    [threadId],
+    [threadId, runQueue],
   );
   const selectOccupied = useCallback(
     (snapshot: HostSnapshot) =>

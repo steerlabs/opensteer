@@ -1,3 +1,4 @@
+import { testResourceData } from "../server/test-host-api-request.js";
 /**
  * Opt-in Agent Phone soak, the release qualification run through the device
  * suite's real setup, Host and gateway. A fresh agent Run uses the phone once
@@ -31,7 +32,6 @@ import {
   freePort,
   type CallerMachine,
 } from "../runtime/private-machine-host.test-support.js";
-import { testRpcData } from "../server/test-host-api-request.js";
 import {
   Redaction,
   acquireAndroidDevice,
@@ -353,8 +353,8 @@ it("Agent Phone remains available and never duplicates fixture effects during a 
 
     await waitOnline();
     await clearReceipts(device);
-    const bootstrap = await testRpcData(host.origin, "bootstrap.get", {}, owner);
-    if (!bootstrap.personalSettings) throw new Error("No Main Workspace for the soak agent.");
+    const bootstrap = await testResourceData(host.origin, "settings", owner);
+    if (!bootstrap.settings) throw new Error("No Main Workspace for the soak agent.");
 
     startedAt = new Date().toISOString();
     const start = Date.now();

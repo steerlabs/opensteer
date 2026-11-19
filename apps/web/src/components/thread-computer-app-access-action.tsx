@@ -1,4 +1,5 @@
-import { requestSettlementLabel, deviceMachine } from "@opensteer/client/host";
+import { requestDecisionRevision } from "@opensteer/client/host";
+import { requestSettlementLabel } from "@opensteer/client/host";
 import { ActionNote } from "./action-rows.js";
 import { useComputerAppApproval } from "./computer-apps/computer-app-approval.js";
 import type { Request } from "@opensteer/core";
@@ -56,8 +57,7 @@ export function ThreadComputerAppAccessAction({
         hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
         inDesktopApp: desktopBridge !== null,
         lentByThisDesktop:
-          machine !== undefined &&
-          localExecutionStatus?.runner.runnerId === deviceMachine(machine).selfRunnerId,
+          machine !== undefined && localExecutionStatus?.runner.runnerId === machine.selfRunnerId,
       }),
     deviceId,
   });
@@ -71,6 +71,7 @@ export function ThreadComputerAppAccessAction({
         hostClient.dispatch({
           idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
           requestId: request.id,
+          ...requestDecisionRevision(request),
           response: { kind: "external", value: { decision: "declined" } },
           type: "request.respond",
         }),

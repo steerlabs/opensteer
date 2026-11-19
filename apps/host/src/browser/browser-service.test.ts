@@ -217,7 +217,6 @@ function nativeProfileOptions() {
 const profileStateOptions = {
   deploymentId: createId("deployment"),
   onSessionsChanged: () => undefined,
-  onDeploymentEvent: () => undefined,
   hostOrigin: new URL("https://host.test"),
 };
 
@@ -3502,9 +3501,7 @@ describe("BrowserService", () => {
   it("bounds interleaved activity writes and converges usage on the final surface", async () => {
     const clock = new ManualClock(0);
     const f = await runPlaceFixture(clock);
-    f.record.mockImplementation(
-      async (input) => ({ type: "place.entered", ...input }) as unknown as AgentEvent,
-    );
+    f.record.mockResolvedValue(true);
     const usage = vi.spyOn(f.backing, "recordAgentBrowserUse");
     for (let index = 0; index < 30; index++) await f.activity(`page-${(index % 3) + 1}`);
     expect(f.record).toHaveBeenCalledTimes(1);
@@ -3598,9 +3595,7 @@ describe("BrowserService", () => {
   it("credits the settled tab after Stop ends the Run's actor", async () => {
     const clock = new ManualClock(0);
     const f = await runPlaceFixture(clock);
-    f.record.mockImplementation(
-      async (input) => ({ type: "place.entered", ...input }) as unknown as AgentEvent,
-    );
+    f.record.mockResolvedValue(true);
     const usage = vi.spyOn(f.backing, "recordAgentBrowserUse");
     await f.activity("page-1");
     await f.activity("page-2");
@@ -3697,7 +3692,7 @@ describe("BrowserService", () => {
 
   it("drains rejected pending Run place writes without throwing", async () => {
     const f = await runPlaceFixture();
-    const pending = Promise.withResolvers<AgentEvent | undefined>();
+    const pending = Promise.withResolvers<boolean>();
     const failure = new Error("place write refused");
     f.record.mockReturnValueOnce(pending.promise);
     await f.activity("page-1");
@@ -3724,7 +3719,7 @@ describe("BrowserService", () => {
 
   it("keeps a newer Run place transition when an older pending write fails", async () => {
     const f = await runPlaceFixture();
-    const pending = Promise.withResolvers<AgentEvent | undefined>();
+    const pending = Promise.withResolvers<boolean>();
     const failure = new Error("old place write refused");
     f.record.mockReturnValueOnce(pending.promise);
     try {
@@ -3739,7 +3734,7 @@ describe("BrowserService", () => {
         data: { tabId: "page-2" },
       });
     } finally {
-      pending.resolve(undefined);
+      pending.resolve(false);
     }
   });
 
@@ -4595,6 +4590,7 @@ describe("BrowserService", () => {
       runtimeId: "runtime-1",
     });
     const service = new BrowserService({
+      personal: true,
       ...nativeProfileOptions(),
       ...profileStateOptions,
       repository,
@@ -4619,13 +4615,9 @@ describe("BrowserService", () => {
     const ownerId = createId("user");
 
     const repository = new MemoryBrowserRepository(ownerId);
-    const events: AgentEvent[] = [];
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
-      onDeploymentEvent: (event) => {
-        events.push(event);
-      },
       repository,
       signer: new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey }),
     });
@@ -4646,10 +4638,10 @@ describe("BrowserService", () => {
       requestId: expect.stringMatching(/^req_/),
       status: "pending",
     });
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      data: { request: { id: requested.requestId, kind: "browser.access", status: "pending" } },
-      type: "request.opened",
+    await expect(repository.requests.get(requested.requestId)).resolves.toMatchObject({
+      id: requested.requestId,
+      kind: "browser.access",
+      status: "pending",
     });
     const duplicate = await service.requestAccess({
       ...request,
@@ -4657,7 +4649,6 @@ describe("BrowserService", () => {
       suggestion: { kind: "user_choice" },
     });
     expect(duplicate).toEqual({ ...requested, replayed: true });
-    expect(events).toHaveLength(1);
 
     // There is deliberately no semantic or per-Workspace uniqueness. A new
     // tool call is a new Request even when it asks the same question.
@@ -4668,7 +4659,6 @@ describe("BrowserService", () => {
       status: "pending",
     });
     expect(distinct.requestId).not.toBe(requested.requestId);
-    expect(events).toHaveLength(2);
 
     const response = {
       kind: "external",
@@ -4679,6 +4669,7 @@ describe("BrowserService", () => {
     } as const;
     const resolved = await service.resolveRequest({
       requestId: requested.requestId,
+      expectedRevision: "1",
       resolvedBy: ownerId,
       response,
     });
@@ -4689,16 +4680,10 @@ describe("BrowserService", () => {
       response,
       status: "fulfilled",
     });
-    expect(events).toHaveLength(3);
-    expect(events[2]).toMatchObject({
-      data: {
-        request: {
-          id: requested.requestId,
-          response,
-          status: "fulfilled",
-        },
-      },
-      type: "request.resolved",
+    await expect(repository.requests.get(requested.requestId)).resolves.toMatchObject({
+      id: requested.requestId,
+      response,
+      status: "fulfilled",
     });
     await expect(service.requestAccess(request)).resolves.toEqual({
       ...requested,
@@ -4715,6 +4700,7 @@ describe("BrowserService", () => {
     await expect(
       service.resolveRequest({
         requestId: requested.requestId,
+        expectedRevision: "1",
         resolvedBy: ownerId,
         response: { kind: "external", value: { decision: "declined" } },
       }),
@@ -4742,7 +4728,12 @@ describe("BrowserService", () => {
     const pending = await service.requestAccess(request);
     const response = { kind: "external", value: { decision: "declined" } } as const;
     expect(
-      await service.resolveRequest({ requestId: pending.requestId, resolvedBy: ownerId, response }),
+      await service.resolveRequest({
+        requestId: pending.requestId,
+        expectedRevision: "1",
+        resolvedBy: ownerId,
+        response,
+      }),
     ).toMatchObject({ profile: null, request: { response, status: "declined" } });
     await expect(service.listAgentProfiles(ownerId)).resolves.toEqual([]);
     await expect(service.requestAccess(request)).resolves.toEqual({
@@ -5675,7 +5666,6 @@ function freshService(options: {
   readonly actorMetadataTimeoutMs?: number;
   readonly activityClock?: Clock;
   readonly keys: { readonly privateKey: KeyObject };
-  readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly repository: MemoryBrowserRepository;
   readonly runtime: { readonly url: URL };
   readonly tabs?: TabStore;
@@ -5685,7 +5675,7 @@ function freshService(options: {
     ...(options.tabs
       ? {
           tabs: options.tabs,
-          tabPlaces: { write: async () => undefined, publish: () => {}, notice: () => {} },
+          tabPlaces: { write: async () => false, notice: () => {} },
         }
       : {}),
     ...nativeProfileOptions(),
@@ -5702,7 +5692,6 @@ function freshService(options: {
       : {
           actorMetadataTimeoutMs: options.actorMetadataTimeoutMs,
         }),
-    ...(options.onDeploymentEvent ? { onDeploymentEvent: options.onDeploymentEvent } : {}),
     repository: options.repository,
     signer: new BrowserAttachTicketSigner({
       keyId: "host-primary",
@@ -5965,8 +5954,8 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return this.#credit(input.sessionId, input.threadId, "person", input.tabId ?? null, input.page);
   }
 
-  async recordRunTabPlace(): Promise<AgentEvent | undefined> {
-    return undefined;
+  async recordRunTabPlace(): Promise<boolean> {
+    return false;
   }
 
   async recordAgentBrowserUse(input: {
@@ -7577,7 +7566,7 @@ it("closes durable rows only on a change removal, never an interrupted or commit
     signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
     targetResolver: runnerTarget({ url: runtime.url, tabRestoreVersion: true }),
     tabs: memory.store,
-    tabPlaces: { write: async () => undefined, publish: () => {}, notice: () => {} },
+    tabPlaces: { write: async () => false, notice: () => {} },
   });
   cleanups.push(() => service.close());
   const descriptor = await service.pageTabs.open(

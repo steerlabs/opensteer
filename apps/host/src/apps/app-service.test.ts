@@ -43,7 +43,6 @@ function fixture(app: PublishedApp) {
     tunnels: tunnels as unknown as ConstructorParameters<typeof AppService>[0]["tunnels"],
     tabs: { removeTabs: async () => [] },
     changed: vi.fn(),
-    publishEvent: vi.fn(),
   });
   return {
     service,
@@ -214,7 +213,6 @@ it("serves stored HTML with origin bootstrap while keeping the capability docume
     tunnels: f.tunnels as unknown as ConstructorParameters<typeof AppService>[0]["tunnels"],
     tabs: { removeTabs: async () => [] },
     changed: vi.fn(),
-    publishEvent: vi.fn(),
   });
   try {
     await mkdir(join(directory, "apps"));

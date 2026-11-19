@@ -82,7 +82,7 @@ integration("personal task delegation lifecycle", () => {
       maxQueuedCommands: 64,
     }),
     onExecutionQueued: vi.fn(),
-    onDeploymentEvent: vi.fn(),
+
     store,
   });
   const assertDelegatedPlaces = vi.fn(async () => undefined);
@@ -1165,8 +1165,7 @@ integration("personal task delegation lifecycle", () => {
     const terminal = await end(worker, "completed");
     const replayed = await store.commitRunnerEvent(terminal.commit);
     expect(replayed).toMatchObject({
-      compensatingEvents: [],
-      wasDuplicate: true,
+      replayed: true,
     });
     expect(await assignmentRow(task.delegationId)).toMatchObject({
       resultRunId: worker.runId,
@@ -1181,9 +1180,11 @@ integration("personal task delegation lifecycle", () => {
       store.drainAssignmentReturn(task.delegationId),
     ]);
     expect(deliveries[1].failures).toEqual([]);
-    await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
-      events: [],
+    await expect(store.drainPendingAssignmentReturns()).resolves.toMatchObject({
       failures: [],
+      waiting: 0,
+      held: 0,
+      more: false,
     });
     const returned = await returnMessages(fixture.parentThreadId);
     expect(returned).toHaveLength(1);
@@ -1241,7 +1242,7 @@ integration("personal task delegation lifecycle", () => {
       resultRunId: worker.runId,
       resultText: finalReply,
       returnMessageCount: returned.length,
-      replayedTerminalEventWasDuplicate: replayed.wasDuplicate,
+      replayedTerminalEventWasDuplicate: replayed.replayed,
       laterUnboundRunId: laterWorker.runId,
     });
   });
@@ -1289,29 +1290,20 @@ integration("personal task delegation lifecycle", () => {
       resultMessageId: null,
     });
     // The assigning Thread still sees its task finish.
-    const parentUpdates = await database
-      .selectFrom("deploymentEvents")
-      .select("data")
-      .where("type", "=", "assignment.updated")
-      .execute();
     expect(
-      parentUpdates.some(({ data }) => {
-        const assignment = (
-          data as {
-            assignment?: {
-              id?: string;
-              status?: string;
-              parentThreadId?: string;
-            };
-          }
-        ).assignment;
-        return (
-          assignment?.id === silent.delegationId &&
-          assignment.status === "completed" &&
-          assignment.parentThreadId === fixture.parentThreadId
-        );
+      await store.listThreadAssignmentsForOwner({
+        ownerId: fixture.userId,
+        threadId: fixture.parentThreadId,
       }),
-    ).toBe(true);
+    ).toMatchObject({
+      assignments: expect.arrayContaining([
+        expect.objectContaining({
+          id: silent.delegationId,
+          status: "completed",
+          parentThreadId: fixture.parentThreadId,
+        }),
+      ]),
+    });
     const after = await Promise.all([
       database
         .selectFrom("messages")
@@ -1404,20 +1396,15 @@ integration("personal task delegation lifecycle", () => {
     });
     const first = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     const firstRequest = await openDurableRequest(fixture, first);
-    expect(await store.drainPendingThreadStates()).toContainEqual(
-      expect.objectContaining({
-        data: {
-          assignment: expect.objectContaining({
-            id: task.delegationId,
-            workerThread: expect.objectContaining({
-              pendingRequests: 1,
-            }),
-          }),
-        },
-        threadId: (await readToolRecords(store, task)).thread.id,
-        type: "assignment.updated",
+    expect(
+      await store.getAssignmentForOwner({
+        ownerId: fixture.userId,
+        assignmentId: task.delegationId,
       }),
-    );
+    ).toMatchObject({ workerThreadId: first.threadId });
+    expect(await store.getThreadForOwner(first.threadId, fixture.userId)).toMatchObject({
+      pendingRequests: 1,
+    });
     await reply(first, "I asked for file access and will continue once it is answered.");
     await end(first, "completed");
     expect(await assignmentRow(task.delegationId)).toMatchObject({
@@ -1425,9 +1412,11 @@ integration("personal task delegation lifecycle", () => {
       resultText: null,
       status: "open",
     });
-    await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
-      events: [],
+    await expect(store.drainPendingAssignmentReturns()).resolves.toMatchObject({
       failures: [],
+      waiting: 0,
+      held: 0,
+      more: false,
     });
     const waiting = await store.listThreadAssignmentsForOwner({
       ownerId: fixture.userId,
@@ -1502,12 +1491,11 @@ integration("personal task delegation lifecycle", () => {
       resultText: "",
       resultStatus: "pending",
     });
-    expect(await drainReturns()).toContainEqual(
-      expect.objectContaining({
-        threadId: (await readToolRecords(store, parent)).thread.id,
-        type: "message.created",
-      }),
-    );
+    await drainReturns();
+    expect(await assignmentRow(trial.delegationId)).toMatchObject({
+      resultStatus: "delivered",
+      resultMessageId: expect.any(String),
+    });
     const parentSecond = await activateRun(
       fixture,
       (await queuedRun((await readToolRecords(store, parent)).thread.id)).id,
@@ -1699,16 +1687,14 @@ integration("personal task delegation lifecycle", () => {
       .where("threadId", "=", (await readToolRecords(store, hostRecovery)).thread.id)
       .where("active", "=", true)
       .execute();
-    const recovery = await store.recoverRunsWithExpiredExecutionBindings();
-    expect(recovery.events).toContainEqual(
-      expect.objectContaining({
-        runId: hostWorker.runId,
-        type: "run.restarted",
-        data: expect.objectContaining({
-          reason: "recovery",
-        }),
-      }),
-    );
+    await store.recoverRunsWithExpiredExecutionBindings();
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", hostWorker.runId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "queued" });
     expect(await assignmentRow(hostRecovery.delegationId)).toMatchObject({
       status: "open",
       resultRunId: null,
@@ -1768,9 +1754,11 @@ integration("personal task delegation lifecycle", () => {
       resultText: null,
       status: "open",
     });
-    await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
-      events: [],
+    await expect(store.drainPendingAssignmentReturns()).resolves.toMatchObject({
       failures: [],
+      waiting: 0,
+      held: 0,
+      more: false,
     });
     const nudge = await commands.enqueueThreadInput({
       content: [
@@ -2318,31 +2306,12 @@ integration("personal task delegation lifecycle", () => {
     expect((await list()).find(({ id }) => id === followUp.delegationId)?.modelLabel).toBe(
       alternateModel.modelId,
     );
-    const committed = await database
-      .selectFrom("deploymentEvents")
-      .select("data")
-      .where("type", "=", "assignment.updated")
-      .execute();
     expect(
-      committed.some(
-        ({ data }) =>
-          (
-            data as {
-              assignment?: {
-                id?: string;
-                modelLabel?: string | null;
-              };
-            }
-          ).assignment?.id === task.delegationId &&
-          (
-            data as {
-              assignment?: {
-                modelLabel?: string | null;
-              };
-            }
-          ).assignment?.modelLabel === alternateModel.modelId,
-      ),
-    ).toBe(true);
+      await store.getAssignmentForOwner({
+        ownerId: fixture.userId,
+        assignmentId: task.delegationId,
+      }),
+    ).toMatchObject({ resultRunId: worker.runId });
     acceptanceEvidence.push({
       caseId: "assignment-model-reload",
       firstAssignmentId: task.delegationId,
@@ -2392,9 +2361,11 @@ integration("personal task delegation lifecycle", () => {
         .where("childThreadId", "=", thread.id)
         .execute(),
     ).resolves.toEqual([]);
-    await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
-      events: [],
+    await expect(store.drainPendingAssignmentReturns()).resolves.toMatchObject({
       failures: [],
+      waiting: 0,
+      held: 0,
+      more: false,
     });
     acceptanceEvidence.push({
       caseId: "L23-unbound",
@@ -2842,7 +2813,14 @@ integration("personal task delegation lifecycle", () => {
   function assignmentRow(id: AssignmentId) {
     return database
       .selectFrom("delegations")
-      .select(["resultReason", "resultRunId", "resultStatus", "resultText", "status"])
+      .select([
+        "resultMessageId",
+        "resultReason",
+        "resultRunId",
+        "resultStatus",
+        "resultText",
+        "status",
+      ])
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
   }
@@ -2907,9 +2885,10 @@ integration("personal task delegation lifecycle", () => {
       requiredActor: "requester",
     });
   }
-  function declineRequest(fixture: Fixture, requestId: RequestId) {
+  async function declineRequest(fixture: Fixture, requestId: RequestId) {
     return store.requests.declineMachineFullDiskAccessRequest({
       requestId,
+      expectedRevision: (await store.requests.revision(requestId))!,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",
@@ -2922,7 +2901,6 @@ integration("personal task delegation lifecycle", () => {
   async function drainReturns() {
     const drained = await store.drainPendingAssignmentReturns();
     expect(drained.failures).toEqual([]);
-    return drained.events;
   }
 
   /** The Host's continuation outbox, drained once as its timer would. */
@@ -2980,7 +2958,7 @@ integration("personal task delegation lifecycle", () => {
       pluginsTokens: {
         issue,
       } as never,
-      onDeploymentEvent: vi.fn(),
+
       publicUrl: new URL("https://delegation.opensteer.test"),
       requestResponseVault: {} as never,
       runners: {
@@ -3006,6 +2984,7 @@ integration("personal task delegation lifecycle", () => {
           modules: { agents: { computerTool: 1 } },
           runnerId,
         }),
+        connectionGenerationFor: () => 1,
         inspectHarnesses: async (
           _environmentId: EnvironmentId,
           harnesses: readonly {

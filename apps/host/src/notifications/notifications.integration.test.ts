@@ -10,7 +10,6 @@ import {
   ModelSelectionSchema,
   NotificationViewSchema,
   TriggerIdSchema,
-  zeroSequence,
   type MessageId,
   type NotificationView,
   type RunId,
@@ -210,9 +209,9 @@ integration("Notifications", () => {
       .execute();
     socket = await openSocket(stack);
     socket.on("message", (data) => {
-      const message = HostToClientMessageSchema.parse(JSON.parse(String(data)));
-      if (message.type === "host.notification") {
-        received.push(NotificationViewSchema.parse(message.notification));
+      const message = HostToClientMessageSchema.safeParse(JSON.parse(String(data)));
+      if (message.success && message.data.type === "host.notification") {
+        received.push(NotificationViewSchema.parse(message.data.notification));
       }
     });
     rootTask = await stack.createThread({
@@ -225,14 +224,11 @@ integration("Notifications", () => {
     );
     socket.send(
       JSON.stringify({
-        type: "client.subscribe",
-        threadId: rootTask,
+        type: "client.attach",
         apiVersion: hostApiVersion,
-        cursor: {
-          deploymentId: stack.host.deployment.id,
-          apiVersion: hostApiVersion,
-          afterSequence: zeroSequence,
-        },
+        generation: 1,
+        interests: [],
+        installed: {},
       }),
     );
     await synchronized;
@@ -318,11 +314,14 @@ integration("Notifications", () => {
       threadId: rootTask,
     });
     const committed = await stack.host.store.database
-      .selectFrom("deploymentEvents")
-      .select("eventId")
-      .where("eventId", "=", publication.eventId)
+      .selectFrom("runs")
+      .select(["terminalReplyMessageId", "revision"])
+      .where("id", "=", turn.runId!)
       .executeTakeFirstOrThrow();
-    expect(committed.eventId).toBe(publication.eventId);
+    expect(committed).toEqual({
+      terminalReplyMessageId: publication.messageId,
+      revision: publication.sequence,
+    });
     await record("rootTask reply", since);
   }, 120_000);
   it("never alerts for a note; the reply that later reads it does", async () => {
@@ -335,32 +334,8 @@ integration("Notifications", () => {
         kind: "webhook",
       },
     });
-    const published = waitForRealtimeMessage(
-      socket,
-      (message) =>
-        message.type === "host.events" &&
-        message.events.some(
-          (event) =>
-            (event.type === "message.created" || event.type === "message.placed") &&
-            event.threadId === rootTask &&
-            event.data.message.content.some(
-              (part) => part.type === "text" && part.text === "Three new emails, none urgent.",
-            ),
-        ),
-    );
-    const [, observed] = await Promise.all([runTrigger(stack, trigger), published]);
+    await runTrigger(stack, trigger);
     const note = await waitForMessage(stack, rootTask, "Three new emails, none urgent.");
-    const producer =
-      observed.type === "host.events"
-        ? observed.events.find(
-            (event) =>
-              (event.type === "message.created" || event.type === "message.placed") &&
-              event.data.message.id === note,
-          )
-        : undefined;
-    expect(producer).toBeDefined();
-    // A realtime gap fill can expose a committed row before its publisher runs.
-    // Program success proves its awaited message command has returned after publication.
     const completed = await waitFor(
       async () => {
         const detail = await stack.api["triggers.get"]({
@@ -384,7 +359,7 @@ integration("Notifications", () => {
     });
     const reply = await replyOf(stack, turn.runId);
     await waitForNotification(received, since, (n) => n.messageId === reply, "reply after a note");
-    await record("note then reply", since, producer!.eventId, completed.id);
+    await record("note then reply", since, undefined, completed.id);
   }, 120_000);
   it("delivers a reminder: The task schedules it, it fires, and the task's reply alerts", async () => {
     const since = received.length;
@@ -818,17 +793,12 @@ async function runTrigger(stack: VerticalStack, triggerId: string): Promise<void
   }
 }
 async function replyOf(stack: VerticalStack, runId: RunId): Promise<MessageId> {
-  const event = await stack.host.store.database
-    .selectFrom("deploymentEvents")
-    .select("data")
-    .where("runId", "=", runId)
-    .where("type", "=", "run.completed")
+  const { terminalReplyMessageId: replyMessageId } = await stack.host.store.database
+    .selectFrom("runs")
+    .select("terminalReplyMessageId")
+    .where("id", "=", runId)
+    .where("status", "=", "completed")
     .executeTakeFirstOrThrow();
-  const replyMessageId = (
-    event.data as {
-      readonly replyMessageId?: MessageId | null;
-    }
-  ).replyMessageId;
   if (!replyMessageId) throw new Error(`Run ${runId} completed without a reply`);
   return replyMessageId;
 }

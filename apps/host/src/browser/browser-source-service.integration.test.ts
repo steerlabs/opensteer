@@ -1,3 +1,4 @@
+import { RequestDeadlines } from "../agents/request-deadlines.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
@@ -402,11 +403,10 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       deploymentId,
       connectTimeoutMs: 2_000,
       onSessionsChanged: () => {},
-      onDeploymentEvent: () => {},
       hostOrigin: new URL(sourceOrigin),
       repository: store,
       tabs: new TabStore(database),
-      tabPlaces: { write: async () => undefined, publish: () => {}, notice: () => {} },
+      tabPlaces: { write: async () => false, notice: () => {} },
       signer: new BrowserAttachTicketSigner({ keyId: "host-test", privateKey: hostKey.privateKey }),
       targetResolver: {
         placements: () =>
@@ -454,25 +454,28 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         }),
       },
     });
+    passwordDeadlines = new RequestDeadlines({
+      next: async () => passwords.nextDeadline(),
+      settle: () => passwords.settleDeadlines(),
+      onError: (error) => passwordSignInErrors.push(error),
+      now: () => Date.now() + clockOffsetMs,
+    });
     passwords = new PasswordSignInService({
       authority: passwordAuthority,
       resolveAuthority: resolvePasswordAuthority,
+      onDeadlineChanged: () => passwordDeadlines.wake(),
       agentWaitMs: 40,
       declineAnswerMs: 400,
       now: () => Date.now() + clockOffsetMs,
       onError: (error) => passwordSignInErrors.push(error),
-      reconcileIntervalMs: 100,
       describe: async () => description,
-      onRequestResolved: () => {
-        resolvedRequests += 1;
-      },
-      onDeploymentEvent: () => {},
       requests: {
         hasActiveRunPasswordSignInAuthority:
           store.requests.hasActiveRunPasswordSignInAuthority.bind(store.requests),
         hasDurablePasswordSignInRequestAuthority:
           store.requests.hasDurablePasswordSignInRequestAuthority.bind(store.requests),
         get: (requestId) => store.requests.get(requestId),
+        revision: (requestId) => store.requests.revision(requestId),
         listPendingPasswordSignIns: store.requests.listPendingPasswordSignIns.bind(store.requests),
         openPasswordSignIn: async (input) => {
           await beforeOpen?.();
@@ -499,10 +502,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       store: sourceStore,
       requests: store.requests,
       onError: (error) => serviceErrors.push(error),
-      onRequestResolved: () => {
-        resolvedRequests += 1;
-      },
-      onDeploymentEvent: () => {},
       sign: (bytes) => sign(null, bytes, hostKey.privateKey).toString("base64url"),
     });
     logins = new SavedLoginService({
@@ -535,6 +534,28 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     authorityConnection: null as FakeRuntimeConnection | null,
     supportsImport: true,
   };
+  async function settleDeferredPasswordResponse(requestId: RequestId) {
+    const deadline = await vi.waitFor(
+      async () => {
+        if ((await passwordRequest(requestId)).request.status === "fulfilled") return null;
+        const next = passwords.nextDeadline();
+        if (settleFaults !== 0 || !next || next.getTime() - Date.now() > 10_000)
+          throw new Error(
+            `Password settlement retry was not ready (faults: ${settleFaults}, deadline: ${next})`,
+          );
+        return next;
+      },
+      { timeout: 5_000 },
+    );
+    if (!deadline) return;
+    clockOffsetMs = Math.max(0, deadline.getTime() - Date.now());
+    try {
+      await passwordDeadlines.settle();
+    } finally {
+      clockOffsetMs = 0;
+    }
+  }
+
   let clockOffsetMs = 0;
   /** How many Request settlements the store fails before it works again. */
   let settleFaults = 0;
@@ -581,7 +602,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       ? { runnerId: runtime.runnerId, name: "Test Mac" }
       : null;
   let browser: BrowserService;
-  let resolvedRequests = 0;
+
   const serviceErrors: unknown[] = [];
   const savedLogins: PasswordsOffer[] = [];
   const stoppedThreads = new Set<string>();
@@ -589,6 +610,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   const passwordSignInErrors: unknown[] = [];
 
   let passwords: PasswordSignInService;
+  let passwordDeadlines: RequestDeadlines;
 
   let service: BrowserSourceService;
   let logins: SavedLoginService;
@@ -645,6 +667,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   afterEach(async () => {
     service?.close();
     logins?.close();
+    await passwordDeadlines?.close();
     await passwords?.close();
     await browser?.close();
     expect(v4Violations, "The Host sent a wire-4 extension a frame it refuses").toEqual([]);
@@ -950,6 +973,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   async function declinePasswordRequest(input: { ownerId: UserId; requestId: RequestId }) {
     const result = await passwords.respond({
       ...input,
+      expectedRevision: (await store.requests.revision(input.requestId))!,
       sessionId: await passwordSession(input.ownerId),
       revalidate: async () => {},
       decision: { kind: "decline" },
@@ -968,6 +992,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     return passwords.respond({
       ownerId: request.requestedBy,
       requestId: request.id,
+      expectedRevision: (await store.requests.revision(request.id))!,
       sessionId,
       revalidate: async () => {},
       decision: {
@@ -1378,6 +1403,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       site: "https://close-open.test",
     });
     if (!("requestId" in answer)) throw new Error("Expected created Request");
+    await settleDeferredPasswordResponse(answer.requestId);
     await waitFor(
       async () => (await passwordRequest(answer.requestId)).request.status === "fulfilled",
     );
@@ -1632,6 +1658,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         decision: { decision: "decline" },
         ownerId: ready.ownerId,
         requestId: other.requestId,
+        expectedRevision: (await store.requests.revision(other.requestId))!,
       });
       await logins.sweepOffers();
       expect(wakes(ready)).toHaveLength(1);
@@ -1953,6 +1980,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const landed = await startedPasswordSignIn("https://store-retry.test");
     settleFaults = 1;
     await approvePasswordRequest(landed.requestId, landed.connection, authorized());
+    await settleDeferredPasswordResponse(landed.requestId);
     await waitFor(
       async () => (await passwordRequest(landed.requestId)).request.status === "fulfilled",
     );
@@ -1986,6 +2014,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const late = await startedPasswordSignIn("https://deadline.test");
     clockOffsetMs = 61 * 60_000;
     try {
+      await passwordDeadlines.settle();
       await waitFor(() => late.connection.signInCancels().length > 0);
       await waitFor(
         async () => (await passwordRequest(late.requestId)).request.status !== "pending",
@@ -2013,7 +2042,10 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       return request;
     });
     try {
-      await entered.promise;
+      passwords.authorityChanged();
+      await withTimeout(entered.promise, 1000, {
+        timeoutError: () => new Error("Password authority reconciliation did not read the Request"),
+      });
       await approvePasswordRequest(ready.requestId, ready.connection, {
         ...authorized(),
         expiresAt: ready.start.expiresAt,
@@ -2095,8 +2127,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         deploymentName: "Test",
         threadTitle: "Test thread",
       }),
-      onRequestResolved: () => {},
-      onDeploymentEvent: () => {},
       requests: store.requests,
     });
     try {
@@ -2533,6 +2563,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         decision: { decision: "allow", sourceId: first.sourceId },
         ownerId,
         requestId: asked.requestId,
+        expectedRevision: (await store.requests.revision(asked.requestId))!,
       }),
     ).toEqual({ problem: "chrome-offline", site, sourceName: "Chrome A", status: "problem" });
     expect(await store.requests.get(asked.requestId)).toMatchObject({ status: "pending" });
@@ -2554,13 +2585,13 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     });
     expect(connection.imports()).toHaveLength(1);
     expect(chromeB.exports).toBe(1);
-    expect(resolvedRequests).toBeGreaterThan(0);
     expect((await sourceStore.list(ownerId)).map(({ id }) => id)).toEqual([second.sourceId]);
     expect(
       await service.respond({
         decision: { decision: "allow", sourceId: second.sourceId },
         ownerId,
         requestId: asked.requestId,
+        expectedRevision: (await store.requests.revision(asked.requestId))!,
       }),
     ).toMatchObject({ site, status: "applied" });
     expect(await service.agentCopyChromeCookies({ ...agent, callId, site })).toMatchObject({
@@ -2581,6 +2612,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         decision: { decision: "decline" },
         ownerId,
         requestId: other.requestId,
+        expectedRevision: (await store.requests.revision(other.requestId))!,
       }),
     ).toBeNull();
     expect(
@@ -2843,6 +2875,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         decision: { decision: "allow", sourceId: paired.sourceId },
         ownerId,
         requestId: later.requestId,
+        expectedRevision: (await store.requests.revision(later.requestId))!,
       }),
     ).toEqual({
       problem: "not-allowed",
@@ -2985,11 +3018,12 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       if (asked.status !== "pending") throw new Error("Expected a pending Request");
       return asked.requestId;
     };
-    const allow = (requestId: Awaited<ReturnType<typeof open>>) =>
+    const allow = async (requestId: Awaited<ReturnType<typeof open>>) =>
       service.respond({
         decision: { decision: "allow", sourceId: paired.sourceId },
         ownerId,
         requestId,
+        expectedRevision: (await store.requests.revision(requestId))!,
       });
     chrome.holdExports = true;
 
@@ -3002,6 +3036,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       decision: { decision: "decline" },
       ownerId,
       requestId: raced,
+      expectedRevision: (await store.requests.revision(raced))!,
     });
     // Let the decline reach its turn before Chrome answers.
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -3016,7 +3051,11 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const declined = await open("https://declined.test");
     const late = allow(declined);
     await waitFor(() => chrome.held.length === 1);
-    await store.requests.declineBrowserSignInRequest({ requestId: declined, resolvedBy: ownerId });
+    await store.requests.declineBrowserSignInRequest({
+      requestId: declined,
+      expectedRevision: (await store.requests.revision(declined))!,
+      resolvedBy: ownerId,
+    });
     chrome.releaseExports();
     await expect(late).rejects.toMatchObject({ code: "conflict" });
     expect(await store.requests.get(declined)).toMatchObject({ status: "declined" });
@@ -3089,6 +3128,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         decision: { decision: "allow", sourceId: paired.sourceId },
         ownerId,
         requestId: asked.requestId,
+        expectedRevision: (await store.requests.revision(asked.requestId))!,
       }),
     ).toMatchObject({ problem: "chrome-offline" });
     chrome = await connectChrome(paired);
@@ -3320,6 +3360,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
 
   it("sends a wire-4 extension every frame type in a shape its frozen schemas accept", async () => {
     service.close();
+    await passwordDeadlines.close();
     await passwords.close();
     await browser.close();
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });

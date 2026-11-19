@@ -192,13 +192,14 @@ try {
     );
     return { box };
   });
-  await check("mock bootstrap advertises the resulting layout without browser errors", async () => {
+  await check("the tab resource reports the resulting layout without browser errors", async () => {
     const layout = await page.evaluate(async () => {
       const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-      const result = await client.rpc["bootstrap.get"]({});
+      const result = await client.rpc["resources.detail.get"]({ kind: "tab-layout" });
       if (!result.ok) throw new Error(result.error.message);
+      if (result.data.data.kind !== "tab-layout") throw new Error("Wrong tab resource");
       return {
-        groups: result.data.tabs.layout.items.flatMap((item) =>
+        groups: result.data.data.tabs.layout.items.flatMap((item) =>
           item.kind === "group" ? [item.group.name] : [],
         ),
       };
@@ -206,7 +207,7 @@ try {
     expectThat(
       { ...layout, errors },
       layout.groups.includes("Reading") && errors.length === 0,
-      "bootstrap or page errors disagree with the UI",
+      "the tab resource or page errors disagree with the UI",
     );
     return { ...layout, errors };
   });

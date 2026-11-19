@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { totalmem } from "node:os";
 import type { RunnerCommand } from "@opensteer/protocol";
 import type { HarnessCapabilities, HarnessSkillPlan } from "@opensteer/harness";
 import type { HarnessInstanceId, ThreadId } from "@opensteer/core";
@@ -42,6 +43,18 @@ export interface WarmEngine {
   readonly threadId: ThreadId;
 }
 
+const gibibyte = 1024 ** 3;
+
+/**
+ * How many idle engines a computer keeps warm. Each is a resident provider
+ * process tree, so a small laptop keeps one or two rather than eight.
+ */
+export function warmEngineIdleCap(totalMemoryBytes: number = totalmem()): number {
+  if (totalMemoryBytes <= 4 * gibibyte) return 1;
+  if (totalMemoryBytes <= 8 * gibibyte) return 2;
+  return 8;
+}
+
 interface Idle {
   readonly engine: WarmEngine;
   readonly timer: NodeJS.Timeout;
@@ -69,7 +82,7 @@ export class WarmEnginePool {
     readonly retire: (engine: WarmEngine) => Promise<void>;
   }) {
     this.#idleMs = options.idleMs ?? 15 * 60 * 1_000;
-    this.#maxIdle = options.maxIdle ?? 8;
+    this.#maxIdle = options.maxIdle ?? warmEngineIdleCap();
     this.#retire = options.retire;
   }
 

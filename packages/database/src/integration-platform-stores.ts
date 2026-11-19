@@ -1,3 +1,4 @@
+import { lockRequestThreads } from "./request-persistence.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import {
   getDeviceSelfRunnerId,
@@ -5,7 +6,7 @@ import {
   requireDeviceSelfRunnerId,
 } from "./device-inventory-store.js";
 import { DeviceIdSchema, type DeviceId } from "@opensteer/core";
-import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { integrationAccountLabel } from "@opensteer/integration-core";
 import {
   administrationCommand,
@@ -60,7 +61,6 @@ import {
 import {
   OpensteerError,
   createId,
-  type AgentEvent,
   type RequestId,
   type ThreadId,
   type UserId,
@@ -303,7 +303,6 @@ export interface InstallIntegrationInput {
 
 export interface InstallIntegrationMutation {
   readonly installation: IntegrationInstallation;
-  readonly requestEvents: readonly AgentEvent[];
 }
 
 export interface UninstallIntegrationInput {
@@ -319,7 +318,6 @@ export interface UninstallIntegrationMutation {
   readonly removedConnectionIds: readonly IntegrationConnectionId[];
   readonly removedApps: readonly RemovedComputerApp[];
   readonly removedServerIds: readonly IntegrationServerId[];
-  readonly requestEvents: readonly AgentEvent[];
 }
 
 export type RevokeComputerConnectionSelector =
@@ -342,7 +340,6 @@ export interface RevokeComputerConnectionsMutation {
   readonly connectionIds: readonly IntegrationConnectionId[];
   /** The apps whose approval this removal took back, `(deviceId, appKey)` and all. */
   readonly removedApps: readonly RemovedComputerApp[];
-  readonly requestEvents: readonly AgentEvent[];
 }
 
 export type { ComputerAppAccessSettlement } from "./computer-app-approvals.js";
@@ -351,6 +348,7 @@ export type { ComputerAppAccessSettlement } from "./computer-app-approvals.js";
 export async function revokeComputerConnectionsInTransaction(
   transaction: Transaction<DatabaseSchema>,
   selector: RevokeComputerConnectionSelector,
+  requestThreadIds: readonly import("@opensteer/core").ThreadId[] = [],
 ): Promise<RevokeComputerConnectionsMutation> {
   let query = transaction
     .selectFrom("integrationConnections")
@@ -468,7 +466,7 @@ export async function revokeComputerConnectionsInTransaction(
       .where("revokedAt", "is", null)
       .execute();
   }
-  const declined = await declineComputerAppAccessRequestsInTransaction(transaction, {
+  await declineComputerAppAccessRequestsInTransaction(transaction, {
     setupRequestIds: revokedSetupRequestIds,
   });
   const removedApps = connections.flatMap((connection): readonly RemovedComputerApp[] =>
@@ -489,7 +487,6 @@ export async function revokeComputerConnectionsInTransaction(
       cancelledRequestIds: [],
       connectionIds: [],
       removedApps: [],
-      requestEvents: declined.requestEvents,
     };
   }
   await transaction
@@ -514,6 +511,7 @@ export async function revokeComputerConnectionsInTransaction(
     transaction,
     dependentChannels.map(({ id }) => id),
   );
+  await lockRequestThreads(transaction, requestThreadIds);
   const requestIds = new Set<RequestId>();
   for (const connection of connections) {
     const pending = await transaction
@@ -543,7 +541,7 @@ export async function revokeComputerConnectionsInTransaction(
     for (const request of pending) requestIds.add(request.id);
   }
   const cancelledRequestIds = [...requestIds];
-  const requestEvents = await cancelPending(transaction, {
+  await cancelPending(transaction, {
     reason: "resource-deleted",
     requestIds: cancelledRequestIds,
     resolvedAt: now,
@@ -577,7 +575,6 @@ export async function revokeComputerConnectionsInTransaction(
     cancelledRequestIds,
     connectionIds,
     removedApps,
-    requestEvents: [...declined.requestEvents, ...requestEvents],
   };
 }
 
@@ -647,10 +644,24 @@ export async function uninstallIntegrationInTransaction(
         .onConflict((oc) => oc.columns(["runnerId", "pluginId"]).doNothing())
         .execute();
   }
+  const requestThreads = await transaction
+    .selectFrom("requests")
+    .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
+    .select("requests.originatingThreadId")
+    .distinct()
+    .where("requests.kind", "=", "integration.access")
+    .where("requests.status", "=", "pending")
+    .where("integrationRequestDetails.installationId", "=", installation.id)
+    .execute();
+  const requestThreadIds = requestThreads.map(({ originatingThreadId }) => originatingThreadId);
   const uninstallIds = await uninstallConnectionIds(transaction, serverIds);
-  const revokedComputerConnections = await revokeComputerConnectionsInTransaction(transaction, {
-    installationId: installation.id,
-  });
+  const revokedComputerConnections = await revokeComputerConnectionsInTransaction(
+    transaction,
+    {
+      installationId: installation.id,
+    },
+    requestThreadIds,
+  );
   // A server a computer runs goes with its plugin, and so does the approval
   // it waits on there.
   if (serverIds.length > 0) {
@@ -667,10 +678,10 @@ export async function uninstallIntegrationInTransaction(
     .where("requests.kind", "=", "integration.access")
     .where("requests.status", "=", "pending")
     .where("integrationRequestDetails.installationId", "=", installation.id)
-    .forNoKeyUpdate("requests")
     .execute();
+  await lockRequestThreads(transaction, requestThreadIds);
   const remainingCancelledRequestIds = pendingAccessRequests.map(({ id }) => id);
-  const remainingRequestEvents = await cancelPending(transaction, {
+  await cancelPending(transaction, {
     reason: "resource-deleted",
     requestIds: remainingCancelledRequestIds,
     resolvedAt: now,
@@ -681,7 +692,6 @@ export async function uninstallIntegrationInTransaction(
       ...remainingCancelledRequestIds,
     ]),
   ];
-  const requestEvents = [...revokedComputerConnections.requestEvents, ...remainingRequestEvents];
   const removedConnectionIds = [
     ...new Set([...revokedComputerConnections.connectionIds, ...uninstallIds]),
   ];
@@ -792,7 +802,6 @@ export async function uninstallIntegrationInTransaction(
     removedConnectionIds,
     removedApps: revokedComputerConnections.removedApps,
     removedServerIds: serverIds,
-    requestEvents,
   };
 }
 
@@ -849,7 +858,6 @@ export async function installIntegrationInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: InstallIntegrationInput,
 ): Promise<InstallIntegrationMutation> {
-  await lockDeploymentEvents(transaction);
   validateInstallation(input);
   await lockIntegrationInstallationIdentityInTransaction(transaction, input.installation);
   const current = await transaction
@@ -1062,7 +1070,7 @@ export async function installIntegrationInTransaction(
     input.installation.status !== "active" || installationAuthorityChanged
       ? pendingAccessRequests.map(({ id }) => id)
       : [];
-  const requestEvents = await cancelPending(transaction, {
+  await cancelPending(transaction, {
     reason: "authority-revoked",
     requestIds: invalidatedRequestIds,
     resolvedAt: now,
@@ -1084,7 +1092,7 @@ export async function installIntegrationInTransaction(
       targetType: "integration-installation",
     })
     .executeTakeFirstOrThrow();
-  return { installation: installationFromRow(installation), requestEvents };
+  return { installation: installationFromRow(installation) };
 }
 
 function exactCatalogDefinitionId(
@@ -1097,7 +1105,7 @@ function exactCatalogDefinitionId(
 
 export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
   async install(input: InstallIntegrationInput): Promise<InstallIntegrationMutation> {
-    return withPersonalTransaction(this.database, async (transaction) =>
+    return commitPersonalMutation(this.database, async (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         await input.beforeInstall?.(transaction);
         const mutation = await installIntegrationInTransaction(transaction, input);
@@ -1109,7 +1117,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
   }
 
   async uninstall(input: UninstallIntegrationInput): Promise<UninstallIntegrationMutation> {
-    return withPersonalTransaction(this.database, (transaction) =>
+    return commitPersonalMutation(this.database, (transaction) =>
       administrationCommand(transaction, input.administration, () =>
         uninstallIntegrationInTransaction(transaction, input),
       ),
@@ -1120,7 +1128,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     installationId: IntegrationInstallationId,
     reason: string,
   ): Promise<void> {
-    await withPersonalTransaction(this.database, (transaction) =>
+    await commitPersonalMutation(this.database, (transaction) =>
       markNeedsAttentionInTransaction(transaction, installationId, reason),
     );
   }
@@ -1482,7 +1490,7 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
   >();
 
   async createGrant(input: CreateIntegrationGrantInput): Promise<IntegrationGrant> {
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return commitPersonalMutation(this.database, async (transaction) => {
       // Standalone grants have no Request/approval transaction to fence their
       // parents. Hold those fences before the grant scope, then validate current
       // membership and resource state in createGrantInTransaction.
@@ -1573,7 +1581,7 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<void> {
-    await withPersonalTransaction(this.database, async (transaction) =>
+    await commitPersonalMutation(this.database, async (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         const row = await transaction
           .updateTable("integrationGrants")

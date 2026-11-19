@@ -306,7 +306,7 @@ export default { ...config, test: { ...config.test, globalSetup: [${JSON.stringi
     const enforced = await journey("reversal-enforce", { OPENSTEER_LOCK_ORDER_MODE: "enforce" });
     expect(enforced.code, enforced.log).toBe(1);
     expect((await failureMessages(enforced.directory)).join("\n"), enforced.log).toMatch(
-      /Database lock order: threads -> deployment_event_state/u,
+      /Database lock order: threads -> client_sync_state/u,
     );
   });
 

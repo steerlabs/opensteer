@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "../host/client.js";
 import cronstrue from "cronstrue";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import type { Request, RequestResponse } from "@opensteer/core";
@@ -329,13 +330,14 @@ export const confirmPluginWebhookRemoval = (
 /** Answers one of the three plugin Requests through the ordinary Request path. */
 export function respondToPluginRequest(
   client: PluginsHost,
-  requestId: Request["id"],
+  request: Request,
   response: RequestResponse,
 ) {
   return client.dispatch({
     type: "request.respond",
-    idempotencyKey: mutationIdempotencyKey(`request:${requestId}`),
-    requestId,
+    idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
+    requestId: request.id,
+    ...requestDecisionRevision(request),
     response,
   });
 }

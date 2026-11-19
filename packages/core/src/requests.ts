@@ -845,7 +845,11 @@ const waitingRequestAssignments = z
  * Assignment's Run asked holds up nothing handed out.
  */
 /** The subagent that asked a Request, as its Run named it. */
-const askingSubagent = z.object({ id: ExecutionNodeIdSchema, title: z.string().min(1).max(240) });
+const subagentName = z.object({ id: ExecutionNodeIdSchema, title: z.string().min(1).max(240) });
+const askingSubagent = subagentName.extend({
+  /** The subagent it runs inside, when it is nested. */
+  within: subagentName.nullable().optional(),
+});
 
 export const WaitingRequestPresentationSchema = z.object({
   threadId: ThreadIdSchema,
@@ -931,4 +935,61 @@ export function readableRequestList<T>(schema: z.ZodType<T>, max: number) {
         return result.success ? [result.data] : [];
       }),
     );
+}
+
+/** The winning answerer, shared by Request cards and transcript receipts. */
+export function requestSettlementLabel(
+  request: Pick<Request, "status" | "settlementProvenance">,
+): string | null {
+  if (!request.settlementProvenance) return null;
+  if ("kind" in request.settlementProvenance) {
+    return request.status === "fulfilled" || request.status === "declined"
+      ? `Answered by ${request.settlementProvenance.title}`
+      : null;
+  }
+  const decision =
+    request.status === "fulfilled" ? "Allowed" : request.status === "declined" ? "Declined" : null;
+  return decision ? `${decision} on ${request.settlementProvenance.deviceLabel}` : null;
+}
+
+export function requestOutcomeText(request: Request): string {
+  if (request.status === "pending") return "Pending";
+  if (request.status === "cancelled") {
+    if (request.cancellationReason === "plugin-interrupted")
+      return "Cancelled · Plugin execution was interrupted";
+    if (request.cancellationReason === "plugin-expired")
+      return "Cancelled · Plugin request expired";
+    return `Cancelled · ${request.cancellationReason}`;
+  }
+  if (request.status === "withdrawn") return "Withdrawn";
+  const settlement = requestSettlementLabel(request);
+  if (settlement) return settlement;
+  const prefix = request.status === "declined" ? "Declined" : "Fulfilled";
+  if (request.response.kind === "choice" && request.presentation.kind === "choice") {
+    const { options } = request.presentation;
+    const optionId = request.response.optionId;
+    const chosen = options.find((option) => option.id === optionId);
+    // The one way a Request offered to decline it says nothing "Declined" does not.
+    if (
+      !chosen ||
+      (request.status === "declined" && options.filter(requestOptionDeclines).length === 1)
+    ) {
+      return prefix;
+    }
+    return `${prefix} · ${chosen.label}`;
+  }
+  if (request.response.kind === "form") return `${prefix} · Answered`;
+  if (request.response.kind === "external") {
+    return externalDecisionLabel(request.response.value?.["decision"]) ?? prefix;
+  }
+  return prefix;
+}
+
+/**
+ * The receipt of an externally resolved Request. Its response value carries the
+ * decision, which is all the receipt says: a status beside it would repeat it.
+ */
+function externalDecisionLabel(decision: unknown): string | null {
+  if (decision === "fulfilled") return "Allowed";
+  return decision === "declined" ? "Declined" : null;
 }

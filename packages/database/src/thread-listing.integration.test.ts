@@ -50,16 +50,18 @@ describeStore("person-asked Thread listing", (it) => {
       });
     const asked = await delegate("asked");
     expect(asked.thread.listed).toBe(true);
-    expect(asked.events.filter((event) => event.type === "thread.created")).toMatchObject([
-      {
-        data: {
-          thread: {
-            listed: true,
-          },
-        },
-      },
+    const listedChanges = (threadId: ThreadId) =>
+      database
+        .selectFrom("clientChanges")
+        .select("payload")
+        .where("scopeKey", "=", "shell")
+        .where("entityKind", "=", "task")
+        .where("entityId", "=", threadId)
+        .where("operation", "=", "upsert")
+        .execute();
+    expect(await listedChanges(asked.thread.id)).toMatchObject([
+      { payload: { id: asked.thread.id, title: asked.thread.title } },
     ]);
-    expect(asked.events.some((event) => event.type === "thread.listed")).toBe(false);
     const authors: MessageAuthor[] = [
       {
         kind: "platform",
@@ -129,14 +131,8 @@ describeStore("person-asked Thread listing", (it) => {
       .execute();
     const promoted = await delegate("promote", helper.thread.id);
     expect(promoted.thread.listed).toBe(true);
-    expect(promoted.events.filter((event) => event.type === "thread.listed")).toMatchObject([
-      {
-        data: {
-          thread: {
-            listed: true,
-          },
-        },
-      },
+    expect(await listedChanges(promoted.thread.id)).toMatchObject([
+      { payload: { id: helper.thread.id } },
     ]);
   });
   it("keeps a person's child inside its parent, including Voice", async ({ storeFixture }) => {
@@ -164,7 +160,7 @@ describeStore("person-asked Thread listing", (it) => {
   });
   for (const kind of ["trigger", "watch"] as const) {
     it(`keeps ${kind} work unlisted, including a re-tasked helper`, async ({ storeFixture }) => {
-      const { startRunFixture, startTriggerOccurrence, store, triggers } = storeFixture;
+      const { startRunFixture, startTriggerOccurrence, store, triggers, database } = storeFixture;
       const f = await startRunFixture(`automation-${kind}`);
       const base = {
         accessMode: "auto" as const,
@@ -252,7 +248,16 @@ describeStore("person-asked Thread listing", (it) => {
             : {}),
         });
         expect(result.thread.listed).toBe(false);
-        expect(result.events.some((event) => event.type === "thread.listed")).toBe(false);
+        expect(
+          await database
+            .selectFrom("clientChanges")
+            .select("entityId")
+            .where("scopeKey", "=", "shell")
+            .where("entityKind", "=", "task")
+            .where("operation", "=", "upsert")
+            .where("entityId", "=", result.thread.id)
+            .execute(),
+        ).toEqual([]);
       }
     });
   }

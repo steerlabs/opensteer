@@ -1,18 +1,21 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
-import { readEmptyPersonalResources } from "./store.integration.test-support.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 
 import { finalizeRunTransaction } from "./run-finalization.js";
-import { messageFromRow, threadInputFromRow } from "./thread-row-mappers.js";
 
-import { createId, AgentEventSchema, ModelSelectionSchema } from "@opensteer/core";
+import { createId, ModelSelectionSchema } from "@opensteer/core";
 import { expect } from "vitest";
-import { OpensteerStore } from "./store.js";
+import { readPersonalDetailSnapshot, readPersonalShellSnapshot } from "./snapshot-store.js";
+import { readTranscriptPage } from "./personal-sync-store.js";
+import { readPersonalTaskPage } from "./personal-task-store.js";
+import { publishThreadSummary } from "./thread-status.js";
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
+import { clientSendKeyWireReserve } from "@opensteer/protocol/transcript";
 import {
   describeStore,
   testModelSelection,
   testContinuationIdentity,
   testRunnerDescriptor,
+  pendingEvent,
 } from "./store.integration.test-support.js";
 describeStore("Deployment snapshot history", (it) => {
   it("remembers a human hand-off returned to the queue at finalization", async ({
@@ -100,7 +103,7 @@ describeStore("Deployment snapshot history", (it) => {
       })
       .where("id", "=", f.thread.id)
       .execute();
-    await withPersonalTransaction(database, (tx) =>
+    await commitPersonalMutation(database, (tx) =>
       finalizeRunTransaction(tx, {
         completedAt: new Date(),
         links: {
@@ -133,7 +136,7 @@ describeStore("Deployment snapshot history", (it) => {
   });
 
   it("keeps a human-seeded Run stopped before claim", async ({ storeFixture }) => {
-    const { database, store, createRunFixture, enqueueHumanTrigger } = storeFixture;
+    const { database, createRunFixture, enqueueHumanTrigger } = storeFixture;
     const f = await createRunFixture("human-stop-before-claim");
     const admitted = await enqueueHumanTrigger({
       content: [
@@ -146,7 +149,7 @@ describeStore("Deployment snapshot history", (it) => {
       idempotencyKey: "human-stop",
       threadId: f.thread.id,
     });
-    await withPersonalTransaction(database, (tx) =>
+    await commitPersonalMutation(database, (tx) =>
       finalizeRunTransaction(tx, {
         completedAt: new Date(),
         links: {
@@ -168,9 +171,9 @@ describeStore("Deployment snapshot history", (it) => {
       personWaited: true,
     });
     expect(
-      await store.threadEventPageForOwner({
-        ownerId: f.userId,
-        threadId: f.thread.id,
+      await readTranscriptPage(database, {
+        viewerId: f.userId,
+        scope: { kind: "thread", threadId: f.thread.id },
         maxTurns: 10,
       }),
     ).not.toBeNull();
@@ -186,107 +189,39 @@ describeStore("Deployment snapshot history", (it) => {
       .where("id", "=", f.thread.id)
       .execute();
     const seed = await database
-      .selectFrom("messages")
+      .selectFrom("transcriptItems")
       .selectAll()
-      .where("id", "=", f.run.seedInputId)
+      .where("messageId", "=", f.run.seedInputId)
       .executeTakeFirstOrThrow();
-    const input = threadInputFromRow(
-      await database
-        .selectFrom("threadInputs")
-        .selectAll()
-        .where("messageId", "=", f.run.seedInputId)
-        .executeTakeFirstOrThrow(),
-    );
-    const message = {
-      ...messageFromRow(seed),
-      author: {
-        kind: "watch",
-        displayName: "Watcher",
-        activationId: createId("triggerWatchActivation"),
-        revisionId: createId("triggerRevision"),
-        triggerId: createId("trigger"),
-      },
-    };
-    const starts: string[] = [];
-    for (const [type, data] of [
-      [
-        "message.placed",
-        {
-          message,
-        },
-      ],
-      [
-        "message.created",
-        {
-          message: {
-            ...message,
-            id: createId("message"),
-          },
-          input: {
-            ...input,
-            policy: "steer",
-          },
-        },
-      ],
-      [
-        "message.placed",
-        {
-          message: {
-            ...message,
-            id: createId("message"),
-          },
-        },
-      ],
-      [
-        "message.created",
-        {
-          message: {
-            ...message,
-            id: createId("message"),
-            runId: null,
-          },
-          input: {
-            ...input,
-            policy: "report",
-          },
-        },
-      ],
-      [
-        "run.completed",
-        {
-          status: "completed",
-          replyMessageId: null,
-          startedBy: message.author,
-          personWaiting: false,
-          startedAt: seed.createdAt.toISOString(),
-        },
-      ],
-    ] as const) {
-      const event = await withPersonalTransaction(database, (transaction) =>
-        appendHostDeploymentEvent(
-          transaction,
-          AgentEventSchema.parse({
-            type,
-            data,
-            threadId: f.thread.id,
-            runId: f.run.id,
-            environmentId: f.environmentId,
-            eventId: createId("event"),
-            sequence: "0",
-            createdAt: new Date().toISOString(),
-          }),
-        ),
-      );
-      starts.push(event.sequence);
+    for (const [index, policy] of (["report", "steer"] as const).entries()) {
+      const report = await store.enqueueThreadInput({
+        threadId: f.thread.id,
+        requestedBy: f.userId,
+        policy,
+        content: [{ type: "text", text: "Automatic update" }],
+        source: { kind: "agent", runId: f.run.id },
+        idempotencyKey: `automatic-update-${index}`,
+      });
+      const item = await database
+        .selectFrom("transcriptItems")
+        .select("isTurnStart")
+        .where("messageId", "=", report.message.id)
+        .executeTakeFirst();
+      expect(item?.isTurnStart ?? false).toBe(false);
     }
-    const page = await store.threadEventPageForOwner({
-      ownerId: f.userId,
-      threadId: f.thread.id,
+    const page = await readTranscriptPage(database, {
+      viewerId: f.userId,
+      scope: { kind: "thread", threadId: f.thread.id },
       maxTurns: 1,
     });
-    expect(page!.events.map(({ sequence }) => sequence)).toEqual(starts);
-    expect(page!.window.nextBefore).toBe(starts[0]);
-    expect(page!.window.totalItems).toBeGreaterThanOrEqual(5);
+    expect(page).toMatchObject({
+      kind: "page",
+      items: expect.arrayContaining([expect.objectContaining({ id: seed.id })]),
+    });
+    if (page.kind !== "page") throw new Error("The transcript must be available");
+    expect(page.items.filter(({ isTurnStart }) => isTurnStart).map(({ id }) => id)).toEqual([
+      seed.id,
+    ]);
   });
   it("moves tasks only for admitted human work, including steering a running turn", async ({
     storeFixture,
@@ -328,14 +263,19 @@ describeStore("Deployment snapshot history", (it) => {
       })
       .where("id", "=", other.thread.id)
       .execute();
-    const page = () =>
-      store.taskPageForUser({
-        userId: f.userId,
-      });
-    expect((await page()).tasks.map(({ thread }) => thread.id)).toEqual([
-      other.thread.id,
-      f.thread.id,
-    ]);
+    const page = async () => {
+      const [active, settled] = await Promise.all(
+        (["active", "recent"] as const).map((window) =>
+          readPersonalTaskPage(database, { viewerId: f.userId, window }),
+        ),
+      );
+      return {
+        tasks: [...active!.tasks, ...settled!.tasks].sort(
+          (left, right) => right.askedAt.getTime() - left.askedAt.getTime(),
+        ),
+      };
+    };
+    expect((await page()).tasks.map(({ id }) => id)).toEqual([other.thread.id, f.thread.id]);
     const steer = await store.enqueueThreadInput({
       content: [
         {
@@ -352,13 +292,13 @@ describeStore("Deployment snapshot history", (it) => {
       threadId: f.thread.id,
     });
     expect(steer.disposition).toBe("steering");
-    const asked = (await page()).tasks[0]!.thread;
+    const asked = (await page()).tasks[0]!;
     expect(asked.id).toBe(f.thread.id);
-    expect(Date.parse(asked.askedAt!)).toBeGreaterThan(Date.parse("2021-01-01"));
+    expect(asked.askedAt.getTime()).toBeGreaterThan(Date.parse("2021-01-01"));
     const unchanged = async () =>
-      expect(
-        (await page()).tasks.find(({ thread }) => thread.id === f.thread.id)!.thread.askedAt,
-      ).toBe(asked.askedAt);
+      expect((await page()).tasks.find(({ id }) => id === f.thread.id)!.askedAt).toEqual(
+        asked.askedAt,
+      );
     await store.enqueueThreadInput({
       content: [
         {
@@ -413,11 +353,16 @@ describeStore("Deployment snapshot history", (it) => {
       })
       .where("id", "=", child.assignment.id)
       .execute();
+    await store.drainAssignmentReturn(child.assignment.id);
     expect(
-      (await store.drainAssignmentReturn(child.assignment.id)).some(
-        ({ type }) => type === "message.created",
-      ),
-    ).toBe(true);
+      await database
+        .selectFrom("delegations")
+        .select("resultMessageId")
+        .where("id", "=", child.assignment.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      resultMessageId: expect.any(String),
+    });
     await unchanged();
     await store.enqueueThreadInput({
       content: [
@@ -499,77 +444,353 @@ describeStore("Deployment snapshot history", (it) => {
       },
       threadId: other.thread.id,
     });
-    expect((await page()).tasks[0]!.thread.id).toBe(other.thread.id);
+    expect((await page()).tasks[0]!.id).toBe(other.thread.id);
   });
-  it("omits history without reading message rows or counts and retains metadata", async ({
+  it("lists active tasks beside the settled window and counts Done with its quiet reason", async ({
+    storeFixture,
+  }) => {
+    const { database, store, startRunFixture } = storeFixture;
+    const f = await startRunFixture("settled-window");
+    const create = async (key: string) =>
+      (
+        await store.createThread({
+          createdBy: f.userId,
+          environmentId: f.environmentId,
+          harnessInstanceId: f.harnessInstance.id,
+          idempotencyKey: key,
+          modelSelection: testModelSelection,
+          title: key,
+        })
+      ).thread.id;
+    const settled = await create("settled-open");
+    const done = [await create("done-quiet"), await create("done-person")];
+    await database
+      .updateTable("threads")
+      .set({ doneAt: new Date(), doneReason: "quiet" })
+      .where("id", "=", done[0]!)
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ doneAt: new Date() })
+      .where("id", "=", done[1]!)
+      .execute();
+    const shell = await readPersonalShellSnapshot(database, { viewerId: f.userId });
+    if (shell.kind !== "snapshot") throw new Error("Expected a shell cut");
+    expect(shell.snapshot.activeTaskIds).toEqual([f.thread.id]);
+    expect(shell.snapshot.recentTaskIds).toEqual([settled]);
+    expect(shell.snapshot.activeNextBefore).toBeNull();
+    const page = await readPersonalTaskPage(database, {
+      viewerId: f.userId,
+      window: "done",
+      limit: 1,
+    });
+    expect(page).toMatchObject({ hasMore: true, totalItems: 2 });
+    expect(page.tasks).toHaveLength(1);
+    // The list is counted when it opens; a continuation does not count it again.
+    const next = await readPersonalTaskPage(database, {
+      viewerId: f.userId,
+      window: "done",
+      limit: 1,
+      before: page.nextBefore!,
+    });
+    expect(next.tasks).toHaveLength(1);
+    expect(next).not.toHaveProperty("totalItems");
+    await commitPersonalMutation(database, (tx) => publishThreadSummary(tx, done[0]!));
+    const pushed = await database
+      .selectFrom("clientChanges")
+      .select("payload")
+      .where("scopeKey", "=", "shell")
+      .where("entityKind", "=", "task")
+      .where("entityId", "=", done[0]!)
+      .orderBy("sequence", "desc")
+      .executeTakeFirstOrThrow();
+    expect(pushed.payload).toMatchObject({ doneReason: "quiet" });
+  });
+
+  it("budgets a detail's waiting messages for the send keys their sender's reads add", async ({
+    storeFixture,
+  }) => {
+    const { store, startRunFixture } = storeFixture;
+    const f = await startRunFixture("queue-send-key-budget");
+    for (let index = 0; index < 40; index++)
+      await store.enqueueThreadInput({
+        requestedBy: f.userId,
+        threadId: f.thread.id,
+        content: [{ type: "text", text: `${index} ${"words ".repeat(400)}` }],
+        source: { kind: "human" },
+        policy: "queue",
+        idempotencyKey: `queue-send-key-budget-${index}`,
+      });
+    const detail = await readPersonalDetailSnapshot(store.database, {
+      viewerId: f.userId,
+      scope: { kind: "thread", threadId: f.thread.id },
+    });
+    if (detail.kind !== "snapshot") throw new Error("Expected a detail cut");
+    const { inputQueue = [], inputQueueComplete, queue } = detail.snapshot;
+    expect(queue?.inputs).toHaveLength(40);
+    expect(inputQueueComplete).toBe(false);
+    expect(inputQueue.length).toBeGreaterThan(0);
+    expect(inputQueue.map(({ message }) => message.id)).toEqual(
+      queue?.inputs.slice(0, inputQueue.length),
+    );
+    expect(
+      Buffer.byteLength(JSON.stringify(inputQueue)) + inputQueue.length * clientSendKeyWireReserve,
+    ).toBeLessThanOrEqual(24 * 1024);
+  });
+
+  it("resumes a detail with its current thread value after its computer's capabilities changed", async ({
+    storeFixture,
+  }) => {
+    const { database, store, startRunFixture } = storeFixture;
+    const f = await startRunFixture("capability-resume");
+    const descriptor = testRunnerDescriptor({
+      environmentId: f.environmentId,
+      runnerId: f.runnerId,
+      runnerKind: "main",
+      name: "Hosting computer",
+    });
+    await store.authenticateRunnerConnection(descriptor);
+    const state = await database
+      .selectFrom("clientSyncState")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    const cursor = {
+      deploymentId: state.deploymentId,
+      epoch: state.epoch,
+      viewerId: f.userId,
+      scopeKey: `thread:${f.thread.id}` as const,
+      afterSequence: state.sequence,
+    };
+    await store.authenticateRunnerConnection({
+      ...descriptor,
+      bootId: `rbt_${crypto.randomUUID()}` as typeof descriptor.bootId,
+      capabilities: [...descriptor.capabilities, "claude-compaction-v1"],
+    });
+    // A fresh read (as after a Host restart) of the durable feed carries the hint's new value.
+    const resumed = await readPersonalDetailSnapshot(database, {
+      viewerId: f.userId,
+      scope: { kind: "thread", threadId: f.thread.id },
+      cursor,
+    });
+    if (resumed.kind !== "replay") throw new Error("Expected a replay");
+    expect(resumed.commits.flatMap(({ changes }) => changes)).toContainEqual(
+      expect.objectContaining({ entityKind: "thread", entityId: f.thread.id, operation: "upsert" }),
+    );
+  });
+
+  it("moves a pending Request's attention forward when the subagent asking for it is renamed", async ({
     storeFixture,
   }) => {
     const { database, store, startRunFixture, openLiveRequest } = storeFixture;
-    const f = await startRunFixture("snapshot-omitted-history");
+    const f = await startRunFixture("asker-rename");
+    const emit = async (type: string, data: Record<string, unknown>) => {
+      const run = await database
+        .selectFrom("runs")
+        .select("nextRunnerOrdinal")
+        .where("id", "=", f.run.id)
+        .executeTakeFirstOrThrow();
+      await store.commitRunnerEvent({
+        environmentId: f.environmentId,
+        runnerBootId: f.runnerBootId,
+        runnerId: f.runnerId,
+        event: pendingEvent({
+          bindingGeneration: f.bindingGeneration,
+          data,
+          environmentId: f.environmentId,
+          ordinal: run.nextRunnerOrdinal,
+          runId: f.run.id,
+          threadId: f.threadId,
+          type,
+        } as Parameters<typeof pendingEvent>[0]),
+      });
+    };
+    const nodeId = createId("executionNode");
+    await emit("node.started", {
+      nodeId,
+      kind: "subagent",
+      effort: null,
+      model: null,
+      phaseIndex: 0,
+      nativeRef: nodeId,
+      sessionRef: null,
+      originCallId: null,
+      parentNodeId: null,
+      prompt: null,
+      title: "Research",
+    });
+    const requestId = createId("request");
+    await openLiveRequest(f, requestId);
+    await database
+      .updateTable("requests")
+      .set({ originatingNodeId: nodeId })
+      .where("id", "=", requestId)
+      .execute();
+    const attention = () =>
+      database
+        .selectFrom("clientChanges")
+        .select(["sequence", "operation"])
+        .where("scopeKey", "=", "shell")
+        .where("entityKind", "=", "attention")
+        .where("entityId", "=", `request:${requestId}`)
+        .orderBy("sequence", "desc")
+        .executeTakeFirstOrThrow();
+    const childId = createId("executionNode");
+    await emit("node.started", {
+      nodeId: childId,
+      kind: "subagent",
+      effort: null,
+      model: null,
+      phaseIndex: 0,
+      nativeRef: childId,
+      sessionRef: null,
+      originCallId: null,
+      parentNodeId: nodeId,
+      prompt: null,
+      title: "Read the logs",
+    });
+    const childRequestId = createId("request");
+    await openLiveRequest(f, childRequestId);
+    await database
+      .updateTable("requests")
+      .set({ originatingNodeId: childId })
+      .where("id", "=", childRequestId)
+      .execute();
+    const opened = await attention();
+    await emit("node.updated", { nodeId, title: "Research the queue" });
+    const renamed = await attention();
+    expect(renamed.operation).toBe("upsert");
+    expect(BigInt(renamed.sequence)).toBeGreaterThan(BigInt(opened.sequence));
+    // A repair reads the same revision from current rows, for the asker and the Request inside it.
+    const repaired = await readPersonalShellSnapshot(database, { viewerId: f.userId });
+    if (repaired.kind !== "snapshot") throw new Error("Expected a shell snapshot");
+    const revisions = new Map(repaired.snapshot.attention.map((item) => [item.id, item.revision]));
+    expect(revisions.get(`request:${requestId}`)).toBe(renamed.sequence);
+    expect(revisions.get(`request:${childRequestId}`)).toBe(renamed.sequence);
+    expect(repaired.snapshot.counts.pendingRequestsRevision).toBe(renamed.sequence);
+    // The same title again changes nothing a waiting Request shows.
+    await emit("node.updated", { nodeId, title: "Research the queue" });
+    const unchanged = await database
+      .selectFrom("clientSyncState")
+      .select("pendingRequestsRevision")
+      .executeTakeFirstOrThrow();
+    expect(unchanged.pendingRequestsRevision).toBe(renamed.sequence);
+    expect((await attention()).sequence).toBe(renamed.sequence);
+  });
+
+  it("moves the shell's pending-Requests revision when, and only when, the Waiting Requests list changes", async ({
+    storeFixture,
+  }) => {
+    const { database, store, startRunFixture, openLiveRequest } = storeFixture;
+    const f = await startRunFixture("pending-revision");
+    const other = await startRunFixture("pending-revision-other");
+    const state = () =>
+      database
+        .selectFrom("clientSyncState")
+        .select(["sequence", "pendingRequestsRevision"])
+        .executeTakeFirstOrThrow();
+    const rename = (threadId: typeof f.threadId, title: string) =>
+      store.renameThread({
+        threadId,
+        requestedBy: f.userId,
+        title,
+        idempotencyKey: `rename-${title}`,
+      });
+    const before = await state();
+    const requestId = createId("request");
+    await openLiveRequest(f, requestId);
+    const opened = await state();
+    expect(BigInt(opened.pendingRequestsRevision)).toBeGreaterThan(
+      BigInt(before.pendingRequestsRevision),
+    );
+    // The list and the shell read the same stamp in their cut.
+    const page = await store.requests.waitingOnUserPage({ limit: 10, userId: f.userId });
+    expect(page.requests.map(({ request }) => request.id)).toEqual([requestId]);
+    expect(page.pendingRequestsRevision).toBe(opened.pendingRequestsRevision);
+    const shell = await readPersonalShellSnapshot(database, { viewerId: f.userId });
+    if (shell.kind !== "snapshot") throw new Error("Expected a shell snapshot");
+    expect(shell.snapshot.counts.pendingRequestsRevision).toBe(opened.pendingRequestsRevision);
+    // A task no pending Request sits in: the shell moves, the stamp does not.
+    const top = await startRunFixture("pending-revision-top");
+    await rename(top.threadId, "Elsewhere");
+    const unrelated = await state();
+    expect(BigInt(unrelated.sequence)).toBeGreaterThan(BigInt(opened.sequence));
+    expect(unrelated.pendingRequestsRevision).toBe(opened.pendingRequestsRevision);
+    // The listed task a Request sits in is not named on its row: the client names it from its own
+    // task list. Renaming it leaves the stamp alone.
+    await rename(f.threadId, "Where it asks");
+    expect((await state()).pendingRequestsRevision).toBe(opened.pendingRequestsRevision);
+    // Asked from an unlisted task under a listed one, the row names that unlisted task (`via`):
+    // renaming it moves the stamp; renaming the listed one above it, or anything higher, does not.
+    await database
+      .updateTable("threads")
+      .set({ parentThreadId: top.threadId, lineageRootThreadId: top.threadId })
+      .where("id", "=", other.threadId)
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ listed: false, parentThreadId: other.threadId, lineageRootThreadId: top.threadId })
+      .where("id", "=", f.threadId)
+      .execute();
+    const placed = await state();
+    await rename(other.threadId, "The listed task above");
+    await rename(top.threadId, "Higher still");
+    expect((await state()).pendingRequestsRevision).toBe(placed.pendingRequestsRevision);
+    await rename(f.threadId, "The unlisted task it asks from");
+    const shown = await state();
+    expect(shown.pendingRequestsRevision).toBe(shown.sequence);
+  });
+
+  it("builds addressed shell and detail cuts within their budgets without reading message bodies", async ({
+    storeFixture,
+  }) => {
+    const { database, startRunFixture, openLiveRequest } = storeFixture;
+    const f = await startRunFixture("bounded-scoped-snapshots");
     const requestId = createId("request");
     await openLiveRequest(f, requestId);
     let messageQueries = 0;
-    const observed = new OpensteerStore(
-      database.withPlugin({
-        transformQuery({ node }) {
-          if (JSON.stringify(node).includes('"name":"messages"')) messageQueries += 1;
-          return node;
-        },
-        async transformResult({ result }) {
-          return result;
-        },
-      }),
-      { readPersonalResources: readEmptyPersonalResources },
-    );
-    const full = await observed.deploymentSnapshot();
-    expect(full.messages.length).toBeGreaterThan(0);
-    expect(full.messageWindows).toContainEqual(
-      expect.objectContaining({
-        threadId: f.thread.id,
-        totalItems: 1,
-      }),
-    );
-    expect(full).not.toHaveProperty("messagesOmitted");
-    expect(messageQueries).toBe(2);
-    messageQueries = 0;
-    const omitted = await observed.deploymentSnapshot({
-      omitMessages: true,
+    const observed = database.withPlugin({
+      transformQuery({ node }) {
+        if (JSON.stringify(node).includes('"name":"messages"')) messageQueries += 1;
+        return node;
+      },
+      async transformResult({ result }) {
+        return result;
+      },
     });
-    expect.soft(omitted.messages).toEqual([]);
-    expect.soft(omitted.messageWindows).toEqual([]);
-    expect.soft(omitted).toHaveProperty("messagesOmitted", true);
+    const shell = await readPersonalShellSnapshot(observed, {
+      viewerId: f.userId,
+      selectedThreadId: f.thread.id,
+    });
+    const scope = { kind: "thread" as const, threadId: f.thread.id };
+    const detail = await readPersonalDetailSnapshot(observed, { viewerId: f.userId, scope });
+    expect(shell.kind).toBe("snapshot");
+    expect(detail.kind).toBe("snapshot");
+    if (shell.kind !== "snapshot" || detail.kind !== "snapshot")
+      throw new Error("Expected both cuts");
+    expect(shell.snapshot.tasks).toContainEqual(expect.objectContaining({ id: f.thread.id }));
+    expect(detail.snapshot.queue?.runs).toContainEqual(expect.objectContaining({ id: f.run.id }));
+    expect(detail.snapshot.pendingRequests).toContainEqual(
+      expect.objectContaining({ id: requestId }),
+    );
+    expect(detail.snapshot.items).toContainEqual(
+      expect.objectContaining({ id: f.run.seedInputId }),
+    );
+    for (const [cut, frameScope, subscriptionId] of [
+      [shell, { kind: "shell" }, "shell"],
+      [detail, scope, "detail:0"],
+    ] as const) {
+      expect(
+        ScopedHostMessageSchema.safeParse({
+          type: "host.snapshot",
+          scope: frameScope,
+          subscriptionId,
+          generation: 1,
+          throughSequence: cut.state.sequence,
+          snapshot: cut.snapshot,
+        }).success,
+      ).toBe(true);
+    }
     expect(messageQueries).toBe(0);
-    expect(omitted.serializedBytes).toBe(Buffer.byteLength(JSON.stringify(omitted), "utf8"));
-    const metadata = ({
-      messages: _messages,
-      messageWindows: _windows,
-      serializedBytes: _bytes,
-      messagesOmitted: _omitted,
-      ...rest
-    }: typeof omitted) => rest;
-    expect(metadata(omitted)).toEqual(metadata(full));
-    // Viewer state still reads the latest published sequence, never history bodies.
-    const withViewer = await store.deploymentSnapshot({
-      viewerId: f.userId,
-    });
-    const omittedWithViewer = await store.deploymentSnapshot({
-      viewerId: f.userId,
-      omitMessages: true,
-    });
-    expect(omittedWithViewer.threads[0]).toMatchObject({
-      lastVisitedAt: null,
-      latestRunCompletedAt: null,
-    });
-    expect(metadata(omittedWithViewer)).toEqual(metadata(withViewer));
-    expect(omittedWithViewer.pendingRequests).toContainEqual(
-      expect.objectContaining({
-        id: requestId,
-      }),
-    );
-    expect(omittedWithViewer.runQueue).toContainEqual(
-      expect.objectContaining({
-        id: f.run.id,
-      }),
-    );
+    expect(shell.state.sequence).toBe(detail.state.sequence);
   });
 });

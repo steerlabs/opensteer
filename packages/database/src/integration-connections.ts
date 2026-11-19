@@ -11,16 +11,18 @@ import type { DatabaseSchema, IntegrationConnectionTable } from "./schema.js";
 export async function listIntegrationConnections(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
+  deviceIds?: readonly DeviceId[],
 ): Promise<readonly DeviceIntegrationConnectionSummary[]> {
-  const rows = await database
+  if (deviceIds?.length === 0) return [];
+  let query = database
     .selectFrom("integrationConnections")
     .selectAll()
     .where("ownerUserId", "=", ownerUserId)
     .where("connectionKind", "=", "computer")
     .where("status", "!=", "revoked")
-    .orderBy("updatedAt", "desc")
-    .limit(500)
-    .execute();
+    .orderBy("updatedAt", "desc");
+  if (deviceIds) query = query.where(computerConnectionDeviceId, "in", [...deviceIds]);
+  const rows = await query.limit(500).execute();
   return rows.map(integrationConnectionFromRow);
 }
 

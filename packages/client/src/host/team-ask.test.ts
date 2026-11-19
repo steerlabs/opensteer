@@ -72,9 +72,8 @@ it("admits an ask into a task of its own as a gated waiting input that Needs you
     ).toMatchObject({ line: "Tim's agent: Please review this proposal", tone: "needs-you" });
     mock.activateThread(threadId);
     expect(
-      waitingInputs(mock.getSnapshot().inputQueues[threadId]!, {
+      waitingInputs(mock.getThreadTranscript(threadId)?.getSnapshot().inputQueue!, {
         needsYou: page,
-        ownsLease: () => false,
       }),
     ).toMatchObject([
       {
@@ -154,6 +153,7 @@ describe.each(["approve", "decline"] as const)("%s decision", (decision) => {
     });
     try {
       await client.load();
+      await client.loadEarlierNeedsYou();
       await vi.waitFor(
         () => expect(listed(client.getSnapshot().needsYou, ask.requestId)?.task).toBeDefined(),
         { timeout: 1000 },
@@ -161,7 +161,10 @@ describe.each(["approve", "decline"] as const)("%s decision", (decision) => {
       const threadId = listed(client.getSnapshot().needsYou, ask.requestId)!.task!.threadId;
       client.activateThread(threadId);
       await vi.waitFor(
-        () => expect(client.getSnapshot().inputQueues[threadId]?.items).toHaveLength(1),
+        () =>
+          expect(
+            client.getThreadTranscript(threadId)?.getSnapshot().inputQueue?.items,
+          ).toHaveLength(1),
         { timeout: 1000 },
       );
       await client.decideTeamAsk(
@@ -172,8 +175,9 @@ describe.each(["approve", "decline"] as const)("%s decision", (decision) => {
       const snapshot = client.getSnapshot();
       expect(listed(snapshot.needsYou, ask.requestId)).toBeUndefined();
       expect(listed(snapshot.needsYou, second.requestId)).toBeDefined();
-      const waiting = waitingInputs(snapshot.inputQueues[threadId]!, { ownsLease: () => false });
+      const queue = client.getThreadTranscript(threadId)?.getSnapshot().inputQueue;
       if (decision === "approve") {
+        const waiting = waitingInputs(queue!, {});
         // Approving until the team confirms; then it joins the line and a Run takes it.
         expect(waiting).toMatchObject([{ approving: true, canEdit: false, kind: "ask" }]);
         await vi.waitFor(
@@ -185,7 +189,7 @@ describe.each(["approve", "decline"] as const)("%s decision", (decision) => {
           { timeout: 1000 },
         );
       } else {
-        expect(waiting).toEqual([]);
+        expect(queue).toBeNull();
         // The ask was all its task ever held, so the task goes with it.
         expect(mock.getSnapshot().threads.some(({ id }) => id === threadId)).toBe(false);
         expect(mock.getSnapshot().threadLookups[threadId]).toBe("missing");
@@ -247,6 +251,7 @@ it("refreshes the loaded Needs you range without losing an older review or retai
   const client = new HttpHostClient({
     baseUrl: "http://mock-host",
     webSocketFactory: transport.connect,
+
     fetch: async (input, init) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       if (url.pathname !== "/v1/rpc/needsYou.get") return transport.fetch(input, init);
@@ -282,7 +287,7 @@ it("refreshes the loaded Needs you range without losing an older review or retai
         ),
       { timeout: 1000 },
     );
-    [...transport.sockets][0]!.deliver({ type: "host.requests-changed" });
+    await client.loadEarlierNeedsYou();
     await vi.waitFor(
       () =>
         expect(
@@ -302,7 +307,7 @@ it("refreshes the loaded Needs you range without losing an older review or retai
       },
       ...asks.filter((entry) => entry !== asks[50] && entry !== asks[51]),
     ];
-    [...transport.sockets][0]!.deliver({ type: "host.requests-changed" });
+    transport.repairShell();
     await vi.waitFor(
       () =>
         expect(client.getSnapshot().needsYou?.count, "Needs you refresh never arrived").toBe(

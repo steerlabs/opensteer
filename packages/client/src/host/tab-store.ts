@@ -93,6 +93,45 @@ export class TabStore implements TabsReadModel {
     return true;
   }
 
+  replaceCurrent(snapshot: TabBootstrap): boolean {
+    if (snapshot.layout.revision < this.#layout.revision) return false;
+    this.#receiver.seed(snapshot.tabs as Tab[], { layout: snapshot.layout as TabLayout });
+    this.#complete = snapshot.complete;
+    this.#syncing = !snapshot.complete;
+    this.#publish();
+    return true;
+  }
+
+  /**
+   * A read of the tab rows alone. They are paired with the layout the stream itself holds, never
+   * with a command's answer running ahead of it: that answer stays shown until a layout at least
+   * as new confirms it, so rows read before a tab opened cannot take that tab away.
+   */
+  replaceRows(tabs: readonly Tab[], complete: boolean): void {
+    this.#receiver.seed(tabs as Tab[], { layout: this.#receiver.meta?.layout ?? emptyLayout });
+    this.#complete = complete;
+    this.#syncing = !complete;
+    this.#publish();
+  }
+
+  /**
+   * A read of the layout alone, judged against the stream's own layout. The rows kept are the
+   * ones shown, which include a command's answer this layout now confirms.
+   */
+  replaceLayout(layout: TabLayout): boolean {
+    const held = this.#receiver.meta?.layout ?? emptyLayout;
+    if (layout.revision < held.revision) return false;
+    this.#receiver.seed([...this.#rows.values()], { layout });
+    this.#publish();
+    return true;
+  }
+
+  markInventoryStale(): void {
+    this.#complete = false;
+    this.#syncing = true;
+    this.#publish();
+  }
+
   /** "resync" asks the caller to request a fresh stream; the rows shown stay until it lands. */
   apply(message: TabStream): "applied" | "staged" | "resync" {
     const result = this.#receiver.apply(message as KeyedStreamMessage<Tab, Meta, "tabId">);

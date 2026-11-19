@@ -1,13 +1,16 @@
+import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import { HostVersionMismatchError } from "./deployment-catalog.js";
 import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { TeamEntryRefusedError } from "../auth/native-oauth.js";
 import {
   apiVersionHeaders,
+  apiVersionQueryParameter,
   hostApiCurrentHeader,
   hostApiVersionHeader,
   setApiVersionQuery,
   teamApiVersionHeader,
+  usesPersonalApiVersion,
 } from "@opensteer/deployment-authority";
 import type { DeploymentId } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
@@ -30,6 +33,10 @@ import {
 } from "./host-response-deadline.js";
 import { HostCapacityError, HostTransportError } from "./host-transport-error.js";
 
+const scopedPersonalHeaders = {
+  [hostApiVersionHeader]: String(scopedPersonalApiVersion),
+  [hostApiCurrentHeader]: String(scopedPersonalApiVersion),
+};
 const maximumConcurrentRequests = 32;
 const maximumConcurrentAppStreams = 32;
 const maximumOpenSockets = 128;
@@ -58,7 +65,6 @@ export interface HostTransportRequest {
     readonly accept?: string | undefined;
     readonly apiVersion?: string | undefined;
     readonly apiCurrent?: string | undefined;
-    readonly bootstrapDiagnostics?: string | undefined;
     readonly contentType?: string | undefined;
     readonly idempotencyKey?: string | undefined;
   };
@@ -276,7 +282,11 @@ export class HostTransport {
           ),
         );
         const { apiVersion: _version, apiCurrent: _current, ...headers } = request.headers;
-        const versions = apiVersionHeaders(deploymentKind);
+        const versions =
+          usesPersonalApiVersion(deploymentKind) &&
+          request.headers.apiVersion === String(scopedPersonalApiVersion)
+            ? scopedPersonalHeaders
+            : apiVersionHeaders(deploymentKind);
         request = {
           ...request,
           headers: {
@@ -435,7 +445,11 @@ export class HostTransport {
     const bound = events(socket);
     const target = hostUrl(resolved.origin, input.path);
     target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
-    setApiVersionQuery(target, connection.authority.document.deploymentShape.kind);
+    const kind = connection.authority.document.deploymentShape.kind;
+    const scoped =
+      usesPersonalApiVersion(kind) &&
+      target.searchParams.get(apiVersionQueryParameter) === String(scopedPersonalApiVersion);
+    if (!scoped) setApiVersionQuery(target, kind);
     assertCurrent();
     this.#sockets.add(socket);
     releaseOwner = resolved.teamRuntime?.own(() =>
@@ -448,7 +462,7 @@ export class HostTransport {
         requestOrigin: resolved.origin,
         deploymentId: resolved.deploymentId,
         url: target.toString(),
-        headers: apiVersionHeaders(connection.authority.document.deploymentShape.kind),
+        headers: scoped ? scopedPersonalHeaders : apiVersionHeaders(kind),
       },
       {
         close: (code, reason) => {

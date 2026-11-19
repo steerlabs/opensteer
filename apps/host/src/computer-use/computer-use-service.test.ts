@@ -496,16 +496,53 @@ describe("ComputerUseService", () => {
     expect(test.service.sessionsForRunner(runnerId)[0]).toBeUndefined();
   });
 
-  it("closes a session that has been idle for ten minutes", async () => {
-    await observe(test.service, callable, context);
-    test.now += 9 * 60 * 1_000;
-    test.service.sweepIdle();
-    expect(test.service.sessionsForRunner(runnerId)[0]).not.toBeUndefined();
+  it("sweeps only while a session is open and closes it after ten idle minutes", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const sweep = vi.spyOn(test.service, "sweep");
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(sweep).not.toHaveBeenCalled();
+      await observe(test.service, callable, context);
+      test.now += 9 * 60_000;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(sweep).toHaveBeenCalledOnce();
+      expect(test.service.sessionsForRunner(runnerId)[0]).not.toBeUndefined();
 
-    test.now += 2 * 60 * 1_000;
-    test.service.sweepIdle();
-    await vi.waitFor(() => expect(test.sent.at(-1)?.operation).toBe("close"));
-    expect(test.service.sessionsForRunner(runnerId)[0]).toBeUndefined();
+      test.now += 60_000;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(sweep).toHaveBeenCalledTimes(2);
+      expect(test.sent.at(-1)?.operation).toBe("close");
+      expect(test.service.sessionsForRunner(runnerId)[0]).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(sweep).toHaveBeenCalledTimes(2);
+    } finally {
+      await test.service.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the sweep armed for a failed close after the last session ends", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      await observe(test.service, callable, context);
+      test.outcomes.push({
+        kind: "error",
+        code: "failed",
+        message: "Close delivery failed",
+        retryable: true,
+      });
+      await test.service.releaseSession(context, runnerId);
+      expect(test.service.sessionsForRunner(runnerId)).toEqual([]);
+      expect(test.sent.filter(({ operation }) => operation === "close")).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(test.sent.filter(({ operation }) => operation === "close")).toHaveLength(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await test.service.shutdown();
+      vi.useRealTimers();
+    }
   });
 
   it("closes a session when the connection holding one of its apps is removed", async () => {
@@ -635,40 +672,48 @@ describe("ComputerUseService", () => {
         await stops.ledger().record(runId, runnerId);
       },
     };
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const test = harness({ onError, stops: unrecordable });
-    await observe(test.service, callable, context);
-    const sessionId = test.service.sessionsForRunner(runnerId)[0]?.sessionId;
-    if (!sessionId) throw new Error("The session was not opened.");
+    try {
+      await observe(test.service, callable, context);
+      const sessionId = test.service.sessionsForRunner(runnerId)[0]?.sessionId;
+      if (!sessionId) throw new Error("The session was not opened.");
 
-    await expect(test.service.stop(sessionId, ownerUserId)).rejects.toThrow(
-      "The database is unavailable",
-    );
-    await expect(observe(test.service, callable, context)).rejects.toMatchObject({
-      code: "stopped-by-user",
-    });
+      await expect(test.service.stop(sessionId, ownerUserId)).rejects.toThrow(
+        "The database is unavailable",
+      );
+      await expect(observe(test.service, callable, context)).rejects.toMatchObject({
+        code: "stopped-by-user",
+      });
 
-    const other = otherRun();
-    await observe(test.service, callable, other);
-    const native = test.service
-      .sessionsForRunner(runnerId)
-      .find((session) => session.runId === other.runId)?.sessionId;
-    if (!native) throw new Error("The second session was not opened.");
-    test.service.handleHelperEvent(runnerId, {
-      event: "session.stopped",
-      params: { reason: "user", sessionId: native },
-    });
-    await vi.waitFor(() => expect(onError).toHaveBeenCalled());
-    await expect(observe(test.service, callable, other)).rejects.toMatchObject({
-      code: "stopped-by-user",
-    });
+      const other = otherRun();
+      await observe(test.service, callable, other);
+      const native = test.service
+        .sessionsForRunner(runnerId)
+        .find((session) => session.runId === other.runId)?.sessionId;
+      if (!native) throw new Error("The second session was not opened.");
+      test.service.handleHelperEvent(runnerId, {
+        event: "session.stopped",
+        params: { reason: "user", sessionId: native },
+      });
+      await vi.waitFor(() => expect(onError).toHaveBeenCalled());
+      await expect(observe(test.service, callable, other)).rejects.toMatchObject({
+        code: "stopped-by-user",
+      });
 
-    // Pressing Stop again records the first; the sweep records the one pressed
-    // on the Mac, which nobody can press again.
-    unavailable = false;
-    await test.service.stop(sessionId, ownerUserId);
-    expect([...stops.rows.values()]).toEqual([{ runId: context.runId, runnerId }]);
-    test.service.sweep();
-    await vi.waitFor(() => expect(stops.rows.size).toBe(2));
+      // Pressing Stop again records the first; the sweep records the one pressed
+      // on the Mac, which nobody can press again.
+      unavailable = false;
+      await test.service.stop(sessionId, ownerUserId);
+      expect([...stops.rows.values()]).toEqual([{ runId: context.runId, runnerId }]);
+      expect(test.service.sessionsForRunner(runnerId)).toEqual([]);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(stops.rows.size).toBe(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await test.service.shutdown();
+      vi.useRealTimers();
+    }
   });
 
   it("makes a second Stop wait for the first one's record", async () => {

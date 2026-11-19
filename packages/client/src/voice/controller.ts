@@ -71,6 +71,13 @@ export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
   );
 }
 
+/** The inventories an account is looked up in, each read complete for this viewer. */
+function accountsKnown(snapshot: HostSnapshot): boolean {
+  return (["environment", "harness-catalog", "harness"] as const).every((kind) =>
+    snapshot.loadedResources.includes(kind),
+  );
+}
+
 function holdsAccount(snapshot: HostSnapshot, account: VoiceAccount): boolean {
   return voiceAccounts(snapshot).some(
     ({ environmentId, harnessInstanceId }) =>
@@ -276,7 +283,18 @@ export class VoiceController {
       call.setMuted(this.#snapshot.muted);
       media.keepAwake?.(true);
 
-      session.releaseThread = this.#input.hostClient.observeThread(call.identity.threadId);
+      const client = this.#input.hostClient;
+      const release = client.observeThread(call.identity.threadId);
+      const unsubscribe = client.getThreadTranscript(call.identity.threadId)?.subscribe(() => {
+        if (this.#session === session) {
+          this.#readActivity(session);
+          this.#readWork(session, client.getSnapshot());
+        }
+      });
+      session.releaseThread = () => {
+        unsubscribe?.();
+        release();
+      };
       session.speaker = new VoiceSpeaker({
         ...this.#input,
         baseline,
@@ -418,16 +436,25 @@ export class VoiceController {
     const session = this.#session;
     if (!session) return;
     const snapshot = this.#input.hostClient.getSnapshot();
+    // Only what is known ends a call. While the client reads its viewer again (a new history,
+    // a reconnect) the viewer and its accounts are unknown, not gone.
+    const viewerKnown = snapshot.user !== null;
     if (
-      snapshot.deploymentId !== session.baseline.deploymentId ||
-      snapshot.user?.id !== session.baseline.user?.id ||
-      snapshot.session !== "authenticated" ||
-      !snapshot.voiceAvailable ||
-      (session.account !== null && !holdsAccount(snapshot, session.account))
+      snapshot.session === "authentication-required" ||
+      (viewerKnown &&
+        (snapshot.deploymentId !== session.baseline.deploymentId ||
+          snapshot.user?.id !== session.baseline.user?.id ||
+          snapshot.session !== "authenticated" ||
+          !snapshot.voiceAvailable)) ||
+      (viewerKnown &&
+        session.account !== null &&
+        accountsKnown(snapshot) &&
+        !holdsAccount(snapshot, session.account))
     ) {
       void this.#end(session);
       return;
     }
+    if (!viewerKnown) return;
     this.#readActivity(session);
     this.#readWork(session, snapshot);
   }
@@ -457,7 +484,9 @@ export class VoiceController {
           : first.request.id;
       return { kind: "request", requestId: shown, others: waiting.length - 1 };
     }
-    const offer = callPasswordsOffer(snapshot.transcripts[threadId] ?? []);
+    const offer = callPasswordsOffer(
+      this.#input.hostClient.getThreadTranscript(threadId)?.getSnapshot().entries ?? [],
+    );
     return offer ? { kind: "passwords", offer } : null;
   }
 
@@ -469,7 +498,8 @@ export class VoiceController {
   #readActivity(session: VoiceSession): void {
     const identity = session.call?.identity;
     if (!identity) return;
-    const entries = this.#input.hostClient.getSnapshot().transcripts[identity.threadId] ?? [];
+    const entries =
+      this.#input.hostClient.getThreadTranscript(identity.threadId)?.getSnapshot().entries ?? [];
     let running: ActivityIcon | null = null;
     let busy = false;
     for (let index = entries.length - 1; index >= Math.max(0, entries.length - 24); index -= 1) {

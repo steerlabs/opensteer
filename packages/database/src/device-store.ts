@@ -21,7 +21,7 @@ import {
 } from "@opensteer/runner-auth";
 import { type Kysely, sql } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { personalDeploymentOwner } from "./machine-store.js";
 import { machineOwnershipIn } from "./machine-ownership.js";
 import { revokeRunner } from "./runner-store.js";
@@ -36,7 +36,7 @@ export async function bindDeviceSession(
     readonly proof: DeviceSessionBindingProof;
   },
 ): Promise<void> {
-  await withPersonalTransaction(database, async (transaction) => {
+  await commitPersonalMutation(database, async (transaction) => {
     const runner = await transaction
       .selectFrom("runners")
       .select(["publicKeyPem", "revokedAt"])
@@ -91,8 +91,7 @@ export async function revokeDeviceSession(
     readonly userId: UserId;
   },
 ) {
-  return withPersonalTransaction(database, async (transaction) => {
-    // The personal event fence keeps the binding stable while runner teardown takes its locks.
+  return commitPersonalMutation(database, async (transaction) => {
     const session = await transaction
       .selectFrom("authSessions")
       .select("deviceId")
@@ -125,7 +124,7 @@ export async function leaveDevice(
   input: RunnerLeaveRequest,
 ) {
   const runnerId = RunnerIdSchema.parse(input.runnerId);
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     const deployment = await transaction
       .selectFrom("deployments")
       .select("id")

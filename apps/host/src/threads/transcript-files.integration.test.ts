@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createId, type Sequence } from "@opensteer/core";
-import { AttachmentStore, appendHostDeploymentEvent } from "@opensteer/database";
+import { createId } from "@opensteer/core";
+import { AttachmentStore } from "@opensteer/database";
 import { createStoreFixture } from "@opensteer/database/test-support/store";
 import {
   admitTranscriptFiles,
@@ -24,7 +24,7 @@ import { createTranscriptFileServices } from "./transcript-files.js";
 async function fixture() {
   const f = await createStoreFixture();
   try {
-    const task = await f.createRunFixture("transcript-files");
+    const task = await f.startRunFixture("transcript-files");
     const root = await realpath(task.agentHome.path);
     const homePath = join(root, "home"),
       imagesRoot = join(root, "runner/images");
@@ -191,29 +191,69 @@ it("requires exact persisted output provenance for both tool-card paths and fina
     expect(await f.files.open({ threadId: f.task.threadId, source }, f.actor)).toEqual({
       status: "unavailable",
     });
-    const event = await f.database.transaction().execute((tx) =>
-      appendHostDeploymentEvent(tx, {
-        type: "tool.completed",
-        environmentId: f.task.environmentId,
-        threadId: f.task.threadId,
-        runId: null,
-        data: {
-          callId: "generated",
-          isError: false,
+    const callId = "computer:generated";
+    const toolCallId = "call:fixture-image";
+    const imageId = `${toolCallId}:0`;
+    await f.database.transaction().execute(async (tx) => {
+      await tx
+        .insertInto("toolCalls")
+        .values({
+          id: toolCallId,
+          runId: f.task.run.id,
+          threadId: f.task.threadId,
+          callId,
+          attemptId: null,
+          nodeId: null,
+          bindingGeneration: null,
+          origin: "host-computer",
+          tool: null,
+          integration: null,
+          arguments: null,
+          argumentDigest: null,
+          status: "completed",
           output: {
             text: "generated image",
             images: [{ path: p, mediaType: "image/png", generated: true }],
           },
-        },
-      }),
-    );
+          isError: false,
+          startedAt: null,
+          completedAt: new Date(),
+          completionOrder: "1",
+        })
+        .execute();
+      await tx
+        .insertInto("toolOutputImages")
+        .values({
+          id: imageId,
+          toolCallId,
+          imageIndex: 0,
+          threadId: f.task.threadId,
+          nodeId: null,
+          path: p,
+          pathHash: createHash("sha256").update(p).digest(),
+          mediaType: "image/png",
+          generated: true,
+          completionOrder: "1",
+        })
+        .execute();
+    });
     const open = await f.files.open({ threadId: f.task.threadId, source }, f.actor);
     expect(open).toMatchObject({
       status: "ok",
-      resource: { kind: "output-image", sequence: event.sequence, index: 0 },
+      resource: {
+        kind: "output-image",
+        imageId,
+        revision: expect.stringMatching(/^[\w-]{43}\.[\w-]{43}$/u),
+      },
       preview: { kind: "image", image: { status: "ok" } },
     });
     if (open.status !== "ok") throw Error("Expected generated image");
+    expect(
+      await f.files.open(
+        { threadId: f.task.threadId, source: { kind: "transcript-image", imageId } },
+        f.actor,
+      ),
+    ).toMatchObject({ status: "ok", resource: open.resource });
     expect(
       Buffer.from(
         (await f.files.content({ threadId: f.task.threadId, resource: open.resource }, f.actor))
@@ -247,18 +287,14 @@ it("requires exact persisted output provenance for both tool-card paths and fina
           threadId: f.task.threadId,
           resource: {
             kind: "output-image",
-            sequence: event.sequence as Sequence,
-            index: 1,
+            imageId: `${toolCallId}:1`,
             revision: open.resource.revision,
           },
         },
         f.actor,
       ),
     ).rejects.toMatchObject({ code: "not_found" });
-    await f.database
-      .deleteFrom("deploymentEvents")
-      .where("sequence", "=", event.sequence)
-      .execute();
+    await f.database.deleteFrom("toolCalls").where("id", "=", toolCallId).execute();
     await expect(
       f.files.content({ threadId: f.task.threadId, resource: open.resource }, f.actor),
     ).rejects.toMatchObject({ code: "not_found" });

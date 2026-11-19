@@ -9,9 +9,14 @@ import {
   type AgentEventView as AgentEvent,
   type AssignmentView,
 } from "@opensteer/core";
-import type { HostSnapshot, NodeEntry, RunEntry, TranscriptEntry } from "../host/client.js";
+import type {
+  TranscriptFixtureSnapshot,
+  NodeEntry,
+  RunEntry,
+  TranscriptEntry,
+} from "../host/client.js";
 
-export function seedMockSubagents<Snapshot extends HostSnapshot>(
+export function seedMockSubagents<Snapshot extends TranscriptFixtureSnapshot>(
   snapshot: Snapshot,
 ): {
   snapshot: Snapshot;

@@ -810,10 +810,14 @@ integration("local servers as plugin tools", () => {
     expect(JSON.stringify(failed)).not.toMatch(/AB89|CD34/u);
     // Answers reach only the server: no Request or event keeps the code.
     const stored = await host.store.database.selectFrom("requests").selectAll().execute();
-    const events = await host.store.database.selectFrom("deploymentEvents").selectAll().execute();
+    const transcript = await host.store.database
+      .selectFrom("transcriptItems")
+      .selectAll()
+      .execute();
+    const changes = await host.store.database.selectFrom("clientChanges").selectAll().execute();
     const commands = await host.store.database.selectFrom("commands").selectAll().execute();
     const history = await host.store.database.selectFrom("threadInputs").selectAll().execute();
-    expect(JSON.stringify([stored, events, commands, history])).not.toMatch(
+    expect(JSON.stringify([stored, transcript, changes, commands, history])).not.toMatch(
       /AB89|CD34|6723672367236723|-13\.75/u,
     );
 
@@ -905,10 +909,15 @@ integration("local servers as plugin tools", () => {
 });
 
 /** The person's form answer through the same command every client sends. */
-function respond(host: MachineAccessHost, requestId: RequestId, content: Record<string, unknown>) {
+async function respond(
+  host: MachineAccessHost,
+  requestId: RequestId,
+  content: Record<string, unknown>,
+) {
   return dispatch(host, {
     type: "request.respond",
     requestId,
+    expectedRevision: (await host.store.requests.revision(requestId))!,
     response: { kind: "external", value: { action: "accept", content } },
   });
 }

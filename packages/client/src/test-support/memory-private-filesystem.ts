@@ -1,4 +1,4 @@
-import type { PrivateFilesystem } from "../connections/private-filesystem.js";
+import type { ListingPrivateFilesystem } from "../connections/private-filesystem.js";
 
 /**
  * The `PrivateFilesystem` contract without a disk, for tests in this package.
@@ -8,7 +8,7 @@ import type { PrivateFilesystem } from "../connections/private-filesystem.js";
  * What this package's own tests need is the contract itself: a missing file
  * reads as `null`, a read is bounded, and a write replaces the whole file.
  */
-export class MemoryPrivateFilesystem implements PrivateFilesystem {
+export class MemoryPrivateFilesystem implements ListingPrivateFilesystem {
   readonly root = "/private";
   readonly #directories = new Set<string>();
   readonly #files = new Map<string, Uint8Array>();
@@ -27,6 +27,15 @@ export class MemoryPrivateFilesystem implements PrivateFilesystem {
   async directoryEmpty(path: string): Promise<boolean> {
     const prefix = `${path}/`;
     return ![...this.#files.keys()].some((candidate) => candidate.startsWith(prefix));
+  }
+
+  async listFiles(path: string): Promise<readonly string[]> {
+    const prefix = `${path}/`;
+    return [...this.#files.keys()].flatMap((candidate) =>
+      candidate.startsWith(prefix) && !candidate.slice(prefix.length).includes("/")
+        ? [candidate.slice(prefix.length)]
+        : [],
+    );
   }
 
   async ensureDirectory(path: string): Promise<void> {

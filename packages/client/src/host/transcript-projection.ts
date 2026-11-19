@@ -1,4 +1,4 @@
-import type { AssignmentSummary, ThreadInputQueue, WaitingRequest } from "@opensteer/core";
+import type { AssignmentSummary, WaitingRequest } from "@opensteer/core";
 import type { ThreadSummary, TranscriptEntry } from "./client.js";
 import { conversationRows, groupTranscriptEntries } from "./agent-activity-model.js";
 import { withoutOwnAssignment } from "./assignment-presentation.js";
@@ -14,7 +14,9 @@ export function drawnTranscriptRowKeys(
     waitingRequests = [],
   }: {
     readonly thread: Pick<ThreadSummary, "id" | "purpose" | "inputQueuePaused">;
-    readonly inputQueue?: ThreadInputQueue | null;
+    readonly inputQueue?: {
+      readonly items: readonly { readonly message: { readonly id: string } }[];
+    } | null;
     readonly assignments?: Readonly<Record<string, AssignmentSummary>>;
     readonly waitingRequests?: readonly WaitingRequest[];
   },

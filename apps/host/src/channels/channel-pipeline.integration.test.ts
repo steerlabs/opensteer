@@ -22,6 +22,7 @@ import {
   RuntimeChannelRequestSchema,
   type RuntimeChannelRequest,
 } from "@opensteer/channel-protocol";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   HarnessIdSchema,
   MessageContentSchema,
@@ -142,7 +143,7 @@ integration("messaging pipeline", () => {
     const seed = await database
       .selectFrom("messages")
       .innerJoin("runs", "runs.seedInputId", "messages.id")
-      .select(["messages.author", "runs.createdAt"])
+      .select(["messages.author", "messages.id"])
       .where("runs.id", "=", run.id)
       .executeTakeFirstOrThrow();
     const binding = await beginRun(run);
@@ -180,22 +181,23 @@ integration("messaging pipeline", () => {
     await emit(binding, run, 4, "run.completed", { status: "completed" });
     await expect(sentFor(narrationId)).resolves.toEqual([]);
     await expect(sentFor(blankId)).resolves.toEqual([]);
-    // The Host names the reply where every client reads how the Run ended.
-    await expect(
-      database
-        .selectFrom("deploymentEvents")
-        .select("data")
-        .where("runId", "=", run.id)
-        .where("type", "=", "run.completed")
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({
-      data: {
-        replyMessageId,
-        startedBy: seed.author,
-        startedAt: seed.createdAt.toISOString(),
-        personWaiting: seed.author.kind === "human",
-        status: "completed",
-      },
+    const completed = await database
+      .selectFrom("runs")
+      .select([
+        "turnReplyMessageId",
+        "terminalReplyMessageId",
+        "seedInputId",
+        "personWaited",
+        "status",
+      ])
+      .where("id", "=", run.id)
+      .executeTakeFirstOrThrow();
+    expect(completed).toEqual({
+      turnReplyMessageId: null,
+      terminalReplyMessageId: replyMessageId,
+      seedInputId: seed.id,
+      personWaited: seed.author.kind === "human",
+      status: "completed",
     });
     const parts = await database
       .selectFrom("channelDeliveries")
@@ -641,21 +643,14 @@ integration("messaging pipeline", () => {
 
     // 4. A computer coming online picks up a message that is still waiting.
     await commit("Ev-DEFER-3", "1786320000.000203");
-    const parked = await vi.waitFor(
+    await vi.waitFor(
       async () => {
         const row = await ingress("Ev-DEFER-3");
         if (row.lastError === null) throw new Error("Not yet deferred");
-        return row;
       },
       { timeout: 10_000 },
     );
     fixture.computer.online = true;
-    await database
-      .updateTable("channelIngressEvents")
-      .set({ nextAttemptAt: new Date() })
-      .where("id", "=", parked.id)
-      .execute();
-    service.wake();
     const run = await waitForRun(fixture.created.binding.id);
     expect(run).toMatchObject({ status: "queued" });
 
@@ -1005,7 +1000,7 @@ integration("messaging pipeline", () => {
           (grant) => grant.bindingId === updated.id,
         )?.status,
       ).toBe("revoked");
-      // The send boundary holds admission until the Runner accepts the command.
+      // A committed policy change fences the receipt even after the command was sent.
       let entered!: () => void;
       let allowAcceptance!: () => void;
       const atSend = new Promise<void>((resolve) => {
@@ -1019,27 +1014,28 @@ integration("messaging pipeline", () => {
         await receipt;
         await beforeAck();
       });
-      await atSend;
-      let policyChanged = false;
-      const changePolicy = service
-        .updateBinding({
+      const refused = expect(handoff).rejects.toMatchObject({
+        code: "forbidden",
+        message: expect.stringContaining("Messaging access changed"),
+      });
+      try {
+        await withTimeout(atSend, 5_000, {
+          timeoutError: () => new Error("The messaging dispatch did not reach the Runner"),
+        });
+        await service.updateBinding({
           bindingId: updated.id,
           ownerUserId,
           expectedRevision: updated.revision,
           accessPolicy: { ...accessPolicy, channels: { ...accessPolicy.channels, scope: "off" } },
-        })
-        .then(() => {
-          policyChanged = true;
         });
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(policyChanged).toBe(false);
-      allowAcceptance();
-      await Promise.all([handoff, changePolicy]);
-      expect(policyChanged).toBe(true);
+      } finally {
+        allowAcceptance();
+        await refused;
+      }
       const neverSend = vi.fn(async (beforeAck: () => Promise<void>) => beforeAck());
       await expect(
         store.dispatchChannelCommand(channelCommand.id, neverSend),
-      ).rejects.toMatchObject({ code: "conflict" });
+      ).rejects.toMatchObject({ code: "forbidden" });
       expect(neverSend).not.toHaveBeenCalled();
       // A policy change after planning is fenced again when the Runner asks to bind.
       await expect(
@@ -1228,7 +1224,6 @@ integration("messaging pipeline", () => {
       channels,
       credentials,
       onExecutionQueued: (id) => queued.push(id),
-      onDeploymentEvent: () => undefined,
       relay: hub,
       runners: {
         canRunHarness: (candidate) => candidate === onlineEnvironmentId,

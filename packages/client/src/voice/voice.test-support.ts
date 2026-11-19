@@ -1,7 +1,7 @@
 import { vi } from "vitest";
 import { createId } from "@opensteer/core";
 import { MockHostClient } from "../mock/index.js";
-import type { HostSnapshot } from "../host/client.js";
+import type { TranscriptFixtureSnapshot } from "../host/client.js";
 import type { VoiceView } from "@opensteer/protocol/voice";
 import type {
   VoiceCallEvent,
@@ -23,7 +23,7 @@ export function voiceHost(_initialHome: "seeded" | "absent" = "seeded") {
   });
   const original = host.getSnapshot;
   const voiceThreadId = createId("thread");
-  let snapshot: HostSnapshot = { ...original(), voiceAvailable: true, voiceThreadId };
+  let snapshot: TranscriptFixtureSnapshot = { ...original(), voiceAvailable: true, voiceThreadId };
   const listeners = new Set<() => void>();
   vi.spyOn(host, "getSnapshot").mockImplementation(() => snapshot);
   host.subscribe(() => {
@@ -42,7 +42,7 @@ export function voiceHost(_initialHome: "seeded" | "absent" = "seeded") {
     host,
     release,
     listeners,
-    publish(patch: Partial<HostSnapshot>) {
+    publish(patch: Partial<TranscriptFixtureSnapshot>) {
       snapshot = { ...snapshot, ...patch };
       for (const listener of listeners) listener();
     },

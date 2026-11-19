@@ -690,6 +690,7 @@ export async function grantAccess(
     {
       idempotencyKey: `${input.integration}-access`,
       requestId: request.request.id,
+      expectedRevision: (await host.store.requests.revision(request.request.id))!,
       response: {
         kind: "external",
         value: {

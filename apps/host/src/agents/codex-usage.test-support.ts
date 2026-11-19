@@ -53,7 +53,6 @@ export interface RecordedUsage {
   /** The `runs` row: the sum over its attempts. */
   readonly run: RunUsage | null;
   /** Each `run.usage` in the Run's log, and whether it came before the Run's end. */
-  readonly statements: readonly { readonly beforeEnd: boolean; readonly data: unknown }[];
   /** What a client reads from the Run's execution details. */
   readonly view: {
     readonly attempts: readonly (RunUsage | null)[];
@@ -164,23 +163,9 @@ export async function recordedUsage(active: VerticalStack, runId: RunId): Promis
     ])
     .where("id", "=", runId)
     .executeTakeFirstOrThrow();
-  const events = await database
-    .selectFrom("deploymentEvents")
-    .select(["data", "type"])
-    .where("runId", "=", runId)
-    .orderBy("sequence", "asc")
-    .execute();
-  const end = events.findIndex((event) =>
-    ["run.completed", "run.failed", "run.interrupted"].includes(event.type),
-  );
   return {
     attempts: attempts.map(usageOfRow),
     run: usageOfRow(run),
-    statements: events.flatMap((event, index) =>
-      event.type === "run.usage"
-        ? [{ beforeEnd: end === -1 || index < end, data: event.data }]
-        : [],
-    ),
     view: {
       attempts: listed.data.attempts.map((attempt) => attempt.usage),
       nodes: listed.data.nodes.map((node) => node.usage),
@@ -193,9 +178,6 @@ export function expectRecordedUsage(recorded: RecordedUsage, expected: UsageExpe
   expect(recorded.attempts).toEqual([expected.attempt]);
   expect(recorded.view.attempts).toEqual([expected.attempt]);
   expect(recorded.run).toEqual(expected.attempt);
-  expect(recorded.statements).toEqual(
-    expected.attempt ? [{ beforeEnd: true, data: expected.attempt }] : [],
-  );
   expect(recorded.view.nodes).toEqual(expected.nodes);
 }
 

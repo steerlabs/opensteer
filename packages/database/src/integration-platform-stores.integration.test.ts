@@ -1,6 +1,6 @@
 import { upsertSelfDeviceInTransaction } from "./device-inventory-store.js";
 import { DeviceIdSchema } from "@opensteer/core";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   personalFixtureOwner,
   createPersonalRunFixturePort,
@@ -322,12 +322,6 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     });
 
     expect(mutation.cancelledRequestIds).toEqual([opened.request.id]);
-    expect(mutation.requestEvents).toEqual([
-      expect.objectContaining({
-        data: { reason: "resource-deleted", requestId: opened.request.id },
-        type: "request.cancelled",
-      }),
-    ]);
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
       cancellationReason: "resource-deleted",
       status: "cancelled",
@@ -1415,19 +1409,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read"),
     });
-    expect(created.requestEvents).toEqual([
-      expect.objectContaining({
-        data: expect.objectContaining({
-          request: expect.objectContaining({ id: read.request.id }),
-        }),
-      }),
-    ]);
     await expect(platform.requests.get(read.request.id)).resolves.toMatchObject({
       status: "fulfilled",
     });
 
     const write = await request("read-write", "computer-request-write");
-    const unchanged = await setApprovedComputerConnection({
+    await setApprovedComputerConnection({
       access: "read",
       actorUserId: setup.ownerUserId,
       createIfMissing: true,
@@ -1436,7 +1423,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read"),
     });
-    expect(unchanged.requestEvents).toEqual([]);
     await expect(platform.requests.get(write.request.id)).resolves.toMatchObject({
       status: "pending",
     });
@@ -1450,15 +1436,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read-write"),
     });
-    expect(
-      widened.requestEvents
-        .map((event) => {
-          if (event.type !== "request.resolved")
-            throw new Error("Expected a resolved access Request");
-          return event.data.request.id;
-        })
-        .sort(),
-    ).toEqual([write.request.id, anotherRead.request.id].sort());
+    await expect(platform.requests.get(anotherRead.request.id)).resolves.toMatchObject({
+      status: "fulfilled",
+    });
     expect(widened.grants).toEqual([
       expect.objectContaining({ access: "read-write", connectionId: created.connection.id }),
     ]);
@@ -1469,7 +1449,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const stillActionable = await request("read", "computer-request-survives-machine-removal");
     const revoked = await store.revokeRunner(setup.runnerId, setup.ownerUserId);
     expect(revoked.cancelledRequestIds).toEqual([]);
-    expect(revoked.requestEvents).toEqual([]);
     await expect(platform.requests.get(stillActionable.request.id)).resolves.toMatchObject({
       cancellationReason: null,
       status: "pending",
@@ -1516,10 +1495,10 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const otherRunnerId = createId("runner");
     await insertComputerRunner(otherRunnerId, run.userId, "Other Mac");
     const other = await connect(otherRunnerId, "read-write");
-    expect(other.requestEvents).toEqual([]);
     await expect(
       platform.integrationRequests.resolveIntegrationAccessRequest({
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
         resolvedBy: run.userId,
         response: {
           kind: "external",
@@ -1543,8 +1522,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         .where("requestId", "=", opened.request.id)
         .execute(),
     ).toEqual([]);
-    const widened = await connect(setup.runnerId, "read-write");
-    expect(widened.requestEvents.map((event) => event.type)).toEqual(["request.resolved"]);
+    await connect(setup.runnerId, "read-write");
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
       status: "fulfilled",
       response: { value: { connectionId: own.connection.id } },
@@ -1688,6 +1666,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         await barrier.reached;
         fulfillment = platform.integrationRequests.resolveIntegrationAccessRequest({
           requestId: opened.request.id,
+          expectedRevision: (await platform.requests.revision(opened.request.id))!,
           resolvedBy: run.userId,
           response: {
             kind: "external",
@@ -1906,7 +1885,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         where datname = current_database()
           and application_name = 'opensteer-computer-app-connections-test'
           and wait_event_type = 'Lock'
-          and query ilike '%deployment_event_state%'
+          and query ilike '%client_sync_state%'
       `.execute(database);
       expect(Number(blockedOnFence.rows[0]?.count)).toBeGreaterThanOrEqual(1);
       release();
@@ -2288,9 +2267,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
             }>`select query from pg_stat_activity where datname=current_database() and application_name='opensteer-computer-app-connections-test' and wait_event_type='Lock'`.execute(
               database,
             )
-          ).rows.some(({ query }) =>
-            query.includes("from deployment_event_state for no key update"),
-          ),
+          ).rows.some(({ query }) => /from "?client_sync_state"? .*for no key update/i.test(query)),
         )
         .toBe(true);
       barrier.release();
@@ -2412,7 +2389,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     let replacing: Promise<unknown> | undefined;
     try {
       await barrier.reached;
-      replacing = withPersonalTransaction(database, (transaction) =>
+      replacing = commitPersonalMutation(database, (transaction) =>
         installIntegrationInTransaction(transaction, {
           actorUserId: setup.ownerUserId,
           installation: {
@@ -2491,7 +2468,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         /"name":"integration_?tools"/iu.test(node) &&
         node.includes("ForNoKeyUpdate"),
     );
-    const replacing = withPersonalTransaction(barrier.database, (transaction) =>
+    const replacing = commitPersonalMutation(barrier.database, (transaction) =>
       installIntegrationInTransaction(transaction, {
         actorUserId: setup.ownerUserId,
         installation: {
@@ -2525,7 +2502,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     let revoking: Promise<unknown> | undefined;
     try {
       await barrier.reached;
-      revoking = withPersonalTransaction(database, (transaction) =>
+      revoking = commitPersonalMutation(database, (transaction) =>
         revokeComputerConnectionsInTransaction(transaction, {
           connectionId: source.connection.id,
           ownerUserId: setup.ownerUserId,
@@ -2540,9 +2517,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
             }>`select query from pg_stat_activity where datname=current_database() and application_name='opensteer-computer-app-connections-test' and wait_event_type='Lock'`.execute(
               database,
             )
-          ).rows.some(({ query }) =>
-            query.includes("from deployment_event_state for no key update"),
-          ),
+          ).rows.some(({ query }) => /from "?client_sync_state"? .*for no key update/i.test(query)),
         )
         .toBe(true);
       barrier.release();
@@ -2685,8 +2660,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
           transformQuery(args) {
             const node = JSON.stringify(args.node);
             if (
-              args.node.kind === "RawNode" &&
-              node.includes("select deployment_id from deployment_event_state for no key update")
+              args.node.kind === "SelectQueryNode" &&
+              /"name":"client_?sync_?state"/i.test(node) &&
+              node.includes("ForNoKeyUpdate")
             )
               acquiring.resolve();
             return args.node;
@@ -2721,7 +2697,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         where datname = current_database() and application_name = 'opensteer-covered-order-test'
         and wait_event_type = 'Lock'`.execute(database)
             ).rows.some(({ query }) =>
-              query.includes("from deployment_event_state for no key update"),
+              /from "?client_sync_state"? .*for no key update/i.test(query),
             ),
           )
           .toBe(true);
@@ -3785,13 +3761,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     };
     const opened = await askOnMac(ask);
     expect(opened.replayed).toBe(false);
-    expect(opened.requestEvents).toEqual([
-      expect.objectContaining({
-        data: { request: expect.objectContaining({ id: opened.request.id }) },
-        threadId: run.threadId,
-        type: "request.opened",
-      }),
-    ]);
     expect(opened.setupRequest).toMatchObject({ access: "read", app: notes });
     expect(opened.request).toMatchObject({
       kind: "computer.app.access",
@@ -3814,7 +3783,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     const again = await askOnMac(ask);
     expect(again.replayed).toBe(true);
-    expect(again.requestEvents).toEqual([]);
     expect(again.request.id).toBe(opened.request.id);
     expect(again.setupRequest.id).toBe(opened.setupRequest.id);
     // A second call with a different call identity is still the same card.
@@ -3874,11 +3842,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         connectionId: consumed.connection.id,
       }),
     ]);
-    expect(consumed.requestEvents).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: "request.resolved", threadId: run.threadId }),
-      ]),
-    );
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
       status: "fulfilled",
       settlementProvenance: { sessionId, deviceLabel: "iPhone" },
@@ -3926,15 +3889,16 @@ integration.sequential("PostgreSQL computer app connections", () => {
       platform.declineComputerAppAccessRequest({
         actorUserId: run.userId,
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
         response: { kind: "external", value: { decision: "fulfilled" } },
       }),
     ).rejects.toMatchObject({ code: "bad_request" });
     const declined = await platform.declineComputerAppAccessRequest({
       actorUserId: run.userId,
       requestId: opened.request.id,
+      expectedRevision: (await platform.requests.revision(opened.request.id))!,
     });
     expect(declined.request.status).toBe("declined");
-    expect(declined.events).toContainEqual(expect.objectContaining({ type: "request.resolved" }));
     await expect(platform.listComputerAppSetupRequests(run.userId)).resolves.toEqual([]);
     await expect(
       database
@@ -3947,6 +3911,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       platform.declineComputerAppAccessRequest({
         actorUserId: run.userId,
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
       }),
     ).rejects.toMatchObject({ code: "conflict" });
   });
@@ -4294,12 +4259,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
           { timeout: 4_000 },
         );
       };
-      // Both asks must wait at the personal commit fence.
+      // Both asks must wait at the personal commit fence: the client_sync_state row every
+      // personal commit takes first (it no longer also locks personal_settings).
       const barrier = wide.transaction().execute(async (transaction) => {
         await transaction
-          .selectFrom("personalSettings")
-          .select("ownerId")
-          .where("ownerId", "=", first.userId)
+          .selectFrom("clientSyncState")
+          .select("deploymentId")
           .forUpdate()
           .execute();
         acquired.resolve();
@@ -4539,6 +4504,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const decline = platform.declineComputerAppAccessRequest({
         actorUserId: test.run.userId,
         requestId: declining.request.id,
+        expectedRevision: (await platform.requests.revision(declining.request.id))!,
       });
       await waitForLockWaiters(2);
       release();
@@ -5188,6 +5154,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const declined = await platform.declineComputerAppAccessRequest({
         actorUserId: run.userId,
         requestId: wide.request.id,
+        expectedRevision: (await platform.requests.revision(wide.request.id))!,
       });
       expect(declined.request.status).toBe("declined");
       expect(

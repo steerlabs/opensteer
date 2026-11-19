@@ -17,6 +17,7 @@
     "test:model-picker": "tsx scripts/model-picker-journey.ts",
     "test:sidebar-split": "tsx scripts/sidebar-split-journey.ts",
     "test:start-page-computers": "tsx scripts/start-page-computers-journey.ts",
+    "test:long-thread": "tsx scripts/long-thread-journey.ts",
     "test:transcript-links": "tsx scripts/transcript-links-journey.ts",
     "test:transcript-presentation": "tsx scripts/transcript-presentation-journey.ts",
     "test:browser-navigation": "tsx scripts/browser-navigation-journey.ts",

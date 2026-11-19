@@ -1,3 +1,4 @@
+import { useThreadTranscript } from "@opensteer/client/react";
 import type { ClientScope } from "@opensteer/client/connections";
 import { assertMessageLogin, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
 import { useMobileNotifications } from "../ui/notifications-context.js";
@@ -17,7 +18,7 @@ import {
   startReference,
 } from "../ui/composer-reference-picker.js";
 import { useCompactionOffer } from "@opensteer/client/react";
-import { compactionOfferText, type HostSnapshot } from "@opensteer/client/host";
+import { compactionOfferText } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { useHostSelector } from "@opensteer/client/react";
 import { useFocusEffect } from "@react-navigation/native";
@@ -107,6 +108,8 @@ import { setTaskDone, useTaskDoneLine } from "../threads/task-row.js";
  * down here is said beside the bar, and the draft stays.
  */
 export function Composer(props: {
+  /** Whether its pane is in front; one stacked out of sight holds no subscription. */
+  readonly observed?: boolean;
   readonly variant?: "conversation" | "work";
   /** What this Thread may do without asking, named in AI settings. */
   readonly accessMode: ThreadAccessMode;
@@ -145,6 +148,11 @@ export function Composer(props: {
   readonly conversationActions: readonly NativeMenuOption[];
   readonly placeholder: string;
   readonly requests: readonly Request[];
+  readonly onMoreRequests?: () => void;
+  /**
+   * Words handed back to the composer, such as a queued message taken back to
+   * be reworded. Each new value joins the draft once, ahead of what is there.
+   */
   /** Focus after a quote or an edit has been saved in this draft. */
   readonly focusDraft?: number;
   readonly running: boolean;
@@ -214,9 +222,12 @@ export function Composer(props: {
         await props.hostClient.stopRun(threadId, runId);
       },
       reconcile: async (runId) => {
-        const { runQueue, transcripts } = props.hostClient.getSnapshot();
-        const running = runQueue.some((run) => run.id === runId && run.threadId === threadId);
-        return !running || runStopRequested(transcripts[threadId] ?? [], runId)
+        const detail = props.hostClient.getThreadTranscript(threadId)?.getSnapshot();
+        if (!detail?.synchronized) return null;
+        const running = detail.runQueue.some(
+          (run) => run.id === runId && run.threadId === threadId,
+        );
+        return !running || runStopRequested(detail.entries, runId)
           ? { kind: "confirmed", value: undefined }
           : null;
       },
@@ -226,16 +237,12 @@ export function Composer(props: {
   // The fact that the run stopped can land just after the connection is back,
   // after the ready revision's check: it settles the line as it arrives.
   const { stopRunId } = props;
-  const stopEvidence = useHostSelector(
-    props.hostClient,
-    useCallback(
-      (snapshot: HostSnapshot) =>
-        stopRunId !== null &&
-        (!snapshot.runQueue.some((run) => run.id === stopRunId && run.threadId === threadId) ||
-          runStopRequested(snapshot.transcripts[threadId] ?? [], stopRunId)),
-      [stopRunId, threadId],
-    ),
-  );
+  const detail = useThreadTranscript(props.hostClient, threadId, props.observed ?? true);
+  const stopEvidence =
+    stopRunId !== null &&
+    detail.synchronized &&
+    (!detail.runQueue.some((run) => run.id === stopRunId && run.threadId === threadId) ||
+      runStopRequested(detail.entries, stopRunId));
   const stopUnconfirmed = stopAction.state.outcome?.kind === "unconfirmed";
   const { reconcile: reconcileStop } = stopAction;
   useEffect(() => {
@@ -739,6 +746,11 @@ export function Composer(props: {
     );
   return (
     <View style={styles.dock}>
+      {props.onMoreRequests ? (
+        <Pressable accessibilityRole="button" onPress={props.onMoreRequests}>
+          <AppText role="caption">Show more requests</AppText>
+        </Pressable>
+      ) : null}
       {surface === null ? null : question !== null ? (
         <Animated.View entering={appear}>
           <QuestionRequestCard

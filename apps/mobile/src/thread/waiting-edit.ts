@@ -2,10 +2,13 @@ import { classifyClientFailure } from "@opensteer/client/connections";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import {
   followWaitingDraft,
+  hydrateWaitingDraft,
   openWaitingDraft,
   reloadWaitingDraft,
   removeWaitingDraftPart,
   setWaitingDraftText,
+  waitingDraftAwaits,
+  waitingDraftOutgoing,
   waitingDraftSave,
   type HostClient,
   type WaitingDraft,
@@ -116,7 +119,10 @@ export function useWaitingEdit(
       current === undefined || kept.phase === "saving"
         ? kept.draft
         : followWaitingDraft(kept.draft, {
-            content: current.item.message.content,
+            content: [
+              { type: "text", text: current.entry.body },
+              ...(current.entry.attachments ?? []),
+            ],
             revision: current.revision,
           });
     const gone = current === undefined;
@@ -146,7 +152,18 @@ export function useWaitingEdit(
           }
           held.editor = editor;
           setKept((shown) =>
-            shown?.messageId === messageId ? { ...shown, failure: null, phase: "open" } : shown,
+            shown?.messageId === messageId
+              ? {
+                  ...shown,
+                  draft: hydrateWaitingDraft(shown.draft, {
+                    content: editor.content,
+                    revision: editor.revision,
+                    full: true,
+                  }),
+                  failure: null,
+                  phase: "open",
+                }
+              : shown,
           );
         },
         (error: unknown) => {
@@ -168,6 +185,44 @@ export function useWaitingEdit(
     },
     [hostClient, threadId],
   );
+
+  // A newer version locks the field until its full body is read under the lease.
+  const awaited = edit === null ? null : waitingDraftAwaits(edit.draft);
+  const phase = edit?.phase;
+  useEffect(() => {
+    const held = lease.current;
+    const editor = held?.editor;
+    if (awaited === null || !held || !editor || editor.revision === awaited) return;
+    let current = true;
+    editor.read(awaited).then(
+      (content) => {
+        if (!current || lease.current !== held) return;
+        setKept((shown) =>
+          shown?.messageId === held.messageId
+            ? {
+                ...shown,
+                draft: hydrateWaitingDraft(shown.draft, { content, revision: awaited, full: true }),
+              }
+            : shown,
+        );
+      },
+      (error: unknown) => {
+        if (!current || lease.current !== held) return;
+        setKept((shown) =>
+          shown?.messageId === held.messageId
+            ? {
+                ...shown,
+                failure:
+                  failureWords(error, editWords, "This message can’t be edited right now.") ?? "",
+              }
+            : shown,
+        );
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [awaited, phase]);
 
   const close = useCallback((): void => {
     letGo();
@@ -210,7 +265,11 @@ export function useWaitingEdit(
       close();
       setKept({
         asker: item.kind === "ask" ? item.asker : null,
-        draft: openWaitingDraft({ content: item.item.message.content, revision: item.revision }),
+        // The preview shows while the full body is read; it cannot be edited or saved.
+        draft: openWaitingDraft({
+          content: [{ type: "text", text: item.entry.body }, ...(item.entry.attachments ?? [])],
+          revision: item.revision,
+        }),
         failure: null,
         gone: false,
         kind: item.kind,
@@ -347,10 +406,13 @@ export function useWaitingEdit(
         const shown = editRef.current;
         if (flushed?.composing || shown?.messageId !== opened.messageId) return;
         const draft = flushed ? setWaitingDraftText(shown.draft, flushed.text) : shown.draft;
+        // Only words built on the full body leave: never the queue's clipped preview.
+        const outgoing = waitingDraftOutgoing(draft);
+        if (outgoing === null) return;
         setKept({ ...shown, draft, failure: null, phase: "saving", replyFull: false });
         let issue = null;
         try {
-          if (await keep({ parts: draft.parts, text: draft.text.trim() })) {
+          if (await keep({ parts: outgoing.parts, text: outgoing.text })) {
             if (editRef.current?.messageId === shown.messageId) close();
             return;
           }

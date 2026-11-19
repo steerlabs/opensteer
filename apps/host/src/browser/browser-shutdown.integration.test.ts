@@ -3,7 +3,6 @@ import { describeStore, pendingEvent } from "@opensteer/database/test-support/st
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { generateKeyPairSync } from "node:crypto";
 import { expect } from "vitest";
-import { terminalRunReaction } from "../runtime/runtime.js";
 import { BrowserService } from "./browser-service.js";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 
@@ -24,7 +23,8 @@ describeStore("Browser shutdown reconciliation", (it) => {
         deploymentId: f.deploymentId,
         hostOrigin: new URL("http://127.0.0.1:4310"),
         onSessionsChanged: () => undefined,
-        onDeploymentEvent: () => undefined,
+        personal: true,
+
         repository,
         signer,
       });
@@ -59,7 +59,7 @@ describeStore("Browser shutdown reconciliation", (it) => {
 
     // The Host stops its browser before stopping terminal-event producers.
     await browser.close();
-    const terminal = await store.commitRunnerEvent({
+    await store.commitRunnerEvent({
       environmentId: f.environmentId,
       event: pendingEvent({
         bindingGeneration: f.bindingGeneration,
@@ -73,14 +73,7 @@ describeStore("Browser shutdown reconciliation", (it) => {
       runnerBootId: f.runnerBootId,
       runnerId: f.runnerId,
     });
-    let detaching: Promise<unknown> | undefined;
-    terminalRunReaction({
-      detachBrowserSessions: (binding) =>
-        (detaching = browser.detachAgentSessionsForBinding(binding)),
-      endShellSessions: async () => undefined,
-    })(terminal.event);
-    expect(detaching).toBeDefined();
-    await detaching;
+    await browser.detachAgentSessionsForBinding(bindingId);
     expect(await store.countBrowserSessionAttachments(sessionId)).toBe(1);
     expect(await store.listAttachedRunIdsForBrowserSessions([sessionId])).toEqual(
       new Map([[sessionId, [f.run.id]]]),

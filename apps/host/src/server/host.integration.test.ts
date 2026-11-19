@@ -1,3 +1,4 @@
+import { injectTestResource } from "./test-host-api-request.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
 import {
@@ -27,7 +28,6 @@ import {
   personalRemoteAuthorizationScheme,
   rememberExecutionChoice,
   ThreadAccessModeSchema,
-  ThreadViewSchema,
   type AuthenticatedSession,
   type EnvironmentId,
   type ExecutionChoice,
@@ -57,11 +57,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from "vitest";
-import {
-  threadPlacementOptions,
-  type EnvironmentSummary,
-  type HarnessSummary,
-} from "@opensteer/client/host";
+import { threadPlacementOptions } from "@opensteer/client/host";
 import { HostAuthenticator } from "../identity/auth.js";
 import { LocalBootstrapService } from "../runtime/local-bootstrap.js";
 
@@ -126,6 +122,7 @@ function createHostServer(dependencies: HostServerTestOverrides) {
   const store = Object.assign(
     {
       countLiveThreadsByEnvironment: async () => new Map(),
+      recordHarnessCatalogs: async () => [],
       database: personalFixture.database,
       personalMessageSendKeys: personalFixture.store.personalMessageSendKeys.bind(
         personalFixture.store,
@@ -198,6 +195,10 @@ function createHostServer(dependencies: HostServerTestOverrides) {
     },
     complete.store,
   ) as typeof complete.store;
+  const authenticateSession: HostAuthenticator["authenticateSession"] = async (headers, options) =>
+    typeof partialAuthenticator.authenticateSession === "function"
+      ? await partialAuthenticator.authenticateSession(headers, options)
+      : testAuthenticatedSession(await partialAuthenticator.authenticateUser(headers, options));
   return createProductionHostServer({
     ...complete,
     execution: { canExecute: () => true },
@@ -206,20 +207,15 @@ function createHostServer(dependencies: HostServerTestOverrides) {
         ? authenticator
         : ({
             ...partialAuthenticator,
+            authenticateSession,
             authenticateSessionContext: async (headers, options) => ({
               credentialKind: "browser-cookie" as const,
-              session:
-                typeof partialAuthenticator.authenticateSession === "function"
-                  ? await partialAuthenticator.authenticateSession(headers, options)
-                  : testAuthenticatedSession(
-                      await partialAuthenticator.authenticateUser(headers, options),
-                    ),
+              session: await authenticateSession(headers, options),
               surface: "canonical" as const,
             }),
           } as HostAuthenticator),
     browser: Object.assign(
       {
-        latestTabPlaces: async () => [],
         withRunnerAdmission: async <T>(_runnerId: RunnerId, action: () => Promise<T>) => action(),
       },
       complete.browser,
@@ -233,12 +229,16 @@ function createHostServer(dependencies: HostServerTestOverrides) {
   });
 }
 
+const testSessionIds = new Map<UserId, AuthenticatedSession["id"]>();
 function testAuthenticatedSession(userId: UserId): AuthenticatedSession {
+  const id = testSessionIds.get(userId) ?? createId("authSession");
+  testSessionIds.set(userId, id);
+  const now = Date.now();
   return {
-    absoluteExpiresAt: "2026-09-12T00:00:00.000Z",
-    createdAt: "2026-08-12T00:00:00.000Z",
-    expiresAt: "2026-08-13T00:00:00.000Z",
-    id: createId("authSession"),
+    absoluteExpiresAt: new Date(now + 3_600_000).toISOString(),
+    createdAt: new Date(now - 60_000).toISOString(),
+    expiresAt: new Date(now + 60_000).toISOString(),
+    id,
     user: {
       disabledAt: null,
       displayName: "Owner",
@@ -286,11 +286,10 @@ function injectHarnessAuthentication(
 }
 
 /**
- * The realtime hub as a command handler uses it: `publish` for a Workspace's
- * durable events, `broadcast` for the "read the computers list again" nudge.
+ * Narrow realtime collaborators for a command-handler fixture.
  */
 function testRealtime(overrides: Record<string, unknown> = {}) {
-  return { broadcast: vi.fn(), publish: vi.fn(), ...overrides } as never;
+  return { broadcast: vi.fn(), ...overrides } as never;
 }
 
 const testDiscoveryKeys = generateKeyPairSync("ed25519");
@@ -682,6 +681,7 @@ describe("rpc envelope", () => {
       } as never,
       store: {
         countLiveThreadsByEnvironment: async () => new Map(),
+        recordHarnessCatalogs: async () => [],
         database: personalFixture.database,
         listPendingRunnerEnrollments: overrides.listPendingRunnerEnrollments ?? (async () => []),
         listRunners: overrides.listRunners ?? (async () => ({ runners: [] })),
@@ -938,70 +938,6 @@ describe("rpc envelope", () => {
       expect(approved.statusCode, approved.body).toBe(200);
       expect(publishConnectionsChanged).toHaveBeenCalledTimes(2);
       expect(publishConnectionsChanged).toHaveBeenLastCalledWith(ownerId);
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("publishes the terminal events for work the removed computer never claimed", async () => {
-    const ownerId = fixtureOwnerId;
-    const runnerId = createId("runner");
-    const terminalEvent = {
-      id: createId("event"),
-      runId: createId("run"),
-      threadId: createId("thread"),
-      data: {
-        code: "forbidden",
-        message: "Access revoked",
-        retryable: false,
-        status: "failed",
-        startedAt: "2026-08-09T09:00:00.000Z",
-        personWaiting: true,
-        startedBy: {
-          displayName: "Alex",
-          kind: "human",
-          userId: createId("user"),
-          principalId: "test-principal",
-        },
-      },
-      type: "run.failed",
-      purpose: "task",
-      teamOrigin: null,
-    };
-    const publish = vi.fn();
-    const app = await createHostServer({
-      authenticator: {
-        authenticateSession: async () => testAuthenticatedSession(ownerId),
-        identity: testIdentity,
-      } as never,
-      discovery: testDiscovery,
-      channels: { relay: { forget: vi.fn() }, service: {} } as never,
-      browser: { abandonSession: vi.fn(), profilesRemoved: vi.fn(async () => undefined) } as never,
-      realtime: testRealtime({ publish }),
-      runners: { revoke: vi.fn(async () => undefined) } as never,
-      store: {
-        removeDevice: vi.fn(async () => ({
-          removedDeviceIds: [],
-          detachedDeviceBindings: [],
-          endedSessionIds: [],
-          cancelledRequestIds: [],
-          closedBrowserSessions: [],
-          deletedBrowserProfiles: [],
-          events: [terminalEvent],
-          requestEvents: [],
-          revokedComputerConnectionIds: [],
-        })),
-      } as never,
-    });
-    try {
-      const response = await injectRpcRequest(app, "commands.dispatch", {
-        idempotencyKey: "revoke-settles-queued-work",
-        machineId: runnerId,
-        type: "machine.revoke",
-      });
-      expect(response.statusCode, response.body).toBe(200);
-      // A parent Thread waiting on a delegation only learns about it here.
-      expect(publish).toHaveBeenCalledWith(terminalEvent);
     } finally {
       await app.close();
     }
@@ -2000,6 +1936,7 @@ describe("Request routes", () => {
     try {
       const response = await injectRpcRequest(app, "commands.dispatch", {
         idempotencyKey: "resolve-secret-request",
+        expectedRevision: "1",
         requestId: request.id,
         response: responseBody.response,
         type: "request.respond",
@@ -2030,7 +1967,7 @@ describe("Request routes", () => {
     }
   });
 
-  it("settles a question an agent asked the person and wakes its task", async () => {
+  it("settles a reviewed question an agent asked the person", async () => {
     const asked = pendingRequestFixture("harness.input");
     const request = {
       ...asked,
@@ -2038,10 +1975,8 @@ describe("Request routes", () => {
       mode: "durable",
       payload: { kind: "person.question" },
     } as const;
-    const answerPersonQuestion = vi.fn(async () => ({ events: [], request }));
-    const notify = vi.fn();
+    const answerPersonQuestion = vi.fn(async () => ({ replayed: false, request }));
     const app = await requestRouteServer({
-      continuations: { notify },
       ownerId: fixtureOwnerId,
       request,
       store: { requests: { answerPersonQuestion } },
@@ -2050,6 +1985,7 @@ describe("Request routes", () => {
     try {
       const response = await injectRpcRequest(app, "commands.dispatch", {
         idempotencyKey: "answer-question",
+        expectedRevision: "1",
         requestId: request.id,
         response: answer,
         type: "request.respond",
@@ -2058,11 +1994,11 @@ describe("Request routes", () => {
       expect(answerPersonQuestion).toHaveBeenCalledWith(
         expect.objectContaining({
           requestId: request.id,
+          expectedRevision: "1",
           resolvedBy: fixtureOwnerId,
           response: answer,
         }),
       );
-      expect(notify).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }
@@ -2141,201 +2077,27 @@ describe("Optional subsystem registration", () => {
   });
 });
 
-describe("thread event history route", () => {
+describe("thread Request history route", () => {
   it("projects settlement provenance in raw request list responses", async () => {
     const request = {
       ...pendingRequestFixture("browser.access"),
+      status: "declined" as const,
+      resolvedAt: new Date().toISOString(),
+      resolvedBy: fixtureOwnerId,
+      response: { kind: "external" as const, value: { decision: "declined" } },
       settlementProvenance: { sessionId: "PRIVATE-SETTLEMENT-SESSION", deviceLabel: "iPhone" },
     };
     const app = await requestRouteServer({ ownerId: request.requestedBy, request });
     try {
       const response = await injectRpcRequest(app, "thread.requests.list", {
         threadId: request.originatingThreadId,
+        requestId: request.id,
       });
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode, response.body).toBe(200);
       expect(response.body).not.toContain("PRIVATE-SETTLEMENT-SESSION");
       expect(response.json().data.requests[0].settlementProvenance).toEqual({
         deviceLabel: "iPhone",
       });
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("serves the durable event page and 404s when the Thread is not accessible", async () => {
-    const ownerId = fixtureOwnerId;
-    const threadId = createId("thread");
-    const pending = pendingRequestFixture("browser.access");
-    const request = {
-      ...pending,
-      originatingThreadId: threadId,
-      status: "declined" as const,
-      resolvedAt: new Date().toISOString(),
-      resolvedBy: ownerId,
-      response: { kind: "external" as const, value: { decision: "declined" } },
-      settlementProvenance: { sessionId: "PRIVATE-SETTLEMENT-SESSION", deviceLabel: "iPhone" },
-    };
-    const page = {
-      thread: ThreadViewSchema.parse({
-        accessMode: "full-access",
-        continuationIdentity: null,
-        createdAt: request.createdAt,
-        updatedAt: request.createdAt,
-        createdBy: ownerId,
-        environmentId: createId("environment"),
-        harnessInstanceId: createId("harnessInstance"),
-        id: threadId,
-        lineageRootThreadId: threadId,
-        inputQueuePaused: false,
-        listed: true,
-        modelSelection: { modelId: "gpt-5.6-sol", options: {}, providerId: "openai" },
-        parentThreadId: null,
-        pendingRequests: 0,
-        status: "idle",
-        title: "History",
-        purpose: "task" as const,
-        teamOrigin: null,
-      }),
-      asOfSequence: "1",
-      events: [
-        {
-          createdAt: request.resolvedAt,
-          data: { request },
-          environmentId: createId("environment"),
-          eventId: createId("event"),
-          runId: request.originatingRunId,
-          sequence: "1",
-          threadId,
-          type: "request.resolved" as const,
-        },
-      ],
-      threadId,
-      window: {
-        byteCount: 2,
-        hasMore: false,
-        itemCount: 1,
-        nextBefore: null,
-        threadId,
-        totalItems: 1,
-      },
-    };
-    let result: unknown = page;
-    const threadEventPageForOwner = vi.fn(async () => result);
-    const app = await createHostServer({
-      requestResponseVault: {} as never,
-
-      agentTools: {} as never,
-      authenticator: { authenticateUser: async () => ownerId } as never,
-      browser: {} as never,
-      commands: {} as never,
-      credentials: {} as never,
-      discovery: testDiscovery,
-      egress: {} as never,
-      harnessAuthenticationCoordinator: {} as never,
-      realtime: testRealtime(),
-      runnerAuthenticator: {} as never,
-      runners: {} as never,
-      store: { threadEventPageForOwner } as never,
-    } satisfies HostServerTestOverrides);
-    try {
-      const ok = await injectRpcRequest(app, "thread.events.list", {
-        before: "17",
-        limit: 100,
-        threadId,
-      });
-      expect(ok.statusCode).toBe(200);
-      expect(ok.body).not.toContain("PRIVATE-SETTLEMENT-SESSION");
-      expect(rpcData(ok)).toEqual({
-        ...page,
-        events: [
-          {
-            ...page.events[0],
-            data: {
-              request: {
-                ...request,
-                settlementProvenance: { deviceLabel: "iPhone" },
-              },
-            },
-          },
-        ],
-      });
-      expect(threadEventPageForOwner).toHaveBeenCalledWith({
-        before: "17",
-        maxItems: 100,
-        ownerId,
-        threadId,
-      });
-
-      const text = "large output 🙂\n".repeat(1000);
-      result = {
-        ...page,
-        events: [
-          {
-            ...page.events[0]!,
-            type: "tool.completed",
-            data: { callId: "call", isError: false, output: { text } },
-          },
-        ],
-      };
-      const whole = await injectRpcRequest(app, "thread.events.list", { threadId });
-      expect(rpcData(whole)).toMatchObject({ events: [{ data: { output: { text } } }] });
-      const preview = await injectRpcRequest(app, "thread.events.list", {
-        threadId,
-        toolOutputs: "preview",
-      });
-      expect(rpcData(preview)).toMatchObject({
-        events: [
-          {
-            data: {
-              outputPreview: {
-                bytes: Buffer.byteLength(text),
-                cut: true,
-                digest: expect.any(String),
-              },
-            },
-          },
-        ],
-      });
-      expect(JSON.stringify(rpcData(preview))).not.toContain(text);
-      result = page;
-      const bare = await injectRpcRequest(app, "thread.events.list", { threadId });
-      expect(bare.statusCode).toBe(200);
-      expect(threadEventPageForOwner).toHaveBeenLastCalledWith({
-        maxItems: 200,
-        ownerId,
-        threadId,
-      });
-
-      const turns = await injectRpcRequest(app, "thread.events.list", {
-        before: "17",
-        threadId,
-        turns: 10,
-      });
-      expect(turns.statusCode).toBe(200);
-      expect(threadEventPageForOwner).toHaveBeenLastCalledWith({
-        before: "17",
-        maxTurns: 10,
-        ownerId,
-        threadId,
-      });
-      // A turn page sizes itself; an event count beside it is a contradiction.
-      const turnsWithLimit = await injectRpcRequest(app, "thread.events.list", {
-        limit: 100,
-        threadId,
-        turns: 10,
-      });
-      expect(turnsWithLimit.statusCode).toBe(400);
-
-      const invalidCursor = await injectRpcRequest(app, "thread.events.list", {
-        before: "not a cursor",
-        threadId,
-      });
-      expect(invalidCursor.statusCode).toBe(400);
-
-      result = null;
-      const missing = await injectRpcRequest(app, "thread.events.list", { threadId });
-      expect(missing.statusCode).toBe(404);
-      expect(missing.json()).toMatchObject({ error: { code: "not_found" } });
     } finally {
       await app.close();
     }
@@ -2555,16 +2317,18 @@ describe("Thread input command boundary", () => {
   });
 
   it("reads the authoritative queue with owner identity", async () => {
+    const session = testAuthenticatedSession(ownerId);
     const getThreadForOwner = vi.fn(async () => thread);
     const getThreadInputQueue = vi.fn(async (input: { readonly threadId: typeof threadId }) => ({
       items: [],
+      revision: "0",
       paused: false,
       steerRunId: null,
       threadId: input.threadId,
     }));
     const app = await createHostServer({
       authenticator: {
-        authenticateSession: async () => testAuthenticatedSession(ownerId),
+        authenticateSession: async () => session,
         identity,
       } as never,
       commands: {} as never,
@@ -2576,12 +2340,17 @@ describe("Thread input command boundary", () => {
       expect(response.statusCode, response.body).toBe(200);
       expect(rpcData(response)).toEqual({
         items: [],
+        revision: "0",
         paused: false,
         steerRunId: null,
         threadId,
       });
       expect(getThreadForOwner).toHaveBeenCalledWith(threadId, ownerId);
-      expect(getThreadInputQueue).toHaveBeenCalledWith({ requestedBy: ownerId, threadId });
+      expect(getThreadInputQueue).toHaveBeenCalledWith({
+        requestedBy: ownerId,
+        sessionId: session.id,
+        threadId,
+      });
     } finally {
       await app.close();
     }
@@ -2804,6 +2573,8 @@ describe("durable harness catalogs", () => {
           : undefined,
       dispatch,
       inspectHarnesses,
+      // The registry answers a generation only for a connected Runner.
+      connectionGenerationFor: () => (options.connected ? 1 : undefined),
       isAvailable: () => options.connected,
       manageHarnessAuthentication,
       reconcileHarnesses,
@@ -2917,9 +2688,9 @@ describe("durable harness catalogs", () => {
     const authenticateSession = vi.fn(
       async () =>
         ({
-          absoluteExpiresAt: "2026-09-12T00:00:00.000Z",
-          createdAt: "2026-08-12T00:00:00.000Z",
-          expiresAt: "2026-08-13T00:00:00.000Z",
+          absoluteExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          createdAt: new Date(Date.now() - 60_000).toISOString(),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
           id: "ses_00000000-0000-4000-8000-000000000001",
           user: {
             disabledAt: null,
@@ -3048,6 +2819,8 @@ describe("durable harness catalogs", () => {
       );
       expect(fixture.recordHarnessCatalogs).toHaveBeenCalledWith({
         catalogs: [gatewayCatalog],
+        // Written under the connection that answered.
+        connectionGeneration: 1,
         environmentId,
         expectedRevisions: new Map([[harnessInstanceId, 1]]),
       });
@@ -3317,33 +3090,45 @@ describe("durable harness catalogs", () => {
     }
   });
 
-  it("serves bootstrap catalogs from the store without asking a Runner", async () => {
-    const { listHarnessCatalogs, server } = harnessCatalogServer({
-      catalog: readyCatalog,
+  it("serves the committed catalog resource without asking a Runner", async () => {
+    const harness = await createCatalogResourceHarness("Committed catalog");
+    await personalFixture.store.recordHarnessCatalogs({
+      catalogs: [{ ...readyCatalog, harnessInstanceId: harness.id }],
+      environmentId: harness.environmentId,
+      expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
+    });
+    const { inspectHarnesses, reconcileHarnesses, server } = harnessCatalogServer({
       connected: false,
       environmentKind: "main",
     });
     const app = await server;
+    const settings = personalFixture.store.notificationState;
+    const prior = await settings.quietTaskDaysFor(fixtureOwnerId);
     try {
-      const bootstrap = await injectRpcRequest(app, "bootstrap.get", {});
-      expect(bootstrap.statusCode).toBe(200);
-      expect(rpcData(bootstrap)).toMatchObject({
-        quietTaskDays: 3,
-        environments: [
-          {
-            connected: false,
-            harnessCatalogs: [{ harnessInstanceId, status: "ready" }],
-            id: environmentId,
-          },
-        ],
-      });
-      expect(listHarnessCatalogs).toHaveBeenCalledWith([environmentId]);
+      await settings.setQuietTaskDays({ userId: fixtureOwnerId, quietTaskDays: 3 });
+      expect(await injectTestResource(app, "settings")).toMatchObject({ quietTaskDays: 3 });
+      expect((await injectTestResource(app, "harness-catalog")).environments).toContainEqual(
+        expect.objectContaining({
+          id: harness.environmentId,
+          status: "disconnected",
+          harnessCatalogs: expect.arrayContaining([
+            expect.objectContaining({
+              harnessInstanceId: harness.id,
+              status: "ready",
+            }),
+          ]),
+        }),
+      );
+      expect(inspectHarnesses).not.toHaveBeenCalled();
+      expect(reconcileHarnesses).not.toHaveBeenCalled();
     } finally {
       await app.close();
+      await settings.setQuietTaskDays({ userId: fixtureOwnerId, quietTaskDays: prior });
     }
   });
 
   it("marks every engine on a Runner without the tool plan as needing an update", async () => {
+    const harness = await createCatalogResourceHarness("Unavailable engine");
     const fixture = harnessCatalogServer({
       catalog: readyCatalog,
       connected: true,
@@ -3370,11 +3155,9 @@ describe("durable harness catalogs", () => {
     });
     const app = await fixture.server;
     try {
-      const bootstrap = rpcData(await injectRpcRequest(app, "bootstrap.get", {})) as {
-        environments: EnvironmentSummary[];
-        harnesses: HarnessSummary[];
-      };
-      expect(bootstrap.environments[0]?.harnessDrivers).toEqual([
+      const { environments } = await injectTestResource(app, "harness-catalog");
+      const { harnesses } = await injectTestResource(app, "harness");
+      expect(environments[0]?.harnessDrivers).toEqual([
         {
           driverKind: "native",
           readiness: "unavailable",
@@ -3382,7 +3165,9 @@ describe("durable harness catalogs", () => {
         },
       ]);
       // The shared client's picker says so before anything is sent.
-      const [placement] = threadPlacementOptions(bootstrap.environments, bootstrap.harnesses);
+      const placement = threadPlacementOptions(environments, harnesses).find(
+        ({ harnessInstanceId }) => harnessInstanceId === harness.id,
+      );
       expect(placement).toMatchObject({
         available: false,
         detail: "Update this computer to use Opensteer tools.",
@@ -3391,6 +3176,25 @@ describe("durable harness catalogs", () => {
       await app.close();
     }
   });
+
+  async function createCatalogResourceHarness(name: string) {
+    const { id } = await personalFixture.database
+      .selectFrom("executionEnvironments")
+      .innerJoin(
+        "personalSettings",
+        "personalSettings.agentHomeComputerId",
+        "executionEnvironments.runnerId",
+      )
+      .select("executionEnvironments.id")
+      .executeTakeFirstOrThrow();
+    return personalFixture.store.createHarnessInstance({
+      config: {},
+      driverKind: readyCatalog.driverKind,
+      environmentId: id,
+      name,
+      stateKind: "isolated",
+    });
+  }
 
   it("keeps the hosting computer's status two-valued", async () => {
     // No lifecycle service exists on a self-hosted Host, so an away Runner is
@@ -3401,7 +3205,7 @@ describe("durable harness catalogs", () => {
       environmentKind: "main",
     }).server;
     try {
-      expect(rpcData(await injectRpcRequest(away, "bootstrap.get", {}))).toMatchObject({
+      expect(await injectTestResource(away, "environment")).toMatchObject({
         environments: [{ connected: false, status: "disconnected" }],
       });
     } finally {
@@ -3415,7 +3219,7 @@ describe("durable harness catalogs", () => {
       environmentKind: "main",
     }).server;
     try {
-      expect(rpcData(await injectRpcRequest(unmanaged, "bootstrap.get", {}))).toMatchObject({
+      expect(await injectTestResource(unmanaged, "environment")).toMatchObject({
         environments: [{ connected: false, status: "disconnected" }],
       });
     } finally {
@@ -3783,11 +3587,10 @@ describe("durable harness catalogs", () => {
 
       expect(created.statusCode).toBe(200);
       await vi.waitFor(() => expect(fixture.reconcileHarnesses).toHaveBeenCalledTimes(1));
-      const refreshed = await injectRpcRequest(app, "bootstrap.get", {});
-      expect(refreshed.statusCode).toBe(200);
-      expect(rpcData(refreshed)).toMatchObject({
-        harnesses: [expect.objectContaining({ id: harnessInstanceId })],
-      });
+      expect(fixture.createHarnessInstance).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ name: "Cold account", environmentId }),
+      );
+      expect(rpcData(created)).toMatchObject({ harness: { id: harnessInstanceId } });
       coldCatalog.resolve([]);
     } finally {
       coldCatalog.resolve([]);
@@ -3973,6 +3776,8 @@ describe("durable harness catalogs", () => {
       );
       expect(fixture.recordHarnessCatalogs).toHaveBeenCalledExactlyOnceWith({
         catalogs: [readyCatalog],
+        // Written under the connection that answered.
+        connectionGeneration: 1,
         environmentId,
         expectedRevisions: new Map([[harnessInstanceId, 1]]),
       });
@@ -4003,7 +3808,7 @@ describe("durable harness catalogs", () => {
       environmentKind: "main",
     }).server;
     try {
-      expect(rpcData(await injectRpcRequest(app, "bootstrap.get", {}))).toMatchObject({
+      expect(await injectTestResource(app, "environment")).toMatchObject({
         environments: [{ harnessAuthenticationAllowed: true }],
       });
     } finally {
@@ -4056,6 +3861,7 @@ async function requestRouteServer(options: {
 }) {
   const requests = {
     get: vi.fn(async () => options.request),
+    referenceForOwner: vi.fn(async () => options.request),
     originatingPendingPage: vi.fn(async () => ({
       requests: [options.request],
       window: { byteCount: 1, hasMore: false, itemCount: 1, nextBefore: null, totalItems: 1 },
@@ -4073,7 +3879,7 @@ async function requestRouteServer(options: {
 
     agentTools: {} as never,
     authenticator: { authenticateUser: async () => options.ownerId } as never,
-    browser: { latestPlaces: async () => [], ...options.browser } as never,
+    browser: { ...options.browser } as never,
     commands: { sendControl: options.sendControl ?? vi.fn() } as never,
     integrations: {
       ...hostServerTestDependencies().integrations,

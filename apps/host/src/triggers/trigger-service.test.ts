@@ -250,7 +250,7 @@ describe("TriggerService", () => {
     expect(enqueueWebhook).toHaveBeenCalledTimes(1);
     expect(onOccurrenceQueued).toHaveBeenCalledTimes(1);
   });
-  it("wakes dispatch only when the schedule transaction creates occurrences", async () => {
+  it("fires schedules at their deadline or a wake, wakes dispatch only for new occurrences, and never polls", async () => {
     vi.useFakeTimers();
     const onChanged = vi.fn();
     const onOccurrenceQueued = vi.fn();
@@ -266,28 +266,87 @@ describe("TriggerService", () => {
           },
         ],
         changed: true,
+        failures: [],
       })
       .mockResolvedValue({
         occurrences: [],
         changed: false,
+        failures: [],
       });
+    // The next schedule is a minute out, and then none is armed.
+    const nextScheduleAt = vi
+      .fn<() => Promise<Date | null>>()
+      .mockImplementationOnce(async () => new Date(Date.now() + 60_000))
+      .mockResolvedValue(null);
     const loop = new TriggerScheduleLoop({
       onChanged,
       onError: vi.fn(),
       onOccurrenceQueued,
       store: {
         claimDueSchedules,
-      } as Pick<TriggerStore, "claimDueSchedules">,
+        nextScheduleAt,
+      } as Pick<TriggerStore, "claimDueSchedules" | "nextScheduleAt">,
     });
+    const passAt = Date.now();
     loop.start();
     await vi.advanceTimersByTimeAsync(0);
     expect(claimDueSchedules).toHaveBeenCalledTimes(1);
+    // Claimed at the pass's own time, the one its deadline is judged against.
+    expect(claimDueSchedules.mock.calls[0]?.[0]).toEqual(new Date(passAt));
     expect(onOccurrenceQueued).toHaveBeenCalledTimes(1);
     expect(onChanged.mock.calls).toEqual([[]]);
-    await vi.advanceTimersByTimeAsync(1_000);
+    // No polling before the deadline.
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(claimDueSchedules).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
     expect(claimDueSchedules).toHaveBeenCalledTimes(2);
     expect(onOccurrenceQueued).toHaveBeenCalledTimes(1);
     expect(onChanged).toHaveBeenCalledTimes(1);
+    // Nothing armed: idle until a commit moves a schedule.
+    expect(vi.getTimerCount()).toBe(0);
+    loop.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(claimDueSchedules).toHaveBeenCalledTimes(3);
     await loop.close();
+  });
+});
+
+describe("TriggerScheduleLoop exits", () => {
+  it.each([
+    ["claimed and moved on: re-armed at the next time", true, 60_000, 60_000],
+    ["nothing due: armed at the next time", false, 60_000, 60_000],
+    ["no schedule armed: disarmed", false, null, null],
+    ["due but not claimable: backs off, no spin", false, -1, 5_000],
+  ] as const)("%s", async (_, changed, nextIn, armedIn) => {
+    vi.useFakeTimers();
+    try {
+      const claimDueSchedules = vi.fn(async () => ({ occurrences: [], changed, failures: [] }));
+      const nextScheduleAt = vi.fn(async () =>
+        nextIn === null ? null : new Date(Date.now() + nextIn),
+      );
+      const loop = new TriggerScheduleLoop({
+        onChanged: vi.fn(),
+        onError: vi.fn(),
+        onOccurrenceQueued: vi.fn(),
+        store: { claimDueSchedules, nextScheduleAt } as Pick<
+          TriggerStore,
+          "claimDueSchedules" | "nextScheduleAt"
+        >,
+      });
+      loop.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(claimDueSchedules).toHaveBeenCalledTimes(1);
+      if (armedIn === null) expect(vi.getTimerCount()).toBe(0);
+      else {
+        await vi.advanceTimersByTimeAsync(armedIn - 1);
+        expect(claimDueSchedules).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(claimDueSchedules).toHaveBeenCalledTimes(2);
+      }
+      await loop.close();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

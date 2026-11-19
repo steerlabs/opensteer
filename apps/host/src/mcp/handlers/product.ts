@@ -1,3 +1,4 @@
+import { RunnerIdSchema, utf8Prefix } from "@opensteer/core";
 import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import {
@@ -5,7 +6,6 @@ import {
   cardAgentResult,
   chromeCookiesAgentResult,
 } from "../../browser/agent-request-results.js";
-import { RunnerIdSchema } from "@opensteer/core";
 import type { TabServicePort } from "../../tabs/ports.js";
 import { PersonShowTargetSchema } from "@opensteer/core";
 type DelegationCall = ToolCall<"opensteer_task_delegate"> & {
@@ -13,7 +13,7 @@ type DelegationCall = ToolCall<"opensteer_task_delegate"> & {
 };
 import type { DeviceAccessService } from "../../administration/device-access-service.js";
 import { threadWaitMaxMs } from "@opensteer/agent-tools/tools";
-import { toolMessageAuthor, toolRequestAnswerer } from "@opensteer/agent-tools/outputs";
+import { toolRequestAnswerer } from "@opensteer/agent-tools/outputs";
 import {
   readAgentThreadRecent,
   readAgentThreadActivity,
@@ -24,18 +24,10 @@ import {
   withoutDatabaseOperationSignal,
   withDatabaseOperationSignal,
   readAgentRequest,
-  requestRevision,
   AgentRequestResponderSchema,
   reachableNode,
 } from "@opensteer/database";
-import {
-  activityItem,
-  messageItem,
-  taskItem,
-  boundedThreadItems,
-  itemText,
-} from "../thread-items.js";
-import { sql } from "kysely";
+import { activityItem, messageItem, taskItem, boundedThreadItems } from "../thread-items.js";
 import { stripRefs } from "@opensteer/shared/stripRefs";
 import { isDeepStrictEqual } from "node:util";
 import { ThreadService } from "../../threads/thread-service.js";
@@ -68,8 +60,6 @@ import {
   compareSequence,
   ThreadIdSchema,
   MessageIdSchema,
-  type AgentEvent,
-  AgentEventSchema,
   type PlaceContentPart,
   type PlaceIdentity,
   type DeploymentId,
@@ -153,7 +143,7 @@ export class ProductToolHandlers {
 
   readonly #deploymentId: DeploymentId;
   readonly #threads: ThreadService;
-  readonly #realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
+  readonly #realtime: Pick<RealtimeHub, "observe" | "observeScopes" | "sendToUsers">;
   readonly #tabs: Pick<TabServicePort, "authorizeShow" | "get"> | undefined;
   readonly #personShow:
     | ((userId: RunToolScope["requestedBy"], message: PersonShowMessage) => Promise<number>)
@@ -180,7 +170,6 @@ export class ProductToolHandlers {
   readonly #questionNotices: Pick<TaskQuestionNotices, "wait"> | undefined;
   readonly #execution: AgentExecution;
   readonly #isEnvironmentConnected: (environmentId: EnvironmentId) => boolean;
-  readonly #onEvent: (event: AgentEvent) => void;
   readonly #store: OpensteerStore;
   readonly #onBrowserUsage: ((credits: readonly BrowserUsageCredit[]) => void) | undefined;
   readonly #placeContext: Pick<PlaceContextService, "assertDelegated"> | undefined;
@@ -189,7 +178,7 @@ export class ProductToolHandlers {
   constructor(options: {
     readonly deploymentId: DeploymentId;
     readonly threads: ThreadService;
-    readonly realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
+    readonly realtime: Pick<RealtimeHub, "observe" | "observeScopes" | "sendToUsers">;
     readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay">;
     readonly personShow?: (userId: UserId, message: PersonShowMessage) => Promise<number>;
     readonly tabs?: Pick<TabServicePort, "authorizeShow" | "get">;
@@ -216,7 +205,6 @@ export class ProductToolHandlers {
     readonly execution: AgentExecution;
     readonly isEnvironmentConnected: (environmentId: EnvironmentId) => boolean;
     readonly memoryPasses?: Pick<MemoryPassService, "admissionSelection">;
-    readonly onEvent: (event: AgentEvent) => void;
     readonly store: OpensteerStore;
     readonly onBrowserUsage?: (credits: readonly BrowserUsageCredit[]) => void;
     readonly placeContext?: Pick<PlaceContextService, "assertDelegated">;
@@ -239,7 +227,6 @@ export class ProductToolHandlers {
     this.#questionNotices = options.questionNotices;
     this.#execution = options.execution;
     this.#isEnvironmentConnected = options.isEnvironmentConnected;
-    this.#onEvent = options.onEvent;
     this.#store = options.store;
     this.#placeContext = options.placeContext;
     this.#onBrowserUsage = options.onBrowserUsage;
@@ -369,7 +356,6 @@ export class ProductToolHandlers {
       requestedBy: claims.requestedBy,
       requiredActor: "requester",
     });
-    for (const event of created.events) this.#onEvent(event);
     return requestResult(
       created.request,
       created.request.status === "pending"
@@ -511,12 +497,11 @@ export class ProductToolHandlers {
     });
     if (!recent) throw forbidden("task is unavailable to this user");
     const seen = new Set<string>();
-    const references = recent.places.flatMap((event) => {
-      if (!event.runId) return [];
-      const key = `${event.runId}:${event.data.tabId}`;
+    const references = recent.places.flatMap((place) => {
+      const key = `${place.runId}:${place.tabId}`;
       if (seen.has(key)) return [];
       seen.add(key);
-      return [{ threadId: thread.id, runId: event.runId, ...event.data }];
+      return [{ threadId: thread.id, ...place }];
     });
     const recentPlaces = (await this.#readableTabPlaces(caller.userId, references))
       .slice(0, 10)
@@ -530,11 +515,7 @@ export class ProductToolHandlers {
       })),
       recentPlaces,
     };
-    // An event's itemId can't name a message, so it needs no `view` to be read.
-    if (
-      input.view === "activity" ||
-      (input.itemId && !MessageIdSchema.safeParse(input.itemId).success)
-    )
+    if (input.itemId ? !MessageIdSchema.safeParse(input.itemId).success : input.view === "activity")
       return { ...context, ...(await this.#activity(caller, thread.id, input)) };
     let page;
     try {
@@ -591,174 +572,86 @@ export class ProductToolHandlers {
     if (!node) throw missing();
     const thread = await this.#store.getThreadForOwner(node.threadId, caller.userId);
     if (!thread) throw missing();
-    try {
-    } catch {
-      throw missing();
-    }
-    const page = await this.#store.nodeEventPageForOwner({
-      ownerId: caller.userId,
-      threadId: thread.id,
-      nodeId: node.id,
-      maxItems: input.itemId ? 1 : input.limit,
-      types:
-        input.view === "activity" || input.itemId
-          ? ["node.message", "tool.started", "tool.completed"]
-          : ["node.message"],
-      ...(input.cursor ? { before: input.cursor } : {}),
-      ...(input.itemId ? { itemId: input.itemId } : {}),
-    });
-    if (!page) throw missing();
-    const calls = page.events.flatMap((event) =>
-      event.type === "tool.completed" ? [event.data.callId] : [],
-    );
-    const starts = calls.length
-      ? await this.#store.database
-          .selectFrom("deploymentEvents")
-          .selectAll()
-          .where("nodeDetailId", "=", node.id)
-          .where("type", "=", "tool.started")
-          .where(sql<string>`data->>'callId'`, "in", calls)
-          .execute()
-      : [];
-    const started = new Map(
-      starts
-        .map((row) => {
-          const event = AgentEventSchema.parse({
-            ...row,
-            createdAt: row.createdAt.toISOString(),
-            sequence: String(row.sequence),
-          });
-          return event.type === "tool.started" ? ([event.data.callId, event] as const) : null;
-        })
-        .filter((entry) => entry !== null),
-    );
-    const mapped = [...page.events].reverse().flatMap((event) => {
-      if (event.type === "node.message")
-        return [
-          {
-            itemId: event.sequence,
-            type: "node.message",
-            status: "published",
-            runId: event.runId,
-            title: null,
-            ...itemText(event.data.text, input.maxCharsPerItem, input.textOffset),
-            createdAt: event.createdAt,
-          },
-        ];
-      if (event.type !== "tool.started" && event.type !== "tool.completed") return [];
-      return [
-        activityItem(event, {
-          start: event.type === "tool.started" ? event : started.get(event.data.callId),
-          ownRun: node.requestedBy === caller.userId,
-          named: !!input.itemId,
-          maxChars: input.maxCharsPerItem,
-          offset: input.textOffset,
-        }),
-      ];
-    });
-    const items = boundedThreadItems(mapped);
-    if (input.itemId && !items.length) throw forbidden("Item is unavailable in this subagent");
-    const hasMore = items.length < mapped.length || page.window.hasMore;
+    const { node: subagent, ...activity } = await this.#activity(caller, thread.id, input, node.id);
     return {
       thread: { ...thread, link: formatReferenceLink(thread.id, thread.title) },
-      subagent: page.node,
+      subagent,
       recentRuns: [],
       recentPlaces: [],
-      items,
-      hasMore,
-      nextBefore: hasMore ? (items.at(-1)?.itemId ?? page.window.nextBefore) : null,
+      ...activity,
     };
   }
 
   async #activity(
     caller: AgentCaller,
     threadId: Thread["id"],
-    input: ToolCall<"opensteer_task_read">["input"] & {
-      subagentId?: import("@opensteer/core").ExecutionNodeId | undefined;
-    },
+    input: ToolCall<"opensteer_task_read">["input"],
+    nodeId?: import("@opensteer/core").ExecutionNodeId,
   ) {
     const page = await readAgentThreadActivity(this.#store.database, {
       threadId,
       ownerId: caller.userId,
       limit: input.itemId ? 1 : input.limit,
+      ...(nodeId ? { nodeId, messagesOnly: input.view !== "activity" && !input.itemId } : {}),
       ...(input.cursor ? { before: input.cursor } : {}),
       ...(input.itemId ? { itemId: input.itemId } : {}),
     });
-    if (!page) throw forbidden("task is unavailable to this user");
-    const starts = new Map(page.starts.map((s) => [s.completionSequence, s.start]));
-    const events = page.items.filter((item) => item.type !== "message");
-    const startOf = (event: (typeof events)[number]) =>
-      event.type === "tool.started"
-        ? event
-        : event.type === "tool.completed"
-          ? starts.get(event.sequence)
-          : undefined;
-    const machineOf = (event: (typeof events)[number]) => {
-      const integration = startOf(event)?.data.integration;
-      return integration?.computerApp?.runnerId ?? integration?.phone?.runnerId;
-    };
-    const requestIds = events.flatMap((event) =>
-      event.type === "request.resolved"
-        ? [event.data.request.id]
-        : event.type === "request.cancelled"
-          ? [event.data.requestId]
-          : [],
-    );
-    const [places, owners, requests, messages] = await Promise.all([
+    if (!page)
+      throw forbidden(nodeId ? "Subagent is unavailable" : "task is unavailable to this user");
+    if (input.itemId && !page.items.some(({ id }) => id === input.itemId))
+      throw forbidden(
+        nodeId ? "Item is unavailable in this subagent" : "Item is unavailable in this task",
+      );
+    const machineOf = (item: (typeof page.items)[number]) =>
+      item.type === "tool.started" || item.type === "tool.completed"
+        ? (item.integration?.computerApp?.runnerId ?? item.integration?.phone?.runnerId)
+        : undefined;
+    const [places, owners, messages] = await Promise.all([
       this.#readableTabPlaces(
         caller.userId,
-        events.flatMap((event) =>
-          event.type === "place.entered"
-            ? [{ threadId, tabId: event.data.tabId, sequence: event.sequence }]
-            : [],
+        page.items.flatMap((item) =>
+          item.type === "place.entered" ? [{ id: item.id, tabId: item.place.tabId }] : [],
         ),
       ),
-      this.#store.effectiveDeviceOwners(events.flatMap((event) => machineOf(event) ?? [])),
-      Promise.all(requestIds.map((id) => this.#store.requests.get(id))),
+      this.#store.effectiveDeviceOwners(page.items.flatMap((item) => machineOf(item) ?? [])),
       this.#readableMessages(
         caller,
         page.items.flatMap((item) => (item.type === "message" ? [item.message] : [])),
       ),
     ]);
-    const readablePlaces = new Set(places.map((place) => place.sequence));
-    const requestById = new Map(requests.flatMap((r) => (r ? [[r.id, r] as const] : [])));
+    const readablePlaces = new Set(places.map((place) => place.id));
     const readableMessages = new Map(messages.map((message) => [message.id, message]));
     const teamSources = await this.#store.messageTeamSources(
       threadId,
       messages.map((message) => message.id),
     );
-    const mapped = page.items.flatMap((item) => {
-      if (item.type === "message")
-        return [
-          {
-            sequence: item.sequence,
-            item: messageItem(
-              readableMessages.get(item.message.id)!,
-              input.maxCharsPerItem,
-              input.textOffset,
-              teamSources.get(item.message.id),
-            ),
-          },
-        ];
+    const mapped = page.items.flatMap<{
+      item: (typeof page.items)[number];
+      view: ReturnType<typeof activityItem>;
+    }>((item) => {
+      if (item.type === "message") {
+        const message = readableMessages.get(item.message.id);
+        return message
+          ? [
+              {
+                item,
+                view: messageItem(
+                  message,
+                  input.maxCharsPerItem,
+                  input.textOffset,
+                  teamSources.get(message.id),
+                ),
+              },
+            ]
+          : [];
+      }
       const machineId = machineOf(item);
       if (machineId && owners.get(machineId)?.effectiveOwner !== caller.userId) return [];
-      if (item.type === "place.entered" && !readablePlaces.has(item.sequence)) return [];
+      if (item.type === "place.entered" && !readablePlaces.has(item.id)) return [];
       return [
         {
-          sequence: item.sequence,
-          item: activityItem(item, {
-            start: startOf(item),
-            request:
-              item.type === "request.opened"
-                ? item.data.request
-                : item.type === "request.resolved"
-                  ? requestById.get(item.data.request.id)
-                  : item.type === "request.cancelled"
-                    ? requestById.get(item.data.requestId)
-                    : undefined,
-            nodeTitle:
-              item.type === "node.completed" ? page.nodeTitles.get(item.data.nodeId) : undefined,
-            ownRun: !!item.runId && page.requesters.get(item.runId) === caller.userId,
+          item,
+          view: activityItem(item, {
             named: !!input.itemId,
             maxChars: input.maxCharsPerItem,
             offset: input.textOffset,
@@ -766,13 +659,21 @@ export class ProductToolHandlers {
         },
       ];
     });
-    const items = boundedThreadItems(mapped.map(({ item }) => item));
-    if (input.itemId && !items.length) throw forbidden("Item is unavailable in this task");
+    const items = boundedThreadItems(mapped.map(({ view }) => view));
+    if (input.itemId && !items.length)
+      throw forbidden(
+        nodeId ? "Item is unavailable in this subagent" : "Item is unavailable in this task",
+      );
     const trimmed = items.length < mapped.length;
+    const last = mapped[items.length - 1]?.item;
     return {
+      ...(nodeId ? { node: page.node } : {}),
       items,
       hasMore: trimmed || page.hasMore,
-      nextBefore: trimmed ? mapped[items.length - 1]!.sequence : page.nextBefore,
+      nextBefore:
+        trimmed && last
+          ? page.encodeCursor({ beforeId: last.id, beforePosition: last.position })
+          : page.nextBefore,
     };
   }
 
@@ -985,7 +886,6 @@ export class ProductToolHandlers {
       assignmentId: input.delegationId,
       authority: threadCallerAuthority(caller),
     });
-    for (const event of read.events) this.#onEvent(event);
     return taskItem(read.assignment, read.result);
   }
 
@@ -1005,7 +905,7 @@ export class ProductToolHandlers {
   }) {
     if (input.action === "respond") {
       const run = requireRun(caller);
-      const request = await readAgentRequest(
+      const { request } = await readAgentRequest(
         this.#store.database,
         threadCallerAuthority(run),
         input.requestId!,
@@ -1028,6 +928,7 @@ export class ProductToolHandlers {
       await this.#commands.sendControl({
         type: "request.respond",
         requestId: request.id,
+        expectedRevision: agentResponder.expectedRevision,
         response,
         sealedResponse,
         requestedBy: caller.userId,
@@ -1043,7 +944,7 @@ export class ProductToolHandlers {
       return { request: agentRequest((await this.#store.requests.get(request.id))!) };
     }
     if (input.action === "read") {
-      const request = await readAgentRequest(
+      const { request, revision } = await readAgentRequest(
         this.#store.database,
         threadCallerAuthority(caller),
         input.requestId!,
@@ -1051,6 +952,7 @@ export class ProductToolHandlers {
       return {
         request: {
           ...agentRequest(request),
+          revision,
           ...(requestIsAgentAnswerable(request) ? { presentation: request.presentation } : {}),
         },
       };
@@ -1081,7 +983,6 @@ export class ProductToolHandlers {
       threadId: claims.threadId,
       withdrawnBy: claims.requestedBy,
     });
-    for (const event of withdrawn.events) this.#onEvent(event);
     return { request: agentRequest(withdrawn.request) };
   }
 
@@ -1708,28 +1609,21 @@ export class ProductToolHandlers {
       requestedBy: caller.userId,
       authority: threadCallerAuthority(caller),
     });
-    const messages = await this.#readableMessages(
-      caller,
-      queue.items.map(({ message }) => message),
-    );
     return {
       link: formatReferenceLink(thread.id, thread.title),
       paused: queue.paused,
-      items: queue.items.map((item, index) => {
-        const message = messages[index]!;
-        const text = message.content
-          .map((part) => (part.type === "text" ? part.text : `[${part.type}]`))
-          .join("\n");
-        const preview = stripRefs(text);
+      items: queue.items.map(({ message, canCancel, canMove, canSteer }) => {
+        const plain = stripRefs(message.preview);
+        const preview = utf8Prefix(plain, 500);
         return {
           messageId: message.id,
           link: formatReferenceLink(message.id, `Message · ${thread.title}`),
-          author: toolMessageAuthor(message.author),
-          preview: preview.slice(0, 500),
-          truncated: preview.length > 500,
-          canCancel: item.canCancel,
-          canMove: item.canMove,
-          canSteer: item.canSteer,
+          author: message.author,
+          preview,
+          truncated: message.truncated || preview !== plain,
+          canCancel,
+          canMove,
+          canSteer,
         };
       }),
     };
@@ -1771,17 +1665,17 @@ export class ProductToolHandlers {
       const wait = new ThreadWaitService({
         subscribe: (wake) => {
           const anchorId = caller.kind === "connection" ? undefined : callerThread(caller).id;
-          const detach = this.#realtime.observe((change) => {
-            if (
-              // Revocation ends a connection's whole session, so the service owns that wake.
-              ("threadId" in change &&
-                (change.threadId === threadId || change.threadId === anchorId)) ||
-              change.type === "host.machines.changed" ||
-              (caller.kind === "program" && change.type === "host.triggers-changed")
-            )
-              wake();
+          const unobserve = this.#realtime.observeScopes(
+            [`thread:${threadId}`, ...(anchorId ? [`thread:${anchorId}`] : [])],
+            wake,
+          );
+          const unobserveNotices = this.#realtime.observe((change) => {
+            if (caller.kind === "program" && change.type === "host.triggers-changed") wake();
           });
-          return detach;
+          return () => {
+            unobserve();
+            unobserveNotices();
+          };
         },
         read: ({ signal, expiresAt }) =>
           withDatabaseOperationSignal(signal, expiresAt, async () => {
@@ -1862,7 +1756,6 @@ export class ProductToolHandlers {
               ...(call.signal ? { signal: call.signal } : {}),
             })
           : undefined;
-      if (task) for (const event of task.events) this.#onEvent(event);
       // Oldest first, so the last item is where the next wait resumes.
       const items = boundedThreadItems(
         result.messages.map((message) => messageItem(message, 20_000)),
@@ -1894,10 +1787,9 @@ export class ProductToolHandlers {
       };
     } finally {
       if (held && waitId) {
-        const events = await withoutDatabaseOperationSignal(() =>
+        await withoutDatabaseOperationSignal(() =>
           endAssignmentResultWait(this.#store.database, { assignmentId: held, waitId }),
         );
-        for (const event of events) this.#onEvent(event);
       }
     }
   }
@@ -1989,7 +1881,6 @@ function agentRequest(request: Request) {
     reason: "reason" in request.payload ? request.payload.reason : null,
     originatingThreadId: request.originatingThreadId,
     createdAt: request.createdAt,
-    revision: requestRevision(request),
     settlementProvenance: request.settlementProvenance
       ? toolRequestAnswerer(
           "kind" in request.settlementProvenance

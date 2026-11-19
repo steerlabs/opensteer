@@ -212,11 +212,13 @@ run("Browser Sessions through a whole deployment", () => {
             .executeTakeFirst();
           return run?.status === "completed";
         }, 30_000);
-        const snapshot = await stack.host.store.deploymentSnapshot();
+        const history = await stack.api["thread.messages.list"]({ threadId });
+        if (!history.ok) throw new Error(history.error.message);
         expect(
-          snapshot.messages.find((message) => message.id === result.message.id)?.content,
+          history.data.messages.find((message) => message.id === result.message.id)?.content,
         ).toEqual(command.content);
-        const answer = snapshot.messages
+        const answer = [...history.data.messages]
+          .reverse()
           .filter((message) => message.runId === result.run!.id && message.kind === "assistant")
           .flatMap((message) => message.content)
           .flatMap((part) => (part.type === "text" ? [part.text] : []))
@@ -262,11 +264,13 @@ run("Browser Sessions through a whole deployment", () => {
       expect(retry.wasDuplicate).toBe(true);
       expect(retry.message.id).toBe(automatic.result.message.id);
       expect(retry.run?.id).toBe(automatic.result.run!.id);
-      const snapshot = await stack.host.store.deploymentSnapshot();
       expect(
-        snapshot.messages.filter(
-          (message) => message.threadId === automatic.command.threadId && message.kind === "input",
-        ),
+        await stack.host.store.database
+          .selectFrom("messages")
+          .select("id")
+          .where("threadId", "=", automatic.command.threadId)
+          .where("kind", "=", "input")
+          .execute(),
       ).toHaveLength(1);
       expect(
         await stack.host.store.database
@@ -403,8 +407,16 @@ run("Browser Sessions through a whole deployment", () => {
           },
         }) as unknown as WebSocketClient,
     });
-    addCleanup("chip Host client", async () => client.dispose());
+    const releaseTabs = client.watchPersonalResource("tab", () => {});
+    addCleanup("chip Host client", async () => {
+      releaseTabs();
+      client.dispose();
+    });
     await client.load();
+    await vi.waitFor(
+      () => expect(client.getSnapshot().tabs.get(adaId)?.title).toBe("Ada Lovelace"),
+      { timeout: 10_000 },
+    );
     for (const thread of threads) {
       const release = client.observeThread(thread);
       addCleanup("observed chip thread", async () => release());
@@ -540,19 +552,24 @@ run("Browser Sessions through a whole deployment", () => {
       }),
     );
     expect(attached.surfaceId).toBe(adaId);
-    await waitFor(
-      async () =>
-        client
-          .getSnapshot()
-          .browserUses?.some((use) => use.runId === runA && use.tabId === adaId) === true &&
-        runtimeRows()
-          .find((tab) => tab.id === adaId)
-          ?.occupants.some((occupant) => occupant.threadId === threadA && occupant.acting) ===
-          true &&
-        pagesFor([runA]).some((page) => page.key === adaId && page.acting),
-      10_000,
-      "Run A must hold and act on the exact Ada tab",
-    );
+    const waitForActingPage = (runId: string, threadId: string, tabId: string) =>
+      vi.waitFor(
+        () =>
+          expect(
+            {
+              used: client
+                .getSnapshot()
+                .browserUses?.some((use) => use.runId === runId && use.tabId === tabId),
+              occupied: runtimeRows()
+                .find((tab) => tab.id === tabId)
+                ?.occupants.some((occupant) => occupant.threadId === threadId && occupant.acting),
+              acting: pagesFor([runId]).some((page) => page.key === tabId && page.acting),
+            },
+            `Run ${runId} must hold and act on tab ${tabId}`,
+          ).toEqual({ used: true, occupied: true, acting: true }),
+        { timeout: 10_000, interval: 50 },
+      );
+    await waitForActingPage(runA, threadA, adaId);
     expect(note("Run A attached Ada")).toMatchObject({
       pagesA: [{ title: "Ada Lovelace", acting: true }],
       pagesB: [],
@@ -636,20 +653,7 @@ run("Browser Sessions through a whole deployment", () => {
         parameters: { targetId: created.targetId, flatten: true },
       }),
     );
-    await waitFor(
-      async () =>
-        client
-          .getSnapshot()
-          .browserUses?.some((use) => use.runId === runB && use.tabId === babbage.surfaceId) ===
-          true &&
-        runtimeRows()
-          .find((tab) => tab.id === babbage.surfaceId)
-          ?.occupants.some((occupant) => occupant.threadId === threadB && occupant.acting) ===
-          true &&
-        pagesFor([runB]).some((page) => page.key === babbage.surfaceId && page.acting),
-      10_000,
-      "Run B must hold and act on the exact Babbage tab",
-    );
+    await waitForActingPage(runB, threadB, babbage.surfaceId);
     const concurrent = note("only Run B acts on shared Babbage");
     expect(concurrent.pagesA.every((page) => !page.acting)).toBe(true);
     expect(concurrent.pagesB).toMatchObject([{ title: "Charles Babbage", acting: true }]);
@@ -789,8 +793,6 @@ run("Browser Sessions through a whole deployment", () => {
     const sessionId = tabs[0]!.sessionId;
     expect(tabs[1]!.sessionId).toBe(sessionId);
     const coldRows = async () => {
-      const result = await stack.api["bootstrap.get"]({});
-      if (!result.ok) throw new Error(JSON.stringify(result));
       return (await browserInventory(stack)).tabs;
     };
     await waitFor(async () => (await coldRows()).filter((row) => row.iconRef).length === 2, 10_000);
@@ -889,10 +891,7 @@ run("Browser Sessions through a whole deployment", () => {
       return new Promise((resolve) => page.close(() => resolve(undefined)));
     });
     const pageOrigin = `http://127.0.0.1:${(page.address() as { port: number }).port}`;
-    await waitFor(async () => {
-      const bootstrap = await stack.api["bootstrap.get"]({});
-      return bootstrap.ok && bootstrap.data.browser.available;
-    }, 30_000);
+    await browserAvailable(stack);
     const threadId = await stack.createThread({
       modelSelection: ModelSelectionSchema.parse({
         modelId: "gpt-5.6-sol",

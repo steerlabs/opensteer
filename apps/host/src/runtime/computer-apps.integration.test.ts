@@ -227,6 +227,7 @@ integration("computer apps", () => {
       {
         idempotencyKey: "messages-read-access",
         requestId: readRequest.request.id,
+        expectedRevision: (await host.store.requests.revision(readRequest.request.id))!,
         response: {
           kind: "external",
           value: {
@@ -280,6 +281,7 @@ integration("computer apps", () => {
       {
         idempotencyKey: "messages-write-access",
         requestId: writeRequest.request.id,
+        expectedRevision: (await host.store.requests.revision(writeRequest.request.id))!,
         response: {
           kind: "external",
           value: {
@@ -452,10 +454,10 @@ integration("computer apps", () => {
     });
     await expect(
       host.store.database
-        .selectFrom("deploymentEvents")
-        .select("type")
-        .where("runId", "=", run.runId)
-        .where("type", "=", "request.cancelled")
+        .selectFrom("requests")
+        .select("id")
+        .where("originatingRunId", "=", run.runId)
+        .where("status", "=", "cancelled")
         .execute(),
     ).resolves.toEqual([]);
     const connection = await host.store.database
@@ -595,6 +597,7 @@ integration("computer apps", () => {
       {
         idempotencyKey: "personal-messages-read-access",
         requestId: readRequest.request.id,
+        expectedRevision: (await host.store.requests.revision(readRequest.request.id))!,
         response: {
           kind: "external",
           value: {

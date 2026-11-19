@@ -1,5 +1,4 @@
-import { deviceMachine, visibleDeviceMachines } from "../host/device-projection.js";
-import { computerStatus } from "./computers.js";
+import { computerStatus, isServiceMachine } from "./computers.js";
 import type { AuthSessionSummary } from "@opensteer/core";
 import {
   type DesktopDeviceMembership,
@@ -75,7 +74,7 @@ export function devicesView(input: {
   readonly hereId: string | null;
   readonly otherDevices?: readonly OtherDevice[];
 }): DevicesView {
-  const machines = visibleDeviceMachines(input.machines);
+  const machines = input.machines.filter((machine) => !isServiceMachine(machine));
   const ids = new Set(machines.map((machine) => machine.id));
   const rank = (machine: MachineSummary) =>
     machine.id === input.hereId ? 0 : isHomeDevice(machine) ? 1 : 2;
@@ -134,7 +133,7 @@ export function deviceAccessRows(
   machine: MachineSummary,
   devicesAvailable: boolean,
 ): readonly DeviceAccessRow[] {
-  const capabilities = deviceMachine(machine).capabilities;
+  const capabilities = machine.capabilities;
   if (!capabilities) return [];
   return deviceCapabilities.flatMap((capability): DeviceAccessRow[] => {
     const fact = capabilities[capability];

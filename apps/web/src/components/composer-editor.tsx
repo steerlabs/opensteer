@@ -187,18 +187,20 @@ export function ComposerEditor({
     [scope],
   );
 
+  // Focus is taken once: when the field appears, or when it first becomes editable.
+  const focusPending = useRef(autoFocus);
+  const takeFocus = () => {
+    focusPending.current = false;
+    editor.view.focus();
+    const end = docPosAt(editor.state.doc, composerSource(editor.state.doc).length);
+    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.state.doc, end)));
+  };
+
   useLayoutEffect(() => {
     const dom = editor.view.dom;
     fieldRef?.(dom);
-    if (autoFocus) {
-      editor.view.focus();
-      const end = docPosAt(editor.state.doc, composerSource(editor.state.doc).length);
-      editor.view.dispatch(
-        editor.state.tr.setSelection(TextSelection.create(editor.state.doc, end)),
-      );
-    }
+    if (focusPending.current && !readOnly) takeFocus();
     return () => fieldRef?.(null);
-    // Focus is taken once, when the field appears.
   }, [editor]);
 
   useLayoutEffect(() => {
@@ -218,6 +220,7 @@ export function ComposerEditor({
 
   useEffect(() => {
     editor.setEditable(!readOnly, false);
+    if (!readOnly && focusPending.current) takeFocus();
   }, [editor, readOnly]);
 
   // A value that is not what the editor last reported is a reset from outside:

@@ -1,18 +1,12 @@
+import { HostTransportError } from "@opensteer/client/connections";
 // @vitest-environment happy-dom
 import { act, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, expect, it, vi } from "vitest";
-import { createId, ModelSelectionSchema } from "@opensteer/core";
-import { MockHostClient } from "@opensteer/client/mock";
-import { HostTransportError } from "@opensteer/client/connections";
-import {
-  HttpHostClient,
-  unwrapRpcResult,
-  type HostClient,
-  type WebSocketClient,
-} from "@opensteer/client/host";
-import { previewDeploymentSnapshot } from "../../desktop/preview-bootstrap.js";
+import { ModelSelectionSchema } from "@opensteer/core";
+import { MockHostClient, MockPersonalHost } from "@opensteer/client/mock";
+import { HttpHostClient, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { AutomationDetailPage } from "./automation-detail.js";
 import { AutomationEditorPage } from "./automation-editor.js";
 
@@ -29,11 +23,14 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
 let client: MockHostClient;
 let http: HttpHostClient | undefined;
+let transport: MockPersonalHost | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   http?.dispose();
   http = undefined;
-  client?.dispose();
+  if (transport) transport.dispose();
+  else client?.dispose();
+  transport = undefined;
   document.body.replaceChildren();
 });
 async function mount(memoryPasses?: "active" | "waiting-for-model", edit = false) {
@@ -183,7 +180,7 @@ it("offers Resume worker for a stopped managed worker", async () => {
   await vi.waitFor(() => expect(button(node, "Resume worker")).toBeUndefined(), { timeout: 2000 });
 });
 
-it("uses authorized hidden-worker events on the real page and HTTP client, ignoring unrelated tasks and refreshing on reconnect", async () => {
+it("refreshes an authorized hidden worker on a scoped connection and ignores unrelated task changes", async () => {
   client = new MockHostClient({ latencyMs: 0, memoryPasses: "active" });
   const trigger = unwrapRpcResult(await client.rpc["triggers.list"]({})).triggers.find(
     (t) => t.systemRole === "memory-light",
@@ -195,39 +192,22 @@ it("uses authorized hidden-worker events on the real page and HTTP client, ignor
     doneAt: "2026-11-03T10:00:00Z",
     inputQueuePaused: false,
   };
-  const sockets: TestSocket[] = [];
+  await client.load();
+  const host = (transport = new MockPersonalHost(client));
   const read = vi.fn(() => ({ ...seed, anchorThread: worker }));
   http = new HttpHostClient({
     baseUrl: "http://127.0.0.1",
+
     reconnectBaseDelayMs: 1,
     reconnectMaxDelayMs: 1,
-    fetch: async (input) => {
-      const path = new URL(String(input)).pathname;
-      const data = path.endsWith("triggers.get")
-        ? read()
-        : path.endsWith("bootstrap.get")
-          ? unwrapRpcResult(await client.rpc["bootstrap.get"]({}))
-          : {};
-      return new Response(JSON.stringify({ ok: true, data }), {
-        headers: { "content-type": "application/json" },
-      });
-    },
-    webSocketFactory: () => {
-      const socket = new TestSocket();
-      sockets.push(socket);
-      return socket;
-    },
+    fetch: async (input, init) =>
+      new URL(String(input)).pathname.endsWith("/triggers.get")
+        ? Response.json({ ok: true, data: read() })
+        : host.fetch(input, init),
+    webSocketFactory: host.connect,
   });
   await http.load();
-  const connect = (socket: TestSocket) => {
-    socket.emit("open", {});
-    socket.receive({
-      type: "host.snapshot",
-      snapshot: previewDeploymentSnapshot(client.getSnapshot().deploymentId!),
-    });
-    socket.receive({ type: "host.synchronized", sequence: "0" });
-  };
-  connect(sockets[0]!);
+  const first = [...host.sockets][0]!;
   harness.client = http;
   const node = document.createElement("div");
   document.body.append(node);
@@ -243,37 +223,15 @@ it("uses authorized hidden-worker events on the real page and HTTP client, ignor
   );
   await vi.waitFor(() => expect(button(node, "Reopen worker")).toBeDefined(), { timeout: 2000 });
   expect(http.getSnapshot().threads.some((t) => t.id === worker.id)).toBe(false);
-  let sequence = 0;
-  const event = (type: string, data: object, threadId: string = worker.id) =>
-    sockets[0]!.receive({
-      type: "host.events",
-      throughSequence: String(sequence + 1),
-      events: [
-        {
-          type,
-          data,
-          threadId,
-          runId: null,
-          environmentId: worker.environmentId,
-          createdAt: worker.createdAt,
-          eventId: createId("event"),
-          sequence: String(++sequence),
-        },
-      ],
-    });
+  const changed = () => first.deliver({ type: "host.triggers-changed" });
   await act(async () => {
     worker = { ...worker, doneAt: null };
-    event("thread.state-changed", {
-      status: worker.status,
-      doneAt: null,
-      inputQueuePaused: false,
-      pendingRequests: 0,
-    });
+    changed();
   });
   await vi.waitFor(() => expect(button(node, "Reopen worker")).toBeUndefined(), { timeout: 2000 });
   await act(async () => {
     worker = { ...worker, inputQueuePaused: true };
-    event("thread.input-queue-updated", { paused: true });
+    changed();
   });
   await vi.waitFor(() => expect(button(node, "Resume worker")).toBeDefined(), { timeout: 2000 });
   await act(async () => {
@@ -284,45 +242,27 @@ it("uses authorized hidden-worker events on the real page and HTTP client, ignor
         modelId: "changed-model",
       }),
     };
-    event("thread.execution-updated", { thread: worker });
+    changed();
   });
   await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(4), { timeout: 2000 });
-  await act(async () =>
-    event(
-      "thread.state-changed",
-      { status: "running", doneAt: null, inputQueuePaused: false, pendingRequests: 0 },
-      createId("thread"),
-    ),
-  );
+  const unrelated = client
+    .getSnapshot()
+    .tasks?.entries.find(({ thread }) => thread.id !== worker.id);
+  if (!unrelated) throw new Error("Missing unrelated task fixture");
+  await act(async () => {
+    await client.dispatch({
+      type: "thread.rename",
+      threadId: unrelated.thread.id,
+      title: "Unrelated task renamed",
+      idempotencyKey: "unrelated-rename",
+    });
+  });
   expect(read).toHaveBeenCalledTimes(4);
-  await act(async () => sockets[0]!.emit("close", { code: 1006, reason: "Disconnected" }));
-  await vi.waitFor(() => expect(sockets).toHaveLength(2), { timeout: 2000 });
   await act(async () => {
     worker = { ...worker, inputQueuePaused: false };
-    connect(sockets[1]!);
+    first.emit("close", { code: 1006, reason: "Disconnected" });
   });
+  await vi.waitFor(() => expect([...host.sockets][0]).not.toBe(first), { timeout: 2000 });
   await vi.waitFor(() => expect(button(node, "Resume worker")).toBeUndefined(), { timeout: 2000 });
   expect(read).toHaveBeenCalledTimes(5);
 });
-
-class TestSocket implements WebSocketClient {
-  binaryType: BinaryType = "blob";
-  readyState = 0;
-  listeners = new Map<string, Set<(event: never) => void>>();
-  addEventListener(type: string, listener: (event: never) => void) {
-    const set = this.listeners.get(type) ?? new Set();
-    set.add(listener);
-    this.listeners.set(type, set);
-  }
-  send() {}
-  close() {
-    this.readyState = 3;
-  }
-  receive(message: unknown) {
-    this.emit("message", { data: JSON.stringify(message) });
-  }
-  emit(type: string, event: unknown) {
-    if (type === "open") this.readyState = 1;
-    for (const listener of this.listeners.get(type) ?? []) listener(event as never);
-  }
-}

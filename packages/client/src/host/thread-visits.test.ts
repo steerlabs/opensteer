@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { trackThreadVisits, withPublishedReplies } from "./thread-visits.js";
-import type { HostSnapshot, MessageEntry } from "./client.js";
+import type { TranscriptFixtureSnapshot, MessageEntry } from "./client.js";
 
 const disposers: (() => void)[] = [];
 afterEach(() => {
@@ -34,7 +34,7 @@ function fixture() {
     },
     visitThread,
   };
-  const change = (patch: Partial<HostSnapshot>, liveThreadId?: string) => {
+  const change = (patch: Partial<TranscriptFixtureSnapshot>, liveThreadId?: string) => {
     snapshot = withPublishedReplies(snapshot, { ...snapshot, ...patch }, liveThreadId);
     for (const fn of listeners) fn();
   };

@@ -1,3 +1,4 @@
+import { readTestResource } from "../server/test-host-api-request.js";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -337,7 +338,7 @@ const evidence: unknown[] = [];
         operation = (kind === "crash" ? stack.crashRunner() : stack.restartRunner()).then(
           async () => {
             proceeded = true;
-            return stack.api["bootstrap.get"]({});
+            return readTestResource(stack.api, "harness-catalog");
           },
         );
         void operation.catch(() => undefined);
@@ -383,8 +384,10 @@ const evidence: unknown[] = [];
             (record) => record.harnessInstanceId === accountId,
           )!.catalog.status,
         ).toBe("ready");
-        const bootstrap = await stack.api["bootstrap.get"]({});
-        if (!bootstrap.ok) throw new Error(bootstrap.error.message);
+        const bootstrap = {
+          ok: true as const,
+          data: await readTestResource(stack.api, "harness-catalog"),
+        };
         const environment = bootstrap.data.environments.find(
           (entry) => entry.id === harness.environmentId,
         )!;

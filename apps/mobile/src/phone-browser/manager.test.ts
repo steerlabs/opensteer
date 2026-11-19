@@ -356,7 +356,7 @@ describe("phone browser manager", () => {
         type: "surface.open",
         url: `https://example.test/${"界".repeat(200)}?${index}`,
       });
-      expect(fixture.server().at(-1)).toMatchObject({
+      expect(fixture.lastServer()).toMatchObject({
         type: "agent.result",
         result: { type: "surface.open" },
       });
@@ -371,7 +371,7 @@ describe("phone browser manager", () => {
     let oversized = 0;
     do {
       await fixture.sessionAction({ type: "session.tabs", ...(cursor ? { cursor } : {}) });
-      const listed = fixture.server().at(-1);
+      const listed = fixture.lastServer();
       expect(listed).toMatchObject({ type: "agent.result", result: { type: "session.tabs" } });
       if (listed?.type !== "agent.result" || listed.result.type !== "session.tabs")
         throw new Error("Tabs were not listed");

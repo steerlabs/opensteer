@@ -1,6 +1,5 @@
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 
-import { appendHostDeploymentEvent } from "./deployment-events.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -16,13 +15,11 @@ import {
   PendingRequestSchema,
   ThreadAccessModeSchema,
   createId,
-  type AgentEventView as AgentEvent,
   type ContentPart,
   type EnvironmentId,
   type MessageId,
   type RunId,
   type RunnerId,
-  type ThreadId,
   type UserId,
 } from "@opensteer/core";
 import {
@@ -36,6 +33,7 @@ import { beforeAll, describe, expect, it as baseIt } from "vitest";
 import { AttachmentStore } from "./attachment-store.js";
 import { createDatabase, OpensteerStore } from "./index.js";
 import { jsonValue } from "./store-primitives.js";
+import { readTranscriptItem } from "./personal-sync-store.js";
 
 /**
  * A person's message in their conversation contributes to the reply under way
@@ -330,7 +328,7 @@ integration.sequential("conversation delivery", () => {
           "run.failed",
           "run.interrupted",
         ].includes(type) &&
-        !committed.wasDuplicate
+        !committed.replayed
       ) {
         const seed = await database
           .selectFrom("messages")
@@ -343,11 +341,11 @@ integration.sequential("conversation delivery", () => {
           .where("runId", "=", runId)
           .where("kind", "=", "input")
           .execute();
-        expect(committed.event.data).toMatchObject({
-          startedBy: seed.author,
-          startedAt: run.createdAt.toISOString(),
-          personWaiting: inputs.some((input) => input.author.kind === "human"),
-        });
+        const current = await runRow(runId);
+        expect(current.seedInputId).toBe(run.seedInputId);
+        expect(current.personWaited).toBe(
+          seed.author.kind === "human" || inputs.some((input) => input.author.kind === "human"),
+        );
       }
       return committed;
     }
@@ -487,6 +485,7 @@ integration.sequential("conversation delivery", () => {
           requestFingerprint: `hmac-sha256-v1:1:${key}`,
         },
         threadId: f.thread.id,
+        expectedRevision: (await store.requests.revision(requestId as never))!,
         type: "request.respond",
       });
       const claimed = await store.claimCommand(response.command.id, `${f.suffix}-answers`);
@@ -496,7 +495,7 @@ integration.sequential("conversation delivery", () => {
       });
     }
     async function receipt(name: string, f: Fixture, extra: Record<string, unknown> = {}) {
-      const [inputs, commands, runs, attempts, messages, page] = await Promise.all([
+      const [inputs, commands, runs, attempts, messages, changes] = await Promise.all([
         database
           .selectFrom("threadInputs")
           .select([
@@ -544,10 +543,13 @@ integration.sequential("conversation delivery", () => {
           .where("threadId", "=", f.thread.id)
           .orderBy("sequence", "asc")
           .execute(),
-        store.threadEventPageForOwner({
-          ownerId: f.ownerId,
-          threadId: f.thread.id,
-        }),
+        database
+          .selectFrom("clientChanges")
+          .select(["sequence", "entityId", "entityKind", "operation"])
+          .where("scopeKey", "=", `thread:${f.thread.id}`)
+          .orderBy("sequence")
+          .orderBy("ordinal")
+          .execute(),
       ]);
       await writeFile(
         join(evidenceRoot, `${name}.json`),
@@ -560,7 +562,7 @@ integration.sequential("conversation delivery", () => {
             runs,
             attempts,
             messages,
-            events: (page?.events ?? []).map(summarizeEvent),
+            changes,
             ...extra,
           },
           null,
@@ -798,44 +800,26 @@ integration.sequential("conversation delivery", () => {
     expect((await input(after.message.id)).state).toBe("pending");
   });
 
-  it("stamps Host and Runner lifecycle context after a human joins an automatic wake", async ({
+  it("retains the automatic seed and records when a person joins the reply", async ({
     storeFixture,
   }) => {
-    const { fixture, platformInput, start, send, emit, runRow, running, finish, database } =
-      storeFixture;
+    const { fixture, platformInput, start, send, emit, runRow, running, finish } = storeFixture;
     const f = await fixture("automatic-human-context");
     const sourceRunId = await running(f);
     await finish(f, sourceRunId);
     const automatic = await platformInput(f, "automatic-wake", sourceRunId);
     if (!automatic.run) throw new Error("Expected an automatic Run");
     const runId = automatic.run.id;
-    const started = await start(f, runId);
-    expect(started.started.event.data).toMatchObject({
-      personWaiting: false,
+    await start(f, runId);
+    expect(await runRow(runId)).toMatchObject({
+      seedInputId: automatic.message.id,
+      personWaited: false,
     });
     await send(f, "human-steer");
-    const phase = await emit(f, runId, "run.phase", {
-      phase: "turn",
-    });
-    expect(phase.event.data).toMatchObject({
-      personWaiting: true,
-    });
-    const row = await runRow(runId);
-    const hostEvent = await database.transaction().execute((tx) =>
-      appendHostDeploymentEvent(tx, {
-        type: "run.interrupted",
-        data: {
-          status: "interrupted",
-        },
-        runId,
-        threadId: f.thread.id,
-        environmentId: f.environmentId,
-      }),
-    );
-    expect(hostEvent.data).toMatchObject({
-      startedBy: automatic.message.author,
-      startedAt: row.createdAt.toISOString(),
-      personWaiting: true,
+    await emit(f, runId, "run.phase", { phase: "turn" });
+    expect(await runRow(runId)).toMatchObject({
+      seedInputId: automatic.message.id,
+      personWaited: true,
     });
   });
   it("joins a person's message into the reply under way, once, without a second Run", async ({
@@ -1011,19 +995,6 @@ integration.sequential("conversation delivery", () => {
       run: null,
     });
     const { claimed } = await claimAndBind(f, runId);
-    const placed = claimed.events
-      .filter((event) => event.type === "message.placed")
-      .map(
-        (event) =>
-          (
-            event.data as {
-              message: {
-                id: MessageId;
-              };
-            }
-          ).message.id,
-      );
-    expect(placed).toEqual([b.message.id, c.message.id]);
     const context = await store.loadRunDispatchContext(claimed.command.id);
     expect(context.inputs.map(({ id }) => id)).toEqual([
       first.message.id,
@@ -1085,8 +1056,7 @@ integration.sequential("conversation delivery", () => {
         id: later.message.id,
       },
     ]);
-    const stopped = await stop(f, runId, "work-stop");
-    expect(stopped.events.some((event) => event.type === "thread.input-queue-updated")).toBe(true);
+    await stop(f, runId, "work-stop");
     expect((await thread(f)).inputQueuePaused).toBe(true);
     await receipt("work-queue-unchanged", f);
   });
@@ -1139,7 +1109,6 @@ integration.sequential("conversation delivery", () => {
       fixture,
       running,
       openApproval,
-      store,
       runRow,
       thread,
       send,
@@ -1154,7 +1123,6 @@ integration.sequential("conversation delivery", () => {
     const first = await openApproval(f, runId);
     const second = await openApproval(f, runId);
     // The Host projects Request changes on its drain.
-    await store.drainPendingThreadStates();
     expect((await runRow(runId)).status).toBe("waiting");
     expect((await thread(f)).status).toBe("waiting");
     const follow = await send(f, "while-waiting");
@@ -1182,9 +1150,8 @@ integration.sequential("conversation delivery", () => {
     expect(await input(follow.message.id)).toMatchObject({
       state: "pending",
     });
-    const events = await answer(f, runId, second.id, "answer-second");
+    await answer(f, runId, second.id, "answer-second");
     expect((await runRow(runId)).status).toBe("running");
-    expect(events.some(isRunningState)).toBe(true);
     expect(await input(follow.message.id)).toMatchObject({
       runId,
       state: "claimed",
@@ -1356,14 +1323,27 @@ integration.sequential("conversation delivery", () => {
     const c = await send(f, "stop-c");
     const reminder = await platformInput(f, "stop-reminder", runId);
     const bCommand = await steerCommand(b.message.id);
-    const stopped = await stop(f, runId, "stop-reply");
-    expect(stopped.events.some((event) => event.type === "thread.input-queue-updated")).toBe(false);
+    await stop(f, runId, "stop-reply");
     expect((await thread(f)).inputQueuePaused).toBe(false);
-    for (const id of [b.message.id, c.message.id])
+    for (const id of [b.message.id, c.message.id]) {
       expect(await input(id)).toMatchObject({
         cancelReason: "stopped",
         state: "cancelled",
       });
+      await expect(
+        readTranscriptItem(database, {
+          viewerId: f.ownerId,
+          scope: { kind: "thread", threadId: f.thread.id },
+          itemId: id,
+        }),
+      ).resolves.toMatchObject({
+        kind: "item",
+        item: {
+          messageId: id,
+          delivery: { status: "failed", reason: "Not sent: you stopped the reply." },
+        },
+      });
+    }
     expect(
       await database
         .selectFrom("commands")
@@ -1585,6 +1565,41 @@ integration.sequential("conversation delivery", () => {
     });
     await receipt("deadline-keeps-follow-up", f);
   });
+  it("stops every overdue background Run even when one Run's stop keeps failing", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, emit, store, database } = storeFixture;
+    const a = await fixture("deadline-fails");
+    const b = await fixture("deadline-stops");
+    const runs = [await running(a, "overdue-a"), await running(b, "overdue-b")];
+    await emit(a, runs[0]!, "run.phase", { phase: "background" });
+    await emit(b, runs[1]!, "run.phase", { phase: "background" });
+    // The Run the sweep reaches first cannot record its stop, on any pass.
+    const [first] = runs.toSorted();
+    await sql`create function refuse_overdue_stop() returns trigger language plpgsql as $$
+      begin
+        if new.payload->>'runId' = ${sql.lit(first!)} then
+          raise exception 'injected stop failure';
+        end if;
+        return new;
+      end $$`.execute(database);
+    await sql`create trigger refuse_overdue_stop before insert on commands
+      for each row execute function refuse_overdue_stop()`.execute(database);
+    try {
+      const stops: unknown[] = [];
+      await expect(
+        store.stopRunsPastBackgroundDeadline(
+          (stopped) => stops.push(stopped),
+          new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+        ),
+      ).rejects.toThrow("background deadline");
+      // The failing Run did not end the sweep: the other overdue Run stopped.
+      expect(stops).toHaveLength(1);
+    } finally {
+      await sql`drop trigger refuse_overdue_stop on commands`.execute(database);
+      await sql`drop function refuse_overdue_stop()`.execute(database);
+    }
+  });
   it("ends a reply that had not started and keeps the conversation open", async ({
     storeFixture,
   }) => {
@@ -1642,7 +1657,7 @@ integration.sequential("conversation delivery", () => {
     await emit(f, runId, "run.interrupted", { status: "interrupted" });
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      expect(await store.recoverThreadWorkQueues()).toEqual([]);
+      expect(await store.recoverThreadWorkQueues()).toBeUndefined();
       expect((await thread(f)).inputQueuePaused).toBe(true);
       expect(await input(queued.message.id)).toMatchObject({
         runId: null,
@@ -1663,7 +1678,7 @@ integration.sequential("conversation delivery", () => {
       seedInputId: queued.message.id,
       status: "queued",
     });
-    expect(await store.recoverThreadWorkQueues()).toEqual([]);
+    expect(await store.recoverThreadWorkQueues()).toBeUndefined();
     expect(await runsOf(f)).toHaveLength(2);
     await receipt("paused-task-recovery", f);
   });
@@ -1697,10 +1712,9 @@ integration.sequential("conversation delivery", () => {
     [
       "when the person answers the last approval",
       async (storeFixture: StoreFixture, f: Fixture) => {
-        const { running, openApproval, store, sendImage, send, answer, runRow } = storeFixture;
+        const { running, openApproval, sendImage, send, answer, runRow } = storeFixture;
         const runId = await running(f, "barrier-approval-first");
         const request = await openApproval(f, runId);
-        await store.drainPendingThreadStates();
         const image = await sendImage(f, "barrier-approval-image");
         const later = await send(f, "barrier-approval-text");
         await answer(f, runId, request.id, "barrier-approval-answer");
@@ -1929,15 +1943,15 @@ integration.sequential("conversation delivery", () => {
       .where("threadId", "=", f.thread.id)
       .where("active", "=", true)
       .execute();
-    const recovered = await store.recoverRunsWithExpiredExecutionBindings();
-    expect(recovered.events).toContainEqual(
-      expect.objectContaining({
-        type: "run.restarted",
-        data: expect.objectContaining({
-          reason: "recovery",
-        }),
-      }),
-    );
+    await store.recoverRunsWithExpiredExecutionBindings();
+    const restarted = await database
+      .selectFrom("runAttempts")
+      .select("reason")
+      .where("runId", "=", runId)
+      .orderBy("ordinal", "desc")
+      .limit(1)
+      .executeTakeFirstOrThrow();
+    expect(restarted.reason).toBe("recovery");
     expect(await input(b.message.id)).toMatchObject({
       runId,
       state: "unknown",
@@ -2139,7 +2153,7 @@ integration.sequential("conversation delivery", () => {
       .selectAll()
       .where("id", "=", pending.message.id)
       .executeTakeFirstOrThrow();
-    const templateInput = await database
+    const { approvalSort: _approvalSort, ...templateInput } = await database
       .selectFrom("threadInputs")
       .selectAll()
       .where("messageId", "=", pending.message.id)
@@ -2332,51 +2346,4 @@ function messageIdOf(payload: unknown): string | undefined {
       readonly messageId?: string;
     } | null
   )?.messageId;
-}
-function isRunningState(event: AgentEvent): boolean {
-  return (
-    event.type === "thread.state-changed" &&
-    (
-      event.data as {
-        readonly status?: string;
-      }
-    ).status === "running"
-  );
-}
-function summarizeEvent(event: AgentEvent) {
-  const data = event.data as Record<string, unknown> | null;
-  const input = data && typeof data === "object" ? (data.input as Record<string, unknown>) : null;
-  const message =
-    data && typeof data === "object" ? (data.message as Record<string, unknown>) : null;
-  return {
-    sequence: event.sequence,
-    threadId: event.threadId as ThreadId | null,
-    runId: event.runId,
-    type: event.type,
-    ...(input && typeof input === "object"
-      ? {
-          input: {
-            cancelReason: input.cancelReason,
-            messageId: input.messageId,
-            policy: input.policy,
-            runId: input.runId,
-            state: input.state,
-          },
-        }
-      : {}),
-    ...(message && typeof message === "object"
-      ? {
-          message: {
-            id: message.id,
-            runId: message.runId,
-            sequence: message.sequence,
-          },
-        }
-      : {}),
-    ...(event.type === "thread.state-changed"
-      ? {
-          state: data,
-        }
-      : {}),
-  };
 }

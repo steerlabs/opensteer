@@ -1,3 +1,4 @@
+import { scopedTranscriptFixture } from "@opensteer/client/test-support";
 import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
@@ -844,15 +845,7 @@ function syncTabs(): void {
     revision: ++tabsRevision,
     items: listed.map((tab) => ({ kind: "tab" as const, tabId: tab.tabId })),
   };
-  if (!state.tabsComplete) {
-    // A list still arriving: what is known so far, and more to come.
-    tabs.clear();
-    tabs.seed({ tabs: listed, layout, complete: false });
-    return;
-  }
-  tabs.apply({ op: "begin", generation: `fixture-${tabsRevision}` });
-  if (listed.length) tabs.apply({ op: "rows", rows: listed });
-  tabs.apply({ op: "end", revision: 0, count: listed.length, meta: { layout } });
+  tabs.replaceCurrent({ tabs: listed, layout, complete: state.tabsComplete });
 }
 
 const seededSnapshots = new WeakMap<object, HostSnapshot>();
@@ -960,10 +953,15 @@ async function setup(
   options: { strict?: boolean; snapshot?: HostSnapshot } = {},
 ) {
   state.hostClient.getSnapshot ??= currentSnapshot;
-  state.hostClient.subscribe ??= (listener: () => void) => {
+  const subscribe = (listener: () => void) => {
     clientListeners.add(listener);
     return () => clientListeners.delete(listener);
   };
+  state.hostClient.subscribe ??= subscribe;
+  Object.assign(
+    state.hostClient,
+    scopedTranscriptFixture(() => currentSnapshot()!, subscribe),
+  );
   state.hostClient.connection ??= testHostConnection({
     getSnapshot: () =>
       ({
@@ -1377,7 +1375,7 @@ describe("mobile pages", () => {
     expect(state.setParams).not.toHaveBeenCalled();
   });
 
-  it("keeps its selection by tabId through a stream reset, and asks the Host only once", async () => {
+  it("keeps its selection by tabId through a catalog replacement, and asks the Host only once", async () => {
     const { container, render } = await setup({ sessionId: "chosen" }, { snapshot: twoPages() });
     state.tabsComplete = false;
     state.snapshot = snapshot([]);

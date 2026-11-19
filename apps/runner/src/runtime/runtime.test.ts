@@ -4147,6 +4147,60 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  it("lets Stop win after a Request answer is admitted and before it reaches the engine", async () => {
+    const resolveRequest = vi.fn(async () => undefined);
+    const driver = new FakeHarnessDriver("interactive-driver", (context) => {
+      const session = new InteractiveHarnessSession(context);
+      session.resolveRequest = resolveRequest;
+      return session;
+    });
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const execute = executeCommand(environmentId, "interactive-driver");
+    await reconcile(registry, execute);
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    const { runId, threadId, bindingGeneration } = execute.context;
+    try {
+      await runtime.handleCommand(execute, sink);
+      await waitUntil(() => hasEvent(messages, "request.opened"));
+      const command = RunnerCommandSchema.parse({
+        type: "request.resolve",
+        commandId: createId("command"),
+        correlationId: CorrelationIdSchema.parse("response-before-stop"),
+        environmentId,
+        bindingGeneration,
+        runId,
+        requestId: testApprovalRequestId,
+        response: { kind: "choice", optionId: "allow" },
+      });
+      vi.useFakeTimers({ toFake: ["setImmediate", "clearImmediate"] });
+      const answer = runtime.handleCommand(command, sink);
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(1);
+      expect(resolveRequest).not.toHaveBeenCalled();
+      const stop = {
+        type: "run.interrupt",
+        commandId: createId("command"),
+        correlationId: CorrelationIdSchema.parse("stop-before-engine"),
+        environmentId,
+        bindingGeneration,
+        runId,
+        threadId,
+      } as const;
+      runtime.fenceRequestAnswers(runId, stop);
+      await vi.runOnlyPendingTimersAsync();
+      await expect(answer).resolves.toMatchObject({ status: "rejected" });
+      expect(resolveRequest).not.toHaveBeenCalled();
+      await expect(runtime.handleCommand(stop, sink)).resolves.toEqual({ status: "accepted" });
+    } finally {
+      vi.useRealTimers();
+      await runtime.close();
+    }
+  });
+
   it("reserves a terminal event when a harness exceeds the per-Run event budget", async () => {
     const driver = new FakeHarnessDriver("flood-driver", () => new FloodHarnessSession());
     const registry = new HarnessRegistry();
@@ -5396,6 +5450,7 @@ class InteractiveHarnessSession implements HarnessSession {
   }
 
   async execute(turn: HarnessRunInput): Promise<void> {
+    turn.signal.addEventListener("abort", () => this.#approval.resolve(false), { once: true });
     publish(this.#stream, { data: { status: "running" }, type: "run.started" });
     publish(this.#stream, {
       data: {

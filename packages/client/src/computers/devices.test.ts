@@ -1,3 +1,4 @@
+import { mockDeviceMachine } from "../mock/mock-device-machine.js";
 import { deviceAccessCommand } from "../host/device-commands.js";
 import { mockIphoneScreenDevice } from "../mock/mock-screen-devices.js";
 import { describe, expect, it } from "vitest";
@@ -84,7 +85,6 @@ const machine = (id: string, kind: "home" | "computer") =>
     enrollmentId: null,
     expiresAt: null,
     lastSeenAt: null,
-    pinnedThreads: 0,
     revocable: kind !== "home",
     status: "online",
   });
@@ -185,19 +185,21 @@ describe("device access rows", () => {
     readonly device: { readonly form: string; readonly platform: string; readonly app?: string };
     readonly status?: "online" | "offline";
   }) =>
-    MachineSummarySchema.parse({
-      ...machine("rnr_device", "computer"),
-      access: {
-        activeSessions: [],
-        ownerReachAvailable: true,
-        revision: 1,
-        policy: { apps: false, reach: "owner", commands: true, forwarding: true, shares: [] },
-      },
-      allowedModules: input.allowedModules,
-      device: input.device,
-      modules: Object.fromEntries(input.modules.map((name) => [name, unreported])),
-      status: input.status ?? "online",
-    });
+    mockDeviceMachine(
+      MachineSummarySchema.parse({
+        ...machine("rnr_device", "computer"),
+        access: {
+          activeSessions: [],
+          ownerReachAvailable: true,
+          revision: 1,
+          policy: { apps: false, reach: "owner", commands: true, forwarding: true, shares: [] },
+        },
+        allowedModules: input.allowedModules,
+        device: input.device,
+        modules: Object.fromEntries(input.modules.map((name) => [name, unreported])),
+        status: input.status ?? "online",
+      }),
+    );
   const rows = (summary: ReturnType<typeof device>) =>
     deviceAccessRows(summary, true).map((row) => row.capability);
 
@@ -266,16 +268,16 @@ it("uses Host Device capabilities even when a screen Device has no modules", () 
   ).toEqual([]);
 });
 
-it("keeps self access editable on v60 and refuses screen Device commands there", () => {
+it("addresses self and attached screen access by their Device ids", () => {
   const phone = mockIphoneScreenDevice();
   const input = {
     deviceId: "rnr_11111111-1111-4111-8111-111111111111",
     expectedRevision: 1,
     policy: phone.access!.policy,
   };
-  expect(deviceAccessCommand(input, "legacy", false)).toHaveProperty("runnerId", input.deviceId);
-  expect(deviceAccessCommand(input, "current", true)).toHaveProperty("deviceId", input.deviceId);
-  expect(() =>
-    deviceAccessCommand({ ...input, deviceId: phone.id }, "older-screen", false),
-  ).toThrow(/Update/);
+  expect(deviceAccessCommand(input, "self")).toHaveProperty("deviceId", input.deviceId);
+  expect(deviceAccessCommand({ ...input, deviceId: phone.id }, "screen")).toHaveProperty(
+    "deviceId",
+    phone.id,
+  );
 });

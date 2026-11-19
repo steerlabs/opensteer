@@ -1,8 +1,9 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { hasSecretRequestFields, type Request } from "@opensteer/core";
 import type { BrowserAccessSelection } from "@opensteer/client/host";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { BrowserSignInOutcome } from "@opensteer/protocol/browser-sources";
-import { useState, useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import type { QuestionDrafts } from "@opensteer/client/host";
 import type { ActionLineValue } from "../ui/action-line.js";
 import type { RequestFormDraft, RequestSubmission } from "./request-form-model.js";
@@ -93,10 +94,14 @@ function sharedSession(key: string): RequestSession {
  */
 export function useRequestSession(request: Request, userId: string | null): RequestSession {
   // A shared Thread's Request reaches everyone in it, and an unsent answer is one person's.
-  const [session] = useState(() =>
-    hasSecretRequestFields(request)
-      ? createSession()
-      : sharedSession(`${userId ?? "signed-out"}|${request.id}`),
+  const revision = requestDecisionRevision(request).expectedRevision;
+  const secret = hasSecretRequestFields(request);
+  const session = useMemo(
+    () =>
+      secret
+        ? createSession()
+        : sharedSession(`${userId ?? "signed-out"}|${request.id}|${revision ?? ""}`),
+    [userId, request.id, revision, secret],
   );
   useSyncExternalStore(
     (listener) => {

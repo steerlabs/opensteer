@@ -1,168 +1,129 @@
 import {
   OpensteerError,
-  createToolOutput,
-  type AgentEvent,
   type RunId,
   type ThreadId,
   type EnvironmentId,
   type ToolOutput,
 } from "@opensteer/core";
-import { sql, type Transaction, type Kysely } from "kysely";
-import type { DeploymentEventRow } from "./schema.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
-import { type HostDeploymentEventInput, eventFromRow } from "./deployment-events.js";
+import { sql, type Kysely } from "kysely";
+import type { DatabaseSchema } from "./schema.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import {
+  completePersonalHostToolCall,
+  interruptPersonalToolCalls,
+  startPersonalToolCall,
+  type HostToolEffectHandle,
+} from "./personal-tool-calls.js";
 
-type Started = Extract<AgentEvent, { type: "tool.started" }>;
-type Completed = Extract<AgentEvent, { type: "tool.completed" }>;
 export interface AgentToolActivityContext {
   readonly runId: RunId;
   readonly threadId: ThreadId;
   readonly environmentId: EnvironmentId;
   readonly bindingGeneration: number;
 }
-/** The event fence serializes replay and completion, including after Host restart. */
-export class AgentToolActivityStore<Schema> {
-  readonly database: Kysely<Schema>;
-  readonly append: (
-    tx: Transaction<Schema>,
-    input: HostDeploymentEventInput,
-  ) => Promise<AgentEvent>;
-  constructor(
-    database: Kysely<Schema>,
-    append: (tx: Transaction<Schema>, input: HostDeploymentEventInput) => Promise<AgentEvent>,
-  ) {
-    this.database = database;
-    this.append = append;
+
+export class AgentToolActivityStore {
+  readonly #database: Kysely<DatabaseSchema>;
+  constructor(database: Kysely<DatabaseSchema>) {
+    this.#database = database;
   }
 
-  async start(
-    context: AgentToolActivityContext,
-    callId: string,
-    name: string,
-    args: unknown,
-  ): Promise<{
-    started: Started;
-    replay: boolean;
-    completed: Completed | null;
-  }> {
+  async start(context: AgentToolActivityContext, callId: string, name: string, args: unknown) {
     if (!callId.startsWith(`harness:${context.runId}:${context.bindingGeneration}:`))
       throw new TypeError("Harness activity must name its Run attempt");
-    return withPersonalTransaction(this.database, async (tx) => {
-      const previous = (
-        await sql<DeploymentEventRow>`select * from deployment_events where run_id = ${context.runId} and type in ('tool.started', 'tool.completed') and data->>'callId' = ${callId} order by sequence`.execute(
-          tx,
-        )
-      ).rows;
-      const events = previous.map(eventFromRow);
-      const started = events.find((event): event is Started => event.type === "tool.started");
-      if (started) {
-        const equal = await sql<{
-          equal: boolean;
-        }>`select ${JSON.stringify(started.data.arguments)}::jsonb = ${JSON.stringify(args)}::jsonb as equal`.execute(
-          tx,
-        );
-        if (started.data.tool.name !== name || !equal.rows[0]?.equal)
-          throw new OpensteerError({
-            code: "conflict",
-            message: "This callId already names different tool arguments.",
-          });
-        return {
-          started,
-          replay: true,
-          completed:
-            events.find((event): event is Completed => event.type === "tool.completed") ?? null,
-        };
-      }
-      const run = (
-        await sql<{
-          status: string;
-          threadId: string;
-          environmentId: string;
-          bindingGeneration: number;
-        }>`select status, thread_id, environment_id, binding_generation from runs where id = ${context.runId}`.execute(
-          tx,
-        )
-      ).rows[0];
+    return commitPersonalMutation(this.#database, async (tx, mutation) => {
+      const run = await tx
+        .selectFrom("runs")
+        .select(["status", "bindingGeneration", "threadId", "environmentId", "finishIntent"])
+        .where("id", "=", context.runId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
       if (
         !run ||
+        run.finishIntent ||
         !["starting", "running", "waiting"].includes(run.status) ||
         run.threadId !== context.threadId ||
         run.environmentId !== context.environmentId ||
         run.bindingGeneration !== context.bindingGeneration
       )
         throw new OpensteerError({ code: "forbidden", message: "Run tool authority has ended." });
-      const event = await this.append(tx, {
-        runId: context.runId,
-        threadId: context.threadId,
-        environmentId: context.environmentId,
-        type: "tool.started",
-        data: { callId, tool: { namespace: "opensteer", name }, arguments: args },
+      const attempt = await tx
+        .selectFrom("runAttempts")
+        .select("id")
+        .where("runId", "=", context.runId)
+        .where("bindingGeneration", "=", context.bindingGeneration)
+        .where("status", "=", "current")
+        .where("endedAt", "is", null)
+        .limit(1)
+        .executeTakeFirst();
+      if (!attempt)
+        throw new OpensteerError({ code: "forbidden", message: "Run tool attempt has ended." });
+      const origin = "host-harness";
+      const result = await startPersonalToolCall(tx, mutation, {
+        ...context,
+        attemptId: attempt.id,
+        nodeId: null,
+        callId,
+        origin,
+        tool: { namespace: "opensteer", name },
+        arguments: args,
       });
-      if (event.type !== "tool.started") throw new Error("Tool activity did not start");
-      return { started: event, replay: false, completed: null };
+      return {
+        handle: { toolCallId: result.call.id, origin } satisfies HostToolEffectHandle,
+        replay: !result.started,
+        completed:
+          result.call.status === "completed" && result.call.output
+            ? { output: result.call.output, isError: result.call.isError === true }
+            : null,
+      };
     });
   }
 
-  /** At startup or Run end, interrupted calls complete once without replaying effects. */
-  async finalize(runId?: RunId): Promise<Completed[]> {
-    const rows = (
-      await sql<DeploymentEventRow>`select started.* from deployment_events started
-      where started.type = 'tool.started' and started.data->>'callId' like 'harness:%'
-      and (${runId ?? null}::text is null or started.run_id = ${runId ?? null})
-      and not exists (select 1 from deployment_events completed where completed.run_id = started.run_id and completed.type = 'tool.completed' and completed.data->>'callId' = started.data->>'callId')`.execute(
-        this.database,
-      )
-    ).rows;
-    const completed: Completed[] = [];
-    for (const row of rows) {
-      const started = eventFromRow(row);
-      if (started.type !== "tool.started") continue;
-      completed.push(
-        await this.complete(
-          started,
-          createToolOutput(
-            JSON.stringify({
-              content: [
-                {
-                  type: "text",
-                  text: "Tool call interrupted; observe before repeating an effect.",
-                },
-              ],
-              structuredContent: {
-                error: {
-                  code: "outcome_unknown",
-                  message: "This tool call was interrupted.",
-                  next: "Observe before repeating an effectful call.",
-                },
-              },
-              isError: true,
-            }),
-          ),
-          true,
-        ),
-      );
-    }
-    return completed;
+  async complete(handle: HostToolEffectHandle, output: ToolOutput, isError: boolean) {
+    return commitPersonalMutation(this.#database, (tx, mutation) =>
+      completePersonalHostToolCall(tx, mutation, handle, { output, isError }),
+    );
   }
 
-  async complete(started: Started, output: ToolOutput, isError: boolean): Promise<Completed> {
-    return withPersonalTransaction(this.database, async (tx) => {
-      const existing = (
-        await sql<DeploymentEventRow>`select * from deployment_events where run_id = ${started.runId} and type = 'tool.completed' and data->>'callId' = ${started.data.callId}`.execute(
-          tx,
-        )
-      ).rows[0];
-      const event = existing
-        ? eventFromRow(existing)
-        : await this.append(tx, {
-            runId: started.runId,
-            threadId: started.threadId,
-            environmentId: started.environmentId,
-            type: "tool.completed",
-            data: { callId: started.data.callId, output, isError },
-          });
-      if (event.type !== "tool.completed") throw new Error("Tool activity did not complete");
-      return event;
-    });
+  async finalize(runId?: RunId) {
+    await interruptOpenHostTools(this.#database, "host-harness", runId);
   }
+}
+
+export async function interruptOpenHostTools(
+  database: Kysely<DatabaseSchema>,
+  origin: HostToolEffectHandle["origin"],
+  runId?: RunId,
+) {
+  let remaining: boolean;
+  do {
+    remaining = await commitPersonalMutation(database, async (tx, mutation) => {
+      const rows = await tx
+        .selectFrom("toolCalls")
+        .select(["id", "runId"])
+        .where("origin", "=", origin)
+        .where(sql<boolean>`status='open'`)
+        .$if(runId !== undefined, (query) => query.where("runId", "=", runId!))
+        .orderBy("runId")
+        .orderBy("id")
+        .limit(129)
+        .execute();
+      const runs = new Map<RunId, string[]>();
+      for (const row of rows.slice(0, 128)) {
+        const ids = runs.get(row.runId) ?? [];
+        ids.push(row.id);
+        runs.set(row.runId, ids);
+      }
+      for (const [id, toolIds] of runs) {
+        await tx
+          .selectFrom("runs")
+          .select("id")
+          .where("id", "=", id)
+          .forNoKeyUpdate()
+          .executeTakeFirstOrThrow();
+        await interruptPersonalToolCalls(tx, mutation, id, toolIds);
+      }
+      return rows.length > 128;
+    });
+  } while (remaining);
 }

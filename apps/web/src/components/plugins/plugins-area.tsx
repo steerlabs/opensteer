@@ -326,6 +326,12 @@ function PluginCatalog() {
               : null
         }
       />
+      {view.kind === "entries" && view.issue?.retry ? (
+        // Entries already shown stay; a recoverable failed read can still be retried.
+        <button className="btn plugins-retry" onClick={list.reload} type="button">
+          Try again
+        </button>
+      ) : null}
       {view.kind === "loading" ? (
         <LoadingRows label="Loading the catalog" rows={4} />
       ) : view.kind === "failed" ? (

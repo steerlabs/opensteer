@@ -41,9 +41,15 @@ describe("HostCommandDispatcher Request responses", () => {
       },
     );
     const dispatchRequestResponse = vi.fn(
-      async (_commandId: string, send: (beforeAck: () => Promise<void>) => Promise<void>) => {
-        await send(async () => undefined);
-        return [];
+      async (
+        _commandId: string,
+        send: Parameters<OpensteerStore["dispatchRequestResponse"]>[1],
+      ) => {
+        await send(
+          async () => undefined,
+          async () => undefined,
+          3,
+        );
       },
     );
     const dispatcher = new HostCommandDispatcher({
@@ -63,9 +69,9 @@ describe("HostCommandDispatcher Request responses", () => {
       egress: {} as never,
       pluginVersions: async () => [],
       pluginsTokens: {} as never,
-      onDeploymentEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: {
+        identityForEnvironment: () => ({ connectionGeneration: 7 }),
         dispatch: runnersDispatch,
       } as never,
       store: {
@@ -85,6 +91,7 @@ describe("HostCommandDispatcher Request responses", () => {
     expect(JSON.stringify(command.payload)).not.toContain("live-secret");
     expect(runnersDispatch).toHaveBeenCalledWith(
       expect.objectContaining({
+        bindingGeneration: 3,
         requestId,
         response,
         runId,
@@ -93,6 +100,8 @@ describe("HostCommandDispatcher Request responses", () => {
       expect.any(AbortSignal),
       {
         beforeAck: expect.any(Function),
+        fenceRequestSend: expect.any(Function),
+        connectionGeneration: 7,
       },
     );
     expect(dispatchRequestResponse).toHaveBeenCalledWith(command.id, expect.any(Function));
@@ -124,7 +133,6 @@ describe("HostCommandDispatcher Request responses", () => {
       egress: {} as never,
       pluginVersions: async () => [],
       pluginsTokens: {} as never,
-      onDeploymentEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: {
         dispatch: runnersDispatch,
@@ -170,8 +178,8 @@ describe("HostCommandDispatcher steering", () => {
     const dispatcher = steerDispatcher({
       dispatchChannelCommand,
       runnersDispatch,
-      refuseSteer: vi.fn(async () => []),
-      succeedCommand: vi.fn(async () => []),
+      refuseSteer: vi.fn(async () => undefined),
+      succeedCommand: vi.fn(async () => undefined),
     });
     const command = {
       ...steerCommand(),
@@ -188,14 +196,9 @@ describe("HostCommandDispatcher steering", () => {
   it.each([undefined, "request-pending"])(
     "compensates through the Thread Inbox when the Runner refuses steering (%s)",
     async (reason) => {
-      const requeuedEvent = {
-        type: "run.queued",
-      } as never;
-      const refuseSteer = vi.fn(async () => [requeuedEvent]);
-      const succeedCommand = vi.fn(async () => []);
-      const onDeploymentEvent = vi.fn();
+      const refuseSteer = vi.fn(async () => undefined);
+      const succeedCommand = vi.fn(async () => undefined);
       const dispatcher = steerDispatcher({
-        onDeploymentEvent,
         refuseSteer,
         runnersDispatch: vi.fn(async () => {
           throw new CommandDispatchError(
@@ -224,18 +227,17 @@ describe("HostCommandDispatcher steering", () => {
         "Harness does not support steering",
         reason,
       );
-      expect(onDeploymentEvent).toHaveBeenCalledWith(requeuedEvent);
       expect(succeedCommand).not.toHaveBeenCalled();
     },
   );
   it("leaves a retryable steer to the coordinator", async () => {
-    const refuseSteer = vi.fn(async () => []);
+    const refuseSteer = vi.fn(async () => undefined);
     const dispatcher = steerDispatcher({
       refuseSteer,
       runnersDispatch: vi.fn(async () => {
         throw new CommandDispatchError("Runner acknowledgement timed out", "uncertain");
       }),
-      succeedCommand: vi.fn(async () => []),
+      succeedCommand: vi.fn(async () => undefined),
     });
     await expect(
       dispatcher.dispatch(steerCommand(), new AbortController().signal),
@@ -793,12 +795,12 @@ describe("HostCommandDispatcher model selection", () => {
       pluginsTokens: {
         issue: () => "skills-token",
       } as never,
-      onDeploymentEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: {
         supportsMessageAttachments: () => input.supportsAttachments ?? false,
         canRunHarness: () => true,
         dispatch,
+        connectionGenerationFor: () => 7,
         identityForEnvironment: () => ({
           bootId: "boot-run",
           connectionGeneration: 7,
@@ -963,12 +965,12 @@ describe("HostCommandDispatcher run planning", () => {
         pluginsTokens: {
           issue: () => "skills-token",
         } as never,
-        onDeploymentEvent: vi.fn(),
         publicUrl: new URL("https://host.example"),
         runners: {
           supportsMessageAttachments: () => false,
           canRunHarness: () => true,
           dispatch,
+          connectionGenerationFor: () => identity.connectionGeneration,
           identityForEnvironment: () => identity,
           inspectHarnesses: async () => [
             {
@@ -1117,11 +1119,10 @@ describe("HostCommandDispatcher run planning", () => {
   );
 });
 function steerDispatcher(input: {
-  readonly onDeploymentEvent?: () => void;
   readonly dispatchChannelCommand?: OpensteerStore["dispatchChannelCommand"];
-  readonly refuseSteer: () => Promise<readonly never[]>;
+  readonly refuseSteer: OpensteerStore["refuseSteer"];
   readonly runnersDispatch: () => Promise<undefined>;
-  readonly succeedCommand: () => Promise<readonly never[]>;
+  readonly succeedCommand: OpensteerStore["succeedCommand"];
 }): HostCommandDispatcher {
   return new HostCommandDispatcher({
     teamRequestContext: async () => {
@@ -1140,7 +1141,6 @@ function steerDispatcher(input: {
     egress: {} as never,
     pluginVersions: async () => [],
     pluginsTokens: {} as never,
-    onDeploymentEvent: input.onDeploymentEvent ?? vi.fn(),
     publicUrl: new URL("https://host.example"),
     runners: {
       dispatch: input.runnersDispatch,

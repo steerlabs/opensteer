@@ -14,7 +14,7 @@ import {
   click,
   pageTab,
   tabSearch,
-  settle,
+  until,
 } from "./workspace.interaction.test-support.js";
 import { composerText, rewrite } from "../composer-editor.test-support.js";
 
@@ -36,10 +36,11 @@ vi.mock("../../desktop/desktop-bridge.js", async (original) => ({
   ...(await original<typeof import("../../desktop/desktop-bridge.js")>()),
   desktopBridge: () => bridge,
 }));
-async function command(value: DesktopPersonalTabCommand) {
+/** Runs a desktop tab command and waits until `done` holds: what the command is for. */
+async function command(value: DesktopPersonalTabCommand, done: () => void) {
   expect(execute).toBeDefined();
   await act(async () => execute!(value));
-  await settle();
+  await until(`${value.type} never took effect`, done);
 }
 const selected = () =>
   document.querySelector(".place:not([hidden])")?.getAttribute("data-place-key");
@@ -64,22 +65,24 @@ it("new and close commands across composer, address and sidebar preserve the dra
     rewrite(field, "Keep this draft");
   });
   await click(element(`.side-tab[data-place-key="${quiet[0]!.key}"] .side-tab__main`));
-  await command({ type: "new-tab" });
-  expect(document.activeElement).toBe(element(".start-page__input"));
-  await command({ type: "close-tab" });
-  expect(document.querySelector(".side-tab--start")).toBeNull();
-  expect(selected()).toBe(quiet[0]!.key);
+  await command({ type: "new-tab" }, () =>
+    expect(document.activeElement).toBe(element(".start-page__input")),
+  );
+  await command({ type: "close-tab" }, () => {
+    expect(document.querySelector(".side-tab--start")).toBeNull();
+    expect(selected()).toBe(quiet[0]!.key);
+  });
   expect(close).not.toHaveBeenCalled();
   field.focus();
-  await command({ type: "close-tab" });
-  expect(close).toHaveBeenCalledTimes(1);
-  expect(selected()).toBe(initial[initial.indexOf(quiet[0]!.key) + 1]);
+  await command({ type: "close-tab" }, () => {
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(selected()).toBe(initial[initial.indexOf(quiet[0]!.key) + 1]);
+  });
   expect(composerText(field)).toBe("Keep this draft");
   await click(element(`.side-tab[data-place-key="${quiet[1]!.key}"] .side-tab__main`));
   const send = vi.spyOn(client, "sendBrowserCommand");
   element<HTMLElement>("[data-live-page] textarea").focus();
-  await command({ type: "close-tab" });
-  expect(close).toHaveBeenCalledTimes(2);
+  await command({ type: "close-tab" }, () => expect(close).toHaveBeenCalledTimes(2));
   expect(
     send.mock.calls.some(
       ([, command]) => command.type === "input.key" && command.key.toLowerCase() === "w",
@@ -102,14 +105,13 @@ it("number and cycle commands select exactly their tab while editing chords leav
   const threads = client.getSnapshot().threads.map((thread) => thread.id);
   for (let index = 1; index <= 9; index++) {
     if (index === 5) element<HTMLElement>(".side-tab__main").focus();
-    await command({ type: "select-tab", index });
     const expected = index === 9 ? places.at(-1) : places[index - 1];
-    if (expected) expect(selected()).toBe(expected);
+    // A number with no tab selects nothing: the one before stays.
+    const now = selected();
+    await command({ type: "select-tab", index }, () => expect(selected()).toBe(expected ?? now));
   }
-  await command({ type: "next-tab" });
-  expect(selected()).toBe(places[0]);
-  await command({ type: "previous-tab" });
-  expect(selected()).toBe(places.at(-1));
+  await command({ type: "next-tab" }, () => expect(selected()).toBe(places[0]));
+  await command({ type: "previous-tab" }, () => expect(selected()).toBe(places.at(-1)));
   const before = [...history];
   for (const key of ["a", "c", "v", "z", "l", "t", "w"]) {
     await act(async () =>

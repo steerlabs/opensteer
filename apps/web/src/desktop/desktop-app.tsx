@@ -1,3 +1,4 @@
+import { realtimeIdleProbeDeadlineMs, realtimeIdleProbeMs } from "@opensteer/client/host";
 import { deploymentPolicy } from "@opensteer/core";
 import type { AgentConnectionAuthorizationTarget } from "@opensteer/protocol";
 import type { DesktopLocalExecutionStatus } from "@opensteer/protocol/desktop";
@@ -281,6 +282,10 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       capabilities: selectedConnection?.capabilities ?? null,
       fetch: createDesktopHostFetch(bridge, selected.canonicalOrigin, selected.id),
       pacedUploads: true,
+      realtimeLiveness: {
+        idleMs: realtimeIdleProbeMs,
+        deadlineMs: realtimeIdleProbeDeadlineMs,
+      },
       // Desktop main holds the sockets; hiding or covering the window never closes them.
       lifecycle: browserClientLifecycle({ socketTrustWindowMs: Number.POSITIVE_INFINITY }),
       webSocketFactory: createDesktopHostWebSocketFactory(
@@ -409,6 +414,14 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     if ((fresh.phase === "offer" && !startFreshDeclined) || fresh.phase === "starting") {
       return (
         <StartFreshScreen
+          conversion={
+            snapshot.personalSetup?.issue?.code === "personal-conversion-failed"
+              ? {
+                  detail: snapshot.personalSetup.issue.detail,
+                  onRetry: () => runBridgeOperation(bridge.retry()),
+                }
+              : undefined
+          }
           error={fresh.phase === "offer" ? fresh.error : null}
           moves={fresh.data.entries}
           onNotNow={() => setStartFreshDeclined(true)}

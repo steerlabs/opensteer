@@ -1,3 +1,4 @@
+import { RetainedToolImage } from "./asset-image.js";
 import {
   hostMessageOutbox,
   messageDeliveryActions,
@@ -18,7 +19,7 @@ import { TranscriptImageContext, useClientConnectionName } from "@opensteer/clie
 import { AssetImage } from "./asset-image.js";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { TeamInputSource } from "../team/task-source-chip.js";
-import { useToolOutput } from "@opensteer/client/react";
+import { useToolOutput, useTranscriptMessage, useTranscriptText } from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
 import { voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
@@ -27,17 +28,20 @@ import { useTaskSnapshot } from "./task-rows.js";
 import { taskMark, threadMark } from "@opensteer/client/host";
 import {
   createContext,
+  memo,
   useContext,
   useCallback,
   Fragment,
   Suspense,
   lazy,
+  type ComponentProps,
   useEffect,
   useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type Dispatch,
   type ReactNode,
   type RefObject,
@@ -93,6 +97,7 @@ import {
   type AssignmentEntry,
   type DelegationEntry,
   type MessageEntry,
+  type TranscriptGroup,
   type PlaceEntry,
   type ReasoningEntry,
   type RequestReceiptEntry,
@@ -140,7 +145,7 @@ import {
   SurfaceChips,
   SurfaceLink,
 } from "./surface-chips.js";
-import { MessageFold } from "./message-fold.js";
+import { FoldMeasuresWhenLaidOut, MessageFold } from "./message-fold.js";
 import { useToast } from "./toast.js";
 import { TaskMark, AgentOrb } from "./workspace/task-mark.js";
 import { automationPath, useMediaQuery } from "../ui-utils.js";
@@ -153,7 +158,45 @@ import { act, failureWords } from "./use-action.js";
 // Fetched with this module, not when a reply is first drawn: until it lands a
 // reply shows its raw Markdown, and on a weak link that wait is what people see.
 const markdownChunk = import("./markdown.js");
-const Markdown = lazy(() => markdownChunk);
+const LazyMarkdown = lazy(() => markdownChunk);
+
+/**
+ * Where a long transcript's rows scroll, while the browser skips the ones off screen. A row's
+ * Markdown is parsed once it comes within a screen of view; until then its words stand as plain
+ * text, so Find and assistive reading still have them. Without skipping (an engine that would not
+ * hold the reader's place as a row above grows), every body is parsed as it is drawn.
+ */
+const DeferredBodies = createContext<(() => HTMLElement | null) | null>(null);
+const undeferredRows = 40;
+
+function Markdown(props: ComponentProps<typeof LazyMarkdown>) {
+  const scroller = useContext(DeferredBodies);
+  const [near, setNear] = useState(scroller === null);
+  const plain = useRef<HTMLParagraphElement | null>(null);
+  useEffect(() => {
+    const element = plain.current;
+    const root = scroller?.() ?? null;
+    if (near || !element) return;
+    if (!root || typeof IntersectionObserver === "undefined") {
+      setNear(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some(({ isIntersecting }) => isIntersecting)) setNear(true);
+      },
+      { root, rootMargin: "100% 0px" },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [near, scroller]);
+  if (near) return <LazyMarkdown {...props} />;
+  return (
+    <p className="md-prose md-prose--plain" ref={plain}>
+      {props.bare ? props.text : readableMarkdown(props.text)}
+    </p>
+  );
+}
 
 const TranscriptLive = createContext(true);
 /**
@@ -232,7 +275,30 @@ interface AgentSource {
   /** Keeps each row's model the same object while it is unchanged, so only changed rows redraw. */
   readonly cache: SubagentCache;
 }
-const AgentReader = createContext<AgentSource | null>(null);
+/**
+ * The source changes with every transcript update; rows read it through this store so only the
+ * turns that draw helpers redraw when it does.
+ */
+class AgentSourceStore {
+  #value: AgentSource;
+  readonly #listeners = new Set<() => void>();
+  constructor(value: AgentSource) {
+    this.#value = value;
+  }
+  get = () => this.#value;
+  set(value: AgentSource) {
+    if (value === this.#value) return;
+    this.#value = value;
+    for (const listener of this.#listeners) listener();
+  }
+  subscribe = (listener: () => void) => {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  };
+}
+const AgentReader = createContext<AgentSourceStore | null>(null);
+const noAgentSubscription = () => () => {};
+const noAgentSource = () => null;
 
 const noReader: SubagentReader = {
   assignments: {},
@@ -255,9 +321,9 @@ function useAgentSource(
   entries: readonly TranscriptEntry[],
   threadId: string | null,
   live: boolean,
-): AgentSource {
+): AgentSourceStore {
   const cache = useMemo(() => new SubagentCache(), []);
-  return useMemo(() => {
+  const value = useMemo(() => {
     const base = source ?? noReader;
     const id = threadId ?? "";
     return {
@@ -270,9 +336,13 @@ function useAgentSource(
       },
     };
   }, [cache, entries, live, source, threadId]);
+  const [store] = useState(() => new AgentSourceStore(value));
+  useLayoutEffect(() => store.set(value), [store, value]);
+  return store;
 }
 
 const noWaitingRequests: readonly WaitingRequest[] = [];
+const noActivities: ReadonlyMap<string, ReplyActivity> = new Map();
 const noAssignments: Readonly<Record<string, AssignmentSummary>> = {};
 const noBrowserUses: readonly BrowserSessionUseSummary[] = [];
 
@@ -309,6 +379,7 @@ export function AgentTranscript({
   renderPasswordsSuggestion,
   subagentReader = null,
   viewerUserId = null,
+  scroller = null,
 }: {
   /** What the Thread is doing, which decides the line under its transcript. */
   activity?: ThreadActivity;
@@ -368,19 +439,30 @@ export function AgentTranscript({
    */
   subagentReader?: SubagentReader | null;
   viewerUserId?: string | null;
+  /**
+   * The element a long transcript scrolls in. Given, and where the browser skips off-screen rows,
+   * a row's Markdown is parsed only as it nears view.
+   */
+  scroller?: (() => HTMLElement | null) | null;
 }) {
   const groups = useMemo(
     () => groupTranscriptEntries(entries, { inputQueuePaused, startHold, assignments }),
     [entries, inputQueuePaused, startHold, assignments],
   );
+  const shownDelivery = useRef<ReadonlySet<string>>(new Set());
   const deliveryStatus = useMemo(() => {
     const own = [...entries, ...afterQueue].filter(
       (entry): entry is MessageEntry => entry.kind === "message" && !!entry.localDelivery,
     );
     const shown = messageDeliveryStatusShown(own.map((entry) => entry.localDelivery!.phase));
-    return new Set(
+    const next = new Set(
       own.flatMap((entry, index) => (shown[index] ? [entry.clientSendKey ?? entry.id] : [])),
     );
+    // The same members keep the same set, so own messages do not redraw on every update.
+    const held = shownDelivery.current;
+    if (next.size === held.size && [...next].every((key) => held.has(key))) return held;
+    shownDelivery.current = next;
+    return next;
   }, [afterQueue, entries]);
   const [deliveryNotes, setDeliveryNotes] = useState<ReadonlyMap<string, string>>(new Map());
   const noteDelivery = useCallback((key: string, words: string | null) => {
@@ -397,8 +479,8 @@ export function AgentTranscript({
     [deliveryStatus, deliveryNotes, noteDelivery],
   );
   const activities = useMemo(() => {
+    if (!conversation) return noActivities;
     const byTurn = new Map<string, ReplyActivity>();
-    if (!conversation) return byTurn;
     for (const activity of conversationActivities(groups)) {
       for (const key of activity.keys) byTurn.set(key, activity);
     }
@@ -458,6 +540,64 @@ export function AgentTranscript({
     () => (renderPasswordsSuggestion ? passwordsSetupOffer(groups) : null),
     [groups, renderPasswordsSuggestion],
   );
+  // A screen passes these inline; held stable, an update redraws only the rows it changed.
+  const latest = useRef({ activityOwner, onOpenActivity, onReply, renderTask });
+  latest.current = { activityOwner, onOpenActivity, onReply, renderTask };
+  const hasReply = onReply !== undefined;
+  const hasOpen = onOpenActivity !== undefined;
+  const hasTask = renderTask !== undefined;
+  const replyWith = useMemo(
+    () => (hasReply ? (message: MessageEntry) => latest.current.onReply?.(message) : undefined),
+    [hasReply],
+  );
+  const openWith = useMemo(
+    () =>
+      hasOpen
+        ? (turnKey: string, opener: HTMLElement) => latest.current.onOpenActivity?.(turnKey, opener)
+        : undefined,
+    [hasOpen],
+  );
+  const taskView = useMemo<TaskRenderer | undefined>(
+    () => (hasTask ? (entries) => latest.current.renderTask?.(entries) : undefined),
+    [hasTask],
+  );
+  const ownerPanel = activityOwner?.panelId;
+  const ownerTurn = activityOwner?.turnKey;
+  const owner = useMemo<ReplyActivityOwner | null>(
+    () =>
+      ownerPanel !== undefined && ownerTurn !== undefined
+        ? {
+            panelId: ownerPanel,
+            turnKey: ownerTurn,
+            onClose: () => latest.current.activityOwner?.onClose(),
+          }
+        : null,
+    [ownerPanel, ownerTurn],
+  );
+  // Read once: the start-up check that decides whether rows are skipped finishes long before this.
+  const [skipping] = useState(
+    () => typeof document !== "undefined" && document.documentElement.dataset.rowSkipping !== "off",
+  );
+  const deferBodies = skipping ? scroller : null;
+  const imageScope = useMemo(
+    () => (attachmentReader && threadId ? { client: attachmentReader, threadId } : null),
+    [attachmentReader, threadId],
+  );
+  const drawnRows = rows.map(({ group, key }, index) => (
+    <TranscriptRow
+      continued={places?.[index]?.continued === true}
+      // The newest rows are where a reader opens a conversation: they are parsed at once.
+      deferBodies={index < rows.length - undeferredRows ? deferBodies : null}
+      group={group}
+      joined={places?.[index]?.joined === true}
+      key={key}
+      renderTask={taskView}
+      reveal={revealMessage}
+      rowKey={key}
+      time={places?.[index]?.time ?? null}
+      viewerUserId={viewerUserId}
+    />
+  ));
 
   return (
     <DeliveryFeedback value={deliveryFeedback}>
@@ -467,66 +607,19 @@ export function AgentTranscript({
             <AgentFolds>
               <RequestShown value={requestShown}>
                 <ConversationMode value={conversation}>
-                  <ReplyWith value={onReply}>
-                    <OpenActivity value={onOpenActivity}>
+                  <ReplyWith value={replyWith}>
+                    <OpenActivity value={openWith}>
                       <ActivityOfTurn value={activities}>
-                        <ActivityOpenedFrom value={activityOwner}>
+                        <ActivityOpenedFrom value={owner}>
                           <ActivityAnchor value={onActivityAnchor}>
-                            <TaskViews value={renderTask}>
+                            <TaskViews value={taskView}>
                               <TranscriptHostClientContext value={attachmentReader}>
                                 <ReaderComputers value={computers}>
                                   <TranscriptBrowserUses value={browserUses}>
                                     <TranscriptBrowsers value={browserSessions}>
                                       <Speakers value={speakers}>
-                                        <TranscriptImageContext
-                                          value={
-                                            attachmentReader && threadId
-                                              ? { client: attachmentReader, threadId }
-                                              : null
-                                          }
-                                        >
-                                          {rows.map(({ group, key }, index) => (
-                                            <Fragment key={key}>
-                                              {places?.[index]?.time ? (
-                                                <p className="transcript__time">
-                                                  {places[index].time}
-                                                </p>
-                                              ) : null}
-                                              <div
-                                                className="transcript__row"
-                                                data-continued={
-                                                  places?.[index]?.continued || undefined
-                                                }
-                                                data-joined={places?.[index]?.joined || undefined}
-                                                data-transcript-row={key}
-                                              >
-                                                {group.kind === "app" ? (
-                                                  <AppCard entry={group.entry} />
-                                                ) : group.kind === "turn" ? (
-                                                  <TurnView
-                                                    turn={group.turn}
-                                                    turnKey={group.key}
-                                                    reveal={revealMessage}
-                                                  />
-                                                ) : group.kind === "delegation" ? (
-                                                  <DelegationNotice delegation={group.entry} />
-                                                ) : group.kind === "assignment" ? (
-                                                  renderTask?.([group.entry])
-                                                ) : (
-                                                  <TranscriptMessage
-                                                    joinedRun={group.joinedRun === true}
-                                                    reveal={
-                                                      revealMessage?.id === group.entry.id
-                                                        ? revealMessage
-                                                        : null
-                                                    }
-                                                    message={group.entry}
-                                                    viewerUserId={viewerUserId}
-                                                  />
-                                                )}
-                                              </div>
-                                            </Fragment>
-                                          ))}
+                                        <TranscriptImageContext value={imageScope}>
+                                          {drawnRows}
                                           {indicator === null ? null : indicator.kind ===
                                             "typing" ? (
                                             // No turn has begun, so there is no Activity to open yet.
@@ -564,6 +657,106 @@ export function AgentTranscript({
 
 /* ---- A turn ---- */
 
+interface TranscriptRowProps {
+  readonly continued: boolean;
+  readonly deferBodies: (() => HTMLElement | null) | null;
+  readonly group: TranscriptGroup;
+  readonly joined: boolean;
+  readonly renderTask: TaskRenderer | undefined;
+  readonly reveal: { readonly id: string } | null;
+  readonly rowKey: string;
+  readonly time: string | null;
+  readonly viewerUserId: string | null;
+}
+
+/**
+ * One transcript row. Rows stay mounted however long the conversation, so a row whose group holds
+ * the same entries as before skips rendering: a streamed token redraws its own row alone.
+ */
+const TranscriptRow = memo(
+  function TranscriptRow({
+    continued,
+    deferBodies,
+    group,
+    joined,
+    renderTask,
+    reveal,
+    rowKey,
+    time,
+    viewerUserId,
+  }: TranscriptRowProps) {
+    return (
+      <DeferredBodies value={deferBodies}>
+        <FoldMeasuresWhenLaidOut value={deferBodies !== null}>
+          {time ? <p className="transcript__time">{time}</p> : null}
+          <div
+            className="transcript__row"
+            data-continued={continued || undefined}
+            data-joined={joined || undefined}
+            data-transcript-row={rowKey}
+          >
+            {group.kind === "app" ? (
+              <AppCard entry={group.entry} />
+            ) : group.kind === "turn" ? (
+              <TurnView turn={group.turn} turnKey={group.key} reveal={reveal} />
+            ) : group.kind === "delegation" ? (
+              <DelegationNotice delegation={group.entry} />
+            ) : group.kind === "assignment" ? (
+              renderTask?.([group.entry])
+            ) : (
+              <TranscriptMessage
+                joinedRun={group.joinedRun === true}
+                reveal={reveal?.id === group.entry.id ? reveal : null}
+                message={group.entry}
+                viewerUserId={viewerUserId}
+              />
+            )}
+          </div>
+        </FoldMeasuresWhenLaidOut>
+      </DeferredBodies>
+    );
+  },
+  // `renderTask` is a screen's inline renderer; an assignment row redraws when its entry does.
+  (previous: TranscriptRowProps, next: TranscriptRowProps) =>
+    previous.continued === next.continued &&
+    previous.deferBodies === next.deferBodies &&
+    previous.joined === next.joined &&
+    previous.time === next.time &&
+    previous.reveal === next.reveal &&
+    previous.rowKey === next.rowKey &&
+    previous.viewerUserId === next.viewerUserId &&
+    sameGroup(previous.group, next.group),
+);
+
+/** Two groupings of the same row that hold the very same entries. */
+function sameGroup(left: TranscriptGroup, right: TranscriptGroup): boolean {
+  if (left === right) return true;
+  if (left.kind !== right.kind || left.key !== right.key) return false;
+  if (left.kind !== "turn" || right.kind !== "turn")
+    return (
+      "entry" in left &&
+      "entry" in right &&
+      left.entry === right.entry &&
+      (left.kind !== "message" || right.kind !== "message" || left.joinedRun === right.joinedRun)
+    );
+  const [a, b] = [left.turn, right.turn];
+  const same = <T,>(x: readonly T[] | undefined, y: readonly T[] | undefined) =>
+    x === y || (!!x && !!y && x.length === y.length && x.every((item, i) => item === y[i]));
+  return (
+    a.run === b.run &&
+    a.reply === b.reply &&
+    a.runId === b.runId &&
+    a.continued === b.continued &&
+    a.inputQueuePaused === b.inputQueuePaused &&
+    a.startHold === b.startHold &&
+    a.personWaiting === b.personWaiting &&
+    a.startedBy === b.startedBy &&
+    a.source === b.source &&
+    same(a.work, b.work) &&
+    same(a.assignments, b.assignments) &&
+    same(a.nodes, b.nodes)
+  );
+}
 function TurnView({
   turn,
   turnKey,
@@ -1061,7 +1254,7 @@ function useActivityAnchor(panelId: string | null, control: RefObject<HTMLElemen
  */
 function ReplyBubble({
   arrived = false,
-  message,
+  message: preview,
   turnKey = null,
 }: {
   /** It replaced its typing on this screen, so it arrives rather than just stands there. */
@@ -1070,6 +1263,10 @@ function ReplyBubble({
   /** The turn it answers, whose Activity it offers; none for a reply no turn wrote. */
   turnKey?: string | null;
 }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const [expanded, setExpanded] = useState(false);
+  const message = useTranscriptMessage(client, threadId, preview, expanded);
   const replyWith = useContext(ReplyWith);
   const openActivity = useContext(OpenActivity);
   const activity = useContext(ActivityOfTurn).get(turnKey ?? "");
@@ -1104,9 +1301,17 @@ function ReplyBubble({
           more={index === parts.length - 1 ? more : null}
           only={parts.length === 1}
           part={part}
+          streaming={message.streaming === true && index === parts.length - 1}
         />
       ))}
       {parts.length === 0 ? <div className="reply__line">{more}</div> : null}
+      {preview.previewTruncated && !expanded ? (
+        <button className="btn" onClick={() => setExpanded(true)} type="button">
+          Read full reply
+        </button>
+      ) : null}
+      <MessagePages pages={message.pages ?? []} />
+      <MessagePlaces places={message.places ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
     </div>
   );
@@ -1116,10 +1321,13 @@ function ReplyBubblePart({
   more,
   only,
   part,
+  streaming,
 }: {
   more: ReactNode;
   only: boolean;
   part: ReplyPart;
+  /** The reply is still arriving and this is its last part. */
+  streaming: boolean;
 }) {
   const label =
     part.kind === "code" ? "Copy code" : part.kind === "draft" ? "Copy draft" : "Copy message";
@@ -1148,6 +1356,7 @@ function ReplyBubblePart({
           >
             <Markdown
               bare={part.kind === "code"}
+              streaming={streaming}
               text={part.kind === "code" ? part.source : part.text}
             />
           </Suspense>
@@ -1565,7 +1774,16 @@ type AgentPlace =
  * for the life of the view, even once it finishes.
  */
 function useTurnAgents(turn: Turn, folded: boolean) {
-  const source = useContext(AgentReader);
+  const store = useContext(AgentReader);
+  // A turn that started no helpers draws none, and need not redraw when the reader changes.
+  const draws =
+    store !== null &&
+    (turn.assignments.length > 0 || turn.work.some((entry) => entry.kind === "node"));
+  const source = useSyncExternalStore(
+    draws ? store.subscribe : noAgentSubscription,
+    draws ? store.get : noAgentSource,
+    draws ? store.get : noAgentSource,
+  );
   const kept = useRef<readonly string[]>([]);
   const model = useMemo(
     () =>
@@ -1718,11 +1936,13 @@ export function SubagentSteps({
   active,
   entries,
   live,
+  scope,
 }: {
   /** It is still at work, so a thought arriving opens as it does in a live turn. */
   active: boolean;
   entries: readonly SubagentDetailEntry[];
   live: boolean;
+  scope?: TranscriptTextScope | undefined;
 }) {
   const parts = useMemo(() => {
     const drawn: SubagentPart[] = [];
@@ -1768,23 +1988,9 @@ export function SubagentSteps({
                   ))}
                 </Fragment>
               ) : part.entry.kind === "message" ? (
-                <div
-                  className="msg--assistant__body"
-                  data-message-id={part.entry.id}
-                  key={part.entry.id}
-                >
-                  <Suspense
-                    fallback={
-                      <p className="md-prose md-prose--plain">
-                        {readableMarkdown(part.entry.text)}
-                      </p>
-                    }
-                  >
-                    <Markdown text={part.entry.text} />
-                  </Suspense>
-                </div>
+                <SubagentMessage key={part.entry.id} entry={part.entry} scope={scope} />
               ) : part.entry.kind === "reasoning" ? (
-                <Reasoning active={active} entry={part.entry} key={part.entry.id} />
+                <Reasoning active={active} entry={part.entry} key={part.entry.id} scope={scope} />
               ) : (
                 <AgentRow card={part.entry.card} key={part.entry.card.key} noun />
               ),
@@ -1852,19 +2058,73 @@ function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; tur
   );
 }
 
-function Reasoning({ entry, active }: { entry: ReasoningEntry; active: boolean }) {
-  // Completed blocks arriving in a live snapshot deserve the same visibility
-  // as streamed blocks. Completion and later activity never undo a reader's choice.
+export type TranscriptTextScope = {
+  client: HostClient;
+  threadId: string;
+  nodeId: string;
+  generation?: number | undefined;
+};
+
+function SubagentMessage({
+  entry,
+  scope,
+}: {
+  entry: Extract<SubagentDetailEntry, { kind: "message" }>;
+  scope?: TranscriptTextScope | undefined;
+}) {
+  const [expanded, expand] = useState(false);
+  const text = useTranscriptText({
+    ...scope,
+    itemId: entry.id,
+    revision: entry.itemRevision,
+    expanded: expanded && entry.previewTruncated === true,
+    preview: entry.text,
+  });
+  return (
+    <div className="msg--assistant__body" data-message-id={entry.id}>
+      <Suspense
+        fallback={<p className="md-prose md-prose--plain">{readableMarkdown(text.text)}</p>}
+      >
+        <Markdown streaming={text.streaming} text={text.text} />
+      </Suspense>
+      {entry.previewTruncated && !expanded ? (
+        <button type="button" className="btn btn--small" onClick={() => expand(true)}>
+          Show full message
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function Reasoning({
+  entry,
+  active,
+  scope,
+}: {
+  entry: ReasoningEntry;
+  active: boolean;
+  scope?: TranscriptTextScope | undefined;
+}) {
   const [open, setOpen] = useState(active || entry.state === "streaming");
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const content = useTranscriptText({
+    client,
+    threadId,
+    ...scope,
+    itemId: entry.itemId,
+    revision: entry.itemRevision,
+    expanded: open && entry.previewTruncated === true,
+    preview: entry.text,
+  });
+  const text = content.text;
   return (
     <div className="trace-thought">
       <StepHead head={activityStepHead(entry)} onToggle={() => setOpen(!open)} open={open} />
       {open ? (
         <div className="trace-step__thought">
-          <Suspense
-            fallback={<p className="md-prose md-prose--plain">{readableMarkdown(entry.text)}</p>}
-          >
-            <Markdown text={entry.text} />
+          <Suspense fallback={<p className="md-prose md-prose--plain">{readableMarkdown(text)}</p>}>
+            <Markdown streaming={content.streaming} text={text} />
           </Suspense>
         </div>
       ) : null}
@@ -1923,6 +2183,9 @@ function ToolDetail({ tool: preview }: { tool: ToolEntry }) {
   return (
     <div className="trace-step__body">
       <TranscriptImageContext value={client && threadId ? { client, threadId } : null}>
+        {detail.images.map((image) => (
+          <RetainedToolImage key={image.id} imageId={image.id} />
+        ))}
         {tool.output?.images?.map((image) => (
           <AssetImage key={image.path} path={image.path} />
         ))}
@@ -2114,13 +2377,18 @@ function ErrorCount({ count }: { count: number }) {
 
 function Reply({
   copyable = false,
-  message,
-  streaming,
+  message: preview,
+  streaming: wasStreaming,
 }: {
   copyable?: boolean;
   message: MessageEntry;
   streaming: boolean;
 }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const [expanded, setExpanded] = useState(false);
+  const message = useTranscriptMessage(client, threadId, preview, expanded);
+  const streaming = wasStreaming || message.streaming === true;
   return (
     <div aria-busy={streaming} className="msg--assistant__body" data-message-id={message.id}>
       {message.body ? (
@@ -2131,8 +2399,15 @@ function Reply({
         </Suspense>
       ) : null}
       {streaming ? <span aria-hidden className="stream-caret" /> : null}
+      <MessagePages pages={message.pages ?? []} />
+      <MessagePlaces places={message.places ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
-      {copyable && message.body ? (
+      {preview.previewTruncated && !expanded ? (
+        <button className="btn" onClick={() => setExpanded(true)} type="button">
+          Read full reply
+        </button>
+      ) : null}
+      {copyable && !streaming && message.body ? (
         <div className="msg--assistant__marks">
           <CopyMark label="Copy reply" text={message.body} />
         </div>
@@ -2157,11 +2432,14 @@ export function TranscriptMessage({
   message,
   reveal,
   joinedRun = false,
+  onOpenChange,
   queued = false,
   viewerUserId,
 }: {
   message: MessageEntry;
   reveal: { readonly id: string } | null;
+  /** Hears whether another's message is unfolded on screen, whole. */
+  onOpenChange?: ((open: boolean) => void) | undefined;
   /** It joined the turn under way, which a task says because the person chose to. */
   joinedRun?: boolean;
   queued?: boolean;
@@ -2214,6 +2492,7 @@ export function TranscriptMessage({
   return (
     <InputMessage
       message={message}
+      onOpenChange={onOpenChange}
       queued={queued}
       reveal={reveal}
       steered={steered}
@@ -2274,7 +2553,7 @@ function TranscriptEditMark({
 
 /** The reader's own message: their words in full, folded only once they run long. */
 function OwnMessage({
-  message,
+  message: previewMessage,
   queued,
   reveal,
   steered,
@@ -2287,6 +2566,9 @@ function OwnMessage({
   viewerUserId: string | null;
 }) {
   const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const [open, setOpen] = useState(reveal !== null);
+  const message = useTranscriptMessage(client, threadId, previewMessage, open);
   const outbox = client ? hostMessageOutbox(client) : null;
   const computer = useClientConnectionName(client?.connection ?? null);
   const local = message.localDelivery;
@@ -2342,7 +2624,6 @@ function OwnMessage({
   );
   const menu =
     local && outbox ? messageDeliveryActions(local.phase, local.attempted, unconfirmed) : [];
-  const [open, setOpen] = useState(reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
@@ -2404,6 +2685,7 @@ function OwnMessage({
             <div className="msg--user">
               <MessageFold
                 lines={messageFoldLines(message, viewerUserId)}
+                more={previewMessage.previewTruncated === true}
                 onOpenChange={setOpen}
                 open={open}
               >
@@ -2503,17 +2785,20 @@ type UpdateAuthor = Exclude<MessageEntry["author"], { kind: "human" }>;
  */
 function RecoveryNote({
   author,
-  message,
+  message: previewMessage,
   reveal,
 }: {
   author: Extract<MessageEntry["author"], { kind: "platform" }>;
   message: MessageEntry;
   reveal: { readonly id: string } | null;
 }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
   const [open, setOpen] = useState(reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
+  const message = useTranscriptMessage(client, threadId, previewMessage, open);
   const bodyId = useId();
   const name = messageAuthorName(author);
   return (
@@ -2540,6 +2825,8 @@ function RecoveryNote({
       ) : null}
       {open ? (
         <div className="update-line__body" id={bodyId}>
+          <MessagePages pages={message.pages ?? []} />
+          <MessagePlaces places={message.places ?? []} />
           <MessageAttachments attachments={message.attachments ?? []} />
           {message.body ? (
             <Suspense
@@ -2606,23 +2893,29 @@ function updateSource(author: UpdateAuthor): {
  * it holds, so a long address or a code line can never widen it.
  */
 function InputMessage({
-  message,
+  message: previewMessage,
+  onOpenChange,
   queued,
   reveal,
   steered,
   viewerUserId,
 }: {
   message: MessageEntry;
+  onOpenChange?: ((open: boolean) => void) | undefined;
   reveal: { readonly id: string } | null;
   queued: boolean;
   steered: boolean;
   viewerUserId: string | null;
 }) {
   const conversation = useContext(ConversationMode);
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
   const [open, setOpen] = useState(reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
+  useLayoutEffect(() => onOpenChange?.(open), [onOpenChange, open]);
+  const message = useTranscriptMessage(client, threadId, previewMessage, open);
   const preview = useMemo(() => incomingMessagePreview(message), [message]);
   const body = preview.truncated && !open ? preview.text : message.body;
   const source = inputSource(message);
@@ -2679,11 +2972,13 @@ function InputMessage({
             <CopyMark className="input-card__copy" label="Copy message" text={message.body} />
           ) : null}
         </header>
+        <MessagePages pages={message.pages ?? []} />
+        <MessagePlaces places={message.places ?? []} />
         <MessageAttachments attachments={message.attachments ?? []} />
         {message.body ? (
           <MessageFold
             lines={messageFoldLines(message, viewerUserId)}
-            more={preview.truncated && !open}
+            more={previewMessage.previewTruncated === true || (preview.truncated && !open)}
             onOpenChange={setOpen}
             open={open}
           >
@@ -2703,6 +2998,10 @@ function InputMessage({
               <p className="input-card__plain">{body}</p>
             )}
           </MessageFold>
+        ) : previewMessage.previewTruncated && !open ? (
+          <button className="btn" onClick={() => setOpen(true)} type="button">
+            Show message
+          </button>
         ) : null}
       </article>
       {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}

@@ -52,7 +52,6 @@ import type {
   TabActor,
   TabServicePort,
 } from "./ports.js";
-import { TabStreams } from "./tab-streams.js";
 
 export interface PageTabsPort {
   open(
@@ -148,7 +147,6 @@ const cursorSchema = z.strictObject({
 });
 
 export class TabService implements TabServicePort {
-  readonly streams: TabStreams;
   readonly #stopAcquired: () => void;
   readonly options: TabServiceOptions;
   readonly #catalogs = new Map<
@@ -184,7 +182,6 @@ export class TabService implements TabServicePort {
   }
   constructor(options: TabServiceOptions) {
     this.options = options;
-    this.streams = new TabStreams((ownerId) => this.#catalog(ownerId), options.onError);
     this.#stopAcquired = options.nativeTargets.onTargetAcquired(
       async (target) =>
         this.acquired({
@@ -200,7 +197,6 @@ export class TabService implements TabServicePort {
       if (!tabIds) catalog.dirty = null;
       else if (catalog.dirty) for (const tabId of tabIds) catalog.dirty.add(tabId);
     }
-    this.streams.changed(ownerId, tabIds);
   }
   appsChanged(appIds: AppId[]): void {
     for (const [ownerId, catalog] of this.#catalogs) {
@@ -212,7 +208,6 @@ export class TabService implements TabServicePort {
   }
   dispose(): void {
     this.#stopAcquired();
-    this.streams.close();
     this.#catalogs.clear();
   }
   async #catalog(ownerId: UserId) {
@@ -263,7 +258,7 @@ export class TabService implements TabServicePort {
     return current.pending;
   }
 
-  /** The same ordered projection feeds bootstrap, snapshots, RPCs and the keyed stream. */
+  /** The same ordered projection feeds resource reads and RPCs. */
   async project(
     actor: TabActor,
     database = this.options.store.database,
@@ -288,7 +283,7 @@ export class TabService implements TabServicePort {
     rows: TabRecord[],
     layout: TabLayout,
     database: TabDatabase,
-    catalog?: ReadonlyMap<TabId, Tab>,
+    catalog?: ReadonlyMap<TabId, Pick<Tab, "groupId">>,
   ): Promise<{ tabs: Tab[]; layout: TabLayout }> {
     const ownerId = owner(actor);
     const canRead = this.options.readAuthority
@@ -881,6 +876,38 @@ export class TabService implements TabServicePort {
     }
     result.complete = result.tabs.length === tabs.length;
     return result;
+  }
+  async resourceTabs(
+    ownerId: UserId,
+    database: TabDatabase,
+    input: Parameters<TabStore["resourceTabs"]>[2],
+  ) {
+    const store = this.options.store;
+    const rows = await store.resourceTabs(database, ownerId, input);
+    const groups = await store.resourceTabGroups(
+      database,
+      ownerId,
+      rows.map(({ id }) => id),
+    );
+    const catalog = new Map(rows.map(({ id }) => [id, { groupId: groups.get(id) ?? null }]));
+    const { tabs } = await this.#projectRows(
+      { kind: "person", ownerId },
+      rows,
+      { revision: 0, items: [] },
+      database,
+      catalog,
+    );
+    const byId = new Map(tabs.map((tab) => [tab.tabId, tab]));
+    return rows.map(({ id }) => ({ id, tab: byId.get(id) }));
+  }
+
+  async resourceLayout(
+    ownerId: UserId,
+    database: TabDatabase,
+    input: Parameters<TabStore["resourceLayout"]>[2],
+  ) {
+    await this.options.authorizeMembership({ kind: "person", ownerId }, database);
+    return this.options.store.resourceLayout(database, ownerId, input);
   }
   async requireOpenPage(claims: RunToolScope, tabId: TabId): Promise<PageAgentBinding> {
     const actor = { kind: "run", claims } as const,

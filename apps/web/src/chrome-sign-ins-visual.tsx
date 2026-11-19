@@ -123,9 +123,10 @@ function Shell() {
 }
 
 function CardView() {
-  const { snapshot } = useShellContext();
-  const requests = snapshot.requests[signInThreadId] ?? [];
-  const receipts = (snapshot.transcripts[signInThreadId] ?? []).filter(
+  const { hostClient } = useShellContext();
+  const detail = hostClient.getThreadTranscript(signInThreadId)?.getSnapshot();
+  const requests = detail?.requests ?? [];
+  const receipts = (detail?.entries ?? []).filter(
     (entry) => entry.kind === "request" && entry.requestKind === "browser.sign-in",
   );
   return (

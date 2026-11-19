@@ -16,6 +16,18 @@ export async function seedPersonalFixture(database: Kysely<DatabaseSchema>, path
     await sql`insert into users(id,display_name,email,email_verified) values(${userId},'Alex','alex@example.invalid',true)`.execute(
       transaction,
     );
+    const sync = await sql<{
+      present: boolean;
+    }>`select to_regclass('client_sync_state') is not null as present`.execute(transaction);
+    if (sync.rows[0]?.present)
+      await transaction
+        .insertInto("clientSyncState")
+        .values({ deploymentId, ready: true })
+        .execute();
+    else
+      await sql`insert into deployment_event_state(deployment_id,sequence) values(${deploymentId},0)`.execute(
+        transaction,
+      );
     await seedPersonalOwnerResources(transaction, { deploymentId, userId, path });
   });
   const settings = await database
@@ -67,9 +79,6 @@ export async function seedPersonalOwnerResources(
     database,
   );
   await initializePersonalSettings(database, input.userId, agentHome);
-  await sql`insert into deployment_event_state(deployment_id,sequence) values(${input.deploymentId},0) on conflict (deployment_id) do nothing`.execute(
-    database,
-  );
   return { runnerId, environmentId, agentHome };
 }
 

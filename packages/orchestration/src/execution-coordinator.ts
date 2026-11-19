@@ -1,8 +1,9 @@
 import { isResendableControlCommand } from "@opensteer/database/command-delivery";
-import type { AgentEvent, CommandId, EnvironmentId, RunId, ThreadId } from "@opensteer/core";
+import type { CommandId, EnvironmentId, RunId, ThreadId } from "@opensteer/core";
 import { OpensteerError } from "@opensteer/core";
 import type { CommandRow, OpensteerStore, PendingCommandRow } from "@opensteer/database";
 import { CoalescedWake } from "@opensteer/shared/coalescedWake";
+import { systemClock, type Clock } from "@opensteer/shared/clock";
 export type DispatchDisposition = "retry" | "uncertain" | "failed";
 export class CommandDispatchError extends Error {
   readonly disposition: DispatchDisposition;
@@ -40,9 +41,10 @@ interface ExecutionCoordinatorOptions {
   readonly maxConcurrentTriggerPrograms: number;
   readonly maxQueuedBytes: number;
   readonly maxQueuedCommands: number;
-  readonly now?: () => number;
-  readonly onDeploymentEvent?: (event: AgentEvent) => void;
+  /** Time and timers for dispatch backoff; defaults to the system clock. */
+  readonly clock?: Clock;
   readonly onDispatchError?: (error: unknown, command: CommandRow) => void;
+  /** The retry delay after a failed read or claim. */
   readonly pollIntervalMs?: number;
   readonly store: ExecutionCoordinatorStore;
 }
@@ -66,8 +68,8 @@ export class ExecutionCoordinator {
   readonly #maxConcurrentTriggerPrograms: number;
   readonly #maxQueuedBytes: number;
   readonly #maxQueuedCommands: number;
+  readonly #clock: Clock;
   readonly #now: () => number;
-  readonly #onDeploymentEvent: ((event: AgentEvent) => void) | undefined;
   readonly #onDispatchError: ExecutionCoordinatorOptions["onDispatchError"];
   readonly #pollIntervalMs: number;
   readonly #store: ExecutionCoordinatorStore;
@@ -84,10 +86,17 @@ export class ExecutionCoordinator {
   #activeControls = 0;
   #activeTriggerPrograms = 0;
   #controller: AbortController | undefined;
-  #pollTimer: NodeJS.Timeout | undefined;
+  #cancelPoll: (() => void) | undefined;
+  #pollAt = 0;
+  #readFailed = false;
+  readonly #owedSettlements = new Map<CommandId, () => Promise<unknown>>();
+  #claimFailed = false;
   readonly #reads = new CoalescedWake({
     run: () => this.#poll(),
     onSettled: () => this.#schedulePoll(),
+    onError: () => {
+      this.#readFailed = true;
+    },
   });
   #stopping: Promise<void> | undefined;
   constructor(options: ExecutionCoordinatorOptions) {
@@ -104,8 +113,8 @@ export class ExecutionCoordinator {
     );
     this.#maxQueuedBytes = positiveInteger(options.maxQueuedBytes, "maxQueuedBytes");
     this.#maxQueuedCommands = positiveInteger(options.maxQueuedCommands, "maxQueuedCommands");
-    this.#now = options.now ?? Date.now;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
+    this.#clock = options.clock ?? systemClock;
+    this.#now = this.#clock.now;
     this.#onDispatchError = options.onDispatchError;
     this.#pollIntervalMs = positiveInteger(options.pollIntervalMs ?? 500, "pollIntervalMs");
     this.#store = options.store;
@@ -121,6 +130,8 @@ export class ExecutionCoordinator {
   }
   wake(): void {
     if (!this.#controller || this.#controller.signal.aborted) return;
+    this.#cancelPoll?.();
+    this.#cancelPoll = undefined;
     this.#reads.wake();
   }
   async stop(): Promise<void> {
@@ -130,8 +141,8 @@ export class ExecutionCoordinator {
   }
   async #stop(): Promise<void> {
     this.#controller?.abort(new Error("Coordinator stopped"));
-    if (this.#pollTimer) clearTimeout(this.#pollTimer);
-    this.#pollTimer = undefined;
+    this.#cancelPoll?.();
+    this.#cancelPoll = undefined;
     await this.#reads.stop();
     while (this.#activeRuns > 0 || this.#activeControls > 0 || this.#activeTriggerPrograms > 0) {
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
@@ -139,13 +150,25 @@ export class ExecutionCoordinator {
     this.#queue.length = 0;
     this.#queuedIds.clear();
     this.#dispatchBackoff.clear();
+    // Startup recovery returns dispatched resendable controls to pending.
+    this.#owedSettlements.clear();
     this.#queuedBytes = 0;
     this.#controller = undefined;
     this.#stopping = undefined;
   }
   async #poll(): Promise<void> {
+    this.#claimFailed = false;
+    for (const [commandId, write] of this.#owedSettlements) {
+      try {
+        await write();
+        this.#owedSettlements.delete(commandId);
+      } catch {
+        this.#claimFailed = true;
+      }
+    }
     const recordedBefore = this.#backoffRecords;
     const commands = await this.#store.listPendingCommands(this.#maxQueuedCommands);
+    this.#readFailed = false;
     // Backoff is dispatch pacing for commands that are still pending. A command
     // that has left the listing can never be dispatched again, so its entry is
     // dropped and the map stays bounded by the queue it paces. A command being
@@ -249,7 +272,10 @@ export class ExecutionCoordinator {
           this.#dispatchingIds.delete(entry.command.id);
           this.#pump();
           if (wakeImmediately) this.wake();
-          else this.#schedulePoll();
+          else {
+            this.#claimFailed = true;
+            this.#schedulePoll();
+          }
         })
         .catch(() => undefined);
     }
@@ -279,16 +305,12 @@ export class ExecutionCoordinator {
       // bounded poll retry rather than failing the Run or rejecting detached.
       return false;
     }
-    if (!claimed) return true;
-    for (const event of claimed.events) this.#onDeploymentEvent?.(event);
+    if (!claimed) return false;
+
     if (claimed.terminalFailure) {
-      for (const event of await this.#store.failCommand(
-        command.id,
-        claimed.terminalFailure,
-        claimed.terminalFailureInput ?? "authority-cohort",
-      )) {
-        this.#onDeploymentEvent?.(event);
-      }
+      const failure = claimed.terminalFailure;
+      const input = claimed.terminalFailureInput ?? "authority-cohort";
+      await this.#settle(command.id, () => this.#store.failCommand(command.id, failure, input));
       return true;
     }
     try {
@@ -302,22 +324,38 @@ export class ExecutionCoordinator {
       const resendable =
         dispatchError.disposition === "uncertain" && isResendableControlCommand(command.type);
       if (dispatchError.disposition === "retry" || resendable) {
-        const events = await this.#store.retryCommand(command.id, dispatchError);
-        // Recorded once the retry has committed: a listing read before then
-        // misses the command, and must not take it for one that left.
-        this.#backOff(command.id);
-        for (const event of events) this.#onDeploymentEvent?.(event);
+        await this.#settle(command.id, async () => {
+          await this.#store.retryCommand(command.id, dispatchError);
+          // Recorded once the retry has committed: a listing read before then
+          // misses the command, and must not take it for one that left.
+          this.#backOff(command.id);
+        });
       } else if (dispatchError.disposition === "failed") {
-        for (const event of await this.#store.failCommand(command.id, dispatchError.message)) {
-          this.#onDeploymentEvent?.(event);
-        }
+        await this.#settle(command.id, () =>
+          this.#store.failCommand(command.id, dispatchError.message),
+        );
       } else if (command.type === "run.steer") {
-        for (const event of await this.#store.markSteerUnknown(command.id, dispatchError.message)) {
-          this.#onDeploymentEvent?.(event);
-        }
+        await this.#settle(command.id, () =>
+          this.#store.markSteerUnknown(command.id, dispatchError.message),
+        );
       }
     }
     return true;
+  }
+
+  /**
+   * The write that settles a claimed command. A claimed command is no longer
+   * pending, so no listing will find it again: if this write fails it is owed,
+   * kept here and retried on the poll interval until it commits.
+   */
+  async #settle(commandId: CommandId, write: () => Promise<unknown>): Promise<void> {
+    try {
+      await write();
+      this.#owedSettlements.delete(commandId);
+    } catch (error) {
+      this.#owedSettlements.set(commandId, write);
+      throw error;
+    }
   }
 
   /**
@@ -337,14 +375,25 @@ export class ExecutionCoordinator {
     entry.recorded = ++this.#backoffRecords;
     this.#dispatchBackoff.set(commandId, entry);
   }
+  /**
+   * Idle means no timer. A failed read or claim retries after the poll
+   * interval; a command in backoff wakes the queue when it next becomes
+   * eligible. Everything else is woken by the commit or Runner that changed it.
+   */
   #schedulePoll(): void {
     const signal = this.#controller?.signal;
-    if (!signal || signal.aborted || this.#pollTimer) return;
-    this.#pollTimer = setTimeout(() => {
-      this.#pollTimer = undefined;
+    if (!signal || signal.aborted) return;
+    const now = this.#now();
+    let at = this.#readFailed || this.#claimFailed ? now + this.#pollIntervalMs : Infinity;
+    for (const { nextEligibleAt } of this.#dispatchBackoff.values())
+      if (nextEligibleAt > now) at = Math.min(at, nextEligibleAt);
+    if (at === Infinity || (this.#cancelPoll && this.#pollAt <= at)) return;
+    this.#cancelPoll?.();
+    this.#pollAt = at;
+    this.#cancelPoll = this.#clock.schedule(() => {
+      this.#cancelPoll = undefined;
       this.wake();
-    }, this.#pollIntervalMs);
-    this.#pollTimer.unref();
+    }, at - now);
   }
 }
 function normalizeDispatchError(error: unknown): CommandDispatchError {

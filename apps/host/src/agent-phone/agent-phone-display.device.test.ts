@@ -1,3 +1,5 @@
+import { hostApiVersion } from "@opensteer/deployment-authority";
+import { testResourceData } from "../server/test-host-api-request.js";
 import { createId } from "@opensteer/core";
 import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
@@ -788,8 +790,8 @@ it.each([
     });
     let currentCaller = caller;
     cleanup.push(() => caller.close());
-    const bootstrap = await testRpcData(host.origin, "bootstrap.get", {}, owner);
-    if (!bootstrap.personalSettings) throw new Error("Owner has no Main Workspace.");
+    const bootstrap = await testResourceData(host.origin, "settings", owner);
+    if (!bootstrap.settings) throw new Error("Owner has no Main Workspace.");
     const agent = await startPhoneAgent(host, caller, {
       key: `display-run-${randomUUID()}`,
       redaction,
@@ -2737,8 +2739,8 @@ it.each([
       });
       await phase("epoch-old-and-future-requests-are-refused", async () => {
         const results = [];
-        for (const version of [41, 43]) {
-          const result = await fetch(`${host.origin.origin}/v1/rpc/bootstrap.get`, {
+        for (const version of [hostApiVersion - 1, hostApiVersion + 1]) {
+          const result = await fetch(`${host.origin.origin}/v1/rpc/personal.shell.get`, {
             headers: { ...host.ownerHeaders, [hostApiVersionHeader]: String(version) },
           });
           expect(result.status).toBe(400);

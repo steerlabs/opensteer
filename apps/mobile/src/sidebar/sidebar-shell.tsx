@@ -333,7 +333,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     if (dockedRef.current) return;
     // The keyboard would otherwise stay up over the drawer. The draft is the
     // composer's and is untouched; only the field loses focus.
-    dismissKeyboard();
+    void dismissKeyboard();
     trigger.current = from ?? null;
     restoreFocus.current = true;
     closing.current = false;
@@ -357,7 +357,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     setVisible(next);
     // The drawer's own drag dismissal reaches only React Native's text inputs, not the composer's.
     if (next) {
-      dismissKeyboard();
+      void dismissKeyboard();
       return;
     }
     const from = trigger.current;

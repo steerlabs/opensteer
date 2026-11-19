@@ -1,4 +1,5 @@
-import { lockDeploymentEvents } from "./deployment-events.js";
+import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
+import { lockPersonalSyncState } from "./personal-transaction.js";
 import { createId, type AssignmentId } from "@opensteer/core";
 
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -150,7 +151,7 @@ async function deliveryFixture(storeFixture: StoreFixture, suffix: string) {
     const held = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const blocker = database.transaction().execute(async (tx) => {
-      await lockDeploymentEvents(tx);
+      await lockPersonalSyncState(tx);
       held.resolve();
       await byDeadline(
         release.promise,
@@ -403,7 +404,19 @@ describeStore("Assignment result delivery", (it) => {
     const waitId = (await s.begin(task.assignment.id))!;
     const otherId = (await s.begin(task.assignment.id))!;
     await task.settle("Waited result");
-    expect(await s.store.drainAssignmentReturn(task.assignment.id)).toEqual([]);
+    // Held, not settled: the return owner must stay armed until the wait ends.
+    await expect(s.store.drainAssignmentReturn(task.assignment.id)).resolves.toBe("held");
+    const drained = await s.store.drainPendingAssignmentReturns();
+    expect(drained).toMatchObject({ held: 1, settled: 0, failures: [], waiting: 0 });
+    // The hold's end as the delivery transaction saw it, not filtered by a later clock.
+    const stored = await s.database
+      .selectFrom("delegations")
+      .select("resultWaits")
+      .where("id", "=", task.assignment.id)
+      .executeTakeFirstOrThrow();
+    expect(drained.heldUntil!.getTime()).toBe(
+      Math.min(...stored.resultWaits.map(({ expiresAt }) => expiresAt)),
+    );
     expect(await s.returns()).toEqual([]);
     await endAssignmentResultWait(s.database, {
       assignmentId: task.assignment.id,
@@ -420,6 +433,47 @@ describeStore("Assignment result delivery", (it) => {
       waitId: otherId,
     });
     expect(await s.returns()).toHaveLength(1);
+  });
+  it("shows a delegate settlement without exposing its model continuation", async ({
+    storeFixture,
+  }) => {
+    const s = await deliveryFixture(storeFixture, "return-history");
+    const task = await s.delegate("Sales Agent");
+    await s.database
+      .updateTable("delegations")
+      .set({ objective: "Inspect the available integrations." })
+      .where("id", "=", task.assignment.id)
+      .executeTakeFirstOrThrow();
+    await task.settle("Inspection complete.");
+    await s.store.drainAssignmentReturn(task.assignment.id);
+    const [result] = await s.returns();
+    if (!result) throw new Error("Expected the model's continuation");
+    const read = {
+      viewerId: s.f.userId,
+      scope: { kind: "thread", threadId: s.f.thread.id } as const,
+    };
+    const page = await readTranscriptPage(s.database, read);
+    if (page.kind !== "page") throw new Error("Expected parent history");
+    expect(page.items.filter((item) => item.kind === "assignment")).toEqual([
+      expect.objectContaining({
+        id: `delegation:${task.assignment.id}`,
+        delegationId: task.assignment.id,
+        runId: s.f.run.id,
+        view: { title: "Sales Agent", status: "completed", preview: "Inspection complete." },
+        assignment: expect.objectContaining({
+          status: "completed",
+          returnStatus: "delivered",
+          initialRunId: task.run.id,
+          workerThread: expect.objectContaining({ title: "Sales Agent", id: task.thread.id }),
+          objectivePreview: "Inspect the available integrations.",
+          resultPreview: "Inspection complete.",
+        }),
+      }),
+    ]);
+    expect(page.items.map(({ id }) => id)).not.toContain(result.id);
+    expect(await readTranscriptItem(s.database, { ...read, itemId: result.id })).toEqual({
+      kind: "unavailable",
+    });
   });
   for (const ending of ["restart", "deadline", "run-end"] as const) {
     it(`recovers exactly one return when a persistent wait ends by ${ending}`, async ({

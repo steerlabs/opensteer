@@ -2,6 +2,17 @@ import { phoneScreenUnavailableWords } from "./phone-screen.js";
 import { deviceReasonLabel } from "../host/device-projection.js";
 import type { MachineSummary } from "@opensteer/protocol";
 
+/** Whether the Host reports a live display for this computer's task sessions. */
+export function canWatchComputer(machine: MachineSummary): boolean {
+  if (machine.capabilities)
+    return machine.phoneDisplay
+      ? ["phone", "agent-phone"].includes(machine.kind ?? "unknown") &&
+          machine.phoneDisplay.view.state === "ready"
+      : (machine.kind === "home" || machine.kind === "computer") &&
+          machine.computerUse?.displayStreamSupported === true;
+  return machine.status === "online" && machine.computerUse?.displayStreamSupported === true;
+}
+
 /** Why no picture of a computer's app or phone can be asked for now, before any is asked. */
 export type ComputerNotReady =
   | "not-connected"
@@ -57,7 +68,9 @@ export function computerReadiness(input: {
       case "unsupported":
         return reason;
       case "driver-update-required":
-        return "needs-update";
+        return machine.status === "updating" || machine.status === "update-pending"
+          ? machine.status
+          : "needs-update";
       case "setup-required":
       case "trust-required":
       case "developer-mode-required":
@@ -92,6 +105,7 @@ export function ownerViewComputerReadiness(
   machine: MachineSummary | null | undefined,
   phone: boolean,
 ): ComputerNotReady | null {
+  if (phone && machine?.phoneDisplay?.view.reason?.kind === "paused") return null;
   return computerReadiness({
     machine,
     phone,
@@ -116,7 +130,8 @@ export function newOwnerViewReadiness(
   phone: boolean,
 ): ComputerNotReady | null {
   const readiness = ownerViewComputerReadiness(machine, phone);
-  if (machine?.phoneDisplay) return readiness;
+  if (machine?.phoneDisplay)
+    return machine.phoneDisplay.view.reason?.kind === "paused" ? "paused" : readiness;
   const state = machine?.computerUse?.state;
   if (readiness !== null || !phone || state === undefined || state === "ready") return readiness;
   // Pausing is the one thing a phone reports itself as not ready for.

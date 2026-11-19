@@ -19,6 +19,8 @@ import {
 } from "@opensteer/integration-core/computer-app-setup";
 import {
   DesktopPersonalDeploymentStatusSchema,
+  personalUpgradeHeartbeatLine,
+  personalUpgradeProgressLine,
   type DesktopPersonalComponentState,
   type DesktopPersonalDeploymentIssue,
   type DesktopPersonalDeploymentStatus,
@@ -99,6 +101,7 @@ import {
 } from "./personal-data-reset.js";
 
 const defaultStartupTimeoutMs = 60_000;
+const maximumHostStartupMs = 30 * 60_000;
 const defaultShutdownTimeoutMs = processStopTimeoutMs;
 const defaultRestartBackoffMs = 1_000;
 const defaultMaximumRestartBackoffMs = 30_000;
@@ -256,6 +259,8 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   #desiredRunning = false;
   #restartWait: AbortController | undefined;
   readonly #dataReset: PersonalDataReset | undefined;
+  /** The conversion stage the Host last reported, to name if it stops. */
+  #upgradeStage: string | null = null;
   #oldData: PersonalOldDataState | null = null;
   #resetRecovered = false;
   #configuredManifestLookup: Promise<PersonalDeploymentManifest | null> | undefined;
@@ -588,6 +593,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       this.#assertCompleteStack();
       if (recovery) this.#restartPolicy.markStarted();
       else this.#restartPolicy.reset();
+      await this.#markPersonalStateConverted(manifest);
       this.#setStatus({ issue: this.#messagingIssue, state: "ready", step: "ready" });
       return this.#status;
     } catch (error) {
@@ -697,8 +703,14 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   }
 
   async #planOldData(error: unknown): Promise<void> {
-    if (!(error instanceof PersonalOldDatabaseError) || !this.#dataReset) return;
-    const deploymentId = error.deploymentId ?? this.#status.deploymentId;
+    if (
+      !(error instanceof PersonalOldDatabaseError || error instanceof PersonalConversionError) ||
+      !this.#dataReset
+    )
+      return;
+    const deploymentId =
+      (error instanceof PersonalOldDatabaseError ? error.deploymentId : undefined) ??
+      this.#status.deploymentId;
     if (!deploymentId) return;
     this.#oldData = await this.#dataReset.plan(deploymentId);
     this.#setStatus({ deploymentId });
@@ -959,6 +971,8 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         this.#log("browser-extension-sync-failed", { error: safeErrorDetail(error) });
       }
     }
+    let renewDeadline: (() => void) | undefined;
+    this.#upgradeStage = null;
     const host = this.#spawn(
       hostSpec(
         release,
@@ -972,14 +986,45 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         extensionDirectory,
         await this.#personFullName(),
       ),
+      (line) => {
+        const stage = line.startsWith(`${personalUpgradeProgressLine}: `)
+          ? line.slice(personalUpgradeProgressLine.length + 2)
+          : null;
+        if (
+          (stage === null &&
+            line !== personalUpgradeProgressLine &&
+            line !== personalUpgradeHeartbeatLine) ||
+          !renewDeadline ||
+          signal.aborted
+        )
+          return;
+        if (stage && /^[a-z-]{1,40}$/u.test(stage)) this.#upgradeStage = stage;
+        renewDeadline();
+        if (this.#status.step === "starting-host") this.#setStatus({ step: "upgrading-database" });
+      },
     );
     const origin = `http://127.0.0.1:${manifest.hostPort}`;
+    const readiness = new AbortController();
+    const readinessSignal = AbortSignal.any([signal, readiness.signal]);
     const verifiedHost = await this.#raceChild(
       host,
-      this.#host.waitForHost(origin, manifest, signal),
-      signal,
+      withTimeout(
+        this.#host.waitForHost(origin, manifest, readinessSignal),
+        Math.max(this.#startupTimeoutMs, maximumHostStartupMs),
+        {
+          signal: readinessSignal,
+          timeoutError: () => new Error("The Personal database upgrade timed out."),
+        },
+      ),
+      readinessSignal,
       "Host",
-    );
+      (refresh) => {
+        renewDeadline = refresh;
+        return () => {
+          renewDeadline = undefined;
+        };
+      },
+    ).finally(() => readiness.abort());
     if (!verifiedHost.discoveryEnvelope) {
       throw new Error("Personal Host canonical discovery did not include its signed envelope.");
     }
@@ -1349,14 +1394,14 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     });
   }
 
-  #spawn(spec: PersonalProcessSpec): RunningChild {
+  #spawn(spec: PersonalProcessSpec, onLine?: (line: string) => void): RunningChild {
     if (this.#shutdownRequested) throw new Error("Personal deployment is stopping.");
     if (this.#children.has(spec.component)) {
       throw new Error(`Personal ${spec.component} process is already running.`);
     }
     const child = this.#processes.spawn(spec);
     this.#diagnosticLogs.delete(spec.component);
-    const logs = new BoundedPersonalLog(undefined, processSensitiveValues(spec));
+    const logs = new BoundedPersonalLog(undefined, processSensitiveValues(spec), onLine);
     const stderr = new BoundedPersonalLog(16 * 1_024, processSensitiveValues(spec));
     logs.attach(child.stdout);
     logs.attach(child.stderr);
@@ -1403,6 +1448,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     readiness: Promise<T>,
     signal: AbortSignal,
     label: string,
+    refreshOn?: (refresh: () => void) => () => void,
   ): Promise<T> {
     this.#assertExpectedStack(target.component);
     let result: T;
@@ -1411,14 +1457,20 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         withTimeout(readiness, this.#startupTimeoutMs, {
           abortFallback: "Personal setup was cancelled.",
           signal,
-          timeoutError: () => new Error(`${label} did not become ready.`),
+          ...(refreshOn ? { refreshOn } : {}),
+          timeoutError: () =>
+            new Error(
+              label === "Host" && this.#status.step === "upgrading-database"
+                ? "The Personal database upgrade stopped making progress."
+                : `${label} did not become ready.`,
+            ),
         }),
         // Messaging is still running during a Host-only restart, but nothing
         // waits on it and its own crash path owns its exit.
         ...[...this.#children.values()]
           .filter((running) => running.component !== "messaging")
           .map((running) =>
-            running.exit.then((exit) => {
+            running.exit.then(async (exit) => {
               running.logs.flush();
               running.stderr.flush();
               if (
@@ -1426,6 +1478,12 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
                 isOldDatabaseDiagnostic(running.stderr.text || running.logs.text)
               ) {
                 throw new PersonalOldDatabaseError();
+              }
+              if (running.component === "host") {
+                const conversion = await this.#conversionFailure(
+                  `${running.stderr.text}\n${running.logs.text}`,
+                );
+                if (conversion) throw conversion;
               }
               throw new PersonalChildExitedError(
                 running.component,
@@ -1436,10 +1494,23 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
           ),
       ]);
     } catch (error) {
+      // Once the conversion has started, every way it can end without success (an
+      // exit with or without its own diagnostic, no progress, the overall ceiling)
+      // is the same failure, with the same step, rollback version and choices.
+      // Evidence is a reported conversion stage; the migration heartbeat alone
+      // also runs when nothing is converted, so it is not.
+      if (
+        !signal.aborted &&
+        label === "Host" &&
+        this.#upgradeStage !== null &&
+        !(error instanceof PersonalConversionError || error instanceof PersonalOldDatabaseError)
+      )
+        throw await this.#conversionStopped(this.#upgradeStage, error);
       if (
         signal.aborted ||
         error instanceof PersonalChildExitedError ||
-        error instanceof PersonalOldDatabaseError
+        error instanceof PersonalOldDatabaseError ||
+        error instanceof PersonalConversionError
       )
         throw error;
       const hostDiagnostic = this.#children.get("host");
@@ -1731,24 +1802,71 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
 
   /**
    * The children are stopped and the new release has not run yet, so this is
-   * the last copy of the data the old release left. A safety net only: a
-   * snapshot that cannot be taken never holds the update back.
+   * the last copy of the data the old release left. Until this Deployment has
+   * started healthy after the Personal state conversion, the copy is a gate
+   * and is pinned: the conversion cannot be undone in place, so no copy means
+   * no update. Afterwards it is a safety net that never holds an update back.
    */
   async #snapshotDatabase(
     manifest: PersonalDeploymentManifest,
     toRelease: PersonalRuntimeIdentity,
   ): Promise<void> {
     if (!manifest.databaseInitialized) return;
+    const gate = !(await this.#files.personalStateConverted(manifest));
+    // The first gated update pinned the pre-conversion copy. Until a healthy
+    // start, a later update's cluster may be partly converted, so it is never
+    // pinned in its place: the pristine copy stays the one kept and named.
+    const keptFrom = gate ? await this.#files.pinnedSnapshotSourceVersion(manifest) : null;
+    if (keptFrom !== null) {
+      this.#log("personal-database-snapshot-kept", { from: keptFrom });
+      return;
+    }
     const started = performance.now();
     try {
-      const snapshot = await this.#files.snapshotDatabase(manifest, toRelease, this.#now());
+      const snapshot = await this.#files.snapshotDatabase(manifest, toRelease, this.#now(), gate);
       this.#log("personal-database-snapshot", {
         durationMs: Math.round(performance.now() - started),
+        pinned: gate,
         snapshot,
       });
     } catch (error) {
-      this.#log("personal-database-snapshot-skipped", { error: safeErrorDetail(error) });
+      this.#log("personal-database-snapshot-skipped", {
+        error: safeErrorDetail(error),
+        gate,
+      });
+      if (gate)
+        throw new PersonalConversionBackupError(
+          `Opensteer didn't update this computer's data because it couldn't keep a copy of it first (${safeErrorDetail(error)}). Free some disk space and try again.`,
+        );
     }
+  }
+
+  /** The first healthy start after conversion lets the pinned copy age out normally. */
+  async #markPersonalStateConverted(manifest: PersonalDeploymentManifest): Promise<void> {
+    try {
+      await this.#files.markPersonalStateConverted(manifest);
+    } catch (error) {
+      this.#log("personal-state-converted-mark-failed", { error: safeErrorDetail(error) });
+    }
+  }
+
+  /** A Host that exited with a failed conversion names its step; this turns it into the error the app shows. */
+  async #conversionFailure(diagnostic: string): Promise<PersonalConversionError | null> {
+    const step = conversionFailureStep(diagnostic);
+    return step === null ? null : this.#conversionStopped(step);
+  }
+
+  /** The one failure every unsuccessful end of the conversion becomes. */
+  async #conversionStopped(step: string, cause?: unknown): Promise<PersonalConversionError> {
+    const manifest = await this.#files.load().catch(() => null);
+    const keptFrom = manifest
+      ? await this.#files.pinnedSnapshotSourceVersion(manifest).catch(() => null)
+      : null;
+    return new PersonalConversionError(
+      step,
+      keptFrom,
+      cause === undefined ? undefined : safeErrorDetail(cause),
+    );
   }
 
   #setFailure(
@@ -1780,6 +1898,36 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       }
     }
   }
+}
+
+/** The Host's Personal state conversion failed; `step` is the stage it names. */
+class PersonalConversionError extends Error {
+  readonly step: string;
+  constructor(step: string, keptFrom: string | null, reason?: string) {
+    super(
+      `Opensteer couldn't finish converting this computer's data (step "${step}")${
+        reason ? `: ${reason}` : ""
+      }. ${
+        keptFrom
+          ? `A copy from before this update is kept, and Opensteer ${keptFrom} can open it.`
+          : "No copy from before this update was found on this computer."
+      } Try again, or Start fresh to continue with new data.`,
+    );
+    this.name = "PersonalConversionError";
+    this.step = step;
+  }
+}
+
+class PersonalConversionBackupError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PersonalConversionBackupError";
+  }
+}
+
+/** The step a Host's `PersonalStateConversionError` names, read from its output. */
+export function conversionFailureStep(diagnostic: string): string | null {
+  return /Personal state conversion failed at step "([a-z-]{1,40})"/u.exec(diagnostic)?.[1] ?? null;
 }
 
 class PersonalUpdateRequiredError extends Error {
@@ -1864,6 +2012,12 @@ function postgresSpec(
       "password_encryption=scram-sha-256",
       "-c",
       "logging_collector=off",
+      // One person's database on a laptop: no bursty parallel scans on two
+      // cores, and a WAL ceiling sized for its write rate rather than 1 GB.
+      "-c",
+      "max_parallel_workers_per_gather=0",
+      "-c",
+      "max_wal_size=256MB",
     ],
     component: "postgresql",
     cwd: paths.rootDirectory,
@@ -2127,6 +2281,18 @@ function classifyFailure(
   readonly state: "repair-required" | "update-required";
 } {
   const detail = safeErrorDetail(error);
+  if (error instanceof PersonalConversionError) {
+    return {
+      issue: issue("personal-conversion-failed", "host", detail, "restart-opensteer"),
+      state: "repair-required",
+    };
+  }
+  if (error instanceof PersonalConversionBackupError) {
+    return {
+      issue: issue("disk-space-insufficient", "desktop", detail, "free-disk-space"),
+      state: "repair-required",
+    };
+  }
   if (error instanceof PersonalUpdateRequiredError) {
     return {
       issue: issue("update-incompatible", "desktop", detail, "update-opensteer"),
@@ -2218,7 +2384,7 @@ function classifyFailure(
   const component =
     step === "preparing-database"
       ? "postgresql"
-      : step === "starting-host" || step === "preparing-agent-home"
+      : step === "starting-host" || step === "upgrading-database" || step === "preparing-agent-home"
         ? "host"
         : step === "starting-local-agents"
           ? "runner"
@@ -2357,6 +2523,8 @@ async function bindAndReleaseLoopbackPort(port: number): Promise<void> {
 function permanentStartFailure(error: unknown): boolean {
   return (
     error instanceof PersonalOldDatabaseError ||
+    error instanceof PersonalConversionError ||
+    error instanceof PersonalConversionBackupError ||
     error instanceof PersonalFilesystemError ||
     error instanceof PersonalUpdateRequiredError ||
     error instanceof PersonalRuntimeTransitionError ||

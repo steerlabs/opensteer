@@ -375,3 +375,22 @@ describe("durable team publication", () => {
     expect(f.calls.some((c) => c.type === "post")).toBe(false);
   });
 });
+
+it("expires every undecided ask when one ask cannot be cancelled", async () => {
+  const ask = (requestId: string) => ({ teamId: createId("deployment"), requestId }) as never;
+  const cancelled: string[] = [];
+  const publisher = new PersonalTeamRequests({
+    requests: {
+      terminalAsksPendingCleanup: async () => [ask("cleanup-stuck"), ask("cleanup-ok")],
+      expiredUndecidedAsks: async () => [ask("expired-stuck"), ask("expired-ok")],
+    },
+    admission: {
+      cancelTeamRequest: async ({ requestId }: { requestId: string }) => {
+        if (requestId.endsWith("stuck")) throw new Error("conflict");
+        cancelled.push(requestId);
+      },
+    },
+  } as never);
+  await expect(publisher.expireUndecidedAsks()).rejects.toThrow("Expiring team asks failed");
+  expect(cancelled).toEqual(["cleanup-ok", "expired-ok"]);
+});

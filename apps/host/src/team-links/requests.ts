@@ -10,8 +10,8 @@ import {
   type UserId,
   type TeamAskDecision,
 } from "@opensteer/core";
-import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
-import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
+import type { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
+import type { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import {
   TeamAgentRequestSchema,
   TeamMarkdownSchema,
@@ -197,8 +197,9 @@ export class PersonalTeamRequests {
       await this.cancel(teamId, request.id);
       return;
     }
+    let ack: Awaited<ReturnType<TeamLinkRpc["call"]>>;
     try {
-      await this.options.rpc(teamId).call({ type: "accept", requestId: request.id });
+      ack = await this.options.rpc(teamId).call({ type: "accept", requestId: request.id });
     } catch (error) {
       if (
         error instanceof OpensteerError &&
@@ -207,6 +208,8 @@ export class PersonalTeamRequests {
         await this.cancel(teamId, request.id);
       throw error;
     }
+    if (ack.kind === "accepted" && ack.request.id === request.id)
+      await this.options.requests.remote(teamId, request.id, ack.request.state);
     await this.reconcileOne(local);
   }
 
@@ -243,22 +246,39 @@ export class PersonalTeamRequests {
     }
   }
   async resumeAdmissions(teamId: DeploymentId): Promise<void> {
-    await this.#recoverCancelledAsks(teamId);
+    const failures = await this.#recoverCancelledAsks(teamId);
+    if (failures.length > 0)
+      throw new AggregateError(failures, "Cleaning up cancelled asks failed");
     for (const local of await this.options.requests.mirrors(teamId))
       if (local.kind === "ask" && !local.terminalState && !local.taskId)
         await this.#admitAsk(local);
   }
-  async #recoverCancelledAsks(teamId?: DeploymentId): Promise<void> {
+  async #recoverCancelledAsks(teamId?: DeploymentId): Promise<unknown[]> {
+    // Every ask gets its turn; the failures are answered for the caller to report.
+    const failures: unknown[] = [];
     for (const local of await this.options.requests.terminalAsksPendingCleanup(teamId))
-      await this.options.admission.cancelTeamRequest({
-        teamId: local.teamId,
-        requestId: local.requestId,
-      });
+      await this.options.admission
+        .cancelTeamRequest({ teamId: local.teamId, requestId: local.requestId })
+        .catch((error: unknown) => {
+          failures.push(error);
+        });
+    return failures;
   }
-  async expireUndecidedAsks(): Promise<void> {
-    await this.#recoverCancelledAsks();
-    for (const local of await this.options.requests.expiredUndecidedAsks())
-      await this.cancel(local.teamId, local.requestId, "The time to approve this ask expired.");
+  /** Answers how many expired asks it cancelled. */
+  async expireUndecidedAsks(): Promise<number> {
+    // One ask that fails to clean up or cancel does not keep the rest from expiring.
+    const failures = await this.#recoverCancelledAsks();
+    const expired = await this.options.requests.expiredUndecidedAsks();
+    for (const local of expired)
+      await this.cancel(
+        local.teamId,
+        local.requestId,
+        "The time to approve this ask expired.",
+      ).catch((error: unknown) => {
+        failures.push(error);
+      });
+    if (failures.length > 0) throw new AggregateError(failures, "Expiring team asks failed");
+    return expired.length;
   }
   async decide(
     ownerId: UserId,
@@ -499,8 +519,13 @@ export class PersonalTeamRequests {
         await this.#receipt(admitted);
         const current = (await this.options.requests.get(teamId, local.requestId))!;
         const outcome = await this.options.runs.outcome(current);
-        if (["pending", "working", "needs_you"].includes(outcome.state))
-          await this.options.rpc(teamId).call({ type: "accept", requestId: local.requestId });
+        if (["pending", "working", "needs_you"].includes(outcome.state)) {
+          const ack = await this.options
+            .rpc(teamId)
+            .call({ type: "accept", requestId: local.requestId });
+          if (ack.kind === "accepted" && ack.request.id === local.requestId)
+            await this.options.requests.remote(teamId, local.requestId, ack.request.state);
+        }
         await this.reconcileOne(current);
       } catch (error) {
         await this.#failure(local, error);
@@ -582,10 +607,11 @@ export class PersonalTeamRequests {
     throw error;
   }
 
-  async reconcileOne(request: PersonalTeamRequest): Promise<void> {
+  /** Whether this call recorded the request's terminal state. */
+  async reconcileOne(request: PersonalTeamRequest): Promise<boolean> {
     const { requests, runs } = this.options;
     const outcome = await runs.outcome(request);
-    if (!["done", "failed", "stopped", "cancelled"].includes(outcome.state)) return;
+    if (!["done", "failed", "stopped", "cancelled"].includes(outcome.state)) return false;
     const terminalState = outcome.state as NonNullable<PersonalTeamRequest["terminalState"]>;
     this.#lastStatus.delete(`${request.teamId}:${request.requestId}`);
     const current = (await requests.get(request.teamId, request.requestId))!;
@@ -596,19 +622,23 @@ export class PersonalTeamRequests {
         outcome.answerMessageId,
       );
     if ((await requests.get(request.teamId, request.requestId))?.publicationState === "pending")
-      return;
+      return false;
     try {
       await this.options
         .rpc(request.teamId)
         .call({ type: "status", requestId: request.requestId, state: terminalState, steps: [] });
       await requests.terminal(request.teamId, request.requestId, outcome.runId, terminalState);
+      return true;
     } catch (error) {
       await this.#failure(current, error);
       if (
         error instanceof OpensteerError &&
         ["forbidden", "unauthorized", "not_found"].includes(error.code)
-      )
+      ) {
         await requests.terminal(request.teamId, request.requestId, outcome.runId, terminalState);
+        return true;
+      }
+      return false;
     }
   }
 

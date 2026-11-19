@@ -1,3 +1,5 @@
+import { openVerticalViewer } from "./vertical-stack.test-support.js";
+import { readTestResource } from "../server/test-host-api-request.js";
 import { randomInt, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -211,54 +213,45 @@ describe("engine qualification", () => {
             },
           );
         }
-        const toolEvent = (data: unknown) =>
-          data as {
-            callId?: string;
-            isError?: boolean;
-            tool?: {
-              name?: string;
-            };
-          };
-        const held = await database
-          .selectFrom("deploymentEvents")
-          .select(["type", "data"])
-          .where("runId", "=", firstRunId)
-          .orderBy("sequence", "asc")
-          .execute();
-        const heldCall = held.find(
-          ({ type, data }) =>
-            type === "tool.started" && toolEvent(data).tool?.name === "browser_profile_request",
-        );
-        const sinceOpened = held.slice(held.findIndex(({ type }) => type === "request.opened"));
-        const returned = sinceOpened.findIndex(
-          ({ type, data }) =>
-            type === "tool.completed" &&
-            toolEvent(data).callId === toolEvent(heldCall?.data).callId,
-        );
-        const during = returned < 0 ? sinceOpened : sinceOpened.slice(0, returned);
-        // A call issued in the same step as the Request may still run; a tool starting after
-        // one has finished can only come from a new step, which the hold must prevent.
+        const [calls, requestOpened] = await Promise.all([
+          database
+            .selectFrom("toolCalls")
+            .select(["tool", "startedAt", "completedAt", "isError", "status"])
+            .where("runId", "=", firstRunId)
+            .orderBy("startedAt")
+            .execute(),
+          database
+            .selectFrom("requests")
+            .select("createdAt")
+            .where("originatingRunId", "=", firstRunId)
+            .orderBy("createdAt")
+            .limit(1)
+            .executeTakeFirstOrThrow(),
+        ]);
+        const heldCall = calls.find((call) => call.tool?.name === "browser_profile_request");
+        const returned = heldCall?.completedAt?.getTime() ?? Number.POSITIVE_INFINITY;
+        const during = calls
+          .flatMap((call) => [
+            ...(call.startedAt ? [{ type: "tool.started", time: call.startedAt.getTime() }] : []),
+            ...(call.completedAt
+              ? [{ type: "tool.completed", time: call.completedAt.getTime() }]
+              : []),
+          ])
+          .filter(({ time }) => time >= requestOpened.createdAt.getTime() && time < returned)
+          .sort((one, two) => one.time - two.time);
         const finished = during.findIndex(({ type }) => type === "tool.completed");
         expect(
           finished < 0 ? [] : during.slice(finished).filter(({ type }) => type === "tool.started"),
           "The engine took another step while the Request was held",
         ).toEqual([]);
         // Access ends before the interrupt lands, so an engine may try one more step. It gets nothing.
-        const windDown = returned < 0 ? [] : sinceOpened.slice(returned + 1);
-        const attempted = new Set(
-          windDown
-            .filter(
-              ({ type, data }) =>
-                type === "tool.started" && toolEvent(data).tool?.name === "opensteer_task_list",
-            )
-            .map(({ data }) => toolEvent(data).callId),
-        );
         expect(
-          windDown.filter(
-            ({ type, data }) =>
-              type === "tool.completed" &&
-              attempted.has(toolEvent(data).callId) &&
-              toolEvent(data).isError !== true,
+          calls.filter(
+            (call) =>
+              (call.startedAt?.getTime() ?? 0) > returned &&
+              call.tool?.name === "opensteer_task_list" &&
+              call.status === "completed" &&
+              call.isError !== true,
           ),
           "A tool reached the Host after the Run's access ended",
         ).toEqual([]);
@@ -274,6 +267,7 @@ describe("engine qualification", () => {
         expect(opened.status, "The Request did not outlive the hold").toBe("pending");
         await active.host.store.requests.resolveBrowserRequest({
           requestId: opened.id,
+          expectedRevision: (await active.host.store.requests.revision(opened.id))!,
           resolvedBy: opened.requestedBy,
           response: {
             kind: "external",
@@ -295,10 +289,10 @@ describe("engine qualification", () => {
               join(evidence, `${engine.label.replaceAll(" ", "-")}-${hold}-stalled.json`),
               JSON.stringify(
                 await database
-                  .selectFrom("deploymentEvents")
-                  .select(["sequence", "type", "createdAt", "data"])
+                  .selectFrom("transcriptItems")
+                  .select(["position", "kind", "createdAt", "view"])
                   .where("threadId", "=", threadId)
-                  .orderBy("sequence", "asc")
+                  .orderBy("position", "asc")
                   .execute(),
               ),
             );
@@ -717,28 +711,16 @@ describe("engine qualification", () => {
                 sequence,
                 text: text.slice(-120),
               })),
-              runEvents: midAnswer.events
-                .filter(
-                  (event) => event.type.startsWith("run.") || event.type === "message.injected",
-                )
-                .map((event) =>
-                  event.type === "run.phase"
-                    ? `run.phase:${String(
-                        (
-                          event.data as {
-                            phase?: unknown;
-                          }
-                        ).phase,
-                      )}`
-                    : event.type,
-                ),
+              status: midAnswer.status,
+              items: midAnswer.items,
               runId: midAnswer.runId,
             },
             lateFollowUp: {
               answeredBy: lateAnsweredBy,
               input: lateInput,
               replies: lateReplies,
-              runEvents: late.events.map((event) => event.type),
+              status: late.status,
+              items: late.items,
               runId: late.runId,
             },
             burst: {
@@ -749,7 +731,7 @@ describe("engine qualification", () => {
             stop: {
               nextRunId: afterStop.runId,
               queuePaused: paused.inputQueuePaused,
-              stoppedEvents: stopped.events.map((event) => event.type),
+              status: stopped.status,
               stoppedRunId: stopped.runId,
             },
           },
@@ -820,13 +802,8 @@ describe("engine qualification", () => {
       });
       expect(first.assistantText).toMatch(/\bREADY\b/iu);
       if (newEngineKinds.has(engine.driverKind)) {
-        const eventTypes = first.events.map((event) => event.type);
-        expect(eventTypes).toContain("assistant.message");
-        expect(eventTypes).toContain("run.usage");
-        expect(eventTypes.indexOf("assistant.message")).toBeLessThan(
-          eventTypes.indexOf("run.completed"),
-        );
-        expect(eventTypes.indexOf("run.usage")).toBeLessThan(eventTypes.indexOf("run.completed"));
+        expect(first.items.some((item) => item.kind === "message")).toBe(true);
+        expect(first.status).toBe("completed");
         const listed = await stack.api["run.attempts.list"]({
           runId: first.runId,
         });
@@ -959,8 +936,10 @@ describe("engine qualification", () => {
       });
       expect(approvalRequestId).not.toBe("");
       expect(approved.assistantText).toContain(approvalCode);
-      expect(approved.events.map((event) => event.type)).toEqual(
-        expect.arrayContaining(["tool.started", "tool.completed"]),
+      expect(approved.tools).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ startedAt: expect.any(Date), status: "completed" }),
+        ]),
       );
       console.info(
         `${engine.label}: approved an MCP shell call through Request ${approvalRequestId}`,
@@ -997,21 +976,14 @@ describe("engine qualification", () => {
           })),
         );
         const childSteps = await stack.host.store.database
-          .selectFrom("deploymentEvents")
-          .select("data")
+          .selectFrom("toolCalls")
+          .select("id")
           .where("runId", "=", delegated.runId)
-          .where("type", "=", "tool.started")
+          .where("nodeId", "is not", null)
+          .where("startedAt", "is not", null)
+          .limit(1)
           .execute();
-        expect(
-          childSteps.some(
-            (step) =>
-              typeof (
-                step.data as {
-                  nodeId?: unknown;
-                }
-              ).nodeId === "string",
-          ),
-        ).toBe(true);
+        expect(childSteps).toHaveLength(1);
         // A Codex subagent's responses are its node's usage and the Run's too.
         if (engine.driverKind === "codex") {
           const usage = listed.data.attempts.at(-1)?.usage;
@@ -1183,9 +1155,7 @@ describe("engine qualification", () => {
             approval: {
               requestId: approvalRequestId,
               runId: approved.runId,
-              toolEvents: approved.events
-                .filter((event) => event.type.startsWith("tool."))
-                .map((event) => event.type),
+              toolCalls: approved.tools.map(({ tool, status }) => ({ tool, status })),
             },
             restartSteer: restartResult ?? {
               status: "The engine steers natively",
@@ -1450,8 +1420,10 @@ describe("live Home handoff between native engines", () => {
     });
     const claudeHarnessId = stack.additionalHarnessInstanceIds[0];
     if (!claudeHarnessId) throw new Error("Claude account did not connect");
-    const bootstrap = await stack.api["bootstrap.get"]({});
-    if (!bootstrap.ok) throw new Error(bootstrap.error.message);
+    const bootstrap = {
+      ok: true as const,
+      data: await readTestResource(stack.api, "harness-catalog"),
+    };
     const environment = bootstrap.data.environments.find(
       (candidate) => candidate.id === stack!.environmentId,
     );
@@ -1858,6 +1830,7 @@ async function approvePendingHarnessRequest(active: VerticalStack, runId: string
   let pending:
     | {
         readonly id: string;
+        readonly revision: string;
         readonly kind: string;
         readonly presentation: unknown;
       }
@@ -1866,7 +1839,7 @@ async function approvePendingHarnessRequest(active: VerticalStack, runId: string
     async () => {
       pending = await active.host.store.database
         .selectFrom("requests")
-        .select(["id", "kind", "presentation"])
+        .select(["id", "revision", "kind", "presentation"])
         .where("originatingRunId", "=", runId as never)
         .where("status", "=", "pending")
         .executeTakeFirst();
@@ -1889,6 +1862,7 @@ async function approvePendingHarnessRequest(active: VerticalStack, runId: string
   const answered = await active.api["commands.dispatch"]({
     idempotencyKey: key,
     requestId: pending.id,
+    expectedRevision: pending.revision,
     response: {
       kind: "choice",
       optionId: allow.id,
@@ -1920,23 +1894,33 @@ async function waitForRunStatus(
 
 /** Waits until the Run has begun writing its answer, live or recorded. */
 async function waitForAssistantText(active: VerticalStack, runId: string): Promise<void> {
-  await vi.waitFor(
-    async () => {
-      const live = await active.api["thread.live.get"]({
-        threadId: await threadOf(active, runId),
-      });
-      const written = live.ok
-        ? live.data.runs
-            .filter((run) => run.progress.runId === runId)
-            .flatMap((run) => run.progress.items)
-            .filter((item) => item.stream === "assistant")
-            .reduce((length, item) => length + item.text.length, 0)
-        : 0;
-      expect(written, "Timed out waiting for the answer to start").toBeGreaterThan(200);
-    },
-    { timeout: 300_000, interval: 100 },
-  );
+  const threadId = await threadOf(active, runId);
+  const client = await openVerticalViewer(active, threadId);
+  try {
+    await vi.waitFor(
+      () => {
+        const entries = client.getThreadTranscript(threadId)?.getSnapshot().entries ?? [];
+        const text = client.getThreadItemText(threadId);
+        const written = entries.reduce(
+          (length, entry) =>
+            length +
+            (entry.kind === "message" &&
+            entry.runId === runId &&
+            entry.messageKind === "assistant" &&
+            entry.itemId
+              ? (text?.get(entry.itemId)?.text.length ?? entry.body.length)
+              : 0),
+          0,
+        );
+        expect(written, "Timed out waiting for the answer to start").toBeGreaterThan(200);
+      },
+      { timeout: 300_000, interval: 100 },
+    );
+  } finally {
+    client.dispose();
+  }
 }
+
 async function threadOf(active: VerticalStack, runId: string) {
   const run = await active.host.store.database
     .selectFrom("runs")

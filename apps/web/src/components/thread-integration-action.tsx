@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { IntegrationAccess } from "@opensteer/integration-core";
 import type { Request } from "@opensteer/core";
@@ -137,6 +138,7 @@ export function ThreadIntegrationAction({
       hostClient
         .dispatch({
           idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
+          ...requestDecisionRevision(request),
           requestId: request.id,
           response: { kind: "external", value: { decision: "declined" } },
           type: "request.respond",
@@ -188,12 +190,14 @@ export function ThreadIntegrationAction({
     void run(async () => {
       await hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${request.id}:install`),
+        ...requestDecisionRevision(request),
         requestId: request.id,
         response: { kind: "choice", optionId: "installed" },
         type: "request.respond",
       });
       let before: string | undefined;
       let updated: Request | undefined;
+      let reviewedRevision: string | undefined;
       do {
         const page = unwrapRpcResult(
           await hostClient.rpc["thread.requests.list"]({
@@ -203,6 +207,7 @@ export function ThreadIntegrationAction({
           }),
         );
         updated = page.requests.find((candidate) => candidate.id === request.id);
+        if (updated) reviewedRevision = page.reviewedRevisions?.[updated.id];
         if (updated || !page.window.hasMore) break;
         if (!page.window.nextBefore)
           throw new Error("Thread Request page is missing its continuation cursor.");
@@ -214,13 +219,14 @@ export function ThreadIntegrationAction({
         hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
         hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
       ]);
-      setLoaded({ dashboard, platform, request: updated.payload });
+      setLoaded({ dashboard, platform, request: updated.payload, reviewedRevision });
     });
   };
   const chooseServer = (serverId: string) =>
     void run(async () => {
       await hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${request.id}:server:${serverId}`),
+        ...requestDecisionRevision(request),
         requestId: request.id,
         response: { kind: "choice", optionId: `server:${serverId}` },
         type: "request.respond",
@@ -361,6 +367,8 @@ export function ThreadIntegrationAction({
         accountsCount: plan.accounts.length,
         installationTitle: plan.installationTitle,
         requestId: request.id,
+        expectedRevision:
+          loaded?.reviewedRevision ?? requestDecisionRevision(request).expectedRevision,
         selectedAccount: plan.selectedAccount,
       });
       if (await integrationRequestStillPending(hostClient, request.originatingThreadId, request.id))

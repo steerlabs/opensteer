@@ -68,7 +68,8 @@ export class ComputerReplService {
   readonly #revoked = new Set<string>();
   readonly #generations = new Map<string, number>();
   readonly #queue: Call[] = [];
-  readonly #sweep: NodeJS.Timeout;
+  #expiry: NodeJS.Timeout | undefined;
+  #expiryAt = Infinity;
   #worker: Worker | undefined;
   #executing = 0;
   #closed = false;
@@ -81,12 +82,33 @@ export class ComputerReplService {
     this.#invoke = options.invoke;
     this.#clock = options.clock ?? systemClock;
     this.#wait = options.wait ?? delay;
-    this.#sweep = setInterval(() => {
-      for (const [key, resident] of this.#contexts)
-        if (!resident.call && Date.now() - resident.usedAt >= limits.idleMs) this.#dispose(key);
-    }, 60_000);
-    this.#sweep.unref();
   }
+
+  #scheduleExpiry(): void {
+    let next = Infinity;
+    if (!this.#closed) {
+      for (const resident of this.#contexts.values())
+        if (!resident.call) next = Math.min(next, resident.usedAt + limits.idleMs);
+    }
+    if (next === this.#expiryAt) return;
+    clearTimeout(this.#expiry);
+    this.#expiry = undefined;
+    this.#expiryAt = next;
+    if (!Number.isFinite(next)) return;
+    this.#expiry = setTimeout(
+      () => {
+        this.#expiryAt = Infinity;
+        this.#expiry = undefined;
+        const now = Date.now();
+        for (const [key, resident] of this.#contexts)
+          if (!resident.call && now - resident.usedAt >= limits.idleMs) this.#dispose(key);
+        this.#scheduleExpiry();
+      },
+      Math.max(0, next - Date.now()),
+    );
+    this.#expiry.unref();
+  }
+
   execute(
     context: ComputerReplContext,
     code: string,
@@ -166,6 +188,7 @@ export class ComputerReplService {
         images: 0,
       };
       resident.call = call;
+      this.#scheduleExpiry();
       signal?.addEventListener("abort", cancel, { once: true });
       this.#queue.push(call);
       this.#drain();
@@ -327,6 +350,7 @@ export class ComputerReplService {
     if (resident?.call !== call) return;
     resident.call = undefined;
     resident.usedAt = Date.now();
+    this.#scheduleExpiry();
     call.cleanup();
     if (error) {
       this.#post({ type: "cancel", context: call.key, callId: call.id });
@@ -368,6 +392,7 @@ export class ComputerReplService {
       });
     this.#post({ type: "dispose", context: key });
     this.#contexts.delete(key);
+    this.#scheduleExpiry();
   }
   #failWorker(error: unknown): void {
     const worker = this.#worker;
@@ -388,6 +413,7 @@ export class ComputerReplService {
     this.#contexts.clear();
     this.#queue.length = 0;
     this.#closed = closed;
+    this.#scheduleExpiry();
   }
   async endRun(runId: string): Promise<void> {
     this.#ended.add(runId);
@@ -404,7 +430,7 @@ export class ComputerReplService {
   }
   async close(): Promise<void> {
     this.#closed = true;
-    clearInterval(this.#sweep);
+    this.#scheduleExpiry();
     for (const key of this.#contexts.keys()) this.#dispose(key);
     const worker = this.#worker;
     this.#worker = undefined;

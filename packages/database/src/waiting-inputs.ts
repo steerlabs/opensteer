@@ -1,3 +1,6 @@
+import { syncTranscriptMessage } from "./message-visibility.js";
+import { projectThreadState, publishThreadSummary } from "./thread-status.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   ContentPartSchema,
   MessageAuthorSchema,
@@ -14,14 +17,13 @@ import {
   type ThreadId,
   type UserId,
   type ThreadInputEditLeaseView,
-  type AgentEvent,
 } from "@opensteer/core";
 import { messageRevisionsPageSize } from "@opensteer/protocol";
 import { type Kysely, type Transaction, type Selectable } from "kysely";
 import type { DatabaseSchema, ThreadRow, ThreadInputTable, MessageTable } from "./schema.js";
 import {
   executionDate,
-  withPersonalTransaction,
+  isOfflineSettlement,
   withPersonalReadTransaction,
 } from "./personal-transaction.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -32,8 +34,7 @@ import {
   idempotencyConflict,
 } from "./store-primitives.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
-import { messageFromRow, messageViewFromRow, threadInputFromRow } from "./thread-row-mappers.js";
+import { messageViewFromRow } from "./thread-row-mappers.js";
 import {
   ensureQueuedRun,
   deliverConversationInputsInTransaction,
@@ -100,7 +101,7 @@ export async function inputLeaseBarrier(
 export async function lockInputQueueProjection(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
-  forRemoval = false,
+  inputMessageIds?: readonly MessageId[],
 ): Promise<ThreadRow> {
   const runs = await transaction
     .selectFrom("runs")
@@ -111,18 +112,10 @@ export async function lockInputQueueProjection(
     .forNoKeyUpdate()
     .execute();
   await lockThreadRow(transaction, threadId);
-  if (forRemoval)
-    await transaction
-      .selectFrom("threads")
-      .select("id")
-      .where("id", "=", threadId)
-      // FOR UPDATE: Removing an ask task deletes this row; take it before anything ranked after it.
-      .forUpdate()
-      .execute();
   await lockRunProjectionRows(transaction, {
     threadIds: [threadId],
     runIds: runs.map((row) => row.id),
-    forRemoval,
+    ...(inputMessageIds ? { inputMessageIds } : {}),
   });
   return transaction
     .selectFrom("threads")
@@ -138,7 +131,7 @@ export async function advanceThreadQueue(
   transaction: Transaction<DatabaseSchema>,
   thread: ThreadRow,
 ) {
-  const queued = await ensureQueuedRun(transaction, thread);
+  await ensureQueuedRun(transaction, thread);
   const active = await transaction
     .selectFrom("runs")
     .select("id")
@@ -147,22 +140,29 @@ export async function advanceThreadQueue(
     .executeTakeFirst();
   const handed = active
     ? await deliverConversationInputsInTransaction(transaction, active.id)
-    : { events: [], revokedGrants: [] };
-  return { events: [...queued.events, ...handed.events], revokedGrants: handed.revokedGrants };
+    : { revokedGrants: [] };
+  return { revokedGrants: handed.revokedGrants };
 }
 
-export function leaseChangedEvent(
-  transaction: Transaction<DatabaseSchema>,
-  thread: Pick<ThreadRow, "id" | "environmentId">,
-  messageId: MessageId,
-  lease: ThreadInputEditLeaseView | null,
-) {
-  return appendHostDeploymentEvent(transaction, {
-    type: "thread-input.lease-changed",
-    threadId: thread.id,
-    environmentId: thread.environmentId,
-    runId: null,
-    data: { messageId, lease },
+export async function refreshInputQueue(
+  tx: Transaction<DatabaseSchema>,
+  threadId: ThreadId,
+  messageId?: MessageId,
+): Promise<void> {
+  if (isOfflineSettlement(tx)) return;
+  await commitPersonalMutation(tx, async (tx, mutation) => {
+    mutation.touchThread(threadId);
+    if (messageId) await syncTranscriptMessage(tx, messageId);
+    // The revision is this commit's head, so one update per task per commit is enough.
+    mutation.deferQueue(threadId, messageId ? [messageId] : []);
+    if (mutation.firstInputQueueChange(threadId))
+      await tx
+        .updateTable("threads")
+        .set({ inputQueueRevision: mutation.sequence, revision: mutation.sequence })
+        .where("id", "=", threadId)
+        .execute();
+    await publishThreadSummary(tx, threadId);
+    await projectThreadState(tx, threadId);
   });
 }
 
@@ -170,8 +170,10 @@ export async function inputEditEligibility(
   transaction: Transaction<DatabaseSchema>,
   thread: ThreadRow,
   row: InputRow,
-  message: Selectable<MessageTable>,
+  message: Pick<Selectable<MessageTable>, "kind" | "author">,
   requestedBy: UserId,
+  /** Whether the message seeds an unfinished Run, when the caller already read it for a queue. */
+  seedsActiveRun?: boolean,
 ): Promise<boolean> {
   if (
     thread.createdBy !== requestedBy ||
@@ -182,12 +184,14 @@ export async function inputEditEligibility(
   )
     return false;
   if (
-    await transaction
+    seedsActiveRun ??
+    (await transaction
       .selectFrom("runs")
       .select("id")
       .where("seedInputId", "=", row.messageId)
       .where("status", "in", nonTerminalRunStatuses)
-      .executeTakeFirst()
+      .limit(1)
+      .executeTakeFirst())
   )
     return false;
   const mirror = row.teamRequestId
@@ -248,7 +252,7 @@ export function takeThreadInputLease(
   database: Kysely<DatabaseSchema>,
   input: WaitingInputIdentity & { readonly leaseId: string; readonly takeOver: boolean },
 ) {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     const { thread, row, message } = await editable(transaction, input);
     const live = liveInputLease(transaction, row);
     if (
@@ -274,11 +278,9 @@ export function takeThreadInputLease(
       })
       .where("messageId", "=", row.messageId)
       .execute();
-    return {
-      lease,
-      revision: message.revision,
-      events: [await leaseChangedEvent(transaction, thread, row.messageId, lease)],
-    };
+    mutation.react({ type: "deadlinesChanged" });
+    await refreshInputQueue(transaction, thread.id);
+    return { lease, revision: message.revision };
   });
 }
 
@@ -286,8 +288,8 @@ export function renewThreadInputLease(
   database: Kysely<DatabaseSchema>,
   input: WaitingInputIdentity & { readonly leaseId: string },
 ) {
-  return withPersonalTransaction(database, async (transaction) => {
-    const { row } = await editable(transaction, input);
+  return commitPersonalMutation(database, async (transaction, mutation) => {
+    const { thread, row } = await editable(transaction, input);
     if (!liveInputLease(transaction, row))
       throw new OpensteerError({ code: "conflict", message: "The edit lease expired." });
     assertInputLease(transaction, row, input.leaseId, input.sessionId);
@@ -298,7 +300,9 @@ export function renewThreadInputLease(
       .where("messageId", "=", row.messageId)
       .returningAll()
       .executeTakeFirstOrThrow();
-    return { lease: liveInputLease(transaction, saved)!, events: [] };
+    mutation.react({ type: "deadlinesChanged" });
+    await refreshInputQueue(transaction, thread.id);
+    return { lease: liveInputLease(transaction, saved)! };
   });
 }
 
@@ -306,7 +310,7 @@ export function releaseThreadInputLease(
   database: Kysely<DatabaseSchema>,
   input: WaitingInputIdentity & { readonly leaseId?: string },
 ) {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     await requirePersonalOwner(transaction, input.requestedBy);
     const thread = await lockInputQueueProjection(transaction, input.threadId);
     const row = await transaction
@@ -321,15 +325,16 @@ export function releaseThreadInputLease(
       (input.leaseId &&
         (row.editLeaseId !== input.leaseId || row.editLeaseSessionId !== input.sessionId))
     )
-      return { events: [], revokedGrants: [] };
+      return { revokedGrants: [] };
     await transaction
       .updateTable("threadInputs")
       .set(clearInputLease)
       .where("messageId", "=", row.messageId)
       .execute();
-    const event = await leaseChangedEvent(transaction, thread, row.messageId, null);
+    mutation.react({ type: "deadlinesChanged" });
+    await refreshInputQueue(transaction, thread.id);
     const advanced = await advanceThreadQueue(transaction, thread);
-    return { ...advanced, events: [event, ...advanced.events] };
+    return { ...advanced };
   });
 }
 
@@ -342,7 +347,7 @@ export function editThreadInput(
     readonly idempotencyKey: string;
   },
 ) {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     await requirePersonalOwner(transaction, input.requestedBy);
     await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
     const request = {
@@ -365,7 +370,6 @@ export function editThreadInput(
       return {
         message: MessageViewSchema.parse(payload.message),
         edit: MessageEditSchema.parse(payload.edit),
-        events: [],
         revokedGrants: [],
       };
     }
@@ -438,12 +442,13 @@ export function editThreadInput(
       .where("id", "=", message.id)
       .returningAll()
       .executeTakeFirstOrThrow();
-    const updatedInput = await transaction
+    await transaction
       .updateTable("threadInputs")
       .set({ ...clearInputLease, updatedAt: now })
       .where("messageId", "=", message.id)
       .returningAll()
       .executeTakeFirstOrThrow();
+    if (row.editLeaseExpiresAt) mutation.react({ type: "deadlinesChanged" });
     const view = messageViewFromRow(updated);
     const edit = view.edit!;
     await transaction
@@ -464,18 +469,10 @@ export function editThreadInput(
         payload: jsonValue({ request, message: view, edit }),
       })
       .execute();
-    const events = [
-      await appendHostDeploymentEvent(transaction, {
-        type: "message.updated",
-        threadId: thread.id,
-        runId: null,
-        environmentId: thread.environmentId,
-        data: { message: messageFromRow(updated), input: threadInputFromRow(updatedInput), edit },
-      }),
-      await leaseChangedEvent(transaction, thread, row.messageId, null),
-    ];
+    await refreshInputQueue(transaction, thread.id, updated.id);
+    await refreshInputQueue(transaction, thread.id);
     const advanced = await advanceThreadQueue(transaction, thread);
-    return { message: view, edit, ...advanced, events: [...events, ...advanced.events] };
+    return { message: view, edit, ...advanced };
   });
 }
 
@@ -486,6 +483,9 @@ export function listMessageRevisions(
     readonly messageId: MessageId;
     readonly requestedBy: UserId;
     readonly before?: number | undefined;
+    readonly expectedRevision?: number | undefined;
+    readonly leaseId?: string | undefined;
+    readonly sessionId?: AuthSessionId | undefined;
   },
 ) {
   return withPersonalReadTransaction(database, async (transaction) => {
@@ -497,6 +497,49 @@ export function listMessageRevisions(
       .where("id", "=", input.messageId)
       .executeTakeFirst();
     if (!message) throw new OpensteerError({ code: "not_found", message: "Message not found" });
+    if (input.expectedRevision !== undefined) {
+      if (input.before !== undefined || message.revision !== input.expectedRevision)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "This message changed on another device.",
+        });
+      const thread = await transaction
+        .selectFrom("threads")
+        .selectAll()
+        .where("id", "=", input.threadId)
+        .where("removedAt", "is", null)
+        .executeTakeFirst();
+      const queued = await transaction
+        .selectFrom("threadInputs")
+        .selectAll()
+        .where("threadId", "=", input.threadId)
+        .where("messageId", "=", message.id)
+        .executeTakeFirst();
+      if (
+        !thread ||
+        !queued ||
+        !(await inputEditEligibility(transaction, thread, queued, message, input.requestedBy))
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          message: "This input is no longer editable.",
+        });
+      assertInputLease(transaction, queued, input.leaseId, input.sessionId);
+      return {
+        revisions: [
+          MessageRevisionViewSchema.parse({
+            revision: message.revision,
+            content: message.content,
+            author: message.author,
+            deviceLabel: null,
+            createdAt: (message.editedAt ?? message.createdAt).toISOString(),
+          }),
+        ],
+        hasMore: false,
+      };
+    }
+    if (!message.published)
+      throw new OpensteerError({ code: "not_found", message: "Message not found" });
     const rows = await transaction
       .selectFrom("messageRevisions")
       .selectAll()
@@ -535,10 +578,12 @@ export async function expireThreadInputLeases(database: Kysely<DatabaseSchema>) 
     .orderBy("threadId")
     .limit(100)
     .execute();
-  const events: AgentEvent[] = [];
+
   const revokedGrants = [];
+  // One Thread whose queue fails to advance does not keep the rest waiting.
+  const failures: unknown[] = [];
   for (const { threadId } of affected) {
-    const result = await withPersonalTransaction(database, async (transaction) => {
+    const result = await commitPersonalMutation(database, async (transaction) => {
       const thread = await lockInputQueueProjection(transaction, threadId);
       const expired = await transaction
         .selectFrom("threadInputs")
@@ -547,20 +592,24 @@ export async function expireThreadInputLeases(database: Kysely<DatabaseSchema>) 
         .where("editLeaseExpiresAt", "<=", executionDate(transaction))
         .orderBy("messageId")
         .execute();
-      const changed: AgentEvent[] = [];
+
       for (const row of expired) {
         await transaction
           .updateTable("threadInputs")
           .set(clearInputLease)
           .where("messageId", "=", row.messageId)
           .execute();
-        changed.push(await leaseChangedEvent(transaction, thread, row.messageId, null));
+        await refreshInputQueue(transaction, thread.id);
       }
       const advanced = await advanceThreadQueue(transaction, thread);
-      return { ...advanced, events: [...changed, ...advanced.events] };
+      return { ...advanced };
+    }).catch((error: unknown) => {
+      failures.push(error);
+      return null;
     });
-    events.push(...result.events);
-    revokedGrants.push(...result.revokedGrants);
+    if (result) revokedGrants.push(...result.revokedGrants);
   }
-  return { events, revokedGrants };
+  // Failures are returned, not thrown, so the grants the committed Threads
+  // revoked are still announced before the caller reports them.
+  return { revokedGrants, settled: affected.length - failures.length, failures };
 }

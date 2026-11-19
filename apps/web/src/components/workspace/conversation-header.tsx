@@ -1,7 +1,7 @@
 import { heldThread, taskCanBeDone, taskMark, threadMark } from "@opensteer/client/host";
 import { TaskIconEditor } from "../task-icon-editor.js";
 import { ThreadTitleEditor } from "../thread-title-editor.js";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, useThreadTranscript } from "@opensteer/client/react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   assignmentPresentation,
@@ -87,14 +87,13 @@ export function ConversationHeader({
     [threadId],
   );
   const family = useHostSelector(hostClient, selectFamily, sameTaskFamilyGlance);
+  const { runQueue } = useThreadTranscript(hostClient, threadId);
   const selectRunId = useCallback(
     (snapshot: HostSnapshot) => {
       const thread = snapshot.threads.find(({ id }) => id === threadId);
-      return thread === undefined
-        ? null
-        : (threadStopTarget({ runQueue: snapshot.runQueue, thread })?.id ?? null);
+      return thread === undefined ? null : (threadStopTarget({ runQueue, thread })?.id ?? null);
     },
-    [threadId],
+    [runQueue, threadId],
   );
   const runId = useHostSelector(hostClient, selectRunId);
   const barRef = useRef<HTMLDivElement | null>(null);
@@ -343,6 +342,7 @@ function TaskActions({
 }) {
   const { hostClient, reportActionError, setTaskDone, snapshot } = useShell();
   const { review, ask, dismiss } = useActionReview(hostClient);
+  const { runQueue } = useThreadTranscript(hostClient, threadId);
   useEffect(() => {
     onConfirming(review !== null);
   }, [onConfirming, review]);
@@ -351,9 +351,7 @@ function TaskActions({
   const handedOut = assignment !== null && presentation?.open === true;
   const thread = snapshot.threads.find((item) => item.id === threadId);
   const running =
-    !handedOut &&
-    thread !== undefined &&
-    threadStopTarget({ runQueue: snapshot.runQueue, thread }) !== null;
+    !handedOut && thread !== undefined && threadStopTarget({ runQueue, thread }) !== null;
   const stoppable = handedOut || running;
   // The task itself decides, not a list row: delegated work and Done tasks
   // past the loaded pages are open here without one.

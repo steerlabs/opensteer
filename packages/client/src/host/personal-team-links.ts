@@ -60,7 +60,10 @@ export async function readTeamReply(
 
 /** Keeps an unresolved visible reply waiting on personal task and visit notices, without polling. */
 export function watchTeamReplyRead(
-  client: Pick<HostClient, "getSnapshot" | "visitThread" | "rpc" | "subscribe">,
+  client: Pick<
+    HostClient,
+    "getSnapshot" | "visitThread" | "rpc" | "subscribe" | "watchPersonalResource"
+  >,
   origin: Parameters<typeof readTeamReply>[1],
 ): () => void {
   let active = true;
@@ -69,9 +72,11 @@ export function watchTeamReplyRead(
   let states = client.getSnapshot().threadVisits;
   let tasks = client.getSnapshot().tasks;
   let unsubscribe: () => void = () => undefined;
+  let unwatch: () => void = () => undefined;
   const stop = () => {
     active = false;
     unsubscribe();
+    unwatch();
   };
   const read = () => {
     if (!active) return;
@@ -100,6 +105,8 @@ export function watchTeamReplyRead(
     tasks = snapshot.tasks;
     read();
   });
+  // An accepted reply was published: the one being waited on may be it.
+  unwatch = client.watchPersonalResource("team-replies", read);
   read();
   return stop;
 }

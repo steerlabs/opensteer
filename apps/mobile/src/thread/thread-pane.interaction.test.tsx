@@ -1,3 +1,5 @@
+import type { HostSnapshot } from "@opensteer/client/host";
+import { mockInputQueue } from "@opensteer/client/mock";
 import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
@@ -19,7 +21,7 @@ import {
   toMessageEntry,
   reconcileBrowserLastPictures,
   type HostClient,
-  type HostSnapshot,
+  type TranscriptFixtureSnapshot,
   type MessageEntry,
   type ReasoningEntry,
   type RequestReceiptEntry,
@@ -136,6 +138,8 @@ const harness = vi.hoisted(() => ({
   /** The notices this reader put away, one store value as a snapshot must be. */
   dismissed: new Set<string>(),
   /** Where the screen's bar options go, as the native stack would take them. */
+  /** The snapshots the fake transcript view says were installed: a test bumps it for a new cut. */
+  cuts: 0,
   setOptions: null as ((options: Record<string, unknown>) => void) | null,
   /** The transcript list's props as last rendered, to drive its native events. */
   list: null as null | {
@@ -147,6 +151,10 @@ const harness = vi.hoisted(() => ({
     readonly onScroll?: (event: object) => void;
     readonly onScrollBeginDrag?: () => void;
     readonly onScrollEndDrag?: () => void;
+    readonly onViewableItemsChanged?: (info: {
+      viewableItems: readonly { item: unknown }[];
+    }) => void;
+    readonly data?: readonly unknown[];
     readonly renderScrollComponent?: (props: object) => ReactElement<{
       readonly onContentInsetChange?: (insets: { bottom: number; top: number }) => void;
     }>;
@@ -261,7 +269,11 @@ vi.mock("react-native", async () => {
         aria-expanded={props.accessibilityState?.expanded}
         aria-label={props.accessibilityLabel}
         disabled={props.disabled}
-        onClick={props.onPress}
+        // As on a phone, the innermost Pressable takes the touch; one around it does not.
+        onClick={(event) => {
+          event.stopPropagation();
+          props.onPress?.();
+        }}
       >
         {typeof props.children === "function" ? props.children({ pressed: false }) : props.children}
       </button>
@@ -840,6 +852,7 @@ afterEach(() => {
   harness.insets = { bottom: 0, left: 0, right: 0, top: 0 };
   harness.layouts.clear();
   harness.list = null;
+  harness.cuts = 0;
   harness.setOptions = null;
 });
 
@@ -1124,7 +1137,7 @@ function snapshotFor(input: {
   readonly requests?: readonly Request[];
   readonly run: { readonly id: string; readonly status: "running" | "waiting" } | null;
   readonly threadId: string;
-}): HostSnapshot {
+}): TranscriptFixtureSnapshot {
   const status = input.run === null ? "idle" : input.run.status;
   const environmentId = base.threads.find(({ id }) => id === input.threadId)?.environmentId;
   return {
@@ -1263,10 +1276,12 @@ const idleDisplaySocket = () => ({
 });
 
 /** A Host whose snapshot the test moves, recording what the phone asks of it. */
-function fakeHost(initial: HostSnapshot) {
-  let snapshot = { ...initial, deploymentId };
+type FixtureHostSnapshot = HostSnapshot & Partial<TranscriptFixtureSnapshot>;
+
+function fakeHost(initial: FixtureHostSnapshot) {
+  let snapshot = { ...initial, deploymentId } as TranscriptFixtureSnapshot;
   // What the Host answers the next "Load earlier" with: the transcript with that page merged in.
-  let earlierPage: HostSnapshot | null = null;
+  let earlierPage: TranscriptFixtureSnapshot | null = null;
   const listeners = new Set<() => void>();
   const runPlaces = new RunPlaceStore();
   const placeActivity = new PlaceActivityStore();
@@ -1303,7 +1318,7 @@ function fakeHost(initial: HostSnapshot) {
   }));
   const stopRun = vi.fn(async (_threadId: string) => undefined);
   const resumeThreadInputQueue = vi.fn(async (_threadId: string) => undefined);
-  const loadTranscriptAround = vi.fn(async (_threadId: string, _messageId: string) => undefined);
+  const loadTranscriptAround = vi.fn(async (_threadId: string, _messageId: string) => true);
   const loadEarlierTranscript = vi.fn(async (_threadId: string) => {
     if (earlierPage === null) return;
     snapshot = { ...earlierPage, deploymentId };
@@ -1314,6 +1329,31 @@ function fakeHost(initial: HostSnapshot) {
     data: {},
     ok: true,
   }));
+  // The whole of a waiting message, read at the version the tray shows.
+  const revisions = vi.fn(
+    async (input: { threadId: string; messageId: string; expectedRevision?: number }) => {
+      const held = snapshot.inputQueues[input.threadId]?.items.find(
+        ({ message }) => message.id === input.messageId,
+      );
+      if (!held)
+        return { ok: false, error: { code: "not_found", message: "Gone", retryable: false } };
+      return {
+        ok: true,
+        data: {
+          hasMore: false,
+          revisions: [
+            {
+              revision: held.message.edit?.revision ?? 0,
+              content: held.message.content,
+              author: held.message.author,
+              deviceLabel: null,
+              createdAt: held.message.createdAt,
+            },
+          ],
+        },
+      };
+    },
+  );
   // The one waiting message open in place, as the client's editor holds it.
   const editor = {
     cancel: vi.fn(async () => undefined),
@@ -1322,11 +1362,83 @@ function fakeHost(initial: HostSnapshot) {
     save: vi.fn(async (_content: readonly object[]) => ({ editedAt: at, revision: 1 })),
     touch: vi.fn(),
   };
+  const queueViews = new WeakMap<ThreadInputQueue, ReturnType<typeof mockInputQueue>>();
+  const views = new Map<string, ReturnType<typeof buildTranscriptView>>();
+  const noRows = [] as const;
+  function buildTranscriptView(value: TranscriptFixtureSnapshot, id: string) {
+    const queue = value.inputQueues[id];
+    let inputQueue = queue ? queueViews.get(queue) : undefined;
+    if (queue && !inputQueue) {
+      const full = mockInputQueue(queue, String(value.revision), (id) => id === editor.leaseId);
+      // The Host clips each waiting message's preview, as here past 80 characters.
+      inputQueue = {
+        ...full,
+        items: full.items.map((item) =>
+          item.message.preview.length > 80
+            ? {
+                ...item,
+                message: {
+                  ...item.message,
+                  preview: item.message.preview.slice(0, 80),
+                  truncated: true,
+                },
+              }
+            : item,
+        ),
+      };
+      queueViews.set(queue, inputQueue);
+    }
+    return {
+      entries: value.transcripts[id] ?? noRows,
+      requests: value.requests[id] ?? noRows,
+      runQueue: value.runQueue.filter(({ threadId }) => threadId === id),
+      inputQueue: inputQueue ?? null,
+      synchronized: value.connection === "connected",
+      hasMore: value.transcriptWindows[id]?.hasMore ?? false,
+      hasNewer: false,
+      moreRequests: false,
+      cuts: harness.cuts,
+    };
+  }
+  function transcriptView(value: TranscriptFixtureSnapshot, id: string) {
+    const existing = views.get(id);
+    const next = buildTranscriptView(value, id);
+    if (
+      existing &&
+      existing.entries === next.entries &&
+      existing.requests === next.requests &&
+      existing.inputQueue === next.inputQueue &&
+      existing.synchronized === next.synchronized &&
+      existing.hasMore === next.hasMore &&
+      existing.cuts === next.cuts &&
+      existing.runQueue.length === next.runQueue.length &&
+      existing.runQueue.every((run, index) => run === next.runQueue[index])
+    )
+      return existing;
+    views.set(id, next);
+    return next;
+  }
   const client = {
     acceptBrowserWatchFrame: vi.fn((sessionId: string, token: string, surfaceId: string) =>
       watch.accept(sessionId, surfaceId, token),
     ),
     activateThread: vi.fn(),
+    observeThread: () => () => {},
+    getThreadItemText: () => undefined,
+    setTranscriptPosition: vi.fn(
+      (_threadId: string, _measure: (() => string | undefined) | null) => {},
+    ),
+    revealedTranscriptMove: vi.fn((_threadId: string) => {}),
+    watchPersonalResource: () => () => {},
+    getThreadTranscript: (id: string) => {
+      return {
+        subscribe: (listener: () => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        getSnapshot: () => transcriptView(snapshot, id),
+      };
+    },
     // What a mounted tab preview reads: the Host's latest place and a passive picture.
     browserWatchFrames: {
       accept: (sessionId: string, surfaceId: string, token: string) =>
@@ -1350,7 +1462,27 @@ function fakeHost(initial: HostSnapshot) {
     browserWatchState: watch.get,
     cancelThreadInput: vi.fn(async () => undefined),
     decideTeamAsk: vi.fn(async (_decision: object) => undefined),
-    editWaitingMessage: vi.fn(async (_threadId: string, _messageId: string) => editor),
+    // The lease read returns the full waiting message, as the Host holds it now.
+    editWaitingMessage: vi.fn(async (threadId: string, messageId: string) => {
+      const held = snapshot.inputQueues[threadId]?.items.find(
+        ({ message }) => message.id === messageId,
+      );
+      if (!held) throw new Error("That message is not waiting.");
+      return {
+        ...editor,
+        content: held.message.content,
+        revision: held.message.edit?.revision ?? 0,
+        // A later version's full body, read under the same lease.
+        read: vi.fn(async (revision: number) => {
+          const now = snapshot.inputQueues[threadId]?.items.find(
+            ({ message }) => message.id === messageId,
+          );
+          if (!now || (now.message.edit?.revision ?? 0) !== revision)
+            throw new Error("That version is not the one waiting.");
+          return now.message.content;
+        }),
+      };
+    }),
     latestPlaceOfThread: () => null,
     ownsEditLease: (leaseId: string) => leaseId === editor.leaseId,
     releaseWaitingMessage: vi.fn(async (_threadId: string, _messageId: string) => undefined),
@@ -1369,7 +1501,7 @@ function fakeHost(initial: HostSnapshot) {
     getSnapshot: () => snapshot,
     load: vi.fn(async () => undefined),
     loadEarlierTranscript,
-    loadLatestTranscript: vi.fn(async () => undefined),
+    loadLatestTranscript: vi.fn(async () => true),
     loadTranscriptAround,
     readAttachment: vi.fn(async () => new Blob()),
     discardAttachment: vi.fn(async () => undefined),
@@ -1377,7 +1509,10 @@ function fakeHost(initial: HostSnapshot) {
     moveThreadInput: vi.fn(async () => undefined),
     refresh: vi.fn(async () => undefined),
     resumeThreadInputQueue,
-    rpc: { "integration.computer.session.stop": stopComputerSession },
+    rpc: {
+      "integration.computer.session.stop": stopComputerSession,
+      "thread.message.revisions.list": revisions,
+    },
     steerThreadInput: vi.fn(async () => undefined),
     stopRun,
     subscribe: (listener: () => void) => {
@@ -1393,6 +1528,7 @@ function fakeHost(initial: HostSnapshot) {
     dispatch,
     editWaitingMessage: client.editWaitingMessage,
     editor,
+    revisions,
     releaseWaitingMessage: client.releaseWaitingMessage,
     runPlaces,
     placeActivity,
@@ -1430,13 +1566,13 @@ function fakeHost(initial: HostSnapshot) {
       act(() => sockets.at(-1)!.close(1006));
     },
     /** The transcript the Host has once the phone loads its earlier page. */
-    holdEarlier(next: HostSnapshot) {
+    holdEarlier(next: TranscriptFixtureSnapshot) {
       earlierPage = next;
     },
     loadEarlierTranscript,
     loadTranscriptAround,
-    move(next: HostSnapshot) {
-      snapshot = { ...next, deploymentId };
+    move(next: FixtureHostSnapshot) {
+      snapshot = { ...next, deploymentId } as TranscriptFixtureSnapshot;
       act(() => {
         for (const listener of listeners) listener();
       });
@@ -1675,9 +1811,9 @@ function savedElsewhere(
 
 /** `snapshot` with `item` as the task's only waiting input. */
 function withWaiting(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   item: ThreadInputQueue["items"][number],
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   return {
     ...snapshot,
     inputQueues: { [workId]: { ...snapshot.inputQueues[workId]!, items: [item] } },
@@ -1956,7 +2092,7 @@ describe("a conversation with a page", () => {
     expect(
       second.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
     ).toBe("Explain this");
-    host.move({ ...host.client.getSnapshot(), browserSessions: [] });
+    host.move({ ...(host.client.getSnapshot() as TranscriptFixtureSnapshot), browserSessions: [] });
     await type(second.container, "Message", "Explain the page I saw");
     await press(second.container, "Send message");
     expect(host.dispatch.mock.calls.map(([command]) => command)).toContainEqual(
@@ -2145,7 +2281,7 @@ it("renders this thread's transcript, stream, requests, input queue, run queue a
   });
   const host = fakeHost(snapshot);
   const { container } = await mount(host, workId);
-  const move = async (patch: Partial<HostSnapshot>) => {
+  const move = async (patch: Partial<TranscriptFixtureSnapshot>) => {
     const before = harness.paneRenders;
     snapshot = { ...snapshot, ...patch };
     host.move(snapshot);
@@ -2406,6 +2542,22 @@ describe("a voice conversation while Opensteer is replying", () => {
   });
 });
 
+describe("a cold link", () => {
+  it("starts reading around the linked message once the conversation is synchronized", async () => {
+    const chat = chatAtWork();
+    const initial = snapshotFor({
+      entries: chat.entries.slice(0, 6),
+      run: null,
+      threadId: conversationId,
+    });
+    const host = fakeHost({ ...initial, connection: "connecting" });
+    await mount(host, conversationId, { messageId: chat.noteA.id });
+    expect(host.loadTranscriptAround).not.toHaveBeenCalled();
+    await act(async () => host.move(initial));
+    expect(host.loadTranscriptAround).toHaveBeenCalledWith(conversationId, chat.noteA.id);
+  });
+});
+
 describe("a link into Chat", () => {
   it("opens the Activity of the reply whose steps hold the linked message, at that reply", async () => {
     const chat = chatAtWork();
@@ -2426,6 +2578,62 @@ describe("a link into Chat", () => {
     expect(harness.scrollToIndex).toHaveBeenCalledWith(expect.objectContaining({ index: 1 }));
   });
 
+  it("after a new cut puts the reader back on the row measured before it, or at the latest when it is gone", async () => {
+    const chat = chatAtWork();
+    const initial = snapshotFor({ entries: chat.entries, run: null, threadId: conversationId });
+    const host = fakeHost(initial);
+    const { rerender } = await mount(host, conversationId);
+    const list = () => harness.list!;
+    const position = host.client.setTranscriptPosition as unknown as ReturnType<typeof vi.fn>;
+    const measure = () => (position.mock.calls.at(-1)![1] as () => string | undefined | null)();
+    act(() => {
+      list().onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
+      list().onContentSizeChange?.(390, 1000);
+    });
+    const rows = list().data!;
+    const at = rows.findIndex(
+      (row, index) => index > 0 && (row as { kind?: string }).kind === "group",
+    );
+    expect(at, "the conversation drew too few rows").toBeGreaterThan(0);
+    act(() => list().onViewableItemsChanged?.({ viewableItems: [{ item: rows[at] }] }));
+    act(() => {
+      list().onScrollBeginDrag?.();
+      list().onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 0 },
+          contentSize: { height: 1000, width: 390 },
+          layoutMeasurement: { height: 600, width: 390 },
+        },
+      });
+      list().onScrollEndDrag?.();
+    });
+    // The client asks, as it does just before a new cut replaces the rows.
+    expect(measure()).toEqual(expect.any(String));
+    harness.scrollToIndex.mockClear();
+    harness.cuts = 1;
+    await rerender();
+    expect(harness.scrollToIndex).toHaveBeenLastCalledWith({
+      animated: false,
+      index: at,
+      viewPosition: 0,
+    });
+
+    // Measured again; the next cut holds none of what was measured: the reader follows the latest.
+    expect(measure()).toEqual(expect.any(String));
+    harness.scrollToOffset.mockClear();
+    harness.cuts = 2;
+    await act(async () =>
+      host.move(
+        snapshotFor({
+          entries: [said("Something else entirely", null)],
+          run: null,
+          threadId: conversationId,
+        }),
+      ),
+    );
+    expect(harness.scrollToOffset).toHaveBeenCalled();
+  });
+
   it("goes to a linked reply in place, opening nothing over it", async () => {
     const chat = chatAtWork();
     const host = fakeHost(
@@ -2435,6 +2643,8 @@ describe("a link into Chat", () => {
 
     expect(harness.navigate).not.toHaveBeenCalled();
     expect(harness.scrollToIndex).toHaveBeenCalledWith(expect.objectContaining({ index: 1 }));
+    // Only once the linked reply is on screen has the reader's move landed.
+    expect(host.client.revealedTranscriptMove).toHaveBeenCalledWith(conversationId);
   });
 });
 
@@ -2820,7 +3030,7 @@ describe("surfaces belonging to one reply", () => {
       },
     });
     const firstWork = [notes, phone("First phone"), joinedFirst, first];
-    const initial: HostSnapshot = {
+    const initial: TranscriptFixtureSnapshot = {
       ...snapshotFor({
         entries: [ask, ran(runId, { replyMessageId: first.id, status: "completed" }), ...firstWork],
         machines: [],
@@ -3983,6 +4193,52 @@ describe("a task", () => {
     );
   });
 
+  it("answers a long ask only once its whole text is read and shown", async () => {
+    const whole =
+      "@My agent is CI green on main, and if it is not, revert the last three merges and page whoever is on call tonight";
+    const ask = teammateAsk(whole);
+    const host = fakeHost(
+      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
+    );
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    host.revisions.mockImplementationOnce(async (input) => {
+      await held;
+      return host.revisions.getMockImplementation()!(input);
+    });
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain("Loading the whole ask…");
+    expect(button(container, "Answer").disabled).toBe(true);
+    expect(text(container)).not.toContain("whoever is on call tonight");
+    await act(async () => release());
+    await settle();
+    expect(text(container)).toContain("whoever is on call tonight");
+    // Past the guard that ignores a tap on a decision as it arrives.
+    const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+    await press(container, "Answer");
+    later.mockRestore();
+    expect(host.decideTeamAsk).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: "approve", expectedRevision: 0 }),
+    );
+  });
+
+  it("answers a long ask only while it stands unfolded in its bubble", async () => {
+    const whole = `@My agent ${"revert the last three merges and page the on-call, ".repeat(20)}`;
+    const ask = teammateAsk(whole);
+    const host = fakeHost(
+      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
+    );
+    const { container } = await mount(host, workId);
+    await settle();
+    // The whole ask is read and shown unfolded.
+    expect(hasButton(container, "Show less")).toBe(true);
+    expect(button(container, "Answer").disabled).toBe(false);
+    await press(container, "Show less");
+    expect(button(container, "Answer").disabled, "Answer approved a folded ask").toBe(true);
+    await press(container, "Show more");
+    expect(button(container, "Answer").disabled).toBe(false);
+  });
+
   it("ignores a decision tapped as the ask docks, then declines it", async () => {
     const ask = teammateAsk("@My agent can you check what's on your machine");
     const host = fakeHost(
@@ -4013,19 +4269,14 @@ describe("a task", () => {
       threadId: workId,
     });
     const host = fakeHost(initial);
-    let acquire!: (editor: typeof host.editor) => void;
-    host.editWaitingMessage.mockImplementationOnce(
-      () => new Promise((resolve) => (acquire = resolve)),
-    );
     const { container } = await mount(host, workId);
     await tapWaiting(container, ask.entry.body);
+    await settle();
     await type(container, "Edit Maya’s ask", "A local change to the original ask");
-    // The iPad saved its own version while this phone was still opening the ask.
+    // The iPad saved its own version while these words were being written.
     await act(async () =>
       host.move(withWaiting(initial, savedElsewhere(ask.item, "From iPad", 1))),
     );
-    host.editor.revision = 1;
-    await act(async () => acquire(host.editor));
     await settle();
     expect(text(container)).toContain("This ask changed elsewhere");
     expect(button(container, "Save and answer").disabled).toBe(true);
@@ -4045,6 +4296,35 @@ describe("a task", () => {
     );
   });
 
+  it("keeps typed words through a same-viewer history reset that empties and refills the queue", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const initial = snapshotFor({
+      entries: [...task.entries, waiting],
+      queue: [waitingInput(waiting, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Card fees, FX and the wire charge");
+    // The reset forgets what was read; the queue is read again a moment later.
+    await act(async () =>
+      host.move(
+        snapshotFor({
+          entries: task.entries,
+          queue: [],
+          run: { id: task.runId, status: "running" },
+          threadId: workId,
+        }),
+      ),
+    );
+    await act(async () => host.move(initial));
+    expect(editField(container)?.value).toBe("Card fees, FX and the wire charge");
+    expect(host.editor.cancel).not.toHaveBeenCalled();
+  });
+
   it("follows a version saved elsewhere until words are typed, then offers them as a new message", async () => {
     const task = taskAtWork();
     const waiting = said("Include the card fees", null);
@@ -4059,6 +4339,11 @@ describe("a task", () => {
     await tapWaiting(container, waiting.body);
     const first = savedElsewhere(waitingInput(waiting, workId), "Card fees and FX", 1);
     await act(async () => host.move(withWaiting(initial, first)));
+    // The newer version opens from its full body, read under the lease, never the queue's preview.
+    const opened = (await host.editWaitingMessage.mock.results[0]!.value) as {
+      read: ReturnType<typeof vi.fn>;
+    };
+    expect(opened.read).toHaveBeenCalledWith(1);
     expect(editField(container)?.value).toBe("Card fees and FX");
 
     await type(container, "Edit message", "Card fees, FX and the wire charge");
@@ -4095,7 +4380,7 @@ describe("a task", () => {
     expect(text(container)).toContain("Third in line");
   });
 
-  it("keeps words typed while the message was opening when it can't be held, and tries again", async () => {
+  it("opens an edit only from the full body: locked while opening, and taken again after a refusal", async () => {
     const task = taskAtWork();
     const waiting = said("Original", null);
     const host = fakeHost(
@@ -4112,7 +4397,8 @@ describe("a task", () => {
     );
     const { container } = await mount(host, workId);
     await tapWaiting(container, waiting.body);
-    await type(container, "Edit message", "Words typed on a slow connection");
+    // Nothing can be typed against the preview while the full body is read.
+    expect(editField(container)?.disabled).toBe(true);
     await act(async () =>
       refuse(
         new HostClientRequestError({
@@ -4123,15 +4409,16 @@ describe("a task", () => {
       ),
     );
     await settle();
-    expect(editField(container)?.value).toBe("Words typed on a slow connection");
     expect(text(container)).toContain("This message can’t be edited right now.");
-    expect(hasButton(container, "Discard")).toBe(true);
 
     await press(container, "Try again");
+    await settle();
     expect(host.editWaitingMessage).toHaveBeenCalledTimes(2);
+    expect(editField(container)?.disabled).toBe(false);
+    await type(container, "Edit message", "Words typed once it opened");
     await press(container, "Save");
     expect(host.editor.save).toHaveBeenCalledWith(
-      [{ text: "Words typed on a slow connection", type: "text" }],
+      [{ text: "Words typed once it opened", type: "text" }],
       0,
     );
   });
@@ -4268,6 +4555,49 @@ describe("a task", () => {
     await act(async () => host.move(queued));
     act(() => list().onContentSizeChange?.(390, 1200));
     expect(harness.scrollToOffset).not.toHaveBeenCalled();
+  });
+
+  it("tells nobody as the reader scrolls; asked, it names the row at the top of the screen, and none at the latest", async () => {
+    const task = taskAtWork();
+    const host = fakeHost(
+      snapshotFor({
+        entries: task.entries,
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    await mount(host, workId);
+    const list = () => harness.list!;
+    const position = host.client.setTranscriptPosition as unknown as ReturnType<typeof vi.fn>;
+    const measure = () => (position.mock.calls.at(-1)![1] as () => string | undefined)();
+    act(() => {
+      list().onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
+      list().onContentSizeChange?.(390, 1000);
+    });
+    const row = list().data?.find((item) => (item as { kind?: string }).kind === "group") as {
+      group: { kind: string; turn?: { work: { id: string; itemId?: string }[] } };
+    };
+    expect(row, "The transcript drew no row").toBeDefined();
+    act(() => list().onViewableItemsChanged?.({ viewableItems: [{ item: row }] }));
+    const scroll = (y: number) =>
+      act(() => {
+        list().onScrollBeginDrag?.();
+        list().onScroll?.({
+          nativeEvent: {
+            contentOffset: { x: 0, y },
+            contentSize: { height: 1000, width: 390 },
+            layoutMeasurement: { height: 600, width: 390 },
+          },
+        });
+        list().onScrollEndDrag?.();
+      });
+    const registered = position.mock.calls.length;
+    scroll(0);
+    // Scrolling tells nobody; the client asks only when it needs the reader's place.
+    expect(position.mock.calls.length).toBe(registered);
+    expect(measure()).toEqual(expect.any(String));
+    scroll(400);
+    expect(measure()).toBeUndefined();
   });
 
   it("shows Resume with a paused queue and no waiting messages", async () => {
@@ -5222,7 +5552,7 @@ it("floats active voice while its dock's pane is hidden and docks again when vis
 function voiceThreadSnapshot(input: {
   readonly entries?: readonly TranscriptEntry[];
   readonly requests?: readonly Request[];
-}): HostSnapshot {
+}): TranscriptFixtureSnapshot {
   const snapshot = snapshotFor({
     entries: input.entries ?? [],
     run: null,
@@ -5239,13 +5569,13 @@ function voiceThreadSnapshot(input: {
   };
 }
 
-function waitingOn(request: Request): HostSnapshot["waitingRequests"][number] {
+function waitingOn(request: Request): TranscriptFixtureSnapshot["waitingRequests"][number] {
   return {
     assignments: [],
     presentation: null,
     request,
     subagent: null,
-  } as unknown as HostSnapshot["waitingRequests"][number];
+  } as unknown as TranscriptFixtureSnapshot["waitingRequests"][number];
 }
 
 function askedHere(title: string): Request {
@@ -6030,7 +6360,7 @@ describe("the Run's page above the conversation", () => {
       data: { tabId, title: `Live page ${sequence}`, site: "https://example.com" },
     });
   /** The person's tabs with the Run's page among them. */
-  const withPage = (snapshot: HostSnapshot): HostSnapshot => ({
+  const withPage = (snapshot: TranscriptFixtureSnapshot): TranscriptFixtureSnapshot => ({
     ...snapshot,
     tabs: tabStoreFixture([
       tabFixture({ tabId: pageTab, url: "https://example.com/" }),
@@ -6226,7 +6556,7 @@ describe("the Run's page above the conversation", () => {
       const renders = harness.nativeRenders;
       const reply = wrote("Still streaming", runId, conversationId);
       host.move({
-        ...host.client.getSnapshot(),
+        ...(host.client.getSnapshot() as TranscriptFixtureSnapshot),
         transcripts: { [conversationId]: [ran(runId), reply] },
       });
       expect(harness.nativeRenders).toBe(renders);
@@ -6314,7 +6644,7 @@ describe("the Run's page above the conversation", () => {
   });
 });
 
-it("opens a task with a whole-turn page in one read", async () => {
+it("draws the scoped conversation cut on its first pane render", async () => {
   const source = new MockHostClient({ latencyMs: 0 });
   await source.load();
   const fixture = conversationHistoryHost(source);
@@ -6330,8 +6660,6 @@ it("opens a task with a whole-turn page in one read", async () => {
       },
       { timeout: 1000 },
     );
-    expect(fixture.requests).toHaveLength(1);
-    expect(fixture.requests[0]).toMatchObject({ turns: 10 });
   } finally {
     fixture.client.dispose();
     source.dispose();

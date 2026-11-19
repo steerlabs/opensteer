@@ -1,12 +1,10 @@
+import { buildPersonalDetailSnapshot } from "./personal-snapshot-store.js";
+import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createId, type RunnerId } from "@opensteer/core";
-import {
-  RunnerBootIdSchema,
-  machineAccessPolicyDefault,
-  projectDeviceAccessRequestEvent,
-} from "@opensteer/protocol";
+import { RunnerBootIdSchema, machineAccessPolicyDefault } from "@opensteer/protocol";
 import { expect } from "vitest";
 import { devicesLegacyReaders } from "./device-request-legacy-readers.test-support.js";
 import { NotificationStore } from "./notification-store.js";
@@ -17,7 +15,7 @@ import {
   pendingEvent,
   type StoreFixture,
 } from "./store.integration.test-support.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { personalReachableGrant, phoneRunnerGrant } from "./runner-store.js";
 
 type Started = Awaited<ReturnType<StoreFixture["startRunFixture"]>>;
@@ -115,7 +113,7 @@ function ask(
 }
 const decline = { kind: "external", value: { decision: "declined" } } as const;
 describeStore("device access Requests", (it) => {
-  it("projects new Requests out of legacy pages and snapshots without settling the durable wait", async ({
+  it("keeps device Requests in the current snapshot and filters legacy attention reads", async ({
     storeFixture: f,
   }) => {
     const old = await devicesLegacyReaders();
@@ -143,17 +141,24 @@ describeStore("device access Requests", (it) => {
     const opened = await ask(f, run, target);
     expect(old.PendingRequestViewSchema.safeParse(opened.request).success).toBe(false);
     const notifications = new NotificationStore(f.database);
-    const event = opened.events.find(({ type }) => type === "request.opened")!;
-    const [notification] = await notifications.decide(event);
+    const [notification] = await notifications.decide({
+      type: "requestChanged",
+      kind: "device.access",
+      status: "pending",
+      opened: true,
+      requestId: opened.request.id,
+      runId: run.run.id,
+      threadId: run.thread.id,
+    });
     expect(notification).toMatchObject({ deviceAccessRequests: "include" });
     expect(
       await notifications.publicationSkipReason({
         ...notification!.view,
         userId: run.userId,
-        eventId: event.eventId,
-        sequence: event.sequence,
-        occurredAt: new Date(event.createdAt),
-        expiresAt: new Date(Date.parse(event.createdAt) + 60_000),
+        eventId: createId("event"),
+        sequence: notification!.sequence,
+        occurredAt: new Date(opened.request.createdAt),
+        expiresAt: new Date(Date.parse(opened.request.createdAt) + 60_000),
       }),
     ).toBeNull();
 
@@ -194,39 +199,16 @@ describeStore("device access Requests", (it) => {
     expect(
       await f.store.notificationState.attention(run.userId, { deviceAccessRequests: "include" }),
     ).toMatchObject({ needsYou: 2 });
-    const states = await f.store.drainPendingThreadStates();
-    const state = states.find(({ type }) => type === "thread.state-changed")!;
-    expect(state.data).toMatchObject({ pendingRequests: 2, pendingDeviceAccessRequests: 1 });
-    expect(projectDeviceAccessRequestEvent(state, false).data).toMatchObject({
-      pendingRequests: 1,
+    const state = await f.database
+      .selectFrom("clientSyncState")
+      .select(["pendingRequestCount", "pendingDeviceAccessRequestCount", "needsYouCount"])
+      .executeTakeFirstOrThrow();
+    expect(state).toEqual({
+      pendingRequestCount: 2,
+      pendingDeviceAccessRequestCount: 1,
+      needsYouCount: 2,
     });
-    expect(projectDeviceAccessRequestEvent(state, true).data).toMatchObject({ pendingRequests: 2 });
-    const historyInput = { threadId: run.thread.id, ownerId: run.userId };
-    expect((await f.store.threadEventPageForOwner(historyInput))?.thread.pendingRequests).toBe(1);
-    expect(
-      (await f.store.threadEventPageForOwner({ ...historyInput, deviceAccessRequests: "include" }))
-        ?.thread.pendingRequests,
-    ).toBe(2);
     expect(await f.store.notificationState.attention(run.userId)).toMatchObject({ needsYou: 1 });
-    const snapshot = await f.store.deploymentSnapshot({ viewerId: run.userId });
-    expect(old.DeploymentSnapshotSchema.safeParse(snapshot).success).toBe(true);
-    expect(snapshot.threads.find(({ id }) => id === run.thread.id)?.pendingRequests).toBe(1);
-    expect(snapshot.pendingRequests.map(({ id }) => id)).toEqual([ordinary.request.id]);
-    expect(snapshot.pendingRequestWindow).toMatchObject({ itemCount: 1, totalItems: 1 });
-    expect(
-      snapshot.tasks!.recent.tasks.find(({ thread }) => thread.id === run.thread.id)?.thread
-        .pendingRequests,
-    ).toBe(1);
-    expect(
-      (await f.store.taskPageForUser({ userId: run.userId })).tasks.find(
-        ({ thread }) => thread.id === run.thread.id,
-      )?.thread.pendingRequests,
-    ).toBe(1);
-    expect(
-      (
-        await f.store.taskPageForUser({ userId: run.userId, deviceAccessRequests: "include" })
-      ).tasks.find(({ thread }) => thread.id === run.thread.id)?.thread.pendingRequests,
-    ).toBe(2);
     const supported = await needsYouPage(f.database, {
       userId: run.userId,
       deviceAccessRequests: "include",
@@ -236,25 +218,17 @@ describeStore("device access Requests", (it) => {
         .filter((entry) => entry.kind === "request")
         .map(({ request }) => request.id),
     ).toContain(opened.request.id);
-    const modern = await f.store.deploymentSnapshot({
-      viewerId: run.userId,
-      deviceAccessRequests: "include",
-    });
-    expect(modern.threads.find(({ id }) => id === run.thread.id)?.pendingRequests).toBe(2);
-    expect(modern.pendingRequests.map(({ id }) => id)).toContain(opened.request.id);
-    expect(old.DeploymentSnapshotSchema.safeParse(modern).success).toBe(false);
-    expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "pending" });
-    await f.store.updateMachineAccessPolicy({
-      runnerId: target,
-      ownerId: run.userId,
-      allowDeployment: true,
-      expectedRevision: 2,
-      policy: { ...machineAccessPolicyDefault, browser: true },
-    });
-    expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "fulfilled" });
-    expect(await f.database.selectFrom("requestContinuations").selectAll().execute()).toHaveLength(
-      1,
+    const modern = await withPersonalSyncRead(f.database, async (tx) =>
+      buildPersonalDetailSnapshot(tx, await authorizedSyncState(tx, run.userId), run.userId, {
+        kind: "thread",
+        threadId: run.thread.id,
+      }),
     );
+    expect(modern.thread.pendingRequestCount).toBe(2);
+    expect(modern.pendingRequests.map(({ id }) => id).sort()).toEqual(
+      [ordinary.request.id, opened.request.id].sort(),
+    );
+    expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "pending" });
   });
 
   it("deduplicates an owned off phone and never adds it to reachable shell routes", async ({
@@ -329,7 +303,7 @@ describeStore("device access Requests", (it) => {
       idempotency: { key: "enable", requestedBy: run.userId },
     };
     await expect(
-      withPersonalTransaction(f.database, async (tx) => {
+      commitPersonalMutation(f.database, async (tx) => {
         const { updateMachineAccessPolicy } = await import("./machine-store.js");
         await updateMachineAccessPolicy(tx, update);
         expect(await tx.selectFrom("requestContinuations").selectAll().execute()).toHaveLength(1);
@@ -349,12 +323,10 @@ describeStore("device access Requests", (it) => {
     const updated = await f.store.updateMachineAccessPolicy(update);
     expect(updated).toMatchObject({
       outcome: "updated",
-      requestEvents: [expect.objectContaining({ type: "request.resolved" })],
     });
     expect((await f.store.requests.get(opened.request.id))?.status).toBe("fulfilled");
     expect(await f.store.updateMachineAccessPolicy(update)).toMatchObject({
       replayed: true,
-      requestEvents: [],
     });
     expect(await f.database.selectFrom("requestContinuations").selectAll().execute()).toHaveLength(
       1,
@@ -369,12 +341,14 @@ describeStore("device access Requests", (it) => {
     await expect(
       f.store.requests.declineDeviceAccessRequest({
         requestId: opened.request.id,
+        expectedRevision: (await f.store.requests.revision(opened.request.id))!,
         resolvedBy: createId("user"),
         response: decline,
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     await f.store.requests.declineDeviceAccessRequest({
       requestId: opened.request.id,
+      expectedRevision: (await f.store.requests.revision(opened.request.id))!,
       resolvedBy: run.userId,
       response: decline,
     });
@@ -433,7 +407,7 @@ describeStore("device access Requests", (it) => {
       .where("id", "=", DeviceIdSchema.parse(nextTarget))
       .execute();
     const { fulfillDeviceAccessRequestsInTransaction } = await import("./request-store.js");
-    await withPersonalTransaction(f.database, (tx) =>
+    await commitPersonalMutation(f.database, (tx) =>
       fulfillDeviceAccessRequestsInTransaction(tx, DeviceIdSchema.parse(nextTarget), {
         ...machineAccessPolicyDefault,
         browser: true,

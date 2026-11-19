@@ -127,3 +127,72 @@ describe("a Thread's activity on the web", () => {
     );
   });
 });
+
+describe("a cold message link on the web", () => {
+  it("reads around the linked message once the conversation is synchronized", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(window, "matchMedia").mockImplementation((query) =>
+      Object.assign(new EventTarget(), {
+        addListener: () => undefined,
+        matches: false,
+        media: query,
+        onchange: null,
+        removeListener: () => undefined,
+      }),
+    );
+    client = new MockHostClient({ latencyMs: 0 });
+    const real = client.getThreadTranscript(thread.id);
+    let synchronized = false;
+    const listeners = new Set<() => void>();
+    let shown: ReturnType<typeof real.getSnapshot> | undefined;
+    let view: ReturnType<typeof real.getSnapshot> | undefined;
+    // The detail cut is drawn before it is synchronized, as on a fresh route.
+    vi.spyOn(client, "getThreadTranscript").mockReturnValue({
+      getSnapshot: () => {
+        const current = real.getSnapshot();
+        if (current !== shown || view?.synchronized !== synchronized) {
+          shown = current;
+          view = { ...current, synchronized };
+        }
+        return view!;
+      },
+      subscribe: (listener) => {
+        listeners.add(listener);
+        const release = real.subscribe(listener);
+        return () => {
+          listeners.delete(listener);
+          release();
+        };
+      },
+    });
+    const around = vi.spyOn(client, "loadTranscriptAround").mockResolvedValue(true);
+    const messageId = "msg_00000000-0000-4000-8000-0000000000aa";
+    const node = document.createElement("div");
+    document.body.append(node);
+    root = createRoot(node);
+    const hostClient = client;
+    await act(async () =>
+      root?.render(
+        <ToastProvider>
+          <MemoryRouter initialEntries={[`/tasks/${thread.id}?messageId=${messageId}`]}>
+            <Routes>
+              <Route element={<AppShell hostClient={hostClient} />}>
+                <Route path="tasks/:threadId" element={<ThreadRoute />} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>,
+      ),
+    );
+    expect(around).not.toHaveBeenCalled();
+    synchronized = true;
+    await act(async () => listeners.forEach((listener) => listener()));
+    expect(around).toHaveBeenCalledWith(thread.id, messageId);
+  });
+});

@@ -1,3 +1,5 @@
+import { readTestResource } from "../server/test-host-api-request.js";
+import { testResourceData } from "../server/test-host-api-request.js";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +9,6 @@ import { HarnessRegistry, nativeUserHarnessRuntimeBoundary } from "@opensteer/ha
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CursorHarnessDriver } from "@opensteer/harness-cursor";
 import { RunnerRegistry } from "@opensteer/orchestration";
-import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { reconcileHarnessCatalogs, type HarnessCatalogInspector } from "./harness-catalogs.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
@@ -93,18 +94,14 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
         },
       );
     const read = async () => {
-      const bootstrap = await testRpcData(
-        active.hostOrigin,
-        "bootstrap.get",
-        {},
-        {
-          headers,
-        },
-      );
+      const bootstrap = await testResourceData(active.hostOrigin, "harness-catalog", {
+        headers,
+      });
       const catalog = bootstrap.environments
         .flatMap((environment) => environment.harnessCatalogs)
         .find((candidate) => candidate.harnessInstanceId === active.harnessInstanceId);
-      const placement = threadPlacementOptions(bootstrap.environments, bootstrap.harnesses).find(
+      const { harnesses } = await testResourceData(active.hostOrigin, "harness", { headers });
+      const placement = threadPlacementOptions(bootstrap.environments, harnesses).find(
         (candidate) => candidate.harnessInstanceId === active.harnessInstanceId,
       );
       if (!catalog || !placement) throw new Error("Engine state missing from bootstrap");
@@ -134,6 +131,8 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
     const beforeIdle = await readFile(capture, "utf8");
     let convergenceRequests = 0;
     const inspector: HarnessCatalogInspector = {
+      // Never asked here: this check expects no capture at all.
+      connectionGenerationFor: () => 1,
       inspectHarnesses: async () => {
         convergenceRequests++;
         await refresh();
@@ -197,11 +196,10 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
     console.info(`Engine inspection evidence: ${artifactDirectory}/inspection.json`);
   }, 60_000);
   it.each(["refresh", "reconnect"] as const)(
-    "recovers an invalidated sign-in answer after the first %s capture fails, without another action",
+    "recaptures an invalidated sign-in answer on Runner reconnect after a failed %s capture",
     async (invalidation) => {
       scratch = await mkdtemp(join(tmpdir(), "opensteer-engine-recapture-"));
-      const reconcileClock = new ManualClock();
-      const started = await startEngineInspectionStack(databaseUrl!, scratch, reconcileClock);
+      const started = await startEngineInspectionStack(databaseUrl!, scratch);
       stack = started.stack;
       const { state } = started;
       const active = stack;
@@ -239,18 +237,16 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
       // The superseded answer must be gone even though its replacement failed.
       expect(await read()).toEqual([]);
       const failedAt = new Date().toISOString();
-      // Use the real periodic Host loop, not another refresh or a test-driven
-      // call to the reconciler. Only read durable state while waiting. Domain
-      // time brings its next pass now rather than up to 45 seconds from now.
-      reconcileClock.advanceBy(45_000);
+      active.network.drop();
       await expect
         .poll(async () => (await read())[0]?.catalog.status, {
           interval: 250,
           timeout: 45_000,
         })
         .toBe("ready");
-      const recovered = unwrapRpcResult(await active.api["bootstrap.get"]({}));
-      const placement = threadPlacementOptions(recovered.environments, recovered.harnesses).find(
+      const { environments } = await readTestResource(active.api, "harness-catalog");
+      const { harnesses } = await readTestResource(active.api, "harness");
+      const placement = threadPlacementOptions(environments, harnesses).find(
         (candidate) => candidate.harnessInstanceId === active.harnessInstanceId,
       );
       expect(placement?.available).toBe(true);

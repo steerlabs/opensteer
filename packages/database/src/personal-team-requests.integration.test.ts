@@ -106,7 +106,7 @@ describeStore("personal team reply watermark", (it) => {
           clientMessageId: crypto.randomUUID(),
           payload: { bodyMarkdown: "Explicit reply", attachmentIds: [] },
         });
-      await requests.publication(teamId, requestId, "accepted", input.replyMessageId);
+      if (explicit) await requests.publication(teamId, requestId, "accepted", input.replyMessageId);
       expect(await requests.replyTask(personal.userId, input)).toEqual(empty);
       if (explicit)
         await f.store.commitRunnerEvent({
@@ -145,6 +145,17 @@ describeStore("personal team reply watermark", (it) => {
         expect(await requests.replyTask(personal.userId, input)).toEqual(empty);
         return;
       }
+      const publish = {
+        runId: run.runId,
+        via: "final" as const,
+        clientMessageId: crypto.randomUUID(),
+        payload: { bodyMarkdown: "Published answer", attachmentIds: [] },
+      };
+      await expect(
+        requests.freeze(teamId, requestId, { ...publish, answerMessageId: createId("message") }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      await requests.freeze(teamId, requestId, { ...publish, answerMessageId: replyId });
+      await requests.publication(teamId, requestId, "accepted", input.replyMessageId);
       const completed = await f.database
         .selectFrom("runs")
         .select("completedAt")

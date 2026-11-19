@@ -17,6 +17,7 @@ import {
 import { afterEach, expect, it, vi } from "vitest";
 import { createDatabase } from "./connection.js";
 import { cloneTestDatabase } from "./test-database.test-support.js";
+import { readTranscriptItem } from "./personal-sync-store.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 
 // These tests exercise the personal scheduler without a browser, integration or Messaging bridge.
@@ -69,7 +70,14 @@ import { agentThreadPageForOwner, createThread, enqueueThreadInput } from "./thr
 import { claimCommand } from "./command-store.js";
 import { acquireExecutionBinding, bindProviderSession } from "./execution-store.js";
 import { commitRunnerEvent } from "./runner-event-store.js";
-import { admitTeamTaskRequest, cancelTeamTaskRequest } from "./task-admission-store.js";
+import {
+  admitTeamTaskRequest,
+  cancelTeamTaskRequest,
+  removeAskTask,
+} from "./task-admission-store.js";
+import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
+import { publishRunQueue } from "./thread-status.js";
+import { returnRunToQueue } from "./store-primitives.js";
 import { openVoiceThread } from "./voice-store.js";
 import { createMemoryPass } from "./memory-pass-store.js";
 import { messageTeamSources } from "./message-team-sources.js";
@@ -311,13 +319,10 @@ it("admits readable owner-authored words and file-only asks with immutable reply
   expect(first.content).not.toEqual(attached.content);
 });
 
-it("freezes publication once and projects Host delivery events and history", async () => {
+it("freezes publication once and preserves canonical delivery state", async () => {
   const f = await fixture();
   const ask = await f.ask();
-  const events: import("@opensteer/core").AgentEvent[] = [];
-  const ledger = new PersonalTeamRequestsStore(f.database, undefined, (event) =>
-    events.push(event),
-  );
+  const ledger = new PersonalTeamRequestsStore(f.database);
   const payload = { bodyMarkdown: "Frozen answer", attachmentIds: [] };
   const run = await f.start(ask.receipt.runId!);
   await f.emit(run.run.id, run.bindingGeneration, payload.bodyMarkdown);
@@ -350,11 +355,6 @@ it("freezes publication once and projects Host delivery events and history", asy
   await ledger.publication(f.origin.teamId, ask.requestId, "accepted", teamMessageId);
   await ledger.publication(f.origin.teamId, ask.requestId, "blocked", null, "late failure");
   expect(
-    events.map((event) =>
-      event.type === "run.delivery-updated" ? event.data.delivery.state : null,
-    ),
-  ).toEqual(["sending", "sent"]);
-  expect(
     await f.database
       .selectFrom("runs")
       .select(runDeliverySelection)
@@ -362,6 +362,20 @@ it("freezes publication once and projects Host delivery events and history", asy
       .executeTakeFirstOrThrow(),
   ).toEqual({
     delivery: { state: "sent", via: "final", answerMessageId, teamMessageId, reason: null },
+  });
+  const readRunCard = (runId: RunId, threadId: ThreadId) =>
+    readTranscriptItem(f.database, {
+      viewerId: f.userId,
+      scope: { kind: "thread", threadId },
+      itemId: `run:${runId}`,
+    });
+  await expect(readRunCard(run.run.id, run.run.threadId)).resolves.toMatchObject({
+    kind: "item",
+    item: {
+      replyMessageId: answerMessageId,
+      endedAt: expect.any(String),
+      delivery: { state: "sent", via: "final", answerMessageId, teamMessageId, reason: null },
+    },
   });
   const cancelled = await f.ask();
   await ledger.publication(
@@ -374,6 +388,12 @@ it("freezes publication once and projects Host delivery events and history", asy
   expect(await ledger.get(f.origin.teamId, cancelled.requestId)).toMatchObject({
     publicationState: "blocked",
     blockedReason: "The team link was revoked.",
+  });
+  await expect(
+    readRunCard(cancelled.receipt.runId!, cancelled.receipt.taskId),
+  ).resolves.toMatchObject({
+    kind: "item",
+    item: { delivery: { state: "blocked", reason: "The team link was revoked." } },
   });
 });
 
@@ -982,37 +1002,25 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
   expect(await f.database.selectFrom("requests").select("originatingThreadId").execute()).toEqual(
     Array.from({ length: 3 }, () => ({ originatingThreadId: child.id })),
   );
-  const { deploymentSnapshot } = await import("./snapshot-store.js");
-  const { NotificationStateStore } = await import("./notification-state.js");
+  const { readPersonalShellSnapshot } = await import("./snapshot-store.js");
+  const { withPersonalSyncRead } = await import("./personal-sync-store.js");
   const ready = Promise.withResolvers<void>(),
     release = Promise.withResolvers<void>();
   let resourceCount = 0;
-  const snapshot = deploymentSnapshot(f.database, new NotificationStateStore(f.database), {
-    viewerId: f.userId,
-    omitMessages: true,
-    readResources: async ({ database }) => {
-      expect(database.isTransaction).toBe(true);
-      resourceCount = Number(
-        (
-          await database
-            .selectFrom("requests")
-            .select(({ fn }) => fn.countAll<string>().as("count"))
-            .executeTakeFirstOrThrow()
-        ).count,
-      );
-      ready.resolve();
-      await withTimeout(release.promise, 5_000, {
-        timeoutError: () => new Error("Snapshot resource reader never released"),
-      });
-      return {
-        tabs: { tabs: [], layout: { revision: 0, items: [] }, complete: true },
-        browser: {
-          available: false,
-          placements: [],
-          profiles: [],
-        },
-      };
-    },
+  const snapshot = withPersonalSyncRead(f.database, async (tx) => {
+    resourceCount = Number(
+      (
+        await tx
+          .selectFrom("requests")
+          .select(({ fn }) => fn.countAll<string>().as("count"))
+          .executeTakeFirstOrThrow()
+      ).count,
+    );
+    ready.resolve();
+    await withTimeout(release.promise, 5_000, {
+      timeoutError: () => new Error("Snapshot read never released"),
+    });
+    return readPersonalShellSnapshot(tx, { viewerId: f.userId });
   });
   let snapshotError: unknown;
   void snapshot.catch((error) => {
@@ -1021,7 +1029,7 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
   let writer: ReturnType<typeof requests.create> | undefined;
   try {
     await withTimeout(ready.promise, 5_000, {
-      timeoutError: () => new Error("Snapshot never entered its resource transaction"),
+      timeoutError: () => new Error("Snapshot never entered its read transaction"),
     });
     writer = requests.create({
       callId: "needs-you-later",
@@ -1049,17 +1057,17 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
     });
     if (snapshotError) throw snapshotError;
     const committed = await f.database
-      .selectFrom("deploymentEventState")
+      .selectFrom("clientSyncState")
       .select("sequence")
       .executeTakeFirstOrThrow();
     release.resolve();
     const view = await snapshot;
     // The reader resumes after the snapshot's sequence, so it still hears the later Request.
-    expect(BigInt(view.sequence)).toBeLessThan(BigInt(committed.sequence));
+    expect(BigInt(view.state.sequence)).toBeLessThan(BigInt(committed.sequence));
+    if (view.kind !== "snapshot") throw new Error("Expected a shell snapshot");
     expect(resourceCount).toBe(3);
-    expect(view.needsYou.count).toBe(3);
-    expect(view.serializedBytes).toBeLessThanOrEqual(900 * 1024);
-    expect(view.serializedBytes).toBe(Buffer.byteLength(JSON.stringify(view)));
+    expect(view.snapshot.counts.needsYouCount).toBe(3);
+    expect(Buffer.byteLength(JSON.stringify(view.snapshot))).toBeLessThanOrEqual(96 * 1024);
     expect((await needsYouPage(f.database, { userId: f.userId })).count).toBe(4);
   } finally {
     release.resolve();
@@ -1385,13 +1393,26 @@ it("keeps a reply that says nothing out of the transcript, and a file-only reply
     );
   const before = await sequence();
   const blank = await reply([{ type: "text", text: " \n" }]);
-  expect(blank.committed.event.type).toBe("assistant.message");
-  expect(blank.committed.compensatingEvents).toEqual([]);
+  expect(blank.committed.replayed).toBe(false);
+  const blankReceipt = await f.database
+    .selectFrom("runnerEventReceipts")
+    .select("ordinal")
+    .where("runId", "=", run.id)
+    .where("ordinal", "=", 1)
+    .executeTakeFirst();
+  expect(blankReceipt).toBeDefined();
   expect(await sequence()).toBe(before);
   const file = await reply([
     { type: "artifact", artifactId: "art_report", mediaType: "text/csv", name: "deals.csv" },
   ]);
-  expect(file.committed.compensatingEvents.map(({ type }) => type)).toEqual(["message.created"]);
+  expect(
+    await f.database
+      .selectFrom("transcriptItems")
+      .select(["id", "visible"])
+      .where("threadId", "=", task.id)
+      .where("id", "in", [blank.messageId, file.messageId])
+      .execute(),
+  ).toEqual([{ id: file.messageId, visible: true }]);
   expect(
     (
       await f.database
@@ -1402,4 +1423,122 @@ it("keeps a reply that says nothing out of the transcript, and a file-only reply
     ).map(({ id }) => id),
   ).toEqual([file.messageId]);
   expect(await sequence()).toBe(before + 1);
+});
+
+it("fences shell sends when it removes a never-run ask task", async () => {
+  const f = await fixture();
+  const removable = await f.task("Removable ask");
+  await f.database
+    .updateTable("threads")
+    .set({ teamAskOrigin: true, titleSource: "provisional" })
+    .where("id", "=", removable.id)
+    .execute();
+  const fenced: string[][] = [];
+  const disconnect = installPersonalMutationHooks(f.database, {
+    wake() {},
+    onFailure(error) {
+      throw error;
+    },
+    suspend(scopes) {
+      fenced.push([...scopes].sort());
+      return { committed() {}, rolledBack() {} };
+    },
+  });
+  try {
+    await removeAskTask(f.database, removable.id);
+  } finally {
+    disconnect();
+  }
+  // The never-run ask is removed and then purged.
+  expect(
+    await f.database
+      .selectFrom("threads")
+      .select("id")
+      .where("id", "=", removable.id)
+      .where("removedAt", "is", null)
+      .executeTakeFirst(),
+  ).toBeUndefined();
+  // A shell cut held before the removal lists the task; it must not dispatch afterwards.
+  expect(fenced[0]).toEqual(["shell", `thread:${removable.id}`]);
+});
+
+it("says on the shell task row whether a Run waits to start with none executing", async () => {
+  const f = await fixture();
+  const task = await f.task("Queued work");
+  const queued = await enqueueThreadInput(f.database, {
+    threadId: task.id,
+    requestedBy: f.userId,
+    source: { kind: "human" },
+    policy: "queue",
+    content: [{ type: "text", text: "Start when the account is ready" }],
+    idempotencyKey: "queued-row",
+  });
+  const { readPersonalShellSnapshot } = await import("./snapshot-store.js");
+  const row = async () => {
+    const cut = await readPersonalShellSnapshot(f.database, { viewerId: f.userId });
+    if (cut.kind !== "snapshot") throw new Error("Expected a shell snapshot");
+    return cut.snapshot.tasks.find(({ id }) => id === task.id);
+  };
+  expect(await row()).toMatchObject({
+    runQueued: true,
+    environmentId: task.environmentId,
+    harnessInstanceId: task.harnessInstanceId,
+  });
+  await f.start(queued.run!.id);
+  expect((await row())?.runQueued).toBe(false);
+  // The change reached viewers as the task row's value, not only in a new snapshot.
+  const published = await f.database
+    .selectFrom("clientChanges")
+    .select("payload")
+    .where("scopeKey", "=", "shell")
+    .where("entityKind", "=", "task")
+    .where("entityId", "=", task.id)
+    .orderBy("sequence", "desc")
+    .executeTakeFirstOrThrow();
+  expect(published.payload).toMatchObject({ runQueued: false });
+});
+
+it("republishes the shell row when a starting Run returns to the queue", async () => {
+  const f = await fixture();
+  const task = await f.task("Requeued work");
+  const queued = await enqueueThreadInput(f.database, {
+    threadId: task.id,
+    requestedBy: f.userId,
+    source: { kind: "human" },
+    policy: "queue",
+    content: [{ type: "text", text: "Start, then wait again" }],
+    idempotencyKey: "requeued-row",
+  });
+  const runId = queued.run!.id;
+  const command = await f.database
+    .selectFrom("commands")
+    .select("id")
+    .where("runId", "=", runId)
+    .where("type", "=", "run.execute")
+    .executeTakeFirstOrThrow();
+  await claimCommand(f.database, command.id, "fixture");
+  await commitPersonalMutation(f.database, async (tx) => {
+    await tx.updateTable("runs").set({ status: "starting" }).where("id", "=", runId).execute();
+    await publishRunQueue(tx, task.id, runId);
+  });
+  const latest = async () =>
+    (
+      await f.database
+        .selectFrom("clientChanges")
+        .select("payload")
+        .where("scopeKey", "=", "shell")
+        .where("entityKind", "=", "task")
+        .where("entityId", "=", task.id)
+        .orderBy("sequence", "desc")
+        .executeTakeFirstOrThrow()
+    ).payload;
+  expect(await latest()).toMatchObject({ runQueued: false, status: "running" });
+  const run = await f.database
+    .selectFrom("runs")
+    .select(["id", "environmentId", "threadId"])
+    .where("id", "=", runId)
+    .executeTakeFirstOrThrow();
+  await commitPersonalMutation(f.database, (tx) => returnRunToQueue(tx, { run }));
+  // The task status stays running; only the row's queued bit moved, and viewers get it.
+  expect(await latest()).toMatchObject({ runQueued: true, status: "running" });
 });

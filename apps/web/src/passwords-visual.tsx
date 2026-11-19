@@ -128,9 +128,10 @@ function Shell() {
 }
 
 function CardView() {
-  const { snapshot } = useShellContext();
-  const requests = snapshot.requests[threadId] ?? [];
-  const receipts = (snapshot.transcripts[threadId] ?? []).filter(
+  const { hostClient } = useShellContext();
+  const detail = hostClient.getThreadTranscript(threadId)?.getSnapshot();
+  const requests = detail?.requests ?? [];
+  const receipts = (detail?.entries ?? []).filter(
     (entry) => entry.kind === "request" && entry.requestKind === "browser.password-sign-in",
   );
   // The thread's own frame, so the card meets the height a window gives it.

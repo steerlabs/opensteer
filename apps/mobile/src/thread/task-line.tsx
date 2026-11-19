@@ -21,7 +21,11 @@ import {
   type Turn,
   type TurnAgents,
 } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import {
+  useHostSelector,
+  useThreadTranscript,
+  useWorkerTranscripts,
+} from "@opensteer/client/react";
 import { MenuView } from "@expo/ui/community/menu";
 import {
   createContext,
@@ -99,6 +103,8 @@ export function useAgentScope(): AgentScope | null {
 export function useTurnAgents(scope: TaskScope, turn: Turn, folded: boolean): TurnAgents | null {
   const memory = useContext(AgentMemoryContext);
   const cache = useMemo(() => new SubagentCache(), []);
+  // Nested subagents are cards in the thread's transcript, which the Host snapshot does not carry.
+  const { entries } = useThreadTranscript(scope.hostClient, scope.threadId, false);
   const select = useMemo(() => {
     const own: Turn = { ...turn, assignments: [] };
     const drawn = turn.work.some((entry) => entry.kind === "node" && entry.nodeKind !== "task");
@@ -109,11 +115,17 @@ export function useTurnAgents(scope: TaskScope, turn: Turn, folded: boolean): Tu
           ? [`node:${entry.nodeId}`]
           : [],
       );
-      const agents = subagentTurnModel(own, scope.threadId, snapshot, { folded, keptKeys }, cache);
+      const agents = subagentTurnModel(
+        own,
+        scope.threadId,
+        { ...snapshot, transcripts: { [scope.threadId]: entries } },
+        { folded, keptKeys },
+        cache,
+      );
       if (folded) for (const key of agents.keptKeys) memory.set(`kept:${key}`, true);
       return agents;
     });
-  }, [cache, folded, memory, scope.threadId, turn]);
+  }, [cache, entries, folded, memory, scope.threadId, turn]);
   return useHostSelector(scope.hostClient, select, sameTurnAgents);
 }
 
@@ -168,6 +180,8 @@ function HeldTaskCards(props: {
 }): ReactNode {
   const { agents, entries, scope } = props;
   const cache = useMemo(() => new SubagentCache(), []);
+  // A working task names its step while its own transcript is held live.
+  const workers = useWorkerTranscripts(scope.hostClient);
   const select = useMemo(
     () =>
       heldSelector((snapshot) =>
@@ -177,14 +191,14 @@ function HeldTaskCards(props: {
             entries.map((entry) =>
               assignmentSubagentCard(
                 currentAssignment(entry, snapshot.assignments),
-                snapshot,
+                { ...snapshot, transcripts: workers },
                 cache,
               ),
             ),
           ),
         ),
       ),
-    [cache, entries],
+    [cache, entries, workers],
   );
   const group = useHostSelector(scope.hostClient, select);
   const byId = useMemo(

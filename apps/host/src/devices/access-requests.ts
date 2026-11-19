@@ -21,7 +21,6 @@ import {
   OpensteerError,
   refused,
   RequestResponseSchema,
-  type AgentEvent,
   type Request,
   type RequestId,
   type RequestResponse,
@@ -76,18 +75,15 @@ export function dataAppName(definition: Pick<IntegrationDefinition, "id">): stri
 export class AccessRequests {
   readonly #definitions: readonly IntegrationDefinition[];
   readonly #devices: AccessRequestDevices;
-  readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #store: IntegrationPlatformStore;
 
   constructor(options: {
     readonly definitions: readonly IntegrationDefinition[];
     readonly devices: AccessRequestDevices;
-    readonly onDeploymentEvent: (event: AgentEvent) => void;
     readonly store: IntegrationPlatformStore;
   }) {
     this.#definitions = options.definitions;
     this.#devices = options.devices;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#store = options.store;
   }
   /** The device data apps an agent may name, as it names them. */
@@ -174,6 +170,7 @@ export class AccessRequests {
   /** The person's answer on an `integration.access` card. */
   async resolve(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
@@ -201,13 +198,13 @@ export class AccessRequests {
     if (response.kind === "choice" && response.optionId.startsWith("server:")) {
       const selected = await this.#store.integrationRequests.selectIntegrationAccessServer({
         requestId: input.requestId,
+        expectedRevision: input.expectedRevision,
         resolvedBy: input.resolvedBy,
         ...settlement,
         requestedServerId: IntegrationServerIdSchema.parse(
           response.optionId.slice("server:".length),
         ),
       });
-      this.#publish(selected.events);
       return { grant: null, installation: null, request: selected.request };
     }
     if (response.kind === "choice" && response.optionId === "installed") {
@@ -218,12 +215,12 @@ export class AccessRequests {
           await this.#store.integrationRequests.loadIntegrationAccessInstallManifest(input);
         installed = await this.#store.integrationRequests.installForIntegrationAccessRequest({
           requestId: input.requestId,
+          expectedRevision: input.expectedRevision,
           resolvedBy: input.resolvedBy,
           ...settlement,
           preparedFulfillment: await this.#prepareInstall(manifest),
         });
       }
-      this.#publish(installed.requestEvents);
       return { grant: null, installation: installed.installation, request: installed.request };
     }
     const value = response.kind === "external" ? response.value : undefined;
@@ -246,6 +243,7 @@ export class AccessRequests {
       }
       return this.#store.integrationRequests.resolveIntegrationAccessRequest({
         requestId: input.requestId,
+        expectedRevision: input.expectedRevision,
         resolvedBy: input.resolvedBy,
         ...settlement,
         response,
@@ -260,7 +258,6 @@ export class AccessRequests {
     const resolved = connectionId
       ? await this.#devices.withConnectionAdmission(connectionId, input.resolvedBy, resolve)
       : await resolve();
-    this.#publish(resolved.events);
     return { grant: resolved.grant, installation: null, request: resolved.request };
   }
 
@@ -352,7 +349,6 @@ export class AccessRequests {
           ? null
           : IntegrationServerIdSchema.parse(target.requestedServerId),
     });
-    for (const event of created.events) this.#onDeploymentEvent(event);
     return { kind: "request", request: created.request, replayed: created.replayed };
   }
 
@@ -378,9 +374,5 @@ export class AccessRequests {
       approvalManifest,
       material: this.#devices.prepareDefinition({ ...(current ? { current } : {}), definition }),
     };
-  }
-
-  #publish(events: readonly AgentEvent[]) {
-    for (const event of events) this.#onDeploymentEvent(event);
   }
 }

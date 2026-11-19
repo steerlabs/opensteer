@@ -221,6 +221,41 @@ it("stops a live workflow run the Host lists past the first six", async () => {
   expect(runs.data.runs.find(({ id }) => id === "wfr_6a8")?.status).toBe("terminated");
 });
 
+it("offers Try again under a catalog that could not be read, and reloads it", async () => {
+  const client = await host();
+  const loaded = await client.rpc["plugins.catalog.list"]({ limit: 30 });
+  if (!loaded.ok) throw new Error("catalog read failed");
+  const busy = {
+    ok: false,
+    error: { code: "unavailable", message: "Host busy", retryable: true },
+  } as never;
+  // The read tries twice more by itself before it says so.
+  const list = vi
+    .fn()
+    .mockResolvedValueOnce(busy)
+    .mockResolvedValueOnce(busy)
+    .mockResolvedValueOnce(busy)
+    .mockResolvedValue(loaded);
+  Object.defineProperty(client.rpc, "plugins.catalog.list", { value: list });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    await render(
+      <PluginCatalogScreen route={{ params: { deploymentId: "dep_fixture" } } as never} />,
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    const catalog = page().sections.find(({ key }) => key === "catalog")!;
+    expect(list).toHaveBeenCalledTimes(3);
+    expect(rows(page()).some(({ label }) => label === "The catalog is empty.")).toBe(false);
+    expect(catalog.footer?.link?.label).toBe("Try again");
+    await act(async () => catalog.footer!.link!.onPress());
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(list).toHaveBeenCalledTimes(4);
+    expect(rows(page()).some(({ label }) => label === loaded.data.items[0]!.name)).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("finds iMessage in the catalog and sets it up on a device", async () => {
   await host();
   await render(

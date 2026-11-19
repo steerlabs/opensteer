@@ -188,6 +188,7 @@ function NewTask(props: {
   const { placements, selection } = execution;
   const blocker = firstMessageBlocker({
     attachmentsReady: staged.items.every((item) => draftAttachmentPart(item) !== null),
+    accountsKnown: snapshot.loadedResources.includes("harness"),
     execution,
   });
 
@@ -352,10 +353,13 @@ function NewTask(props: {
           if (start === undefined)
             throw new NotStarted("This saved message is missing its task details.");
           const { generateTitle, ...creation } = start;
-          const thread = await hostClient.createThread({
-            ...creation,
-            ...(generateTitle ? { generateTitle: true } : {}),
-          });
+          const thread = await hostClient.createThread(
+            {
+              ...creation,
+              ...(generateTitle ? { generateTitle: true } : {}),
+            },
+            ownedScope,
+          );
           assertCurrent();
           threadId = thread.id;
           // Unrecorded, a retry asks again under the same key and gets the same task.
@@ -770,7 +774,8 @@ function sameNewTaskSnapshot(previous: HostSnapshot, next: HostSnapshot): boolea
   return (
     sameStableHostSnapshot(previous, next) &&
     previous.executionPreferences === next.executionPreferences &&
-    previous.personalSettings === next.personalSettings
+    previous.personalSettings === next.personalSettings &&
+    previous.loadedResources === next.loadedResources
   );
 }
 

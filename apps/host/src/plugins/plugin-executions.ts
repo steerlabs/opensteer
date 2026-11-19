@@ -2,8 +2,6 @@ import { EventEmitter } from "node:events";
 import { z } from "zod";
 import {
   OpensteerError,
-  RequestIdSchema,
-  type AgentEvent,
   type RequestId,
   type RequestPresentation,
   type RequestResponse,
@@ -12,10 +10,13 @@ import {
 } from "@opensteer/core";
 import {
   PluginAgentStore,
-  withPersonalTransaction,
   type OpensteerStore,
   type PluginExecutionRecord,
 } from "@opensteer/database";
+import {
+  commitPersonalMutation,
+  type PersonalCommitReaction,
+} from "@opensteer/database/personal-mutation";
 import type { AgentCaller, RunCaller } from "../mcp/agent-caller.js";
 import { pluginCaller, type PluginAuthority } from "./plugin-authority.js";
 import {
@@ -41,10 +42,7 @@ export class PluginExecutions {
     store: OpensteerStore;
     records: PluginAgentStore;
     authority: PluginAuthority;
-    publish: (event: AgentEvent) => void;
-    notify: () => void;
     onError: (error: unknown) => void;
-    onStopped: (stop: NonNullable<Awaited<ReturnType<OpensteerStore["stopHeldRun"]>>>) => void;
     localName?: (context: PluginCaller, plugin: string) => Promise<string | undefined>;
   };
   constructor(options: PluginExecutions["options"]) {
@@ -108,16 +106,14 @@ export class PluginExecutions {
       ["interrupted", "expired", "cancelled", "failed"].includes(execution.state) &&
       updated.requestId
     ) {
-      for (const event of await this.options.store.requests.endPluginExecutionRequest(
+      await this.options.store.requests.endPluginExecutionRequest(
         updated.requestId,
         execution.state === "expired"
           ? "plugin-expired"
           : execution.state === "interrupted"
             ? "plugin-interrupted"
             : "run-ended",
-      ))
-        this.options.publish(event);
-      this.options.notify();
+      );
     }
     this.#changes.emit(execution.id);
   }
@@ -130,15 +126,13 @@ export class PluginExecutions {
         result: null,
       });
       if (updated?.requestId) {
-        for (const event of await this.options.store.requests.endPluginExecutionRequest(
+        await this.options.store.requests.endPluginExecutionRequest(
           updated.requestId,
           "plugin-interrupted",
-        ))
-          this.options.publish(event);
+        );
       }
       this.#changes.emit(row.id);
     }
-    this.options.notify();
   }
   async execute(
     caller: AgentCaller,
@@ -262,39 +256,35 @@ export class PluginExecutions {
       } as RequestPresentation;
       const previous = row;
       try {
-        const { attached, events } = await withPersonalTransaction(
-          this.options.store.database,
-          async (transaction) => {
-            const created = await this.options.store.requests.create(
-              {
-                callId: `plugin:${execution.id}:${interaction.requestId}`,
-                kind,
-                mode: "durable",
-                originatingThreadId: previous.threadId,
-                requestedBy: previous.ownerUserId,
-                requiredActor: "owner",
-                ...(previous.runId
-                  ? { originatingRunId: previous.runId }
-                  : previous.occurrenceId
-                    ? { originatingOccurrenceId: previous.occurrenceId }
-                    : { originatingWatchActivationId: previous.watchActivationId! }),
-                payload: { kind, executionId: execution.id, interactionId: interaction.requestId },
-                presentation,
-              },
-              transaction,
-            );
-            const attached = await this.options.records.attachInteraction(
-              transaction,
-              previous,
-              created.request.id,
-              interaction.requestId,
-            );
-            if (!attached) throw interactionEnded;
-            return { attached, events: created.events };
-          },
-        );
-        for (const event of events) this.options.publish(event);
-        row = attached;
+        // The Request exists only if the execution is still waiting for this interaction.
+        row = await commitPersonalMutation(this.options.store.database, async (transaction) => {
+          const created = await this.options.store.requests.create(
+            {
+              callId: `plugin:${execution.id}:${interaction.requestId}`,
+              kind,
+              mode: "durable",
+              originatingThreadId: previous.threadId,
+              requestedBy: previous.ownerUserId,
+              requiredActor: "owner",
+              ...(previous.runId
+                ? { originatingRunId: previous.runId }
+                : previous.occurrenceId
+                  ? { originatingOccurrenceId: previous.occurrenceId }
+                  : { originatingWatchActivationId: previous.watchActivationId! }),
+              payload: { kind, executionId: execution.id, interactionId: interaction.requestId },
+              presentation,
+            },
+            transaction,
+          );
+          const attached = await this.options.records.attachInteraction(
+            transaction,
+            previous,
+            created.request.id,
+            interaction.requestId,
+          );
+          if (!attached) throw interactionEnded;
+          return attached;
+        });
       } catch (error) {
         if (error !== interactionEnded) throw error;
         row = await this.#owned(caller, execution.id);
@@ -417,6 +407,7 @@ export class PluginExecutions {
   }
   async respond(input: {
     requestId: RequestId;
+    expectedRevision: string;
     resolvedBy: UserId;
     settlementSessionId?: string;
     response: RequestResponse;
@@ -441,6 +432,11 @@ export class PluginExecutions {
     }
     if (!request || request.requestedBy !== input.resolvedBy || request.status !== "pending")
       throw new OpensteerError({ code: "forbidden", message: "Plugin Request is unavailable." });
+    if ((await this.options.store.requests.revision(request.id)) !== input.expectedRevision)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Request changed; read it again before answering",
+      });
     if (request.payload.kind === "plugin.account") {
       const declined =
         input.response.kind === "external" && input.response.value?.decision === "declined";
@@ -505,12 +501,15 @@ export class PluginExecutions {
     }
   }
   async #settle(
-    input: { requestId: RequestId; resolvedBy: UserId; settlementSessionId?: string },
+    input: {
+      requestId: RequestId;
+      expectedRevision: string;
+      resolvedBy: UserId;
+      settlementSessionId?: string;
+    },
     decision: "fulfilled" | "declined",
   ) {
     const result = await this.options.store.requests.settlePluginRequest({ ...input, decision });
-    for (const event of result.events) this.options.publish(event);
-    this.options.notify();
     return result;
   }
   async hold(input: {
@@ -565,11 +564,10 @@ export class PluginExecutions {
           ) {
             row = await this.options.records.update(id, { handoff: true });
             if (!input.signal.aborted && snapshot && (snapshot.queued || Date.now() >= deadline)) {
-              const stopped = await this.options.store.stopHeldRun(
+              await this.options.store.stopHeldRun(
                 input.caller.claims,
                 snapshot.queued ? "queued-input" : "limit",
               );
-              if (stopped) this.options.onStopped(stopped);
             }
             return this.result(row);
           }
@@ -583,26 +581,31 @@ export class PluginExecutions {
       }
     });
   }
-  observe(event: AgentEvent) {
+  observe(
+    reaction: Extract<
+      PersonalCommitReaction,
+      {
+        type: "runChanged" | "runFinished" | "requestChanged";
+      }
+    >,
+  ) {
     this.#changes.emit("run");
-    if (event.type === "run.interrupted" && event.runId)
-      void this.stopRun(event.runId).catch(this.options.onError);
-    if (event.type === "request.cancelled" || event.type === "request.resolved") {
-      void this.#cancelSettled(event).catch(this.options.onError);
-    }
+    if (
+      reaction.type === "runFinished" &&
+      !reaction.attemptOnly &&
+      reaction.outcome === "interrupted"
+    )
+      void this.stopRun(reaction.runId).catch(this.options.onError);
+    if (
+      reaction.type === "requestChanged" &&
+      (reaction.kind === "plugin.approval" || reaction.kind === "plugin.input") &&
+      (reaction.status === "cancelled" || reaction.status === "withdrawn")
+    )
+      void this.#cancelSettled(reaction.requestId).catch(this.options.onError);
   }
-  async #cancelSettled(event: AgentEvent) {
-    const requestId =
-      "requestId" in event.data
-        ? RequestIdSchema.safeParse(event.data.requestId).data
-        : "request" in event.data
-          ? event.data.request.id
-          : undefined;
-    if (!requestId) return;
-    const row = (await this.options.records.unfinished()).find((r) => r.requestId === requestId);
-    const request = row ? await this.options.store.requests.get(requestId) : null;
-    if (row && request && ["cancelled", "withdrawn"].includes(request.status))
-      await this.#cancel(row);
+  async #cancelSettled(requestId: RequestId) {
+    const row = await this.options.records.unfinishedRequest(requestId);
+    if (row) await this.#cancel(row);
   }
   async stopRun(runId: RunId) {
     const stops = await this.options.store.database
@@ -628,11 +631,10 @@ export class PluginExecutions {
       .where((eb) => eb(eb.ref("payload", "->>").key("plugin"), "=", plugin))
       .execute();
     if (requests.length)
-      for (const event of await this.options.store.requests.cancelPluginRequests(
+      await this.options.store.requests.cancelPluginRequests(
         requests.map(({ id }) => id),
         "plugin-interrupted",
-      ))
-        this.options.publish(event);
+      );
     if (ids.size)
       for (const row of await this.options.records.unfinished())
         if (row.ownerUserId === owner && ids.has(row.id))
@@ -641,7 +643,6 @@ export class PluginExecutions {
             "plugin-interrupted",
             `Plugin authority changed. ${pluginInterruptedReason}`,
           );
-    this.options.notify();
   }
   async #cancel(row: PluginExecutionRecord) {
     await this.#end(
@@ -665,12 +666,7 @@ export class PluginExecutions {
       .cancel({ execution: row.id }, this.#context(row))
       .catch(() => undefined);
     if (ended.requestId)
-      for (const event of await this.options.store.requests.endPluginExecutionRequest(
-        ended.requestId,
-        cause,
-      ))
-        this.options.publish(event);
-    this.options.notify();
+      await this.options.store.requests.endPluginExecutionRequest(ended.requestId, cause);
     this.#changes.emit(row.id);
   }
   async close() {

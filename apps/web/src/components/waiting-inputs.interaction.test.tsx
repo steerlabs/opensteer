@@ -1,3 +1,4 @@
+import { mockInputQueue } from "@opensteer/client/mock";
 import { MockHostClient } from "@opensteer/client/mock";
 import { controlledClientSession } from "@opensteer/client/test-support";
 import { initializeMessageOutbox, createMessageOutboxStorage } from "@opensteer/client/host";
@@ -109,20 +110,32 @@ function inputsOf(
   options: { paused?: boolean; threadId?: string } = {},
 ): WaitingInput[] {
   return waitingInputs(
-    {
-      items,
-      paused: options.paused ?? false,
-      steerRunId: null,
-      threadId: options.threadId ?? "thread",
-    } as unknown as ThreadInputQueue,
-    { ownsLease: () => false },
+    mockInputQueue(
+      {
+        items,
+        paused: options.paused ?? false,
+        steerRunId: null,
+        threadId: options.threadId ?? "thread",
+      } as unknown as ThreadInputQueue,
+      "0",
+      () => false,
+    ),
+    {},
   );
 }
 
-function fakeEditor(overrides: Partial<WaitingMessageEditor> = {}): WaitingMessageEditor {
+/** An editor whose lease read returned `body`, the full message the edit opens from. */
+function fakeEditor(
+  body: string | ContentPart[],
+  overrides: Partial<WaitingMessageEditor> = {},
+): WaitingMessageEditor {
   return {
     cancel: vi.fn(async () => undefined),
+    content: typeof body === "string" ? [{ text: body, type: "text" }] : body,
     leaseId: "lease",
+    read: vi.fn(async (): Promise<readonly ContentPart[]> =>
+      typeof body === "string" ? [{ text: body, type: "text" }] : body,
+    ),
     revision: 0,
     save: vi.fn(async () => ({ editedAt: "2026-10-31T12:01:00.000Z", revision: 1 })),
     touch: vi.fn(),
@@ -420,9 +433,6 @@ describe("WaitingInputs", () => {
   });
 
   it("edits a message in place: Enter saves the new words with the files still kept", async () => {
-    const editor = fakeEditor();
-    const editWaitingMessage = vi.fn(async () => editor);
-    const client = { editWaitingMessage } as unknown as HostClient;
     const photo = { artifactId: "a1", mediaType: "image/png", name: "photo.png", type: "artifact" };
     const notes = {
       artifactId: "a2",
@@ -430,18 +440,16 @@ describe("WaitingInputs", () => {
       name: "notes.txt",
       type: "artifact",
     };
+    const content: ContentPart[] = [
+      { text: "Check the shard", type: "text" },
+      { ...photo, type: "artifact" },
+      { ...notes, type: "artifact" },
+    ];
+    const editor = fakeEditor(content);
+    const editWaitingMessage = vi.fn(async () => editor);
+    const client = { editWaitingMessage } as unknown as HostClient;
     const container = mount(
-      render(
-        client,
-        inputsOf([
-          item(
-            "mine",
-            "Check the shard",
-            { canEdit: true },
-            { content: [{ text: "Check the shard", type: "text" }, photo, notes] as ContentPart[] },
-          ),
-        ]),
-      ),
+      render(client, inputsOf([item("mine", "Check the shard", { canEdit: true }, { content })])),
     );
     await clickWords(container, "mine");
     expect(editWaitingMessage).toHaveBeenCalledWith("thread", "mine");
@@ -460,32 +468,56 @@ describe("WaitingInputs", () => {
     expect(editor.cancel).not.toHaveBeenCalled();
   });
 
-  it("takes the lease again when an edit that could not open is tried again, keeping the words", async () => {
-    const editor = fakeEditor();
+  it("opens an edit from the full body only: the preview stays locked until the lease read returns", async () => {
+    const page = {
+      type: "browser-page",
+      sessionId: `bsn_${crypto.randomUUID()}`,
+      tabId: "tab-1",
+      title: "Docs",
+      url: "https://example.com",
+    } as ContentPart;
+    const full: ContentPart[] = [
+      { text: "Check the shard and then the whole integration suite", type: "text" },
+      page,
+    ];
+    const editor = fakeEditor(full);
+    let opened!: (editor: WaitingMessageEditor) => void;
     const editWaitingMessage = vi
-      .fn<() => Promise<typeof editor>>()
+      .fn<() => Promise<WaitingMessageEditor>>()
       .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValueOnce(editor);
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            opened = resolve;
+          }),
+      );
     const client = { editWaitingMessage } as unknown as HostClient;
+    // The queue's preview is clipped and carries no page.
     const container = mount(
       render(client, inputsOf([item("mine", "Check the shard", { canEdit: true })])),
     );
     await clickWords(container, "mine");
-    await write(field(container)!, "Check the integration shard");
+    expect(field(container)?.value).toBe("Check the shard");
+    expect(field(container)?.readOnly).toBe(true);
     expect(container.textContent).toContain("Couldn’t save your edit.");
 
+    // Try again takes the lease again; the field stays locked until the full body arrives.
     await act(async () => button(container, "Try again").click());
-
     expect(editWaitingMessage).toHaveBeenCalledTimes(2);
+    expect(field(container)?.readOnly).toBe(true);
+    await act(async () => opened(editor));
+    expect(field(container)?.readOnly).toBe(false);
+    expect(field(container)?.value).toBe("Check the shard and then the whole integration suite");
+    await write(field(container)!, "Check the shard and then the whole integration suite, twice");
+    await press(field(container)!, "Enter");
     expect(editor.save).toHaveBeenCalledWith(
-      [{ text: "Check the integration shard", type: "text" }],
+      [{ text: "Check the shard and then the whole integration suite, twice", type: "text" }, page],
       0,
     );
-    expect(field(container)).toBeNull();
   });
 
   it("Escape ends the edit unsaved and lets the message go on", async () => {
-    const editor = fakeEditor();
+    const editor = fakeEditor("Draft");
     const client = { editWaitingMessage: vi.fn(async () => editor) } as unknown as HostClient;
     const container = mount(render(client, inputsOf([item("mine", "Draft", { canEdit: true })])));
     await clickWords(container, "mine");
@@ -498,7 +530,7 @@ describe("WaitingInputs", () => {
   });
 
   it("keeps the words when the save is refused or the message is taken", async () => {
-    const editor = fakeEditor({
+    const editor = fakeEditor("Open a PR", {
       save: vi.fn(async () => {
         throw new HostClientRequestError({ code: "conflict", message: "changed", status: 409 });
       }),
@@ -561,7 +593,7 @@ describe("WaitingInputs", () => {
 
   it("answering an ask mid-edit saves the edit first and approves the version saved", async () => {
     const calls: string[] = [];
-    const editor = fakeEditor({
+    const editor = fakeEditor("Is CI green?", {
       save: vi.fn(async () => {
         calls.push("save");
         return { editedAt: "2026-10-31T12:01:00.000Z", ownerEdited: true as const, revision: 3 };
@@ -591,6 +623,73 @@ describe("WaitingInputs", () => {
     });
   });
 
+  it("Answer on a long ask waits until its whole text is read and shown", async () => {
+    const whole =
+      "Is CI green on main, and if not, revert the last three merges and page the on-call";
+    let read!: (value: unknown) => void;
+    const revisions = vi.fn(() => new Promise((resolve) => (read = resolve)));
+    const decideTeamAsk = vi.fn(async () => undefined);
+    const client = {
+      decideTeamAsk,
+      rpc: { "thread.message.revisions.list": revisions },
+    } as unknown as HostClient;
+    const [clipped] = inputsOf([ask("asked", whole)]).map((input) => ({
+      ...input,
+      entry: { ...input.entry, body: "Is CI green on main, and if not", previewTruncated: true },
+    }));
+    const container = mount(render(client, [clipped!]));
+    expect(button(container, "Answer").disabled).toBe(true);
+    expect(container.textContent).not.toContain("page the on-call");
+    expect(revisions).toHaveBeenCalledWith({
+      threadId: "thread",
+      messageId: "asked",
+      expectedRevision: 0,
+    });
+    await act(async () =>
+      read({
+        ok: true,
+        data: {
+          hasMore: false,
+          revisions: [
+            {
+              revision: 0,
+              content: [{ type: "text", text: whole }],
+              author: clipped!.entry.author,
+              deviceLabel: null,
+              createdAt: "2026-10-31T12:00:00.000Z",
+            },
+          ],
+        },
+      }),
+    );
+    expect(container.textContent).toContain("page the on-call");
+    expect(button(container, "Answer").disabled).toBe(false);
+    await act(async () => button(container, "Answer").click());
+    expect(decideTeamAsk).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 0 }));
+  });
+
+  it("Answer on a loaded ask waits while the person has folded it away again", async () => {
+    const whole = "Revert the last three merges, then page the on-call. ".repeat(20);
+    // The ask runs past its fold: twenty lines of 20px words in a fold of fewer lines.
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
+    const style = window.getComputedStyle.bind(window);
+    vi.spyOn(window, "getComputedStyle").mockImplementation((element) =>
+      element instanceof HTMLElement && element.classList.contains("message-fold")
+        ? ({ lineHeight: "20px" } as CSSStyleDeclaration)
+        : style(element),
+    );
+    const decideTeamAsk = vi.fn(async () => undefined);
+    const client = { decideTeamAsk } as unknown as HostClient;
+    const container = mount(render(client, inputsOf([ask("asked", whole)])));
+    // The whole ask is here and shown unfolded.
+    expect(button(container, "Show less")).not.toBeNull();
+    expect(button(container, "Answer").disabled).toBe(false);
+    await act(async () => button(container, "Show less").click());
+    expect(button(container, "Answer").disabled, "Answer approved a folded ask").toBe(true);
+    await act(async () => button(container, "Show more").click());
+    expect(button(container, "Answer").disabled).toBe(false);
+  });
+
   it("binds an open edit to the version it shows: untouched words follow a save made elsewhere", async () => {
     let opened!: (editor: WaitingMessageEditor) => void;
     const opening = new Promise<WaitingMessageEditor>((resolve) => {
@@ -607,15 +706,45 @@ describe("WaitingInputs", () => {
     // Another device saved before this one held the ask.
     await act(async () => {
       root?.render(render(client, inputsOf([edited(old, "New words on iPad", 1)])));
-      opened(fakeEditor({ revision: 1 }));
+      opened(fakeEditor("New words on iPad", { revision: 1 }));
     });
     expect(field(container)?.value).toBe("New words on iPad");
     await act(async () => button(container, "Answer").click());
     expect(decideTeamAsk).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 1 }));
   });
 
+  it("a newer version under untouched words locks the field until its full body is read under the lease", async () => {
+    let body!: (content: readonly ContentPart[]) => void;
+    const editor = fakeEditor("Old words", {
+      read: vi.fn(
+        () =>
+          new Promise<readonly ContentPart[]>((resolve) => {
+            body = resolve;
+          }),
+      ),
+    });
+    const client = { editWaitingMessage: vi.fn(async () => editor) } as unknown as HostClient;
+    const old = ask("asked", "Old words");
+    const container = mount(render(client, inputsOf([old])));
+    await clickWords(container, "asked");
+    expect(field(container)?.value).toBe("Old words");
+    // Another device saved; the queue reports only a clipped preview of it.
+    await act(async () =>
+      root?.render(render(client, inputsOf([edited(old, "New words on i", 1)]))),
+    );
+    expect(editor.read).toHaveBeenCalledWith(1);
+    await press(field(container)!, "Enter");
+    expect(editor.save).not.toHaveBeenCalled();
+    expect(button(container, "Answer").disabled, "Answer approved a preview").toBe(true);
+    await act(async () => body([{ text: "New words on iPad, in full", type: "text" }]));
+    expect(field(container)?.value).toBe("New words on iPad, in full");
+    expect(button(container, "Answer").disabled).toBe(false);
+  });
+
   it("keeps words typed over a newer version: nothing saves or approves them until reloaded", async () => {
-    const editor = fakeEditor({
+    const editor = fakeEditor("Old words", {
+      // The version reloaded is read whole under the lease before it can be edited.
+      read: vi.fn(async () => [{ text: "New words on iPad", type: "text" as const }]),
       save: vi.fn(async () => ({ editedAt: "2026-10-31T12:02:00.000Z", revision: 2 })),
     });
     const decideTeamAsk = vi.fn(async () => undefined);
@@ -636,6 +765,7 @@ describe("WaitingInputs", () => {
     expect(editor.save).not.toHaveBeenCalled();
 
     await act(async () => button(container, "Reload").click());
+    expect(editor.read).toHaveBeenCalledWith(1);
     expect(field(container)?.value).toBe("New words on iPad");
     await write(field(container)!, "New words, then mine");
     await act(async () => button(container, "Save and answer").click());
@@ -643,8 +773,58 @@ describe("WaitingInputs", () => {
     expect(decideTeamAsk).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 2 }));
   });
 
+  it("never sends the locked preview as a new message when the message is taken before its body is read", async () => {
+    // The lease is taken but the full body never arrives: the field still shows the clipped preview.
+    const client = new MockHostClient({ latencyMs: 0 });
+    vi.spyOn(client, "dispatch").mockRejectedValue(new TypeError("The connection was lost."));
+    client.editWaitingMessage = () => new Promise<WaitingMessageEditor>(() => undefined);
+    const records = new Map<string, string>();
+    const outbox = initializeMessageOutbox(client, {
+      storage: createMessageOutboxStorage({
+        read: async (key) => records.get(key) ?? null,
+        write: async (key, value) => {
+          records.set(key, value);
+        },
+        remove: async (key) => {
+          records.delete(key);
+        },
+      }),
+      drafts: { restore: async () => "restored" },
+    });
+    const [clipped] = inputsOf([item("mine", "The first words of a long", { canEdit: true })]).map(
+      (input) => ({ ...input, entry: { ...input.entry, previewTruncated: true } }),
+    );
+    try {
+      const container = mount(render(client, [clipped!]));
+      await clickWords(container, "mine");
+      expect(field(container)?.value).toBe("The first words of a long");
+      // A Run took the message while its body was still being read.
+      await act(async () => root?.render(render(client, [])));
+      expect(container.textContent).toContain("Your agent took this message");
+      expect(buttons(container)).not.toContain("Send as new message");
+      expect(records.size).toBe(0);
+      expect(outbox.getSnapshot().messages).toEqual([]);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("keeps an open editor's words through a same-viewer history reset that empties and refills the queue", async () => {
+    const editor = fakeEditor("Old words");
+    const client = { editWaitingMessage: vi.fn(async () => editor) } as unknown as HostClient;
+    const inputs = inputsOf([item("mine", "Old words", { canEdit: true })]);
+    const container = mount(render(client, inputs));
+    await clickWords(container, "mine");
+    await write(field(container)!, "Words I have not saved");
+    // The view stays mounted; the queue is forgotten and read again a moment later.
+    await act(async () => root?.render(render(client, [])));
+    await act(async () => root?.render(render(client, inputs)));
+    expect(field(container)?.value).toBe("Words I have not saved");
+    expect(editor.cancel).not.toHaveBeenCalled();
+  });
+
   it("hands an edit to the app outbox before closing its editor", async () => {
-    const editor = fakeEditor({
+    const editor = fakeEditor("Old", {
       save: vi.fn(async () => {
         throw new HostClientRequestError({ code: "conflict", message: "taken", status: 409 });
       }),
@@ -691,7 +871,7 @@ describe("WaitingInputs", () => {
 
   it("a save under way holds its editor: Escape waits, and only that save closes it", async () => {
     let saved!: (edit: { revision: number; editedAt: string }) => void;
-    const first = fakeEditor({
+    const first = fakeEditor("Old", {
       save: vi.fn(
         () =>
           new Promise<{ revision: number; editedAt: string }>((resolve) => {
@@ -699,7 +879,7 @@ describe("WaitingInputs", () => {
           }),
       ),
     });
-    const second = fakeEditor({ leaseId: "second" });
+    const second = fakeEditor("Old", { leaseId: "second" });
     const editWaitingMessage = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
     const client = { editWaitingMessage } as unknown as HostClient;
     const container = mount(render(client, inputsOf([item("mine", "Old", { canEdit: true })])));
@@ -719,7 +899,7 @@ describe("WaitingInputs", () => {
   });
 
   it("opens an ask's editor from its labelled Edit button and hands focus back on the way out", async () => {
-    const editor = fakeEditor();
+    const editor = fakeEditor("Is CI green?");
     const client = { editWaitingMessage: vi.fn(async () => editor) } as unknown as HostClient;
     const container = mount(render(client, inputsOf([ask("asked", "Is CI green?")])));
     const trigger = () => button(container, "Edit Maya Chen’s ask");

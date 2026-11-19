@@ -35,7 +35,9 @@ function channelServiceFixture(
       kind: "adopted" as const,
       revokedGrants: [],
     })),
-    claimIngress: vi.fn(async () =>
+    nextIngressDeadline: vi.fn(async (_asOf: Date): Promise<Date | null> => null),
+    pruneHistory: vi.fn(async () => undefined),
+    claimIngress: vi.fn(async (_workerId: string, _asOf?: Date) =>
       remaining-- > 0
         ? {
             accountId: "cha_00000000-0000-4000-8000-000000000001",
@@ -61,7 +63,6 @@ function channelServiceFixture(
     channels: channels as never,
     credentials: {} as never,
     onExecutionQueued,
-    onDeploymentEvent: () => undefined,
     runners: {
       canRunHarness: (_environmentId: string, driverKind: string) => driverKind !== "broken",
       identityForEnvironment: (id: string) =>
@@ -108,5 +109,62 @@ describe("ChannelService", () => {
       { environmentId, driverKinds: ["codex"] },
       { environmentId: otherEnvironmentId, driverKinds: ["claude"] },
     ]);
+  });
+
+  it.each([
+    ["claimed one and more are due: runs again at once", 1, 0, 0],
+    ["nothing due: armed at the next time", 0, 60_000, 60_000],
+    ["due but none claimable: backs off, no spin", 0, -1, 5_000],
+  ] as const)("ingress pass, %s", async (_, pending, nextIn, armedIn) => {
+    vi.useFakeTimers();
+    try {
+      const fixture = channelServiceFixture({ pending });
+      let first = true;
+      fixture.channels.nextIngressDeadline.mockImplementation(async () => {
+        // After one claimed delivery the rest stay due once, then nothing.
+        if (pending && !first) return null;
+        first = false;
+        return new Date(Date.now() + nextIn) as never;
+      });
+      fixture.service.start();
+      await vi.advanceTimersByTimeAsync(0);
+      const passes = fixture.channels.claimIngress.mock.calls.length;
+      if (armedIn > 0) {
+        await vi.advanceTimersByTimeAsync(armedIn - 1);
+        expect(fixture.channels.claimIngress.mock.calls.length).toBe(passes);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(fixture.channels.claimIngress.mock.calls.length).toBeGreaterThan(passes);
+      } else {
+        expect(fixture.channels.adoptIngress).toHaveBeenCalledOnce();
+        expect(vi.getTimerCount()).toBe(0);
+      }
+      await fixture.service.close();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("judges an unclaimable exhausted event at the pass's own time and backs off", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = channelServiceFixture({ pending: 0 });
+      // The store answers an exhausted event (another transaction holds it) as
+      // due at the time it is asked about; asked later, it reads as later.
+      fixture.channels.nextIngressDeadline.mockImplementation(async (asOf) => asOf);
+      fixture.service.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fixture.channels.claimIngress).toHaveBeenCalledOnce();
+      const claimedAt = fixture.channels.claimIngress.mock.calls[0]![1];
+      expect(fixture.channels.nextIngressDeadline.mock.calls[0]![0]).toBe(claimedAt);
+      // Claimed nothing while something was due: one retry 5 s later, no spin.
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(fixture.channels.claimIngress).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fixture.channels.claimIngress).toHaveBeenCalledTimes(2);
+      await fixture.service.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

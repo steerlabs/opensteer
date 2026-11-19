@@ -372,12 +372,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
-  "packages/client/src/host/host-api-client.ts": {
-    counts: {
-      "options.kind": 1,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
   "packages/client/src/integrations/computer-app-approval.ts": {
     counts: {
       "review.request.kind": 1,

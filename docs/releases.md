@@ -6,16 +6,19 @@ Tim performs every credential operation; agents never read or operate on key mat
 
 ## Fresh baseline and team servers
 
-This baseline refuses old databases. Desktop Start fresh renames personal data aside and creates
-a new Deployment identity; it never deletes the old data or touches `~/Opensteer`. Phones must
-pair again, and the old Account/Connect entry remains removable. Test reset only in disposable
-fixtures or a VM.
+Supported Personal databases upgrade in place. Migration 0038 converts Personal state after the
+plugin migrations. Desktop Start fresh renames personal data aside and creates a new Deployment
+identity. Phones then pair again, and the old Account/Connect entry remains removable. Test reset
+only in disposable fixtures or a VM.
 
 Self-hosted team servers update through the [deploy/team recipe](../deploy/team/README.md), with hourly
 scheduler-driven pull-before-replace updates. A failed pull leaves the running stack in place;
 there is no desktop team supervisor. Stable and Beta select the corresponding published tags,
-and each tag's version names the images it runs. The personal and team API windows advance
-independently. Hosted teams use the hosted release policy instead.
+and each tag's version names the images it runs. The Personal Host and apps update together at
+Personal API version 64. Version 64 introduces scoped sync and requires an update for clients
+on version 63 or older. Agent-enabled Runners update alongside the Host and negotiate
+`run-events-v2` separately. Team keeps its own API compatibility window.
+Hosted teams use the hosted release policy instead.
 
 ## Build inputs and local proof
 
@@ -159,7 +162,11 @@ outside CI.
 ## Personal database snapshots
 
 Before migrating on a new version, the app [snapshots](../apps/desktop/src/supervisor/personal-database-snapshot.ts)
-the stopped PostgreSQL cluster: a guard against a bad migration, not a failing disk, that never blocks launch. Restore by
+the stopped PostgreSQL cluster: a guard against a bad migration, not a failing disk. It never blocks
+launch, except before the one-way Personal state conversion (migration 0038): until a Deployment
+has started healthy after it, no copy means no update, and that copy is pinned past the newest-three
+retention. A failed conversion offers Try again or Start fresh and names the version that opens the
+kept copy; the new app cannot restore in place because it would rerun the conversion. Restore by
 hand with Opensteer and PostgreSQL stopped, setting the current data aside; an older binary alone
 is not a restore. Snapshots exclude native browser storage: a restored pre-conversion database
 must never recreate or replace an established native directory, and named profiles stay

@@ -10,7 +10,11 @@ import {
   type AssignmentSummary,
   type WaitingRequest,
 } from "@opensteer/core";
-import type { AssignmentEntry, HostSnapshot, TranscriptEntry } from "@opensteer/client/host";
+import type {
+  AssignmentEntry,
+  TranscriptFixtureSnapshot,
+  TranscriptEntry,
+} from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { AppShell } from "./app-shell.js";
 import { HomeRoute } from "./home/home-route.js";
@@ -36,6 +40,8 @@ afterEach(() => {
 async function chatWith(
   tasks: (seeded: AssignmentSummary) => readonly AssignmentSummary[],
   waiting: (tasks: readonly AssignmentSummary[]) => readonly WaitingRequest[] = () => [],
+  /** Workers' own transcripts this client holds, by worker task. */
+  workers: (tasks: readonly AssignmentSummary[]) => Record<string, TranscriptEntry[]> = () => ({}),
 ): Promise<{
   client: MockHostClient;
   node: HTMLElement;
@@ -54,7 +60,7 @@ async function chatWith(
   )!;
   let made = tasks(seeded.assignment);
   const questions = waiting(made);
-  let cache = new WeakMap<HostSnapshot, HostSnapshot>();
+  let cache = new WeakMap<TranscriptFixtureSnapshot, TranscriptFixtureSnapshot>();
   // The Host moving a task on: the next summary, told to whoever reads it.
   const listeners = new Set<() => void>();
   const subscribe = client.subscribe.bind(client);
@@ -102,6 +108,15 @@ async function chatWith(
       cache.set(snapshot, held);
     }
     return held;
+  });
+  // A worker's transcript is only in its own detail store, as the real client holds it.
+  const held = workers(made);
+  const transcript = client.getThreadTranscript.bind(client);
+  vi.spyOn(client, "getThreadTranscript").mockImplementation((threadId) => {
+    const entries = held[threadId];
+    if (!entries) return transcript(threadId);
+    const view = { ...transcript(threadId).getSnapshot(), entries, synchronized: true };
+    return { getSnapshot: () => view, subscribe: () => () => undefined };
   });
   const node = document.createElement("div");
   document.body.append(node);
@@ -200,6 +215,33 @@ describe("a task's row in the conversation that handed it out", () => {
     const title = line!.querySelector(".agent-step__title")!.textContent;
     await act(async () => open.click());
     expect(node.querySelector(".conv-header__name")?.textContent).toBe(title);
+  });
+
+  it("names the step a working task is taking while its own transcript is held", async () => {
+    const step = (task: AssignmentSummary): TranscriptEntry => ({
+      arguments: { command: "pnpm test --filter payments" },
+      callId: "call-1",
+      createdAt: "2026-10-25T10:01:00Z",
+      id: "tool:call-1",
+      integration: null,
+      isError: false,
+      kind: "tool",
+      output: undefined,
+      runId: task.currentRunId!,
+      state: "running",
+      streamText: "",
+      tool: { name: "shell", namespace: "codex" },
+    });
+    const { node } = await chatWith(
+      (seeded) => [
+        variant(seeded, 0, { currentRunId: createId("run"), currentRunStatus: "running" }),
+      ],
+      () => [],
+      ([task]) => ({ [task!.workerThread.id]: [step(task!)] }),
+    );
+    const [line] = lines(node);
+    expect(line!.dataset.tone).toBe("working");
+    expect(secondLine(line!)).toBe("Task·Running a command");
   });
 
   it("says a task asked a question, which is answered above the composer", async () => {

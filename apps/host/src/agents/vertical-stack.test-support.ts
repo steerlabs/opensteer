@@ -1,3 +1,6 @@
+import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
+import type { Kysely, Selectable } from "kysely";
+import type { DatabaseSchema } from "@opensteer/database";
 import type { HostConfig } from "@opensteer/config";
 import type { HarnessRegistry, HarnessRuntimeBoundary } from "@opensteer/harness";
 import type {
@@ -18,7 +21,6 @@ import type { PersonalHostRuntime as HostRuntime } from "../runtime/runtime.js";
 import type { NetworkPartition } from "./network-partition.test-support.js";
 import type { RunnerWire, RunnerWireOptions } from "./runner-wire.test-support.js";
 import type {
-  AgentEvent,
   ArtifactContentPart,
   Attachment,
   MessageId,
@@ -30,12 +32,41 @@ import type {
 } from "@opensteer/core";
 import type { HostApiClient } from "@opensteer/protocol";
 import { HostToClientMessageSchema, type HostToClientMessage } from "@opensteer/protocol";
-import type { RawData, WebSocket } from "ws";
+import { ScopedHostMessageSchema, type ScopedHostMessage } from "@opensteer/protocol/personal-sync";
+import WebSocket, { type RawData } from "ws";
+
+export type VerticalToolCall = Pick<
+  Selectable<DatabaseSchema["toolCalls"]>,
+  "callId" | "tool" | "arguments" | "integration" | "status" | "isError" | "output" | "startedAt"
+>;
+
+export function readVerticalRunTools(database: Kysely<DatabaseSchema>, runId: RunId) {
+  return database
+    .selectFrom("toolCalls")
+    .select([
+      "callId",
+      "tool",
+      "arguments",
+      "integration",
+      "origin",
+      "status",
+      "isError",
+      "output",
+      "startedAt",
+      "completedAt",
+    ])
+    .where("runId", "=", runId)
+    .orderBy("startedAt")
+    .orderBy("completionOrder")
+    .execute();
+}
 
 export interface VerticalTurn {
   readonly assistantText: string;
-  readonly events: readonly AgentEvent[];
+  readonly status: "completed" | "failed" | "interrupted";
+  readonly items: readonly { id: string; kind: string; position: string | null }[];
   readonly runId: RunId;
+  readonly tools: readonly VerticalToolCall[];
 }
 export interface VerticalStack {
   readonly api: HostApiClient;
@@ -215,10 +246,37 @@ export function attachmentReference(attachment: Attachment): ArtifactContentPart
     sizeBytes: attachment.sizeBytes,
   };
 }
+export async function openVerticalViewer(
+  { hostOrigin, sessionCookie }: Pick<VerticalStack, "hostOrigin" | "sessionCookie">,
+  threadId: ThreadId,
+) {
+  const client = new HttpHostClient({
+    baseUrl: hostOrigin,
+    fetch: (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("cookie", sessionCookie);
+      headers.set("origin", hostOrigin.origin);
+      return fetch(input, { ...init, headers });
+    },
+    webSocketFactory: (url) =>
+      new WebSocket(url, {
+        headers: { cookie: sessionCookie, origin: hostOrigin.origin },
+      }) as unknown as WebSocketClient,
+  });
+  try {
+    await client.load();
+    client.activateThread(threadId);
+    return client;
+  } catch (error) {
+    client.dispose();
+    throw error;
+  }
+}
+
 export function waitForRealtimeMessage(
   socket: WebSocket,
-  predicate: (message: HostToClientMessage) => boolean,
-): Promise<HostToClientMessage> {
+  predicate: (message: HostToClientMessage | ScopedHostMessage) => boolean,
+): Promise<HostToClientMessage | ScopedHostMessage> {
   return new Promise((resolve, reject) => {
     const finish = (effect: () => void) => {
       clearTimeout(timer);
@@ -229,7 +287,9 @@ export function waitForRealtimeMessage(
     const receive = (frame: RawData, isBinary: boolean) => {
       try {
         if (isBinary) throw new Error("Realtime sent a binary frame");
-        const message = HostToClientMessageSchema.parse(JSON.parse(frame.toString()));
+        const raw: unknown = JSON.parse(frame.toString());
+        const scoped = ScopedHostMessageSchema.safeParse(raw);
+        const message = scoped.success ? scoped.data : HostToClientMessageSchema.parse(raw);
         if (predicate(message)) finish(() => resolve(message));
       } catch (error) {
         finish(() => reject(error));

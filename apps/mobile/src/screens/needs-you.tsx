@@ -5,7 +5,7 @@ import { useHostSelector } from "@opensteer/client/react";
 import { needsYouEntryKey, type HostClient } from "@opensteer/client/host";
 import type { NeedsYouEntry, NeedsYouTeamAskEntry } from "@opensteer/protocol";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { notDone, useScreenAction } from "../ui/client-feedback.js";
@@ -32,6 +32,12 @@ const earlierFailed = presentClientIssue({ code: "read-failed", resource: "earli
  */
 function NeedsYouList({ client, deploymentId }: { client: HostClient; deploymentId: string }) {
   const page = useHostSelector(client, (snapshot) => snapshot.needsYou);
+  const summaries = useHostSelector(client, (snapshot) => snapshot.attentionSummaries);
+  const count = useHostSelector(client, (snapshot) => snapshot.needsYouCount);
+  const ready = useHostSelector(client, (snapshot) => snapshot.connection === "connected");
+  useEffect(() => {
+    if (ready && count && page == null) void client.loadEarlierNeedsYou().catch(() => undefined);
+  }, [client, count, page, ready, summaries]);
   const [loading, setLoading] = useState(false);
   const [earlier, setEarlier] = useState<ActionLineValue | null>(null);
   const loadMore = async () => {
@@ -53,17 +59,26 @@ function NeedsYouList({ client, deploymentId }: { client: HostClient; deployment
   return (
     <Screen>
       <ScrollView contentContainerStyle={{ padding: space[16], gap: space[16] }}>
-        {page === null || page === undefined ? <PlaceholderRows /> : null}
-        {page?.entries.length === 0 ? <AppText tone="muted">Nothing needs you.</AppText> : null}
+        {page == null && count === undefined ? <PlaceholderRows /> : null}
+        {count === 0 || page?.entries.length === 0 ? (
+          <AppText tone="muted">Nothing needs you.</AppText>
+        ) : null}
+        {page == null &&
+          summaries?.map((entry) => (
+            <View key={entry.id} style={{ gap: space[8], padding: space[16] }}>
+              <AppText>{entry.title}</AppText>
+              {entry.preview ? <AppText tone="muted">{entry.preview}</AppText> : null}
+            </View>
+          ))}
         {page?.entries.map((entry) => (
           <NeedsYouRow
+            key={needsYouEntryKey(entry)}
             client={client}
             deploymentId={deploymentId}
             entry={entry}
-            key={needsYouEntryKey(entry)}
           />
         ))}
-        {earlier === null ? null : <ActionLine line={earlier} />}
+        {earlier ? <ActionLine line={earlier} /> : null}
         {page?.window.hasMore ? (
           <Pressable
             accessibilityRole="button"

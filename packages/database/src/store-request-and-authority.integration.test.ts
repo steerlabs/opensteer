@@ -122,28 +122,10 @@ describeStore("PostgreSQL store", (it) => {
       resolvedAt: consent?.request.resolvedAt,
       resolvedBy: consent?.request.resolvedBy,
     });
-    expect(consent?.events).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "request.resolved",
-          data: expect.objectContaining({
-            request: expect.objectContaining({
-              response: {
-                kind: "external",
-                value: {
-                  outcome: "authorized",
-                  account: "a•••",
-                },
-              },
-              settlementProvenance: {
-                sessionId,
-                deviceLabel: "Safari on iPhone",
-              },
-            }),
-          }),
-        }),
-      ]),
-    );
+    expect(consent?.request).toMatchObject({
+      response: { kind: "external", value: { outcome: "authorized", account: "a•••" } },
+      settlementProvenance: { sessionId, deviceLabel: "Safari on iPhone" },
+    });
     expect(await store.requests.settlePasswordSignInRequest(interruption)).toBeNull();
     expect(
       await store.requests.settlePasswordSignInRequest({
@@ -234,9 +216,10 @@ describeStore("PostgreSQL store", (it) => {
           .where("id", "=", opened.request.id)
           .forUpdate()
           .execute(),
-      () =>
+      async () =>
         store.requests.resolveBrowserRequest({
           requestId: opened.request.id,
+          expectedRevision: (await store.requests.revision(opened.request.id))!,
           resolvedBy: fixture.userId,
           response: {
             kind: "external",
@@ -270,12 +253,6 @@ describeStore("PostgreSQL store", (it) => {
           status: "declined",
           originatingOccurrenceId: occurrence.id,
         },
-        events: [
-          expect.objectContaining({
-            type: "request.resolved",
-            runId: null,
-          }),
-        ],
       },
     });
   });
@@ -344,6 +321,7 @@ describeStore("PostgreSQL store", (it) => {
         .toBeGreaterThanOrEqual(count);
     const resolving = store.requests.resolveBrowserRequest({
       requestId: opened.request.id,
+      expectedRevision: (await store.requests.revision(opened.request.id))!,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",
@@ -435,13 +413,6 @@ describeStore("PostgreSQL store", (it) => {
     const created = await store.requests.create(input);
     const replay = await store.requests.create(input);
     expect(created).toMatchObject({
-      // A Trigger Occurrence has no Run to attribute its event to.
-      events: [
-        expect.objectContaining({
-          runId: null,
-          type: "request.opened",
-        }),
-      ],
       replayed: false,
       request: {
         originatingOccurrenceId: occurrence.id,
@@ -488,12 +459,6 @@ describeStore("PostgreSQL store", (it) => {
       withdrawnBy: fixture.userId,
     });
     expect(withdrawn).toMatchObject({
-      events: [
-        expect.objectContaining({
-          runId: null,
-          type: "request.resolved",
-        }),
-      ],
       replayed: false,
       request: {
         status: "withdrawn",
@@ -705,6 +670,7 @@ describeStore("PostgreSQL store", (it) => {
       await expect(
         store.requests.resolveBrowserRequest({
           requestId: opened.request.id,
+          expectedRevision: (await store.requests.revision(opened.request.id))!,
           resolvedBy: fixture.userId,
           response: {
             kind: "external",
@@ -723,6 +689,7 @@ describeStore("PostgreSQL store", (it) => {
       expect((await store.requests.get(opened.request.id))?.status).toBe("pending");
       const resolved = await store.requests.resolveBrowserRequest({
         requestId: opened.request.id,
+        expectedRevision: (await store.requests.revision(opened.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
@@ -823,7 +790,7 @@ describeStore("PostgreSQL store", (it) => {
             writes,
           });
           expect(result.session.state).toBe(terminal);
-          expect(result.events).toEqual([]);
+
           expect(after).toEqual(before);
         }
       }

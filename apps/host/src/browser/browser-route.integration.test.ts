@@ -1,3 +1,4 @@
+import { testResourceData } from "../server/test-host-api-request.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { hostApiVersion } from "@opensteer/deployment-authority";
@@ -93,7 +94,7 @@ integration("Host browser broker vertical", () => {
       name: "Storage computer",
       token: await machineHost.hostingRunnerEnrollmentToken,
     });
-    await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
+    await testRpcData(origin, "personal.shell.get", {}, { headers: sessionHeaders });
 
     // Identity is explicit at open: profiles are never auto-provisioned.
     const createdProfile = await testRpcData(
@@ -277,11 +278,14 @@ integration("Host browser broker vertical", () => {
       (frame) => decodeBrowserFrameEnvelope(frame).header.frameId,
     );
 
-    const bootstrap = await testRpcData(origin, "bootstrap.get", {}, { headers: { cookie } });
-    expect(bootstrap.browser).toMatchObject({
+    const browserOptions = { headers: { cookie } };
+    expect(await testResourceData(origin, "browser-availability", browserOptions)).toMatchObject({
       available: true,
+    });
+    expect(await testResourceData(origin, "browser-profile", browserOptions)).toMatchObject({
       profiles: [{ name: "Integration browser" }],
     });
+    const bootstrap = await testResourceData(origin, "tab", browserOptions);
     expect(bootstrap.tabs).toMatchObject({
       complete: true,
       tabs: [expect.objectContaining({ kind: "page", state: "open" })],
@@ -291,16 +295,11 @@ integration("Host browser broker vertical", () => {
     await expect(
       runtime.store.attachBrowserSession({
         agentBindingId: `run:${projectionRunId}`,
-        ownerId: bootstrap.user.id,
+        ownerId: (await runtime.store.firstUser())!.id,
         sessionId: started.session.id,
       }),
     ).resolves.toBe(false);
-    const detachedBootstrap = await testRpcData(
-      origin,
-      "bootstrap.get",
-      {},
-      { headers: { cookie } },
-    );
+    const detachedBootstrap = await testResourceData(origin, "tab", { headers: { cookie } });
     expect(detachedBootstrap.tabs.tabs.every((tab) => tab.usedBy.length === 0)).toBe(true);
 
     const laterAcknowledgment = vi.spyOn(runtime.store, "acknowledgeBrowserProfileReady");
@@ -478,8 +477,8 @@ integration("Host browser broker vertical", () => {
         capability: "browser",
       });
       expect(browserRuntime.streamOpen()).toBe(true);
-      const after = await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
-      expect(after.browser.profileHomes).toContain(browserRuntime.runnerId);
+      const after = await testResourceData(origin, "browser-home", { headers: sessionHeaders });
+      expect(after.homes).toContain(browserRuntime.runnerId);
       const person = await runtime.browser.start({
         fresh: true,
         ownerId: owner.id,

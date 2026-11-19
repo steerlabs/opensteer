@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { computerTargetId } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { isPhoneDisplayDefinitionId, RunnerIdSchema, type Request } from "@opensteer/core";
@@ -276,6 +277,8 @@ export function IntegrationConnectCard(props: {
         accountsCount: nextPlan.accounts.length,
         installationTitle: nextPlan.installationTitle,
         requestId: props.request.id,
+        expectedRevision:
+          loaded?.reviewedRevision ?? requestDecisionRevision(props.request).expectedRevision,
         selectedAccount: nextPlan.selectedAccount,
       });
     }
@@ -305,12 +308,14 @@ export function IntegrationConnectCard(props: {
       if (!payload || !loaded || !card?.primary) return;
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${props.request.id}:install`),
+        ...requestDecisionRevision(props.request),
         requestId: props.request.id,
         response: { kind: "choice", optionId: "installed" },
         type: "request.respond",
       });
       let before: string | undefined;
       let updated: Request | undefined;
+      let reviewedRevision: string | undefined;
       do {
         const page = unwrapRpcResult(
           await props.hostClient.rpc["thread.requests.list"]({
@@ -320,6 +325,7 @@ export function IntegrationConnectCard(props: {
           }),
         );
         updated = page.requests.find((candidate) => candidate.id === props.request.id);
+        if (updated) reviewedRevision = page.reviewedRevisions?.[updated.id];
         if (updated || !page.window.hasMore) break;
         if (!page.window.nextBefore)
           throw new Error("Thread Request page is missing its continuation cursor.");
@@ -332,7 +338,7 @@ export function IntegrationConnectCard(props: {
         props.hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
       ]);
       if (generation !== operationGeneration.current) return;
-      const next = { dashboard, platform, request: updated.payload };
+      const next = { dashboard, platform, request: updated.payload, reviewedRevision };
       setLoaded(next);
       // A catalog app goes on to its computer, or to its server, on the same card.
       const nextCard = connectCard({ loaded: next, allowChanges });
@@ -381,6 +387,7 @@ export function IntegrationConnectCard(props: {
     run(async (generation) => {
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${props.request.id}:server:${serverId}`),
+        ...requestDecisionRevision(props.request),
         requestId: props.request.id,
         response: { kind: "choice", optionId: `server:${serverId}` },
         type: "request.respond",
@@ -393,6 +400,7 @@ export function IntegrationConnectCard(props: {
     run(async (generation) => {
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${props.request.id}`),
+        ...requestDecisionRevision(props.request),
         requestId: props.request.id,
         response: { kind: "external", value: { decision: "declined" } },
         type: "request.respond",
@@ -410,6 +418,8 @@ export function IntegrationConnectCard(props: {
           accountsCount: 0,
           installationTitle: plan.installationTitle,
           requestId: props.request.id,
+          expectedRevision:
+            loaded?.reviewedRevision ?? requestDecisionRevision(props.request).expectedRevision,
           selectedAccount: null,
         });
         if (generation === operationGeneration.current) props.onResponded();

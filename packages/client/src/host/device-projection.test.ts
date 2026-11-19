@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { MachineSummarySchema, hostApi } from "@opensteer/protocol";
-import { computerTargetId, deviceMachine, machineSelfRunnerId } from "./device-projection.js";
+import {
+  computerTargetId,
+  deviceDriverKey,
+  deviceReasonLabel,
+  machineSelfRunnerId,
+} from "./device-projection.js";
+
+import { devicesView } from "../computers/devices.js";
 
 const runner = "rnr_00000000-0000-4000-8000-000000000001";
 const legacy = MachineSummarySchema.parse({
@@ -15,51 +22,82 @@ const legacy = MachineSummarySchema.parse({
   lastSeenAt: null,
   modules: {},
   ownership: "mine",
-  pinnedThreads: 0,
   revocable: true,
   status: "offline",
   unlinkedLocalFolders: 0,
 });
 
-describe("new client on a v60 Host", () => {
-  it("normalizes self identity once and never grants screen control from platform alone", () => {
-    for (const platform of ["android", "ios"] as const) {
-      const row = { ...legacy, device: { platform, form: "phone" as const } };
-      const projected = deviceMachine(row);
-      expect(machineSelfRunnerId(projected)).toBe(runner);
-      expect(projected.capabilities?.browser.supported).toBe(true);
-      expect(projected.capabilities?.apps.supported).toBe(false);
-      expect(projected.phoneDisplay).toBeNull();
-      expect(deviceMachine(row)).toBe(projected);
-    }
-    expect(deviceMachine({ ...legacy, kind: "agent-phone" }).phoneDisplay).toBeNull();
+describe("scoped device facts", () => {
+  it("uses the Host's explicit device identity and attached driver generation", () => {
+    expect(machineSelfRunnerId(legacy)).toBeNull();
+    expect(deviceDriverKey(legacy)).toBeNull();
+    const current = MachineSummarySchema.parse({
+      ...legacy,
+      kind: "computer",
+      selfRunnerId: runner,
+      phoneDisplay: null,
+      drivers: [
+        { role: "self", runnerId: runner, runnerName: "Phone", generation: 4, attached: true },
+      ],
+    });
+    expect(machineSelfRunnerId(current)).toBe(runner);
+    expect(deviceDriverKey(current)).toBe(JSON.stringify([runner, runner, 4, true]));
   });
 
-  it("retains legacy Agent Phone display capability from Host kind and integration grant", () => {
-    const projected = deviceMachine({
+  it("reads the typed target from the shared setup request", () => {
+    expect(computerTargetId({ deviceId: runner })).toBe(runner);
+    expect(computerTargetId({ runnerId: runner })).toBe(runner);
+    expect(
+      hostApi["machines.list"].success.parse({ machines: [{ ...legacy, pinnedThreads: 0 }] })
+        .machines[0]?.id,
+    ).toBe(runner);
+  });
+});
+
+it("never offers screen control from phone platform or Device kind alone", () => {
+  const phones = (["android", "ios"] as const).map((platform) =>
+    MachineSummarySchema.parse({
       ...legacy,
+      id: platform,
+      device: { platform, form: "phone", app: "opensteer" },
       kind: "agent-phone",
       allowedModules: ["browser", "integrations"],
-    });
-    expect(projected.phoneDisplay?.definitionId).toBe("android-phone");
-    expect(projected.phoneDisplay?.control).toMatchObject({
-      state: "unavailable",
-      reason: { kind: "driver-offline" },
-    });
-  });
+      phoneDisplay: null,
+    }),
+  );
+  expect(phones.map(machineSelfRunnerId)).toEqual([null, null]);
+  expect(
+    devicesView({ machines: phones, sessions: [], hereId: null }).devices.map(
+      ({ capabilitySummary }) => capabilitySummary,
+    ),
+  ).toEqual([null, null]);
+});
 
-  it("keeps current Host capability facts, including an explicit absent display", () => {
-    const current = { ...deviceMachine(legacy), kind: "agent-phone" as const, phoneDisplay: null };
-    expect(deviceMachine(current)).toBe(current);
-    expect(current.phoneDisplay).toBeNull();
+it("keeps an explicitly advertised Android display and its offline reason", () => {
+  const unavailable = { state: "unavailable", reason: { kind: "driver-offline" } };
+  const phone = MachineSummarySchema.parse({
+    ...legacy,
+    kind: "agent-phone",
+    device: { platform: "android", form: "phone" },
+    phoneDisplay: {
+      definitionId: "android-phone",
+      driver: null,
+      control: unavailable,
+      view: unavailable,
+      input: unavailable,
+      navigationButtons: [],
+      actions: [],
+      wake: false,
+      lock: null,
+      setup: { location: "android-usb" },
+    },
   });
-
-  it("reads legacy setup target fields through the existing shared target adapter", () => {
-    const old = { runnerId: runner };
-    expect(computerTargetId(old)).toBe(runner);
-    expect(computerTargetId({ deviceId: runner })).toBe(runner);
-    expect(hostApi["machines.list"].success.parse({ machines: [legacy] }).machines[0]?.id).toBe(
-      runner,
-    );
+  const row = devicesView({ machines: [phone], sessions: [], hereId: null }).devices[0];
+  expect(row?.machine).toBe(phone);
+  expect(row?.capabilitySummary).toBe("Screen control");
+  expect(row?.machine.phoneDisplay).toMatchObject({
+    definitionId: "android-phone",
+    control: unavailable,
   });
+  expect(deviceReasonLabel(phone.phoneDisplay?.control.reason ?? null)).toBe("Driver offline");
 });

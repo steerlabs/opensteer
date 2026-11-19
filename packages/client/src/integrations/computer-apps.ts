@@ -15,7 +15,6 @@ import type {
 import { androidAccessibilityStep } from "./computer-use.js";
 import {
   computerTargetId,
-  deviceMachine,
   type ClientComputerConnection,
   type ClientComputerSetupRequest,
 } from "../host/device-projection.js";
@@ -136,7 +135,7 @@ export function computerAppRows(input: {
     );
     if (!connection && !(online && entry) && !pending) return [];
     const access = connection?.computer?.access ?? null;
-    const phone = deviceMachine(machine).phoneDisplay?.setup.location === "android-usb";
+    const phone = machine.phoneDisplay?.setup.location === "android-usb";
     return [
       {
         access,
@@ -335,7 +334,7 @@ export function computerAppTargets(input: {
           integrationsAdvertised: machine.modules.integrations !== undefined,
           name: input.definition.name,
           online: true,
-          phone: deviceMachine(machine).phoneDisplay?.setup.location === "android-usb",
+          phone: machine.phoneDisplay?.setup.location === "android-usb",
         }),
       },
     ];
@@ -363,7 +362,7 @@ export function computerConnectionState(input: {
     integrationsAdvertised: machine.modules.integrations !== undefined,
     name: input.definition.name,
     online: machine.status === "online",
-    phone: deviceMachine(machine).phoneDisplay?.setup.location === "android-usb",
+    phone: machine.phoneDisplay?.setup.location === "android-usb",
   });
 }
 

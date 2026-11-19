@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import {
   useEffect,
   useId,
@@ -161,6 +162,7 @@ export function PasswordSignInRequestBody({
         client.dispatch({
           idempotencyKey,
           requestId: request.id,
+          ...requestDecisionRevision(request),
           type: "browser.password-sign-in.respond",
           decision: { kind: "decline" },
         }),
@@ -184,6 +186,7 @@ export function PasswordSignInRequestBody({
         client.dispatch({
           type: "browser.password-sign-in.respond",
           requestId: request.id,
+          ...requestDecisionRevision(request),
           idempotencyKey: mutationIdempotencyKey(`password-sign-in:${request.id}`),
           decision: {
             kind: "approve",

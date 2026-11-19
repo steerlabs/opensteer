@@ -51,7 +51,6 @@ it.each([false, true])(
           }),
         },
       } as unknown as Options["store"],
-      onDeploymentEvent: () => undefined,
     });
     const result = await service.requestDataApp(
       {

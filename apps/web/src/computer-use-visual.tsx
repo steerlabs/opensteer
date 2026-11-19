@@ -135,7 +135,6 @@ const machine = {
   modules: { integrations: { checkedAt: null, detail: null, readiness: "ready" } },
   name: "Alex’s MacBook Pro",
   ownership: "mine",
-  pinnedThreads: 0,
   revocable: true,
   status: online ? "online" : "offline",
   unlinkedLocalFolders: 0,

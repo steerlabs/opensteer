@@ -57,7 +57,8 @@ export async function insertStatusDelivery(
       kind: "status",
       lastError: null,
       messageId: null,
-      nextAttemptAt: new Date(),
+      // Claimed against statement_timestamp(): stamp it on the same clock.
+      nextAttemptAt: sql<Date>`statement_timestamp()`,
       part: 0,
       partCount: 1,
       receipt: null,
@@ -336,7 +337,7 @@ export async function enqueueChannelReply(
         kind: "reply",
         lastError: null,
         messageId: input.messageId,
-        nextAttemptAt: new Date(),
+        nextAttemptAt: sql<Date>`statement_timestamp()`,
         part: index,
         partCount: parts.length,
         receipt: null,

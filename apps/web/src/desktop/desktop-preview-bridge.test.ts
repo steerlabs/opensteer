@@ -1,7 +1,7 @@
 import { createId } from "@opensteer/core";
-import { HostBootstrapSchema } from "@opensteer/protocol";
+import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import { describe, expect, it, vi } from "vitest";
-import { createHttpHostApiClient } from "@opensteer/client/host";
+import { createHttpHostApiClient, unwrapRpcResult } from "@opensteer/client/host";
 import { createDesktopHostFetch } from "./desktop-host-transport.js";
 import { desktopPreviewBridge } from "./desktop-preview-bridge.js";
 
@@ -31,7 +31,7 @@ describe("Desktop preview Host simulation", () => {
     ).rejects.toThrow("unconfirmed");
   });
 
-  it("serves a bootstrap that satisfies the real wire contract", async () => {
+  it("serves a scoped shell and its matching environment detail through the Desktop transport", async () => {
     vi.useFakeTimers();
     const bridge = desktopPreviewBridge("?desktop-preview=first-run", true, {
       transitionDelayMs: 1,
@@ -59,12 +59,43 @@ describe("Desktop preview Host simulation", () => {
         (input, init) => bridge.hostRoute(new Request(input, init)),
       ),
       onAuthenticationRequired: () => undefined,
+      personalVersion: scopedPersonalApiVersion,
     });
-    const result = await rpc["bootstrap.get"]({});
-    expect(result.ok, result.ok ? "" : result.error.message).toBe(true);
-    if (!result.ok) return;
-    expect(HostBootstrapSchema.safeParse(result.data).success).toBe(true);
-    expect(result.data.environments).toHaveLength(1);
+    const shell = unwrapRpcResult(await rpc["personal.shell.get"]({}));
+    expect(shell.session.user.id).toBe(shell.viewerId);
+    expect(shell.deploymentId).toBe(snapshot.deployments[0]?.id);
+    const details = unwrapRpcResult(await rpc["resources.detail.get"]({ kind: "environment" }));
+    expect(details.revision).toBe("0");
+    expect(details.next).toBeNull();
+    expect(details.data.kind).toBe("environment");
+    if (details.data.kind !== "environment") throw new Error("Missing environment details");
+    expect(details.data.environments).toHaveLength(1);
+    expect(details.data.environments[0]?.name).toBe("This Computer");
+    // An attach is always answered, marked, even when every installed revision is current.
+    const frames: unknown[] = [];
+    const stop = bridge.onHostWebSocketEvent((event) => {
+      if (event.type === "text") frames.push(JSON.parse(event.data));
+    });
+    const { connectionId } = await bridge.openHostWebSocket({
+      expectedDeploymentId: snapshot.deployments[0]!.id,
+      path: "/v1/personal/socket",
+    });
+    await bridge.sendHostWebSocket({
+      connectionId,
+      type: "text",
+      data: JSON.stringify({
+        type: "client.attach",
+        apiVersion: scopedPersonalApiVersion,
+        generation: 1,
+        interests: ["environment"],
+        installed: { environment: "0" },
+      }),
+    });
+    await vi.runAllTimersAsync();
+    expect(frames).toContainEqual(
+      expect.objectContaining({ type: "host.resource", reply: true, revisions: {} }),
+    );
+    stop();
     vi.useRealTimers();
   });
 });

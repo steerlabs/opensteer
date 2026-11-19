@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { controlledClientSession } from "@opensteer/client/test-support";
+import { controlledClientSession, scopedTranscriptFixture } from "@opensteer/client/test-support";
 
 import type { SurfaceModel } from "@opensteer/client/host";
 import type { Request } from "@opensteer/core";
@@ -190,6 +190,10 @@ async function render(
             refresh: async () => undefined,
             rpc: { "browser.sources.inspect": vi.fn() },
             subscribe: () => () => undefined,
+            ...scopedTranscriptFixture(
+              () => snapshot as never,
+              () => () => undefined,
+            ),
           } as never
         }
         mutationGate={createThreadMutationGate(null, () => undefined)}

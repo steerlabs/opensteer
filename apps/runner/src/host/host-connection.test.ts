@@ -138,6 +138,7 @@ describe("AgentsWorkSession", () => {
         send: async (message) => void messages.push(message),
       });
       const runtime = {
+        fenceRequestAnswers: vi.fn(),
         observeAgentHomeSkills: () => undefined,
         observeAgentHomeSettings: async () => undefined,
         subscribeHarnessPreparation: () => () => undefined,
@@ -198,6 +199,10 @@ describe("AgentsWorkSession", () => {
               },
         );
         expect(calls).toEqual(["run.execute"]);
+        expect(runtime.fenceRequestAnswers).toHaveBeenCalledExactlyOnceWith(
+          ids.runId,
+          ...(stop === "interrupt" ? [interrupt] : []),
+        );
         expect(work.settled()).toBe(false);
         execution.resolve();
         await vi.waitFor(() =>
@@ -559,9 +564,8 @@ describe("runnerWebSocketUrl", () => {
     const abort = new AbortController();
     const advertised: unknown[] = [];
     const announcements: RunnerToHostMessage[] = [];
-    // Two "denied" answers before the person turns the switch: the watch must
-    // stay silent while the answer is what the descriptor already said.
-    const answers = [false, false, true];
+    // The first probe happens on connect. A foreground refresh sees the grant.
+    const answers = [false, true, true];
     let probes = 0;
     const probe = vi.fn(async () => answers[Math.min(probes++, answers.length - 1)] ?? true);
     let connections = 0;
@@ -575,6 +579,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -599,6 +604,19 @@ describe("runnerWebSocketUrl", () => {
               runnerId: message.descriptor.runnerId,
               serverTime: new Date().toISOString(),
               type: "host.welcome",
+            }),
+          );
+          return;
+        }
+        if (message.type === "runner.executions.attach") {
+          socket.send(
+            JSON.stringify({
+              bootId: message.bootId,
+              connectionGeneration: message.connectionGeneration,
+              connectionId: message.connectionId,
+              connectionLeaseId: message.connectionLeaseId,
+              runnerId: message.runnerId,
+              type: "host.shell.probe-full-disk-access",
             }),
           );
           return;
@@ -646,7 +664,7 @@ describe("runnerWebSocketUrl", () => {
         runnerId,
         runnerKind: "local",
       } as unknown as RunnerConfig,
-      fullDiskAccessProbe: { deniedIntervalMs: 5, grantedIntervalMs: 5, probe },
+      fullDiskAccessProbe: { probe },
       identity,
       identityStore: {
         acceptHostConnection: async ({ connectionGeneration }) => ({
@@ -679,7 +697,7 @@ describe("runnerWebSocketUrl", () => {
         runnerId,
         type: "runner.shell.full-disk-access",
       });
-      expect(probes).toBeGreaterThanOrEqual(3);
+      expect(probes).toBe(3);
       expect(advertised[0]).toEqual({
         fullDiskAccess: false,
         hostPublicKey:
@@ -727,6 +745,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -853,6 +872,7 @@ describe("runnerWebSocketUrl", () => {
         hostSessionId: "host-session-with-at-least-thirty-two-characters",
         nonce: "runner-challenge-with-at-least-thirty-two-characters",
         proofFormatVersion: 2,
+        runEventsVersion: 2,
         type: "host.challenge" as const,
       };
       socket.send(JSON.stringify(challenge));
@@ -1156,6 +1176,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -1412,6 +1433,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -1605,6 +1627,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -1805,6 +1828,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -1902,6 +1926,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -2031,6 +2056,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -2265,8 +2291,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
     try {
       await host.until(() => host.attaches.length === 1, "the first connection");
       runner.connection.recheckEngines();
-      // A heartbeat rechecks before it sends; one arriving on the first
-      // connection afterwards proves neither recheck hung up.
+      // The heartbeat confirms the explicit recheck left this connection open.
       vi.advanceTimersByTime(1_000);
       await host.until(() => host.heartbeats(1) === 1, "a heartbeat on the first connection");
       expect(host.hellos).toHaveLength(1);
@@ -2287,7 +2312,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
         }),
       ]);
       expect(host.attaches[1]).toEqual([heldRun]);
-      // A runnable engine compares equal to its own advertisement too.
+      runner.connection.recheckEngines();
       vi.advanceTimersByTime(1_000);
       await host.until(() => host.heartbeats(2) === 1, "a heartbeat on the second connection");
       expect(host.hellos).toHaveLength(2);
@@ -2301,7 +2326,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
     }
   });
 
-  it("waits while trigger work runs, and reconnects at the next heartbeat once it is idle", async () => {
+  it("keeps the connection during trigger work and reconnects on an explicit recheck once idle", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const host = await fakeAgentsHost();
     let installed = false;
@@ -2321,6 +2346,9 @@ describe("ReconnectingHostConnection engine rechecks", () => {
 
       triggerWork.mockReturnValue([]);
       vi.advanceTimersByTime(1_000);
+      await host.until(() => host.heartbeats(1) === 2, "a heartbeat after trigger work ended");
+      expect(host.hellos).toHaveLength(1);
+      runner.connection.recheckEngines();
       await host.until(() => host.hellos.length === 2, "the reconnect once trigger work ended");
       expect(host.hellos[1]).toEqual([
         expect.objectContaining({ driverKind, readiness: "runtime-check" }),
@@ -2344,13 +2372,13 @@ describe("ReconnectingHostConnection engine rechecks", () => {
     const reconcile = Promise.withResolvers<void>();
     try {
       await host.until(() => host.attaches.length === 1, "the first connection");
-      // A slow reconcile holds the ordered queue; a trigger sent after it waits there.
       const reconciling = Promise.withResolvers<void>();
       vi.spyOn(runner.runtime, "reconcileHarnesses").mockImplementation(async () => {
         reconciling.resolve();
         await reconcile.promise;
       });
-      host.send(1, { harnesses: [], requestId: randomUUID(), type: "host.reconcile-harnesses" });
+      const requestId = randomUUID();
+      host.send(1, { harnesses: [], requestId, type: "host.reconcile-harnesses" });
       await withTimeout(reconciling.promise, 2_000, {
         timeoutError: () => new Error("the reconcile never started"),
       });
@@ -2360,12 +2388,12 @@ describe("ReconnectingHostConnection engine rechecks", () => {
       await host.until(() => host.heartbeats(1) === 1, "a heartbeat while the queue is busy");
       expect(host.hellos).toHaveLength(1);
 
-      // The queue empties a few microtasks after the reconcile does; the
-      // heartbeat that follows is the first to see it empty.
       reconcile.resolve();
-      vi.advanceTimersByTime(1_000);
-      await host.until(() => host.heartbeats(1) === 2, "a heartbeat as the queue drains");
-      vi.advanceTimersByTime(1_000);
+      await host.until(
+        () => host.catalogs.some((catalog) => catalog.requestId === requestId),
+        "the queued reconcile response",
+      );
+      runner.connection.recheckEngines();
       await host.until(() => host.hellos.length === 2, "the reconnect once the queue drained");
     } finally {
       reconcile.resolve();
@@ -2525,6 +2553,7 @@ async function fakeAgentsHost() {
         hostSessionId: randomUUID(),
         nonce: randomUUID(),
         proofFormatVersion: 2,
+        runEventsVersion: 2,
         type: "host.challenge",
       }),
     );

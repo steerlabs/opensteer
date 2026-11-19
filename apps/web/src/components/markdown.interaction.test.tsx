@@ -97,6 +97,30 @@ describe("Markdown an agent wrote", () => {
     expect(container.textContent).not.toContain("the task");
   });
 
+  it("highlights each code fence as it closes while the reply keeps streaming", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const first = "```js\nconst first = 1;\n```";
+    const second = "```js\nconst second = 2;";
+    const draw = (text: string, streaming = true) =>
+      act(() => root.render(<Markdown text={text} streaming={streaming} />));
+
+    draw(`${first}\n\n${second}`);
+    expect(container.querySelector("pre code.hljs .hljs-keyword")?.textContent).toBe("const");
+    expect(container.querySelectorAll("pre code")[1]?.outerHTML).toBe(
+      '<code class="language-js">const second = 2;\n</code>',
+    );
+    draw(`${first}\n\n${second}\nconst third = 3;`);
+    expect(container.querySelectorAll("pre code.hljs")).toHaveLength(1);
+    draw(`${first}\n\n${second}\n\`\`\``);
+    expect(container.querySelectorAll("pre code.hljs")).toHaveLength(2);
+
+    draw(`${first}\n\n${second}`, false);
+    expect(container.querySelectorAll("pre code.hljs")).toHaveLength(2);
+  });
+
   it("reads a person's words as typed: no single-tilde strike, raw HTML stays text", () => {
     const container = document.createElement("div");
     document.body.append(container);

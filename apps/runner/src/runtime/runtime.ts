@@ -76,7 +76,7 @@ import {
 import {
   backgroundTextAttemptsPerRunner,
   HarnessInstanceCatalogSchema,
-  PendingAgentEventSchema,
+  PendingAgentEventV2Schema,
   pendingAgentEventMaxSerializedBytes,
   type PendingAgentEvent,
   type ProtocolError,
@@ -275,8 +275,10 @@ interface ActiveRun {
   emittedEvents: number;
   /** Streaming text not yet completed by a durable event. */
   readonly live: LiveProgressBuffer;
+  assistantMessageId?: import("@opensteer/core").MessageId;
   nextOrdinal: number;
   readonly pendingRequestIds: Set<RequestId>;
+  requestAnswersRevoked?: true;
   /**
    * The Host already ended this Run without it. Nothing more is sent for it:
    * its outcome is durable there, and a late event would only be refused.
@@ -616,7 +618,7 @@ export class RunnerRuntime {
   /**
    * The part of `harnessDrivers` that a CLI appearing or going changes, read
    * from PATH lookups alone (no version probe, process or network), so a
-   * connection can compare it with what it advertised on every heartbeat.
+   * connection can compare it with what it advertised when explicitly refreshed.
    */
   harnessDriverAvailability(): readonly HarnessDriverAvailability[] {
     return this.#harnesses.listDrivers().map(({ kind, readiness }) => ({
@@ -1612,7 +1614,7 @@ export class RunnerRuntime {
         case "run.interrupt":
           return this.#interrupt(command.runId, command.threadId, command.bindingGeneration);
         case "request.resolve":
-          return this.#resolveRequest(command.runId, command.requestId, command.response);
+          return this.#resolveRequest(command);
         case "run.steer":
           return this.#steer(command);
         case "harness.update":
@@ -1825,6 +1827,25 @@ export class RunnerRuntime {
     }
   }
 
+  /** A received Stop fences answers while its ordered command is still waiting. */
+  fenceRequestAnswers(
+    runId: RunId,
+    interrupt?: Extract<RunnerCommand, { type: "run.interrupt" }>,
+  ): void {
+    const active = this.#runs.get(runId);
+    if (!active) return;
+    const context = active.command.context;
+    if (
+      interrupt &&
+      (interrupt.environmentId !== context.environmentId ||
+        interrupt.threadId !== context.threadId ||
+        (interrupt.bindingGeneration !== undefined &&
+          interrupt.bindingGeneration !== context.bindingGeneration))
+    )
+      return;
+    active.requestAnswersRevoked = true;
+  }
+
   /**
    * The Host ended these Runs without them. Each one stops at once and says
    * nothing more: its outcome is durable on the Host already.
@@ -1980,9 +2001,13 @@ export class RunnerRuntime {
     await this.#publishPendingHarnessCatalogInvalidations(sink);
   }
 
+  resynchronizeLive(runId: RunId): void {
+    this.#runs.get(runId)?.live.resynchronize();
+  }
+
   /** Forgets what the Host has committed; nothing acknowledged is replayed again. */
   acknowledge(
-    acks: Extract<HostToRunnerMessage, { readonly type: "host.events.acked" }>["acks"],
+    acks: Extract<HostToRunnerMessage, { readonly type: "host.executions.acked" }>["acks"],
   ): void {
     for (const ack of acks) {
       const active = this.#runs.get(ack.runId) ?? this.#settledRuns.get(ack.runId);
@@ -2280,6 +2305,7 @@ export class RunnerRuntime {
               runId: context.runId,
               threadId: context.threadId,
             },
+            ...(active.assistantMessageId ? { assistantMessageId: active.assistantMessageId } : {}),
             type: "runner.live",
           });
         },
@@ -3172,6 +3198,7 @@ export class RunnerRuntime {
   #appendLive(active: ActiveRun, event: HarnessLiveEvent): void {
     switch (event.type) {
       case "assistant.delta":
+        active.assistantMessageId ??= createId("message");
         active.live.append({ stream: "assistant" }, event.data.text);
         return;
       case "reasoning.delta":
@@ -3212,7 +3239,12 @@ export class RunnerRuntime {
    */
   async #emitDurable(active: ActiveRun, event: HarnessDurableEvent): Promise<void> {
     await active.live.flush();
-    await this.#emit(active, event);
+    await this.#emit(
+      active,
+      event.type === "assistant.message" && active.assistantMessageId
+        ? { ...event, data: { ...event.data, messageId: active.assistantMessageId } }
+        : event,
+    );
     switch (event.type) {
       case "tool.started":
         if (event.data.nodeId) active.toolNodeIds.set(event.data.callId, event.data.nodeId);
@@ -3222,6 +3254,7 @@ export class RunnerRuntime {
         return;
       case "assistant.message":
         active.live.complete({ stream: "assistant" });
+        delete active.assistantMessageId;
         return;
       case "reasoning.completed":
         if (event.data.nodeId) return;
@@ -3255,7 +3288,10 @@ export class RunnerRuntime {
           // tail can exceed in many scripts; the newest text that fits is kept.
           const text = fittedTail(item.text, truncated, messageContentMaxSerializedBytes - 1_024);
           await this.#emit(active, {
-            data: { content: [{ text, type: "text" }], messageId: createId("message") },
+            data: {
+              content: [{ text, type: "text" }],
+              messageId: active.assistantMessageId ?? createId("message"),
+            },
             type: "assistant.message",
           });
         } else if (item.stream === "reasoning") {
@@ -3296,7 +3332,7 @@ export class RunnerRuntime {
         : original;
     const event = fittedDurableEvent(outcome);
     const { context } = active.command;
-    const pending = PendingAgentEventSchema.parse({
+    const pending = PendingAgentEventV2Schema.parse({
       bindingGeneration: context.bindingGeneration,
       data: event.data,
       emittedAt: new Date().toISOString(),
@@ -3338,9 +3374,9 @@ export class RunnerRuntime {
     active.journal.events.set(pending.ordinal, { bytes, event: pending });
     active.journal.bytes += bytes;
     if (terminal) active.journal.terminal = true;
+    if (event.type === "request.opened") active.pendingRequestIds.add(event.data.request.id);
+    if (event.type === "request.cancelled") active.pendingRequestIds.delete(event.data.requestId);
     await this.#pumpJournal(active);
-    active.pendingRequestIds.clear();
-    for (const requestId of pendingAfter) active.pendingRequestIds.add(requestId);
   }
 
   async #stopNode(
@@ -3443,16 +3479,31 @@ export class RunnerRuntime {
   }
 
   async #resolveRequest(
-    runId: RunId,
-    requestId: Parameters<HarnessSession["resolveRequest"]>[0],
-    response: Parameters<HarnessSession["resolveRequest"]>[1],
+    command: Extract<RunnerCommand, { type: "request.resolve" }>,
   ): Promise<CommandDecision> {
+    const { runId, requestId, response, bindingGeneration } = command;
     const active = this.#runs.get(runId);
     const session = active?.session;
     if (!session) return reject("not_found", "Active run was not found", false);
-    // Answered before the engine hears it: an engine may act on the answer,
-    // and end its turn, before the call that delivered it returns.
-    active.pendingRequestIds.delete(requestId);
+    if (
+      (bindingGeneration !== undefined &&
+        active.command.context.bindingGeneration !== bindingGeneration) ||
+      !active.pendingRequestIds.has(requestId)
+    )
+      return reject("not_found", "Request is no longer live in this execution", false);
+    // Let ordered inbound controls run before handing off the answer.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (
+      this.#runs.get(runId) !== active ||
+      active.session !== session ||
+      active.requestAnswersRevoked ||
+      active.settling ||
+      active.abort.signal.aborted ||
+      !active.pendingRequestIds.delete(requestId)
+    ) {
+      return reject("not_found", "Request is no longer live in this execution", false);
+    }
+    // Once the Runner delivers the answer to the engine, a later Stop races an admitted effect.
     try {
       await session.resolveRequest(requestId, response);
       return { status: "accepted" };

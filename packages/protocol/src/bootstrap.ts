@@ -83,6 +83,24 @@ export const OwnerProfileViewSchema = z.object({
 });
 export type OwnerProfileView = z.infer<typeof OwnerProfileViewSchema>;
 
+export const PersonalSettingsViewSchema = z
+  .object({
+    ...PersonalSettingsSchema.shape,
+    agentHome: z.object(PersonalSettingsSchema.shape.agentHome.shape),
+    idleCompactionPolicy: IdleCompactionPolicyViewSchema.optional(),
+  })
+  .nullable();
+export const PersonalCapabilitiesViewSchema = z.object({
+  createTasks: z.boolean(),
+  useVoice: z.boolean(),
+  manageComputers: z.boolean(),
+  managePrivateResources: z.boolean(),
+});
+export const PersonalSessionSurfaceSchema = z.enum(["canonical", "personal-remote"]);
+export const PersonalEnvironmentsViewSchema = z.array(HostBootstrapEnvironmentSchema).max(400);
+export const PersonalHarnessesViewSchema = z.array(HostBootstrapHarnessSchema).max(400);
+export const PersonalMachinesViewSchema = z.array(MachineSummarySchema).max(400);
+
 export const HostBootstrapSchema = z.object({
   /**
    * The personal API version this caller is served. A Host from before the
@@ -91,31 +109,20 @@ export const HostBootstrapSchema = z.object({
   apiVersion: z.number().int().positive().optional(),
   deploymentId: DeploymentIdSchema,
   sessionId: AuthSessionIdSchema,
-  personalSettings: z
-    .object({
-      ...PersonalSettingsSchema.shape,
-      agentHome: z.object(PersonalSettingsSchema.shape.agentHome.shape),
-      idleCompactionPolicy: IdleCompactionPolicyViewSchema.optional(),
-    })
-    .nullable(),
-  can: z.object({
-    createTasks: z.boolean(),
-    useVoice: z.boolean(),
-    manageComputers: z.boolean(),
-    managePrivateResources: z.boolean(),
-  }),
+  personalSettings: PersonalSettingsViewSchema,
+  can: PersonalCapabilitiesViewSchema,
   tabs: TabBootstrapSchema,
   browser: HostedBrowserBootstrapSchema,
   latestPlaces: z.array(ThreadPlaceReferenceSchema).max(4096),
-  environments: z.array(HostBootstrapEnvironmentSchema).max(400),
+  environments: PersonalEnvironmentsViewSchema,
   executionPreferences: ExecutionPreferencesViewSchema,
   quietTaskDays: QuietTaskDaysSchema,
   /** Absent from Hosts before `viewer.name.update`; its presence is the capability. */
   ownerProfile: OwnerProfileViewSchema.optional(),
-  harnesses: z.array(HostBootstrapHarnessSchema).max(400),
+  harnesses: PersonalHarnessesViewSchema,
   identityConfig: IdentityConfigViewSchema,
-  machines: z.array(MachineSummarySchema).max(400),
-  sessionSurface: z.enum(["canonical", "personal-remote"]),
+  machines: PersonalMachinesViewSchema,
+  sessionSurface: PersonalSessionSurfaceSchema,
   user: AuthenticatedUserViewSchema,
 });
 

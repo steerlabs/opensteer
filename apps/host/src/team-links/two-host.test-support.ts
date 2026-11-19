@@ -412,7 +412,7 @@ export async function createTwoHostLinkFixture() {
       if (local.runId)
         await database
           .updateTable("runs")
-          .set({ status: "interrupted" })
+          .set({ status: "interrupted", terminalReplyMessageId: null })
           .where("id", "=", local.runId)
           .execute();
       else
@@ -558,21 +558,22 @@ export async function createTwoHostLinkFixture() {
       .select("runId")
       .where("teamRequestId", "=", request.id)
       .executeTakeFirstOrThrow();
-    if (text !== null) {
-      const messageId = createId("message");
+    const messageId = text === null ? null : createId("message");
+    if (messageId !== null) {
       const seq = await database
         .updateTable("threads")
         .set({ nextMessageSequence: sql`next_message_sequence+1` })
         .where("id", "=", saved.taskId)
         .returning("nextMessageSequence")
         .executeTakeFirstOrThrow();
-      await sql`insert into messages(id,thread_id,run_id,sequence,kind,actor_principal_id,author,content) values(${messageId},${saved.taskId},${run.runId},${seq.nextMessageSequence},'assistant',${principalId},'{}',${JSON.stringify([{ type: "text", text }])})`.execute(
+      await sql`insert into messages(id,thread_id,run_id,sequence,kind,actor_principal_id,author,content) values(${messageId},${saved.taskId},${run.runId},${seq.nextMessageSequence},'assistant',${principalId},${JSON.stringify({ kind: "agent", displayName: "Agent", runId: run.runId, threadId: saved.taskId })}::jsonb,${JSON.stringify([{ type: "text", text }])})`.execute(
         database,
       );
     }
     await database
       .updateTable("runs")
       .set({
+        terminalReplyMessageId: state === "done" ? messageId : null,
         status:
           state === "done"
             ? "completed"

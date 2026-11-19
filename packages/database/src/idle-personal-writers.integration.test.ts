@@ -32,7 +32,9 @@ describeStore("Idle personal writers", (it) => {
           withTimeout(scan, 2_000, {
             timeoutError: () => new Error(`Idle ${kind} scan waited for personal event order`),
           }),
-        ).resolves.toEqual(kind === "schedules" ? { occurrences: [], changed: false } : null);
+        ).resolves.toEqual(
+          kind === "schedules" ? { occurrences: [], changed: false, failures: [] } : null,
+        );
       } finally {
         release.resolve();
         await Promise.allSettled([blocker, scan]);

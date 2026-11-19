@@ -4,7 +4,7 @@ import { DeviceIdSchema } from "@opensteer/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MockHostClient, mockIphoneScreenDevice } from "@opensteer/client/mock";
+import { MockHostClient, mockDeviceMachine, mockIphoneScreenDevice } from "@opensteer/client/mock";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { type TabTarget } from "@opensteer/core";
 import { runPlacePicture, type HostSnapshot } from "@opensteer/client/host";
@@ -1443,15 +1443,17 @@ it.each([
     expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
     return;
   }
-  const denied = {
-    ...machine,
+  const { capabilities: _capabilities, ...machineFacts } = machine;
+  const project = (changes: Partial<MachineSummary>) =>
+    mockDeviceMachine({ ...machineFacts, ...changes });
+  const denied = project({
     computerUse: {
       ...machine.computerUse!,
       sessions: refusal === "denial-before-session-removal" ? machine.computerUse!.sessions : [],
       state: "permission-required" as const,
       permissions: { accessibility: "granted" as const, screenRecording: "denied" as const },
     },
-  };
+  });
   if (refusal === "denial-before-release" || refusal === "denial-before-session-removal") {
     await move([denied]);
     expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
@@ -1460,7 +1462,7 @@ it.each([
   }
   for (const changed of [
     { ...machine, computerUse: { ...machine.computerUse!, sessions: [] } },
-    { ...machine, status: "offline" as const },
+    project({ status: "offline" }),
   ]) {
     await move([changed]);
     expect(node.querySelector("canvas")).toBe(canvas);
@@ -1500,7 +1502,7 @@ it.each([
     expect(node.querySelector(".place-canvas--hidden")).toBeNull();
     expect(node.querySelector(".viewfinder--still")).toBeNull();
   });
-  await move([{ ...machine, ownership: "mine", computerUse: null }]);
+  await move([project({ ownership: "mine", computerUse: null })]);
   expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
   expect(node.querySelector("canvas")).toBe(canvas);
   expect(sessionId).toBeDefined();

@@ -1,8 +1,11 @@
+import {
+  ScopedClientMessageSchema,
+  type ScopedHostMessage,
+} from "@opensteer/protocol/personal-sync";
 import { assertDeviceSessionAllowed } from "@opensteer/client/computers";
-import type { HostApiClient, PasswordSignInCard } from "@opensteer/protocol";
+import { hostApi, type HostApiClient, type PasswordSignInCard } from "@opensteer/protocol";
 import type { PasswordSignInAccount } from "@opensteer/client/host";
 import { createId, DeploymentIdSchema, RunnerIdSchema } from "@opensteer/core";
-import { hostApi } from "@opensteer/protocol";
 import {
   DesktopDownloadSchema,
   DesktopDownloadTargetSchema,
@@ -38,20 +41,13 @@ import {
   type DesktopComputerAppSetup,
 } from "@opensteer/protocol/desktop";
 
-import { previewBootstrap, previewDate, previewDeploymentSnapshot } from "./preview-bootstrap.js";
+import { previewPersonalHost, previewDate } from "./preview-personal-host.js";
 
 const previewParameter = "desktop-preview";
 const previewPersonalOrigin = "http://127.0.0.1:4310";
+const shellMember = "personal.shell.get";
+const resourceMember = "resources.detail.get";
 
-/**
- * The rpc declaration owns the bootstrap contract, so the simulator derives its
- * route and response body from the same record the real client reads. A renamed
- * or reshaped member becomes a compile error here instead of an onboarding
- * preview that answers 501 to the only request the shell makes.
- */
-const bootstrapMember = "bootstrap.get";
-const bootstrapDeclaration = hostApi[bootstrapMember];
-const bootstrapPath = `/v1/rpc/${bootstrapMember}`;
 /** Bridge requests carry an origin-relative path; this base only makes it parseable. */
 const previewRequestBase = "http://desktop-preview.invalid";
 
@@ -133,6 +129,16 @@ export function desktopPreviewBridge(
   const previewEnvironmentId = createId("environment");
   const previewRunnerId = createId("runner");
   const previewUserId = createId("user");
+  const previewSessionId = createId("authSession");
+  function previewHostData(selected: DesktopDeploymentSummary) {
+    return previewPersonalHost(selected, {
+      environmentId: previewEnvironmentId,
+      runnerId: previewRunnerId,
+      userId: previewUserId,
+      sessionId: previewSessionId,
+    });
+  }
+
   const signedInDeployments = new Set<string>();
   const socketPaths = new Map<string, string>();
   let socketOrdinal = 0;
@@ -613,21 +619,43 @@ export function desktopPreviewBridge(
       } catch {
         return;
       }
-      if (!isSubscribeFrame(frame)) return;
+      const parsed = ScopedClientMessageSchema.safeParse(frame);
       const selected = selectedDeployment(selection);
-      if (!selected) return;
-      emitSocket({
-        connectionId: input.connectionId,
-        data: JSON.stringify({
-          snapshot: previewDeploymentSnapshot(selected.id),
-          type: "host.snapshot",
-        }),
-        type: "text",
-      });
-      emitSocket({
-        connectionId: input.connectionId,
-        data: JSON.stringify({ sequence: "0", type: "host.synchronized" }),
-        type: "text",
+      if (!parsed.success || !selected) return;
+      const message = parsed.data;
+      const emit = (data: ScopedHostMessage | { type: "host.pong"; nonce: string }) =>
+        emitSocket({ connectionId: input.connectionId, data: JSON.stringify(data), type: "text" });
+      if (message.type === "client.ping") {
+        emit({ type: "host.pong", nonce: message.nonce });
+        return;
+      }
+      const writesShell =
+        message.type === "client.attach" ||
+        (message.type === "client.subscribe" && message.scope.kind === "shell");
+      if (!writesShell && message.type !== "client.resources.watch") return;
+      const data = previewHostData(selected);
+      if (writesShell) {
+        const address = {
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          scope: { kind: "shell" as const },
+          throughSequence: "0",
+        };
+        emit({ ...address, type: "host.snapshot", snapshot: data.shell });
+        emit({ ...address, type: "host.synchronized" });
+      }
+      // Every preview resource is fixed at revision "0".
+      if (message.type !== "client.attach" && message.type !== "client.resources.watch") return;
+      // The answer to an attach or watch is always sent, marked, even when nothing moved.
+      const revisions = Object.fromEntries(
+        message.interests.flatMap((kind) => (message.installed[kind] === "0" ? [] : [[kind, "0"]])),
+      );
+      emit({
+        type: "host.resource",
+        subscriptionId: "shell",
+        generation: message.generation,
+        revisions,
+        reply: true,
       });
     },
 
@@ -967,7 +995,8 @@ export function desktopPreviewBridge(
   async function hostRoute(request: Request): Promise<Response> {
     const route = parseDesktopHostRoute(request.url);
     if (!route) return new Response(null, { status: 404 });
-    const path = new URL(route.path, previewRequestBase).pathname;
+    const url = new URL(route.path, previewRequestBase);
+    const path = url.pathname;
     // The summaries main lets the chooser read from an Opensteer it hasn't opened.
     const summaryOf =
       request.method === "POST"
@@ -1003,20 +1032,20 @@ export function desktopPreviewBridge(
         { status: 401 },
       );
     }
-    if (request.method === bootstrapDeclaration.method && path === bootstrapPath) {
-      return Response.json(
-        {
-          data: bootstrapDeclaration.success.parse(
-            previewBootstrap(selected, {
-              environmentId: previewEnvironmentId,
-              runnerId: previewRunnerId,
-              userId: previewUserId,
-            }),
-          ),
-          ok: true,
-        },
-        { status: 200 },
+    if (request.method === hostApi[shellMember].method && path === `/v1/rpc/${shellMember}`) {
+      return Response.json({
+        ok: true,
+        data: hostApi[shellMember].success.parse(previewHostData(selected).shell),
+      });
+    }
+    if (request.method === hostApi[resourceMember].method && path === `/v1/rpc/${resourceMember}`) {
+      const { kind } = hostApi[resourceMember].payload.parse(
+        JSON.parse(url.searchParams.get("input") ?? "{}"),
       );
+      return Response.json({
+        ok: true,
+        data: hostApi[resourceMember].success.parse(previewHostData(selected).resource(kind)),
+      });
     }
     return Response.json(
       {
@@ -1314,15 +1343,6 @@ function previewAccountIdentity() {
     issuer: "https://accounts.opensteer.invalid",
     subject: "acct_00000000-0000-4000-8000-000000000001",
   };
-}
-
-function isSubscribeFrame(value: unknown): value is { readonly type: "client.subscribe" } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "type" in value &&
-    value.type === "client.subscribe"
-  );
 }
 
 function subscribe<Value>(

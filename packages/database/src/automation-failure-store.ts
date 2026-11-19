@@ -8,6 +8,7 @@ import type {
 } from "@opensteer/core";
 import { TriggerProgramEventSchema, TriggerSourceSchema } from "@opensteer/triggers";
 import { sql, type Kysely, type Transaction } from "kysely";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
 import { nearestListedThread } from "./thread-lineage.js";
 
@@ -30,18 +31,22 @@ export async function recordAutomationFailure(
   },
 ): Promise<void> {
   const detail = [...(input.detail.trim() || "No error was reported.")].slice(0, 2_000).join("");
-  await transaction
-    .insertInto("automationFailureNotices")
-    .values({
-      activationId: input.activationId ?? null,
-      detail,
-      id: randomUUID(),
-      occurrenceId: input.occurrenceId ?? null,
-      reason: input.reason,
-      triggerId: input.triggerId,
-    })
-    .onConflict((conflict) => conflict.column("occurrenceId").doNothing())
-    .execute();
+  await commitPersonalMutation(transaction, async (tx, mutation) => {
+    const inserted = await tx
+      .insertInto("automationFailureNotices")
+      .values({
+        activationId: input.activationId ?? null,
+        detail,
+        id: randomUUID(),
+        occurrenceId: input.occurrenceId ?? null,
+        reason: input.reason,
+        triggerId: input.triggerId,
+      })
+      .onConflict((conflict) => conflict.column("occurrenceId").doNothing())
+      .returning("id")
+      .executeTakeFirst();
+    if (inserted) mutation.react({ type: "automationFailuresChanged" });
+  });
 }
 
 /**
@@ -85,12 +90,34 @@ export class AutomationFailureStore {
     this.#database = database;
   }
 
-  /** Notices due now, oldest first. */
-  async listDue(limit = 50): Promise<readonly PendingAutomationFailure[]> {
-    const rows = await this.#database
+  #pendingNotices() {
+    return this.#database
       .selectFrom("automationFailureNotices")
       .innerJoin("triggers", "triggers.id", "automationFailureNotices.triggerId")
       .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
+      .where("automationFailureNotices.settledAt", "is", null);
+  }
+
+  /**
+   * Notices are stamped and found due on PostgreSQL's clock, and the Host times its wake on
+   * its own: the deadline is returned as the database's remaining wait from the Host's now.
+   */
+  async nextDeadline(): Promise<Date | null> {
+    const row = await this.#pendingNotices()
+      .select(
+        sql<number>`extract(epoch from (automation_failure_notices.next_attempt_at - now())) * 1000`.as(
+          "waitMs",
+        ),
+      )
+      .orderBy("automationFailureNotices.nextAttemptAt")
+      .limit(1)
+      .executeTakeFirst();
+    return row ? new Date(Date.now() + Math.max(0, Number(row.waitMs))) : null;
+  }
+
+  /** Notices due now, oldest first. */
+  async listDue(limit = 50): Promise<readonly PendingAutomationFailure[]> {
+    const rows = await this.#pendingNotices()
       .select([
         "automationFailureNotices.attempts",
         "automationFailureNotices.detail",
@@ -102,7 +129,6 @@ export class AutomationFailureStore {
         "triggers.id as triggerId",
         "triggers.name",
       ])
-      .where("automationFailureNotices.settledAt", "is", null)
       .where("automationFailureNotices.nextAttemptAt", "<=", sql<Date>`now()`)
       .orderBy("automationFailureNotices.createdAt", "asc")
       .limit(limit)

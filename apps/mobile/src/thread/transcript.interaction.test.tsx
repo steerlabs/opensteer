@@ -18,7 +18,7 @@ import {
   placeList,
   type DelegationEntry,
   type HostClient,
-  type HostSnapshot,
+  type TranscriptFixtureSnapshot,
   type MessageEntry,
   type NodeEntry,
   type PlaceEntry,
@@ -29,6 +29,7 @@ import {
 } from "@opensteer/client/host";
 import { mockComputerUseToolRefs, mockComputerUseTurn } from "@opensteer/client/mock";
 import { MockHostClient } from "@opensteer/client/mock";
+import { scopedTranscriptFixture } from "@opensteer/client/test-support";
 import { ThreadIdSchema } from "@opensteer/core";
 import {
   TranscriptAppTabsContext,
@@ -702,15 +703,19 @@ describe("a turn's subagents", () => {
   async function pane() {
     const loaded = new MockHostClient({ latencyMs: 0, subagents: "absent" });
     await loaded.load();
-    let current: HostSnapshot = { ...loaded.getSnapshot(), connection: "connected" };
+    let current: TranscriptFixtureSnapshot = { ...loaded.getSnapshot(), connection: "connected" };
     loaded.dispose();
     const listeners = new Set<() => void>();
+    const subscribe = (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    };
+    // The drawn entries are the thread's transcript, as the real client holds them.
     const hostClient = {
+      ...scopedTranscriptFixture(() => current, subscribe),
       getSnapshot: () => current,
-      subscribe: (listener: () => void) => {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-      },
+      getThreadItemText: () => undefined,
+      subscribe,
     } as unknown as HostClient;
     const onOpenSubagent = vi.fn();
     const container = document.createElement("div");

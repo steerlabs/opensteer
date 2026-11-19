@@ -44,6 +44,8 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .innerJoin("teamLinks as l", "l.id", "r.linkId")
       .innerJoin("teamMembers as m", "m.userId", "r.ownerUserId")
       .selectAll("r")
+      // PostgreSQL stamps a working request's expiry, so PostgreSQL decides it, in this transaction.
+      .select(sql<boolean>`r.expires_at is not null and r.expires_at <= now()`.as("expired"))
       .where("r.id", "=", id)
       .where("r.linkId", "=", linkId)
       .where("l.state", "=", "active")
@@ -87,7 +89,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       (queued && row.state === "queued") || row.state === "working" || row.state === "needs_you",
       "Request is terminal or has not been accepted",
     );
-    requireTeam(row.expiresAt === null || row.expiresAt > new Date(), "Request expired");
+    requireTeam(!row.expired, "Request expired");
     return row;
   }
   async authorize(
@@ -772,7 +774,10 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .where((e) =>
         e.or([
           e.and([e("state", "=", "awaiting_approval"), e("consentExpiresAt", "<=", new Date())]),
-          e.and([e("state", "in", ["working", "needs_you"]), e("expiresAt", "<=", new Date())]),
+          e.and([
+            e("state", "in", ["working", "needs_you"]),
+            e("expiresAt", "<=", sql<Date>`now()`),
+          ]),
         ]),
       );
     if (id) query = query.where("id", "=", id);
@@ -793,7 +798,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
                 ]),
                 e.and([
                   e("state", "in", ["working", "needs_you"]),
-                  e("expiresAt", "<=", new Date()),
+                  e("expiresAt", "<=", sql<Date>`now()`),
                 ]),
               ]),
             )

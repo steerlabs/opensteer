@@ -1,3 +1,4 @@
+import { useUnreadableResources } from "@opensteer/client/react";
 import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
@@ -29,6 +30,8 @@ import type { NativeSettingsSection } from "./native-settings-page.types.js";
 import { otherDevicesSettingsRows } from "./settings-model.js";
 import { useSettingsHost } from "./use-settings-host.js";
 
+const machineKinds = ["machine"] as const;
+
 export function DevicesSettingsController(): ReactNode {
   const [adding, setAdding] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -39,6 +42,7 @@ export function DevicesSettingsController(): ReactNode {
   const iphone = useIphoneAppsState(useIphoneApps());
   const leave = useLeaveSheets(selection.deploymentId, selection.hostClient);
   const host = selection.hostClient;
+  const machinesRead = useUnreadableResources(host, machineKinds);
   const deploymentId = selection.deploymentId;
   const overview = useScreenRead(host, {
     key: "devices-overview",
@@ -184,9 +188,28 @@ export function DevicesSettingsController(): ReactNode {
       ? settingsFooter(signOutDevice.line)
       : { text: failure, tone: "danger" as const };
   const missing = settingsFooter(readLine(sessions, sessions.refresh));
+  // Devices that could not be read are said so, with Try again, never listed empty or stale.
+  const unreadableDevices: NativeSettingsSection[] = machinesRead.unreadable
+    ? [
+        {
+          key: "devices-unreadable",
+          title: "",
+          rows: [],
+          footer: {
+            text: machinesRead.held
+              ? "Couldn't refresh your devices. Showing what was last loaded."
+              : "Couldn't load your devices.",
+            tone: "danger",
+            link: { label: "Try again", onPress: machinesRead.retry },
+          },
+        },
+      ]
+    : [];
   const nativeSections: NativeSettingsSection[] = [
     ...(answer === undefined ? [] : [{ key: "failure", title: "", rows: [], footer: answer }]),
-    ...sections.map((section) => ({
+    ...unreadableDevices,
+    // Held devices stay with their controls, under the error.
+    ...(machinesRead.unreadable && !machinesRead.held ? [] : sections).map((section) => ({
       key: section.key,
       title: section.title,
       ...(section.footer === null ? {} : { footer: { text: section.footer } }),

@@ -6,6 +6,8 @@ import { StartupFailure } from "./components/onboarding-card.js";
 import { installDictation } from "./desktop/dictation-runtime.js";
 
 import { createRoot } from "react-dom/client";
+import { checkRowSkipping } from "./row-skipping.js";
+import { removeRetiredStorage } from "./host/retired-storage.js";
 import { desktopBridge } from "./desktop/desktop-bridge.js";
 import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
@@ -15,7 +17,11 @@ import { initializeDesktopWindowChrome } from "./desktop/window-controls-overlay
 
 import { AuthSessionIdSchema, DeploymentKindSchema } from "@opensteer/core";
 import { personalWebBuildId } from "@opensteer/protocol";
-import { chromeConnectPagePath } from "@opensteer/client/host";
+import {
+  chromeConnectPagePath,
+  realtimeIdleProbeDeadlineMs,
+  realtimeIdleProbeMs,
+} from "@opensteer/client/host";
 
 document.documentElement.dataset.opensteerWebBuild = personalWebBuildId;
 
@@ -25,7 +31,11 @@ if (!root) {
   throw new Error("Opensteer web root was not found.");
 }
 
+// What earlier builds wrote and nothing reads goes first, private text included.
+removeRetiredStorage(safeLocalStorage());
 const appRoot = createRoot(root);
+// Decided once, beside the first paint: whether off-screen transcript rows may be skipped here.
+void checkRowSkipping().catch(() => undefined);
 const dictation = installDictation(desktopBridge()?.dictation);
 const reactRoot = {
   render: (children: React.ReactNode) =>
@@ -331,6 +341,11 @@ async function renderOpensteer(): Promise<void> {
         )
       : import("./host/browser-host-client.js").then(({ createBrowserHostClient }) =>
           createBrowserHostClient({
+            // The same quiet-socket probe as Desktop and the phone; a hidden tab pauses it.
+            realtimeLiveness: {
+              idleMs: realtimeIdleProbeMs,
+              deadlineMs: realtimeIdleProbeDeadlineMs,
+            },
             capabilities: async () => {
               const { verifyAccessEndpoint } = await import("@opensteer/client/connections");
               const verified = await verifyAccessEndpoint({
@@ -435,3 +450,12 @@ void renderOpensteer().catch((error: unknown) => {
     </StartupFailure>,
   );
 });
+
+/** The page's local storage, or undefined where reaching it throws (blocked site data). */
+function safeLocalStorage(): Storage | undefined {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return undefined;
+  }
+}

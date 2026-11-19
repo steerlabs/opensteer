@@ -1,3 +1,5 @@
+import { RetainedToolImage } from "../markdown/asset-image.js";
+import { useThreadTranscript } from "@opensteer/client/react";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import { AssetImage } from "../markdown/asset-image.js";
 import { useToolOutput } from "@opensteer/client/react";
@@ -9,7 +11,6 @@ import {
   type ReasoningEntry,
   type ToolEntry,
 } from "@opensteer/client/host";
-import { useHostSnapshot } from "@opensteer/client/react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -91,8 +92,8 @@ function SubscribedStep(props: {
   readonly hostClient: HostClient;
   readonly threadId: string;
 }): ReactNode {
-  const { snapshot } = useHostSnapshot(props.hostClient);
-  const entry = snapshot.transcripts[props.threadId]?.find(({ id }) => id === props.entryId);
+  const { entries } = useThreadTranscript(props.hostClient, props.threadId);
+  const entry = entries.find(({ id }) => id === props.entryId);
   if (entry?.kind === "tool")
     return <ToolDetail tool={entry} hostClient={props.hostClient} threadId={props.threadId} />;
   if (entry?.kind === "reasoning") return <ThoughtDetail reasoning={entry} />;
@@ -117,6 +118,9 @@ function ToolDetail(props: {
           threadId: props.threadId,
         }}
       >
+        {detail.images.map((image) => (
+          <RetainedToolImage key={image.id} imageId={image.id} />
+        ))}
         {tool.output?.images?.map((image) => (
           <AssetImage key={image.path} path={image.path} />
         ))}

@@ -138,6 +138,7 @@ integration("files between a Run and an app on another computer", () => {
       {
         idempotencyKey: "files-access",
         requestId: request.request.id,
+        expectedRevision: (await host.store.requests.revision(request.request.id))!,
         response: {
           kind: "external",
           value: {

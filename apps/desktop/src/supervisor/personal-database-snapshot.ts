@@ -1,9 +1,14 @@
 /**
  * A copy of a Personal Deployment's stopped PostgreSQL cluster, taken on the
- * first start of a new app version, before its Host migrates. It is a safety
- * net, never a gate: the restore is manual (docs/releases.md#personal-database-snapshots),
- * and on APFS the copy is a clone, so it costs nearly no space until the live
- * database changes and guards against a bad migration, not a failing disk.
+ * first start of a new app version, before its Host migrates. The restore is
+ * manual (docs/releases.md), and on APFS the copy is a clone, so it costs
+ * nearly no space until the live database changes and guards against a bad
+ * migration, not a failing disk.
+ *
+ * Until this Deployment has once started healthy on an app that converts
+ * Personal state (migration 0038), the copy is a gate and is pinned: no copy,
+ * no update, and later updates do not age it out until that first healthy
+ * start writes the converted marker.
  */
 import { constants } from "node:fs";
 import { cp, lstat, readdir, readFile, rm } from "node:fs/promises";
@@ -15,6 +20,7 @@ import type { PersonalRuntimeIdentity } from "../secrets/personal-deployment-sto
 
 export const retainedDatabaseSnapshots = 3;
 const metadataName = "snapshot.json";
+const convertedMarker = "personal-state-converted";
 
 /**
  * Clones `dataDirectory` into `<deploymentRoot>/snapshots/<UTC>-<fromVersion>/postgres`
@@ -27,6 +33,8 @@ export async function snapshotDatabase(input: {
   readonly fromRelease: PersonalRuntimeIdentity;
   readonly toRelease: PersonalRuntimeIdentity;
   readonly createdAt: Date;
+  /** Kept past the newest three until the converted marker exists. */
+  readonly pinned?: boolean;
 }): Promise<string> {
   const snapshots = path.join(input.deploymentRoot, "snapshots");
   await ensurePrivateDirectory(snapshots);
@@ -50,6 +58,7 @@ export async function snapshotDatabase(input: {
         {
           createdAt: input.createdAt.toISOString(),
           fromRelease: input.fromRelease,
+          ...(input.pinned ? { pinned: true } : {}),
           toRelease: input.toRelease,
         },
         null,
@@ -60,7 +69,13 @@ export async function snapshotDatabase(input: {
     await rm(directory, { force: true, recursive: true });
     throw error;
   }
-  const complete = (await snapshotNames(snapshots)).filter((entry) => entry !== name);
+  const keepPinned = !(await personalStateConverted(input.deploymentRoot));
+  const complete: string[] = [];
+  for (const entry of await snapshotNames(snapshots)) {
+    if (entry === name) continue;
+    if (keepPinned && (await readMetadata(snapshots, entry))?.pinned === true) continue;
+    complete.push(entry);
+  }
   for (const stale of complete
     .sort()
     .toReversed()
@@ -68,6 +83,41 @@ export async function snapshotDatabase(input: {
     await rm(path.join(snapshots, stale), { force: true, recursive: true });
   }
   return name;
+}
+
+/** Whether this Deployment has started healthy since Personal state was converted. */
+export async function personalStateConverted(deploymentRoot: string): Promise<boolean> {
+  return isFile(path.join(deploymentRoot, convertedMarker));
+}
+
+/** The first healthy start after conversion releases the pinned copy to normal retention. */
+export async function markPersonalStateConverted(deploymentRoot: string): Promise<void> {
+  if (await personalStateConverted(deploymentRoot)) return;
+  await replacePrivateFileAtomically(path.join(deploymentRoot, convertedMarker), "converted\n");
+}
+
+/**
+ * The app version that wrote the pre-conversion copy: the oldest pin, taken
+ * before any conversion batch ran, and the one that version can open.
+ */
+export async function pinnedSnapshotSourceVersion(deploymentRoot: string): Promise<string | null> {
+  const snapshots = path.join(deploymentRoot, "snapshots");
+  for (const entry of (await snapshotNames(snapshots)).sort()) {
+    const metadata = await readMetadata(snapshots, entry);
+    if (metadata?.pinned === true) return metadata.fromRelease?.hostVersion ?? null;
+  }
+  return null;
+}
+
+async function readMetadata(
+  snapshots: string,
+  entry: string,
+): Promise<{ pinned?: unknown; fromRelease?: { hostVersion?: string } } | null> {
+  try {
+    return JSON.parse(await readFile(path.join(snapshots, entry, metadataName), "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 /** A directory without `snapshot.json` is a copy that never finished. */

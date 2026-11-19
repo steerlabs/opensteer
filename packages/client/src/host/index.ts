@@ -116,6 +116,8 @@ export * from "./authorization-attempt.js";
 export * from "./device-projection.js";
 export type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 export * from "./iphone-setup.js";
+
+export { createPersonalStreamCache, type PersonalStreamCache } from "./personal-stream-cache.js";
 export * from "./message-outbox.js";
 export * from "./message-outbox-storage.js";
 export * from "./message-delivery-view.js";

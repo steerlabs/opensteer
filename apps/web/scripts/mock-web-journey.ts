@@ -3,14 +3,15 @@
  * Host, served the way a Host serves it, driven in headless Chromium, and
  * checks that keep what they observed for `result.json`. Chromium is
  * Playwright's (`playwright-core install chromium`) unless
- * OPENSTEER_CHROMIUM_EXECUTABLE names another.
+ * OPENSTEER_CHROMIUM_EXECUTABLE names another, or WebKit with
+ * OPENSTEER_JOURNEY_BROWSER=webkit.
  */
 import { once } from "node:events";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { chromium, type Browser } from "playwright-core";
+import { chromium, webkit, type Browser } from "playwright-core";
 import { build } from "vite";
 
 const webRoot = path.resolve(import.meta.dirname, "..");
@@ -38,10 +39,14 @@ export async function openMockWeb(name: string): Promise<MockWeb> {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("The web server has no port.");
     const executablePath = process.env.OPENSTEER_CHROMIUM_EXECUTABLE;
-    const browser = await chromium.launch({
-      headless: true,
-      ...(executablePath ? { executablePath } : {}),
-    });
+    // `OPENSTEER_JOURNEY_BROWSER=webkit` runs a journey in Playwright's WebKit instead.
+    const browser =
+      process.env.OPENSTEER_JOURNEY_BROWSER === "webkit"
+        ? await webkit.launch({ headless: true })
+        : await chromium.launch({
+            headless: true,
+            ...(executablePath ? { executablePath } : {}),
+          });
     return {
       browser,
       origin: `http://127.0.0.1:${address.port}`,

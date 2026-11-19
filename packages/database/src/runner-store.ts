@@ -8,7 +8,7 @@ import { upsertSelfDeviceInTransaction, getSelfDeviceId } from "./device-invento
 import { isDeepStrictEqual } from "node:util";
 import { canonicalRunnerPublicKeyPem } from "@opensteer/runner-auth";
 import { cancelPending } from "./request-cancellation.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 
 import { lockBrowserProfile } from "./browser-profile-storage-store.js";
 import {
@@ -24,7 +24,6 @@ import {
 import { type IntegrationConnectionId } from "@opensteer/channel-core";
 import {
   type AuthSessionId,
-  type AgentEvent,
   type BrowserProfileId,
   type EnvironmentId,
   type RequestId,
@@ -229,6 +228,7 @@ async function activateRunnerConnection(
       "publicKeyFingerprint",
       "publicKeyPem",
       "revokedAt",
+      "capabilities",
     ])
     .where("id", "=", descriptor.runnerId)
     .forNoKeyUpdate()
@@ -322,6 +322,15 @@ async function activateRunnerConnection(
     ])
     .executeTakeFirstOrThrow(databaseOperationOptions());
   await upsertSelfDeviceInTransaction(transaction, descriptor.runnerId);
+  // Capabilities are durable facts derived views read (a task's return hint); connecting is not.
+  const before = new Set<string>(existing.capabilities as readonly string[]);
+  if (
+    before.size !== new Set(descriptor.capabilities).size ||
+    descriptor.capabilities.some((capability) => !before.has(capability))
+  )
+    await commitPersonalMutation(transaction, async (_tx, mutation) => {
+      mutation.bumpResource("machine");
+    });
   // The first advertisement is the binding, and there is never a second one.
   // A computer can reach here having enrolled reach-only and come back running
   // agents: the grant already allowed it — `assertModulesWithinGrant` above
@@ -400,7 +409,7 @@ async function failRunsForRevokedRunner(
   transaction: Transaction<DatabaseSchema>,
   runnerId: RunnerId,
   links: ChannelLinks,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   const affected = await transaction
     .selectFrom("runs")
     .innerJoin("executionEnvironments", "executionEnvironments.id", "runs.environmentId")
@@ -429,30 +438,26 @@ async function failRunsForRevokedRunner(
     threadIds: affected.map(({ threadId }) => threadId),
   });
   if (affected.length) await lockRunnerBrowserProfileRemoval(transaction, runnerId);
-  const events: AgentEvent[] = [];
   for (const run of affected) {
-    events.push(
-      ...(await finalizeRunTransaction(transaction, {
-        completedAt: new Date(),
-        failure: {
-          code: "runner_revoked",
-          message:
-            run.status === "queued"
-              ? "The computer this work was waiting for was removed from this deployment"
-              : "The computer running this work was removed from this deployment",
-          retryable: false,
-          status: "failed",
-        },
-        links,
-        queuedInputCancellation: "authority-cohort",
-        requestCancellationReason: "process-lost",
-        runId: run.id,
-        source: "host",
+    await finalizeRunTransaction(transaction, {
+      completedAt: new Date(),
+      failure: {
+        code: "runner_revoked",
+        message:
+          run.status === "queued"
+            ? "The computer this work was waiting for was removed from this deployment"
+            : "The computer running this work was removed from this deployment",
+        retryable: false,
         status: "failed",
-      })),
-    );
+      },
+      links,
+      queuedInputCancellation: "authority-cohort",
+      requestCancellationReason: "process-lost",
+      runId: run.id,
+      source: "host",
+      status: "failed",
+    });
   }
-  return events;
 }
 
 /**
@@ -900,8 +905,7 @@ export async function revokeRunner(
   }[];
   readonly cancelledRequestIds: readonly RequestId[];
   readonly closedBrowserSessions: readonly BrowserSessionId[];
-  readonly events: readonly AgentEvent[];
-  readonly requestEvents: readonly AgentEvent[];
+
   readonly revokedComputerConnectionIds: readonly IntegrationConnectionId[];
 }> {
   const runs = (transaction: Transaction<DatabaseSchema>) =>
@@ -968,7 +972,7 @@ export async function revokeRunner(
       throw new TransactionScopeChanged();
     }
   };
-  return withPersonalTransaction(database, async (personalTransaction) => {
+  return commitPersonalMutation(database, async (personalTransaction, mutation) => {
     const identity = await personalTransaction
       .selectFrom("runners")
       .select(["ownerKind", "ownerUserId", "publicKeyPem", "revokedAt"])
@@ -999,8 +1003,7 @@ export async function revokeRunner(
         deletedBrowserProfiles: [],
         cancelledRequestIds: [],
         closedBrowserSessions: [],
-        events: [],
-        requestEvents: [],
+
         revokedComputerConnectionIds: [],
       };
     }
@@ -1060,6 +1063,7 @@ export async function revokeRunner(
             message: "Active Runner not found",
           });
         }
+        mutation.react({ type: "runnerRevoked", runnerId });
         if (
           (await homes(transaction).execute(databaseOperationOptions())).some(
             (row) => !profileIds.includes(row.id),
@@ -1076,10 +1080,11 @@ export async function revokeRunner(
           profileIds,
           revokedAt,
         );
+        if (deletedBrowserProfiles.length) mutation.bumpResource("browser-profile");
 
         await clearRemovedDeviceStopsInTransaction(transaction, deviceEffects.removedDeviceIds);
         await recheck(transaction);
-        const runEvents = await failRunsForRevokedRunner(transaction, runnerId, links);
+        await failRunsForRevokedRunner(transaction, runnerId, links);
         await transaction
           .updateTable("triggerWatchActivations")
           .set({
@@ -1127,7 +1132,6 @@ export async function revokeRunner(
           removals.push(await revokeComputerConnectionsInTransaction(transaction, { deviceId }));
         const revokedComputerConnections = {
           cancelledRequestIds: removals.flatMap((r) => r.cancelledRequestIds),
-          requestEvents: removals.flatMap((r) => r.requestEvents),
           connectionIds: removals.flatMap((r) => r.connectionIds),
         };
 
@@ -1149,7 +1153,7 @@ export async function revokeRunner(
             claimExpiresAt: null,
             claimOwner: null,
             claimTokenHash: null,
-            nextAttemptAt: revokedAt,
+            nextAttemptAt: sql<Date>`statement_timestamp()`,
             status: "pending",
             updatedAt: revokedAt,
           })
@@ -1177,7 +1181,7 @@ export async function revokeRunner(
           .where("status", "=", "pending")
           .where(sql<string>`payload->>'machineId'`, "=", runnerId)
           .execute();
-        const deviceRequestEvents = await cancelPending(transaction, {
+        const cancelledDeviceRequestIds = await cancelPending(transaction, {
           requestIds: deviceRequests.map((row) => row.id),
           reason: "resource-deleted",
           resolvedAt: revokedAt,
@@ -1198,6 +1202,10 @@ export async function revokeRunner(
           .where("deviceId", "in", sessionTargets)
           .returning("id")
           .execute();
+        mutation.bumpResource("machine");
+        mutation.bumpResource("environment");
+        mutation.bumpResource("browser-placement");
+        mutation.bumpResource("browser-availability");
         return {
           ...deviceEffects,
           endedSessionIds: endedSessions.map((row) => row.id),
@@ -1207,11 +1215,9 @@ export async function revokeRunner(
           })),
           cancelledRequestIds: [
             ...revokedComputerConnections.cancelledRequestIds,
-            ...deviceRequests.map((row) => row.id),
+            ...cancelledDeviceRequestIds,
           ],
           closedBrowserSessions,
-          events: runEvents,
-          requestEvents: [...revokedComputerConnections.requestEvents, ...deviceRequestEvents],
           revokedComputerConnectionIds: revokedComputerConnections.connectionIds,
         };
       }))(personalTransaction);
@@ -1230,7 +1236,7 @@ export async function renameRunner(
     readonly administration?: AdministrationCommandIdentity | undefined;
   } = {},
 ): Promise<void> {
-  await withPersonalTransaction(database, (transaction) =>
+  await commitPersonalMutation(database, (transaction, mutation) =>
     administrationCommand(transaction, options.administration, async () => {
       const updatedAt = new Date();
       const result = await transaction
@@ -1257,6 +1263,8 @@ export async function renameRunner(
           message: "Active Runner not found",
         });
       }
+      mutation.bumpResource("machine");
+      mutation.bumpResource("environment");
       const deviceId = await getSelfDeviceId(transaction, runnerId);
       if (deviceId)
         await transaction
@@ -1299,6 +1307,8 @@ export async function listPendingRunnerEnrollments(
     readonly includeDeployment: boolean;
     readonly limit: number;
     readonly ownerId: UserId;
+    readonly ids?: readonly string[];
+    readonly asOf?: Date;
   },
 ): Promise<readonly PendingRunnerEnrollmentRecord[]> {
   if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
@@ -1307,6 +1317,7 @@ export async function listPendingRunnerEnrollments(
       message: "Runner enrollment page limit is invalid",
     });
   }
+  if (input.ids?.length === 0) return [];
   return database
     .selectFrom("runnerEnrollments")
     .select([
@@ -1319,7 +1330,8 @@ export async function listPendingRunnerEnrollments(
       "runnerKind",
     ])
     .where("consumedAt", "is", null)
-    .where("expiresAt", ">", new Date())
+    .where("expiresAt", ">", input.asOf ?? new Date())
+    .$if(input.ids !== undefined, (query) => query.where("id", "in", input.ids!))
     .where((expression) =>
       expression.or([
         expression.and([
@@ -1425,7 +1437,7 @@ export async function createRunnerEnrollment(
     readonly tokenHash: string;
   },
 ): Promise<RunnerEnrollmentIssuanceRecord> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     let preparedIdentity = input.preparedIdentity ?? null;
     if (preparedIdentity) {
       try {
@@ -1642,6 +1654,7 @@ export async function createRunnerEnrollment(
         tokenHash: input.tokenHash,
       })
       .executeTakeFirstOrThrow(databaseOperationOptions());
+    if (input.runnerKind === "local") mutation.bumpResource("machine");
     return {
       deviceProfile: input.deviceProfile ?? null,
       allowedModules,
@@ -1670,7 +1683,7 @@ export async function retireRunnerEnrollment(
     readonly ownerId: UserId;
   },
 ): Promise<"consumed" | "expired" | "retired"> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     const identity = await transaction
       .selectFrom("runnerEnrollments")
       .select(["ownerKind", "ownerUserId", "tokenHash"])
@@ -1703,6 +1716,7 @@ export async function retireRunnerEnrollment(
       })
       .where("id", "=", input.enrollmentId)
       .executeTakeFirstOrThrow(databaseOperationOptions());
+    mutation.bumpResource("machine");
     return "retired";
   });
 }
@@ -1715,7 +1729,7 @@ export async function enrollRunnerConnection(
     readonly publicKeyPem: string;
   },
 ): Promise<RunnerConnectionRecord> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${input.enrollmentTokenHash}, 0))`.execute(
       transaction,
       databaseOperationOptions(),
@@ -1921,6 +1935,8 @@ export async function enrollRunnerConnection(
     );
     await bindRunnerEnvironments(transaction, input.descriptor, enrollment.name);
     const connection = await activateRunnerConnection(transaction, input.descriptor);
+    mutation.bumpResource("machine");
+    mutation.bumpResource("environment");
     return connection;
   });
 }
@@ -1928,23 +1944,32 @@ export async function setRunnerShellFullDiskAccess(
   database: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
   fullDiskAccess: boolean,
+  connectionGeneration?: number,
 ): Promise<boolean> {
-  const result = await database
-    .updateTable("runners")
-    .set({
-      moduleDescriptors: sql`jsonb_set(module_descriptors, '{shell,fullDiskAccess}', to_jsonb(${fullDiskAccess}::boolean))`,
-    })
-    .where("id", "=", runnerId)
-    .where("revokedAt", "is", null)
-    .where(sql<boolean>`module_descriptors ? 'shell'`)
-    .executeTakeFirst(databaseOperationOptions());
-  return result.numUpdatedRows > 0n;
+  return commitPersonalMutation(database, async (tx, mutation) => {
+    let update = tx
+      .updateTable("runners")
+      .set({
+        moduleDescriptors: sql`jsonb_set(module_descriptors, '{shell,fullDiskAccess}', to_jsonb(${fullDiskAccess}::boolean))`,
+      })
+      .where("id", "=", runnerId)
+      .where("revokedAt", "is", null)
+      .where(sql<boolean>`module_descriptors ? 'shell'`)
+      .where(
+        sql<boolean>`module_descriptors #> '{shell,fullDiskAccess}' IS DISTINCT FROM to_jsonb(${fullDiskAccess}::boolean)`,
+      );
+    if (connectionGeneration !== undefined)
+      update = update.where("connectionGeneration", "=", String(connectionGeneration));
+    const result = await update.returning("id").executeTakeFirst(databaseOperationOptions());
+    if (result) mutation.bumpResource("machine");
+    return !!result;
+  });
 }
 export async function authenticateRunnerConnection(
   database: Kysely<DatabaseSchema>,
   descriptor: RunnerDescriptor,
 ): Promise<RunnerConnectionRecord> {
-  return withPersonalTransaction(database, async (transaction) =>
+  return commitPersonalMutation(database, async (transaction) =>
     activateRunnerConnection(transaction, descriptor),
   );
 }
@@ -1958,17 +1983,23 @@ export async function recordRunnerUpdateRequired(
     readonly reason: "agent-phone-outdated" | "runner-outdated";
   },
 ): Promise<boolean> {
-  const result = await database
-    .updateTable("runners")
-    .set({
-      updateRequired: input.reason,
-      updatedAt: new Date(),
-    })
-    .where("id", "=", input.runnerId)
-    .where("connectionGeneration", "=", String(input.connectionGeneration))
-    .where("revokedAt", "is", null)
-    .executeTakeFirst(databaseOperationOptions());
-  return result.numUpdatedRows === 1n;
+  return commitPersonalMutation(database, async (tx, mutation) => {
+    const result = await tx
+      .updateTable("runners")
+      .set({ updateRequired: input.reason, updatedAt: new Date() })
+      .where("id", "=", input.runnerId)
+      .where("connectionGeneration", "=", String(input.connectionGeneration))
+      .where("revokedAt", "is", null)
+      .where(sql<boolean>`update_required IS DISTINCT FROM ${input.reason}`)
+      .returning("id")
+      .executeTakeFirst(databaseOperationOptions());
+    if (result) {
+      mutation.bumpResource("machine");
+      // An outdated Runner's device apps become unavailable until it updates.
+      if (input.reason === "runner-outdated") mutation.bumpResource("plugin");
+    }
+    return !!result;
+  });
 }
 
 /**

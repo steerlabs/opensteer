@@ -28,8 +28,6 @@ const noPlaces = vi.hoisted(() => ({
   sessionId: "test-login",
   network: "online",
   threads: [],
-  inputQueues: {},
-  transcripts: {},
 }));
 const shell = vi.hoisted(() => ({
   desktopBridge: null,
@@ -39,6 +37,7 @@ const shell = vi.hoisted(() => ({
     // The composer's place list reads the catalog; this conversation has none.
     getSnapshot: vi.fn(() => noPlaces),
     subscribe: vi.fn(() => () => undefined),
+    getThreadTranscript: () => undefined,
     loadEarlierWorkspaces: vi.fn(async () => undefined),
     rpc: {
       "integration.platform.get": vi.fn(async () => ({
@@ -469,6 +468,32 @@ describe("answering a question", () => {
     expect(composerField(node).closest("[hidden]")).not.toBeNull();
     await act(async () => option(node, "Batches").click());
     expect(sent()).toEqual([{ kind: "form", answers: { q: ["Batches"] } }]);
+  });
+
+  it("keeps a half-typed answer when its view goes away and comes back, and when the Request is read again", async () => {
+    const asked = question([field("q", { multiSelect: true })]);
+    let node = mount([asked]);
+    type(answerField(node), "Run 2023 f");
+    // Away (another task, or a same-viewer history reset) and back.
+    act(() => root.unmount());
+    node.remove();
+    node = mount([asked]);
+    expect(answerField(node).value).toBe("Run 2023 f");
+    // The Request reread after a reset is a new object for the same Request.
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <InputSurface
+            disabled={false}
+            placeholder="Reply…"
+            requests={[{ ...asked }]}
+            running={false}
+            threadId="thread"
+          />
+        </MemoryRouter>,
+      ),
+    );
+    expect(answerField(node).value).toBe("Run 2023 f");
   });
 
   it("sends what the person typed instead of an option, and unchooses it", async () => {

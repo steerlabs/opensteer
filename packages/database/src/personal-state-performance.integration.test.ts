@@ -1,0 +1,392 @@
+import type { DatabaseSchema } from "./schema.js";
+import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { EnvironmentIdSchema } from "@opensteer/core";
+import { sql } from "kysely";
+import { expect, test } from "vitest";
+import { createDatabase } from "./connection.js";
+import { withLockOrderMode } from "./lock-order-checker.test-support.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { preparePersonalConversion } from "./personal-state.test-support.js";
+import { finishPersonalStateUpgrade } from "./personal-state-upgrade.js";
+import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
+import {
+  buildPersonalShellSnapshot,
+  buildPersonalDetailSnapshot,
+} from "./personal-snapshot-store.js";
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
+import { countPlacedThreads, pinnedThreadsCountCap, placedThreadsQuery } from "./store.js";
+import { createStoreFixture } from "./store.integration.test-support.js";
+import { ownTestDatabaseProducer } from "./test-database.test-support.js";
+
+const enabled = process.env.OPENSTEER_PERSONAL_STATE_PERF === "1";
+
+function distribution(values: number[]) {
+  const ordered = values.toSorted((a, b) => a - b);
+  return {
+    count: ordered.length,
+    p50: ordered[Math.ceil(ordered.length * 0.5) - 1],
+    p95: ordered[Math.ceil(ordered.length * 0.95) - 1],
+    max: ordered.at(-1),
+  };
+}
+
+/**
+ * Rows each table or index scan in an `explain (analyze, format json)` plan read: what it
+ * returned and what its filters threw away, over every loop.
+ */
+function rowsRead(plan: unknown): number[] {
+  const scans: number[] = [];
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== "object") return;
+    const fields = node as Record<string, unknown>;
+    if (typeof fields["Relation Name"] === "string") {
+      const counted = (key: string) => Number(fields[key] ?? 0);
+      scans.push(
+        (counted("Actual Rows") +
+          counted("Rows Removed by Filter") +
+          counted("Rows Removed by Index Recheck")) *
+          Number(fields["Actual Loops"] ?? 1),
+      );
+    }
+    for (const child of Object.values(fields)) visit(child);
+  };
+  visit(plan);
+  return scans;
+}
+
+async function measure(events: number) {
+  const fixture = await createStoreFixture();
+  const { database } = fixture;
+  try {
+    const run = await fixture.startRunFixture(`personal-perf-${events}`);
+    await preparePersonalConversion(database, events + 100);
+    const current = await database
+      .selectFrom("runs")
+      .select("actorPrincipalId")
+      .where("id", "=", run.runId)
+      .executeTakeFirstOrThrow();
+    const messageCount = Math.floor((events * 5) / 6);
+    const tools = Math.floor(events / 60);
+    const createdAt = new Date();
+    const author = {
+      kind: "agent",
+      displayName: "Opensteer",
+      runId: run.runId,
+      threadId: run.threadId,
+    };
+    const content = [{ type: "text", text: "A retained assistant update" }];
+    // These rows represent messages that predate the migration's fast default.
+    await sql`insert into messages(id,thread_id,run_id,sequence,kind,actor_principal_id,author,content,created_at,published)
+      select 'msg_90000000-0000-4000-8000-'||lpad(n::text,12,'0'),${run.threadId},${run.runId},n+1,'assistant',${current.actorPrincipalId},
+        ${JSON.stringify(author)}::jsonb,${JSON.stringify(content)}::jsonb,${createdAt},true
+      from generate_series(1,${messageCount}) n`.execute(database);
+    await sql`insert into deployment_events(deployment_id,sequence,event_id,thread_id,run_id,environment_id,type,data,
+      created_at,runner_ordinal,runner_id,runner_boot_id,runner_binding_generation)
+      select ${run.deploymentId},n+100,'evt_90000000-0000-4000-8000-'||lpad(n::text,12,'0'),${run.threadId},${run.runId},${run.environmentId},
+        case when n<=${messageCount} then 'assistant.message'
+          when n<=${messageCount + tools} then 'tool.started'
+          when n<=${messageCount + tools * 2} then 'tool.completed' else 'reasoning.completed' end,
+        case when n<=${messageCount} then jsonb_build_object('messageId','msg_90000000-0000-4000-8000-'||lpad(n::text,12,'0'),'content',${JSON.stringify(content)}::jsonb)
+          when n<=${messageCount + tools} then jsonb_build_object('callId','perf:'||(n-${messageCount}::int),
+            'arguments','{}'::jsonb,'tool','{"namespace":"native","name":"read"}'::jsonb)
+          when n<=${messageCount + tools * 2} then jsonb_build_object('callId','perf:'||(n-${messageCount + tools}::int),
+            'isError',false,'output','{"text":"Work completed","images":[{"path":"/fixture/perf.png","mediaType":"image/png"}]}'::jsonb)
+          else jsonb_build_object('blockId','perf:'||n,'text','Retained reasoning') end,
+        ${createdAt},n,${run.runnerId},${run.runnerBootId},${run.bindingGeneration}
+      from generate_series(1,${events}) n`.execute(database);
+    await database
+      .updateTable("runs")
+      .set({ nextRunnerOrdinal: events + 1 })
+      .where("id", "=", run.runId)
+      .execute();
+    await sql`insert into provider_sessions(id,thread_id,harness_instance_id,active,state_layout,binding_generation,status)
+      select 'perf-retired-session-'||n,thread_id,harness_instance_id,false,state_layout,n,'stopped'
+      from provider_sessions cross join generate_series(1,512) n
+      where thread_id=${run.threadId} and active`.execute(database);
+    await sql`insert into commands(id,environment_id,thread_id,run_id,requested_by,actor_principal_id,authority_source,idempotency_key,type,payload,status)
+      select 'perf-retired-command-'||n,environment_id,thread_id,run_id,requested_by,actor_principal_id,
+        authority_source,idempotency_key||':retired:'||n,type,payload,'failed'
+      from commands cross join generate_series(1,512) n where id=${run.turn.command.id}`.execute(
+      database,
+    );
+    const start = performance.now();
+    globalThis.gc?.();
+    const startMemory = process.memoryUsage();
+    let observedHeap = startMemory.heapUsed;
+    let observedRss = startMemory.rss;
+    const peakByStage: Record<string, number> = {};
+    let previousBatch = start;
+    const batches: number[] = [];
+    await finishPersonalStateUpgrade(database, {
+      afterBatch(stage) {
+        const memory = process.memoryUsage();
+        observedHeap = Math.max(observedHeap, memory.heapUsed);
+        observedRss = Math.max(observedRss, memory.rss);
+        peakByStage[stage] = Math.max(peakByStage[stage] ?? 0, memory.heapUsed);
+
+        const now = performance.now();
+        batches.push(now - previousBatch);
+        previousBatch = now;
+      },
+    });
+    const conversionMs = performance.now() - start;
+    globalThis.gc?.();
+    const conversion = {
+      ms: conversionMs,
+      observedHeapGrowthBytes: observedHeap - startMemory.heapUsed,
+      observedRssGrowthBytes: observedRss - startMemory.rss,
+      postGcHeapGrowthBytes: globalThis.gc
+        ? process.memoryUsage().heapUsed - startMemory.heapUsed
+        : null,
+      peakByStage,
+
+      batchMs: distribution(batches),
+    };
+    const { target } = await ownTestDatabaseProducer(fixture.databaseUrl, async () => {
+      const target = createDatabase<DatabaseSchema>({ connectionString: fixture.databaseUrl });
+      return { target, close: () => target.destroy() };
+    });
+    const settled = await target
+      .selectFrom("runs")
+      .select("status")
+      .where("id", "=", run.runId)
+      .executeTakeFirstOrThrow();
+    expect(settled.status).toBe("interrupted");
+    const counts = (
+      await sql<{ items: string; tools: string }>`select
+      (select count(*) from transcript_items where visible) as items,
+      (select count(*) from tool_calls) as tools`.execute(target)
+    ).rows[0]!;
+    expect(Number(counts.items)).toBeGreaterThanOrEqual(messageCount + tools);
+    expect(Number(counts.tools)).toBe(tools);
+    const shellScope = { kind: "shell" as const };
+    const detailScope = { kind: "thread" as const, threadId: run.threadId };
+    const detail = () =>
+      withPersonalSyncRead(target, async (tx) => {
+        const state = await authorizedSyncState(tx, run.userId);
+        return ScopedHostMessageSchema.parse({
+          type: "host.snapshot",
+          scope: detailScope,
+          subscriptionId: "detail:0",
+          generation: 1,
+          throughSequence: state.sequence,
+          snapshot: await buildPersonalDetailSnapshot(tx, state, run.userId, detailScope),
+        });
+      });
+    const shell = () =>
+      withPersonalSyncRead(target, async (tx) => {
+        const state = await authorizedSyncState(tx, run.userId);
+        return ScopedHostMessageSchema.parse({
+          type: "host.snapshot",
+          scope: shellScope,
+          subscriptionId: "shell",
+          generation: 1,
+          throughSequence: state.sequence,
+          snapshot: await buildPersonalShellSnapshot(tx, state, run.userId, run.threadId),
+        });
+      });
+    const windowMs: number[] = [],
+      detailMs: number[] = [],
+      settingsMs: number[] = [];
+    let shellBytes = 0,
+      detailBytes = 0;
+    for (let i = 0; i < 20; i++) {
+      let started = performance.now();
+      const window = await shell();
+      windowMs.push(performance.now() - started);
+      shellBytes = Math.max(shellBytes, Buffer.byteLength(JSON.stringify(window)));
+      started = performance.now();
+      const page = await detail();
+      detailMs.push(performance.now() - started);
+      detailBytes = Math.max(detailBytes, Buffer.byteLength(JSON.stringify(page)));
+      started = performance.now();
+      await commitPersonalMutation(target, async (_tx, mutation) =>
+        mutation.bumpResource("settings"),
+      );
+      settingsMs.push(performance.now() - started);
+    }
+    // Every statement one task-open read makes, timed: median of five reads, in order.
+    const statementTimes = new Map<string, number[]>();
+    const started = new Map<unknown, { at: number; sql: string }>();
+    const profiled = target.withPlugin({
+      transformQuery({ node, queryId }) {
+        const compiled = target.getExecutor().compileQuery(node, queryId).sql;
+        started.set(queryId, {
+          at: performance.now(),
+          sql: compiled.replace(/\s+/g, " ").slice(0, 200),
+        });
+        return node;
+      },
+      async transformResult({ queryId, result }) {
+        const begun = started.get(queryId);
+        if (begun) {
+          const times = statementTimes.get(begun.sql) ?? [];
+          times.push(performance.now() - begun.at);
+          statementTimes.set(begun.sql, times);
+        }
+        return result;
+      },
+    });
+    for (let i = 0; i < 5; i++)
+      await withPersonalSyncRead(profiled, async (tx) => {
+        const state = await authorizedSyncState(tx, run.userId);
+        return buildPersonalDetailSnapshot(tx, state, run.userId, detailScope);
+      });
+    const detailStatements = [...statementTimes].map(([statement, times]) => ({
+      statement,
+      perRead: times.length / 5,
+      medianMs: Number((distribution(times).p50 ?? 0).toFixed(3)),
+    }));
+    // A task keeps one input row per message it was ever sent.
+    await sql`insert into thread_inputs(message_id,thread_id,actor_principal_id,authority_source,causal_chain_id,
+        idempotency_key,policy,queue_rank,request_fingerprint,requested_by,state,delivered_at)
+      select 'msg_90000000-0000-4000-8000-'||lpad(n::text,12,'0'),input.thread_id,input.actor_principal_id,
+        input.authority_source,input.causal_chain_id,input.idempotency_key||':perf:'||n,'queue',n,
+        input.request_fingerprint,input.requested_by,'delivered',now()
+      from thread_inputs input cross join generate_series(1,${Math.min(messageCount, 50_000)}) n
+      where input.thread_id=${run.threadId} limit ${Math.min(messageCount, 50_000)}`.execute(
+      target,
+    );
+    // A long task history beside the measured one: settled and Done copies of its task row.
+    const columns = (
+      await sql<{ name: string }>`select column_name as name from information_schema.columns
+        where table_name='threads' and table_schema=current_schema() and is_generated='NEVER'
+        order by ordinal_position`.execute(target)
+    ).rows.map(({ name }) => name);
+    const copied = columns.map((name) =>
+      name === "id" || name === "lineage_root_thread_id"
+        ? sql.raw(`'thr_'||'90000000-0000-4000-8000-'||lpad(n::text,12,'0')`)
+        : name === "done_at"
+          ? sql.raw(`case when n % 2 = 0 then now() end`)
+          : name === "status"
+            ? sql.raw(`'idle'`)
+            : sql.ref(`t.${name}`),
+    );
+    await sql`insert into threads(${sql.join(columns.map((name) => sql.ref(name)))})
+      select ${sql.join(copied)} from threads t cross join generate_series(1,${Math.min(events, 100_000)}) n
+      where t.id=${run.threadId}`.execute(target);
+    await sql`analyze thread_inputs, messages, transcript_items, threads`.execute(target);
+    const placedIds = [
+      run.environmentId,
+      ...Array.from({ length: 63 }, (_, index) =>
+        EnvironmentIdSchema.parse(`env_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`),
+      ),
+    ];
+    const placedMs: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const started = performance.now();
+      await countPlacedThreads(target, placedIds);
+      placedMs.push(performance.now() - started);
+    }
+    const explain = async (query: ReturnType<typeof sql>) =>
+      (await sql`explain(analyze,buffers,format json) ${query}`.execute(target)).rows;
+    const plans = {
+      tasks:
+        await explain(sql`select id,title from threads where listed and removed_at is null and done_at is null
+        and status<>'archived' order by asked_at desc,id desc limit 26`),
+      detail: await explain(sql`select id,position,revision,view from transcript_items
+        where visible and thread_id=${run.threadId} and node_id is null order by position desc,id desc limit 101`),
+      anchor: await explain(
+        sql`select id,position,revision,view from transcript_items where id='msg_90000000-0000-4000-8000-000000000050' and thread_id=${run.threadId} limit 1`,
+      ),
+      openTools:
+        await explain(sql`select id from tool_calls where run_id=${run.runId} and status='open'
+        and binding_generation=${run.bindingGeneration} order by id limit 11`),
+      image:
+        await explain(sql`select id from tool_output_images where thread_id=${run.threadId} and node_id is null
+        and path_hash=sha256('/fixture/perf.png'::bytea) and path='/fixture/perf.png'
+        order by completion_order desc,image_index desc limit 1`),
+      attention:
+        await explain(sql`select pending_request_count,unread_task_count from client_sync_state
+        where deployment_id=${run.deploymentId} limit 1`),
+      receipts: await explain(
+        sql`select reported_digest from runner_event_receipts where run_id=${run.runId} and ordinal=0 limit 1`,
+      ),
+      channelAuthority:
+        await explain(sql`select 1 from thread_inputs where thread_id=${run.threadId}
+        and state in ('pending','claimed','unknown') and authority_source->>'kind'='channel-ingress'`),
+      // A Run with no reply is the worst case: nothing stops the scan early.
+      runReply:
+        await explain(sql`select content,id,sequence from messages where thread_id=${run.threadId}
+        and run_id='run_00000000-0000-4000-8000-000000000000' and kind='assistant'
+        and addressed_to_user_id is null order by sequence desc limit 1`),
+      // Task-list counts read only the owner's partial index, bounded however long the history.
+      doneCount: await explain(sql`select count(*) from (select id from threads
+        where created_by=${run.userId} and listed and removed_at is null and done_at is not null
+        and status<>'archived' order by done_at desc,id desc limit 10000) listed`),
+      settledCount: await explain(sql`select count(*) from (select id from threads
+        where created_by=${run.userId} and listed and removed_at is null and done_at is null
+        and status not in ('archived','running','waiting') order by asked_at desc,id desc limit 10000) listed`),
+      toolCard: await explain(
+        sql`select id from transcript_items where tool_call_id=(select id from tool_calls limit 1)`,
+      ),
+      // machines.list for 64 computers: the hosting one holds every task, the rest none.
+      placedCount: await explain(placedThreadsQuery(placedIds)),
+      // What the placed-count check must catch: a scan that reads every task and returns none.
+      fullScan: await explain(sql`select 1 from threads where title = '' limit 1`),
+    };
+    expect(JSON.stringify(plans.channelAuthority)).toContain("thread_inputs_channel_authority");
+    expect(JSON.stringify(plans.runReply)).toContain("messages_run_sequence");
+    expect(JSON.stringify(plans.toolCard)).toContain("transcript_tool_call");
+    // With a long history the bounded counts read the owner's partial index, not the table.
+    if (events >= 600_000) {
+      expect(JSON.stringify(plans.doneCount)).toContain("threads_current_done");
+      expect(JSON.stringify(plans.settledCount)).toContain("threads_current_recent");
+    }
+    expect(JSON.stringify(plans.detail)).toContain("transcript_root");
+    // Each computer's count stops at the cap: the hosting computer's scan ends after 1,000 rows,
+    // and every other computer reads the partial index. Rows read, not rows returned: a scan that
+    // filters the whole table down to nothing returns no rows but reads them all.
+    expect(JSON.stringify(plans.placedCount)).toContain("threads_environment_live");
+    expect(Math.max(...rowsRead(plans.fullScan))).toBeGreaterThan(pinnedThreadsCountCap);
+    const scans = rowsRead(plans.placedCount);
+    expect(scans.length).toBeGreaterThan(0);
+    expect(Math.max(...scans)).toBeLessThanOrEqual(pinnedThreadsCountCap);
+    expect(scans.reduce((total, rows) => total + rows, 0)).toBeLessThanOrEqual(
+      pinnedThreadsCountCap,
+    );
+    expect(shellBytes).toBeLessThanOrEqual(96 * 1024);
+    expect(detailBytes).toBeLessThanOrEqual(128 * 1024);
+    return {
+      events,
+      counts,
+      conversion,
+      queryMs: {
+        shell: distribution(windowMs),
+        detail: distribution(detailMs),
+        settingsCommit: distribution(settingsMs),
+        placedCount: distribution(placedMs),
+      },
+      detailStatements,
+      shellBytes,
+      detailBytes,
+      plans,
+    };
+  } finally {
+    await fixture.close();
+  }
+}
+
+test.skipIf(!enabled)(
+  "measures standalone personal conversion and indexed reads at 10k and 600k events",
+  async () => {
+    // The correctness fixtures enforce lock order. Row lock instrumentation scans whole tables.
+    await withLockOrderMode("off", async () => {
+      const out =
+        process.env.OPENSTEER_PERSONAL_STATE_PERF_OUT ??
+        join(tmpdir(), "opensteer-personal-state-perf.json");
+      const results = [];
+      for (const rows of [10_000, 600_000]) {
+        results.push(await measure(rows));
+        await writeFile(out, JSON.stringify(results, null, 2) + "\n");
+      }
+      for (const result of results)
+        expect(result.conversion.observedHeapGrowthBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+      expect(results[1]!.queryMs.shell.p95).toBeLessThan(500);
+      expect(results[1]!.queryMs.detail.p95).toBeLessThan(500);
+    });
+  },
+  600_000,
+);

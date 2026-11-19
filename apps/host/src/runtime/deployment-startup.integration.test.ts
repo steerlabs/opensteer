@@ -185,10 +185,9 @@ it.each(["personal", "team"] as const)(
           expect(refused.body).toContain("version");
         }
         const personal = await runtime.app.inject({
-          method: "POST",
-          url: "/v1/rpc/bootstrap.get",
+          method: "GET",
+          url: "/v1/rpc/personal.shell.get?input=%7B%7D",
           headers: { [teamApiVersionHeader]: String(teamApiVersion) },
-          payload: {},
         });
         expect(personal.statusCode).toBe(404);
       } else {
@@ -219,11 +218,14 @@ it.each(["personal", "team"] as const)(
             "workspace_tabs",
             "projects",
             "channel_conversation_contexts",
+            "deployment_event_state",
+            "deployment_events",
           ])
             expect(names.has(removed)).toBe(false);
           for (const required of [
             "personal_settings",
-            "deployment_event_state",
+            "client_sync_state",
+            "client_changes",
             "team_access_state",
             "team_channels",
           ])

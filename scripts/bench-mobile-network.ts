@@ -31,6 +31,7 @@ const scenarios = [
   "open-subagent-parent",
   "open-subagent",
   "busy-subagents",
+  "idle",
   "team-cold-attach",
   "team-open-channel",
   "team-open-thread",
@@ -41,8 +42,14 @@ if (!(values.profile === "all" || Object.hasOwn(linkProfiles, values.profile!)))
   throw new Error("Unknown --profile");
 if (!["all", "heavy", "light", "busy-subagents", "team", "team-media"].includes(values.seed!))
   throw new Error("Unknown --seed");
-if (!(values.scenario === "all" || scenarios.includes(values.scenario!)))
-  throw new Error("Unknown --scenario");
+const requested = values.scenario!.split(",");
+if (
+  values.scenario !== "all" &&
+  (requested.some((scenario) => !scenarios.includes(scenario)) ||
+    (requested.length > 1 &&
+      requested.some((scenario) => scenario.startsWith("team-") || scenario === "busy-subagents")))
+)
+  throw new Error("Unknown --scenario or unsupported combination");
 for (const [name, value] of [
   ["runs", values.runs],
   ["stall-every", values["stall-every"]],

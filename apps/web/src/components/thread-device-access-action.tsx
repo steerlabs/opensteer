@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { useContext, useState, type ReactNode } from "react";
 import type { Request } from "@opensteer/core";
 import { turnOnDeviceAccess } from "@opensteer/client/computers";
@@ -174,6 +175,7 @@ export function ThreadDeviceAccessAction({
         hostClient.dispatch({
           idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
           requestId: request.id,
+          ...requestDecisionRevision(request),
           response: { kind: "external", value: { decision: "declined" } },
           type: "request.respond",
         }),

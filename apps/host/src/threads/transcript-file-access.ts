@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   OpensteerError,
   attachmentMaxBytes,
-  type Sequence,
+  type ExecutionNodeId,
   type ThreadId,
   type UserId,
   type ToolOutputImage,
@@ -34,7 +34,7 @@ export type ResolvedTranscriptFile = {
   sizeBytes: number;
   mediaType: string;
 };
-type OutputImage = ToolOutputImage & { sequence: Sequence; index: number };
+type OutputImage = Pick<ToolOutputImage, "path" | "mediaType"> & { id: string };
 const types: Readonly<Record<string, string>> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -79,9 +79,9 @@ export class TranscriptFileAccess {
     outputImage: (input: {
       ownerId: UserId;
       threadId: ThreadId;
-      sequence: Sequence;
-      index: number;
-    }) => Promise<ToolOutputImage | null>;
+      imageId: string;
+      nodeId?: ExecutionNodeId;
+    }) => Promise<OutputImage | null>;
     homeDirectory?: string;
   };
   constructor(options: TranscriptFileAccess["options"]) {
@@ -195,6 +195,16 @@ export class TranscriptFileAccess {
           mediaType: a.mediaType,
         };
       }
+      if (source.kind === "transcript-image") {
+        if (!context.threadId) return null;
+        const image = await this.options.outputImage({
+          ownerId: context.userId,
+          threadId: context.threadId,
+          imageId: source.imageId,
+          ...(source.nodeId ? { nodeId: source.nodeId } : {}),
+        });
+        return image ? await this.#resolveImage(image, source.nodeId, signal) : null;
+      }
       let managed = false;
       try {
         this.#managedKey(source.path);
@@ -205,18 +215,7 @@ export class TranscriptFileAccess {
       if (managed) {
         const image = images.find((i) => i.path === source.path);
         if (!image || !context.threadId) return null;
-        const f = await this.#images.resolveAbsolutePath(source.path, signal);
-        return {
-          name: f.name,
-          sizeBytes: f.sizeBytes,
-          resource: {
-            kind: "output-image",
-            sequence: image.sequence,
-            index: image.index,
-            revision: f.revision,
-          },
-          mediaType: image.mediaType,
-        };
+        return await this.#resolveImage(image, undefined, signal);
       }
       const f = await this.options.home.resolveAbsolutePath(source.path, signal);
       return {
@@ -234,6 +233,25 @@ export class TranscriptFileAccess {
         return null;
       throw e;
     }
+  }
+  async #resolveImage(
+    image: OutputImage,
+    nodeId: ExecutionNodeId | undefined,
+    signal?: AbortSignal,
+  ) {
+    this.#managedKey(image.path);
+    const f = await this.#images.resolveAbsolutePath(image.path, signal);
+    return {
+      name: f.name,
+      sizeBytes: f.sizeBytes,
+      resource: {
+        kind: "output-image" as const,
+        imageId: image.id,
+        ...(nodeId ? { nodeId } : {}),
+        revision: f.revision,
+      },
+      mediaType: image.mediaType,
+    };
   }
   async read(
     resource: FileResource,
@@ -284,8 +302,8 @@ export class TranscriptFileAccess {
       const image = await this.options.outputImage({
         ownerId: context.userId,
         threadId: context.threadId,
-        sequence: resource.sequence,
-        index: resource.index,
+        imageId: resource.imageId,
+        ...(resource.nodeId ? { nodeId: resource.nodeId } : {}),
       });
       if (!image) throw fileUnavailable();
       key = this.#managedKey(image.path);

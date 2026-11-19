@@ -1062,6 +1062,10 @@ async function checked(
     const statement = topLevelSql(sql);
     const ordered =
       (!/^\s*(?:update|delete|insert)\b/iu.test(statement) && /\border\s+by\b/iu.test(statement)) ||
+      // Feed rows are written and pruned only under the deployment fence, so prunes never interleave.
+      (table === "client_changes" &&
+        /^\s*delete\b/iu.test(statement) &&
+        [...state.held.keys()].some((key) => key.startsWith("client_sync_state:"))) ||
       (flushingDeferred && state.orderedDeferredTables.has(table)) ||
       (table === "plugin_owner_settings" &&
         state.orderedDeferredTables.has(table) &&

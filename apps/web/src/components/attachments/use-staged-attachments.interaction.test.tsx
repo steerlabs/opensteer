@@ -129,6 +129,29 @@ describe("files during an outage", () => {
     expect(files.items[0]).toMatchObject({ error: null, status: "ready" });
   });
 
+  it("a file still uploading when its composer goes away is there, uploading, when it comes back", async () => {
+    const uploads: { resolve(value: unknown): void }[] = [];
+    vi.mocked(stageAttachment).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          uploads.push({ resolve: resolve as (value: unknown) => void });
+        }) as ReturnType<typeof stageAttachment>,
+    );
+    const client = { connection: fakeConnection() } as unknown as HostClient;
+    root = createRoot(document.createElement("div"));
+    await act(async () => root?.render(<Tray client={client} />));
+    await act(async () => files.add([new File(["abc"], "notes.txt", { type: "text/plain" })]));
+    await vi.waitFor(() => expect(uploads).toHaveLength(1), { timeout: 1_000 });
+    // Away (another task, or a same-viewer history reset) and back, the upload still going.
+    act(() => root?.unmount());
+    root = createRoot(document.createElement("div"));
+    await act(async () => root?.render(<Tray client={client} />));
+    expect(files.items).toMatchObject([{ name: "notes.txt", status: "uploading" }]);
+    await act(async () => uploads[0]!.resolve(notes));
+    expect(files.items).toMatchObject([{ name: "notes.txt", status: "ready" }]);
+    expect(uploads, "the file was uploaded twice").toHaveLength(1);
+  });
+
   it("a file the outage interrupted uploads by itself once the connection is back", async () => {
     const uploads: { reject(error: unknown): void; resolve(value: unknown): void }[] = [];
     vi.mocked(stageAttachment).mockImplementation(

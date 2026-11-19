@@ -1,3 +1,4 @@
+import { lockComputerApprovalRequestThreads } from "./computer-app-setup.js";
 import { isPhoneDisplayDefinitionId, type DeviceId } from "@opensteer/core";
 import { deviceOwnershipIn } from "./machine-ownership.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
@@ -24,13 +25,7 @@ import {
 } from "@opensteer/integration-core";
 import { integrationAccessCovers } from "@opensteer/integration-core/access";
 import { computerAppApprovalChangedReason } from "@opensteer/integration-core/computer-app-setup";
-import {
-  OpensteerError,
-  createId,
-  type AgentEvent,
-  type RequestId,
-  type UserId,
-} from "@opensteer/core";
+import { OpensteerError, createId, type RequestId, type UserId } from "@opensteer/core";
 import { type Selectable, type Transaction, sql } from "kysely";
 import type { DatabaseSchema, IntegrationConnectionTable } from "./schema.js";
 import {
@@ -74,7 +69,7 @@ export interface SetComputerConnectionResult {
    * has to be asked about again.
    */
   readonly reissuedSetupRequestId: string | null;
-  readonly requestEvents: readonly AgentEvent[];
+
   /**
    * The live session this change ended, if any: the one holding this app on a
    * Mac, or the one holding a phone's display. Null for a change that left
@@ -265,6 +260,32 @@ export async function computerConnectionTargetInTransaction(
   };
 }
 
+async function pendingComputerConnectionRequestThreads(
+  tx: Transaction<DatabaseSchema>,
+  target: ComputerConnectionTarget,
+  ownerId: UserId,
+) {
+  const rows = await tx
+    .selectFrom("requests")
+    .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
+    .select("requests.originatingThreadId")
+    .distinct()
+    .where("requests.kind", "=", "integration.access")
+    .where("requests.status", "=", "pending")
+    .where("requests.requestedBy", "=", ownerId)
+    .where("integrationRequestDetails.installationId", "=", target.installed.installationId)
+    .where((eb) =>
+      eb.or([
+        eb("integrationRequestDetails.requestedConnectionId", "is", null),
+        ...(target.current
+          ? [eb("integrationRequestDetails.requestedConnectionId", "=", target.current.id)]
+          : []),
+      ]),
+    )
+    .execute();
+  return rows.map(({ originatingThreadId }) => originatingThreadId);
+}
+
 export function storedComputerApp(
   row: Selectable<IntegrationConnectionTable> | undefined,
 ): ComputerAppIdentity | null {
@@ -292,6 +313,11 @@ export async function consumeComputerAppApprovalInTransaction(
   const widened = current?.computerAccess === "read" && input.access === "read-write";
   if (widened && !input.createIfMissing) throw new ComputerAppNotOfferedError(input.runner.name);
   const now = new Date();
+  await lockComputerApprovalRequestThreads(
+    transaction,
+    [input.setupRequestId],
+    await pendingComputerConnectionRequestThreads(transaction, input.target, input.actorUserId),
+  );
   const pending = await transaction
     .selectFrom("computerAppSetupRequests")
     .selectAll()
@@ -586,6 +612,18 @@ export async function finishComputerConnectionChangeInTransaction(
     input.alsoGrant?.access === "read-write" || pendingAccess === "read-write"
       ? "read-write"
       : (input.alsoGrant?.access ?? pendingAccess);
+  const requestThreads = pendingRequests.map(({ originatingThreadId }) => originatingThreadId);
+  await lockComputerApprovalRequestThreads(
+    transaction,
+    transaction
+      .selectFrom("computerAppSetupRequests")
+      .select("id")
+      .where("kind", "=", scope.kind)
+      .where("runnerId", "=", scope.deviceId)
+      .where("definitionId", "=", scope.definitionId)
+      .where("appKey", scope.appKey === null ? "is" : "=", scope.appKey),
+    requestThreads,
+  );
   const settlement = await settleComputerAppApprovalInTransaction(transaction, {
     settlementActor,
     additionalRequestIds: pendingRequests.map(({ id }) => id),
@@ -603,18 +641,17 @@ export async function finishComputerConnectionChangeInTransaction(
     reissueWaiting: input.reissueWaiting,
     scope,
   });
-  const pendingRequestEvents =
-    input.created || input.widened
-      ? await fulfillPendingIntegrationAccessRequestsInTransaction(transaction, {
-          settlementActor,
-          access: input.connectionAccess,
-          connectionId,
-          displayName: input.row.displayName,
-          installationId: installed.installationId,
-          ownerUserId: input.actorUserId,
-          serverId: installed.serverId,
-        })
-      : [];
+  if (input.created || input.widened) {
+    await fulfillPendingIntegrationAccessRequestsInTransaction(transaction, {
+      settlementActor,
+      access: input.connectionAccess,
+      connectionId,
+      displayName: input.row.displayName,
+      installationId: installed.installationId,
+      ownerUserId: input.actorUserId,
+      serverId: installed.serverId,
+    });
+  }
   if (input.tools !== null) {
     await upsertConnectionTools(
       transaction,
@@ -651,7 +688,6 @@ export async function finishComputerConnectionChangeInTransaction(
     fulfilledRequestIds: settlement.requestIds,
     grants: settlement.grants,
     reissuedSetupRequestId: settlement.reissuedSetupRequestId,
-    requestEvents: [...pendingRequestEvents, ...settlement.requestEvents],
   };
 }
 

@@ -16,6 +16,21 @@ export const assetUrlsMaxPaths = 32;
 export const AssetVariantSchema = z.enum(["preview", "original"]);
 export type AssetVariant = z.infer<typeof AssetVariantSchema>;
 
+export const TranscriptImageRefSchema = z.object({
+  id: z.string().min(1).max(255),
+  mediaType: ToolOutputImageMediaTypeSchema,
+  generated: z.literal(true).optional(),
+});
+
+export const AssetSourceSchema = z.union([
+  FileSourceSchema,
+  z.strictObject({
+    kind: z.literal("transcript-image"),
+    imageId: TranscriptImageRefSchema.shape.id,
+  }),
+]);
+export type AssetSource = z.infer<typeof AssetSourceSchema>;
+
 export const AssetUrlsInputSchema = z.strictObject({
   /** Optional owning task context; paths are decoded and the Host decides containment. */
   threadId: ThreadIdSchema.optional(),
@@ -25,7 +40,7 @@ export const AssetUrlsInputSchema = z.strictObject({
         .strictObject({
           /** A file path, in the shape Hosts before `source` read; send paths this way. */
           path: z.string().min(1).max(imagePathMaxLength).optional(),
-          source: FileSourceSchema.optional(),
+          source: AssetSourceSchema.optional(),
           variant: AssetVariantSchema,
         })
         .refine((item) => (item.path === undefined) !== (item.source === undefined), {

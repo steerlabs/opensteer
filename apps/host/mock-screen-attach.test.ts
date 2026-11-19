@@ -28,15 +28,10 @@ it("matches screen attach authority, name validation, and live Mac requirements"
     expect(client.getSnapshot().machines.find((m) => m.id === added.deviceId)?.name).toBe(
       "Trimmed",
     );
-    const mac = client.getSnapshot().machines.find((m) => m.id === runnerId)!;
-    Reflect.set(mac, "status", "offline");
+    client.setMachineStatus(runnerId, "offline");
     await expect(attach("Offline")).rejects.toMatchObject({ code: "conflict" });
-    Reflect.set(mac, "status", "online");
-    Reflect.set(mac.modules, "integrations", {
-      checkedAt: null,
-      detail: null,
-      readiness: "unsupported",
-    });
+    client.setMachineStatus(runnerId, "online");
+    client.setMachineIntegrationReadiness(runnerId, "unsupported");
     await expect(attach("Unsupported")).rejects.toMatchObject({ code: "conflict" });
   } finally {
     client.dispose();

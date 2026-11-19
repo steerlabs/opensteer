@@ -260,6 +260,13 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           type: "browser.password-sign-in.respond",
           idempotencyKey: "card-approve",
           requestId: cardPending.requestId,
+          expectedRevision: (
+            await host.store.database
+              .selectFrom("requests")
+              .select("revision")
+              .where("id", "=", cardPending.requestId)
+              .executeTakeFirstOrThrow()
+          ).revision,
           decision: {
             kind: "approve-card",
             cardId: choice.id,
@@ -413,6 +420,13 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             type: "browser.password-sign-in.respond",
             idempotencyKey: "decline-pin-test",
             requestId,
+            expectedRevision: (
+              await host.store.database
+                .selectFrom("requests")
+                .select("revision")
+                .where("id", "=", requestId)
+                .executeTakeFirstOrThrow()
+            ).revision,
             decision: { kind: "decline" },
           },
           { headers: host.ownerHeaders },

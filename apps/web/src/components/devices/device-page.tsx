@@ -9,7 +9,6 @@ import {
 import { computerGlyph, deviceRemovalProfiles, hostsDeployment } from "@opensteer/client/computers";
 import {
   canRespondToRequests,
-  deviceMachine,
   fullAccessOnThisMac,
   mutationIdempotencyKey,
 } from "@opensteer/client/host";
@@ -232,7 +231,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
   const hereId = useHereId();
   const here = hereId !== null && machine.id === hereId;
   const home = hostsDeployment(machine);
-  const phone = Boolean(deviceMachine(machine).phoneDisplay);
+  const phone = Boolean(machine.phoneDisplay);
   const screenMac = phoneScreenMac(machine);
   const screen = phoneScreenStatus(machine);
   const screenMacHere = desktopBridge !== null && screenMac?.runnerId === hereId;
@@ -281,7 +280,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
     screen?.tone ??
     (machine.status === "online" ? "online" : machine.status === "offline" ? "offline" : "waiting");
   const appsSwitch = switches.find((item) => item.capability === "apps");
-  const driverGeneration = deviceMachine(machine).phoneDisplay?.driver?.generation;
+  const driverGeneration = machine.phoneDisplay?.driver?.generation;
   // A disconnected iPhone can be set up again on any of the person's Macs; one
   // that needs setup is fixed on the Mac that drives it, without detaching it.
   const fixSetup =
@@ -313,7 +312,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
   }
 
   async function disconnectScreen() {
-    const generation = deviceMachine(machine).phoneDisplay?.driver?.generation;
+    const generation = machine.phoneDisplay?.driver?.generation;
     if (generation === undefined) return;
     setRemoving(true);
     setError(null);

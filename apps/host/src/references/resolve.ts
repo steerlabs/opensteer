@@ -1,3 +1,9 @@
+import { requestFromRow } from "@opensteer/database";
+import {
+  authorizedDetail,
+  authorizedSyncState,
+  withPersonalSyncRead,
+} from "@opensteer/database/personal-sync-store";
 import { OpensteerError, type ReferenceId, type UserId } from "@opensteer/core";
 import type { DatabaseSchema, OpensteerStore } from "@opensteer/database";
 import {
@@ -36,13 +42,54 @@ export function createReferenceHandlers(
 }
 
 export function createThreadRequestHandler(
-  store: Pick<OpensteerStore, "getThreadForOwner" | "requests">,
+  store: Pick<OpensteerStore, "database" | "getThreadForOwner" | "requests">,
 ) {
   return async (
     input: z.output<(typeof hostApi)["thread.requests.list"]["payload"]>,
     context: HostApiServerContext,
   ) => {
     const ownerId = requireSession(context).user.id;
+    if (input.review) {
+      const review = new Map(input.review.map(({ id, revision }) => [id, revision]));
+      return withPersonalSyncRead(store.database, async (tx) => {
+        await authorizedSyncState(tx, ownerId);
+        if (!(await authorizedDetail(tx, ownerId, { kind: "thread", threadId: input.threadId })))
+          throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+        const rows = await tx
+          .selectFrom("requests")
+          .selectAll()
+          .where("originatingThreadId", "=", input.threadId)
+          .where("id", "in", [...review.keys()])
+          .where("status", "=", "pending")
+          .limit(20)
+          .execute();
+        if (
+          rows.length !== review.size ||
+          rows.some(
+            ({ id, revision, kind }) =>
+              review.get(id) !== revision ||
+              (kind === "device.access" && input.deviceAccessRequests !== "include"),
+          )
+        )
+          throw new OpensteerError({ code: "conflict", message: "The reviewed Request changed." });
+        const requests = rows.map(requestFromRow);
+        const byteCount = Buffer.byteLength(JSON.stringify(requests));
+        return rpcSuccess(
+          hostApi["thread.requests.list"].success.parse({
+            threadId: input.threadId,
+            requests,
+            reviewedRevisions: Object.fromEntries(review),
+            window: {
+              byteCount,
+              itemCount: requests.length,
+              totalItems: requests.length,
+              hasMore: false,
+              nextBefore: null,
+            },
+          }),
+        );
+      });
+    }
     if (input.requestId && (input.before !== undefined || input.limit !== undefined))
       throw new OpensteerError({
         code: "bad_request",

@@ -1,3 +1,4 @@
+import { useThreadTranscript } from "@opensteer/client/react";
 import {
   hostMessageOutbox,
   messageDeliveryStatusShown,
@@ -57,7 +58,7 @@ import {
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
 import type { BrowserPageContentPart } from "@opensteer/core";
 import { useTeamsSnapshot } from "../team/team-context.js";
-import { useHostSnapshot, useThreadInputQueue, useWaitingInputs } from "@opensteer/client/react";
+import { useHostSnapshot, useWaitingInputs } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { conversationActions } from "./conversation-actions.js";
 import {
@@ -280,11 +281,7 @@ function selectThreadPane(snapshot: HostSnapshot, threadId: string) {
     machines: snapshot.machines,
     waitingRequests: snapshot.waitingRequests,
     thread: snapshot.threads.find(({ id }) => id === threadId) ?? null,
-    entries: snapshot.transcripts[threadId],
-    window: snapshot.transcriptWindows[threadId],
-    ownRequests: snapshot.requests[threadId],
     lookup: snapshot.threadLookups[threadId],
-    runQueue: snapshot.runQueue.filter((run) => run.threadId === threadId),
     // These helpers read requester/worker Threads and delegated work. Select their
     // answers against the full store so unrelated transcript maps cannot go stale.
     task: taskHeading(snapshot, threadId),
@@ -307,8 +304,6 @@ function sameThreadPaneSelection(left: ThreadPaneSelection, right: ThreadPaneSel
           left.requester?.threadId === right.requester?.threadId &&
           left.requester?.title === right.requester?.title
         );
-      case "runQueue":
-        return sameEntries(left.runQueue, right.runQueue);
       default:
         return left[key] === right[key];
     }
@@ -438,6 +433,10 @@ function ThreadPaneForUser(
   const deploymentId = props.deploymentId;
   const { hostClient, onHeader, threadId } = props;
   const inView = usePaneInView();
+  const navigationFocused = useIsFocused();
+  const appForeground = useAppForeground();
+  const showing = inView && navigationFocused && appForeground;
+  const threadDetail = useThreadTranscript(hostClient, threadId, showing);
   useFocusEffect(
     useCallback(() => {
       // The Host holds one active Thread. A task stays mounted under the one
@@ -446,7 +445,11 @@ function ThreadPaneForUser(
       // it as it comes into view, not merely as it mounts.
       if (!inView) return;
       hostClient.activateThread(threadId);
-      return notifications.enterThread({ deploymentId, threadId });
+      const leave = notifications.enterThread({ deploymentId, threadId });
+      return () => {
+        leave();
+        hostClient.deactivateThread?.(threadId);
+      };
     }, [deploymentId, hostClient, inView, notifications, threadId]),
   );
   // Whether this conversation is the screen in front of the reader. Read
@@ -455,9 +458,7 @@ function ThreadPaneForUser(
   // render it first mounts on. The sidebar covers the screen without blurring
   // the route under it, so it counts as looking away too.
   const sidebarVisible = useSidebarVisible();
-  const navigationFocused = useIsFocused();
   const focused = navigationFocused && !sidebarVisible && inView;
-  const appForeground = useAppForeground();
   // What an arriving alert has to know before it interrupts: an alert about
   // the conversation in front of the reader, at its latest activity, is telling
   // them what they are already watching.
@@ -468,8 +469,8 @@ function ThreadPaneForUser(
     );
   }, [atTail, deploymentId, focused, historical, notifications, props.threadId]);
 
-  const inputQueue = useThreadInputQueue(hostClient, threadId);
-  const waiting = useWaitingInputs(hostClient, threadId);
+  const inputQueue = threadDetail.inputQueue;
+  const waiting = useWaitingInputs(hostClient, threadId, false);
   // A waiting message is held for editing only while its task is in front of
   // the reader: under another screen, out of view or in the background, it goes on.
   const editing = useWaitingEdit(
@@ -520,9 +521,10 @@ function ThreadPaneForUser(
   );
 
   const thread = snapshot.thread;
-  const canRespond = canRespondToRequests(snapshot);
+  const canRespond = threadDetail.synchronized && canRespondToRequests(snapshot);
   const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
-  const live = useShowsLive(props.hostClient.connection) && environment?.status === "connected";
+  const connectionLive = useShowsLive(props.hostClient.connection);
+  const live = threadDetail.synchronized && connectionLive && environment?.status === "connected";
   const connectionReady = useConnectionReady(props.hostClient.connection);
   // A failed read is asked again once the connection is back; it says nothing until then.
   const { readyRevision } = useClientConnection(props.hostClient.connection);
@@ -530,7 +532,7 @@ function ThreadPaneForUser(
   const connectionLabel =
     canRespond && environment?.status === "disconnected" ? `${environment.name} offline` : null;
 
-  const entries = useMemo(() => snapshot.entries ?? [], [snapshot.entries, threadId]);
+  const entries = threadDetail.entries;
   // A voice conversation reads as messages, each reply's steps in its
   // Activity; a task keeps its whole trace in view.
   const conversational = thread?.purpose === "voice";
@@ -542,8 +544,8 @@ function ThreadPaneForUser(
   // The same answer every surface gives: what this Thread is doing, and
   // which Run, if any, a Stop would reach.
   const activity =
-    thread === null ? "idle" : threadActivity({ entries, runQueue: snapshot.runQueue, thread });
-  const outbox = hostMessageOutbox(props.hostClient);
+    thread === null ? "idle" : threadActivity({ entries, runQueue: threadDetail.runQueue, thread });
+  const outbox = hostMessageOutbox(hostClient);
   const withOutbox = useOutboxTranscript(outbox, threadId, entries, viewerUserId);
   const visible = useMemo(
     () =>
@@ -555,7 +557,7 @@ function ThreadPaneForUser(
   );
   const hasQueuedInputs = Boolean(inputQueue?.items.length);
   const startsRun =
-    thread !== null && threadStartsRunForMessage({ runQueue: snapshot.runQueue, thread });
+    thread !== null && threadStartsRunForMessage({ runQueue: threadDetail.runQueue, thread });
   const local = useMemo(
     () => splitLocalMessages(visible, !conversational, hasQueuedInputs, startsRun),
     [conversational, hasQueuedInputs, startsRun, visible],
@@ -632,7 +634,7 @@ function ThreadPaneForUser(
     live && thread !== null
       ? threadStartHold({
           environments: snapshot.environments,
-          runQueue: snapshot.runQueue,
+          runQueue: threadDetail.runQueue,
           thread,
         })
       : null;
@@ -656,7 +658,7 @@ function ThreadPaneForUser(
     return heldGroups.current;
   }, [grouped]);
   const stopTarget =
-    thread === null ? null : threadStopTarget({ runQueue: snapshot.runQueue, thread });
+    thread === null ? null : threadStopTarget({ runQueue: threadDetail.runQueue, thread });
   const keptStop = useKeptComputerStop(hostClient, stopTarget?.id ?? null);
   const computers = useMemo<TranscriptComputers>(
     () => ({ hostClient, kept: keptStop, machines: snapshot.machines }),
@@ -678,7 +680,7 @@ function ThreadPaneForUser(
         : groups.map((group) => ({ group, key: group.key })),
     [computers, conversational, groups, live, snapshot.waitingRequests],
   );
-  const canLoadEarlier = snapshot.window?.hasMore ?? false;
+  const canLoadEarlier = threadDetail.hasMore;
 
   // A link may name the Request it is about. A Request still pending is docked
   // in the composer, which is already on screen; one already answered left its
@@ -707,7 +709,12 @@ function ThreadPaneForUser(
   const anchorMessageId = props.messageId ?? null;
   const anchored = useRef<string | null>(null);
   useEffect(() => {
-    if (anchorMessageId === null || anchored.current === anchorMessageId) return;
+    if (
+      !threadDetail.synchronized ||
+      anchorMessageId === null ||
+      anchored.current === anchorMessageId
+    )
+      return;
     anchored.current = anchorMessageId;
     setHistorical(true);
     follow(false);
@@ -718,7 +725,7 @@ function ThreadPaneForUser(
         .catch(() => setFailure({ key: Date.now(), resource: "that update", retry: open }));
     };
     open();
-  }, [anchorMessageId, follow, hostClient, threadId]);
+  }, [anchorMessageId, follow, hostClient, threadDetail.synchronized, threadId]);
 
   /** Puts the live conversation back and returns the reader to its foot. */
   const returnToLatest = useCallback((): void => {
@@ -727,7 +734,9 @@ function ThreadPaneForUser(
     setFailure(null);
     void hostClient
       .loadLatestTranscript(threadId)
-      .then(() => {
+      .then((landed) => {
+        // A newer move of the reader's took over: it owns the position and the route.
+        if (!landed) return;
         // The anchor is spent. It is released on the route too, so opening the
         // same message again is a new jump rather than a no-op.
         anchored.current = null;
@@ -736,6 +745,7 @@ function ThreadPaneForUser(
         setHistorical(false);
         follow(true);
         scrollToLatest(false);
+        hostClient.revealedTranscriptMove(threadId);
       })
       .catch(() =>
         setFailure({ key: Date.now(), resource: "the latest messages", retry: returnToLatest }),
@@ -778,6 +788,49 @@ function ThreadPaneForUser(
     shownHead.current = { key: head.key, runId: head.turn.runId };
   }
 
+  const visibleItem = useRef<string | undefined>(undefined);
+  const onVisibleItems = useRef(
+    ({ viewableItems }: { viewableItems: readonly { item: TranscriptItem }[] }) => {
+      const row = viewableItems[0]?.item;
+      if (row?.kind !== "group") return;
+      visibleItem.current = rowItemId(row);
+    },
+  ).current;
+  // Where the reader is, asked only when the client needs it (a repair, a subscription): the row
+  // the list last reported at the top of the screen, or none while following the latest.
+  // Measured, the row also records its neighbours, nearest first (older, then newer), so a new cut
+  // that lost it puts the reader on the nearest one left, or at the latest.
+  const following = useRef(true);
+  following.current = atTail && !historical;
+  const measured = useRef<{ readonly targets: readonly string[] } | null>(null);
+  const shownItems = useRef<readonly TranscriptItem[]>([]);
+  useEffect(() => {
+    hostClient.setTranscriptPosition(threadId, () => {
+      measured.current = null;
+      if (following.current) return undefined;
+      const itemId = visibleItem.current;
+      // Nothing reported yet: the list cannot tell, and the last place stands.
+      if (itemId === undefined) return null;
+      const rows = shownItems.current;
+      const index = rows.findIndex((row) => rowItemId(row) === itemId);
+      const near = (from: number, to: number, step: number) => {
+        const ids: string[] = [];
+        for (let at = from; at !== to && ids.length < 25; at += step) {
+          const id = rowItemId(rows[at]!);
+          if (id) ids.push(id);
+        }
+        return ids;
+      };
+      measured.current = {
+        targets: [
+          itemId,
+          ...(index < 0 ? [] : [...near(index - 1, -1, -1), ...near(index + 1, rows.length, 1)]),
+        ],
+      };
+      return itemId;
+    });
+    return () => hostClient.setTranscriptPosition(threadId, null);
+  }, [hostClient, threadId]);
   const loadEarlier = useCallback(() => {
     if (paging.current || !canLoadEarlier) return;
     paging.current = true;
@@ -795,7 +848,7 @@ function ThreadPaneForUser(
   }, [canLoadEarlier, hostClient, threadId]);
 
   const pendingRequest =
-    requestId !== null && (snapshot.ownRequests ?? []).some((request) => request.id === requestId);
+    requestId !== null && (threadDetail.requests ?? []).some((request) => request.id === requestId);
   // An answer on a page not loaded yet is paged back to. Whether it has a row
   // is not the question: in a conversation it never does.
   useEffect(() => {
@@ -905,7 +958,10 @@ function ThreadPaneForUser(
     if (anchor.activityKey !== null && !focused) return;
     anchorShown.current = anchorMessageId;
     reveal(anchor, anchorMessageId);
-  }, [anchor, anchorMessageId, focused, reveal]);
+    // The linked message is on screen: the reader's move has landed. Until it is (a repair
+    // replaced the rows), the move holds the position and its message is read again.
+    hostClient.revealedTranscriptMove(threadId);
+  }, [anchor, anchorMessageId, focused, hostClient, reveal, threadId]);
   useEffect(() => {
     if (requestId === null || revealed.current === requestId) return;
     // A Request still waiting is shown in the composer, and that spends the
@@ -990,8 +1046,8 @@ function ThreadPaneForUser(
     [askedRequestId, snapshot.waitingRequests],
   );
   const dockableRequests = useMemo(
-    () => (snapshot.ownRequests ?? []).filter(({ id }) => id !== askedRequestId),
-    [askedRequestId, snapshot.ownRequests],
+    () => (threadDetail.requests ?? []).filter(({ id }) => id !== askedRequestId),
+    [askedRequestId, threadDetail.requests],
   );
   const taskScope = useMemo<TaskScope>(
     () => ({
@@ -1086,8 +1142,8 @@ function ThreadPaneForUser(
   );
 
   const threadRuns = useMemo(
-    () => snapshot.runQueue.filter((run) => run.threadId === threadId),
-    [snapshot.runQueue, threadId],
+    () => threadDetail.runQueue.filter((run) => run.threadId === threadId),
+    [threadDetail.runQueue, threadId],
   );
   const indicator = useMemo(
     () => threadActivityIndicator(activity, { conversation: conversational, groups, startHold }),
@@ -1148,6 +1204,33 @@ function ThreadPaneForUser(
     // Spaced as if the held turn were drawn, so drawing it later changes nothing below it.
     return heldHead === 0 ? rows : rows.slice(heldHead);
   }, [conversational, drawn, groups, heldHead, indicator, outcomes, viewerUserId]);
+  shownItems.current = items;
+
+  // A new cut (a repair, or a new subscription's snapshot) replaced the rows: the reader goes back
+  // to the row measured just before it, else its nearest surviving neighbour, else the latest.
+  // Until they drag, a reread that brings the measured row back puts them on it.
+  const cuts = threadDetail.cuts ?? 0;
+  const seenCuts = useRef(cuts);
+  const restoring = useRef<readonly string[] | null>(null);
+  useEffect(() => {
+    if (seenCuts.current !== cuts) {
+      seenCuts.current = cuts;
+      restoring.current = following.current ? null : (measured.current?.targets ?? null);
+      measured.current = null;
+    }
+    const targets = restoring.current;
+    if (!targets) return;
+    const index = targets
+      .map((target) => items.findIndex((row) => rowItemId(row) === target))
+      .find((found) => found >= 0);
+    if (index === undefined) {
+      follow(true);
+      scrollToLatest(false);
+      return;
+    }
+    listRef.current?.scrollToIndex({ animated: false, index, viewPosition: 0 });
+    if (rowItemId(items[index]!) === targets[0]) restoring.current = null;
+  }, [cuts, follow, items, scrollToLatest]);
 
   const queueFooter = useMemo(
     () =>
@@ -1199,7 +1282,16 @@ function ThreadPaneForUser(
       ? null
       : (waiting?.find((item) => item.messageId === editing.edit?.messageId) ?? null);
   const passwordsOffer = useMemo(() => passwordsSetupOffer(groups), [groups]);
-  const listFooter =
+  const loadMoreActivity = (kind: "tools" | "nodes") => {
+    void hostClient.loadMoreOverlays(threadId, kind).catch(() =>
+      setFailure({
+        key: Date.now(),
+        resource: "more activity",
+        retry: () => loadMoreActivity(kind),
+      }),
+    );
+  };
+  const conversationFooter =
     passwordsOffer !== null && viewerUserId !== null && !(voiceThread && onCall) ? (
       <>
         <PasswordsSuggestion
@@ -1214,6 +1306,50 @@ function ThreadPaneForUser(
     ) : (
       (queueFooter ?? undefined)
     );
+
+  const loadWaitingMessages = () => {
+    setFailure(null);
+    void hostClient
+      .loadThreadInputQueue(threadId)
+      .catch(() =>
+        setFailure({ key: Date.now(), resource: "waiting messages", retry: loadWaitingMessages }),
+      );
+  };
+  const loadNewer = () => {
+    setFailure(null);
+    void hostClient
+      .loadNewerTranscript(threadId)
+      .catch(() => setFailure({ key: Date.now(), resource: "newer activity", retry: loadNewer }));
+  };
+  const listFooter = (
+    <>
+      {threadDetail.inputQueueError !== undefined ? (
+        <AnswerPill
+          tone="secondary"
+          label="Retry loading waiting messages"
+          onPress={loadWaitingMessages}
+        />
+      ) : null}
+      {conversationFooter}
+      {threadDetail.hasNewer ? (
+        <AnswerPill tone="secondary" label="Load newer" onPress={loadNewer} />
+      ) : null}
+      {threadDetail.moreTools ? (
+        <AnswerPill
+          tone="secondary"
+          label="Show more tools"
+          onPress={() => loadMoreActivity("tools")}
+        />
+      ) : null}
+      {threadDetail.moreNodes ? (
+        <AnswerPill
+          tone="secondary"
+          label="Show more subagents"
+          onPress={() => loadMoreActivity("nodes")}
+        />
+      ) : null}
+    </>
+  );
 
   // Never under a finger: the list moves only where the reader puts it.
   const keepPinned = (): void => {
@@ -1389,8 +1525,10 @@ function ThreadPaneForUser(
             flinging.current = false;
           }}
           onScroll={handleScroll}
+          onViewableItemsChanged={onVisibleItems}
           onScrollBeginDrag={() => {
             dragging.current = true;
+            restoring.current = null;
           }}
           onScrollEndDrag={() => {
             dragging.current = false;
@@ -1495,6 +1633,7 @@ function ThreadPaneForUser(
       {snapshot.user === null || voiceThread || historical || editingInPlace ? null : (
         <RunningNowCapsule
           hostClient={hostClient}
+          observed={showing}
           onOpen={openRunningNow}
           reachable={live}
           threadId={threadId}
@@ -1581,12 +1720,14 @@ function ThreadPaneForUser(
                     ask={dockedAsk}
                     canRespond={canRespond}
                     decisions={askDecisions}
+                    hostClient={hostClient}
                   />
                 </Animated.View>
               )}
               {/* Kept mounted while a waiting message is edited: it owns a send in flight. */}
               <View style={editingInPlace && !editingReply ? styles.hidden : undefined}>
                 <Composer
+                  observed={showing}
                   variant={conversational ? "conversation" : "work"}
                   voice={false}
                   accessMode={thread.accessMode}
@@ -1635,6 +1776,15 @@ function ThreadPaneForUser(
                       : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
                   }
                   requests={editingReply ? [] : dockableRequests}
+                  {...(threadDetail.moreRequests
+                    ? {
+                        onMoreRequests: () => {
+                          void hostClient
+                            .loadMoreOverlays(threadId, "requests")
+                            .catch(() => undefined);
+                        },
+                      }
+                    : {})}
                   focusDraft={focusDraft}
                   running={stopTarget !== null}
                   stopRunId={stopTarget?.id ?? null}
@@ -1953,4 +2103,15 @@ function useChannelName(teamId: string | null, channelId: string | null): string
     [session],
   );
   return useSyncExternalStore(subscribe, read, read);
+}
+
+/** The item a transcript row stands for: its first, which is what an anchor names. */
+function rowItemId(row: TranscriptItem): string | undefined {
+  if (row.kind !== "group") return undefined;
+  const group = row.group;
+  const entry =
+    group.kind === "turn"
+      ? (group.turn.work[0] ?? group.turn.reply ?? group.turn.run)
+      : group.entry;
+  return (entry && ("itemId" in entry ? (entry.itemId ?? entry.id) : entry.id)) || undefined;
 }

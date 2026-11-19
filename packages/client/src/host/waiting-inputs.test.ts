@@ -1,3 +1,4 @@
+import { mockInputQueue } from "../mock/mock-scoped-personal.js";
 import { expect, it } from "vitest";
 import {
   MessageRevisionViewSchema,
@@ -119,9 +120,14 @@ it("lists what waits for the agent in order: the person's messages, approved ask
     canEdit: false,
     state: "awaiting-approval",
   });
-  const list = waitingInputs(queue([followUp, own, released, held, waiting, approving]), {
-    ownsLease: (leaseId) => leaseId === "lease-mine-0000001",
-  });
+  const list = waitingInputs(
+    mockInputQueue(
+      queue([followUp, own, released, held, waiting, approving]),
+      "0",
+      (leaseId) => leaseId === "lease-mine-0000001",
+    ),
+    {},
+  );
   expect(list.map(({ kind, text }) => [kind, text])).toEqual([
     ["message", "Draft the reply"],
     ["message", "Check the invoice"],
@@ -131,13 +137,12 @@ it("lists what waits for the agent in order: the person's messages, approved ask
   ]);
   // A follow-up ahead of every message means none of them is next.
   expect(list.some((input) => input.kind === "message" && input.next)).toBe(false);
-  expect(list[0]!.lease).toEqual({ kind: "mine", leaseId: "lease-mine-0000001" });
+  expect(list[0]!.lease).toEqual({ kind: "mine" });
   expect(list[1]).toMatchObject({ edit: { revision: 1 }, revision: 1, lease: { kind: "none" } });
   expect(list[2]!.lease).toEqual({
     deviceLabel: "Alex's iPad",
     expiresAt: at,
     kind: "other",
-    leaseId: "lease-other-000001",
   });
   expect(list[3]).toMatchObject({
     approving: false,
@@ -149,9 +154,15 @@ it("lists what waits for the agent in order: the person's messages, approved ask
   });
   expect(list[4]).toMatchObject({ approving: true, canEdit: false });
 
-  const [first] = waitingInputs(queue([own, waiting]), { ownsLease: () => false });
+  const [first] = waitingInputs(
+    mockInputQueue(queue([own, waiting]), "0", () => false),
+    {},
+  );
   expect(first).toMatchObject({ kind: "message", next: true });
-  const [paused] = waitingInputs(queue([own], true), { ownsLease: () => false });
+  const [paused] = waitingInputs(
+    mockInputQueue(queue([own], true), "0", () => false),
+    {},
+  );
   expect(paused).toMatchObject({ next: false });
 });
 

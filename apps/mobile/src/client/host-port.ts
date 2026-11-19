@@ -14,10 +14,13 @@ import {
 } from "@opensteer/client/connections";
 import {
   HttpHostClient,
+  realtimeIdleProbeDeadlineMs,
+  realtimeIdleProbeMs,
   type ClientLifecycle,
   type HostClient,
   type HostCapabilityReader,
   type BrowserPreferencesStorage,
+  type PersonalStreamCache,
 } from "@opensteer/client/host";
 import { DeploymentIdSchema, type DeploymentId, type MessageOrigin } from "@opensteer/core";
 import type { HostCapability } from "@opensteer/deployment-authority";
@@ -61,6 +64,7 @@ export type HostEpochAgreement =
  */
 export interface MobileHostPort {
   readonly credentials: DeploymentCredentials;
+  clearPersonalStreamCache?(deploymentId: DeploymentId): Promise<void>;
   attach(input: {
     readonly connectionController?: import("@opensteer/client/connections").ConnectionController;
     readonly clientScope?: () => import("@opensteer/client/connections").ClientScope | null;
@@ -89,6 +93,7 @@ export type MobileHostPortFactory = (input: {
 
 export function createNetworkHostPort(options: {
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
+  readonly streamCache?: (deploymentId: DeploymentId) => PersonalStreamCache;
   readonly fetch: HostFetch;
   readonly lifecycle: ClientLifecycle;
   readonly now: () => Date;
@@ -101,6 +106,9 @@ export function createNetworkHostPort(options: {
   const maintenanceNetwork = createMaintenanceNetwork(options);
   return ({ oauth, sessions, sessionExchange }) => ({
     credentials: createDeploymentCredentials({ now: options.now, oauth, sessions }),
+    clearPersonalStreamCache: async (deploymentId) => {
+      await options.streamCache?.(deploymentId).removeDeployment(deploymentId);
+    },
 
     desktopUpdates: ({ catalog, deploymentId }) => {
       const credentials = createDeploymentCredentials({ now: options.now, oauth, sessions });
@@ -151,11 +159,13 @@ export function createNetworkHostPort(options: {
         origin,
         openWebSocket: options.openWebSocket,
       });
+      const cacheDeploymentId = connection.authority.document.deploymentId;
+      const cache = options.streamCache?.(cacheDeploymentId);
       const client = new HttpHostClient({
         ...(assetRoute ? { assetRoute } : {}),
+        ...(cache ? { streamCache: cache, cacheDeploymentId } : {}),
         ...(connectionController ? { connectionController } : {}),
         ...(clientScope ? { clientScope } : {}),
-        deviceAccessRequests: "include",
         baseUrl: origin,
         ...(options.browserPreferencesStorage
           ? { browserPreferencesStorage: options.browserPreferencesStorage }
@@ -164,6 +174,9 @@ export function createNetworkHostPort(options: {
         fetch: network.fetch,
         lifecycle: options.lifecycle,
         origin: options.origin,
+        prepareSocket: () => authorization.current(),
+        // Frames count as progress, so only a quiet socket is probed.
+        realtimeLiveness: { idleMs: realtimeIdleProbeMs, deadlineMs: realtimeIdleProbeDeadlineMs },
         webSocketFactory: network.webSocketFactory,
       });
       registerPhoneEnrollmentHost(client, {

@@ -1,6 +1,7 @@
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import type { HostClient, HostSnapshot } from "../host/client.js";
 import { waitingInputs, type WaitingInput } from "../host/waiting-inputs.js";
+import { useThreadInputQueue } from "./use-thread-input-queue.js";
 import { useHostSelector } from "./use-host-snapshot.js";
 
 const selectNeedsYou = (snapshot: HostSnapshot) => snapshot.needsYou;
@@ -13,17 +14,9 @@ const selectNeedsYou = (snapshot: HostSnapshot) => snapshot.needsYou;
 export function useWaitingInputs(
   hostClient: HostClient,
   threadId: string | null | undefined,
+  observed = true,
 ): readonly WaitingInput[] | null {
-  const selectQueue = useCallback(
-    (snapshot: HostSnapshot) => (threadId ? (snapshot.inputQueues[threadId] ?? null) : null),
-    [threadId],
-  );
-  const queue = useHostSelector(hostClient, selectQueue);
+  const queue = useThreadInputQueue(hostClient, threadId, observed);
   const needsYou = useHostSelector(hostClient, selectNeedsYou);
-  return useMemo(
-    () =>
-      queue &&
-      waitingInputs(queue, { needsYou, ownsLease: (leaseId) => hostClient.ownsEditLease(leaseId) }),
-    [hostClient, needsYou, queue],
-  );
+  return useMemo(() => queue && waitingInputs(queue, { needsYou }), [needsYou, queue]);
 }

@@ -104,12 +104,11 @@ integration("page tab adapter", () => {
       personal: true,
       repository: personalBrowserRepository(store),
       tabs,
-      tabPlaces: { write: async () => undefined, publish: () => {}, notice: () => {} },
+      tabPlaces: { write: async () => false, notice: () => {} },
       signer: new BrowserAttachTicketSigner({
         keyId: "test",
         privateKey: generateKeyPairSync("ed25519").privateKey,
       }),
-      onDeploymentEvent: () => {},
       onSessionsChanged: () => {},
       onError: (error) => errors.push(error),
       targetResolver: {

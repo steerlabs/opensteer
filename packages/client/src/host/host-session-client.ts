@@ -1,26 +1,44 @@
-import type { PluginChange } from "@opensteer/protocol";
-import { nameConnectionFromHost } from "./host-connection.js";
-import { assertMessageLogin, disposeMessageOutbox } from "./message-outbox.js";
+import { unsupportedVersionCloseCode } from "@opensteer/protocol";
+import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import {
-  clientScopeKey,
   createConnectionController,
-  type ConnectionController,
-  type ConnectionAttempt,
-  type ConnectionLease,
   type ClientScope,
+  type ClientConnectionState,
+  type ConnectionAttempt,
+  type ConnectionController,
+  type ConnectionLease,
+  type ConnectionPresentation,
+  probeAnsweredByFrames,
 } from "../connections/connection-controller.js";
-import { classifyClientFailure, ClientOperationError } from "../connections/operation-error.js";
+import { classifyClientFailure } from "../connections/operation-error.js";
 import { HostTransportError } from "../connections/host-transport-error.js";
+import { assertMessageLogin, disposeMessageOutbox } from "./message-outbox.js";
+import { nameConnectionFromHost } from "./host-connection.js";
+import type { TranscriptItem } from "@opensteer/protocol/transcript";
+import { MessageIdSchema, utf8ByteLength } from "@opensteer/core";
+import type { PersonalStreamCache } from "./personal-stream-cache.js";
+import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
+import { withThreadState } from "./optimistic-command-patches.js";
+import { ScopedThreadReader, TranscriptBodies, transcriptBodyKey } from "./scoped-thread-reader.js";
+import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
+import { displayedItemIds } from "./thread-transcript-store.js";
+import {
+  scopedPersonalApiVersion,
+  personalDetailFrameMaxBytes,
+  affectedPersonalSubscriptions,
+  personalShellSettledTasks,
+} from "@opensteer/protocol/personal-sync";
+import { pluginCategoryResources, type PersonalResourceKind } from "@opensteer/protocol/resources";
+import type { PersonalShellStore } from "./personal-shell-store.js";
+import { PersonalResourceReads, type ResourceInterest } from "./personal-resource-reads.js";
+import { savedStartWaitMs, ScopedPersonalStream } from "./scoped-personal-stream.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { HostClient } from "./client.js";
 import {
   clientCommandSchema,
   deviceAccessCommand,
-  deviceDriversApiVersion,
-  deviceDriversCapability,
   type MachineAccessUpdateInput,
 } from "./device-commands.js";
-import { visibleDeviceMachines, deviceDriverKey } from "./device-projection.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { createIphoneSetupPort, type IphoneSetupPort } from "./iphone-setup.js";
 import { clearRunPageViews } from "./run-page-memory.js";
@@ -28,25 +46,17 @@ import { clearRunPlacePictures } from "./run-place-picture.js";
 import { ReferenceStore } from "../references/store.js";
 import { TranscriptFileController } from "./transcript-files.js";
 import { AssetUrlStore, type AssetRoute } from "./asset-urls.js";
-import { needsYouEntryKey, refreshNeedsYou } from "./needs-you.js";
 import {
   isSettledInputMutationError,
   openWaitingMessageEditor,
   type WaitingMessageEditorPort,
 } from "./waiting-message-editor.js";
-import type { MachineSummary } from "@opensteer/protocol";
-import type { PersonalStreamCache, PersonalCacheScope } from "./personal-stream-cache.js";
 import { familyAutomations } from "./task-family.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
-import { NodeDetailStore, type NodeDetailSubscription } from "./node-detail.js";
-import { executionNodeEntry } from "./subagent-model.js";
-import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
+import type { NodeDetailSubscription, NodeDetailSnapshot } from "./node-detail.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
 import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
-import { drawnTranscriptRowKeys } from "./transcript-projection.js";
-import type { BootstrapReason } from "@opensteer/shared/bootstrapDiagnostics";
-import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
 import { BrowserEditingStore } from "./browser-editing.js";
@@ -64,69 +74,41 @@ import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
 import {
   DeploymentIdSchema,
-  EnvironmentIdSchema,
-  EventIdSchema,
-  IsoDateTimeSchema,
-  MessageIdSchema,
+  ModelSelectionSchema,
   ExecutionNodeIdSchema,
   TeamAgentRequestIdSchema,
   RequestIdSchema,
-  nodeDetailEventNodeId,
   type QuietTaskDays,
   type PersonName,
-  AgentEventViewSchema,
-  LiveItemViewSchema,
-  LiveRunProgressViewSchema,
   RunIdSchema,
   SequenceSchema,
   ThreadIdSchema,
-  ThreadStatusSchema,
   ThreadTitleSchema,
-  ThreadViewSchema,
   TimeZoneSchema,
   type MessageOrigin,
-  compareSequence,
   defaultTaskSymbol,
   emptyExecutionPreferences,
-  eventDataSchemas,
-  liveProgressMaxItems,
-  liveStreamKeyId,
-  liveStreamKeyOf,
-  requestTitleText,
   zeroSequence,
-  type AgentEventView as AgentEvent,
   type AssignmentSummary,
   type AssignmentView,
   type Attachment,
   type ExecutionPreferences,
   type NotificationView,
   type Request,
+  type RunId,
   type Sequence,
   type Thread,
   type ThreadAccessMode,
-  type ThreadId,
-  type ThreadInputQueue,
   type ThreadVisit,
-  type WaitingRequest,
   type IconName,
   type MessageRevisionView,
 } from "@opensteer/core";
-import {
-  hostApiVersion,
-  minimumHostApiVersion,
-  setApiVersionQuery,
-} from "@opensteer/deployment-authority";
+import { apiVersionQueryParameter } from "@opensteer/deployment-authority";
 import {
   DisplaySourceSchema,
-  HarnessModelSettingsMapSchema,
   HostToClientMessageSchema,
-  DeploymentSnapshotSchema,
   browserUsageRunBatchSize,
-  threadPageMaxItems,
-  deploymentSnapshotMaxThreads,
   type BrowserSessionUsageProjection,
-  type DurableWindow,
-  hostApi,
   type HostApiClient,
   type HostApiCommand,
   type HostApiCommandInput,
@@ -134,10 +116,7 @@ import {
   type HostToClientMessage,
   type RealtimeFrameDiagnostic,
   type RpcResult,
-  type DeploymentSnapshot,
-  realtimeEnvelopeTypes,
 } from "@opensteer/protocol";
-import { z } from "zod";
 import { BrowserWatchStore, browserCommandNeedsNoView } from "./browser-watch.js";
 import type {
   BrowserCommand,
@@ -146,214 +125,55 @@ import type {
   CreateThreadInput,
   EnvironmentSummary,
   HarnessSummary,
-  HostConnectionState,
   HostSnapshot,
   MachineAccessHistoryPage,
   MachineAccessUpdateOutcome,
   HostClient as OwnerViewHostClient,
+  TaskEntry,
   TaskListState,
   ThreadSummary,
-  TranscriptEntry,
   TeamAskDecision,
   WaitingMessageEditor,
 } from "./client.js";
-import { HostClientRequestError, isHostRefusal, mainDoneTasks } from "./client.js";
+import { HostClientRequestError, mainDoneTasks, resourceBackedFields } from "./client.js";
+import { rawSnapshot, trackSnapshot, type SnapshotReader } from "./host-snapshot-store.js";
 import { browserProfileHomeCommand } from "./browser-access.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
-import { dispatchDeviceCommand, createHttpHostApiClient } from "./host-api-client.js";
+import { createHttpHostApiClient } from "./host-api-client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { RunPlaceStore } from "./run-place.js";
+import { heldThread } from "./task-list.js";
 import {
-  realtimeIdleProbeDeadlineMs,
-  realtimeIdleProbeMs,
   type ClientLifecycle,
   type ClientNetworkState,
   type ClientVisibility,
 } from "./lifecycle.js";
-import { LiveStreamLedger, type LiveProgressInput } from "./live-progress.js";
-import {
-  applyOptimisticCommandPatch,
-  withEditedWaitingMessage,
-  withEditLease,
-  withThreadState,
-} from "./optimistic-command-patches.js";
 import { PlaceActivityStore } from "./place-activity.js";
 import { placeByKey } from "./places.js";
 import { reconcileBrowserLastPictures } from "./browser-last-picture.js";
-import { isActiveRunStatus, RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
-import { mergeTaskEntries } from "./task-entries.js";
+import { compareTaskOrder, mergeTaskEntries } from "./task-entries.js";
+import { FencedReads, type FencedRead } from "./fenced-reads.js";
 import { threadStopTarget } from "./thread-activity.js";
 import { isThreadUnread } from "./thread-unread.js";
 import { ThreadStateProjection } from "./thread-state.js";
-import { withPublishedReplies } from "./thread-visits.js";
-import {
-  drawnLiveStream,
-  foldLiveRun,
-  foldTranscriptEvent,
-  isWaitingInputState,
-  mergeTranscriptSegments,
-  toMessageEntry,
-  toTranscriptEntry,
-  upsertEntry,
-  withoutClosedLiveStreams,
-} from "./transcript.js";
-import {
-  describeRealtimeFrameFailure,
-  maxInboundFrameCharacters,
-  realtimeEnvelopeType,
-  realtimeFrameLoss,
-} from "./realtime-frames.js";
 
-type HostCapability = AuthorityHostCapability | "node-detail-v1" | "device-drivers-v1";
+type HostCapability = AuthorityHostCapability;
 
-const defaultRefreshIntervalMs = 15_000;
-const historyPageTurns = 10;
-const historyScanMaxPages = 20;
-const historyScanMaxBytes = 2 * 1024 * 1024;
 const defaultReconnectBaseDelayMs = 300;
-/** How long a missed live frame waits before its Thread's streams are reread. */
-const liveRefreshDelayMs = 250;
-
-const maxHeldLiveFrames = 256;
-
-const realtimeEventsSchema = z.object({
-  events: z.array(z.unknown()).max(2_000),
-});
-const realtimeEventPositionSchema = z.object({
-  sequence: SequenceSchema,
-});
-const realtimeLiveEnvelopeSchema = z.object({
-  afterSequence: SequenceSchema,
-  progress: LiveRunProgressViewSchema.extend({
-    items: z.array(z.unknown()).min(1).max(liveProgressMaxItems),
-  }),
-});
-const realtimeLiveKindSchema = z.object({
-  stream: z.enum(["assistant", "reasoning", "tool", "node"]),
-  op: z.enum(["append", "replace"]),
-});
-type RealtimeEvent = AgentEvent | (z.infer<typeof realtimeEventPositionSchema> & { type: null });
-
-const realtimeHeaderSchema = z.object({ type: z.string().min(1) });
-const realtimeEventTypes = new Set<string>(
-  AgentEventViewSchema.options.map((schema) => schema.shape.type.value),
-);
-const realtimeSnapshotFrameSchema = z.object({
-  snapshot: z.looseObject({ threads: z.array(z.unknown()).max(deploymentSnapshotMaxThreads) }),
-});
-/** Any event's envelope, whose Run may be null; place entries alone always name one. */
-const realtimeEventEnvelopeSchema = z.object({
-  createdAt: IsoDateTimeSchema,
-  environmentId: EnvironmentIdSchema,
-  eventId: EventIdSchema,
-  runId: RunIdSchema.nullable(),
-  sequence: SequenceSchema,
-  threadId: ThreadIdSchema,
-});
-const realtimeThreadStateEventSchema = realtimeEventEnvelopeSchema.extend({
-  type: z.literal("thread.state-changed"),
-  data: z.object({
-    ...eventDataSchemas["thread.state-changed"].shape,
-    status: z.string().min(1),
-  }),
-});
-const realtimeThreadEventSchema = realtimeEventEnvelopeSchema.extend({
-  type: z.enum(["thread.created", "thread.execution-updated", "thread.listed"]),
-  data: z.object({
-    thread: ThreadViewSchema.extend({ status: z.string().min(1) }),
-  }),
-});
-const realtimeResyncSchema = z.object({
-  type: z.literal("host.resync-required"),
-  // The reason explains the reset; every present or future reason requires it.
-  reason: z.string().min(1),
-});
-type RealtimeMessage =
-  | Exclude<HostToClientMessage, { type: "host.events" | "host.resync-required" }>
-  | { type: "host.events"; events: RealtimeEvent[]; throughSequence: Sequence }
-  | z.infer<typeof realtimeResyncSchema>;
-
 const defaultReconnectMaxDelayMs = 12_000;
-/** Times a channel fails at one position before it starts over from a snapshot. */
-const realtimeReplayAttempts = 3;
-/** Each try can cost a whole snapshot over cellular, so a frame that keeps failing waits longest. */
+
 /** Notification ids remembered after delivery, enough to cover every socket's copy. */
 const rememberedNotificationIds = 256;
-
-/**
- * The events after which a loaded queue is read again: a message may have
- * joined it, an input may have left it, and a Run starting or ending changes
- * which Run, if any, a queued message could be steered into.
- */
-const inputQueueEventTypes: ReadonlySet<AgentEvent["type"]> = new Set<AgentEvent["type"]>([
-  "message.created",
-  "run.completed",
-  "run.failed",
-  "run.interrupted",
-  "run.queued",
-  "run.started",
-  "run.status",
-  "thread-input.updated",
-  "thread.input-queue-updated",
+const scopedRealtimeTypes = new Set([
+  "host.snapshot",
+  "host.changes",
+  "host.synchronized",
+  "host.removed",
+  "host.resource",
+  "host.live",
+  "host.text",
 ]);
 
-function showsSubscriptionProgress(message: RealtimeMessage, channel: DeploymentChannel): boolean {
-  switch (message.type) {
-    case "host.snapshot":
-    case "host.events":
-    case "host.live":
-    case "host.synchronized":
-    case "host.thread-visits":
-      return true;
-    case "host.pong":
-      return message.nonce === channel.probeNonce;
-    default:
-      return false;
-  }
-}
-
-/**
- * A send the Host held rather than ran is a queue item from the moment it is
- * acknowledged. The reader sent it, so they may take it back or move it; whether they
- * may steer it is the queue's word on the Run it would be promoted into.
- */
-function queuedInputItem(
-  result: Extract<HostApiCommandOutput, { readonly type: "thread.sendMessage" }>,
-  queue: ThreadInputQueue | undefined,
-): ThreadInputQueue["items"][number] | null {
-  if (!queue || result.run !== null) return null;
-  if (result.input.policy !== "queue" || result.input.state !== "pending") return null;
-  return {
-    canCancel: true,
-    canEdit: true,
-    canMove: true,
-    canSteer: queue.steerRunId !== null && !result.input.freshContext,
-    input: result.input,
-    lease: null,
-    message: result.message,
-  };
-}
-
-function commandIs<Type extends HostApiCommand["type"]>(
-  command: HostApiCommand,
-  type: Type,
-): command is Extract<HostApiCommand, { readonly type: Type }> {
-  return command.type === type;
-}
-
-const HarnessRecordSchema = z.strictObject({
-  modelSettings: HarnessModelSettingsMapSchema.optional(),
-  config: z.unknown(),
-  driverKind: z.string().min(1),
-  enabled: z.boolean(),
-  environmentId: z.string().min(1),
-  id: z.string().min(1),
-  isDefault: z.boolean(),
-  name: z.string().trim().min(1).max(120),
-  runtimeRevision: z.number().int().positive(),
-  sourceId: z.string().min(1).max(100),
-  stateKind: z.enum(["ambient", "isolated"]),
-});
 type Fetch = typeof globalThis.fetch;
 type Timer = ReturnType<typeof globalThis.setTimeout>;
 
@@ -376,59 +196,25 @@ export interface WebSocketClient {
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
 }
 
-interface DeploymentChannel {
-  refused: boolean;
-  cursor: Sequence;
-  /** The version `cursor` was read at; state read at another one is replaced. */
-  apiVersion: number;
-  /** The nonce of the liveness probe this channel is waiting on, if any. */
-  probeNonce: string | null;
-  probeResolve: (() => void) | null;
-  /** When the current socket last showed its subscription delivering. */
-  progressAt: number;
-  interrupted: boolean;
-  /** Whether this subscription was answered by replay, which carries events but never notices. */
-  resumed: boolean;
-  socket: WebSocketClient | null;
-  synchronized: boolean;
-  /** Replay and sync frames this client could not read since it last synchronized. */
-  unreadableFrames: number;
-  /** While frames are unreadable, when the next attempt may start. */
-  deploymentId: string;
-}
-
 /** Whom a realtime socket was opened for. */
 interface SocketViewer {
   readonly deploymentId: string | null;
   readonly userId: string | null;
 }
 
-interface LiveReread {
-  /**
-   * Something the read may predate happened after it was asked: a frame went
-   * missing, or the connection started over. Its answer is owed one more read.
-   */
-  again: boolean;
-  /** Waiting out the debounce; null once the read is asked. */
-  timer: Timer | null;
-}
-
-/** The connection owner keeps discovery evidence within its attachment fence. */
 export type HostCapabilityReader = (options?: {
   readonly revalidate: boolean;
 }) => Promise<readonly HostCapability[]>;
 
 export interface HttpHostClientOptions {
-  readonly presentation?: import("../connections/connection-controller.js").ConnectionPresentation;
+  readonly presentation?: ConnectionPresentation;
   readonly connectionController?: ConnectionController;
   readonly clientScope?: () => ClientScope | null;
-  /** Browser and desktop credentials are selected outside the renderer. */
-  readonly bindMutationsToSession?: boolean;
   readonly iphoneSetup?: import("@opensteer/protocol/desktop").DesktopIphoneSetupBridge;
   readonly assetRoute?: AssetRoute;
   readonly desktopMedia?: boolean;
-  readonly deviceAccessRequests?: "include";
   readonly streamCache?: PersonalStreamCache;
+  readonly cacheDeploymentId?: string;
   readonly passkeys?: BrowserPasskeyPort;
   /** The viewer's command platform for exact baseline shortcut projection. */
   readonly viewerPlatform?: "mac" | "pc";
@@ -447,12 +233,14 @@ export interface HttpHostClientOptions {
   readonly lifecycle?: ClientLifecycle;
   readonly random?: () => number;
 
-  readonly realtimeLiveness?: { readonly idleMs: number; readonly deadlineMs: number };
   readonly reconnectBaseDelayMs?: number;
   readonly reconnectMaxDelayMs?: number;
+  /** Watches delivery when a socket is proxied across the Desktop bridge. */
+  readonly realtimeLiveness?: { readonly idleMs: number; readonly deadlineMs: number };
   /** Where a platform keeps a record of realtime frames this client could not read. */
   readonly reportRealtimeFrame?: (record: RealtimeFrameDiagnostic) => void;
 
+  readonly prepareSocket?: () => Promise<unknown>;
   readonly webSocketFactory?: (url: string) => WebSocketClient;
 }
 
@@ -466,12 +254,6 @@ type AttachmentRead = {
 };
 
 export class HttpHostClient {
-  readonly connection: ConnectionController;
-  readonly #ownsConnection: boolean;
-  readonly #clientScope: (() => ClientScope | null) | undefined;
-  readonly #bindMutationsToSession: boolean;
-  #connectionPathRevision = 0;
-  #connectionFailed: ((error: unknown) => void) | null = null;
   readonly browserPasskeys: BrowserPasskeys;
   readonly iphoneSetup: IphoneSetupPort | undefined;
   readonly browserHistory: BrowserHistoryClient;
@@ -495,25 +277,98 @@ export class HttpHostClient {
   readonly transcriptFiles: TranscriptFileController;
   readonly rpc: HostApiClient;
   readonly #baseUrl: URL;
-  readonly #streamCache: PersonalStreamCache | undefined;
-  #checkpointWrite: Promise<void> = Promise.resolve();
-  #cacheLoaded = false;
-  #applyingSnapshot = false;
-  #restoredCursor: Sequence | null = null;
+  readonly #stream: ScopedPersonalStream;
+  readonly #prepareSocket: HttpHostClientOptions["prepareSocket"];
+  #probe: { nonce: string; finish(): void; abort(): void } | undefined;
+  #checkingHandshake = false;
+  readonly #realtimeLiveness: HttpHostClientOptions["realtimeLiveness"];
+  #lastRealtimeFrameAt = 0;
+  #attachDeadline: Timer | undefined;
+  readonly #reportRealtimeFrame: HttpHostClientOptions["reportRealtimeFrame"];
+  #socket: WebSocketClient | null = null;
+  readonly connection: ConnectionController;
+  readonly #ownsConnection: boolean;
+  readonly #clientScope: (() => ClientScope | null) | undefined;
+  #connectionFailed: ((error: unknown) => void) | null = null;
+  #connectionAdmit: (() => void) | null = null;
+  #socketCloseReason: string | undefined;
+  #backgroundShellGeneration: number | undefined;
+  #load: Promise<void> | undefined;
+  #resolveLoad: (() => void) | undefined;
+  readonly #resources: PersonalResourceReads;
+  readonly #environmentCatalogs = new Map<string, EnvironmentSummary["harnessCatalogs"]>();
+  readonly #scopeReaders = new Map<string, ScopedThreadReader>();
+  readonly #bodies = new TranscriptBodies();
+  readonly #threadReaders = new Map<string, () => void>();
+  readonly #shellEntries = new WeakMap<Parameters<typeof compactThread>[0], TaskEntry>();
+  /** Task page reads, fenced by the viewer and the shell cut they extend. */
+  readonly #taskReads = new FencedReads({
+    epoch: () => `${this.#viewerGeneration}:${this.#shellCut}`,
+  });
+  /** Counts shell cuts: a repair or a new attach replaces the rows pages were read against. */
+  #shellCut = 0;
+  /** Open tasks read past the shell's settled window, the cut they extend, and where they go on. */
+  #openPages:
+    | {
+        readonly cut: number;
+        readonly entries: readonly TaskEntry[];
+        readonly window: { readonly nextBefore: string | null; readonly hasMore: boolean };
+      }
+    | undefined;
+  /** Running and waiting tasks past the shell's active window, and where they go on. */
+  #activePages: readonly TaskEntry[] = [];
+  #activeCursor: string | null = null;
+  /** Done as the Host counted it, read to `#doneDepth`, stamped with what it was read against. */
+  #donePages:
+    | {
+        readonly stamp: string;
+        readonly entries: readonly TaskEntry[];
+        readonly window: TaskListState["window"];
+      }
+    | undefined;
+  /** Settled open rows the person has asked to see; and Done rows (0 until Done opens). */
+  #openDepth: number = personalShellSettledTasks;
+  #doneDepth = 0;
+  /** Counts pushes that may move Done membership: a Done read from before one is read again. */
+  #doneCountTimer: ReturnType<typeof setTimeout> | undefined;
   /**
-   * The version the Host serves this client, from bootstrap. A Host from before
-   * the window admits this client only at its minimum, and does not say so.
+   * Done's count, with the Host sequence it was read at. One rule sets it: a count from the Host
+   * (a first page or the count-only read) replaces the held one when it was read at the same or
+   * a later sequence. Nothing else can set it, so no arrival order can put an older count back.
    */
-  #servedApiVersion = minimumHostApiVersion;
-  readonly #channels = new Map<string, DeploymentChannel>();
+  #doneCount: { readonly count: number; readonly asOf: bigint } | undefined;
+  /** The latest sequence at which a pushed change may have moved Done's membership. */
+  #doneChangedAt = -1n;
+  /** The held open and active lists, as last built, and what they were built from. */
+  #openCache:
+    | {
+        readonly tasks: ReadonlyMap<string, unknown>;
+        readonly openPages: unknown;
+        readonly activePages: readonly TaskEntry[];
+        readonly byId: Map<string, TaskEntry>;
+        readonly open: readonly TaskEntry[];
+        readonly active: readonly TaskEntry[];
+      }
+    | undefined;
+  /** Counts the times a person opened Done; each reads it again from its first page. */
+  #doneOpens = 0;
+  /** Tasks the shell removed in this cut: a page read before cannot bring one back. */
+  readonly #removedTasks = new Set<string>();
+  #publishedShell: ReturnType<ScopedPersonalStream["shell"]["getSnapshot"]> | undefined;
+  #syncedAttachment: number | undefined;
   readonly #fetch: Fetch;
-  readonly #listeners = new Set<() => void>();
-  readonly #messagePageLoads = new Map<string, { promise: Promise<void>; retired: boolean }>();
-  /**
-   * Threads whose assignments were asked for, answered or not. A failed read
-   * is not retried per event batch; an explicit refresh or a resync asks again.
-   */
-  readonly #assignmentReads = new Map<string, "read" | "reading">();
+  /** Each subscription is a reader: what its listener reads stays watched while it is subscribed. */
+  readonly #listeners = new Map<() => void, ResourceInterest>();
+  /** A task's assignment reads, fenced by the viewer; and the tasks whose list is read. */
+  readonly #assignmentReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
+  readonly #assignmentsRead = new Set<string>();
+  /** Each task view's one-shot measurement of the row in view, for its reader. */
+  readonly #positionMeasures = new Map<string, () => string | undefined | null>();
+  /** When each assignment was last pushed, by a counter a read notes as it begins. */
+  readonly #assignmentPushes = new Map<string, number>();
+  /** Every task whose assignments were asked for under this viewer. */
+  readonly #assignmentKeys = new Set<string>();
+  #assignmentPushCount = 0;
   readonly #automationReads = new Map<string, { again: boolean }>();
   readonly #readAutomations = new Set<string>();
   /**
@@ -535,7 +390,6 @@ export class HttpHostClient {
    */
   readonly #presenceMarks = new Map<string, number>();
   #presenceCounter = 0;
-  #browserCarrier: DeploymentChannel | null = null;
   readonly #tabs = new TabStore();
   /** The page session each tab's viewer was bound to by this device's own activation. */
   readonly #pageSessions = new Map<string, string>();
@@ -544,6 +398,7 @@ export class HttpHostClient {
     return this.#viewers.get(tabId, this.#snapshot.machines);
   }
   #tabRows: ReadonlyMap<TabId, Tab> | null = null;
+  #tabInventoryComplete = false;
   browserViewerSurface(sessionId: string, surfaceId: string) {
     return (
       this.#targetedControl.surface(sessionId, surfaceId) ??
@@ -575,7 +430,8 @@ export class HttpHostClient {
       if (message.type === "browser.snapshot" || message.type === "browser.dialog.changed")
         this.#patchBrowserSession(sessionId, { dialog: message.dialog });
     },
-    (attempt, unreadableFrames) => this.#retryDelay(attempt, unreadableFrames),
+    (attempt, unreadableFrames) =>
+      this.#reconnectDelay(attempt, unreadableFrames ? 5 * 60_000 : undefined),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
     (sessionId, surfaceId, hadSurface) => {
       this.#browserEditing.disconnect(sessionId, surfaceId);
@@ -591,7 +447,8 @@ export class HttpHostClient {
     (_sessionId, message) => {
       if (message.type === "browser.surface") this.#update(this.#snapshot);
     },
-    (attempt, unreadableFrames) => this.#retryDelay(attempt, unreadableFrames),
+    (attempt, unreadableFrames) =>
+      this.#reconnectDelay(attempt, unreadableFrames ? 5 * 60_000 : undefined),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
     (_sessionId, _surfaceId, hadSurface) => {
       if (hadSurface) this.#update(this.#snapshot);
@@ -615,11 +472,7 @@ export class HttpHostClient {
       this.#webSocketUrl(`/v1/browser-sessions/${encodeURIComponent(sessionId)}/connect`),
     );
     if (mode === "watch") url.searchParams.set("mode", mode);
-    const passkeys = this.browserPasskeys.optIn(
-      this.#capabilities?.filter(
-        (capability) => capability !== "node-detail-v1" && capability !== "device-drivers-v1",
-      ),
-    );
+    const passkeys = this.browserPasskeys.optIn(this.#capabilities ?? undefined);
     if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
     if (mode === "control") {
       url.searchParams.set("popups", "1");
@@ -800,41 +653,15 @@ export class HttpHostClient {
   }
   /** Holds on Threads observed beside the active one, counted per Thread. */
   readonly #observedThreads = new Map<string, number>();
-  readonly #requestLoads = new Map<string, Promise<void>>();
-  /** The Host's pending count each Thread's last Request read was asked under. */
-  readonly #requestReads = new Map<string, number>();
-  readonly #threadHydrations = new Map<string, Promise<void>>();
-  /** The newest snapshot a history read must cover before it can be installed. */
-  readonly #invalidatedHydrations = new Map<string, Sequence>();
-  readonly #threadInputQueueLoads = new Map<string, Promise<ThreadInputQueue>>();
-  /** Threads whose queue an event touched while a read of it was in flight. */
-  readonly #threadInputQueueRereads = new Set<string>();
-  /**
-   * One key per steer or cancel attempt, held until the Host answers it, so a
-   * retry after a lost answer repeats the mutation instead of adding one.
-   */
   readonly #threadInputMutationKeys = new Map<string, string>();
   /** The edit leases this device holds, so its own edit never reads as another device's. */
   readonly #editLeases = new Set<string>();
-  /** Tasks the Host removed; an open view of one stays `missing` rather than reading it again. */
-  readonly #removedThreads = new Set<string>();
-
-  readonly #hydratedThreads = new Map<string, Sequence>();
-  readonly #historicalThreads = new Set<string>();
-
-  /**
-   * Assignments the Host refused this viewer (403 or 404). Nothing held for
-   * them is shown, and no later event, page or read brings them back.
-   */
   readonly #deniedAssignments = new Set<string>();
   readonly #threadDeployment = new Map<string, string>();
   #viewerGeneration = 0;
   #savedViewReadiness = emptySavedViewReadiness();
   readonly #notificationListeners = new Set<(notification: NotificationView) => void>();
   readonly #pluginEngineListeners = new Set<(engine: PluginEngineStateView) => void>();
-  readonly #pluginsChangedListeners = new Set<
-    (message: { type: "host.plugins-changed" } & PluginChange) => void
-  >();
   readonly #personalRemoteAccessListeners = new Set<() => void>();
   readonly #connectionsListeners = new Set<() => void>();
   readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
@@ -848,99 +675,61 @@ export class HttpHostClient {
    * Every bootstrap compares against it, so only a new viewer or a moved clock
    * sends again.
    */
-  #reportedTimeZone: string | null = null;
-  readonly #hydrationBuffers = new Map<string, AgentEvent[]>();
   readonly #threadState = new ThreadStateProjection();
   readonly #threadRenames = new Map<string, { readonly title: string; readonly token: symbol }>();
   readonly #threadIcons = new Map<string, { readonly icon: IconName; readonly token: symbol }>();
 
-  /** The authority for `snapshot.runQueue`, reconciled across events, reads and answers. */
-  readonly #runQueue = new RunQueueProjection();
-  readonly #nodeDetails = new NodeDetailStore({
-    available: () => this.#capabilities?.includes("node-detail-v1") === true,
-    nodes: (threadId) =>
-      (this.#snapshot.transcripts[threadId] ?? []).filter((entry) => entry.kind === "node"),
-    readNodes: (runId) => this.#readRunNodes(runId),
-    read: async (input) => {
-      const page = tabEventPage(
-        await this.rpc["node.events.list"]({
-          ...(this.#supportsDeviceAccessRequests()
-            ? { deviceAccessRequests: "include" as const }
-            : {}),
-          ...(this.#capabilities?.includes("tool-output-detail-v1")
-            ? { toolOutputs: "preview" as const }
-            : {}),
-          ...input,
-          nodeId: ExecutionNodeIdSchema.parse(input.nodeId),
-        }),
-      );
-      if (page.threadId !== input.threadId || page.nodeId !== input.nodeId)
-        throw new Error("Node event page mismatch.");
-      return page;
-    },
-    sendWatch: (deploymentId, nodeId) => {
-      const channel = this.#channels.get(deploymentId);
-      if (!channel?.synchronized || channel.socket?.readyState !== 1) return false;
-      try {
-        channel.socket.send(JSON.stringify({ type: "client.watch-node", nodeId }));
-        return true;
-      } catch {
-        return false;
-      }
-    },
-  });
-  /** What each active Run is streaming, the authority for every live entry drawn. */
-  readonly #live = new LiveStreamLedger();
-  /** Threads whose streams are reread whole, one read at a time per Thread. */
-  readonly #liveRereads = new Map<string, LiveReread>();
-
-  readonly #heldLive = new Map<string, LiveProgressInput[]>();
-
-  readonly #liveGenerations = new Map<string, number>();
-  readonly #latestTranscriptLoads = new Map<string, Promise<void>>();
   #activeThreadId: string | null = null;
-  #hostUnreachable = false;
-  readonly #livenessIdleMs: number;
-  readonly #livenessDeadlineMs: number;
-  #handshakeTimer: Timer | null = null;
-  readonly #reportRealtimeFrame: ((record: RealtimeFrameDiagnostic) => void) | undefined;
-  #lostFrameRereadAt = Number.NEGATIVE_INFINITY;
-  #lostFrameRereadTimer: Timer | null = null;
-
+  readonly #random: () => number;
+  readonly #reconnectBaseDelayMs: number;
+  readonly #reconnectMaxDelayMs: number;
   readonly #webSocketFactory: (url: string) => WebSocketClient;
   readonly #lifecycleDisposers: (() => void)[] = [];
   #network: ClientNetworkState;
   #visibility: ClientVisibility;
 
-  #bootstrapPromise: Promise<void> | null = null;
-  #bootstrapFailed = false;
-  #bootstrapReadGeneration = 0;
-  #attemptBootstrap: Promise<void> | null = null;
-  #bootstrapAttemptSignal: AbortSignal | undefined;
-  #authRestored = false;
-  #rereadPending: BootstrapReason | null = null;
-  #waitingRead: "again" | "idle" | "reading" = "idle";
-  #tasksStale = false;
-
-  readonly #taskReads = new Map<string | null, { again: boolean; done: Promise<void> }>();
-  /** Per task list, the one read of a later page in flight, for the viewer that asked. */
-  readonly #taskPageLoads = new Map<
-    string | null,
-    { readonly generation: number; readonly promise: Promise<void> }
-  >();
-
   #disposed = false;
-
   #snapshot: HostSnapshot = emptySnapshot(this.#tabs);
   #remembering: Promise<unknown> = Promise.resolve();
 
-  readonly #deviceAccessRequests: boolean;
   readonly #viewerPlatform: "mac" | "pc" | null;
   readonly #origin: Omit<MessageOrigin, "timeZone"> | undefined;
   constructor(options: HttpHostClientOptions) {
-    this.#deviceAccessRequests = options.deviceAccessRequests === "include";
     this.#origin = options.origin;
-    this.#streamCache = options.streamCache;
+    this.#prepareSocket = options.prepareSocket;
+    this.#realtimeLiveness = options.realtimeLiveness;
+    this.#reportRealtimeFrame = options.reportRealtimeFrame;
+    this.#resources = new PersonalResourceReads({
+      read: (kind, cursor, signal) =>
+        this.rpc["resources.detail.get"]({ kind, ...(cursor ? { cursor } : {}) }, { signal }),
+      apply: (pages) => this.#applyResource(pages),
+      // Signed out, nothing can be read; signing in attaches, which reads what is watched.
+      canRead: () =>
+        this.#visibility !== "background" && this.#snapshot.session !== "authentication-required",
+      watchChanged: () => this.#stream.watchResources(),
+      // Rows stay on screen; the inventory is only no longer known to be complete.
+      behind: (kind) => kind === "tab" && this.#tabs.markInventoryStale(),
+      unreadable: (kind, unreadable) => {
+        const held = this.#snapshot.unreadableResources ?? [];
+        if (held.includes(kind) === unreadable) return;
+        this.#update({
+          ...this.#snapshot,
+          unreadableResources: unreadable ? [...held, kind] : held.filter((each) => each !== kind),
+        });
+      },
+      loaded: (kind) => {
+        if (this.#snapshot.loadedResources.includes(kind)) return;
+        this.#update({
+          ...this.#snapshot,
+          loadedResources: [...this.#snapshot.loadedResources, kind],
+        });
+      },
+    });
+    this.#stream = new ScopedPersonalStream(
+      options.streamCache,
+      this.#resources,
+      options.cacheDeploymentId,
+    );
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.iphoneSetup = options.iphoneSetup
       ? createIphoneSetupPort(options.iphoneSetup, (command) => this.dispatch(command))
@@ -972,21 +761,19 @@ export class HttpHostClient {
       },
     });
     this.#tabs.subscribe(() => {
-      if (!this.#applyingSnapshot) this.#update(this.#snapshot);
+      this.#update(this.#snapshot);
     });
     this.#baseUrl = new URL(options.baseUrl);
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.rpc = createHttpHostApiClient({
       baseUrl: this.#baseUrl,
       fetch: this.#fetch,
+      personalVersion: scopedPersonalApiVersion,
       ...(options.pacedUploads ? { pacedUploads: true } : {}),
-      onAuthenticationRequired: (method) => {
-        const checking =
-          method === "bootstrap.get" &&
-          this.#bootstrapAttemptSignal &&
-          !this.connection.getSnapshot().scope;
-        this.#expireSession(!checking);
-        if (!checking) this.#reverifyCapabilities();
+      onSignedOut: () => this.#expireSession(),
+      onAuthenticationRequired: () => {
+        this.#expireSession();
+        this.#reverifyCapabilities();
       },
       onVersionMismatch: () => this.#reverifyCapabilities(),
     });
@@ -1045,30 +832,29 @@ export class HttpHostClient {
           listener();
         }),
     });
-    this.#livenessIdleMs = Math.max(1, options.realtimeLiveness?.idleMs ?? realtimeIdleProbeMs);
-    this.#livenessDeadlineMs = Math.max(
-      1,
-      options.realtimeLiveness?.deadlineMs ?? realtimeIdleProbeDeadlineMs,
+    this.#random = options.random ?? Math.random;
+    this.#reconnectBaseDelayMs = Math.max(
+      0,
+      options.reconnectBaseDelayMs ?? defaultReconnectBaseDelayMs,
     );
-    this.#clientScope = options.clientScope;
-    this.#bindMutationsToSession = options.bindMutationsToSession ?? false;
+    this.#reconnectMaxDelayMs = Math.max(
+      this.#reconnectBaseDelayMs,
+      options.reconnectMaxDelayMs ?? defaultReconnectMaxDelayMs,
+    );
+    this.#webSocketFactory = options.webSocketFactory ?? ((url) => new globalThis.WebSocket(url));
     this.#ownsConnection = !options.connectionController;
+    this.#clientScope = options.clientScope;
     this.connection =
       options.connectionController ??
       createConnectionController({
         driver: { connect: (attempt) => this.openConnection(attempt) },
-        keepAliveInBackground: () => this.#notificationListeners.size > 0,
-        ...(options.presentation ? { presentation: options.presentation } : {}),
         ...(options.lifecycle ? { lifecycle: options.lifecycle } : {}),
-        ...(options.random ? { random: options.random } : {}),
+        ...(options.presentation ? { presentation: options.presentation } : {}),
         ...(options.realtimeLiveness ? { liveness: options.realtimeLiveness } : {}),
-        backoff: {
-          baseMs: options.reconnectBaseDelayMs ?? defaultReconnectBaseDelayMs,
-          maximumMs: options.reconnectMaxDelayMs ?? defaultReconnectMaxDelayMs,
-        },
+        idleProbes: options.realtimeLiveness !== undefined,
+        random: this.#random,
+        backoff: { baseMs: this.#reconnectBaseDelayMs, maximumMs: this.#reconnectMaxDelayMs },
       });
-    this.#reportRealtimeFrame = options.reportRealtimeFrame;
-    this.#webSocketFactory = options.webSocketFactory ?? ((url) => new globalThis.WebSocket(url));
     const lifecycle = options.lifecycle?.getSnapshot();
     this.#network = lifecycle?.network ?? "unknown";
     this.#snapshot = {
@@ -1097,37 +883,17 @@ export class HttpHostClient {
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
     };
     this.#visibility = lifecycle?.visibility ?? "foreground";
+    this.#stream.setBackground(this.#visibility === "background");
+    this.#stream.shell.subscribe(() => this.#publishShell());
     this.#targetedControl.suspend(this.#reconnectSuspended(), this.#network !== "offline");
     this.#targetedWatch.suspend(this.#reconnectSuspended());
+    let observed = this.connection.getSnapshot();
     this.#lifecycleDisposers.push(
       this.connection.subscribe(() => {
         const state = this.connection.getSnapshot();
-        const visibilityChanged = state.visibility !== this.#visibility;
-        const networkChanged =
-          state.network !== this.#network || state.pathRevision !== this.#connectionPathRevision;
-        this.#connectionPathRevision = state.pathRevision;
-        this.#visibility = state.visibility;
-        this.#network = state.network;
-        this.#targetedControl.suspend(this.#reconnectSuspended(), this.#network !== "offline");
-        this.#targetedWatch.suspend(this.#reconnectSuspended());
-        if (visibilityChanged)
-          for (const listener of this.#lifecycleListeners)
-            listener(this.#visibility === "foreground" ? "foreground" : "background");
-        if (visibilityChanged && state.visibility === "foreground" && this.#rereadPending) {
-          const pending = this.#rereadPending;
-          this.#rereadPending = null;
-          this.#reread(pending);
-        }
-        if (networkChanged) {
-          this.#targetedControl.reconnect();
-          this.#targetedWatch.reconnect();
-          for (const listener of this.#lifecycleListeners) listener("network");
-        }
-        if (
-          this.#snapshot.network !== state.network ||
-          this.#snapshot.connectionInterrupted !== state.showInterruption
-        )
-          this.#update(this.#snapshot);
+        const old = observed;
+        observed = state;
+        this.#connectionChanged(state, old);
       }),
     );
     const views = computerViewMethods(
@@ -1161,7 +927,38 @@ export class HttpHostClient {
     this.listComputerAppWindows = views.listComputerAppWindows;
   }
 
-  readonly getSnapshot = (): HostSnapshot => this.#snapshot;
+  readonly #views = new WeakMap<HostSnapshot, HostSnapshot>();
+  /** The subscription whose listener is running: what it reads, it holds while subscribed. */
+  #reading: ResourceInterest | undefined;
+  /**
+   * Reading a resource-backed field watches its kinds (`resourceBackedFields`): for the
+   * subscription whose listener reads it, or else for a short lease renewed by every such read.
+   * Mounted screens read through a selection's own reader (`snapshotReader`).
+   */
+  readonly getSnapshot = (): HostSnapshot =>
+    trackSnapshot(this.#snapshot, this.#views, (field) => {
+      const kinds = resourceKindsOf(field);
+      if (!kinds) return;
+      const reading = this.#reading;
+      for (const kind of kinds) {
+        if (reading) reading.hold(kind);
+        else this.#resources.lease(kind);
+      }
+    });
+
+  /** A reader of its own: kinds read through its view stay watched while it is open. */
+  readonly snapshotReader = (): SnapshotReader => {
+    const interest = this.#resources.interest();
+    const views = new WeakMap<HostSnapshot, HostSnapshot>();
+    return {
+      view: (snapshot) =>
+        trackSnapshot(rawSnapshot(snapshot), views, (field) => {
+          for (const kind of resourceKindsOf(field) ?? []) interest.hold(kind);
+        }),
+      open: interest.open,
+      close: interest.close,
+    };
+  };
 
   readonly #browserCursor = new BrowserCursorStore();
   readonly #browserEditing = new BrowserEditingStore(
@@ -1201,29 +998,47 @@ export class HttpHostClient {
   };
 
   readonly subscribe = (listener: () => void): (() => void) => {
-    this.#listeners.add(listener);
-    return () => this.#listeners.delete(listener);
+    const interest = this.#listeners.get(listener) ?? this.#resources.interest();
+    if (!this.#listeners.has(listener)) {
+      interest.open();
+      this.#listeners.set(listener, interest);
+    }
+    return () => {
+      if (this.#listeners.get(listener) !== interest) return;
+      this.#listeners.delete(listener);
+      interest.close();
+    };
   };
+
+  /** Writes saved personal state now, for a page about to be hidden or unloaded. */
+  flushSavedState() {
+    this.#stream.flushCheckpoints();
+  }
 
   async dispatch(
     command: ClientCommandInput,
     options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
   ): Promise<HostApiCommandOutput> {
+    // Only a command that creates a browser profile needs the Host's homes, to keep its chosen
+    // home; it waits a bounded time for them. Every other command goes straight out.
+    if (createsBrowserProfile(command))
+      await this.#resources.current("browser-home", commandResourceBoundMs);
     const parsedCommand = clientCommandSchema.parse(
       options?.preserveOrigin
         ? browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)
         : this.#withOrigin(browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)),
     );
-    const screenCommand =
-      parsedCommand.type === "iphone.screen.attach" ||
-      parsedCommand.type === "iphone.screen.detach" ||
-      (parsedCommand.type === "machine.access.update" && "deviceId" in parsedCommand) ||
-      (parsedCommand.type === "integration.computer.setup.set" &&
-        "deviceId" in parsedCommand.input) ||
-      ((parsedCommand.type === "machine.rename" || parsedCommand.type === "machine.revoke") &&
-        parsedCommand.machineId.startsWith("dev_"));
-    if (screenCommand && !this.#snapshot.deviceDriversAvailable)
-      throw new Error("Update this Opensteer to manage screen device drivers.");
+    if (
+      (parsedCommand.type === "request.respond" ||
+        parsedCommand.type === "browser.sign-in.respond" ||
+        parsedCommand.type === "browser.password-sign-in.respond") &&
+      parsedCommand.expectedRevision === undefined
+    )
+      throw new HostClientRequestError({
+        code: "conflict",
+        status: 409,
+        message: "Review the latest request before answering.",
+      });
     const needsDevices =
       parsedCommand.type === "machine.session.bind" ||
       (parsedCommand.type === "machine.access.update" &&
@@ -1238,29 +1053,24 @@ export class HttpHostClient {
         throw new Error("This Host does not support task marks.");
       return this.#setThreadIcon(parsedCommand);
     }
-    if (parsedCommand.type === "machine.access.update" && "deviceId" in parsedCommand)
-      return unwrapRpcResult(await dispatchDeviceCommand(this.rpc, parsedCommand));
-    if (
-      parsedCommand.type === "integration.computer.setup.set" &&
-      "deviceId" in parsedCommand.input
-    )
-      return unwrapRpcResult(await dispatchDeviceCommand(this.rpc, parsedCommand));
-    const commandPayload = hostApi["commands.dispatch"].payload.parse(parsedCommand);
     const login = options?.expectedLogin;
-    if (!login) return this.#dispatchCommand(commandPayload);
+    if (!login) {
+      const sessionId =
+        parsedCommand.type === "thread.create" || parsedCommand.type === "thread.sendMessage"
+          ? (this.#snapshot.sessionId ?? undefined)
+          : undefined;
+      return this.#dispatchCommand(parsedCommand, sessionId);
+    }
     assertMessageLogin(login, this.connection.getSnapshot().scope);
-    if (!this.#bindMutationsToSession) return this.#dispatchCommand(commandPayload);
-    // The receiving Host decides whether it can check this header. API 60/61 ignore it.
     try {
-      return await this.#dispatchCommand(commandPayload, login.loginId);
+      return await this.#dispatchCommand(parsedCommand, login.loginId);
     } catch (error) {
-      const { reason } = classifyClientFailure(error);
       if (
-        clientScopeKey(this.connection.getSnapshot().scope) === clientScopeKey(login) &&
-        reason === "session-changed"
+        classifyClientFailure(error).reason === "session-changed" &&
+        this.#snapshot.sessionId === login.loginId
       ) {
-        this.connection.invalidateScope();
-        if (this.#ownsConnection) void this.reauthenticate().catch(() => {});
+        this.#expireSession();
+        if (this.#ownsConnection) void this.reauthenticate().catch(() => undefined);
       }
       throw error;
     }
@@ -1279,261 +1089,46 @@ export class HttpHostClient {
     return origin ? { ...command, origin } : command;
   }
 
-  async #dispatchCommand(
-    parsedCommand: HostApiCommand,
+  #dispatchCommand(command: HostApiCommand, expectedSessionId?: string) {
+    if (command.type === "request.respond")
+      return this.#answerRequest(command.requestId, () =>
+        this.#dispatchCommandNow(command, expectedSessionId),
+      );
+    return this.#dispatchCommandNow(command, expectedSessionId);
+  }
+
+  async #dispatchCommandNow(
+    command: HostApiCommand,
     expectedSessionId?: string,
   ): Promise<HostApiCommandOutput> {
-    // Installation and server selection advance an integration access Request
-    // without resolving it. Capture that fact before dispatch so an earlier
-    // request.updated event cannot make the HTTP acknowledgement erase the
-    // still-pending card when it arrives later.
-    const preservesIntegrationAccessRequest =
-      parsedCommand.type === "request.respond" &&
-      parsedCommand.response.kind === "choice" &&
-      (parsedCommand.response.optionId === "installed" ||
-        parsedCommand.response.optionId.startsWith("server:")) &&
-      Object.values(this.#snapshot.requests)
-        .flat()
-        .some(
-          (request) =>
-            request.id === parsedCommand.requestId &&
-            request.kind === "integration.access" &&
-            request.status === "pending",
-        );
-    const result = await this.#dispatch(parsedCommand, expectedSessionId);
-    switch (result.type) {
-      case "teams.ask.decide":
-        if (commandIs(parsedCommand, result.type))
-          this.#update(
-            applyOptimisticCommandPatch(this.#snapshot, {
-              decision: parsedCommand.decision,
-              requestId: parsedCommand.requestId,
-              teamId: parsedCommand.teamId,
-              type: result.type,
-            }),
-          );
-        break;
-      case "thread.input.edit":
-        if (commandIs(parsedCommand, result.type))
-          this.#update(
-            applyOptimisticCommandPatch(this.#snapshot, {
-              edit: result.edit,
-              ...(parsedCommand.leaseId === undefined ? {} : { leaseId: parsedCommand.leaseId }),
-              message: result.message,
-              threadId: parsedCommand.threadId,
-              type: result.type,
-            }),
-          );
-        break;
-      case "thread.input.lease.take":
-        if (commandIs(parsedCommand, result.type))
-          this.#update(
-            applyOptimisticCommandPatch(this.#snapshot, {
-              lease: result.lease,
-              messageId: parsedCommand.messageId,
-              threadId: parsedCommand.threadId,
-              type: result.type,
-            }),
-          );
-        break;
-      case "thread.input.lease.release":
-        if (commandIs(parsedCommand, result.type))
-          this.#update(
-            applyOptimisticCommandPatch(this.#snapshot, {
-              leaseId: parsedCommand.leaseId,
-              messageId: parsedCommand.messageId,
-              threadId: parsedCommand.threadId,
-              type: result.type,
-            }),
-          );
-        break;
-      case "assignment.cancel":
-        this.#update({
-          ...this.#snapshot,
-          assignments: mergeAssignments(this.#snapshot.assignments, [result.assignment]),
-        });
-        break;
-      case "browser.profile.create":
-        this.#update(
-          applyOptimisticCommandPatch(this.#snapshot, {
-            profile: result.profile,
-            type: result.type,
-          }),
-        );
-        break;
-      case "browser.profile.rename":
-        this.#update(
-          applyOptimisticCommandPatch(this.#snapshot, {
-            profile: result.profile,
-            type: result.type,
-          }),
-        );
-        break;
-      case "browser.profile.delete":
-        if (commandIs(parsedCommand, result.type)) {
-          this.browserHistory.drop(parsedCommand.profileId);
-          this.#update(
-            applyOptimisticCommandPatch(this.#snapshot, {
-              profileId: parsedCommand.profileId,
-              deletion:
-                result.deletion && result.deletion.state !== "deleted"
-                  ? { ...result.deletion, state: result.deletion.state }
-                  : undefined,
-              type: result.type,
-            }),
-          );
-        }
-        break;
-      case "harness.model.configure":
-      case "harness.create":
-        // The Host reports a new harness only through bootstrap, so without
-        // this the AI engine stays invisible until the next refresh tick.
-        void this.refresh().catch(() => undefined);
-        break;
-      case "harness.rename":
-      case "harness.default.set":
-        this.#update(
-          applyOptimisticCommandPatch(this.#snapshot, {
-            harness: harnessSummary(HarnessRecordSchema.parse(result.harness)),
-            type: result.type,
-          }),
-        );
-        break;
-      case "harness.enabled.set":
-        this.#update(
-          applyOptimisticCommandPatch(this.#snapshot, {
-            harness: harnessSummary(HarnessRecordSchema.parse(result.harness)),
-            type: result.type,
-          }),
-        );
-        // Enabling or disabling can move the default to a sibling, which is
-        // not included in this command result.
-        void this.refresh().catch(() => undefined);
-        break;
-      case "harness.delete":
-        if (commandIs(parsedCommand, result.type)) {
-          this.#update(
-            applyOptimisticCommandPatch(this.#snapshot, {
-              harnessInstanceId: parsedCommand.harnessInstanceId,
-              type: result.type,
-            }),
-          );
-          // Deleting the default can promote the oldest enabled sibling.
-          void this.refresh().catch(() => undefined);
-        }
-        break;
-      case "thread.create":
-      case "thread.rename":
-      case "thread.icon.set":
-      case "thread.execution.update":
-      case "thread.access.update":
-      case "thread.inputQueue.resume": {
-        const generation = this.#viewerGeneration;
-        const userId = this.#snapshot.user?.id;
-        let source = { thread: result.thread, asOfSequence: result.asOfSequence };
-        for (
-          let attempt = 0;
-          attempt < 3 && this.#threadState.needsRead(source.thread, source.asOfSequence);
-          attempt += 1
-        ) {
-          const page = await this.#readThreadHistory(source.thread.id);
-          if (!this.#viewerStillCurrent(generation, userId)) return result;
-          if (compareSequence(page.asOfSequence, source.asOfSequence) >= 0)
-            source = { thread: page.thread, asOfSequence: page.asOfSequence };
-        }
-        this.#update(
-          applyOptimisticCommandPatch(this.#snapshot, {
-            thread: this.#threadState.reconcile(
-              toThreadSummary(source.thread, this.#snapshot.environments, this.#snapshot.harnesses),
-              source.asOfSequence,
-              this.#snapshot.threads.find(({ id }) => id === result.thread.id),
-            ),
-            type: result.type,
-          }),
-        );
-        break;
-      }
-      case "thread.sendMessage":
-        if (commandIs(parsedCommand, result.type)) {
-          const queueItem = queuedInputItem(
-            result,
-            this.#snapshot.inputQueues[parsedCommand.threadId],
-          );
-          const run = result.run ? toRunQueueEntry(result.run) : null;
-          const deploymentId = this.#threadDeployment.get(parsedCommand.threadId);
-          // The answer may arrive after the Run's own events; it never takes
-          // back what they said, including that the Run already ended.
-          const admitted =
-            run !== null && deploymentId !== undefined && this.#runQueue.acknowledge(run);
-          this.#update({
-            ...applyOptimisticCommandPatch(this.#snapshot, {
-              acceptedRunCreatedAt: result.run?.createdAt ?? null,
-              message: toMessageEntry(result.message, result.input.policy, result.input),
-              queueItem,
-              run: admitted ? run : null,
-              threadId: parsedCommand.threadId,
-              type: result.type,
-            }),
-            runQueue: this.#runQueue.entries(),
-          });
-          // The Host held the message when it answered; a Run may have taken
-          // it since, in an event this answer overtook. The read settles it.
-          if (queueItem) this.#reloadInputQueue(parsedCommand.threadId);
-        }
-        break;
-      case "thread.input.cancel":
-        if (commandIs(parsedCommand, result.type)) {
-          this.#update(
-            applyOptimisticCommandPatch(this.#snapshot, {
-              messageId: parsedCommand.messageId,
-              threadId: parsedCommand.threadId,
-              type: result.type,
-              withdrawnAt: result.input.updatedAt,
-            }),
-          );
-        }
-        break;
-      case "thread.input.steer":
-        if (commandIs(parsedCommand, result.type)) {
-          this.#update(
-            applyOptimisticCommandPatch(this.#snapshot, {
-              messageId: parsedCommand.messageId,
-              threadId: parsedCommand.threadId,
-              type: result.type,
-            }),
-          );
-        }
-        break;
-      case "run.interrupt":
-        if (commandIs(parsedCommand, result.type)) {
-          this.#update(
-            applyOptimisticCommandPatch(this.#snapshot, {
-              runId: parsedCommand.runId,
-              threadId: parsedCommand.threadId,
-              type: result.type,
-            }),
-          );
-        }
-        break;
-      case "request.respond":
-        if (commandIs(parsedCommand, result.type) && !preservesIntegrationAccessRequest) {
-          this.#update(
-            applyOptimisticCommandPatch(this.#snapshot, {
-              requestId: parsedCommand.requestId,
-              type: result.type,
-            }),
-          );
-        }
-        break;
-      case "execution.preferences.remember":
-        // The Host answers with the whole merged record, so there is nothing
-        // to patch — a caller dispatching the raw command gets the same
-        // snapshot write `rememberExecution` performs.
-        this.#update({ ...this.#snapshot, executionPreferences: result.preferences });
-        break;
-      default:
-        break;
+    const viewer = this.#viewerGeneration;
+    const result = await this.#dispatch(command, expectedSessionId);
+    if (viewer !== this.#viewerGeneration || this.#disposed) return result;
+    if ("thread" in result && "asOfSequence" in result) {
+      const thread = this.#threadState.reconcile(
+        toThreadSummary(result.thread, this.#snapshot.environments, this.#snapshot.harnesses),
+        result.asOfSequence,
+      );
+      this.#update({ ...this.#snapshot, threads: upsertThread(this.#snapshot.threads, thread) });
     }
+    if (result.type === "teams.ask.decide" && command.type === result.type) {
+      const needsYou = settleTeamAsk(this.#snapshot.needsYou, command.teamId, command.requestId);
+      if (needsYou !== this.#snapshot.needsYou) this.#update({ ...this.#snapshot, needsYou });
+    }
+    if (result.type === "execution.preferences.remember")
+      this.#update({ ...this.#snapshot, executionPreferences: result.preferences });
+    if (result.type === "assignment.cancel")
+      this.#update({
+        ...this.#snapshot,
+        assignments: mergeAssignments(this.#snapshot.assignments, [result.assignment]),
+      });
+    if (result.type === "browser.profile.delete" && command.type === result.type)
+      this.browserHistory.drop(command.profileId);
+    if (
+      "threadId" in command &&
+      (command.type.startsWith("thread.input") || command.type === "thread.sendMessage")
+    )
+      this.#reloadInputQueue(command.threadId);
     return result;
   }
 
@@ -1672,98 +1267,1080 @@ export class HttpHostClient {
   }
 
   activateThread(threadId: string): void {
-    const thread = this.#snapshot.threads.find(({ id }) => id === threadId);
-    const opened = !this.#showsThread(threadId);
+    const id = ThreadIdSchema.safeParse(threadId);
+    if (!id.success) return;
+    const previous = this.#activeThreadId;
     this.#activeThreadId = threadId;
-    if (this.#removedThreads.has(threadId)) return;
-    for (const [id, scan] of this.#messagePageLoads) {
-      if (!this.#showsThread(id)) scan.retired = true;
-    }
-    this.#ensureInputQueue(threadId);
-    this.#ensureAssignments(threadId);
-    this.#ensureAutomations(threadId, opened);
-    this.#ensureBrowserUsage(threadId, "missing");
-    if (!thread) {
-      // A deep link can reference a Thread the snapshot has not loaded yet.
+    if (previous && previous !== threadId) this.#releaseDetail(previous);
+    this.#watchDetail(threadId);
+    this.#stream.select({ kind: "thread", threadId: id.data });
+  }
 
-      // page includes thread.created.
-      if (this.#snapshot.threadLookups[threadId] !== "loading") {
-        this.#update({
-          ...this.#snapshot,
-          threadLookups: { ...this.#snapshot.threadLookups, [threadId]: "loading" },
-        });
-      }
-      this.#ensureThreadHydration(threadId);
-      return;
-    }
-    if (this.#snapshot.deploymentId) this.#ensureDeploymentChannel(this.#snapshot.deploymentId);
-    this.#ensureThreadHydration(threadId);
-    this.#ensureRequests(threadId);
+  deactivateThread(threadId: string) {
+    if (threadId !== this.#activeThreadId) return;
+    this.#activeThreadId = null;
+    this.#stream.select(undefined);
+    this.#releaseDetail(threadId);
   }
 
   deploymentPosition(): Sequence | null {
-    const channel = this.#snapshot.deploymentId
-      ? this.#channels.get(this.#snapshot.deploymentId)
+    const state = this.#stream.shell.getSnapshot();
+    return state.synchronized ? SequenceSchema.parse(state.through) : null;
+  }
+
+  observeThread(threadId: string): () => void {
+    const id = ThreadIdSchema.safeParse(threadId);
+    if (!id.success) return () => {};
+    this.#watchDetail(threadId);
+    this.#observedThreads.set(threadId, (this.#observedThreads.get(threadId) ?? 0) + 1);
+    const release = this.#stream.observe({ kind: "thread", threadId: id.data });
+    return () => {
+      release();
+      const count = this.#observedThreads.get(threadId) ?? 0;
+      if (count <= 1) this.#observedThreads.delete(threadId);
+      else this.#observedThreads.set(threadId, count - 1);
+      this.#releaseDetail(threadId);
+    };
+  }
+
+  getThreadTranscript(threadId: string) {
+    return this.#scopeReaders.get(threadId);
+  }
+
+  getThreadItemText(threadId: string, nodeId?: string) {
+    const scope = this.#detailScope(threadId, nodeId);
+    return scope && this.#stream.peekDetail(scope)?.text;
+  }
+
+  getCachedTranscriptItem(threadId: string, itemId: string, nodeId?: string) {
+    const scope = this.#detailScope(threadId, nodeId);
+    const state = scope && this.#stream.peekDetail(scope)?.transcript.getSnapshot();
+    const item = state?.items.get(itemId);
+    if (!scope || !state?.synchronized || !item) return;
+    return this.#bodies.peek(transcriptBodyKey(scope, state.generation, itemId), item.revision);
+  }
+
+  subscribeTranscriptBody(
+    threadId: string,
+    _itemId: string,
+    nodeId: string | undefined,
+    listener: () => void,
+  ) {
+    const scope = this.#detailScope(threadId, nodeId);
+    const releaseScope = scope && this.#stream.peekDetail(scope)?.transcript.subscribe(listener);
+    const releaseCache = this.#bodies.subscribe(listener);
+    return () => {
+      releaseScope?.();
+      releaseCache();
+    };
+  }
+
+  async readTranscriptItem(threadId: string, itemId: string, nodeId?: string) {
+    if (!nodeId) return this.#reader(threadId)?.body(itemId);
+    const scope = this.#detailScope(threadId, nodeId);
+    const detail = scope && this.#stream.peekDetail(scope);
+    if (!detail) return;
+    const reader = new ScopedThreadReader(detail, this.rpc, this.#bodies, false);
+    try {
+      return await reader.body(itemId);
+    } finally {
+      reader.dispose();
+    }
+  }
+
+  revealedTranscriptMove(threadId: string) {
+    this.#reader(threadId)?.revealed();
+  }
+
+  setTranscriptPosition(threadId: string, measure: (() => string | undefined | null) | null) {
+    // Kept for the task's reader, which may be made after the view mounts.
+    if (measure) this.#positionMeasures.set(threadId, measure);
+    else this.#positionMeasures.delete(threadId);
+    this.#reader(threadId)?.setMeasure(measure ?? undefined);
+  }
+
+  async loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes") {
+    await this.#reader(threadId)?.loadMoreOverlays(kind);
+  }
+
+  async loadEarlierTranscript(threadId: string): Promise<void> {
+    await this.#reader(threadId)?.history("earlier");
+  }
+
+  async loadNewerTranscript(threadId: string): Promise<void> {
+    await this.#reader(threadId)?.history("newer");
+  }
+
+  loadTranscriptAround(threadId: string, messageId: string): Promise<boolean> {
+    return this.#reader(threadId)?.history("around", messageId) ?? Promise.resolve(true);
+  }
+
+  loadLatestTranscript(threadId: string): Promise<boolean> {
+    return this.#reader(threadId)?.history("latest") ?? Promise.resolve(true);
+  }
+
+  loadThreadInputQueue(threadId: string) {
+    const reader = this.#reader(threadId);
+    return reader ? reader.queue() : Promise.reject(new Error("Conversation unavailable."));
+  }
+
+  #detailScope(threadId: string, nodeId?: string) {
+    const thread = ThreadIdSchema.safeParse(threadId);
+    if (!thread.success) return;
+    if (!nodeId) return { kind: "thread", threadId: thread.data } as const;
+    const node = ExecutionNodeIdSchema.safeParse(nodeId);
+    return node.success
+      ? ({ kind: "node", threadId: thread.data, nodeId: node.data } as const)
       : undefined;
-    return channel?.synchronized ? channel.cursor : null;
+  }
+
+  #reader(threadId: string) {
+    const scope = this.#detailScope(threadId);
+    if (!scope) return;
+    return this.#scopeReaders.get(threadId);
+  }
+
+  #watchDetail(threadId: string) {
+    const scope = this.#detailScope(threadId);
+    if (!scope || this.#threadReaders.has(threadId)) return;
+    const detail = this.#stream.detail(scope);
+    const reader = new ScopedThreadReader(detail, this.rpc, this.#bodies);
+    reader.setMeasure(this.#positionMeasures.get(threadId));
+    this.#scopeReaders.set(threadId, reader);
+    let placeItems: ReturnType<typeof detail.transcript.getSnapshot>["items"] | undefined;
+    let placeQueue: NonNullable<
+      ReturnType<typeof detail.transcript.getSnapshot>["snapshot"]
+    >["queue"];
+    let placedRuns = new Set<RunId>();
+    let previousThread:
+      | NonNullable<ReturnType<typeof detail.transcript.getSnapshot>["snapshot"]>["thread"]
+      | undefined;
+    let detailGeneration = 0;
+    let subscribedGeneration = 0;
+    let readsDue = false;
+    let subscribedRepairs = 0;
+    let reread = false;
+    let previousAssignments:
+      ReturnType<typeof detail.transcript.getSnapshot>["assignments"] | undefined;
+    const clearPlaces = () => {
+      for (const runId of placedRuns) this.#runPlaces.forget(runId);
+      placedRuns.clear();
+      placeItems = undefined;
+      placeQueue = undefined;
+      this.#runPlaces.flush();
+    };
+    const release = detail.transcript.subscribe(() => {
+      const state = detail.transcript.getSnapshot();
+      if (state.removed) {
+        clearPlaces();
+        this.#clearDetailReads(threadId);
+        const threads = this.#snapshot.threads.filter(({ id }) => id !== threadId);
+        const lookups = Object.entries(this.#snapshot.threadLookups)
+          .filter(([id]) => id !== threadId)
+          .slice(-127);
+        this.#update({
+          ...this.#snapshot,
+          threads,
+          threadLookups: { ...Object.fromEntries(lookups), [threadId]: "missing" },
+        });
+        return;
+      }
+      if (state.assignments !== previousAssignments) {
+        const changed = [...state.assignments].filter(
+          ([id, value]) => previousAssignments?.get(id) !== value,
+        );
+        previousAssignments = state.assignments;
+        if (changed.length) {
+          // Each pushed assignment is stamped, so a read begun before it never prunes it.
+          for (const [id] of changed) this.#assignmentPushes.set(id, ++this.#assignmentPushCount);
+          const assignments = mergeAssignments(
+            this.#snapshot.assignments,
+            changed.flatMap(([, value]) => value ?? []),
+          );
+          for (const [id, value] of changed) if (value === null) delete assignments[id];
+          this.#update({ ...this.#snapshot, assignments });
+        }
+      }
+      const row = state.snapshot?.thread;
+      if (row && row !== previousThread) {
+        previousThread = row;
+        const thread = this.#threadState.reconcile(
+          row.thread
+            ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
+            : compactThread(row),
+          SequenceSchema.parse(row.revision),
+          undefined,
+          row.thread ? undefined : row,
+        );
+        const threads = upsertThread(this.#snapshot.threads, thread);
+        if (threads !== this.#snapshot.threads) this.#update({ ...this.#snapshot, threads });
+      }
+      // Assignments and automations are read as the subscription opens, beside its snapshot.
+      if (detail.slot && subscribedGeneration !== state.generation) {
+        reread = subscribedGeneration !== 0;
+        subscribedGeneration = state.generation;
+        subscribedRepairs = state.repairs;
+        readsDue = true;
+        // A new subscription (a reconnect, a resubscribe) may have skipped the change that ended
+        // an assignment: the task's assignments are read again, as after a repair.
+        if (reread) {
+          this.#assignmentsRead.delete(threadId);
+          this.#assignmentReads.changed(`assignments:${threadId}`);
+        }
+      } else if (state.repairs !== subscribedRepairs) {
+        // A repair replaced the scope: its assignments are read again, as on a new subscription.
+        subscribedRepairs = state.repairs;
+        this.#assignmentsRead.delete(threadId);
+        this.#assignmentReads.changed(`assignments:${threadId}`);
+        reread = true;
+        readsDue = true;
+      }
+      if (readsDue && this.#snapshot.session === "authenticated" && this.#showsThread(threadId)) {
+        readsDue = false;
+        this.#ensureAssignments(threadId);
+        this.#ensureAutomations(threadId, reread);
+      }
+      if (!state.synchronized || !this.#showsThread(threadId)) return;
+      if (placeItems !== state.items || placeQueue !== state.snapshot?.queue) {
+        placeItems = state.items;
+        placeQueue = state.snapshot?.queue;
+        const next = new Set<RunId>();
+        const runIds = new Set(placeQueue?.runs.map(({ id }) => id));
+        for (let i = state.ids.length - 1; i >= 0 && next.size < runIds.size; i--) {
+          const item = state.items.get(state.ids[i]!);
+          if (
+            item?.kind !== "place" ||
+            !item.place ||
+            !item.runId ||
+            !runIds.has(item.runId) ||
+            next.has(item.runId)
+          )
+            continue;
+          next.add(item.runId);
+          this.#runPlaces.accept(
+            { runId: item.runId, sequence: SequenceSchema.parse(item.revision), data: item.place },
+            false,
+          );
+        }
+        for (const runId of placedRuns) {
+          if (!runIds.has(runId)) this.#runPlaces.end(runId, false);
+          else next.add(runId);
+        }
+        placedRuns = next;
+        this.#runPlaces.flush();
+      }
+
+      if (detailGeneration !== state.generation) {
+        const reattached = detailGeneration !== 0;
+        detailGeneration = state.generation;
+        // Browser usage notices only reach synchronized details.
+        this.#ensureBrowserUsage(threadId, reattached ? "full" : "missing");
+      }
+    });
+    this.#threadReaders.set(threadId, () => {
+      release();
+      clearPlaces();
+    });
+  }
+
+  #releaseDetail(threadId: string) {
+    if (this.#showsThread(threadId)) return;
+    this.#threadReaders.get(threadId)?.();
+    this.#threadReaders.delete(threadId);
+    this.#scopeReaders.get(threadId)?.dispose();
+    this.#scopeReaders.delete(threadId);
+    this.#clearDetailReads(threadId);
+  }
+
+  #clearDetailReads(threadId: string) {
+    this.#assignmentReads.stop(`assignments:${threadId}`);
+    this.#assignmentsRead.delete(threadId);
+    this.#automationReads.delete(threadId);
+    this.#readAutomations.delete(threadId);
+    this.#browserUsageRead.delete(threadId);
+    this.#browserUsageReads.delete(threadId);
+    this.#browserUsageRunSources.delete(threadId);
+    const browserUsesChanged = this.#browserUses.delete(threadId);
+    const { [threadId]: browserState, ...browserUsage } = this.#snapshot.browserUsage ?? {};
+    const { [threadId]: automationState, ...threadAutomations } = this.#snapshot.threadAutomations;
+    if (browserState || automationState || browserUsesChanged)
+      this.#update({
+        ...this.#snapshot,
+        browserUsage,
+        threadAutomations,
+        browserUses: browserUsesChanged
+          ? [...this.#browserUses.values()].flat()
+          : this.#snapshot.browserUses,
+      });
+  }
+
+  #clearViewerReads() {
+    // Every task's read stops, those still in flight as well as those that installed.
+    for (const threadId of this.#assignmentKeys)
+      this.#assignmentReads.stop(`assignments:${threadId}`);
+    this.#assignmentKeys.clear();
+    this.#assignmentsRead.clear();
+    this.#assignmentPushes.clear();
+    this.#automationReads.clear();
+    this.#readAutomations.clear();
+    this.#browserUsageRead.clear();
+    this.#browserUsageReads.clear();
+    this.#browserUsageRunSources.clear();
+    this.#browserUses.clear();
+    this.#deniedAssignments.clear();
+    for (const key of ["open", "active", "done", "done-count"]) this.#taskReads.stop(key);
+    if (this.#doneCountTimer) clearTimeout(this.#doneCountTimer);
+    this.#doneCountTimer = undefined;
+    this.#openPages = undefined;
+    this.#activePages = [];
+    this.#activeCursor = null;
+    this.#donePages = undefined;
+    this.#doneCount = undefined;
+    this.#doneChangedAt = -1n;
+    this.#openDepth = personalShellSettledTasks;
+    this.#doneDepth = 0;
+    this.#removedTasks.clear();
+  }
+
+  /**
+   * Another viewer, session or history. Everything held for the one before goes in this one step,
+   * together with what says it was read (the resource reader's installed revisions and loaded
+   * flags, the tab store's confirmed layout and command overlay, the waiting Requests' stamp,
+   * attention), so nothing cleared can look already read. A new history of the same viewer (a
+   * restored or re-created Host) is cleared exactly like another viewer: its state is not the
+   * old one's. Only the viewer's durable drafts and outbox, which live outside this client's
+   * view state, survive it. This is the only place held data is cleared for a viewer.
+   */
+  #forgetViewer(keep: Partial<HostSnapshot>) {
+    this.#viewerGeneration++;
+    clearRunPageViews(this);
+    clearRunPlacePictures(this);
+    this.#runPlaces.clear();
+    this.#targetedWatch.clear();
+    this.#targetedControl.clear();
+    this.#computerViews.clear();
+    this.#ownerViews.clear();
+    this.#pageSessions.clear();
+    this.#viewers.clear();
+    this.#tabs.clear();
+    this.#threadState.clear();
+    this.#threadRenames.clear();
+    this.#threadIcons.clear();
+    this.#environmentCatalogs.clear();
+    this.#bodies.clear();
+    this.#clearAttachmentReads();
+    this.#threadDeployment.clear();
+    this.#clearViewerReads();
+    this.#invalidateAttention();
+    this.#waitingRequestReads.stop("waiting-requests");
+    this.#waitingRequestWanted = "";
+    this.#waitingRequestInstalled = "";
+    this.#answeredRequests.clear();
+    this.#resources.reset();
+    this.#update({ ...emptySnapshot(this.#tabs), ...keep });
   }
 
   watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
-    const deploymentId = this.#threadDeployment.get(threadId);
-    if (!deploymentId) throw new Error("Open the conversation before its subagent.");
-    ExecutionNodeIdSchema.parse(nodeId);
-    const releaseThread = this.observeThread(threadId);
-    const detail = this.#nodeDetails.open(threadId, nodeId, deploymentId);
-    let held = true;
-    const releaseThreadOnce = () => {
-      if (!held) return;
-      held = false;
-      releaseThread();
+    const scope = this.#detailScope(threadId, nodeId);
+    if (scope?.kind !== "node") throw new Error("Invalid subagent scope.");
+    const detail = this.#stream.detail(scope);
+    const reader = new ScopedThreadReader(detail, this.rpc, this.#bodies);
+    const release = this.#stream.observe(scope);
+    let previous: ReturnType<typeof detail.transcript.getSnapshot> | undefined;
+    const cards = new WeakMap<TranscriptItem, ReturnType<typeof nodeTranscriptCard>>();
+    const liveCards = new WeakMap<TranscriptItem, ReturnType<typeof nodeTranscriptCard>>();
+    const listeners = new Set<() => void>();
+    const notify = () => {
+      for (const listener of listeners) listener();
     };
-    const unsubscribe = detail.subscribe(() => {
-      if (detail.getSnapshot().status === "closed") {
-        queueMicrotask(releaseThreadOnce);
-        unsubscribe();
+    // Progress is not merged here: its leaf reads the item text store (`useLiveAgentCard`).
+    const unsubscribe = detail.transcript.subscribe(notify);
+    let released = false;
+    let read:
+      | {
+          generation: number;
+          mode: "earlier" | "latest";
+          status: "loading" | "missing" | "error";
+          error: string | null;
+        }
+      | undefined;
+    let shownRead: typeof read;
+    let view: NodeDetailSnapshot = {
+      threadId,
+      nodeId,
+      node: null,
+      status: "loading",
+      entries: [],
+      hasMore: false,
+      error: null,
+      loadingOlder: false,
+    };
+    const closed = { ...view, status: "closed" as const };
+    const readHistory = async (mode: "earlier" | "latest") => {
+      const { generation, synchronized } = detail.transcript.getSnapshot();
+      if (
+        released ||
+        !synchronized ||
+        (read?.generation === generation && read.status === "loading")
+      )
+        return;
+      const pending = { generation, mode, status: "loading" as const, error: null };
+      read = pending;
+      notify();
+      try {
+        await reader.history(mode);
+        if (read === pending) read = undefined;
+      } catch (error) {
+        if (read === pending && generation === detail.transcript.getSnapshot().generation) {
+          const unavailable =
+            error instanceof HostClientRequestError &&
+            (error.status === 403 || error.status === 404);
+          read = {
+            generation,
+            mode,
+            status: unavailable ? "missing" : "error",
+            error: unavailable ? null : "Could not load this subagent’s work.",
+          };
+        }
+      } finally {
+        if (!released) notify();
       }
-    });
+    };
     return {
-      ...detail,
+      getSnapshot: () => {
+        if (released) return closed;
+        const state = detail.transcript.getSnapshot();
+        const page = read?.generation === state.generation ? read : undefined;
+        if (previous === state && shownRead === page) return view;
+        shownRead = page;
+        const status =
+          state.removed || page?.status === "missing"
+            ? "missing"
+            : page?.status === "error"
+              ? "error"
+              : state.synchronized
+                ? "ready"
+                : "loading";
+        const structureChanged =
+          previous?.items !== state.items ||
+          previous.liveItems !== state.liveItems ||
+          previous.newest !== state.newest ||
+          (view.status === "missing") !== (status === "missing");
+        const subject = state.snapshot?.nodeSubject;
+        const node =
+          status === "missing"
+            ? null
+            : subject === previous?.snapshot?.nodeSubject && view.status !== "missing"
+              ? view.node
+              : subject
+                ? transcriptCard(subject)!
+                : null;
+        const hasMore = status !== "missing" && state.snapshot?.nextBefore != null;
+        const loadingOlder = page?.status === "loading" && page.mode === "earlier";
+        const error = page?.error ?? null;
+        previous = state;
+        if (
+          !structureChanged &&
+          node === view.node &&
+          status === view.status &&
+          hasMore === view.hasMore &&
+          loadingOlder === view.loadingOlder &&
+          error === view.error &&
+          state.generation === view.generation
+        )
+          return view;
+        const entries =
+          status === "missing"
+            ? closed.entries
+            : !structureChanged
+              ? view.entries
+              : displayedItemIds(state).flatMap((id) => {
+                  const durable = state.items.get(id);
+                  const item = durable ?? state.liveItems.get(id);
+                  if (!item) return [];
+                  const projected = durable ? cards : liveCards;
+                  if (!projected.has(item)) projected.set(item, nodeTranscriptCard(item, !durable));
+                  const card = projected.get(item);
+                  return card ?? [];
+                });
+        view = {
+          ...view,
+          entries,
+          status,
+          hasMore,
+          loadingOlder,
+          error,
+          generation: state.generation,
+          node: node?.kind === "node" ? node : null,
+        };
+        return view;
+      },
+      subscribe: (listener) => {
+        if (released) return () => {};
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      loadOlder: () => readHistory("earlier"),
+      retry: () => {
+        void readHistory(read?.mode ?? "latest");
+      },
       release: () => {
-        detail.release();
-        releaseThreadOnce();
+        if (released) return;
+        released = true;
         unsubscribe();
+        reader.dispose();
+        release();
+        notify();
+        listeners.clear();
       },
     };
   }
 
-  observeThread(threadId: string): () => void {
-    const opened = !this.#showsThread(threadId);
-    this.#observedThreads.set(threadId, (this.#observedThreads.get(threadId) ?? 0) + 1);
-    if (!this.#snapshot.transcriptWindows[threadId]) {
+  readonly watchPersonalResource = (kind: PersonalResourceKind, listener: () => void) =>
+    this.#resources.watch(kind, listener);
+
+  #shellEntry(row: Parameters<typeof compactThread>[0]): TaskEntry {
+    const cached = this.#shellEntries.get(row);
+    if (cached) return cached;
+    const thread = this.#reconcilePageThread(
+      compactThread(row),
+      SequenceSchema.parse(row.revision),
+      row,
+    );
+    const entry = { thread, lastReply: row.lastReplyPreview, failure: row.failurePreview };
+    this.#shellEntries.set(row, entry);
+    return entry;
+  }
+
+  #publishShell() {
+    const state = this.#stream.shell.getSnapshot();
+    const old = this.#publishedShell;
+    this.#publishedShell = state;
+    const shellAuthority = state.snapshot;
+    let forgot = false;
+    if (
+      (old !== undefined && old.history !== state.history) ||
+      (shellAuthority &&
+        this.#snapshot.user &&
+        (this.#snapshot.user.id !== shellAuthority.viewerId ||
+          this.#snapshot.deploymentId !== shellAuthority.deploymentId ||
+          old?.snapshot?.epoch !== shellAuthority.epoch ||
+          (shellAuthority.session &&
+            this.#snapshot.sessionId !== shellAuthority.session.sessionId)))
+    ) {
+      const { connection, connectionInterrupted, network } = this.#snapshot;
+      this.#forgetViewer({ connection, connectionInterrupted, network });
+      forgot = true;
+    }
+    const shell = state.snapshot;
+    if (!shell || this.#disposed) return;
+    // Only the socket moves the connection; a scope repair on an open socket leaves it alone.
+    const attachment = this.#stream.ready ? this.#stream.attachment : undefined;
+    const attached = attachment !== undefined && this.#syncedAttachment !== attachment;
+    const reattached = attached && this.#syncedAttachment !== undefined;
+    if (attached) this.#syncedAttachment = attachment;
+    const connection = attached ? "connected" : this.#snapshot.connection;
+    const session = shell.session;
+    // A new shell cut replaces the lists; between cuts every row is applied where it is held.
+    const replaced = old?.snapshot?.recentTaskIds !== shell.recentTaskIds;
+    if (replaced) {
+      // Pages were read against the old rows: they are read again, to the depth the person had
+      // loaded, from the new cut's cursors. Until then the old pages stay on screen.
+      this.#shellCut++;
+      this.#removedTasks.clear();
+      this.#activePages = [];
+      this.#activeCursor = shell.activeNextBefore;
+    }
+    if ((replaced || attached) && this.#doneCount) {
+      // A new cut (an attach, a repair, a history reset) may stand on a different history: the
+      // held count keeps showing, but its horizon goes, so the Host's next count is always taken,
+      // and that count is asked for now.
+      this.#doneCount = { count: this.#doneCount.count, asOf: -1n };
+      this.#doneChangedAt = state.through === null ? 0n : BigInt(state.through);
+      this.#countDoneSoon();
+    }
+    const tasksChanged = replaced || old?.tasks !== state.tasks;
+    const visitsChanged = old?.visits !== state.visits;
+    const taskChanges = state.taskChanges.length > 0 && old?.taskChanges !== state.taskChanges;
+    const doneMoves: DoneMove[] = [];
+    if (taskChanges) {
+      for (const row of state.taskChanges) {
+        const held = heldThread(this.#snapshot, row.id);
+        if (this.#donePages || this.#taskReads.busy("done")) {
+          // What this client knew of the task's Done membership before the push, if anything.
+          const prior = old?.tasks.get(row.id);
+          const listed = this.#donePages?.entries.some(({ thread }) => thread.id === row.id);
+          const was = listed
+            ? true
+            : held
+              ? isDoneTask(held)
+              : prior
+                ? isDoneTask(prior)
+                : undefined;
+          doneMoves.push({ row, was, now: !("removed" in row) && isDoneTask(row) });
+        }
+        if ("removed" in row) {
+          this.#removedTasks.add(row.id);
+          continue;
+        }
+        if (held)
+          this.#threadState.reconcile(
+            {
+              ...held,
+              title: row.title,
+              status: row.status,
+              doneAt: row.doneAt,
+              doneReason: row.doneReason,
+              latestRunCompletedAt: row.latestRunCompletedAt,
+              inputQueuePaused: row.inputQueuePaused ?? held.inputQueuePaused,
+              runQueued: row.runQueued,
+            },
+            SequenceSchema.parse(row.revision),
+            undefined,
+            row,
+          );
+      }
+    }
+    if (doneMoves.length) this.#moveDone(doneMoves, state.through);
+    if (
+      session &&
+      (this.#snapshot.user?.id !== session.user.id ||
+        this.#snapshot.sessionId !== session.sessionId)
+    ) {
       this.#update({
         ...this.#snapshot,
-        threadLookups: { ...this.#snapshot.threadLookups, [threadId]: "loading" },
+        deploymentId: shell.deploymentId,
+        deploymentShape: { kind: "personal" },
+        user: session.user,
+        can: session.can,
+        session: "authenticated",
+        sessionId: session.sessionId,
+        sessionSurface: session.sessionSurface,
       });
     }
-    const deploymentId = this.#threadDeployment.get(threadId);
-    if (deploymentId) this.#ensureDeploymentChannel(deploymentId);
-    this.#ensureThreadHydration(threadId);
-    this.#ensureRequests(threadId);
-    this.#ensureAssignments(threadId);
-    this.#ensureAutomations(threadId, opened);
-    this.#ensureBrowserUsage(threadId, "missing");
-    this.#recomputeConnection();
-    let held = true;
-    return () => {
-      if (!held) return;
-      held = false;
-      const count = this.#observedThreads.get(threadId) ?? 0;
-      if (count <= 1) this.#observedThreads.delete(threadId);
-      else this.#observedThreads.set(threadId, count - 1);
-      this.#recomputeConnection();
-      const scan = this.#messagePageLoads.get(threadId);
-      if (scan && !this.#showsThread(threadId)) scan.retired = true;
-    };
+    const attentionChanged =
+      old?.attention !== state.attention ||
+      old.snapshot?.counts.pendingRequestCount !== shell.counts.pendingRequestCount ||
+      old.snapshot?.counts.needsYouCount !== shell.counts.needsYouCount;
+    if (
+      tasksChanged ||
+      taskChanges ||
+      visitsChanged ||
+      attentionChanged ||
+      connection !== this.#snapshot.connection
+    ) {
+      const taskLists =
+        tasksChanged || taskChanges
+          ? this.#taskLists(
+              state,
+              replaced ? undefined : { tasks: old?.tasks, changes: state.taskChanges },
+            )
+          : undefined;
+      if (state.synchronized) this.#savedViewReadiness = { tasksReady: true };
+      this.#update(
+        {
+          ...this.#snapshot,
+          connection,
+          connectionInterrupted: attached ? false : this.#snapshot.connectionInterrupted,
+          ...taskLists,
+          ...(attentionChanged
+            ? {
+                attentionSummaries: [...state.attention.values()],
+                pendingRequestCount: shell.counts.pendingRequestCount,
+                needsYouCount: shell.counts.needsYouCount,
+              }
+            : {}),
+          ...(visitsChanged
+            ? {
+                threadVisits: Object.fromEntries(
+                  [...state.visits].map(([id, visit]) => [id, visit.lastVisitedAt]),
+                ),
+              }
+            : {}),
+        },
+        taskChanges,
+      );
+    }
+    if (state.synchronized && (tasksChanged || !old?.synchronized)) this.#requestTaskReads();
+    if (attached) {
+      this.#connectionAdmit?.();
+      this.#finishLoad();
+      this.references.reconnect();
+      this.#invalidatePersonalRemoteAccess();
+      this.#reverifyCapabilities();
+      this.#resources.resume();
+      if (reattached) this.#noticesMissed();
+    } else if (forgot) this.#resources.resume();
+    if (
+      state.synchronized &&
+      (shell.counts.needsYouCount || this.#snapshot.needsYou) &&
+      (attached || attentionChanged)
+    )
+      this.#invalidateAttention(true);
+    if (state.synchronized) this.#syncWaitingRequests(attached ? "resume" : false);
+  }
+
+  /** The Host's pending Requests as the shell states them: their count and each row's revision. */
+  /**
+   * The pending count and the Host's `pendingRequestsRevision`, which moves exactly when the set
+   * of pending Requests or what their list shows changes; `requests.list` returns the same
+   * revision for the cut it read.
+   */
+  #requestStamp(): string | undefined {
+    const state = this.#stream.shell.getSnapshot();
+    if (!state.synchronized || !state.snapshot) return undefined;
+    const { pendingRequestCount, pendingRequestsRevision } = state.snapshot.counts;
+    return `${pendingRequestCount}|${pendingRequestsRevision}`;
+  }
+
+  /**
+   * Brings `waitingRequests` to what the Host states now. There is one wanted stamp: a read is
+   * asked for only when the stamp differs from the one last asked for, or on attach, a return to
+   * the front or a local answer. A change while a read flies marks it to run once more when it
+   * lands; it never adds another waiter. Unrelated shell frames leave the stamp, and the read,
+   * alone. A count of zero needs no read.
+   */
+  #syncWaitingRequests(force: boolean | "resume" = false) {
+    const stamp = this.#requestStamp();
+    if (stamp === undefined || this.#disposed) return;
+    const key = "waiting-requests";
+    // An answer not yet confirmed is never carried across a gap: what it hides shows again,
+    // unless the Host's list, read now, omits it.
+    if (force === "resume") {
+      let unconfirmed = false;
+      for (const [id, { confirmedAfterRun }] of this.#answeredRequests)
+        if (confirmedAfterRun === null) {
+          this.#answeredRequests.delete(id);
+          unconfirmed = true;
+        }
+      if (unconfirmed) force = true;
+    }
+    // An attach or a return to the front asks again only when the Host's pending count or
+    // Requests revision moved since the list held was read; the Host's revision is the whole news.
+    if (
+      force === "resume" &&
+      stamp === this.#waitingRequestInstalled &&
+      !this.#waitingRequestReads.busy(key)
+    ) {
+      this.#waitingRequestWanted = stamp;
+      return;
+    }
+    if (stamp.startsWith("0|")) {
+      this.#waitingRequestReads.stop(key);
+      this.#waitingRequestWanted = stamp;
+      this.#waitingRequestInstalled = stamp;
+      if (this.#snapshot.waitingRequests.length)
+        this.#update({ ...this.#snapshot, waitingRequests: [] });
+      return;
+    }
+    if (!force && stamp === this.#waitingRequestWanted) return;
+    // Behind, nothing is read; the return to the front asks again.
+    if (this.#visibility === "background") return;
+    this.#waitingRequestWanted = stamp;
+    if (this.#waitingRequestReads.busy(key)) this.#waitingRequestReads.changed(key);
+    else this.#readWaitingRequests();
+  }
+
+  /** The stamp the list was last asked to match; each run reads it as it starts. */
+  #waitingRequestWanted = "";
+  /** The stamp the installed list was read at; empty while none is held for this viewer. */
+  #waitingRequestInstalled = "";
+  /** Each run of the list read, counted, so an answer confirmed after a run began outlives it. */
+  #waitingRequestRuns = 0;
+  /** Requests answered here: hidden from any list read that began before the answer was confirmed. */
+  readonly #answeredRequests = new Map<string, { confirmedAfterRun: number | null }>();
+  readonly #waitingRequestReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
+
+  /** The person answered a Request here: it leaves the list now, and stays gone unless re-asked. */
+  async #answerRequest(requestId: string, answer: () => Promise<HostApiCommandOutput>) {
+    this.#answeredRequests.set(requestId, { confirmedAfterRun: null });
+    const generation = this.#viewerGeneration;
+    const index = this.#snapshot.waitingRequests.findIndex(
+      ({ request }) => request.id === requestId,
+    );
+    const removed = index === -1 ? undefined : this.#snapshot.waitingRequests[index];
+    const waitingRequests = this.#snapshot.waitingRequests.filter(
+      ({ request }) => request.id !== requestId,
+    );
+    if (waitingRequests.length !== this.#snapshot.waitingRequests.length)
+      this.#update({ ...this.#snapshot, waitingRequests });
+    try {
+      const result = await answer();
+      const held = this.#answeredRequests.get(requestId);
+      if (held) held.confirmedAfterRun = this.#waitingRequestRuns;
+      return result;
+    } catch (error) {
+      // Rejected, failed or cancelled: the Request is back now, where it was, and the list held
+      // no longer counts as current, so the next attach or return to the front reads it.
+      this.#answeredRequests.delete(requestId);
+      this.#waitingRequestInstalled = "";
+      if (
+        removed &&
+        generation === this.#viewerGeneration &&
+        !this.#snapshot.waitingRequests.some(({ request }) => request.id === requestId)
+      ) {
+        const restored = [...this.#snapshot.waitingRequests];
+        restored.splice(Math.min(index, restored.length), 0, removed);
+        this.#update({ ...this.#snapshot, waitingRequests: restored });
+      }
+      throw error;
+    } finally {
+      this.#syncWaitingRequests(true);
+    }
+  }
+
+  /**
+   * The pending Requests this person answers, with the work each holds up: every page, installed
+   * together. A read in flight when something changes installs nothing and runs again; a failure
+   * retries with backoff while the app is in front.
+   */
+  #readWaitingRequests() {
+    void this.#waitingRequestReads
+      .request(
+        "waiting-requests",
+        async (read) => {
+          const run = ++this.#waitingRequestRuns;
+          const asked = this.#waitingRequestWanted;
+          const read_: HostSnapshot["waitingRequests"][number][] = [];
+          const revisions = new Set<string>();
+          let before: string | null = null;
+          // Read to the end, as the list is the person's whole set of open asks; the Host keeps no
+          // cap on it, so no page count is a bound it guarantees. Only a broken cursor stops the
+          // read, as a failure that retries, never as a shorter list.
+          const cursors = new Set<string>();
+          for (;;) {
+            const page: {
+              requests: HostSnapshot["waitingRequests"];
+              window: import("@opensteer/protocol").DurableWindow;
+              pendingRequestsRevision: string;
+            } = unwrapRpcResult(
+              await this.rpc["requests.list"](
+                { ...(before ? { before } : {}), limit: 100, deviceAccessRequests: "include" },
+                { signal: read.signal },
+              ),
+            );
+            if (!read.current()) return;
+            read_.push(...page.requests);
+            revisions.add(page.pendingRequestsRevision);
+            if (!page.window.hasMore) break;
+            before = page.window.nextBefore ?? null;
+            if (!before || cursors.has(before))
+              throw Object.assign(new Error("The Host's waiting Requests list repeats a page."), {
+                code: "conflict",
+              });
+            cursors.add(before);
+          }
+          if (!read.current()) return;
+          // Pages read at different revisions are not one list: read it whole again.
+          if (revisions.size !== 1) {
+            queueMicrotask(() => this.#syncWaitingRequests(true));
+            return;
+          }
+          // An answer confirmed before this run began is the Host's truth now: a Request it still
+          // lists was asked again. One confirmed later, or not yet, stays hidden from this answer.
+          for (const [id, { confirmedAfterRun }] of this.#answeredRequests)
+            if (confirmedAfterRun !== null && confirmedAfterRun < run)
+              this.#answeredRequests.delete(id);
+          const waitingRequests = read_.filter(
+            ({ request }) => !this.#answeredRequests.has(request.id),
+          );
+          // Read at the stamp it was asked for only when the Host's pages carry that revision.
+          const [revision] = revisions;
+          this.#waitingRequestInstalled = asked.endsWith(`|${revision}`) ? asked : "";
+          this.#update({ ...this.#snapshot, waitingRequests });
+        },
+        { observed: () => !this.#disposed && this.#visibility !== "background" },
+      )
+      .catch(() => undefined);
+  }
+
+  #attentionRead: { controller: AbortController; promise: Promise<void> } | undefined;
+  #attentionTarget = 0;
+
+  #invalidateAttention(refresh = false) {
+    this.#attentionRead?.controller.abort();
+    this.#attentionRead = undefined;
+    if (!refresh) {
+      this.#attentionTarget = 0;
+      if (this.#snapshot.needsYou) this.#update({ ...this.#snapshot, needsYou: null });
+      return;
+    }
+    if (this.#attentionTarget) void this.#readAttention(true).catch(() => undefined);
+  }
+
+  /** A kind's complete inventory, every page of one read, installed as one change. */
+  #applyResource(
+    pages: readonly import("zod").infer<
+      typeof import("@opensteer/protocol/resources").PersonalResourceDataSchema
+    >[],
+  ) {
+    const first = pages[0];
+    if (!first) return;
+    if (first.kind === "tab" || first.kind === "tab-layout") return this.#applyTabResource(pages);
+    let snapshot = this.#snapshot;
+    pages.forEach((data, index) => {
+      snapshot = this.#resourcePage(snapshot, data, index > 0);
+    });
+    if (first.kind === "harness-catalog")
+      snapshot = {
+        ...snapshot,
+        environments: snapshot.environments.map((row) => this.#withEnvironmentCatalogs(row)),
+      };
+    if (first.kind === "machine")
+      snapshot = { ...snapshot, machineRevision: this.#snapshot.machineRevision + 1 };
+    if (snapshot !== this.#snapshot) this.#update(snapshot);
+  }
+
+  /** The tab rows or layout of one read, replacing what the tab store holds in one step. */
+  #applyTabResource(
+    pages: readonly import("zod").infer<
+      typeof import("@opensteer/protocol/resources").PersonalResourceDataSchema
+    >[],
+  ) {
+    const tabPages = pages.flatMap((data) => (data.kind === "tab" ? [data.tabs] : []));
+    if (tabPages.length) {
+      this.#tabs.replaceRows(
+        mergeResourceRows(
+          [],
+          tabPages.flatMap((page) => page.tabs),
+          (tab) => tab.tabId,
+        ),
+        // Each page says whether the rows end with it; the last one speaks for the whole read.
+        tabPages.at(-1)!.complete,
+      );
+      return;
+    }
+    const layouts = pages.flatMap((data) => (data.kind === "tab-layout" ? [data.tabs.layout] : []));
+    const last = layouts.at(-1);
+    if (!last) return;
+    this.#tabs.replaceLayout({
+      ...last,
+      items: mergeResourceRows(
+        [],
+        layouts
+          .filter((layout) => layout.revision === last.revision)
+          .flatMap((layout) => layout.items),
+        (item) => (item.kind === "tab" ? item.tabId : item.group.groupId),
+      ),
+    });
+  }
+
+  /** One page of a read laid onto the snapshot being built; nothing is published here. */
+  #resourcePage(
+    snapshot: HostSnapshot,
+    data: import("zod").infer<
+      typeof import("@opensteer/protocol/resources").PersonalResourceDataSchema
+    >,
+    append: boolean,
+  ): HostSnapshot {
+    switch (data.kind) {
+      case "plugin-engine":
+        for (const listener of this.#pluginEngineListeners) listener(data.engine);
+        return snapshot;
+      case "settings":
+        return {
+          ...snapshot,
+          personalSettings: data.settings,
+          quietTaskDays: data.quietTaskDays,
+          executionPreferences: data.executionPreferences,
+          voiceThreadId: data.settings?.voiceThreadId ?? null,
+        };
+      case "identity":
+        return { ...snapshot, identityConfig: data.identity };
+      case "owner-profile":
+        return { ...snapshot, ownerProfile: data.ownerProfile };
+      case "environment":
+        return {
+          ...snapshot,
+          environments: mergeResourceRows(
+            append ? snapshot.environments : [],
+            data.environments.map((row) => this.#withEnvironmentCatalogs(row)),
+            (row) => row.id,
+          ),
+        };
+      case "harness-catalog":
+        // Staged in the catalog map; the snapshot takes it once every page is in.
+        if (!append) this.#environmentCatalogs.clear();
+        for (const row of data.environments) {
+          const held = this.#environmentCatalogs.get(row.id) ?? [];
+          const page = row.harnessCatalogs.map((catalog) => {
+            const previous = held.find(
+              ({ harnessInstanceId }) => harnessInstanceId === catalog.harnessInstanceId,
+            );
+            return previous?.status === "ready" && catalog.status === "ready"
+              ? { ...catalog, models: [...previous.models, ...catalog.models] }
+              : catalog;
+          });
+          this.#environmentCatalogs.set(
+            row.id,
+            mergeResourceRows(held, page, (catalog) => catalog.harnessInstanceId),
+          );
+        }
+        return snapshot;
+      case "machine":
+        return {
+          ...snapshot,
+          machines: mergeResourceRows(
+            append ? snapshot.machines : [],
+            data.machines,
+            (row) => row.id,
+          ),
+        };
+      case "harness":
+        return {
+          ...snapshot,
+          harnesses: mergeResourceRows(
+            append ? snapshot.harnesses : [],
+            data.harnesses.map(({ config, ...harness }) => ({
+              ...harness,
+              ...harnessEndpoint(config),
+            })),
+            (row) => row.id,
+          ),
+        };
+      case "tab":
+      case "tab-layout":
+        return snapshot;
+      case "browser-profile":
+        return {
+          ...snapshot,
+          browserProfiles: mergeResourceRows(
+            append ? snapshot.browserProfiles : [],
+            data.profiles,
+            (row) => row.id,
+          ),
+          browserProfileDeletions: mergeResourceRows(
+            append ? (snapshot.browserProfileDeletions ?? []) : [],
+            data.deletions ?? [],
+            (row) => row.profileId,
+          ),
+        };
+      case "browser-placement":
+        return {
+          ...snapshot,
+          browserPlacements: mergeResourceRows(
+            append ? snapshot.browserPlacements : [],
+            data.placements,
+            (row) => row.runnerId,
+          ),
+        };
+      case "browser-home":
+        return {
+          ...snapshot,
+          browserProfileHomes: mergeResourceRows(
+            append ? (snapshot.browserProfileHomes ?? []) : [],
+            data.homes ?? [],
+            (runnerId) => runnerId,
+          ),
+        };
+      case "browser-availability":
+        return { ...snapshot, browserAvailable: data.available };
+    }
+    return snapshot;
+  }
+
+  #withEnvironmentCatalogs(row: EnvironmentSummary): EnvironmentSummary {
+    return { ...row, harnessCatalogs: this.#environmentCatalogs.get(row.id) ?? [] };
   }
 
   async getAssignment(assignmentId: string): Promise<AssignmentView> {
@@ -1812,7 +2389,8 @@ export class HttpHostClient {
     for (const summary of Object.values(this.#snapshot.assignments)) {
       if (summary.workerThread.id === workerThreadId) ids.add(summary.id);
     }
-    for (const entries of Object.values(this.#snapshot.transcripts)) {
+    for (const reader of this.#scopeReaders.values()) {
+      const { entries } = reader.getSnapshot();
       for (const entry of entries) {
         if (entry.kind === "assignment" && entry.assignment.workerThread.id === workerThreadId)
           ids.add(entry.assignment.id);
@@ -1821,18 +2399,16 @@ export class HttpHostClient {
     return [...ids];
   }
 
-  /** `again` asks once more after a finished read; a read in flight always answers. */
-  #ensureAssignments(threadId: string, again = false): void {
+  #ensureAssignments(threadId: string): void {
     if (this.#disposed || this.#snapshot.session !== "authenticated") return;
-    const read = this.#assignmentReads.get(threadId);
-    if (read === "reading" || (read === "read" && !again)) return;
-    this.#assignmentReads.set(threadId, "reading");
-    void this.#readAssignments(threadId)
-      .catch(() => undefined)
-      .finally(() => {
-        if (this.#assignmentReads.get(threadId) === "reading")
-          this.#assignmentReads.set(threadId, "read");
-      });
+    const key = `assignments:${threadId}`;
+    if (this.#assignmentsRead.has(threadId) || this.#assignmentReads.busy(key)) return;
+    this.#assignmentKeys.add(threadId);
+    void this.#assignmentReads
+      .request(key, (read) => this.#readAssignments(threadId, read), {
+        observed: () => !this.#disposed && this.#showsThread(threadId),
+      })
+      .catch(() => undefined);
   }
 
   #ensureAutomations(threadId: string, again = false): void {
@@ -1893,56 +2469,73 @@ export class HttpHostClient {
   }
 
   /**
-   * The newest page, which is all the history a family shows, and every open
-   * Assignment however far back it was handed out, so work under way is never
-   * missing. A Host without `task-family-v1` gives the newest page alone.
+   * The newest page, which is all the history a family shows, and, when that page is not the
+   * whole family, every open Assignment however far back it was handed out, so work under way is
+   * never missing. A Host without `task-family-v1` gives the newest page alone.
    */
-  async #readAssignments(threadId: string): Promise<void> {
-    await Promise.all([
-      this.#readAssignmentPages(threadId, false),
-      ...(this.#capabilities?.includes("task-family-v1")
-        ? [this.#readAssignmentPages(threadId, true)]
-        : []),
-    ]);
-  }
-
-  async #readAssignmentPages(threadId: string, open: boolean): Promise<void> {
-    const generation = this.#viewerGeneration;
-    const userId = this.#snapshot.user?.id;
-    let before: string | null = null;
-    do {
-      let response;
+  /**
+   * Reads a task's assignments: its newest page and, when that left some out, every open one. The
+   * result replaces what this client held for the task: an open assignment neither read returns
+   * has finished, even when the feed's update for it was skipped by a repair.
+   */
+  async #readAssignments(threadId: string, read: FencedRead): Promise<void> {
+    const startedAt = this.#assignmentPushCount;
+    const list = async (open: boolean, before: string | null) => {
       try {
-        response = unwrapRpcResult(
-          await this.rpc["thread.assignments.list"]({
-            ...(this.#supportsDeviceAccessRequests()
-              ? { deviceAccessRequests: "include" as const }
-              : {}),
-            threadId,
-            limit: 100,
-            ...(open ? { open } : {}),
-            ...(before === null ? {} : { before }),
-          }),
+        const response = unwrapRpcResult(
+          await this.rpc["thread.assignments.list"](
+            {
+              threadId,
+              limit: 100,
+              ...(open ? { open } : {}),
+              ...(before === null ? {} : { before }),
+            },
+            { signal: read.signal },
+          ),
         );
+        if (response.threadId !== threadId) throw new Error("Assignment page Thread mismatch.");
+        return response;
       } catch (error) {
-        if (this.#viewerStillCurrent(generation, userId))
-          this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
+        if (read.current()) this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
         throw error;
       }
-      if (!this.#viewerStillCurrent(generation, userId)) return;
-      if (response.threadId !== threadId) throw new Error("Assignment page Thread mismatch.");
-      this.#update({
-        ...this.#snapshot,
-        assignments: mergeAssignments(this.#snapshot.assignments, response.assignments),
-      });
-      before = open && response.window.hasMore ? response.window.nextBefore : null;
-    } while (before !== null);
+    };
+    const newest = await list(false, null);
+    const found = [...newest.assignments];
+    let complete = !newest.window.hasMore;
+    if (newest.window.hasMore && this.#capabilities?.includes("task-family-v1")) {
+      let before: string | null = null;
+      do {
+        const page = await list(true, before);
+        found.push(...page.assignments);
+        before = page.window.hasMore ? page.window.nextBefore : null;
+      } while (before !== null);
+      complete = true;
+    }
+    if (!read.current()) return;
+    const assignments = mergeAssignments(this.#snapshot.assignments, found);
+    if (complete) {
+      const returned = new Set<string>(found.map(({ id }) => id));
+      for (const [id, held] of Object.entries(assignments))
+        if (
+          held.parentThreadId === threadId &&
+          held.status === "open" &&
+          !returned.has(id) &&
+          // Pushed after this read began: newer than what the read could have returned.
+          (this.#assignmentPushes.get(id) ?? 0) <= startedAt
+        ) {
+          delete assignments[id];
+          this.#assignmentPushes.delete(id);
+        }
+    }
+    this.#assignmentsRead.add(threadId);
+    this.#update({ ...this.#snapshot, assignments });
   }
 
   /** Every Run whose browser use this Thread shows: its own, and its tasks' workers'. */
   #browserUsageRunIds(threadId: string): ReadonlySet<string> {
     const runIds = new Set<string>();
-    for (const entry of this.#snapshot.transcripts[threadId] ?? []) {
+    for (const entry of this.#reader(threadId)?.getSnapshot().entries ?? []) {
       if ("runId" in entry && entry.runId) runIds.add(entry.runId);
       if (entry.kind === "assignment") {
         runIds.add(entry.assignment.initialRunId);
@@ -1954,9 +2547,8 @@ export class HttpHostClient {
       runIds.add(assignment.initialRunId);
       if (assignment.currentRunId) runIds.add(assignment.currentRunId);
     }
-    for (const run of this.#snapshot.runQueue) {
-      if (run.threadId === threadId) runIds.add(run.id);
-    }
+    for (const run of this.#scopeReaders.get(threadId)?.getSnapshot().runQueue ?? [])
+      runIds.add(run.id);
     return runIds;
   }
 
@@ -1984,9 +2576,7 @@ export class HttpHostClient {
       !this.#showsThread(threadId)
     )
       return;
-    const deploymentId = this.#threadDeployment.get(threadId);
-    const channel = deploymentId === undefined ? undefined : this.#channels.get(deploymentId);
-    if (channel && !channel.synchronized && !channel.refused) return;
+    if (!this.#stream.ready) return;
     const pending = this.#browserUsageReads.get(threadId);
     if (pending) {
       if (mode === "full") pending.again = "full";
@@ -2008,7 +2598,7 @@ export class HttpHostClient {
         },
       });
     }
-    void this.#readBrowserUsage(threadId, scope ?? runIds, scope === null)
+    void this.#readBrowserUsage(threadId, scope ?? runIds, scope === null, read)
       .catch(() => false)
       .then((settled) => {
         if (this.#browserUsageReads.get(threadId) !== read) return;
@@ -2038,6 +2628,7 @@ export class HttpHostClient {
     threadId: string,
     runIds: readonly string[],
     whole: boolean,
+    read: { again: "full" | "missing" | null },
   ): Promise<boolean> {
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
@@ -2045,6 +2636,7 @@ export class HttpHostClient {
     const current = () =>
       this.#viewerStillCurrent(generation, userId) &&
       this.#snapshot.deploymentId === deploymentId &&
+      this.#browserUsageReads.get(threadId) === read &&
       this.#showsThread(threadId);
     const uses = new Map<string, BrowserSessionUsageProjection>();
     try {
@@ -2128,13 +2720,13 @@ export class HttpHostClient {
   #checkBrowserUsageRuns(): void {
     for (const threadId of [this.#activeThreadId, ...this.#observedThreads.keys()]) {
       if (!threadId || !this.#browserUsageRead.has(threadId)) continue;
-      const transcript = this.#snapshot.transcripts[threadId] ?? [];
+      const transcript = this.#reader(threadId)?.getSnapshot().entries ?? [];
       const sources = [
         transcript.length,
         transcript[0]?.id,
         transcript.at(-1)?.id,
         this.#snapshot.assignments,
-        this.#snapshot.runQueue,
+        this.#scopeReaders.get(threadId)?.getSnapshot().runQueue,
       ] as const;
       const checked = this.#browserUsageRunSources.get(threadId);
       if (checked && checked.every((source, index) => source === sources[index])) continue;
@@ -2186,280 +2778,82 @@ export class HttpHostClient {
     if (changed) this.#update({ ...this.#snapshot, machines });
   }
 
-  /**
-   * Reads a Thread's Requests when the Host counts more pending than it holds.
-   * The count is projected after the Requests it counts, so it can lag the
-   * list in either direction; a read is asked once per count, never per event
-   * batch, and a new count, a refresh or a resync is what asks again. A failed
-   * read waits for the same, since there is no one to hand the failure to.
-   */
-  #ensureRequests(threadId: string): void {
-    const thread = this.#snapshot.threads.find(({ id }) => id === threadId);
-    if (!thread) return;
-    if (knownPendingRequestCount(this.#snapshot, threadId) >= thread.pendingRequests) {
-      // Caught up, so a later shortfall is a new question even at the same count.
-      this.#requestReads.delete(threadId);
-      return;
-    }
-    if (this.#requestLoads.has(threadId)) return;
-    if (this.#requestReads.get(threadId) === thread.pendingRequests) return;
-    this.#requestReads.set(threadId, thread.pendingRequests);
-    const operation = this.#loadRequests(threadId).finally(() => {
-      if (this.#requestLoads.get(threadId) === operation) {
-        this.#requestLoads.delete(threadId);
-        this.#ensureRequests(threadId);
-      }
-    });
-    this.#requestLoads.set(threadId, operation);
-    void operation.catch(() => undefined);
-  }
-
-  async openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {
-    attempt.signal.throwIfAborted();
-    if (this.#snapshot.session !== "authenticated" || this.#bootstrapFailed || this.#authRestored) {
-      const reason = this.#authRestored ? "reauthenticate" : "load";
-      const bootstrap = this.#bootstrap(reason, true, this.#authRestored, true, attempt.signal);
-      this.#attemptBootstrap = bootstrap;
-      try {
-        await bootstrap;
-        attempt.signal.throwIfAborted();
-        this.#authRestored = false;
-      } finally {
-        if (this.#attemptBootstrap === bootstrap) this.#attemptBootstrap = null;
-      }
-    }
-    attempt.signal.throwIfAborted();
-    if (
-      this.#snapshot.session !== "authenticated" ||
-      !this.#snapshot.user ||
-      !this.#snapshot.deploymentId
-    ) {
-      const refusal = new HostClientRequestError({
-        code: "unauthorized",
-        message: "Sign in to continue.",
-        status: 401,
-        retryable: false,
-      });
-      attempt.fail?.(classifyClientFailure(refusal));
-      throw refusal;
-    }
-    const scope = this.#scope();
-    if (scope) attempt.acceptScope(scope);
-    return new Promise((resolve, reject) => {
-      let admitted = false;
-      let closeLease!: (failure: ReturnType<typeof classifyClientFailure>) => void;
-      const closed = new Promise<ReturnType<typeof classifyClientFailure>>((done) => {
-        closeLease = done;
-      });
-      const close = () => {
-        if (this.#connectionFailed !== fail) return;
-        this.#connectionFailed = null;
-        unsubscribe();
-        attempt.signal.removeEventListener("abort", abort);
-        for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
-        this.#recomputeConnection();
-      };
-      const fail = (error: unknown) => {
-        if (this.#connectionFailed !== fail) return;
-        close();
-        const failure = classifyClientFailure(error);
-        attempt.fail?.(failure);
-        if (admitted) closeLease(failure);
-        else reject(error);
-      };
-      const abort = () => fail(attempt.signal.reason);
-      const observe = () => {
-        if (this.#snapshot.session !== "authenticated") {
-          fail(
-            new HostClientRequestError({
-              code: "unauthorized",
-              message: "Sign in to continue.",
-              status: 401,
-              retryable: false,
-            }),
-          );
-          return;
-        }
-        const scope = this.#scope();
-        if (scope) attempt.acceptScope(scope);
-        if (admitted || this.#snapshot.connection !== "connected") return;
-        admitted = true;
-        this.#stopHandshake();
-        const lease: ConnectionLease = {
-          closed,
-          lastProgressAt: () =>
-            Math.min(...[...this.#channels.values()].map((channel) => channel.progressAt)),
-          // A socket proven alive answers task notices owed from the background; a
-          // replaced one answers them through its replay, so they are not read twice.
-          probe: (signal) =>
-            Promise.all(
-              [...this.#channels.values()].map((channel) => this.#probeChannel(channel, signal)),
-            ).then(() => {
-              signal.throwIfAborted();
-              if (this.#tasksStale) this.#rereadTasks();
-            }),
-          close,
-        };
-        attempt.admit?.(lease);
-        resolve(lease);
-      };
-      const unsubscribe = this.subscribe(observe);
-      this.#connectionFailed = fail;
-      attempt.signal.addEventListener("abort", abort, { once: true });
-      const held = this.#channels.get(this.#snapshot.deploymentId!);
-      if (held) held.refused = false;
-      this.#ensureDeploymentChannel(this.#snapshot.deploymentId!);
-      observe();
-    });
-  }
-
-  #scope(): ClientScope | null {
-    if (this.#clientScope) return this.#clientScope();
-    if (!this.#snapshot.deploymentId || !this.#snapshot.user) return null;
-    return {
-      authorityKey: this.#baseUrl.origin,
-      deploymentId: this.#snapshot.deploymentId,
-      viewerId: this.#snapshot.user.id,
-      loginId: this.#snapshot.sessionId ?? String(this.#viewerGeneration),
-    };
-  }
-
   async load(): Promise<void> {
     if (this.#disposed) throw new Error("The Host client is closed.");
     if (this.#ownsConnection) this.connection.start();
-    await (this.#attemptBootstrap ?? this.#bootstrapPromise);
+    await this.#load;
   }
 
   async refresh(options?: { readonly retryConnection?: boolean }): Promise<void> {
     if (this.#disposed) return;
-    if (this.#ownsConnection && this.#snapshot.session === "authentication-required") {
-      await this.reauthenticate();
-      return;
+    if (options?.retryConnection || !this.#socket) {
+      this.connection.retry();
+      await this.#load;
+    } else {
+      this.#stream.repairShell();
     }
-    if (options?.retryConnection) this.connection.retry();
-    await this.#refresh("refresh");
   }
 
-  async #refresh(reason: BootstrapReason): Promise<void> {
-    this.#assignmentReads.clear();
-    this.#automationReads.clear();
-    this.#readAutomations.clear();
-    this.#requestReads.clear();
-    await this.#bootstrap(reason, false, true);
-  }
-
-  /** The browser cookie or desktop attachment was restored outside the session. */
   async reauthenticate(): Promise<void> {
     if (this.#disposed) return;
-    this.#authRestored = true;
-    this.connection.retry();
-    await this.#attemptBootstrap;
-  }
-
-  async loadEarlierTranscript(threadId: string): Promise<void> {
-    const existing = this.#messagePageLoads.get(threadId);
-    if (existing && !existing.retired) return existing.promise;
-    const scan = { promise: Promise.resolve(), retired: false };
-    this.#messagePageLoads.set(threadId, scan);
-    // A retired scan still settles its in-flight page; a new request starts after it.
-    scan.promise = (existing?.promise.catch(() => undefined) ?? Promise.resolve())
-      .then(() => this.#loadEarlierTranscript(threadId, scan))
-      .finally(() => {
-        if (this.#messagePageLoads.get(threadId) === scan) {
-          this.#messagePageLoads.delete(threadId);
-        }
+    // The credential may have changed. A known viewer is judged against the next shell cut; what
+    // was read before any viewer was known is read again under the new credential.
+    if (this.#snapshot.user === null)
+      this.#forgetViewer({
+        identityConfig: this.#snapshot.identityConfig,
+        connection: this.#snapshot.connection,
       });
-    return scan.promise;
+    else this.#update({ ...this.#snapshot, session: "checking" });
+    this.connection.retry();
+    await this.#load;
   }
 
   async searchThreadMessages(input: { threadId: string; query: string; before?: string }) {
     return unwrapRpcResult(await this.rpc["thread.messages.list"]({ ...input, limit: 50 }));
   }
 
-  async loadTranscriptAround(threadId: string, messageId: string): Promise<void> {
-    const generation = this.#viewerGeneration,
-      userId = this.#snapshot.user?.id;
-    const scan = this.#messagePageLoads.get(threadId);
-    if (scan) scan.retired = true;
-    await this.#threadHydrations.get(threadId);
-    await this.#latestTranscriptLoads.get(threadId);
-    await scan?.promise;
-    const page = tabEventPage(
-      await this.rpc["thread.events.list"]({
-        ...(this.#capabilities?.includes("tool-output-detail-v1")
-          ? { toolOutputs: "preview" as const }
-          : {}),
-        ...(this.#supportsDeviceAccessRequests()
-          ? { deviceAccessRequests: "include" as const }
-          : {}),
-        ...(this.#capabilities?.includes("place-events-v1")
-          ? { placeEvents: "include" as const }
-          : {}),
-        threadId,
-        aroundMessageId: messageId,
-      }),
-    );
-    if (!this.#viewerStillCurrent(generation, userId)) return;
-    if (page.threadId !== threadId) throw new Error("Thread event page mismatch.");
-    this.#historicalThreads.add(threadId);
-
-    this.#update({
-      ...this.#snapshot,
-      assignments: withAssignmentsFrom(this.#snapshot.assignments, page.events),
-      transcripts: {
-        ...this.#snapshot.transcripts,
-        [threadId]: page.events.reduce(foldTranscriptEvent, [] as TranscriptEntry[]),
-      },
-      transcriptWindows: { ...this.#snapshot.transcriptWindows, [threadId]: page.window },
-    });
-  }
-
-  async loadLatestTranscript(threadId: string): Promise<void> {
-    const existing = this.#latestTranscriptLoads.get(threadId);
-    if (existing) return existing;
-    const operation = this.#loadLatestTranscript(threadId).finally(() => {
-      if (this.#latestTranscriptLoads.get(threadId) === operation) {
-        this.#latestTranscriptLoads.delete(threadId);
-      }
-    });
-    this.#latestTranscriptLoads.set(threadId, operation);
-    return operation;
-  }
-
-  async #loadLatestTranscript(threadId: string): Promise<void> {
-    const generation = this.#viewerGeneration;
-    const scan = this.#messagePageLoads.get(threadId);
-    if (scan) scan.retired = true;
-    const hydration = this.#threadHydrations.get(threadId);
-    if (hydration) await hydration;
-    if (scan) await scan.promise;
-    if (generation !== this.#viewerGeneration) return;
-    await this.#hydrateThread(threadId, true);
-  }
-
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void {
-    const resumesHidden = this.#visibility === "background" && !this.#notifiesWhileHidden();
     this.#notificationListeners.add(listener);
-    // Hidden sockets were left closed, or unwatched, while nobody listened; they are needed now.
-    if (resumesHidden) {
-      this.connection.wake();
-    }
     return () => this.#notificationListeners.delete(listener);
   }
 
   subscribePluginsChanged(
     listener: (message: { type: "host.plugins-changed" } & PluginChange) => void,
   ): () => void {
-    this.#pluginsChangedListeners.add(listener);
-    return () => this.#pluginsChangedListeners.delete(listener);
+    const watch = (kind: PersonalResourceKind, category?: PluginResourceCategory) => {
+      let seen = this.#resources.revision(kind);
+      return this.#resources.watch(kind, () => {
+        const revision = this.#resources.revision(kind);
+        if (revision === undefined || revision === seen) return;
+        seen = revision;
+        listener({ type: "host.plugins-changed", ...(category ? { categories: [category] } : {}) });
+      });
+    };
+    const releases = [
+      watch("plugin"),
+      ...Object.entries(pluginCategoryResources).map(([category, kind]) =>
+        watch(kind, category as PluginResourceCategory),
+      ),
+    ];
+    return () => releases.forEach((release) => release());
   }
   subscribePluginEngine(listener: (engine: PluginEngineStateView) => void): () => void {
     this.#pluginEngineListeners.add(listener);
-    return () => this.#pluginEngineListeners.delete(listener);
+    const release = this.watchPersonalResource("plugin-engine", () => {});
+    return () => {
+      this.#pluginEngineListeners.delete(listener);
+      release();
+      if (!this.#pluginEngineListeners.size) this.#resources.forget("plugin-engine");
+    };
   }
   subscribePersonalRemoteAccess(listener: () => void): () => void {
     this.#personalRemoteAccessListeners.add(listener);
     return () => this.#personalRemoteAccessListeners.delete(listener);
+  }
+
+  /** Reads these kinds again, for a screen that said it could not load them. */
+  retryResources(kinds: readonly PersonalResourceKind[]) {
+    for (const kind of kinds) this.#resources.retry(kind);
   }
 
   subscribeConnectionsChanged(listener: () => void): () => void {
@@ -2499,11 +2893,6 @@ export class HttpHostClient {
     )
       return;
     this.#update(this.#snapshot);
-    const channel = this.#snapshot.deploymentId
-      ? this.#channels.get(this.#snapshot.deploymentId)
-      : undefined;
-    // Reconnect visit pages precede host.synchronized, whose checkpoint carries them.
-    if (channel?.synchronized) this.#persistCheckpoint(channel);
   }
 
   async visitThread(threadId: string, visitedAt: string): Promise<void> {
@@ -2518,244 +2907,6 @@ export class HttpHostClient {
     });
     if (result.type !== "thread.visit") throw new Error("Visit command mismatch.");
     if (this.#viewerStillCurrent(generation, userId)) this.#applyVisits([result]);
-  }
-
-  #ensureThreadHydration(threadId: string): void {
-    if (
-      this.#historicalThreads.has(threadId) ||
-      this.#hydratedThreads.has(threadId) ||
-      this.#threadHydrations.has(threadId) ||
-      this.#latestTranscriptLoads.has(threadId)
-    )
-      return;
-    const generation = this.#viewerGeneration;
-    this.#update({
-      ...this.#snapshot,
-      threadLookups: { ...this.#snapshot.threadLookups, [threadId]: "loading" },
-    });
-    const operation = this.#hydrateThread(threadId)
-      .catch((error: unknown) => {
-        // A failed refresh leaves the last readable transcript in place. Its
-        // failure is visible for known Threads too; activation retries it.
-        if (
-          generation === this.#viewerGeneration &&
-          this.#snapshot.threadLookups[threadId] === "loading"
-        ) {
-          this.#update({
-            ...this.#snapshot,
-            threadLookups: {
-              ...this.#snapshot.threadLookups,
-              [threadId]:
-                error instanceof HostClientRequestError && error.status === 404
-                  ? "missing"
-                  : "failed",
-            },
-          });
-        }
-      })
-      .finally(() => {
-        if (this.#threadHydrations.get(threadId) === operation) {
-          this.#threadHydrations.delete(threadId);
-        }
-      });
-    this.#threadHydrations.set(threadId, operation);
-  }
-
-  /**
-   * Restores the durable trace (tool calls, reasoning, run outcomes) for a
-   * Thread from the Host's event history so a reloaded page shows the same
-   * transcript a live session saw. Live events arriving mid-flight are
-   * buffered and re-folded on top of the restored page.
-   */
-  async #hydrateThread(threadId: string, restoreLatest = false): Promise<void> {
-    const generation = this.#viewerGeneration;
-    const userId = this.#snapshot.user?.id;
-    const buffer: AgentEvent[] = [];
-    this.#hydrationBuffers.set(threadId, buffer);
-    try {
-      const first = await this.#readLatestHistory(threadId, generation, userId);
-      if (!first) return;
-      let latest = first;
-      const overtaken = () => {
-        const sequence = this.#invalidatedHydrations.get(threadId);
-        return sequence !== undefined && compareSequence(latest.page.asOfSequence, sequence) < 0;
-      };
-      for (
-        let attempt = 0;
-        attempt < 3 &&
-        (overtaken() || this.#threadState.needsRead(latest.page.thread, latest.page.asOfSequence));
-        attempt += 1
-      ) {
-        const fresh = await this.#readLatestHistory(threadId, generation, userId);
-        if (!fresh) return;
-        if (compareSequence(fresh.page.asOfSequence, latest.page.asOfSequence) >= 0) latest = fresh;
-      }
-      if (overtaken())
-        throw new Error("The connection changed while loading this conversation. Try again.");
-      const { history, page, window } = latest;
-
-      const activeNodes = await this.#readActiveNodes(threadId);
-      if (!this.#viewerStillCurrent(generation, userId)) return;
-      let entries = history.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
-      const loadedNodeIds = new Set(
-        entries.filter((entry) => entry.kind === "node").map((node) => node.nodeId),
-      );
-      for (const node of activeNodes) {
-        if (loadedNodeIds.has(node.nodeId)) continue;
-        const index = entries.findIndex((entry) => entry.createdAt > node.createdAt);
-        entries.splice(index < 0 ? entries.length : index, 0, node);
-      }
-      const replayed = buffer.filter(
-        (event) => compareSequence(event.sequence, page.asOfSequence) > 0,
-      );
-      for (const event of replayed) entries = foldTranscriptEvent(entries, event);
-      // The page is durable history only; whatever the Thread's Runs are
-      // streaming right now is drawn again on top of it, less any stream the
-      // page shows completed before the event stream has said so.
-      for (const event of [...history, ...replayed]) this.#live.complete(event);
-      const receivedAt = new Date().toISOString();
-      for (const run of this.#live.threadRuns(threadId as ThreadId)) {
-        entries = foldLiveRun(entries, run, receivedAt);
-      }
-      for (const event of [...history, ...replayed]) this.#threadState.record(event);
-      // History paging must not reconstruct today's selection from an old creation event.
-      const summary = this.#threadState.reconcile(
-        toThreadSummary(page.thread, this.#snapshot.environments, this.#snapshot.harnesses),
-        page.asOfSequence,
-        this.#snapshot.threads.find(({ id }) => id === threadId),
-      );
-      const threads = this.#snapshot.threads.some(({ id }) => id === threadId)
-        ? this.#snapshot.threads.map((thread) => (thread.id === threadId ? summary : thread))
-        : [summary, ...this.#snapshot.threads];
-      const deploymentId = this.#snapshot.deploymentId!;
-      const threadLookups = { ...this.#snapshot.threadLookups };
-      delete threadLookups[threadId];
-      if (restoreLatest) this.#historicalThreads.delete(threadId);
-      this.#hydratedThreads.set(threadId, page.asOfSequence);
-      this.#update({
-        ...this.#snapshot,
-        assignments: withAssignmentsFrom(this.#snapshot.assignments, [...history, ...replayed]),
-        threadLookups,
-        threads,
-        transcripts: { ...this.#snapshot.transcripts, [threadId]: entries },
-        transcriptWindows: { ...this.#snapshot.transcriptWindows, [threadId]: window },
-      });
-      if (deploymentId) this.#ensureDeploymentChannel(deploymentId);
-      if (this.#observedThreads.has(threadId)) this.#ensureRequests(threadId);
-      this.#mergeVisits([page.thread]);
-    } catch (error) {
-      // A worker the Host will not show this viewer takes its tasks with it.
-      if (this.#viewerStillCurrent(generation, userId))
-        this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
-      throw error;
-    } finally {
-      if (this.#hydrationBuffers.get(threadId) === buffer) {
-        this.#hydrationBuffers.delete(threadId);
-        this.#invalidatedHydrations.delete(threadId);
-      }
-    }
-  }
-
-  /** Read one opening page; even a silent settled turn has a row. */
-  async #readLatestHistory(threadId: string, generation: number, userId: string | undefined) {
-    const page = await this.#readThreadHistory(threadId);
-    if (!this.#viewerStillCurrent(generation, userId)) return null;
-    const thread = toThreadSummary(
-      page.thread,
-      this.#snapshot.environments,
-      this.#snapshot.harnesses,
-    );
-    let history = page.events;
-    let window = page.window;
-    let entries = history.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
-    let assignments = withAssignmentsFrom(this.#snapshot.assignments, history);
-    // A page can hold only the tail of one long turn, such as background work
-    // after its reply, so read back until the Thread draws something.
-    let pages = 1;
-    let bytes = window.byteCount;
-    const cursors = new Set<string>();
-    while (
-      window.hasMore &&
-      pages < historyScanMaxPages &&
-      bytes < historyScanMaxBytes &&
-      this.#drawnRowCount(thread, entries, assignments) === 0
-    ) {
-      const before = window.nextBefore;
-      if (!before || cursors.has(before))
-        throw new Error("Thread event page is missing its continuation cursor.");
-      cursors.add(before);
-      const older = await this.#readThreadHistory(threadId, before);
-      if (!this.#viewerStillCurrent(generation, userId)) return null;
-      pages += 1;
-      bytes += older.window.byteCount;
-      history = [...older.events, ...history];
-      window = older.window;
-      entries = mergeTranscriptSegments(
-        older.events.reduce(foldTranscriptEvent, [] as TranscriptEntry[]),
-        entries,
-      );
-      assignments = withAssignmentsFrom(assignments, older.events);
-    }
-    if (window.hasMore && (!window.nextBefore || cursors.has(window.nextBefore)))
-      throw new Error("Thread event page is missing its continuation cursor.");
-    return {
-      history,
-      page,
-      window,
-
-      complete: !window.hasMore || this.#drawnRowCount(thread, entries, assignments) > 0,
-    };
-  }
-
-  async #readActiveNodes(threadId: string) {
-    const runs = this.#snapshot.runQueue.filter(
-      (run) => run.threadId === threadId && run.status !== "queued",
-    );
-    const pages = await Promise.all(runs.map((run) => this.#readRunNodes(run.id)));
-    return pages.flat();
-  }
-
-  async #readRunNodes(runId: string) {
-    const result = unwrapRpcResult(
-      await this.rpc["run.attempts.list"]({ runId: RunIdSchema.parse(runId) }),
-    );
-    return result.nodes.map(executionNodeEntry);
-  }
-
-  /** How many rows a Thread's transcript draws once its history is settled. */
-  #drawnRowCount(
-    thread: Pick<ThreadSummary, "id" | "purpose" | "inputQueuePaused">,
-    entries: readonly TranscriptEntry[],
-    assignments: HostSnapshot["assignments"],
-  ): number {
-    return drawnTranscriptRowKeys(entries, {
-      thread,
-      inputQueue: this.#snapshot.inputQueues[thread.id] ?? null,
-      assignments,
-      waitingRequests: this.#snapshot.waitingRequests,
-    }).length;
-  }
-
-  async #readThreadHistory(threadId: string, before?: string) {
-    const page = tabEventPage(
-      await this.rpc["thread.events.list"]({
-        ...(this.#capabilities?.includes("tool-output-detail-v1")
-          ? { toolOutputs: "preview" as const }
-          : {}),
-        ...(this.#supportsDeviceAccessRequests()
-          ? { deviceAccessRequests: "include" as const }
-          : {}),
-        ...(this.#capabilities?.includes("place-events-v1")
-          ? { placeEvents: "include" as const }
-          : {}),
-        ...(before ? { before } : {}),
-        threadId,
-        ...(this.#capabilities?.includes("history-turns-v1") ? { turns: historyPageTurns } : {}),
-      }),
-    );
-    if (page.threadId !== threadId || page.thread.id !== threadId)
-      throw new Error("Thread event page mismatch.");
-    return page;
   }
 
   #capabilities: readonly HostCapability[] | null;
@@ -3015,9 +3166,9 @@ export class HttpHostClient {
   }
 
   async stopNode(threadId: string, nodeId: string): Promise<void> {
-    const node = this.#snapshot.transcripts[threadId]?.find(
-      (entry) => entry.kind === "node" && entry.nodeId === nodeId,
-    );
+    const node = this.#reader(threadId)
+      ?.getSnapshot()
+      .entries.find((entry) => entry.kind === "node" && entry.nodeId === nodeId);
     if (
       node?.kind !== "node" ||
       !node.runId ||
@@ -3035,16 +3186,15 @@ export class HttpHostClient {
     });
   }
 
-  async stopRun(threadId: string, expectedRunId?: string): Promise<void> {
+  async stopRun(threadId: string): Promise<void> {
     const thread = this.#snapshot.threads.find((item) => item.id === threadId);
     if (!thread) throw new Error("Thread not found.");
-    const runId = expectedRunId
-      ? RunIdSchema.parse(expectedRunId)
-      : threadStopTarget({ runQueue: this.#snapshot.runQueue, thread })?.id;
-    if (!runId) throw new Error("This Thread has nothing to stop.");
+    const detail = this.#reader(threadId)?.getSnapshot();
+    const run = threadStopTarget({ runQueue: detail?.synchronized ? detail.runQueue : [], thread });
+    if (!run) throw new Error("This Thread has nothing to stop.");
     const result = await this.dispatch({
       idempotencyKey: mutationIdempotencyKey("interrupt"),
-      runId,
+      runId: run.id,
       threadId,
       type: "run.interrupt",
     });
@@ -3052,7 +3202,7 @@ export class HttpHostClient {
   }
 
   async steerThreadInput(threadId: string, messageId: string): Promise<void> {
-    const expectedRunId = this.#snapshot.inputQueues[threadId]?.steerRunId ?? null;
+    const expectedRunId = this.#reader(threadId)?.getSnapshot().inputQueue?.steerRunId ?? null;
     if (expectedRunId === null) throw new Error("This message cannot be steered right now.");
     await this.#mutateThreadInput(
       threadId,
@@ -3132,16 +3282,46 @@ export class HttpHostClient {
   readonly #waitingMessageEditorPort: WaitingMessageEditorPort = {
     dispatch: (command) => this.dispatch(command),
     leases: this.#editLeases,
-    // A take can report a newer version than this client has read; the person
-    // must start from that one, or their save would quietly undo it.
-    holdsRevision: async (threadId, messageId, revision) => {
-      for (let read = 0; read < 2; read += 1) {
-        const held = this.#snapshot.inputQueues[threadId]?.items.find(
-          (item) => item.message.id === messageId,
-        );
-        if ((held?.message.edit?.revision ?? 0) >= revision) return;
-        await this.loadThreadInputQueue(threadId);
-      }
+    readRevision: async (threadId, messageId, expectedRevision, leaseId) => {
+      const scope = this.#detailScope(threadId);
+      const detail = scope && this.#stream.detail(scope);
+      const signal = detail?.controller?.signal;
+      if (!signal) throw new Error("This conversation is unavailable.");
+      const page = unwrapRpcResult(
+        await this.rpc["thread.message.revisions.list"](
+          {
+            threadId,
+            messageId: MessageIdSchema.parse(messageId),
+            expectedRevision,
+            leaseId,
+          },
+          { signal },
+        ),
+      );
+      signal.throwIfAborted();
+      // The lease just taken is checked against the Host itself, not the feed racing behind it.
+      const queue = unwrapRpcResult(
+        await this.rpc["thread.inputQueue.get"](
+          { threadId: ThreadIdSchema.parse(threadId) },
+          { signal },
+        ),
+      );
+      signal.throwIfAborted();
+      const held = queue?.items.find(({ message }) => message.id === messageId);
+      const current = page.revisions[0];
+      if (
+        !current ||
+        current.revision !== expectedRevision ||
+        !held?.lease?.ownedBySession ||
+        Date.parse(held.lease.expiresAt) <= Date.now() ||
+        held.message.revision !== expectedRevision
+      )
+        throw new HostClientRequestError({
+          code: "conflict",
+          message: "This waiting message changed.",
+          status: 409,
+        });
+      return current.content;
     },
     now: () => Date.now(),
   };
@@ -3216,7 +3396,7 @@ export class HttpHostClient {
       idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("iphone-attach"),
     });
     if (result.type !== "iphone.screen.attach") throw new Error("Screen attach command mismatch.");
-    void this.refresh().catch(() => undefined);
+    await this.refresh();
     return result;
   }
 
@@ -3228,25 +3408,18 @@ export class HttpHostClient {
       idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("iphone-detach"),
     });
     if (result.type !== "iphone.screen.detach") throw new Error("Screen detach command mismatch.");
-    void this.refresh().catch(() => undefined);
+    await this.refresh();
     return result;
   }
 
   async updateMachineAccess(input: MachineAccessUpdateInput): Promise<MachineAccessUpdateOutcome> {
-    const command = deviceAccessCommand(
-      input,
-      mutationIdempotencyKey("machine-access"),
-      this.#snapshot.deviceDriversAvailable === true,
-    );
-    const result =
-      "deviceId" in command && command.type === "machine.access.update"
-        ? unwrapRpcResult(await dispatchDeviceCommand(this.rpc, command))
-        : await this.dispatch(command);
+    const command = deviceAccessCommand(input, mutationIdempotencyKey("machine-access"));
+    const result = await this.dispatch(command);
     if (result.type !== "machine.access.update") {
       throw new Error("Access settings command mismatch.");
     }
     if (result.outcome === "conflict") return { outcome: "conflict" };
-    void this.refresh().catch(() => undefined);
+    await this.refresh();
     return { outcome: "updated", revision: result.revision };
   }
 
@@ -3259,7 +3432,7 @@ export class HttpHostClient {
     if (result.type !== "machine.access.session.stop") {
       throw new Error("Stop session command mismatch.");
     }
-    void this.refresh().catch(() => undefined);
+    await this.refresh();
     return result.ended;
   }
 
@@ -3277,65 +3450,9 @@ export class HttpHostClient {
     );
   }
 
-  loadThreadInputQueue(threadId: string): Promise<ThreadInputQueue> {
-    const existing = this.#threadInputQueueLoads.get(threadId);
-    if (existing) return existing;
-    const generation = this.#viewerGeneration;
-    const held = this.#snapshot.inputQueues[threadId];
-    const operation = this.rpc["thread.inputQueue.get"]({ threadId })
-      .then(unwrapRpcResult)
-      .then((queue) => {
-        if (queue.threadId !== threadId) throw new Error("Thread input queue mismatch.");
-        if (
-          generation !== this.#viewerGeneration ||
-          this.#disposed ||
-          this.#removedThreads.has(threadId)
-        )
-          return queue;
-        if (
-          this.#snapshot.inputQueues[threadId] !== held ||
-          this.#threadInputQueueRereads.has(threadId)
-        ) {
-          this.#threadInputQueueRereads.add(threadId);
-          return queue;
-        }
-        this.#update({
-          ...this.#snapshot,
-          inputQueues: { ...this.#snapshot.inputQueues, [threadId]: queue },
-        });
-        return queue;
-      });
-    this.#threadInputQueueLoads.set(threadId, operation);
-    const settle = () => {
-      if (this.#threadInputQueueLoads.get(threadId) !== operation) return;
-      this.#threadInputQueueLoads.delete(threadId);
-      // An event that landed while this read was in flight may postdate what
-      // the read saw, so the answer it is owed is one more read.
-      if (this.#threadInputQueueRereads.delete(threadId)) this.#reloadInputQueue(threadId);
-    };
-    void operation.then(settle, settle);
-    return operation;
-  }
-
-  /** The first read of a Thread's queue; one already read is kept fresh by events. */
-  #ensureInputQueue(threadId: string): void {
-    if (this.#disposed || this.#snapshot.session !== "authenticated") return;
-    if (this.#snapshot.inputQueues[threadId] || this.#threadInputQueueLoads.has(threadId)) return;
-    void this.loadThreadInputQueue(threadId).catch(() => undefined);
-  }
-
-  /**
-   * Reads a queue again because something may have changed it. A read already
-   * in flight may predate the change, so the request waits for it and is
-   * answered by one more read rather than joining a possibly stale one.
-   */
-  #reloadInputQueue(threadId: string): void {
-    if (this.#disposed || this.#snapshot.session !== "authenticated") return;
-    if (this.#threadInputQueueLoads.has(threadId)) {
-      this.#threadInputQueueRereads.add(threadId);
-      return;
-    }
-    void this.loadThreadInputQueue(threadId).catch(() => undefined);
+  #reloadInputQueue(threadId: string) {
+    if (this.#showsThread(threadId))
+      void this.loadThreadInputQueue(threadId).catch(() => undefined);
   }
 
   async #dispatch(
@@ -3351,251 +3468,149 @@ export class HttpHostClient {
   }
 
   dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    if (this.#doneCountTimer) clearTimeout(this.#doneCountTimer);
+    // Their retries are gated on observation already; this also lets their timers go now.
+    this.#taskReads.dispose();
+    this.#assignmentReads.dispose();
+    this.#waitingRequestReads.dispose();
     disposeMessageOutbox(this);
+    if (this.#ownsConnection) this.connection.dispose();
+    this.#closeSocket();
+    this.#stream.clear(false);
+    this.#bodies.clear();
+    for (const release of this.#threadReaders.values()) release();
+    this.#threadReaders.clear();
+    for (const reader of this.#scopeReaders.values()) reader.dispose();
+    this.#scopeReaders.clear();
+    this.#clearViewerReads();
+    for (const release of this.#lifecycleDisposers) release();
     clearRunPageViews(this);
     clearRunPlacePictures(this);
+    this.#clearAttachmentReads();
+    this.#computerViews.clear();
+    this.#placeActivity.dispose();
+    this.#runPlaces.dispose();
+    this.#targetedControl.dispose();
+    this.#targetedWatch.dispose();
+    this.#browserEditing.dispose();
+    this.browserHistory.dispose();
     this.references.dispose();
     this.transcriptFiles.dispose();
     this.assetUrls.dispose();
-    this.#nodeDetails.clear();
-    if (this.#disposed) return;
-    if (this.#ownsConnection) this.connection.dispose();
-    this.#clearAttachmentReads();
-    this.#cancelLostFrameReread();
-    this.browserHistory.dispose();
-    this.#disposed = true;
-    this.#computerViews.clear();
-    this.#browserUsageRead.clear();
-    this.#browserUsageReads.clear();
-    this.#browserUsageRunSources.clear();
-    this.#browserUses.clear();
-    this.#tabs.clear();
-    this.#pageSessions.clear();
-    this.#placeActivity.clear();
-    this.#runPlaces.clear();
-    this.#targetedWatch.clear();
-    this.#targetedControl.clear();
-    this.#threadState.clear();
-    this.#threadRenames.clear();
-    this.#threadIcons.clear();
-    this.#runQueue.clear();
-    this.#live.clear();
-    this.#heldLive.clear();
-    for (const release of this.#lifecycleDisposers) release();
-    this.#lifecycleDisposers.length = 0;
-    this.#stopHandshake();
-    for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
-    this.#channels.clear();
-    this.#assignmentReads.clear();
-    this.#automationReads.clear();
-    this.#readAutomations.clear();
-    this.#deniedAssignments.clear();
-    this.#observedThreads.clear();
-    this.#forgetLiveRereads();
     this.#listeners.clear();
-    this.#personShowListeners.clear();
-    this.#lifecycleListeners.clear();
-    this.#placeActivity.dispose();
-    this.#runPlaces.dispose();
-    this.#targetedWatch.dispose();
-    this.#targetedControl.dispose();
-    this.#browserEditing.dispose();
+    this.#resources.dispose();
   }
 
-  async #bootstrap(
-    reason: BootstrapReason,
-    force = false,
-    revalidateCapabilities = false,
-    trigger = true,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    if (trigger) bootstrapReadDiagnostics.trigger(reason);
-    if (this.#bootstrapPromise && !force) {
-      // A bootstrap already under way may be reusing evidence this caller
-      // asked to replace, so the reverification runs beside it.
-      if (!revalidateCapabilities) return this.#bootstrapPromise;
-      await Promise.all([this.#bootstrapPromise, this.#refreshCapabilities({ revalidate: true })]);
-      // An explicit refresh may follow a mutation committed after that read
-      // began. Read again after it settles so its stale answer cannot win.
-      if (!this.#disposed) await this.#bootstrap(reason, false, false, false);
-      return;
-    }
-    this.#bootstrapAttemptSignal = signal;
-    const operation = this.#performBootstrap(reason, revalidateCapabilities, signal);
-    this.#bootstrapPromise = operation;
-    let succeeded = false;
-    try {
-      await operation;
-      succeeded = true;
-    } finally {
-      if (this.#bootstrapPromise === operation) {
-        this.#bootstrapFailed = !succeeded;
-        this.#bootstrapPromise = null;
-        this.#bootstrapAttemptSignal = undefined;
-        if (!signal?.aborted && this.#rereadPending) {
-          const reason = this.#rereadPending;
-          this.#rereadPending = null;
-          this.#reread(reason, false);
-        }
+  loadEarlierNeedsYou(): Promise<void> {
+    return this.#readAttention(false);
+  }
+
+  #readAttention(refresh: boolean): Promise<void> {
+    if (this.#attentionRead) return this.#attentionRead.promise;
+    const held = this.#snapshot.needsYou;
+    const state = this.#stream.shell.getSnapshot();
+    if (
+      !state.synchronized ||
+      this.#visibility === "background" ||
+      (!refresh && held && (!held.window.hasMore || !held.window.nextBefore))
+    )
+      return Promise.resolve();
+    const controller = new AbortController();
+    const current = () => {
+      const latest = this.#stream.shell.getSnapshot();
+      return (
+        !controller.signal.aborted &&
+        latest.synchronized &&
+        latest.generation === state.generation &&
+        latest.attention === state.attention &&
+        latest.snapshot?.counts.needsYouCount === state.snapshot?.counts.needsYouCount &&
+        latest.snapshot?.counts.pendingRequestCount === state.snapshot?.counts.pendingRequestCount
+      );
+    };
+    const read = async (before?: string) =>
+      unwrapRpcResult(
+        await this.rpc["needsYou.get"](
+          { ...(before ? { before } : {}), limit: 50 },
+          { signal: controller.signal },
+        ),
+      );
+    const promise = (async () => {
+      let page = await read(refresh ? undefined : (held?.window.nextBefore ?? undefined));
+      if (!current()) return;
+      const entries = new Map(
+        (refresh ? [] : (held?.entries ?? [])).map((entry) => [needsYouEntryKey(entry), entry]),
+      );
+      let byteCount = 0;
+      for (let pages = 0; ; pages++) {
+        byteCount += page.window.byteCount;
+        for (const entry of page.entries) entries.set(needsYouEntryKey(entry), entry);
+        const cursor = page.window.nextBefore;
+        if (
+          !refresh ||
+          pages >= 2 ||
+          entries.size >= this.#attentionTarget ||
+          !page.window.hasMore ||
+          !cursor
+        )
+          break;
+        page = await read(cursor);
+        if (!current()) return;
+        if (page.window.nextBefore === cursor)
+          throw new Error("The Host returned the same Needs you cursor.");
       }
-    }
-  }
-
-  /**
-   * Answers a Host notice that something outside the event stream changed.
-   *
-   * A notice is a fact, not a fetch: one bootstrap answers every notice that
-   * arrived before it started, and a notice that lands mid-flight earns
-   * exactly one more read once it finishes — so a burst, a session starting
-   * and then ready, never leaves the client on the stale read it would have
-   * joined. Hidden, it waits: coming to the foreground rereads anyway.
-   */
-  #reread(reason: BootstrapReason, trigger = true): void {
-    if (this.#disposed) return;
-    if (this.#visibility === "background") {
-      this.#rereadPending ??= reason;
-      return;
-    }
-    if (this.#bootstrapPromise) {
-      if (trigger) bootstrapReadDiagnostics.trigger(reason);
-      this.#rereadPending ??= reason;
-      return;
-    }
-    void this.#bootstrap(reason, false, false, trigger).catch(() => undefined);
-  }
-
-  #rereadWaitingRequests(): void {
-    if (this.#disposed || this.#snapshot.session !== "authenticated") return;
-    if (this.#waitingRead !== "idle") {
-      this.#waitingRead = "again";
-      return;
-    }
-    this.#waitingRead = "reading";
-    void this.#readWaitingRequests()
-      .catch(() => undefined)
-      .finally(() => {
-        const again = this.#waitingRead === "again";
-        this.#waitingRead = "idle";
-        if (again) this.#rereadWaitingRequests();
+      const visible = [...entries.values()].slice(-150);
+      this.#attentionTarget = visible.length || 1;
+      this.#update({
+        ...this.#snapshot,
+        needsYou: {
+          ...page,
+          entries: visible,
+          window: { ...page.window, byteCount, itemCount: visible.length },
+        },
       });
-  }
-
-  async loadEarlierNeedsYou(): Promise<void> {
-    const held = this.#snapshot.needsYou,
-      generation = this.#viewerGeneration;
-    if (!held?.window.hasMore || !held.window.nextBefore) return;
-    const page = unwrapRpcResult(
-      await this.rpc["needsYou.get"]({
-        before: held.window.nextBefore,
-        limit: 50,
-        ...(this.#supportsDeviceAccessRequests()
-          ? { deviceAccessRequests: "include" as const }
-          : {}),
-      }),
-    );
-    if (generation !== this.#viewerGeneration || this.#disposed || this.#snapshot.needsYou !== held)
-      return;
-    const ids = new Set(held.entries.map(needsYouEntryKey));
-    this.#update({
-      ...this.#snapshot,
-      needsYou: {
-        ...page,
-        entries: [
-          ...held.entries,
-          ...page.entries.filter((entry) => !ids.has(needsYouEntryKey(entry))),
-        ],
-      },
-    });
+    })()
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) throw error;
+      })
+      .finally(() => {
+        if (this.#attentionRead?.controller === controller) this.#attentionRead = undefined;
+      });
+    this.#attentionRead = { controller, promise };
+    return promise;
   }
 
   async readRequest(threadId: string, requestId: string): Promise<Request | null> {
-    const { requests } = unwrapRpcResult(
+    const generation = this.#viewerGeneration;
+    const { requests, reviewedRevisions } = unwrapRpcResult(
       await this.rpc["thread.requests.list"]({
         requestId: RequestIdSchema.parse(requestId),
         threadId: ThreadIdSchema.parse(threadId),
-        ...(this.#supportsDeviceAccessRequests()
-          ? { deviceAccessRequests: "include" as const }
-          : {}),
       }),
     );
-    return requests.find(({ id }) => id === requestId) ?? null;
-  }
-
-  #supportsDeviceAccessRequests(): boolean {
-    return this.#deviceAccessRequests && this.#capabilities?.includes("devices-v1") === true;
-  }
-
-  async #readWaitingRequests(): Promise<void> {
-    const needsGeneration = this.#viewerGeneration;
-    const held = this.#snapshot.needsYou;
-    const needsYou = await refreshNeedsYou(held, async (before) =>
-      unwrapRpcResult(
-        await this.rpc["needsYou.get"]({
-          ...(before ? { before } : {}),
-          ...(this.#supportsDeviceAccessRequests()
-            ? { deviceAccessRequests: "include" as const }
-            : {}),
-        }),
-      ),
+    if (generation !== this.#viewerGeneration || this.#disposed) return null;
+    const request = requests.find(
+      ({ id, originatingThreadId }) => id === requestId && originatingThreadId === threadId,
     );
-    if (needsGeneration !== this.#viewerGeneration || this.#disposed) return;
-    if (this.#snapshot.needsYou !== held) {
-      this.#rereadWaitingRequests();
-      return;
-    }
-    this.#update({ ...this.#snapshot, needsYou });
-    const generation = this.#viewerGeneration;
-    const userId = this.#snapshot.user?.id;
-    const waitingRequests: WaitingRequest[] = [];
-    let before: string | null = null;
-    do {
-      const page: {
-        readonly requests: readonly WaitingRequest[];
-        readonly window: DurableWindow;
-      } = unwrapRpcResult(
-        await this.rpc["requests.list"]({
-          ...(before ? { before } : {}),
-          limit: 100,
-          ...(this.#supportsDeviceAccessRequests()
-            ? { deviceAccessRequests: "include" as const }
-            : {}),
-        }),
-      );
-      if (!this.#viewerStillCurrent(generation, userId)) return;
-      waitingRequests.push(...page.requests);
-      before = page.window.hasMore ? page.window.nextBefore : null;
-      if (page.window.hasMore && !before) {
-        throw new Error("Waiting Request page is missing its continuation cursor.");
-      }
-    } while (before);
-    this.#update({ ...this.#snapshot, waitingRequests });
+    if (!request) return null;
+    const reviewed = { ...request, reviewedRevision: reviewedRevisions?.[request.id] };
+    return reviewed;
   }
 
-  /** A page entry follows the newest thread state, but counts only the Requests its reader may see. */
-  #reconcilePageThread(thread: ThreadSummary, asOfSequence: Sequence): ThreadSummary {
-    const reconciled = this.#threadState.reconcile(thread, asOfSequence);
-    return reconciled.pendingRequests === thread.pendingRequests
-      ? reconciled
-      : { ...reconciled, pendingRequests: thread.pendingRequests };
-  }
-
-  /** A task notice is owed until a read answers it: one that arrives hidden waits for the foreground. */
-  #rereadTasks(): void {
-    if (this.#disposed || this.#snapshot.session !== "authenticated") return;
-    this.#tasksStale = this.#visibility === "background";
-    if (this.#tasksStale) return;
-    for (const scope of [null, "active", "done:*"])
-      void this.#readFirstTaskPage(scope, "changed").catch(() => {
-        this.#tasksStale = true;
-      });
-  }
-
+  /** Opens Done: a person opening it sees it read again from its first page. */
   loadDoneTasks(): Promise<void> {
-    return this.#readFirstTaskPage("done:*", "asked");
+    this.#doneDepth = Math.max(this.#doneDepth, taskPageSize);
+    this.#doneOpens++;
+    return this.#requestDone();
   }
 
   loadEarlierDoneTasks(): Promise<void> {
-    return this.#loadEarlier("done:*");
+    this.#doneDepth = Math.max(
+      this.#doneDepth,
+      (this.#donePages?.entries.length ?? 0) + taskPageSize,
+    );
+    return this.#requestDone();
   }
 
   async setIdleCompactionPolicy(
@@ -3639,138 +3654,387 @@ export class HttpHostClient {
       this.#update({ ...this.#snapshot, quietTaskDays: result.quietTaskDays });
   }
 
-  /**
-   * One list's loaded prefix, one refresh at a time. A change told during a read
-   * earns exactly one more, so the last read never started before the change;
-   * a screen asking during a read joins it. Every caller is answered when the
-   * last read lands.
-   */
-  #readFirstTaskPage(scope: string | null, reason: "asked" | "changed"): Promise<void> {
-    const pending = this.#taskReads.get(scope);
-    if (pending) {
-      if (reason === "changed") pending.again = true;
-      return pending.done;
-    }
-    const earlier = this.#taskPageLoads.get(scope)?.promise;
-    const read = { again: false, done: Promise.resolve() };
-    read.done = (async () => {
-      try {
-        if (earlier) await earlier.catch(() => undefined);
-        let failure: unknown = null;
-        do {
-          read.again = false;
-          failure = await this.#readTaskPage(
-            scope,
-            null,
-            this.#heldTasks(scope)?.entries.length ?? 0,
-          ).then(
-            () => null,
-            (error: unknown) => error,
-          );
-        } while (read.again && !this.#disposed);
-        if (failure !== null) throw failure;
-      } finally {
-        this.#taskReads.delete(scope);
-      }
-    })();
-    this.#taskReads.set(scope, read);
-    return read.done;
-  }
-
   loadEarlierTasks(): Promise<void> {
-    return this.#loadEarlier(null);
+    this.#openDepth = Math.max(
+      this.#openDepth,
+      settledEntries(this.#snapshot.tasks).length + taskPageSize,
+    );
+    return this.#requestOpen();
   }
 
-  #loadEarlier(scope: string | null): Promise<void> {
-    const generation = this.#viewerGeneration;
-    const pending = this.#taskPageLoads.get(scope);
-    if (pending?.generation === generation) return pending.promise;
-    const promise = this.#loadEarlierTasks(scope).finally(() => {
-      if (this.#taskPageLoads.get(scope)?.promise === promise) this.#taskPageLoads.delete(scope);
+  /** Task reads run while the socket is attached and the app is in front. */
+  readonly #tasksObserved = () =>
+    !this.#disposed && this.#stream.ready && this.#visibility !== "background";
+
+  /** Starts the task reads the lists still need; each is one fenced job that reads to its depth. */
+  #requestTaskReads() {
+    if (!this.#stream.shell.getSnapshot().synchronized || !this.#tasksObserved()) return;
+    const tasks = this.#snapshot.tasks;
+    if (
+      tasks?.window.hasMore &&
+      this.#settledInCut() < this.#openDepth &&
+      !this.#taskReads.busy("open")
+    )
+      void this.#requestOpen().catch(() => undefined);
+    if (this.#activeCursor !== null && !this.#taskReads.busy("active"))
+      void this.#taskReads
+        .request("active", (read) => this.#readActive(read), { observed: this.#tasksObserved })
+        .catch(() => undefined);
+    if (
+      this.#doneDepth > 0 &&
+      this.#donePages?.stamp !== this.#doneStamp() &&
+      !this.#taskReads.busy("done")
+    )
+      void this.#requestDone().catch(() => undefined);
+    // A count left stale (its read came while out of sight) is asked for again.
+    else if (this.#doneCountStale() && this.#donePages && !this.#taskReads.busy("done-count"))
+      this.#countDoneSoon();
+  }
+
+  #requestOpen() {
+    return this.#taskReads.request("open", (read) => this.#readOpen(read), {
+      observed: this.#tasksObserved,
     });
-    this.#taskPageLoads.set(scope, { generation, promise });
-    return promise;
   }
 
-  async #loadEarlierTasks(scope: string | null): Promise<void> {
-    const generation = this.#viewerGeneration;
-    const userId = this.#snapshot.user?.id;
-    await this.#taskReads.get(scope)?.done;
-    if (!this.#viewerStillCurrent(generation, userId)) return;
-    const window = this.#heldTasks(scope)?.window;
-    const cursor = window?.hasMore ? window.nextBefore : null;
-    if (cursor) await this.#readTaskPage(scope, cursor);
-  }
-
-  #heldTasks(scope: string | null): TaskListState | null {
-    return scope === null
-      ? this.#snapshot.tasks
-      : scope === "active"
-        ? null
-        : (this.#snapshot.doneTasks[mainDoneTasks] ?? null);
-  }
-
-  /** Replaces a loaded prefix atomically, or appends one page after its cursor. */
-  async #readTaskPage(
-    scope: string | null,
-    cursor: string | null,
-    minimumItems = 0,
-  ): Promise<void> {
-    const generation = this.#viewerGeneration,
-      userId = this.#snapshot.user?.id;
-    try {
-      let before = cursor,
-        merged = cursor ? this.#heldTasks(scope) : null;
-      for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
-        const page = unwrapRpcResult(
-          await this.rpc["tasks.list"]({
-            ...(this.#supportsDeviceAccessRequests()
-              ? { deviceAccessRequests: "include" as const }
-              : {}),
-            ...(scope === "active" ? { active: true } : scope ? { done: true } : {}),
-            ...(before ? { before } : {}),
-            limit: threadPageMaxItems,
-          }),
-        );
-        if (!this.#viewerStillCurrent(generation, userId)) return;
-        this.#mergeVisits(page.tasks.map((entry) => entry.thread));
-        merged = mergeTasks(merged, {
-          entries: page.tasks
-            .filter((entry) => !this.#removedThreads.has(entry.thread.id))
-            .map((entry) => ({
-              ...entry,
-              thread: this.#reconcilePageThread(
-                toThreadSummary(
-                  entry.thread,
-                  this.#snapshot.environments,
-                  this.#snapshot.harnesses,
-                ),
-                page.asOfSequence,
-              ),
-            })),
-          window: page.window,
-        });
-        if (!page.window.hasMore || (scope !== "active" && merged.entries.length >= minimumItems))
-          break;
-        if (!page.window.nextBefore || page.window.nextBefore === before)
-          throw new Error("Task page is missing its continuation cursor.");
-        before = page.window.nextBefore;
-      }
-      if (!merged || !this.#viewerStillCurrent(generation, userId)) return;
-      merged = {
-        ...merged,
-        entries: merged.entries.filter((entry) => !this.#removedThreads.has(entry.thread.id)),
-      };
-      if (!scope) this.#savedViewReadiness = { ...this.#savedViewReadiness, tasksReady: true };
-      this.#update(
-        scope === "active"
-          ? { ...this.#snapshot, activeTasks: merged.entries }
-          : scope
-            ? { ...this.#snapshot, doneTasks: { [mainDoneTasks]: merged } }
-            : { ...this.#snapshot, tasks: merged },
-      );
-    } finally {
+  /**
+   * Follows pushed moves in and out of Done. The loaded Done rows move at once where the client
+   * can place the task (it knew it, the held list is the whole of Done, or its `doneAt` is newer
+   * than every held one). The count does not: any push that can change Done's membership marks it
+   * stale, and the count shown stays the Host's last answer until the count is read again, once
+   * the pushes rest.
+   */
+  #moveDone(moves: readonly DoneMove[], through: string | null) {
+    // Pushes that can touch Done: into it, out of it, or a task this client cannot place.
+    const touching = moves.filter(({ was, now }) => now || was !== false);
+    if (!touching.length) return;
+    // The count is never worked out here: it is the Host's last answer. A change at this sequence
+    // leaves it stale until a count read at or after it, asked for once the pushes rest.
+    if (through !== null && BigInt(through) > this.#doneChangedAt)
+      this.#doneChangedAt = BigInt(through);
+    // A Done read in flight from before them is read again.
+    if (this.#taskReads.busy("done")) this.#taskReads.changed("done");
+    const pages = this.#donePages;
+    if (!pages) return;
+    // Rows the loaded Done page holds, or a task now Done newer than every held row, move at once.
+    let entries = pages.entries;
+    const oldest = entries.at(-1)?.thread.doneAt ?? null;
+    for (const { row, was, now } of touching) {
+      const before =
+        was ??
+        (!pages.window.hasMore ||
+        (now && "doneAt" in row && oldest !== null && row.doneAt! > oldest)
+          ? false
+          : undefined);
+      if (before === undefined || before === now) continue;
+      entries = entries.filter(({ thread }) => thread.id !== row.id);
+      if (now && !("removed" in row)) entries = [...entries, this.#shellEntry(row)];
     }
+    if (entries !== pages.entries)
+      this.#donePages = {
+        ...pages,
+        entries: [...entries].sort((left, right) => compareDoneOrder(left.thread, right.thread)),
+      };
+    this.#countDoneSoon();
+  }
+
+  /** Reads Done's count again once pushes have rested, so a burst of them costs one read. */
+  #countDoneSoon() {
+    if (this.#doneCountTimer) clearTimeout(this.#doneCountTimer);
+    this.#doneCountTimer = setTimeout(() => {
+      this.#doneCountTimer = undefined;
+      if (!this.#donePages) return;
+      void this.#taskReads
+        .request("done-count", (read) => this.#readDoneCount(read), {
+          observed: this.#tasksObserved,
+        })
+        .catch(() => undefined);
+    }, doneCountRestMs);
+  }
+
+  async #readDoneCount(read: FencedRead) {
+    const page = unwrapRpcResult(
+      await this.rpc["tasks.page"]({ done: true, limit: 1 }, { signal: read.signal }),
+    );
+    if (!read.current() || page.window.totalItems === undefined) return;
+    if (this.#offerDoneCount(page.window.totalItems, page.asOfSequence)) this.#publishTasks();
+  }
+
+  /** Takes a count from the Host if it was read at the held count's sequence or later. */
+  #offerDoneCount(count: number, asOfSequence: string) {
+    const asOf = BigInt(asOfSequence);
+    if (this.#doneCount && asOf < this.#doneCount.asOf) return false;
+    this.#doneCount = { count, asOf };
+    return true;
+  }
+
+  /** Stale while a pushed change is newer than the count the Host last gave. */
+  #doneCountStale() {
+    return this.#doneChangedAt > (this.#doneCount?.asOf ?? -1n);
+  }
+
+  #requestDone() {
+    return this.#taskReads.request("done", (read) => this.#readDone(read), {
+      observed: this.#tasksObserved,
+    });
+  }
+
+  #doneStamp() {
+    return `${this.#viewerGeneration}:${this.#shellCut}:${this.#doneOpens}`;
+  }
+
+  /** Reads open tasks past the shell's settled window until `#openDepth` settled rows, or the end. */
+  async #readOpen(read: FencedRead) {
+    for (;;) {
+      const shell = this.#stream.shell.getSnapshot().snapshot;
+      if (!shell) return;
+      const pages = this.#openPages?.cut === this.#shellCut ? this.#openPages : undefined;
+      const window = pages?.window ?? {
+        nextBefore: shell.nextBefore,
+        hasMore: shell.nextBefore !== null,
+      };
+      if (!window.hasMore || window.nextBefore === null || this.#settledInCut() >= this.#openDepth)
+        return;
+      const page = await this.#taskPage({ before: window.nextBefore }, read);
+      if (!read.current()) return;
+      this.#openPages = {
+        cut: this.#shellCut,
+        entries: mergeTaskEntries(pages?.entries ?? [], page.entries),
+        window: { nextBefore: page.window.nextBefore, hasMore: page.window.hasMore },
+      };
+      this.#publishTasks();
+    }
+  }
+
+  /** Settled open rows this cut holds: the shell's own and the pages read against it. */
+  #settledInCut() {
+    const state = this.#stream.shell.getSnapshot();
+    const ids = new Set<string>();
+    const settled = (thread: { doneAt: string | null; status: string }) =>
+      thread.doneAt === null &&
+      thread.status !== "archived" &&
+      thread.status !== "running" &&
+      thread.status !== "waiting";
+    for (const row of state.tasks.values()) if (settled(row)) ids.add(row.id);
+    if (this.#openPages?.cut === this.#shellCut)
+      for (const { thread } of this.#openPages.entries)
+        if (!state.tasks.has(thread.id) && !this.#removedTasks.has(thread.id) && settled(thread))
+          ids.add(thread.id);
+    return ids.size;
+  }
+
+  /** Reads every running and waiting task past the shell's active window. */
+  async #readActive(read: FencedRead) {
+    while (this.#activeCursor !== null) {
+      const page = await this.#taskPage({ active: true, before: this.#activeCursor }, read);
+      if (!read.current()) return;
+      this.#activePages = mergeTaskEntries(this.#activePages, page.entries);
+      this.#activeCursor = page.window.hasMore ? page.window.nextBefore : null;
+      this.#publishTasks();
+    }
+  }
+
+  /**
+   * Reads Done to `#doneDepth`. Pages read against the current stamp are continued; a push that
+   * may move Done membership, or a new shell cut, starts it again from the first page.
+   */
+  async #readDone(read: FencedRead) {
+    const stamp = this.#doneStamp();
+    let held = this.#donePages?.stamp === stamp ? this.#donePages : undefined;
+    for (;;) {
+      if (
+        held &&
+        (!held.window.hasMore ||
+          held.window.nextBefore === null ||
+          held.entries.length >= this.#doneDepth)
+      )
+        return;
+      const before = held?.window.nextBefore;
+      const page = await this.#taskPage({ done: true, ...(before ? { before } : {}) }, read);
+      if (!read.current()) return;
+      held = {
+        stamp,
+        entries: mergeTaskEntries(held?.entries ?? [], page.entries).sort((left, right) =>
+          compareDoneOrder(left.thread, right.thread),
+        ),
+        // The count shown is `#doneCount`, never a page's.
+        window: { ...page.window, totalItems: 0 },
+      };
+      // A page that counts (only a first page does) offers its count, by its own sequence.
+      if (page.window.totalItems !== undefined)
+        this.#offerDoneCount(page.window.totalItems, page.asOfSequence);
+      this.#donePages = held;
+      this.#publishTasks();
+    }
+  }
+
+  /** One page of tasks, as entries; a shell row newer than the page's cut stands for its own. */
+  async #taskPage(
+    input: { readonly done?: true; readonly active?: true; readonly before?: string },
+    read: FencedRead,
+  ) {
+    const page = unwrapRpcResult(
+      await this.rpc["tasks.page"]({ ...input, limit: taskPageSize }, { signal: read.signal }),
+    );
+    // A page from a cut since replaced touches nothing, the shared thread state included.
+    if (!read.current())
+      return { entries: [], window: page.window, asOfSequence: page.asOfSequence };
+    const rows = this.#stream.shell.getSnapshot().tasks;
+    const asOf = BigInt(page.asOfSequence);
+    const entries = page.tasks.flatMap((entry): TaskEntry[] => {
+      if (this.#removedTasks.has(entry.thread.id)) return [];
+      const row = rows.get(entry.thread.id);
+      if (row && BigInt(row.revision) > asOf) return [this.#shellEntry(row)];
+      const thread = toThreadSummary(
+        entry.thread,
+        this.#snapshot.environments,
+        this.#snapshot.harnesses,
+      );
+      return [
+        {
+          ...entry,
+          thread: this.#reconcilePageThread(
+            // The queued-account reason rides beside the Thread on the page, as on the shell row.
+            entry.runQueued === undefined ? thread : { ...thread, runQueued: entry.runQueued },
+            page.asOfSequence,
+          ),
+        },
+      ];
+    });
+    return { entries, window: page.window, asOfSequence: page.asOfSequence };
+  }
+
+  #publishTasks() {
+    const state = this.#stream.shell.getSnapshot();
+    if (!state.snapshot) return;
+    this.#update({ ...this.#snapshot, ...this.#taskLists(state) });
+  }
+
+  /**
+   * The task lists: the shell's keyed rows, then the rows pages read past it. A row the shell
+   * holds speaks for itself; a task the shell removed is gone. Done is what the Host counted at
+   * its last read, less tasks a push has since reopened or removed; a push that may add one
+   * reads Done again.
+   */
+  #taskLists(
+    state: ReturnType<PersonalShellStore["getSnapshot"]>,
+    delta?: {
+      readonly tasks: ReadonlyMap<string, unknown> | undefined;
+      readonly changes: readonly { readonly id: string }[];
+    },
+  ): Pick<HostSnapshot, "tasks" | "activeTasks" | "doneTasks"> {
+    const shell = state.snapshot!;
+    const { open, active } = this.#openLists(state, delta);
+    const window =
+      this.#openPages?.cut === this.#shellCut
+        ? this.#openPages.window
+        : { nextBefore: shell.nextBefore, hasMore: shell.nextBefore !== null };
+    const done = this.#donePages;
+    return {
+      tasks: {
+        entries: open,
+        window: { ...window, totalItems: open.length, byteCount: 0, itemCount: open.length },
+      },
+      activeTasks: active,
+      doneTasks: done
+        ? {
+            [mainDoneTasks]: {
+              window: { ...done.window, totalItems: this.#doneCount?.count ?? 0 },
+              entries: done.entries.flatMap((entry) => {
+                if (this.#removedTasks.has(entry.thread.id)) return [];
+                // A held row takes a pushed change through the thread state.
+                return state.tasks.get(entry.thread.id)?.doneAt === null ? [] : [entry];
+              }),
+            },
+          }
+        : {},
+    };
+  }
+
+  /**
+   * The open and active lists, sorted. A publish that only changed some task rows (no page, no
+   * shell replacement, no row the shell let go of on its own) moves just those rows, by binary
+   * search, instead of rebuilding and re-sorting every held task.
+   */
+  #openLists(
+    state: ReturnType<PersonalShellStore["getSnapshot"]>,
+    delta?: {
+      readonly tasks: ReadonlyMap<string, unknown> | undefined;
+      readonly changes: readonly { readonly id: string }[];
+    },
+  ) {
+    const cache = this.#openCache;
+    const ids = delta ? new Set(delta.changes.map(({ id }) => id)) : undefined;
+    let size = delta?.tasks?.size ?? -1;
+    for (const id of ids ?? []) size += Number(state.tasks.has(id)) - Number(delta!.tasks!.has(id));
+    if (
+      cache &&
+      ids &&
+      delta!.tasks === cache.tasks &&
+      cache.openPages === this.#openPages &&
+      cache.activePages === this.#activePages &&
+      size === state.tasks.size
+    ) {
+      const open = [...cache.open];
+      const active = [...cache.active];
+      for (const id of ids) {
+        const before = cache.byId.get(id);
+        if (before) {
+          remove(open, before);
+          remove(active, before);
+          cache.byId.delete(id);
+        }
+        const row = state.tasks.get(id);
+        const entry = row
+          ? this.#shellEntry(row)
+          : this.#removedTasks.has(id)
+            ? undefined
+            : [...(this.#openPages?.entries ?? []), ...this.#activePages].find(
+                ({ thread }) => thread.id === id,
+              );
+        if (!entry) continue;
+        cache.byId.set(id, entry);
+        if (isOpenTask(entry)) insert(open, entry);
+        if (isActiveTask(entry)) insert(active, entry);
+      }
+      this.#openCache = { ...cache, tasks: state.tasks, open, active };
+      return { open, active };
+    }
+    const paged = (entries: readonly TaskEntry[]) =>
+      entries.filter(
+        ({ thread }) => !state.tasks.has(thread.id) && !this.#removedTasks.has(thread.id),
+      );
+    const byId = new Map<string, TaskEntry>();
+    for (const entry of [
+      ...[...state.tasks.values()].map((row) => this.#shellEntry(row)),
+      ...paged(this.#openPages?.entries ?? []),
+      ...paged(this.#activePages),
+    ])
+      if (!byId.has(entry.thread.id)) byId.set(entry.thread.id, entry);
+    const open = [...byId.values()]
+      .filter(isOpenTask)
+      .sort((left, right) => compareTaskOrder(left.thread, right.thread));
+    const active = open.filter(isActiveTask);
+    this.#openCache = {
+      tasks: state.tasks,
+      openPages: this.#openPages,
+      activePages: this.#activePages,
+      byId,
+      open,
+      active,
+    };
+    return { open, active };
+  }
+
+  #reconcilePageThread(
+    thread: ThreadSummary,
+    sequence: Sequence,
+    compact?: { readonly inputQueuePaused?: boolean | undefined },
+  ) {
+    const reconciled = this.#threadState.reconcile(thread, sequence, undefined, compact);
+    return reconciled.pendingRequests === thread.pendingRequests
+      ? reconciled
+      : { ...reconciled, pendingRequests: thread.pendingRequests };
   }
 
   async setTaskDone(threadId: string, done: boolean): Promise<void> {
@@ -3801,22 +4065,18 @@ export class HttpHostClient {
         current.id === thread.id ? thread : current,
       ),
     });
-    this.#rereadTasks();
+    if (this.#snapshot.doneTasks[mainDoneTasks]) await this.loadDoneTasks();
   }
 
   #reverifyCapabilities(): void {
     void this.#refreshCapabilities({ revalidate: true }).catch(() => undefined);
   }
 
-  async #refreshCapabilities(
-    options?: { readonly revalidate: boolean },
-    signal?: AbortSignal,
-  ): Promise<void> {
+  async #refreshCapabilities(options?: { readonly revalidate: boolean }): Promise<void> {
     if (!this.#readCapabilities || this.#disposed) return;
     const generation = this.#viewerGeneration;
     const read = ++this.#capabilityReadGeneration;
     const capabilities = await this.#readCapabilities(options);
-    signal?.throwIfAborted();
     if (
       generation !== this.#viewerGeneration ||
       read !== this.#capabilityReadGeneration ||
@@ -3828,7 +4088,6 @@ export class HttpHostClient {
       capabilities.length !== this.#capabilities.length ||
       capabilities.some((capability) => !this.#capabilities?.includes(capability));
     this.#capabilities = [...capabilities];
-    this.#nodeDetails.capabilitiesChanged();
     this.#update({
       ...this.#snapshot,
       threadRenameAvailable: capabilities.includes("thread-titles-v1"),
@@ -3844,9 +4103,6 @@ export class HttpHostClient {
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
       iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
       devicesAvailable: capabilities.includes("devices-v1"),
-      deviceDriversAvailable:
-        this.#servedApiVersion >= deviceDriversApiVersion &&
-        capabilities.includes(deviceDriversCapability),
       voiceAvailable: capabilities.includes("voice-run-v1"),
       ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
     });
@@ -3856,1297 +4112,428 @@ export class HttpHostClient {
     }
   }
 
-  async #performBootstrap(
-    reason: BootstrapReason,
-    revalidateCapabilities: boolean,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    let generation = this.#viewerGeneration;
-    const read = ++this.#bootstrapReadGeneration;
-    const current = () =>
-      !this.#disposed &&
-      read === this.#bootstrapReadGeneration &&
-      generation === this.#viewerGeneration;
-    const call = signal ? { signal } : undefined;
-    const presenceMark = this.#presenceCounter,
-      ownerViewRevision = this.#ownerViews.revision;
+  #connectionChanged(state: ClientConnectionState, old: ClientConnectionState) {
+    this.#network = state.network;
+    this.#visibility = state.visibility;
+    if (state.visibility === "background" && old.visibility !== "background") {
+      this.#backgroundShellGeneration = this.#stream.shell.getSnapshot().generation;
+      this.#stream.setBackground(true);
+      this.#invalidateAttention();
+      this.#resources.abort();
+    }
+    this.#targetedControl.suspend(this.#reconnectSuspended(), state.network !== "offline");
+    this.#targetedWatch.suspend(this.#reconnectSuspended());
+    if (state.pathRevision !== old.pathRevision) {
+      this.#targetedControl.reconnect();
+      this.#targetedWatch.reconnect();
+    }
+    const connection =
+      state.phase === "ready"
+        ? "connected"
+        : state.phase === "blocked" && state.issue?.code === "sign-in"
+          ? "connected"
+          : state.network === "offline" || state.phase === "recovering"
+            ? "offline"
+            : "connecting";
     if (
-      this.#snapshot.session === "checking" ||
-      (this.#snapshot.connection === "offline" && reason !== "interval")
+      connection !== this.#snapshot.connection ||
+      state.showInterruption !== this.#snapshot.connectionInterrupted ||
+      state.network !== this.#snapshot.network
     ) {
-      this.#hostUnreachable = false;
-      this.#update({ ...this.#snapshot, connection: "connecting" });
+      this.#update({
+        ...this.#snapshot,
+        connection,
+        connectionInterrupted: state.showInterruption,
+      });
     }
-    if (this.#readCapabilities)
-      await this.#refreshCapabilities(
-        revalidateCapabilities ? { revalidate: true } : undefined,
-        signal,
-      );
-    signal?.throwIfAborted();
-    if (!current()) return;
-    bootstrapReadDiagnostics.start(reason);
-    const response = await this.rpc["bootstrap.get"]({}, call);
-    signal?.throwIfAborted();
-    if (!response.ok && response.error.code === "unauthorized") {
-      if (this.#disposed || read !== this.#bootstrapReadGeneration) return;
-      if (generation === this.#viewerGeneration) this.#expireSession(!signal);
-      generation = this.#viewerGeneration;
-      const config = await this.rpc["auth.config"]({}, call);
-      signal?.throwIfAborted();
-      if (signal && !config.ok) unwrapRpcResult(response);
-      const identityConfig = unwrapRpcResult(config);
-      if (current()) this.#update({ ...this.#snapshot, identityConfig, connection: "connected" });
-      return;
-    }
-    if (!current()) return;
-    this.#hostUnreachable =
-      !response.ok && ![...this.#channels.values()].some((channel) => channel.synchronized);
-    if (this.#hostUnreachable) this.#update({ ...this.#snapshot, connection: "offline" });
-    const payload = unwrapRpcResult(response);
-    if (!current()) return;
-    let replacedViewer = false;
-    if (
-      (this.#snapshot.user && this.#snapshot.user.id !== payload.user.id) ||
-      (this.#snapshot.deploymentId && this.#snapshot.deploymentId !== payload.deploymentId)
-    ) {
-      this.#expireSession(!signal);
-      replacedViewer = true;
-      generation = this.#viewerGeneration;
-    }
-    this.#servedApiVersion = payload.apiVersion ?? minimumHostApiVersion;
-    this.#snapshot = {
-      ...this.#snapshot,
-      deviceDriversAvailable:
-        this.#servedApiVersion >= deviceDriversApiVersion &&
-        this.#capabilities?.includes(deviceDriversCapability) === true,
-    };
-    const environments = payload.environments.map((environment) => ({ ...environment }));
-    const harnesses = payload.harnesses.map(({ config, ...harness }) => ({
-      ...harness,
-      ...harnessEndpoint(config),
-    }));
-    const patchedSince = (sessionId: string) =>
-      (this.#presenceMarks.get(sessionId) ?? 0) > presenceMark;
-    const threads = this.#snapshot.threads.map((thread) => ({
-      ...thread,
-      harnessLabel:
-        harnesses.find((harness) => harness.id === thread.harnessInstanceId)?.name ??
-        "Unavailable harness",
-      runnerLabel:
-        environments.find((environment) => environment.id === thread.environmentId)?.name ??
-        "Unavailable work location",
-      modelLabel: modelLabel(thread.modelSelection, environments),
-    }));
-    this.#update({
-      ...this.#snapshot,
-      ...shareBootstrapData(this.#snapshot, {
-        deploymentId: payload.deploymentId,
-        personalSettings: payload.personalSettings,
-        can: payload.can,
-        voiceThreadId: payload.personalSettings?.voiceThreadId ?? null,
-        environments,
-        harnesses,
-        deploymentShape: { kind: "personal" },
-        browserAvailable: payload.browser.available,
-        browserPlacements: payload.browser.placements,
-        browserProfiles: payload.browser.profiles,
-        browserProfileHomes: payload.browser.profileHomes,
-        browserProfileDeletions: payload.browser.profileDeletions,
-        executionPreferences: payload.executionPreferences,
-        quietTaskDays: payload.quietTaskDays,
-        identityConfig: payload.identityConfig,
-        threads,
-        machines: visibleDeviceMachines(payload.machines).map((machine) =>
-          this.#ownerViews.reread(
-            withNewerComputerPresence(machine, this.#snapshot.machines, patchedSince),
-            this.#snapshot.machines.find((current) => current.id === machine.id),
-            ownerViewRevision,
-          ),
-        ),
-        ownerProfile: payload.ownerProfile ?? null,
-        session: "authenticated",
-        sessionId: payload.sessionId,
-        sessionSurface: payload.sessionSurface,
-        user: payload.user,
-      }),
-    });
-    // The stream, once running, is newer than any bootstrap prefix.
-    this.#tabs.seed(payload.tabs);
-    if (!this.#cacheLoaded && this.#streamCache) {
-      this.#cacheLoaded = true;
-      await this.#checkpointWrite.catch(() => undefined);
-      signal?.throwIfAborted();
-      const cached = await this.#streamCache
-        .load({
-          deploymentId: payload.deploymentId,
-          userId: payload.user.id,
-          apiVersion: hostApiVersion,
-        })
-        .catch(() => null);
-      signal?.throwIfAborted();
-      if (!current()) return;
-      if (
-        cached &&
-        cached.cursor.deploymentId === payload.deploymentId &&
-        cached.cursor.apiVersion === this.#servedApiVersion &&
-        cached.scope.userId === payload.user.id &&
-        cached.scope.deploymentId === payload.deploymentId &&
-        cached.scope.apiVersion === hostApiVersion
-      ) {
-        this.#threadState.restore(cached.threadStates);
-        this.#savedViewReadiness = { tasksReady: true };
-        this.#update({
-          ...this.#snapshot,
-          threadVisits: cached.snapshot.threadVisits,
-          tasks: cached.snapshot.tasks,
-          activeTasks: cached.snapshot.activeTasks,
-          threads: cached.snapshot.threads,
-          transcripts: cached.snapshot.transcripts,
-          transcriptWindows: cached.snapshot.transcriptWindows,
-          requests: cached.snapshot.requests,
-          waitingRequests: cached.snapshot.waitingRequests,
-          needsYou: cached.snapshot.needsYou,
-        });
-        this.#restoredCursor = cached.cursor.afterSequence;
-      }
-    }
-    if (this.#ownsConnection && replacedViewer && !signal) this.connection.retry();
-    this.#ensureDeploymentChannel(payload.deploymentId);
-    this.#recomputeConnection();
-    this.#reportTimeZone();
+    if (state.visibility !== old.visibility)
+      for (const listener of this.#lifecycleListeners) listener(state.visibility);
+    if (state.network !== old.network || state.pathRevision !== old.pathRevision)
+      for (const listener of this.#lifecycleListeners) listener("network");
   }
 
-  /** Reconnecting is pointless while the app is hidden or the device is off
-   * the network; the next foreground or online signal resumes every channel. */
-  #reconnectSuspended(): boolean {
+  #reconnectSuspended() {
     return this.#visibility === "background" || this.#network === "offline";
   }
 
-  #deploymentReconnectSuspended(): boolean {
-    return (
-      this.#network === "offline" || (this.#reconnectSuspended() && !this.#notifiesWhileHidden())
-    );
+  openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {
+    const ready = Promise.withResolvers<ConnectionLease>();
+    const closed = Promise.withResolvers<ReturnType<typeof classifyClientFailure>>();
+    const loaded = Promise.withResolvers<void>();
+    this.#load = loaded.promise;
+    this.#resolveLoad = loaded.resolve;
+    const close = () => {
+      if (this.#connectionFailed !== fail) return;
+      this.#connectionFailed = null;
+      this.#connectionAdmit = null;
+      attempt.signal.removeEventListener("abort", abort);
+      this.#closeSocket(this.#socketCloseReason);
+    };
+    const fail = (error: unknown) => {
+      if (this.#connectionFailed !== fail) return;
+      close();
+      const failure = classifyClientFailure(error);
+      attempt.fail?.(failure);
+      closed.resolve(failure);
+      ready.reject(error);
+    };
+    const abort = () => fail(attempt.signal.reason);
+    const lease: ConnectionLease = {
+      closed: closed.promise,
+      close,
+      lastProgressAt: () => this.#lastRealtimeFrameAt,
+      reconnectOnForeground: () =>
+        this.#backgroundShellGeneration !== this.#stream.shell.getSnapshot().generation,
+      probe: async (signal) => {
+        // Frames that arrive while the pong is slow prove the socket alive just as the pong does.
+        await this.#probeSocket(signal).catch((error: unknown) => {
+          if (!probeAnsweredByFrames(signal)) throw error;
+        });
+        if (signal.aborted && !probeAnsweredByFrames(signal)) signal.throwIfAborted();
+        if (this.#visibility === "foreground" && this.#backgroundShellGeneration !== undefined) {
+          this.#resumeForeground();
+          this.#requestTaskReads();
+          if (this.#snapshot.needsYouCount || this.#snapshot.needsYou)
+            this.#invalidateAttention(true);
+          this.#resources.resume();
+          // A list read given up in the background, or a change heard there, is read now.
+          this.#syncWaitingRequests("resume");
+        }
+      },
+    };
+    this.#connectionFailed = fail;
+    this.#connectionAdmit = () => {
+      const scope = this.#clientScope ? this.#clientScope() : this.#localScope();
+      if (scope) attempt.acceptScope(scope);
+      if (attempt.signal.aborted) return;
+      attempt.admit?.(lease);
+      ready.resolve(lease);
+    };
+    attempt.signal.addEventListener("abort", abort, { once: true });
+    void this.#open(attempt).catch(fail);
+    return ready.promise;
   }
 
-  #notifiesWhileHidden(): boolean {
-    return this.#notificationListeners.size > 0;
+  #localScope(): ClientScope | null {
+    const { deploymentId, user, sessionId } = this.#snapshot;
+    return deploymentId && user && sessionId
+      ? { authorityKey: this.#baseUrl.origin, deploymentId, viewerId: user.id, loginId: sessionId }
+      : null;
   }
 
-  #probeChannel(channel: DeploymentChannel, signal: AbortSignal): Promise<void> {
-    const socket = channel.socket;
+  #probeSocket(signal: AbortSignal): Promise<void> {
+    const socket = this.#socket;
     if (!socket || socket.readyState !== 1)
       return Promise.reject(new HostTransportError("unreachable"));
-    return new Promise((resolve, reject) => {
+    const nonce = crypto.randomUUID();
+    return new Promise<void>((resolve, reject) => {
       const abort = () => {
-        channel.probeResolve = null;
-        channel.probeNonce = null;
+        if (this.#probe?.nonce === nonce) this.#probe = undefined;
+        if (signal.reason instanceof HostTransportError && signal.reason.code === "timed-out")
+          this.#socketCloseReason = "Liveness probe unanswered";
         reject(signal.reason);
       };
-      if (signal.aborted) {
-        abort();
-        return;
-      }
-      signal.addEventListener("abort", abort, { once: true });
-      channel.probeResolve = () => {
+      const finish = () => {
         signal.removeEventListener("abort", abort);
+        this.#probe = undefined;
         resolve();
       };
-      const nonce = globalThis.crypto.randomUUID();
-      channel.probeNonce = nonce;
+      if (signal.aborted) return abort();
+      signal.addEventListener("abort", abort, { once: true });
+      this.#probe = { nonce, finish, abort };
       try {
-        socket.send(JSON.stringify({ nonce, type: "client.ping" }));
+        socket.send(JSON.stringify({ type: "client.ping", nonce }));
       } catch (error) {
         signal.removeEventListener("abort", abort);
-        channel.probeResolve = null;
+        this.#probe = undefined;
         reject(error);
       }
     });
   }
 
-  #clearProbe(channel: DeploymentChannel): void {
-    const resolve = channel.probeResolve;
-    channel.probeResolve = null;
-    resolve?.();
-    channel.probeNonce = null;
-  }
-
-  /** An open socket has a deadline to deliver its required initial subscriptions. */
-  #watchHandshake(): void {
-    if (this.#handshakeTimer || this.#disposed) return;
-    this.#handshakeTimer = globalThis.setInterval(
-      () => this.#checkHandshake(),
-      Math.max(1, Math.floor(this.#livenessDeadlineMs / 2)),
-    );
-  }
-
-  #stopHandshake(): void {
-    if (this.#handshakeTimer) globalThis.clearInterval(this.#handshakeTimer);
-    this.#handshakeTimer = null;
-  }
-
-  #checkHandshake(): void {
-    // Nothing is judged while the client is not reading: a suspended channel
-    // is replaced on the way back, by the foreground and network signals.
-    if (
-      this.#disposed ||
-      this.#snapshot.session !== "authenticated" ||
-      this.#deploymentReconnectSuspended()
-    ) {
-      this.#stopHandshake();
-      return;
-    }
-    const now = Date.now();
-    let watched = false;
-    for (const channel of this.#channels.values()) {
-      const socket = channel.socket;
-      if (!socket || channel.synchronized) continue;
-      watched = true;
-      const silentMs = now - channel.progressAt;
-      if (silentMs < this.#livenessIdleMs) continue;
-      if (silentMs >= this.#livenessIdleMs + this.#livenessDeadlineMs) {
-        this.#closeChannel(channel, true, 1000, "Realtime channel silent");
-        this.#recomputeConnection();
-      }
-    }
-    if (!watched) this.#stopHandshake();
-  }
-
-  /** Apps pages reread on this; nothing else is read again. */
-  #invalidateApps(): void {
-    this.#update({ ...this.#snapshot, appsRevision: this.#snapshot.appsRevision + 1 });
-  }
-  /** Asks the carrier's Host to restart the tab stream from a fresh snapshot. */
-  #resyncTabs(): void {
-    const carrier = this.#browserCarrier;
-    if (!carrier?.socket || carrier.socket.readyState !== 1) return;
+  async #diagnoseHandshake(signal: AbortSignal) {
+    if (this.#checkingHandshake || signal.aborted) return;
+    this.#checkingHandshake = true;
     try {
-      carrier.socket.send(JSON.stringify({ type: "client.browser.resync" }));
-    } catch {
-      this.#closeChannel(carrier, true, 1000, "Browser resync unsendable");
+      const result = await this.rpc["personal.shell.get"]({}, { signal });
+      signal.throwIfAborted();
+      if (!result.ok && result.error.code === "unauthorized") this.#expireSession();
+      else if (
+        !result.ok &&
+        ["unsupported-version", "api-version-mismatch", "unknown-method"].includes(
+          result.error.reason ?? "",
+        )
+      )
+        this.#socketFailed(updateRequired());
+      else this.#socketFailed(new HostTransportError("unreachable"));
+    } catch (error) {
+      if (!signal.aborted) this.#socketFailed(error);
+    } finally {
+      this.#checkingHandshake = false;
     }
   }
-  #electBrowserCarrier(): void {
-    if (this.#browserCarrier || this.#disposed || this.#snapshot.session !== "authenticated")
-      return;
-    this.#browserCarrier =
-      [...this.#channels.values()].find((channel) => channel.socket?.readyState === 1) ?? null;
-    this.#resyncTabs();
-  }
-  #releaseBrowserCarrier(channel: DeploymentChannel): void {
-    if (channel !== this.#browserCarrier) return;
-    this.#browserCarrier = null;
-    this.#tabs.disconnected();
-    this.#electBrowserCarrier();
+
+  #resumeForeground() {
+    this.#backgroundShellGeneration = undefined;
+    this.#stream.setBackground(false);
   }
 
-  #ensureDeploymentChannel(deploymentId: string): void {
-    if (this.#disposed || this.#snapshot.session !== "authenticated") return;
-    const existing = this.#channels.get(deploymentId);
-    if (existing?.socket) return;
-    const channel =
-      existing ??
-      ({
-        cursor: this.#restoredCursor ?? zeroSequence,
-        apiVersion: this.#servedApiVersion,
-        refused: false,
-        probeNonce: null,
-        probeResolve: null,
-        progressAt: 0,
-        interrupted: false,
-        resumed: false,
-        socket: null,
-        synchronized: false,
-        unreadableFrames: 0,
-        deploymentId,
-      } satisfies DeploymentChannel);
-    this.#channels.set(deploymentId, channel);
-    if (this.#connectionFailed) this.#connect(channel);
-  }
-
-  #connect(channel: DeploymentChannel): void {
-    if (this.#disposed || channel.socket || channel.refused) return;
-    // A bootstrap or refresh started before the app was hidden still resolves
-
-    // nobody can read. The channel and its cursor stay, so the next foreground
-    // or network signal opens the socket and resumes the stream.
-    if (this.#deploymentReconnectSuspended()) return;
+  async #open(attempt: ConnectionAttempt) {
+    attempt.signal.throwIfAborted();
+    if (this.#visibility === "foreground") this.#resumeForeground();
+    await this.#prepareSocket?.();
+    attempt.signal.throwIfAborted();
+    // The saved state is read while the socket opens; the attach reply decides whether it is ours.
+    // Storage never holds the attach: past a short wait the socket attaches without a cursor, and
+    // a read that lands later is dropped.
+    const restored = this.#stream.restore().catch(() => undefined);
     let socket: WebSocketClient;
     try {
       socket = this.#webSocketFactory(this.#webSocketUrl("/v1/realtime"));
     } catch {
-      // A channel holds a socket or a retry; one the platform refused to open
-      // is a failed attempt like any other.
-      this.#scheduleReconnect(channel);
-      this.#recomputeConnection();
-      return;
+      throw new HostTransportError("unreachable");
     }
-    channel.socket = socket;
-    channel.progressAt = Date.now();
-    // A new socket is a new subscription: a stream reread asked for under the
-    // old one answers about streams this one starts over.
-    this.#heldLive.delete(channel.deploymentId);
-    this.#liveGenerations.set(
-      channel.deploymentId,
-      (this.#liveGenerations.get(channel.deploymentId) ?? 0) + 1,
+    if (attempt.signal.aborted) {
+      socket.close();
+      attempt.signal.throwIfAborted();
+    }
+    this.#socket = socket;
+    this.#lastRealtimeFrameAt = Date.now();
+    const liveness = this.#realtimeLiveness;
+    this.#attachDeadline = setTimeout(
+      () => {
+        if (this.#socket === socket)
+          this.#socketFailed(new HostTransportError("timed-out"), "Realtime channel silent");
+      },
+      liveness ? Math.min(15_000, liveness.idleMs + liveness.deadlineMs) : 15_000,
     );
-    channel.synchronized = false;
-    this.#clearProbe(channel);
-    this.#recomputeConnection();
-    this.#watchHandshake();
-    const viewer: SocketViewer = {
-      deploymentId: this.#snapshot.deploymentId,
-      userId: this.#snapshot.user?.id ?? null,
-    };
-
     socket.addEventListener("open", () => {
-      if (channel.socket !== socket) return;
-      channel.progressAt = Date.now();
-      if (channel.apiVersion !== this.#servedApiVersion) {
-        channel.apiVersion = this.#servedApiVersion;
-        channel.cursor = zeroSequence;
-      }
-      channel.resumed = true;
-      try {
-        socket.send(
-          JSON.stringify({
-            cursor: {
-              deploymentId: channel.deploymentId,
-              apiVersion: channel.apiVersion,
-              afterSequence: channel.cursor,
-            },
-            apiVersion: channel.apiVersion,
-            ...(this.#supportsDeviceAccessRequests() ? { deviceAccessRequests: "include" } : {}),
-            ...(this.#capabilities?.includes("person-show-v1") ? { personShow: "accept" } : {}),
-            ...(this.#capabilities?.includes("tool-output-detail-v1")
-              ? { toolOutputs: "preview" }
-              : {}),
-            ...(this.#capabilities?.includes("place-events-v1")
-              ? { placeEvents: "include" as const }
-              : {}),
-            ...(this.#capabilities?.includes("snapshot-messages-omit-v1")
-              ? { snapshotMessages: "omit" }
-              : {}),
-            threadId: null,
-            type: "client.subscribe",
-          }),
-        );
-        this.#electBrowserCarrier();
-      } catch {
-        this.#closeChannel(channel, true, 1000, "Subscription unsendable");
-        this.#recomputeConnection();
-      }
+      let waited: ReturnType<typeof setTimeout> | undefined;
+      const ready = new Promise<void>((resolve) => {
+        waited = setTimeout(resolve, savedStartWaitMs);
+        void restored.then(resolve);
+      });
+      void ready.then(() => {
+        clearTimeout(waited);
+        if (this.#socket !== socket) return;
+        try {
+          this.#stream.attach((message) => socket.send(JSON.stringify(message)));
+        } catch {
+          this.#socketFailed();
+        }
+      });
     });
-    socket.addEventListener("message", (event) => {
-      if (channel.socket !== socket) return;
-      let message: RealtimeMessage | null;
-      try {
-        message = this.#readRealtimeFrame(channel, event.data);
-      } catch (error) {
-        if (channel.socket === socket) this.#loseRealtimeFrame(channel, event.data, error);
+    socket.addEventListener("message", ({ data }) => {
+      if (this.#socket !== socket || typeof data !== "string") return;
+      if (this.#realtimeLiveness) this.#lastRealtimeFrameAt = Date.now();
+      const wireBytes = utf8ByteLength(data);
+      if (wireBytes > personalDetailFrameMaxBytes) {
+        this.#frameRejected("frame", wireBytes);
+        this.#socketFailed(
+          new HostTransportError("unreachable", {
+            reason: "unreadable-frame",
+            kind: "protocol",
+            provenance: "protocol",
+          }),
+          "Invalid Host protocol frame",
+        );
         return;
       }
-      if (!message) return;
+      let parsed = false;
       try {
-        this.#applyRealtimeMessage(channel, viewer, message);
+        const message: unknown = JSON.parse(data);
+        parsed = true;
+        if (this.#stream.receive(message, wireBytes)) return;
+        if (
+          message &&
+          typeof message === "object" &&
+          "type" in message &&
+          typeof message.type === "string" &&
+          scopedRealtimeTypes.has(message.type)
+        )
+          throw new Error("Invalid personal scope frame.");
+        const notice = HostToClientMessageSchema.safeParse(message);
+        if (notice.success) this.#applyNotice(notice.data);
       } catch {
-        // A transport effect (including acknowledgement) cannot invalidate a
-        // frame already parsed and admitted, or the progress already applied.
-        if (channel.socket !== socket) return;
-        this.#closeChannel(channel, true, 1000, "Realtime transport interrupted");
-        this.#recomputeConnection();
+        this.#frameRejected(parsed ? "schema" : "json", wireBytes);
+        this.#socketFailed(
+          new HostTransportError("unreachable", {
+            reason: "unreadable-frame",
+            kind: "protocol",
+            provenance: "protocol",
+          }),
+          "Invalid Host protocol frame",
+        );
+      }
+    });
+    socket.addEventListener("close", (event) => {
+      if (this.#socket !== socket) return;
+      if (
+        event.code === 4401 ||
+        event.code === 4403 ||
+        (event.code === 4003 && event.reason === "Session ended")
+      )
+        this.#expireSession();
+      else {
+        const affected = affectedPersonalSubscriptions(event.reason ?? "");
+        if (affected !== null) {
+          if (affected.length === 0 || affected.includes("shell")) {
+            this.#stream.clear(true);
+            this.#forgetViewer({ connection: "connecting" });
+          } else {
+            for (const scope of this.#stream.revokeDetails(affected)) {
+              if (scope.kind !== "thread") continue;
+              const id = scope.threadId;
+              this.#threadDeployment.delete(id);
+              this.#threadState.forget(id);
+              this.#clearDetailReads(id);
+            }
+          }
+          this.#bodies.clear();
+          this.#clearAttachmentReads();
+        }
+        if (event.code === unsupportedVersionCloseCode) this.#socketFailed(updateRequired());
+        else if (!this.#stream.ready) void this.#diagnoseHandshake(attempt.signal);
+        else this.#socketFailed();
       }
     });
     socket.addEventListener("error", () => {
-      if (channel.socket === socket) {
-        this.#hostUnreachable = true;
-        this.#recomputeConnection();
-      }
-    });
-    socket.addEventListener("close", () => {
-      if (channel.socket !== socket) return;
-      channel.socket = null;
-      channel.synchronized = false;
-      this.#releaseBrowserCarrier(channel);
-      this.#nodeDetails.disconnected(channel.deploymentId);
-      this.#scheduleReconnect(channel);
-      this.#recomputeConnection();
+      if (this.#socket !== socket) return;
+      if (this.#stream.ready) this.#socketFailed();
+      else void this.#diagnoseHandshake(attempt.signal);
     });
   }
 
-  #readRealtimeFrame(channel: DeploymentChannel, frame: unknown): RealtimeMessage | null {
-    if (typeof frame !== "string" || frame.length > maxInboundFrameCharacters) {
-      throw new Error("Host protocol frame must be bounded JSON text.");
-    }
-    const value: unknown = JSON.parse(frame);
-    const { type } = realtimeHeaderSchema.parse(value);
-    if (!realtimeEnvelopeTypes.has(type)) {
-      const parsed = HostToClientMessageSchema.safeParse(value);
-      if (!parsed.success) this.#recordRealtimeFrame(frame, parsed.error, "ignored");
-      return null;
-    }
-    if (type === "host.events") {
-      const batch = realtimeEventsSchema.parse(value);
-      const positions = batch.events.map((raw) => realtimeEventPositionSchema.parse(raw));
-      const ignoredIssues: z.ZodError["issues"] = [];
-      const events = batch.events.map((raw, index): RealtimeEvent => {
-        try {
-          const eventType = realtimeHeaderSchema.parse(raw).type;
-          let skip = !realtimeEventTypes.has(eventType);
-          if (eventType === "thread.state-changed") {
-            const candidate = realtimeThreadStateEventSchema.parse(raw);
-            skip = !ThreadStatusSchema.safeParse(candidate.data.status).success;
-          } else if (
-            eventType === "thread.created" ||
-            eventType === "thread.execution-updated" ||
-            eventType === "thread.listed"
-          ) {
-            const { thread } = realtimeThreadEventSchema.parse(raw).data;
-            skip = !ThreadStatusSchema.safeParse(thread.status).success;
-          }
-          if (!skip) return AgentEventViewSchema.parse(raw);
-          const parsed = AgentEventViewSchema.safeParse(raw);
-          if (!parsed.success)
-            ignoredIssues.push(
-              ...parsed.error.issues.map((issue) => ({
-                ...issue,
-                path: ["events", index, ...issue.path],
-              })),
-            );
-          return { ...positions[index]!, type: null };
-        } catch (error) {
-          if (error instanceof z.ZodError)
-            throw new z.ZodError(
-              error.issues.map((issue) => ({ ...issue, path: ["events", index, ...issue.path] })),
-            );
-          throw error;
-        }
-      });
-      if (ignoredIssues.length > 0)
-        this.#recordRealtimeFrame(frame, new z.ZodError(ignoredIssues), "ignored");
-      const throughSequence = z
-        .object({ throughSequence: SequenceSchema })
-        .parse(value).throughSequence;
-      if (events.some((event) => compareSequence(event.sequence, throughSequence) > 0))
-        throw new Error("Event exceeds the applied-through watermark.");
-      return { type: "host.events", events, throughSequence };
-    }
-    if (type === "host.snapshot") {
-      const raw = realtimeSnapshotFrameSchema.parse(value).snapshot;
-      const { snapshot } = z
-        .object({ snapshot: DeploymentSnapshotSchema })
-        .parse({ snapshot: { ...raw, threads: [] } });
-      if (snapshot.deploymentId !== channel.deploymentId)
-        throw new Error("Deployment snapshot mismatch.");
-
-      const ignoredIssues: z.ZodError["issues"] = [];
-      const threads = raw.threads.flatMap((thread, index) => {
-        const parsed = ThreadViewSchema.safeParse(thread);
-        if (parsed.success) return [parsed.data];
-        ignoredIssues.push(
-          ...parsed.error.issues.map((issue) => ({
-            ...issue,
-            path: ["snapshot", "threads", index, ...issue.path],
-          })),
-        );
-        return [];
-      });
-      if (ignoredIssues.length > 0)
-        this.#recordRealtimeFrame(frame, new z.ZodError(ignoredIssues), "ignored");
-      return { type: "host.snapshot", snapshot: { ...snapshot, threads } };
-    }
-    if (type === "host.resync-required") {
-      const message = realtimeResyncSchema.parse(value);
-
-      return message;
-    }
-    if (type === "host.live") {
-      const live = realtimeLiveEnvelopeSchema.parse(value);
-      const items = live.progress.items.flatMap((raw, index) => {
-        const kind = z.object({ stream: z.string().min(1), op: z.string().min(1) }).parse(raw);
-        if (
-          !["assistant", "reasoning", "tool", "node"].includes(kind.stream) ||
-          !["append", "replace"].includes(kind.op)
-        ) {
-          const parsed = realtimeLiveKindSchema.safeParse(raw);
-          if (!parsed.success)
-            this.#recordRealtimeFrame(
-              frame,
-              new z.ZodError(
-                parsed.error.issues.map((issue) => ({
-                  ...issue,
-                  path: ["progress", "items", index, ...issue.path],
-                })),
-              ),
-              "ignored",
-            );
-          return [];
-        }
-        return [LiveItemViewSchema.parse(raw)];
-      });
-      if (items.length === 0) return null;
-      return { ...live, type: "host.live", progress: { ...live.progress, items } };
-    }
-    const message = HostToClientMessageSchema.parse(value);
-    if (
-      (message.type === "host.show" ||
-        message.type === "host.thread-visits" ||
-        message.type === "host.triggers-changed" ||
-        message.type === "host.browser-usage-changed" ||
-        message.type === "host.synchronized") &&
-      channel.deploymentId !== channel.deploymentId
-    )
-      throw new Error("Deployment mismatch.");
-    return message;
+  #frameRejected(category: RealtimeFrameDiagnostic["category"], bytes: number) {
+    this.#reportRealtimeFrame?.({
+      apiEpoch: scopedPersonalApiVersion,
+      bytes,
+      category,
+      envelopeType: "personal",
+      event: "host.realtime.frame-rejected",
+      issuePaths: [],
+    });
   }
 
-  #recordRealtimeFrame(frame: unknown, error: unknown, action: "ignored" | "rejected"): void {
-    try {
-      const record = {
-        event: `host.realtime.frame-${action}` as const,
-        ...describeRealtimeFrameFailure(frame, error),
-      };
-      console.warn(JSON.stringify(record));
-      this.#reportRealtimeFrame?.(record);
-    } catch {
-      /* Diagnostics cannot decide what becomes of the channel. */
-    }
+  #socketFailed(error: unknown = new HostTransportError("unreachable"), reason?: string) {
+    this.#socketCloseReason = reason;
+    this.#connectionFailed?.(error);
+  }
+
+  #closeSocket(reason = "Client closed") {
+    this.#socketCloseReason = undefined;
+    this.#probe?.abort();
+    const socket = this.#socket;
+    this.#socket = null;
+    this.#stream.disconnect();
+    this.#invalidateAttention();
+    this.#resources.abort();
+    this.#finishLoad();
+    socket?.close(1000, reason);
+  }
+
+  #finishLoad() {
+    if (this.#attachDeadline) clearTimeout(this.#attachDeadline);
+    this.#attachDeadline = undefined;
+    this.#resolveLoad?.();
+    this.#resolveLoad = undefined;
+    this.#load = undefined;
   }
 
   /**
-   * What losing an unreadable frame costs decides what happens. A notice is
-   * dropped and its data reread. A replay or sync frame is never applied or
-   * acknowledged: the channel reconnects from the same cursor, or from a
-   * snapshot when replay cannot resend it or get past what it cannot read.
+   * The Host's notices are not replayed. After a gap, the one list kept current only by a notice
+   * and nothing else, the apps directory (`appsRevision`: `AppsList`, `useApp`), counts as changed,
+   * so each mounted reader reads once. Every other notice-fed reader already rereads on reattach on
+   * its own, and is not touched here so one reattach costs one read: schedules, automations and
+   * connected agents are `ClientRead`s, which reread on the connection's new ready revision; an open
+   * app view re-keys on its connection; browser usage and thread automations reread with the
+   * thread's new detail subscription; browser history, references and remote access on reconnect;
+   * resource kinds compare revisions.
    */
-  #loseRealtimeFrame(channel: DeploymentChannel, frame: unknown, error: unknown): void {
-    const loss = realtimeFrameLoss(realtimeEnvelopeType(frame));
-    const reconnects = loss === "replay" || loss === "snapshot";
-    this.#recordRealtimeFrame(frame, error, reconnects ? "rejected" : "ignored");
-    if (reconnects) {
-      channel.unreadableFrames += 1;
-      if (loss === "snapshot" || channel.unreadableFrames >= realtimeReplayAttempts)
-        channel.cursor = zeroSequence;
-      this.#closeChannel(channel, true, 4002, "Invalid Host protocol frame");
-      this.#recomputeConnection();
-      return;
-    }
-    switch (loss) {
-      case "tabs":
-        if (channel === this.#browserCarrier) {
-          this.#tabs.disconnected();
-          this.#resyncTabs();
-        }
-        return;
-      case "apps":
-        this.#invalidateApps();
-        return;
-      case "none":
-        return;
-      case "place-activity":
-        this.#placeActivity.clear();
-        return;
-      case "browser-history":
-        this.browserHistory.changedAll();
-        return;
-      case "browser-usage":
-        this.#browserUsageChanged([
-          ...new Set([...this.#browserUsageRead.keys(), ...this.#browserUsageReads.keys()]),
-        ]);
-        return;
-      case "triggers":
-        this.#triggersChanged(channel.deploymentId);
-        return;
-      case "machines":
-        this.#update({ ...this.#snapshot, machineRevision: this.#snapshot.machineRevision + 1 });
+  #noticesMissed() {
+    this.#update({ ...this.#snapshot, appsRevision: this.#snapshot.appsRevision + 1 });
+  }
+
+  #applyNotice(message: HostToClientMessage) {
+    const deploymentId = this.#snapshot.deploymentId;
+    switch (message.type) {
+      case "host.pong":
+        if (message.nonce === this.#probe?.nonce) this.#probe.finish();
         break;
-      case "bootstrap":
-        break;
-    }
-    this.#rereadLostFrame();
-  }
-
-  /** Tab frames arrive with every navigation, so reads are spaced and the last is owed, not lost. */
-  #rereadLostFrame(): void {
-    if (this.#lostFrameRereadTimer) return;
-    const wait = this.#lostFrameRereadAt + defaultRefreshIntervalMs - Date.now();
-    if (wait > 0) {
-      this.#lostFrameRereadTimer = globalThis.setTimeout(() => {
-        this.#lostFrameRereadTimer = null;
-        this.#rereadLostFrame();
-      }, wait);
-      return;
-    }
-    this.#lostFrameRereadAt = Date.now();
-    this.#reread("host.frame-lost");
-  }
-
-  #cancelLostFrameReread(): void {
-    if (this.#lostFrameRereadTimer) globalThis.clearTimeout(this.#lostFrameRereadTimer);
-    this.#lostFrameRereadTimer = null;
-  }
-
-  #applyRealtimeMessage(
-    channel: DeploymentChannel,
-    viewer: SocketViewer,
-    message: RealtimeMessage,
-  ): void {
-    // Notices addressed to the person arrive on every socket they hold, so
-    // only what this channel's own subscription sends shows it is delivering.
-    if (showsSubscriptionProgress(message, channel)) channel.progressAt = Date.now();
-    if (message.type === "host.show") {
-      if (
-        this.#visibility !== "foreground" ||
-        this.#disposed ||
-        this.#snapshot.session !== "authenticated" ||
-        viewer.userId === null ||
-        this.#snapshot.user?.id !== viewer.userId ||
-        this.#snapshot.deploymentId !== viewer.deploymentId
-      )
-        return;
-      for (const listener of this.#personShowListeners) {
-        try {
-          listener(message);
-        } catch (error) {
-          queueMicrotask(() => {
-            throw error;
-          });
+      case "host.error":
+        if (!message.error.retryable && message.error.code === "forbidden") this.#expireSession();
+        else {
+          const { reason, ...error } = message.error;
+          this.#socketFailed(
+            new HostClientRequestError({
+              ...error,
+              ...(reason === undefined ? {} : { reason }),
+              status: rpcErrorStatus(error.code),
+            }),
+          );
         }
-      }
-      return;
-    }
-    if (message.type !== "host.pong" && channel.probeResolve) this.#clearProbe(channel);
-    if (message.type === "host.pong") {
-      // Only a probe is correlated; an uncorrelated pong answers nobody.
-      if (message.nonce === channel.probeNonce) this.#clearProbe(channel);
-      return;
-    }
-    if (message.type === "host.notification") {
-      // every socket they hold and moves no cursor.
-      this.#deliverNotification(message.notification, viewer);
-      return;
-    }
-    if (
-      message.type === "host.computer-view.changed" ||
-      message.type === "host.computer-view.removed"
-    ) {
-      this.#update({
-        ...this.#snapshot,
-        machines: [
-          ...(message.type === "host.computer-view.changed"
-            ? this.#ownerViews.accept(this.#snapshot.machines, message.view)
-            : this.#ownerViews.remove(this.#snapshot.machines, message)),
-        ],
-      });
-      return;
-    }
-    if (message.type === "host.thread-visits") {
-      this.#applyVisits(message.visits);
-      return;
-    }
-    if (message.type === "host.error") {
-      if (!message.error.retryable && message.error.code === "forbidden") {
-        this.#expireSession();
-        return;
-      }
-      if (message.error.reason === "unsupported-version") this.#reverifyCapabilities();
-      channel.refused = !message.error.retryable;
-      this.#closeChannel(channel, false);
-      this.#connectionFailed?.(message.error);
-      this.#recomputeConnection();
-      return;
-    }
-    if (message.type === "host.resync-required") {
-      this.references.reconnect();
-      // A Host behind this cursor restarted its history: state read from the old one,
-      // including answers still in flight, would outrank the snapshot that follows.
-      if (message.reason === "cursor-ahead") {
-        this.#viewerGeneration += 1;
-        this.#threadState.clear();
-      }
-      channel.cursor = zeroSequence;
-      channel.interrupted = false;
-      this.#closeChannel(channel, true, 4009, "Fresh snapshot required");
-      this.#recomputeConnection();
-      return;
-    }
-    if (message.type === "host.snapshot") {
-      this.#applyDeploymentSnapshot(message.snapshot);
-      channel.resumed = false;
-      channel.cursor = message.snapshot.sequence;
-      this.#persistCheckpoint(channel);
-      return;
-    }
-    if (message.type === "host.node-watched") {
-      this.#nodeDetails.watched(channel.deploymentId, message.nodeId, message.sequence);
-      return;
-    }
-    if (message.type === "host.events") {
-      this.#applyEvents(channel, message.events);
-      channel.cursor = maxSequence(channel.cursor, message.throughSequence);
-      this.#persistCheckpoint(channel);
-      this.#sendAck(channel);
-      this.#recomputeConnection();
-      return;
-    }
-    if (message.type === "host.live") {
-      // Progress never moves the cursor and never acknowledges: it is not
-      // durable, and nothing replays it.
-      this.#applyLive(message);
-      return;
-    }
-    if (message.type === "host.triggers-changed") {
-      this.#triggersChanged(channel.deploymentId);
-      return;
-    }
-    if (message.type === "host.browser-history-changed") {
-      this.browserHistory.changed(message.profileId);
-      return;
-    }
-    if (message.type === "host.browser-sessions-changed") {
-      this.#reread(message.type);
-      return;
-    }
-    if (message.type === "host.apps.changed") {
-      this.#invalidateApps();
-      return;
-    }
-    if (message.type === "host.thread-place-changed") {
-      return;
-    }
-    if (message.type === "host.place-activity" || message.type === "host.place-activity-cleared") {
-      this.#placeActivity.apply(message);
-      return;
-    }
-    if (message.type === "host.browser-usage-changed") {
-      this.#browserUsageChanged(message.threadIds);
-      return;
-    }
-    if (message.type === "host.computer-presence") {
-      this.#applyComputerPresence(message.sessions);
-      return;
-    }
-    if (message.type === "host.personal-remote-access-changed") {
-      this.#invalidatePersonalRemoteAccess();
-      return;
-    }
-    if (message.type === "host.connections-changed") {
-      for (const listener of this.#connectionsListeners) listener();
-      return;
-    }
-    if (message.type === "host.plugins-changed") {
-      for (const listener of this.#pluginsChangedListeners) listener(message);
-      return;
-    }
-    if (message.type === "host.plugin-engine") {
-      for (const listener of this.#pluginEngineListeners) listener(message.engine);
-      return;
-    }
-    if (message.type === "host.requests-changed") {
-      this.#rereadWaitingRequests();
-      return;
-    }
-    if (message.type === "host.tasks-changed") {
-      this.#rereadTasks();
-      return;
-    }
-    if (
-      message.type === "host.machines.changed" ||
-      message.type === "host.machine.access.session.started" ||
-      message.type === "host.machine.access.session.ended"
-    ) {
-      // Machine state also says, in a Thread, when its turn is at work on a Mac.
-      // Refresh it here so correctness never depends on mounting Computers.
-      this.#update({ ...this.#snapshot, machineRevision: this.#snapshot.machineRevision + 1 });
-      this.#reread(message.type);
-      return;
-    }
-    if (message.type === "host.tabs") {
-      if (channel !== this.#browserCarrier) return;
-      if (this.#tabs.apply(message.stream) === "resync") this.#resyncTabs();
-      return;
-    }
-    // What this socket sent was read at the version it names, whatever bootstrap last said.
-    if (message.apiVersion !== undefined)
-      channel.apiVersion = this.#servedApiVersion = message.apiVersion;
-    channel.cursor = maxSequence(channel.cursor, message.sequence);
-    this.#persistCheckpoint(channel, true);
-    // A resubscription sends every open stream whole right after this, so what
-    // the old connection streamed is forgotten rather than continued, and any
-    // reread still in flight belongs to the old subscription.
-    this.#live.reset();
-    this.#heldLive.delete(channel.deploymentId);
-    this.#liveGenerations.set(
-      channel.deploymentId,
-      (this.#liveGenerations.get(channel.deploymentId) ?? 0) + 1,
-    );
-    // A stream the old connection drew that the new one does not carry would
-    // otherwise stay on screen half-written; a reread says which are still open.
-    for (const thread of this.#snapshot.threads) {
-      if (this.#snapshot.deploymentId! !== channel.deploymentId) continue;
-      if (this.#snapshot.transcripts[thread.id]?.some((entry) => drawnLiveStream(entry) !== null))
-        this.#scheduleLiveRefresh(thread.id, channel.deploymentId);
-    }
-    const reconnected = channel.interrupted || channel.unreadableFrames > 0;
-    const resumed = reconnected || channel.resumed;
-    channel.synchronized = true;
-    this.#nodeDetails.connected(channel.deploymentId);
-    channel.interrupted = false;
-    channel.unreadableFrames = 0;
-    this.#invalidatePersonalRemoteAccess();
-    if (reconnected) this.#reread("reconnect");
-    this.#sendAck(channel);
-    this.#recomputeConnection();
-    // Notices sent while no socket listened are lost, and replay does not carry them.
-    if (resumed) {
-      this.#rereadTasks();
-      this.#rereadWaitingRequests();
-      this.#refreshShownAutomations(channel.deploymentId);
-    } else if (this.#tasksStale) this.#rereadTasks();
-    // A usage notice sent while this socket was away is lost: a shown
-
-    // and one not shown is read whole when it next is. One shown while the
-    // stream was not live has waited for it, and is read for the first time;
-    // a read already under way began before the stream and is read again.
-    for (const threadId of this.#browserUsageRead.keys()) {
-      if (this.#threadDeployment.get(threadId) !== channel.deploymentId) continue;
-      if (this.#showsThread(threadId)) this.#ensureBrowserUsage(threadId, "full");
-      else this.#browserUsageRead.delete(threadId);
-    }
-    for (const threadId of [this.#activeThreadId, ...this.#observedThreads.keys()]) {
-      if (!threadId || this.#threadDeployment.get(threadId) !== channel.deploymentId) continue;
-      if (this.#browserUsageRead.has(threadId)) continue;
-      this.#ensureBrowserUsage(
-        threadId,
-        this.#browserUsageReads.has(threadId) ? "full" : "missing",
-      );
-    }
-  }
-
-  #applyDeploymentSnapshot(snapshot: DeploymentSnapshot): void {
-    if (snapshot.deploymentId !== this.#snapshot.deploymentId)
-      throw new Error("Snapshot Deployment mismatch.");
-    const inFlight = [...this.#hydrationBuffers.keys()];
-    const coversSnapshot = (threadId: string) => {
-      const sequence = this.#hydratedThreads.get(threadId);
-      return sequence !== undefined && compareSequence(sequence, snapshot.sequence) >= 0;
-    };
-    const retainsHistory = (threadId: string) =>
-      this.#historicalThreads.has(threadId) ||
-      this.#showsThread(threadId) ||
-      coversSnapshot(threadId);
-    this.#mergeVisits([
-      ...snapshot.threads,
-      ...snapshot.tasks.recent.tasks.map((entry) => entry.thread),
-      ...snapshot.tasks.active.tasks.map((entry) => entry.thread),
-      ...snapshot.tasks.done.tasks.map((entry) => entry.thread),
-    ]);
-    this.#threadState.cover(snapshot.sequence);
-    this.#runQueue.reconcile({
-      runQueue: snapshot.runQueue,
-      threads: new Map(snapshot.threads.map(({ id }) => [id, snapshot.sequence])),
-      wholeDeployment: true,
-    });
-    if (snapshot.runPlaces) this.#runPlaces.reconcile(snapshot.sequence, snapshot.runPlaces);
-    const transcripts = { ...this.#snapshot.transcripts };
-    const transcriptWindows = { ...this.#snapshot.transcriptWindows };
-    const requests = { ...this.#snapshot.requests };
-    const inputQueues = { ...this.#snapshot.inputQueues };
-    const incoming = new Set<string>(snapshot.threads.map(({ id }) => id));
-    for (const existing of this.#snapshot.threads) {
-      if (incoming.has(existing.id) || this.#showsThread(existing.id)) continue;
-      this.#historicalThreads.delete(existing.id);
-      this.#hydratedThreads.delete(existing.id);
-      delete transcripts[existing.id];
-      delete transcriptWindows[existing.id];
-      delete requests[existing.id];
-      delete inputQueues[existing.id];
-    }
-    for (const thread of snapshot.threads) {
-      requests[thread.id] = snapshot.pendingRequests.filter(
-        (request) => request.originatingThreadId === thread.id,
-      );
-      this.#requestReads.delete(thread.id);
-      if (retainsHistory(thread.id)) continue;
-      if (snapshot.messagesOmitted) {
-        delete transcripts[thread.id];
-        delete transcriptWindows[thread.id];
-      } else transcripts[thread.id] = [];
-      this.#hydratedThreads.delete(thread.id);
-    }
-    for (const window of snapshot.messageWindows)
-      if (!retainsHistory(window.threadId)) transcriptWindows[window.threadId] = window;
-    for (const message of snapshot.messages) {
-      if (retainsHistory(message.threadId)) continue;
-      const entry = toTranscriptEntry(message);
-      if (entry)
-        transcripts[message.threadId] = upsertEntry(transcripts[message.threadId] ?? [], entry);
-    }
-    const threads = [
-      ...snapshot.threads.map((thread) =>
-        this.#threadState.reconcile(
-          toThreadSummary(thread, this.#snapshot.environments, this.#snapshot.harnesses),
-          snapshot.sequence,
-          this.#snapshot.threads.find(({ id }) => id === thread.id),
-        ),
-      ),
-      ...this.#snapshot.threads.filter(
-        (thread) => !incoming.has(thread.id) && this.#showsThread(thread.id),
-      ),
-    ];
-    const taskPage = (page: import("@opensteer/protocol").TaskPage): TaskListState => ({
-      entries: page.tasks.map((entry) => ({
-        ...entry,
-        thread: this.#reconcilePageThread(
-          toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
-          snapshot.sequence,
-        ),
-      })),
-      window: page.window,
-    });
-    this.#applyingSnapshot = true;
-    try {
-      this.#tabs.seed(snapshot.resources.tabs);
-    } finally {
-      this.#applyingSnapshot = false;
-    }
-    this.#savedViewReadiness = { tasksReady: true };
-    this.#update({
-      ...this.#snapshot,
-      threads,
-      transcripts,
-      transcriptWindows,
-      requests,
-      inputQueues,
-      runQueue: this.#runQueue.entries(),
-      tasks: taskPage(snapshot.tasks.recent),
-      activeTasks: taskPage(snapshot.tasks.active).entries,
-      doneTasks: { [mainDoneTasks]: taskPage(snapshot.tasks.done) },
-      needsYou: snapshot.needsYou,
-      browserAvailable: snapshot.resources.browser.available,
-      browserProfiles: snapshot.resources.browser.profiles,
-      browserProfileHomes: snapshot.resources.browser.profileHomes,
-      browserProfileDeletions: snapshot.resources.browser.profileDeletions,
-      browserPlacements: snapshot.resources.browser.placements,
-      // A new subscription may follow changes this client never heard of.
-      appsRevision: this.#snapshot.appsRevision + 1,
-    });
-    this.#refreshInputQueues(threads.map(({ id }) => id));
-    for (const threadId of inFlight) {
-      if (!this.#historicalThreads.has(threadId))
-        this.#invalidatedHydrations.set(
-          threadId,
-          maxSequence(this.#invalidatedHydrations.get(threadId) ?? zeroSequence, snapshot.sequence),
-        );
-    }
-    for (const threadId of new Set([this.#activeThreadId, ...this.#observedThreads.keys()])) {
-      if (threadId === null) continue;
-      if (!this.#historicalThreads.has(threadId) && !coversSnapshot(threadId)) {
-        this.#hydratedThreads.delete(threadId);
-        this.#ensureThreadHydration(threadId);
-      }
-      this.#ensureAssignments(threadId, true);
-      this.#ensureAutomations(threadId, true);
-    }
-    if (snapshot.tasks.active.window.hasMore)
-      void this.#readFirstTaskPage("active", "asked").catch(() => undefined);
-  }
-
-  #applyLive(input: LiveProgressInput): void {
-    const channel = this.#channels.get(this.#snapshot.deploymentId!);
-    if (!channel) return;
-    if (compareSequence(input.afterSequence, channel.cursor) > 0) {
-      const held = this.#heldLive.get(channel.deploymentId) ?? [];
-      // Held progress is bounded; what is dropped is reread when it is missed.
-      if (held.length >= maxHeldLiveFrames) held.shift();
-      held.push(input);
-      this.#heldLive.set(channel.deploymentId, held);
-      return;
-    }
-    this.#drawLive(input);
-  }
-
-  /** Draws held progress whose durable predecessors have now been applied. */
-  #releaseHeldLive(channel: DeploymentChannel): void {
-    const held = this.#heldLive.get(channel.deploymentId);
-    if (!held?.length) return;
-    const ready = held.filter((input) => compareSequence(input.afterSequence, channel.cursor) <= 0);
-    if (ready.length === 0) return;
-    this.#heldLive.set(
-      channel.deploymentId,
-      held.filter((input) => compareSequence(input.afterSequence, channel.cursor) > 0),
-    );
-    for (const input of ready) this.#drawLive(input);
-  }
-
-  #drawLive(input: LiveProgressInput): void {
-    this.#nodeDetails.acceptLive(input);
-    const { changed, gap } = this.#live.apply(input);
-    const threadId = input.progress.threadId;
-    const retained = this.#showsThread(threadId) || this.#hydratedThreads.has(threadId);
-    if (changed && retained && !this.#historicalThreads.has(threadId)) {
-      this.#update(
-        {
-          ...this.#snapshot,
-          transcripts: {
-            ...this.#snapshot.transcripts,
-            [threadId]: foldLiveRun(
-              this.#snapshot.transcripts[threadId] ?? [],
-              changed,
-              new Date().toISOString(),
-            ),
-          },
-        },
-        threadId,
-      );
-    }
-    if (gap) this.#scheduleLiveRefresh(threadId, this.#snapshot.deploymentId!);
-  }
-
-  /**
-   * Rereads a Thread's streams whole: after a frame was missed, or after a
-   * resubscription, to learn which drawn streams it still carries. Reads are
-   * debounced and never overlap. One asked for while another is in flight is
-   * owed, not dropped, since the read in flight may predate what prompted it;
-   * a reply older than what the ledger holds is ignored there.
-   */
-  #scheduleLiveRefresh(threadId: string, deploymentId: string): void {
-    if (this.#disposed) return;
-    const pending = this.#liveRereads.get(threadId);
-    if (pending) {
-      if (pending.timer === null) pending.again = true;
-      return;
-    }
-    const reread: LiveReread = { again: false, timer: null };
-    reread.timer = globalThis.setTimeout(() => {
-      reread.timer = null;
-      const generation = this.#liveGenerations.get(deploymentId) ?? 0;
-      const viewer = this.#viewerGeneration;
-      void this.rpc["thread.live.get"]({ threadId })
-        .then((result) => {
-          if (this.#liveRereads.get(threadId) !== reread || !result.ok) return;
-          if (viewer !== this.#viewerGeneration) return;
-          if ((this.#liveGenerations.get(deploymentId) ?? 0) !== generation) return;
-          for (const run of result.data.runs) this.#applyLive(run);
-          this.#sweepLive(threadId, deploymentId);
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          // A read the session outlived is nobody's to settle or to repeat.
-          if (this.#liveRereads.get(threadId) !== reread) return;
-          this.#liveRereads.delete(threadId);
-          if (reread.again) this.#scheduleLiveRefresh(threadId, deploymentId);
+        break;
+      case "host.show":
+        if (this.#visibility === "foreground" && this.#snapshot.session === "authenticated")
+          for (const listener of this.#personShowListeners) listener(message);
+        break;
+      case "host.notification":
+        this.#deliverNotification(message.notification, {
+          deploymentId,
+          userId: this.#snapshot.user?.id ?? null,
         });
-    }, liveRefreshDelayMs);
-    this.#liveRereads.set(threadId, reread);
-  }
-
-  #forgetLiveRereads(): void {
-    for (const reread of this.#liveRereads.values()) {
-      if (reread.timer !== null) globalThis.clearTimeout(reread.timer);
-    }
-    this.#liveRereads.clear();
-  }
-
-  /**
-   * Drops what the transcript draws of streams the ledger no longer holds and
-   * no held frame is about to draw: what a dropped connection was carrying
-   * that nothing since has continued. The ledger is the authority for every
-   * live entry, so anything else drawn is a stale partial stream.
-   */
-  #sweepLive(threadId: string, deploymentId: string): void {
-    const entries = this.#snapshot.transcripts[threadId];
-    if (!entries || this.#historicalThreads.has(threadId)) return;
-    const held = new Set<string>();
-    for (const input of this.#heldLive.get(deploymentId) ?? []) {
-      if (input.progress.threadId !== threadId) continue;
-      for (const item of input.progress.items) {
-        held.add(`${input.progress.runId}:${liveStreamKeyId(liveStreamKeyOf(item))}`);
+        break;
+      case "host.triggers-changed":
+        if (deploymentId) this.#triggersChanged(deploymentId);
+        break;
+      case "host.browser-history-changed":
+        this.browserHistory.changed(message.profileId);
+        break;
+      case "host.apps.changed": {
+        // An open app view rereads when its own app changed, as when the agent publishes it.
+        const appVersions = { ...this.#snapshot.appVersions };
+        for (const appId of message.appIds) appVersions[appId] = (appVersions[appId] ?? 0) + 1;
+        this.#update({
+          ...this.#snapshot,
+          appsRevision: this.#snapshot.appsRevision + 1,
+          appVersions,
+        });
+        break;
       }
-    }
-    const swept = withoutClosedLiveStreams(
-      entries,
-      (runId, key) => this.#live.holds(runId, key) || held.has(`${runId}:${liveStreamKeyId(key)}`),
-    );
-    if (swept === entries) return;
-    this.#update({
-      ...this.#snapshot,
-      transcripts: { ...this.#snapshot.transcripts, [threadId]: [...swept] },
-    });
-  }
-
-  #applyEvents(channel: DeploymentChannel, events: readonly RealtimeEvent[]): void {
-    let next = this.#snapshot;
-    let applied = channel.cursor;
-    const touchedInputQueues = new Set<string>();
-    for (const event of events) {
-      if (compareSequence(event.sequence, applied) <= 0) continue;
-      if (event.type === null) {
-        applied = event.sequence;
-        continue;
-      }
-      this.#nodeDetails.accept(event);
-      this.references.accept(event);
-      if (nodeDetailEventNodeId(event)) {
-        this.#live.complete(event);
-        applied = event.sequence;
-        continue;
-      }
-      if (event.type === "place.entered") this.#runPlaces.accept(event, false);
-      if (
-        event.runId !== null &&
-        (event.type === "run.completed" ||
-          event.type === "run.failed" ||
-          event.type === "run.interrupted" ||
-          (event.type === "run.status" && !isActiveRunStatus(event.data.status)))
-      )
-        this.#runPlaces.end(event.runId, false);
-      invalidateScheduleAnchor(this, event);
-      if (event.type === "task.removed") this.#forgetTask(event.threadId, event.sequence);
-      const current = next.threads.find(({ id }) => id === event.threadId);
-      const ownsState = this.#threadState.record(event);
-      const retained =
-        this.#showsThread(event.threadId) || this.#hydratedThreads.has(event.threadId);
-      next = projectAgentEvent(
-        next,
-        event,
-        retained && !this.#historicalThreads.has(event.threadId),
-      );
-      if (this.#runQueue.record(event)) next = { ...next, runQueue: this.#runQueue.entries() };
-      if (ownsState)
-        next = {
-          ...next,
-          threads: next.threads.map((thread) =>
-            thread.id === event.threadId
-              ? this.#threadState.reconcile(thread, event.sequence, current)
-              : thread,
-          ),
-        };
-      this.#live.complete(event);
-      applied = event.sequence;
-      this.#hydrationBuffers.get(event.threadId)?.push(event);
-      if (inputQueueEventTypes.has(event.type)) touchedInputQueues.add(event.threadId);
-    }
-    if (next !== this.#snapshot) {
-      this.#update(next);
-      if (this.#activeThreadId) this.activateThread(this.#activeThreadId);
-    }
-    channel.cursor = applied;
-    this.#runPlaces.flush();
-    this.#releaseHeldLive(channel);
-    this.#refreshInputQueues(touchedInputQueues);
-  }
-
-  #forgetTask(threadId: string, sequence: Sequence): void {
-    this.#removedThreads.add(threadId);
-    this.#hydratedThreads.delete(threadId);
-    this.#historicalThreads.delete(threadId);
-    this.#threadInputQueueRereads.delete(threadId);
-    // A read already under way predates the removal and must not bring the task back.
-    if (this.#hydrationBuffers.has(threadId))
-      this.#invalidatedHydrations.set(
-        threadId,
-        maxSequence(this.#invalidatedHydrations.get(threadId) ?? zeroSequence, sequence),
-      );
-  }
-
-  #refreshInputQueues(threadIds: Iterable<string>): void {
-    const stale: string[] = [];
-    for (const threadId of threadIds) {
-      if (!this.#snapshot.inputQueues[threadId] && !this.#threadInputQueueLoads.has(threadId))
-        continue;
-      if (threadId === this.#activeThreadId) this.#reloadInputQueue(threadId);
-      else stale.push(threadId);
-    }
-    if (stale.length === 0) return;
-    const inputQueues = { ...this.#snapshot.inputQueues };
-    for (const threadId of stale) delete inputQueues[threadId];
-    this.#update({ ...this.#snapshot, inputQueues });
-  }
-
-  #sendAck(channel: DeploymentChannel): void {
-    if (!channel.socket || channel.socket.readyState !== 1) return;
-    channel.socket.send(
-      JSON.stringify({
-        sequence: channel.cursor,
-        type: "client.ack",
-      }),
-    );
-  }
-
-  #retryDelay(attempt: number, unreadableFrames: number): number {
-    return Math.min(
-      defaultReconnectMaxDelayMs,
-      defaultReconnectBaseDelayMs * 2 ** Math.min(16, Math.max(attempt, unreadableFrames - 1)),
-    );
-  }
-
-  #scheduleReconnect(channel: DeploymentChannel): void {
-    channel.interrupted = true;
-    this.#connectionFailed?.(
-      channel.unreadableFrames > 0
-        ? new ClientOperationError("A synchronized answer is needed.", "transient", {
-            retryable: true,
-            kind: "protocol",
-            provenance: "protocol",
-            reason: "unreadable-frame",
-          })
-        : new HostTransportError("unreachable"),
-    );
-  }
-
-  #closeChannel(
-    channel: DeploymentChannel,
-    reconnect: boolean,
-    code = 1000,
-    reason = "Client closed",
-  ): void {
-    this.#clearProbe(channel);
-    const socket = channel.socket;
-    channel.socket = null;
-    channel.synchronized = false;
-    this.#releaseBrowserCarrier(channel);
-    this.#nodeDetails.disconnected(channel.deploymentId);
-    if (reconnect) this.#scheduleReconnect(channel);
-    try {
-      socket?.close(code, reason);
-    } catch {
-      // The socket is already abandoned; failing to close it changes nothing here.
+      case "host.place-activity":
+      case "host.place-activity-cleared":
+        this.#placeActivity.apply(message);
+        break;
+      case "host.browser-usage-changed":
+        this.#browserUsageChanged(message.threadIds);
+        break;
+      case "host.computer-presence":
+        this.#applyComputerPresence(message.sessions);
+        break;
+      case "host.computer-view.changed":
+        this.#update({
+          ...this.#snapshot,
+          machines: [...this.#ownerViews.accept(this.#snapshot.machines, message.view)],
+        });
+        break;
+      case "host.computer-view.removed":
+        this.#update({
+          ...this.#snapshot,
+          machines: [...this.#ownerViews.remove(this.#snapshot.machines, message)],
+        });
+        break;
+      case "host.personal-remote-access-changed":
+        this.#invalidatePersonalRemoteAccess();
+        break;
+      case "host.connections-changed":
+        for (const listener of this.#connectionsListeners) listener();
+        break;
     }
   }
 
-  #recomputeConnection(): void {
-    if (this.#snapshot.session !== "authenticated") {
-      if (this.#network !== this.#snapshot.network) this.#update(this.#snapshot);
-      return;
-    }
-
-    // connection for the one being read. A refused one's own screen remains
-    // unavailable, and it never decides for a client reading nothing yet.
-    const channels = [...this.#channels.values()];
-    const read = channels.filter(({ deploymentId }) => this.#readsDeployment(deploymentId));
-    const pending = (
-      read.length > 0 ? read : channels.filter((channel) => !channel.refused)
-    ).filter((channel) => !channel.synchronized);
-    if (pending.length === 0 && !channels.some((channel) => channel.refused))
-      this.#hostUnreachable = false;
-    // Retrying a snapshot this client cannot read is no reconnection in
-    // progress: it says so, and offers Retry, between and during the attempts.
-    const connection: HostConnectionState =
-      this.#network === "offline" || channels.some((channel) => channel.refused)
-        ? "offline"
-        : pending.length === 0
-          ? "connected"
-          : pending.some((channel) => channel.unreadableFrames > realtimeReplayAttempts) ||
-              this.#hostUnreachable
-            ? "offline"
-            : "connecting";
-    if (connection !== this.#snapshot.connection || this.#network !== this.#snapshot.network) {
-      this.#update({ ...this.#snapshot, connection });
-    }
-  }
-
-  #readsDeployment(_deploymentId: string): boolean {
-    return true;
+  #reconnectDelay(attempt: number, maxDelayMs = this.#reconnectMaxDelayMs): number {
+    const ceiling = Math.min(maxDelayMs, this.#reconnectBaseDelayMs * 2 ** Math.min(attempt, 16));
+    return Math.min(maxDelayMs, Math.round(ceiling * (0.8 + this.#random() * 0.2)));
   }
 
   #patchBrowserSession(sessionId: string, patch: Partial<BrowserSessionSummary>): void {
@@ -5160,175 +4547,28 @@ export class HttpHostClient {
     }
   }
 
-  async #loadEarlierTranscript(
-    threadId: string,
-    scan: { readonly retired: boolean },
-  ): Promise<void> {
-    const generation = this.#viewerGeneration;
-    const userId = this.#snapshot.user?.id;
-    const drawnRows = (snapshot: HostSnapshot) => {
-      const thread = snapshot.threads.find((item) => item.id === threadId);
-      return thread
-        ? this.#drawnRowCount(thread, snapshot.transcripts[threadId] ?? [], snapshot.assignments)
-        : 0;
-    };
-    let pages = 0;
-    let bytes = 0;
-    const cursors = new Set<string>();
-    while (
-      !scan.retired &&
-      this.#viewerStillCurrent(generation, userId) &&
-      pages < historyScanMaxPages &&
-      bytes < historyScanMaxBytes
-    ) {
-      const thread = this.#snapshot.threads.find((item) => item.id === threadId);
-      const currentWindow = this.#snapshot.transcriptWindows[threadId];
-      if (!thread || currentWindow?.hasMore === false) return;
-      const before = currentWindow?.nextBefore ?? undefined;
-      if (before && cursors.has(before))
-        throw new Error("Thread event page is missing its continuation cursor.");
-      if (before) cursors.add(before);
-      const page = await this.#readThreadHistory(threadId, before);
-      pages += 1;
-      bytes += page.window.byteCount;
-      if (scan.retired || !this.#viewerStillCurrent(generation, userId)) return;
-      if (!this.#snapshot.threads.some((item) => item.id === threadId)) return;
-      // A reconnect hydration may have replaced the window during this read.
-      if (this.#snapshot.transcriptWindows[threadId] !== currentWindow) return;
-      for (const event of page.events) this.#threadState.record(event);
-      const current = this.#snapshot.threads.find(({ id }) => id === threadId);
-      const summary = this.#threadState.reconcile(
-        toThreadSummary(page.thread, this.#snapshot.environments, this.#snapshot.harnesses),
-        page.asOfSequence,
-        current,
-      );
-      const olderEntries = page.events.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
-      const currentEntries = this.#snapshot.transcripts[threadId] ?? [];
-      const drawnBefore = drawnRows(this.#snapshot);
-      const merged = {
-        ...this.#snapshot,
-        threads: this.#snapshot.threads.map((thread) =>
-          thread.id === threadId
-            ? {
-                ...thread,
-                title: summary.title,
-                status: summary.status,
-                inputQueuePaused: summary.inputQueuePaused,
-                pendingRequests: summary.pendingRequests,
-                updatedAt: summary.updatedAt,
-              }
-            : thread,
-        ),
-        assignments: withAssignmentsFrom(this.#snapshot.assignments, page.events),
-        transcripts: {
-          ...this.#snapshot.transcripts,
-          [threadId]: mergeTranscriptSegments(olderEntries, currentEntries),
-        },
-        transcriptWindows: {
-          ...this.#snapshot.transcriptWindows,
-          [threadId]: page.window,
-        },
-      };
-      const drawnAfter = drawnRows(merged);
-      this.#update(merged);
-      if (page.window.hasMore && (!page.window.nextBefore || cursors.has(page.window.nextBefore)))
-        throw new Error("Thread event page is missing its continuation cursor.");
-      // A byte/item budget can split one turn across pages. Its older steps
-      // can merge into the existing row without adding a row to read.
-      if (!page.window.hasMore || drawnAfter > drawnBefore) return;
-    }
-  }
-
-  async #loadRequests(threadId: string): Promise<void> {
-    const generation = this.#viewerGeneration;
-    const requests: Request[] = [];
-    let before: string | null = null;
-    do {
-      const response: {
-        readonly requests: Request[];
-        readonly threadId: string;
-        readonly window: DurableWindow;
-      } = unwrapRpcResult(
-        await this.rpc["thread.requests.list"]({
-          ...(this.#supportsDeviceAccessRequests()
-            ? { deviceAccessRequests: "include" as const }
-            : {}),
-          ...(before ? { before } : {}),
-          limit: 100,
-          threadId,
-        }),
-      );
-      if (generation !== this.#viewerGeneration || this.#disposed) return;
-      if (response.threadId !== threadId) throw new Error("Thread Request response mismatch.");
-      requests.push(...response.requests);
-      before = response.window.hasMore ? response.window.nextBefore : null;
-      if (response.window.hasMore && !before) {
-        throw new Error("Thread Request page is missing its continuation cursor.");
-      }
-    } while (before);
-    this.#update({
-      ...this.#snapshot,
-      requests: { ...this.#snapshot.requests, [threadId]: requests },
-    });
-  }
-
-  #expireSession(invalidate = true): void {
-    if (invalidate) this.connection.invalidateScope();
-    const cacheScope = this.#cacheScope();
-    if (cacheScope)
-      this.#checkpointWrite = this.#checkpointWrite
-        .catch(() => undefined)
-        .then(() => this.#streamCache?.remove(cacheScope));
-    this.#cacheLoaded = false;
-    this.#restoredCursor = null;
-    this.#browserCarrier = null;
-    this.#nodeDetails.clear();
-    this.#clearAttachmentReads();
-    this.#cancelLostFrameReread();
-    this.#savedViewReadiness = emptySavedViewReadiness();
-    this.#viewerGeneration += 1;
-    this.#browserUsageRead.clear();
-    this.#browserUsageReads.clear();
-    this.#browserUsageRunSources.clear();
-    this.#browserUses.clear();
-    this.#tabs.clear();
-    this.#pageSessions.clear();
-    this.#placeActivity.clear();
-    this.#runPlaces.clear();
-    this.#targetedWatch.clear();
-    this.#targetedControl.clear();
-    this.#reportedTimeZone = null;
-    this.#tasksStale = false;
-    this.#threadState.clear();
-    this.#threadRenames.clear();
-    this.#threadIcons.clear();
-    // Another viewer may sign in next and open the same Threads; nothing this
-    // one was streaming, nor any reread asked for it, may draw for them.
-    this.#runQueue.clear();
-    this.#live.clear();
-    this.#heldLive.clear();
-    this.#forgetLiveRereads();
-    this.#threadDeployment.clear();
-    this.#assignmentReads.clear();
-    this.#automationReads.clear();
-    this.#readAutomations.clear();
-    this.#requestReads.clear();
-    this.#deniedAssignments.clear();
-    this.#observedThreads.clear();
-    this.#historicalThreads.clear();
-    this.#threadHydrations.clear();
-    this.#hydrationBuffers.clear();
-    this.#hydratedThreads.clear();
-    this.#invalidatedHydrations.clear();
-    for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
-    this.#channels.clear();
-    this.#update({
-      ...emptySnapshot(this.#tabs),
-      connection: "connected",
+  #expireSession() {
+    if (this.#disposed || this.#snapshot.session === "authentication-required") return;
+    this.connection.invalidateScope();
+    this.#closeSocket();
+    this.#stream.clear(true);
+    this.#forgetViewer({
       identityConfig: this.#snapshot.identityConfig,
-      revision: this.#snapshot.revision,
+      connection: "connected",
       session: "authentication-required",
     });
+    const generation = this.#viewerGeneration;
+    void this.rpc["auth.config"]({})
+      .then((result) => {
+        if (
+          result.ok &&
+          !this.#disposed &&
+          this.#viewerGeneration === generation &&
+          this.#snapshot.session === "authentication-required"
+        )
+          this.#update({ ...this.#snapshot, identityConfig: result.data });
+      })
+      .catch(() => undefined);
   }
 
   #viewerStillCurrent(generation: number, userId: string | undefined): boolean {
@@ -5355,7 +4595,8 @@ export class HttpHostClient {
   #webSocketUrl(path: string): string {
     const url = new URL(path, this.#baseUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    return setApiVersionQuery(url, "personal").toString();
+    url.searchParams.set(apiVersionQueryParameter, String(scopedPersonalApiVersion));
+    return url.toString();
   }
 
   /**
@@ -5391,102 +4632,9 @@ export class HttpHostClient {
     }
   }
 
-  /**
-   * Tells the Host this viewer's time zone, as this device's clock has it, so
-   * an agent asked for "5pm" means their 5pm. Each bootstrap checks; only a
-   * new viewer, a new Deployment or a moved clock sends. A refusal stands for
-   * that zone, and a request that never landed is asked again by the next
-   * bootstrap, never sooner.
-   */
-  #reportTimeZone(): void {
-    const userId = this.#snapshot.user?.id;
-    if (this.#disposed || this.#snapshot.session !== "authenticated" || !userId) return;
-    // A Host with `message-origin-v1` reads each message's zone instead.
-    if (this.#capabilities?.includes("message-origin-v1")) return;
-    const timeZone = TimeZoneSchema.safeParse(deviceTimeZone());
-    if (!timeZone.success) return;
-    const report = `${this.#snapshot.deploymentId ?? ""}:${userId}:${timeZone.data}`;
-    if (this.#reportedTimeZone === report) return;
-    this.#reportedTimeZone = report;
-    void this.#dispatch({
-      idempotencyKey: mutationIdempotencyKey("time-zone"),
-      timeZone: timeZone.data,
-      type: "viewer.timeZone.update",
-    }).catch((error: unknown) => {
-      if (this.#reportedTimeZone === report && !isHostRefusal(error)) this.#reportedTimeZone = null;
-    });
-  }
-
-  #cacheScope(): PersonalCacheScope | null {
-    return this.#snapshot.deploymentId && this.#snapshot.user
-      ? {
-          deploymentId: this.#snapshot.deploymentId,
-          userId: this.#snapshot.user.id,
-          apiVersion: hostApiVersion,
-        }
-      : null;
-  }
-  #persistCheckpoint(channel: DeploymentChannel, synchronizing = false): void {
-    // Until a socket synchronizes, the version its state was read at is unconfirmed.
-    if (!channel.synchronized && !synchronizing) return;
-    const scope = this.#cacheScope();
-    if (!scope || !this.#streamCache) return;
-    const generation = this.#viewerGeneration;
-    const {
-      threads,
-      tasks,
-      activeTasks,
-      transcripts,
-      transcriptWindows,
-      requests,
-      waitingRequests,
-      needsYou,
-      threadVisits,
-    } = this.#snapshot;
-    const snapshot = {
-      threads,
-      tasks,
-      activeTasks,
-      transcripts,
-      transcriptWindows,
-      requests,
-      waitingRequests,
-      needsYou,
-      threadVisits,
-    };
-    const checkpoint = {
-      scope,
-      snapshot,
-      threadStates: this.#threadState.checkpoint(),
-      cursor: {
-        deploymentId: DeploymentIdSchema.parse(scope.deploymentId),
-        apiVersion: channel.apiVersion,
-        afterSequence: channel.cursor,
-      },
-    };
-    this.#checkpointWrite = this.#checkpointWrite
-      .catch(() => undefined)
-      .then(() =>
-        new TextEncoder().encode(JSON.stringify(checkpoint)).byteLength <= 1_048_576
-          ? this.#streamCache!.commit(
-              checkpoint,
-              () => generation === this.#viewerGeneration && !this.#disposed,
-            )
-          : this.#streamCache!.remove(scope),
-      );
-  }
-
-  #update(snapshot: HostSnapshot, liveThreadId?: string): void {
+  #update(snapshot: HostSnapshot, projectThreadState = false): void {
     if (this.#disposed) return;
-    snapshot = withPublishedReplies(
-      this.#snapshot,
-      {
-        ...snapshot,
-        network: this.#network,
-        connectionInterrupted: this.connection?.getSnapshot().showInterruption ?? false,
-      },
-      liveThreadId,
-    );
+
     if (snapshot.session !== "authenticated") this.#savedViewReadiness = emptySavedViewReadiness();
     if (
       !this.#capabilities?.includes("task-family-v1") &&
@@ -5495,8 +4643,10 @@ export class HttpHostClient {
       snapshot = { ...snapshot, threadAutomations: {} };
     const tabRows = this.#tabs.rows;
     const tabsChanged = tabRows !== this.#tabRows;
-    if (tabsChanged) {
-      this.#tabRows = tabRows;
+    const inventoryCompleted = this.#tabs.complete && !this.#tabInventoryComplete;
+    this.#tabRows = tabRows;
+    this.#tabInventoryComplete = this.#tabs.complete;
+    if (this.#tabs.complete && (tabsChanged || inventoryCompleted)) {
       // A page binding lasts while its tab is listed; a closed tab's session is no longer this device's.
       for (const tabId of this.#pageSessions.keys())
         if (!tabRows.has(tabId as TabId)) this.#pageSessions.delete(tabId);
@@ -5509,21 +4659,10 @@ export class HttpHostClient {
         };
     }
     const scope = viewerScopeOf(snapshot);
-    if (this.#viewer.change(scope)) {
-      clearRunPageViews(this);
-      clearRunPlacePictures(this);
-      this.#nodeDetails.clear();
-      this.#runPlaces.clear();
-      this.#targetedWatch.clear();
-      this.#targetedControl.clear();
-      this.#clearAttachmentReads();
-      this.#computerViews.clear();
-      this.#ownerViews.clear();
-      this.#pageSessions.clear();
-      this.#viewers.clear();
-      this.#tabs.clear();
-      snapshot = { ...snapshot, browserSessions: [] };
-    }
+    // Fences answers asked under another scope. What is held is cleared only by `#forgetViewer`:
+    // a viewer becoming known adopts what was read for it, and every other viewer has gone through
+    // `#forgetViewer` before its first cut is applied.
+    this.#viewer.change(scope);
     // A dropped connection pauses the views being watched; it does not end them.
     this.#computerViews.setConnected(scope !== null && snapshot.connection === "connected");
     this.browserHistory.setScope(scope);
@@ -5569,52 +4708,81 @@ export class HttpHostClient {
         };
       }
     }
-    for (const thread of snapshot.threads)
-      this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
-    for (const { thread } of snapshot.activeTasks)
-      this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
-    for (const list of [snapshot.tasks, ...Object.values(snapshot.doneTasks)])
-      for (const { thread } of list?.entries ?? [])
+    if (
+      projectThreadState ||
+      snapshot.threads !== this.#snapshot.threads ||
+      snapshot.tasks !== this.#snapshot.tasks ||
+      snapshot.activeTasks !== this.#snapshot.activeTasks ||
+      snapshot.doneTasks !== this.#snapshot.doneTasks ||
+      snapshot.threadVisits !== this.#snapshot.threadVisits ||
+      snapshot.deploymentId !== this.#snapshot.deploymentId ||
+      this.#threadRenames.size !== 0 ||
+      this.#threadIcons.size !== 0
+    ) {
+      this.#threadDeployment.clear();
+      for (const thread of snapshot.threads)
         this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
-    const hiddenAssignments = new Set(this.#deniedAssignments);
-    if (hiddenAssignments.size > 0) snapshot = withoutAssignments(snapshot, hiddenAssignments);
-    const incoming = [
-      ...snapshot.threads,
-      ...(snapshot.tasks?.entries ?? []).map((entry) => entry.thread),
-      ...snapshot.activeTasks.map((entry) => entry.thread),
-      ...Object.values(snapshot.doneTasks).flatMap((list) =>
-        list.entries.map((entry) => entry.thread),
-      ),
-    ];
-    const previousVisits =
-      viewerScopeOf(snapshot) === viewerScopeOf(this.#snapshot)
-        ? this.#snapshot.threadVisits
-        : snapshot.threadVisits;
-    let visits = previousVisits;
-    for (const [id, at] of [
-      ...Object.entries(snapshot.threadVisits),
-      ...incoming.flatMap((row) =>
-        row.lastVisitedAt ? [[row.id, row.lastVisitedAt] as const] : [],
-      ),
-    ]) {
-      if (at <= (visits[id] ?? "")) continue;
-      if (visits === previousVisits) visits = { ...visits };
-      visits[id] = at;
+      for (const { thread } of snapshot.activeTasks)
+        this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
+      for (const list of [snapshot.tasks, ...Object.values(snapshot.doneTasks)])
+        for (const { thread } of list?.entries ?? [])
+          this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
+      const hiddenAssignments = new Set(this.#deniedAssignments);
+      if (hiddenAssignments.size > 0) snapshot = withoutAssignments(snapshot, hiddenAssignments);
+      const incoming = [
+        ...snapshot.threads,
+        ...(snapshot.tasks?.entries ?? []).map((entry) => entry.thread),
+        ...snapshot.activeTasks.map((entry) => entry.thread),
+        ...Object.values(snapshot.doneTasks).flatMap((list) =>
+          list.entries.map((entry) => entry.thread),
+        ),
+      ];
+      const previousVisits =
+        snapshot.sessionId === this.#snapshot.sessionId &&
+        snapshot.deploymentId === this.#snapshot.deploymentId
+          ? this.#snapshot.threadVisits
+          : snapshot.threadVisits;
+      let visits = previousVisits;
+      for (const [id, at] of [
+        ...Object.entries(snapshot.threadVisits),
+        ...incoming.flatMap((row) =>
+          row.lastVisitedAt ? [[row.id, row.lastVisitedAt] as const] : [],
+        ),
+      ]) {
+        if (at <= (visits[id] ?? "")) continue;
+        if (visits === previousVisits) visits = { ...visits };
+        visits[id] = at;
+      }
+      const keptVisits = Object.entries(visits).filter(
+        ([id]) => this.#threadDeployment.has(id) || this.#showsThread(id),
+      );
+      snapshot = {
+        ...snapshot,
+        threadVisits:
+          keptVisits.length === Object.keys(visits).length
+            ? visits
+            : Object.fromEntries(keptVisits),
+      };
+      this.#threadState.retainLoaded(incoming);
+      snapshot = withThreadState(snapshot, (thread) => ({
+        ...this.#threadState.view(thread),
+        lastVisitedAt: snapshot.threadVisits[thread.id] ?? thread.lastVisitedAt,
+        ...(this.#threadRenames.has(thread.id)
+          ? { title: this.#threadRenames.get(thread.id)!.title }
+          : {}),
+        ...(this.#threadIcons.has(thread.id)
+          ? { icon: this.#threadIcons.get(thread.id)!.icon }
+          : {}),
+      }));
+      let changed = false;
+      const threads = snapshot.threads.map((thread) => {
+        const unread = isThreadUnread(thread);
+        if (thread.unread === unread) return thread;
+        changed = true;
+        return { ...thread, unread };
+      });
+      if (changed) snapshot = { ...snapshot, threads };
     }
-    snapshot = { ...snapshot, threadVisits: visits };
-    this.#threadState.retainLoaded(incoming);
-    snapshot = withThreadState(snapshot, (thread) => ({
-      ...this.#threadState.view(thread),
-      lastVisitedAt: snapshot.threadVisits[thread.id] ?? thread.lastVisitedAt,
-      ...(this.#threadRenames.has(thread.id)
-        ? { title: this.#threadRenames.get(thread.id)!.title }
-        : {}),
-      ...(this.#threadIcons.has(thread.id) ? { icon: this.#threadIcons.get(thread.id)!.icon } : {}),
-    }));
-    const threads = snapshot.threads.map((thread) => {
-      const unread = isThreadUnread(thread);
-      return thread.unread === unread ? thread : { ...thread, unread };
-    });
     this.#snapshot = {
       ...snapshot,
       savedViewReadiness: this.#savedViewReadiness,
@@ -5637,442 +4805,24 @@ export class HttpHostClient {
       devicesAvailable: this.#capabilities?.includes("devices-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-run-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
-      threads:
-        threads.length === this.#snapshot.threads.length &&
-        threads.every((thread, index) => thread === this.#snapshot.threads[index])
-          ? this.#snapshot.threads
-          : threads,
       network: this.#network,
       revision: this.#snapshot.revision + 1,
     };
     this.#runPlaces.flush();
     reconcileBrowserTargets?.();
-    this.#nodeDetails.refreshNodes();
     this.browserHistory.setConnected(this.#snapshot.connection === "connected");
-    nameConnectionFromHost(this.connection, this.#snapshot);
-    for (const listener of this.#listeners) listener();
+    if (this.connection) nameConnectionFromHost(this.connection, this.#snapshot);
+    for (const [listener, interest] of this.#listeners) {
+      const outer = this.#reading;
+      this.#reading = interest;
+      try {
+        listener();
+      } finally {
+        this.#reading = outer;
+      }
+    }
     this.#checkBrowserUsageRuns();
   }
-}
-
-// Only bootstrap's plain data is shared; live stores keep their own identities.
-
-// Only bootstrap's plain data is shared; live stores keep their own identities.
-function shareBootstrapData<T>(previous: unknown, next: T): T;
-function shareBootstrapData(previous: unknown, next: unknown): unknown {
-  if (previous === next) return previous;
-  if (Array.isArray(previous) && Array.isArray(next)) {
-    const shared = next.map((value: unknown, index: number) =>
-      shareBootstrapData(previous[index], value),
-    );
-    return previous.length === shared.length &&
-      shared.every((value, index) => value === previous[index])
-      ? previous
-      : shared;
-  }
-  if (
-    previous &&
-    next &&
-    typeof previous === "object" &&
-    typeof next === "object" &&
-    Object.getPrototypeOf(previous) === Object.prototype &&
-    Object.getPrototypeOf(next) === Object.prototype
-  ) {
-    const held = previous as Record<string, unknown>;
-    const incoming = next as Record<string, unknown>;
-    const keys = Object.keys(incoming);
-    const shared: Record<string, unknown> = { ...incoming };
-    let equal = Object.keys(held).length === keys.length;
-    for (const key of keys) {
-      shared[key] = shareBootstrapData(held[key], incoming[key]);
-      if (!Object.hasOwn(held, key) || shared[key] !== held[key]) equal = false;
-    }
-    return equal ? previous : shared;
-  }
-  return next;
-}
-
-function withNewerComputerPresence(
-  machine: MachineSummary,
-  previous: readonly MachineSummary[],
-  patchedSince: (sessionId: string) => boolean,
-): MachineSummary {
-  const computerUse = machine.computerUse;
-  if (!computerUse?.sessions.some((session) => patchedSince(session.sessionId))) {
-    return { ...machine };
-  }
-  const known = new Map(
-    previous
-      .filter(
-        (candidate) =>
-          candidate.id === machine.id && deviceDriverKey(candidate) === deviceDriverKey(machine),
-      )
-      .flatMap((candidate) =>
-        (candidate.computerUse?.sessions ?? []).map((session) => [session.sessionId, session]),
-      ),
-  );
-  return {
-    ...machine,
-    computerUse: {
-      ...computerUse,
-      sessions: computerUse.sessions.map((session) => {
-        const patched = patchedSince(session.sessionId) ? known.get(session.sessionId) : undefined;
-        return patched ? { ...session, actingAppKeys: [...patched.actingAppKeys] } : session;
-      }),
-    },
-  };
-}
-
-export function unwrapRpcResult<Success>(
-  result: RpcResult<
-    Success,
-    import("@opensteer/protocol").RpcError<
-      (typeof import("@opensteer/protocol").hostApi)[keyof typeof import("@opensteer/protocol").hostApi]
-    >
-  >,
-): Success {
-  if (result.ok) return result.data;
-  throw new HostClientRequestError({
-    code: result.error.code,
-    message: result.error.message,
-    ...(result.error.reason === undefined ? {} : { reason: result.error.reason }),
-    ...(result.error.provenance ? { provenance: result.error.provenance } : {}),
-    status: rpcErrorStatus(result.error.code),
-    retryable: result.error.retryable,
-  });
-}
-
-/**
- * A Run that has ended can take no more steering. The queue read will say the
- * same, but the tray must not offer Steer into a finished Run for the length
- * of a round trip.
- */
-function withoutSteerTarget(
-  inputQueues: HostSnapshot["inputQueues"],
-  threadId: string,
-  runId: string | null,
-): HostSnapshot["inputQueues"] {
-  const queue = inputQueues[threadId];
-  if (!runId || queue?.steerRunId !== runId) return inputQueues;
-  return { ...inputQueues, [threadId]: { ...queue, steerRunId: null } };
-}
-
-/**
- * A task the Host removed leaves every list and record this client holds of
- * it. A view still open on it reads `missing`, as for any task that is gone.
- */
-function withoutTask(snapshot: HostSnapshot, threadId: string): HostSnapshot {
-  const without = <Value>(record: Readonly<Record<string, Value>>): Record<string, Value> => {
-    const { [threadId]: _removed, ...rest } = record;
-    return rest;
-  };
-  const withoutEntry = (list: TaskListState): TaskListState => {
-    const entries = list.entries.filter((entry) => entry.thread.id !== threadId);
-    if (entries.length === list.entries.length) return list;
-    return {
-      entries,
-      window: {
-        ...list.window,
-        itemCount: Math.max(0, list.window.itemCount - 1),
-        totalItems: Math.max(0, list.window.totalItems - 1),
-      },
-    };
-  };
-  const needsYou = snapshot.needsYou;
-  const asks = needsYou?.entries.filter(
-    (entry) => entry.kind === "team-ask" && entry.task?.threadId === threadId,
-  ).length;
-  return {
-    ...snapshot,
-    activeTasks: snapshot.activeTasks.filter((entry) => entry.thread.id !== threadId),
-    doneTasks: Object.fromEntries(
-      Object.entries(snapshot.doneTasks).map(([key, list]) => [key, withoutEntry(list)]),
-    ),
-    inputQueues: without(snapshot.inputQueues),
-    needsYou:
-      needsYou && asks
-        ? {
-            ...needsYou,
-            count: Math.max(0, needsYou.count - asks),
-            entries: needsYou.entries.filter(
-              (entry) => entry.kind !== "team-ask" || entry.task?.threadId !== threadId,
-            ),
-            window: {
-              ...needsYou.window,
-              itemCount: Math.max(0, needsYou.window.itemCount - asks),
-              totalItems: Math.max(0, needsYou.window.totalItems - asks),
-            },
-          }
-        : needsYou,
-    requests: without(snapshot.requests),
-    tasks: snapshot.tasks && withoutEntry(snapshot.tasks),
-    threadLookups: { ...snapshot.threadLookups, [threadId]: "missing" },
-    threads: snapshot.threads.filter((thread) => thread.id !== threadId),
-    threadVisits: without(snapshot.threadVisits),
-    transcriptWindows: without(snapshot.transcriptWindows),
-    transcripts: without(snapshot.transcripts),
-  };
-}
-
-export function rpcErrorStatus(code: string): number {
-  return code === "bad_request"
-    ? 400
-    : code === "unauthorized"
-      ? 401
-      : code === "canonical_surface_required" || code === "forbidden"
-        ? 403
-        : code === "not_found"
-          ? 404
-          : code === "conflict"
-            ? 409
-            : code === "resource_exhausted" || code === "timeout"
-              ? 429
-              : code === "runner_offline" || code === "folder_unavailable"
-                ? 503
-                : 500;
-}
-
-function projectAgentEvent(
-  snapshot: HostSnapshot,
-  event: AgentEvent,
-  drawTranscript: boolean,
-): HostSnapshot {
-  const assignments =
-    event.type === "assignment.created" || event.type === "assignment.updated"
-      ? mergeAssignments(snapshot.assignments, [event.data.assignment])
-      : snapshot.assignments;
-  let requests = snapshot.requests;
-  let inputQueues = snapshot.inputQueues;
-  // An ended Request waits on nobody. The Host's notice rereads the list, but
-  // a card that already knows need not keep asking until it lands.
-  const endedRequestId =
-    event.type === "request.cancelled"
-      ? event.data.requestId
-      : event.type === "request.resolved"
-        ? event.data.request.id
-        : null;
-  const waitingRequests =
-    endedRequestId === null
-      ? snapshot.waitingRequests
-      : snapshot.waitingRequests.filter(({ request }) => request.id !== endedRequestId);
-  const cancellationContext =
-    event.type === "request.cancelled"
-      ? requests[event.threadId]?.find((request) => request.id === event.data.requestId)
-      : undefined;
-
-  switch (event.type) {
-    case "run.completed":
-    case "run.failed":
-    case "run.interrupted":
-      inputQueues = withoutSteerTarget(inputQueues, event.threadId, event.runId);
-      break;
-    case "request.updated":
-      requests = {
-        ...requests,
-        [event.threadId]: upsertRequest(requests[event.threadId] ?? [], event.data.request),
-      };
-      break;
-    case "request.opened":
-      requests = {
-        ...requests,
-        [event.threadId]: upsertRequest(requests[event.threadId] ?? [], event.data.request),
-      };
-      break;
-    case "request.cancelled":
-      requests = {
-        ...requests,
-        [event.threadId]: (requests[event.threadId] ?? []).filter(
-          (request) => request.id !== event.data.requestId,
-        ),
-      };
-      break;
-    case "request.resolved":
-      requests = {
-        ...requests,
-        [event.threadId]: (requests[event.threadId] ?? []).filter(
-          (request) => request.id !== event.data.request.id,
-        ),
-      };
-      break;
-    case "thread.created": {
-      const thread = toThreadSummary(event.data.thread, snapshot.environments, snapshot.harnesses);
-      return {
-        ...snapshot,
-        ...(event.data.voice ? { voiceThreadId: thread.id } : {}),
-        requests: snapshot.requests[thread.id]
-          ? snapshot.requests
-          : { ...snapshot.requests, [thread.id]: [] },
-        threads: snapshot.threads.some((item) => item.id === thread.id)
-          ? patchThread(snapshot.threads, thread.id, thread)
-          : [thread, ...snapshot.threads],
-        transcriptWindows: snapshot.transcriptWindows[thread.id]
-          ? snapshot.transcriptWindows
-          : {
-              ...snapshot.transcriptWindows,
-              [thread.id]: {
-                byteCount: 2,
-                hasMore: false,
-                itemCount: 0,
-                nextBefore: null,
-                threadId: thread.id,
-                totalItems: 0,
-              },
-            },
-        transcripts: snapshot.transcripts[thread.id]
-          ? snapshot.transcripts
-          : { ...snapshot.transcripts, [thread.id]: [] },
-      };
-    }
-    case "thread.execution-updated":
-      // The switch's marker is the entry a reloaded history folds from this
-      // same event, so the live conversation draws it exactly as a reload will.
-      return {
-        ...snapshot,
-        threads: patchThread(
-          snapshot.threads,
-          event.threadId,
-          toThreadSummary(event.data.thread, snapshot.environments, snapshot.harnesses),
-        ),
-        transcripts: drawTranscript
-          ? {
-              ...snapshot.transcripts,
-              [event.threadId]: foldTranscriptEvent(
-                snapshot.transcripts[event.threadId] ?? [],
-                event,
-              ),
-            }
-          : snapshot.transcripts,
-      };
-    case "thread.listed": {
-      // Lists never held an unlisted Thread, so it may arrive here unknown.
-      const thread = toThreadSummary(event.data.thread, snapshot.environments, snapshot.harnesses);
-      return {
-        ...snapshot,
-        threads: snapshot.threads.some(({ id }) => id === thread.id)
-          ? patchThread(snapshot.threads, thread.id, { listed: thread.listed })
-          : [thread, ...snapshot.threads],
-      };
-    }
-    case "thread.continuation-established":
-      return {
-        ...snapshot,
-        threads: patchThread(snapshot.threads, event.threadId, {
-          continuationIdentity: event.data.continuationIdentity,
-          updatedAt: event.createdAt,
-        }),
-      };
-    case "thread.access-mode-updated":
-      return {
-        ...snapshot,
-        threads: patchThread(snapshot.threads, event.threadId, {
-          accessMode: event.data.accessMode,
-          updatedAt: event.createdAt,
-        }),
-      };
-    case "thread.state-changed":
-      // Absolute state is reconciled where events are applied. It is not
-      // transcript; folding it would give every Thread that changes state an
-      // empty transcript and copy the whole transcript map once per change.
-      return {
-        ...snapshot,
-        threads: patchThread(snapshot.threads, event.threadId, { updatedAt: event.createdAt }),
-      };
-    case "thread.input-queue-updated": {
-      const queue = snapshot.inputQueues[event.threadId];
-      return {
-        ...snapshot,
-        inputQueues:
-          queue && queue.paused !== event.data.paused
-            ? { ...inputQueues, [event.threadId]: { ...queue, paused: event.data.paused } }
-            : inputQueues,
-      };
-    }
-    case "thread-input.updated": {
-      // The queue read decides what is waiting, but an input that has stopped
-      // waiting has certainly left the queue, and the tray need not wait a
-      // round trip to stop offering it.
-      const input = event.data.input;
-      const queue = inputQueues[event.threadId];
-      if (
-        !isWaitingInputState(input.state) &&
-        queue?.items.some((item) => item.message.id === input.messageId)
-      ) {
-        inputQueues = {
-          ...inputQueues,
-          [event.threadId]: {
-            ...queue,
-            items: queue.items.filter((item) => item.message.id !== input.messageId),
-          },
-        };
-      }
-      break;
-    }
-    // Renewals are silent, so this is a take, a hand-over or an end: only
-    // that item's lease changes, without reading the queue's messages again.
-    case "thread-input.lease-changed":
-      return {
-        ...snapshot,
-        inputQueues: withEditLease(
-          inputQueues,
-          event.threadId,
-          event.data.messageId,
-          event.data.lease,
-        ),
-      };
-    case "message.updated":
-      return withEditedWaitingMessage(
-        snapshot,
-        event.threadId,
-        event.data.message,
-        event.data.edit,
-        event.data.input,
-      );
-    case "task.removed":
-      return withoutTask(snapshot, event.threadId);
-    case "message.created":
-      break;
-    default:
-      break;
-  }
-
-  let entries = drawTranscript
-    ? foldTranscriptEvent(snapshot.transcripts[event.threadId] ?? [], event)
-    : null;
-  if (entries && event.type === "request.cancelled" && cancellationContext) {
-    entries = entries.map((entry) =>
-      entry.kind === "request" && entry.requestId === event.data.requestId
-        ? {
-            ...entry,
-            requestKind: cancellationContext.kind,
-            title: requestTitleText(cancellationContext.presentation),
-          }
-        : entry,
-    );
-  }
-  return {
-    ...snapshot,
-    assignments,
-    inputQueues,
-    requests,
-    waitingRequests,
-    ...(event.type === "app.published"
-      ? {
-          appVersions: {
-            ...snapshot.appVersions,
-            [event.data.appId]: Math.max(
-              snapshot.appVersions?.[event.data.appId] ?? 0,
-              event.data.version,
-            ),
-          },
-        }
-      : {}),
-    threads: patchThread(snapshot.threads, event.threadId, {
-      updatedAt: event.createdAt,
-    }),
-    transcripts: entries
-      ? { ...snapshot.transcripts, [event.threadId]: entries }
-      : snapshot.transcripts,
-  };
 }
 
 function mergeAssignments(
@@ -6087,61 +4837,14 @@ function mergeAssignments(
   return merged;
 }
 
-/** What a history page says about assignments, merged into what the client holds. */
-function withAssignmentsFrom(
-  prior: Readonly<Record<string, AssignmentSummary>>,
-  events: readonly AgentEvent[],
-): Record<string, AssignmentSummary> {
-  return mergeAssignments(
-    prior,
-    events.flatMap((event) =>
-      event.type === "assignment.created" || event.type === "assignment.updated"
-        ? [event.data.assignment]
-        : [],
-    ),
-  );
-}
-
 /** The snapshot without these assignments' summaries, cards or return rows. */
 function withoutAssignments(snapshot: HostSnapshot, hidden: ReadonlySet<string>): HostSnapshot {
-  const shown = (entry: TranscriptEntry): boolean =>
-    entry.kind === "assignment"
-      ? !hidden.has(entry.assignment.id)
-      : entry.kind !== "assignment-return" || !hidden.has(entry.assignmentId);
   return {
     ...snapshot,
     assignments: Object.fromEntries(
       Object.entries(snapshot.assignments).filter(([id]) => !hidden.has(id)),
     ),
-    transcripts: Object.fromEntries(
-      Object.entries(snapshot.transcripts).map(([threadId, entries]) => [
-        threadId,
-        entries.every(shown) ? entries : entries.filter(shown),
-      ]),
-    ),
   };
-}
-
-function upsertRequest(requests: readonly Request[], request: Request): Request[] {
-  return [...requests.filter((candidate) => candidate.id !== request.id), request].sort(
-    (left, right) => left.createdAt.localeCompare(right.createdAt),
-  );
-}
-
-function knownPendingRequestCount(snapshot: HostSnapshot, threadId: string): number {
-  return (snapshot.requests[threadId] ?? []).filter((request) => request.status === "pending")
-    .length;
-}
-
-/**
- * History pages and the realtime stream share one event shape, whose
- * place.entered names a tab.
- */
-function tabEventPage<Page extends { readonly events: readonly unknown[] }>(
-  result: Parameters<typeof unwrapRpcResult<Page>>[0],
-): Omit<Page, "events"> & { readonly events: AgentEvent[] } {
-  const page = unwrapRpcResult(result);
-  return { ...page, events: z.array(AgentEventViewSchema).parse(page.events) };
 }
 
 function emptySnapshot(tabs: TabStore): HostSnapshot {
@@ -6160,8 +4863,8 @@ function emptySnapshot(tabs: TabStore): HostSnapshot {
     iphoneAppsAvailable: false,
     assignments: {},
     threadAutomations: {},
-    requests: {},
     waitingRequests: [],
+    loadedResources: [],
     runQueue: [],
 
     browserAvailable: false,
@@ -6189,7 +4892,6 @@ function emptySnapshot(tabs: TabStore): HostSnapshot {
     doneTasks: {},
     quietTaskDays: null,
     identityConfig: null,
-    inputQueues: {},
     machines: [],
     ownerProfile: null,
     revision: 0,
@@ -6199,8 +4901,6 @@ function emptySnapshot(tabs: TabStore): HostSnapshot {
     triggerRevision: 0,
     threadLookups: {},
     threads: [],
-    transcriptWindows: {},
-    transcripts: {},
     user: null,
   };
 }
@@ -6218,35 +4918,6 @@ function harnessEndpoint(config: unknown): Pick<HarnessSummary, "endpoint"> {
   return { endpoint: typeof runtime === "string" ? { baseUrl, runtime } : { baseUrl } };
 }
 
-function harnessSummary(record: z.infer<typeof HarnessRecordSchema>): HarnessSummary {
-  const {
-    config,
-    driverKind,
-    enabled,
-    environmentId,
-    id,
-    isDefault,
-    name,
-    modelSettings,
-    runtimeRevision,
-    sourceId,
-    stateKind,
-  } = record;
-  return {
-    driverKind,
-    enabled,
-    environmentId,
-    id,
-    isDefault,
-    name,
-    modelSettings,
-    runtimeRevision,
-    ...harnessEndpoint(config),
-    sourceId,
-    stateKind,
-  };
-}
-
 /** One use of a browser within a conversation, by session, Run and page. */
 function browserUseKey(
   sessionId: string,
@@ -6257,6 +4928,54 @@ function browserUseKey(
 
 function sameKeys(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((key, index) => key === right[index]);
+}
+
+const unknownModelSelection = ModelSelectionSchema.parse({
+  providerId: "unknown",
+  modelId: "unknown",
+  options: {},
+});
+
+function mergeResourceRows<T>(held: readonly T[], page: readonly T[], id: (row: T) => string): T[] {
+  const rows = new Map(held.map((row) => [id(row), row]));
+  for (const row of page) rows.set(id(row), row);
+  return [...rows.values()];
+}
+
+function compactThread(
+  row: NonNullable<ReturnType<PersonalShellStore["getSnapshot"]>["snapshot"]>["tasks"][number],
+): ThreadSummary {
+  return {
+    id: row.id,
+    title: row.title,
+    askedAt: row.askedAt,
+    createdAt: row.askedAt,
+    updatedAt: row.askedAt,
+    doneAt: row.doneAt,
+    doneReason: row.doneReason,
+    latestRunCompletedAt: row.latestRunCompletedAt,
+    lastVisitedAt: null,
+    status: row.status,
+    purpose: row.purpose,
+    pendingRequests: row.pendingRequestCount,
+    listed: true,
+    unread: false,
+    inputQueuePaused: row.inputQueuePaused ?? false,
+    accessMode: "approval-required",
+    continuationIdentity: null,
+    providerSessionId: null,
+    environmentId: row.environmentId,
+    harnessInstanceId: row.harnessInstanceId,
+    runQueued: row.runQueued,
+    modelSelection: unknownModelSelection,
+    harnessLabel: "",
+    modelLabel: "",
+    runnerLabel: "",
+    parentThreadId: null,
+    teamOrigin: null,
+    icon: null,
+    color: null,
+  };
 }
 
 function toThreadSummary(
@@ -6300,8 +5019,67 @@ function toThreadSummary(
 }
 
 /** Pages in a freshly read prefix share their continuation; newer Thread data wins duplicates. */
-function mergeTasks(held: TaskListState | null, page: TaskListState): TaskListState {
-  return { entries: mergeTaskEntries(held?.entries ?? [], page.entries), window: page.window };
+/** Open tasks no Run is working on: the window the shell's 25 and the refill keep full. */
+function settledEntries(list: TaskListState | null) {
+  return (list?.entries ?? []).filter(
+    ({ thread }) => thread.status !== "running" && thread.status !== "waiting",
+  );
+}
+
+/** Rows a task page asks for: the Host's page size, within its response budget. */
+const taskPageSize = 50;
+function isOpenTask({ thread }: TaskEntry) {
+  return thread.doneAt === null && thread.status !== "archived";
+}
+
+function isActiveTask(entry: TaskEntry) {
+  return (
+    isOpenTask(entry) && (entry.thread.status === "running" || entry.thread.status === "waiting")
+  );
+}
+
+/** Where `entry` belongs in a list sorted by task order. */
+function taskIndex(list: readonly TaskEntry[], entry: TaskEntry) {
+  let low = 0;
+  let high = list.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (compareTaskOrder(list[middle]!.thread, entry.thread) < 0) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function insert(list: TaskEntry[], entry: TaskEntry) {
+  list.splice(taskIndex(list, entry), 0, entry);
+}
+
+function remove(list: TaskEntry[], entry: TaskEntry) {
+  const at = taskIndex(list, entry);
+  if (list[at]?.thread.id === entry.thread.id) list.splice(at, 1);
+}
+
+/** How long pushes must rest before Done's count is read again for moves the client cannot see. */
+const doneCountRestMs = 1_000;
+
+interface DoneMove {
+  readonly row: ReturnType<PersonalShellStore["getSnapshot"]>["taskChanges"][number];
+  /** In Done before the push: unknown when this client held nothing of the task. */
+  readonly was: boolean | undefined;
+  readonly now: boolean;
+}
+
+/** In Done, as the Host's Done list counts it: settled with a `doneAt`, and not archived. */
+function isDoneTask(task: { readonly doneAt: string | null; readonly status: string }) {
+  return task.doneAt !== null && task.status !== "archived";
+}
+
+/** Done's own order, as the Host pages it: most recently done first. */
+function compareDoneOrder(
+  left: { readonly doneAt: string | null; readonly id: string },
+  right: { readonly doneAt: string | null; readonly id: string },
+) {
+  return (right.doneAt ?? "").localeCompare(left.doneAt ?? "") || right.id.localeCompare(left.id);
 }
 
 function modelLabel(
@@ -6314,38 +5092,52 @@ function modelLabel(
   );
 }
 
-function patchThread(
-  threads: readonly ThreadSummary[],
-  threadId: string,
-  patch: Partial<ThreadSummary>,
-): ThreadSummary[] {
-  return threads.map((thread) =>
-    thread.id === threadId
-      ? {
-          ...thread,
-          ...patch,
-          updatedAt:
-            patch.updatedAt && patch.updatedAt > thread.updatedAt
-              ? patch.updatedAt
-              : thread.updatedAt,
-        }
-      : thread,
-  );
-}
-
-function maxSequence(left: Sequence, right: Sequence): Sequence {
-  return compareSequence(left, right) >= 0 ? left : right;
-}
-
 /** The IANA zone this device's clock is set to; nothing where `Intl` cannot say. */
 function deviceTimeZone(): string | undefined {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone;
-  } catch {
-    return undefined;
-  }
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
+function upsertThread(threads: ThreadSummary[], thread: ThreadSummary): ThreadSummary[] {
+  const index = threads.findIndex(({ id }) => id === thread.id);
+  if (index < 0) return [...threads.slice(-35), thread];
+  if (threads[index] === thread) return threads;
+  return threads.map((value, at) => (at === index ? thread : value));
+}
+
+export function unwrapRpcResult<Success>(
+  result: RpcResult<
+    Success,
+    import("@opensteer/protocol").RpcError<
+      (typeof import("@opensteer/protocol").hostApi)[keyof typeof import("@opensteer/protocol").hostApi]
+    >
+  >,
+): Success {
+  if (result.ok) return result.data;
+  throw new HostClientRequestError({
+    code: result.error.code,
+    message: result.error.message,
+    ...(result.error.reason === undefined ? {} : { reason: result.error.reason }),
+    retryable: result.error.retryable,
+    status: rpcErrorStatus(result.error.code),
+  });
+}
+export function rpcErrorStatus(code: string): number {
+  return code === "bad_request"
+    ? 400
+    : code === "unauthorized"
+      ? 401
+      : code === "canonical_surface_required" || code === "forbidden"
+        ? 403
+        : code === "not_found"
+          ? 404
+          : code === "conflict"
+            ? 409
+            : code === "resource_exhausted" || code === "timeout"
+              ? 429
+              : code === "runner_offline" || code === "folder_unavailable"
+                ? 503
+                : 500;
+}
 export function mutationIdempotencyKey(prefix: string): string {
   return `${prefix}:${globalThis.crypto.randomUUID()}`;
 }
@@ -6353,3 +5145,30 @@ export function mutationIdempotencyKey(prefix: string): string {
 export { HostClientRequestError as HostHttpError } from "./client.js";
 
 export type { HostToClientMessage };
+
+function updateRequired(): HostClientRequestError {
+  return new HostClientRequestError({
+    code: "bad_request",
+    message: "Update Opensteer to connect to this Host.",
+    reason: "unsupported-version",
+    retryable: false,
+    status: 426,
+  });
+}
+
+/** How long a command waits for a resource it needs before failing with a clear error. */
+const commandResourceBoundMs = 10_000;
+
+/** Whether a command creates a browser profile, directly or by approving a Request that asks to. */
+function createsBrowserProfile(command: ClientCommandInput): boolean {
+  if (command.type === "browser.profile.create") return true;
+  if (command.type !== "request.respond" || command.response.kind !== "external") return false;
+  const value = command.response.value as Record<string, unknown> | null | undefined;
+  return value?.["decision"] === "fulfilled" && value["createProfile"] !== undefined;
+}
+
+function resourceKindsOf(field: PropertyKey): readonly PersonalResourceKind[] | undefined {
+  return typeof field === "string" && Object.hasOwn(resourceBackedFields, field)
+    ? resourceBackedFields[field as keyof typeof resourceBackedFields]
+    : undefined;
+}

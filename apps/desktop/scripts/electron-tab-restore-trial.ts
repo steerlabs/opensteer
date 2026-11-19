@@ -17,7 +17,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { app, nativeImage, webContents, type BrowserWindow, type WebContents } from "electron";
 import {
-  HostBootstrapSchema,
+  TabBootstrapSchema,
   TabOpenResultSchema,
   LocalProfileBindingSchema,
   BrowserSessionIdSchema,
@@ -73,18 +73,18 @@ export async function runTabRestoreTrial(input: {
   let state = existsSync(statePath)
     ? State.parse(JSON.parse(readFileSync(statePath, "utf8")))
     : null;
-  const bootstrap = async () => HostBootstrapSchema.parse(await rpc("bootstrap.get"));
+  const bootstrap = async () => TabBootstrapSchema.parse(await rpc("tabs.state"));
   const rows = (value: Awaited<ReturnType<typeof bootstrap>>) =>
-    value.tabs.layout.items
+    value.layout.items
       .flatMap((item) => (item.kind === "tab" ? [item.tabId] : item.group.tabIds))
       .flatMap((id, order) => {
-        const tab = value.tabs.tabs.find((tab) => tab.tabId === id);
+        const tab = value.tabs.find((tab) => tab.tabId === id);
         return tab?.kind === "page" ? [{ ...tab, id: tab.tabId, order }] : [];
       });
   const targets = (value: Awaited<ReturnType<typeof bootstrap>>) =>
     rows(value).filter((tab) => tab.state === "open");
   const groups = (value: Awaited<ReturnType<typeof bootstrap>>) =>
-    value.tabs.layout.items.flatMap((item) =>
+    value.layout.items.flatMap((item) =>
       item.kind === "group"
         ? [{ ...item.group, id: item.group.groupId, title: item.group.name }]
         : [],
@@ -675,7 +675,7 @@ export async function runTabRestoreTrial(input: {
     "workspace sidebar",
   );
 
-  const initial = HostBootstrapSchema.parse(
+  const initial = TabBootstrapSchema.parse(
     z
       .object({ ok: z.literal(true), data: z.unknown() })
       .parse(JSON.parse(readFileSync(path.join(root, `${trial}.before-window.json`), "utf8"))).data,

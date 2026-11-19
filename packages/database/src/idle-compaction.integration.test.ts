@@ -4,7 +4,7 @@ import {
   compactionReturnHint,
   compactionReturnHints,
 } from "./compaction-eligibility.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
 import { threadPathLinks, jsonValue } from "./store-primitives.js";
 import { admitIdleCompaction } from "./idle-compaction-store.js";
@@ -21,7 +21,9 @@ import {
 } from "./store.integration.test-support.js";
 
 describeStore("Claude compaction persistence", (it) => {
-  it("batches return hints identically for a mixed task page", async ({ storeFixture }) => {
+  it("reads a mixed task page in one query and matches action admission", async ({
+    storeFixture,
+  }) => {
     const { database, thread, createRunFixture } = await compactionFixture(storeFixture);
     const { thread: other } = await createRunFixture("no-context");
     const original = await database
@@ -51,14 +53,25 @@ describeStore("Claude compaction persistence", (it) => {
         .set({ inputQueuePaused: paused })
         .where("id", "=", thread.id)
         .execute();
-      const expected = await Promise.all(
-        ids.map(async (id) => [id, await compactionReturnHint(database, id)] as const),
-      );
       const queries = vi.spyOn(database.getExecutor(), "executeQuery");
       const hints = await compactionReturnHints(database, ids);
       expect(queries.mock.calls.length).toBe(1);
       queries.mockRestore();
-      for (const [id, hint] of expected) expect(hints.get(id) ?? null).toEqual(hint);
+      const active = hints.get(thread.id)!;
+      const expected = await compactionIsEligible(
+        database,
+        thread.id,
+        {
+          kind: "claude-compaction",
+          reason: "before-send",
+          providerSessionId: session.id,
+          sourceRunId: active.sourceRunId,
+        },
+        active.eligibleAt,
+      );
+      expect(active.eligible).toBe(expected);
+      expect(hints.has(other.id)).toBe(false);
+      expect(hints.get(archivedId)?.eligible).toBe(false);
     }
   });
   it("persists the owner's policy and refuses another person", async ({ storeFixture }) => {
@@ -279,13 +292,14 @@ describeStore("Claude compaction persistence", (it) => {
       ).contextSnapshot,
     ).toBeNull();
     expect((await store.getThreadForOwner(thread.id, userId))?.returnHint).toBeNull();
-    const events: import("@opensteer/core").AgentEvent[] = [];
-    await store.drainPendingThreadStates((batch) => {
-      events.push(...batch);
-    });
-    expect(events.find((event) => event.type === "thread.state-changed")?.data).toMatchObject({
-      returnHint: null,
-    });
+    const published = await database
+      .selectFrom("clientChanges")
+      .select("payload")
+      .where("scopeKey", "=", `thread:${thread.id}`)
+      .where("entityKind", "=", "thread")
+      .orderBy("sequence", "desc")
+      .executeTakeFirstOrThrow();
+    expect(published.payload).toMatchObject({ thread: { id: thread.id, returnHint: null } });
   });
   it("rechecks source selections at execution binding even with retained evidence", async ({
     storeFixture,
@@ -355,10 +369,9 @@ describeStore("Claude compaction persistence", (it) => {
       .select("updatedAt")
       .where("id", "=", thread.id)
       .executeTakeFirstOrThrow();
-    const events = await withPersonalTransaction(database, (tx) =>
+    await commitPersonalMutation(database, (tx) =>
       projectThreadState(tx, thread.id, new Date(now + 60_000), true),
     );
-    expect(events[0]?.data).toMatchObject({ updatedAt: before.updatedAt.toISOString() });
     expect(
       (
         await database
@@ -445,7 +458,7 @@ describeStore("Claude compaction persistence", (it) => {
         maintenance.id,
       ),
     ).toBe(true);
-    await withPersonalTransaction(database, (tx) =>
+    await commitPersonalMutation(database, (tx) =>
       finalizeRunTransaction(tx, {
         links: threadPathLinks,
         runId: maintenance.id,
@@ -501,7 +514,7 @@ describeStore("Claude compaction persistence", (it) => {
       })
       .where("id", "=", sessionId)
       .execute();
-    await withPersonalTransaction(database, (tx) => projectThreadState(tx, thread.id));
+    await commitPersonalMutation(database, (tx) => projectThreadState(tx, thread.id));
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const eligibleAt = now + 70 * 60_000;
@@ -522,16 +535,18 @@ describeStore("Claude compaction persistence", (it) => {
         .select("updatedAt")
         .where("id", "=", thread.id)
         .executeTakeFirstOrThrow();
+      const before = await database
+        .selectFrom("clientSyncState")
+        .select("resourceRevisions")
+        .executeTakeFirstOrThrow();
       await store.notificationState.setIdleCompactionPolicy({ userId, policy: { mode: "off" } });
-      const events: import("@opensteer/core").AgentEvent[] = [];
-      await store.drainPendingThreadStates((batch) => {
-        events.push(...batch);
-      });
-      expect(
-        events.find(
-          (event) => event.type === "thread.state-changed" && event.threadId === thread.id,
-        )?.data,
-      ).toMatchObject({ returnHint: { ...hint, eligible: false } });
+      const after = await database
+        .selectFrom("clientSyncState")
+        .select("resourceRevisions")
+        .executeTakeFirstOrThrow();
+      expect(BigInt(after.resourceRevisions.settings)).toBeGreaterThan(
+        BigInt(before.resourceRevisions.settings),
+      );
       expect((await store.getThreadForOwner(thread.id, userId))?.returnHint?.eligible).toBe(false);
       expect(
         (

@@ -1,4 +1,6 @@
+import { RealtimeHub } from "@opensteer/orchestration";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
+import { ResourceRevisions } from "../runtime/personal-resource-revisions.js";
 import { unroutedShellControlStream } from "../shell/shell-control-stream.test-support.js";
 import type { HostServerDependencies } from "../server.js";
 
@@ -14,7 +16,6 @@ export function hostServerTestDependencies(
   overrides: HostServerTestOverrides = {},
 ): HostServerDependencies {
   return {
-    // Not inert: bootstrap lists open app tabs for every viewer.
     apps: {
       list: async () => [],
       onRevoked: () => () => undefined,
@@ -28,9 +29,6 @@ export function hostServerTestDependencies(
     browser: inert(),
     tabs: {
       bootstrap: async () => ({ tabs: [], layout: { revision: 0, items: [] }, complete: true }),
-      streams: {
-        subscribe: () => ({ ready: Promise.resolve(), close: () => {}, flush: async () => {} }),
-      },
     } as unknown as HostServerDependencies["tabs"],
     toolActivity: inert(),
     browserSources: inert(),
@@ -61,11 +59,11 @@ export function hostServerTestDependencies(
     },
     credentials: inert(),
     discovery: inert(),
+    resourceRevisions: new ResourceRevisions(() => undefined),
     egress: inert(),
     execution: inert(),
     teamLinks: inert(),
     harnessAuthenticationCoordinator: inert(),
-    liveRuns: { threadFrames: () => [] },
     integrations: {
       access: inert(),
       authAttempts: inert(),
@@ -109,16 +107,20 @@ export function hostServerTestDependencies(
       },
       overrides.agentTools,
     ) as HostServerDependencies["agentTools"],
-    realtime: Object.assign(
-      {
-        observe: () => () => undefined,
-        broadcast: () => undefined,
-        sendToUsers: () => undefined,
-        publish: () => undefined,
-        publishConnectionsChanged: () => undefined,
-      },
-      overrides.realtime,
-    ) as HostServerDependencies["realtime"],
+    realtime:
+      overrides.realtime instanceof RealtimeHub
+        ? overrides.realtime
+        : (Object.assign(
+            {
+              observe: () => () => undefined,
+              observeScopes: () => () => false,
+              guardRead: () => ({ current: () => true, release: () => false }),
+              broadcast: () => undefined,
+              sendToUsers: () => undefined,
+              publishConnectionsChanged: () => undefined,
+            },
+            overrides.realtime,
+          ) as HostServerDependencies["realtime"]),
     commands:
       overrides.commands && typeof overrides.commands.withInputAdmission === "function"
         ? overrides.commands

@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import {
   browserAccessChoices,
   browserAccessGrantable,
@@ -32,12 +33,14 @@ export async function resolveBrowserAccess(
     readonly home: string | null;
     readonly name: string;
     readonly requestId: string;
+    readonly expectedRevision?: string;
     readonly selection: BrowserAccessSelection | null;
   },
 ): Promise<void> {
   await hostClient.dispatch({
     idempotencyKey: mutationIdempotencyKey(`request:${input.requestId}`),
     requestId: input.requestId,
+    ...(input.expectedRevision === undefined ? {} : { expectedRevision: input.expectedRevision }),
     response: browserAccessResponse(input.selection, input.name, input.home),
     type: "request.respond",
   });
@@ -74,7 +77,13 @@ export function ThreadBrowserRequestAction({
     setError(null);
     try {
       await act(hostClient, requestAnswer, () =>
-        resolveBrowserAccess(hostClient, { home, name, requestId: request.id, selection: choice }),
+        resolveBrowserAccess(hostClient, {
+          home,
+          name,
+          requestId: request.id,
+          ...requestDecisionRevision(request),
+          selection: choice,
+        }),
       );
     } catch (reason) {
       setError(failureWords(reason));

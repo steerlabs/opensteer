@@ -4,7 +4,6 @@ import { toWebHeaders } from "../identity/auth.js";
 import { bindAnonymousClientAddress } from "../identity/anonymous-client-address.js";
 import {
   HostApiErrorSchema,
-  assertDeviceWireInput,
   expectedMutationSessionHeader,
   hostApi,
   type HostApiHandlers,
@@ -13,8 +12,8 @@ import {
   type RpcDeclaration,
   type RpcResult,
 } from "@opensteer/protocol";
-import { deploymentPolicy, OpensteerError, unsupportedVersionReason } from "@opensteer/core";
-import { attachmentMaxBytes } from "@opensteer/core";
+import { OpensteerError, unsupportedVersionReason } from "@opensteer/core";
+import { attachmentMaxBytes, deploymentPolicy } from "@opensteer/core";
 import {
   apiCurrentQueryParameter,
   apiNegotiation,
@@ -22,7 +21,6 @@ import {
   apiVersionQueryParameter,
   hostApiCurrentHeader,
   minimumHostApiVersion,
-  negotiatedHostApiVersion,
   statesApiVersion,
 } from "@opensteer/deployment-authority";
 import type { DeploymentKind } from "@opensteer/core";
@@ -35,6 +33,15 @@ import { afterResponse } from "./after-response.js";
 import { requestAbortSignal } from "./request-abort-signal.js";
 
 export const hostApiScopes = {
+  "personal.shell.get": "session",
+  "personal.readiness.get": "session",
+  "tasks.page": "session",
+  "thread.snapshot.get": "session",
+  "thread.items.page": "session",
+  "node.items.page": "session",
+  "thread.overlays.page": "session",
+  "transcript.item.get": "session",
+  "resources.detail.get": "session",
   "attention.get": "session",
   "needsYou.get": "session",
   "team.bootstrap.get": "session",
@@ -102,7 +109,6 @@ export const hostApiScopes = {
   "auth.setup.claim": "exact-origin",
   "auth.setup.exchange": "exact-origin",
   "auth.signOut": "mutation",
-  "bootstrap.get": "session",
   "channel.connection.check": "mutation",
   "channels.get": "session",
   "connections.list": "session",
@@ -160,14 +166,10 @@ export const hostApiScopes = {
   "asset.urls": "session",
   "file.open": "session",
   "file.content": "session",
-  "tool.output.get": "session",
-  "thread.events.list": "session",
-  "node.events.list": "session",
   "thread.assignments.list": "session",
   "thread.browserUsage.get": "session",
   "thread.inputQueue.get": "session",
   "thread.message.revisions.list": "session",
-  "thread.live.get": "session",
   "thread.messages.list": "session",
   "thread.requests.list": "session",
   "references.resolve": "session",
@@ -202,7 +204,20 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
 ): void {
   const declaration = hostApi[name];
   const binaryRequest = "binaryRequest" in declaration && declaration.binaryRequest === true;
+  const guards = new WeakMap<
+    FastifyRequest,
+    NonNullable<ReturnType<NonNullable<HostApiRegistrationOptions["guardResponse"]>>>
+  >();
   app.route({
+    onSend: (request, reply, payload, done) => {
+      const guard = guards.get(request);
+      if (reply.statusCode < 400 && guard && !guard.current()) {
+        done(new OpensteerError({ code: "forbidden", message: "Content access changed." }));
+        return;
+      }
+      done(null, payload);
+    },
+    onResponse: async (request) => guards.get(request)?.release(),
     // Every refusal, from the version gate and body parsing through
     // authentication to the handler, is a result of the call in the envelope
     // the client parses, never the root handler's different shape.
@@ -269,7 +284,17 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
       }
       const context = createContext(authenticated, request, reply, binaryRequest);
       bindAnonymousClientAddress(context, request);
-      const input = rpcInput(declaration, request, options.kind);
+      const input = rpcInput(declaration, request);
+      // Sign-out admits the session before revoking it and returns an empty receipt.
+      const guard =
+        authenticated &&
+        name !== "commands.dispatch" &&
+        name !== "auth.signOut" &&
+        options.guardResponse?.(input, context);
+      if (guard) {
+        guards.set(request, guard);
+        reply.raw.once("close", guard.release);
+      }
       const handler = handlers[name];
       if (!handler)
         throw new OpensteerError({
@@ -278,6 +303,7 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
         });
       await options.admit?.(name, input, context);
       const output = await handler(input, context);
+      if (output.ok && guard) await options.revalidateResponse?.(context);
       if (output.ok && options.projectResponse && !declaration.stream) {
         return sendResult(
           declaration,
@@ -304,14 +330,11 @@ function refusalCause(error: unknown): string | undefined {
 function rpcInput<Declaration extends RpcDeclaration>(
   declaration: Declaration,
   request: FastifyRequest,
-  kind: DeploymentKind,
 ): z.output<Declaration["payload"]> {
   const raw: unknown =
     declaration.method === "POST" && !declaration.binaryRequest
       ? request.body
       : JSON.parse(z.strictObject({ input: z.string().max(262_144) }).parse(request.query).input);
-  if (deploymentPolicy({ kind }).services.personal)
-    assertDeviceWireInput(raw, negotiatedHostApiVersion(request.headers)!);
   return declaration.payload.parse(raw) as z.output<Declaration["payload"]>;
 }
 
@@ -390,12 +413,13 @@ export function requireNegotiatedVersion(
     kind === "personal"
       ? `Opensteer protocol ${minimumHostApiVersion} through ${apiNegotiation(kind).apiVersion}`
       : `Opensteer protocol ${apiNegotiation(kind).apiVersion}`;
+  const detail =
+    typeof stated === "string"
+      ? `This deployment serves ${serves}; the caller stated ${stated}${typeof current === "string" ? ` through ${current}` : ""}.`
+      : `This deployment serves ${serves} and the caller stated none.`;
   throw new OpensteerError({
     code: "bad_request",
-    message:
-      typeof stated === "string"
-        ? `This deployment serves ${serves}; the caller stated ${stated}${typeof current === "string" ? ` through ${current}` : ""}.`
-        : `This deployment serves ${serves} and the caller stated none.`,
+    message: kind === "personal" ? `Update Opensteer to connect to this Host. ${detail}` : detail,
     reason: unsupportedVersionReason,
   });
 }
@@ -445,6 +469,11 @@ function createContext(
 
 export interface HostApiRegistrationOptions {
   readonly kind: DeploymentKind;
+  readonly guardResponse?: (
+    input: unknown,
+    context: HostApiServerContext,
+  ) => { current(): boolean; release(): void };
+  readonly revalidateResponse?: (context: HostApiServerContext) => Promise<void>;
   readonly admit?: (
     name: keyof typeof hostApi,
     input: unknown,
@@ -475,7 +504,8 @@ export function carryWebSocketVersion(request: FastifyRequest, kind: DeploymentK
         : "invalid";
   };
   carry(apiVersionQueryParameter, apiVersionHeader(kind));
-  if (kind === "personal") carry(apiCurrentQueryParameter, hostApiCurrentHeader);
+  if (deploymentPolicy({ kind }).services.personal)
+    carry(apiCurrentQueryParameter, hostApiCurrentHeader);
 }
 
 /**

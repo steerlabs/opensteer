@@ -9,7 +9,7 @@ import {
   type HostClient,
   type HostSnapshot,
 } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, useUnreadableResources } from "@opensteer/client/react";
 import { useState, type ReactNode } from "react";
 import { Alert } from "react-native";
 import { notDone, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
@@ -42,11 +42,14 @@ function menuAction(action: AiEngineAction): readonly AiAccountAction[] {
     : [];
 }
 
+const accountKinds = ["environment", "harness", "harness-catalog"] as const;
+
 export function useAiAccounts(host: HostClient): {
   readonly form: AiAccountsForm;
   readonly sheet: ReactNode;
 } {
   const { environments, harnesses } = useHostSelector(host, selectAccounts, sameAccounts);
+  const accountsRead = useUnreadableResources(host, accountKinds);
   const [requestedEnvironment, setRequestedEnvironment] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
@@ -214,21 +217,33 @@ export function useAiAccounts(host: HostClient): {
     form: {
       busyId,
       confirmation,
-      line,
-      groups: groups.map(({ accounts, engine }) => ({
-        addable: engine.addable,
-        driverKind: engine.driverKind,
-        name: engine.engineName,
-        rows: accounts.map(({ actions, profile, row }) => ({
-          attention: row.status?.tone === "bad" ? "bad" : row.status ? "warn" : null,
-          id: profile.id,
-          isDefault: profile.isDefault,
-          line: row.line,
-          menu: actions.menu.flatMap(menuAction),
-          name: row.name,
-          primary: primaryAction(actions.primary),
-        })),
-      })),
+      // Accounts that could not be read are said so, with Try again, never shown empty or stale.
+      line: accountsRead.unreadable
+        ? {
+            text: accountsRead.held
+              ? "Couldn't refresh your AI accounts. Showing what was last loaded."
+              : "Couldn't load your AI accounts.",
+            tone: "danger",
+            link: { label: "Try again", onPress: accountsRead.retry },
+          }
+        : line,
+      // Held accounts stay with their controls, so whatever is too large can be removed.
+      groups: (accountsRead.unreadable && !accountsRead.held ? [] : groups).map(
+        ({ accounts, engine }) => ({
+          addable: engine.addable,
+          driverKind: engine.driverKind,
+          name: engine.engineName,
+          rows: accounts.map(({ actions, profile, row }) => ({
+            attention: row.status?.tone === "bad" ? "bad" : row.status ? "warn" : null,
+            id: profile.id,
+            isDefault: profile.isDefault,
+            line: row.line,
+            menu: actions.menu.flatMap(menuAction),
+            name: row.name,
+            primary: primaryAction(actions.primary),
+          })),
+        }),
+      ),
       locationId: environment?.id ?? null,
       locations:
         environments.length > 1

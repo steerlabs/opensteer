@@ -27,11 +27,13 @@ export function reviewHostAction(
   perform: () => Promise<unknown> = () => performAction(client, action),
 ): ActionReview | null {
   const store = hostSnapshotStore(client);
-  const expected = actionState(store.getSnapshot(), action);
+  const detail = "threadId" in action ? client.getThreadTranscript(action.threadId) : undefined;
+  const state = () => actionState(store.getSnapshot(), action, detail?.getSnapshot());
+  const expected = state();
   if (expected === null) return null;
   let active = true;
   const current = () => {
-    if (active && actionState(store.getSnapshot(), action) !== expected) active = false;
+    if (active && state() !== expected) active = false;
     return active;
   };
   return {
@@ -40,10 +42,17 @@ export function reviewHostAction(
     cancel: () => {
       active = false;
     },
-    subscribe: (listener) =>
-      store.subscribe(() => {
+    subscribe: (listener) => {
+      const check = () => {
         if (!current()) listener();
-      }),
+      };
+      const release = store.subscribe(check);
+      const releaseDetail = detail?.subscribe(check);
+      return () => {
+        release();
+        releaseDetail?.();
+      };
+    },
     confirm: async () => {
       if (!current()) return false;
       active = false;
@@ -52,13 +61,13 @@ export function reviewHostAction(
         return true;
       } catch (error) {
         // An obsolete action needs no error panel. Current failures still explain themselves.
-        if (actionState(store.getSnapshot(), action) !== expected) return false;
+        if (state() !== expected) return false;
         if (
           error instanceof HostClientRequestError &&
           (error.code === "conflict" || error.code === "not_found")
         ) {
           await client.refresh().catch(() => undefined);
-          if (actionState(store.getSnapshot(), action) !== expected) return false;
+          if (state() !== expected) return false;
         }
         throw error;
       }
@@ -66,17 +75,23 @@ export function reviewHostAction(
   };
 }
 
-function actionState(snapshot: HostSnapshot, action: ReviewedAction): string | null {
+function actionState(
+  snapshot: HostSnapshot,
+  action: ReviewedAction,
+  detail?: import("./scoped-thread-reader.js").ThreadViewState,
+): string | null {
   if (snapshot.connection !== "connected" || snapshot.session !== "authenticated" || !snapshot.user)
     return null;
   const viewer = snapshot.user.id;
   const stopTarget = (threadId: string) => {
     const thread = snapshot.threads.find((item) => item.id === threadId);
-    return thread ? (threadStopTarget({ thread, runQueue: snapshot.runQueue })?.id ?? null) : null;
+    return thread
+      ? (threadStopTarget({ thread, runQueue: detail?.runQueue ?? snapshot.runQueue })?.id ?? null)
+      : null;
   };
   switch (action.kind) {
     case "stop-node": {
-      const node = snapshot.transcripts[action.threadId]?.find(
+      const node = detail?.entries.find(
         (entry) => entry.kind === "node" && entry.nodeId === action.nodeId,
       );
       return node?.kind === "node" &&

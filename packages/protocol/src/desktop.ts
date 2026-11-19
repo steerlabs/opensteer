@@ -180,10 +180,14 @@ export const DesktopPersonalDeploymentStateSchema = z.enum([
 ]);
 export type DesktopPersonalDeploymentState = z.infer<typeof DesktopPersonalDeploymentStateSchema>;
 
+export const personalUpgradeProgressLine = "Opensteer Personal database upgrade committed a batch";
+export const personalUpgradeHeartbeatLine = "Opensteer Personal database upgrade is running";
+
 export const DesktopPersonalDeploymentStepSchema = z.enum([
   "checking-computer",
   "preparing-database",
   "starting-host",
+  "upgrading-database",
   "preparing-agent-home",
   "starting-local-agents",
   "connecting-computer",
@@ -227,6 +231,8 @@ export const DesktopPersonalDeploymentIssueCodeSchema = z.enum([
   "service-crash-loop",
   "shutdown-incomplete",
   "update-incompatible",
+  /** The one-time Personal state conversion failed; Try again or Start fresh. */
+  "personal-conversion-failed",
   "unexpected",
 ]);
 

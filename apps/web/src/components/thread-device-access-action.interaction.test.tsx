@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { expect, it, vi } from "vitest";
-import type { HostSnapshot, NodeEntry } from "@opensteer/client/host";
+import type { TranscriptFixtureSnapshot, NodeEntry } from "@opensteer/client/host";
 import type { Request } from "@opensteer/core";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { client, goTo, mount, settle } from "./workspace/workspace.interaction.test-support.js";
@@ -46,7 +46,10 @@ function askedBySubagent(source: typeof client) {
     originatingThreadId: asking.originatingThreadId,
   };
   const real = source.getSnapshot;
-  let copy: { readonly from: HostSnapshot; readonly to: HostSnapshot } | null = null;
+  let copy: {
+    readonly from: TranscriptFixtureSnapshot;
+    readonly to: TranscriptFixtureSnapshot;
+  } | null = null;
   vi.spyOn(source, "getSnapshot").mockImplementation(() => {
     const base = real();
     if (copy?.from === base) return copy.to;

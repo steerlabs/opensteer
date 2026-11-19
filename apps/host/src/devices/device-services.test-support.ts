@@ -67,7 +67,6 @@ export function createDeviceServices(
   const access = new AccessRequests({
     definitions,
     devices,
-    onDeploymentEvent: options.onDeploymentEvent,
     store: options.store,
   });
   const registry = new LocalServerRegistry({
@@ -79,8 +78,6 @@ export function createDeviceServices(
       throw new Error("Agent home files are not part of this test");
     },
     onConnectionsChanged: options.onConnectionsChanged,
-    onDeploymentEvent: options.onDeploymentEvent,
-    onRequestsChanged: options.onRequestsChanged,
     onSettingsChanged,
   });
   return {

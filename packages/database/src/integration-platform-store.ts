@@ -3,7 +3,8 @@ import {
   replayAdministrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
-import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { lockPersonalSyncState } from "./personal-transaction.js";
 import { PluginSettingsStore } from "./plugin-settings-store.js";
 import { PluginStore } from "./plugin-store.js";
 import { ComputerOperationStore } from "./computer-operation-store.js";
@@ -108,7 +109,7 @@ export class IntegrationPlatformStore {
   ): Promise<T> {
     // Dispatch may have happened even if the transaction fails to finish.
     return this.#database.transaction().execute(async (transaction) => {
-      await lockDeploymentEvents(transaction);
+      await lockPersonalSyncState(transaction);
       return dispatch(transaction, new IntegrationGrantStore(transaction));
     });
   }
@@ -117,7 +118,7 @@ export class IntegrationPlatformStore {
     identity: AdministrationCommandIdentity | undefined,
     mutate: (store: IntegrationPlatformStore) => Promise<Result>,
   ) {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       let applied = false;
       const result = await administrationCommand(transaction, identity, async () => {
         const value = await mutate(new IntegrationPlatformStore(transaction));

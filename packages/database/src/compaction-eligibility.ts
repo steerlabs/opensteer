@@ -157,33 +157,8 @@ export async function compactionIsEligible(
 export async function compactionReturnHint(
   database: Kysely<DatabaseSchema>,
   threadId: ThreadId,
-  nowMs = Date.now(),
 ): Promise<CompactionReturnHint | null> {
-  const session = await database
-    .selectFrom("providerSessions")
-    .selectAll()
-    .where("threadId", "=", threadId)
-    .where("active", "=", true)
-    .executeTakeFirst();
-  const snapshot = session?.contextSnapshot;
-  if (!snapshot) return null;
-  const eligibleAt = compactionReturnEligibleAt(snapshot);
-  return {
-    eligible: await compactionIsEligible(
-      database,
-      threadId,
-      {
-        kind: "claude-compaction",
-        reason: "before-send",
-        providerSessionId: session.id,
-        sourceRunId: snapshot.sourceRunId,
-      },
-      Math.max(nowMs, eligibleAt),
-    ),
-    eligibleAt,
-    sourceRunId: snapshot.sourceRunId,
-    sessionRevision: `${session.id}:${snapshot.bindingGeneration}:${snapshot.ordinal}`,
-  };
+  return (await compactionReturnHints(database, [threadId])).get(threadId) ?? null;
 }
 
 export async function compactionReturnHints(
@@ -212,11 +187,11 @@ export async function compactionReturnHints(
       and length(session.provider_session_reference) > 0
       and session.harness_instance_id = thread.harness_instance_id
       and runner.revoked_at is null and runner.capabilities @> '["claude-compaction-v1"]'::jsonb
-      and not exists (select 1 from personal_team_requests r where r.local_task_id = thread.id)
+      and not exists (select 1 from personal_team_requests r where r.local_task_id = thread.id limit 1)
       and not exists (select 1 from delegations d where
-        (d.parent_thread_id = thread.id or d.child_thread_id = thread.id) and d.status = 'open')
+        (d.parent_thread_id = thread.id or d.child_thread_id = thread.id) and d.status = 'open' limit 1)
       and not exists (select 1 from execution_nodes n join runs r on r.id = n.run_id
-        where r.thread_id = thread.id and n.status = 'running')
+        where r.thread_id = thread.id and n.status = 'running' limit 1)
       and (session.context_snapshot->>'usedTokens')::bigint >= 200000
       and source.thread_id = thread.id and source.status = 'completed'
       and source.harness_instance_id = thread.harness_instance_id
@@ -225,10 +200,10 @@ export async function compactionReturnHints(
       and source.assignment_id is null and source.reply_target is null
       and source.provider_session_id = session.id
       and not exists (select 1 from runs r where r.thread_id = thread.id
-        and (r.run_ordinal > source.run_ordinal or r.status in ('queued','starting','running','waiting')))
+        and (r.run_ordinal > source.run_ordinal or r.status in ('queued','starting','running','waiting')) limit 1)
       and thread.pending_request_count = 0
       and not exists (select 1 from thread_inputs i where i.thread_id = thread.id
-        and i.state in ('pending','claimed','unknown')),
+        and i.state in ('pending','claimed','unknown') limit 1),
       false)`.as("eligible"),
     )
     .where("thread.id", "in", threadIds)

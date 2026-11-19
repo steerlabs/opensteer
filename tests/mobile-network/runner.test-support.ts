@@ -1,5 +1,4 @@
 import { expect, vi } from "vitest";
-import { nodeDetailEventNodeId } from "../../packages/core/src/index.js";
 import { testRpcData } from "../../apps/host/src/server/test-host-api-request.js";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket from "ws";
@@ -23,6 +22,7 @@ import {
   type RequestLine,
 } from "./proxy.test-support.js";
 import {
+  benchmarkToolOutput,
   seedPersonal,
   startMobileNetworkHost,
   type SeedName,
@@ -37,6 +37,7 @@ export const scenarios = [
   "network-change",
   "open-subagent-parent",
   "open-subagent",
+  "idle",
 ] as const;
 export type Scenario = (typeof scenarios)[number];
 
@@ -92,6 +93,7 @@ interface WsRecord {
   readonly type: string;
   readonly bytes: number;
   readonly afterSequence?: string;
+  readonly scope?: string;
   readonly eventCount?: number;
 }
 export interface ScenarioResult {
@@ -173,29 +175,27 @@ export async function runMobileNetworkSample(options: {
     cleanup.push(() => host.close());
     console.info(`Seeding ${options.seed}/${options.profile} run ${options.run}`);
     const fixture = await seedPersonal(host, options.seed, cleanup);
-    const wholePage = await testRpcData(
+    const page = await testRpcData(
       host.origin,
-      "thread.events.list",
-      { threadId: fixture.historyThreadId, turns: 10 },
+      "thread.items.page",
+      { threadId: fixture.historyThreadId, limit: 25 },
       { headers: host.ownerHeaders },
     );
-    const previewPage = await testRpcData(
-      host.origin,
-      "thread.events.list",
-      { threadId: fixture.historyThreadId, turns: 10, toolOutputs: "preview" },
-      { headers: host.ownerHeaders },
-    );
-    const toolOutputHistoryBytes = {
-      whole: Buffer.byteLength(JSON.stringify(wholePage)),
-      preview: Buffer.byteLength(JSON.stringify(previewPage)),
-    };
-    for (const event of previewPage.events)
-      if (event.type === "tool.completed") {
-        expect(event.data.outputPreview).toBeDefined();
-        expect(event.data.output.text).not.toContain(
-          "Build log: checked workspace and synchronized dependency.\n".repeat(440),
-        );
-      }
+    if (page.kind !== "page") throw new Error("The first history page was reset");
+    const preview = Buffer.byteLength(JSON.stringify(page));
+    let whole = preview;
+    for (const tool of page.items.filter((item) => item.kind === "tool")) {
+      expect(tool.view.preview).not.toContain(benchmarkToolOutput);
+      const detail = await testRpcData(
+        host.origin,
+        "transcript.item.get",
+        { threadId: fixture.historyThreadId, itemId: tool.id },
+        { headers: host.ownerHeaders },
+      );
+      expect(detail.body).toMatchObject({ kind: "tool", output: { text: benchmarkToolOutput } });
+      whole += Buffer.byteLength(JSON.stringify(detail));
+    }
+    const toolOutputHistoryBytes = { whole, preview };
     console.info("Tool output history bytes", toolOutputHistoryBytes);
     options.onManifest?.(fixture.manifest);
     console.info(
@@ -212,20 +212,6 @@ export async function runMobileNetworkSample(options: {
     });
     let nodeDetailEvents = 0;
     let nodeDetailBytes = 0;
-    const inspectPayload = (value: unknown): void => {
-      if (!value || typeof value !== "object") return;
-      if (
-        "type" in value &&
-        typeof value.type === "string" &&
-        "data" in value &&
-        nodeDetailEventNodeId({ type: value.type, data: value.data })
-      ) {
-        nodeDetailEvents++;
-        nodeDetailBytes += Buffer.byteLength(JSON.stringify(value));
-        return;
-      }
-      for (const child of Object.values(value)) inspectPayload(child);
-    };
     let inFlight = 0;
     let lastActivity = performance.now();
     let synchronized = 0;
@@ -251,8 +237,6 @@ export async function runMobileNetworkSample(options: {
       try {
         const response = await fetch(request);
         const body = await response.arrayBuffer();
-        if (response.headers.get("content-type")?.includes("application/json"))
-          inspectPayload(JSON.parse(Buffer.from(body).toString("utf8")));
         record.responseBytes = body.byteLength;
         record.status = response.status;
         return new Response(body, { status: response.status, headers: response.headers });
@@ -289,21 +273,32 @@ export async function runMobileNetworkSample(options: {
         const record = (raw: string, direction: "up" | "down") => {
           const data = JSON.parse(raw) as {
             type: string;
-            afterSequence?: string;
+            scope?: { kind: string };
             cursor?: { afterSequence: string };
-            events?: unknown[];
+            changes?: unknown[];
+            snapshot?: { items?: unknown[] };
           };
-          if (direction === "down") inspectPayload(data);
-          const position = data.cursor?.afterSequence ?? data.afterSequence;
+          const scope = data.scope?.kind;
+          const bytes = Buffer.byteLength(raw);
+          if (direction === "down" && scope === "node") {
+            nodeDetailEvents += data.snapshot?.items?.length ?? data.changes?.length ?? 0;
+            nodeDetailBytes += bytes;
+          }
+          const position = data.cursor?.afterSequence;
           messages.push({
             atMs: performance.now(),
             direction,
             type: data.type,
-            bytes: Buffer.byteLength(raw),
+            bytes,
+            ...(scope === undefined ? {} : { scope }),
             ...(position === undefined ? {} : { afterSequence: position }),
-            ...(data.events ? { eventCount: data.events.length } : {}),
+            ...(data.changes ? { eventCount: data.changes.length } : {}),
           });
-          if (data.type === "host.synchronized") synchronized++;
+          if (direction === "down" && data.type === "host.snapshot") {
+            if (scope === "shell") mark("shellFirstFrame");
+            if (scope === "thread") mark("taskFirstFrame");
+          }
+          if (data.type === "host.synchronized" && scope === "shell") synchronized++;
           lastActivity = performance.now();
         };
         socket.on("message", (raw) => record(raw.toString(), "down"));
@@ -330,11 +325,6 @@ export async function runMobileNetworkSample(options: {
       const tasks = taskList(snapshot);
       if (tasks.working.length + tasks.ready.length + tasks.done.length > 0)
         mark("taskListRenderable");
-      if (
-        snapshot.transcriptWindows[fixture.historyThreadId] &&
-        (snapshot.transcripts[fixture.historyThreadId]?.length ?? 0) > 0
-      )
-        mark("historyFirstPage");
       if (placeList(snapshot).length === fixture.manifest.tabs) mark("tabsLoaded");
     };
     const unsubscribe = client.subscribe(inspect);
@@ -358,7 +348,7 @@ export async function runMobileNetworkSample(options: {
             Math.max(150, options.link.latencyDownMs + options.link.latencyUpMs + 25),
       );
     const results: ScenarioResult[] = [];
-    // oxlint-disable-next-line opensteer/no-polling-loop-in-tests -- The foreground scenario measures a fixed background interval; readiness uses vi.waitFor.
+    // oxlint-disable-next-line opensteer/no-polling-loop-in-tests -- Foreground and idle measure fixed intervals; readiness uses vi.waitFor.
     for (const scenario of scenarios) {
       const selected = options.scenarios.includes(scenario);
       // Warm scenarios all need the same real attach; run only the prerequisites they use.
@@ -386,6 +376,12 @@ export async function runMobileNetworkSample(options: {
       const priorDetailBytes = nodeDetailBytes;
       const priorSync = synchronized;
       if (scenario === "cold-attach") {
+        const releaseTabs = client.watchPersonalResource("tab", inspect);
+        const releaseLayout = client.watchPersonalResource("tab-layout", inspect);
+        cleanup.push(async () => {
+          releaseTabs();
+          releaseLayout();
+        });
         const loading = client.load();
         await loading;
         await wait("cold attach milestones", () =>
@@ -403,9 +399,10 @@ export async function runMobileNetworkSample(options: {
         await wait(
           "three subagent cards",
           () =>
-            (client.getSnapshot().transcripts[busy.threadId] ?? []).filter(
-              (entry) => entry.kind === "node",
-            ).length === 3,
+            client
+              .getThreadTranscript(busy.threadId)
+              ?.getSnapshot()
+              .entries.filter((entry) => entry.kind === "node").length === 3,
         );
         mark("parentFirstPage");
       } else if (scenario === "open-subagent") {
@@ -444,13 +441,15 @@ export async function runMobileNetworkSample(options: {
       } else if (scenario === "open-task") {
         const threadId = fixture.historyThreadId;
         client.activateThread(threadId);
-        await wait(
-          "Task history",
-          () =>
-            client.getSnapshot().threadLookups[threadId] === undefined &&
-            (client.getSnapshot().transcripts[threadId]?.length ?? 0) > 0,
-        );
-        mark("taskFirstPage");
+        await wait("Task history", () => {
+          const thread = client.getThreadTranscript(threadId)?.getSnapshot();
+          return Boolean(thread?.synchronized && thread.entries.length > 0);
+        });
+        mark("historyFirstPage");
+      } else if (scenario === "idle") {
+        // oxlint-disable-next-line opensteer/no-real-time-wait-in-tests -- The benchmark measures five minutes of real idle traffic.
+        await delay(5 * 60_000, undefined, { signal: options.signal });
+        expect(client.getSnapshot().connection).toBe("connected");
       } else {
         if (scenario === "reconnect") {
           proxy.dropConnections();
@@ -537,10 +536,17 @@ export async function runMobileNetworkSample(options: {
           .map((line) => ({ ...line, atMs: line.atMs - proxyStart })),
         resume: {
           cursor:
-            websocket.find((message) => message.type === "client.subscribe")?.afterSequence ?? null,
-          snapshots: websocket.filter((message) => message.type === "host.snapshot").length,
-          eventBatches: websocket.filter((message) => message.type === "host.events").length,
-          events: websocket.reduce((total, message) => total + (message.eventCount ?? 0), 0),
+            websocket.find((message) => message.type === "client.attach")?.afterSequence ?? null,
+          snapshots: websocket.filter(
+            (message) => message.type === "host.snapshot" && message.scope === "shell",
+          ).length,
+          eventBatches: websocket.filter(
+            (message) => message.type === "host.changes" && message.scope === "shell",
+          ).length,
+          events: websocket.reduce(
+            (total, message) => total + (message.scope === "shell" ? (message.eventCount ?? 0) : 0),
+            0,
+          ),
         },
       };
       if (selected) {

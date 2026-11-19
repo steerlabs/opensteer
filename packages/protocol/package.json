@@ -31,6 +31,9 @@
     "./apps": "./src/apps.ts",
     "./agent-tool-relay": "./src/agent-tool-relay.ts",
     "./iphone-bridge": "./src/iphone-bridge.ts",
+    "./personal-sync": "./src/personal-sync.ts",
+    "./resources": "./src/resources.ts",
+    "./transcript": "./src/transcript.ts",
     "./test-support/personal-wire": "./src/personal-wire.test-support.ts"
   },
   "scripts": {

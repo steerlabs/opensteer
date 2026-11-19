@@ -1,12 +1,10 @@
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { requestSettlementActor, readRequestSettlementProvenance } from "./request-settlement.js";
 import {
   OpensteerError,
-  PendingRequestSchema,
   RequestJsonObjectSchema,
   RequestResponseSchema,
-  type AgentEvent,
   type Request,
   type RequestId,
   type RequestPayload,
@@ -36,17 +34,19 @@ import {
   type InstallIntegrationInput,
   type InstallIntegrationMutation,
 } from "./integration-platform-stores.js";
-import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
+import {
+  assertRequestRevision,
+  refreshRequestState,
+  requestFromRow,
+} from "./request-persistence.js";
 import type { DatabaseSchema } from "./schema.js";
-import { jsonValue } from "./store-primitives.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { jsonValue, lockThreadRow } from "./store-primitives.js";
 import {
   enqueueContinuation,
   integrationAccessRequestInput,
   lockAndValidateIntegrationAccessResources,
   type IntegrationAccessRequestInput,
   lockActiveDurableRequestAuthority,
-  terminalEvents,
   type RequestMutation,
   type RequestStore,
 } from "./request-store.js";
@@ -59,17 +59,14 @@ interface PendingIntegrationAccessRequest {
   readonly requestedServerId: IntegrationServerId | null;
 }
 interface ResolvedIntegrationAccessRequest {
-  readonly events: readonly AgentEvent[];
   readonly request: Request;
   readonly grant: IntegrationGrant | null;
 }
 interface BoundIntegrationAccessInstallation {
   readonly installation: InstallIntegrationMutation["installation"];
   readonly request: Request;
-  readonly requestEvents: readonly AgentEvent[];
 }
 interface SelectedIntegrationAccessServer {
-  readonly events: readonly AgentEvent[];
   readonly request: Request;
 }
 
@@ -100,11 +97,12 @@ export class IntegrationRequestStore {
   }
   async resolveIntegrationAccessRequest(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<ResolvedIntegrationAccessRequest> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const observed = await transaction
         .selectFrom("requests")
         .innerJoin(
@@ -134,6 +132,7 @@ export class IntegrationRequestStore {
         });
       }
       const observedRequest = requestFromRow(observed);
+      assertRequestRevision(observed, input.expectedRevision);
       await lockActiveDurableRequestAuthority(transaction, observedRequest);
       const response = withoutClientIntegrationAccount(RequestResponseSchema.parse(input.response));
       const decision = parseIntegrationAccessDecision(response);
@@ -144,6 +143,7 @@ export class IntegrationRequestStore {
             message: "Install the reviewed integration before granting access",
           });
         }
+        await lockThreadRow(transaction, observed.originatingThreadId);
         const pending = await transaction
           .selectFrom("requests")
           .innerJoin(
@@ -190,9 +190,8 @@ export class IntegrationRequestStore {
         await enqueueContinuation(transaction, declined, now);
         await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
         return {
-          events: await terminalEvents(transaction, declined),
           grant: null,
-          request: declined,
+          request: await refreshRequestState(transaction, declined.id),
         };
       }
       if (decision.decision === "fulfilled") {
@@ -254,6 +253,28 @@ export class IntegrationRequestStore {
           requestedServerId: row.detailRequestedServerId,
         });
       }
+      await transaction
+        .selectFrom("threads")
+        .select("id")
+        .where(
+          "id",
+          "in",
+          transaction
+            .selectFrom("requests")
+            .innerJoin(
+              "integrationRequestDetails",
+              "integrationRequestDetails.requestId",
+              "requests.id",
+            )
+            .select("requests.originatingThreadId")
+            .where("requests.kind", "=", "integration.access")
+            .where("requests.status", "=", "pending")
+            .where("requests.requestedBy", "=", input.resolvedBy)
+            .where("integrationRequestDetails.installationId", "=", row.detailInstallationId),
+        )
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
       const grant =
         decision.decision === "fulfilled"
           ? await createPersonalIntegrationGrantForRequest(transaction, {
@@ -347,7 +368,6 @@ export class IntegrationRequestStore {
         decision.decision === "fulfilled" && "access" in decision
           ? decision.access
           : row.detailAccess;
-      const coveredEvents: AgentEvent[] = [];
       if (decision.decision === "fulfilled" && grantedAccess === "read-write") {
         const covered = await transaction
           .selectFrom("requests")
@@ -392,19 +412,19 @@ export class IntegrationRequestStore {
           if (!coveredRow) continue;
           const coveredRequest = requestFromRow(coveredRow);
           await enqueueContinuation(transaction, coveredRequest, now);
-          coveredEvents.push(...(await terminalEvents(transaction, coveredRequest)));
+          await refreshRequestState(transaction, coveredRequest.id);
         }
       }
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
       return {
-        events: [...coveredEvents, ...(await terminalEvents(transaction, resolved))],
         grant,
-        request: resolved,
+        request: await refreshRequestState(transaction, resolved.id),
       };
     });
   }
   async loadIntegrationAccessInstallManifest(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<IntegrationInstallManifest> {
@@ -428,10 +448,11 @@ export class IntegrationRequestStore {
   }
   async tryBindExistingIntegrationAccessInstallation(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<BoundIntegrationAccessInstallation | null> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const observed = await transaction
         .selectFrom("requests")
         .innerJoin(
@@ -458,6 +479,7 @@ export class IntegrationRequestStore {
           message: "Integration access installation is no longer pending",
         });
       }
+      assertRequestRevision(observed, input.expectedRevision);
       await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
       await requirePersonalOwner(transaction, input.resolvedBy);
       const manifest = IntegrationInstallManifestSchema.parse(observed.detailManifest);
@@ -485,7 +507,6 @@ export class IntegrationRequestStore {
       if (!current || !installedIntegrationMatchesReviewedManifest(current, manifest)) return null;
       const bound = await bindIntegrationAccessInstallation(transaction, {
         installation: integrationInstallationFromRequestRow(current),
-        requestEvents: [],
         requestId: input.requestId,
       });
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
@@ -495,6 +516,7 @@ export class IntegrationRequestStore {
   async installForIntegrationAccessRequest(input: {
     readonly preparedFulfillment: PreparedIntegrationInstallFulfillment;
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<BoundIntegrationAccessInstallation> {
@@ -509,7 +531,7 @@ export class IntegrationRequestStore {
         message: "Prepared device installation does not match the reviewed manifest",
       });
     }
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const observed = await transaction
         .selectFrom("requests")
         .innerJoin(
@@ -547,6 +569,7 @@ export class IntegrationRequestStore {
           message: "Prepared installation does not match the reviewed manifest",
         });
       }
+      assertRequestRevision(observed, input.expectedRevision);
       await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
       await lockIntegrationInstallationIdentityInTransaction(
         transaction,
@@ -609,7 +632,6 @@ export class IntegrationRequestStore {
               updatedAt: current.updatedAt.toISOString(),
               version: current.version,
             }),
-            requestEvents: [] as readonly AgentEvent[],
           }
         : await installIntegrationInTransaction(transaction, {
             ...input.preparedFulfillment.material,
@@ -618,7 +640,6 @@ export class IntegrationRequestStore {
           });
       const bound = await bindIntegrationAccessInstallation(transaction, {
         installation: installationMutation.installation,
-        requestEvents: installationMutation.requestEvents,
         requestId: input.requestId,
       });
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
@@ -628,10 +649,11 @@ export class IntegrationRequestStore {
   async selectIntegrationAccessServer(input: {
     readonly requestId: RequestId;
     readonly requestedServerId: IntegrationServerId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<SelectedIntegrationAccessServer> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const observed = await transaction
         .selectFrom("requests")
         .innerJoin(
@@ -660,6 +682,7 @@ export class IntegrationRequestStore {
           message: "Integration server selection is no longer available",
         });
       }
+      assertRequestRevision(observed, input.expectedRevision);
       await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
       await lockAndValidateIntegrationAccessResources(transaction, {
         installationId: observed.detailInstallationId,
@@ -736,18 +759,8 @@ export class IntegrationRequestStore {
         .returningAll()
         .executeTakeFirstOrThrow();
       const request = requestFromRow(updated);
-      const event = await appendHostDeploymentEvent(transaction, {
-        data: {
-          request: PendingRequestSchema.parse(request),
-        },
-        environmentId: await requestOriginEnvironment(transaction, request),
-        runId: request.originatingRunId,
-        threadId: request.originatingThreadId,
-        type: "request.updated",
-      });
       return {
-        events: [event],
-        request,
+        request: await refreshRequestState(transaction, request.id),
       };
     });
   }
@@ -871,7 +884,7 @@ async function bindIntegrationAccessInstallation(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly installation: InstallIntegrationMutation["installation"];
-    readonly requestEvents: readonly AgentEvent[];
+
     readonly requestId: RequestId;
   },
 ): Promise<BoundIntegrationAccessInstallation> {
@@ -934,19 +947,9 @@ async function bindIntegrationAccessInstallation(
     .returningAll()
     .executeTakeFirstOrThrow();
   const request = requestFromRow(updatedRow);
-  const event = await appendHostDeploymentEvent(transaction, {
-    data: {
-      request: PendingRequestSchema.parse(request),
-    },
-    environmentId: await requestOriginEnvironment(transaction, request),
-    runId: request.originatingRunId,
-    threadId: request.originatingThreadId,
-    type: "request.updated",
-  });
   return {
     installation: input.installation,
-    request,
-    requestEvents: [...input.requestEvents, event],
+    request: await refreshRequestState(transaction, request.id),
   };
 }
 async function withAuthoritativeIntegrationAccount(

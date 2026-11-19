@@ -4,7 +4,7 @@ import type {
   TeamMessageId,
   TeamSource,
 } from "@opensteer/core";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
 export async function personalTeamReturnPost(
@@ -41,7 +41,7 @@ export async function personalTeamReturnPost(
     .where("remoteLinkId", "=", link.remoteLinkId)
     .where("runId", "=", payload.resumeRunId)
     .where("channelId", "=", input.source.channelId)
-    .where("createdAt", ">", new Date(Date.now() - 14 * 86400000))
+    .where("createdAt", ">", sql<Date>`now() - interval '14 days'`)
     .executeTakeFirst();
   if (
     !post ||

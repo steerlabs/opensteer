@@ -43,8 +43,8 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
  * The personal Host API this tree speaks, and the oldest it still serves. Peers
  * speak the lower of their two current versions.
  */
-export const hostApiVersion = 63;
-export const minimumHostApiVersion = 63;
+export const hostApiVersion = 64;
+export const minimumHostApiVersion = 64;
 /**
  * The team API this tree speaks, and the oldest peer it still serves. The wire
  * snapshot test refuses a breaking schema change without a bump.
@@ -73,15 +73,19 @@ export function apiNegotiation(kind: z.infer<typeof DeploymentKindSchema>): ApiN
 export function apiVersionHeader(kind: z.infer<typeof DeploymentKindSchema>): string {
   return kind === "team" ? teamApiVersionHeader : hostApiVersionHeader;
 }
+export function usesPersonalApiVersion(kind: z.infer<typeof DeploymentKindSchema>): boolean {
+  return apiVersionHeader(kind) === hostApiVersionHeader;
+}
 /** What every caller that can set headers sends to a Host of `kind`. */
 export function apiVersionHeaders(
   kind: z.infer<typeof DeploymentKindSchema>,
+  personalVersion?: number,
 ): Readonly<Record<string, string>> {
   return kind === "team"
     ? { [teamApiVersionHeader]: String(teamApiVersion) }
     : {
-        [hostApiVersionHeader]: String(minimumHostApiVersion),
-        [hostApiCurrentHeader]: String(hostApiVersion),
+        [hostApiVersionHeader]: String(personalVersion ?? minimumHostApiVersion),
+        [hostApiCurrentHeader]: String(personalVersion ?? hostApiVersion),
       };
 }
 

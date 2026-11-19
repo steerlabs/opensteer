@@ -45,16 +45,24 @@ export interface MobileNetworkHost extends MachineAccessHost {
 export type MobileNetworkHostFactory = (databaseUrl: string) => Promise<MobileNetworkHost>;
 
 import {
-  AgentEventSchema,
   createId,
   MessageSchema,
   ModelSelectionSchema,
-  type AgentEvent,
   type ThreadId,
-  nodeDetailEventNodeId,
 } from "../../packages/core/src/index.js";
 import { PendingAgentEventSchema } from "../../packages/protocol/src/index.js";
-import { eventFromRow, jsonValue } from "../../packages/database/src/store-primitives.js";
+import { jsonValue } from "../../packages/database/src/store-primitives.js";
+
+import type { InsertObject } from "kysely";
+import type { DatabaseSchema } from "../../packages/database/src/schema.js";
+import {
+  describeTranscriptMessage,
+  toolCallId,
+  transcriptPreview,
+} from "../../packages/database/src/transcript-store.js";
+
+export const benchmarkToolOutput =
+  "Build log: checked workspace and synchronized dependency.\n".repeat(440);
 
 export async function startMobileNetworkHost(databaseUrl: string): Promise<MobileNetworkHost> {
   const clone = await createMachineAccessDatabase(databaseUrl);
@@ -192,9 +200,6 @@ export async function seedPersonal(
 ) {
   const caller = await host.connectHostingCaller();
   cleanup.push(() => caller.close());
-  const boot = await host.api["bootstrap.get"]({});
-  if (!boot.ok) throw new Error(boot.error.message);
-  const deploymentId = boot.data.deploymentId;
   const createThread = async (key: string) => {
     const result = await host.api["commands.dispatch"]({
       type: "thread.create",
@@ -237,30 +242,16 @@ export async function seedPersonal(
     runId: typeof historyRun.runId,
   ) {
     await database.transaction().execute(async (transaction) => {
-      const head = await transaction
-        .selectFrom("deploymentEventState")
-        .select("sequence")
-        .where("deploymentId", "=", deploymentId)
-        .forUpdate()
-        .executeTakeFirstOrThrow();
       const thread = await transaction
         .selectFrom("threads")
-        .select("nextMessageSequence")
+        .select(["nextMessageSequence", "nextTranscriptPosition"])
         .where("id", "=", threadId)
         .forUpdate()
         .executeTakeFirstOrThrow();
-      let sequence = BigInt(head.sequence);
-      const events: (Omit<AgentEvent, "createdAt" | "data"> & {
-        deploymentId: typeof deploymentId;
-        nodeDetailId: ReturnType<typeof nodeDetailEventNodeId>;
-        createdAt: Date;
-        data: ReturnType<typeof jsonValue>;
-        runnerId: null;
-        runnerOrdinal: null;
-        runnerBootId: null;
-        runnerBindingGeneration: null;
-      })[] = [];
-      const messages = [];
+      let position = BigInt(thread.nextTranscriptPosition);
+      const messages: InsertObject<DatabaseSchema, "messages">[] = [];
+      const items: InsertObject<DatabaseSchema, "transcriptItems">[] = [];
+      const calls: InsertObject<DatabaseSchema, "toolCalls">[] = [];
       for (let index = 0; index < count; index++) {
         const createdAt = new Date(Date.UTC(2026, 0, 1, 0, 0, index));
         const id = createId("message");
@@ -292,6 +283,13 @@ export async function seedPersonal(
             },
           ],
         });
+        const projection = describeTranscriptMessage({
+          ...message,
+          edited: false,
+          assigned: false,
+          admittedSeed: false,
+          seedInRun: false,
+        });
         messages.push({
           id,
           threadId,
@@ -301,45 +299,71 @@ export async function seedPersonal(
           author: jsonValue(message.author),
           actorPrincipalId: template.actorPrincipalId,
           content: jsonValue(message.content),
+          published: projection.published,
           createdAt,
         });
-        const add = (type: string, data: unknown) => {
-          const event = AgentEventSchema.parse({
-            createdAt: createdAt.toISOString(),
-            eventId: createId("event"),
-            environmentId: caller.environmentId,
-            runId: runId,
-            sequence: String(++sequence),
-            threadId,
-            type,
-            data,
-          });
-          events.push({
-            ...event,
-            deploymentId,
-            nodeDetailId: nodeDetailEventNodeId(event),
-            createdAt,
-            data: jsonValue(event.data),
-            runnerId: null,
-            runnerOrdinal: null,
-            runnerBootId: null,
-            runnerBindingGeneration: null,
-          });
-        };
-        add("message.created", { message, input: null });
+        items.push({
+          id,
+          threadId,
+          runId: message.runId,
+          attemptId: null,
+          nodeId: null,
+          kind: "message",
+          messageId: id,
+          position: String(++position),
+          visible: projection.visible,
+          isTurnStart: projection.isTurnStart,
+          createdAt,
+          view: jsonValue(projection.view),
+        });
         if (tools && index % 10 === 5) {
-          const callId = `logs-${index}`;
-          add("tool.started", {
-            callId,
-            arguments: { command: "tail deployment.log" },
-            tool: { name: "shell", namespace: "functions" },
-          });
-          add("tool.completed", {
-            callId,
+          const key = {
+            runId,
+            attemptId: null,
+            bindingGeneration: null,
+            nodeId: null,
+            callId: `logs-${index}`,
+          };
+          const callId = toolCallId(key);
+          const tool = { name: "shell", namespace: "functions" };
+          const itemPosition = String(++position);
+          calls.push({
+            ...key,
+            id: callId,
+            threadId,
+            origin: "host-harness",
+            tool: jsonValue(tool),
+            arguments: jsonValue({ command: "tail deployment.log" }),
+            argumentDigest: null,
+            startedAt: createdAt,
+            completedAt: createdAt,
+            completionOrder: String(++position),
+            status: "completed",
             isError: false,
-            output: {
-              text: "Build log: checked workspace and synchronized dependency.\n".repeat(440),
-            },
+            output: jsonValue({ text: benchmarkToolOutput }),
+            integration: null,
+          });
+          items.push({
+            id: `tool:${callId}`,
+            threadId,
+            runId,
+            attemptId: null,
+            nodeId: null,
+            kind: "tool",
+            toolCallId: callId,
+            position: itemPosition,
+            createdAt,
+            visible: true,
+            isTurnStart: false,
+            view: jsonValue(
+              transcriptPreview({
+                tool,
+                title: tool.name,
+                preview: benchmarkToolOutput,
+                status: "completed",
+                completedAt: createdAt.toISOString(),
+              }),
+            ),
           });
         }
       }
@@ -348,20 +372,19 @@ export async function seedPersonal(
           .insertInto("messages")
           .values(messages.slice(start, start + 100))
           .execute();
-      for (let start = 0; start < events.length; start += 100)
+      if (calls.length) await transaction.insertInto("toolCalls").values(calls).execute();
+      for (let start = 0; start < items.length; start += 100)
         await transaction
-          .insertInto("deploymentEvents")
-          .values(events.slice(start, start + 100))
+          .insertInto("transcriptItems")
+          .values(items.slice(start, start + 100))
           .execute();
       await transaction
         .updateTable("threads")
-        .set({ nextMessageSequence: String(BigInt(thread.nextMessageSequence) + BigInt(count)) })
+        .set({
+          nextMessageSequence: String(BigInt(thread.nextMessageSequence) + BigInt(count)),
+          nextTranscriptPosition: String(position),
+        })
         .where("id", "=", threadId)
-        .execute();
-      await transaction
-        .updateTable("deploymentEventState")
-        .set({ sequence: String(sequence) })
-        .where("deploymentId", "=", deploymentId)
         .execute();
     });
   }
@@ -487,12 +510,12 @@ export async function seedPersonal(
     }
     await reply("All three investigations finished. The findings agree and the checks passed.");
     await emit("run.completed", { status: "completed" });
-    const rows = await database
-      .selectFrom("deploymentEvents")
+    const detail = await database
+      .selectFrom("transcriptItems")
       .selectAll()
       .where("threadId", "=", threadId)
+      .where("nodeId", "is not", null)
       .execute();
-    const detail = rows.map(eventFromRow).filter((event) => nodeDetailEventNodeId(event));
     busySubagents = {
       threadId,
       nodeIds,

@@ -1,10 +1,16 @@
 import { expect, it, vi } from "vitest";
-import { createId, type AgentEvent, type RunId } from "../packages/core/src/index.js";
+import { createId, type RunId } from "../packages/core/src/index.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { TeamRunEvents } from "../apps/host/src/runtime/team-run-events.js";
 
-const event = (runId: RunId, type: string, data: unknown = {}): AgentEvent =>
-  ({ runId, type, data }) as unknown as AgentEvent;
+const finished = (runId: RunId) => ({
+  type: "runFinished" as const,
+  runId,
+  threadId: createId("thread"),
+  attemptId: null,
+  bindingGeneration: null,
+  outcome: "completed" as const,
+});
 
 it("serializes and coalesces Run changes while retaining only safe step kinds and counts", async () => {
   const runId = createId("run"),
@@ -29,24 +35,27 @@ it("serializes and coalesces Run changes while retaining only safe step kinds an
     },
     onError,
   });
-  publisher.observe(
-    event(runId, "tool.started", {
-      tool: { namespace: "opensteer", name: "browser_open" },
-      arguments: { path: "/private/sentinel", token: "credential-sentinel" },
-    }),
-  );
+  publisher.observe({ type: "teamStep", runId, toolName: "browser_open", isIntegration: false });
   await withTimeout(started.promise, 1000, {
     timeoutError: () => new Error("Run publication never started"),
   });
-  publisher.observe(
-    event(runId, "tool.started", {
-      tool: { namespace: "opensteer", name: "opensteer_team_search" },
-      arguments: { query: "private query sentinel" },
-    }),
-  );
-  publisher.observe(event(runId, "run.delivery-updated", { delivery: { state: "sent" } }));
-  publisher.observe(event(runId, "request.opened", { prompt: "private question sentinel" }));
-  publisher.observe(event(runId, "run.completed", { reply: "private answer sentinel" }));
+  publisher.observe({
+    type: "teamStep",
+    runId,
+    toolName: "opensteer_team_search",
+    isIntegration: false,
+  });
+  publisher.observe({ type: "runChanged", runId });
+  publisher.observe({
+    type: "requestChanged",
+    requestId: createId("request"),
+    threadId: createId("thread"),
+    kind: "harness.approval",
+    status: "pending",
+    opened: true,
+    runId,
+  });
+  publisher.observe(finished(runId));
   gate.resolve();
   await publisher.close();
   expect(maximum).toBe(1);
@@ -62,7 +71,6 @@ it("serializes and coalesces Run changes while retaining only safe step kinds an
       ],
     },
   ]);
-  expect(JSON.stringify(updates)).not.toContain("sentinel");
 });
 
 it("still reconciles a terminal event after a publication fails and stops on close", async () => {
@@ -71,16 +79,15 @@ it("still reconciles a terminal event after a publication fails and stops on clo
   let publisher: TeamRunEvents;
   const publish = vi.fn(async () => {
     if (publish.mock.calls.length === 1) {
-      publisher.observe(event(runId, "run.completed"));
+      publisher.observe(finished(runId));
       throw new Error("private response sentinel");
     }
   });
   publisher = new TeamRunEvents({ publish, onError });
-  publisher.observe(event(runId, "run.started"));
-  publisher.observe(event(runId, "assistant.message", { content: "private live text sentinel" }));
+  publisher.observe({ type: "runChanged", runId });
   await publisher.close();
   expect(publish).toHaveBeenCalledTimes(2);
   expect(onError).toHaveBeenCalledExactlyOnceWith();
-  publisher.observe(event(runId, "run.completed"));
+  publisher.observe(finished(runId));
   expect(publish).toHaveBeenCalledTimes(2);
 });

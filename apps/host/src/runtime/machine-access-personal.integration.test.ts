@@ -255,7 +255,7 @@ integration("Personal computer membership", () => {
             routeOrigin: null,
           });
         },
-        onEvent: async () => undefined,
+        onEvent: async () => 0,
         onRegistered: async (candidate) => {
           survived = await confirmRunnerRegistration(host.store, registry, candidate);
         },

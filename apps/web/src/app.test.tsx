@@ -75,9 +75,13 @@ vi.mock("react", async (importOriginal) => {
 
 let snapshot: HostSnapshot;
 
-vi.mock("@opensteer/client/react", async (actual) => ({
-  ...(await actual<typeof import("@opensteer/client/react")>()),
-  useHostSnapshot: () => ({ snapshot }),
+vi.mock("@opensteer/client/react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opensteer/client/react")>()),
+  useHostSnapshot: () => ({
+    loadError: null,
+    reload: async () => undefined,
+    snapshot,
+  }),
 }));
 
 import { App, startHostOidcSignIn } from "./app.js";
@@ -274,6 +278,41 @@ describe("App setup continuation", () => {
     }
     await runEffectsTwice();
     expect(onSetupOpened).toHaveBeenCalled();
+  });
+});
+
+describe("App on the shell", () => {
+  it("mounts the workspace before the first settings read, and waits only for settings known absent", async () => {
+    installWindow();
+    const client = createClient();
+    const onSetupOpened = vi.fn();
+    const render = () => {
+      hooks.beginRender();
+      try {
+        return renderToStaticMarkup(
+          <App hostClient={client} onSetupOpened={onSetupOpened} openSetup />,
+        );
+      } catch {
+        // The shell itself needs a browser; that it was reached is what is under test.
+        return "workspace";
+      }
+    };
+    // Authenticated, settings not read yet: the app the setup continues into can draw.
+    snapshot = {
+      ...snapshot,
+      session: "authenticated",
+      personalSettings: null,
+      loadedResources: [],
+    };
+    expect(render()).not.toContain("Preparing your agent’s home");
+    await runEffectsTwice();
+    expect(onSetupOpened).toHaveBeenCalled();
+    // Read, and the Host has not written them yet: the first run's moment.
+    snapshot = { ...snapshot, loadedResources: ["settings"] };
+    hooks.beginRender();
+    expect(renderToStaticMarkup(<App hostClient={client} />)).toContain(
+      "Preparing your agent’s home",
+    );
   });
 });
 

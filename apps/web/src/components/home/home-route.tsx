@@ -44,7 +44,8 @@ export function HomeRoute() {
       composer={<NewTaskComposer draftId={draftId} key={draftId} suggestion={suggestion} />}
       firstRun={firstRun}
       header={<AreaHeader hostClient={hostClient} mark={<NewTaskMark />} title="New task" />}
-      needsAccount={snapshot.harnesses.length === 0}
+      // Unknown until the first accounts read lands; none connected only after it says so.
+      needsAccount={snapshot.loadedResources.includes("harness") && snapshot.harnesses.length === 0}
       onConnectAccount={() => void navigate("/settings/ai")}
       onSuggestion={(text) => setSuggestion((current) => ({ key: (current?.key ?? 0) + 1, text }))}
     />

@@ -1,7 +1,11 @@
 import type { HostSnapshot, ThreadSummary } from "./client.js";
 
 export function sameAppGateSnapshot(previous: HostSnapshot, next: HostSnapshot): boolean {
-  return previous.session === next.session && previous.identityConfig === next.identityConfig;
+  return (
+    previous.session === next.session &&
+    previous.identityConfig === next.identityConfig &&
+    (previous.personalSettings === null) === (next.personalSettings === null)
+  );
 }
 
 export function sameStableHostSnapshot(previous: HostSnapshot, next: HostSnapshot): boolean {
@@ -18,6 +22,7 @@ export function sameStableHostSnapshot(previous: HostSnapshot, next: HostSnapsho
       // Recent, and the options a model comes back with.
       previous.executionPreferences === next.executionPreferences &&
       previous.harnesses === next.harnesses &&
+      previous.loadedResources === next.loadedResources &&
       previous.identityConfig === next.identityConfig &&
       previous.machines === next.machines &&
       previous.machineRevision === next.machineRevision &&

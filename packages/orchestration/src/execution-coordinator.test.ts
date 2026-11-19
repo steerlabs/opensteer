@@ -1,11 +1,4 @@
-import {
-  AgentEventSchema,
-  OpensteerError,
-  SequenceSchema,
-  createId,
-  type AgentEvent,
-  type CommandId,
-} from "@opensteer/core";
+import { OpensteerError, createId, type CommandId } from "@opensteer/core";
 import type { CommandRow, PendingCommandRow } from "@opensteer/database";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -25,7 +18,7 @@ describe("ExecutionCoordinator", () => {
     [new Error("private database failure"), "The AI engine could not be started."],
   ])("retains the dispatch cause and exposes only domain errors (%s)", async (error, message) => {
     const command = pendingCommand();
-    const store = fakeStore(command, null);
+    const store = fakeStore(command);
     const onDispatchError = vi.fn();
     const coordinator = new ExecutionCoordinator({
       dispatcher: {
@@ -51,94 +44,12 @@ describe("ExecutionCoordinator", () => {
     });
     expect(store.failCommand).toHaveBeenCalledWith(command.id, message);
   });
-  it("publishes the durable failure projection for a non-retryable dispatch", async () => {
-    const command = pendingCommand();
-    const event = failureEvent(command);
-    const store = fakeStore(command, event);
-    const onDeploymentEvent = vi.fn();
-    const coordinator = new ExecutionCoordinator({
-      dispatcher: {
-        isAvailable: () => true,
-        dispatch: async () => {
-          throw new CommandDispatchError("Harness is unavailable", "failed");
-        },
-      },
-      dispatcherId: "test-dispatcher",
-      maxConcurrentRuns: 1,
-      maxConcurrentTriggerPrograms: 1,
-      maxQueuedBytes: 10_000,
-      maxQueuedCommands: 10,
-      onDeploymentEvent,
-      pollIntervalMs: 10_000,
-      store: store.value,
-    });
-    coordinator.start();
-    await waitFor(() => store.failCommand.mock.calls.length === 1);
-    await coordinator.stop();
-    expect(store.retryCommand).not.toHaveBeenCalled();
-    expect(store.failCommand).toHaveBeenCalledWith(command.id, "Harness is unavailable");
-    expect(onDeploymentEvent).toHaveBeenCalledWith(event);
-  });
-  it("projects durable starting and retry transitions around dispatch", async () => {
-    const command = pendingCommand();
-    const starting = statusEvent(command, "starting", "1");
-    const queued = statusEvent(command, "queued", "2");
-    const idle = {
-      ...queued,
-      data: {
-        status: "idle" as const,
-        inputQueuePaused: false,
-        pendingRequests: 0,
-      },
-      eventId: createId("event"),
-      runId: null,
-      sequence: SequenceSchema.parse("3"),
-      type: "thread.state-changed" as const,
-    };
-    const dispatched = {
-      ...command,
-      status: "dispatched" as const,
-    };
-    const onDeploymentEvent = vi.fn();
-    const coordinator = new ExecutionCoordinator({
-      dispatcher: {
-        isAvailable: () => true,
-        dispatch: async () => {
-          expect(onDeploymentEvent).toHaveBeenLastCalledWith(starting);
-          throw new CommandDispatchError("Runner is offline", "retry");
-        },
-      },
-      dispatcherId: "test-dispatcher",
-      maxConcurrentRuns: 1,
-      maxConcurrentTriggerPrograms: 1,
-      maxQueuedBytes: 10_000,
-      maxQueuedCommands: 10,
-      onDeploymentEvent,
-      pollIntervalMs: 10_000,
-      store: {
-        claimCommand: vi.fn(async () => ({
-          command: dispatched,
-          events: [starting],
-        })),
-        failCommand: vi.fn(async () => []),
-        listPendingCommands: vi.fn().mockResolvedValueOnce([command]).mockResolvedValue([]),
-        markSteerUnknown: vi.fn(async () => []),
-        retryCommand: vi.fn(async () => [queued, idle]),
-      },
-    });
-    coordinator.start();
-    await waitFor(() => onDeploymentEvent.mock.calls.length >= 2);
-    await coordinator.stop();
-    expect(onDeploymentEvent.mock.calls.map(([event]) => event)).toEqual([starting, queued, idle]);
-  });
   it.each(["authority-cohort", "seed-input"] as const)(
     "terminalizes lost authority with %s scope without dispatching",
     async (scope) => {
       const command = pendingCommand();
-      const failure = failureEvent(command);
       const dispatch = vi.fn(async () => undefined);
-      const failCommand = vi.fn(async () => [failure]);
-      const onDeploymentEvent = vi.fn();
+      const failCommand = vi.fn(async () => undefined);
       const coordinator = new ExecutionCoordinator({
         dispatcher: {
           dispatch,
@@ -149,7 +60,6 @@ describe("ExecutionCoordinator", () => {
         maxConcurrentTriggerPrograms: 1,
         maxQueuedBytes: 10_000,
         maxQueuedCommands: 10,
-        onDeploymentEvent,
         pollIntervalMs: 10_000,
         store: {
           claimCommand: vi.fn(async () => ({
@@ -167,8 +77,8 @@ describe("ExecutionCoordinator", () => {
           })),
           failCommand,
           listPendingCommands: vi.fn().mockResolvedValueOnce([command]).mockResolvedValue([]),
-          markSteerUnknown: vi.fn(async () => []),
-          retryCommand: vi.fn(async () => []),
+          markSteerUnknown: vi.fn(async () => undefined),
+          retryCommand: vi.fn(async () => undefined),
         },
       });
       coordinator.start();
@@ -180,7 +90,6 @@ describe("ExecutionCoordinator", () => {
         "Execution authority is no longer active.",
         scope,
       );
-      expect(onDeploymentEvent).toHaveBeenCalledWith(failure);
     },
   );
   it("reads again at once for a command queued while a read was running", async () => {
@@ -210,7 +119,7 @@ describe("ExecutionCoordinator", () => {
       // The fallback poll must not be what finds it.
       pollIntervalMs: 3_600_000,
       store: {
-        ...fakeStore(command, null).value,
+        ...fakeStore(command).value,
         claimCommand: vi.fn(async () => ({
           command: {
             ...command,
@@ -244,16 +153,16 @@ describe("ExecutionCoordinator", () => {
       maxQueuedCommands: 10,
       pollIntervalMs: 1,
       store: {
-        ...fakeStore(pendingCommand(), null).value,
+        ...fakeStore(pendingCommand()).value,
         listPendingCommands,
       },
     });
     coordinator.start();
-    await waitFor(() => listPendingCommands.mock.calls.length >= 2);
+    await waitFor(() => listPendingCommands.mock.calls.length === 1);
     await coordinator.stop();
     const stoppedAt = listPendingCommands.mock.calls.length;
     coordinator.start();
-    await waitFor(() => listPendingCommands.mock.calls.length >= stoppedAt + 2);
+    await waitFor(() => listPendingCommands.mock.calls.length === stoppedAt + 1);
     await coordinator.stop();
 
     // Only a stop that really ran lets it start a third time.
@@ -273,13 +182,13 @@ describe("ExecutionCoordinator", () => {
       .fn<ExecutionCoordinatorStore["claimCommand"]>()
       .mockRejectedValueOnce(new Error("transient database lock failure"))
       .mockResolvedValueOnce(dispatched);
-    const failCommand = vi.fn(async () => []);
+    const failCommand = vi.fn(async () => undefined);
     const listPendingCommands = vi
       .fn<ExecutionCoordinatorStore["listPendingCommands"]>()
       .mockResolvedValueOnce([command])
       .mockResolvedValueOnce([command])
       .mockResolvedValue([]);
-    const retryCommand = vi.fn(async () => []);
+    const retryCommand = vi.fn(async () => undefined);
     const dispatch = vi.fn(async () => undefined);
     const coordinator = new ExecutionCoordinator({
       dispatcher: {
@@ -296,7 +205,7 @@ describe("ExecutionCoordinator", () => {
         claimCommand,
         failCommand,
         listPendingCommands,
-        markSteerUnknown: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
         retryCommand,
       },
     });
@@ -346,10 +255,10 @@ describe("ExecutionCoordinator", () => {
       pollIntervalMs: 10_000,
       store: {
         claimCommand,
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands: vi.fn().mockResolvedValueOnce([first, second]).mockResolvedValue([]),
-        markSteerUnknown: vi.fn(async () => []),
-        retryCommand: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
+        retryCommand: vi.fn(async () => undefined),
       },
     });
     coordinator.start();
@@ -395,13 +304,13 @@ describe("ExecutionCoordinator", () => {
       pollIntervalMs: 10_000,
       store: {
         claimCommand,
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands: vi
           .fn()
           .mockResolvedValueOnce([run, triggerProgram])
           .mockResolvedValue([]),
-        markSteerUnknown: vi.fn(async () => []),
-        retryCommand: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
+        retryCommand: vi.fn(async () => undefined),
       },
     });
     coordinator.start();
@@ -455,10 +364,10 @@ describe("ExecutionCoordinator", () => {
       pollIntervalMs: 10_000,
       store: {
         claimCommand,
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands: vi.fn().mockResolvedValueOnce([turn, steer]).mockResolvedValue([]),
-        markSteerUnknown: vi.fn(async () => []),
-        retryCommand: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
+        retryCommand: vi.fn(async () => undefined),
       },
     });
     coordinator.start();
@@ -469,7 +378,7 @@ describe("ExecutionCoordinator", () => {
   });
   it("paces a command's retryable rejections instead of redispatching at poll speed", async () => {
     const command = pendingCommand();
-    let clock = 1_700_000_000_000;
+    const time = manualClock();
     const store = backoffStore(() => [command]);
     const dispatch = vi.fn(async () => {
       throw new CommandDispatchError("Runner is offline", "retry");
@@ -484,16 +393,18 @@ describe("ExecutionCoordinator", () => {
       maxConcurrentTriggerPrograms: 1,
       maxQueuedBytes: 10_000,
       maxQueuedCommands: 10,
-      now: () => clock,
+      clock: time.clock,
       pollIntervalMs: 1,
       store: store.value,
     });
     coordinator.start();
     await waitFor(() => dispatch.mock.calls.length === 1);
-    const polls = store.listPendingCommands.mock.calls.length;
-    await waitFor(() => store.listPendingCommands.mock.calls.length >= polls + 5);
+    await wakeRepeatedly(coordinator, () => store.listPendingCommands.mock.calls.length);
     expect(dispatch).toHaveBeenCalledTimes(1);
-    clock += 1_000;
+    // Backoff arms one timer for when the command is eligible; it never polls.
+    await waitFor(() => time.timers().length > 0);
+    expect(time.timers()).toEqual([1_000]);
+    time.advance(1_000);
     await waitFor(() => dispatch.mock.calls.length === 2);
     await coordinator.stop();
     expect(store.retryCommand).toHaveBeenCalledTimes(2);
@@ -539,9 +450,9 @@ describe("ExecutionCoordinator", () => {
   });
   it("keeps pacing a command that polls cannot see while it is being dispatched", async () => {
     const command = pendingCommand();
-    let clock = 1_700_000_000_000;
-    // Like the database: a claimed command leaves the pending listing until
-    // its retry commits, and polls keep running meanwhile.
+    const time = manualClock();
+    // A claimed command leaves the pending listing until its retry commits.
+    // Other admissions may wake a read during that time.
     let listed = true;
     let releaseRetry = () => {};
     const claimCommand = vi.fn(async () => {
@@ -577,37 +488,39 @@ describe("ExecutionCoordinator", () => {
       maxConcurrentTriggerPrograms: 1,
       maxQueuedBytes: 10_000,
       maxQueuedCommands: 10,
-      now: () => clock,
+      clock: time.clock,
       pollIntervalMs: 1,
       store: {
         claimCommand,
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands,
-        markSteerUnknown: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
         retryCommand,
       } as unknown as ExecutionCoordinatorStore,
     });
     const settleWhileUnlisted = async () => {
       await waitFor(() => retryCommand.mock.calls.length === dispatch.mock.calls.length);
-      const polls = listPendingCommands.mock.calls.length;
-      await waitFor(() => listPendingCommands.mock.calls.length >= polls + 3);
+      const reads = listPendingCommands.mock.calls.length;
+      coordinator.wake();
+      await waitFor(() => listPendingCommands.mock.calls.length > reads);
       releaseRetry();
-      const settled = listPendingCommands.mock.calls.length;
-      await waitFor(() => listPendingCommands.mock.calls.length >= settled + 5);
+      await wakeRepeatedly(coordinator, () => listPendingCommands.mock.calls.length);
     };
     coordinator.start();
     await waitFor(() => dispatch.mock.calls.length === 1);
     await settleWhileUnlisted();
     expect(dispatch).toHaveBeenCalledTimes(1);
-    clock += 1_000;
+    await waitFor(() => time.timers().length > 0);
+    time.advance(1_000);
     await waitFor(() => dispatch.mock.calls.length === 2);
     await settleWhileUnlisted();
-    clock += 1_000;
-    const polls = listPendingCommands.mock.calls.length;
-    await waitFor(() => listPendingCommands.mock.calls.length >= polls + 5);
+    await waitFor(() => time.timers().length > 0);
+    time.advance(1_000);
+    await wakeRepeatedly(coordinator, () => listPendingCommands.mock.calls.length);
     // The second rejection doubled the wait instead of starting over.
     expect(dispatch).toHaveBeenCalledTimes(2);
-    clock += 1_000;
+    await waitFor(() => time.timers().length > 0);
+    time.advance(1_000);
     await waitFor(() => dispatch.mock.calls.length === 3);
     await settleWhileUnlisted();
     await coordinator.stop();
@@ -615,7 +528,7 @@ describe("ExecutionCoordinator", () => {
   it("keeps the backoff a command records while a listing that missed it is read", async () => {
     const first = pendingCommand();
     const second = pendingCommand();
-    const clock = 1_700_000_000_000;
+    const time = manualClock();
     let secondAvailable = false;
     let releaseFirst = () => {};
     let finishListing = (_commands: readonly PendingCommandRow[]) => {};
@@ -652,7 +565,7 @@ describe("ExecutionCoordinator", () => {
       maxConcurrentTriggerPrograms: 1,
       maxQueuedBytes: 10_000,
       maxQueuedCommands: 10,
-      now: () => clock,
+      clock: time.clock,
       pollIntervalMs: 1,
       store: {
         claimCommand: vi.fn(async (id: CommandId) => ({
@@ -662,27 +575,29 @@ describe("ExecutionCoordinator", () => {
           },
           events: [],
         })),
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands,
-        markSteerUnknown: vi.fn(async () => []),
-        retryCommand: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
+        retryCommand: vi.fn(async () => undefined),
       } as unknown as ExecutionCoordinatorStore,
     });
     coordinator.start();
-    await waitFor(() => listings === 2 && dispatch.mock.calls.length === 1);
+    await waitFor(() => dispatch.mock.calls.length === 1);
+    coordinator.wake();
+    await waitFor(() => listings === 2);
     // The second command is dispatched and rejected entirely within that read.
     secondAvailable = true;
     releaseFirst();
     await waitFor(() => dispatch.mock.calls.length === 2);
     finishListing([]);
-    await waitFor(() => listings >= 8);
+    await wakeRepeatedly(coordinator, () => listings);
     // The clock never moves, so only a lost backoff could dispatch it again.
     expect(dispatch).toHaveBeenCalledTimes(2);
     await coordinator.stop();
   });
   it("keeps the backoff of a retry that commits while a listing that missed it is read", async () => {
     const command = pendingCommand();
-    const clock = 1_700_000_000_000;
+    const time = manualClock();
     let releaseRetry = () => {};
     let finishListing = (_commands: readonly PendingCommandRow[]) => {};
     let listings = 0;
@@ -715,7 +630,7 @@ describe("ExecutionCoordinator", () => {
       maxConcurrentTriggerPrograms: 1,
       maxQueuedBytes: 10_000,
       maxQueuedCommands: 10,
-      now: () => clock,
+      clock: time.clock,
       pollIntervalMs: 1,
       store: {
         claimCommand: vi.fn(async () => ({
@@ -725,18 +640,20 @@ describe("ExecutionCoordinator", () => {
           },
           events: [],
         })),
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands,
-        markSteerUnknown: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
         retryCommand,
       } as unknown as ExecutionCoordinatorStore,
     });
     coordinator.start();
-    await waitFor(() => retryCommand.mock.calls.length === 1 && listings === 2);
+    await waitFor(() => retryCommand.mock.calls.length === 1);
+    coordinator.wake();
+    await waitFor(() => listings === 2);
     releaseRetry();
     await waitFor(() => !coordinator.dispatchingRunIds().includes(command.runId!));
     finishListing([]);
-    await waitFor(() => listings >= 8);
+    await wakeRepeatedly(coordinator, () => listings);
     // The clock never moves, so only a lost backoff could dispatch it again.
     expect(dispatch).toHaveBeenCalledTimes(1);
     await coordinator.stop();
@@ -748,7 +665,7 @@ describe("ExecutionCoordinator", () => {
       },
       type: "run.interrupt",
     });
-    const clock = 1_700_000_000_000;
+    const time = manualClock();
     let listed = true;
     let resumeRetry = () => {};
     const claimCommand = vi.fn(async () => {
@@ -787,31 +704,67 @@ describe("ExecutionCoordinator", () => {
       maxConcurrentTriggerPrograms: 1,
       maxQueuedBytes: 10_000,
       maxQueuedCommands: 10,
-      now: () => clock,
+      clock: time.clock,
       pollIntervalMs: 1,
       store: {
         claimCommand,
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands,
-        markSteerUnknown: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
         retryCommand,
       } as unknown as ExecutionCoordinatorStore,
     });
     coordinator.start();
     await waitFor(() => retryCommand.mock.calls.length === 1);
-    const polls = listPendingCommands.mock.calls.length;
-    await waitFor(() => listPendingCommands.mock.calls.length >= polls + 5);
+    const reads = listPendingCommands.mock.calls.length;
+    coordinator.wake();
+    await waitFor(() => listPendingCommands.mock.calls.length > reads);
     expect(claimCommand).toHaveBeenCalledTimes(1);
     resumeRetry();
-    const settled = listPendingCommands.mock.calls.length;
-    await waitFor(() => listPendingCommands.mock.calls.length >= settled + 5);
+    await wakeRepeatedly(coordinator, () => listPendingCommands.mock.calls.length);
     // The clock never moves: the recorded backoff still holds it.
     expect(dispatch).toHaveBeenCalledTimes(1);
     await coordinator.stop();
   });
+  it("retries a failed write after a claim instead of stranding the dispatched command", async () => {
+    const command = pendingCommand({ payload: { type: "run.interrupt" }, type: "run.interrupt" });
+    const time = manualClock();
+    let listed = true;
+    const store = backoffStore(() => (listed ? [command] : []));
+    store.value.claimCommand = vi.fn(async () => {
+      listed = false;
+      return { command: { ...command, status: "dispatched" as const }, events: [] };
+    }) as never;
+    store.retryCommand
+      .mockRejectedValueOnce(new Error("connection lost"))
+      .mockResolvedValue(undefined);
+    const coordinator = new ExecutionCoordinator({
+      dispatcher: {
+        isAvailable: () => true,
+        dispatch: vi.fn(async () => {
+          throw new CommandDispatchError("Runner connection was lost", "uncertain");
+        }),
+      },
+      dispatcherId: "test-dispatcher",
+      maxConcurrentRuns: 1,
+      maxConcurrentTriggerPrograms: 1,
+      maxQueuedBytes: 10_000,
+      maxQueuedCommands: 10,
+      clock: time.clock,
+      pollIntervalMs: 500,
+      store: store.value,
+    });
+    coordinator.start();
+    await waitFor(() => store.retryCommand.mock.calls.length === 1);
+    // The command left the pending listing; only the owed write can settle it.
+    await waitFor(() => time.timers().length > 0);
+    time.advance(500);
+    await waitFor(() => store.retryCommand.mock.calls.length === 2);
+    await coordinator.stop();
+  });
   it("drops the backoff of a command that has left the pending listing", async () => {
     const command = pendingCommand();
-    const clock = 1_700_000_000_000;
+    const time = manualClock();
     let pending: readonly PendingCommandRow[] = [command];
     const store = backoffStore(() => pending);
     const dispatch = vi.fn(async () => {
@@ -827,16 +780,18 @@ describe("ExecutionCoordinator", () => {
       maxConcurrentTriggerPrograms: 1,
       maxQueuedBytes: 10_000,
       maxQueuedCommands: 10,
-      now: () => clock,
+      clock: time.clock,
       pollIntervalMs: 1,
       store: store.value,
     });
     coordinator.start();
     await waitFor(() => dispatch.mock.calls.length === 1);
     pending = [];
-    const polls = store.listPendingCommands.mock.calls.length;
-    await waitFor(() => store.listPendingCommands.mock.calls.length >= polls + 3);
+    const reads = store.listPendingCommands.mock.calls.length;
+    coordinator.wake();
+    await waitFor(() => store.listPendingCommands.mock.calls.length > reads);
     pending = [command];
+    coordinator.wake();
 
     // The clock never moves: only pruning can make this command eligible again.
     await waitFor(() => dispatch.mock.calls.length === 2);
@@ -855,12 +810,12 @@ function backoffStore(pending: () => readonly PendingCommandRow[]) {
       events: [],
     };
   });
-  const failCommand = vi.fn(async () => []);
+  const failCommand = vi.fn(async () => undefined);
   const listPendingCommands = vi
     .fn<ExecutionCoordinatorStore["listPendingCommands"]>()
     .mockImplementation(async () => pending());
-  const retryCommand = vi.fn(async () => []);
-  const markSteerUnknown = vi.fn(async () => []);
+  const retryCommand = vi.fn(async () => undefined);
+  const markSteerUnknown = vi.fn(async () => undefined);
   return {
     listPendingCommands,
     markSteerUnknown,
@@ -874,7 +829,7 @@ function backoffStore(pending: () => readonly PendingCommandRow[]) {
     } as unknown as ExecutionCoordinatorStore,
   };
 }
-function fakeStore(command: PendingCommandRow, event: AgentEvent | null) {
+function fakeStore(command: PendingCommandRow) {
   const claimCommand = vi.fn(async () => ({
     command: {
       ...command,
@@ -882,13 +837,13 @@ function fakeStore(command: PendingCommandRow, event: AgentEvent | null) {
     },
     events: [],
   }));
-  const failCommand = vi.fn(async () => (event ? [event] : []));
+  const failCommand = vi.fn(async () => undefined);
   const listPendingCommands = vi
     .fn<ExecutionCoordinatorStore["listPendingCommands"]>()
     .mockResolvedValueOnce([command])
     .mockResolvedValue([]);
-  const retryCommand = vi.fn(async () => []);
-  const markSteerUnknown = vi.fn(async () => []);
+  const retryCommand = vi.fn(async () => undefined);
+  const markSteerUnknown = vi.fn(async () => undefined);
   return {
     claimCommand,
     failCommand,
@@ -932,63 +887,45 @@ function pendingCommand(overrides: Partial<PendingCommandRow> = {}): PendingComm
     ...overrides,
   };
 }
-function failureEvent(command: CommandRow): AgentEvent {
-  if (!command.environmentId || !command.runId || !command.threadId) {
-    throw new Error("Test command is missing durable identities");
-  }
-  return AgentEventSchema.parse({
-    createdAt: new Date().toISOString(),
-    data: {
-      startedAt: "2026-08-09T09:00:00.000Z",
-      personWaiting: true,
-      startedBy: {
-        displayName: "Alex",
-        kind: "human",
-        userId: createId("user"),
-        principalId: "test-principal",
-      },
-      code: "dispatch_failed",
-      message: "The Run could not be dispatched",
-      retryable: false,
-      status: "failed",
-    },
-    environmentId: command.environmentId,
-    eventId: createId("event"),
-    runId: command.runId,
-    sequence: SequenceSchema.parse("1"),
-    threadId: command.threadId,
-    type: "run.failed",
-  });
-}
-function statusEvent(
-  command: CommandRow,
-  status: "queued" | "starting",
-  eventSequence: string,
-): AgentEvent {
-  if (!command.environmentId || !command.runId || !command.threadId) {
-    throw new Error("Test command is missing durable identities");
-  }
-  return AgentEventSchema.parse({
-    createdAt: new Date().toISOString(),
-    data: {
-      status,
-      startedAt: "2026-08-09T09:00:00.000Z",
-      personWaiting: true,
-      startedBy: {
-        displayName: "Alex",
-        kind: "human",
-        userId: createId("user"),
-        principalId: "test-principal",
+
+/** Time that moves only when the test says so, with the timers it armed. */
+function manualClock(start = 1_700_000_000_000) {
+  let now = start;
+  const scheduled = new Set<{ readonly at: number; readonly run: () => void }>();
+  return {
+    clock: {
+      now: () => now,
+      schedule(run: () => void, milliseconds: number) {
+        const timer = { at: now + milliseconds, run };
+        scheduled.add(timer);
+        return () => scheduled.delete(timer);
       },
     },
-    environmentId: command.environmentId,
-    eventId: createId("event"),
-    runId: command.runId,
-    sequence: SequenceSchema.parse(eventSequence),
-    threadId: command.threadId,
-    type: "run.status",
-  });
+    advance(milliseconds: number) {
+      now += milliseconds;
+      for (const timer of [...scheduled].sort((left, right) => left.at - right.at)) {
+        if (timer.at > now) continue;
+        scheduled.delete(timer);
+        timer.run();
+      }
+    },
+    timers: () => [...scheduled].map((timer) => timer.at - now),
+  };
 }
+
+/** Other commits wake the queue meanwhile; a held backoff must survive each read. */
+async function wakeRepeatedly(
+  coordinator: ExecutionCoordinator,
+  reads: () => number,
+  times = 5,
+): Promise<void> {
+  for (let wake = 0; wake < times; wake += 1) {
+    const before = reads();
+    coordinator.wake();
+    await waitFor(() => reads() > before);
+  }
+}
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (predicate()) return;

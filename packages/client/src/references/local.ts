@@ -7,7 +7,7 @@ import {
 } from "@opensteer/core";
 import type { AvailableReference, TeamNote, TeamNotePreview, TeamTopic } from "@opensteer/protocol";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
-import type { HostSnapshot } from "../host/client.js";
+import type { HostSnapshot, TranscriptFixtureSnapshot } from "../host/client.js";
 import type { IdReference as Reference } from "./links.js";
 import { heldThread } from "../host/task-list.js";
 import type { TeamSessionSnapshot } from "../team/team-session-client.js";
@@ -16,7 +16,11 @@ export function referenceTitle(title: string, fallback: string): string {
   return plainTextExcerpt(title, 256) || fallback;
 }
 
-export function localReference(snapshot: HostSnapshot, ref: Reference): AvailableReference | null {
+export function localReference(
+  snapshot: HostSnapshot &
+    Partial<Pick<TranscriptFixtureSnapshot, "transcripts" | "inputQueues" | "requests">>,
+  ref: Reference,
+): AvailableReference | null {
   const common = { status: "available" as const, id: ref.id };
   switch (ref.kind) {
     case "task": {
@@ -29,7 +33,7 @@ export function localReference(snapshot: HostSnapshot, ref: Reference): Availabl
       // RunEntry has neither the activation input nor an authoritative ordinal.
       return null;
     case "message": {
-      for (const [parent, entries] of Object.entries(snapshot.transcripts)) {
+      for (const [parent, entries] of Object.entries(snapshot.transcripts ?? {})) {
         const message = entries.find(
           (entry) =>
             entry.kind === "message" &&
@@ -49,7 +53,7 @@ export function localReference(snapshot: HostSnapshot, ref: Reference): Availabl
             title: referenceTitle(`Message · ${thread.title}`, "Message"),
           };
       }
-      for (const queue of Object.values(snapshot.inputQueues)) {
+      for (const queue of Object.values(snapshot.inputQueues ?? {})) {
         if (
           !queue.items.some(
             ({ message, input }) => message.id === ref.id && input.state !== "cancelled",
@@ -71,7 +75,7 @@ export function localReference(snapshot: HostSnapshot, ref: Reference): Availabl
     }
     case "request": {
       const request =
-        Object.values(snapshot.requests)
+        Object.values(snapshot.requests ?? {})
           .flat()
           .find(({ id }) => id === ref.id) ??
         snapshot.waitingRequests.find(({ request }) => request.id === ref.id)?.request;
@@ -106,7 +110,7 @@ export function localReference(snapshot: HostSnapshot, ref: Reference): Availabl
         : null;
     }
     case "attachment": {
-      for (const [parent, entries] of Object.entries(snapshot.transcripts)) {
+      for (const [parent, entries] of Object.entries(snapshot.transcripts ?? {})) {
         for (const entry of entries) {
           if (entry.kind !== "message") continue;
           const part = entry.attachments?.find((part) => part.artifactId === ref.id);

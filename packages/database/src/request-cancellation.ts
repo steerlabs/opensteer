@@ -1,32 +1,39 @@
 import {
-  type AgentEvent,
-  type Request,
   type RequestCancellationReason,
   type RequestId,
   type RunId,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { lockDeploymentEvents } from "./personal-transaction.js";
+import { isOfflineSettlement } from "./personal-transaction.js";
 import type { Transaction } from "kysely";
-import { assignmentActivityEventsForRun } from "./assignment-store.js";
-import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
+import { lockRequestThreads, refreshRequestState } from "./request-persistence.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
-export async function cancelPending(
+interface Cancellation {
+  readonly reason: RequestCancellationReason;
+  readonly resolvedAt: Date;
+  readonly runId?: RunId;
+  readonly cancelHandedOffPlugins?: boolean;
+  readonly originatingThreadId?: ThreadId;
+  readonly requestIds?: readonly RequestId[];
+  readonly requestedBy?: UserId;
+}
+
+export function cancelPending(
   transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly reason: RequestCancellationReason;
-    readonly resolvedAt: Date;
-    readonly runId?: RunId;
-    readonly cancelHandedOffPlugins?: boolean;
-    readonly originatingThreadId?: ThreadId;
-    readonly requestIds?: readonly RequestId[];
-    readonly requestedBy?: UserId;
-  },
-): Promise<readonly AgentEvent[]> {
-  await lockDeploymentEvents(transaction);
+  input: Cancellation,
+): Promise<readonly RequestId[]> {
+  if (isOfflineSettlement(transaction)) return cancelInTransaction(transaction, input, false);
+  return commitPersonalMutation(transaction, (tx) => cancelInTransaction(tx, input, true));
+}
+
+async function cancelInTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  input: Cancellation,
+  refresh: boolean,
+): Promise<readonly RequestId[]> {
   let pending = transaction.selectFrom("requests").selectAll().where("status", "=", "pending");
   if (input.requestIds) {
     if (input.requestIds.length === 0) return [];
@@ -58,12 +65,26 @@ export async function cancelPending(
     pending = pending.where("originatingThreadId", "=", input.originatingThreadId);
   }
   if (input.requestedBy) pending = pending.where("requestedBy", "=", input.requestedBy);
+  if (refresh) {
+    const parents = await pending.clearSelect().select("originatingThreadId").distinct().execute();
+    await lockRequestThreads(
+      transaction,
+      parents.map(({ originatingThreadId }) => originatingThreadId),
+    );
+  }
   const locked = await pending.orderBy("id", "asc").forNoKeyUpdate().execute();
   if (locked.length === 0) return [];
   const responseCommandIds = locked
     .map(({ responseCommandId }) => responseCommandId)
     .filter((id): id is NonNullable<typeof id> => id !== null);
   if (responseCommandIds.length > 0) {
+    await transaction
+      .selectFrom("commands")
+      .select("id")
+      .where("id", "in", responseCommandIds)
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
     await transaction
       .updateTable("commands")
       .set({
@@ -95,9 +116,6 @@ export async function cancelPending(
     .where("status", "=", "pending")
     .returningAll()
     .execute();
-  const events = await Promise.all(
-    rows.map((row) => cancellationEvent(transaction, requestFromRow(row))),
-  );
   if (
     ["resource-deleted", "authority-revoked", "plugin-interrupted", "plugin-expired"].includes(
       input.reason,
@@ -119,27 +137,7 @@ export async function cancelPending(
         .execute();
     }
   }
-  const runIds = new Set(
-    rows.map((row) => row.originatingRunId).filter((id): id is RunId => id !== null),
-  );
-  for (const runId of runIds) {
-    events.push(...(await assignmentActivityEventsForRun(transaction, runId)));
-  }
-  return events;
-}
-async function cancellationEvent(
-  transaction: Transaction<DatabaseSchema>,
-  request: Request,
-): Promise<AgentEvent> {
-  if (request.status !== "cancelled") throw new Error("Cancellation event requires cancellation");
-  return appendHostDeploymentEvent(transaction, {
-    data: {
-      reason: request.cancellationReason,
-      requestId: request.id,
-    },
-    environmentId: await requestOriginEnvironment(transaction, request),
-    runId: request.originatingRunId,
-    threadId: request.originatingThreadId,
-    type: "request.cancelled",
-  });
+  const ids = rows.map((row) => row.id).sort();
+  if (refresh) for (const id of ids) await refreshRequestState(transaction, id);
+  return ids;
 }

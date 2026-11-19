@@ -1,3 +1,4 @@
+import { lockRunProjectionRows, lockThreadProviderSession } from "./run-projection-locks.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { ChannelStore, ChannelIngressDeferredError } from "./channel-store.js";
 import { pauseAfterLock } from "./lock-race.test-support.js";
@@ -7,8 +8,7 @@ import { withPersonalTransaction } from "./personal-transaction.js";
 import { prepareThreadInsertion } from "./thread-insertion.js";
 import { takeTransactionConflicts } from "./lock-order-checker.test-support.js";
 
-import { cancelPending } from "./request-cancellation.js";
-import { HarnessIdSchema, createId, type AgentEvent, type RunnerId } from "@opensteer/core";
+import { HarnessIdSchema, createId, type RunnerId } from "@opensteer/core";
 import { CamelCasePlugin, Kysely, PostgresDialect, sql } from "kysely";
 import { Pool } from "pg";
 import type { DatabaseSchema } from "./schema.js";
@@ -23,6 +23,95 @@ import {
   sealedTestRequestResponse,
 } from "./store.integration.test-support.js";
 describeStore("PostgreSQL store", (it) => {
+  it("leaves retired session and command rows unlocked during a Run projection", async ({
+    storeFixture,
+  }) => {
+    const { database, startRunFixture } = storeFixture;
+    const run = await startRunFixture("many-retired-projection-rows");
+    const { providerSessionId } = await database
+      .selectFrom("runs")
+      .select("providerSessionId")
+      .where("id", "=", run.runId)
+      .executeTakeFirstOrThrow();
+    expect(providerSessionId).not.toBeNull();
+    const { rows: retiredSessions } = await sql<{ id: string }>`
+      insert into provider_sessions(
+        id, thread_id, harness_instance_id, active, state_layout, binding_generation, status
+      )
+      select 'retired-projection-session-' || n, thread_id, harness_instance_id,
+        false, state_layout, n, 'stopped'
+      from provider_sessions cross join generate_series(1, 200) n
+      where id = ${providerSessionId} returning id
+    `.execute(database);
+    const { rows: retiredCommands } = await sql<{ id: string }>`
+      insert into commands(
+        id, thread_id, run_id, environment_id, requested_by, actor_principal_id, authority_source,
+        idempotency_key, type, payload, status
+      )
+      select 'retired-projection-command-' || n, thread_id, run_id, environment_id, requested_by,
+        actor_principal_id, authority_source, idempotency_key || ':retired:' || n, type, payload, 'failed'
+      from (select * from commands where run_id = ${run.runId} and type = 'run.execute' limit 1) source
+      cross join generate_series(1, 200) n returning id
+    `.execute(database);
+    expect(retiredSessions).toHaveLength(200);
+    expect(retiredCommands).toHaveLength(200);
+
+    await withPersonalTransaction(database, async (tx) => {
+      await tx
+        .selectFrom("runs")
+        .select("id")
+        .where("id", "=", run.runId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      await tx
+        .selectFrom("threads")
+        .select("id")
+        .where("id", "=", run.threadId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      expect((await lockThreadProviderSession(tx, run.threadId, providerSessionId))?.id).toBe(
+        providerSessionId,
+      );
+      await lockRunProjectionRows(tx, { threadIds: [run.threadId], runIds: [run.runId] });
+      const retired = await database.transaction().execute(async (other) => {
+        const sessions = await sql`select id from provider_sessions
+          where id like 'retired-projection-session-%' order by id for no key update nowait`.execute(
+          other,
+        );
+        const commands = await sql`select id from commands
+          where id like 'retired-projection-command-%' order by id for no key update nowait`.execute(
+          other,
+        );
+        return [sessions.rows.length, commands.rows.length];
+      });
+      expect(retired).toEqual([200, 200]);
+    });
+  });
+
+  it("creating a task does not announce the machine resource to every device", async ({
+    storeFixture,
+  }) => {
+    const { createRunFixture, store, database } = storeFixture;
+    const fixture = await createRunFixture("placed-count");
+    const machineRevision = async () =>
+      (
+        await database
+          .selectFrom("clientSyncState")
+          .select("resourceRevisions")
+          .executeTakeFirstOrThrow()
+      ).resourceRevisions.machine;
+    const before = await machineRevision();
+    await store.createThread({
+      createdBy: fixture.userId,
+      environmentId: fixture.environmentId,
+      harnessInstanceId: fixture.harnessInstance.id,
+      idempotencyKey: "placed-count",
+      modelSelection: testModelSelection,
+      title: "Placed",
+    });
+    // A computer's placed-task count is read with its page; no task write fans out to it.
+    expect(await machineRevision()).toBe(before);
+  });
   it("pages the owner's active listed tasks with filter-bound cursors", async ({
     storeFixture,
   }) => {
@@ -54,23 +143,34 @@ describeStore("PostgreSQL store", (it) => {
     await make("failed", "failed");
     await make("archived", "archived");
     await make("hidden", "running", false);
-    const page = await store.taskPageForUser({ active: true, maxItems: 1, userId: fixture.userId });
-    expect(page.window).toMatchObject({ hasMore: true, itemCount: 1, totalItems: 2 });
-    const next = await store.taskPageForUser({
-      active: true,
-      before: page.window.nextBefore!,
-      maxItems: 1,
-      userId: fixture.userId,
+    const page = await store.taskPageForUser({
+      window: "active",
+      limit: 1,
+      viewerId: fixture.userId,
     });
-    expect(next.window.hasMore).toBe(false);
-    expect(new Set([...page.tasks, ...next.tasks].map(({ thread }) => thread.id))).toEqual(
+    expect(page.hasMore).toBe(true);
+    expect(page.tasks).toHaveLength(1);
+    const next = await store.taskPageForUser({
+      window: "active",
+      before: page.nextBefore!,
+      limit: 1,
+      viewerId: fixture.userId,
+    });
+    expect(next.hasMore).toBe(false);
+    expect(new Set([...page.tasks, ...next.tasks].map(({ id }) => id))).toEqual(
       new Set([running, waiting]),
     );
     await expect(
-      store.taskPageForUser({ before: page.window.nextBefore!, userId: fixture.userId }),
+      store.taskPageForUser({
+        window: "recent",
+        before: page.nextBefore!,
+        viewerId: fixture.userId,
+      }),
     ).rejects.toMatchObject({ code: "bad_request" });
     const outsider = await store.createUser("Outsider");
-    await expect(store.taskPageForUser({ active: true, userId: outsider })).rejects.toMatchObject({
+    await expect(
+      store.taskPageForUser({ window: "active", viewerId: outsider }),
+    ).rejects.toMatchObject({
       code: "forbidden",
     });
     await database
@@ -79,7 +179,7 @@ describeStore("PostgreSQL store", (it) => {
       .where("id", "=", fixture.userId)
       .execute();
     await expect(
-      store.taskPageForUser({ active: true, userId: fixture.userId }),
+      store.taskPageForUser({ window: "active", viewerId: fixture.userId }),
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 
@@ -128,227 +228,6 @@ describeStore("PostgreSQL store", (it) => {
     },
   );
 
-  describe("pending Thread state", () => {
-    it("publishes each committed projection before waiting on the next Thread", async ({
-      storeFixture,
-    }) => {
-      const { createRunFixture, createTaskForOwner, store, database } = storeFixture;
-      const first = await createRunFixture("drain-first");
-      const workspace = await createTaskForOwner(first.userId, "drain-second");
-      const { thread } = await store.createThread({
-        createdBy: first.userId,
-        environmentId: first.environmentId,
-        harnessInstanceId: first.harnessInstance.id,
-        idempotencyKey: "drain-second",
-        modelSelection: testModelSelection,
-        title: "Second",
-      });
-      const second = {
-        ...first,
-        thread,
-        workspace,
-      };
-      for (const [index, fixture] of [first, second].entries()) {
-        await database
-          .updateTable("threads")
-          .set({
-            pendingRequestCount: 7,
-          })
-          .where("id", "=", fixture.thread.id)
-          .execute();
-        await sql`insert into thread_state_pending (thread_id, requested_at) values (${fixture.thread.id}, ${new Date(1000 + index)})`.execute(
-          database,
-        );
-      }
-      const held = Promise.withResolvers<void>();
-      const release = Promise.withResolvers<void>();
-      const blocker = database.transaction().execute(async (transaction) => {
-        await transaction
-          .selectFrom("threads")
-          .select("id")
-          .where("id", "=", second.thread.id)
-          .forUpdate()
-          .execute();
-        held.resolve();
-        await release.promise;
-      });
-      await held.promise;
-      const published: AgentEvent[] = [];
-      const draining = store.drainPendingThreadStates((events) => {
-        published.push(...events);
-      });
-      try {
-        await expect
-          .poll(() => published.map(({ threadId }) => threadId))
-          .toEqual([first.thread.id]);
-      } finally {
-        release.resolve();
-        await blocker;
-        await draining;
-      }
-      expect(published.map(({ threadId }) => threadId)).toEqual([
-        first.thread.id,
-        second.thread.id,
-      ]);
-    });
-    it("records Request changes and drains one absolute event only for a changed tuple", async ({
-      storeFixture,
-    }) => {
-      const {
-        startRunFixture,
-
-        database,
-        store,
-      } = storeFixture;
-      const fixture = await startRunFixture("pending-state");
-      const input = {
-        callId: "pending-state",
-        kind: "browser.access" as const,
-        mode: "durable" as const,
-        originatingRunId: fixture.run.id,
-        originatingThreadId: fixture.thread.id,
-        payload: {
-          kind: "browser.access" as const,
-          reason: "Choose a profile",
-          suggestion: {
-            kind: "user_choice" as const,
-          },
-        },
-        presentation: {
-          kind: "external" as const,
-          subject: {
-            id: fixture.threadId,
-            kind: "task" as const,
-          },
-          title: "Browser",
-        },
-        requestedBy: fixture.userId,
-        requiredActor: "requester" as const,
-      };
-      const pending = async () =>
-        (
-          await sql<{
-            threadId: string;
-          }>`select thread_id from thread_state_pending order by thread_id`.execute(database)
-        ).rows;
-      const opened = await store.requests.create(input);
-      expect(opened.events.map(({ type }) => type)).toEqual(["request.opened"]);
-      expect(await pending()).toEqual([
-        {
-          threadId: fixture.thread.id,
-        },
-      ]);
-      expect(
-        (await store.getThreadForOwner(fixture.thread.id, fixture.userId))?.pendingRequests,
-      ).toBe(0);
-      const drained = await store.drainPendingThreadStates();
-      expect(drained).toMatchObject([
-        {
-          type: "thread.state-changed",
-          data: {
-            pendingRequests: 1,
-            status: "running",
-            inputQueuePaused: false,
-          },
-        },
-      ]);
-      expect(BigInt(drained[0]!.sequence)).toBeGreaterThan(BigInt(opened.events[0]!.sequence));
-      expect(await pending()).toEqual([]);
-      expect(await store.drainPendingThreadStates()).toEqual([]);
-      const resolved = await store.requests.resolveBrowserRequest({
-        requestId: opened.request.id,
-        resolvedBy: fixture.userId,
-        response: {
-          kind: "external",
-          value: {
-            decision: "declined",
-          },
-        },
-      });
-      expect(resolved.events.map(({ type }) => type)).toEqual(["request.resolved"]);
-      expect(await pending()).toEqual([
-        {
-          threadId: fixture.thread.id,
-        },
-      ]);
-      expect(await store.drainPendingThreadStates()).toMatchObject([
-        {
-          data: {
-            pendingRequests: 0,
-          },
-        },
-      ]);
-      const second = await store.requests.create({
-        ...input,
-        callId: "pending-state-second",
-      });
-      await store.drainPendingThreadStates();
-      const cancelled = await database.transaction().execute((transaction) =>
-        cancelPending(transaction, {
-          reason: "task-deleted",
-          resolvedAt: new Date(),
-        }),
-      );
-      expect(cancelled.map(({ type }) => type)).toEqual(["request.cancelled"]);
-      expect(await pending()).toEqual([
-        {
-          threadId: fixture.thread.id,
-        },
-      ]);
-      expect(await store.drainPendingThreadStates()).toMatchObject([
-        {
-          data: {
-            pendingRequests: 0,
-          },
-        },
-      ]);
-      expect((await store.requests.get(second.request.id))?.status).toBe("cancelled");
-      await store.requests.create({
-        ...input,
-        callId: "pending-state-coalesce",
-      });
-      await database.transaction().execute((transaction) =>
-        cancelPending(transaction, {
-          reason: "task-deleted",
-          resolvedAt: new Date(),
-        }),
-      );
-      expect(await pending()).toHaveLength(1);
-      expect(await store.drainPendingThreadStates()).toEqual([]);
-      await store.requests.create({
-        ...input,
-        callId: "pending-state-sync",
-      });
-      const interrupted = await store.enqueueRunnerControl({
-        idempotencyKey: "pending-state-pause",
-        requestedBy: fixture.userId,
-        runId: fixture.run.id,
-        threadId: fixture.thread.id,
-        type: "run.interrupt",
-      });
-      expect(interrupted.events).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: "thread.state-changed",
-            data: {
-              updatedAt: expect.any(String),
-              returnHint: null,
-              latestRunCompletedAt: null,
-              pendingRequests: 1,
-              inputQueuePaused: true,
-              status: "running",
-              title: fixture.thread.title,
-              icon: fixture.thread.icon,
-              doneAt: null,
-              doneReason: null,
-            },
-          }),
-        ]),
-      );
-      expect(await pending()).toEqual([]);
-      expect(await store.drainPendingThreadStates()).toEqual([]);
-    });
-  });
   it("accepts concurrent colour collisions without a global allocator lock", async ({
     storeFixture,
   }) => {
@@ -402,43 +281,36 @@ describeStore("PostgreSQL store", (it) => {
     expect(rows.map((value) => value.color)).toEqual(["lime", "lime"]);
   });
   describe("absolute Thread state", () => {
-    it("publishes absolute state for open, resolve, cancel, pause and resume exactly when it changes", async ({
+    it("commits Request counts with task state through open, resolve, cancel, pause, and resume", async ({
       storeFixture,
     }) => {
       const { startRunFixture, database, store } = storeFixture;
       const fixture = await startRunFixture("absolute-state");
-      const states = (events: readonly AgentEvent[]) =>
-        events.filter((event) => event.type === "thread.state-changed");
-      const check = async (
-        events: readonly AgentEvent[],
-        count: number,
-        status: string,
-        paused = false,
-      ) => {
-        expect(states(events)).toMatchObject([
-          {
-            data: {
-              pendingRequests: count,
-              status,
-              inputQueuePaused: paused,
-            },
-          },
-        ]);
-        const row = await sql<{
-          pendingRequestCount: number;
-        }>`select pending_request_count from threads where id = ${fixture.thread.id}`.execute(
-          database,
-        );
-        const actual = await database
-          .selectFrom("requests")
-          .select(({ fn }) => fn.countAll<string>().as("count"))
-          .where("originatingThreadId", "=", fixture.thread.id)
-          .where("status", "=", "pending")
-          .executeTakeFirstOrThrow();
-        expect(row.rows[0]?.pendingRequestCount).toBe(Number(actual.count));
+      const check = async (count: number, status: string, paused = false) => {
+        const thread = await store.getThreadForOwner(fixture.thread.id, fixture.userId);
+        expect(thread).toMatchObject({ pendingRequests: count, status, inputQueuePaused: paused });
         expect(
-          (await store.getThreadForOwner(fixture.thread.id, fixture.userId))?.pendingRequests,
-        ).toBe(count);
+          await database
+            .selectFrom("clientSyncState")
+            .select("pendingRequestCount")
+            .executeTakeFirstOrThrow(),
+        ).toMatchObject({ pendingRequestCount: count });
+        expect(
+          await database
+            .selectFrom("threads")
+            .select("pendingRequestCount")
+            .where("id", "=", fixture.thread.id)
+            .executeTakeFirstOrThrow(),
+        ).toEqual({ pendingRequestCount: count });
+        const published = await database
+          .selectFrom("clientChanges")
+          .select("payload")
+          .where("entityKind", "=", "thread")
+          .where("entityId", "=", fixture.thread.id)
+          .orderBy("sequence", "desc")
+          .limit(1)
+          .executeTakeFirstOrThrow();
+        expect(published.payload).toMatchObject({ pendingRequestCount: count });
       };
       let ordinal = 1;
       const open = async () => {
@@ -461,7 +333,7 @@ describeStore("PostgreSQL store", (it) => {
           runId: fixture.run.id,
           threadId: fixture.thread.id,
         });
-        const result = await store.commitRunnerEvent({
+        await store.commitRunnerEvent({
           ...fixture,
           event: pendingEvent({
             bindingGeneration: fixture.bindingGeneration,
@@ -475,66 +347,64 @@ describeStore("PostgreSQL store", (it) => {
             },
           }),
         });
-        return {
-          request,
-          result,
-        };
+        return request;
       };
       const first = await open();
-      expect(states(first.result.compensatingEvents)).toEqual([]);
-      await check(await store.drainPendingThreadStates(), 1, "waiting");
-      const second = await open();
-      expect(states(second.result.compensatingEvents)).toEqual([]);
-      await check(await store.drainPendingThreadStates(), 2, "waiting");
+      await check(1, "waiting");
+      await open();
+      await check(2, "waiting");
       const response = await store.enqueueRunnerControl({
         idempotencyKey: "absolute-resolve",
         requestedBy: fixture.userId,
         runId: fixture.run.id,
         threadId: fixture.thread.id,
+        expectedRevision: (await store.requests.revision(first.id))!,
         type: "request.respond",
-        requestId: first.request.id,
+        requestId: first.id,
         response: {
           kind: "choice",
           optionId: "yes",
         },
         sealedResponse: sealedTestRequestResponse(),
       });
-      expect(states(response.events)).toEqual([]);
       await store.claimCommand(response.command.id, "absolute-state");
-      expect(states(await store.succeedCommand(response.command.id))).toEqual([]);
-      await check(await store.drainPendingThreadStates(), 1, "waiting");
-      expect(states(await store.succeedCommand(response.command.id))).toEqual([]);
-      expect(states(await store.requests.cancelForRun(fixture.run.id, "run-ended"))).toEqual([]);
-      await check(await store.drainPendingThreadStates(), 0, "waiting");
-      expect(states(await store.requests.cancelForRun(fixture.run.id, "run-ended"))).toEqual([]);
-      const interrupted = await store.enqueueRunnerControl({
+      await store.succeedCommand(response.command.id);
+      await check(1, "waiting");
+      const head = () =>
+        database.selectFrom("clientSyncState").select("sequence").executeTakeFirstOrThrow();
+      const resolved = await head();
+      await store.succeedCommand(response.command.id);
+      expect(await head()).toEqual(resolved);
+      await store.requests.cancelForRun(fixture.run.id, "run-ended");
+      await check(0, "waiting");
+      const cancelled = await head();
+      await store.requests.cancelForRun(fixture.run.id, "run-ended");
+      expect(await head()).toEqual(cancelled);
+      await store.enqueueRunnerControl({
         idempotencyKey: "absolute-pause",
         requestedBy: fixture.userId,
         runId: fixture.run.id,
         threadId: fixture.thread.id,
         type: "run.interrupt",
       });
-      // With nothing left to answer, the stopped Run is no longer waiting on anyone.
-      await check(interrupted.events, 0, "running", true);
-      const resumed = await store.resumeThreadInputQueue({
+      await check(0, "running", true);
+      await store.resumeThreadInputQueue({
         idempotencyKey: "absolute-resume",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
       });
-      await check(resumed.events, 0, "running");
-      expect(resumed).toHaveProperty("asOfSequence");
-      const again = await store.resumeThreadInputQueue({
+      await check(0, "running");
+      const resumed = await head();
+      await store.resumeThreadInputQueue({
         idempotencyKey: "absolute-resume-again",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
       });
-      expect(states(again.events)).toEqual([]);
+      expect(await head()).toEqual(resumed);
     });
   });
   describe("Thread status projection", () => {
-    it("publishes a durable status event exactly when the stored projection changes", async ({
-      storeFixture,
-    }) => {
+    it("commits scoped task state across queueing, Stop, and Resume", async ({ storeFixture }) => {
       const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
       const fixture = await createRunFixture("status-events");
       const turn = await enqueueHumanTrigger({
@@ -548,38 +418,34 @@ describeStore("PostgreSQL store", (it) => {
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
       });
-      const statusEvents = (events: readonly AgentEvent[]) =>
-        events.filter((event) => event.type === "thread.state-changed");
-      expect(statusEvents(turn.events)).toMatchObject([
-        {
-          data: {
-            status: "running",
-          },
-          environmentId: fixture.environmentId,
-          runId: null,
-          threadId: fixture.thread.id,
-        },
-      ]);
-      const claimed = await store.claimCommand(turn.command.id, "status-events");
-      expect(statusEvents(claimed?.events ?? [])).toEqual([]);
-      const interrupted = await store.enqueueRunnerControl({
+      const read = () => store.getThreadForOwner(fixture.thread.id, fixture.userId);
+      await expect(read()).resolves.toMatchObject({
+        status: "running",
+        inputQueuePaused: false,
+        latestRunCompletedAt: null,
+      });
+      await store.claimCommand(turn.command.id, "status-events");
+      await expect(read()).resolves.toMatchObject({ status: "running" });
+      await store.enqueueRunnerControl({
         idempotencyKey: "status-events-pause",
         requestedBy: fixture.userId,
         runId: turn.run.id,
         threadId: fixture.thread.id,
         type: "run.interrupt",
       });
-      // Stopped before it was bound, the Run ends at once: one change, not two.
-      expect(statusEvents(interrupted.events)).toMatchObject([
-        {
-          data: {
-            status: "idle",
-            inputQueuePaused: true,
-            pendingRequests: 0,
-          },
-        },
-      ]);
-      expect(await store.retryCommand(turn.command.id, new Error("Not dispatched"))).toEqual([]);
+      const stopped = await database
+        .selectFrom("runs")
+        .select(["completedAt", "status"])
+        .where("id", "=", turn.run.id)
+        .executeTakeFirstOrThrow();
+      expect(stopped.status).toBe("interrupted");
+      await expect(read()).resolves.toMatchObject({
+        status: "idle",
+        inputQueuePaused: true,
+        pendingRequests: 0,
+        latestRunCompletedAt: stopped.completedAt!.toISOString(),
+      });
+      await store.retryCommand(turn.command.id, new Error("Not dispatched"));
       const later = await store.enqueueThreadInput({
         content: [
           {
@@ -595,82 +461,41 @@ describeStore("PostgreSQL store", (it) => {
         },
         threadId: fixture.thread.id,
       });
-      expect(statusEvents(later.events)).toEqual([]);
+      expect(later.run).toBeNull();
+      await expect(read()).resolves.toMatchObject({ status: "idle", inputQueuePaused: true });
       const resumed = await store.resumeThreadInputQueue({
         idempotencyKey: "status-events-resume",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
       });
-      expect(statusEvents(resumed.events)).toMatchObject([
-        {
-          data: {
-            status: "running",
-          },
-        },
-      ]);
+      expect(resumed.thread).toMatchObject({
+        status: "running",
+        inputQueuePaused: false,
+        latestRunCompletedAt: null,
+      });
       const again = await store.resumeThreadInputQueue({
         idempotencyKey: "status-events-resume-again",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
       });
-      expect(statusEvents(again.events)).toEqual([]);
+      expect(again.asOfSequence).toBe(resumed.asOfSequence);
       const stored = await database
-        .selectFrom("deploymentEvents")
-        .selectAll()
-        .where("threadId", "=", fixture.thread.id)
-        .where("type", "=", "thread.state-changed")
-        .orderBy("sequence", "asc")
+        .selectFrom("clientChanges")
+        .select("payload")
+        .where("entityKind", "=", "task")
+        .where("entityId", "=", fixture.thread.id)
+        .where("sequence", "=", resumed.asOfSequence)
         .execute();
-      const completed = await database
-        .selectFrom("runs")
-        .select("completedAt")
-        .where("id", "=", turn.run.id)
-        .executeTakeFirstOrThrow();
-      expect(stored.map(({ data }) => data)).toEqual([
+      expect(stored).toMatchObject([
         {
-          updatedAt: expect.any(String),
-          returnHint: null,
-          latestRunCompletedAt: null,
-          status: "running",
-          inputQueuePaused: false,
-          pendingRequests: 0,
-          title: fixture.thread.title,
-          icon: fixture.thread.icon,
-          doneAt: null,
-          doneReason: null,
-        },
-        {
-          updatedAt: expect.any(String),
-          returnHint: null,
-          latestRunCompletedAt: completed.completedAt!.toISOString(),
-          status: "idle",
-          inputQueuePaused: true,
-          pendingRequests: 0,
-          title: fixture.thread.title,
-          icon: fixture.thread.icon,
-          doneAt: null,
-          doneReason: null,
-        },
-        {
-          updatedAt: expect.any(String),
-          returnHint: null,
-          latestRunCompletedAt: null,
-          status: "running",
-          inputQueuePaused: false,
-          pendingRequests: 0,
-          title: fixture.thread.title,
-          icon: fixture.thread.icon,
-          doneAt: null,
-          doneReason: null,
+          payload: {
+            status: "running",
+            title: fixture.thread.title,
+            pendingRequestCount: 0,
+            latestRunCompletedAt: null,
+          },
         },
       ]);
-      expect(stored.map(({ eventId }) => eventId)).toEqual(
-        [
-          ...statusEvents(turn.events),
-          ...statusEvents(interrupted.events),
-          ...statusEvents(resumed.events),
-        ].map((event) => event.eventId),
-      );
     });
     it("projects queued, starting, and running from the Run instead of a stale waiting projection", async ({
       storeFixture,
@@ -766,7 +591,6 @@ describeStore("PostgreSQL store", (it) => {
           },
         }),
       });
-      await store.drainPendingThreadStates();
       expect((await store.getThreadForOwner(fixture.thread.id, fixture.userId))?.status).toBe(
         "waiting",
       );
@@ -781,7 +605,6 @@ describeStore("PostgreSQL store", (it) => {
           },
         }),
       });
-      await store.drainPendingThreadStates();
       expect((await store.getThreadForOwner(fixture.thread.id, fixture.userId))?.status).toBe(
         "waiting",
       );
@@ -797,7 +620,6 @@ describeStore("PostgreSQL store", (it) => {
           },
         }),
       });
-      await store.drainPendingThreadStates();
       expect((await store.getThreadForOwner(fixture.thread.id, fixture.userId))?.status).toBe(
         "running",
       );
@@ -839,7 +661,9 @@ describeStore("PostgreSQL store", (it) => {
         "idle",
       );
       // A dispatch retry finds nothing to put back.
-      expect(await store.retryCommand(turn.command.id, new Error("Not dispatched"))).toEqual([]);
+      expect(
+        await store.retryCommand(turn.command.id, new Error("Not dispatched")),
+      ).toBeUndefined();
       // Sent while paused, the next message waits without a Run until resume.
       const later = await store.enqueueThreadInput({
         content: [
@@ -1113,6 +937,7 @@ describeStore("PostgreSQL store", (it) => {
     const otherUser = await store.createUser("Other requester");
     await expect(
       store.requests.declineMachineFullDiskAccessRequest({
+        expectedRevision: (await store.requests.revision(declined.request.id))!,
         requestId: declined.request.id,
         resolvedBy: otherUser,
         response: {
@@ -1127,6 +952,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     await expect(
       store.requests.declineMachineFullDiskAccessRequest({
+        expectedRevision: (await store.requests.revision(declined.request.id))!,
         requestId: declined.request.id,
         resolvedBy: fixture.userId,
         response: {
@@ -1141,6 +967,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     expect(
       await store.requests.declineMachineFullDiskAccessRequest({
+        expectedRevision: (await store.requests.revision(declined.request.id))!,
         requestId: declined.request.id,
         resolvedBy: fixture.userId,
         response: {
@@ -1168,13 +995,8 @@ describeStore("PostgreSQL store", (it) => {
         (request) => request.status === "fulfilled" && request.resolvedBy === fixture.userId,
       ),
     ).toBe(true);
-    expect(fulfilled.events.map((event) => event.type)).toEqual([
-      "request.resolved",
-      "request.resolved",
-    ]);
     expect((await store.requests.get(other.request.id))?.status).toBe("pending");
     expect(await store.requests.fulfillMachineFullDiskAccessRequests(machineId)).toEqual({
-      events: [],
       requests: [],
     });
     const continuations = await database
@@ -1238,7 +1060,6 @@ describeStore("PostgreSQL store", (it) => {
       itemCount: 1,
       totalItems: 1,
     });
-    await store.drainPendingThreadStates();
     await expect(store.getThreadForOwner(fixture.thread.id, fixture.userId)).resolves.toMatchObject(
       {
         pendingRequests: 1,
@@ -1255,18 +1076,12 @@ describeStore("PostgreSQL store", (it) => {
       withdrawnBy: fixture.userId,
     });
     expect(withdrawn).toMatchObject({
-      events: [
-        expect.objectContaining({
-          type: "request.resolved",
-        }),
-      ],
       replayed: false,
       request: {
         status: "withdrawn",
       },
     });
     expect(withdrawnReplay).toMatchObject({
-      events: [],
       replayed: true,
       request: {
         status: "withdrawn",
@@ -1283,7 +1098,6 @@ describeStore("PostgreSQL store", (it) => {
         totalItems: 0,
       },
     });
-    await store.drainPendingThreadStates();
     await expect(store.getThreadForOwner(fixture.thread.id, fixture.userId)).resolves.toMatchObject(
       {
         pendingRequests: 0,
@@ -1299,19 +1113,13 @@ describeStore("PostgreSQL store", (it) => {
   });
   it.for(
     (["update", "resume"] as const).flatMap((mutation) =>
-      (["drain", "resolution"] as const).flatMap((writer) =>
-        (["watch-first", "writer-first"] as const).map((order) => ({
-          mutation,
-          writer,
-          order,
-        })),
-      ),
+      (["watch-first", "writer-first"] as const).map((order) => ({ mutation, order })),
     ),
   )(
-    "keeps Watch $mutation foreign keys transparent to $writer ($order)",
-    async ({ mutation, writer, order }, { storeFixture }) => {
+    "keeps Watch $mutation foreign keys transparent to Request resolution ($order)",
+    async ({ mutation, order }, { storeFixture }) => {
       const { startRunFixture, store, triggers, createTaskForOwner, database } = storeFixture;
-      const fixture = await startRunFixture(`watch-fk-${mutation}-${writer}-${order}`);
+      const fixture = await startRunFixture(`watch-fk-${mutation}-${order}`);
       const { thread: anchor } = await store.createThread({
         createdBy: fixture.userId,
         environmentId: fixture.environmentId,
@@ -1401,28 +1209,19 @@ describeStore("PostgreSQL store", (it) => {
       const release = Promise.withResolvers<void>();
       const held = Promise.withResolvers<void>();
       const operations: Promise<unknown>[] = [];
-      // The second writer waits on Deployment event order while the first holds its domain fence.
+      // The second writer waits on the personal commit fence while the first holds its domain fence.
       await sql`create function phase3k_watch_barrier() returns trigger language plpgsql as $$
       begin perform pg_advisory_xact_lock(731003, 1); return new; end $$`.execute(database);
       await sql`create trigger phase3k_watch_barrier before insert on trigger_watch_activations
       for each row execute function phase3k_watch_barrier()`.execute(database);
       const blocker = database.transaction().execute(async (transaction) => {
         await sql`select pg_advisory_xact_lock(731003, 1)`.execute(transaction);
-        if (writer === "drain") {
-          await transaction
-            .selectFrom("threads")
-            .select("id")
-            .where("id", "=", fixture.thread.id)
-            .forUpdate()
-            .execute();
-        } else {
-          await transaction
-            .selectFrom("requests")
-            .select("id")
-            .where("id", "=", opened.request.id)
-            .forUpdate()
-            .execute();
-        }
+        await transaction
+          .selectFrom("requests")
+          .select("id")
+          .where("id", "=", opened.request.id)
+          .forUpdate()
+          .execute();
         held.resolve();
         await release.promise;
       });
@@ -1459,19 +1258,13 @@ describeStore("PostgreSQL store", (it) => {
               status: "active",
               triggerId: watch.trigger.id,
             });
-      const startWriter = () =>
-        writer === "drain"
-          ? racingStore.drainPendingThreadStates()
-          : racingStore.requests.resolveBrowserRequest({
-              requestId: opened.request.id,
-              resolvedBy: fixture.userId,
-              response: {
-                kind: "external",
-                value: {
-                  decision: "declined",
-                },
-              },
-            });
+      const startWriter = async () =>
+        racingStore.requests.resolveBrowserRequest({
+          expectedRevision: (await store.requests.revision(opened.request.id))!,
+          requestId: opened.request.id,
+          resolvedBy: fixture.userId,
+          response: { kind: "external", value: { decision: "declined" } },
+        });
       const start = (operation: () => Promise<unknown>) => {
         const running = operation();
         void running.catch(() => undefined);
@@ -1502,38 +1295,22 @@ describeStore("PostgreSQL store", (it) => {
           .where("desired", "=", "active")
           .execute();
         expect(active).toHaveLength(1);
-        const events = await database
-          .selectFrom("deploymentEvents")
-          .select(["type", "data"])
-          .where("threadId", "=", fixture.thread.id)
-          .orderBy("sequence", "desc")
+        expect(await store.requests.get(opened.request.id)).toMatchObject({ status: "declined" });
+        const changes = await database
+          .selectFrom("clientChanges")
+          .select(["operation", "payload"])
+          .where("scopeKey", "=", `thread:${fixture.thread.id}`)
+          .where("entityId", "in", [opened.request.id, `request:${opened.request.id}`])
           .execute();
-        if (writer === "drain") {
-          expect(events).toContainEqual(
-            expect.objectContaining({
-              type: "thread.state-changed",
-              data: expect.objectContaining({
-                pendingRequests: 1,
-              }),
+        expect(changes).toContainEqual({ operation: "remove", payload: {} });
+        expect(changes).toContainEqual(
+          expect.objectContaining({
+            operation: "upsert",
+            payload: expect.objectContaining({
+              view: expect.objectContaining({ status: "declined" }),
             }),
-          );
-          expect(
-            await database
-              .selectFrom("threadStatePending")
-              .selectAll()
-              .where("threadId", "=", fixture.thread.id)
-              .execute(),
-          ).toEqual([]);
-        } else {
-          expect(await store.requests.get(opened.request.id)).toMatchObject({
-            status: "declined",
-          });
-          expect(events).toContainEqual(
-            expect.objectContaining({
-              type: "request.resolved",
-            }),
-          );
-        }
+          }),
+        );
       } finally {
         release.resolve();
         await blocker;
@@ -1601,8 +1378,8 @@ describeStore("PostgreSQL store", (it) => {
               database,
             );
             expect(
-              waiting.rows.some(({ query }) => query.includes('from "execution_environments"')),
-              "Retirement never waited on creation",
+              waiting.rows.some(({ query }) => /from "?client_sync_state"?\b/u.test(query)),
+              "Retirement never waited on the Personal commit fence",
             ).toBe(true);
           },
           { timeout: 5_000 },
@@ -1678,8 +1455,8 @@ describeStore("PostgreSQL store", (it) => {
               database,
             );
             expect(
-              waiting.rows.some(({ query }) => query.includes('from "execution_environments"')),
-              "Creation never waited on retirement",
+              waiting.rows.some(({ query }) => /from "?client_sync_state"?\b/u.test(query)),
+              "Creation never waited on the Personal commit fence",
             ).toBe(true);
           },
           { timeout: 5_000 },
@@ -1770,8 +1547,8 @@ describeStore("PostgreSQL store", (it) => {
               database,
             );
             expect(
-              waiting.rows.some(({ query }) => query.includes('from "execution_environments"')),
-              "Messaging creation and retirement never met at the environment fence",
+              waiting.rows.some(({ query }) => /from "?client_sync_state"?\b/u.test(query)),
+              "Messaging creation and retirement never met at the Personal commit fence",
             ).toBe(true);
           },
           { timeout: 5_000 },
@@ -1847,8 +1624,9 @@ describeStore("PostgreSQL store", (it) => {
           .where("id", "=", opened.request.id)
           .forUpdate()
           .execute(),
-      () =>
+      async () =>
         store.requests.resolveBrowserRequest({
+          expectedRevision: (await store.requests.revision(opened.request.id))!,
           requestId: opened.request.id,
           resolvedBy: fixture.userId,
           response: {
@@ -1880,14 +1658,27 @@ describeStore("PostgreSQL store", (it) => {
     expect(await store.requests.get(opened.request.id)).toMatchObject({
       status: "declined",
     });
-    const events = await database
-      .selectFrom("deploymentEvents")
-      .select("type")
-      .where("runId", "=", fixture.run.id)
-      .orderBy("sequence", "asc")
-      .execute();
-    expect(events.map(({ type }) => type)).toEqual(
-      expect.arrayContaining(["request.resolved", "run.completed"]),
-    );
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", fixture.run.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "completed" });
+    // The completed Run admitted ordinal 1 and, being terminal, keeps no receipts.
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("nextRunnerOrdinal")
+        .where("id", "=", fixture.run.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ nextRunnerOrdinal: 2 });
+    expect(
+      await database
+        .selectFrom("runnerEventReceipts")
+        .select("ordinal")
+        .where("runId", "=", fixture.run.id)
+        .execute(),
+    ).toEqual([]);
   });
 });

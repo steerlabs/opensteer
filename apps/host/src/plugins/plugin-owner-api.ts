@@ -304,6 +304,9 @@ function sections(detail: EngineDetail, row: Settings | undefined) {
 }
 
 export class PluginOwnerApi {
+  engineState(): PluginEngineStateView {
+    return pluginEngineStateView(this.#options.service.state());
+  }
   readonly #options: PluginOwnerApiOptions;
   readonly pages: PluginOwnerApiOptions["pages"];
   readonly webhooks: PluginOwnerApiOptions["webhooks"];

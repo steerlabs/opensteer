@@ -61,7 +61,6 @@ export * from "./team-api.js";
 export * from "./team-session.js";
 
 export * from "./needs-you.js";
-export * from "./person-questions.js";
 export {
   readTeamFrame,
   TeamClientFrameViewSchema,
@@ -99,4 +98,4 @@ export {
 export * from "./plugin-oauth.js";
 export * from "./phone-display.js";
 
-export * from "./device-wire-compatibility.js";
+export * from "./personal-input-queue.js";

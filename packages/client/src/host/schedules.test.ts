@@ -4,7 +4,11 @@ import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
 import { createId, defaultTaskSymbol, type AgentEventView } from "@opensteer/core";
 import type { TriggerSummary } from "@opensteer/triggers/models";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import { HostClientRequestError, type HostClient, type HostSnapshot } from "./client.js";
+import {
+  HostClientRequestError,
+  type HostClient,
+  type TranscriptFixtureSnapshot,
+} from "./client.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 import { scheduleDetail, scheduleList, scheduleTiming, schedulesClient } from "./schedules.js";
 import { describeRepeating, runOutcome } from "./automation-presentation.js";
@@ -16,7 +20,7 @@ afterEach(() => {
 function fixture() {
   const mock = new MockHostClient({ latencyMs: 0, now: () => new Date("2026-11-01T12:00:00Z") });
   mocks.push(mock);
-  let snapshot: HostSnapshot = { ...mock.getSnapshot(), connection: "connected" };
+  let snapshot: TranscriptFixtureSnapshot = { ...mock.getSnapshot(), connection: "connected" };
   const listeners = new Set<() => void>();
   const list = vi.fn(mock.rpc["triggers.list"]);
   const get = vi.fn(mock.rpc["triggers.get"]);
@@ -38,7 +42,7 @@ function fixture() {
     get,
     dispatch,
     snapshot: () => snapshot,
-    emit: (patch: Partial<HostSnapshot>) => {
+    emit: (patch: Partial<TranscriptFixtureSnapshot>) => {
       snapshot = { ...snapshot, ...patch };
       for (const f of listeners) f();
     },
@@ -289,15 +293,18 @@ describe("schedules", () => {
           "Finished without a message",
         );
         f.get.mockResolvedValue({ ok: true, data: { ...wire, downstreamRuns: [delayed] } });
-        const baseQueue = f.snapshot().runQueue;
-        const queued = {
-          id: delayed.run.id,
-          threadId: delayed.run.threadId,
-          status: "running" as const,
-          createdAt: delayed.run.createdAt,
-          runOrdinal: 1,
+        // The Run's task is a running shell row, which every client holds.
+        const base = f.snapshot().activeTasks;
+        const working = {
+          thread: {
+            ...f.snapshot().threads[0]!,
+            id: delayed.run.threadId,
+            status: "running" as const,
+          },
+          lastReply: null,
+          failure: null,
         };
-        f.emit({ runQueue: [...baseQueue, queued] });
+        f.emit({ activeTasks: [...base, working] });
         await vi.waitFor(
           () =>
             expect(resource.getSnapshot().data?.definition.downstreamRuns[0]?.run.status).toBe(
@@ -309,7 +316,7 @@ describe("schedules", () => {
           ok: true,
           data: { ...wire, downstreamRuns: [{ ...delayed, run: { ...delayed.run, status } }] },
         });
-        f.emit({ runQueue: baseQueue });
+        f.emit({ activeTasks: base });
         await vi.waitFor(
           () =>
             expect(resource.getSnapshot().data?.definition.downstreamRuns[0]?.run.status).toBe(

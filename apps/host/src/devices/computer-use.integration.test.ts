@@ -160,9 +160,8 @@ integration.sequential("Host computer-use approval transactions", () => {
       dataDirectory,
       definitions: [definition],
       isRunnerConnected: () => true,
-      onDeploymentEvent: vi.fn(),
       onConnectionsChanged: vi.fn(),
-      onRequestsChanged: vi.fn(),
+
       store: persistence,
     });
     await service.installCatalogDefinition({

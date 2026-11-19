@@ -4,6 +4,12 @@ import type { MessageEntry, ToolEntry, TranscriptEntry } from "../host/client.js
 
 const runnerId = DeviceIdSchema.parse("rnr_35a353b8-9b64-4600-9eb1-e25db7c052a3");
 
+/** A valid message id for one of this turn's messages, stable for its Run. */
+export function mockComputerUseMessageId(runId: string, slot: "input" | "note" | "reply"): string {
+  const suffix = { input: "a1", note: "a2", reply: "a3" }[slot];
+  return `msg_${runId.slice("run_".length, -2)}${suffix}`;
+}
+
 export const mockComputerUseSlack = {
   app: "Slack",
   bundleId: "com.tinyspeck.slackmacgap",
@@ -153,7 +159,7 @@ export function mockComputerUseTurn(options: {
     author: options.agent,
     body: "I’ll inspect the current Slack view first, then click the Opensteer workspace/org.",
     createdAt: at("28:10.000"),
-    id: `msg_cu_${runId}_note`,
+    id: mockComputerUseMessageId(runId, "note"),
     kind: "message",
     messageKind: "assistant",
     runId,
@@ -271,7 +277,7 @@ export function mockComputerUseTurn(options: {
       author: options.agent,
       body: "Done — I clicked the Opensteer organization in Slack. It’s now showing the `#openai-yc-alumni-6` channel.",
       createdAt: at("29:37.000"),
-      id: `msg_cu_${runId}_reply`,
+      id: mockComputerUseMessageId(runId, "reply"),
       kind: "message",
       messageKind: "assistant",
       runId,

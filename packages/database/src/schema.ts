@@ -46,7 +46,6 @@ import type {
   PrincipalId,
 } from "@opensteer/channel-core";
 import type {
-  AgentEvent,
   AssignmentId,
   AssignmentOrigin,
   AssignmentReturnStatus,
@@ -64,7 +63,6 @@ import type {
   DeploymentId,
   DeploymentShape,
   EnvironmentId,
-  EventId,
   ExecutionNodeId,
   ExecutionPreferences,
   GrantId,
@@ -135,6 +133,17 @@ import type {
 } from "@opensteer/protocol";
 import type { StoredTriggerProgram, TriggerProgramEvent, TriggerSource } from "@opensteer/triggers";
 import type { ColumnType, Generated, Selectable } from "kysely";
+import type {
+  ClientChangesTable,
+  ClientSyncStateTable,
+  FinishIntent,
+  PersonalAttentionTable,
+  PlaceView,
+  RunnerEventReceiptTable,
+  ToolCallTable,
+  ToolOutputImageTable,
+  TranscriptItemTable,
+} from "./personal-state-schema.js";
 
 export type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>;
 export type NullableTimestamp = ColumnType<
@@ -708,7 +717,15 @@ export interface ThreadTable {
   /** Set only while Done, when the Host moved the task there because nothing touched it. */
   doneReason: Generated<ThreadDoneReason | null>;
   pendingRequestCount: Generated<number>;
-  projectedInputQueuePaused: Generated<boolean>;
+  revision: Generated<string>;
+  nextTranscriptPosition: Generated<string>;
+  inputQueueRevision: Generated<string>;
+  lastReplyMessageId: Generated<MessageId | null>;
+  lastReplyPreview: Generated<string | null>;
+  failurePreview: Generated<string | null>;
+  latestRunCompletedAt: Generated<Date | null>;
+  latestPlace: Generated<PlaceView | null>;
+  removedAt: Generated<Date | null>;
   inputQueuePaused: Generated<boolean>;
   inputQueuePausedBy: Generated<UserId | null>;
   accessMode: Generated<ThreadAccessMode>;
@@ -742,6 +759,7 @@ export interface ThreadTable {
 }
 
 export interface MessageTable {
+  published: Generated<boolean>;
   addressedToUserId: Generated<UserId | null>;
   quote: Generated<import("@opensteer/core").MessageQuote | null>;
   author: JsonColumn<MessageAuthor>;
@@ -791,6 +809,7 @@ export interface AttachmentTable {
 }
 
 export interface ThreadInputTable {
+  approvalSort: Generated<number>;
   freshContext: Generated<boolean>;
   teamRequestId: TeamAgentRequestId | null;
   teamSource: JsonColumn<TeamSource | null>;
@@ -849,6 +868,14 @@ export interface RunInitialContext {
 }
 
 export interface RunTable {
+  revision: Generated<string>;
+  latestPlace: Generated<PlaceView | null>;
+  terminalReplyMessageId: Generated<MessageId | null>;
+  runnerSafetyTerminal: Generated<boolean>;
+  executeClaimState: Generated<"not-created" | "unclaimed" | "claimed">;
+  finishIntent: Generated<FinishIntent | null>;
+  /** The digest of the last Runner statement this Run admitted; it outlives the Run's receipts. */
+  lastRunnerDigest: Generated<Buffer | null>;
   maintenance: Generated<import("@opensteer/core").RunMaintenance | null>;
   personWaited: Generated<boolean>;
   doneWhenFinished: Generated<boolean>;
@@ -1000,6 +1027,7 @@ export interface GrantTable {
 }
 
 export interface DelegationTable {
+  cancellationRootId: Generated<AssignmentId | null>;
   initialInputMessageId: MessageId;
   objective: string;
   origin: AssignmentOrigin;
@@ -1043,6 +1071,7 @@ export interface WatchControlRequestTable {
 }
 
 export interface RequestTable {
+  revision: Generated<string>;
   id: RequestId;
   kind: Request["kind"];
   mode: Request["mode"];
@@ -1302,28 +1331,6 @@ interface TriggerControlRequestTable {
   action: AgentControlRequestTable["action"];
   actionClass: AgentControlRequestTable["actionClass"];
   requestFingerprint: string;
-  createdAt: Timestamp;
-}
-
-export interface DeploymentEventTable {
-  deploymentId: DeploymentId;
-  nodeDetailId: ColumnType<
-    ExecutionNodeId | null,
-    ExecutionNodeId | null | undefined,
-    ExecutionNodeId | null
-  >;
-  sequence: string;
-  eventId: EventId;
-
-  threadId: ThreadId | null;
-  runId: RunId | null;
-  environmentId: EnvironmentId | null;
-  runnerOrdinal: number | null;
-  runnerId: RunnerId | null;
-  runnerBootId: string | null;
-  runnerBindingGeneration: number | null;
-  type: AgentEvent["type"];
-  data: JsonColumn<unknown>;
   createdAt: Timestamp;
 }
 
@@ -2078,7 +2085,13 @@ export interface DatabaseSchema {
   teamAgentRecipients: TeamAgentRecipientTable;
 
   personalSettings: PersonalSettingsTable;
-  deploymentEventState: DeploymentEventStateTable;
+  clientSyncState: ClientSyncStateTable;
+  clientChanges: ClientChangesTable;
+  toolCalls: ToolCallTable;
+  transcriptItems: TranscriptItemTable;
+  toolOutputImages: ToolOutputImageTable;
+  runnerEventReceipts: RunnerEventReceiptTable;
+  personalAttention: PersonalAttentionTable;
 
   agentConnections: AgentConnectionTable;
   apps: AppTable;
@@ -2157,7 +2170,6 @@ export interface DatabaseSchema {
 
   securityAudit: SecurityAuditTable;
 
-  threadStatePending: { threadId: ThreadId; requestedAt: Timestamp };
   threads: ThreadTable;
   messages: MessageTable;
   messageRevisions: MessageRevisionTable;
@@ -2186,7 +2198,6 @@ export interface DatabaseSchema {
   commands: CommandTable;
   agentControlRequests: AgentControlRequestTable;
   triggerControlRequests: TriggerControlRequestTable;
-  deploymentEvents: DeploymentEventTable;
   automationFailureNotices: AutomationFailureNoticeTable;
   threadVisits: ThreadVisitTable;
 
@@ -2282,7 +2293,6 @@ export type CommandRow = Selectable<CommandTable>;
 export type PendingCommandRow = CommandRow & {
   readonly runHarnessInstanceId: HarnessInstanceId | null;
 };
-export type DeploymentEventRow = Selectable<DeploymentEventTable>;
 
 export interface PersonalSettingsTable {
   idleCompactionPolicy: Generated<import("@opensteer/core").IdleCompactionPolicy>;
@@ -2304,10 +2314,6 @@ export interface PersonalSettingsTable {
     { readonly issuer: string; readonly subject: string } | null | undefined,
     { readonly issuer: string; readonly subject: string } | null
   >;
-}
-export interface DeploymentEventStateTable {
-  deploymentId: DeploymentId;
-  sequence: Generated<string>;
 }
 export interface TeamMemberTable {
   userId: UserId;
@@ -2611,6 +2617,7 @@ export interface TeamAgentRequestTable {
   changeSeq: string;
 }
 export interface PersonalTeamLinkTable {
+  approvalAttentionCount: Generated<number>;
   id: string;
   teamDeploymentId: DeploymentId;
   teamHostInstanceId: HostInstanceId;

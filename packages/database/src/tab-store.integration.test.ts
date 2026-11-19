@@ -48,7 +48,7 @@ integration("workspace tabs", () => {
     return { database, legacy, ownerId, computerId, tabs, write };
   }
   it("keeps one mixed layout and singleton identity across concurrent opens, close, replay and reopen", async () => {
-    const { tabs, write, ownerId } = await fixture();
+    const { tabs, write, ownerId, database } = await fixture();
     const phone = write("phone", {
         id: TabIdSchema.parse("tab_00000000-0000-4000-8000-000000000000"),
       }),
@@ -75,6 +75,20 @@ integration("workspace tabs", () => {
     expect(tabLayoutIds(grouped.layout)).toEqual(ids);
     const group = grouped.layout.items[0]!;
     expect(group.kind).toBe("group");
+    const first = await tabs.resourceTabs(database, ownerId, { limit: 2 });
+    const next = await tabs.resourceTabs(database, ownerId, { limit: 2, after: first[1]!.id });
+    expect([...first, ...next].map(({ id }) => id)).toEqual([...ids].sort());
+    expect(await tabs.resourceLayout(database, ownerId, { after: 0, limit: 1 })).toEqual({
+      revision: grouped.layout.revision,
+      entries: [{ item: group, ordinal: 1 }],
+    });
+    expect(await tabs.resourceLayout(database, ownerId, { after: 1, limit: 1 })).toEqual({
+      revision: grouped.layout.revision,
+      entries: [],
+    });
+    expect([...(await tabs.resourceTabGroups(database, ownerId, [phoneId]))]).toEqual([
+      [phoneId, group.kind === "group" ? group.group.groupId : null],
+    ]);
     await tabs.close(ownerId, [app.id], "close");
     await expect(
       tabs.open(app, "late-open", undefined, app, grouped.layout.revision),
@@ -344,8 +358,8 @@ integration("workspace tabs", () => {
     await tabs.open(app, "app");
     await tabs.open(phone, "phone");
     await tabs.close(ownerId, [app.id], "close");
-    const { withPersonalTransaction } = await import("./personal-transaction.js");
-    await withPersonalTransaction(database, (tx) => tabs.removeTabs(tx, app.appId!));
+    const { commitPersonalMutation } = await import("./personal-mutation.js");
+    await commitPersonalMutation(database, (tx) => tabs.removeTabs(tx, app.appId!));
     expect(await tabs.get(ownerId, app.id, true)).toBeNull();
     expect(tabLayoutIds((await tabs.snapshot(ownerId)).layout)).toEqual([phone.id]);
   });

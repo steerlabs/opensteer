@@ -54,7 +54,7 @@ function service(fixture: StoreFixture, options: { personal?: boolean; runnerId?
     }),
     profileRequestRunner: async () => options.runnerId ?? null,
     onSessionsChanged: () => undefined,
-    onDeploymentEvent: () => undefined,
+
     targetResolver: { placements: () => placements, resolve: () => undefined },
   });
   return { browser, placements };
@@ -184,6 +184,7 @@ describeStore("Host browser homes", (it) => {
           browser
             .resolveRequest({
               requestId: request.requestId,
+              expectedRevision: (await fixture.store.requests.revision(request.requestId))!,
               resolvedBy: run.userId,
               response: {
                 kind: "external",
@@ -397,6 +398,7 @@ describeStore("Host browser homes", (it) => {
         );
         const resolution = browser.resolveRequest({
           requestId: request.requestId,
+          expectedRevision: (await fixture.store.requests.revision(request.requestId))!,
           resolvedBy: run.userId,
           response,
         });

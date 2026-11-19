@@ -159,6 +159,13 @@ describe("replyParts", () => {
     ]);
   });
 
+  it("leaves a fence the reply has not closed yet open, so it reads as still growing", () => {
+    expect(replyParts("Run:\n\n```ts\nconst a = 1;")).toEqual([
+      { kind: "prose", text: "Run:", wide: false },
+      { kind: "code", language: "ts", source: "```ts\nconst a = 1;", text: "const a = 1;" },
+    ]);
+  });
+
   it("leaves a fence inside a list where the list put it, and draws that bubble wide", () => {
     const steps = "1. Step\n   ```bash\n   pnpm dev\n   ```\n2. Next";
     expect(replyParts(steps)).toEqual([{ kind: "prose", text: steps, wide: true }]);

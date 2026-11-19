@@ -1,23 +1,6 @@
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type RefObject,
-} from "react";
-import {
-  agentCardLabel,
-  runningNow,
-  sameRunningNow,
-  SubagentCache,
-  type HostSnapshot,
-  type RunningNow as RunningNowModel,
-} from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import { memo, useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { agentCardLabel, type RunningNow as RunningNowModel } from "@opensteer/client/host";
+import { useRunningNow } from "@opensteer/client/react";
 import { useShell } from "./app-shell.js";
 import { Icon } from "./icon.js";
 import { SubagentStop } from "./subagent-stop.js";
@@ -45,13 +28,7 @@ export const RunningNow = memo(function RunningNow({
   threadId: string;
 }) {
   const { hostClient } = useShell();
-  const cache = useMemo(() => new SubagentCache(), []);
-  const select = useCallback(
-    (snapshot: HostSnapshot) =>
-      runningNow(reachable ? snapshot : { ...snapshot, connection: "offline" }, threadId, cache),
-    [cache, reachable, threadId],
-  );
-  const live = useHostSelector(hostClient, select, sameRunningNow);
+  const live = useRunningNow(hostClient, threadId, reachable);
   // The last thing that ran stays drawn for a moment while the line leaves.
   const [leaving, setLeaving] = useState<RunningNowModel | null>(null);
   const shown = useRef<RunningNowModel | null>(null);

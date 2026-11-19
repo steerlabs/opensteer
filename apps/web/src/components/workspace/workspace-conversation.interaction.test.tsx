@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter, useNavigate } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { placeList, type HostSnapshot } from "@opensteer/client/host";
+import { placeList, type TranscriptFixtureSnapshot } from "@opensteer/client/host";
 
 import { type WorkspaceNavigation } from "./navigation.js";
 import { WorkspaceLayout } from "./workspace-layout.js";
@@ -19,7 +19,8 @@ import {
   resize,
   mount,
   stubLayout,
-  settle,
+  until,
+  microtasksDrained,
   element,
   click,
   placeParams,
@@ -46,9 +47,10 @@ describe("a conversation chosen before the list redraws", () => {
         `.side-task[data-thread-id="${threadId}"] .side-task__main`,
       ).click();
     });
-    await settle();
-    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
-    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+    await until("The second press never opened its task beside the first's place", () => {
+      expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
+      expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+    });
     // A modified click still belongs to the link.
     const other = document.querySelectorAll<HTMLAnchorElement>(".side-task .side-task__main")[1]!;
     const event = new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true });
@@ -115,8 +117,8 @@ describe("the dock's slide always settles", () => {
     const phase = () => workspace.layout.get();
     const slideStarted = async () => {
       const count = slides.length;
-      await settle(40);
-      expect(slides.length).toBe(count + 1);
+      // The slide starts in the frame after the layout settles on it.
+      await until("The slide never started", () => expect(slides.length).toBe(count + 1));
       expect(phase()).toBe("settling");
       return slides.at(-1)!;
     };
@@ -128,7 +130,8 @@ describe("the dock's slide always settles", () => {
     await act(async () => go("/"));
     expect(phase()).toBe("settled");
     await act(async () => go("/?panel=browser"));
-    await settle(40);
+    // A slide would start in the next frame; that frame has run.
+    await act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
     expect(phase()).toBe("settled");
 
     // A slide the browser cancels without starting another settles too.
@@ -369,7 +372,7 @@ describe("a reply's live picture belongs to its working Run", () => {
 });
 
 /** The task that handed work to another: the mock's task line and its worker belong to it. */
-function delegating(source: { getSnapshot(): HostSnapshot }): string {
+function delegating(source: { getSnapshot(): TranscriptFixtureSnapshot }): string {
   const assignment = Object.values(source.getSnapshot().assignments)[0];
   if (!assignment) throw new Error("The mock hands out no work");
   return assignment.parentThreadId;
@@ -386,7 +389,6 @@ describe("task titles", () => {
         new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key, isComposing }),
       ),
     );
-    await settle();
   }
 
   it.each(["header", "sidebar"])(
@@ -410,13 +412,19 @@ describe("task titles", () => {
       const field = element<HTMLInputElement>('input[aria-label="Task title"]');
       expect(document.activeElement).toBe(field);
       await typeInto(field, "  Shipping plan  ");
+      const rename = vi.spyOn(client, "renameThread");
       await key(field, "Enter", true);
+      // An Enter that composes a character is the input method's: nothing is asked of the Host.
+      await microtasksDrained();
+      expect(rename).not.toHaveBeenCalled();
       expect(client.getSnapshot().threads.find((thread) => thread.id === id)?.title).toBe(original);
       await key(field, "Enter");
-      expect(client.getSnapshot().threads.find((thread) => thread.id === id)?.title).toBe(
-        "Shipping plan",
-      );
-      expect(element(`[data-thread-id="${id}"]`).textContent).toContain("Shipping plan");
+      await until("Enter never renamed the task and its row", () => {
+        expect(client.getSnapshot().threads.find((thread) => thread.id === id)?.title).toBe(
+          "Shipping plan",
+        );
+        expect(element(`[data-thread-id="${id}"]`).textContent).toContain("Shipping plan");
+      });
     },
   );
 
@@ -439,8 +447,9 @@ describe("task titles", () => {
       const message = "Prepare a launch plan for the new mobile application with milestones";
       await write(element<HTMLElement>("[data-composer-input]"), message);
       await click(element(".composer__send"));
-      for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/tasks/"); tries += 1)
-        await settle(25);
+      await until("The new task never opened", () =>
+        expect(history.at(-1)!.path).toMatch(/^\/tasks\//u),
+      );
       const id = history.at(-1)!.path.split("/").at(-1)!;
       expect(client.getSnapshot().threads.find((thread) => thread.id === id)?.title).toBe(message);
       if (renameEarly) {
@@ -464,9 +473,10 @@ describe("task titles", () => {
     await act(async () => {
       await client.renameThread(worker, "Renamed delegated task");
     });
-    await settle();
-    expect(element("a.agent-step__head .agent-step__title").textContent).toBe(
-      "Renamed delegated task",
+    await until("The delegated task line never took the new name", () =>
+      expect(element("a.agent-step__head .agent-step__title").textContent).toBe(
+        "Renamed delegated task",
+      ),
     );
   });
 
@@ -479,7 +489,7 @@ describe("task titles", () => {
     expect(assignment).toBeDefined();
     const worker = assignment.workerThread.id;
     const read = client.getSnapshot;
-    const cache = new WeakMap<HostSnapshot, HostSnapshot>();
+    const cache = new WeakMap<TranscriptFixtureSnapshot, TranscriptFixtureSnapshot>();
     vi.spyOn(client, "getSnapshot").mockImplementation(() => {
       const snapshot = read();
       let held = cache.get(snapshot);
@@ -499,7 +509,11 @@ describe("task titles", () => {
     await act(async () => {
       await client.renameThread(worker, "Guest room mattress");
     });
-    await settle();
+    await until("The assignment never took the worker's new name", () =>
+      expect(client.getSnapshot().assignments[assignment.id]?.workerThread.title).toBe(
+        "Guest room mattress",
+      ),
+    );
     expect(client.getSnapshot().assignments[assignment.id]).toMatchObject({
       revision: assignment.revision + 1,
       status: "completed",
@@ -544,7 +558,7 @@ describe("task titles", () => {
   it("hides rename on a Host without task titles", async () => {
     await mount((source) => {
       const read = source.getSnapshot;
-      const cache = new WeakMap<HostSnapshot, HostSnapshot>();
+      const cache = new WeakMap<TranscriptFixtureSnapshot, TranscriptFixtureSnapshot>();
       vi.spyOn(source, "getSnapshot").mockImplementation(() => {
         const snapshot = read();
         let held = cache.get(snapshot);
@@ -567,7 +581,7 @@ describe("task titles", () => {
   });
 });
 
-it("opens a task with a whole-turn page in one read", async () => {
+it("draws the initial conversation cut from one scoped subscription", async () => {
   let fixture!: ReturnType<typeof conversationHistoryHost>;
   await mount((source) => `/tasks/${source.getSnapshot().threads[0]!.id}`, {
     hostClient: (source) => {
@@ -584,8 +598,8 @@ it("opens a task with a whole-turn page in one read", async () => {
     },
     { timeout: 1000 },
   );
-  expect(fixture.requests).toHaveLength(1);
-  expect(fixture.requests[0]).toMatchObject({ turns: 10 });
+  expect(fixture.detailRequests).toEqual([client.getSnapshot().threads[0]!.id]);
+  expect(fixture.reads).not.toContain("/v1/rpc/thread.items.page");
 });
 
 describe("a conversation's page above it at phone width", () => {
@@ -634,9 +648,26 @@ describe("a conversation's page above it at phone width", () => {
       this.viewport = null;
     },
   };
-  async function opened() {
-    await mount(`/tasks/${waiting}`, { width: 390 });
+  async function opened(scriptPlaces = false) {
     phoneGeometry();
+    await mount(
+      (source) => {
+        if (scriptPlaces) source.scriptPlaces();
+        return `/tasks/${waiting}`;
+      },
+      {
+        width: 390,
+        mock: { subagents: "absent", automations: "absent" },
+      },
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          document.querySelector(".composer-dock [data-composer-input]"),
+          "The scoped conversation never mounted its composer",
+        ).not.toBeNull(),
+      { timeout: 1500 },
+    );
     expect(page() ?? folded(), "The Run was already in a place").toBeNull();
   }
   function browserPlace(title: string) {
@@ -655,31 +686,36 @@ describe("a conversation's page above it at phone width", () => {
   }
 
   it("opens on the first action, folds into the head, unfolds, shows the full tab and ends with the Run", async () => {
-    await opened();
+    await opened(true);
     // A hardware keyboard takes no room: writing in a narrow window still lets it open.
-    await act(async () => element<HTMLElement>(".composer-dock [data-composer-input]").focus());
-    const place = await acts();
-    expect(page()).not.toBeNull();
+    act(() => element<HTMLElement>(".composer-dock [data-composer-input]").focus());
+    const place = browserPlace("Coffee shortlist");
+    act(() => client.actInPlace(waiting, place.key));
+    await vi.waitFor(() => expect(page(), "The first place picture did not open").not.toBeNull(), {
+      timeout: 1500,
+    });
     expect(folded(), "The head kept a picture of the open page").toBeNull();
 
-    await click(element(".run-page__handle"));
+    act(() => element<HTMLElement>(".run-page__handle").click());
     expect(page()).toBeNull();
     expect(folded()?.getAttribute("aria-expanded")).toBe("false");
 
-    await click(folded()!);
+    act(() => folded()!.click());
     expect(page()).not.toBeNull();
     // Folding and unfolding never navigate.
     expect(history.at(-1)).toMatchObject({ path: `/tasks/${waiting}`, search: "" });
 
     // The Run moving to another page keeps it open, on that page.
     const next = browserPlace("Your reading list");
-    await act(async () => client.actInPlace(waiting, next.key));
+    act(() => client.actInPlace(waiting, next.key));
     expect(element(".run-page__view").getAttribute("aria-label")).toContain(next.title);
-    await act(async () => client.actInPlace(waiting, place.key));
+    act(() => client.actInPlace(waiting, place.key));
 
-    await click(element(".run-page__view"));
+    act(() => element<HTMLElement>(".run-page__view").click());
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
-    await act(async () => goTo!(`/tasks/${waiting}`));
+    act(() => {
+      void goTo!(`/tasks/${waiting}`);
+    });
     expect(page(), "Coming back, the page was no longer open").not.toBeNull();
 
     await act(async () => client.stopRun(waiting));
@@ -883,5 +919,193 @@ describe("a conversation's foot", () => {
     geometry.content = 2400;
     await scrollTo(scroller, 1850);
     expect(scroller.scrollTop, "A scroll up beside a reflow was taken for the reflow").toBe(1850);
+  });
+
+  it("a link overtaken by a newer link in the same task reports nothing missing and leaves the reader at the newer one", async () => {
+    const long = "thr_00000000-0000-4000-8000-000000000005";
+    const messages = () =>
+      client
+        .getSnapshot()
+        .transcripts[long]!.filter((entry) => entry.kind === "message")
+        .map(({ id }) => id);
+    let first!: (landed: boolean) => void;
+    let around!: ReturnType<typeof vi.fn>;
+    let latest!: ReturnType<typeof vi.fn>;
+    const watch = (source: MockHostClient) => {
+      const real = source.loadTranscriptAround.bind(source);
+      around = vi
+        .fn(real)
+        // The first link's page is slow; the newer link's move supersedes it.
+        .mockImplementationOnce(() => new Promise<boolean>((resolve) => (first = resolve)));
+      source.loadTranscriptAround = around as typeof source.loadTranscriptAround;
+      latest = vi.fn(source.loadLatestTranscript.bind(source));
+      source.loadLatestTranscript = latest as typeof source.loadLatestTranscript;
+      return source;
+    };
+    await mount(`/tasks/${long}`, { hostClient: watch });
+    // A message the newer link's page does not hold: only a superseded jump could misjudge it.
+    const a = "msg_00000000-0000-4000-8000-0000000000aa";
+    const [b] = messages();
+    await act(async () => goTo!(`/tasks/${long}?messageId=${a}`));
+    await vi.waitFor(() => expect(around).toHaveBeenCalledTimes(1));
+    await act(async () => goTo!(`/tasks/${long}?messageId=${b}`));
+    await vi.waitFor(() => expect(around).toHaveBeenCalledTimes(2));
+    await act(async () => first(false));
+    // The superseded page's answer is handled by a promise chain with no timer: it has run by now.
+    await microtasksDrained();
+    expect(
+      document.querySelector(".ref-unavailable"),
+      "a superseded link reported its message missing",
+    ).toBeNull();
+    expect(latest, "a superseded link returned the reader to the latest").not.toHaveBeenCalled();
+  });
+
+  it("tells nobody as the reader scrolls; asked at a repair, it names the row in view and puts it back where it stood", async () => {
+    // The Host's repairs of this conversation, as its reader counts them.
+    let repairs = 0;
+    const long = "thr_00000000-0000-4000-8000-000000000005";
+    let measure: (() => string | undefined | null) | null = null;
+    const anchors = vi.fn();
+    const watch = (source: MockHostClient) => {
+      const real = source.getThreadTranscript.bind(source);
+      const views = new WeakMap<object, Map<number, object>>();
+      vi.spyOn(source, "getThreadTranscript").mockImplementation((threadId) => {
+        const view = real(threadId);
+        return {
+          subscribe: view.subscribe,
+          getSnapshot: () => {
+            const current = view.getSnapshot();
+            const held = views.get(current) ?? new Map<number, object>();
+            views.set(current, held);
+            if (!held.has(repairs)) held.set(repairs, { ...current, repairs, cuts: repairs + 1 });
+            return held.get(repairs) as typeof current;
+          },
+        };
+      });
+      // The one-shot measurement the view gives the client, and any report it might make.
+      vi.spyOn(source, "setTranscriptPosition").mockImplementation((_threadId, given) => {
+        measure = given;
+      });
+      Object.assign(source, { setTranscriptAnchor: anchors });
+      return source;
+    };
+    await mount(`/tasks/${long}`, { hostClient: watch });
+    const scroller = element<HTMLElement>(".transcript-scroll");
+    const rows = () => [...scroller.querySelectorAll("[data-transcript-row]:not(:empty)")];
+    expect(rows().length, "The conversation has too few rows to scroll").toBeGreaterThan(1);
+    // Each row is 100px tall; `above` is what a repair adds over them.
+    const geometry = { content: rows().length * 100 + 400, above: 0 };
+    transcriptGeometry(geometry);
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element,
+    ) {
+      const index = rows().indexOf(this);
+      const top = index < 0 ? 0 : geometry.above + index * 100 - scroller.scrollTop;
+      return { top, bottom: index < 0 ? 400 : top + 100, height: index < 0 ? 400 : 100 } as DOMRect;
+    });
+    const frame = () =>
+      act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    for (const _ of [1, 2]) await scrollTo(scroller, geometry.content);
+    await frame();
+    expect(measure, "the view gave the client no way to ask").not.toBeNull();
+    expect(measure!(), "A reader at the foot is at the latest").toBeUndefined();
+
+    // The reader scrolls up to stand 30px into the second row. Nobody is told.
+    await scrollTo(scroller, 130);
+    await frame();
+    expect(anchors).not.toHaveBeenCalled();
+    // The client asks, as it does when a repair arrives, before the repair changes the rows.
+    expect(measure!(), "The row in view was not named").toEqual(expect.any(String));
+
+    // A repair lays the conversation out again with 300px more above that row.
+    geometry.above = 300;
+    geometry.content += 300;
+    repairs = 1;
+    await act(async () => {
+      await client.dispatch({
+        type: "thread.sendMessage",
+        threadId: long,
+        content: [{ type: "text", text: "Arrived with the repair" }],
+        delivery: "queue",
+        idempotencyKey: "repair-arrival",
+      });
+    });
+    expect(scroller.scrollTop, "The repair moved the reader off their row").toBe(430);
+    expect(element(".transcript__jump")).not.toBeNull();
+  });
+
+  it("a new subscription's snapshot, not only a repair, puts the measured row back where it stood", async () => {
+    // The Host's repairs of this conversation, as its reader counts them.
+    let repairs = 0;
+    const long = "thr_00000000-0000-4000-8000-000000000005";
+    let measure: (() => string | undefined | null) | null = null;
+    const anchors = vi.fn();
+    const watch = (source: MockHostClient) => {
+      const real = source.getThreadTranscript.bind(source);
+      const views = new WeakMap<object, Map<number, object>>();
+      vi.spyOn(source, "getThreadTranscript").mockImplementation((threadId) => {
+        const view = real(threadId);
+        return {
+          subscribe: view.subscribe,
+          getSnapshot: () => {
+            const current = view.getSnapshot();
+            const held = views.get(current) ?? new Map<number, object>();
+            views.set(current, held);
+            if (!held.has(repairs))
+              held.set(repairs, { ...current, repairs: 0, cuts: repairs + 1 });
+            return held.get(repairs) as typeof current;
+          },
+        };
+      });
+      // The one-shot measurement the view gives the client, and any report it might make.
+      vi.spyOn(source, "setTranscriptPosition").mockImplementation((_threadId, given) => {
+        measure = given;
+      });
+      Object.assign(source, { setTranscriptAnchor: anchors });
+      return source;
+    };
+    await mount(`/tasks/${long}`, { hostClient: watch });
+    const scroller = element<HTMLElement>(".transcript-scroll");
+    const rows = () => [...scroller.querySelectorAll("[data-transcript-row]:not(:empty)")];
+    expect(rows().length, "The conversation has too few rows to scroll").toBeGreaterThan(1);
+    // Each row is 100px tall; `above` is what a repair adds over them.
+    const geometry = { content: rows().length * 100 + 400, above: 0 };
+    transcriptGeometry(geometry);
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element,
+    ) {
+      const index = rows().indexOf(this);
+      const top = index < 0 ? 0 : geometry.above + index * 100 - scroller.scrollTop;
+      return { top, bottom: index < 0 ? 400 : top + 100, height: index < 0 ? 400 : 100 } as DOMRect;
+    });
+    const frame = () =>
+      act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    for (const _ of [1, 2]) await scrollTo(scroller, geometry.content);
+    await frame();
+    expect(measure, "the view gave the client no way to ask").not.toBeNull();
+    expect(measure!(), "A reader at the foot is at the latest").toBeUndefined();
+
+    // The reader scrolls up to stand 30px into the second row. Nobody is told.
+    await scrollTo(scroller, 130);
+    await frame();
+    expect(anchors).not.toHaveBeenCalled();
+    // The client asks, as it does when a repair arrives, before the repair changes the rows.
+    expect(measure!(), "The row in view was not named").toEqual(expect.any(String));
+
+    // A repair lays the conversation out again with 300px more above that row.
+    geometry.above = 300;
+    geometry.content += 300;
+    repairs = 1;
+    await act(async () => {
+      await client.dispatch({
+        type: "thread.sendMessage",
+        threadId: long,
+        content: [{ type: "text", text: "Arrived with the repair" }],
+        delivery: "queue",
+        idempotencyKey: "repair-arrival",
+      });
+    });
+    expect(scroller.scrollTop, "The repair moved the reader off their row").toBe(430);
+    expect(element(".transcript__jump")).not.toBeNull();
   });
 });

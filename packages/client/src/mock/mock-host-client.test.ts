@@ -36,10 +36,15 @@ it("carries pending profile erasure through the mock catalog and clears complete
     };
     client.setBrowserProfileDeletions([deletion]);
     expect(client.getSnapshot().browserProfileDeletions).toEqual([deletion]);
-    const catalog = unwrap(await client.rpc["bootstrap.get"]({}));
-    expect(catalog.browser.profileDeletions).toEqual([deletion]);
+    const readDeletions = async () => {
+      const kind = "browser-profile";
+      const { data } = unwrap(await client.rpc["resources.detail.get"]({ kind }));
+      if (data.kind !== kind) throw new Error("Expected browser profiles");
+      return data.deletions;
+    };
+    expect(await readDeletions()).toEqual([deletion]);
     client.setBrowserProfileDeletions([]);
-    expect(unwrap(await client.rpc["bootstrap.get"]({})).browser.profileDeletions).toEqual([]);
+    expect(await readDeletions()).toEqual([]);
   } finally {
     client.dispose();
   }
@@ -655,7 +660,7 @@ describe("MockHostClient", () => {
     }
   });
 
-  it("reports the streams a reply is still writing through the live read", async () => {
+  it("exposes a writing reply through its scoped item text", async () => {
     vi.useFakeTimers();
     const client = new MockHostClient({ latencyMs: 40, now: () => fixedNow });
     try {
@@ -670,33 +675,15 @@ describe("MockHostClient", () => {
       expect(streaming()).toBeDefined();
       const drawn = streaming();
       if (drawn?.kind !== "reasoning") throw new Error("Nothing is streaming.");
-      const live = unwrap(await client.rpc["thread.live.get"]({ threadId: thread.id }));
-      expect(live.runs).toEqual([
-        expect.objectContaining({
-          progress: expect.objectContaining({
-            items: [
-              {
-                blockId: "block-1",
-                length: drawn.text.length,
-                op: "replace",
-                stream: "reasoning",
-                text: drawn.text,
-              },
-            ],
-            runId: drawn.runId,
-            threadId: thread.id,
-          }),
-        }),
-      ]);
-      let settled = false;
-      void sending.then(() => {
-        settled = true;
+      const live = client.getThreadItemText(thread.id);
+      expect(live?.get(drawn.id)).toMatchObject({
+        text: drawn.text,
+        totalLength: drawn.text.length,
+        incomplete: false,
       });
-      await vi.waitFor(() => expect(settled, "the mock send never settled").toBe(true), {
-        timeout: 2000,
-      });
+      await vi.advanceTimersByTimeAsync(1_000);
       await sending;
-      expect(unwrap(await client.rpc["thread.live.get"]({ threadId: thread.id })).runs).toEqual([]);
+      expect(live?.get(drawn.id)).toBeUndefined();
     } finally {
       client.dispose();
       vi.useRealTimers();
@@ -784,7 +771,8 @@ it("filters the mock task catalog to active listed work before paging", async ()
     const page = unwrap(
       await client.rpc["tasks.list"]({ active: true, limit: 1, ...(before ? { before } : {}) }),
     );
-    expect(page.window.totalItems).toBe(expected.length);
+    // As on the Host, only the first page counts the list.
+    expect(page.window.totalItems).toBe(before ? undefined : expected.length);
     ids.push(...page.tasks.map(({ thread }) => thread.id));
     before = page.window.nextBefore ?? undefined;
   } while (before);
@@ -975,14 +963,17 @@ describe("shared task Done", () => {
   });
 });
 
-it("accepts a whole-turn history read without a durable mock event log", async () => {
+it("returns the mock history window as typed scoped cards", async () => {
   const client = createClient();
   try {
     const threadId = client.getSnapshot().threads[0]!.id;
-    const result = unwrap(await client.rpc["thread.events.list"]({ threadId, turns: 10 }));
+    const result = unwrap(await client.rpc["thread.items.page"]({ threadId }));
+    if (result.kind !== "page") throw new Error("Missing current card window");
     expect(result.threadId).toBe(threadId);
-    expect(result.events).toEqual([]);
-    expect(result.window.hasMore).toBe(false);
+    expect(result.items.map(({ id }) => id)).toEqual(
+      client.scopedDetail(threadId)?.items.map(({ id }) => id),
+    );
+    expect(result.hasMore).toBe(false);
   } finally {
     client.dispose();
   }
@@ -1169,7 +1160,6 @@ it("projects each screen preview as its own Device and preserves both existing p
         selfRunnerId: null,
         allowedModules: [],
         modules: {},
-        pinnedThreads: 0,
       });
       expect(
         snapshot.machines.some((machine) => machine.id === phone.phoneDisplay?.driver?.runnerId),

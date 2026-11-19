@@ -7,7 +7,6 @@ import type {
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import {
   computerTargetId,
-  deviceMachine,
   deviceReasonLabel,
   type ClientComputerConnection,
   type ClientComputerSetupRequest,
@@ -22,6 +21,12 @@ import {
 import { turnComputer, type TranscriptGroup, type Turn } from "../host/agent-activity-model.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "../host/host-session-client.js";
 import type { HostClient } from "../host/index.js";
+import { canWatchComputer } from "./computer-reasons.js";
+
+export {
+  canWatchComputer,
+  canWatchComputer as canStreamComputerDisplay,
+} from "./computer-reasons.js";
 
 /**
  * Computer use on a Mac or a Host-projected phone display, as every client surface
@@ -255,7 +260,7 @@ export function computerUseView(input: {
   const definition = computerUseDefinition(input.definitions);
   if (!definition) return null;
   const { machine } = input;
-  if (deviceMachine(machine).phoneDisplay) return null;
+  if (machine.phoneDisplay) return null;
   if (machine.capabilities && (!machine.capabilities.apps.supported || machine.kind === "unknown"))
     return null;
   const report = machine.computerUse ?? null;
@@ -473,7 +478,7 @@ export function computerUseAutomaticFootnote(view: ComputerUseView): string {
  */
 export function computerUseMachineLine(machine: MachineSummary, hostConnected: boolean): string {
   if (!hostConnected) return "Status unavailable";
-  if (deviceMachine(machine).phoneDisplay) return phoneUseMachineLine(machine);
+  if (machine.phoneDisplay) return phoneUseMachineLine(machine);
   const state = computerUseState(machine);
   switch (state.kind) {
     case "offline":
@@ -574,7 +579,7 @@ export function phoneUseView(input: {
       })
   | null {
   const { machine } = input;
-  const projection = deviceMachine(machine);
+  const projection = machine;
   const display = projection.phoneDisplay;
   if (
     !display ||
@@ -616,7 +621,7 @@ export function phoneUseView(input: {
 }
 
 export function phoneUseState(machine: MachineSummary): PhoneUseState {
-  const display = deviceMachine(machine).phoneDisplay;
+  const display = machine.phoneDisplay;
   if (!display) return { kind: "unavailable", detail: "Screen control is not available." };
   const android = display.setup.location === "android-usb";
   const reason = display.control.reason;
@@ -848,30 +853,6 @@ export interface WatchableComputerSession {
 }
 
 /**
- * Whether a computer can show a live picture of its sessions now. Only its
- * owner is shown its sessions, so this asks nothing about who is reading.
- * Macs capture an app window; phones capture their whole display.
- */
-export function canWatchComputer(machine: MachineSummary): boolean {
-  if (machine.capabilities)
-    return machine.phoneDisplay
-      ? ["phone", "agent-phone"].includes(machine.kind ?? "unknown") &&
-          machine.phoneDisplay.view.state === "ready"
-      : (machine.kind === "home" || machine.kind === "computer") &&
-          machine.computerUse?.displayStreamSupported === true;
-  return machine.status === "online" && machine.computerUse?.displayStreamSupported === true;
-}
-
-/**
- * Whether web and desktop can show a phone's display live. They watch phones
- * only this way; a phone whose app predates the stream is asked to update.
- * Every client uses this transport for phones.
- */
-export function canStreamComputerDisplay(machine: MachineSummary): boolean {
-  return canWatchComputer(machine);
-}
-
-/**
  * A Thread's computer use that can be watched now, newest first. The Host ends
  * a Run's sessions when the Run ends, so a session naming this Thread is its
  * work in progress, whichever of its Runs holds it.
@@ -1028,7 +1009,7 @@ export async function setPhoneUseAccess(
   machine: MachineSummary,
   access: IntegrationAccess,
 ): Promise<void> {
-  const display = deviceMachine(machine).phoneDisplay;
+  const display = machine.phoneDisplay;
   if (!display) throw new Error("This device has no phone display.");
   await setPhoneDisplayAccess(client, {
     deviceId: machine.id,
@@ -1045,36 +1026,17 @@ export async function setPhoneDisplayAccess(
     readonly access: IntegrationAccess;
   },
 ): Promise<void> {
-  const snapshot = client.getSnapshot();
-  const current = snapshot.deviceDriversAvailable === true;
-  const machine = snapshot.machines.find(({ id }) => id === input.deviceId);
-  const selfRunnerId = machine ? deviceMachine(machine).selfRunnerId : null;
-  if (!current && !selfRunnerId)
-    throw new Error("Update this Opensteer to manage phone display access.");
-  const idempotencyKey = mutationIdempotencyKey("phone-access");
-  const result = current
-    ? await client.dispatch({
-        type: "integration.computer.setup.set",
-        idempotencyKey,
-        input: {
-          kind: "app",
-          deviceId: input.deviceId,
-          definitionId: input.definitionId,
-          app: null,
-          access: input.access,
-        },
-      })
-    : await client.dispatch({
-        type: "integration.computer.setup.set",
-        idempotencyKey,
-        input: {
-          kind: "app",
-          runnerId: selfRunnerId!,
-          definitionId: input.definitionId,
-          app: null,
-          access: input.access,
-        },
-      });
+  const result = await client.dispatch({
+    type: "integration.computer.setup.set",
+    idempotencyKey: mutationIdempotencyKey("phone-access"),
+    input: {
+      kind: "app",
+      deviceId: input.deviceId,
+      definitionId: input.definitionId,
+      app: null,
+      access: input.access,
+    },
+  });
   if (result.type !== "integration.computer.setup.set")
     throw new Error("Phone access was not set.");
   await client.refresh();
