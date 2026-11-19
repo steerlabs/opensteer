@@ -766,10 +766,13 @@ test("a stalled scope's live closes stay bounded and converge by one repair", as
     cursor: { ...cursor, scopeKey: `thread:${detail.threadId}` as const },
     frames: [],
   }));
+  const runId = createId("run");
   const readLive = vi.fn(() => []);
+  const liveStreams = vi.fn(() => [{ runId, streamId: "tool:still-open" }]);
   const socket = new PersonalSyncSocket({
     read,
     readLive,
+    liveStreams,
     async send(encoded, guard) {
       if (!guard()) return false;
       frames.push(ScopedHostMessageSchema.parse(JSON.parse(encoded)));
@@ -777,7 +780,6 @@ test("a stalled scope's live closes stay bounded and converge by one repair", as
     },
     close: closed,
   });
-  const runId = createId("run");
   const attemptId = createId("runAttempt");
   const liveBootId = crypto.randomUUID();
   const text = "x".repeat(12 * 1024);
@@ -811,16 +813,22 @@ test("a stalled scope's live closes stay bounded and converge by one repair", as
       });
       await vi.advanceTimersByTimeAsync(100);
     }
-    const sent = frames.length;
+    const liveFrames = () =>
+      frames.filter((frame) => frame.type === "host.live" || frame.type === "host.text").length;
+    const sent = liveFrames();
     for (let index = 100; index < 400; index++) offer(index, { operation: "close" });
     await vi.advanceTimersByTimeAsync(100);
-    expect(frames.length).toBe(sent);
+    expect(liveFrames()).toBe(sent);
     socket.ack({ subscriptionId: "detail:0", generation: 1, throughSequence: "1" });
     await vi.advanceTimersByTimeAsync(100);
     // The overflow became one repair read and one reread of the open streams, not 300 closes.
     expect(read.mock.calls.map(([, after]) => after)).toEqual([null, null]);
     expect(readLive).toHaveBeenCalledTimes(2);
     expect(frames.filter((frame) => frame.type === "host.live").length).toBeLessThan(40);
+    // The reader is told exactly which streams survive the dropped closes.
+    expect(frames.filter((frame) => frame.type === "host.live-reset")).toMatchObject([
+      { scope: detail, generation: 1, open: [{ runId, streamId: "tool:still-open" }] },
+    ]);
     expect(closed).not.toHaveBeenCalled();
   } finally {
     socket.close("test finished");

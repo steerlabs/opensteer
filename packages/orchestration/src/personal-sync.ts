@@ -1,6 +1,8 @@
+import type { RunId } from "@opensteer/core";
 import {
   personalAuthorityChangedReason,
   personalHostFrameMaxBytes,
+  personalLiveResetMaxStreams,
   type PersonalResumeCursor,
   type PersonalScope,
   type ScopedClientMessage,
@@ -52,6 +54,8 @@ interface PersonalSyncPort {
   /** Current revisions, from memory; a detail read checks access. */
   resourceRevisions?(kinds: readonly PersonalResourceKind[]): PersonalResourceRevisions;
   readLive?(scope: DetailScope, request?: LiveResync): readonly PersonalLiveUpdate[];
+  /** The streams of a scope still open, newest first. */
+  liveStreams?(scope: DetailScope): readonly { runId: RunId; streamId: string }[];
   onFailure?(error: unknown): void;
   close(reason: string): void;
 }
@@ -610,11 +614,20 @@ export class PersonalSyncSocket {
     }
     if (!this.#matches(current) || current.pauseCount > 0 || !cut.cursor) return;
     current.cursor = cut.cursor;
-    if (liveReset && current.synchronized) {
+    if (liveReset && current.synchronized && request.scope.kind !== "shell") {
+      // The reader learns exactly which streams survive; every other live item of the scope ends.
+      const sent = await this.#send(current, {
+        type: "host.live-reset",
+        scope: request.scope,
+        open: (this.#port.liveStreams?.(request.scope) ?? [])
+          .slice(0, personalLiveResetMaxStreams)
+          .map(({ runId, streamId }) => ({ runId, streamId })),
+      });
+      if (!sent) return;
       current.liveReset = false;
-      if (request.scope.kind !== "shell")
-        for (const update of this.#port.readLive?.(request.scope) ?? [])
-          this.#queueLive(current, update, { replace: true }, true);
+      current.sentLive.clear();
+      for (const update of this.#port.readLive?.(request.scope) ?? [])
+        this.#queueLive(current, update, { replace: true }, true);
     }
     if (!current.synchronized) {
       const sent = await this.#send(current, {
