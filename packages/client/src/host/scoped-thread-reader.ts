@@ -429,8 +429,7 @@ export class ScopedThreadReader implements ThreadViewSource {
   }
 
   setAnchor(itemId: string | undefined) {
-    if (itemId === undefined) delete this.#detail.anchor;
-    else this.#detail.anchor = itemId;
+    this.#detail.anchorTo(itemId);
   }
 
   async history(mode: "earlier" | "newer" | "around" | "latest", aroundMessageId?: string) {
@@ -491,7 +490,7 @@ export class ScopedThreadReader implements ThreadViewSource {
         this.#detail.transcript.getSnapshot().items.has(anchor)
       )
         throw new Error("The history anchor is unavailable.");
-      delete this.#detail.anchor;
+      this.#detail.anchorTo(undefined);
       reset = await this.#page(signal, null, aroundMessageId);
     }
     if (current() && reset.kind === "page")
@@ -519,12 +518,12 @@ export class ScopedThreadReader implements ThreadViewSource {
       if (finalizedItemText(current)) this.#detail.text.finishItem(item.id);
     }
     // The scope's anchor is where the reader is: none at the tail, the linked message after a jump.
-    if (state.newest) delete this.#detail.anchor;
+    if (state.newest) this.#detail.anchorTo(undefined);
     else if (aroundMessageId) {
       const target = args[0].items.find(
         (item) => item.kind === "message" && item.messageId === aroundMessageId,
       );
-      if (target) this.#detail.anchor = target.id;
+      if (target) this.#detail.anchorTo(target.id);
     }
   }
 

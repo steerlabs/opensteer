@@ -611,10 +611,16 @@ test("the scope's anchor follows the reader: set by a jump, cleared on return to
     f.stream.setBackground(false);
     return f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
   };
+  const anchors = () =>
+    f.sent.flatMap((frame) =>
+      frame.type === "client.anchor" ? [frame.anchorItemId ?? "latest"] : [],
+    );
   await reader.history("around", old.messageId);
   expect(f.detail.anchor).toBe(old.id);
   await reader.history("latest");
   expect(f.detail.anchor).toBeUndefined();
+  // The open subscription heard each move, so a repair centres where the reader is.
+  expect(anchors()).toEqual([old.id, "latest"]);
   expect(resubscribe().anchorItemId).toBeUndefined();
   reader.dispose();
 });

@@ -53,7 +53,10 @@ export interface ObservedDetail {
   readonly text: ItemTextStore;
   observers: number;
   slot?: DetailId | undefined;
+  /** Where the reader is: absent at the latest messages. Change it through `anchorTo`. */
   anchor?: string;
+  /** Moves the anchor and tells the Host, so a repair or the next subscription centres there. */
+  anchorTo(itemId: string | undefined): void;
   controller?: AbortController | undefined;
   held?: Map<string, Live> | undefined;
   heldBytes: number;
@@ -149,6 +152,7 @@ export class ScopedPersonalStream {
       liveBytes: 0,
       revision: 0,
       subscriptions: 0,
+      anchorTo: (itemId) => this.#anchorTo(detail, itemId),
     };
     this.#details.set(key, detail);
     return detail;
@@ -575,16 +579,15 @@ export class ScopedPersonalStream {
       this.#live(detail, frame);
       return;
     }
+    // A cut that says the anchor is gone ends it; one centred elsewhere, sent before the Host
+    // heard the reader's newest anchor, is answered by reading around that anchor.
     if (
       frame.type === "host.snapshot" &&
       "items" in frame.snapshot &&
       detail.anchor &&
-      !frame.snapshot.items.some(({ id }) => id === detail.anchor)
-    ) {
-      if (frame.snapshot.anchorItemId !== null)
-        throw new Error("Transcript snapshot omitted its anchor.");
+      frame.snapshot.anchorItemId === null
+    )
       delete detail.anchor;
-    }
     // A snapshot after `host.synchronized` is the Host's inline repair and applies in place.
     if (!detail.transcript.apply(frame, this.#identity)) {
       this.#subscribe(detail, false, true);
@@ -671,6 +674,19 @@ export class ScopedPersonalStream {
       subscriptionId: frame.subscriptionId,
       generation: frame.generation,
       throughSequence: through,
+    });
+  }
+
+  #anchorTo(detail: ObservedDetail, itemId: string | undefined) {
+    if (detail.anchor === itemId) return;
+    if (itemId === undefined) delete detail.anchor;
+    else detail.anchor = itemId;
+    if (!detail.slot) return;
+    this.#send?.({
+      type: "client.anchor",
+      subscriptionId: detail.slot,
+      generation: detail.transcript.getSnapshot().generation,
+      ...(itemId === undefined ? {} : { anchorItemId: itemId }),
     });
   }
 
