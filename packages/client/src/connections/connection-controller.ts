@@ -94,6 +94,10 @@ export interface ConnectionControllerOptions {
   readonly backoff?: { readonly baseMs: number; readonly maximumMs: number };
 }
 
+/** Abort reasons that end a probe without failing the lease. */
+const probeAnsweredByProgress = new Error("A frame arrived while the probe was outstanding");
+const probeSuspended = new Error("The app went to the background during the probe");
+
 export function createConnectionController(
   options: ConnectionControllerOptions,
 ): ConnectionController {
@@ -114,6 +118,7 @@ class SessionConnectionController implements ConnectionController {
   #hold: ReturnType<typeof setTimeout> | null = null;
   #idle: ReturnType<typeof setTimeout> | null = null;
   #probe: Promise<void> | null = null;
+  #probeAbort: AbortController | null = null;
   #probeFollowsNetwork = false;
   #lastProbeAt = 0;
   #backgroundAt: number | null = null;
@@ -460,6 +465,9 @@ class SessionConnectionController implements ConnectionController {
       if (!this.#lease) this.#cancel();
       if (this.#idle) clearTimeout(this.#idle);
       this.#idle = null;
+      // A suspended app cannot answer; its probe ends here instead of failing
+      // the lease in the background or on resume, which probes afresh.
+      this.#probeAbort?.abort(probeSuspended);
     }
   }
   #foreground(): void {
@@ -512,11 +520,19 @@ class SessionConnectionController implements ConnectionController {
     const probe = new AbortController();
     const aborted = () => probe.abort(controller.signal.reason);
     controller.signal.addEventListener("abort", aborted, { once: true });
+    const sentAt = Date.now();
     // A return to foreground or a network change is a moment the person is
     // waiting, so its probe keeps the short deadline; only a quiet socket's
     // routine probe gets the longer, weak-link allowance.
     const timer = setTimeout(
-      () => probe.abort(new HostTransportError("timed-out")),
+      () =>
+        // A frame that arrived after the ping proves the socket alive, however
+        // slow the link is to carry the matching pong.
+        probe.abort(
+          (lease.lastProgressAt?.() ?? 0) > sentAt
+            ? probeAnsweredByProgress
+            : new HostTransportError("timed-out"),
+        ),
       force || followsNetwork
         ? socketProbeDeadlineMs
         : (this.#options.liveness?.deadlineMs ?? realtimeIdleProbeDeadlineMs),
@@ -527,6 +543,7 @@ class SessionConnectionController implements ConnectionController {
     );
     const pending = Promise.race([lease.probe(probe.signal), failed])
       .catch((error) => {
+        if (error === probeAnsweredByProgress || error === probeSuspended) return;
         if (this.#controller === controller) {
           if (this.#probeFollowsNetwork) {
             this.#publish({ pathRevision: this.#state.pathRevision + 1 });
@@ -542,11 +559,13 @@ class SessionConnectionController implements ConnectionController {
         controller.signal.removeEventListener("abort", aborted);
         if (this.#probe === pending) {
           this.#probe = null;
+          this.#probeAbort = null;
           this.#probeFollowsNetwork = false;
         }
       });
     this.#lastProbeAt = Date.now();
     this.#probe = pending;
+    this.#probeAbort = probe;
   }
   #clearHold(): void {
     if (this.#hold) clearTimeout(this.#hold);

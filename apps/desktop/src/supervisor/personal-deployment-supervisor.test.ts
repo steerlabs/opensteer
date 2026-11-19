@@ -980,10 +980,27 @@ describe("PersonalDeploymentSupervisor", () => {
     expect(pinned.files.markPersonalStateConverted).toHaveBeenCalledTimes(1);
     expect(pinned.files.converted).toBe(true);
     await pinned.supervisor.stop();
+
+    // A failed conversion, then another build before any healthy start: the
+    // cluster may be partly converted, so it is not pinned over the pristine copy.
+    const later = supervisorFixture(
+      configured,
+      undefined,
+      verifiedRelease({ hostVersion: "1.2.5", runnerVersion: "2.3.6" }),
+    );
+    later.files.converted = false;
+    later.files.pinnedFrom = "1.2.3";
+    await expect(later.supervisor.resumeIfConfigured()).resolves.toMatchObject({
+      state: "ready",
+    });
+    expect(later.files.snapshotDatabase).not.toHaveBeenCalled();
+    expect(later.files.pinnedFrom).toBe("1.2.3");
+    await later.supervisor.stop();
   });
 
   it("names the failed conversion step and the version that opens the kept copy", async () => {
     const fixture = supervisorFixture(null);
+    fixture.files.pinnedFrom = "1.2.3";
     fixture.host.waitForHost.mockImplementationOnce(() => new Promise(() => undefined));
     const starting = fixture.supervisor.start();
     await vi.waitFor(() => {
@@ -1936,13 +1953,18 @@ class MemoryPersonalFiles implements PersonalDeploymentFilesystemPort {
     return this.databasePresent ? "initialized" : "empty";
   }
 
+  /** The version the pinned pre-conversion copy came from, once one exists. */
+  pinnedFrom: string | null = null;
   readonly snapshotDatabase = vi.fn(
     async (
-      _manifest: PersonalDeploymentManifest,
+      manifest: PersonalDeploymentManifest,
       _toRelease: PersonalRuntimeIdentity,
       _createdAt: Date,
-      _pinned?: boolean,
-    ) => "20261028T120000Z-1.2.3",
+      pinned?: boolean,
+    ) => {
+      if (pinned) this.pinnedFrom = manifest.release.hostVersion;
+      return "20261028T120000Z-1.2.3";
+    },
   );
   /** Existing fixtures predate the gate; the conversion tests turn it off. */
   converted = true;
@@ -1950,7 +1972,7 @@ class MemoryPersonalFiles implements PersonalDeploymentFilesystemPort {
   readonly markPersonalStateConverted = vi.fn(async () => {
     this.converted = true;
   });
-  readonly pinnedSnapshotSourceVersion = vi.fn(async (): Promise<string | null> => "1.2.3");
+  readonly pinnedSnapshotSourceVersion = vi.fn(async (): Promise<string | null> => this.pinnedFrom);
 
   readonly stageDatabaseInitPassword = vi.fn(
     async (_: PersonalDeploymentManifest, password: string) => {

@@ -1,5 +1,6 @@
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
+import { installPersonalMutationHooks } from "./personal-mutation.js";
 
 import {
   cloneTestDatabase,
@@ -986,6 +987,44 @@ integration.sequential("Trigger failure auto-pause", () => {
       triggerId: created.trigger.id,
     });
     expect(archived.pauseReason).toBeNull();
+  });
+  it("wakes the scheduler when a program repair makes a waiting schedule runnable", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, database, triggers } = storeFixture;
+    const fixture = await createFixture("program-repair-wake");
+    const created = await createScheduleTrigger(fixture, "program-repair-wake");
+    // An older program version: the schedule keeps its future time but cannot run.
+    await sql`update trigger_revisions set program = jsonb_set(program, '{toolContractVersion}', '4')
+      where id = ${created.revision.id}`.execute(database);
+    expect(await triggers.nextScheduleAt()).toBeNull();
+    const reactions: string[] = [];
+    const unhook = installPersonalMutationHooks(database, {
+      wake() {},
+      react: (reaction) => {
+        reactions.push(reaction.type);
+      },
+      onFailure(error) {
+        throw error;
+      },
+    });
+    try {
+      await triggers.update({
+        actorThreadId: null,
+        expectedRevisionId: created.revision.id,
+        ownerId: fixture.userId,
+        program: {
+          toolContractVersion: 5,
+          language: "javascript",
+          source: "export default async () => 'fixed'",
+        },
+        triggerId: created.trigger.id,
+      });
+    } finally {
+      unhook();
+    }
+    expect(await triggers.nextScheduleAt()).toEqual(expect.any(Date));
+    expect(reactions).toContain("triggerSchedulesChanged");
   });
   it("resets failures on a program update but not a name-only update", async ({ storeFixture }) => {
     const { createFixture, createScheduleTrigger, failManual, triggers } = storeFixture;

@@ -401,6 +401,14 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     if ((fresh.phase === "offer" && !startFreshDeclined) || fresh.phase === "starting") {
       return (
         <StartFreshScreen
+          conversion={
+            snapshot.personalSetup?.issue?.code === "personal-conversion-failed"
+              ? {
+                  detail: snapshot.personalSetup.issue.detail,
+                  onRetry: () => runBridgeOperation(bridge.retry()),
+                }
+              : undefined
+          }
           error={fresh.phase === "offer" ? fresh.error : null}
           moves={fresh.data.entries}
           onNotNow={() => setStartFreshDeclined(true)}

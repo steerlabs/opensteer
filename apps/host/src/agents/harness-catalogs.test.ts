@@ -14,6 +14,7 @@ import {
   harnessCatalogRetryMs,
   inspectHarnessCatalogsAfterUsageLimit,
   reconcileHarnessCatalogs,
+  recaptureInvalidatedHarnessCatalog,
   type HarnessCatalogConvergenceStore,
   type HarnessCatalogInspector,
 } from "./harness-catalogs.js";
@@ -166,6 +167,52 @@ describe("harness catalog convergence", () => {
         signal: AbortSignal.timeout(1_000),
       }),
     ).resolves.toEqual({ staleAt: new Date(now + harnessCatalogRetryMs) });
+  });
+  it("leaves convergence owed after an invalidation whose recapture fails", async () => {
+    let stored: HarnessInstanceCatalog | null = {
+      ...errorCatalog(),
+      status: "authentication-required",
+      detail: "Sign in to use this engine",
+    };
+    const settled = convergence({ stored });
+    // Sign-in required is settled: convergence alone would never ask again.
+    await reconcileHarnessCatalogs({
+      catalogs: settled.catalogs,
+      connectedEnvironmentIds: [harnessEnvironmentId],
+      runners: { inspectHarnesses: settled.inspectHarnesses },
+      signal: AbortSignal.timeout(1_000),
+    });
+    expect(settled.inspectHarnesses).not.toHaveBeenCalled();
+    const onFailed = vi.fn();
+    await recaptureInvalidatedHarnessCatalog({
+      catalogs: settled.catalogs,
+      environmentIds: [harnessEnvironmentId],
+      harnessInstanceId,
+      runners: {
+        inspectHarnesses: vi.fn(async () => {
+          throw new Error("Runner did not answer");
+        }),
+      },
+      signal: AbortSignal.timeout(1_000),
+      store: {
+        getHarnessInstance: async () => harness,
+        discardHarnessCatalog: async () => {
+          stored = null;
+        },
+      },
+      onCaptured: vi.fn(),
+      onFailed,
+    });
+    expect(onFailed).toHaveBeenCalledTimes(1);
+    // What the woken convergence then finds: no stored catalog, so it asks.
+    const after = convergence({ stored });
+    await reconcileHarnessCatalogs({
+      catalogs: after.catalogs,
+      connectedEnvironmentIds: [harnessEnvironmentId],
+      runners: { inspectHarnesses: after.inspectHarnesses },
+      signal: AbortSignal.timeout(1_000),
+    });
+    expect(after.inspectHarnesses).toHaveBeenCalledTimes(1);
   });
   it("re-inspects a stored error once its retry time has passed, and not right after it was recorded", async () => {
     const now = Date.now();

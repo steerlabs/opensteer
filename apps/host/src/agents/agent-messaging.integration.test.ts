@@ -678,7 +678,7 @@ integration("agent-to-agent messaging round trip", () => {
         .selectAll()
         .where("sequence", ">", head.sequence)
         .where("scopeKey", "in", [`thread:${worker.id}`, `thread:${fixture.threadA.id}`])
-        .where("entityId", "in", [`assignment:${reused.assignment.id}`, "assignments"])
+        .where("entityId", "in", [`assignment:${reused.assignment.id}`, reused.assignment.id])
         .execute();
       expect(updates).toEqual(
         expect.arrayContaining([
@@ -690,10 +690,16 @@ integration("agent-to-agent messaging round trip", () => {
               view: expect.objectContaining({ title }),
             }),
           }),
+          // The parent's scope gets the assignment's value, with the worker's new title.
           expect.objectContaining({
             scopeKey: `thread:${fixture.threadA.id}`,
-            entityId: "assignments",
-            operation: "invalidate",
+            entityKind: "assignment",
+            entityId: reused.assignment.id,
+            operation: "upsert",
+            payload: expect.objectContaining({
+              id: reused.assignment.id,
+              workerThread: expect.objectContaining({ title }),
+            }),
           }),
         ]),
       );
