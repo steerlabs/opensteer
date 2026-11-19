@@ -50,7 +50,7 @@ export async function publishRelease(
   try {
     // Two publishes to one site could both pass the live check below before either deploys.
     if (!values.dryRun)
-      unlock = await holdLock(publishLockOf(values.site), `Publishing to ${values.site}`, log);
+      unlock = await holdLock(publishLockOf(values.site), `Publishing to ${values.site}`);
     const places = await separatePlaces(
       {
         dir: values.dir,

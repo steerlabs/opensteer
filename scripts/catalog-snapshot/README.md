@@ -39,8 +39,8 @@ pnpm catalog:snapshot --out ~/catalog/2026-11-18 [--rules <rules.json>] [--feed 
 - One run at a time writes a given `<out>`: a run holds the lock file `.<out>.lock` (created
   exclusively, holding its PID and start time) from before that recovery until after its swap, so
   recovery never takes a running build or its set-aside snapshot for leftovers. A second run
-  refuses, naming the holder. A lock whose process is no longer running is taken over, and the run
-  says so.
+  refuses, naming the holder. A lock left by a stopped run is not taken over: the refusal says its
+  process is gone, and the operator removes the file.
 - `--feed` defaults to the engine's `officialCatalogUrl`, where the copy is taken from.
 
 ### Layout

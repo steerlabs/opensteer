@@ -75,7 +75,7 @@ export async function takeSnapshot(
   // One run at a time per output: recovery below would otherwise take another run's staging
   // directory or set-aside snapshot for leftovers.
   await mkdir(dirname(places.out), { recursive: true });
-  const release = await holdLock(lockOf(places.out), `--out ${places.out}`, log);
+  const release = await holdLock(lockOf(places.out), `--out ${places.out}`);
   try {
     await build(values, places, repository, log);
   } finally {

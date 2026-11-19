@@ -92,17 +92,12 @@ function running(pid: number) {
 
 /**
  * Hold `path` as an exclusive lock for `what` until the returned release is called. The lock file
- * holds this process's PID, its start time and a token; it is written whole to a unique file and
- * then linked to `path`, which fails if `path` exists, so a reader never sees half of one. A lock
- * whose process is running is refused, naming it. One whose process has ended is taken over, and
- * `log` says so: it is renamed away, then checked to be the lock that was judged stale before it is
- * removed, so two runs taking over the same stale lock cannot both succeed.
+ * holds this process's PID and start time; it is written whole to a unique file and then linked to
+ * `path`, which fails if `path` exists, so a reader never sees half of one. An existing lock is
+ * always refused, saying whether its process is still running. A lock left by a stopped run is
+ * removed by the operator, never taken over here: two runs cannot both decide that safely.
  */
-export async function holdLock(
-  path: string,
-  what: string,
-  log: (line: string) => void,
-): Promise<() => Promise<void>> {
+export async function holdLock(path: string, what: string): Promise<() => Promise<void>> {
   const mine = JSON.stringify({
     pid: process.pid,
     started: new Date().toISOString(),
@@ -131,27 +126,12 @@ export async function holdLock(
       } catch {
         // Not a lock this tool wrote.
       }
-      if (typeof holder.pid !== "number" || running(holder.pid))
-        throw new Error(
-          `${what} is in use by process ${String(holder.pid)}, started ${String(holder.started)} (lock ${path}). ` +
-            `Wait for it to finish; if no such run is going, remove ${path}.`,
-        );
-      const stale = `${path}.${randomUUID()}.stale`;
-      try {
-        await rename(path, stale);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw error;
-      }
-      if ((await readFile(stale, "utf8")) !== held) {
-        // Another run took the lock over first; give its lock back and refuse.
-        await link(stale, path).catch(() => {});
-        await rm(stale, { force: true });
-        throw new Error(`${what} is in use by another run (lock ${path})`);
-      }
-      await rm(stale, { force: true });
-      log(
-        `took over the lock ${path} from process ${holder.pid} (started ${String(holder.started)}), which is no longer running`,
+      const alive = typeof holder.pid !== "number" || running(holder.pid);
+      throw new Error(
+        `${what} is in use by process ${String(holder.pid)}, started ${String(holder.started)} (lock ${path}). ` +
+          (alive
+            ? "Wait for it to finish."
+            : `That process is no longer running: remove ${path} and run again.`),
       );
     }
   } finally {

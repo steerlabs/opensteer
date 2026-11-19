@@ -307,7 +307,7 @@ describe("the snapshot tool", () => {
     const manifest = await readFile(join(out, "manifest.json"));
     // A first run still going: it holds the lock, and its build and the earlier snapshot it set
     // aside look like what a stopped run leaves.
-    const release = await holdLock(lockOf(out), "--out", () => {});
+    const release = await holdLock(lockOf(out), "--out");
     const building = await stagingBeside(out);
     await rename(out, asideOf(out));
     await expect(run({ out, cache: await cache("new") })).rejects.toThrow(
@@ -321,12 +321,16 @@ describe("the snapshot tool", () => {
     await release();
     expect(await readdir(root)).not.toContain(".out.lock");
 
-    // A lock left by a run that is no longer going is taken over, and the run says so.
+    // A lock left by a stopped run is never taken over: the operator removes it, then a run works.
     const ended = spawn(process.execPath, ["-e", ""]);
     await new Promise((done) => ended.on("exit", done));
     await writeFile(lockOf(out), JSON.stringify({ pid: ended.pid, started: "then" }));
-    const output = await run({ out, cache: await cache("new") });
-    expect(output).toContain(`took over the lock ${lockOf(out)} from process ${ended.pid}`);
+    await expect(run({ out, cache: await cache("new") })).rejects.toThrow(
+      `That process is no longer running: remove ${lockOf(out)} and run again.`,
+    );
+    expect(await readFile(join(out, "manifest.json"))).toEqual(manifest);
+    await rm(lockOf(out));
+    await run({ out, cache: await cache("new") });
     expect(await readFile(join(out, "manifest.json"))).not.toEqual(manifest);
     expect((await readdir(root)).sort()).toEqual(["cache", "out"]);
   });
@@ -618,7 +622,7 @@ describe("publishing over the live release", () => {
       );
     try {
       // Refused while another publish to the site holds its lock, before the site is read.
-      const unlock = await holdLock(publishLockOf(site), "publishing", () => {});
+      const unlock = await holdLock(publishLockOf(site), "publishing");
       await expect(publish()).rejects.toThrow(`is in use by process ${process.pid}`);
       expect(reads).toBe(0);
       await unlock();
