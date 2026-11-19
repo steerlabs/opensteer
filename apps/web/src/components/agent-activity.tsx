@@ -145,7 +145,7 @@ import {
   SurfaceChips,
   SurfaceLink,
 } from "./surface-chips.js";
-import { MessageFold } from "./message-fold.js";
+import { FoldMeasuresWhenLaidOut, MessageFold } from "./message-fold.js";
 import { useToast } from "./toast.js";
 import { TaskMark, AgentOrb } from "./workspace/task-mark.js";
 import { automationPath, useMediaQuery } from "../ui-utils.js";
@@ -687,30 +687,32 @@ const TranscriptRow = memo(
   }: TranscriptRowProps) {
     return (
       <DeferredBodies value={deferBodies}>
-        {time ? <p className="transcript__time">{time}</p> : null}
-        <div
-          className="transcript__row"
-          data-continued={continued || undefined}
-          data-joined={joined || undefined}
-          data-transcript-row={rowKey}
-        >
-          {group.kind === "app" ? (
-            <AppCard entry={group.entry} />
-          ) : group.kind === "turn" ? (
-            <TurnView turn={group.turn} turnKey={group.key} reveal={reveal} />
-          ) : group.kind === "delegation" ? (
-            <DelegationNotice delegation={group.entry} />
-          ) : group.kind === "assignment" ? (
-            renderTask?.([group.entry])
-          ) : (
-            <TranscriptMessage
-              joinedRun={group.joinedRun === true}
-              reveal={reveal?.id === group.entry.id ? reveal : null}
-              message={group.entry}
-              viewerUserId={viewerUserId}
-            />
-          )}
-        </div>
+        <FoldMeasuresWhenLaidOut value={deferBodies !== null}>
+          {time ? <p className="transcript__time">{time}</p> : null}
+          <div
+            className="transcript__row"
+            data-continued={continued || undefined}
+            data-joined={joined || undefined}
+            data-transcript-row={rowKey}
+          >
+            {group.kind === "app" ? (
+              <AppCard entry={group.entry} />
+            ) : group.kind === "turn" ? (
+              <TurnView turn={group.turn} turnKey={group.key} reveal={reveal} />
+            ) : group.kind === "delegation" ? (
+              <DelegationNotice delegation={group.entry} />
+            ) : group.kind === "assignment" ? (
+              renderTask?.([group.entry])
+            ) : (
+              <TranscriptMessage
+                joinedRun={group.joinedRun === true}
+                reveal={reveal?.id === group.entry.id ? reveal : null}
+                message={group.entry}
+                viewerUserId={viewerUserId}
+              />
+            )}
+          </div>
+        </FoldMeasuresWhenLaidOut>
       </DeferredBodies>
     );
   },
