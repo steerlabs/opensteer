@@ -4,7 +4,7 @@ import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import type { PluginCaller } from "../../plugins/engine-protocol.js";
 import { z } from "zod";
-import { OpensteerError, type Blocked, type UserId } from "@opensteer/core";
+import { OpensteerError, ToolBlockedError, type Blocked, type UserId } from "@opensteer/core";
 import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import type { OpensteerStore, PluginAgentStore } from "@opensteer/database";
 import type { AgentToolHandlers, ToolCall } from "./types.js";
@@ -20,6 +20,13 @@ import { engineInstallReceipt } from "../../plugins/engine-storage.js";
 import { pluginNamespace } from "../../plugins/provider-names.js";
 
 const owner = { caller: "personal", mode: "automatic" } as const;
+
+/** The catalog's feed could not be read; a later call may list it. */
+export const catalogUnavailable: Blocked = {
+  code: "catalog_unavailable",
+  message: "The plugin catalog can't be reached right now.",
+  next: "Retry opensteer_plugin_catalog in a few minutes. Installed plugins still work (opensteer_plugin_list).",
+};
 
 export class PluginToolHandlers {
   readonly options: {
@@ -416,6 +423,8 @@ export class PluginToolHandlers {
           o.authority.admit(c.caller),
           c.signal,
         );
+        // The engine lists an unread feed as empty, which is not "no such plugin".
+        if (page.feed.status !== "listed") throw new ToolBlockedError(catalogUnavailable);
         return {
           items: page.items.map((entry) => ({
             id: entry.id,
