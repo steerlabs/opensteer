@@ -906,4 +906,75 @@ describe("a conversation's foot", () => {
     await scrollTo(scroller, 1850);
     expect(scroller.scrollTop, "A scroll up beside a reflow was taken for the reflow").toBe(1850);
   });
+
+  it("tells the Host the row in view as the reader scrolls, and puts that row back where it stood after a repair", async () => {
+    // The Host's repairs of this conversation, as its reader counts them.
+    let repairs = 0;
+    const long = "thr_00000000-0000-4000-8000-000000000005";
+    let anchors!: { readonly mock: { readonly calls: readonly unknown[][] } };
+    const watch = (source: MockHostClient) => {
+      const real = source.getThreadTranscript.bind(source);
+      const views = new WeakMap<object, Map<number, object>>();
+      vi.spyOn(source, "getThreadTranscript").mockImplementation((threadId) => {
+        const view = real(threadId);
+        return {
+          subscribe: view.subscribe,
+          getSnapshot: () => {
+            const current = view.getSnapshot();
+            const held = views.get(current) ?? new Map<number, object>();
+            views.set(current, held);
+            if (!held.has(repairs)) held.set(repairs, { ...current, repairs });
+            return held.get(repairs) as typeof current;
+          },
+        };
+      });
+      anchors = vi.spyOn(source, "setTranscriptAnchor");
+      return source;
+    };
+    await mount(`/tasks/${long}`, { hostClient: watch });
+    const scroller = element<HTMLElement>(".transcript-scroll");
+    const rows = () => [...scroller.querySelectorAll("[data-transcript-row]:not(:empty)")];
+    expect(rows().length, "The conversation has too few rows to scroll").toBeGreaterThan(1);
+    // Each row is 100px tall; `above` is what a repair adds over them.
+    const geometry = { content: rows().length * 100 + 400, above: 0 };
+    transcriptGeometry(geometry);
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element,
+    ) {
+      const index = rows().indexOf(this);
+      const top = index < 0 ? 0 : geometry.above + index * 100 - scroller.scrollTop;
+      return { top, bottom: index < 0 ? 400 : top + 100, height: index < 0 ? 400 : 100 } as DOMRect;
+    });
+    const frame = () =>
+      act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    for (const _ of [1, 2]) await scrollTo(scroller, geometry.content);
+    await frame();
+    expect(anchors.mock.calls.at(-1), "A reader at the foot is at the latest").toEqual([
+      long,
+      undefined,
+    ]);
+
+    // The reader scrolls up to stand 30px into the second row.
+    await scrollTo(scroller, 130);
+    await frame();
+    const reading = anchors.mock.calls.at(-1);
+    expect(reading?.[0]).toBe(long);
+    expect(reading?.[1], "The row in view was not told to the Host").toEqual(expect.any(String));
+
+    // A repair lays the conversation out again with 300px more above that row.
+    geometry.above = 300;
+    geometry.content += 300;
+    repairs = 1;
+    await act(async () => {
+      await client.dispatch({
+        type: "thread.sendMessage",
+        threadId: long,
+        content: [{ type: "text", text: "Arrived with the repair" }],
+        delivery: "queue",
+        idempotencyKey: "repair-arrival",
+      });
+    });
+    expect(scroller.scrollTop, "The repair moved the reader off their row").toBe(430);
+    expect(element(".transcript__jump")).not.toBeNull();
+  });
 });
