@@ -809,7 +809,12 @@ integration.sequential("automation failure notices", () => {
       attempts: 1,
       lastError: "Thread busy",
     });
-    expect(await notices.nextDeadline()).toEqual(backedOff.nextAttemptAt);
+    // The deadline is the database's remaining wait, measured on the Host's clock.
+    const asked = Date.now();
+    const deadline = (await notices.nextDeadline())!.getTime();
+    const wait = Number(backedOff.delaySeconds) * 1000;
+    expect(deadline).toBeLessThanOrEqual(Date.now() + wait);
+    expect(deadline).toBeGreaterThan(asked + wait - 1_000);
     expect(Number(backedOff.delaySeconds)).toBeGreaterThan(0);
     expect(Number(backedOff.delaySeconds)).toBeLessThanOrEqual(3_600);
     await database

@@ -1153,7 +1153,7 @@ export async function revokeRunner(
             claimExpiresAt: null,
             claimOwner: null,
             claimTokenHash: null,
-            nextAttemptAt: revokedAt,
+            nextAttemptAt: sql<Date>`statement_timestamp()`,
             status: "pending",
             updatedAt: revokedAt,
           })

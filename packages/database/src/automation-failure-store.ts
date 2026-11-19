@@ -98,13 +98,21 @@ export class AutomationFailureStore {
       .where("automationFailureNotices.settledAt", "is", null);
   }
 
+  /**
+   * Notices are stamped and found due on PostgreSQL's clock, and the Host times its wake on
+   * its own: the deadline is returned as the database's remaining wait from the Host's now.
+   */
   async nextDeadline(): Promise<Date | null> {
     const row = await this.#pendingNotices()
-      .select("automationFailureNotices.nextAttemptAt")
+      .select(
+        sql<number>`extract(epoch from (automation_failure_notices.next_attempt_at - now())) * 1000`.as(
+          "waitMs",
+        ),
+      )
       .orderBy("automationFailureNotices.nextAttemptAt")
       .limit(1)
       .executeTakeFirst();
-    return row?.nextAttemptAt ?? null;
+    return row ? new Date(Date.now() + Math.max(0, Number(row.waitMs))) : null;
   }
 
   /** Notices due now, oldest first. */

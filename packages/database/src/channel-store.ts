@@ -2173,7 +2173,7 @@ export class ChannelStore {
         claimOwner: null,
         claimTokenHash: null,
         lastError: input.error?.slice(0, 2_000) ?? null,
-        nextAttemptAt: new Date(now.getTime() + retry),
+        nextAttemptAt: sql<Date>`statement_timestamp() + ${retry} * interval '1 millisecond'`,
         receipt: input.receipt ? jsonValue(input.receipt) : null,
         sentAt: input.outcome === "sent" ? now : null,
         status: input.outcome,
