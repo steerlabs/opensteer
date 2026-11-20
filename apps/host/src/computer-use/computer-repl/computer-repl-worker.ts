@@ -13,17 +13,14 @@ import {
 } from "quickjs-emscripten-core";
 import { browserGuestLibrary } from "../../browser-use/browser-guest-library.js";
 import { browserGuestModules } from "../../browser-use/browser-guest-source.js";
-import {
-  BrowserReplRequestSchema,
-  browserReplLimits,
-} from "../../browser-use/browser-repl-messages.js";
+import { browserReplLimits } from "../../browser-use/browser-repl-messages.js";
 import { computerGuestLibrary } from "./guest-library.js";
 import {
   computerReplLimits as limits,
   boundedReplFailure,
   ToWorkerSchema,
   ReplRequestSchema,
-  type AnyReplRequest,
+  type ReplRequest,
   type FromWorker,
   type ReplFailure,
 } from "./messages.js";
@@ -33,10 +30,9 @@ const port = parentPort;
 const browser = workerData === "browser";
 const label = browser ? "Browser" : "Computer";
 const ended = `This ${label.toLowerCase()} call has ended.`;
-const requestSchema = browser ? BrowserReplRequestSchema : ReplRequestSchema;
 interface HostCall {
   id: number;
-  request: AnyReplRequest;
+  request?: ReplRequest;
   promise: QuickJSDeferredPromise;
 }
 interface Call {
@@ -55,6 +51,8 @@ interface Call {
   pumping: boolean;
   textBytes: number;
   messageBytes: number;
+  requests: number;
+  requestBytes: number;
 }
 interface Context {
   vm: QuickJSContext;
@@ -65,10 +63,10 @@ interface Context {
   phones: Map<string, string>;
   receiveEvents: QuickJSHandle | undefined;
   endBrowserCall: QuickJSHandle | undefined;
+  browserCodec: QuickJSHandle | undefined;
 }
 const contexts = new Map<string, Context>();
-const cancelled = new Set<string>();
-const creations = new Map<string, Promise<Context>>();
+const creations = new Map<string, { callId: string }>();
 const send = (message: FromWorker) =>
   port.postMessage(
     message.type === "done" && message.error
@@ -158,6 +156,7 @@ function dispose(key: string, discard = false) {
   if (discard || context.call) return;
   context.receiveEvents?.dispose();
   context.endBrowserCall?.dispose();
+  context.browserCodec?.dispose();
   context.vm.dispose();
   context.runtime.dispose();
 }
@@ -183,6 +182,7 @@ async function create(key: string): Promise<Context> {
     phones: new Map(),
     receiveEvents: undefined,
     endBrowserCall: undefined,
+    browserCodec: undefined,
   };
   runtime.setInterruptHandler(() => {
     const call = context.call;
@@ -198,22 +198,42 @@ async function create(key: string): Promise<Context> {
   const bridge = vm.newFunction("computerCall", (json) => {
     const call = context.call;
     if (!call || call.settled) throw new Error(ended);
+    if (browser) {
+      if (++call.requests > browserReplLimits.requests)
+        return bridgeLimit(vm, "Browser request count exceeded.");
+      if (call.dispatched.size >= browserReplLimits.pending)
+        return bridgeLimit(vm, "At most 32 browser operations may be pending at once.");
+      const remaining = Math.min(
+        limits.bridgeBytes,
+        browserReplLimits.requestBytes - call.requestBytes,
+      );
+      const input = readBrowserString(context, json, remaining);
+      if (input === undefined) {
+        call.requestBytes = browserReplLimits.requestBytes;
+        return bridgeLimit(vm, "Browser request byte budget exceeded.");
+      }
+      call.requestBytes += Buffer.byteLength(input);
+      const promise = vm.newPromise();
+      const id = ++context.nextId;
+      call.dispatched.set(id, { id, promise });
+      send({ type: "browser-request", context: key, callId: call.id, id, json: input });
+      return promise.handle;
+    }
     const input = vm.getString(json);
     if (Buffer.byteLength(input) > limits.bridgeBytes)
       throw new Error(`${label} arguments exceed 1 MiB.`);
-    const request = requestSchema.parse(JSON.parse(input));
-    if (browser && call.dispatched.size >= browserReplLimits.pending)
-      throw new Error("At most 32 browser operations may be pending at once.");
+    const request = ReplRequestSchema.parse(JSON.parse(input));
     const promise = vm.newPromise();
-    const item = { id: ++context.nextId, request, promise };
-    if (browser) dispatchItem(key, call, item);
-    else call.queue.push(item);
+    call.queue.push({ id: ++context.nextId, request, promise });
     return promise.handle;
   });
-  const print = vm.newFunction("computerPrint", (value) => {
+  const print = vm.newFunction("computerPrint", (value, encoded = vm.undefined) => {
     const call = context.call;
     if (!call || call.settled) throw new Error(ended);
-    if (!call.poisoned) emitText(key, call, vm.getString(value));
+    if (!call.poisoned) {
+      if (browser) emitBrowserText(key, context, call, value, encoded);
+      else emitText(key, call, vm.getString(value));
+    }
     return vm.undefined;
   });
   vm.setProp(vm.global, "__computerCall", bridge);
@@ -236,11 +256,11 @@ async function create(key: string): Promise<Context> {
     }
     context.receiveEvents = vm.getProp(vm.global, "__browserReceiveEvents");
     context.endBrowserCall = vm.getProp(vm.global, "__browserEndCall");
+    context.browserCodec = vm.getProp(vm.global, "__browserCodec");
     vm.unwrapResult(
       vm.evalCode("delete globalThis.__browserReceiveEvents; delete globalThis.__browserEndCall;"),
     ).dispose();
   } else vm.unwrapResult(vm.evalCode(computerGuestLibrary)).dispose();
-  contexts.set(key, context);
   return context;
 }
 function dispatch(key: string, context: Context, call: Call) {
@@ -257,7 +277,8 @@ function dispatch(key: string, context: Context, call: Call) {
 }
 function dispatchItem(key: string, call: Call, item: HostCall) {
   call.dispatched.set(item.id, item);
-  send({ type: "request", context: key, callId: call.id, id: item.id, request: item.request });
+  if (item.request)
+    send({ type: "request", context: key, callId: call.id, id: item.id, request: item.request });
 }
 
 function clearTimers(call: Call) {
@@ -296,7 +317,8 @@ function installBrowserTimers(key: string, context: Context) {
           result.error.dispose();
         } else result.value.dispose();
       } catch (error) {
-        call.failure ??= failure(error instanceof Error ? error.message : String(error));
+        console.error("browser.repl.timer.failed", error);
+        call.failure ??= failure("Browser timer failed.");
       } finally {
         callback.dispose();
       }
@@ -330,7 +352,8 @@ function installBrowserTimers(key: string, context: Context) {
 
 function receiveEvents(context: Context, events: string) {
   const call = context.call;
-  if (!call || !context.receiveEvents || events.length > browserReplLimits.eventBytes + 2) return;
+  if (!call || !context.receiveEvents || events.length > browserReplLimits.eventBytes + 4096)
+    return;
   const { vm } = context;
   const input = vm.newString(events);
   try {
@@ -346,10 +369,83 @@ function receiveEvents(context: Context, events: string) {
   }
 }
 
+function bridgeLimit(vm: QuickJSContext, message: string): QuickJSHandle {
+  return vm.newString(JSON.stringify({ error: { code: "bridge-limit", message } }));
+}
+
+function browserStringFits(context: Context, value: QuickJSHandle, limit: number): boolean {
+  const { vm } = context;
+  if (vm.typeof(value) !== "string") return false;
+  using length = vm.getProp(value, "length");
+  const units = vm.getNumber(length);
+  if (units > limit) return false;
+  if (units * 9 > limit) {
+    using budget = vm.newNumber(limit);
+    const fit = vm.callFunction(context.browserCodec!, vm.undefined, budget, value);
+    if (fit.error) {
+      fit.error.dispose();
+      return false;
+    }
+    using fits = fit.value;
+    const bytes = vm.getNumber(fits);
+    if (!bytes && units) return false;
+  }
+  return true;
+}
+
+function readBrowserString(
+  context: Context,
+  value: QuickJSHandle,
+  limit: number,
+): string | undefined {
+  return browserStringFits(context, value, limit) ? context.vm.getString(value) : undefined;
+}
+
+function emitBrowserText(
+  key: string,
+  context: Context,
+  call: Call,
+  value: QuickJSHandle,
+  json: QuickJSHandle,
+): void {
+  const encoded = browserStringFits(context, value, limits.textBytes - call.textBytes)
+    ? readBrowserString(context, json, limits.bridgeBytes - call.messageBytes)
+    : undefined;
+  if (encoded === undefined) {
+    call.failure ??= failure("Browser output exceeded its byte limit.", "output-limit");
+    call.poisoned = true;
+  } else emitText(key, call, JSON.parse(encoded) as string);
+}
+
+function readBrowserFailure(context: Context, error: QuickJSHandle): ReplFailure {
+  const { vm } = context;
+  const result = vm.callFunction(context.browserCodec!, vm.undefined, vm.false, error);
+  if (result.error) {
+    result.error.dispose();
+    return failure("Browser script failed.");
+  }
+  using fields = result.value;
+  using code = vm.getProp(fields, 0);
+  using message = vm.getProp(fields, 1);
+  using next = vm.getProp(fields, 2);
+  using cdp = vm.getProp(fields, 3);
+  const cdpCode = vm.typeof(cdp) === "number" ? vm.getNumber(cdp) : undefined;
+  const nextText = readBrowserString(context, next, 2000);
+  return {
+    ...failure(
+      readBrowserString(context, message, 8192) ?? "Browser script failed.",
+      readBrowserString(context, code, 128) ?? "failed",
+    ),
+    ...(nextText === undefined ? {} : { next: nextText }),
+    ...(cdpCode === undefined ? {} : { cdpCode }),
+  };
+}
+
 function readFailure(context: Context, error: QuickJSHandle): ReplFailure {
   const { call, vm } = context;
   if (call?.failure) return call.failure;
   return slice(context, () => {
+    if (browser) return readBrowserFailure(context, error);
     const value: unknown = vm.dump(error);
     const result = failure(
       typeof value === "object" && value !== null && "message" in value
@@ -398,23 +494,42 @@ function cancelQueued(context: Context, call: Call) {
     cancelled.dispose();
   }
 }
+function settleBrowserCall(key: string, context: Context, call: Call): void {
+  if (!browser || call.settled) return;
+  send({ type: "settled", context: key, callId: call.id });
+  if (call.poisoned || !context.endBrowserCall) return;
+  const result = slice(context, () =>
+    context.vm.callFunction(context.endBrowserCall!, context.vm.undefined),
+  );
+  if (result.error) {
+    call.failure ??= readFailure(context, result.error);
+    call.poisoned = true;
+    result.error.dispose();
+  } else result.value.dispose();
+}
+
 async function pump(key: string, context: Context) {
   const call = context.call;
   if (!call || call.pumping) return;
   call.pumping = true;
   try {
+    let jobsThisTurn = 0;
+    let turnStarted = performance.now();
+    let first = true;
     do {
-      if (!call.poisoned) {
-        const jobs = slice(context, () => context.runtime.executePendingJobs(64));
+      if (!call.poisoned && (!browser || !first)) {
+        const jobs = slice(context, () => context.runtime.executePendingJobs(browser ? 1 : 64));
         if (jobs.error) {
           call.failure ??= readFailure(context, jobs.error);
           jobs.error.dispose();
         }
       }
+      first = false;
       const state = call.settled
         ? undefined
         : slice(context, () => context.vm.getPromiseState(call.body));
       if (state && state.type !== "pending") {
+        settleBrowserCall(key, context, call);
         call.settled = true;
         if (state.type === "rejected") {
           const rejected = readFailure(context, state.error);
@@ -422,32 +537,49 @@ async function pump(key: string, context: Context) {
           if (/out of memory/iu.test(call.failure.message)) call.poisoned = true;
           state.error.dispose();
         } else {
-          if (context.vm.typeof(state.value) !== "undefined")
-            call.returned = context.vm.getString(state.value);
+          if (context.vm.typeof(state.value) !== "undefined") {
+            if (browser) {
+              const { vm } = context;
+              const encoded = slice(context, () =>
+                vm.callFunction(context.browserCodec!, vm.undefined, vm.true, state.value),
+              );
+              if (encoded.error) {
+                call.failure ??= readFailure(context, encoded.error);
+                encoded.error.dispose();
+              } else {
+                if (vm.typeof(encoded.value) !== "undefined") {
+                  call.returned = slice(context, () =>
+                    readBrowserString(context, encoded.value, limits.textBytes - call.textBytes),
+                  );
+                  if (call.returned === undefined)
+                    call.failure ??= failure(
+                      "Browser output exceeded its byte limit.",
+                      "output-limit",
+                    );
+                }
+                encoded.value.dispose();
+              }
+            } else call.returned = context.vm.getString(state.value);
+          }
           state.value.dispose();
         }
         cancelQueued(context, call);
       }
       if (call.failure) {
         if (/out of memory/iu.test(call.failure.message)) call.poisoned = true;
+        settleBrowserCall(key, context, call);
         call.settled = true;
         cancelQueued(context, call);
       }
       if (call.settled) {
         if (call.dispatched.size) return;
         if (!call.poisoned && context.runtime.hasPendingJob()) {
-          await yieldTurn();
+          if (!browser || ++jobsThisTurn >= 64 || performance.now() - turnStarted >= 10) {
+            await yieldTurn();
+            jobsThisTurn = 0;
+            turnStarted = performance.now();
+          }
           continue;
-        }
-        if (!call.poisoned && context.endBrowserCall) {
-          const result = slice(context, () =>
-            context.vm.callFunction(context.endBrowserCall!, context.vm.undefined),
-          );
-          if (result.error) {
-            call.failure ??= readFailure(context, result.error);
-            call.poisoned = true;
-            result.error.dispose();
-          } else result.value.dispose();
         }
         if (!call.failure && call.returned !== undefined) emitText(key, call, call.returned);
         send({
@@ -466,7 +598,11 @@ async function pump(key: string, context: Context) {
       }
       dispatch(key, context, call);
       if (!context.runtime.hasPendingJob()) return;
-      await yieldTurn();
+      if (!browser || ++jobsThisTurn >= 64 || performance.now() - turnStarted >= 10) {
+        await yieldTurn();
+        jobsThisTurn = 0;
+        turnStarted = performance.now();
+      }
     } while (contexts.get(key) === context && context.call === call);
   } finally {
     call.pumping = false;
@@ -481,12 +617,19 @@ port.on("message", (input: unknown) => {
         parsed.data.type === "reply" ||
         parsed.data.type === "events")
     ) {
+      if (browser) console.error("browser.repl.worker.failed", error);
       dispose(parsed.data.context, true);
       send({
         type: "done",
         context: parsed.data.context,
         callId: parsed.data.callId,
-        error: failure(error instanceof Error ? error.message : String(error)),
+        error: failure(
+          browser
+            ? "Browser worker failed."
+            : error instanceof Error
+              ? error.message
+              : String(error),
+        ),
         ...(browser ? { reset: true } : {}),
       });
     }
@@ -495,11 +638,13 @@ port.on("message", (input: unknown) => {
 async function handle(input: unknown) {
   const message = ToWorkerSchema.parse(input);
   if (message.type === "dispose") {
+    creations.delete(message.context);
     dispose(message.context);
     return;
   }
   if (message.type === "cancel") {
-    if (creations.has(message.context)) cancelled.add(message.callId);
+    const creating = creations.get(message.context);
+    if (creating?.callId === message.callId) creations.delete(message.context);
     const context = contexts.get(message.context);
     if (context?.call?.id === message.callId) dispose(message.context);
     return;
@@ -507,20 +652,25 @@ async function handle(input: unknown) {
   if (message.type === "execute") {
     let context = contexts.get(message.context);
     if (!context) {
-      let creating = creations.get(message.context);
-      if (!creating) {
-        creating = create(message.context);
-        creations.set(message.context, creating);
-      }
+      const creating = { callId: message.callId };
+      creations.set(message.context, creating);
       try {
-        context = await creating;
-      } finally {
+        context = await create(message.context);
+      } catch (error) {
+        if (creations.get(message.context) !== creating) return;
         creations.delete(message.context);
+        throw error;
       }
-    }
-    if (cancelled.delete(message.callId)) {
-      dispose(message.context);
-      return;
+      if (creations.get(message.context) !== creating) {
+        context.receiveEvents?.dispose();
+        context.endBrowserCall?.dispose();
+        context.browserCodec?.dispose();
+        context.vm.dispose();
+        context.runtime.dispose();
+        return;
+      }
+      creations.delete(message.context);
+      contexts.set(message.context, context);
     }
     if (context.call) throw new Error(`${label} code is already running for this context.`);
     // Install the call before eval so the first synchronous slice is bounded.
@@ -540,6 +690,8 @@ async function handle(input: unknown) {
       pumping: false,
       textBytes: 0,
       messageBytes: 0,
+      requests: 0,
+      requestBytes: 0,
     };
     context.call = call;
     if (browser) {
@@ -548,7 +700,7 @@ async function handle(input: unknown) {
     }
     const result = slice(context, () =>
       context.vm.evalCode(
-        `(async () => {\n${message.code}\n})().then(value => value === undefined ? undefined : JSON.stringify(value))`,
+        `(async () => {\n${message.code}\n})()${browser ? "" : ".then(value => value === undefined ? undefined : JSON.stringify(value))"}`,
         browser ? "browser.js" : "computer.js",
       ),
     );
@@ -568,6 +720,7 @@ async function handle(input: unknown) {
   const call = context?.call;
   if (!context || !call || call.id !== message.callId) return;
   if (message.type === "events") {
+    if (call.settled || call.failure) return;
     receiveEvents(context, message.events);
     send({ type: "events-read", context: message.context, callId: call.id });
     await pump(message.context, context);
@@ -576,7 +729,7 @@ async function handle(input: unknown) {
   const item = call.dispatched.get(message.id);
   if (!item) return;
   call.dispatched.delete(message.id);
-  if (!browser) {
+  if (!browser && item.request) {
     if (message.error && message.value === undefined) {
       if (item.request.target) context.phones.delete(item.request.target);
     }

@@ -68,6 +68,7 @@ export const ReplFailureSchema = z.object({
   machineId: DeviceRefusalContextSchema.shape.machineId.optional(),
   capability: DeviceRefusalContextSchema.shape.capability.optional(),
   code: z.string(),
+  cdpCode: z.number().int().optional(),
   message: z.string(),
   next: z.string().nullable().optional(),
   performed: z.array(z.string()).default([]),
@@ -78,9 +79,10 @@ export function boundedReplFailure(error: ReplFailure): ReplFailure {
   return {
     ...(error.machineId ? { machineId: error.machineId } : {}),
     ...(error.capability ? { capability: error.capability } : {}),
-    code: utf8Prefix(error.code, 128),
-    message: utf8Prefix(error.message, 8192),
-    ...(error.next ? { next: utf8Prefix(error.next, 2000) } : {}),
+    code: utf8Prefix(error.code.slice(0, 128), 128),
+    ...(error.cdpCode === undefined ? {} : { cdpCode: error.cdpCode }),
+    message: utf8Prefix(error.message.slice(0, 8192), 8192),
+    ...(error.next ? { next: utf8Prefix(error.next.slice(0, 2000), 2000) } : {}),
     performed: error.performed.slice(0, 160).map((receipt) => utf8Prefix(receipt, 2048)),
   };
 }
@@ -116,10 +118,18 @@ export const FromWorkerSchema = z.discriminatedUnion("type", [
     context: z.string(),
     callId: z.string(),
     id: z.number(),
-    request: z.union([ReplRequestSchema, BrowserReplRequestSchema]),
+    request: ReplRequestSchema,
+  }),
+  z.object({
+    type: z.literal("browser-request"),
+    context: z.string(),
+    callId: z.string(),
+    id: z.number(),
+    json: z.string(),
   }),
   z.object({ type: z.literal("ready"), context: z.string(), callId: z.string() }),
   z.object({ type: z.literal("events-read"), context: z.string(), callId: z.string() }),
+  z.object({ type: z.literal("settled"), context: z.string(), callId: z.string() }),
   z.object({ type: z.literal("text"), context: z.string(), callId: z.string(), text: z.string() }),
   z.object({
     type: z.literal("done"),
@@ -131,4 +141,4 @@ export const FromWorkerSchema = z.discriminatedUnion("type", [
 ]);
 export type FromWorker = z.infer<typeof FromWorkerSchema>;
 
-export type AnyReplRequest = Extract<FromWorker, { type: "request" }>["request"];
+export type AnyReplRequest = ReplRequest | z.infer<typeof BrowserReplRequestSchema>;

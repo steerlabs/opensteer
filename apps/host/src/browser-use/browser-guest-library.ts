@@ -10,17 +10,54 @@ delete globalThis.__computerCall;
 delete globalThis.__computerPrint;
 delete globalThis.__browserNow;
 globalThis.performance = Object.freeze({ now });
+const encode = JSON.stringify;
+const ErrorValue = Error;
+const hasOwn = Object.hasOwn;
+const decode = JSON.parse;
+const charCodeAt = Function.prototype.call.bind(String.prototype.charCodeAt);
+const substring = Function.prototype.call.bind(String.prototype.slice);
+const asString = String;
+const isInteger = Number.isSafeInteger;
+
+globalThis.__browserCodec = (mode, value) => {
+  if (mode === true) return value === undefined ? undefined : encode(value);
+  if (mode === false) {
+    const limit = (text, units) => typeof text === "string" ? substring(text, 0, units) : undefined;
+    const code = value?.code;
+    const cdpCode = isInteger(code) ? code : undefined;
+    return [cdpCode === undefined ? limit(code, 128) : "cdp-error", limit(value?.message, 8192) ?? limit(asString(value), 8192),
+      limit(value?.next, 2000), cdpCode];
+  }
+  let bytes = 0;
+  for (let i = 0; i < value.length; i++) {
+    const c = charCodeAt(value, i);
+    if (c <= 127) bytes++;
+    else if (c <= 2047) bytes += 2;
+    else if (c >= 55296 && c <= 56319 && charCodeAt(value, i + 1) >= 56320 && charCodeAt(value, i + 1) <= 57343) {
+      i++;
+      bytes += 4;
+    } else bytes += c >= 55296 && c <= 57343 ? 9 : 3;
+    if (bytes > mode) return 0;
+  }
+  return bytes;
+};
 
 async function call(operation, target = null, args = {}) {
-  const result = JSON.parse(await bridge(JSON.stringify({ operation: "browser." + operation, target, args })));
-  if (result.error) {
-    const { code, message } = result.error;
-    throw Object.assign(code === "cdp-error" ? new CdpProtocolError(message) : new Error(message), result.error);
+  const result = decode(await bridge(encode({ operation: "browser." + operation, target, args })));
+  if (hasOwn(result, "error")) {
+    const { code, message, next, cdpCode } = result.error;
+    const error = code === "cdp-error" ? new CdpProtocolError(message) : new ErrorValue(message);
+    error.code = cdpCode ?? code;
+    if (next !== undefined) error.next = next;
+    throw error;
   }
   return result.value;
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms))));
-const print = (...values) => write(values.map(value => typeof value === "string" ? value : JSON.stringify(value)).join(" "));
+const print = (...values) => {
+  const text = values.map(value => typeof value === "string" ? value : encode(value)).join(" ");
+  write(text, encode(text));
+};
 function navigableUrl(url) {
   const address = String(url);
   if (address !== "about:blank" && !address.startsWith("http://") && !address.startsWith("https://"))
@@ -29,7 +66,10 @@ function navigableUrl(url) {
 }
 async function parseUrl(href) {
   const { entries, ...url } = await call("url", null, { href });
-  const getAll = name => entries.filter(([key]) => key === String(name)).map(([, value]) => value);
+  const getAll = name => {
+    const key = String(name);
+    return entries.filter(([name]) => name === key).map(([, value]) => value);
+  };
   const searchParams = {
     size: entries.length,
     get: name => getAll(name)[0] ?? null,
@@ -55,6 +95,7 @@ globalThis.__browserEndCall = () => visitStates(state => clearListeners(state.li
 function stateFor(handle) {
   if (!states.has(handle)) states.set(handle, {
     events: [], bytes: 0, listeners: new Set(), open: new Map(), observed: new Map(), sequence: new Map(),
+    page: undefined, ended: false,
   });
   return states.get(handle);
 }
@@ -65,8 +106,10 @@ function noteDialog(state, sessionId, dialog) {
   } else state.open.delete(sessionId);
 }
 globalThis.__browserReceiveEvents = encoded => {
-  for (const { handle, event, bytes } of JSON.parse(encoded)) {
+  const { live, events } = decode(encoded);
+  for (const [bytes, [handle, method, sessionId, params]] of events) {
     const state = stateFor(handle);
+    const event = { method, params, ...(sessionId === null ? {} : { sessionId }) };
     const session = event.sessionId;
     if (event.method === "Page.javascriptDialogOpening" || event.method === "Page.javascriptDialogClosed") {
       state.sequence.set(session, (state.sequence.get(session) ?? 0) + 1);
@@ -85,6 +128,17 @@ globalThis.__browserReceiveEvents = encoded => {
       state.bytes -= state.events.shift().bytes;
     for (const listener of state.listeners) listener(event);
   }
+  for (const [handle, state] of states) {
+    if (live.includes(handle)) continue;
+    states.delete(handle);
+    state.ended = true;
+    clearListeners(state.listeners);
+    state.open.clear();
+    state.observed.clear();
+    state.sequence.clear();
+    state.events = [];
+    state.bytes = 0;
+  }
 };
 
 const rootCommands = new Set([
@@ -96,8 +150,10 @@ const rootCommands = new Set([
 
 function bindPage({ handle, tabId, targetId, sessionId, dialog }) {
   const state = stateFor(handle);
+  if (state.page) return state.page;
   if (!state.sequence.has(sessionId)) noteDialog(state, sessionId, dialog);
   const command = async (method, params = {}, requestedSession, screenshot = false) => {
+    if (state.ended) throw Object.assign(new Error("This page handle has ended. Bind the tab again with openPage(tabId)."), { code: "page-ended" });
     const session = requestedSession ?? (
       method.startsWith("Browser.") || rootCommands.has(method) ? undefined : sessionId
     );
@@ -211,7 +267,7 @@ function bindPage({ handle, tabId, targetId, sessionId, dialog }) {
       clearTimeout(deadline);
     }
   };
-  return Object.freeze({
+  state.page = Object.freeze({
     ...page, tabId, captureScreenshot,
     cdp: (method, params, session) => command(method, params, session),
     clickAt: (x, y, { button = "left", clicks = 1 } = {}) => page.mouse.click(x, y, { button, clickCount: clicks }),
@@ -235,6 +291,7 @@ function bindPage({ handle, tabId, targetId, sessionId, dialog }) {
     },
     waitForNetworkIdle,
   });
+  return state.page;
 }
 
 Object.assign(globalThis, {

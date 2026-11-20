@@ -1,8 +1,17 @@
+import { once } from "node:events";
+import { Worker } from "node:worker_threads";
 import { refused } from "@opensteer/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { computerReplLimits as limits } from "../computer-use/computer-repl/messages.js";
+import {
+  computerReplLimits as limits,
+  FromWorkerSchema,
+  type FromWorker,
+  type ToWorker,
+} from "../computer-use/computer-repl/messages.js";
+import { browserReplLimits } from "./browser-repl-messages.js";
 import {
   BrowserReplService,
+  BrowserUseCdpError,
   type BrowserUseCall,
   type BrowserUseEvent,
   type BrowserUsePort,
@@ -23,6 +32,7 @@ function setup(
   clock?: ConstructorParameters<typeof BrowserReplService>[0]["clock"],
 ) {
   const subscribers = new Set<(event: BrowserUseEvent) => void>();
+  const closures = new Set<() => void>();
   const port = {
     listPages: vi.fn(async () => [
       { tabId: root.tabId, url: "https://example.test/", title: "Root", profile: "Personal" },
@@ -33,11 +43,13 @@ function setup(
       return root;
     }),
     newPage: vi.fn(async () => other),
-    command: vi.fn(async () => ({})),
-    subscribe: vi.fn((_target, listener: (event: BrowserUseEvent) => void) => {
+    command: vi.fn(async () => "{}"),
+    subscribe: vi.fn<BrowserUsePort["subscribe"]>((_target, listener, onEnd) => {
       subscribers.add(listener);
+      closures.add(onEnd);
       return () => {
         subscribers.delete(listener);
+        closures.delete(onEnd);
       };
     }),
     ...overrides,
@@ -48,8 +60,24 @@ function setup(
     service,
     port,
     subscribers,
-    emit: (event: BrowserUseEvent) => {
-      for (const subscriber of subscribers) subscriber(event);
+    end: () => {
+      for (const close of closures) close();
+    },
+    emit: ({
+      method,
+      params,
+      sessionId,
+    }: {
+      method: string;
+      params: unknown;
+      sessionId?: string;
+    }) => {
+      for (const subscriber of subscribers)
+        subscriber({
+          method,
+          paramsJson: JSON.stringify(params),
+          ...(sessionId === undefined ? {} : { sessionId }),
+        });
     },
     run: (code: string, signal?: AbortSignal) => service.execute("context", code, signal),
   };
@@ -60,7 +88,9 @@ const text = (value: unknown) => ({ type: "text", text: JSON.stringify(value) })
 
 describe("browser REPL", () => {
   it("lists, binds and opens pages with a persistent Page API and no ambient authority", async () => {
-    const command = vi.fn<BrowserUsePort["command"]>(async (_target, method) => ({ method }));
+    const command = vi.fn<BrowserUsePort["command"]>(async (_target, method) =>
+      JSON.stringify({ method }),
+    );
     const { service, run, port, subscribers } = setup({ command });
     const result = await run(`
       print((await pages())[0]);
@@ -76,7 +106,14 @@ describe("browser REPL", () => {
     ]);
     expect(port.newPage).toHaveBeenCalledWith(
       { url: "https://example.test/next", profileId: "profile1" },
-      { contextKey: "context", signal: expect.any(AbortSignal), deadline: expect.any(Number) },
+      {
+        contextKey: "context",
+        signal: expect.any(AbortSignal),
+        deadline: expect.any(Number),
+        maxBytes: limits.bridgeBytes,
+        maxDepth: 31,
+        maxEntries: browserReplLimits.jsonEntries,
+      },
     );
     expect(
       await run('await sleep(0); return await page.cdp("Runtime.evaluate", { expression: "1" })'),
@@ -114,15 +151,15 @@ describe("browser REPL", () => {
   });
 
   it("delivers a dialog while its input is still in flight and uses the observed ID", async () => {
-    const blocked = Promise.withResolvers<object>();
+    const blocked = Promise.withResolvers<string>();
     let openDialog: () => void;
     const command = vi.fn<BrowserUsePort["command"]>(async (_target, method, params) => {
       if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") {
         openDialog();
         return blocked.promise;
       }
-      if (method === "Page.handleJavaScriptDialog") blocked.resolve({});
-      return {};
+      if (method === "Page.handleJavaScriptDialog") blocked.resolve("{}");
+      return "{}";
     });
     const { run, emit } = setup({ command });
     openDialog = () =>
@@ -168,12 +205,8 @@ describe("browser REPL", () => {
   it("keeps structured refusals catchable through CDP and Page operations", async () => {
     const { run } = setup({
       command: async (target, method) => {
-        if (method === "Runtime.releaseObjectGroup") return {};
-        throw {
-          code: "profile-revoked",
-          message: `${target.tabId} was revoked.`,
-          next: "Ask the owner.",
-        };
+        if (method === "Runtime.releaseObjectGroup") return "{}";
+        throw refused("forbidden", `${target.tabId} was revoked.`, "Ask the owner.");
       },
     });
     expect(
@@ -188,7 +221,7 @@ describe("browser REPL", () => {
       isError: true,
       structuredContent: {
         error: {
-          code: "profile-revoked",
+          code: "forbidden",
           message: expect.stringContaining("tab-root was revoked."),
           next: "Ask the owner.",
           performed: [],
@@ -198,7 +231,7 @@ describe("browser REPL", () => {
     expect(
       await run('try { await page.cdp("Runtime.evaluate"); } catch (error) { return error.code; }'),
     ).toEqual({
-      content: [text("profile-revoked")],
+      content: [text("forbidden")],
     });
   });
 
@@ -228,7 +261,7 @@ describe("browser REPL", () => {
 
   it("cancels a pending command, clears timers and subscriptions, and ignores its late result", async () => {
     const entered = Promise.withResolvers<BrowserUseCall>();
-    const withheld = Promise.withResolvers<object>();
+    const withheld = Promise.withResolvers<string>();
     const { run, subscribers } = setup({
       command: (_target, _method, _params, _sessionId, call) => {
         entered.resolve(call);
@@ -252,10 +285,360 @@ describe("browser REPL", () => {
     });
     expect(call.signal.aborted).toBe(true);
     expect(subscribers.size).toBe(0);
-    withheld.resolve({});
+    withheld.resolve("{}");
     expect(await run("return [typeof page, typeof late]")).toEqual({
       content: [text(["undefined", "undefined"])],
     });
+  });
+
+  it("reports abandoned reads and effects, retaining reservations until the port completes", async () => {
+    const read = Promise.withResolvers<readonly []>();
+    const reads: BrowserUseCall[] = [];
+    const effects: BrowserUseCall[] = [];
+    const effect = Promise.withResolvers<string>();
+    const { run, service } = setup({
+      listPages: (call) => {
+        reads.push(call);
+        return read.promise;
+      },
+      command: (_target, _method, _params, _session, call) => {
+        effects.push(call);
+        return effect.promise;
+      },
+    });
+    const abandon = "for (let i = 0; i < 32; i++) void pages().catch(() => {}); return 1;";
+    expect(await run(abandon)).toMatchObject({
+      structuredContent: { error: { code: "operation-pending" } },
+    });
+    expect(reads).toHaveLength(browserReplLimits.pending);
+    expect(reads.every(({ signal }) => signal.aborted)).toBe(true);
+    expect(await run("await pages()")).toMatchObject({
+      structuredContent: { error: { code: "bridge-limit" } },
+    });
+    expect(reads).toHaveLength(browserReplLimits.pending);
+    service.disposeContext("context");
+    expect(await run("await pages()")).toMatchObject({
+      structuredContent: { error: { code: "bridge-limit" } },
+    });
+    expect(reads).toHaveLength(browserReplLimits.pending);
+    read.resolve([]);
+    expect(await run("return await pages()")).toEqual({ content: [text([])] });
+    expect(
+      await run(`${bind} void page.cdp("Input.insertText", { text: "one" }); return 1;`),
+    ).toMatchObject({
+      structuredContent: { error: { code: "outcome-unknown" } },
+    });
+    expect(effects).toHaveLength(1);
+    expect(effects[0]?.signal.aborted).toBe(true);
+    expect(await service.execute("different", "return 2")).toEqual({ content: [text(2)] });
+    effect.resolve("{}");
+    expect(await run('return await page.cdp("Runtime.evaluate")')).toEqual({ content: [text({})] });
+  });
+
+  it("lets a port acknowledge cancellation without accumulating old reservations", async () => {
+    const released = vi.fn();
+    const { run } = setup({
+      listPages: ({ signal }) =>
+        new Promise((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              released();
+              resolve([]);
+            },
+            { once: true },
+          );
+        }),
+    });
+    const abandon = "for (let i = 0; i < 32; i++) void pages().catch(() => {}); return 1;";
+    for (let i = 0; i < 2; i++)
+      expect(await run(abandon)).toMatchObject({
+        structuredContent: { error: { code: "operation-pending" } },
+      });
+    expect(released).toHaveBeenCalledTimes(64);
+  });
+
+  it("enforces cumulative bridge request count, byte size, and depth before invoking the port", async () => {
+    const count = vi.fn<BrowserUsePort["listPages"]>(async () => []);
+    const { run, port } = setup({ listPages: count });
+    expect(
+      await run(`for (let i = 0; i <= ${browserReplLimits.requests}; i++) await pages()`),
+    ).toMatchObject({
+      structuredContent: {
+        error: { code: "bridge-limit", message: expect.stringContaining("count") },
+      },
+    });
+    expect(count).toHaveBeenCalledTimes(browserReplLimits.requests);
+    expect(
+      await run(`${bind} const payload = "x".repeat(500_000);
+      for (let i = 0; i < 9; i++) await page.cdp("Runtime.evaluate", { payload });`),
+    ).toMatchObject({
+      structuredContent: {
+        error: { code: "bridge-limit", message: expect.stringContaining("byte") },
+      },
+    });
+    expect(port.command).toHaveBeenCalledTimes(8);
+    expect(
+      await run(`let nested = null;
+      for (let i = 0; i < 300; i++) nested = [nested];
+      await page.cdp("Runtime.evaluate", { nested });`),
+    ).toMatchObject({
+      structuredContent: {
+        error: { code: "bridge-limit", message: expect.stringContaining("nesting") },
+      },
+    });
+    expect(
+      await run('await page.cdp("Runtime.evaluate", { value: "é".repeat(600_000) })'),
+    ).toMatchObject({
+      structuredContent: {
+        error: { code: "bridge-limit", message: expect.stringContaining("byte") },
+      },
+    });
+    expect(port.command).toHaveBeenCalledTimes(8);
+  });
+
+  it("preflights port frame budgets and keeps oversized output isolated to its context", async () => {
+    const deep = "[".repeat(5000) + "0" + "]".repeat(5000);
+    const command = vi.fn<BrowserUsePort["command"]>(async () => deep);
+    const { run, service, subscribers, port } = setup({ command });
+    expect(await run(`${bind} await page.cdp("Runtime.evaluate")`)).toMatchObject({
+      structuredContent: { error: { code: "bridge-limit" } },
+    });
+    expect(command.mock.calls[0]?.[4]).toMatchObject({
+      maxBytes: limits.bridgeBytes,
+      maxDepth: 31,
+    });
+    const budget = vi.mocked(port.subscribe).mock.calls[0]?.[3];
+    expect(budget).toMatchObject({ maxBytes: expect.any(Number), maxDepth: 28 });
+    for (const receive of subscribers) {
+      receive({ method: "oversized", paramsJson: "x".repeat(browserReplLimits.eventBytes + 1) });
+      receive({ method: "deep", paramsJson: deep });
+      receive({ method: "small", paramsJson: '{"quoted":"[\\\"[[]"}' });
+    }
+    expect(await run("return page.drainEvents().map(event => event.method)")).toEqual({
+      content: [text(["small"])],
+    });
+    const oversized = run('return "🙂".repeat(160_000)');
+    expect(await service.execute("other", "return 9")).toEqual({ content: [text(9)] });
+    expect(await oversized).toMatchObject({
+      structuredContent: { error: { code: "output-limit" } },
+    });
+  });
+
+  it("shares concurrent binds and retires each closed target so the next handle can open", async () => {
+    const { run, port, end, subscribers } = setup();
+    expect(
+      await run(`${bind} const pair = await Promise.all([openPage("tab-root"), openPage("tab-root")]);
+      return pair.every(handle => handle === page);`),
+    ).toEqual({ content: [text(true)] });
+    expect(port.openPage).toHaveBeenCalledTimes(1);
+    expect(subscribers.size).toBe(1);
+    for (let i = 0; i <= browserReplLimits.handles; i++) {
+      end();
+      expect(subscribers.size).toBe(0);
+      expect(
+        await run(`const next = await openPage("tab-root");
+        let expired;
+        try { await page.cdp("Page.enable"); } catch (error) { expired = error.code; }
+        const changed = page !== next;
+        globalThis.page = next;
+        return [expired, changed];`),
+      ).toEqual({ content: [text(["page-ended", true])] });
+    }
+    expect(port.command).not.toHaveBeenCalled();
+  });
+
+  it("keeps unexpected errors in Host logs and exposes just explicit CDP error fields", async () => {
+    const internal = Object.assign(new Error("private /provider/path"), {
+      code: "private-code",
+      next: "private-token",
+      value: { internal: true },
+      performed: ["private"],
+    });
+    const cdp = Object.assign(new BrowserUseCdpError(-32001, "No such frame"), { data: "private" });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const { run } = setup({
+        command: async (_target, method) => {
+          throw method === "Runtime.evaluate" ? internal : cdp;
+        },
+      });
+      expect(
+        await run(`${bind} try { await page.cdp("Runtime.evaluate"); } catch (error) {
+        return [error.code, error.message, Object.keys(error)];
+      }`),
+      ).toEqual({ content: [text(["failed", "Browser operation failed.", ["code"]])] });
+      expect(await run('await page.cdp("Runtime.evaluate")')).toMatchObject({
+        structuredContent: { error: { code: "failed", message: "Browser operation failed." } },
+      });
+      expect(log).toHaveBeenCalledWith("browser.repl.port.failed", internal);
+      expect(
+        await run(
+          'try { await page.cdp("Page.enable"); } catch (error) { return [error.code, error.message, error.data]; }',
+        ),
+      ).toEqual({
+        content: [text([-32001, "No such frame", null])],
+      });
+      expect(await run('await page.cdp("Page.enable")')).toMatchObject({
+        structuredContent: {
+          error: { code: "cdp-error", cdpCode: -32001, message: "No such frame" },
+        },
+      });
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("removes queued cancellations while all execution slots are occupied", async () => {
+    const full = Promise.withResolvers();
+    const hold = Promise.withResolvers<readonly []>();
+    let inFlight = 0;
+    const { service } = setup({
+      listPages: (call) => {
+        if (++inFlight === limits.executing) full.resolve(undefined);
+        if (call.contextKey === "queued") return Promise.resolve([]);
+        return hold.promise;
+      },
+    });
+    const active = Array.from({ length: limits.executing }, (_, index) =>
+      service.execute(`slot-${index}`, "await pages()"),
+    );
+    await full.promise;
+    const controller = new AbortController();
+    const queued = service.execute(
+      "queued",
+      'throw new Error("cancelled script ran")',
+      controller.signal,
+    );
+    const deleted = vi.spyOn(Map.prototype, "delete");
+    try {
+      controller.abort();
+      expect(deleted.mock.results.some(({ value }) => value === true)).toBe(true);
+    } finally {
+      deleted.mockRestore();
+    }
+    expect(await queued).toMatchObject({ structuredContent: { error: { code: "cancelled" } } });
+    const replacement = service.execute("queued", "return 42");
+    hold.resolve([]);
+    await Promise.all(active);
+    expect(await replacement).toEqual({ content: [text(42)] });
+  });
+
+  it("withholds a late event during settlement and delivers it to the next call", async () => {
+    const worker = new Worker(
+      new URL("../computer-use/computer-repl/computer-repl-worker.ts", import.meta.url),
+      {
+        workerData: "browser",
+        execArgv: ["--import", "tsx"],
+      },
+    );
+    const messages: FromWorker[] = [];
+    const send = (message: ToWorker) => worker.postMessage(message);
+    const context = "event";
+    const params = { dialogId: "dialog-late", type: "confirm", message: "Too late?" };
+    const expected = { method: "Page.javascriptDialogOpening", params, sessionId: root.sessionId };
+    const late = JSON.stringify({
+      live: ["1"],
+      events: [[100, ["1", expected.method, root.sessionId, params]]],
+    });
+    const listen = (input: unknown) => {
+      const message = FromWorkerSchema.parse(input);
+      messages.push(message);
+      if (message.type === "browser-request" && message.json.includes('"browser.open"'))
+        send({
+          type: "reply",
+          context,
+          callId: message.callId,
+          id: message.id,
+          value: { ...root, handle: "1" },
+        });
+      if (message.type === "settled" && message.callId === "first")
+        send({ type: "events", context, callId: "first", events: late });
+    };
+    worker.on("message", listen);
+    const done = (id: string) =>
+      new Promise<void>((resolve, reject) => {
+        const listener = (input: unknown) => {
+          const message = FromWorkerSchema.parse(input);
+          if (message.type !== "done" || message.callId !== id) return;
+          worker.off("message", listener);
+          if (message.error) reject(new Error(message.error.message));
+          else resolve();
+        };
+        worker.on("message", listener);
+      });
+    try {
+      const first = done("first");
+      send({
+        type: "execute",
+        context,
+        callId: "first",
+        code: `
+        ${bind}
+        void page.waitForNetworkIdle().catch(() => {});
+        let remaining = 1024;
+        const churn = () => { if (--remaining) Promise.resolve().then(churn); };
+        churn();
+      `,
+      });
+      await first;
+      expect(
+        messages.some((message) => message.type === "settled" && message.callId === "first"),
+      ).toBe(true);
+      expect(
+        messages.some((message) => message.type === "events-read" && message.callId === "first"),
+      ).toBe(false);
+      const next = done("next");
+      send({
+        type: "execute",
+        context,
+        callId: "next",
+        code: "return page.drainEvents()",
+        events: late,
+      });
+      await next;
+      expect(messages).toContainEqual({ ...text([expected]), context, callId: "next" });
+    } finally {
+      await worker.terminate();
+    }
+  });
+
+  it("matches a VM creation cancellation to its call and keeps the replacement alive", async () => {
+    const worker = new Worker(
+      new URL("../computer-use/computer-repl/computer-repl-worker.ts", import.meta.url),
+      {
+        workerData: "browser",
+        execArgv: ["--import", "tsx"],
+      },
+    );
+    const messages: FromWorker[] = [];
+    const send = (message: ToWorker) => worker.postMessage(message);
+    const context = "replacement";
+    try {
+      const completed = new Promise<void>((resolve) =>
+        worker.on("message", (input: unknown) => {
+          const message = FromWorkerSchema.parse(input);
+          messages.push(message);
+          if (message.type === "done" && message.callId === "new") resolve();
+        }),
+      );
+      await once(worker, "online");
+      send({
+        type: "execute",
+        context,
+        callId: "old",
+        code: "globalThis.old = true; await sleep(100000)",
+      });
+      send({ type: "cancel", context, callId: "old" });
+      send({ type: "execute", context, callId: "new", code: "return typeof old" });
+      send({ type: "cancel", context, callId: "old" });
+      await completed;
+      expect(
+        messages.filter((message) => message.context === context && message.type === "text"),
+      ).toEqual([{ ...text("undefined"), context, callId: "new" }]);
+    } finally {
+      await worker.terminate();
+    }
   });
 
   it("interrupts guest CPU starvation and counts text, decoded image bytes and image count", async () => {
@@ -268,10 +651,15 @@ describe("browser REPL", () => {
       });
     const { run } = setup({
       command: async (_target, method) =>
-        method === "Page.captureScreenshot" ? screenshot() : { oversizedBridge },
+        method === "Page.captureScreenshot"
+          ? JSON.stringify(await screenshot())
+          : JSON.stringify({ oversizedBridge }),
     });
     expect(await run("throw { get message() { while (true) {} } }")).toMatchObject({
       structuredContent: { error: { code: "slice-limit" } },
+    });
+    expect(await run(String.raw`print("a\0b")`)).toEqual({
+      content: [{ type: "text", text: "a\0b" }],
     });
     expect(await run("return 'x'.repeat(512 * 1024)")).toMatchObject({
       structuredContent: { error: { code: "output-limit" } },

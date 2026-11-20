@@ -1,3 +1,4 @@
+import { OpensteerError } from "@opensteer/core";
 import { z } from "zod";
 import type { Clock } from "@opensteer/shared/clock";
 import {
@@ -9,14 +10,17 @@ import {
 import {
   computerReplLimits as limits,
   ReplReplySchema,
+  type ReplFailure,
   type ReplReply,
 } from "../computer-use/computer-repl/messages.js";
 import {
   BrowserReplRequestSchema,
   browserImageSchema,
+  browserJsonShapeFits,
   browserPageSchema,
   browserReplLimits,
   browserTargetSchema,
+  decodedBase64Bytes,
   type BrowserReplRequest,
 } from "./browser-repl-messages.js";
 
@@ -24,14 +28,46 @@ export type BrowserUsePage = z.infer<typeof browserPageSchema>;
 export type BrowserUseTarget = z.infer<typeof browserTargetSchema>;
 export interface BrowserUseEvent {
   readonly method: string;
-  readonly params: unknown;
+  readonly paramsJson: string;
   readonly sessionId?: string;
 }
-export interface BrowserUseCall {
+export interface BrowserUseBudget {
+  readonly maxBytes: number;
+  readonly maxDepth: number;
+  readonly maxEntries: number;
+}
+export interface BrowserUseCall extends BrowserUseBudget {
   readonly contextKey: string;
   readonly signal: AbortSignal;
   readonly deadline: number;
 }
+
+export class BrowserUseCdpError extends Error {
+  readonly code: number;
+  constructor(code: number, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+class BrowserBridgeError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+/**
+ * Share the producer's ingress byte, depth and structural entry limits with the REPL. Enforce
+ * them before decoding a frame, accumulating a list, or serializing a reply or event.
+ * Metadata fields are bounded by the same budget. Commands return JSON (use "null" for no value).
+ * On abort, stop work that has not been dispatched. Settle only when the operation has finished
+ * or cancellation is confirmed. Rejecting an abort race while the underlying operation runs
+ * does not acknowledge cancellation. onEnd reports closure or detachment of the bound target.
+ * Only explicit Opensteer refusals and BrowserUseCdpError messages are public.
+ * A port must recheck access before each command, including commands on a cached binding.
+ */
 export interface BrowserUsePort<Target extends BrowserUseTarget = BrowserUseTarget> {
   listPages(call: BrowserUseCall): Promise<readonly BrowserUsePage[]>;
   openPage(tabId: string, call: BrowserUseCall): Promise<Target>;
@@ -42,48 +78,106 @@ export interface BrowserUsePort<Target extends BrowserUseTarget = BrowserUseTarg
     params: Record<string, unknown> | undefined,
     sessionId: string | undefined,
     call: BrowserUseCall,
-  ): Promise<unknown>;
-  subscribe(target: Target, onEvent: (event: BrowserUseEvent) => void): () => void;
+  ): Promise<string>;
+  subscribe(
+    target: Target,
+    onEvent: (event: BrowserUseEvent) => void,
+    onEnd: () => void,
+    budget: BrowserUseBudget,
+  ): () => void;
 }
 
+type Binding<Target> = {
+  handle: string;
+  target: Target;
+  value: ReplReply["value"];
+  unsubscribe?: () => void;
+};
 type BrowserContext<Target> = {
   nextHandle: number;
   opening: number;
-  targets: Map<string, { target: Target; unsubscribe: () => void }>;
+  byTab: Map<string, Binding<Target>>;
+  targets: Map<string, Binding<Target>>;
+  opens: Map<string, Promise<ReplReply>>;
   events: { encoded: string; bytes: number; dialog: boolean }[];
   eventBytes: number;
+  dirty: boolean;
   unacknowledged: string | undefined;
+  eventTurnBytes: number;
+  eventTurnCount: number;
 };
 type BrowserInvocation = ReplInvocation<BrowserReplRequest>;
-
-function bridgeValue(value: unknown): ReplReply["value"] {
-  const encoded = JSON.stringify(value ?? null);
-  if (!encoded || Buffer.byteLength(encoded) > limits.bridgeBytes)
-    throw Object.assign(new Error("Browser result exceeds 1 MiB. Narrow the query."), {
-      code: "bridge-limit",
-    });
-  return ReplReplySchema.shape.value.parse(JSON.parse(encoded));
-}
-
-function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
-    if (signal.aborted) abort();
-    void work.then(
-      (value) => {
-        signal.removeEventListener("abort", abort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", abort);
-        reject(error);
-      },
-    );
-  });
-}
-
+const depth = browserReplLimits.depth;
+const eventBudget = {
+  maxBytes: browserReplLimits.eventBytes - 4096,
+  maxDepth: depth - 4,
+  maxEntries: browserReplLimits.jsonEntries,
+};
+const screenshotBytes = Math.ceil(limits.imageBytes / 3) * 4 + 2048;
 const screenshotResult = z.object({ data: z.string(), cropped: z.json().optional() });
+const screenshotTooLarge = () =>
+  new BrowserBridgeError(
+    "output-limit",
+    "Screenshot exceeds 4 MiB. Capture a smaller region with CDP.",
+  );
+const replyTooLarge = () =>
+  new BrowserBridgeError(
+    "bridge-limit",
+    "Browser result exceeds its byte or nesting limit. Narrow the query.",
+  );
+
+function publicFailure(error: unknown): ReplFailure {
+  if (
+    error instanceof BrowserBridgeError ||
+    (error instanceof OpensteerError && error.code !== "internal")
+  ) {
+    return {
+      code: error.code,
+      message: error.message,
+      ...(error instanceof OpensteerError && error.next !== undefined ? { next: error.next } : {}),
+      performed: [],
+    };
+  }
+  if (error instanceof BrowserUseCdpError && Number.isSafeInteger(error.code))
+    return { code: "cdp-error", cdpCode: error.code, message: error.message, performed: [] };
+  console.error("browser.repl.port.failed", error);
+  return { code: "failed", message: "Browser operation failed.", performed: [] };
+}
+
+function boundedBytes(text: string, limit: number): number | undefined {
+  if (typeof text !== "string" || text.length > limit) return undefined;
+  const bytes = Buffer.byteLength(text);
+  return bytes <= limit ? bytes : undefined;
+}
+
+function checkMetadata(
+  budget: BrowserUseBudget,
+  strings: readonly string[],
+  overhead: number,
+): number {
+  let remaining = budget.maxBytes - overhead;
+  for (const text of strings) {
+    if (typeof text !== "string" || text.length > remaining) throw replyTooLarge();
+    for (let index = 0; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      if (code < 32) remaining -= 6;
+      else if (code === 34 || code === 92) remaining -= 2;
+      else if (
+        code >= 0xd800 &&
+        code <= 0xdbff &&
+        text.charCodeAt(index + 1) >= 0xdc00 &&
+        text.charCodeAt(index + 1) <= 0xdfff
+      ) {
+        index++;
+        remaining -= 4;
+      } else if (code >= 0xd800 && code <= 0xdfff) remaining -= 6;
+      else remaining -= code < 128 ? 1 : code < 2048 ? 2 : 3;
+      if (remaining < 0) throw replyTooLarge();
+    }
+  }
+  if (remaining < 0) throw replyTooLarge();
+  return remaining;
+}
 
 export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarget> {
   readonly #port: BrowserUsePort<Target>;
@@ -103,6 +197,7 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
           if (state) state.unacknowledged = undefined;
         },
         dispose: ({ runId }) => this.#dispose(runId),
+        error: publicFailure,
       },
     });
   }
@@ -119,28 +214,45 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     return this.#repl.close();
   }
 
+  #unsubscribe(binding: Binding<Target>): void {
+    try {
+      binding.unsubscribe?.();
+    } catch (error) {
+      console.error("browser.repl.unsubscribe.failed", error);
+    }
+  }
+
   #dispose(key: string): void {
     const context = this.#contexts.get(key);
     if (!context) return;
     this.#contexts.delete(key);
-    for (const { unsubscribe } of context.targets.values()) {
-      try {
-        unsubscribe();
-      } catch {
-        // A closed port cannot keep the context resident.
-      }
-    }
+    for (const binding of context.targets.values()) this.#unsubscribe(binding);
   }
 
   #batch(key: string): string | undefined {
     const context = this.#contexts.get(key);
     if (!context) return undefined;
     if (context.unacknowledged !== undefined) return context.unacknowledged;
-    if (!context.events.length) return undefined;
-    context.unacknowledged = `[${context.events.map(({ encoded }) => encoded).join(",")}]`;
+    if (!context.dirty && !context.events.length) return undefined;
+    const live = JSON.stringify([...context.targets.keys()]);
+    context.unacknowledged = `{"live":${live},"events":[${context.events.map(({ encoded, bytes }) => `[${bytes},${encoded}]`).join(",")}]}`;
     context.events.length = 0;
     context.eventBytes = 0;
+    context.dirty = false;
     return context.unacknowledged;
+  }
+
+  #retire(
+    context: ComputerReplContext,
+    state: BrowserContext<Target>,
+    binding: Binding<Target>,
+  ): void {
+    if (this.#contexts.get(context.runId) !== state || !state.targets.delete(binding.handle))
+      return;
+    state.byTab.delete(binding.target.tabId);
+    this.#unsubscribe(binding);
+    state.dirty = true;
+    this.#repl.eventsAvailable(context);
   }
 
   #event(
@@ -148,22 +260,42 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     state: BrowserContext<Target>,
     handle: string,
     event: BrowserUseEvent,
-  ) {
-    if (this.#contexts.get(context.runId) !== state) return;
-    let encoded: string;
-    let bytes: number;
-    try {
-      const body = { handle, event };
-      bytes = Buffer.byteLength(JSON.stringify(body));
-      if (bytes > browserReplLimits.eventBytes) return;
-      encoded = JSON.stringify({ ...body, bytes });
-      bytes = Buffer.byteLength(encoded) + 1;
-    } catch {
-      return;
-    }
+  ): void {
+    if (this.#contexts.get(context.runId) !== state || !state.targets.has(handle)) return;
     const dialog =
       event.method === "Page.javascriptDialogOpening" ||
       event.method === "Page.javascriptDialogClosed";
+    if (!state.eventTurnCount)
+      setImmediate(() => {
+        state.eventTurnCount = 0;
+        state.eventTurnBytes = 0;
+      });
+    if (
+      state.eventTurnCount >= browserReplLimits.events + (dialog ? browserReplLimits.handles : 0) ||
+      state.eventTurnBytes >= browserReplLimits.eventBytes * (dialog ? 2 : 1)
+    )
+      return;
+    state.eventTurnCount++;
+    if (
+      typeof event.method !== "string" ||
+      event.method.length > 256 ||
+      (event.sessionId !== undefined &&
+        (typeof event.sessionId !== "string" || event.sessionId.length > 256))
+    )
+      return;
+    const rawBytes = boundedBytes(
+      event.paramsJson,
+      Math.min(
+        eventBudget.maxBytes,
+        browserReplLimits.eventBytes * (dialog ? 2 : 1) - state.eventTurnBytes,
+      ),
+    );
+    if (rawBytes === undefined) return;
+    state.eventTurnBytes += rawBytes;
+    if (!browserJsonShapeFits(event.paramsJson, eventBudget.maxDepth)) return;
+    const encoded = `[${JSON.stringify(handle)},${JSON.stringify(event.method)},${JSON.stringify(event.sessionId ?? null)},${event.paramsJson}]`;
+    const bytes = Buffer.byteLength(encoded) + 12;
+    if (bytes > browserReplLimits.eventBytes) return;
     state.events.push({ encoded, bytes, dialog });
     state.eventBytes += bytes;
     while (
@@ -177,8 +309,9 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     this.#repl.eventsAvailable(context);
   }
 
-  async #open(
+  #open(
     request: Extract<BrowserInvocation, { operation: "browser.open" | "browser.new" }>,
+    call: BrowserUseCall,
   ): Promise<ReplReply> {
     const key = request.context.runId;
     let state = this.#contexts.get(key);
@@ -186,43 +319,104 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
       state = {
         nextHandle: 0,
         opening: 0,
+        byTab: new Map(),
         targets: new Map(),
+        opens: new Map(),
         events: [],
         eventBytes: 0,
+        dirty: false,
         unacknowledged: undefined,
+        eventTurnBytes: 0,
+        eventTurnCount: 0,
       };
       this.#contexts.set(key, state);
     }
+    if (request.operation === "browser.new") return this.#bind(request, call, state);
+    const { tabId } = request.args;
+    const existing = state.byTab.get(tabId);
+    if (existing) return Promise.resolve({ value: existing.value });
+    const pending = state.opens.get(tabId);
+    if (pending) return pending;
+    const context = state;
+    const opening = this.#bind(request, call, state).finally(() => {
+      if (context.opens.get(tabId) === opening) context.opens.delete(tabId);
+    });
+    state.opens.set(tabId, opening);
+    return opening;
+  }
+
+  async #bind(
+    request: Extract<BrowserInvocation, { operation: "browser.open" | "browser.new" }>,
+    call: BrowserUseCall,
+    state: BrowserContext<Target>,
+  ): Promise<ReplReply> {
     if (state.targets.size + state.opening >= browserReplLimits.handles)
-      throw new Error("At most 16 page handles may be opened in a browser context.");
+      throw new BrowserBridgeError(
+        "bridge-limit",
+        "At most 16 page handles may be opened in a browser context.",
+      );
     state.opening++;
     try {
-      const { signal, deadline } = request;
-      const call = { contextKey: request.context.runId, signal, deadline };
-      const target = await untilAborted(
-        request.operation === "browser.open"
-          ? this.#port.openPage(request.args.tabId, call)
-          : this.#port.newPage(
-              {
-                url: request.args.url,
-                ...(request.args.profileId === undefined
-                  ? {}
-                  : { profileId: request.args.profileId }),
-              },
-              call,
-            ),
-        signal,
-      );
-      signal.throwIfAborted();
+      const target = await (request.operation === "browser.open"
+        ? this.#port.openPage(request.args.tabId, call)
+        : this.#port.newPage(
+            {
+              url: request.args.url,
+              ...(request.args.profileId === undefined
+                ? {}
+                : { profileId: request.args.profileId }),
+            },
+            call,
+          ));
+      call.signal.throwIfAborted();
+      const { tabId, targetId, sessionId, dialog } = target;
+      const metadataBytes = [
+        tabId,
+        targetId,
+        sessionId,
+        dialog?.id ?? "",
+        dialog?.type ?? "",
+        dialog?.message ?? "",
+      ];
+      checkMetadata(call, metadataBytes, 128);
+      const existing = state.byTab.get(tabId);
+      if (existing) return { value: existing.value };
       const handle = String(++state.nextHandle);
-      const value = bridgeValue({ ...browserTargetSchema.parse(target), handle });
-      const { context } = request;
-      const bindingState = state;
-      const unsubscribe = this.#port.subscribe(target, (event) =>
-        this.#event(context, bindingState, handle, event),
-      );
-      state.targets.set(handle, { target, unsubscribe });
-      return { value };
+      const fields = browserTargetSchema.parse({ tabId, targetId, sessionId, dialog });
+      const binding: Binding<Target> = {
+        handle,
+        target,
+        value: {
+          handle,
+          tabId: fields.tabId,
+          targetId: fields.targetId,
+          sessionId: fields.sessionId,
+          dialog: fields.dialog ?? null,
+        },
+      };
+      state.targets.set(handle, binding);
+      state.byTab.set(tabId, binding);
+      let unsubscribe: () => void;
+      try {
+        unsubscribe = this.#port.subscribe(
+          target,
+          (event) => this.#event(request.context, state, handle, event),
+          () => this.#retire(request.context, state, binding),
+          eventBudget,
+        );
+      } catch (error) {
+        this.#retire(request.context, state, binding);
+        throw error;
+      }
+      binding.unsubscribe = unsubscribe;
+      if (!state.targets.has(handle)) {
+        this.#unsubscribe(binding);
+        throw new BrowserBridgeError(
+          "page-ended",
+          "This page handle has ended. Bind the tab again with openPage(tabId).",
+        );
+      }
+      return { value: binding.value };
     } finally {
       state.opening--;
     }
@@ -231,42 +425,72 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
   async #invoke(request: BrowserInvocation): Promise<ReplReply> {
     const { signal, deadline } = request;
     signal.throwIfAborted();
-    const call = { contextKey: request.context.runId, signal, deadline };
+    const screenshot =
+      request.operation === "browser.command" &&
+      request.args.screenshot &&
+      request.args.method === "Page.captureScreenshot";
+    const call = {
+      contextKey: request.context.runId,
+      signal,
+      deadline,
+      maxDepth: depth - 1,
+      maxEntries: browserReplLimits.jsonEntries,
+      maxBytes: screenshot ? screenshotBytes : limits.bridgeBytes,
+    };
     switch (request.operation) {
       case "browser.pages": {
-        const pages = await untilAborted(this.#port.listPages(call), signal);
-        return { value: z.array(browserPageSchema).parse(bridgeValue(pages)) };
+        const pages = await this.#port.listPages(call);
+        signal.throwIfAborted();
+        if (pages.length > browserReplLimits.events) throw replyTooLarge();
+        checkMetadata(
+          call,
+          pages.flatMap(({ tabId, title, url, profile }) => [tabId, title, url, profile]),
+          pages.length * 64,
+        );
+        return { value: z.array(browserPageSchema).parse(pages) };
       }
       case "browser.open":
       case "browser.new":
-        return this.#open(request);
+        return this.#open(request, call);
       case "browser.command": {
         const binding = this.#contexts.get(request.context.runId)?.targets.get(request.target);
         if (!binding)
-          throw new Error("This page handle has ended. Bind the tab again with openPage(tabId).");
-        const { method, params, sessionId, screenshot } = request.args;
-        const result = await untilAborted(
-          this.#port.command(binding.target, method, params, sessionId, call),
-          signal,
-        );
-        if (screenshot && method === "Page.captureScreenshot") {
+          throw new BrowserBridgeError(
+            "page-ended",
+            "This page handle has ended. Bind the tab again with openPage(tabId).",
+          );
+        const { method, params, sessionId } = request.args;
+        const encoded = await this.#port.command(binding.target, method, params, sessionId, call);
+        signal.throwIfAborted();
+        if (screenshot && typeof encoded === "string" && encoded.length > screenshotBytes)
+          throw screenshotTooLarge();
+        const bytes = boundedBytes(encoded, call.maxBytes);
+        if (bytes === undefined || !browserJsonShapeFits(encoded, call.maxDepth))
+          throw replyTooLarge();
+        const result: unknown = JSON.parse(encoded);
+        if (screenshot) {
           const { data, cropped } = screenshotResult.parse(result);
-          if (Buffer.byteLength(data, "base64") > limits.imageBytes)
-            throw Object.assign(
-              new Error("Screenshot exceeds 4 MiB. Capture a smaller region with CDP."),
-              { code: "output-limit" },
-            );
+          if (decodedBase64Bytes(data) > limits.imageBytes) throw screenshotTooLarge();
+          if (cropped !== undefined && bytes - data.length > limits.bridgeBytes)
+            throw replyTooLarge();
           const image = browserImageSchema.parse({ data, mimeType: "image/png" });
           return {
             value: { mimeType: image.mimeType, ...(cropped === undefined ? {} : { cropped }) },
             content: [{ type: "image", ...image }],
           };
         }
-        return { value: bridgeValue(result) };
+        return { value: ReplReplySchema.shape.value.parse(result) };
       }
       case "browser.image":
         return { value: null, content: [{ type: "image", ...request.args }] };
       case "browser.url": {
+        if (request.args.href.length > limits.codeBytes) throw replyTooLarge();
+        let url: URL;
+        try {
+          url = new URL(request.args.href);
+        } catch {
+          throw new BrowserBridgeError("invalid-url", "Invalid browser URL.");
+        }
         const {
           href,
           origin,
@@ -280,7 +504,32 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
           search,
           hash,
           searchParams,
-        } = new URL(request.args.href);
+        } = url;
+        const entries: [string, string][] = [];
+        for (const entry of searchParams) {
+          if (entries.length >= 4096) throw replyTooLarge();
+          entries.push(entry);
+        }
+        const remaining = checkMetadata(
+          call,
+          [
+            href,
+            origin,
+            protocol,
+            username,
+            password,
+            host,
+            hostname,
+            port,
+            pathname,
+            search,
+            hash,
+            ...entries.flat(),
+          ],
+          entries.length * 8 + 256,
+        );
+        if (search.length * 9 > remaining) throw replyTooLarge();
+        const query = searchParams.toString();
         return {
           value: {
             href,
@@ -294,8 +543,8 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
             pathname,
             search,
             hash,
-            query: searchParams.toString(),
-            entries: [...searchParams],
+            query,
+            entries,
           },
         };
       }

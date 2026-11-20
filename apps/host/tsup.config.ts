@@ -1,11 +1,25 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "tsup";
 import { nodeApp } from "../../scripts/tsup-node-app.js";
 import { pluginEngineBuildPlugin } from "../../scripts/plugin-engine/node-build.js";
-import { readBrowserGuestModules } from "./src/browser-use/browser-guest-source.js";
+import {
+  browserGuestModuleNames,
+  readBrowserGuestModules,
+} from "./src/browser-use/browser-guest-source.js";
 import { hostProcessEntries } from "./src/process-entries.js";
 
-export default defineConfig(
-  nodeApp({
+export default defineConfig((options) => {
+  const watch = options.watch;
+  if (watch) {
+    const paths = watch === true ? ["."] : Array.isArray(watch) ? watch : [watch];
+    options.watch = [
+      ...paths,
+      ...browserGuestModuleNames.map((name) =>
+        fileURLToPath(new URL(`../runner/browser-harness/${name}`, import.meta.url)),
+      ),
+    ];
+  }
+  return nodeApp({
     entry: {
       main: hostProcessEntries.main,
       ...hostProcessEntries.workers,
@@ -25,8 +39,25 @@ export default defineConfig(
       // One schema registry per process: bundled copies fail instanceof checks.
       "zod",
     ],
-    define: { __OPENSTEER_BROWSER_GUEST_MODULES__: JSON.stringify(readBrowserGuestModules()) },
-    esbuildPlugins: [pluginEngineBuildPlugin],
+    esbuildPlugins: [
+      pluginEngineBuildPlugin,
+      {
+        name: "browser-guest-source",
+        setup(build) {
+          const source = JSON.stringify(readBrowserGuestModules());
+          build.initialOptions.define = {
+            ...build.initialOptions.define,
+            __OPENSTEER_BROWSER_GUEST_MODULES__: source,
+          };
+          build.onEnd((result) => {
+            if (result.errors.length === 0 && source !== JSON.stringify(readBrowserGuestModules()))
+              return {
+                errors: [{ text: "Browser harness source changed during the Host build." }],
+              };
+          });
+        },
+      },
+    ],
     optional: [
       // The runtime uses NodeServices here; its Bun peer is never loaded.
       "@effect/platform-bun",
@@ -39,5 +70,5 @@ export default defineConfig(
       // Optional peer of @better-auth/core; unset means no tracing.
       "@opentelemetry/api",
     ],
-  }),
-);
+  });
+});

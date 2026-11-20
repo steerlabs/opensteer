@@ -65,7 +65,15 @@ it("runs the native Page API inside the REPL against a managed Chromium session"
     accept: z.boolean(),
     promptText: z.string().optional(),
   });
-  const openPage = async (tabId) => {
+  // The fixture router already caps incoming CDP frames. Check the narrower REPL budget as well.
+  const encode = (value, budget) => {
+    const json = JSON.stringify(value ?? null);
+    if (Buffer.byteLength(json) > budget.maxBytes)
+      throw new Error("Fixture reply exceeded its budget.");
+    return json;
+  };
+  const openPage = async (tabId, { signal }) => {
+    signal.throwIfAborted();
     const surface = BrowserSurfaceIdSchema.parse(tabId);
     const binding = ledger.binding(surface);
     if (!binding) throw new Error(`Tab ${tabId} has no browser target.`);
@@ -88,12 +96,14 @@ it("runs the native Page API inside the REPL against a managed Chromium session"
         profile: "Test profile",
       })),
     openPage,
-    newPage: async ({ url }, { signal }) => {
+    newPage: async ({ url }, call) => {
+      const { signal } = call;
       const created = await ledger.openSurface({ signal, origin: "agent", activate: false });
       await rootCdpNavigate(ledger, created.id, url);
-      return openPage(created.id);
+      return openPage(created.id, call);
     },
-    command: async (target, method, parameters, attached) => {
+    command: async (target, method, parameters, attached, call) => {
+      call.signal.throwIfAborted();
       const command = {
         method,
         ...(parameters ? { parameters } : {}),
@@ -105,22 +115,44 @@ it("runs the native Page API inside the REPL against a managed Chromium session"
         if (ledger.dialogOf(BrowserSurfaceIdSchema.parse(target.tabId))?.id !== dialogId)
           throw new Error("This dialog is no longer active on the page.");
         await ledger.answerDialog(dialogId, accept, promptText);
-        return {};
+        return "{}";
       }
-      return router.send(sessionId, command);
+      return encode(await router.send(sessionId, command), call);
     },
-    subscribe: (target, listener) =>
-      router.onEvent(sessionId, ({ method, parameters, sessionId: attached }) => {
-        if (attached && router.attachedTargetId(sessionId, attached) === target.targetId)
-          listener({ method, params: parameters, sessionId: attached });
-      }),
+    subscribe: (target, listener, onEnd, budget) => {
+      const offLedger = ledger.subscribe((event) => {
+        if (
+          event.type === "closed" ||
+          (event.type === "changed" &&
+            event.change === "closed" &&
+            event.surface.id === target.tabId)
+        )
+          onEnd();
+      });
+      const offCdp = router.onEvent(sessionId, ({ method, parameters, sessionId: attached }) => {
+        if (method === "Target.detachedFromTarget" && parameters?.sessionId === target.sessionId)
+          onEnd();
+        else if (attached && router.attachedTargetId(sessionId, attached) === target.targetId)
+          listener({ method, paramsJson: encode(parameters, budget), sessionId: attached });
+      });
+      return () => {
+        offCdp();
+        offLedger();
+      };
+    },
   };
   const service = new BrowserReplService({ port });
   cleanup.push(() => service.close());
   const execute = (code) => service.execute("chromium", code, browserTestSignal());
   const program = `
-    await page.goto(${JSON.stringify(origin + "/journey?source=repl")});
-    await page.waitForURL(url => url.pathname === "/journey" && url.searchParams.get("source") === "repl");
+    await page.goto(${JSON.stringify(origin + "/journey?source=repl&tag=first&tag=two+words#ready")});
+    let urlView;
+    await page.waitForURL(url => {
+      urlView = [url.origin, url.pathname, url.hash, String(url), url.toJSON(),
+        url.searchParams.get("source"), url.searchParams.getAll("tag"), [...url.searchParams],
+        url.searchParams.has("tag", "two words"), url.searchParams.get("missing")];
+      return url.pathname === "/journey" && url.searchParams.get("source") === "repl";
+    });
     await page.getByRole("button", { name: "Activate" }).click();
     await page.getByLabel("Name").fill("Ada Lovelace");
     await page.getByRole("button", { name: "Submit" }).click();
@@ -138,7 +170,7 @@ it("runs the native Page API inside the REPL against a managed Chromium session"
       expression: "document.querySelector('#answer').textContent", returnByValue: true,
     });
     const result = {
-      title: await page.title(), status: await status.innerText(),
+      urlView, title: await page.title(), status: await status.innerText(),
       activity: await page.locator("#activity").innerText(),
       dialog: { type: dialog.type, message: dialog.message }, answer: raw.result.value,
     };
@@ -154,6 +186,22 @@ it("runs the native Page API inside the REPL against a managed Chromium session"
   expect(output?.type).toBe("text");
   if (output?.type !== "text") throw new Error("Missing browser journey output.");
   expect(JSON.parse(output.text)).toEqual({
+    urlView: [
+      origin,
+      "/journey",
+      "#ready",
+      `${origin}/journey?source=repl&tag=first&tag=two+words#ready`,
+      `${origin}/journey?source=repl&tag=first&tag=two+words#ready`,
+      "repl",
+      ["first", "two words"],
+      [
+        ["source", "repl"],
+        ["tag", "first"],
+        ["tag", "two words"],
+      ],
+      true,
+      null,
+    ],
     title: "Browser REPL fixture",
     status: "Submitted Ada Lovelace",
     activity: "trusted click",

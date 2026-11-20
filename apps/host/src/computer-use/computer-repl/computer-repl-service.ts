@@ -3,6 +3,11 @@ import { utf8Prefix, OpensteerError } from "@opensteer/core";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { delay } from "@opensteer/shared/delay";
 import type { z } from "zod";
+import {
+  browserJsonShapeFits,
+  browserReplLimits,
+  decodedBase64Bytes,
+} from "../../browser-use/browser-repl-messages.js";
 import { Worker } from "node:worker_threads";
 import { randomUUID } from "node:crypto";
 import { hostWorkerUrl } from "../../process-entries.js";
@@ -49,6 +54,10 @@ interface Call<Request> {
   readonly cleanup: () => void;
   started: boolean;
   mutationsInFlight: number;
+  operationsInFlight: number;
+  abandoned: "outcome-unknown" | "operation-pending" | undefined;
+  requests: number;
+  requestBytes: number;
   ready: boolean;
   eventsPending: boolean;
   textBytes: number;
@@ -74,6 +83,7 @@ type ReplEvents = {
   batch: (context: ComputerReplContext) => string | undefined;
   acknowledge: (context: ComputerReplContext) => void;
   dispose: (context: ComputerReplContext) => void;
+  error: (error: unknown) => ReplFailure;
 };
 
 export class ReplService<Request extends AnyReplRequest> {
@@ -87,11 +97,13 @@ export class ReplService<Request extends AnyReplRequest> {
   readonly #ended = new Set<string>();
   readonly #revoked = new Set<string>();
   readonly #generations = new Map<string, number>();
-  readonly #queue: Call<Request>[] = [];
+  readonly #queue = new Map<string, Call<Request>>();
   #expiry: NodeJS.Timeout | undefined;
   #expiryAt = Infinity;
   #worker: Worker | undefined;
   #executing = 0;
+  #browserPending = 0;
+  readonly #browserPendingByContext = new Map<string, number>();
   #closed = false;
   constructor(
     options: ReplOptions<Request> & {
@@ -146,7 +158,11 @@ export class ReplService<Request extends AnyReplRequest> {
             : "This Run's computer context has ended.",
         ),
       );
-    if (!code.length || Buffer.byteLength(code) > limits.codeBytes)
+    if (
+      !code.length ||
+      code.length > limits.codeBytes ||
+      Buffer.byteLength(code) > limits.codeBytes
+    )
       return Promise.resolve(failure(`${this.#label} code must contain 1 to 65536 bytes.`));
     if (signal?.aborted) return Promise.resolve(failure(`${this.#label} code was cancelled.`));
     const key = `${context.runId}:${context.generation}`;
@@ -216,6 +232,10 @@ export class ReplService<Request extends AnyReplRequest> {
         },
         started: false,
         mutationsInFlight: 0,
+        operationsInFlight: 0,
+        abandoned: undefined,
+        requests: 0,
+        requestBytes: 0,
         ready: false,
         eventsPending: false,
         textBytes: 0,
@@ -225,7 +245,7 @@ export class ReplService<Request extends AnyReplRequest> {
       resident.call = call;
       this.#scheduleExpiry();
       signal?.addEventListener("abort", cancel, { once: true });
-      this.#queue.push(call);
+      this.#queue.set(call.id, call);
       this.#drain();
     });
   }
@@ -242,9 +262,14 @@ export class ReplService<Request extends AnyReplRequest> {
     });
     this.#worker = worker;
     worker.on("message", (message: unknown) => {
-      void this.#message(message).catch((error) => this.#failWorker(error));
+      if (this.#worker === worker)
+        void this.#message(message).catch((error) => {
+          if (this.#worker === worker) this.#failWorker(error);
+        });
     });
-    worker.on("error", (error) => this.#failWorker(error));
+    worker.on("error", (error) => {
+      if (this.#worker === worker) this.#failWorker(error);
+    });
     worker.on("exit", (code) => {
       if (this.#worker === worker) {
         this.#worker = undefined;
@@ -255,8 +280,9 @@ export class ReplService<Request extends AnyReplRequest> {
   #drain(): void {
     if (this.#closed) return;
     while (this.#executing < limits.executing) {
-      const call = this.#queue.shift();
+      const call = this.#queue.values().next().value;
       if (!call) return;
+      this.#queue.delete(call.id);
       if (this.#contexts.get(call.key)?.call !== call) continue;
       this.#ensureWorker();
       call.started = true;
@@ -292,6 +318,16 @@ export class ReplService<Request extends AnyReplRequest> {
       this.#emit(call, { type: "text", text: message.text });
       return;
     }
+    if (message.type === "settled") {
+      call.ready = false;
+      call.abandoned = call.mutationsInFlight
+        ? "outcome-unknown"
+        : call.operationsInFlight
+          ? "operation-pending"
+          : undefined;
+      call.cancellation.abort();
+      return;
+    }
     if (message.type === "ready" || message.type === "events-read") {
       this.#events?.acknowledge(call.context);
       call.ready = true;
@@ -299,18 +335,15 @@ export class ReplService<Request extends AnyReplRequest> {
       this.eventsAvailable(call.context);
       return;
     }
+    if (message.type === "browser-request") {
+      if (this.#events) await this.#browserRequest(call, message);
+      return;
+    }
+    if (this.#events) return;
     const request = this.#request.parse(message.request);
-    const mutation = [
-      "click",
-      "type",
-      "key",
-      "setValue",
-      "scroll",
-      "act",
-      "browser.open",
-      "browser.new",
-      "browser.command",
-    ].includes(request.operation);
+    const mutation = ["click", "type", "key", "setValue", "scroll", "act"].includes(
+      request.operation,
+    );
     if (mutation) call.mutationsInFlight++;
     try {
       const result =
@@ -328,7 +361,7 @@ export class ReplService<Request extends AnyReplRequest> {
       const json = JSON.stringify(result.value);
       if (Buffer.byteLength(json) > limits.bridgeBytes)
         throw Object.assign(new Error(`${this.#label} result exceeds 1 MiB.`), {
-          code: this.#events ? "bridge-limit" : "failed",
+          code: "failed",
         });
       for (const block of result.content ?? []) if (!this.#emit(call, block)) return;
       this.#post({
@@ -345,13 +378,11 @@ export class ReplService<Request extends AnyReplRequest> {
         code:
           error instanceof DeviceAccessRefusal
             ? error.reason
-            : !this.#events && error instanceof OpensteerError && error.reason
+            : error instanceof OpensteerError && error.reason
               ? error.reason
               : "code" in record && typeof record.code === "string"
                 ? record.code
-                : this.#events && "code" in record && typeof record.code === "number"
-                  ? "cdp-error"
-                  : "failed",
+                : "failed",
         ...(error instanceof DeviceAccessRefusal
           ? { machineId: error.machineId, capability: error.capability }
           : {}),
@@ -360,9 +391,7 @@ export class ReplService<Request extends AnyReplRequest> {
             ? `${error.message} ${error.next ?? ""}`
             : error instanceof Error
               ? error.message
-              : this.#events && "message" in record && typeof record.message === "string"
-                ? record.message
-                : `${this.#label} operation failed.`,
+              : `${this.#label} operation failed.`,
         ...("next" in record && typeof record.next === "string" ? { next: record.next } : {}),
         performed:
           "performed" in record && Array.isArray(record.performed)
@@ -393,6 +422,82 @@ export class ReplService<Request extends AnyReplRequest> {
       if (mutation) call.mutationsInFlight--;
     }
   }
+  async #browserRequest(call: Call<Request>, message: { id: number; json: string }): Promise<void> {
+    const address = { context: call.key, callId: call.id, id: message.id };
+    const reject = (code: string, message: string) =>
+      this.#post({ type: "reply", ...address, error: { code, message, performed: [] } });
+    const remaining = Math.min(
+      limits.bridgeBytes,
+      browserReplLimits.requestBytes - call.requestBytes,
+    );
+    if (++call.requests > browserReplLimits.requests || message.json.length > remaining) {
+      reject("bridge-limit", "Browser request budget exceeded.");
+      return;
+    }
+    const bytes = Buffer.byteLength(message.json);
+    call.requestBytes += bytes;
+    if (bytes > remaining || !browserJsonShapeFits(message.json)) {
+      reject("bridge-limit", "Browser request exceeds its byte or nesting limit.");
+      return;
+    }
+    if (call.cancellation.signal.aborted) return;
+    const parsed = this.#request.safeParse(JSON.parse(message.json));
+    if (!parsed.success) {
+      reject("invalid-request", "Invalid browser request.");
+      return;
+    }
+    const request = parsed.data;
+    const mutation =
+      request.operation === "browser.open" ||
+      request.operation === "browser.new" ||
+      request.operation === "browser.command";
+    const portOperation = mutation || request.operation === "browser.pages";
+    const pending = this.#browserPendingByContext.get(call.key) ?? 0;
+    if (
+      portOperation &&
+      (pending >= browserReplLimits.pending ||
+        this.#browserPending >= browserReplLimits.totalPending)
+    ) {
+      reject("bridge-limit", "Too many browser operations are still pending.");
+      return;
+    }
+    if (portOperation) {
+      this.#browserPendingByContext.set(call.key, pending + 1);
+      this.#browserPending++;
+      call.operationsInFlight++;
+      if (mutation) call.mutationsInFlight++;
+    }
+    let result: ReplReply;
+    try {
+      try {
+        result = await call.invoke({
+          ...request,
+          context: call.context,
+          signal: call.cancellation.signal,
+          deadline: call.deadline,
+        });
+      } finally {
+        // The port promise is the completion acknowledgement, including after abort.
+        if (portOperation) {
+          const count = this.#browserPendingByContext.get(call.key)!;
+          if (count === 1) this.#browserPendingByContext.delete(call.key);
+          else this.#browserPendingByContext.set(call.key, count - 1);
+          this.#browserPending--;
+          call.operationsInFlight--;
+          if (mutation) call.mutationsInFlight--;
+        }
+      }
+      if (this.#contexts.get(call.key)?.call !== call || call.cancellation.signal.aborted) return;
+      for (const block of result.content ?? []) if (!this.#emit(call, block)) return;
+      this.#post({ type: "reply", ...address, value: result.value });
+    } catch (error) {
+      if (call.cancellation.signal.aborted && error === call.cancellation.signal.reason) return;
+      const failure = this.#events!.error(error);
+      if (this.#contexts.get(call.key)?.call === call && !call.cancellation.signal.aborted)
+        this.#post({ type: "reply", ...address, error: boundedReplFailure(failure) });
+    }
+  }
+
   async #sleep(ms: unknown, call: Call<Request>): Promise<ReplReply> {
     if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0 || ms > limits.wallMs)
       throw new Error("sleep requires a duration from 0 to 100000 ms.");
@@ -403,7 +508,12 @@ export class ReplService<Request extends AnyReplRequest> {
     const textBytes = call.textBytes + (block.type === "text" ? Buffer.byteLength(block.text) : 0);
     const images = call.images + (block.type === "image" ? 1 : 0);
     const imageBytes =
-      call.imageBytes + (block.type === "image" ? Buffer.from(block.data, "base64").byteLength : 0);
+      call.imageBytes +
+      (block.type === "image"
+        ? this.#events
+          ? decodedBase64Bytes(block.data)
+          : Buffer.from(block.data, "base64").byteLength
+        : 0);
     if (textBytes > limits.textBytes || images > limits.images || imageBytes > limits.imageBytes) {
       this.#finish(call, {
         code: "output-limit",
@@ -423,6 +533,25 @@ export class ReplService<Request extends AnyReplRequest> {
   #finish(call: Call<Request>, error?: ReplFailure, reset = true): void {
     const resident = this.#contexts.get(call.key);
     if (resident?.call !== call) return;
+    if (this.#events && (call.mutationsInFlight || call.abandoned === "outcome-unknown"))
+      error = {
+        code: "outcome-unknown",
+        message:
+          "Browser code ended while an action was still pending. Observe the page before deciding what to do next.",
+        performed: [],
+      };
+    else if (
+      this.#events &&
+      (call.operationsInFlight || call.abandoned === "operation-pending") &&
+      !error
+    )
+      error = {
+        code: "operation-pending",
+        message:
+          "Browser code ended while a browser operation was still pending. Await each operation before returning.",
+        performed: [],
+      };
+    if (!call.started) this.#queue.delete(call.id);
     resident.call = undefined;
     resident.usedAt = Date.now();
     this.#scheduleExpiry();
@@ -430,7 +559,7 @@ export class ReplService<Request extends AnyReplRequest> {
     if (reset && call.started) this.#events?.dispose(call.context);
     if (this.#events) call.cancellation.abort();
     if (error) {
-      this.#post({ type: "cancel", context: call.key, callId: call.id });
+      if (call.started) this.#post({ type: "cancel", context: call.key, callId: call.id });
       call.cancellation.abort();
       const bounded = boundedReplFailure(error);
       // Accepted receipts keep their order; only the final error uses the remainder.
@@ -475,6 +604,7 @@ export class ReplService<Request extends AnyReplRequest> {
   #failWorker(error: unknown): void {
     const worker = this.#worker;
     this.#worker = undefined;
+    if (this.#events) console.error("browser.repl.worker.failed", error);
     if (worker) void worker.terminate();
     const calls = [...this.#contexts.values()].flatMap((resident) =>
       resident.call ? [resident.call] : [],
@@ -485,12 +615,13 @@ export class ReplService<Request extends AnyReplRequest> {
     for (const call of calls)
       this.#finish(call, {
         code: "worker-failed",
-        message: error instanceof Error ? error.message : `${this.#label} worker failed.`,
+        message:
+          !this.#events && error instanceof Error ? error.message : `${this.#label} worker failed.`,
         performed: [],
       });
     for (const resident of this.#contexts.values()) this.#events?.dispose(resident.context);
     this.#contexts.clear();
-    this.#queue.length = 0;
+    this.#queue.clear();
     this.#closed = closed;
     this.#scheduleExpiry();
   }
