@@ -1,7 +1,7 @@
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
-export const agentSessionsMigrationName = "0043_agent_sessions";
+export const agentSessionsMigrationName = "0044_agent_sessions";
 
 /**
  * An external agent's direct work: a session anchored one-to-one to a listed task whose worker is
