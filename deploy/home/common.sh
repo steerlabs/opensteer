@@ -18,11 +18,23 @@ compose() {
     OPENSTEER_HOME_RUNNER_APPARMOR=$(cat "$home_dir/runner-apparmor.name")
     args+=(-f "$home_dir/compose.apparmor.yaml")
   fi
-  if [[ -s "$home_dir/secrets/egress_url" ]]; then args+=(-f "$home_dir/compose.egress.yaml"); fi
+  if [[ -f "$home_dir/ipv6.enabled" ]]; then args+=(-f "$home_dir/compose.ipv6.yaml"); fi
+  if [[ -s "$home_dir/secrets/egress_url" ]]; then
+    args+=(-f "$home_dir/compose.egress.yaml")
+  elif [[ -f "$home_dir/managed" ]]; then
+    args+=(-f "$home_dir/compose.egress-pending.yaml")
+  fi
   local -x OPENSTEER_HOME_OIDC_CLIENT_SECRET_PATH=''
   if [[ -s "$home_dir/secrets/oidc_client_secret" ]]; then
     OPENSTEER_HOME_OIDC_CLIENT_SECRET_PATH=/run/secrets/oidc_client_secret
   fi
+  local -x OPENSTEER_HOME_WORK_MARKER=''
+  if [[ -s "$home_dir/managed-work.json" ]]; then
+    OPENSTEER_HOME_WORK_MARKER=$(cat "$home_dir/managed-work.json")
+  fi
+  if [[ -n ${volume_env:-} ]]; then args+=(--env-file "$volume_env");
+  elif [[ -f "$home_dir/volumes.env" ]]; then args+=(--env-file "$home_dir/volumes.env"); fi
+  if [[ -n ${stage_project:-} ]]; then args+=(--project-name "$stage_project"); fi
   docker compose "${args[@]}" "$@"
 }
 
@@ -35,6 +47,16 @@ save_secret() {
   # The root-only parent stays on the VM. Compose mounts only the individual file.
   chmod 0444 "$tmp"
   mv -f -- "$tmp" "$path"
+}
+
+save_managed_egress() {
+  local upstream name
+  upstream=$(jq -er '.egress.url | rtrimstr("/")' "$1") || return
+  if [[ ! $upstream =~ :[0-9]+$ ]]; then upstream+=:443; fi
+  for name in username password; do
+    jq -er ".egress.$name" "$1" | save_secret "$home_dir/secrets/egress_$name" || return
+  done
+  printf '%s\n' "$upstream" | save_secret "$home_dir/secrets/egress_url"
 }
 
 digest() { openssl dgst -sha256 -r | cut -d ' ' -f 1; }
@@ -56,18 +78,29 @@ fetch_manifest() {
 }
 
 release_to_env() {
-  local manifest=$1 destination=$2 service ref version tmp
+  local manifest=$1 destination=$2 pinned=${3:-false} service ref version tmp
+  if "$pinned"; then
+    version=$(jq -er '.version | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}$"))' "$manifest") ||
+      fail "Invalid managed Home release version."
+  else
   version=$(jq -er '.version | select(type == "string" and test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$") and length <= 79 and . != "0.0.0")' "$manifest") ||
-    fail "Invalid Home release version."
+      fail "Invalid Home release version."
+  fi
   tmp=$(mktemp "${destination}.XXXXXX")
   printf 'OPENSTEER_HOME_VERSION=%s\n' "$version" > "$tmp"
   for service in "${services[@]}"; do
-    if ! ref=$(jq -er --arg service "$service" --arg version "$version" '
-      (.images[$service] // ("ghcr.io/steerlabs/opensteer-home-" + $service + ":" + $version)) |
+    if ! ref=$(jq -er --arg service "$service" --arg version "$version" --argjson pinned "$pinned" '
+      (if $pinned then .images[$service]
+       else .images[$service] // ("ghcr.io/steerlabs/opensteer-home-" + $service + ":" + $version)
+       end) |
       select(type == "string" and length <= 512 and test("^[a-z0-9][a-z0-9./:_-]*[a-z0-9_.-](@sha256:[a-f0-9]{64})?$"; "i"))
     ' "$manifest"); then
       rm -f -- "$tmp"
       fail "Invalid image reference for $service."
+    fi
+    if "$pinned" && [[ ! $ref =~ ^[a-z0-9./_:-]+@sha256:[0-9a-f]{64}$ ]]; then
+      rm -f -- "$tmp"
+      fail "Managed Home releases require a digest for $service."
     fi
     printf 'OPENSTEER_HOME_%s_IMAGE=%s\n' "$(printf %s "$service" | tr 'a-z-' 'A-Z_')" "$ref" >> "$tmp"
   done
@@ -118,18 +151,57 @@ remove_runner_apparmor() {
   fi
 }
 
+host_pid() {
+  local owner
+  owner=$(compose ps -q host) && [[ -n $owner ]] && docker inspect --format '{{.State.Pid}}' "$owner"
+}
+
 start_host() {
-  local owner pid
+  local pid
   compose up -d --wait --pull never postgres host || return
-  owner=$(compose ps -q host) || return
-  pid=$(docker inspect --format '{{.State.Pid}}' "$owner") || return
-  "$home_dir/firewall.sh" "$pid"
+  pid=$(host_pid) || return
+  if [[ -f "$home_dir/ipv6.enabled" ]]; then
+    "$home_dir/firewall.sh" "$pid" apply true
+  else
+    "$home_dir/firewall.sh" "$pid"
+  fi
+}
+
+check_firewall() {
+  local ipv6=false
+  if [[ -f "$home_dir/ipv6.enabled" ]]; then ipv6=true; fi
+  "$home_dir/firewall.sh" "$1" check "$ipv6"
 }
 
 start_pod() {
+  local pid
   prepare_runner_apparmor || return
-  start_host || return
-  compose up -d --wait --pull never || return
+  if start_host && pid=$(host_pid) && compose up -d --wait --no-recreate --pull never &&
+    [[ $(host_pid) == "$pid" ]] && check_firewall "$pid"; then
+    printf '%s\n' "$pid" > "$home_dir/host.pid"
+    return
+  fi
+  compose logs --no-color --tail 20 >&2 || true
+  compose down
+  return 1
+}
+
+local_discovery() {
+  compose exec -T host node -e '
+    const {createHash,createPublicKey}=require("node:crypto");
+    const origin=new URL(process.env.OPENSTEER_CANONICAL_ORIGIN);
+    (async () => {
+      const response=await fetch("http://127.0.0.1:4310/.well-known/opensteer",{
+        headers:{host:origin.host,"x-forwarded-proto":"https"}, signal:AbortSignal.timeout(5000)
+      });
+      if (!response.ok) throw Error("Discovery returned HTTP "+response.status);
+      const {authority:{document,publicKey}}=await response.json();
+      const localKey=createPublicKey(require("node:fs").readFileSync(process.env.OPENSTEER_HOST_PUBLIC_KEY_PATH));
+      const spki=localKey.export({format:"der",type:"spki"});
+      if (!spki.equals(Buffer.from(publicKey.spki,"base64url"))) throw Error("Discovery key differs from local Host key");
+      console.log(JSON.stringify({deploymentId:document.deploymentId,hostKeyFingerprint:"sha256:"+createHash("sha256").update(spki).digest("base64url")}));
+    })().catch(e=>{console.error(e.message);process.exitCode=1});
+  '
 }
 
 claimed_state() {

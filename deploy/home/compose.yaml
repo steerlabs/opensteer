@@ -2,6 +2,10 @@ name: opensteer-home
 
 x-container: &container
   cap_drop: [ALL]
+  restart: "no"
+  cpus: 1
+  mem_limit: 512m
+  memswap_limit: 512m
   security_opt: [no-new-privileges:true]
 
 x-pod: &pod
@@ -17,6 +21,9 @@ x-health: &health
 services:
   postgres:
     <<: *container
+    cpus: 2
+    mem_limit: 2g
+    memswap_limit: 2g
     image: ${OPENSTEER_HOME_POSTGRES_IMAGE:-postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15}
     user: "70:70"
     network_mode: none
@@ -40,6 +47,9 @@ services:
     stop_grace_period: 45s
   host:
     <<: *container
+    cpus: 2
+    mem_limit: 2g
+    memswap_limit: 2g
     image: ${OPENSTEER_HOME_HOST_IMAGE:?Host image required}
     environment:
       OPENSTEER_DEPLOYMENT_KIND: personal
@@ -49,6 +59,7 @@ services:
       OPENSTEER_CANONICAL_ORIGIN: https://${OPENSTEER_HOME_HOSTNAME:?Home hostname required}
       OPENSTEER_SIGNUP_POLICY: closed
       OPENSTEER_LOCAL_PASSWORD_ENABLED: ${OPENSTEER_HOME_LOCAL_PASSWORD_ENABLED:-true}
+      OPENSTEER_MANAGED_HOME_WORK_JSON: ${OPENSTEER_HOME_WORK_MARKER:-}
       OPENSTEER_MANAGED_HOME_ID: ${OPENSTEER_HOME_MANAGED_ID:-}
       OPENSTEER_MANAGED_HOME_GENERATION: ${OPENSTEER_HOME_MANAGED_GENERATION:-}
       OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN: ${OPENSTEER_HOME_ACCOUNT_ORIGIN:-}
@@ -227,24 +238,39 @@ services:
         ]
     stop_grace_period: 45s
 
+networks:
+  default:
+    enable_ipv6: false
+
 volumes:
-  postgres-data: {}
-  postgres-socket: {}
-  host-data: {}
-  runner-data: {}
-  agent-home: {}
-  engine-home: {}
-  browser-profiles: {}
-  channel-data: {}
-  caddy-data: {}
-  caddy-config: {}
+  postgres-data:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_postgres-data
+  postgres-socket:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_postgres-socket
+  host-data:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_host-data
+  runner-data:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_runner-data
+  agent-home:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_agent-home
+  engine-home:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_engine-home
+  browser-profiles:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_browser-profiles
+  channel-data:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_channel-data
+  caddy-data:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_caddy-data
+  caddy-config:
+    name: ${OPENSTEER_HOME_VOLUME_SET:-${COMPOSE_PROJECT_NAME:-opensteer-home}}_caddy-config
+
 secrets:
   postgres_password:
     file: ./secrets/postgres_password
   database_url:
     file: ./secrets/database_url
   auth_secret:
-    file: ./secrets/auth_secret
+    file: ${OPENSTEER_HOME_IDENTITY_SECRETS:-./secrets}/auth_secret
   setup_digest:
     file: ./secrets/setup_digest
   oidc_client_secret:
@@ -254,6 +280,6 @@ secrets:
   messaging_token:
     file: ./secrets/messaging_token
   environment_id:
-    file: ./secrets/environment_id
+    file: ${OPENSTEER_HOME_IDENTITY_SECRETS:-./secrets}/environment_id
   browser_token:
     file: ./secrets/browser_token

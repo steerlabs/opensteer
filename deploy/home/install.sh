@@ -12,9 +12,10 @@ usage() {
 }
 
 [[ $(uname -s) == Linux && $EUID == 0 ]] || fail "Run the Home installer as root on a Linux Docker host."
-local_tls=false prepare=false managed='' token_path='' manifest='' hostname=''
+local_tls=false prepare=false managed='' token_path='' manifest='' hostname='' resume_managed=false
 while (($#)); do
   case "$1" in
+    --resume-managed) resume_managed=true; shift ;;
     --local) local_tls=true; shift ;;
     --prepare) prepare=true; shift ;;
     --managed|--boot-spec) (($# >= 2)) || usage; managed=$2; shift 2 ;;
@@ -25,8 +26,71 @@ while (($#)); do
   esac
 done
 
+[[ $home_dir =~ ^/[a-zA-Z0-9._/-]+$ && $home_dir != / && ${home_dir##*/} != .. ]] ||
+  fail "OPENSTEER_HOME_DIR must be an absolute configuration directory."
+[[ ! -L $home_dir ]] || fail "The Home configuration directory must be a real directory."
+if [[ -e $home_dir ]]; then
+  [[ -d $home_dir && $(stat -c '%u:%a' "$home_dir") == 0:700 ]] || fail "The Home configuration directory must be root-owned with mode 0700."
+else
+  install -d -m 0700 "$home_dir"
+fi
+unit_prefix=${OPENSTEER_HOME_UNIT_PREFIX:-opensteer-home}
+[[ $unit_prefix =~ ^opensteer-home(-[a-z0-9-]+)?$ ]] || fail "Invalid Home systemd unit prefix."
+if $resume_managed; then
+  [[ $# == 0 && -s "$home_dir/boot/spec.json" ]] || usage
+  managed="$home_dir/boot/spec.json"
+  token_path="$home_dir/boot/token"
+  if [[ ${OPENSTEER_HOME_LOCAL_TLS:-false} == true ]]; then local_tls=true; fi
+fi
 if [[ -n $managed ]]; then
   [[ -z $hostname && -z $manifest && -n $token_path ]] || usage
+  if ! $resume_managed && ! $prepare; then
+    lock_home
+    for input in "$managed" "$token_path"; do
+      [[ -f $input && ! -L $input && $(stat -c '%u:%a' "$input") =~ ^0:[46]00$ ]] ||
+        fail "Managed boot inputs must be root-owned files with mode 0400 or 0600."
+    done
+    boot="$home_dir/boot"
+    install -d -m 0700 "$boot"
+    if [[ -f "$boot/completed" ]]; then
+      cmp -s "$managed" "$boot/spec.json" || fail "This Home already completed a different managed install."
+      rm -f -- "$token_path"
+      exit 0
+    fi
+    if [[ -f "$boot/spec.json" ]]; then
+      cmp -s "$managed" "$boot/spec.json" || fail "A different managed install is already staged."
+    fi
+    for file in install.sh managed-boot.sh common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml; do
+      install -m 0700 "$source_dir/$file" "$boot/$file"
+    done
+    install -m 0600 "$managed" "$boot/spec.json.new"
+    mv -f -- "$boot/spec.json.new" "$boot/spec.json"
+    if [[ ! -s "$boot/token" ]]; then
+      install -m 0600 "$token_path" "$boot/token.new"
+      mv -f -- "$boot/token.new" "$boot/token"
+    elif ! cmp -s "$token_path" "$boot/token"; then
+      [[ $(systemctl show "$unit_prefix-managed.service" -p ExecMainStatus --value) == 78 && ! -f "$home_dir/config.env" ]] ||
+        fail "A different bootstrap token is already staged."
+      install -m 0600 "$token_path" "$boot/token.new"
+      mv -f -- "$boot/token.new" "$boot/token"
+      rm -f -- "$boot/result.json"
+    fi
+    printf '%s\n' "$token_path" > "$boot/original-token-path"
+    {
+      printf 'OPENSTEER_HOME_LOCAL_TLS=%s\n' "$local_tls"
+      for key in COMPOSE_PROJECT_NAME CURL_CA_BUNDLE OPENSTEER_HOME_BIND_IP OPENSTEER_HOME_HTTP_PORT OPENSTEER_HOME_HTTPS_PORT OPENSTEER_HOME_BACKUP_NETWORK; do
+        value=${!key:-}
+        if [[ -n $value ]]; then
+          [[ $value =~ ^[a-zA-Z0-9./_:-]+$ ]] || fail "Invalid value for $key."
+          printf '%s=%s\n' "$key" "$value"
+        fi
+      done
+    } > "$boot/options.env"
+    sync "$boot"
+    flock -u 9
+    "$source_dir/install-managed-unit.sh" "$home_dir" "$unit_prefix"
+    exit 0
+  fi
 else
   [[ -n $hostname && -z $token_path ]] || usage
 fi
@@ -50,8 +114,8 @@ if [[ -n $managed && $prepare == false ]]; then
     packages=(apparmor ca-certificates curl jq openssl util-linux iptables)
     if ! docker compose version >/dev/null 2>&1; then packages+=(docker.io docker-compose-v2); fi
     apt-get install -y --no-install-recommends "${packages[@]}"
-    systemctl enable --now docker.service
   fi
+  systemctl enable --now docker.service
 fi
 if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; then
   fail "Docker Engine with Compose v2 is required. On Ubuntu 24.04 run: apt-get update && apt-get install docker.io docker-compose-v2"
@@ -64,19 +128,25 @@ if ! $prepare; then
   command -v systemctl >/dev/null || fail "systemd is required for scheduled Home operation."
 fi
 
-[[ $home_dir =~ ^/[a-zA-Z0-9._/-]+$ && $home_dir != / && ${home_dir##*/} != .. ]] ||
-  fail "OPENSTEER_HOME_DIR must be an absolute configuration directory."
-[[ ! -L $home_dir ]] || fail "The Home configuration directory must be a real directory."
-if [[ -e $home_dir ]]; then
-  [[ -d $home_dir && $(stat -c '%u:%a' "$home_dir") == 0:700 ]] || fail "The Home configuration directory must be root-owned with mode 0700."
-else
-  install -d -m 0700 "$home_dir"
-fi
 install -d -m 0700 "$home_dir/secrets"
 lock_home
 staging=$(mktemp -d "$home_dir/install.XXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
 setup_code=''
+if $resume_managed && [[ -f "$home_dir/boot/completed" ]]; then
+  rm -f -- "$(cat "$home_dir/boot/original-token-path")" "$token_path" "$home_dir/boot/result.json"
+  "$home_dir/install-scheduler.sh" "$home_dir" "$unit_prefix"
+  flock -u 9
+  systemctl start "$unit_prefix.service"
+  exit 0
+fi
+if [[ -n $managed ]]; then
+  if $resume_managed; then result="$home_dir/boot/result.json"; else result="$staging/result.json"; fi
+  if [[ ! -s $result || ! -f "$home_dir/boot/completing" ]]; then
+    "$source_dir/managed-boot.sh" boot "$managed" "$token_path" "$result"
+    sync "$result"
+  fi
+fi
 
 if [[ -f "$home_dir/config.env" ]]; then
   configured_host=$(compose config --format json | jq -er .services.gateway.environment.OPENSTEER_HOME_HOSTNAME)
@@ -88,13 +158,6 @@ else
     computer=$(jq -er .cloudComputerId "$managed")
     if [[ ! $computer =~ ^cc_[a-f0-9-]{36}$ ]] || ! valid_hostname "$hostname"; then
       fail "Invalid managed boot spec."
-    fi
-    result="$home_dir/managed-boot.$computer.$hostname.pending"
-    if [[ ! -s $result ]]; then
-      "$source_dir/managed-boot.sh" "$managed" "$result" "$token_path"
-    fi
-    if [[ -z ${OPENSTEER_HOME_RELEASE_MANIFEST_URL:-} ]]; then
-      OPENSTEER_HOME_RELEASE_MANIFEST_URL=$(jq -r '.releaseManifestUrl // empty' "$result")
     fi
     manifest="$staging/release.json"
     jq -e .release "$result" > "$manifest"
@@ -119,7 +182,9 @@ else
   fi
 
   valid_hostname "$hostname" || fail "Use a fully qualified lowercase DNS hostname."
-  release_to_env "$manifest" "$home_dir/images.env"
+  pinned=false
+  if [[ -n $managed ]]; then pinned=true; fi
+  release_to_env "$manifest" "$home_dir/images.env" "$pinned"
   db_password=$(random_secret)
   printf '%s\n' "$db_password" | save_secret "$home_dir/secrets/postgres_password"
   printf 'postgresql://opensteer:%s@localhost/opensteer?host=%%2Fvar%%2Frun%%2Fpostgresql\n' "$db_password" |
@@ -130,10 +195,14 @@ else
   printf 'env_%s\n' "$(cat /proc/sys/kernel/random/uuid)" | save_secret "$home_dir/secrets/environment_id"
 
   if [[ -n $managed ]]; then
+    if jq -e '.ipv6Enabled' "$result" >/dev/null; then touch "$home_dir/ipv6.enabled"; fi
+    touch "$home_dir/managed"
+    if jq -e '.work != null' "$result" >/dev/null; then
+      jq -ce .work "$result" | save_secret "$home_dir/managed-work.json"
+    fi
+    OPENSTEER_HOME_RELEASE_MANIFEST_URL=$(jq -r '.releaseManifestUrl // empty' "$result")
     if jq -e '.egress != null' "$result" >/dev/null; then
-      for name in url username password; do
-        jq -er ".egress.$name" "$result" | save_secret "$home_dir/secrets/egress_$name"
-      done
+      save_managed_egress "$result"
     fi
     for item in repository password accessKeyId secretAccessKey; do
       jq -er ".backup.$item" "$result" > "$home_dir/secrets/backup_$item"
@@ -168,10 +237,17 @@ else
       fi
     done
   } > "$staging/config.env"
+  if [[ -z $managed ]]; then
+    case ${OPENSTEER_HOME_IPV6_ENABLED:-false} in
+      true) touch "$home_dir/ipv6.enabled" ;;
+      false) ;;
+      *) fail "OPENSTEER_HOME_IPV6_ENABLED must be true or false." ;;
+    esac
+  fi
   if $local_tls; then printf 'tls internal\n'; else printf '# Automatic public TLS\n'; fi > "$home_dir/tls.caddy"
 fi
 
-for name in compose.yaml compose.egress.yaml compose.apparmor.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh; do
+for name in compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh; do
   if [[ "$source_dir/$name" != "$home_dir/$name" ]]; then
     install -m 0600 "$source_dir/$name" "$home_dir/$name"
   fi
@@ -182,17 +258,38 @@ chmod 0700 "$home_dir/"{firewall.sh,opensteer-home,install-scheduler.sh}
 chmod 0444 "$home_dir/tls.caddy"
 if [[ -f "$staging/config.env" ]]; then
   mv -- "$staging/config.env" "$home_dir/config.env"
-  if [[ -n $managed ]]; then rm -f -- "$result"; fi
+  sync "$home_dir"
 fi
 if $prepare; then
   install_sandbox_policies
 else
   compose pull --quiet
   install_sandbox_policies
-  "$home_dir/install-scheduler.sh" "$home_dir"
-  # The service takes the same operation lock.
+  if $resume_managed; then
+    snapshot=$(jq -r '.restoreSnapshot // empty' "$result")
+    if [[ -n $snapshot ]]; then
+      # shellcheck source=deploy/home/backup.sh
+      source "$home_dir/backup.sh"
+      backup_command managed-restore "$snapshot"
+    fi
+    start_pod
+    identity=$(local_discovery)
+    touch "$home_dir/boot/completing"
+    sync "$home_dir/boot"
+    if "$source_dir/managed-boot.sh" boot-complete "$managed" "$token_path" "$identity"; then
+      :
+    else
+      status=$?
+      if [[ $status == 78 ]]; then compose down; fi
+      exit "$status"
+    fi
+    touch "$home_dir/boot/completed"
+    sync "$home_dir/boot"
+    rm -f -- "$(cat "$home_dir/boot/original-token-path")" "$token_path" "$result"
+  fi
+  "$home_dir/install-scheduler.sh" "$home_dir" "$unit_prefix"
   flock -u 9
-  systemctl start opensteer-home.service
+  systemctl start "$unit_prefix.service"
 fi
 if [[ -z $managed && -f "$home_dir/setup-link.pending" ]]; then
   print_setup_link "$(cat "$home_dir/setup-link.pending")"

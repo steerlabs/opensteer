@@ -134,10 +134,18 @@ async function runChild(command, arguments_, environment) {
   }
 }
 
+const serviceReadSecretFiles = new Set([
+  "OPENSTEER_BROWSER_EGRESS_UPSTREAM_PASSWORD_FILE",
+  "OPENSTEER_BROWSER_EGRESS_UPSTREAM_CA_FILE",
+  "OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN_FILE",
+  "OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET_FILE",
+]);
+
 export async function expandSecretFiles(target) {
   const entries = Object.entries(target).filter(([name]) => name.endsWith("_FILE"));
   for (const [fileVariable, path] of entries) {
     if (!path) continue;
+    if (serviceReadSecretFiles.has(fileVariable)) continue;
     const variable = fileVariable.slice(0, -"_FILE".length);
     if (target[variable] !== undefined) {
       fail(`${variable} and ${fileVariable} cannot both be set.`);

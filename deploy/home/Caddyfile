@@ -1,5 +1,13 @@
 {
+	admin off
 	skip_install_trust
+	log {
+		format filter {
+			fields {
+				request>uri regexp "/v1/browser/connect/[^? ]+" /v1/browser/connect/REDACTED
+			}
+		}
+	}
 }
 
 https://{$OPENSTEER_HOME_HOSTNAME} {

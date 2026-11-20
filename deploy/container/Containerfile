@@ -479,6 +479,24 @@ COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/loc
 USER 10001:10001
 CMD ["node", "dist/main.js"]
 
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS claude-code
+ARG TARGETARCH
+ARG CLAUDE_CODE_VERSION=2.1.294
+RUN apt-get update && apt-get install --no-install-recommends --yes ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /output
+RUN case "$TARGETARCH" in \
+      amd64) platform=x64; checksum=3c64486241325f10cc728b2f92275603cd79637767126654ad377275a6d4ece3ec87409bc678fe7a3f3bb0716669638bce5a504e68b600c52c7441dfb21dc076 ;; \
+      arm64) platform=arm64; checksum=58106ad197a49681d706a53bfd19d685a39e2d729b83963a787d759915e02f2c46d789b1219f36bb273a9c4e30ae7c7aabe3e6dc3d41f837322e65ca5f92eb11 ;; \
+      *) exit 1 ;; \
+    esac && \
+    package="claude-code-linux-${platform}" && \
+    curl --fail --show-error --silent --location --connect-timeout 10 --max-time 300 \
+      "https://registry.npmjs.org/@anthropic-ai/${package}/-/${package}-${CLAUDE_CODE_VERSION}.tgz" -o claude.tgz && \
+    echo "$checksum  claude.tgz" | sha512sum --check --strict && \
+    tar --extract --file claude.tgz --strip-components=1 package/claude package/LICENSE.md && \
+    rm claude.tgz
+
 FROM node-runtime AS runner
 USER root
 RUN apt-get update && \
@@ -489,6 +507,8 @@ RUN apt-get update && \
     install --owner root --group root --mode 0555 \
       /usr/local/bin/opensteer-entrypoint.mjs \
       /opt/opensteer/control/opensteer-entrypoint.mjs
+COPY --from=claude-code --chmod=0555 /output/claude /usr/local/bin/claude
+COPY --from=claude-code --chmod=0444 /output/LICENSE.md /usr/local/share/licenses/claude-code/LICENSE.md
 COPY --from=bubblewrap-build --chmod=0555 /output/bwrap /usr/local/bin/bwrap
 # bubblewrap is LGPL: its licence travels with the binary.
 COPY --from=bubblewrap-build --chmod=0444 /output/COPYING /usr/local/share/licenses/bubblewrap/COPYING
@@ -506,7 +526,7 @@ COPY --chmod=0444 apps/runner/browser-harness/PLAYWRIGHT-LICENSE /usr/local/shar
 RUN test "$(bwrap --version)" = "bubblewrap 0.11.2" && \
     test ! -u /usr/local/bin/bwrap && \
     test "$("$OPENSTEER_BROWSER_HARNESS" --version)" = "0.5.0-opensteer" && \
-    node dist/verify-harness-runtimes-main.js && \
+    node dist/verify-harness-runtimes-main.js --require-claude-version 2.1.294 && \
     test -x /opt/opensteer/control/opensteer-entrypoint.mjs && \
     { "$OPENSTEER_PROCESS_SUPERVISOR_EXECUTABLE"; test $? -eq 64; }
 RUN install --directory --mode 0700 /tmp/opensteer-native-fs-probe

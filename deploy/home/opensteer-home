@@ -10,6 +10,16 @@ source "$home_dir/common.sh"
 [[ $EUID == 0 ]] || fail "Run opensteer-home as root."
 [[ -f "$home_dir/config.env" ]] || fail "No Home configuration was found at $home_dir."
 
+# shellcheck source=deploy/home/backup.sh
+source "$home_dir/backup.sh"
+# shellcheck source=deploy/home/update.sh
+source "$home_dir/update.sh"
+
+recover_home() {
+  restore_rollback
+  update_recovery
+}
+
 case "${1:-}" in
   status)
     [[ $# == 1 ]] || fail "Usage: opensteer-home status"
@@ -23,19 +33,37 @@ case "${1:-}" in
   setup-link)
     [[ $# == 1 ]] || fail "Usage: opensteer-home setup-link"
     lock_home
+    [[ ! -f "$home_dir/managed" ]] || fail "The Opensteer Account issues claims for this managed Home."
+    recover_home
     state=$(claimed_state) || fail "Start the Home before issuing a setup link."
     [[ $state == required ]] || fail "This Home is already claimed."
     token=$(random_secret)
     compose down
     printf '%s' "$token" | digest | save_secret "$home_dir/secrets/setup_digest"
-    start_host
+    start_pod
     [[ $(claimed_state) == required ]] || fail "The Home was claimed before its setup link could be replaced."
     print_setup_link "$token"
-    compose up -d --wait --pull never
     ;;
   start)
     lock_home
+    recover_home
     start_pod
+    ;;
+  maintain)
+    lock_home
+    recover_home
+    pid=$(host_pid) || pid=''
+    if ! { [[ -n $pid && -f "$home_dir/host.pid" && $pid == "$(cat "$home_dir/host.pid")" ]] &&
+      check_firewall "$pid" &&
+      compose ps --all --format json | jq -es 'length == 7 and all(.[]; .Health == "healthy")' >/dev/null; }; then
+      compose down
+      start_pod
+    fi
+    if [[ -f "$home_dir/managed" && -f "$home_dir/managed-egress.sh" ]]; then
+      # shellcheck source=deploy/home/managed-egress.sh
+      source "$home_dir/managed-egress.sh"
+      maintain_managed_egress
+    fi
     ;;
   stop)
     lock_home
@@ -43,14 +71,15 @@ case "${1:-}" in
     ;;
   update|scheduled-update)
     lock_home
-    # shellcheck source=deploy/home/update.sh
-    source "$home_dir/update.sh"
+    recover_home
     update_home "$@"
+    ;;
+  snapshots)
+    backup_command "$@"
     ;;
   backup|scheduled-backup|restore)
     lock_home
-    # shellcheck source=deploy/home/backup.sh
-    source "$home_dir/backup.sh"
+    recover_home
     backup_command "$@"
     ;;
   logs)
@@ -63,28 +92,44 @@ case "${1:-}" in
     ;;
   uninstall)
     [[ $# == 1 || ( $# == 2 && $2 == --purge ) ]] || fail "Usage: opensteer-home uninstall [--purge]"
-    if [[ -f /etc/systemd/system/opensteer-home.service ]] &&
-       grep -Fxq "ExecStart=$home_dir/opensteer-home start" /etc/systemd/system/opensteer-home.service; then
-      systemctl disable --now opensteer-home-{update,backup}.timer opensteer-home.service
+    unit=${OPENSTEER_HOME_UNIT_PREFIX:-opensteer-home}
+    [[ $unit =~ ^opensteer-home(-[a-z0-9-]+)?$ ]] || fail "Invalid Home systemd unit prefix."
+    system_files="/etc/systemd/system/$unit"
+    if [[ -f "$system_files-managed.service" ]] &&
+       grep -Fxq "ExecStart=$home_dir/boot/install.sh --resume-managed" "$system_files-managed.service"; then
+      systemctl disable --now "$unit-managed.service"
+    fi
+    if [[ -f "$system_files.service" ]] &&
+       grep -Fxq "ExecStart=$home_dir/opensteer-home start" "$system_files.service"; then
+      for timer in update backup maintain; do
+        if [[ -f "$system_files-$timer.timer" ]]; then
+          systemctl disable --now "$unit-$timer.timer"
+        fi
+      done
+      systemctl disable --now "$unit.service"
     fi
     lock_home
     if [[ $# == 2 ]]; then
       echo 'Removing Home configuration, database, keys, agent work, and browser profiles.'
       compose down --volumes
       remove_runner_apparmor
-      if [[ -f /etc/systemd/system/opensteer-home.service ]] &&
-         grep -Fxq "ExecStart=$home_dir/opensteer-home start" /etc/systemd/system/opensteer-home.service; then
-        rm -f /etc/systemd/system/opensteer-home{.service,-update.service,-update.timer,-backup.service,-backup.timer}
-        rm -f /usr/local/bin/opensteer-home
-        systemctl daemon-reload
+      if [[ -f "$system_files.service" ]] &&
+         grep -Fxq "ExecStart=$home_dir/opensteer-home start" "$system_files.service"; then
+        rm -f -- "$system_files"{.service,-update.service,-update.timer,-backup.service,-backup.timer,-maintain.service,-maintain.timer}
+        if [[ $unit == opensteer-home ]]; then rm -f /usr/local/bin/opensteer-home; fi
       fi
-      rm -rf -- "$home_dir/secrets"
-      rm -f -- "$home_dir/"{config.env,images.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.apparmor.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh}
+      if [[ -f "$system_files-managed.service" ]] &&
+         grep -Fxq "ExecStart=$home_dir/boot/install.sh --resume-managed" "$system_files-managed.service"; then
+        rm -f -- "$system_files-managed.service"
+      fi
+      if command -v systemctl >/dev/null; then systemctl daemon-reload; fi
+      rm -rf -- "${home_dir:?}/"{secrets,boot,identity,restore.pending,update.pending}
+      rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,update-database.dump,managed-work.json,backup-ca.pem}
       rmdir -- "$home_dir" 2>/dev/null || true
     else
       compose down
       echo "Stopped. Home data and configuration are retained in Docker volumes and $home_dir."
     fi
     ;;
-  *) fail "Usage: opensteer-home {status|setup-link|update|logs <service>|backup|restore|uninstall [--purge]}" ;;
+  *) fail "Usage: opensteer-home {status|setup-link|update|logs <service>|backup|snapshots|restore|uninstall [--purge]}" ;;
 esac

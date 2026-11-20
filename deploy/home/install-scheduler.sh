@@ -2,8 +2,13 @@
 set -euo pipefail
 home_dir=$1
 unit_dir=/etc/systemd/system
-install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home
-cat > "$unit_dir/opensteer-home.service" <<UNIT
+unit=${2:-opensteer-home}
+if [[ $unit == opensteer-home ]]; then
+  install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home
+fi
+unit_env=''
+if [[ -f "$home_dir/boot/options.env" ]]; then unit_env="EnvironmentFile=$home_dir/boot/options.env"; fi
+cat > "$unit_dir/$unit.service" <<UNIT
 [Unit]
 Description=Opensteer Home
 PartOf=docker.service
@@ -14,9 +19,12 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+Restart=on-failure
+RestartSec=10s
 TimeoutStartSec=0
 TimeoutStopSec=180
 Environment=OPENSTEER_HOME_DIR=$home_dir
+$unit_env
 ExecStart=$home_dir/opensteer-home start
 ExecStop=$home_dir/opensteer-home stop
 
@@ -24,33 +32,54 @@ ExecStop=$home_dir/opensteer-home stop
 WantedBy=multi-user.target
 UNIT
 
-for task in update backup; do
+timers=()
+for task in update backup maintain; do
+  if [[ $task == update && -f "$home_dir/managed" ]] &&
+     ! grep -Eq "^OPENSTEER_HOME_RELEASE_MANIFEST_URL='https://[^']+'$" "$home_dir/config.env"; then
+    if [[ -f "$unit_dir/$unit-update.timer" ]]; then
+      systemctl disable --now "$unit-update.timer"
+      rm -f -- "$unit_dir/$unit-update.timer" "$unit_dir/$unit-update.service"
+    fi
+    continue
+  fi
+  timers+=("$unit-$task.timer")
   case $task in
     update) calendar=hourly ;;
     backup) calendar=daily ;;
+    maintain) calendar='' ;;
   esac
-  cat > "$unit_dir/opensteer-home-$task.service" <<UNIT
+  command=scheduled-$task
+  if [[ $task == maintain ]]; then command=maintain; fi
+  cat > "$unit_dir/$unit-$task.service" <<UNIT
 [Unit]
 Description=Opensteer Home $task
-After=opensteer-home.service
+Requisite=$unit.service
+After=$unit.service
 
 [Service]
 Type=oneshot
 Environment=OPENSTEER_HOME_DIR=$home_dir
-ExecStart=$home_dir/opensteer-home scheduled-$task
+$unit_env
+ExecStart=$home_dir/opensteer-home $command
 UNIT
-  cat > "$unit_dir/opensteer-home-$task.timer" <<UNIT
+  timer="OnCalendar=$calendar
+Persistent=true"
+  if [[ $task == maintain ]]; then
+    timer='OnBootSec=30s
+OnUnitInactiveSec=15s
+AccuracySec=1s'
+  fi
+  cat > "$unit_dir/$unit-$task.timer" <<UNIT
 [Unit]
 Description=Schedule Opensteer Home $task
 
 [Timer]
-OnCalendar=$calendar
-Persistent=true
+$timer
 
 [Install]
 WantedBy=timers.target
 UNIT
 done
 systemctl daemon-reload
-systemctl enable opensteer-home.service
-systemctl enable --now opensteer-home-{update,backup}.timer
+systemctl enable "$unit.service"
+systemctl enable --now "${timers[@]}"
