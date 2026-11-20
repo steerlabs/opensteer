@@ -1,0 +1,18 @@
+{
+	skip_install_trust
+}
+
+https://{$OPENSTEER_HOME_HOSTNAME} {
+	import /etc/caddy/tls.caddy
+	reverse_proxy 127.0.0.1:4310 {
+		stream_close_delay 5m
+	}
+}
+
+http://127.0.0.1:8080 {
+	handle /ready {
+		reverse_proxy 127.0.0.1:4310 {
+			rewrite /healthz
+		}
+	}
+}

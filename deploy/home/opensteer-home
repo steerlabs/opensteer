@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+default_dir=/etc/opensteer-home
+if [[ -d $(dirname -- "$0") && -f $(dirname -- "$0")/images.env ]]; then default_dir=$(dirname -- "$0"); fi
+home_dir=${OPENSTEER_HOME_DIR:-$default_dir}
+export OPENSTEER_HOME_DIR="$home_dir"
+# shellcheck source=deploy/home/common.sh
+source "$home_dir/common.sh"
+
+[[ $EUID == 0 ]] || fail "Run opensteer-home as root."
+[[ -f "$home_dir/config.env" ]] || fail "No Home configuration was found at $home_dir."
+
+case "${1:-}" in
+  status)
+    [[ $# == 1 ]] || fail "Usage: opensteer-home status"
+    # shellcheck source=/dev/null
+    source "$home_dir/images.env"
+    printf 'Version %s\n' "$OPENSTEER_HOME_VERSION"
+    compose ps --all
+    state=$(claimed_state) || fail "The Home's claim state is unavailable."
+    if [[ $state == complete ]]; then echo 'Claimed'; else echo 'Unclaimed'; fi
+    ;;
+  setup-link)
+    [[ $# == 1 ]] || fail "Usage: opensteer-home setup-link"
+    lock_home
+    state=$(claimed_state) || fail "Start the Home before issuing a setup link."
+    [[ $state == required ]] || fail "This Home is already claimed."
+    token=$(random_secret)
+    compose down
+    printf '%s' "$token" | digest | save_secret "$home_dir/secrets/setup_digest"
+    start_host
+    [[ $(claimed_state) == required ]] || fail "The Home was claimed before its setup link could be replaced."
+    print_setup_link "$token"
+    compose up -d --wait --pull never
+    ;;
+  start)
+    lock_home
+    start_pod
+    ;;
+  stop)
+    lock_home
+    compose down
+    ;;
+  update|scheduled-update)
+    lock_home
+    # shellcheck source=deploy/home/update.sh
+    source "$home_dir/update.sh"
+    update_home "$@"
+    ;;
+  backup|scheduled-backup|restore)
+    lock_home
+    # shellcheck source=deploy/home/backup.sh
+    source "$home_dir/backup.sh"
+    backup_command "$@"
+    ;;
+  logs)
+    [[ $# == 2 ]] || fail "Usage: opensteer-home logs <service>"
+    case "$2" in
+      postgres|host|gateway|runner|browser-runtime|browser-egress|channel-runtime)
+        compose logs --tail 200 "$2" ;;
+      *) fail "Unknown Home service." ;;
+    esac
+    ;;
+  uninstall)
+    [[ $# == 1 || ( $# == 2 && $2 == --purge ) ]] || fail "Usage: opensteer-home uninstall [--purge]"
+    if [[ -f /etc/systemd/system/opensteer-home.service ]] &&
+       grep -Fxq "ExecStart=$home_dir/opensteer-home start" /etc/systemd/system/opensteer-home.service; then
+      systemctl disable --now opensteer-home-{update,backup}.timer opensteer-home.service
+    fi
+    lock_home
+    if [[ $# == 2 ]]; then
+      echo 'Removing Home configuration, database, keys, agent work, and browser profiles.'
+      compose down --volumes
+      if [[ -f /etc/systemd/system/opensteer-home.service ]] &&
+         grep -Fxq "ExecStart=$home_dir/opensteer-home start" /etc/systemd/system/opensteer-home.service; then
+        rm -f /etc/systemd/system/opensteer-home{.service,-update.service,-update.timer,-backup.service,-backup.timer}
+        rm -f /usr/local/bin/opensteer-home
+        systemctl daemon-reload
+      fi
+      rm -rf -- "$home_dir/secrets"
+      rm -f -- "$home_dir/"{config.env,images.env,tls.caddy,chromium-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh}
+      rmdir -- "$home_dir" 2>/dev/null || true
+    else
+      compose down
+      echo "Stopped. Home data and configuration are retained in Docker volumes and $home_dir."
+    fi
+    ;;
+  *) fail "Usage: opensteer-home {status|setup-link|update|logs <service>|backup|restore|uninstall [--purge]}" ;;
+esac
