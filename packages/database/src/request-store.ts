@@ -676,6 +676,7 @@ export class RequestStore {
     readonly threadId: ThreadId;
   }): Promise<{
     readonly requests: readonly Request[];
+    readonly reviewedRevisions: Readonly<Record<RequestId, string>>;
     readonly window: DurableWindow;
   }> {
     const limit = clampLimit(input.limit);
@@ -709,7 +710,7 @@ export class RequestStore {
         .where("status", "=", "pending")
         .executeTakeFirstOrThrow(),
     ]);
-    return requestPage(rows, Number(count.count), limit, scope);
+    return reviewedRequestPage(rows, Number(count.count), limit, scope);
   }
 
   async waitingOnUserPage(input: {
@@ -718,6 +719,7 @@ export class RequestStore {
     readonly userId: UserId;
   }): Promise<{
     readonly requests: readonly WaitingRequest[];
+    readonly reviewedRevisions: Readonly<Record<RequestId, string>>;
     readonly window: DurableWindow;
     readonly pendingRequestsRevision: string;
   }> {
@@ -750,7 +752,12 @@ export class RequestStore {
           page.execute(),
           addressed.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
         ]);
-        const { requests, window } = requestPage(rows, Number(count.count), limit, scope);
+        const { requests, reviewedRevisions, window } = reviewedRequestPage(
+          rows,
+          Number(count.count),
+          limit,
+          scope,
+        );
         const held = await heldAssignments(
           transaction,
           requests.map(({ id }) => id),
@@ -793,6 +800,7 @@ export class RequestStore {
               : null,
           })),
           window,
+          reviewedRevisions,
           pendingRequestsRevision,
         };
       },
@@ -3662,6 +3670,20 @@ function requestPage(
         hasMore && oldest ? encodeRequestCursor(oldest.createdAt, oldest.id, scope) : null,
       totalItems,
     },
+  };
+}
+
+function reviewedRequestPage(
+  rows: readonly RequestRow[],
+  totalItems: number,
+  limit: number,
+  scope: string,
+) {
+  return {
+    ...requestPage(rows, totalItems, limit, scope),
+    reviewedRevisions: Object.fromEntries(
+      rows.slice(0, limit).map(({ id, revision }) => [id, revision]),
+    ),
   };
 }
 

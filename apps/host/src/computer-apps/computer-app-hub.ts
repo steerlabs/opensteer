@@ -1121,11 +1121,10 @@ export class ComputerAppHub {
   ): "unsupported" | "locked" | "paused" | "protected" | null {
     if (this.#isScreen(target)) {
       const status = this.deviceStatus(target);
-      const reason = status?.availability.reason?.kind;
+      if (status?.displayVersion !== 1) return "unsupported";
+      const reason = status.availability.reason?.kind;
       if (reason === "locked" || reason === "paused" || reason === "protected") return reason;
-      return status?.displayVersion === 1 && status.availability.state === "ready"
-        ? null
-        : "unsupported";
+      return status.availability.state === "ready" ? null : "unsupported";
     }
     return this.#targetEntry(target)?.displayAvailable === false ? "unsupported" : null;
   }

@@ -662,6 +662,19 @@ export async function applyDropDeviceAccessCount(database: Kysely<DatabaseSchema
   );
 }
 
+export const browserSessionTabsIndexMigrationName = "0042_browser_session_open_tabs";
+/**
+ * A browser session's open page tabs by owner and session, for the Host's shadow comparison of
+ * its catalog with what the runtime reports. Additive: a Host from before it ignores the index.
+ */
+export async function applyBrowserSessionTabsIndex(database: Kysely<DatabaseSchema>) {
+  await sql`
+    create index if not exists personal_tabs_open_page_session
+      on personal_tabs(owner_id, (page_binding->>'sessionId'))
+      where kind = 'page' and closed_at is null
+  `.execute(database);
+}
+
 export async function applyPersonalStateSchema(transaction: Kysely<DatabaseSchema>) {
   await sql.raw(retainedStateDdl).execute(transaction);
   await sql.raw(currentStateIndexes).execute(transaction);

@@ -12,7 +12,18 @@ export type IphoneScreenAttachInput = Omit<
 > & { readonly idempotencyKey?: string };
 
 export const clientCommandSchema = hostApi["commands.dispatch"].payload;
-export type ClientCommandInput = z.input<typeof clientCommandSchema>;
+type WireCommand = z.input<typeof clientCommandSchema>;
+type RequestDecisionCommand = Extract<
+  WireCommand,
+  {
+    type: "request.respond" | "browser.sign-in.respond" | "browser.password-sign-in.respond";
+  }
+>;
+
+/** v64 accepts older envelopes. Every new app command must carry the reviewed revision. */
+export type ClientCommandInput =
+  | Exclude<WireCommand, RequestDecisionCommand>
+  | (RequestDecisionCommand & { readonly expectedRevision: string });
 
 export type MachineAccessUpdateInput = {
   readonly expectedRevision: number;

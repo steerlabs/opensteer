@@ -1,4 +1,4 @@
-import { requestDecisionRevision } from "../host/client.js";
+import { requestDecision } from "../host/client.js";
 import cronstrue from "cronstrue";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import type { Request, RequestResponse } from "@opensteer/core";
@@ -336,8 +336,7 @@ export function respondToPluginRequest(
   return client.dispatch({
     type: "request.respond",
     idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
-    requestId: request.id,
-    ...requestDecisionRevision(request),
+    ...requestDecision(request),
     response,
   });
 }

@@ -86,11 +86,11 @@ func newLogger(w io.Writer) *slog.Logger {
 			return a
 		case slog.MessageKey:
 			switch a.Value.String() {
-			case "bridge.request", "bridge.response", "bridge.service", "bridge.native-error":
+			case "bridge.request", "bridge.response", "bridge.service", "bridge.native-error", "bridge.screen-state":
 				return a
 			}
 			return slog.String(a.Key, "native")
-		case "method", "service", "reason", "module":
+		case "method", "service", "reason", "module", "lock", "display":
 			return slog.String(a.Key, scrub(a.Value.String()))
 		case "requestId", "durationMs":
 			if a.Value.Kind() == slog.KindInt64 || a.Value.Kind() == slog.KindUint64 {

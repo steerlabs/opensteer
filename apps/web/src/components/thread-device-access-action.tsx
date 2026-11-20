@@ -1,7 +1,7 @@
-import { requestDecisionRevision } from "@opensteer/client/host";
+import { requestDecision } from "@opensteer/client/host";
 import { useContext, useState, type ReactNode } from "react";
 import type { Request } from "@opensteer/core";
-import { turnOnDeviceAccess } from "@opensteer/client/computers";
+import { answerDeviceAccessRequest } from "@opensteer/client/computers";
 import { mutationIdempotencyKey } from "@opensteer/client/host";
 import { outcomeWords, runAction } from "./use-action.js";
 import { ActionNote } from "./action-rows.js";
@@ -153,7 +153,7 @@ export function ThreadDeviceAccessAction({
             requestId: request.id,
             threadId: dockThreadId ?? request.originatingThreadId,
           });
-        await turnOnDeviceAccess(hostClient, machineId, access);
+        await answerDeviceAccessRequest(hostClient, request, "fulfilled");
       },
     });
     if (outcome.kind !== "confirmed") {
@@ -174,8 +174,7 @@ export function ThreadDeviceAccessAction({
       execute: () =>
         hostClient.dispatch({
           idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
-          requestId: request.id,
-          ...requestDecisionRevision(request),
+          ...requestDecision(request),
           response: { kind: "external", value: { decision: "declined" } },
           type: "request.respond",
         }),

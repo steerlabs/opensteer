@@ -537,7 +537,7 @@ function computerAccessResult(
       "fulfilled",
       created.app
         ? `${created.app.displayName} on ${created.computer} is ready. Use app(${JSON.stringify(created.app.displayName)}, {computer:${JSON.stringify(created.computer)}}) in computer_use.`
-        : `${created.computer} is ready. Use phone(${JSON.stringify(created.computerId)}) in computer_use.`,
+        : `${created.computer} screen access is approved. Use phone(${JSON.stringify(created.computerId)}) in computer_use.`,
     ),
     computerId: created.computerId,
     computer: created.computer,

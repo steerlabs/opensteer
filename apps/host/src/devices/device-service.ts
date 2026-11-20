@@ -114,7 +114,10 @@ import {
   type ComputerReplInvocation,
 } from "../computer-use/computer-repl/computer-repl-service.js";
 import type { ReplContent, ReplReply } from "../computer-use/computer-repl/messages.js";
-import { bindNativeTab } from "../computer-use/computer-repl/native-tab-binding.js";
+import {
+  bindNativeTab,
+  type ExistingNativeTab,
+} from "../computer-use/computer-repl/native-tab-binding.js";
 import type { NativeReplTabTarget, NativeTabTargets } from "../computer-use/native-tab-targets.js";
 import {
   ComputerUseError,
@@ -139,7 +142,10 @@ import {
   computerUseHoldingOf,
   endComputerUseSessions,
 } from "./computer-app-approval-service.js";
-import { computerObservationContent } from "./computer-use-tool-result.js";
+import {
+  computerObservationContent,
+  iphoneScreenStatusContent,
+} from "./computer-use-tool-result.js";
 import { IntegrationAuthorizationRequiredError } from "./integration-authorization-required.js";
 
 /** What moving a file between a Run and a computer app needs from the Host. */
@@ -321,7 +327,7 @@ export class DeviceService {
     ((target: import("../tabs/ports.js").DeviceNativeTargetAcquired) => Promise<TabId>) | undefined;
   readonly #onTabUsed: ((claims: RunToolScope, tabId: TabId, title: string) => void) | undefined;
   readonly #nativeTabs: Pick<NativeTabTargets, "acquired" | "captureMembership"> | undefined;
-  readonly #tabs: Pick<TabServicePort, "get" | "authorizeShow"> | undefined;
+  readonly #tabs: Pick<TabServicePort, "get" | "authorizeBind"> | undefined;
   readonly #nativeTabTarget:
     ((ownerId: UserId, tabId: TabId) => Promise<NativeReplTabTarget>) | undefined;
   readonly computerRepl: ComputerReplService;
@@ -370,7 +376,7 @@ export class DeviceService {
     ) => Promise<TabId>;
     readonly onTabUsed?: (claims: RunToolScope, tabId: TabId, title: string) => void;
     readonly nativeTabs?: Pick<NativeTabTargets, "acquired" | "captureMembership">;
-    readonly tabs?: Pick<TabServicePort, "get" | "authorizeShow">;
+    readonly tabs?: Pick<TabServicePort, "get" | "authorizeBind">;
     readonly nativeTabTarget?: (ownerId: UserId, tabId: TabId) => Promise<NativeReplTabTarget>;
     readonly computerToolEnabled?: (
       context: RunCapabilityClaims<string>,
@@ -1094,7 +1100,7 @@ export class DeviceService {
     args: Readonly<Record<string, unknown>>,
     signal?: AbortSignal,
     deadline?: number,
-    beforeAcquired?: () => Promise<void>,
+    existingTab?: ExistingNativeTab,
     facts?: Awaited<ReturnType<DeviceService["computerAccess"]>>,
   ): Promise<ReplReply> {
     if ((!caller.run && !caller.session) || !this.#computerUse)
@@ -1107,7 +1113,7 @@ export class DeviceService {
         args,
         signal,
         deadline,
-        beforeAcquired,
+        existingTab,
         facts,
       );
     } catch (error) {
@@ -1121,6 +1127,8 @@ export class DeviceService {
       const phone = access.phones.find(
         (entry) => (entry.connectionId ?? entry.connection?.connectionId) === target,
       );
+      // Preserve the live iPhone refusal instead of rewriting it from discovery.
+      if (phone?.definitionId === iphoneScreenDefinitionId) throw error;
       const machine = access.machines.find((entry) =>
         entry.apps.some((app) => app.connectionId === target),
       );
@@ -1177,7 +1185,7 @@ export class DeviceService {
     args: Readonly<Record<string, unknown>>,
     signal?: AbortSignal,
     deadline?: number,
-    beforeAcquired?: () => Promise<void>,
+    existingTab?: ExistingNativeTab,
     facts?: Awaited<ReturnType<DeviceService["computerAccess"]>>,
   ): Promise<ReplReply> {
     const run = caller.run;
@@ -1345,7 +1353,9 @@ export class DeviceService {
       };
     };
     const membershipRevision =
-      operation === "bind" ? await this.#nativeTabs?.captureMembership(ownerUserId) : undefined;
+      operation === "bind" && !existingTab
+        ? await this.#nativeTabs?.captureMembership(ownerUserId)
+        : undefined;
     try {
       if (operation !== "release")
         lease = await computerUse.prepare(
@@ -1371,8 +1381,10 @@ export class DeviceService {
           await start(connection, scope);
           return send();
         });
+      const iphone = scope.kind === "display" && scope.definitionId === iphoneScreenDefinitionId;
       if (operation === "release")
         released = await guarded(() => computerUse.releaseSession(authority, placement.deviceId));
+      else if (iphone && operation === "bind") await guarded(async () => undefined);
       else if (lease) {
         const dispatch =
           row === "act"
@@ -1438,12 +1450,21 @@ export class DeviceService {
         content.push(
           ...computerObservationContent(result.observation, renderImages, placement.runnerName),
         );
+      } else if (result?.kind === "display" && result.status && args.emit !== false) {
+        content.push(iphoneScreenStatusContent(result.status, placement.runnerName));
       }
+      const toolResult =
+        iphone && result?.kind === "display"
+          ? {
+              ...result,
+              controls: await this.#replPhoneControls(placement.deviceId, iphoneScreenDefinitionId),
+            }
+          : result;
       if (result?.error)
         throw Object.assign(result.error, {
           performed,
           content,
-          value: JSON.parse(JSON.stringify(result)),
+          value: JSON.parse(JSON.stringify(toolResult)),
         });
       const value =
         operation === "release"
@@ -1454,7 +1475,7 @@ export class DeviceService {
               ? { window: result?.window }
               : mac && row === "act"
                 ? { performed }
-                : result;
+                : toolResult;
       // A connected agent's handle holds its own target; it opens no tab in the person's list.
       if (operation === "bind" && !run)
         return {
@@ -1470,31 +1491,38 @@ export class DeviceService {
           content,
         };
       if (operation === "bind") {
-        if (!this.#nativeTabs || !run || run.aud !== "opensteer-run-tools")
+        if (!run || run.aud !== "opensteer-run-tools")
           throw refused("conflict", "The tab service is unavailable.");
         signal?.throwIfAborted();
-        await beforeAcquired?.();
         const runClaims: RunToolScope = { ...run, aud: "opensteer-run-tools" };
-        const common = {
-          ownerId: ownerUserId,
-          runClaims,
-          computerId: placement.deviceId,
-          key: randomUUID(),
-          membershipRevision: membershipRevision!,
-        };
-        const targetAcquired = mac
-          ? {
-              ...common,
-              kind: "window" as const,
-              windowId: WindowIdSchema.parse(result?.window?.windowId),
-            }
-          : { ...common, kind: "phone" as const };
-        const tabId = this.#onDeviceTargetAcquired
-          ? await this.#onDeviceTargetAcquired(targetAcquired)
-          : await this.#nativeTabs.acquired({
-              ...targetAcquired,
-              computerId: await this.#store.requireDeviceSelfRunnerId(placement.deviceId),
-            });
+        let tabId: TabId;
+        if (existingTab) {
+          await existingTab.authorize();
+          tabId = existingTab.tabId;
+        } else {
+          if (!this.#nativeTabs || membershipRevision === undefined)
+            throw refused("conflict", "The tab service is unavailable.");
+          const common = {
+            ownerId: ownerUserId,
+            runClaims,
+            computerId: placement.deviceId,
+            key: randomUUID(),
+            membershipRevision,
+          };
+          const targetAcquired = mac
+            ? {
+                ...common,
+                kind: "window" as const,
+                windowId: WindowIdSchema.parse(result?.window?.windowId),
+              }
+            : { ...common, kind: "phone" as const };
+          tabId = this.#onDeviceTargetAcquired
+            ? await this.#onDeviceTargetAcquired(targetAcquired)
+            : await this.#nativeTabs.acquired({
+                ...targetAcquired,
+                computerId: await this.#store.requireDeviceSelfRunnerId(placement.deviceId),
+              });
+        }
         this.#onTabUsed?.(runClaims, tabId, result?.window?.title ?? placement.runnerName);
         return {
           value: z.json().parse(
@@ -1770,7 +1798,7 @@ export class DeviceService {
               ? access.app(machine, target.app).blocked
               : undefined;
           },
-          bind: async (connection, target, beforeAcquired) =>
+          bind: async (connection, target, existingTab) =>
             this.callComputerOperation(
               caller,
               connection.id,
@@ -1778,7 +1806,7 @@ export class DeviceService {
               target.kind === "window" ? { windowId: target.windowId } : {},
               request.signal,
               request.deadline,
-              beforeAcquired,
+              existingTab,
               await computerAccess(),
             ),
         },

@@ -1,5 +1,6 @@
 import {
   mutationIdempotencyKey,
+  requestDecision,
   threadInDirectory,
   workWords,
   type HostClient,
@@ -9,7 +10,7 @@ import {
   type SessionTaskView,
 } from "@opensteer/client/host";
 import { useTaskActivity, useThreadTranscript } from "@opensteer/client/react";
-import { AgentSessionIdSchema, RequestIdSchema, ThreadIdSchema } from "@opensteer/core";
+import { AgentSessionIdSchema, ThreadIdSchema } from "@opensteer/core";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { ExternalAgentMark } from "../screens/external-agent-mark.js";
@@ -233,7 +234,7 @@ export function OperationRequestCard(props: {
       if (view.answers === null) return;
       await hostClient.dispatch({
         type: "request.respond",
-        requestId: RequestIdSchema.parse(request.id),
+        ...requestDecision(request),
         response: { kind: "form", answers: { [view.answers.fieldId]: [value] } },
         idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
       });

@@ -1,4 +1,4 @@
-import { requestDecisionRevision } from "@opensteer/client/host";
+import { requestDecision } from "@opensteer/client/host";
 import { clientScopeKey } from "@opensteer/client/connections";
 import { assertMessageLogin, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
 import { presentClientIssue } from "@opensteer/client/feedback";
@@ -58,7 +58,7 @@ import {
   type SurfaceModel,
 } from "@opensteer/client/host";
 import { AnswerField, QuestionBody, untitledQuestion } from "./question-answer.js";
-import { useAnswersInComposer } from "./question-session.js";
+import { useAnswersInComposer, useQuestionSessionKey } from "./question-session.js";
 
 export function InputSurface({
   autoContext = false,
@@ -194,7 +194,8 @@ export function InputSurface({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const docked = requests !== undefined;
   const asked = docked ? dock.question : question;
-  const answering = useAnswersInComposer(threadId, asked?.surface.request.id ?? null);
+  const questionKey = useQuestionSessionKey(asked?.surface.request ?? null);
+  const answering = useAnswersInComposer(threadId, questionKey);
   const messageHidden = composerHidden || (docked && dock.composerHidden) || answering;
   const done = snapshot.threads.find((thread) => thread.id === threadId)?.doneAt != null;
   // A Host that reopens a Done task for its writer keeps the composer; an older one asks first.
@@ -735,8 +736,7 @@ function ActionBody({
       execute: (response: RequestResponse) =>
         hostClient.dispatch({
           idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
-          requestId: request.id,
-          ...requestDecisionRevision(request),
+          ...requestDecision(request),
           response,
           type: "request.respond",
         }),

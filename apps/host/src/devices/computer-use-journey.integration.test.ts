@@ -699,7 +699,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     }
   });
 
-  it("computer REPL read access refuses act", async () => {
+  it("computer REPL read access observes and rebinds a phone tab while refusing input", async () => {
     const world = await createWorld(database, { phone: true });
     try {
       const run = await world.startRun("Read phone through code");
@@ -715,6 +715,24 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           .map((row) => row.text)
           .join("\n"),
       ).toContain("read-write access");
+      expect(fake.received("act")).toBe(0);
+      const tabs = await world.tabStore.snapshot(world.owner.userId);
+      const [phoneTab] = tabs.rows;
+      if (!phoneTab) throw new Error("Missing existing phone tab");
+      await database
+        .updateTable("runs")
+        .set({ accessMode: "approval-required" })
+        .where("id", "=", run.runId)
+        .execute();
+      const rebound = await gateway.call("computer_use", {
+        code: `globalThis.readPhone=await tab(${JSON.stringify(phoneTab.id)}); await readPhone.observe(); return readPhone.tabId`,
+      });
+      expect(rebound.isError, JSON.stringify(rebound)).toBeUndefined();
+      expect(text(rebound)).toContain(JSON.stringify(phoneTab.id));
+      expect(await world.tabStore.snapshot(world.owner.userId)).toEqual(tabs);
+      expect((await gateway.call("computer_use", { code: "await readPhone.tap(1)" })).isError).toBe(
+        true,
+      );
       expect(fake.received("act")).toBe(0);
       const [row] = await world.platform.listCallableTools({
         ownerUserId: world.owner.userId,
@@ -1323,6 +1341,22 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       expect(await world.computerViews.list(world.owner.userId, world.macId)).toEqual([
         nextView.viewer.view,
       ]);
+      const reopenedTabs = await world.tabStore.snapshot(world.owner.userId);
+      await database
+        .updateTable("runs")
+        .set({ accessMode: "approval-required" })
+        .where("id", "=", run.runId)
+        .execute();
+      const readOnly = await gateway.call("computer_use", {
+        code: `globalThis.readWindow=await tab(${JSON.stringify(nativeTab.id)}); await readWindow.observe(); return readWindow.tabId`,
+      });
+      expect(readOnly.isError, JSON.stringify(readOnly)).toBeUndefined();
+      expect(text(readOnly)).toContain(JSON.stringify(nativeTab.id));
+      expect(await world.tabStore.snapshot(world.owner.userId)).toEqual(reopenedTabs);
+      expect(
+        (await gateway.call("computer_use", { code: "await readWindow.click(1)" })).isError,
+      ).toBe(true);
+      expect(world.fakeMac.frames.filter(({ operation }) => operation === "act")).toHaveLength(2);
 
       const artifactDirectory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
       if (artifactDirectory) {

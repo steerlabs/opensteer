@@ -55,6 +55,7 @@ export const iphoneNativeReasonSchema = z.enum([
   "unsupported-clear",
   "lock-state-unknown",
   "wake-on-phone-required",
+  "screen-state-unknown",
   "app-not-launchable",
   "native-limit-exceeded",
   // Same-LAN transport availability.
@@ -269,6 +270,20 @@ export const iphoneNativeObservationSchema = z
       ctx.addIssue({ code: "custom", path: ["nodes"], message: "AX byte limit exceeded" });
   });
 export type IphoneNativeObservation = z.infer<typeof iphoneNativeObservationSchema>;
+const iphoneNativeScreenStatusSchema = z.strictObject({
+  nativeEpoch: positive,
+  state: iphoneNativeDeviceStateSchema,
+  reason: z.enum([
+    "phone-locked",
+    "lock-state-unknown",
+    "wake-on-phone-required",
+    "screen-state-unknown",
+  ]),
+});
+const iphoneNativeObserveResultSchema = z.union([
+  iphoneNativeObservationSchema,
+  iphoneNativeScreenStatusSchema,
+]);
 export const iphoneNativePerformResultSchema = z
   .object({
     effect: z.enum(["not-started", "submitted"]),
@@ -622,7 +637,7 @@ export const iphoneNativeResponseSchema = z
       iphoneNativeRosterSchema,
       iphoneNativeInspectionSchema,
       // N2 screen results.
-      iphoneNativeObservationSchema,
+      iphoneNativeObserveResultSchema,
       iphoneNativePerformResultSchema,
       iphoneNativeInstalledAppsSchema,
       iphoneNativePhoneRefSchema,
@@ -734,7 +749,7 @@ export const iphoneRunnerParams = {
 export const iphoneRunnerResults = {
   "iphone.targets": z.strictObject({ targets: z.array(iphoneRunnerTargetSchema).max(8) }),
   "iphone.session.open": z.strictObject({ nativeEpoch: positive }),
-  "iphone.observe": iphoneScreenNativeObservationSchema,
+  "iphone.observe": iphoneNativeObserveResultSchema,
   "iphone.perform": z.union([
     iphoneScreenNativeReceiptSchema,
     z.strictObject({ error: iphoneNativeFailureSchema }),

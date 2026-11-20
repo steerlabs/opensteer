@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
-import { requestDecisionRevision } from "./client.js";
+import { requestDecision } from "./client.js";
 import type { ScopedClientMessage } from "@opensteer/protocol/personal-sync";
 import { memoryCheckpointStorage } from "../test-support/memory-checkpoint-storage.js";
 import type { HostSnapshot } from "./client.js";
@@ -49,18 +49,28 @@ it("lists the Requests this person answers, and drops one once it is answered", 
         .sort(),
     ).toEqual(pending.map(({ request }) => request.id).sort()),
   );
-  const answered = pending.find(({ request }) => request.kind === "plugin.approval")!;
-  const reviewed = await client.readRequest(
-    answered.request.originatingThreadId,
-    answered.request.id,
-  );
-  await client.dispatch({
+  const answered = client
+    .getSnapshot()
+    .waitingRequests.find(({ request }) => request.kind === "plugin.approval")!;
+  const command = {
     type: "request.respond",
     idempotencyKey: "answer-approval",
-    requestId: answered.request.id,
-    ...requestDecisionRevision(reviewed!),
+    ...requestDecision(answered.request),
     response: { kind: "external", value: { decision: "declined" } },
-  });
+  } as const;
+  await expect(
+    client.dispatch({
+      ...command,
+      idempotencyKey: "stale-approval",
+      expectedRevision: String(BigInt(command.expectedRevision) + 1n),
+    }),
+  ).rejects.toMatchObject({ code: "conflict", reason: "request-changed" });
+  expect(
+    host.client
+      .getSnapshot()
+      .waitingRequests.some(({ request }) => request.id === answered.request.id),
+  ).toBe(true);
+  await client.dispatch(command);
   await vi.waitFor(() =>
     expect(
       client

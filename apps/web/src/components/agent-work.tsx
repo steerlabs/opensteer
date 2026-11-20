@@ -3,13 +3,14 @@ import {
   agentSessionSlot,
   mutationIdempotencyKey,
   operationRequestView,
-  requestDecisionRevision,
+  requestDecision,
   sessionTaskRow,
   sessionTaskView,
   tabAgentLine,
   threadInDirectory,
   type OperationGlyph,
   type OperationRequestView,
+  type RequestView,
   type HostClient,
   type SessionTaskView,
   workWords,
@@ -176,7 +177,7 @@ export function OperationRequestPanel({
   view,
 }: {
   readonly disabled: boolean;
-  readonly request: Request;
+  readonly request: RequestView;
   readonly view: OperationRequestView;
 }) {
   const { hostClient } = useShell();
@@ -188,8 +189,7 @@ export function OperationRequestPanel({
       execute: (response: RequestResponse) =>
         hostClient.dispatch({
           idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
-          requestId: request.id,
-          ...requestDecisionRevision(request),
+          ...requestDecision(request),
           response,
           type: "request.respond",
         }),

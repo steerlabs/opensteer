@@ -123,7 +123,11 @@ export * from "./transcript-files.js";
 export * from "./tabs-contract.js";
 export * from "./authorization-attempt.js";
 export * from "./device-projection.js";
-export type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
+export type {
+  ClientCommandInput,
+  MachineAccessUpdateInput,
+  IphoneScreenAttachInput,
+} from "./device-commands.js";
 export * from "./iphone-setup.js";
 
 export { createPersonalStreamCache, type PersonalStreamCache } from "./personal-stream-cache.js";

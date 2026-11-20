@@ -665,6 +665,7 @@ export class PluginExecutions {
     if ((await this.options.store.requests.revision(request.id)) !== input.expectedRevision)
       throw new OpensteerError({
         code: "conflict",
+        reason: "request-changed",
         message: "Request changed; read it again before answering",
       });
     if (request.payload.kind === "plugin.account") {

@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockPasswordSignInRequest, MockHostClient } from "@opensteer/client/mock";
 import { createId } from "@opensteer/core";
+import type { RequestView } from "@opensteer/client/host";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { PasswordSignInRequestBody } from "./thread-password-sign-in-action.js";
 
@@ -25,7 +26,10 @@ const account = {
 };
 async function mount(
   card: PasswordSignInCard = { stage: "approval", accounts: [account], permissionVersion: 6 },
-  request = mockPasswordSignInRequest(),
+  request: RequestView = {
+    ...mockPasswordSignInRequest(),
+    reviewedRevision: "12",
+  },
 ) {
   const base = new MockHostClient({ latencyMs: 0 });
   const read = vi.fn(async () => ({ ok: true as const, data: card }));
@@ -80,6 +84,7 @@ describe("Passwords approval through the Host", () => {
   it("offers only one-time approval for a connected agent", async () => {
     const h = await mount(undefined, {
       ...mockPasswordSignInRequest(),
+      reviewedRevision: "12",
       originatingAgentSessionId: createId("agentSession"),
     });
     expect(h.page.textContent).not.toContain("from now on");

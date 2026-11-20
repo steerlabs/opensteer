@@ -12,6 +12,7 @@ import {
 import {
   answeredQuestionRecordsMigrationName,
   dropDeviceAccessCountMigrationName,
+  browserSessionTabsIndexMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import { agentGrantsMigrationName } from "./agent-grants-migration.js";
@@ -87,6 +88,7 @@ test.each(["empty", "personal", "team", "personal-0035"] as const)(
         taskApprovalReceiptsMigrationName,
         answeredQuestionRecordsMigrationName,
         dropDeviceAccessCountMigrationName,
+        browserSessionTabsIndexMigrationName,
         agentGrantsMigrationName,
         agentSessionsMigrationName,
         "0044_chrome_live_tabs_source",

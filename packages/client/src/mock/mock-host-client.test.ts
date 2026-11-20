@@ -1,3 +1,4 @@
+import { requestDecision } from "../host/client.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { appFrameReadinessScript } from "@opensteer/shared/appFrame";
 import { phoneUseView } from "../integrations/computer-use.js";
@@ -990,7 +991,7 @@ it("keeps a subagent's settled question with that subagent, as the Host does", a
     const answered = await client.rpc["commands.dispatch"]({
       type: "request.respond",
       idempotencyKey: `mock-answer:${crypto.randomUUID()}`,
-      requestId: asked.id,
+      ...requestDecision((await client.readRequest(threadId, asked.id))!),
       response: { kind: "form", answers: {} },
     });
     if (!answered.ok) throw new Error(JSON.stringify(answered.error));
@@ -1018,7 +1019,7 @@ it("offers transient Passwords choices and settles the pinned shared command in 
     const result = await client.dispatch({
       type: "browser.password-sign-in.respond",
       idempotencyKey: "mock-password-approval",
-      requestId: request.id,
+      ...requestDecision((await client.readRequest(request.originatingThreadId, request.id))!),
       decision: {
         kind: "approve",
         loginId: account.id,

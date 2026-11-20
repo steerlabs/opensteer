@@ -9,6 +9,7 @@ import {
 } from "./migrations.js";
 import {
   answeredQuestionRecordsMigrationName,
+  browserSessionTabsIndexMigrationName,
   dropDeviceAccessCountMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
@@ -58,6 +59,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     taskApprovalReceiptsMigrationName,
     answeredQuestionRecordsMigrationName,
     dropDeviceAccessCountMigrationName,
+    browserSessionTabsIndexMigrationName,
     agentGrantsMigrationName,
     agentSessionsMigrationName,
     "0044_chrome_live_tabs_source",

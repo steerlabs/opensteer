@@ -1,3 +1,4 @@
+import { requestDecision } from "@opensteer/client/host";
 // @vitest-environment happy-dom
 import { controlledClientSession } from "@opensteer/client/test-support";
 import { DeviceIdSchema } from "@opensteer/core";
@@ -459,6 +460,7 @@ describe("RequestSheetContent saved-password sign-ins", () => {
     await click("Don’t Allow");
     expect(dispatch).toHaveBeenCalledExactlyOnceWith({
       idempotencyKey: expect.any(String),
+      expectedRevision: reviewedRevision,
       requestId: passwordSignInRequest().id,
       type: "browser.password-sign-in.respond",
       decision: { kind: "decline" },
@@ -644,6 +646,7 @@ describe("RequestSheetContent browser profile requests", () => {
 
     expect(dispatch).toHaveBeenCalledWith({
       idempotencyKey: expect.any(String),
+      expectedRevision: reviewedRevision,
       requestId: request.id,
       response: {
         kind: "external",
@@ -671,6 +674,7 @@ describe("RequestSheetContent external requests", () => {
     expect(dispatch).toHaveBeenCalledOnce();
     expect(dispatch).toHaveBeenCalledWith({
       idempotencyKey: expect.any(String),
+      expectedRevision: reviewedRevision,
       requestId: request.id,
       response: { kind: "external", value: { decision: "declined" } },
       type: "request.respond",
@@ -710,6 +714,7 @@ describe("RequestSheetContent external requests", () => {
       idempotencyKey: expect.any(String),
       policy: { reach: policy.reach, commands: false, forwarding: false, shares: [], apps: true },
       deviceId: laptop.id,
+      requestReview: { requestId: request.id, revision: reviewedRevision },
       type: "machine.access.update",
     });
     expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: "request.respond" }));
@@ -720,6 +725,7 @@ describe("RequestSheetContent external requests", () => {
     await click("Not now");
     expect(declining).toHaveBeenCalledWith({
       idempotencyKey: expect.any(String),
+      expectedRevision: reviewedRevision,
       requestId: request.id,
       response: { kind: "external", value: { decision: "declined" } },
       type: "request.respond",
@@ -857,6 +863,7 @@ describe("RequestSheetContent external requests", () => {
     await click("Don’t Allow");
     expect(dispatch).toHaveBeenCalledExactlyOnceWith({
       idempotencyKey: expect.any(String),
+      expectedRevision: reviewedRevision,
       requestId: computerAppRequest().id,
       response: { kind: "external", value: { decision: "declined" } },
       type: "request.respond",
@@ -905,6 +912,7 @@ describe("RequestSheetContent external requests", () => {
       expect(dispatch).toHaveBeenCalledExactlyOnceWith({
         decision: { decision: "allow", sourceId: macChrome },
         idempotencyKey: expect.any(String),
+        expectedRevision: reviewedRevision,
         requestId: signInRequest().id,
         type: "browser.sign-in.respond",
       });
@@ -1170,12 +1178,14 @@ describe("RequestSheetContent answers", () => {
   });
 });
 
+const reviewedRevision = "17";
+
 function surface(request: Request, denied: SurfaceModel["denied"] = null): SurfaceModel {
   return {
     denied,
     queued: 0,
     queuedTitle: null,
-    request,
+    request: { ...request, reviewedRevision },
     textRole: "message",
   };
 }
@@ -1373,16 +1383,12 @@ it.each(["live", "durable"] as const)(
       request,
     };
     const chatId = createId("thread");
+    const entry = WaitingRequestSchema.parse({
+      ...waiting,
+      presentation: { ...waiting.presentation, threadId: chatId },
+    });
     const question = waitingQuestion(
-      [
-        WaitingRequestSchema.parse({
-          ...waiting,
-          presentation: {
-            ...waiting.presentation,
-            threadId: chatId,
-          },
-        }),
-      ],
+      [{ ...entry, request: { ...entry.request, reviewedRevision } }],
       chatId,
       { id: UserIdSchema.parse(request.requestedBy) },
     );
@@ -1423,7 +1429,7 @@ describe("RequestSheetScreen opened from a link", () => {
     } else {
       await host.dispatch({
         idempotencyKey: "settle",
-        requestId: settled,
+        ...requestDecision((await host.readRequest(threadId, settled))!),
         response: { kind: "choice", optionId: "approve" },
         type: "request.respond",
       });

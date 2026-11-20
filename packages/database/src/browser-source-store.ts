@@ -467,7 +467,11 @@ export class BrowserSourceStore {
           scope: { sessionId: input.requestReview.browserSessionId, site: input.site },
         }))
       )
-        throw new OpensteerError({ code: "conflict", message: "The sign-in Request changed." });
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "request-changed",
+          message: "The sign-in Request changed.",
+        });
       const grant = await upsertGrantInTransaction(transaction, input, null);
       await requestSettlementActor(
         transaction,

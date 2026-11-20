@@ -96,6 +96,8 @@ interface CommitNotice {
   readonly floor: string;
   readonly changedScopes: ReadonlySet<string>;
   readonly resourceKinds: ReadonlySet<DurablePersonalResourceKind>;
+  /** The catalog tabs this commit changed, so a listener can tell whose they are. */
+  readonly changedTabs: ReadonlySet<string>;
 }
 
 export type PersonalCommitReaction =
@@ -381,6 +383,12 @@ class Mutation {
     this.resourceKinds.add(kind);
   }
 
+  readonly changedTabs = new Set<string>();
+  /** These catalog tabs changed in this commit. */
+  changeTabs(tabIds: Iterable<string>) {
+    for (const id of tabIds) this.changedTabs.add(id);
+  }
+
   count(counter: Counter, delta: number) {
     if (!Number.isInteger(delta)) throw new Error("Invalid personal counter delta");
     this.#counters[counter] += delta;
@@ -558,6 +566,7 @@ class Mutation {
       head,
       floor,
       resourceKinds: this.resourceKinds,
+      changedTabs: this.changedTabs,
       changedScopes: new Set([
         ...this.#scopes.keys(),
         ...(Object.values(this.#counters).some(Boolean) || this.#pendingRequestsChanged
@@ -596,6 +605,7 @@ export type PersonalMutation = Pick<
   | "count"
   | "pendingRequestsChanged"
   | "bumpResource"
+  | "changeTabs"
   | "purge"
   | "fence"
   | "receipt"

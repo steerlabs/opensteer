@@ -21,6 +21,7 @@ export function assertRequestRevision(row: Pick<RequestRow, "revision">, expecte
   if (row.revision !== expectedRevision)
     throw new OpensteerError({
       code: "conflict",
+      reason: "request-changed",
       message: "Request changed; read it again before answering",
     });
 }

@@ -142,6 +142,7 @@ function approval(extra: object = {}, presentation: object = {}): Request {
     },
     requestedBy: "usr_00000000-0000-4000-8000-000000000001",
     requiredActor: "requester",
+    reviewedRevision: "17",
     status: "pending",
     ...extra,
   } as unknown as Request;

@@ -61,18 +61,35 @@ export const computerGuestLibrary = String.raw`
     act(actions) {return this.#act("act",actions);}
   }
   globalThis.app = async (query,{computer}={}) => new App(await resolve("apps",query,computer));
-  const phoneStates=new Map();
   const phoneFacts=["definitionId","platform","navigation","actions","access","blocked"];
   class Phone {
-    #state;
-    constructor(entry) {Object.defineProperty(this,"tabId",{value:entry.tabId,enumerable:true});this.id=entry.connectionId ?? entry.id;this.name=entry.name;this.computerId=entry.computerId;for(const key of phoneFacts) if(entry[key] !== undefined) this[key]=entry[key];let state=phoneStates.get(this.id);if(!state){state={observationId:null};phoneStates.set(this.id,state);}this.#state=state;}
+    constructor(entry) {
+      Object.defineProperty(this,"tabId",{value:entry.tabId,enumerable:true});
+      this.id=entry.connectionId ?? entry.id;
+      this.name=entry.name;
+      this.computerId=entry.computerId;
+      this.#updateFacts(entry);
+    }
+    #updateFacts(entry) {
+      if (entry) for(const key of phoneFacts) if(entry[key] !== undefined) this[key]=entry[key];
+    }
     async #facts() {
-      if(this.navigation === undefined) {const entry=(await call("phones")).find(candidate=>candidate.id === this.id);if(entry) for(const key of phoneFacts) this[key]=entry[key];}
+      if(this.navigation === undefined) {
+        this.#updateFacts((await call("phones")).find(candidate=>candidate.id === this.id));
+      }
       return this;
     }
-    async observe() {const result=await call("observe",this.id);this.#state.observationId=result.observation.observationId;return result.observation;}
-    async act(actions) {try {const result=await call("act",this.id,{actions});this.#state.observationId=result.observation?.observationId ?? null;return result.observation;}catch(error){this.#state.observationId=null;throw error;}}
-    async release() {try{return await call("release",this.id);}finally{this.#state.observationId=null;}}
+    async observe() {
+      const result=await call("observe",this.id);
+      this.#updateFacts(result.controls);
+      return result.observation ?? result.status;
+    }
+    async act(actions) {
+      const result=await call("act",this.id,{actions});
+      this.#updateFacts(result.controls);
+      return result.observation ?? result.status ?? null;
+    }
+    async release() {return call("release",this.id);}
     installedApps({query="",limit=50,offset=0}={}) {return call("installedApps",this.id,{query,limit,offset});}
     tap(value) {return this.act([{type:"tap",target:target(value)}]);}
     longPress(value,durationMs=500) {return this.act([{type:"longPress",target:target(value),durationMs}]);}
@@ -82,7 +99,7 @@ export const computerGuestLibrary = String.raw`
     clear(value) {return this.act([{type:"clear",target:target(value)}]);}
     async navigate(to) {
       const {navigation}=await this.#facts();
-      if(navigation && !navigation.includes(to)) throw new ComputerError("unsupported-navigation",this.name+" has no "+to+" button. It offers: "+(navigation.join(", ") || "none")+".");
+      if(navigation && (this.platform !== "ios" || navigation.length > 0) && !navigation.includes(to)) throw new ComputerError("unsupported-navigation",this.name+" has no "+to+" button. It offers: "+(navigation.join(", ") || "none")+".");
       return this.act([{type:"navigate",to}]);
     }
     launch(appId) {return this.act([{type:"launch",appId}]);}

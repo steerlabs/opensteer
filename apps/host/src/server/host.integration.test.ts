@@ -3862,6 +3862,7 @@ async function requestRouteServer(options: {
     referenceForOwner: vi.fn(async () => ({ request: options.request, revision: "1" })),
     originatingPendingPage: vi.fn(async () => ({
       requests: [options.request],
+      reviewedRevisions: { [options.request.id]: "1" },
       window: { byteCount: 1, hasMore: false, itemCount: 1, nextBefore: null, totalItems: 1 },
     })),
     ...options.store?.requests,

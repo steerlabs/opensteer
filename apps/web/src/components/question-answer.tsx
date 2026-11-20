@@ -6,6 +6,7 @@ import {
   questionTakesTyping,
   typeQuestionAnswer,
   withQuestionDraft,
+  type RequestView,
 } from "@opensteer/client/host";
 import type { Request, RequestFormField } from "@opensteer/core";
 import { useEffect, useRef, type KeyboardEvent } from "react";
@@ -17,6 +18,7 @@ import {
   updateQuestionSession,
   useAnswersInComposer,
   useQuestionSession,
+  useQuestionSessionKey,
 } from "./question-session.js";
 
 /** What engines title a question with no words of its own; its prompt says it all. */
@@ -41,15 +43,16 @@ export function QuestionBody({
   /** A composer below this card takes the typed answer. */
   readonly composer: boolean;
   readonly disabled: boolean;
-  readonly request: Request;
+  readonly request: RequestView;
   /** The task whose composer this card sits above. */
   readonly threadId: string;
   /** The heading the card already shows, so a prompt saying the same isn't repeated. */
   readonly title: string;
 }) {
   const { hostClient } = useShell();
-  const session = useQuestionSession(request.id);
-  const inComposer = useAnswersInComposer(threadId, request.id);
+  const sessionKey = useQuestionSessionKey(request);
+  const session = useQuestionSession(sessionKey);
+  const inComposer = useAnswersInComposer(threadId, sessionKey);
   const fields = fieldsOf(request);
   const index = Math.min(session.index, fields.length - 1);
   const field = fields[index];
@@ -64,8 +67,8 @@ export function QuestionBody({
       field.id,
       chooseQuestionOption(field, draft, value),
     );
-    if (field.multiSelect) updateQuestionSession(request.id, { drafts });
-    else advanceQuestion(hostClient, request, drafts, index);
+    if (field.multiSelect) updateQuestionSession(sessionKey, { drafts });
+    else advanceQuestion(hostClient, request, sessionKey, drafts, index);
   };
   const choices = field.choices ?? [];
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -102,7 +105,7 @@ export function QuestionBody({
               aria-label="Previous question"
               className="icon-btn icon-btn--small"
               disabled={index === 0}
-              onClick={() => updateQuestionSession(request.id, { index: index - 1 })}
+              onClick={() => updateQuestionSession(sessionKey, { index: index - 1 })}
               type="button"
             >
               <Icon name="chevron-left" />
@@ -111,7 +114,7 @@ export function QuestionBody({
               aria-label="Next question"
               className="icon-btn icon-btn--small"
               disabled={index === fields.length - 1}
-              onClick={() => updateQuestionSession(request.id, { index: index + 1 })}
+              onClick={() => updateQuestionSession(sessionKey, { index: index + 1 })}
               type="button"
             >
               <Icon name="chevron-right" />
@@ -170,7 +173,7 @@ export function QuestionBody({
             <button
               className="question__link"
               disabled={busy}
-              onClick={() => updateQuestionSession(request.id, { typing: true })}
+              onClick={() => updateQuestionSession(sessionKey, { typing: true })}
               title="Your message draft stays saved"
               type="button"
             >
@@ -182,7 +185,7 @@ export function QuestionBody({
             <button
               className="btn btn--ghost btn--small"
               disabled={busy}
-              onClick={() => void dismissQuestion(hostClient, request)}
+              onClick={() => void dismissQuestion(hostClient, request, sessionKey)}
               type="button"
             >
               Dismiss
@@ -196,9 +199,10 @@ export function QuestionBody({
 }
 
 /** Next, or Answer once every question has one: the control that moves a question on. */
-function AnswerButton({ disabled, request }: { disabled: boolean; request: Request }) {
+function AnswerButton({ disabled, request }: { disabled: boolean; request: RequestView }) {
   const { hostClient } = useShell();
-  const session = useQuestionSession(request.id);
+  const sessionKey = useQuestionSessionKey(request);
+  const session = useQuestionSession(sessionKey);
   const fields = fieldsOf(request);
   const index = Math.min(session.index, fields.length - 1);
   const step = questionStep(fields, session.drafts, index);
@@ -206,7 +210,7 @@ function AnswerButton({ disabled, request }: { disabled: boolean; request: Reque
     <button
       className="composer__answer"
       disabled={disabled || session.sending || step.kind === "blocked"}
-      onClick={() => advanceQuestion(hostClient, request, session.drafts, index)}
+      onClick={() => advanceQuestion(hostClient, request, sessionKey, session.drafts, index)}
       type="button"
     >
       {session.sending ? "Sending…" : step.kind === "next" ? "Next" : "Answer"}
@@ -233,13 +237,14 @@ export function AnswerField({
   readonly disabled: boolean;
   readonly onEscape?: (() => void) | undefined;
   readonly onStop?: (() => Promise<void>) | undefined;
-  readonly request: Request;
+  readonly request: RequestView;
   readonly running?: boolean;
   readonly stopLabel?: string;
   readonly stopping?: boolean;
 }) {
   const { hostClient } = useShell();
-  const session = useQuestionSession(request.id);
+  const sessionKey = useQuestionSessionKey(request);
+  const session = useQuestionSession(sessionKey);
   const fieldRef = useRef<HTMLTextAreaElement | null>(null);
   const fields = fieldsOf(request);
   const index = Math.min(session.index, fields.length - 1);
@@ -257,7 +262,7 @@ export function AnswerField({
   const busy = disabled || session.sending;
   const submit = () => {
     if (busy || step.kind === "blocked") return;
-    advanceQuestion(hostClient, request, session.drafts, index);
+    advanceQuestion(hostClient, request, sessionKey, session.drafts, index);
   };
   const placeholder = !types
     ? "Choose an answer above"
@@ -273,7 +278,7 @@ export function AnswerField({
           className="composer__input"
           disabled={busy || !types}
           onChange={(event) =>
-            updateQuestionSession(request.id, {
+            updateQuestionSession(sessionKey, {
               drafts: withQuestionDraft(
                 session.drafts,
                 field.id,

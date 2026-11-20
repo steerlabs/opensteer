@@ -5,7 +5,7 @@ import {
   type MachineAccessPolicy,
 } from "@opensteer/protocol";
 import {
-  requestDecisionRevision,
+  requestDecision,
   type HostClient,
   type MachineAccessUpdateOutcome,
 } from "../host/client.js";
@@ -37,22 +37,17 @@ export async function answerDeviceAccessRequest(
   if (decision === "declined") {
     await client.dispatch({
       type: "request.respond",
-      ...requestDecisionRevision(request),
+      ...requestDecision(request),
       idempotencyKey: globalThis.crypto.randomUUID(),
-      requestId: request.id,
       response: { kind: "external", value: { decision: "declined" } },
     });
     return;
   }
-  const { expectedRevision } = requestDecisionRevision(request);
-  return turnOnDeviceAccess(
-    client,
-    request.payload.machineId,
-    request.payload.access,
-    expectedRevision === undefined
-      ? undefined
-      : { requestId: request.id, revision: expectedRevision },
-  );
+  const { expectedRevision } = requestDecision(request);
+  return turnOnDeviceAccess(client, request.payload.machineId, request.payload.access, {
+    requestId: request.id,
+    revision: expectedRevision,
+  });
 }
 
 export async function turnOnDeviceAccess(

@@ -548,14 +548,14 @@ function projectDeviceMachines(input: MachineProjectionInput): readonly MachineL
                 : physical,
           view: !phoneAccess
             ? available(false, "approval-required")
-            : screen && screenStatus?.ownerViewVersion !== 1 && physical.state === "ready"
-              ? available(false, "helper-unavailable")
+            : screen && screenStatus && screenStatus.ownerViewVersion !== 1
+              ? available(false, "unsupported")
               : display,
           input:
             phoneAccess !== "read-write"
               ? available(false, "approval-required")
-              : screen && screenStatus?.inputVersion !== 1 && physical.state === "ready"
-                ? available(false, "helper-unavailable")
+              : screen && screenStatus && screenStatus.inputVersion !== 1
+                ? available(false, "unsupported")
                 : display,
           navigationButtons: screen
             ? (screenStatus?.navigationButtons ?? [])

@@ -140,6 +140,7 @@ async function setUp(
     bootstrap: unexpectedTabOperation,
     requireOpenPage: unexpectedTabOperation,
     authorizeShow: unexpectedTabOperation,
+    authorizeBind: unexpectedTabOperation,
     appsChanged: unexpectedTabOperation,
   };
   const home = { runnerId: createId("runner"), name: "Mac" };
