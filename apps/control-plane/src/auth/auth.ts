@@ -222,6 +222,20 @@ export function createControlPlaneAuth(
                 message: "Sign-in to this work Home is not allowed",
               });
             }
+            if (!assignment) {
+              await database
+                .updateTable("cloudComputers")
+                .where("id", "=", id.data)
+                .where("accountId", "=", ControlPlaneAccountIdSchema.parse(user.id))
+                .where("state", "=", "active")
+                .where("phase", "=", "ready")
+                .where("restoreSnapshot", "is not", null)
+                .where("bootstrapReceiptAt", "is not", null)
+                .where("deletionRequestedAt", "is", null)
+                .where("ownerAccessAt", "is", null)
+                .set({ ownerAccessAt: new Date() })
+                .executeTakeFirst();
+            }
           }
           return scopes.includes("email") ? { email: user.email } : {};
         },
@@ -479,12 +493,17 @@ function internalAuthId(prefix: string): string {
 export async function signAccountDocument(
   auth: ControlPlaneAuth,
   document: JWTPayload,
+  options?: { readonly typ?: string },
 ): Promise<string> {
   // The library's key resolver only reads the context; there is no HTTP endpoint for this signer.
   const context = { context: await auth.$context } as Parameters<typeof resolveSigningKey>[0];
   const key = await resolveSigningKey(context, { jwks: accountJwks, schema: accountJwksSchema });
   if (!key) throw new ControlPlaneError("unavailable", "The Account signing key is unavailable");
   return new SignJWT(document)
-    .setProtectedHeader({ alg: key.alg, kid: key.kid })
+    .setProtectedHeader({
+      alg: key.alg,
+      kid: key.kid,
+      ...(options?.typ ? { typ: options.typ } : {}),
+    })
     .sign(key.privateKey);
 }

@@ -8,6 +8,7 @@ export default defineConfig(
       "src/migrate-main.ts",
       "src/hosted-team-operator-main.ts",
       "src/cloud-computers/cloud-computer-operator-main.ts",
+      "src/agent-directory/agent-directory-operator-main.ts",
     ],
     external: [
       // One schema registry per process: bundled copies fail instanceof checks.

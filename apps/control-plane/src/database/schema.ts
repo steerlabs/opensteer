@@ -1,4 +1,8 @@
 import type {
+  AgentDirectoryEntryTable,
+  AgentDirectoryStateTable,
+} from "../agent-directory/tables.js";
+import type {
   OrganizationTable,
   OrganizationMemberTable,
   OrganizationInvitationTable,
@@ -10,6 +14,7 @@ import type {
 import type {
   CloudComputerCheckoutTable,
   CloudComputerBackupTargetTable,
+  CloudComputerBackupNamespaceTable,
   CloudComputerEgressEndpointTable,
   CloudComputerStripeEventTable,
   CloudComputerTable,
@@ -567,6 +572,8 @@ export interface HostedTeamTable {
 export type HostedTeamStoredStage = "reserving" | "starting" | "configuring" | "ready" | "failed";
 
 export interface ControlPlaneDatabaseSchema {
+  agentDirectoryState: AgentDirectoryStateTable;
+  agentDirectoryEntries: AgentDirectoryEntryTable;
   organizations: OrganizationTable;
   organizationMembers: OrganizationMemberTable;
   organizationInvitations: OrganizationInvitationTable;
@@ -576,6 +583,7 @@ export interface ControlPlaneDatabaseSchema {
   workAuditBatches: WorkAuditBatchTable;
   cloudComputers: CloudComputerTable;
   cloudComputerBackupTargets: CloudComputerBackupTargetTable;
+  cloudComputerBackupNamespaces: CloudComputerBackupNamespaceTable;
   cloudComputerCheckouts: CloudComputerCheckoutTable;
   cloudComputerEgressEndpoints: CloudComputerEgressEndpointTable;
   cloudComputerStripeEvents: CloudComputerStripeEventTable;

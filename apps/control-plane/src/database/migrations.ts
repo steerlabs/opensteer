@@ -1,3 +1,4 @@
+import { agentDirectoryMigration } from "../agent-directory/migration.js";
 import { cloudComputerViewMigration } from "../cloud-computers/view-migration.js";
 import { organizationsMigration } from "../organizations/migration.js";
 import { cloudComputerLifecycleMigration } from "../cloud-computers/lifecycle-migration.js";
@@ -521,6 +522,7 @@ const migrationProvider = {
       "0029_cloud_computer_lifecycle": cloudComputerLifecycleMigration,
       "0030_organizations": organizationsMigration,
       "0031_cloud_computer_view": cloudComputerViewMigration,
+      "0032_agent_directory": agentDirectoryMigration,
     };
   },
 };

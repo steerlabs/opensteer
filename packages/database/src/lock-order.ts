@@ -313,9 +313,12 @@ export const databaseLockOrder = [
   "control-plane:cloud_computers",
   "control-plane:cloud_computer_egress_endpoints",
   "control-plane:cloud_computer_backup_targets",
+  "control-plane:cloud_computer_backup_namespaces",
   "control-plane:cloud_deployment_operations",
   "control-plane:oauth_refresh_token",
   "control-plane:oauth_consents",
+  "control-plane:agent_directory_state",
+  "control-plane:agent_directory_entries",
 ] as const;
 
 export function databaseLockRank(resource: string): number {

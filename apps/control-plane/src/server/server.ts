@@ -1,3 +1,5 @@
+import { registerAgentDirectoryRoutes } from "../agent-directory/routes.js";
+import type { AgentDirectoryReader } from "../agent-directory/store.js";
 import { registerOrganizationRoutes } from "../organizations/routes.js";
 import type { OrganizationStore } from "../organizations/store.js";
 import {
@@ -86,6 +88,7 @@ export async function createControlPlaneServer(
     readonly connectLifecycle: ConnectLifecycleService;
     readonly hostedOAuthBroker?: HostedOAuthBrokerService;
     readonly cloudComputers?: CloudComputerRouteOptions;
+    readonly agentDirectory?: AgentDirectoryReader;
     readonly organizations?: OrganizationStore;
     readonly workHomeFetch?: typeof globalThis.fetch;
     /** Teams Opensteer hosts, and the check that admits only their provisioner. */
@@ -205,6 +208,8 @@ export async function createControlPlaneServer(
         ...(dependencies.cloudComputers
           ? { cloudComputers: dependencies.cloudComputers.store }
           : {}),
+        ...(dependencies.organizations ? { organizations: dependencies.organizations } : {}),
+        ...(dependencies.workHomeFetch ? { workHomeFetch: dependencies.workHomeFetch } : {}),
         portalOrigin: dependencies.portalOrigin,
         portalSessions: dependencies.portalSessions,
         ...(dependencies.personalRemoteAccount
@@ -220,6 +225,13 @@ export async function createControlPlaneServer(
   pageFonts.register(app);
   registerControlPlaneRoutes(app, { ...dependencies, accountDeletion });
   registerNotificationRoutes(app, dependencies);
+  if (dependencies.agentDirectory) {
+    registerAgentDirectoryRoutes(app, {
+      agentDirectory: dependencies.agentDirectory,
+      auth: dependencies.auth,
+      publicOrigin: dependencies.publicOrigin,
+    });
+  }
   if (dependencies.cloudComputers) {
     registerCloudComputerRoutes(app, {
       ...dependencies.cloudComputers,

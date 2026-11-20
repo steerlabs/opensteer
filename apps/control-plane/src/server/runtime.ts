@@ -1,6 +1,8 @@
+import { AgentDirectoryStore } from "../agent-directory/store.js";
 import { OrganizationStore } from "../organizations/store.js";
 import { CloudComputerClaimer, HttpManagedHomeClient } from "../cloud-computers/claim.js";
 import { cloudComputerPortalPath } from "../cloud-computers/portal-pages.js";
+import { organizationsPortalPath } from "../organizations/portal-pages.js";
 import { CloudComputerStore } from "../cloud-computers/store.js";
 import { CloudComputerStripe } from "../cloud-computers/stripe.js";
 import { appleClientSecret } from "../auth/apple-sign-in.js";
@@ -88,7 +90,11 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
       ? new CloudComputerStripe({ key: cloud.stripeKey, returnUrl: config.publicOrigin })
       : undefined;
     const organizations = stripe
-      ? new OrganizationStore(database, { stripe, offer: config.organizationOffer })
+      ? new OrganizationStore(database, {
+          stripe,
+          offer: config.organizationOffer,
+          returnUrl: new URL(organizationsPortalPath, config.portalOrigin),
+        })
       : undefined;
     const cloudComputers =
       cloud && stripe
@@ -156,6 +162,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         authenticator: new ControlPlaneAuthenticator(auth, database, config.publicOrigin),
         connectLifecycle,
         ...(hostedOAuthBroker ? { hostedOAuthBroker } : {}),
+        agentDirectory: new AgentDirectoryStore(database),
         ...(organizations ? { organizations } : {}),
         ...(cloud && cloudComputers
           ? {
