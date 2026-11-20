@@ -1,3 +1,4 @@
+import { fileDeviceUpdateMessage } from "@opensteer/client/host";
 import { useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import type { HostClient } from "@opensteer/client/host";
 import type { ThreadId } from "@opensteer/core";
@@ -42,7 +43,10 @@ function imageFile(bytes: Uint8Array, name: string, mediaType: string): File {
   return new File([bytes as Uint8Array<ArrayBuffer>], fileName(name), { type: mediaType });
 }
 
-function unavailable(status: "unavailable" | "unreachable" | "failed"): ImageUnavailableError {
+function unavailable(
+  status: "unavailable" | "unreachable" | "failed" | "update-required",
+): ImageUnavailableError {
+  if (status === "update-required") return new ImageUnavailableError(fileDeviceUpdateMessage);
   return new ImageUnavailableError(
     // Offline is the pill's to say; the image says only that it couldn't be read.
     status === "unavailable" ? "This image isn't available anymore." : "Couldn't read this image.",

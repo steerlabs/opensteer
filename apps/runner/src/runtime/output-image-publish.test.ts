@@ -30,7 +30,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { CausallyOrderedRunnerSink } from "../host/host-connection.js";
 import { ExecutionContainment } from "./execution-containment.js";
@@ -255,7 +255,6 @@ describe("RunnerRuntime output image publishing", () => {
         published.push(image);
         if (outcome === "transfer failure") throw new Error("Upload failed");
         if (outcome === "unanswered publish") {
-          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
           publishing.resolve(signal);
           await new Promise<void>(() => undefined);
         }
@@ -357,16 +356,14 @@ describe("RunnerRuntime output image publishing", () => {
           runIds: [command.context.runId],
           type: "host.executions.renewed",
         });
+        await settled.promise;
         if (outcome === "unanswered publish") {
           const signal = await publishing.promise;
-          await vi.advanceTimersByTimeAsync(15_000);
-          vi.useRealTimers();
-          expect(signal.aborted).toBe(true);
+          expect(signal.aborted).toBe(false);
         }
-        await settled.promise;
 
         const expectedFileName = `${createHash("sha256").update(pngBytes).digest("hex")}.png`;
-        expect(published).toHaveLength(1);
+        expect(published).toHaveLength(outcome === "transfer failure" ? 2 : 1);
         expect(published[0]).toMatchObject({
           generated: true,
           mediaType: "image/png",
@@ -389,7 +386,6 @@ describe("RunnerRuntime output image publishing", () => {
           ),
         ).toBe(false);
       } finally {
-        vi.useRealTimers();
         sink.close();
         await runtime.close();
       }

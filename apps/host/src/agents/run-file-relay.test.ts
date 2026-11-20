@@ -1,13 +1,17 @@
 import { hostApiVersion, hostApiVersionHeader } from "@opensteer/deployment-authority";
 import { Readable } from "node:stream";
 import { createId } from "@opensteer/core";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign, verify } from "node:crypto";
 import {
   runFileNameHeader,
+  runFileProofHeader,
+  runFileTransferProofPayload,
+  RunnerConnectionFenceSchema,
   runFileTransferContentType,
   runFileTransferPath,
 } from "@opensteer/protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { HarnessSignInBrowser } from "../identity/harness-sign-in-browser.js";
 import { signHostDiscovery } from "../identity/host-keys.js";
 import { createHostServer } from "../server.js";
 import { hostServerTestDependencies } from "../server/host-server-test-harness.js";
@@ -116,6 +120,9 @@ describe("the transfer route", () => {
   });
 
   async function serve(relay: RunFileRelay): Promise<string> {
+    const signIn = vi
+      .spyOn(HarnessSignInBrowser.prototype, "follow")
+      .mockReturnValue(() => undefined);
     const app = await createHostServer(
       hostServerTestDependencies({
         discovery: signHostDiscovery(generateKeyPairSync("ed25519"), {
@@ -127,7 +134,7 @@ describe("the transfer route", () => {
         }),
         runFiles: relay,
       }),
-    );
+    ).finally(() => signIn.mockRestore());
     closing.push(() => app.close());
     return app.listen({ host: "127.0.0.1", port: 0 });
   }
@@ -158,6 +165,84 @@ describe("the transfer route", () => {
     expect(decodeURIComponent(response.headers.get(runFileNameHeader)!)).toBe("어머니 사진.heic");
     expect(await response.text()).toBe(bytes.toString());
     expect(upload.status).toBe(204);
+  });
+
+  it("requires the Runner signature for this connection, request and HTTP direction, then cancels an abandoned GET", async () => {
+    const runner = generateKeyPairSync("ed25519");
+    const stranger = generateKeyPairSync("ed25519");
+    const relay = new RunFileRelay(async (_scope, payload, signature) =>
+      verify(null, Buffer.from(payload), runner.publicKey, Buffer.from(signature, "base64url")),
+    );
+    const binding = {
+      ...RunnerConnectionFenceSchema.parse({
+        runnerId: createId("runner"),
+        bootId: `rbt_${randomUUID()}`,
+        connectionId: `rcn_${randomUUID()}`,
+        connectionLeaseId: `rls_${randomUUID()}`,
+        connectionGeneration: 1,
+      }),
+      requestId: randomUUID(),
+    };
+    const connection = new AbortController();
+    const handle = relay.open();
+    relay.bind(handle.download, "GET", binding, connection.signal);
+    const origin = await serve(relay);
+    const url = new URL(runFileTransferPath(handle.download.id), origin);
+    const proof = (
+      scope = binding,
+      privateKey = runner.privateKey,
+      method: "GET" | "PUT" = "GET",
+    ) =>
+      sign(
+        null,
+        Buffer.from(runFileTransferProofPayload(scope, handle.download.id, method)),
+        privateKey,
+      ).toString("base64url");
+    const headers = {
+      [hostApiVersionHeader]: String(hostApiVersion),
+      authorization: `Bearer ${handle.download.token}`,
+    };
+    const received = Promise.withResolvers<void>();
+    const original = relay.download.bind(relay);
+    const canceled = Promise.withResolvers<void>();
+    vi.spyOn(relay, "download").mockImplementation(async (...args) => {
+      received.resolve();
+      try {
+        return await original(...args);
+      } finally {
+        canceled.resolve();
+      }
+    });
+    const httpPeer = new AbortController();
+    try {
+      for (const signature of [
+        "",
+        proof(binding, stranger.privateKey),
+        proof({ ...binding, requestId: randomUUID() }),
+        proof({ ...binding, connectionGeneration: 2 }),
+        proof(binding, runner.privateKey, "PUT"),
+      ]) {
+        const denied = await fetch(url, {
+          headers: { ...headers, [runFileProofHeader]: signature },
+        });
+        expect(denied.status).toBe(403);
+      }
+      const request = fetch(url, {
+        headers: { ...headers, [runFileProofHeader]: proof() },
+        signal: httpPeer.signal,
+      });
+      const failure = expect(request).rejects.toThrow();
+      await received.promise;
+      httpPeer.abort();
+      await failure;
+      await canceled.promise;
+      const replay = await fetch(url, { headers: { ...headers, [runFileProofHeader]: proof() } });
+      expect(replay.status).toBe(403);
+    } finally {
+      httpPeer.abort();
+      connection.abort();
+      handle.close();
+    }
   });
 
   it("refuses a token that is not this transfer's", async () => {

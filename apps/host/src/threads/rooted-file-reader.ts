@@ -59,7 +59,7 @@ function mapReaderError(result: RunnerHomeFileResult, maxBytes?: number): Openst
   return fileUnavailable();
 }
 
-function parseScopedRevision(expectedRevision: string): {
+export function parseScopedRevision(expectedRevision: string): {
   readonly rootScope: string;
   readonly fileRevision: string;
 } {
@@ -120,6 +120,7 @@ export class RootedFileReader {
       readonly maxBytes: number;
       readonly expectedRevision?: string;
       readonly root?: HomeFileRootKind;
+      readonly computerId?: RunnerId;
     },
     signal = AbortSignal.timeout(15000),
   ) {
@@ -136,7 +137,7 @@ export class RootedFileReader {
       ? parseScopedRevision(options.expectedRevision)
       : undefined;
     const root = options.root ?? this.options.root;
-    const runnerId = await this.options.computerId();
+    const runnerId = options.computerId ?? (await this.options.computerId());
     const result = await this.options.transport.requestHomeFile(
       runnerId,
       {
@@ -179,6 +180,7 @@ export class RootedFileReader {
       readonly expectedRevision: string;
       readonly maxBytes: number;
       readonly root?: HomeFileRootKind;
+      readonly computerId?: RunnerId;
     },
     signal = AbortSignal.timeout(60000),
   ) {
@@ -193,7 +195,7 @@ export class RootedFileReader {
     const segments = rootedFileSegments(key);
     const expected = parseScopedRevision(options.expectedRevision);
     const root = options.root ?? this.options.root;
-    const runnerId = await this.options.computerId();
+    const runnerId = options.computerId ?? (await this.options.computerId());
     const { relay, requestHomeFile } = this.options.transport;
     const transfer = relay.open(options.maxBytes);
     const close = () =>

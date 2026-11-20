@@ -81,6 +81,8 @@ function toolScope(f: Fixture): RunToolScope {
   };
 }
 
+const htmlFileRevision = `${"a".repeat(43)}.${"b".repeat(43)}`;
+
 function htmlFiles(read: () => Buffer) {
   return {
     list: vi.fn(async () => ({
@@ -96,6 +98,7 @@ function htmlFiles(read: () => Buffer) {
           hidden: false,
           mode: 0o600,
           sizeBytes: read().length,
+          revision: htmlFileRevision,
           modifiedAt: null,
         },
       ],
@@ -366,7 +369,12 @@ describeStore("published app HTML", (it) => {
         name: "Budget",
       });
       expect(first).toEqual({ appId: expect.stringMatching(/^app_/u), version: 1 });
-      expect(files.download).toHaveBeenCalledWith("opaque_html_key", expect.any(AbortSignal));
+      expect(files.download).toHaveBeenCalledWith(
+        "opaque_html_key",
+        expect.any(AbortSignal),
+        "app-html",
+        htmlFileRevision,
+      );
       expect(changes).toContainEqual([first.appId]);
       expect(await appCards(database, f.run.id)).toMatchObject([
         { appId: first.appId, view: { version: 1, title: "Budget" } },

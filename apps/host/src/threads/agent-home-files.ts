@@ -15,6 +15,7 @@ import { z } from "zod";
 import {
   RootedFileReader,
   fileTooLarge,
+  parseScopedRevision,
   rootedFileKey,
   rootedFileSegments,
   type HomeFilesTransport,
@@ -84,7 +85,7 @@ export class AgentHomeFiles {
   }
 
   async list(
-    input: { parentKey: string; limit: number; cursor?: string },
+    input: { parentKey: string; limit: number; cursor?: string; expectedRootScope?: string },
     signal = AbortSignal.timeout(15000),
   ): Promise<FolderDirectoryPage> {
     signal = AbortSignal.any([signal, this.#lifetime.signal]);
@@ -107,7 +108,9 @@ export class AgentHomeFiles {
       {
         ...(cursor
           ? { expectedDirectoryRevision: cursor.revision, expectedRootScope: cursor.scope }
-          : {}),
+          : input.expectedRootScope
+            ? { expectedRootScope: input.expectedRootScope }
+            : {}),
         limit: input.limit,
         offset: cursor?.offset ?? 0,
         pathSegmentsBase64: segments,
@@ -116,22 +119,24 @@ export class AgentHomeFiles {
       signal,
     );
     if (!result.ok || result.data?.kind !== "list") throw mapHomeFileError(result);
-    const listing = result.data.listing;
+    const { listing, rootScope } = result.data;
     return FolderDirectoryPageSchema.parse({
       parentKey: input.parentKey,
       revision: listing.directoryRevision,
+      rootScope,
       cursor: listing.hasMore
         ? Buffer.from(
             JSON.stringify({
-              scope: result.data.rootScope,
+              scope: rootScope,
               parentKey: input.parentKey,
               revision: listing.directoryRevision,
               offset: listing.nextOffset,
             }),
           ).toString("base64url")
         : null,
-      entries: listing.entries.map(({ displayName, nameBase64, ...entry }) => ({
+      entries: listing.entries.map(({ displayName, nameBase64, revision, ...entry }) => ({
         ...entry,
+        ...(revision ? { revision: `${rootScope}.${revision}` } : {}),
         name: displayName,
         key: rootedFileKey([...segments, nameBase64]),
       })),
@@ -179,6 +184,7 @@ export class AgentHomeFiles {
     key: string,
     signal = AbortSignal.timeout(60000),
     purpose?: "app-html",
+    expectedRevision?: string,
   ): Promise<Response> {
     const operation = new AbortController();
     signal = AbortSignal.any([signal, this.#lifetime.signal, operation.signal]);
@@ -188,6 +194,7 @@ export class AgentHomeFiles {
     const segments = folderFileSegments(key);
     const { relay, requestHomeFile } = this.options.transport;
     const maxBytes = purpose === "app-html" ? appMaxBytes : homeFilesMaxBytes;
+    const expected = expectedRevision ? parseScopedRevision(expectedRevision) : undefined;
     const transfer = relay.open(maxBytes);
     const onAbort = () =>
       transfer.close(
@@ -199,6 +206,9 @@ export class AgentHomeFiles {
       home.computerId,
       {
         pathSegmentsBase64: segments,
+        ...(expected
+          ? { expectedRootScope: expected.rootScope, expectedFileRevision: expected.fileRevision }
+          : {}),
         ...(purpose ? { purpose } : {}),
         transfer: transfer.upload,
         type: "host.home-files.download",

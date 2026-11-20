@@ -22,7 +22,12 @@ import {
   homeFilesMaxBytes,
 } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
-import { HomeFilesError, HomeFilesHandler, type HomeFilesTransferClient } from "./home-files.js";
+import {
+  HomeFilesError,
+  HomeFilesHandler,
+  homeFileRootScope,
+  type HomeFilesTransferClient,
+} from "./home-files.js";
 
 const execFileAsync = promisify(execFile);
 const helperBinary = fileURLToPath(
@@ -81,7 +86,7 @@ describe("HomeFilesHandler", () => {
     });
     const signal = new AbortController().signal;
     try {
-      await handler.initializeAgentHome(home, signal);
+      const identity = await handler.initializeAgentHome(home, signal);
       await writeFile(html, "");
       const request = {
         ...fence,
@@ -106,6 +111,7 @@ describe("HomeFilesHandler", () => {
         handler.handle(
           {
             ...fence,
+            expectedRootScope: homeFileRootScope(home, identity),
             limit: 5,
             offset: 0,
             pathSegmentsBase64: [],

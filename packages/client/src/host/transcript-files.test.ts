@@ -227,3 +227,24 @@ it("shows an opened image from the preview its open minted, without minting it a
     store.dispose();
   }
 });
+
+it("distinguishes an older hosting Device when opening, saving, or downloading a file", async () => {
+  const { controller, openFile, readFile } = setup();
+  const refusal = new HostClientRequestError({
+    code: "conflict",
+    message: "Update the hosting computer to access Agent home files",
+    reason: "unsupported-runner",
+    retryable: false,
+    status: 409,
+  });
+  openFile.mockRejectedValueOnce(refusal);
+  await expect(controller.open(null, source)).resolves.toEqual({ status: "update-required" });
+  openFile.mockRejectedValueOnce(refusal);
+  await expect(controller.original(null, source)).resolves.toEqual({ status: "update-required" });
+  const opened = await controller.open(null, source);
+  if (opened.status !== "ok") throw new Error("File was not opened");
+  readFile.mockRejectedValueOnce(refusal);
+  await expect(controller.download(null, opened.resource)).resolves.toEqual({
+    status: "update-required",
+  });
+});

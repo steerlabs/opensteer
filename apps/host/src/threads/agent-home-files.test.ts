@@ -14,7 +14,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createId } from "@opensteer/core";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { withFolderPluginPackage } from "../local-servers/folder-plugin-package.js";
 import { RunFileRelay } from "../agents/run-file-relay.js";
 import { AgentHomeFiles } from "./agent-home-files.js";
 import { createInProcessHomeFilesTransport } from "./home-files.test-support.js";
@@ -32,6 +33,63 @@ it("lists, previews and downloads Agent home through the hosting Runner", async 
   } finally {
     files.close();
     await rm(path, { recursive: true, force: true });
+  }
+});
+
+it("rejects a same-size replacement between listing and staging", async () => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), "host-listed-files-")));
+  const files = makeFiles(home);
+  const packageDir = join(home, "plugin");
+  const file = join(packageDir, "index.js");
+  const install = vi.fn();
+  try {
+    await mkdir(packageDir);
+    await writeFile(file, "first");
+    await expect(
+      withFolderPluginPackage({
+        directory: "plugin",
+        files: {
+          list: async (input) => {
+            const page = await files.list(input);
+            await rename(file, join(packageDir, "old.js"));
+            await writeFile(file, "other");
+            return page;
+          },
+          download: files.download.bind(files),
+        },
+        install,
+      }),
+    ).rejects.toMatchObject({ code: "conflict", reason: "revision-mismatch" });
+    expect(install).not.toHaveBeenCalled();
+  } finally {
+    files.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+it("accepts a new root without rebind and refuses the old listing revision", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "host-root-reconnect-")));
+  const home = join(root, "home");
+  await mkdir(home);
+  const files = makeFiles(home);
+  try {
+    await writeFile(join(home, "note.txt"), "first");
+    const original = (await files.list({ parentKey: "", limit: 1 })).entries[0]!;
+    expect(original.revision).toBeDefined();
+    await rename(home, join(root, "previous"));
+    await mkdir(home);
+    await writeFile(join(home, "note.txt"), "other");
+    const fresh = (await files.list({ parentKey: "", limit: 1 })).entries[0]!;
+    expect(fresh.revision?.split(".")[0]).not.toBe(original.revision?.split(".")[0]);
+    await expect(
+      files.download(original.key, undefined, undefined, original.revision),
+    ).rejects.toMatchObject({ code: "conflict", reason: "revision-mismatch" });
+    expect(
+      await (await files.download(fresh.key, undefined, undefined, fresh.revision)).text(),
+    ).toBe("other");
+  } finally {
+    files.close();
+    await rm(root, { recursive: true, force: true });
   }
 });
 

@@ -302,3 +302,18 @@ it("coalesces simultaneous stale-image failures into one explicit refresh", asyn
   expect(await store.loadFailed("d", thread, "/image.png", "preview")).toBe(false);
   expect(read).toHaveBeenCalledTimes(2);
 });
+
+it("keeps the Device update refusal when resolving an image for display", async () => {
+  const { store, thread, read } = setup();
+  store.seed("d", thread, "/legacy.png", "preview", {
+    status: "unavailable",
+    reason: "unsupported",
+    updateRequired: true,
+  });
+  await expect(store.imageResult("d", thread, "/legacy.png", "preview")).resolves.toEqual({
+    status: "unavailable",
+    reason: "unsupported",
+    updateRequired: true,
+  });
+  expect(read).not.toHaveBeenCalled();
+});

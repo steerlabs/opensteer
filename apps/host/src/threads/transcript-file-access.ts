@@ -5,6 +5,7 @@ import {
   OpensteerError,
   attachmentMaxBytes,
   type ExecutionNodeId,
+  type RunnerId,
   type ThreadId,
   type ToolOutputImage,
   type UserId,
@@ -33,7 +34,10 @@ export type ResolvedTranscriptFile = {
   sizeBytes: number;
   mediaType: string;
 };
-type OutputImage = Pick<ToolOutputImage, "path" | "mediaType"> & { id: string };
+type OutputImage = Pick<ToolOutputImage, "path" | "mediaType"> & {
+  id: string;
+  runnerId?: RunnerId | null;
+};
 
 const outputImageFilenamePattern = /^[a-f0-9]{64}\.(png|jpg|jpeg|gif|webp|avif|svg)$/u;
 const types: Readonly<Record<string, string>> = {
@@ -60,7 +64,11 @@ export const transcriptMediaType = (name: string) =>
 
 function privateReadError(error: unknown, signal?: AbortSignal): never {
   signal?.throwIfAborted();
-  if (error instanceof OpensteerError && error.code === "resource_exhausted") throw error;
+  if (
+    error instanceof OpensteerError &&
+    (error.code === "resource_exhausted" || error.reason === "unsupported-runner")
+  )
+    throw error;
   throw fileUnavailable();
 }
 
@@ -142,7 +150,12 @@ export class TranscriptFileAccess {
     return { kind: "path", path: value };
   }
 
-  async resolveMany(sources: readonly FileSource[], context: FileContext, signal?: AbortSignal) {
+  async resolveMany(
+    sources: readonly FileSource[],
+    context: FileContext,
+    signal?: AbortSignal,
+    onUpdateRequired?: (index: number) => void,
+  ) {
     await this.admit(context);
     signal?.throwIfAborted();
     const candidateImagePaths = sources.flatMap((s) => {
@@ -158,7 +171,22 @@ export class TranscriptFileAccess {
             paths: [...new Set(candidateImagePaths)],
           })
         : [];
-    return Promise.all(sources.map((s) => this.#resolve(s, context, images, signal)));
+    return Promise.all(
+      sources.map(async (source, index) => {
+        try {
+          return await this.#resolve(source, context, images, signal);
+        } catch (error) {
+          if (
+            !onUpdateRequired ||
+            !(error instanceof OpensteerError) ||
+            error.reason !== "unsupported-runner"
+          )
+            throw error;
+          onUpdateRequired(index);
+          return null;
+        }
+      }),
+    );
   }
 
   async resolve(source: FileSource, context: FileContext, signal?: AbortSignal) {
@@ -215,7 +243,7 @@ export class TranscriptFileAccess {
       };
     } catch (e) {
       signal?.throwIfAborted();
-      if (e instanceof OpensteerError) return null;
+      if (e instanceof OpensteerError && e.reason !== "unsupported-runner") return null;
       throw e;
     }
   }
@@ -226,7 +254,8 @@ export class TranscriptFileAccess {
     signal?: AbortSignal,
   ): Promise<ResolvedTranscriptFile> {
     const name = remoteBasename(image.path);
-    if (outputImageFilenamePattern.test(name)) {
+    const revision = this.options.outputImageStore.revision(name);
+    if (revision) {
       const hostStored = await this.options.outputImageStore.stat(name, signal);
       if (hostStored) {
         return {
@@ -241,11 +270,15 @@ export class TranscriptFileAccess {
           mediaType: image.mediaType,
         };
       }
-      // Legacy output image recorded before Host-owned publishing: fetch through the hosting Runner.
+
       const key = rootedFileKey([Buffer.from(name).toString("base64url")]);
       const probe = await this.options.home.read(
         key,
-        { maxBytes: 1, root: "output-images" },
+        {
+          maxBytes: 1,
+          root: "output-images",
+          ...(image.runnerId ? { computerId: image.runnerId } : {}),
+        },
         signal,
       );
       return {
@@ -255,7 +288,7 @@ export class TranscriptFileAccess {
           kind: "output-image" as const,
           imageId: image.id,
           ...(nodeId ? { nodeId } : {}),
-          revision: probe.metadata.revision,
+          revision,
         },
         mediaType: image.mediaType,
       };
@@ -359,10 +392,10 @@ export class TranscriptFileAccess {
     const name = remoteBasename(image.path);
     const mediaType = image.mediaType;
     try {
-      if (
-        outputImageFilenamePattern.test(name) &&
-        resource.revision.startsWith(`${this.options.outputImageStore.scope}.`)
-      ) {
+      const publishedRevision = this.options.outputImageStore.revision(name);
+      const isManagedImage = publishedRevision !== undefined;
+      const usesDigest = isManagedImage && resource.revision === publishedRevision;
+      if (usesDigest && (await this.options.outputImageStore.stat(name, signal))) {
         const result = await this.options.outputImageStore.read(
           name,
           {
@@ -385,23 +418,30 @@ export class TranscriptFileAccess {
           },
         };
       }
-      const isManagedImage = outputImageFilenamePattern.test(name);
       const key = isManagedImage
         ? rootedFileKey([Buffer.from(name).toString("base64url")])
         : (await this.options.home.resolveAbsolutePath(image.path, signal)).key;
       const root = isManagedImage ? ("output-images" as const) : ("agent-home" as const);
+      const placement = {
+        root,
+        ...(isManagedImage && image.runnerId ? { computerId: image.runnerId } : {}),
+      };
+      const expectedRevision = usesDigest
+        ? (await this.options.home.read(key, { ...placement, maxBytes: 1 }, signal)).metadata
+            .revision
+        : resource.revision;
       const result = options.full
         ? await this.options.home.readContent(
             key,
-            { expectedRevision: resource.revision, maxBytes: options.maxBytes, root },
+            { ...placement, expectedRevision, maxBytes: options.maxBytes },
             signal,
           )
         : await this.options.home.read(
             key,
             {
-              expectedRevision: resource.revision,
+              ...placement,
+              expectedRevision,
               maxBytes: Math.min(options.maxBytes, 512 * 1024),
-              root,
             },
             signal,
           );

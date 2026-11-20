@@ -1,12 +1,22 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { mkdtemp, mkdir, writeFile, symlink, rename, rm, readdir, stat } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  writeFile,
+  symlink,
+  rename,
+  rm,
+  readdir,
+  stat,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import Fastify from "fastify";
 import sharp from "sharp";
 import { createId, ThreadIdSchema, UserIdSchema } from "@opensteer/core";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { AgentHomeFiles } from "../threads/agent-home-files.js";
 import { HostOutputImageStore } from "../threads/host-output-images.js";
 import { createInProcessHomeFilesTransport } from "../threads/home-files.test-support.js";
@@ -73,6 +83,51 @@ afterEach(async () => {
   home.close();
   await rm(root, { recursive: true, force: true });
 });
+it("reads an unpublished tool image from the producing Device while Main has no copy", async () => {
+  const producer = createId("runner");
+  const imageDirectory = path.join(root, "producer", "images");
+  await mkdir(imageDirectory, { recursive: true });
+  const bytes = await readFile(path.join(root, "home", "a.png"));
+  const imagePath = path.join(
+    imageDirectory,
+    `${createHash("sha256").update(bytes).digest("hex")}.png`,
+  );
+  await writeFile(imagePath, bytes);
+  const source = createInProcessHomeFilesTransport({
+    runnerId: producer,
+    dataDirectory: path.dirname(imageDirectory),
+    agentHomePath: path.join(root, "home"),
+  });
+  const routedHome = new AgentHomeFiles({
+    agentHome: home.options.agentHome,
+    transport: source.transport,
+  });
+  const routed = new TranscriptFileAccess({
+    ...access.options,
+    home: routedHome,
+    outputImage: async () => ({
+      id: "image-1",
+      path: imagePath,
+      mediaType: "image/png",
+      runnerId: producer,
+    }),
+  });
+  try {
+    const context = { userId: owner, threadId };
+    const opened = await routed.resolve({ kind: "transcript-image", imageId: "image-1" }, context);
+    expect(opened).not.toBeNull();
+    expect(
+      (await routed.read(opened!.resource, context, { full: true, maxBytes: bytes.length })).bytes,
+    ).toEqual(bytes);
+    await writeFile(imagePath, Buffer.alloc(bytes.length));
+    await expect(
+      routed.read(opened!.resource, context, { full: true, maxBytes: bytes.length }),
+    ).rejects.toMatchObject({ code: "not_found" });
+  } finally {
+    routedHome.close();
+  }
+});
+
 async function mint(
   source = path.join(root, "home/a.png"),
   variant: "original" | "preview" = "original",

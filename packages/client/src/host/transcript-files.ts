@@ -17,14 +17,16 @@ import {
   isMissingClientResource,
 } from "../connections/operation-error.js";
 
+export const fileDeviceUpdateMessage = "Update Opensteer on the Device that holds this file.";
+
 export type OpenTranscriptFile = Extract<TranscriptFileOpen, { status: "ok" }>;
 export type TranscriptFileState =
   | TranscriptFileOpen
   | { readonly status: "unreachable"; readonly cached: OpenTranscriptFile | null }
-  | { readonly status: "failed" };
+  | { readonly status: "failed" | "update-required" };
 export type TranscriptFileDownload =
   | ({ readonly status: "ok" } & TranscriptFileContent)
-  | { readonly status: "unavailable" | "unreachable" | "failed" };
+  | { readonly status: "unavailable" | "unreachable" | "failed" | "update-required" };
 export type TranscriptFileOriginal =
   | {
       readonly status: "ok";
@@ -32,7 +34,7 @@ export type TranscriptFileOriginal =
       readonly mediaType: string;
       readonly bytes: Uint8Array;
     }
-  | { readonly status: "unavailable" | "unreachable" | "failed" };
+  | { readonly status: "unavailable" | "unreachable" | "failed" | "update-required" };
 interface Operation<T> {
   readonly controller: AbortController;
   readonly promise: Promise<T>;
@@ -114,6 +116,7 @@ export class TranscriptFileController {
       } catch (error) {
         this.#assertCurrent(controller, generation);
         const failure = classifyClientFailure(error);
+        if (failure.reason === "unsupported-runner") return { status: "update-required" };
         if (isMissingClientResource(failure)) {
           this.#forget(key);
           return { status: "unavailable" };
@@ -151,6 +154,7 @@ export class TranscriptFileController {
       } catch (error) {
         this.#assertCurrent(controller, generation);
         const failure = classifyClientFailure(error);
+        if (failure.reason === "unsupported-runner") return { status: "update-required" };
         if (failure.code === "unauthorized" || failure.kind === "cancelled") throw error;
         if (isMissingClientResource(failure)) {
           for (const [key, cached] of this.#cache)

@@ -21,6 +21,7 @@ import {
   HomeFileOutputImageExtensionSchema,
   agentHomeFilesCapability,
   homeFilesOutputImageMaxBytes,
+  runFileTransferProofPayload,
   runnerPowerStateCapability,
   sameRunnerConnectionFence,
   computerAppMaxTimeoutMs,
@@ -81,7 +82,7 @@ import {
   type RunnerModuleStream,
 } from "@opensteer/runner-client";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { randomUUID } from "node:crypto";
+import { randomUUID, sign } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 import { ComputerAppModuleHandler } from "../computer-apps/module-handler.js";
 import type { PreparedIntegrationsModule } from "../computer-apps/prepare.js";
@@ -818,6 +819,7 @@ export class ReconnectingHostConnection {
                 tabRestoreVersion: 1,
                 surfaceState: 1,
                 popupFollowVersion: 1,
+                actorClaim: 1,
                 captureRegion: 1,
                 rasterDemand: 1,
                 editing: 2,
@@ -1187,6 +1189,12 @@ export class ReconnectingHostConnection {
           agents,
           agentHome: welcome.agentHome,
           agentHomeIsProvisional: welcome.agentHomeIsProvisional === true,
+          ...(welcome.acceptsHomeFiles
+            ? {
+                signFileTransfer: (payload: string) =>
+                  sign(null, Buffer.from(payload), this.#identity.privateKey).toString("base64url"),
+              }
+            : {}),
           appTransport: this.#config,
           environmentId: () => requiredEnvironmentId(this.#identity),
           fail: (reason) => socket.close(1011, reason),
@@ -1346,6 +1354,7 @@ interface AgentsWorkSessionOptions {
   /** The Agent home this computer hosts, as the Host's welcome named it. */
   readonly agentHome?: ComputerFolder | undefined;
   readonly agentHomeIsProvisional?: boolean;
+  readonly signFileTransfer?: (payload: string) => string;
   readonly environmentId: () => EnvironmentId;
   readonly fail: (reason: string) => void;
   readonly fence: RunnerConnectionFenceLedger;
@@ -1399,18 +1408,22 @@ export class AgentsWorkSession implements RunnerWorkSession {
         ? { controlCaPath: options.appTransport.controlCaPath }
         : {}),
     };
-    this.#outputImageTransfers = createHttpHomeFilesTransferClient(transport);
+    this.#outputImageTransfers = createHttpHomeFilesTransferClient(
+      transport,
+      (binding, id, method) =>
+        options.signFileTransfer?.(runFileTransferProofPayload(binding, id, method)),
+    );
     const homeFileOptions =
       options.agents.runFileOptions ?? options.agents.runtime.homeFileOptions?.();
-    if (homeFileOptions) {
+    if (homeFileOptions && options.signFileTransfer) {
       this.#homeFiles = new HomeFilesHandler({
         ...homeFileOptions,
-        transport,
+        transfers: this.#outputImageTransfers,
       });
+      options.sink.setOutputImagePublisher((image, signal) =>
+        this.#publishOutputImage(image, signal),
+      );
     }
-    options.sink.setOutputImagePublisher((image, signal) =>
-      this.#publishOutputImage(image, signal),
-    );
     options.agents.runtime.observeAgentHomeSkills(async (bindingGeneration, scan) => {
       await this.#reportSkills(
         bindingGeneration,
@@ -1551,6 +1564,7 @@ export class AgentsWorkSession implements RunnerWorkSession {
       case "host.home-files.download":
       case "host.home-files.write":
       case "host.home-files.cancel":
+        if (!this.#options.signFileTransfer) return;
         void this.#answerHomeFileRequest(message).catch(() =>
           this.#options.fail("Home file response failed"),
         );
@@ -1963,6 +1977,8 @@ export class AgentsWorkSession implements RunnerWorkSession {
           15_000,
           { signal: linked, timeoutError: () => new Error("Host did not answer image publish") },
         );
+        if (upload.status === "rejected")
+          throw new Error(upload.message ?? "Output image publish refused");
         if (upload.status !== "upload" || !upload.transfer) return;
         linked.throwIfAborted();
         const body = handle.createReadStream({ autoClose: false });
@@ -1971,6 +1987,7 @@ export class AgentsWorkSession implements RunnerWorkSession {
             upload.transfer,
             { body, name: fileName, size: info.size },
             linked,
+            upload,
           );
         } finally {
           body.destroy();

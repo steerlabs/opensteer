@@ -24,6 +24,7 @@ export const LocalDirectoryEntrySchema = z.strictObject({
   kind: z.enum(["directory", "file", "opaque", "symlink"]),
   mode: z.number().int().nonnegative().max(0o7777),
   modifiedAt: z.iso.datetime({ offset: true }).nullable(),
+  revision: LocalFileRevisionSchema.optional(),
   nameBase64: z
     .string()
     .max(342)

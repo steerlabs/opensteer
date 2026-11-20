@@ -31,6 +31,7 @@ import {
   type RunnerAppResult,
   type RunnerHomeFileResult,
   type RunnerOutputImagePublish,
+  type RunFileTransferBinding,
   type RunnerRunFileResult,
   type RunnerVoiceCommand,
   type RunnerVoiceResult,
@@ -759,6 +760,10 @@ export class RunnerRegistry {
         heartbeatIntervalMs: Math.min(15_000, Math.floor(this.#executionLeaseMs / 4)),
         ...(identity.capabilities.includes(runnerPowerStateCapability)
           ? { acceptsPowerState: true as const }
+          : {}),
+        ...(identity.capabilities.includes(agentHomeFilesCapability) &&
+        this.#hooks.onAgentHomeReport
+          ? { acceptsHomeFiles: true as const }
           : {}),
         ...agentHome,
         serverTime: new Date(now).toISOString(),
@@ -1893,6 +1898,7 @@ export class RunnerRegistry {
       keyof RunnerConnectionFence | "requestId"
     >,
     signal: AbortSignal,
+    bindTransfer?: (binding: RunFileTransferBinding, signal: AbortSignal) => void,
   ): Promise<RunnerHomeFileResult> {
     const connection = this.#byRunner.get(runnerId);
     if (!connection) {
@@ -1909,9 +1915,10 @@ export class RunnerRegistry {
         reason: "unsupported-runner",
         message: "Update the hosting computer to access Agent home files",
       });
-    if (connection.identity.runnerKind !== "main")
+    const readsOutputImage = "root" in request && request.root === "output-images";
+    if (!readsOutputImage && connection.identity.runnerKind !== "main")
       throw new OpensteerError({ code: "forbidden", message: "This is not the hosting computer" });
-    if (!("root" in request && request.root === "output-images") && !connection.agentHomeReady)
+    if (!readsOutputImage && !connection.agentHomeReady)
       throw new OpensteerError({
         code: "folder_unavailable",
         message: "Agent home is not ready on the hosting computer",
@@ -1922,6 +1929,7 @@ export class RunnerRegistry {
     const pending = deferred<RunnerHomeFileResult>();
     connection.pendingHomeFiles.set(requestId, pending);
     try {
+      bindTransfer?.({ ...fence, requestId }, connection.disconnected.controller.signal);
       const result = await withDeadline(
         Promise.all([
           pending.promise,

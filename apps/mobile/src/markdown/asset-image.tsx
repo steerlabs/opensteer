@@ -1,3 +1,4 @@
+import { fileDeviceUpdateMessage } from "@opensteer/client/host";
 import { useContext, useState } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { Image } from "expo-image";
@@ -17,7 +18,10 @@ export function AssetImage({ path, alt = "" }: { path: string; alt?: string }) {
   const preview = useAssetImage(path, "preview", { enabled: visible });
   const navigation = useReferenceNavigation();
   const [open, setOpen] = useState(false);
-  if (preview.failed) return <Text>{alt || "Image unavailable"}</Text>;
+  if (preview.failed)
+    return (
+      <Text>{preview.updateRequired ? fileDeviceUpdateMessage : alt || "Image unavailable"}</Text>
+    );
   if (!owner || !preview.available) return <Text>{alt || path}</Text>;
   const image = preview.image;
   const viewer =
@@ -72,7 +76,9 @@ function OriginalImage({ path, close }: { path: string; close: () => void }) {
           <Text style={{ color: "white", padding: 16 }}>Close</Text>
         </Pressable>
         {original.failed ? (
-          <Text style={{ color: "white" }}>Image unavailable</Text>
+          <Text style={{ color: "white" }}>
+            {original.updateRequired ? fileDeviceUpdateMessage : "Image unavailable"}
+          </Text>
         ) : owner ? (
           <ImageHold
             source={personalImageSource(
@@ -121,7 +127,8 @@ export function RetainedToolImage({ imageId }: { imageId: string }) {
     enabled: visible,
   });
   const image = preview.image;
-  if (preview.failed) return <Text>Image unavailable</Text>;
+  if (preview.failed)
+    return <Text>{preview.updateRequired ? fileDeviceUpdateMessage : "Image unavailable"}</Text>;
   if (!image) return null;
   return (
     <Image

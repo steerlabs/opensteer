@@ -1,6 +1,15 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
@@ -12,7 +21,13 @@ import {
   ModelProviderIdSchema,
   type RunId,
 } from "@opensteer/core";
-import { AppStore, findPersonalSettings, personalSettings } from "@opensteer/database";
+import {
+  AppStore,
+  findPersonalSettings,
+  personalSettings,
+  readThreadOutputImage,
+  resolveThreadOutputImage,
+} from "@opensteer/database";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -26,7 +41,12 @@ import {
   type HarnessEvent,
   type HarnessSession,
 } from "@opensteer/harness";
-import { RunnerBootIdSchema } from "@opensteer/protocol";
+import { RunnerRegistry } from "@opensteer/orchestration";
+import {
+  RunnerBootIdSchema,
+  RunnerDescriptorSchema,
+  runEventsCapability,
+} from "@opensteer/protocol";
 import {
   AgentHomeManager,
   AttachmentCache,
@@ -48,6 +68,8 @@ import { loadOrCreateHostKeys } from "../identity/host-keys.js";
 import { withFolderPluginPackage } from "../local-servers/folder-plugin-package.js";
 import { exportPluginSource, pluginSourceFiles } from "../plugins/plugin-source.js";
 import { createHostRuntime } from "../runtime/runtime.js";
+import { HostOutputImageStore } from "./host-output-images.js";
+import { closed, connectPrimary } from "../runtime/private-machine-host.test-support.js";
 import { AgentHomeFiles } from "./agent-home-files.js";
 
 function createImageEmittingDriver(imagePath: string, finishTurn: Promise<void>): HarnessDriver {
@@ -200,6 +222,36 @@ it("serves Agent home files, published output images, folder plugins, static app
   let runner: RunnerRuntime | undefined;
   const runnerStop = new AbortController();
   const finishTurn = Promise.withResolvers<void>();
+  const publishRequested = Promise.withResolvers<void>();
+  const answerPublish = Promise.withResolvers<void>();
+  const hasImage = HostOutputImageStore.prototype.has;
+  const publicationRequest = vi
+    .spyOn(HostOutputImageStore.prototype, "has")
+    .mockImplementation(async function (this: HostOutputImageStore, ...args) {
+      publishRequested.resolve();
+      await answerPublish.promise;
+      return hasImage.apply(this, args);
+    });
+  const finishPublishing = Promise.withResolvers<void>();
+  const published = Promise.withResolvers<void>();
+  const storeImage = HostOutputImageStore.prototype.store;
+  const publication = vi
+    .spyOn(HostOutputImageStore.prototype, "store")
+    .mockImplementation(async function (this: HostOutputImageStore, input) {
+      await finishPublishing.promise;
+      await storeImage.call(this, input);
+      published.resolve();
+    });
+  const homeReported = Promise.withResolvers<void>();
+  const handleRunnerMessage = RunnerRegistry.prototype.handle;
+  const reporting = vi.spyOn(RunnerRegistry.prototype, "handle").mockImplementation(async function (
+    this: RunnerRegistry,
+    peer,
+    message,
+  ) {
+    await handleRunnerMessage.call(this, peer, message);
+    if (message.type === "runner.agent-home.report") homeReported.resolve();
+  });
   let runnerTask: Promise<void> | undefined;
   try {
     const port = await freePort();
@@ -344,11 +396,9 @@ it("serves Agent home files, published output images, folder plugins, static app
     runnerTask = connection.run(runnerStop.signal);
 
     // 1. Runner creates + canonicalizes Agent home and reports it; Host persists the canonical path.
-    const savedSettings = await waitUntil(async () => {
-      const s = await findPersonalSettings(personalHost.store.database);
-      return s?.agentHome.path === expectedCanonicalAgentHome ? s : null;
-    }, "canonical agentHome persisted from Runner report");
-    expect(savedSettings.agentHome).toEqual({
+    await homeReported.promise;
+    const savedSettings = await findPersonalSettings(personalHost.store.database);
+    expect(savedSettings?.agentHome).toEqual({
       computerId: runnerId,
       path: expectedCanonicalAgentHome,
     });
@@ -377,6 +427,19 @@ it("serves Agent home files, published output images, folder plugins, static app
     const preview = await unreachablePathFiles.preview(helloEntry!.key);
     expect(preview.bytes.toString("utf8")).toBe("wire-hello-world");
     expect(preview.metadata.truncated).toBe(false);
+    if (!helloEntry?.revision) throw new Error("Listing did not include a file revision");
+    const listed = await unreachablePathFiles.download(
+      helloEntry.key,
+      undefined,
+      undefined,
+      helloEntry.revision,
+    );
+    expect(await listed.text()).toBe("wire-hello-world");
+    await rename(join(expectedCanonicalAgentHome, "hello.txt"), join(root, "original-hello.txt"));
+    await writeFile(join(expectedCanonicalAgentHome, "hello.txt"), "wire-replacement");
+    await expect(
+      unreachablePathFiles.download(helloEntry.key, undefined, undefined, helloEntry.revision),
+    ).rejects.toMatchObject({ reason: "revision-mismatch" });
 
     const largeKey = Buffer.from("sub\0large.txt").toString("base64url");
     const largePreview = await unreachablePathFiles.preview(largeKey);
@@ -567,7 +630,8 @@ it("serves Agent home files, published output images, folder plugins, static app
       { systemRole: "memory-nightly", pauseReason: "Memory is off at your request." },
     ]);
 
-    // 6a. Transcript image open from Host-owned storage after deleting Runner's local copy!
+    // An unanswered publish cannot block the Run or the reads of its image.
+    await publishRequested.promise;
     const publishedImageRow = await personalHost.store.database
       .selectFrom("toolOutputImages")
       .selectAll()
@@ -575,9 +639,19 @@ it("serves Agent home files, published output images, folder plugins, static app
       .executeTakeFirstOrThrow();
     const publishedSha = createHash("sha256").update(generatedPng).digest("hex");
     expect(publishedImageRow.path).toContain(`${publishedSha}.png`);
-    await rm(publishedImageRow.path, { force: true });
-    expect(existsSync(publishedImageRow.path)).toBe(false);
-
+    const imageScope = { ownerId: settings.ownerId, threadId: thread.id };
+    await expect(
+      readThreadOutputImage(personalHost.store.database, {
+        ...imageScope,
+        imageId: publishedImageRow.id,
+      }),
+    ).resolves.toMatchObject({ runnerId });
+    await expect(
+      resolveThreadOutputImage(personalHost.store.database, {
+        ...imageScope,
+        path: publishedImageRow.path,
+      }),
+    ).resolves.toMatchObject({ runnerId });
     const openedPublished = await api["file.open"]({
       source: { imageId: publishedImageRow.id, kind: "transcript-image" },
       threadId: thread.id,
@@ -591,6 +665,18 @@ it("serves Agent home files, published output images, folder plugins, static app
       status: "ok",
     });
     if (openedPublished.data.status !== "ok") throw new Error("Expected ok");
+    const whilePublishing = await api["file.content"]({
+      resource: openedPublished.data.resource,
+      threadId: thread.id,
+    });
+    expect(whilePublishing.ok && Buffer.from(whilePublishing.data.bytes)).toEqual(generatedPng);
+
+    answerPublish.resolve();
+    finishPublishing.resolve();
+    await published.promise;
+    await rm(publishedImageRow.path, { force: true });
+    expect(existsSync(publishedImageRow.path)).toBe(false);
+
     const contentPublished = await api["file.content"]({
       resource: openedPublished.data.resource,
       threadId: thread.id,
@@ -669,8 +755,86 @@ it("serves Agent home files, published output images, folder plugins, static app
     if (!legacyContent.ok) throw new Error("Expected legacy content");
     expect(Buffer.from(legacyContent.data.bytes)).toEqual(legacyPng);
 
+    runnerStop.abort();
+    await runnerTask;
+    const oldMain = await connectPrimary(
+      port,
+      RunnerDescriptorSchema.parse({
+        runnerId,
+        bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
+        capabilities: [runEventsCapability, "agent-home-settings-v1"],
+        name: "Older hosting Device",
+        runnerKind: "main",
+        runtimeVersion: "integration",
+        modules: {
+          agents: {
+            environmentIds: [environmentId],
+            harnessDrivers: [],
+            maxConcurrentRuns: 1,
+            providerStateModes: ["isolated"],
+          },
+        },
+      }),
+      { privateKey: identity.privateKey },
+    );
+    try {
+      const update = {
+        ok: false,
+        error: { message: expect.stringContaining("Update the hosting computer") },
+      };
+      await expect(
+        api["file.open"]({
+          source: { kind: "path", path: join(expectedCanonicalAgentHome, "hello.txt") },
+          threadId: thread.id,
+        }),
+      ).resolves.toMatchObject(update);
+      await expect(
+        api["file.open"]({
+          source: { kind: "transcript-image", imageId: legacyImageId },
+          threadId: thread.id,
+        }),
+      ).resolves.toMatchObject(update);
+      await expect(
+        api["asset.urls"]({
+          assets: [
+            { source: { kind: "transcript-image", imageId: legacyImageId }, variant: "preview" },
+            {
+              source: { kind: "transcript-image", imageId: publishedImageRow.id },
+              variant: "preview",
+            },
+          ],
+          threadId: thread.id,
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        data: {
+          assets: [
+            { status: "unavailable", reason: "unsupported", updateRequired: true },
+            { status: "ok" },
+          ],
+        },
+      });
+      await expect(hostFiles.download(helloEntry!.key)).rejects.toMatchObject({
+        reason: "unsupported-runner",
+      });
+      await expect(
+        exportPluginSource(hostFiles, "legacy-export", [], async () => undefined),
+      ).rejects.toMatchObject({ reason: "unsupported-runner" });
+      await expect(
+        withFolderPluginPackage({ directory: "my-plugin", files: hostFiles, install: vi.fn() }),
+      ).rejects.toMatchObject({ reason: "unsupported-runner" });
+    } finally {
+      oldMain.socket.close();
+      await closed(oldMain.socket);
+    }
+
     unreachablePathFiles.close();
   } finally {
+    answerPublish.resolve();
+    finishPublishing.resolve();
+    publicationRequest.mockRestore();
+    publication.mockRestore();
+    reporting.mockRestore();
     finishTurn.resolve();
     runnerStop.abort(new Error("test done"));
     if (runnerTask) {

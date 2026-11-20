@@ -1,3 +1,4 @@
+import { fileDeviceUpdateMessage } from "@opensteer/client/host";
 import type { HostClient, TranscriptFileState } from "@opensteer/client/host";
 import { TranscriptImageContext, useAssetImage } from "@opensteer/client/react";
 import type { FileSource } from "@opensteer/protocol";
@@ -116,6 +117,8 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
                 if (result.status === "ok")
                   await shareFileBytes(result.bytes, file.name, result.metadata.contentType);
                 else if (result.status === "unavailable") setShown({ status: "unavailable" });
+                else if (result.status === "update-required")
+                  setShown({ status: "update-required" });
                 else failed();
               })
               .catch(failed)
@@ -166,6 +169,8 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
         <Skeleton />
       ) : shown.status === "unavailable" ? (
         <UnavailableState onBack={() => navigation.goBack()} />
+      ) : shown.status === "update-required" ? (
+        <Banner text={fileDeviceUpdateMessage} />
       ) : shown.status === "unreachable" && file === null && phase !== "ready" ? (
         <ConnectionRouteGate connection={client.connection} />
       ) : shown.status === "failed" || (shown.status === "unreachable" && file === null) ? (
@@ -357,7 +362,7 @@ function ImageSurface(props: {
     <View style={styles.imageSurface}>
       {image.failed ? (
         <AppText role="secondary" tone="muted">
-          This image couldn't be shown.
+          {image.updateRequired ? fileDeviceUpdateMessage : "This image couldn't be shown."}
         </AppText>
       ) : (
         <ScrollView

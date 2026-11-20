@@ -66,6 +66,11 @@ export class HostOutputImageStore {
       .digest("base64url");
   }
 
+  revision(filename: string): string | undefined {
+    const sha256 = outputImageFilenamePattern.exec(filename)?.[1];
+    return sha256 ? revisionFor(this.scope, sha256) : undefined;
+  }
+
   async has(sha256: string, extension: HomeFileOutputImageExtension): Promise<boolean> {
     const filename = `${sha256}.${extension}`;
     if (!outputImageFilenamePattern.test(filename)) return false;

@@ -1,3 +1,4 @@
+import { fileDeviceUpdateMessage } from "@opensteer/client/host";
 import { useContext, useMemo, useRef } from "react";
 import { TranscriptImageContext, useAssetImage } from "@opensteer/client/react";
 import { transcriptImageRead, useImageActions } from "./image-actions.js";
@@ -20,7 +21,10 @@ export function AssetImage({ path, alt = "" }: { path: string; alt?: string }) {
     [images, path],
   );
   const actions = useImageActions(read);
-  if (preview.failed) return <span>{alt || "Image unavailable"}</span>;
+  if (preview.failed)
+    return (
+      <span>{preview.updateRequired ? fileDeviceUpdateMessage : alt || "Image unavailable"}</span>
+    );
   if (!preview.available) return <span>{alt || path}</span>;
   const image = preview.image ? (
     <img
@@ -83,7 +87,11 @@ export function RetainedToolImage({ imageId }: { imageId: string }) {
           onError={preview.onError}
         />
       ) : preview.failed ? (
-        "Image unavailable"
+        preview.updateRequired ? (
+          fileDeviceUpdateMessage
+        ) : (
+          "Image unavailable"
+        )
       ) : null}
     </span>
   );

@@ -1,5 +1,11 @@
 import type { DatabaseSchema } from "./schema.js";
-import { OpensteerError, type ExecutionNodeId, type ThreadId, type UserId } from "@opensteer/core";
+import {
+  OpensteerError,
+  type ExecutionNodeId,
+  type RunnerId,
+  type ThreadId,
+  type UserId,
+} from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { ToolOutputImageTable } from "./personal-state-schema.js";
 import {
@@ -22,7 +28,9 @@ function scopeOf(input: ImageScope) {
     : { kind: "thread" as const, threadId: input.threadId };
 }
 
-type ImageView = Pick<ToolOutputImageTable, "id" | "path" | "mediaType" | "generated">;
+type ImageView = Pick<ToolOutputImageTable, "id" | "path" | "mediaType" | "generated"> & {
+  readonly runnerId: RunnerId | null;
+};
 
 export async function resolvePersonalToolImages(
   database: Kysely<DatabaseSchema>,
@@ -43,12 +51,14 @@ export async function resolvePersonalToolImages(
         ? sql`true`
         : sql`image.node_id is null`;
     const rows = await sql<ImageView>`
-      select selected.id,selected.path,selected.media_type,selected.generated
+      select selected.id,selected.path,selected.media_type,selected.generated,selected.runner_id
       from jsonb_to_recordset(${JSON.stringify(keys)}::jsonb) as key(path text,hash text)
       cross join lateral (
-        select image.id,image.path,image.media_type,image.generated from tool_output_images image
+        select image.id,image.path,image.media_type,image.generated,attempt.runner_id from tool_output_images image
         join tool_calls call on call.id=image.tool_call_id and call.thread_id=image.thread_id
           and call.node_id is not distinct from image.node_id
+        left join run_attempts attempt on attempt.id=call.attempt_id and attempt.run_id=call.run_id
+          and call.origin='runner'
         where image.thread_id=${input.threadId} and ${byNode}
           and image.path_hash=decode(key.hash,'hex') and image.path=key.path
         order by image.completion_order desc,image.image_index desc limit 1
@@ -73,7 +83,13 @@ export async function readPersonalToolImage(
           .onRef("call.threadId", "=", "image.threadId")
           .on(sql<boolean>`call.node_id is not distinct from image.node_id`),
       )
-      .select(["image.id", "image.path", "image.mediaType", "image.generated"])
+      .leftJoin("runAttempts as attempt", (join) =>
+        join
+          .onRef("attempt.id", "=", "call.attemptId")
+          .onRef("attempt.runId", "=", "call.runId")
+          .on("call.origin", "=", "runner"),
+      )
+      .select(["image.id", "image.path", "image.mediaType", "image.generated", "attempt.runnerId"])
       .where("image.id", "=", input.imageId)
       .where("image.threadId", "=", input.threadId);
     return (

@@ -10,6 +10,8 @@ import {
   homeFilesMaxBytes,
   homeFilesMaxFrameBytes,
   runFileNameHeader,
+  runFileProofHeader,
+  type RunFileTransferBinding,
   runFileTransferContentType,
   runFileTransferPath,
   type HomeDirectoryIdentity,
@@ -128,20 +130,42 @@ export interface HomeFilesTransferClient {
       readonly name: string;
     },
     signal: AbortSignal,
+    binding: RunFileTransferBinding,
   ): Promise<void>;
-  download(transfer: RunFileTransfer, maxBytes: number, signal: AbortSignal): Promise<Buffer>;
+  download(
+    transfer: RunFileTransfer,
+    maxBytes: number,
+    signal: AbortSignal,
+    binding: RunFileTransferBinding,
+  ): Promise<Buffer>;
 }
 
 export function createHttpHomeFilesTransferClient(
   transport: RunnerTransportPolicy,
+  proof?: (
+    binding: RunFileTransferBinding,
+    id: string,
+    method: "GET" | "PUT",
+  ) => string | undefined,
 ): HomeFilesTransferClient {
+  const headers = (
+    transfer: RunFileTransfer,
+    binding: RunFileTransferBinding,
+    method: "GET" | "PUT",
+  ) => {
+    const signature = proof?.(binding, transfer.id, method);
+    return {
+      authorization: `Bearer ${transfer.token}`,
+      ...(signature ? { [runFileProofHeader]: signature } : {}),
+    };
+  };
   return {
-    async upload(transfer, file, signal) {
+    async upload(transfer, file, signal, binding) {
       const response = await runnerFileRequest(
         transport,
         runFileTransferPath(transfer.id),
         {
-          authorization: `Bearer ${transfer.token}`,
+          ...headers(transfer, binding, "PUT"),
           "content-type": runFileTransferContentType,
           "content-length": String(file.size),
           [runFileNameHeader]: encodeURIComponent(file.name),
@@ -154,11 +178,11 @@ export function createHttpHomeFilesTransferClient(
         throw new HomeFilesError("unavailable", "File transfer upload failed");
       }
     },
-    async download(transfer, maxBytes, signal) {
+    async download(transfer, maxBytes, signal, binding) {
       const response = await runnerFileRequest(
         transport,
         runFileTransferPath(transfer.id),
-        { authorization: `Bearer ${transfer.token}` },
+        headers(transfer, binding, "GET"),
         signal,
       );
       try {
@@ -201,7 +225,6 @@ export class HomeFilesHandler {
   readonly #homeDirectory: string | undefined;
   readonly #transfers: HomeFilesTransferClient | undefined;
   #agentHomePath: string | undefined;
-  #agentHomeIdentity: HomeDirectoryIdentity | undefined;
 
   constructor(options: {
     readonly dataDirectory: string;
@@ -233,7 +256,6 @@ export class HomeFilesHandler {
       signal,
     );
     this.#agentHomePath = canonicalPath;
-    this.#agentHomeIdentity = identity;
     return identity;
   }
 
@@ -267,13 +289,7 @@ export class HomeFilesHandler {
     if (!root) {
       throw new HomeFilesError("unavailable", "Agent home is not ready on this computer");
     }
-    const expectedRootIdentity =
-      rootKind === "agent-home"
-        ? (this.#agentHomeIdentity ??= await this.#helper.directoryIdentity(
-            { root, path: "." },
-            signal,
-          ))
-        : await this.#helper.directoryIdentity({ root, path: "." }, signal);
+    const expectedRootIdentity = await this.#helper.directoryIdentity({ root, path: "." }, signal);
     const rootScope = homeFileRootScope(root, expectedRootIdentity);
     return { root, expectedRootIdentity, rootScope };
   }
@@ -516,6 +532,7 @@ export class HomeFilesHandler {
           size: download.length,
         },
         signal,
+        request,
       );
       return {
         kind: "download",
@@ -536,11 +553,13 @@ export class HomeFilesHandler {
       throw new HomeFilesError("unavailable", "File transfer transport is unavailable");
     }
     validateRelativeSegments(request.directory);
+    const { root, expectedRootIdentity, rootScope } = await this.#pinRoot("agent-home", signal);
     const maxBytes = Math.min(request.maxBytes, homeFilesExportMaxBytes);
     const bundleBytes = await this.#transfers.download(
       request.transfer,
       4 + homeFilesExportManifestMaxBytes + maxBytes,
       signal,
+      request,
     );
     let bundle: ReturnType<typeof decodeHomeFileExportBundle>;
     try {
@@ -558,7 +577,6 @@ export class HomeFilesHandler {
       bytes: file.bytes,
       segments: validateRelativeSegments(file.path),
     }));
-    const { root, expectedRootIdentity, rootScope } = await this.#pinRoot("agent-home", signal);
     await this.#helper.createDirectory(
       { root, path: request.directory, expectedRootIdentity },
       signal,

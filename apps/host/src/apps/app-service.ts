@@ -281,19 +281,28 @@ export class AppService {
       ...(lifetime.signal ? [lifetime.signal] : []),
     ]);
     let key = "";
+    let revision: string | undefined;
+    let rootScope: string | undefined;
     for (const [index, name] of segments.entries()) {
       let cursor: string | undefined;
       let found = false;
       do {
         const page = await this.#options.files.list(
-          { parentKey: key, limit: 500, ...(cursor ? { cursor } : {}) },
+          {
+            parentKey: key,
+            limit: 500,
+            ...(cursor ? { cursor } : {}),
+            ...(rootScope ? { expectedRootScope: rootScope } : {}),
+          },
           signal,
         );
+        rootScope ??= page.rootScope;
         const entry = page.entries.find((candidate) => candidate.name === name);
         if (entry) {
           if (entry.kind !== (index === segments.length - 1 ? "file" : "directory"))
             throw unavailable();
           key = entry.key;
+          revision = entry.revision;
           found = true;
           break;
         }
@@ -301,14 +310,22 @@ export class AppService {
       } while (cursor);
       if (!found) throw unavailable();
     }
-    const response = await this.#options.files.download(key, signal, "app-html").catch((error) => {
-      if (error instanceof OpensteerError && error.reason === "file-too-large")
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "App HTML exceeds the 5 MiB limit",
-        });
-      throw error;
-    });
+    if (!revision)
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "unsupported-runner",
+        message: "Update the hosting computer to publish apps from Agent home.",
+      });
+    const response = await this.#options.files
+      .download(key, signal, "app-html", revision)
+      .catch((error) => {
+        if (error instanceof OpensteerError && error.reason === "file-too-large")
+          throw new OpensteerError({
+            code: "bad_request",
+            message: "App HTML exceeds the 5 MiB limit",
+          });
+        throw error;
+      });
     if (!response.ok) {
       await response.body?.cancel();
       throw unavailable();
@@ -758,7 +775,7 @@ export class AppService {
         ...(actor.kind === "run"
           ? { agentBindingId: `run:${actor.claims.runId}` }
           : actor.kind === "connection"
-            ? { connectionId: actor.caller.connectionId }
+            ? { agentConnectionId: actor.caller.connectionId }
             : actor.kind === "program"
               ? { agentBindingId: actor.caller.key }
               : {}),

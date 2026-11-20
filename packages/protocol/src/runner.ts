@@ -1255,6 +1255,13 @@ export const RunnerBrowserModuleSchema = z
       .positive()
       .transform((version) => (version === 1 ? version : undefined))
       .optional(),
+    /** It reads the attach ticket's `actor` claim, so the Home may issue one. */
+    actorClaim: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
     /**
      * Its pages can offer and fill a person's saved logins, and from 2 offer
      * to save one the person typed (`person-fill.ts`).
@@ -2030,6 +2037,7 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     environmentIds: z.array(EnvironmentIdSchema).max(100),
     heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),
     acceptsPowerState: z.literal(true).optional(),
+    acceptsHomeFiles: z.literal(true).optional(),
     agentHome: ComputerFolderSchema.optional(),
     agentHomeIsProvisional: z.literal(true).optional(),
     serverTime: IsoDateTimeSchema,

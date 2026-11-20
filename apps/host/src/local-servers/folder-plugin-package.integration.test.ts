@@ -14,6 +14,7 @@ it("copies a folder of the most files a package leaves room for, in a folder of 
     mode: 0o600,
     modifiedAt: null,
     sizeBytes: 0,
+    revision: `${"a".repeat(43)}.${"b".repeat(43)}`,
   });
   const names = Array.from({ length: maximumLocalServerFolderFiles }, (_, index) => `f${index}`);
   const list = vi.fn(async ({ parentKey, cursor }: { parentKey: string; cursor?: string }) => {

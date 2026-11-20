@@ -34,6 +34,7 @@ type filesEntry struct {
 	ModifiedAt  *string `json:"modifiedAt"`
 	NameBase64  string  `json:"nameBase64"`
 	SizeBytes   int64   `json:"sizeBytes"`
+	Revision    string  `json:"revision"`
 }
 
 type filesListResult struct {
@@ -385,6 +386,7 @@ func filesEntryFromStat(name string, stat nodeStat) filesEntry {
 		ModifiedAt:  safeModifiedAt(stat.modifiedUnixNano),
 		NameBase64:  base64.RawURLEncoding.EncodeToString(nameBytes),
 		SizeBytes:   max(stat.size, 0),
+		Revision:    nodeRevision(stat),
 	}
 }
 
