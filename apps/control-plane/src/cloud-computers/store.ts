@@ -1386,6 +1386,7 @@ export class CloudComputerStore {
         .selectAll()
         .where("purgeComputerId", "=", id)
         .orderBy("id")
+        .limit(1)
         .forUpdate()
         .executeTakeFirst();
       if (target) {
@@ -2340,29 +2341,48 @@ export class CloudComputerStore {
             .where("computerId", "=", id)
             .set({ computerId: null, needsRotation: true })
             .executeTakeFirst();
-          let available = tx
-            .selectFrom("cloudComputerBackupTargets")
+          let available = freeBackupTargets(tx)
             .select("id")
-            .where("computerId", "is", null)
-            .where("checkoutKey", "is", null)
-            .where("reservedOrganizationId", "is", null)
-            .where("needsRotation", "=", false);
+            .where("reservedOrganizationId", "is", null);
           if (staged) available = available.where("id", "=", staged.targetId);
-          const replacement = await available
-            .orderBy("id")
-            .forUpdate()
-            .skipLocked()
-            .executeTakeFirst();
-          if (!replacement)
+          const candidate = await available.orderBy("id").limit(1).executeTakeFirst();
+          const locked = candidate
+            ? await tx
+                .selectFrom("cloudComputerBackupTargets")
+                .select([
+                  "id",
+                  "computerId",
+                  "checkoutKey",
+                  "reservedOrganizationId",
+                  "needsRotation",
+                  "purgeComputerId",
+                ])
+                .where((eb) => eb.or([eb("computerId", "=", id), eb("id", "=", candidate.id)]))
+                .orderBy("id")
+                .forUpdate()
+                .skipLocked()
+                .execute()
+            : [];
+          const retiring = locked.find((target) => target.computerId === id);
+          const replacement = locked.find(
+            (target) =>
+              target.id === candidate?.id &&
+              !target.computerId &&
+              !target.checkoutKey &&
+              !target.reservedOrganizationId &&
+              !target.needsRotation &&
+              !target.purgeComputerId,
+          );
+          if (!retiring || !replacement)
             throw new ControlPlaneError(
               "unavailable",
               "A fresh backup target is required to reissue bootstrap",
             );
           await tx
             .updateTable("cloudComputerBackupTargets")
-            .where("computerId", "=", id)
+            .where("id", "=", retiring.id)
             .set({ computerId: null, purgeComputerId: id, needsRotation: true })
-            .executeTakeFirst();
+            .executeTakeFirstOrThrow();
           await tx
             .updateTable("cloudComputerBackupTargets")
             .where("id", "=", replacement.id)

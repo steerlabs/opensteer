@@ -193,8 +193,21 @@ integration("Cloud Computer website pages", () => {
       expect.objectContaining({ accountId: person.id, requestId, returnUrl: pagesUrl }),
     );
 
+    const paidNotice = escapeHtml(cloudWords("cloud.web.checkout.paid"));
+    const forged = await page("/cloud-computer?checkout=paid&notice=no-billing", person);
+    expect(forged.body).not.toContain(paidNotice);
+    expect(forged.body).not.toContain(escapeHtml(cloudWords("cloud.web.noBilling")));
+    expect((await page(`/cloud-computer?checkout=${requestId}`, person)).body).not.toContain(
+      paidNotice,
+    );
     const customer = await complete(person.id, requestId!);
-    const preparing = await page("/cloud-computer", person);
+    const preparing = await page(`/cloud-computer?checkout=${requestId}`, person);
+    expect(preparing.body).toContain(
+      `data-state="done">${escapeHtml(cloudWords("cloud.step.payment"))}</li>`,
+    );
+    expect(
+      (await page(`/cloud-computer?checkout=${requestId}`, await signIn())).body,
+    ).not.toContain(paidNotice);
     expect(preparing.status).toBe(200);
     expect(preparing.headers.get("refresh")).toBe(String(cloudComputerPreparingRefreshSeconds));
     expect(preparing.body).toContain(escapeHtml(cloudWords("cloud.preparing.title")));
@@ -206,6 +219,11 @@ integration("Cloud Computer website pages", () => {
     expect(billing.status).toBe(303);
     expect(billing.headers.get("location")).toBe(billingUrl);
     expect(stripe.portal).toHaveBeenCalledWith(customer, pagesUrl, "bpc_cloud");
+    const [computer] = await cloud.list(person.id);
+    expect((await post("/cloud-computer/suspend", person, { id: computer!.id })).status).toBe(303);
+    expect((await page(`/cloud-computer?checkout=${requestId}`, person)).body).toContain(
+      paidNotice,
+    );
   });
 
   it("suspends, resumes and deletes only after the typed word, for its owner alone", async () => {
@@ -238,6 +256,13 @@ integration("Cloud Computer website pages", () => {
     const deleted = await post("/cloud-computer/delete", person, { id, confirm: " Delete " });
     expect(deleted.status).toBe(303);
     expect(stripe.cancel).toHaveBeenCalledTimes(1);
+    const deletionStatus = await page("/cloud-computer", person);
+    for (const fact of [
+      "cloud.deletion.computer",
+      "cloud.deletion.backups",
+      "cloud.deletion.storage",
+    ] as const)
+      expect(deletionStatus.body).toContain(`${escapeHtml(cloudWords(fact))} — Pending since`);
   });
 
   it("shows the store's refusal with what to do next instead of a blank error", async () => {

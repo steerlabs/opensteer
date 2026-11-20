@@ -554,6 +554,9 @@ integration("Organization website pages", () => {
       },
     );
     expect(invalid.status).toBe(400);
+    const onOffboardingError = vi.fn();
+    await organizations.reconcileOffboarding(onOffboardingError);
+    expect(onOffboardingError).not.toHaveBeenCalled();
     const rows = await database
       .selectFrom("workAssignments")
       .selectAll()
@@ -562,6 +565,7 @@ integration("Organization website pages", () => {
     for (const [index, days] of choices.entries()) {
       const row = rows.find(({ id: assignment }) => assignment === assignments[index])!;
       expect(row.state).toBe("offboarding");
+      expect(row.offboardingCheckedAt).not.toBeNull();
       expect(row.signInCutAt).not.toBeNull();
       expect(row.retainUntil).toBeNull();
       expect(row.retentionSeconds).toBe(days * 86_400);

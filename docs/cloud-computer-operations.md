@@ -310,7 +310,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
    - Customer sees the checkout page in their browser; the app polls `GET /v1/account/cloud-computers` every 5 seconds.
 2. **Desired state**:
    - Stripe sends `checkout.session.completed` (or `checkout.session.async_payment_succeeded`) to `POST /v1/cloud-computers/stripe-webhook`.
-   - Account creates the `cc_<uuid>` record (`state: active`, `phase: provisioning`, `generation: 1`, `revision: 1`), binds the reserved backup target, generates a hostname `<token>.<OPENSTEER_CLOUD_COMPUTER_DOMAIN>`, generates a setup code and backup encryption password, and seals a bootstrap token.
+   - Account creates the `cc_<uuid>` record (`state: active`, `phase: provisioning`, `generation: 1`, `revision: 1`), binds the reserved backup target, generates a hostname `<token>.<OPENSTEER_CLOUD_COMPUTER_DOMAIN>`, generates a setup code, and seals a bootstrap token.
    - Customer sees `status: "preparing"` ("Setting up") and `egress: "pending"`.
    - Operator can run `node dist/cloud-computer-operator-main.js show <id>` and see `phase: "provisioning"`.
 3. **Server created**:
@@ -321,7 +321,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
    - Cloud-init writes `/root/opensteer-home-boot.json` and `/run/opensteer-home-bootstrap-token`, downloads `installerUrl`, checks `installerSha256`, and runs the installer.
    - The installer stages `/etc/opensteer-home/boot/*` and starts `opensteer-home-managed.service`, which retries until completion (stopping on exit `78` if the token is rejected).
    - `managed-boot.sh boot` calls `POST /v1/cloud-computers/:id/boot` with `{ hostname, bootstrapToken }`.
-   - Account validates the token, assigns one free egress endpoint (or sets `egressUnavailable` if the pool is empty), registers an OIDC client for the Home, and returns the pinned release images, setup code digest, OIDC client credentials, egress credentials (if assigned), and backup repository credentials.
+   - Account validates the token, assigns one free egress endpoint (or sets `egressUnavailable` if the pool is empty), registers an OIDC client for the Home, creates or reads its repository password in Secret Manager, and returns the pinned release images, setup code digest, OIDC client credentials, egress credentials (if assigned), and backup repository credentials.
    - The VM pulls the six images, applies AppArmor/seccomp policies and the pod `iptables`/`ip6tables` firewall, and starts all seven Compose containers.
    - Customer sees `status: "preparing"` and `egress: "assigned"` (or `"unavailable"`).
 5. **Boot-complete**:
@@ -451,11 +451,11 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 ### Stripe outage during delete
 
 - **How to recognise it**: `show <id>` has a `deletionRequestedAt` timestamp while billing has yet to reach `"canceled"`. The customer view reports that deletion is waiting for Stripe cancellation.
-- **What the system does**: Account records `deletionRequestedAt` and refuses to delete the VM until Stripe confirms the subscription is canceled. Account's 60-second billing reconciler retries canceling the Stripe subscription on every pass. Once Stripe succeeds, Account marks `state: "deleted"`, cancels the VM and DNS via the reconciler, and releases the pools for rotation.
+- **What the system does**: Account records `deletionRequestedAt` and refuses to delete the VM until Stripe confirms the subscription is canceled. Account's 60-second billing reconciler retries canceling the Stripe subscription on every pass. After Stripe confirms cancellation, the reconciler removes DNS and destroys the VM and disk. Account then destroys the repository password and records the tombstone. The backup target stays held until Account confirms removal of the stored backup objects.
 - **What the operator does**:
   1. Check Stripe's status page and Account's outbound network connectivity and `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY`.
   2. Once Stripe is reachable again, wait up to 60 seconds for the billing reconciler to finish the cancellation, or re-run `node dist/cloud-computer-operator-main.js delete <id>` to trigger the cancellation immediately.
-  3. Confirm `show <id>` reaches `phase: "deleted"` and has a `tombstonedAt` timestamp.
+  3. Confirm `show <id>` reaches `phase: "deleted"` and has a `tombstonedAt` timestamp. Check the separate stored-data removal timestamp before rotating the backup target.
 
 ### Organization billing and offboarding
 
@@ -476,7 +476,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 ### No free backup target or egress endpoint
 
 - **How to recognise it**:
-  - **Backup pool empty**: Customer checkout fails with HTTP `503` (`"Cloud Computer checkout is not available right now"`). `node dist/cloud-computer-operator-main.js backup-list` shows every row has a non-null `computerId`, `reserved: true`, or `needsRotation: true`.
+  - **Backup pool empty**: Customer checkout fails with HTTP `503` (`"Cloud Computer checkout is not available right now"`). `node dist/cloud-computer-operator-main.js backup-list` shows every row is assigned or reserved (`computerId`, `reserved`, or `reservedOrganizationId`), awaiting purge (`purgeComputerId`), or marked `needsRotation`.
   - **Egress pool empty**: `show <id>` shows `egressUnavailable: true` (customer sees Browser IP: "Browsing paused"). `node dist/cloud-computer-operator-main.js egress-list` shows every row has a non-null `computerId` or `needsRotation: true`.
 - **What the system does**:
   - With no free backup target, Account refuses new checkouts.
@@ -535,7 +535,7 @@ The automated test suite and local Colima proof (`scripts/verify-home-deployment
 - **Live Stripe**: Checkout Sessions (`2026-11-18.endive` with `allowed_payment_method_types[0]=card`), Billing Portal sessions, real webhook signing and delivery to `/v1/cloud-computers/stripe-webhook`, and live `validateOffer` / 60-second billing reconciliation.
 - **Live Hetzner Cloud**: server creation (`start_after_create: false`), cloud-init execution on an actual Hetzner Ubuntu 24.04 LTS image, firewall `opensteer-cloud-computers`, graceful shutdown + forced `poweroff`, IPv6 `/64` `::1` addressing, and server deletion.
 - **Live Cloudflare DNS**: creating, updating, and deleting unproxied `A` / `AAAA` records with the `Opensteer Cloud Computer` comment, and orphan DNS cleanup.
-- **Live S3-compatible storage with per-customer principals**: prefix-scoped IAM credentials, real restic backup/restore over the public internet, and principal rotation after deletion.
+- **Live backup erasure**: Secret Manager workload permissions and irreversible key deletion, S3-compatible version listing and deletion with prefix-scoped credentials, and principal rotation after deletion. Real restic backup and restore over the public internet remain unverified.
 - **`linux/amd64` Home images and VMs**: the local Colima proof builds and runs `linux/arm64` images only; `linux/amd64` Home container builds and runtime sandboxing (AppArmor, seccomp, bubblewrap, Chromium) have not been executed on a real amd64 Ubuntu 24.04 VM.
 - **Production systemd units and timers on a VM**: `opensteer-home-managed.service`, `opensteer-home.service`, `opensteer-home-update.timer`, `opensteer-home-backup.timer`, and `opensteer-home-maintain.timer` have not been run end-to-end on a real systemd VM (the Colima proof passes `--prepare` and invokes `opensteer-home` directly).
 - **Production restore from a named snapshot**: `replace <computer-id> <snapshot-id>` driving a fresh Hetzner VM through `managed-restore`, `boot-complete`, DNS cutover, identity verification, old-VM deletion, and re-claim has never been executed end-to-end against real infrastructure.

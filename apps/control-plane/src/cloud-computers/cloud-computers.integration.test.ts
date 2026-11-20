@@ -9,6 +9,9 @@ import {
   sign,
   type KeyObject,
 } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   accountCloudComputerBillingPortalPath,
   accountCloudComputerCheckoutPath,
@@ -896,6 +899,21 @@ integration("Cloud Computer Account service", () => {
     await expect(
       runCloudComputerOperator(cloud, ["replace", computerId, "abcdef123456"]),
     ).rejects.toMatchObject({ code: "forbidden" });
+    const restoreDir = await mkdtemp(join(tmpdir(), "work-home-restore-"));
+    try {
+      const restoreFile = join(restoreDir, "restore-backup.json");
+      const target = (await cloud.listBackupTargets()).find((entry) => !entry.computerId)!;
+      await writeFile(
+        restoreFile,
+        JSON.stringify({ targetId: target.id, password: "staged-restore-password" }),
+        { mode: 0o600 },
+      );
+      await expect(
+        runCloudComputerOperator(cloud, ["reissue-bootstrap", computerId, restoreFile]),
+      ).rejects.toMatchObject({ code: "forbidden", reason: "cloud-computer-work-managed" });
+    } finally {
+      await rm(restoreDir, { recursive: true, force: true });
+    }
 
     const desired = (await getDesired(CloudComputerIdSchema.parse(assignment.computerId)))!;
     let server:
@@ -1516,6 +1534,19 @@ integration("Cloud Computer Account service", () => {
     expect(
       (await webhook("customer.subscription.updated", { id: org.subscription.id })).statusCode,
     ).toBe(200);
+    const spare = (await cloud.listBackupTargets()).find(
+      (target) => !target.reservedOrganizationId && !target.computerId && !target.reserved,
+    )!;
+    await cloud.removeBackupTarget(spare.id);
+    expect((await requestAs(admin, "POST", `${org.path}/seats`, pending)).statusCode).toBe(503);
+    expect(stripe.updateSeatQuantity).not.toHaveBeenCalled();
+    await cloud.addBackupTarget({
+      endpoint: "https://s3.example.test",
+      bucket: "test-backups",
+      prefix: "seat-increase",
+      accessKeyId: "access-seat-increase",
+      secretAccessKey: "secret-seat-increase",
+    });
     const changed = await requestAs(admin, "POST", `${org.path}/seats`, pending);
     expect(changed.statusCode, changed.body).toBe(200);
     expect(changed.json().seats).toEqual({ paid: 1, pending: 2, assigned: 0, free: 1 });
@@ -3101,7 +3132,8 @@ integration("Cloud Computer Account service", () => {
       ),
       describe: async (id: number) =>
         [machine.server, machine.previous].find((server) => server?.id === id),
-      powerOn: vi.fn(async () => {
+      powerOn: vi.fn(async (_id: number, _signal: AbortSignal, check?: () => Promise<void>) => {
+        await check?.();
         machine.server = { ...machine.server!, status: "running" };
       }),
       powerOff: vi.fn(async (id: number) => {
@@ -3211,7 +3243,10 @@ integration("Cloud Computer Account service", () => {
       });
       expect(result.statusCode, result.body).toBe(200);
       const { assignmentId, computerId } = WorkAssignmentViewSchema.parse(result.json());
+      const spare = (await cloud.listBackupTargets()).find((target) => !target.computerId)!;
+      await cloud.removeBackupTarget(spare.id);
       const id = CloudComputerIdSchema.parse(computerId);
+      const retentionSeconds = 7 * 24 * 60 * 60;
       const journaled = Promise.withResolvers<void>();
       const stopped = Promise.withResolvers<void>();
       const harness = await liveReconciler({
@@ -3237,7 +3272,7 @@ integration("Cloud Computer Account service", () => {
         expect(
           (
             await requestAs(admin, "POST", `${org.path}/assignments/${assignmentId}/offboard`, {
-              retentionSeconds: 0,
+              retentionSeconds,
             })
           ).statusCode,
         ).toBe(200);
@@ -3256,6 +3291,15 @@ integration("Cloud Computer Account service", () => {
       const errors = vi.fn();
       await organizations.reconcileOffboarding(errors);
       expect((await org.read()).assignments[0]).toMatchObject({ suspended: true, deleted: false });
+      const deadline = now.getTime() + retentionSeconds * 1_000;
+      now = new Date(deadline - 1);
+      await harness.pass();
+      await organizations.reconcileOffboarding(errors);
+      expect(await getDesired(id)).toMatchObject({ state: "suspended" });
+      expect((await org.read()).seats.free).toBe(0);
+      now = new Date(deadline);
+      await organizations.reconcileOffboarding(errors);
+      expect(await getDesired(id)).toMatchObject({ state: "deleted" });
       await harness.pass();
       expect(harness.machine.server).toBeUndefined();
       await organizations.reconcileOffboarding(errors);
@@ -3267,6 +3311,86 @@ integration("Cloud Computer Account service", () => {
           computerDestroyedAt: expect.any(String),
           backupsUnreadableAt: expect.any(String),
         },
+      });
+      expect((await org.read()).seats).toMatchObject({ assigned: 0, free: 0 });
+      await cloud.addBackupTarget({
+        endpoint: "https://s3.example.test",
+        bucket: "test-backups",
+        prefix: "replacement-seat",
+        accessKeyId: "access-replacement-seat",
+        secretAccessKey: "secret-replacement-seat",
+      });
+      await organizations.reconcile(errors);
+      expect(errors).not.toHaveBeenCalled();
+      expect((await org.read()).seats).toMatchObject({ assigned: 0, free: 1 });
+    },
+  );
+
+  it.each(["create", "power-on"] as const)(
+    "offboards after the provider applied a work Home's %s but the reply was lost",
+    async (kind) => {
+      const admin = await createAccount();
+      const org = await buyOrganization(admin, 1);
+      const result = await requestAs(admin, "POST", `${org.path}/assignments`, {
+        requestId: randomUUID(),
+        accountId: admin.id,
+      });
+      expect(result.statusCode, result.body).toBe(200);
+      const { assignmentId, computerId } = WorkAssignmentViewSchema.parse(result.json());
+      const id = CloudComputerIdSchema.parse(computerId);
+      const applied = Promise.withResolvers<void>();
+      const loseReply = Promise.withResolvers<void>();
+      const harness = await liveReconciler({
+        id,
+        ...(kind === "power-on" ? { server: vm(1, "off") } : {}),
+      });
+      const commit = async (server: FakeVm, dispatch?: () => Promise<void>): Promise<never> => {
+        await dispatch?.();
+        harness.machine.server = server;
+        applied.resolve();
+        await loseReply.promise;
+        throw new Error("The provider reply was lost");
+      };
+      if (kind === "create")
+        harness.provider.create.mockImplementationOnce(({ generation }, _, dispatch) =>
+          commit(vm(generation, "off"), dispatch),
+        );
+      else
+        harness.provider.powerOn.mockImplementationOnce((_, __, dispatch) =>
+          commit(vm(1, "running"), dispatch),
+        );
+
+      const pass = harness.pass();
+      await applied.promise;
+      try {
+        expect((await getDesired(id))?.pendingProviderWrites).toMatchObject([
+          { kind, dispatched: true },
+        ]);
+        expect(
+          (
+            await requestAs(admin, "POST", `${org.path}/assignments/${assignmentId}/offboard`, {
+              retentionSeconds: 0,
+            })
+          ).statusCode,
+        ).toBe(200);
+      } finally {
+        loseReply.resolve();
+        await pass;
+      }
+      await harness.pass();
+      expect(harness.machine.server?.status).toBe("off");
+      expect((await getDesired(id))?.pendingProviderWrites).toBeUndefined();
+      const errors = vi.fn();
+      await organizations.reconcileOffboarding(errors);
+      await harness.pass();
+      await organizations.reconcileOffboarding(errors);
+      expect(errors).not.toHaveBeenCalled();
+      expect(harness.machine.server).toBeUndefined();
+      expect((await org.read()).assignments[0]).toMatchObject({
+        state: "ended",
+        signInCut: true,
+        suspended: true,
+        deleted: true,
       });
     },
   );

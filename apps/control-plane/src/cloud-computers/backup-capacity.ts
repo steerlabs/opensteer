@@ -10,6 +10,7 @@ export function freeBackupTargets(db: DB) {
     .selectFrom("cloudComputerBackupTargets")
     .where("computerId", "is", null)
     .where("checkoutKey", "is", null)
+    .where("purgeComputerId", "is", null)
     .where("needsRotation", "=", false);
 }
 
