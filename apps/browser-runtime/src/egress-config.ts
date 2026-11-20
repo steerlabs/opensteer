@@ -1,3 +1,4 @@
+import { X509Certificate } from "node:crypto";
 import { createSecureContext, getCACertificates, type SecureContext } from "node:tls";
 import { refused } from "@opensteer/core";
 import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
@@ -18,7 +19,17 @@ export async function readBrowserEgressUpstream(
   environment: NodeJS.ProcessEnv,
 ): Promise<BrowserEgressUpstream | undefined> {
   const value = environment[upstreamUrl];
-  if (value === undefined) return undefined;
+  if (value === undefined) {
+    const configured = [
+      upstreamUsername,
+      `${upstreamUsername}_FILE`,
+      upstreamPassword,
+      `${upstreamPassword}_FILE`,
+      upstreamCaFile,
+    ].find((name) => environment[name] !== undefined);
+    if (configured) throw refused("bad_request", `${configured} requires ${upstreamUrl}.`);
+    return undefined;
+  }
   const text = value.trim();
   const url = URL.parse(text);
   if (!/^https:\/\/(?:\[[^\]]+\]|[^:/?#@\\\s]+):[0-9]+$/iu.test(text) || !url || url.port === "0") {
@@ -34,13 +45,13 @@ export async function readBrowserEgressUpstream(
     throw refused("bad_request", `${upstreamUsername} cannot contain a colon.`);
   }
   const caFile = environment[upstreamCaFile];
-  const extraCa = caFile ? await readFile(caFile, upstreamCaFile, 1024 * 1024) : undefined;
+  const extraCa = caFile === undefined ? [] : await readExtraCa(caFile);
   let secureContext: SecureContext;
   try {
     secureContext = createSecureContext({
       ca: [
         ...new Set([...getCACertificates("default"), ...getCACertificates("system")]),
-        ...(extraCa ? [extraCa] : []),
+        ...extraCa,
       ],
     });
   } catch {
@@ -52,6 +63,18 @@ export async function readBrowserEgressUpstream(
     authorization: `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}`,
     secureContext,
   };
+}
+
+async function readExtraCa(path: string): Promise<string[]> {
+  const contents = (await readFile(path, upstreamCaFile, 1024 * 1024)).toString("utf8");
+  const pem = /-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----/gu;
+  const certificates = contents.match(pem);
+  try {
+    if (!certificates || contents.replace(pem, "").trim()) throw new Error();
+    return certificates.map((certificate) => new X509Certificate(certificate).toString());
+  } catch {
+    throw refused("bad_request", `${upstreamCaFile} must contain PEM certificates.`);
+  }
 }
 
 async function readCredential(environment: NodeJS.ProcessEnv, name: string): Promise<string> {
