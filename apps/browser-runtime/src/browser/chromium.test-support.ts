@@ -746,7 +746,17 @@ function observeContext(
     return observed;
   };
   return {
-    createPage: async () => wrap(await context.createPage()),
+    createPage: async (options) => {
+      const own = options?.own;
+      return wrap(
+        await context.createPage({
+          ...(options?.restore === undefined ? {} : { restore: options.restore }),
+          ...(own ? { own: (page: BrowserPage) => own(wrap(page)) } : {}),
+        }),
+      );
+    },
+    handOff: (listener) =>
+      context.handOff((page, opener) => listener(wrap(page), opener ? wrap(opener) : null)),
     offPage: (listener) => {
       const observed = listeners.get(listener);
       if (!observed) return;

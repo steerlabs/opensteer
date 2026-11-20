@@ -62,6 +62,9 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
       process.stdout.write(
         `${JSON.stringify({ event: "browser.session.open.timing", ...timing })}\n`,
       ),
+    onSleepPass: (counts) =>
+      process.stdout.write(`${JSON.stringify({ event: "browser.sleep.pass", ...counts })}\n`),
+    onPageDiagnostic: (diagnostic) => process.stdout.write(`${JSON.stringify(diagnostic)}\n`),
     onHostCleanupFailure: ({ kind, stage, error }) =>
       process.stderr.write(
         `${JSON.stringify({ event: "browser.host.cleanup.failed", kind, stage, code: error instanceof BrowserRuntimeError ? error.code : "internal" })}\n`,

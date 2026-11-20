@@ -88,7 +88,7 @@ it.each(["ready", "acquiring"] as const)(
         session.detach,
         "Native close cannot finish until its private CDP is retired",
       ).toHaveBeenCalledOnce();
-      expect(handle.isClosed(), "A closing page must refuse new work").toBe(true);
+      expect(handle.isClosed(), "Only the native close event ends the page").toBe(false);
       await expect(handle.cdp()).rejects.toThrow(/clos/i);
       await expect(handle.agentCdp()).rejects.toThrow(/clos/i);
       if (channel) await expect(channel.send("Runtime.evaluate")).rejects.toThrow(/closed/i);
@@ -97,6 +97,7 @@ it.each(["ready", "acquiring"] as const)(
       await vi.advanceTimersByTimeAsync(0);
       await closing;
       await duplicate;
+      expect(handle.isClosed()).toBe(true);
       expect(page.close).toHaveBeenCalledOnce();
       expect(f.context.newCDPSession).toHaveBeenCalledOnce();
     } finally {
@@ -413,6 +414,210 @@ function hostileEnvironment(
     ...safeValues,
   };
 }
+
+it.each(["page close", "page close after the browser died", "context end"] as const)(
+  "owns a page until its %s confirms it, asking again with real attempts",
+  async (signal) => {
+    const f = await nativeCloseFixture();
+    const events = new EventEmitter();
+    let physicallyClosed = false;
+    const page = Object.assign(events, {
+      isClosed: () => physicallyClosed,
+      close: vi
+        .fn<() => Promise<void>>()
+        .mockRejectedValueOnce(new Error("Protocol error: Target.closeTarget"))
+        .mockResolvedValue(undefined),
+    });
+    f.context.newCDPSession.mockResolvedValue(
+      Object.assign(new EventEmitter(), {
+        detach: vi.fn(async () => undefined),
+        send: vi.fn(async (method: string) =>
+          method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-9" } } : {},
+        ),
+      }),
+    );
+    try {
+      const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
+      const handle = launched.context.pages()[0]!;
+      const gone = vi.fn();
+      const crashed = vi.fn();
+      handle.onClose(gone);
+      handle.onRendererGone?.(crashed);
+      await expect(handle.close()).rejects.toThrow("Protocol error");
+      expect(handle.isClosed(), "A refused close leaves the page open").toBe(false);
+      await handle.close();
+      expect(handle.isClosed(), "A close that settles proves nothing").toBe(false);
+      await handle.close();
+      expect(page.close, "Later attempts go around Playwright's own close").toHaveBeenCalledOnce();
+      expect(
+        f.cdp.send.mock.calls.filter(([method]) => method === "Target.closeTarget"),
+        "Each later attempt closes this page's own target, named through its own debugger",
+      ).toEqual([
+        ["Target.closeTarget", { targetId: "target-9" }],
+        ["Target.closeTarget", { targetId: "target-9" }],
+      ]);
+      events.emit("crash");
+      expect(crashed).toHaveBeenCalledOnce();
+      expect(handle.isClosed(), "A crashed renderer is not a closed page").toBe(false);
+      expect(gone).not.toHaveBeenCalled();
+      if (signal === "context end") {
+        for (const [event, listener] of f.context.on.mock.calls as [string, () => void][])
+          if (event === "close") listener();
+      } else {
+        // Chromium dying reports each page's close before its context's.
+        if (signal === "page close after the browser died")
+          f.cdp.send.mockRejectedValue(new Error("Browser has been closed"));
+        physicallyClosed = true;
+        events.emit("close");
+      }
+      await vi.waitFor(() => expect(gone, "The end was never confirmed").toHaveBeenCalledOnce(), {
+        timeout: 1_000,
+      });
+      expect(gone).toHaveBeenCalledWith(signal === "page close" ? "page" : "context");
+      expect(handle.isClosed()).toBe(true);
+      events.emit("close");
+      await Promise.resolve();
+      expect(gone).toHaveBeenCalledOnce();
+      await launched.close();
+    } finally {
+      f.exit();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  },
+);
+
+it("hands a popup off with its opener, and finds a target past a page asked to close", async () => {
+  const f = await nativeCloseFixture();
+  const fakePage = () =>
+    Object.assign(new EventEmitter(), {
+      isClosed: () => false,
+      close: vi.fn(() => new Promise<void>(() => {})),
+    });
+  const opener = fakePage();
+  const popup = fakePage();
+  const closing = fakePage();
+  const sibling = fakePage();
+  f.context.newCDPSession.mockImplementation(async (target) => {
+    const page: unknown = target;
+    if (page === closing) return new Promise(() => {});
+    return Object.assign(new EventEmitter(), {
+      detach: vi.fn(async () => undefined),
+      send: vi.fn(async (method: string) =>
+        method === "Target.getTargetInfo"
+          ? { targetInfo: { targetId: page === sibling ? "sibling" : "other" } }
+          : {},
+      ),
+    });
+  });
+  try {
+    const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+    const handed: [unknown, unknown][] = [];
+    launched.context.handOff((page, from) => handed.push([page, from]));
+    const announce = (page: unknown) => {
+      for (const [event, listener] of f.context.on.mock.calls as [
+        string,
+        (page: unknown) => void,
+      ][])
+        if (event === "page") listener(page);
+    };
+    announce(opener);
+    announce(popup);
+    opener.emit("popup", popup);
+    await Promise.resolve();
+    const handles = launched.context as unknown as {
+      wrap(page: unknown): unknown;
+      pageByTargetId(targetId: string): Promise<unknown>;
+    };
+    expect(handed).toEqual([
+      [handles.wrap(opener), null],
+      [handles.wrap(popup), handles.wrap(opener)],
+    ]);
+    vi.spyOn(f.context, "pages").mockReturnValue([closing, sibling] as unknown as Page[]);
+    void (handles.wrap(closing) as { close(): Promise<void> }).close();
+    await expect(handles.pageByTargetId("sibling")).resolves.toBe(handles.wrap(sibling));
+    await launched.close();
+  } finally {
+    f.exit();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+it("makes every close a new attempt, and goes around a hung first close to the browser", async () => {
+  const f = await nativeCloseFixture();
+  const events = new EventEmitter();
+  let physicallyClosed = false;
+  const page = Object.assign(events, {
+    isClosed: () => physicallyClosed,
+    close: vi.fn(() => new Promise<void>(() => {})),
+  });
+  f.context.newCDPSession.mockResolvedValue(
+    Object.assign(new EventEmitter(), {
+      detach: vi.fn(async () => undefined),
+      send: vi.fn(async (method: string) =>
+        method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-1" } } : {},
+      ),
+    }),
+  );
+  try {
+    const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+    vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
+    const handle = launched.context.pages()[0]!;
+    await handle.targetId();
+    void handle.close();
+    await vi.waitFor(
+      () => expect(page.close, "First close never reached Playwright").toHaveBeenCalledOnce(),
+      {
+        timeout: 1_000,
+      },
+    );
+    const closeTarget = () =>
+      f.cdp.send.mock.calls.filter(([method]) => method === "Target.closeTarget");
+    await expect(handle.close(), "A hung first close never stalls the next").resolves.toBe(
+      undefined,
+    );
+    await handle.close();
+    expect(closeTarget()).toEqual([
+      ["Target.closeTarget", { targetId: "target-1" }],
+      ["Target.closeTarget", { targetId: "target-1" }],
+    ]);
+    expect(handle.isClosed(), "Only the native end closes it").toBe(false);
+    await expect(
+      handle.agentCdp(),
+      "A page asked to close never returns to service",
+    ).rejects.toThrow(/clos/i);
+    physicallyClosed = true;
+    events.emit("close");
+    await vi.waitFor(() => expect(handle.isClosed(), "The end was never confirmed").toBe(true), {
+      timeout: 1_000,
+    });
+    await launched.close();
+  } finally {
+    f.exit();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+it("reports a page it cannot name to close, instead of rejoining a hung close", async () => {
+  const f = await nativeCloseFixture();
+  const page = Object.assign(new EventEmitter(), {
+    isClosed: () => false,
+    close: vi.fn(() => new Promise<void>(() => {})),
+  });
+  f.context.newCDPSession.mockRejectedValue(new Error("Target page has been closed"));
+  try {
+    const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+    vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
+    const handle = launched.context.pages()[0]!;
+    void handle.close();
+    await expect(handle.close()).rejects.toMatchObject({ reason: "page-unnameable" });
+    expect(page.close, "The hung close is never joined again").toHaveBeenCalledOnce();
+    await launched.close();
+  } finally {
+    f.exit();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
 
 describe("native Chromium profiles", () => {
   it.each(["iframe media", "iframe Web Audio", "top Web Audio"])(

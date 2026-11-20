@@ -497,7 +497,7 @@ export class BrowserController {
     });
   }
 
-  sleepProtection(id: BrowserSurfaceId): string | null {
+  sleepProtection(id: BrowserSurfaceId): "viewer" | "held-input" | "sign-in" | null {
     if (this.targetedCasts.has(id) || this.legacySubscriptions.has(id)) return "viewer";
     if (this.gestures.has(id) || this.keyOwners.has(id)) return "held-input";
     if (
@@ -1476,7 +1476,7 @@ export class BrowserController {
     ) {
       const id = this.ledger.surfaceIdForTarget(message.command.parameters.targetId);
       if (id) {
-        await this.ledger.closeSurface(id);
+        await this.ledger.closeSurface(id, "agent-closed");
         await this.drainTabs();
         await this.send({
           type: "cdp.result",
@@ -1667,7 +1667,7 @@ export class BrowserController {
       if (!this.ledger.dialogOpen(message.surfaceId)) await this.prepareResize(message.surfaceId);
       this.closingSurfaces.add(message.surfaceId);
       try {
-        await this.ledger.closeSurface(message.surfaceId);
+        await this.ledger.closeSurface(message.surfaceId, "person-closed");
       } finally {
         this.closingSurfaces.delete(message.surfaceId);
       }
@@ -3257,7 +3257,7 @@ export class BrowserController {
       typeof command.parameters?.targetId === "string"
     ) {
       const closing = this.ledger.surfaceIdForTarget(command.parameters.targetId);
-      if (closing) await this.ledger.closeSurface(closing);
+      if (closing) await this.ledger.closeSurface(closing, "agent-closed");
     }
     let attachedActivity: AttachedActivity | undefined;
     if (attachTargetId) {
@@ -3491,7 +3491,7 @@ export class BrowserController {
           const dialog = ledger.dialogOf(record.id);
           const tab: AgentTab = {
             surfaceId: record.id,
-            targetId: record.live?.targetId ?? null,
+            targetId: record.lease.state === "closing" ? null : (record.live?.targetId ?? null),
             state: row.state,
             title: row.title,
             url: row.url,
@@ -3696,7 +3696,8 @@ export class BrowserController {
         if (!last && !durableClose)
           throw new BrowserRuntimeError("conflict", "The browser inventory changed.");
       }
-      if (!last && this.ledger.stateOf(surface.id)) await this.ledger.closeSurface(surface.id);
+      if (!last && this.ledger.stateOf(surface.id))
+        await this.ledger.closeSurface(surface.id, "host-closed");
       if (last) {
         this.updateTab(surface.id, true);
       }
