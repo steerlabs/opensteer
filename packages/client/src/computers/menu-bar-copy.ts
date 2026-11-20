@@ -1,6 +1,6 @@
 /**
- * Every word the Mac menu bar popover and its dialogs show, keyed by the
- * design's copy ids (`.opensteer/overhaul/design/copy.json`). `{name}` marks a
+ * Every word the Mac menu bar popover and its dialogs show, keyed by stable
+ * copy ids. This is the source of truth for these strings. `{name}` marks a
  * value filled in by `menuBarWords`.
  */
 export const menuBarCopy = {
@@ -19,6 +19,8 @@ export const menuBarCopy = {
   "menubar.status.paused": "Stopped on this Mac",
   "menubar.needsYou": "{count} need you",
   "menubar.needsYouOne": "1 needs you",
+  "menubar.needsYouPartial": "At least {count} need you",
+  "menubar.needsYouUnread": "Couldn’t check {home} for what needs you",
   "menubar.rightNow": "Right now",
   "menubar.rightNow.agent": "An agent",
   "menubar.rightNow.task": "A task",
@@ -26,6 +28,12 @@ export const menuBarCopy = {
   "menubar.rightNow.tab": "A new browser tab",
   "menubar.rightNow.app": "An app",
   "menubar.rightNow.files": "Files and commands",
+  "menubar.rightNow.running": "Working on this Mac",
+  "menubar.rightNow.backgroundJob": "A background job on this Mac",
+  "menubar.rightNow.voice": "A voice call on this Mac",
+  "menubar.rightNow.shell": "Commands from {machine}",
+  "menubar.row.stopping": "Stopping…",
+  "menubar.row.failed": "Didn’t stop. Try again.",
   "menubar.thisMac": "This Mac",
   "menubar.thisMac.unreadable": "Open Opensteer to change what agents can use on this Mac.",
   "devices.switch.browser": "Browser",
@@ -45,6 +53,7 @@ export const menuBarCopy = {
   "menubar.stopAll.offline": "Works even while {home} is unreachable.",
   "menubar.stopped": "Stopped everything on this Mac at {time}.",
   "menubar.stopped.detail": "Agents can’t use this Mac until you resume.",
+  "menubar.stopping": "Stopping agents on this Mac…",
   "menubar.resume": "Resume",
   "menubar.stop.unsaved":
     "Agents are stopped now, but Opensteer couldn’t save that, so they could start again after Opensteer restarts. Press Stop everything to try again.",

@@ -1,8 +1,8 @@
 import type { ThreadAccessMode } from "@opensteer/core";
 
 /**
- * Every word Connected agents and agent consent show, keyed by the design's copy ids
- * (`.opensteer/overhaul/design/copy.json`), so web and mobile say exactly the same thing.
+ * Every word Connected agents and agent consent show, by stable id. Web, desktop and
+ * mobile all read these, so they say exactly the same thing; this module is the source.
  * `{name}` marks a value filled in by `agentWords`.
  */
 export const connectedAgentsCopy = {
