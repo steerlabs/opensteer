@@ -1,0 +1,381 @@
+import {
+  agentBrowserOptions,
+  agentHomeName,
+  agentWords,
+  connectedAgentDetail,
+  createDedicatedProfile,
+  draftFromGrant,
+  grantFromDraft,
+  sameGrant,
+  type AgentGrantDraft,
+  type ConnectedAgentDetail,
+  type HostClient,
+} from "@opensteer/client/host";
+import {
+  useAgentAppOptions,
+  useAgentPluginOptions,
+  useConnectedAgents,
+} from "@opensteer/client/react";
+import type { ThreadAccessMode } from "@opensteer/core";
+import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useEffect, useState, type ReactNode } from "react";
+import { Alert } from "react-native";
+import {
+  agentGrantSections,
+  agentModeSection,
+  type AgentGrantContext,
+  type AgentGrantSheet,
+} from "./agent-grant-sections.js";
+import { AgentGrantSheetPage } from "./agent-grant-sheet.js";
+import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
+import { NativeSettingsPage } from "./native-settings-page.js";
+import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
+
+type Props = StaticScreenProps<{ readonly deploymentId: string; readonly connectionId: string }>;
+
+export function ConnectedAgentScreen({ route }: Props): ReactNode {
+  const host = useAttachedHost(route.params.deploymentId);
+  return host ? (
+    <ConnectedAgentController
+      connectionId={route.params.connectionId}
+      deploymentId={route.params.deploymentId}
+      host={host}
+    />
+  ) : (
+    <DeploymentGate deploymentId={route.params.deploymentId} />
+  );
+}
+
+/**
+ * One connected agent. Each change saves as it is made, against the revision it was
+ * made on; a list opened as a sheet saves when the sheet closes.
+ */
+export function ConnectedAgentController(props: {
+  readonly connectionId: string;
+  readonly deploymentId: string;
+  readonly host: HostClient;
+}): ReactNode {
+  const { host, connectionId } = props;
+  const navigation = useNavigation();
+  const agents = useConnectedAgents(host);
+  const [sheet, setSheet] = useState<{
+    readonly which: AgentGrantSheet;
+    readonly draft: AgentGrantDraft;
+  } | null>(null);
+  const [note, setNote] = useState<"saved" | "profile-failed" | null>(null);
+  const [creating, setCreating] = useState(false);
+  const connection = agents.connections?.find((row) => row.id === connectionId) ?? null;
+  const snapshot = host.getSnapshot();
+  const names = { profiles: snapshot.browserProfiles };
+  const detail =
+    connection === null
+      ? null
+      : connectedAgentDetail(connection, names, {
+          revoked: agents.revoked,
+          grantsAvailable: agents.grantsAvailable,
+        });
+  const agent = detail?.row.identity.label ?? null;
+  useEffect(() => {
+    if (agent !== null) navigation.setOptions({ title: agent });
+  }, [agent, navigation]);
+  const hasKind = (kind: "computer-app" | "plugin") =>
+    detail?.grant.scope === "selected" &&
+    detail.grant.resources.some((resource) => resource.kind === kind);
+  const apps = useAgentAppOptions(host, sheet?.which === "apps" || hasKind("computer-app"));
+  const plugins = useAgentPluginOptions(host, sheet?.which === "plugins" || hasKind("plugin"));
+
+  if (detail === null || connection === null || agent === null)
+    return (
+      <NativeSettingsPage
+        sections={[
+          agents.connections === null && agents.error === null
+            ? {
+                key: "loading",
+                title: "",
+                rows: [
+                  { key: "placeholder", kind: "placeholder", label: agentWords("common.loading") },
+                ],
+              }
+            : {
+                key: "gone",
+                title: "",
+                rows: [{ key: "gone", kind: "text", label: agentWords("agent.notFound") }],
+                ...(agents.error
+                  ? { footer: { text: agents.error, tone: "danger" as const } }
+                  : {}),
+              },
+        ]}
+      />
+    );
+
+  const pending = agents.pending === connection.id ? agents.pendingAction : null;
+  const busy = pending !== null || creating;
+  const browser = agentBrowserOptions(snapshot);
+  const context = {
+    agent,
+    home: agentHomeName(snapshot),
+    browser,
+    apps,
+    plugins,
+    disabled: busy,
+  };
+  const current = draftFromGrant(detail.grant);
+  const save = async (next: {
+    readonly draft?: AgentGrantDraft;
+    readonly mode?: ThreadAccessMode;
+  }) => {
+    if (!agents.update) return;
+    let draft = next.draft ?? current;
+    let created: string | undefined;
+    setNote(null);
+    if (draft.scope === "selected" && draft.newProfile) {
+      setCreating(true);
+      try {
+        created = await createDedicatedProfile(host, {
+          name: agent,
+          homeRunnerId: draft.newProfile.homeRunnerId,
+        });
+      } catch {
+        setNote("profile-failed");
+        return;
+      } finally {
+        setCreating(false);
+      }
+      draft = { ...draft, newProfile: null };
+    }
+    const grant = grantFromDraft(draft, created);
+    const changes = {
+      ...(sameGrant(grant, detail.grant) ? {} : { grant }),
+      ...(next.mode === undefined || next.mode === detail.accessMode
+        ? {}
+        : { accessMode: next.mode }),
+    };
+    if (Object.keys(changes).length === 0) return;
+    const result = await agents.update(connection.id, {
+      expectedRevision: detail.revision,
+      ...changes,
+    });
+    if (result.kind === "saved") setNote("saved");
+  };
+  const changeScope = (scope: AgentGrantDraft["scope"]) => {
+    if (scope === current.scope) return;
+    if (scope === "everything") {
+      void save({ draft: { ...current, scope } });
+      return;
+    }
+    Alert.alert(agentWords("agent.narrow.title", { agent }), agentWords("agent.narrow.body"), [
+      { text: agentWords("common.cancel"), style: "cancel" },
+      {
+        text: agentWords("agent.narrow.confirm"),
+        onPress: () =>
+          void save({
+            draft: { scope: "selected", tasks: false, resources: [], newProfile: null },
+          }),
+      },
+    ]);
+  };
+  const disconnect = () =>
+    Alert.alert(
+      agentWords("agent.disconnect.title", { agent }),
+      agentWords("agent.disconnect.body"),
+      [
+        { text: agentWords("common.cancel"), style: "cancel" },
+        {
+          text: agentWords("agent.disconnect.confirm"),
+          style: "destructive",
+          onPress: () => {
+            setSheet(null);
+            void agents.revoke?.(connection.id);
+          },
+        },
+      ],
+    );
+  const remove = () => void agents.remove?.(connection.id).then(() => navigation.goBack());
+  return (
+    <>
+      <NativeSettingsPage
+        sections={connectedAgentSections({
+          busy,
+          conflict: agents.conflict === connection.id,
+          context,
+          current,
+          detail,
+          error: agents.error,
+          note,
+          onDisconnect: disconnect,
+          onMode: (mode) => void save({ mode }),
+          onOpen: (which) => setSheet({ which, draft: current }),
+          onRemove: remove,
+          onScope: changeScope,
+          onTasks: (tasks) => void save({ draft: { ...current, tasks } }),
+          pending,
+        })}
+      />
+      {sheet === null ? null : (
+        <AgentGrantSheetPage
+          context={context}
+          draft={sheet.draft}
+          onChange={(draft) => setSheet({ ...sheet, draft })}
+          onClose={() => {
+            const edited = sheet.draft;
+            setSheet(null);
+            void save({ draft: edited });
+          }}
+          onOpenDevices={() => {
+            setSheet(null);
+            navigation.navigate("SettingsDevices", { deploymentId: props.deploymentId });
+          }}
+          sheet={sheet.which}
+        />
+      )}
+    </>
+  );
+}
+
+/** The agent's page as Settings sections: pure, so each state is checked without a screen. */
+export function connectedAgentSections(props: {
+  readonly busy: boolean;
+  readonly conflict: boolean;
+  readonly context: AgentGrantContext;
+  /** Why the last action didn't finish, if it didn't. */
+  readonly error: string | null;
+  readonly current: AgentGrantDraft;
+  readonly detail: ConnectedAgentDetail;
+  readonly note: "saved" | "profile-failed" | null;
+  readonly onDisconnect: () => void;
+  readonly onMode: (mode: ThreadAccessMode) => void;
+  readonly onOpen: (sheet: AgentGrantSheet) => void;
+  readonly onRemove: () => void;
+  readonly onScope: (scope: AgentGrantDraft["scope"]) => void;
+  readonly onTasks: (on: boolean) => void;
+  readonly pending: "revoke" | "update" | "remove" | null;
+}): readonly NativeSettingsSection[] {
+  const { detail } = props;
+  const agent = detail.row.identity.label;
+  const sections: NativeSettingsSection[] = [
+    {
+      key: "status",
+      title: "",
+      rows: [
+        {
+          key: "status",
+          kind: "status",
+          tone: detail.status.tone,
+          label: detail.status.label,
+          ...(detail.status.steps.length ? { steps: detail.status.steps } : {}),
+        },
+      ],
+      footer: {
+        text: props.conflict ? agentWords("agent.conflict") : detail.status.detail,
+      },
+    },
+  ];
+  if (props.error !== null)
+    sections.push({
+      key: "error",
+      title: "",
+      rows: [],
+      footer: { text: props.error, tone: "danger" },
+    });
+  if (detail.uncertain)
+    sections.push({
+      key: "uncertain",
+      title: "",
+      rows: [
+        { key: "uncertain", kind: "status", tone: "attention", label: detail.uncertain.label },
+      ],
+      footer: { text: detail.uncertain.detail },
+    });
+  if (detail.legacy && detail.row.phase === "active")
+    sections.push({
+      key: "legacy",
+      title: "",
+      rows: [],
+      footer: { text: agentWords("agent.legacy") },
+    });
+  if (detail.editable) {
+    const grant = agentGrantSections({
+      ...props.context,
+      draft: props.current,
+      mode: detail.accessMode,
+      onScope: props.onScope,
+      onOpen: props.onOpen,
+      onTasks: props.onTasks,
+    });
+    sections.push(
+      ...grant,
+      agentModeSection({ mode: detail.accessMode, disabled: props.busy, onMode: props.onMode }),
+    );
+    if (props.note !== null)
+      sections.push({
+        key: "note",
+        title: "",
+        rows: [],
+        footer:
+          props.note === "saved"
+            ? { text: agentWords("agent.saved", { agent }) }
+            : { text: agentWords("consent.error.newProfile"), tone: "danger" },
+      });
+  }
+  sections.push({
+    key: "activity",
+    title: agentWords("agent.activity.title"),
+    rows:
+      detail.activity.kind === "unavailable"
+        ? [{ key: "unavailable", kind: "text", label: agentWords("agent.activity.unavailable") }]
+        : detail.activity.items.length === 0
+          ? [{ key: "empty", kind: "text", label: agentWords("agent.activity.empty") }]
+          : detail.activity.items.map((item): NativeSettingsRow => ({
+              key: item.id,
+              kind: "text",
+              label: item.action,
+              detail: `${item.outcome} · ${item.at}`,
+            })),
+  });
+  sections.push({
+    key: "about",
+    title: agentWords("agent.about.title"),
+    rows: detail.about.map((row): NativeSettingsRow => ({
+      key: row.label,
+      kind: "text",
+      label: row.label,
+      detail: row.value,
+    })),
+  });
+  if (detail.row.phase === "active")
+    sections.push({
+      key: "end",
+      title: "",
+      rows: [
+        {
+          key: "disconnect",
+          kind: "button",
+          label:
+            props.pending === "revoke"
+              ? agentWords("agent.disconnecting")
+              : agentWords("agent.disconnect", { agent }),
+          destructive: true,
+          disabled: props.busy,
+          onPress: props.onDisconnect,
+        },
+      ],
+    });
+  else if (detail.row.removable)
+    sections.push({
+      key: "end",
+      title: "",
+      rows: [
+        {
+          key: "remove",
+          kind: "button",
+          label:
+            props.pending === "remove"
+              ? agentWords("disconnect.stopped.removing")
+              : agentWords("disconnect.stopped.remove"),
+          disabled: props.busy,
+          onPress: props.onRemove,
+        },
+      ],
+    });
+  return sections;
+}

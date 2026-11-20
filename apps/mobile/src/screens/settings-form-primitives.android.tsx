@@ -1,6 +1,7 @@
 import {
   Box,
   Button,
+  Checkbox,
   CircularProgressIndicator,
   Column,
   DropdownMenu,
@@ -12,6 +13,7 @@ import {
   LazyColumn,
   ListItem,
   OutlinedTextField,
+  RadioButton,
   Row,
   Switch,
   Text,
@@ -27,6 +29,7 @@ import {
   fillMaxWidth,
   imePadding,
   padding,
+  selectable,
   semantics,
   selectableGroup,
   Shapes,
@@ -349,12 +352,14 @@ export function ToggleRow(props: {
  */
 export function ChoiceRow(props: {
   readonly choices: readonly { readonly value: string; readonly label: string }[];
+  /** Always a menu from the row naming the choice. */
+  readonly menu?: boolean | undefined;
   readonly onChange: (value: string) => void;
   readonly title: string;
   readonly value: string;
 }): ReactNode {
   const [open, setOpen] = useState(false);
-  if (props.choices.length <= 3)
+  if (props.choices.length <= 3 && props.menu !== true)
     return (
       <Column modifiers={[padding(gutter, 8, gutter, 8)]}>
         <Text color={color.text} modifiers={[padding(0, 0, 0, 8)]}>
@@ -407,6 +412,57 @@ export function ChoiceRow(props: {
         ))}
       </DropdownMenu.Items>
     </DropdownMenu>
+  );
+}
+
+/**
+ * One choice among several, each with its own line: a radio button, or a checkbox
+ * where several may be chosen. The whole row selects.
+ */
+export function SelectRow(props: {
+  readonly detail?: string | undefined;
+  readonly disabled?: boolean | undefined;
+  readonly multiple?: boolean | undefined;
+  readonly onPress: () => void;
+  readonly selected: boolean;
+  readonly title: string;
+}): ReactNode {
+  const enabled = props.disabled !== true;
+  return (
+    <ListItem
+      colors={rowColors}
+      modifiers={
+        enabled
+          ? [
+              selectable(
+                props.selected,
+                props.onPress,
+                props.multiple === true ? "checkbox" : "radioButton",
+              ),
+            ]
+          : []
+      }
+    >
+      <ListItem.LeadingContent>
+        {props.multiple === true ? (
+          <Checkbox
+            colors={{ checkedColor: color.ember, checkmarkColor: color.inkOnEmber }}
+            enabled={enabled}
+            value={props.selected}
+          />
+        ) : (
+          <RadioButton enabled={enabled} selected={props.selected} />
+        )}
+      </ListItem.LeadingContent>
+      <ListItem.HeadlineContent>
+        <Text color={enabled ? color.text : color.mutedDim}>{props.title}</Text>
+      </ListItem.HeadlineContent>
+      {props.detail ? (
+        <ListItem.SupportingContent>
+          <Text color={color.muted}>{props.detail}</Text>
+        </ListItem.SupportingContent>
+      ) : null}
+    </ListItem>
   );
 }
 

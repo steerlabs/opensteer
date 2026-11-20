@@ -1,3 +1,4 @@
+import type { ReactElement } from "react";
 import type { RowMark } from "../ui/integration-icon.js";
 import type { SFSymbolName } from "../ui/symbol.js";
 
@@ -23,6 +24,20 @@ export type NativeSettingsRow =
       readonly value: string;
       readonly choices: readonly { readonly value: string; readonly label: string }[];
       readonly onChange: (value: string) => void;
+      /** Open as a menu from a row naming the choice, so the label stays beside it. */
+      readonly menu?: boolean;
+    }
+  | {
+      /** One of several choices that each need a line of their own, such as a mode. */
+      readonly key: string;
+      readonly kind: "choice";
+      readonly label: string;
+      readonly detail?: string;
+      readonly selected: boolean;
+      /** Several may be chosen at once: a checkbox where the platform draws one. */
+      readonly multiple?: boolean;
+      readonly disabled?: boolean;
+      readonly onPress: () => void;
     }
   | {
       readonly key: string;
@@ -62,6 +77,8 @@ export type NativeSettingsRow =
       readonly mark?: RowMark;
       /** The system symbol on a quiet tile that leads the row, where the platform draws one. */
       readonly symbol?: SFSymbolName;
+      /** A React Native view that leads the row, such as an agent's mark. */
+      readonly lead?: ReactElement;
       readonly disabled?: boolean;
       readonly destructive?: boolean;
       readonly onPress: () => void;

@@ -7,6 +7,7 @@ import { PersonalReferenceProvider } from "./markdown/reference-navigation.js";
 import { useAttachedHostOf } from "./screens/deployment-gate.js";
 import { SettingsAiSharingScreen } from "./screens/settings-ai-sharing.js";
 import { isRecord } from "@opensteer/shared/isRecord";
+import { connectedAgentsCopy } from "@opensteer/client/host";
 import {
   createStaticNavigation,
   DarkTheme,
@@ -53,6 +54,7 @@ import {
 } from "./screens/settings-home.js";
 import { SettingsMessagingScreen } from "./screens/settings-messaging.js";
 import { AgentAuthorizationScreen } from "./screens/agent-authorization.js";
+import { ConnectedAgentScreen } from "./screens/connected-agent.js";
 import {
   PluginCatalogScreen,
   PluginLocalToolScreen,
@@ -583,8 +585,9 @@ const RootStack = createNativeStackNavigator({
     SettingsMessaging: { screen: SettingsMessagingScreen, options: { title: "Messaging" } },
     SettingsExternalAgents: {
       screen: SettingsExternalAgentsScreen,
-      options: { title: "External agents" },
+      options: { title: connectedAgentsCopy["agents.settings.label"] },
     },
+    ConnectedAgent: { screen: ConnectedAgentScreen, options: { title: "" } },
     SettingsAI: { screen: SettingsAIScreen, options: { title: "AI" } },
     SettingsPlugins: { screen: PluginsScreen, options: { title: "Plugins" } },
     PluginSkills: { screen: PluginSkillsScreen, options: { title: "Skills" } },
@@ -852,6 +855,7 @@ type OpensteerRootParamList = {
   readonly SettingsDevices: { readonly deploymentId: string };
   readonly SettingsMessaging: { readonly deploymentId: string };
   readonly SettingsExternalAgents: { readonly deploymentId: string };
+  readonly ConnectedAgent: { readonly deploymentId: string; readonly connectionId: string };
   readonly SettingsAI: { readonly deploymentId: string };
   readonly SettingsPlugins: { readonly deploymentId: string };
   readonly PluginSkills: { readonly deploymentId: string };

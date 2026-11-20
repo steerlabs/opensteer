@@ -47,6 +47,7 @@ import { disposeMessageOutbox } from "@opensteer/client/host";
 import { ConnectionGateView } from "../components/connection-shell.js";
 import { useClientConnectionEverReady } from "@opensteer/client/react";
 import { browserClientLifecycle } from "../host/browser-lifecycle.js";
+import { desktopConnectFailure } from "./desktop-connect-failure.js";
 
 const SignedInApp = lazy(async () => {
   const module = await import("../app.js");
@@ -584,9 +585,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
             setFormError(null);
             void bridge
               .connectPrivate(input)
-              .catch(() =>
-                setFormError("That couldn’t be connected. Check the address and try again."),
-              )
+              .catch((error: unknown) => setFormError(desktopConnectFailure(error)))
               .finally(() => setConnectingPrivate(false));
           }}
         />

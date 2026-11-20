@@ -3,6 +3,7 @@ import {
   HStack,
   Image,
   ProgressView,
+  RNHostView,
   Section,
   Spacer,
   Text,
@@ -24,11 +25,13 @@ import {
 import type { ReactNode } from "react";
 import { color } from "../theme.js";
 import {
-  agentAuthorizationFinePrint,
   agentAuthorizationLabelLimit,
   agentAuthorizationUnverified,
   type AgentAuthorizationFormProps,
 } from "./agent-authorization-form.types.js";
+import { agentWords } from "@opensteer/client/host";
+import { ExternalAgentMark } from "./external-agent-mark.js";
+import { NativeSettingsSections } from "./native-settings-page.ios.js";
 import { ErrorText, Footer, Lines } from "./settings-form-primitives.ios.js";
 import { SettingsPageLayout } from "./settings-page-layout.js";
 
@@ -56,7 +59,7 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
   if (props.kind === "failed")
     return (
       <Section>
-        <Lines detail={props.detail} title="Can’t review this request" />
+        <Lines detail={props.detail} title={props.title} />
         {props.onRetry === null ? null : <Button label="Try again" onPress={props.onRetry} />}
         <Button label="Close" onPress={props.onClose} />
       </Section>
@@ -66,32 +69,50 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
     <>
       <Section>
         <VStack alignment="leading" spacing={8}>
+          {props.mark === null ? null : (
+            <RNHostView matchContents>
+              <ExternalAgentMark
+                initial={props.mark.initial}
+                providerId={props.mark.providerId}
+                size={56}
+              />
+            </RNHostView>
+          )}
           <Text
             modifiers={[font({ textStyle: "title2", weight: "bold" }), foregroundStyle(color.text)]}
           >
             {props.title}
           </Text>
-          <Text modifiers={[font({ textStyle: "subheadline" }), foregroundStyle(color.textSoft)]}>
-            {props.destination}
-          </Text>
+          <HStack alignment="firstTextBaseline" spacing={6}>
+            {props.mark !== null && props.verified ? (
+              <Image color={color.green} size={13} systemName="checkmark.seal.fill" />
+            ) : null}
+            <Text modifiers={[font({ textStyle: "subheadline" }), foregroundStyle(color.textSoft)]}>
+              {props.destination}
+            </Text>
+          </HStack>
           <Text modifiers={[secondary, font({ textStyle: "footnote" })]}>
             {agentAuthorizationUnverified}
           </Text>
         </VStack>
       </Section>
-      <Section title="What it can do without asking">
-        {props.modes.map((option) => (
-          <Choice
-            key={option.mode}
-            detail={option.description}
-            disabled={busy}
-            selected={option.mode === props.mode}
-            title={option.label}
-            onPress={() => props.onMode(option.mode)}
-          />
-        ))}
-      </Section>
-      <Section footer={<Footer text={agentAuthorizationFinePrint} />} title="Name">
+      {props.sections === null ? (
+        <Section title="What it can do without asking">
+          {props.modes.map((option) => (
+            <Choice
+              key={option.mode}
+              detail={option.description}
+              disabled={busy}
+              selected={option.mode === props.mode}
+              title={option.label}
+              onPress={() => props.onMode(option.mode)}
+            />
+          ))}
+        </Section>
+      ) : (
+        <NativeSettingsSections sections={props.sections} />
+      )}
+      <Section footer={<Footer text={props.finePrint} />} title={agentWords("consent.name.title")}>
         <Name busy={busy} label={props.label} onLabel={props.onLabel} />
       </Section>
       <Section>
@@ -99,13 +120,15 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
         <Button modifiers={[disabled(busy || !props.label.trim())]} onPress={props.onAllow}>
           <HStack modifiers={[contentShape(shapes.rectangle())]}>
             <Text modifiers={[font({ weight: "semibold" })]}>
-              {props.busy === "allow" ? "Allowing…" : "Allow"}
+              {props.busy === "allow"
+                ? agentWords("consent.allowing")
+                : agentWords("consent.allow")}
             </Text>
             <Spacer />
           </HStack>
         </Button>
         <Button
-          label={props.busy === "deny" ? "Denying…" : "Deny"}
+          label={props.busy === "deny" ? agentWords("consent.denying") : agentWords("consent.deny")}
           modifiers={[disabled(busy)]}
           onPress={props.onDeny}
           role="destructive"
@@ -158,7 +181,7 @@ function Name(props: {
     <TextField
       maxLength={agentAuthorizationLabelLimit}
       modifiers={[autocorrectionDisabled(), disabled(props.busy)]}
-      placeholder="Connection name"
+      placeholder={agentWords("consent.name.placeholder")}
       text={text}
       onTextChange={props.onLabel}
     />

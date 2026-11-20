@@ -17,6 +17,7 @@ import {
   PlaceholderRow,
   PrimaryButton,
   SectionHeader,
+  SelectRow,
   SettingsHost,
   SettingsList,
   StatusRow,
@@ -100,15 +101,45 @@ export function NativeSettingsPage(props: NativeSettingsPageProps): ReactNode {
   );
 }
 
+/** The sections of a page, for a form that draws its own header above them. */
+export function NativeSettingsSections(props: {
+  readonly sections: NativeSettingsPageProps["sections"];
+}): ReactNode {
+  return props.sections.map((section) => [
+    section.title ? <SectionHeader key={`${section.key}:title`} title={section.title} /> : null,
+    ...section.rows.map((row) => <Row_ key={`${section.key}:${row.key}`} row={row} />),
+    section.footer ? (
+      <Footer
+        key={`${section.key}:footer`}
+        link={section.footer.link ?? null}
+        text={section.footer.text}
+        tone={section.footer.tone}
+      />
+    ) : null,
+  ]);
+}
+
 function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
   switch (row.kind) {
     case "chips":
       return (
         <ChoiceRow
           choices={row.choices}
+          menu={row.menu}
           onChange={row.onChange}
           title={row.label}
           value={row.value}
+        />
+      );
+    case "choice":
+      return (
+        <SelectRow
+          detail={row.detail}
+          disabled={row.disabled}
+          multiple={row.multiple}
+          onPress={row.onPress}
+          selected={row.selected}
+          title={row.label}
         />
       );
     case "text":
@@ -147,6 +178,10 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
           <RNHostView matchContents>
             <RowMarkIcon mark={row.mark} size={28} />
           </RNHostView>
+        </Box>
+      ) : row.lead ? (
+        <Box modifiers={[]}>
+          <RNHostView matchContents>{row.lead}</RNHostView>
         </Box>
       ) : material !== undefined ? (
         <Box modifiers={[]}>
@@ -193,6 +228,7 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
 
 const materialSymbols: Partial<Record<SFSymbolName, AndroidSymbol>> = {
   camera: "videocam",
+  checklist: "checklist",
   desktopcomputer: "desktop_mac",
   globe: "language",
   hifispeaker: "speaker",
@@ -200,6 +236,8 @@ const materialSymbols: Partial<Record<SFSymbolName, AndroidSymbol>> = {
   lightbulb: "lightbulb",
   macmini: "host",
   powerplug: "power",
+  "puzzlepiece.extension": "extension",
+  "rectangle.on.rectangle": "apps",
   "server.rack": "dns",
   smartphone: "smartphone",
   tv: "tv",

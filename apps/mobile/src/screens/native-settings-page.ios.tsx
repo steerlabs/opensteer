@@ -26,6 +26,7 @@ import {
   VStack,
 } from "@expo/ui/swift-ui";
 import {
+  accessibilityAddTraits,
   accessibilityHidden,
   accessibilityLabel,
   buttonBorderShape,
@@ -89,23 +90,7 @@ export function NativeSettingsPage(props: NativeSettingsPageProps) {
           : []),
       ]}
     >
-      {props.sections.map((section) => (
-        <Section
-          key={section.key}
-          title={section.collapsed ? "" : section.title}
-          {...(section.footer ? { footer: <LineFooter footer={section.footer} /> } : {})}
-        >
-          {section.collapsed ? (
-            <DisclosureGroup label={section.title}>
-              {section.rows.map((row) => (
-                <Row key={row.key} row={row} />
-              ))}
-            </DisclosureGroup>
-          ) : (
-            section.rows.map((row) => <Row key={row.key} row={row} />)
-          )}
-        </Section>
-      ))}
+      <NativeSettingsSections sections={props.sections} />
     </List>
   );
   return (
@@ -145,6 +130,29 @@ export function NativeSettingsPage(props: NativeSettingsPageProps) {
     </Host>
   );
 }
+/** The sections of a page, for a form that draws its own header above them. */
+export function NativeSettingsSections(props: {
+  readonly sections: NativeSettingsPageProps["sections"];
+}): ReactNode {
+  return props.sections.map((section) => (
+    <Section
+      key={section.key}
+      title={section.collapsed ? "" : section.title}
+      {...(section.footer ? { footer: <LineFooter footer={section.footer} /> } : {})}
+    >
+      {section.collapsed ? (
+        <DisclosureGroup label={section.title}>
+          {section.rows.map((row) => (
+            <Row key={row.key} row={row} />
+          ))}
+        </DisclosureGroup>
+      ) : (
+        section.rows.map((row) => <Row key={row.key} row={row} />)
+      )}
+    </Section>
+  ));
+}
+
 function Row({ row }: { readonly row: NativeSettingsRow }) {
   if (row.kind === "chips")
     return (
@@ -153,7 +161,9 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
         selection={row.value}
         onSelectionChange={row.onChange}
         // A few choices sit side by side; more than fit a row open as a menu.
-        modifiers={[pickerStyle(row.choices.length > 3 ? "menu" : "segmented")]}
+        modifiers={[
+          pickerStyle(row.menu === true || row.choices.length > 3 ? "menu" : "segmented"),
+        ]}
       >
         {row.choices.map((choice) => (
           <Text key={choice.value} modifiers={[tag(choice.value)]}>
@@ -172,6 +182,7 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
       </HStack>
     );
   if (row.kind === "status") return <StatusRow row={row} />;
+  if (row.kind === "choice") return <ChoiceRow row={row} />;
   if (row.kind === "primary")
     return (
       <Button
@@ -223,16 +234,16 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
           </HStack>
         </Button>
       );
-    const button = row.mark ? (
-      <HStack spacing={12}>
-        <RNHostView matchContents>
-          <RowMarkIcon mark={row.mark} size={28} />
-        </RNHostView>
-        {plain}
-      </HStack>
-    ) : (
-      plain
-    );
+    const lead = row.mark ? <RowMarkIcon mark={row.mark} size={28} /> : (row.lead ?? null);
+    const button =
+      lead === null ? (
+        plain
+      ) : (
+        <HStack spacing={12}>
+          <RNHostView matchContents>{lead}</RNHostView>
+          {plain}
+        </HStack>
+      );
     if (!row.actions?.length) return button;
     const actions = row.actions.map((action) => (
       <Button
@@ -275,6 +286,33 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
     );
   }
   return <Input row={row} />;
+}
+
+/** One choice among several, each with its own line; the chosen ones carry a checkmark. */
+function ChoiceRow({ row }: { readonly row: Extract<NativeSettingsRow, { kind: "choice" }> }) {
+  return (
+    <Button
+      modifiers={[
+        accessibilityLabel(row.detail === undefined ? row.label : `${row.label}, ${row.detail}`),
+        accessibilityAddTraits(row.selected ? ["isSelected"] : []),
+        disabled(row.disabled ?? false),
+      ]}
+      onPress={row.onPress}
+    >
+      <HStack alignment="center" modifiers={[contentShape(shapes.rectangle())]} spacing={12}>
+        <Lines detail={row.detail ?? null} title={row.label} />
+        <Spacer />
+        {row.selected ? (
+          <Image
+            color={color.ember}
+            modifiers={[frame({ width: 20 })]}
+            size={15}
+            systemName="checkmark"
+          />
+        ) : null}
+      </HStack>
+    </Button>
+  );
 }
 
 /** A switch whose state never arrived: its track with no knob, never drawn as off. */
