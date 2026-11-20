@@ -1,6 +1,8 @@
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import type { HostApiClient, RpcResult } from "@opensteer/protocol";
+import type { DeploymentId } from "@opensteer/core";
+import { desktopHostRequestIdHeader } from "@opensteer/protocol/desktop";
 
 export type DesktopHostFetch = (input: URL | RequestInfo, init: RequestInit) => Promise<Response>;
 
@@ -59,6 +61,31 @@ export function createDesktopHostApi(options: {
         ...init,
         headers: { ...Object.fromEntries(new Headers(init?.headers)), origin },
       }),
+    onAuthenticationRequired: () => undefined,
+  });
+}
+
+/**
+ * The selected Home's typed API with the window's own owner session: each
+ * call goes through the same Host route the bundled UI's requests take.
+ */
+export function createForwardedHostApi(
+  transport: {
+    forward(deploymentId: DeploymentId, path: string, request: Request): Promise<Response>;
+  },
+  deploymentId: DeploymentId,
+): HostApiClient {
+  return createHttpHostApiClient({
+    baseUrl: new URL("https://selected-home.invalid"),
+    kind: "personal",
+    personalVersion: scopedPersonalApiVersion,
+    fetch: (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set(desktopHostRequestIdHeader, crypto.randomUUID());
+      const request = new Request(input, { ...init, headers });
+      const url = new URL(request.url);
+      return transport.forward(deploymentId, `${url.pathname}${url.search}`, request);
+    },
     onAuthenticationRequired: () => undefined,
   });
 }

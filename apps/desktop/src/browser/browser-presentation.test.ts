@@ -137,6 +137,7 @@ function fixture(
         placed({ bounds: rect, crop: { right: false, bottom: false }, emulation: null }),
     ),
     unmount: vi.fn(),
+    setParked: vi.fn(),
     setStage: vi.fn(),
     isFullscreen: () => false,
     inputOutstanding: vi.fn(() => false),
@@ -195,6 +196,22 @@ function fixture(
     humanInput: () => humanInput(),
   };
 }
+
+describe("a hidden window", () => {
+  it("parks the shown tab so it keeps rendering, and brings it back when the window shows", async () => {
+    const f = fixture();
+    f.socket("admitted");
+    await f.manager.present(f.sender, f.request);
+    let visible = true;
+    Object.assign(f.window, { isVisible: () => visible });
+    visible = false;
+    f.window.emit("hide");
+    expect(f.native.setParked).toHaveBeenLastCalledWith(true);
+    visible = true;
+    f.window.emit("show");
+    expect(f.native.setParked).toHaveBeenLastCalledWith(false);
+  });
+});
 
 describe("native presentation authority (retired A01–A07)", () => {
   it("requires admitted control, rather than local membership, before exposing a page", async () => {

@@ -260,6 +260,8 @@ try {
         "logout",
         "partial",
         "restart",
+        "background",
+        "quit-completely",
       ])) {
     fixturePhase = trial;
     const environment: NodeJS.ProcessEnv = {
@@ -385,10 +387,33 @@ try {
       "Containment wrapper, connector and its descendant are live",
     );
     writeFileSync(path.join(root, `${trial}.before.json`), JSON.stringify(before, null, 2));
+    if (trial === "background" || trial === "quit-completely") {
+      // Cmd+Q puts the app away: nothing stops, and the Home keeps answering.
+      child.kill("SIGUSR1");
+      const backgroundDeadline = Date.now() + 10_000;
+      while (!rows(trial).some(({ event }) => event === "test.backgrounded")) {
+        assert(alive(child.pid), `${trial} exited on Cmd+Q; see ${output}`);
+        assert(
+          !rows(trial).some(({ event }) => event === "test.failed"),
+          JSON.stringify(rows(trial)),
+        );
+        assert(Date.now() < backgroundDeadline, `${trial} did not keep serving after Cmd+Q`);
+        await delay(50);
+      }
+      assert(!rows(trial).some(({ event }) => event === "desktop.shutdown.started"));
+      assert(rows(trial).some(({ event }) => event === "test.background-notice"));
+      assert.deepEqual(
+        before.filter(({ pid }) => !alive(pid)),
+        [],
+        "Cmd+Q stopped part of the stack",
+      );
+      progress(`${trial}:backgrounded`);
+    }
     const started = performance.now();
     const replies: object[] = [];
-    if (trial === "sigterm") child.kill("SIGTERM");
+    if (trial === "sigterm" || trial === "background") child.kill("SIGTERM");
     else if (trial === "logout") child.kill("SIGUSR2");
+    else if (trial === "quit-completely") child.kill("SIGHUP");
     else replies.push(appleQuit());
     const result = await withTimeout(exited, desktopShutdownTimeoutMs + 1_000, {
       timeoutError: () => new Error(`${trial} exceeded quit bound`),
@@ -423,7 +448,11 @@ try {
         `${trial} missing ${component}`,
       );
     }
-    if (["appleevent", "sigterm", "partial", "restart"].includes(trial)) {
+    if (
+      ["appleevent", "sigterm", "partial", "restart", "background", "quit-completely"].includes(
+        trial,
+      )
+    ) {
       assert(
         !rows(trial).some((row) => row.event === "desktop.shutdown.step.failed"),
         JSON.stringify(rows(trial)),
@@ -442,6 +471,20 @@ try {
     assert(rows(trial).some((row) => row.event === "test.automatic-checkpoint"));
     if (trial === "partial")
       assert(rows(trial).some((row) => row.event === "test.partial-checkpoint-reported"));
+    if (trial === "quit-completely") {
+      assert(rows(trial).some((row) => row.event === "test.quit-confirmed"));
+      assert(
+        rows(trial).some(
+          (row) => row.event === "desktop.shutdown.started" && row.reason === "quit-completely",
+        ),
+      );
+    }
+    if (trial === "background")
+      assert(
+        rows(trial).some(
+          (row) => row.event === "desktop.shutdown.started" && row.reason === "SIGTERM",
+        ),
+      );
     assert(rows(trial).some((row) => row.event === "test.local-runner-running"));
     assert(rows(trial).some((row) => row.event === "test.remote-access-enabled"));
     {

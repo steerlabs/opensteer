@@ -5,8 +5,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   hiddenDesktopLaunchArgument,
   linuxAutostartPath,
+  openAtLoginChoiceFileStore,
+  OpenAtLoginPolicy,
   OpenAtLoginService,
   shouldOpenDesktopWindowAtLaunch,
+  type OpenAtLoginChoice,
+  type OpenAtLoginChoiceStore,
 } from "./open-at-login.js";
 
 const temporaryDirectories: string[] = [];
@@ -125,3 +129,63 @@ async function temporaryDirectory(): Promise<string> {
   temporaryDirectories.push(directory);
   return directory;
 }
+
+describe("OpenAtLoginPolicy", () => {
+  function policy(system: { enabled: boolean | null }) {
+    const synced: boolean[] = [];
+    let saved: OpenAtLoginChoice = { turnedOff: false, applied: null };
+    const choices: OpenAtLoginChoiceStore = {
+      load: async () => saved,
+      save: async (choice) => {
+        saved = choice;
+      },
+    };
+    const value = new OpenAtLoginPolicy({
+      service: {
+        sync: async (enabled) => {
+          synced.push(enabled);
+          system.enabled = enabled;
+        },
+      },
+      choices,
+      systemEnabled: () => system.enabled,
+    });
+    return { synced, value, saved: () => saved };
+  }
+
+  it("opens at login when this Mac hosts a Home or lends itself to one", async () => {
+    const { synced, value } = policy({ enabled: false });
+    await expect(value.sync(true)).resolves.toBe(true);
+    await expect(value.sync(false)).resolves.toBe(false);
+    expect(synced).toEqual([true, false]);
+  });
+
+  it("keeps a Login Items switch-off the person made in System Settings", async () => {
+    const system = { enabled: false as boolean | null };
+    const { synced, value, saved } = policy(system);
+    await value.sync(true);
+    system.enabled = false;
+    await expect(value.sync(true)).resolves.toBe(false);
+    expect(synced).toEqual([true, false]);
+    expect(saved().turnedOff).toBe(true);
+    await expect(value.sync(true)).resolves.toBe(false);
+  });
+
+  it("lets the person turn it off and on again", async () => {
+    const { value } = policy({ enabled: null });
+    await expect(value.choose(false, true)).resolves.toBe(false);
+    await expect(value.sync(true)).resolves.toBe(false);
+    await expect(value.turnedOff()).resolves.toBe(true);
+    await expect(value.choose(true, true)).resolves.toBe(true);
+    await expect(value.sync(true)).resolves.toBe(true);
+  });
+
+  it("remembers the choice in a file", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "open-at-login-choice-"));
+    temporaryDirectories.push(directory);
+    const store = openAtLoginChoiceFileStore(path.join(directory, "open-at-login.json"));
+    await expect(store.load()).resolves.toEqual({ turnedOff: false, applied: null });
+    await store.save({ turnedOff: true, applied: false });
+    await expect(store.load()).resolves.toEqual({ turnedOff: true, applied: false });
+  });
+});

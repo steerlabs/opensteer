@@ -653,6 +653,28 @@ describe.skipIf(!onMac)("the helper connection's lifetime", () => {
   });
 });
 
+describe.skipIf(!onMac)("the person's Stop from the menu bar", () => {
+  it("ends every agent session at once and refuses Runners until resumed", async () => {
+    const harness = await lifetimeHarness({});
+    await harness.observe();
+    expect(harness.computerUse.agentSessions).toBe(1);
+
+    await harness.computerUse.pause();
+    await vi.waitFor(() => expect(harness.helper.connections()).toBe(0), { timeout: 2_000 });
+    expect(harness.computerUse.agentSessions).toBe(0);
+    const methods = harness.helper.methods.length;
+    await expect(
+      harness.call("session.open", { sessionId: harness.sessionId, threadTitle: null }),
+    ).resolves.toMatchObject({ error: { code: "stopped-by-user" } });
+    expect(harness.helper.methods).toHaveLength(methods);
+
+    harness.computerUse.resume();
+    await expect(
+      harness.call("session.open", { sessionId: harness.sessionId, threadTitle: null }),
+    ).resolves.toEqual({ sessionId: harness.sessionId });
+  });
+});
+
 describe.skipIf(!onMac)("one deadline from the bridge frame to the helper frame", () => {
   it("forwards only what is left after a slow installation", async () => {
     const harness = await lifetimeHarness({ running: false });

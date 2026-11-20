@@ -1708,6 +1708,33 @@ describe("Electron geometry lifecycle", () => {
     },
   );
 
+  it("parks a page shown in a hidden window in its own host, and returns it when shown", async () => {
+    const { browser, native, view, host, drain } = await launch();
+    const window = new BaseWindow({}) as unknown as (typeof electron.hosts)[number];
+    const stage = { x: 280, y: 52, width: 800, height: 600 };
+    try {
+      native.mount(window as unknown as BaseWindow, stage, vi.fn());
+      await drain();
+      expect(window.contentView.addChildView).toHaveBeenCalledExactlyOnceWith(view);
+      expect(view.getBounds()).toEqual(stage);
+
+      native.setParked(true);
+      expect(host.contentView.addChildView).toHaveBeenLastCalledWith(view);
+      expect(view.getBounds()).toEqual({ ...stage, x: 0, y: 0 });
+      native.setStage({ ...stage, width: 820 });
+      await drain();
+      expect(window.contentView.addChildView).toHaveBeenCalledTimes(1);
+      expect(view.getBounds()).toMatchObject({ x: 0, y: 0 });
+
+      native.setParked(false);
+      await drain();
+      expect(window.contentView.addChildView).toHaveBeenCalledTimes(2);
+      expect(view.getBounds()).toMatchObject({ x: 280, y: 52 });
+    } finally {
+      await browser.close();
+    }
+  });
+
   it("attaches a page remounted while its placement waited only to its latest window", async () => {
     const { browser, native, view, serialize, drain } = await launch();
     const [first, second] = [new BaseWindow({}), new BaseWindow({})] as unknown as Array<

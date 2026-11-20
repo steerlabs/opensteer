@@ -162,6 +162,7 @@ export class ComputerUseService {
   #lastKnownPermissions: ComputerUsePermissions | null = null;
   #lastKnownDataGrants: ComputerUseDataGrants | null = null;
   #stopped = false;
+  #paused = false;
 
   constructor(options: ComputerUseServiceOptions) {
     this.#now = options.now ?? Date.now;
@@ -353,6 +354,35 @@ export class ComputerUseService {
     );
   }
 
+  /**
+   * The person's Stop on this Mac: every agent session ends now, as the idle
+   * disconnect ends them, and every Runner's request is refused until
+   * {@link resume}. The person's own permission panels keep working.
+   */
+  async pause(): Promise<void> {
+    this.#paused = true;
+    this.#cancelIdleDisconnect();
+    await this.#client?.disconnect();
+  }
+
+  resume(): void {
+    this.#paused = false;
+    this.announceGrantsChanged();
+  }
+
+  /** Agent sessions open on this Mac's apps, across every slot. */
+  get agentSessions(): number {
+    return this.#ownership.sessions;
+  }
+
+  #assertNotPaused(): void {
+    if (this.#paused)
+      throw new ComputerUseHelperFailure(
+        "stopped-by-user",
+        "Agents were stopped on this Mac from the Opensteer menu bar. Resume there to use its apps again.",
+      );
+  }
+
   async stop(): Promise<void> {
     this.#stopped = true;
     this.#cancelIdleDisconnect();
@@ -412,6 +442,7 @@ export class ComputerUseService {
         return () => this.#capabilityListeners.delete(listener);
       },
       attachDisplay: async (token, onFrame, onLost, options) => {
+        this.#assertNotPaused();
         const client = await this.#connect(
           options.deadline ?? this.#now() + defaultRequestTimeoutMs,
         );
@@ -419,7 +450,10 @@ export class ComputerUseService {
       },
       readinessDataGrants: async (options) => await this.#readinessDataGrants(options),
       readinessPermissions: async (options) => await this.#readinessPermissions(options),
-      request: async (method, params, options) => await this.#request(method, params, options),
+      request: async (method, params, options) => {
+        this.#assertNotPaused();
+        return await this.#request(method, params, options);
+      },
     };
   }
 

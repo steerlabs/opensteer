@@ -21,6 +21,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { configureDesktopApplicationPaths } from "../src/app/application-paths.js";
+import { DesktopBackgroundMode } from "../src/app/background-mode.js";
 import { DesktopShutdown } from "../src/app/desktop-shutdown.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
 import { electronBrowserPartition } from "../src/browser/electron-browser-launcher.js";
@@ -586,4 +587,33 @@ async function run(): Promise<void> {
     profileId,
   });
   if (trial === "logout") process.once("SIGUSR2", () => powerMonitor.emit("shutdown"));
+  if (trial === "background" || trial === "quit-completely") {
+    // The app's own routing: the app menu's Quit (Cmd+Q) and the window's quit
+    // shortcut call quitRequested; the menus' Quit Opensteer Completely calls
+    // quitCompletely. Nothing here can press keys, so signals stand in for them.
+    const background = new DesktopBackgroundMode({
+      shutdown,
+      window: { hide: () => shell.hide() },
+      notice: {
+        seen: async () => false,
+        markSeen: async () => undefined,
+        show: () => log("test.background-notice"),
+      },
+      work: async () => ({ hostsHome: true, deviceHomes: [], activity: [] }),
+      confirm: async ({ detail }) => {
+        log("test.quit-confirmed", { detail });
+        return true;
+      },
+      log,
+    });
+    process.once("SIGUSR1", () => {
+      background.quitRequested();
+      // Still serving after Cmd+Q: the Host answers, so the phone stays connected.
+      void rpc("machines.list").then(
+        () => log("test.backgrounded", { hostServing: true }),
+        (error: unknown) => log("test.failed", { error: String(error) }),
+      );
+    });
+    process.once("SIGHUP", () => void background.quitCompletely());
+  }
 }

@@ -52,7 +52,10 @@ import {
   type DevicePreparedIdentity,
 } from "@opensteer/protocol";
 import { assertDeviceSessionAllowed } from "@opensteer/client/computers";
-import { type AccountDeploymentConnectionSource } from "@opensteer/client/connections";
+import {
+  isNetworkedHome,
+  type AccountDeploymentConnectionSource,
+} from "@opensteer/client/connections";
 import { readPrivateFileText } from "@opensteer/shared/atomicPrivateFile";
 import { createHash, createPrivateKey, createPublicKey, randomUUID } from "node:crypto";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
@@ -112,6 +115,7 @@ const notEnrolledDetail = "This Mac is not in this Deployment.";
 const neverEnrolledDetail = "This Mac isn’t connected to this Opensteer yet.";
 const revokedDetail = "This Mac was removed from this Deployment.";
 const stoppedDetail = "The Runner is stopped on this Mac.";
+const pausedDetail = "Stopped from the Opensteer menu bar on this Mac. Resume there to reconnect.";
 const removedBeforeConnectedMessage = "This Mac left the Deployment before its Runner connected.";
 const stillRunningMessage =
   "The Runner on this Mac is still running, so nothing was deleted. Try again in a moment.";
@@ -319,6 +323,7 @@ export class LocalRunnerService {
   readonly #userEnvironment: PersonalUserEnvironmentPort;
   #reconcileTail: Promise<void> = Promise.resolve();
   #shuttingDown = false;
+  #paused = false;
 
   constructor(config: DesktopConfiguration, dependencies: LocalRunnerServiceDependencies) {
     this.#log =
@@ -1275,6 +1280,37 @@ export class LocalRunnerService {
     }
   }
 
+  /**
+   * The person's Stop on this Mac: every Device Runner here stops now, without
+   * asking any Home, and none starts again, by reconcile or by restart, until
+   * {@link resume}. Membership and enrollment are untouched.
+   */
+  async pause(): Promise<void> {
+    this.#paused = true;
+    for (const deploymentId of this.#restartTimers.keys()) this.#cancelRestart(deploymentId);
+    for (const slot of this.#runners.values()) this.#disableIntent(slot);
+    const stopAll = () => Promise.all([...this.#runners.values()].map((slot) => this.#stop(slot)));
+    await stopAll();
+    // A reconcile already past the pause check may still be launching one.
+    await this.#reconcileTail;
+    await stopAll();
+    for (const slot of this.#runners.values()) {
+      if (slot.child) continue;
+      slot.state = "disabled";
+      slot.detail = pausedDetail;
+    }
+    this.#emit();
+  }
+
+  get paused(): boolean {
+    return this.#paused;
+  }
+
+  resume(): Promise<void> {
+    this.#paused = false;
+    return this.reconcile();
+  }
+
   async reconcile(): Promise<void> {
     if (this.#shuttingDown) return;
     const operation = this.#reconcileTail.then(() => this.#reconcileEnabled());
@@ -1335,7 +1371,7 @@ export class LocalRunnerService {
           if (current) await this.#finishObligation(deploymentId);
           return;
         }
-        if (this.#fenced.has(deploymentId)) return;
+        if (this.#fenced.has(deploymentId) || this.#paused) return;
         const slot = this.#slot(deploymentId);
         const intentGeneration = this.#enableIntent(slot);
         let target: DesktopLocalRunnerTarget;
@@ -2393,19 +2429,23 @@ export class LocalRunnerService {
     if (authority.deploymentId !== deploymentId)
       throw new Error("The leave proof belongs to another Host.");
     const route = row.lastVerifiedRoute;
-    if (!route.accessRoute)
-      throw new Error("Device leave requires a verified Personal Host route.");
-    verifyPersonalHostAccessRouteEnvelope(route.accessRoute);
-    if (
-      !isSameHost(row.hostAuthority, {
-        deploymentId: route.accessRoute.document.authority.deploymentId,
-        hostInstanceId: route.accessRoute.document.authority.hostInstanceId,
-        hostKeyFingerprint: hostKeyFingerprint(route.accessRoute.publicKey.spki),
-      })
-    )
-      throw new Error("The leave route belongs to another Host.");
-    if (route.accessRoute.document.route.origin !== route.origin)
-      throw new Error("The leave route changed.");
+    // A Home on its own server is reached at its signed canonical origin, with no route to verify.
+    if (!route.accessRoute) {
+      if (!isNetworkedHome(authority) || authority.canonicalOrigin !== route.origin)
+        throw new Error("Device leave requires a verified Personal Host route.");
+    } else {
+      verifyPersonalHostAccessRouteEnvelope(route.accessRoute);
+      if (
+        !isSameHost(row.hostAuthority, {
+          deploymentId: route.accessRoute.document.authority.deploymentId,
+          hostInstanceId: route.accessRoute.document.authority.hostInstanceId,
+          hostKeyFingerprint: hostKeyFingerprint(route.accessRoute.publicKey.spki),
+        })
+      )
+        throw new Error("The leave route belongs to another Host.");
+      if (route.accessRoute.document.route.origin !== route.origin)
+        throw new Error("The leave route changed.");
+    }
     const endpoint = new URL("/v1/runner/leave", route.origin).toString();
     const response = await this.#leaveFetch(endpoint, {
       method: "POST",

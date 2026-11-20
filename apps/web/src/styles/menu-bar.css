@@ -1,0 +1,120 @@
+/* The menu bar item's popover: one narrow column, sized by desktop main. */
+body:has(.menu-bar) {
+  background: var(--surface);
+  background-image: none;
+  overflow-y: auto;
+  user-select: none;
+}
+
+.menu-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 14px 12px;
+  font-size: var(--text-lg);
+  color: var(--text);
+}
+
+.menu-bar__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.menu-bar__heading {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.menu-bar__home {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-weight: 600;
+}
+
+.menu-bar__home::before {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+}
+
+.menu-bar__home--ok::before {
+  background: var(--green);
+}
+
+.menu-bar__home--busy::before {
+  background: var(--amber);
+}
+
+.menu-bar__home--attention::before {
+  background: var(--red);
+}
+
+.menu-bar__switches,
+.menu-bar__activity {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.menu-bar__activity li {
+  color: var(--text-soft);
+}
+
+.menu-bar__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.menu-bar__switch-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.menu-bar__detail,
+.menu-bar__quiet {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.menu-bar__stop {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.menu-bar__stopped {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--amber-text);
+}
+
+.menu-bar__failure {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--red-text);
+}
+
+.menu-bar__footer {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}

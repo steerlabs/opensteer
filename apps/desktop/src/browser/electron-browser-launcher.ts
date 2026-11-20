@@ -457,6 +457,12 @@ export interface ElectronPagePresentation {
   ): void;
   invalidateSurface(): Promise<void>;
   setStage(stage: WindowRect, personFollows?: boolean): void;
+  /**
+   * The window this page is mounted in went out of sight. A parked page rests
+   * in its own host so it still composites for a phone's Watch and an agent's
+   * screencast; unparking puts it back where the window shows it.
+   */
+  setParked(parked: boolean): void;
   unmount(): void;
   inputOutstanding(): boolean;
   takeContextMenuTrigger(): "person" | "agent" | null;
@@ -1174,6 +1180,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   #paintedSurfaceRevision = -1;
   #metricsSurfaceRevision = 0;
   #renderingDemand = false;
+  #parked = false;
   #controlDown = false;
   #contextMenuTrigger: "person" | "agent" | null = null;
   #contextMenuCandidate: "person" | "agent" | null = null;
@@ -1694,6 +1701,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     window.on("move", displayChanged);
     // The view stays in its resting host until placement moves it here: it
     // keeps resting bounds until then, and placement can wait on agent work.
+    this.#parked = false;
     this.#mount = {
       window,
       stage: { ...stage },
@@ -1730,8 +1738,34 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     void this.#reconcile().catch(() => undefined);
   }
 
+  setParked(parked: boolean): void {
+    if (this.isClosed() || this.#parked === parked) return;
+    this.#parked = parked;
+    const mount = this.#mount;
+    if (!mount) return;
+    if (!parked) {
+      void this.#reconcile().catch(() => undefined);
+      return;
+    }
+    if (!mount.attached || this.#restingHost.isDestroyed()) return;
+    mount.attached = false;
+    this.#cancelPaint("reparent");
+    const { width, height } = this.view.getBounds();
+    this.#resizeRestingHost({ width, height });
+    this.view.setBorderRadius(0);
+    this.#restingHost.contentView.addChildView(this.view);
+    this.view.setBounds({ x: 0, y: 0, width, height });
+    this.#syncRenderingDemand();
+  }
+
+  #placement(): NativePlacement {
+    const placement = nativePlacement(this.#mount, this.#geometry);
+    return this.#parked ? { ...placement, bounds: { ...placement.bounds, x: 0, y: 0 } } : placement;
+  }
+
   unmount(): void {
     if (!this.#mount) return;
+    this.#parked = false;
     this.#mount.dispose();
     this.#mount = null;
     // Reparenting cancels paint waits but keeps the geometry owner live.
@@ -1892,7 +1926,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       do {
         this.#assertPlacementLive(owner);
         if (this.#dialog) return;
-        let placement = nativePlacement(this.#mount, this.#geometry);
+        let placement = this.#placement();
         const previous = this.view.getBounds();
         if (
           previous.width !== placement.bounds.width ||
@@ -1909,7 +1943,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
           this.#assertPlacementLive(owner);
           if (epoch !== this.#surfaceAbort.signal) continue;
           if (this.#dialog) return;
-          placement = nativePlacement(this.#mount, this.#geometry);
+          placement = this.#placement();
         }
         const bounds = placement.bounds;
         if (JSON.stringify(placement) !== JSON.stringify(this.#desiredPlacement)) {
@@ -1920,11 +1954,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
           this.#desiredPlacement = placement;
           if (resized) this.#boundsRevision += 1;
           if (resized || metricsChanged) this.#invalidateAppliedSurface();
-          if (!this.#mount) this.#resizeRestingHost(bounds);
+          if (!this.#mount || this.#parked) this.#resizeRestingHost(bounds);
           if (previous.x !== bounds.x || previous.y !== bounds.y || resized)
             this.view.setBounds(bounds);
         }
-        if (this.#mount && !this.#mount.attached) {
+        if (this.#mount && !this.#mount.attached && !this.#parked) {
           this.view.setBorderRadius(15);
           this.#mount.window.contentView.addChildView(this.view);
           this.#mount.attached = true;

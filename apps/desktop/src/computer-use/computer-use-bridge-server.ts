@@ -167,6 +167,11 @@ export class ComputerUseSessionOwnership {
     return this.#owners.size + this.#viewOwners.size + this.#videoOwners.size;
   }
 
+  /** Agent sessions alone: views and video are someone watching. */
+  get sessions(): number {
+    return this.#owners.size;
+  }
+
   claim(sessionId: ComputerUseSessionId, owner: object): void {
     this.#owners.set(sessionId, owner);
   }

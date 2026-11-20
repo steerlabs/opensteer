@@ -1454,6 +1454,51 @@ describe("LocalRunnerService", () => {
     await restoring;
   });
 
+  it("holds every Device Runner stopped from the menu bar until resumed, asking no Home", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const first = targets.add("https://first.opensteer.test");
+    const second = targets.add("https://second.opensteer.test");
+    const running = fixture(await configuration(directory), targets);
+    const starts = [
+      running.service.start(startInput(first.deploymentId)),
+      running.service.start(startInput(second.deploymentId)),
+    ];
+    await eventually(() => running.children.length === 2);
+    running.children.forEach((child) => connect(child));
+    await Promise.all(starts);
+
+    const pausing = running.service.pause();
+    await eventually(() => running.children.every((child) => hasStopMessage(child)));
+    running.children.forEach((child) => child.emit("exit", 0));
+    await pausing;
+    expect(running.service.paused).toBe(true);
+    await expect(running.service.status(first.deploymentId)).resolves.toMatchObject({
+      runner: { state: "disabled", detail: expect.stringContaining("menu bar") },
+    });
+
+    targets.notify();
+    await running.service.reconcile();
+    expect(running.fork).toHaveBeenCalledTimes(2);
+    await expect(
+      readFile(path.join(directory, "runner", "desktop-runner.json"), "utf8").then(JSON.parse),
+    ).resolves.toMatchObject({
+      runners: {
+        [first.deploymentId]: { state: "active" },
+        [second.deploymentId]: { state: "active" },
+      },
+    });
+
+    const resuming = running.service.resume();
+    await eventually(() => running.children.length === 4);
+    running.children.slice(2).forEach((child) => connect(child));
+    await resuming;
+    expect(running.service.paused).toBe(false);
+    await expect(running.service.status(second.deploymentId)).resolves.toMatchObject({
+      runner: { state: "running" },
+    });
+  });
+
   it("does not disturb either Runner when only the viewed Deployment changes", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();

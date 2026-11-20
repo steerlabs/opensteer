@@ -1,5 +1,6 @@
 import {
   BrowserRuntime,
+  type BrowserAttachment,
   browserMemoryBudgetBytes,
   BrowserRuntimeServer,
   defaultAttachTicketReplayLedgerPath,
@@ -12,6 +13,7 @@ import { securePrivateDirectory } from "@opensteer/shared/atomicPrivateFile";
 import { randomBytes } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
+import type { AgentBrowserGate } from "../browser/agent-browser-gate.js";
 import { BrowserAttachKeyRegistry } from "../browser/browser-attach-key-registry.js";
 import { ElectronBrowserLauncher } from "../browser/electron-browser-launcher.js";
 import { profileFailureDiagnostic } from "../browser/profile-failure-diagnostic.js";
@@ -34,6 +36,24 @@ export interface LocalBrowserRuntimeOptions {
    * the only path to it the Host can attribute to this Mac today.
    */
   readonly loginAuthority?: BrowserLoginAuthority;
+  /** The person's Stop on this Mac: ends and refuses every attachment while it holds. */
+  readonly agentGate?: AgentBrowserGate;
+}
+
+class GatedBrowserRuntime extends BrowserRuntime {
+  readonly #gate: AgentBrowserGate;
+
+  constructor(options: ConstructorParameters<typeof BrowserRuntime>[0], gate: AgentBrowserGate) {
+    super(options);
+    this.#gate = gate;
+  }
+
+  override async attach(
+    ...input: Parameters<BrowserRuntime["attach"]>
+  ): Promise<BrowserAttachment> {
+    this.#gate.assertOpen();
+    return this.#gate.admit(await super.attach(...input));
+  }
 }
 
 /**
@@ -78,7 +98,7 @@ export async function startLocalBrowserRuntime(
   const profileStorage = launcher.nativeProfilesAvailable
     ? { localProfiles: { root: profileRoot } }
     : {};
-  const runtime = new BrowserRuntime({
+  const runtimeOptions: ConstructorParameters<typeof BrowserRuntime>[0] = {
     memoryBudgetBytes: browserMemoryBudgetBytes(process.env.OPENSTEER_BROWSER_MEMORY_BUDGET_MB),
     onSleepPass: (counts) =>
       diagnostics.append(`${JSON.stringify({ event: "browser.sleep.pass", ...counts })}\n`),
@@ -102,7 +122,10 @@ export async function startLocalBrowserRuntime(
     sessionFilesRoot: sessionFilesRoot(profileRoot),
     ...(options.loginAuthority ? { loginAuthority: options.loginAuthority } : {}),
     ticketVerifier,
-  });
+  };
+  const runtime = options.agentGate
+    ? new GatedBrowserRuntime(runtimeOptions, options.agentGate)
+    : new BrowserRuntime(runtimeOptions);
   const server = new BrowserRuntimeServer({
     host: "127.0.0.1",
     port: 0,
