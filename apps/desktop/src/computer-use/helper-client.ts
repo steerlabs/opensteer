@@ -215,6 +215,11 @@ export interface ComputerUseHelperRequestOptions {
    */
   readonly deadline?: number;
   readonly signal?: AbortSignal;
+  /**
+   * The menu bar Stop generation an agent's request was admitted in. Desktop
+   * main writes the frame only while that admission is still current.
+   */
+  readonly admission?: number;
 }
 
 type HelperResults = typeof computerUseHelperResults;

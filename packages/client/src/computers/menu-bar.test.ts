@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createId } from "@opensteer/core";
 import { MachineSummarySchema } from "@opensteer/protocol";
 import { mockDeviceMachine } from "../mock/mock-device-machine.js";
-import { menuBarHasActiveWork, menuBarStatus, type MenuBarInput } from "./menu-bar.js";
+import { menuBarActivity, menuBarStatus, type MenuBarInput } from "./menu-bar.js";
 
 const unreported = { checkedAt: null, detail: null, readiness: "unavailable" as const };
 const thisMac = (input: { readonly home?: boolean; readonly sessions?: number } = {}) =>
@@ -49,7 +49,8 @@ const base: MenuBarInput = {
   runningTasks: [],
   local: idle,
   stopped: false,
-  openAtLogin: true,
+  stopProblem: null,
+  openAtLogin: { on: true, available: true },
 };
 
 describe("menu bar status", () => {
@@ -64,7 +65,15 @@ describe("menu bar status", () => {
   ] as const)("says a hosted Home that is %s", (state, tone, line) => {
     const status = menuBarStatus({ ...base, hostedHome: { deploymentId: "dep_home", state } });
     expect(status.homes).toEqual([
-      { deploymentId: "dep_home", role: "home", tone, line, switches: [], editable: false },
+      {
+        deploymentId: "dep_home",
+        role: "home",
+        tone,
+        line,
+        switches: [],
+        editable: false,
+        revision: null,
+      },
     ]);
   });
 
@@ -115,6 +124,7 @@ describe("menu bar status", () => {
     });
     expect(status.homes[0]).toMatchObject({
       editable: true,
+      revision: 3,
       switches: [
         { capability: "browser", label: "Browser", on: true, fixed: false },
         { capability: "apps", label: "Apps", on: true, fixed: false },
@@ -149,10 +159,9 @@ describe("menu bar status", () => {
       "3 tasks running: Book flights, Sort inbox",
       "“Task 0” is using this Mac",
       "An agent is using apps on this Mac",
-      "2 tabs on this Mac are in use",
+      "An agent has 2 tabs open on this Mac",
     ]);
-    expect(menuBarHasActiveWork(input)).toBe(true);
-    expect(menuBarHasActiveWork(base)).toBe(false);
+    expect(menuBarActivity(base)).toEqual([]);
     expect(menuBarStatus(base).activity).toEqual([]);
   });
 

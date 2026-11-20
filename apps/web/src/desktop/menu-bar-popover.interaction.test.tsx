@@ -15,6 +15,7 @@ const status: MenuBarStatus = {
       tone: "ok",
       line: "This Mac is your Home — running",
       editable: true,
+      revision: 7,
       switches: [
         { capability: "browser", label: "Browser", detail: "Always on", on: true, fixed: true },
         {
@@ -30,7 +31,8 @@ const status: MenuBarStatus = {
   activity: ["Running: Book flights"],
   stopped: false,
   stopLine: "Stop cuts agents off this Mac’s apps and tabs and disconnects it as a Device.",
-  openAtLogin: true,
+  stopProblem: null,
+  openAtLogin: { on: true, available: true },
 };
 
 function bridge(): OpensteerMenuBarBridge & { push(next: MenuBarStatus): void } {
@@ -81,6 +83,7 @@ it("shows the Home, this Mac's switches and what is running, and writes a switch
       deploymentId: "dep_home",
       capability: "apps",
       on: true,
+      revision: 7,
     });
   } finally {
     await view.close();
@@ -118,4 +121,63 @@ it("opens the app, quits completely, and says why something failed", async () =>
     await view.close();
   }
   expect(menuBarFailure(new Error(""))).toBe("That didn’t work. Try again.");
+});
+
+it("offers Stop before status loads and while another request is still waiting", async () => {
+  const value = bridge();
+  value.status = vi.fn(() => new Promise<MenuBarStatus>(() => undefined));
+  const loading = await render(value);
+  try {
+    await act(async () => loading.button("Stop").click());
+    expect(value.stop).toHaveBeenCalledOnce();
+  } finally {
+    await loading.close();
+  }
+
+  const waiting = bridge();
+  waiting.setSwitch = vi.fn(() => new Promise<void>(() => undefined));
+  const view = await render(waiting);
+  try {
+    const apps = view.node.querySelector<HTMLInputElement>('input[aria-labelledby$="-apps"]')!;
+    await act(async () => apps.click());
+    expect(view.button("Stop").disabled).toBe(false);
+    await act(async () => view.button("Stop").click());
+    expect(waiting.stop).toHaveBeenCalledOnce();
+  } finally {
+    await view.close();
+  }
+});
+
+it("keeps a Stop that did not fully take effect in view, with Stop to try again", async () => {
+  const value = bridge();
+  value.stop = vi.fn(async () => {
+    throw new Error("Agents are stopped now, but Opensteer couldn’t save that.");
+  });
+  const view = await render(value);
+  try {
+    await act(async () => view.button("Stop").click());
+    expect(view.node.querySelector('[role="alert"]')?.textContent).toMatch(/couldn’t save/);
+    await act(async () =>
+      value.push({ ...status, stopped: true, stopProblem: "Press Stop to try again." }),
+    );
+    expect(view.node.textContent).toContain("Press Stop to try again.");
+  } finally {
+    await view.close();
+  }
+});
+
+it("hides Open at login on a Mac with nothing to open for, and shows what macOS will do", async () => {
+  const value = bridge();
+  const view = await render(value);
+  try {
+    const toggle = () =>
+      Array.from(view.node.querySelectorAll("label")).find((label) =>
+        label.textContent?.includes("Open at login"),
+      );
+    expect(toggle()?.querySelector("input")?.checked).toBe(true);
+    await act(async () => value.push({ ...status, openAtLogin: { on: false, available: false } }));
+    expect(toggle()).toBeUndefined();
+  } finally {
+    await view.close();
+  }
 });

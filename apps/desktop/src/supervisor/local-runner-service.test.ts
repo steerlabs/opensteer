@@ -58,6 +58,7 @@ import {
   type UtilityProcessLike,
 } from "./local-runner-service.js";
 import { RunnerWorkerSecretsMessageSchema } from "./runner-worker-secrets.js";
+import { AgentsStoppedError, openAgentAdmission } from "../app/agent-admission.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -1459,7 +1460,11 @@ describe("LocalRunnerService", () => {
     const targets = mutableTargetAuthority();
     const first = targets.add("https://first.opensteer.test");
     const second = targets.add("https://second.opensteer.test");
-    const running = fixture(await configuration(directory), targets);
+    const third = targets.add("https://third.opensteer.test");
+    const admission = openAgentAdmission();
+    const running = fixture(await configuration(directory), targets, undefined, undefined, {
+      admission,
+    });
     const starts = [
       running.service.start(startInput(first.deploymentId)),
       running.service.start(startInput(second.deploymentId)),
@@ -1468,35 +1473,60 @@ describe("LocalRunnerService", () => {
     running.children.forEach((child) => connect(child));
     await Promise.all(starts);
 
+    admission.close();
     const pausing = running.service.pause();
     await eventually(() => running.children.every((child) => hasStopMessage(child)));
     running.children.forEach((child) => child.emit("exit", 0));
     await pausing;
-    expect(running.service.paused).toBe(true);
     await expect(running.service.status(first.deploymentId)).resolves.toMatchObject({
       runner: { state: "disabled", detail: expect.stringContaining("menu bar") },
     });
+    const membershipsBefore = await readFile(
+      path.join(directory, "runner", "desktop-runner.json"),
+      "utf8",
+    );
 
+    // Nothing launches while stopped: not reconciliation, and not an explicit
+    // connection to another Home, which must not even record the membership.
     targets.notify();
     await running.service.reconcile();
+    await expect(running.service.start(startInput(third.deploymentId))).rejects.toThrow(
+      AgentsStoppedError,
+    );
+    await expect(running.service.setUpDevice(startInput(third.deploymentId))).rejects.toThrow(
+      AgentsStoppedError,
+    );
+    await expect(
+      running.service.prepareDeviceSetup(startInput(third.deploymentId)),
+    ).rejects.toThrow(AgentsStoppedError);
     expect(running.fork).toHaveBeenCalledTimes(2);
     await expect(
-      readFile(path.join(directory, "runner", "desktop-runner.json"), "utf8").then(JSON.parse),
-    ).resolves.toMatchObject({
-      runners: {
-        [first.deploymentId]: { state: "active" },
-        [second.deploymentId]: { state: "active" },
-      },
-    });
+      readFile(path.join(directory, "runner", "desktop-runner.json"), "utf8"),
+    ).resolves.toBe(membershipsBefore);
 
+    admission.reopen();
     const resuming = running.service.resume();
     await eventually(() => running.children.length === 4);
     running.children.slice(2).forEach((child) => connect(child));
     await resuming;
-    expect(running.service.paused).toBe(false);
     await expect(running.service.status(second.deploymentId)).resolves.toMatchObject({
       runner: { state: "running" },
     });
+  });
+
+  it("refuses a launch that was admitted just before Stop, at the moment it would fork", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const first = targets.add("https://first.opensteer.test");
+    const admission = openAgentAdmission();
+    const running = fixture(await configuration(directory), targets, undefined, undefined, {
+      admission,
+    });
+    const starting = running.service.start(startInput(first.deploymentId));
+    admission.close();
+    await expect(starting).rejects.toThrow();
+    await running.service.reconcile();
+    expect(running.fork).not.toHaveBeenCalled();
   });
 
   it("does not disturb either Runner when only the viewed Deployment changes", async () => {
@@ -2831,6 +2861,7 @@ function fixture(
     /** A worker that answers neither the stop message nor the kill. */
     readonly stubborn?: boolean;
     readonly stopTimeouts?: LocalRunnerServiceDependencies["stopTimeouts"];
+    readonly admission?: LocalRunnerServiceDependencies["admission"];
   } = {},
 ) {
   const children: FakeUtilityProcess[] = [];
@@ -2879,6 +2910,7 @@ function fixture(
       ...(restartDelayMs ? { restartDelayMs } : {}),
       runtimeRelease: testRuntimeRelease(config.dataDirectory),
       ...(options.stopTimeouts ? { stopTimeouts: options.stopTimeouts } : {}),
+      ...(options.admission ? { admission: options.admission } : {}),
       targets,
       userEnvironment: testUserEnvironment(config.dataDirectory),
     }),

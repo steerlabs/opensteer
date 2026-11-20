@@ -326,6 +326,10 @@ export class DesktopHostTransport extends HostTransport {
     const controller = new AbortController();
     this.#forwarded.set(id, controller);
     if (this.#cancelledEarly.delete(id)) controller.abort(new HostTransportError("cancelled"));
+    // A caller in main, such as the menu bar's bounded reads, cancels through its own signal.
+    const cancelled = () => controller.abort(new HostTransportError("cancelled"));
+    if (request.signal.aborted) cancelled();
+    else request.signal.addEventListener("abort", cancelled, { once: true });
     // Taken before anything awaits: a sign-in again during the lookups below is another
     // session, and a personal selection that moves away and back is another attachment. A
     // request for a Deployment main hadn't yet resolved as selected is held from resolution.
@@ -349,7 +353,13 @@ export class DesktopHostTransport extends HostTransport {
       },
     )
       .catch((error: unknown) => this.#refused(path, error))
-      .finally(() => void settled.finally(() => this.#forwarded.delete(id)));
+      .finally(
+        () =>
+          void settled.finally(() => {
+            request.signal.removeEventListener("abort", cancelled);
+            this.#forwarded.delete(id);
+          }),
+      );
   }
 
   /**

@@ -2891,6 +2891,34 @@ describe("Desktop Host route admission", () => {
       method: "POST",
     }) as RequestInit;
 
+  it("ends a forwarded request when its own signal aborts, as main's bounded reads do", async () => {
+    const { id, request, transport } = fixture();
+    request.mockImplementation(
+      (input: HostNetworkRequest) =>
+        new Promise<Response>((_resolve, reject) =>
+          input.signal.addEventListener("abort", () => reject(input.signal.reason), { once: true }),
+        ),
+    );
+    const caller = new AbortController();
+    try {
+      const pending = transport.forward(
+        id,
+        "/v1/rpc/bootstrap.get",
+        new Request(`app://opensteer/host/${id}/v1/rpc/bootstrap.get`, {
+          headers: { [desktopHostRequestIdHeader]: crypto.randomUUID() },
+          signal: caller.signal,
+        }),
+      );
+      await vi.waitFor(() => expect(request).toHaveBeenCalledOnce(), { timeout: 1_000 });
+      caller.abort();
+      const response = await pending;
+      expect(response.headers.get(desktopHostTransportErrorHeader)).toBe("cancelled");
+      expect(request.mock.calls[0]![0].signal.aborted).toBe(true);
+    } finally {
+      transport.dispose();
+    }
+  });
+
   it("refuses a request its renderer already cancelled, or one it can't cancel, before sending it", async () => {
     const { gate, request, route, transport } = fixture();
     gate.resolve();

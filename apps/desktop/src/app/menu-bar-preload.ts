@@ -5,7 +5,7 @@ import {
   type OpensteerMenuBarBridge,
 } from "@opensteer/client/computers";
 import { z } from "zod";
-import { menuBarChannels } from "./menu-bar-channels.js";
+import { menuBarChannels, menuBarPopoverUrl } from "./menu-bar-channels.js";
 
 const bridge: OpensteerMenuBarBridge = Object.freeze<OpensteerMenuBarBridge>({
   status: async () => MenuBarStatusSchema.parse(await ipcRenderer.invoke(menuBarChannels.status)),
@@ -37,4 +37,6 @@ const bridge: OpensteerMenuBarBridge = Object.freeze<OpensteerMenuBarBridge>({
     await ipcRenderer.invoke(menuBarChannels.quitCompletely);
   },
 });
-contextBridge.exposeInMainWorld("opensteerMenuBar", bridge);
+// The popover window loads only this document; any other gets no bridge.
+if (window.location.href === menuBarPopoverUrl)
+  contextBridge.exposeInMainWorld("opensteerMenuBar", bridge);

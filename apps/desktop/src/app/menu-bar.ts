@@ -7,17 +7,46 @@ import type {
   Rectangle,
   Screen,
   Tray,
+  WebContents,
   WebPreferences,
 } from "electron";
 import { MenuBarStatusSchema, MenuBarSwitchInputSchema } from "@opensteer/client/computers";
 import { z } from "zod";
-import { configureDesktopWindowNavigation } from "./electron-window.js";
-import { menuBarChannels } from "./menu-bar-channels.js";
+import { menuBarChannels, menuBarPopoverUrl } from "./menu-bar-channels.js";
 import type { DesktopMenuBarService } from "./menu-bar-service.js";
-import { DesktopAppOriginPolicy } from "./navigation-policy.js";
 import type { ShutdownLog } from "./desktop-shutdown.js";
 
-export const menuBarPopoverUrl = "app://opensteer/menu-bar.html";
+export { menuBarPopoverUrl };
+
+/** Only the popover's own top frame, showing its one document, may call main. */
+export function menuBarSenderAllowed(
+  event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">,
+  popover: Pick<BrowserWindow, "isDestroyed" | "webContents"> | null,
+): boolean {
+  if (!popover || popover.isDestroyed()) return false;
+  const frame = event.senderFrame;
+  return (
+    event.sender === popover.webContents &&
+    frame !== null &&
+    frame === popover.webContents.mainFrame &&
+    frame.url === menuBarPopoverUrl
+  );
+}
+
+/** The popover never leaves its document: no navigation, redirect, window or webview. */
+export function lockMenuBarNavigation(
+  contents: Pick<WebContents, "on" | "setWindowOpenHandler">,
+): void {
+  contents.on("will-navigate", (event) => {
+    if (event.url !== menuBarPopoverUrl) event.preventDefault();
+  });
+  contents.on("will-redirect", (event) => event.preventDefault());
+  contents.on("will-frame-navigate", (event) => {
+    if (!event.isMainFrame || event.url !== menuBarPopoverUrl) event.preventDefault();
+  });
+  contents.on("will-attach-webview", (event) => event.preventDefault());
+  contents.setWindowOpenHandler(() => ({ action: "deny" }));
+}
 export const menuBarPopoverSize = { width: 320, height: 460 } as const;
 const glyphPoints = 16;
 
@@ -182,7 +211,7 @@ export class DesktopMenuBar {
       ...(process.platform === "darwin" ? { type: "panel" } : {}),
       webPreferences: this.#options.webPreferences,
     });
-    configureDesktopWindowNavigation(popover.webContents, new DesktopAppOriginPolicy());
+    lockMenuBarNavigation(popover.webContents);
     popover.on("blur", () => {
       if (!popover.isDestroyed() && !popover.webContents.isDevToolsOpened()) popover.hide();
     });
@@ -213,8 +242,7 @@ export class DesktopMenuBar {
   #register(): void {
     const handle = (channel: string, run: (input: unknown) => Promise<unknown>) =>
       this.#options.ipcMain.handle(channel, async (event: IpcMainInvokeEvent, input: unknown) => {
-        const popover = this.#popover;
-        if (!popover || popover.isDestroyed() || event.sender !== popover.webContents)
+        if (!menuBarSenderAllowed(event, this.#popover))
           throw new Error("Only the Opensteer menu bar may ask this.");
         return await run(input);
       });

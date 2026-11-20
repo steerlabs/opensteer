@@ -27,6 +27,8 @@ export const MenuBarHomeSchema = z.strictObject({
   switches: z.array(MenuBarSwitchSchema).max(3),
   /** The Host answered with this Mac's access policy, so a switch can be written. */
   editable: z.boolean(),
+  /** The policy revision these switches show; a change is written against it. */
+  revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
 });
 export type MenuBarHome = z.infer<typeof MenuBarHomeSchema>;
 
@@ -36,7 +38,10 @@ export const MenuBarStatusSchema = z.strictObject({
   activity: z.array(z.string().min(1).max(240)).max(8),
   stopped: z.boolean(),
   stopLine: z.string().min(1).max(240),
-  openAtLogin: z.boolean(),
+  /** A Stop or Resume that did not fully take effect, until a retry succeeds. */
+  stopProblem: z.string().min(1).max(600).nullable(),
+  /** What macOS will do at login, and whether this Mac has anything to open for. */
+  openAtLogin: z.strictObject({ on: z.boolean(), available: z.boolean() }),
 });
 export type MenuBarStatus = z.infer<typeof MenuBarStatusSchema>;
 
@@ -44,6 +49,8 @@ export const MenuBarSwitchInputSchema = z.strictObject({
   deploymentId: z.string().min(1).max(255),
   capability: MenuBarCapabilitySchema,
   on: z.boolean(),
+  /** The revision the person saw when they flipped it. */
+  revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
 });
 export type MenuBarSwitchInput = z.infer<typeof MenuBarSwitchInputSchema>;
 
@@ -81,7 +88,8 @@ export interface MenuBarInput {
   readonly runningTasks: readonly string[];
   readonly local: { readonly appSessions: number; readonly browserTabs: number };
   readonly stopped: boolean;
-  readonly openAtLogin: boolean;
+  readonly stopProblem: string | null;
+  readonly openAtLogin: { readonly on: boolean; readonly available: boolean };
 }
 
 const switchLabel: Readonly<Record<DeviceCapability, string>> = {
@@ -124,12 +132,15 @@ export function menuBarStatus(input: MenuBarInput): MenuBarStatus {
     stopLine: input.stopped
       ? "Stopped. Agents can’t use this Mac’s apps or tabs, and it’s disconnected as a Device, until you resume."
       : "Stop cuts agents off this Mac’s apps and tabs and disconnects it as a Device.",
+    stopProblem: input.stopProblem,
     openAtLogin: input.openAtLogin,
   });
 }
 
 /** One line per thing using this Mac right now, most specific first. */
-export function menuBarActivity(input: MenuBarInput): string[] {
+export function menuBarActivity(
+  input: Pick<MenuBarInput, "local" | "machines" | "runningTasks">,
+): string[] {
   const lines: string[] = [];
   const running = input.runningTasks;
   if (running.length === 1) lines.push(`Running: ${running[0]}`);
@@ -146,15 +157,10 @@ export function menuBarActivity(input: MenuBarInput): string[] {
   if (input.local.browserTabs > 0)
     lines.push(
       input.local.browserTabs === 1
-        ? "1 tab on this Mac is in use"
-        : `${input.local.browserTabs} tabs on this Mac are in use`,
+        ? "An agent has a tab open on this Mac"
+        : `An agent has ${input.local.browserTabs} tabs open on this Mac`,
     );
   return lines.map((line) => (line.length > 240 ? `${line.slice(0, 239)}…` : line));
-}
-
-/** Whether stopping now would interrupt an agent: what the quit and update decisions ask. */
-export function menuBarHasActiveWork(input: MenuBarInput): boolean {
-  return menuBarActivity(input).length > 0;
 }
 
 function hostedState(state: DesktopPersonalDeploymentState): {
@@ -188,9 +194,9 @@ function deviceLine(
 
 function switchesFor(
   entry: MenuBarMachine | undefined,
-): Pick<MenuBarHome, "editable" | "switches"> {
+): Pick<MenuBarHome, "editable" | "revision" | "switches"> {
   const machine = entry?.machine;
-  if (!machine) return { editable: false, switches: [] };
+  if (!machine) return { editable: false, revision: null, switches: [] };
   const switches = deviceAccessRows(machine, entry.devicesAvailable).flatMap(
     (row): MenuBarSwitch[] => {
       const label = switchLabel[row.capability];
@@ -219,7 +225,11 @@ function switchesFor(
       ];
     },
   );
-  return { editable: machine.access !== null, switches };
+  return {
+    editable: machine.access !== null,
+    revision: machine.access?.revision ?? null,
+    switches,
+  };
 }
 
 function needsMacos(machine: MachineSummary, capability: DeviceCapability): boolean {

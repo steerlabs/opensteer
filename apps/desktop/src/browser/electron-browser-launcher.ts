@@ -1483,12 +1483,12 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     this.#endPaintSubscription();
   }
 
+  /** The same placement and parent the apply path would choose, already in place. */
   #placementCurrent(): boolean {
     return (
-      (!this.#mount || this.#mount.attached) &&
+      (!this.#mount || this.#parked || this.#mount.attached) &&
       this.#appliedSurfaceRevision === this.#surfaceRevision &&
-      JSON.stringify(this.#desiredPlacement) ===
-        JSON.stringify(nativePlacement(this.#mount, this.#geometry))
+      JSON.stringify(this.#desiredPlacement) === JSON.stringify(this.#placement())
     );
   }
 
@@ -1743,19 +1743,18 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     this.#parked = parked;
     const mount = this.#mount;
     if (!mount) return;
-    if (!parked) {
-      void this.#reconcile().catch(() => undefined);
-      return;
+    if (parked && mount.attached && !this.#restingHost.isDestroyed()) {
+      mount.attached = false;
+      this.#cancelPaint("reparent");
+      const { width, height } = this.view.getBounds();
+      this.#resizeRestingHost({ width, height });
+      this.view.setBorderRadius(0);
+      this.#restingHost.contentView.addChildView(this.view);
+      this.view.setBounds({ ...this.#placement().bounds, width, height });
+      this.#syncRenderingDemand();
     }
-    if (!mount.attached || this.#restingHost.isDestroyed()) return;
-    mount.attached = false;
-    this.#cancelPaint("reparent");
-    const { width, height } = this.view.getBounds();
-    this.#resizeRestingHost({ width, height });
-    this.view.setBorderRadius(0);
-    this.#restingHost.contentView.addChildView(this.view);
-    this.view.setBounds({ x: 0, y: 0, width, height });
-    this.#syncRenderingDemand();
+    // Unparking returns the view to the window through the one apply path.
+    void this.#reconcile().catch(() => undefined);
   }
 
   #placement(): NativePlacement {
@@ -1954,10 +1953,17 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
           this.#desiredPlacement = placement;
           if (resized) this.#boundsRevision += 1;
           if (resized || metricsChanged) this.#invalidateAppliedSurface();
-          if (!this.#mount || this.#parked) this.#resizeRestingHost(bounds);
-          if (previous.x !== bounds.x || previous.y !== bounds.y || resized)
-            this.view.setBounds(bounds);
         }
+        if (!this.#mount || this.#parked) this.#resizeRestingHost(bounds);
+        // Reparenting moves the view without this pass: what it has is read, not assumed.
+        const actual = this.view.getBounds();
+        if (
+          actual.x !== bounds.x ||
+          actual.y !== bounds.y ||
+          actual.width !== bounds.width ||
+          actual.height !== bounds.height
+        )
+          this.view.setBounds(bounds);
         if (this.#mount && !this.#mount.attached && !this.#parked) {
           this.view.setBorderRadius(15);
           this.#mount.window.contentView.addChildView(this.view);

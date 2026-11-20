@@ -75,6 +75,7 @@ import { computerName } from "./computer-name.js";
 import type { PersonalLocalBrowserHandle } from "./personal-local-runtime.js";
 import {
   runnerWorkerEnginesRecheckMessage,
+  runnerWorkerPowerSleepingMessage,
   runnerWorkerSecretsMessage,
 } from "./runner-worker-secrets.js";
 import {
@@ -89,6 +90,7 @@ import {
   type PersonalUserEnvironmentPort,
 } from "./personal-user-environment.js";
 import { localExecutionStatus } from "./local-execution-status.js";
+import { AgentsStoppedError } from "../app/agent-admission.js";
 
 const startupTimeoutMs = 90_000;
 const gracefulStopTimeoutMs = 5_000;
@@ -224,6 +226,8 @@ export interface LocalRunnerServiceDependencies {
   };
   readonly targets: DesktopLocalRunnerTargetAuthority;
   readonly userEnvironment?: PersonalUserEnvironmentPort;
+  /** The menu bar's Stop: closed, no Runner launches here, whoever asks. */
+  readonly admission?: { readonly open: boolean };
 }
 
 interface RunnerSlot {
@@ -323,7 +327,7 @@ export class LocalRunnerService {
   readonly #userEnvironment: PersonalUserEnvironmentPort;
   #reconcileTail: Promise<void> = Promise.resolve();
   #shuttingDown = false;
-  #paused = false;
+  readonly #admission: { readonly open: boolean };
 
   constructor(config: DesktopConfiguration, dependencies: LocalRunnerServiceDependencies) {
     this.#log =
@@ -371,6 +375,7 @@ export class LocalRunnerService {
     };
     this.#targets = dependencies.targets;
     this.#userEnvironment = dependencies.userEnvironment ?? new NativePersonalUserEnvironment();
+    this.#admission = dependencies.admission ?? { open: true };
     this.#unsubscribeTargets = this.#targets.subscribe(() => void this.reconcile());
   }
 
@@ -479,6 +484,7 @@ export class LocalRunnerService {
    */
   start(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus> {
     const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
+    if (!this.#admission.open) return Promise.reject(new AgentsStoppedError());
     const current = this.#starts.get(parsed.deploymentId);
     if (current) {
       if (JSON.stringify(current.input) === JSON.stringify(parsed)) return current.promise;
@@ -498,6 +504,7 @@ export class LocalRunnerService {
 
   async prepareDeviceSetup(input: DesktopStartLocalRunnerInput): Promise<DevicePreparedIdentity> {
     const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
+    if (!this.#admission.open) throw new AgentsStoppedError();
     if (parsed.enrollmentToken)
       throw new Error("Prepare this Mac before requesting its enrollment.");
     const accountGeneration = this.#accountGeneration;
@@ -744,6 +751,13 @@ export class LocalRunnerService {
     }
   }
 
+  /** Best-effort notice to every supervised Device Runner that this computer is about to sleep. */
+  notifySleeping(): void {
+    for (const slot of this.#runners.values()) {
+      if (slot.child) slot.child.postMessage(runnerWorkerPowerSleepingMessage);
+    }
+  }
+
   async startIfEnabled(): Promise<void> {
     await this.#preferenceMutations.run(async () => {
       await writeMemberships(this.#preferencePath, await readMemberships(this.#preferencePath));
@@ -770,6 +784,7 @@ export class LocalRunnerService {
 
   async setUpDevice(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus> {
     const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
+    if (!this.#admission.open) throw new AgentsStoppedError();
     const existing = (await readMemberships(this.#preferencePath)).runners[parsed.deploymentId];
     const slot = this.#slot(parsed.deploymentId);
     const generation = slot.intentGeneration;
@@ -1282,16 +1297,15 @@ export class LocalRunnerService {
 
   /**
    * The person's Stop on this Mac: every Device Runner here stops now, without
-   * asking any Home, and none starts again, by reconcile or by restart, until
-   * {@link resume}. Membership and enrollment are untouched.
+   * asking any Home. Closed admission keeps any from launching again, whatever
+   * asks, until {@link resume}. Membership and enrollment are untouched.
    */
   async pause(): Promise<void> {
-    this.#paused = true;
     for (const deploymentId of this.#restartTimers.keys()) this.#cancelRestart(deploymentId);
     for (const slot of this.#runners.values()) this.#disableIntent(slot);
     const stopAll = () => Promise.all([...this.#runners.values()].map((slot) => this.#stop(slot)));
     await stopAll();
-    // A reconcile already past the pause check may still be launching one.
+    // A launch already past its last admission check may still be exiting.
     await this.#reconcileTail;
     await stopAll();
     for (const slot of this.#runners.values()) {
@@ -1302,12 +1316,7 @@ export class LocalRunnerService {
     this.#emit();
   }
 
-  get paused(): boolean {
-    return this.#paused;
-  }
-
   resume(): Promise<void> {
-    this.#paused = false;
     return this.reconcile();
   }
 
@@ -1371,7 +1380,7 @@ export class LocalRunnerService {
           if (current) await this.#finishObligation(deploymentId);
           return;
         }
-        if (this.#fenced.has(deploymentId) || this.#paused) return;
+        if (this.#fenced.has(deploymentId) || !this.#admission.open) return;
         const slot = this.#slot(deploymentId);
         const intentGeneration = this.#enableIntent(slot);
         let target: DesktopLocalRunnerTarget;
@@ -1640,6 +1649,7 @@ export class LocalRunnerService {
           }
         : {}),
     });
+    this.#assertCurrentIntent(slot, intentGeneration);
     const child = this.#fork(this.#config.localExecution.runnerWorkerPath, [], {
       cwd: runnerDataDirectory,
       env: environment,
@@ -2164,6 +2174,7 @@ export class LocalRunnerService {
     if (this.#shuttingDown || !this.#intentIsCurrent(slot, generation)) {
       throw new Error(removedBeforeConnectedMessage);
     }
+    if (!this.#admission.open) throw new AgentsStoppedError();
   }
 
   #fence(deploymentId: DeploymentId): void {

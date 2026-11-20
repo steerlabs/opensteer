@@ -35,9 +35,14 @@ export interface DesktopBackgroundUpdateOptions {
     subscribe(listener: (state: DesktopUpdateState) => void): () => void;
     restart(install: () => Promise<void>): Promise<void>;
   };
-  readonly install: () => Promise<void>;
+  /**
+   * Hands off to the updater. `stillDue` is asked once more, as late as the
+   * handoff can ask it; the install goes ahead only if it answers true.
+   */
+  readonly install: (stillDue: () => Promise<boolean>) => Promise<void>;
   readonly windowVisible: () => boolean;
-  readonly activeWork: () => Promise<boolean>;
+  /** True only when nothing can be using this Mac; unknown is not idle. */
+  readonly idle: () => Promise<boolean>;
   readonly stopping: () => boolean;
   readonly log: ShutdownLog;
   readonly recheckMs?: number;
@@ -84,31 +89,44 @@ export class DesktopBackgroundUpdate {
     });
   }
 
+  #due(idle: boolean): boolean {
+    return backgroundUpdateDue({
+      state: this.#options.updater.state(),
+      windowVisible: this.#options.windowVisible(),
+      activeWork: !idle,
+      stopping: this.#options.stopping() || this.#stopped,
+    });
+  }
+
+  async #idleNow(): Promise<boolean> {
+    return this.#due(await this.#options.idle().catch(() => false));
+  }
+
   async #evaluate(): Promise<void> {
     clearTimeout(this.#timer);
-    const due = (activeWork: boolean) =>
-      backgroundUpdateDue({
-        state: this.#options.updater.state(),
-        windowVisible: this.#options.windowVisible(),
-        activeWork,
-        stopping: this.#options.stopping() || this.#stopped,
-      });
-    if (!due(false)) return;
-    const activeWork = await this.#options.activeWork().catch(() => true);
-    if (!due(activeWork)) {
-      // Nothing announces that a task on a Home finished, so a staged update
-      // waiting on work looks again later rather than never.
+    if (!this.#due(true)) return;
+    let installed = false;
+    if (await this.#idleNow()) {
+      this.#options.log("desktop.update.background-install", {});
+      installed = await this.#options.updater
+        .restart(() => this.#options.install(() => this.#idleNow()))
+        .then(
+          () => true,
+          () => {
+            this.#options.log("desktop.update.background-install-deferred", {});
+            return false;
+          },
+        );
+    }
+    // Nothing announces that a task on a Home finished, so a staged update
+    // waiting on work looks again later rather than never.
+    if (!installed && this.#due(true)) {
       this.#timer = setTimeout(
         () => this.evaluate(),
         this.#options.recheckMs ?? backgroundUpdateRecheckMs,
       );
       this.#timer.unref?.();
-      return;
     }
-    this.#options.log("desktop.update.background-install", {});
-    await this.#options.updater.restart(this.#options.install).catch(() => {
-      this.#options.log("desktop.update.background-install-refused", {});
-    });
   }
 }
 
@@ -117,6 +135,10 @@ const HiddenRelaunchSchema = z.object({ at: z.number() });
 /** Written just before an update hands off, so the new version comes back as it was left. */
 export async function rememberHiddenRelaunch(filePath: string, now = Date.now()): Promise<void> {
   await replacePrivateFileAtomically(filePath, `${JSON.stringify({ at: now })}\n`);
+}
+
+export async function forgetHiddenRelaunch(filePath: string): Promise<void> {
+  await rm(filePath, { force: true });
 }
 
 /** One use: a marker left by an install that never relaunched expires. */

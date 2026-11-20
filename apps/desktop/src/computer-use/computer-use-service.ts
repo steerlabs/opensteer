@@ -19,9 +19,11 @@ import {
   type ComputerUsePermissionPane,
   type ComputerUseResolvedApp,
 } from "@opensteer/protocol";
+import { openAgentAdmission, type AgentAdmission } from "../app/agent-admission.js";
 import {
   ComputerUseBridgeServer,
   ComputerUseSessionOwnership,
+  computerUseStoppedSentence,
   type ComputerUseBridgeHelperPort,
   type ComputerUseBridgeServerOptions,
   type PasswordsAuthorityPort,
@@ -102,6 +104,8 @@ export interface ComputerUseServiceOptions {
   readonly platform?: NodeJS.Platform;
   readonly run?: ComputerUseHelperProcess;
   readonly teamId: string | null;
+  /** The menu bar's Stop: closed, no agent's request reaches the helper. */
+  readonly admission?: AgentAdmission;
 }
 
 /**
@@ -162,12 +166,13 @@ export class ComputerUseService {
   #lastKnownPermissions: ComputerUsePermissions | null = null;
   #lastKnownDataGrants: ComputerUseDataGrants | null = null;
   #stopped = false;
-  #paused = false;
+  readonly #admission: AgentAdmission;
 
   constructor(options: ComputerUseServiceOptions) {
     this.#now = options.now ?? Date.now;
     this.#options = options;
     this.#platform = options.platform ?? process.platform;
+    this.#admission = options.admission ?? openAgentAdmission();
   }
 
   get supported(): boolean {
@@ -191,6 +196,7 @@ export class ComputerUseService {
     const existing = this.#bridges.get(deploymentId);
     if (existing) return { token: existing.token, url: existing.url };
     const server = new ComputerUseBridgeServer({
+      admission: this.#admission,
       helper: this.#helperPort(),
       ...(iphone ? { iphone } : {}),
       ...(passwords ? { passwords } : {}),
@@ -355,32 +361,21 @@ export class ComputerUseService {
   }
 
   /**
-   * The person's Stop on this Mac: every agent session ends now, as the idle
-   * disconnect ends them, and every Runner's request is refused until
-   * {@link resume}. The person's own permission panels keep working.
+   * The person's Stop on this Mac: every agent session ends now. Admission,
+   * already closed, refuses what an agent asks next and what it asked before
+   * the Stop but had not yet sent. The person's own views keep working.
    */
-  async pause(): Promise<void> {
-    this.#paused = true;
-    this.#cancelIdleDisconnect();
-    await this.#client?.disconnect();
+  pause(): void {
+    for (const bridge of this.#bridges.values()) bridge.endAgentSessions();
   }
 
   resume(): void {
-    this.#paused = false;
     this.announceGrantsChanged();
   }
 
   /** Agent sessions open on this Mac's apps, across every slot. */
   get agentSessions(): number {
     return this.#ownership.sessions;
-  }
-
-  #assertNotPaused(): void {
-    if (this.#paused)
-      throw new ComputerUseHelperFailure(
-        "stopped-by-user",
-        "Agents were stopped on this Mac from the Opensteer menu bar. Resume there to use its apps again.",
-      );
   }
 
   async stop(): Promise<void> {
@@ -442,7 +437,6 @@ export class ComputerUseService {
         return () => this.#capabilityListeners.delete(listener);
       },
       attachDisplay: async (token, onFrame, onLost, options) => {
-        this.#assertNotPaused();
         const client = await this.#connect(
           options.deadline ?? this.#now() + defaultRequestTimeoutMs,
         );
@@ -450,10 +444,7 @@ export class ComputerUseService {
       },
       readinessDataGrants: async (options) => await this.#readinessDataGrants(options),
       readinessPermissions: async (options) => await this.#readinessPermissions(options),
-      request: async (method, params, options) => {
-        this.#assertNotPaused();
-        return await this.#request(method, params, options);
-      },
+      request: async (method, params, options) => await this.#request(method, params, options),
     };
   }
 
@@ -585,7 +576,12 @@ export class ComputerUseService {
             "This Mac's helper does not support owner input.",
           );
       }
-      const result = await client.request(method, params, { ...options, deadline });
+      // Installing and the handshake can outlast a Stop; the frame is written
+      // only if the agent's admission is still the current one.
+      if (options.admission !== undefined && !this.#admission.current(options.admission))
+        throw new ComputerUseHelperFailure("stopped-by-user", computerUseStoppedSentence);
+      const { admission: _admission, ...requestOptions } = options;
+      const result = await client.request(method, params, { ...requestOptions, deadline });
       if (method === "permissions.get" || method === "permissions.request") {
         this.#rememberPermissions(result);
       }

@@ -7,6 +7,7 @@ import {
   type IphoneRunnerConnection,
 } from "@opensteer/protocol/iphone-bridge";
 import { IphoneServiceError } from "../iphone/iphone-store.js";
+import { openAgentAdmission, type AgentAdmission } from "../app/agent-admission.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
 import { once } from "node:events";
@@ -216,6 +217,8 @@ export interface PasswordsAuthorityPort {
 }
 
 export interface ComputerUseBridgeServerOptions {
+  /** The menu bar's Stop; an agent's work is refused while it is closed. */
+  readonly admission?: AgentAdmission;
   readonly iphone?: IphoneRunnerPort;
   readonly passwords?: PasswordsAuthorityPort;
   /** How long past a deadline to wait; `computerUseBridgeGraceMs` unless a test shortens it. */
@@ -246,6 +249,7 @@ export interface ComputerUseBridgeServerOptions {
 
 interface BridgeConnection {
   readonly detachEvents: () => void;
+  readonly owner: BridgeOwner;
   readonly socket: WebSocket;
 }
 
@@ -303,6 +307,7 @@ export class ComputerUseBridgeServer {
   readonly #now: () => number;
   readonly #leaseNow: () => number;
   readonly #ownership: ComputerUseSessionOwnership;
+  readonly #admission: AgentAdmission;
 
   readonly #token: string;
   readonly #websocketServer: WebSocketServer;
@@ -504,6 +509,7 @@ export class ComputerUseBridgeServer {
     this.#now = options.now ?? Date.now;
     this.#leaseNow = options.now ?? (() => performance.now());
     this.#ownership = options.ownership;
+    this.#admission = options.admission ?? openAgentAdmission();
     this.#token = options.token ?? mintComputerUseBridgeToken();
     this.#httpServer = createServer((_request, response) => {
       response.writeHead(404, { "content-type": "application/json; charset=utf-8" });
@@ -697,6 +703,7 @@ export class ComputerUseBridgeServer {
         detachDisconnect();
         detachCapabilities?.();
       },
+      owner,
       socket,
     };
     this.#connections.add(connection);
@@ -753,6 +760,12 @@ export class ComputerUseBridgeServer {
     const refuse = (code: ComputerUseErrorCode, message: string): void => {
       if (owner.alive) send(socket, { error: { code, message }, id, kind: "response" });
     };
+    // Watching and the person's own views stay available; an agent's work does not.
+    const admission = agentComputerWork(method) ? this.#admit() : undefined;
+    if (admission === null) {
+      refuse("stopped-by-user", computerUseStoppedSentence);
+      return;
+    }
     const phoneMethod = iphoneRunnerMethodSchema.safeParse(method);
     if (phoneMethod.success) {
       if (!owner.iphone) {
@@ -1158,7 +1171,10 @@ export class ComputerUseBridgeServer {
       owner.opening.add(sessionId);
     }
     const outcome = await this.#within(
-      this.#helper.request(request.data.method, request.data.params, { deadline }),
+      this.#helper.request(request.data.method, request.data.params, {
+        deadline,
+        ...(admission === undefined ? {} : { admission }),
+      }),
       deadline,
     );
     if (opening && sessionId) owner.opening.delete(sessionId);
@@ -1267,6 +1283,29 @@ export class ComputerUseBridgeServer {
   }
 
   /** Ends one session on the helper; the answer is logged, never waited on by a Runner. */
+  #admit(): number | null {
+    return this.#admission.open ? this.#admission.generation : null;
+  }
+
+  /**
+   * The person's Stop: every agent session this bridge's Runners hold ends now.
+   * The Runner hears it as the person's stop; owner views and video stay.
+   */
+  endAgentSessions(): void {
+    for (const connection of this.#connections) {
+      const owner = connection.owner;
+      for (const sessionId of this.#ownership.releaseAll(owner)) {
+        if (owner.alive)
+          send(connection.socket, {
+            event: "session.stopped",
+            kind: "event",
+            params: { reason: "user", sessionId },
+          });
+        if (!owner.opening.has(sessionId)) this.#endSession(sessionId, "stopped");
+      }
+    }
+  }
+
   #endSession(sessionId: ComputerUseSessionId, reason: CloseReason, attempt = 0): void {
     void this.#helper
       .request("session.close", { sessionId }, { deadline: this.#now() + sessionCloseTimeoutMs })
@@ -1290,7 +1329,32 @@ export class ComputerUseBridgeServer {
   }
 }
 
-type CloseReason = "late" | "runner-left" | "unconfirmed";
+type CloseReason = "late" | "runner-left" | "stopped" | "unconfirmed";
+
+export const computerUseStoppedSentence =
+  "Agents were stopped on this Mac from the Opensteer menu bar. Resume there to use its apps again.";
+
+/** An agent acting on, or reading through, this Mac's apps or iPhone. */
+export function agentComputerWork(method: string): boolean {
+  return (
+    [
+      "session.open",
+      "session.act",
+      "session.observe",
+      "session.bind",
+      "session.windows",
+      "data.invoke",
+      "imessage.send",
+      "imessage.poll",
+      "imessage.account",
+      "iphone.session.open",
+      "iphone.observe",
+      "iphone.perform",
+      "iphone.installedApps",
+      "iphone.targets",
+    ] as const
+  ).some((name) => name === method);
+}
 
 function sessionIdOf(params: unknown): ComputerUseSessionId | null {
   if (typeof params !== "object" || params === null) return null;

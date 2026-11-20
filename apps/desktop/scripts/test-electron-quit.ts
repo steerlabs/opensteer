@@ -401,6 +401,7 @@ try {
         await delay(50);
       }
       assert(!rows(trial).some(({ event }) => event === "desktop.shutdown.started"));
+      assert(rows(trial).some(({ event }) => event === "test.quit-menu"));
       assert(rows(trial).some(({ event }) => event === "test.background-notice"));
       assert.deepEqual(
         before.filter(({ pid }) => !alive(pid)),

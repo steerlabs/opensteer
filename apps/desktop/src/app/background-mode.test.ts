@@ -2,15 +2,21 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { App, PowerMonitor } from "electron";
+import type { App, MenuItem, MenuItemConstructorOptions, PowerMonitor } from "electron";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDesktopApplicationMenu } from "./application-menu.js";
 import {
   backgroundNoticeFileStore,
   DesktopBackgroundMode,
+  dockHideRetryMs,
   quitCompletelyConfirmation,
-  type QuitWork,
 } from "./background-mode.js";
+import type { ActivitySnapshot } from "./desktop-activity.js";
 import { DesktopShutdown } from "./desktop-shutdown.js";
+import { DesktopQuitRouting, type QuitActions } from "./quit-routing.js";
+
+const { build } = vi.hoisted(() => ({ build: vi.fn((template: unknown) => template) }));
+vi.mock("electron", () => ({ Menu: { buildFromTemplate: build } }));
 
 let signals: Map<"SIGINT" | "SIGTERM", ReturnType<typeof process.listeners>>;
 const directories: string[] = [];
@@ -26,9 +32,9 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((d) => rm(d, { force: true, recursive: true })));
 });
 
-const nothing: QuitWork = { hostsHome: false, deviceHomes: [], activity: [] };
+const nothing: ActivitySnapshot = { known: true, hostsHome: false, deviceHomes: [], lines: [] };
 
-function fixture(work: QuitWork = nothing, answer = true) {
+function fixture(work: () => Promise<ActivitySnapshot> = async () => nothing, answer = true) {
   const application = Object.assign(new EventEmitter(), { exit: vi.fn() });
   const power = new EventEmitter();
   const log = vi.fn();
@@ -40,7 +46,27 @@ function fixture(work: QuitWork = nothing, answer = true) {
   const stopped = vi.fn();
   shutdown.add({ component: "personal", step: "stop", order: 40, timeoutMs: 100, stop: stopped });
   const window = { hide: vi.fn() };
-  const dock = { hide: vi.fn(), show: vi.fn() };
+  let docked = true;
+  let shownAt = -Infinity;
+  let clock = 0;
+  const dock = {
+    // As Electron does: a hide within a second of a show is ignored.
+    hide: vi.fn(() => {
+      if (clock - shownAt >= 1_000) docked = false;
+    }),
+    show: vi.fn(() => {
+      docked = true;
+      shownAt = clock;
+    }),
+    isVisible: () => docked,
+  };
+  const timers: { at: number; run: () => void; cancelled: boolean }[] = [];
+  const advance = (ms: number) => {
+    clock += ms;
+    for (const timer of timers.splice(0))
+      if (timer.at <= clock && !timer.cancelled) timer.run();
+      else if (!timer.cancelled) timers.push(timer);
+  };
   let seen = false;
   const notice = {
     seen: vi.fn(async () => seen),
@@ -49,26 +75,64 @@ function fixture(work: QuitWork = nothing, answer = true) {
     }),
     show: vi.fn(),
   };
-  const confirm = vi.fn(async () => answer);
+  const confirm = vi.fn(async (_confirmation: unknown, _signal: AbortSignal) => answer);
   const mode = new DesktopBackgroundMode({
     shutdown,
     window,
     dock,
     notice,
-    work: async () => work,
+    work,
     confirm,
     log,
+    schedule: (run, delayMs) => {
+      const timer = { at: clock + delayMs, run, cancelled: false };
+      timers.push(timer);
+      return () => {
+        timer.cancelled = true;
+      };
+    },
   });
+  const routing = new DesktopQuitRouting({ shutdown, hideWindows: vi.fn(), log });
   const exited = () =>
     vi.waitFor(() => expect(application.exit).toHaveBeenCalledWith(0), { timeout: 2_000 });
-  return { application, confirm, dock, exited, mode, notice, power, shutdown, stopped, window };
+  return {
+    advance,
+    application,
+    confirm,
+    dock,
+    docked: () => docked,
+    exited,
+    mode,
+    notice,
+    power,
+    routing,
+    shutdown,
+    stopped,
+    window,
+  };
 }
 
-describe("quit routing", () => {
+/** The production app menu, built as main builds it, and one of its items clicked. */
+function menuItem(actions: QuitActions, id: string): MenuItemConstructorOptions {
+  createDesktopApplicationMenu({ quit: actions, workspaceContents: () => null });
+  const template = build.mock.calls.at(-1)![0] as MenuItemConstructorOptions[];
+  const items = template.flatMap((item) =>
+    Array.isArray(item.submenu) ? (item.submenu as MenuItemConstructorOptions[]) : [item],
+  );
+  expect(items.some((item) => item.role === "quit")).toBe(false);
+  return items.find((item) => item.id === id)!;
+}
+const click = (item: MenuItemConstructorOptions) =>
+  item.click!({} as MenuItem, undefined, {} as KeyboardEvent);
+
+describe("quit routing through the production app menu", () => {
   it("puts the app away on Cmd+Q and keeps every service running", async () => {
-    const { application, dock, mode, notice, shutdown, stopped, window } = fixture();
-    mode.quitRequested();
-    mode.quitRequested();
+    const { application, dock, mode, notice, routing, shutdown, stopped, window } = fixture();
+    routing.attach(mode);
+    const quit = menuItem(routing.actions, "quit");
+    expect(quit.accelerator).toBe("CommandOrControl+Q");
+    click(quit);
+    click(quit);
     await vi.waitFor(() => expect(notice.markSeen).toHaveBeenCalled());
     expect(window.hide).toHaveBeenCalledTimes(2);
     expect(dock.hide).toHaveBeenCalled();
@@ -76,82 +140,130 @@ describe("quit routing", () => {
     expect(shutdown.requested).toBe(false);
     expect(stopped).not.toHaveBeenCalled();
     expect(application.exit).not.toHaveBeenCalled();
+  });
 
-    mode.windowShown();
-    expect(dock.show).toHaveBeenCalledTimes(1);
+  it("is installed at ready, before the menu bar app exists, and never quits then", () => {
+    const { routing, shutdown } = fixture();
+    const application = new EventEmitter();
+    const installed = vi.fn();
+    routing.installAtReady(application, installed);
+    expect(installed).not.toHaveBeenCalled();
+    application.emit("ready");
+    expect(installed).toHaveBeenCalledWith(routing.actions);
+    click(menuItem(routing.actions, "quit"));
+    expect(shutdown.requested).toBe(false);
+    expect(routing.quitBeforeStart).toBe(true);
   });
 
   it("runs the full ordered shutdown for Quit Opensteer Completely", async () => {
-    const { confirm, exited, mode, shutdown, stopped } = fixture();
-    await expect(mode.quitCompletely()).resolves.toBe(true);
+    const { confirm, exited, mode, routing, shutdown, stopped } = fixture();
+    routing.attach(mode);
+    click(menuItem(routing.actions, "quit-completely"));
+    await vi.waitFor(() => expect(shutdown.requested).toBe(true));
     expect(confirm).not.toHaveBeenCalled();
-    expect(shutdown.requested).toBe(true);
     await exited();
     expect(stopped).toHaveBeenCalledTimes(1);
   });
 
   it("asks first when this Mac hosts a Home, and stays running when the person declines", async () => {
-    const declined = fixture({ ...nothing, hostsHome: true }, false);
+    const hosting = async () => ({ ...nothing, hostsHome: true });
+    const declined = fixture(hosting, false);
     await expect(declined.mode.quitCompletely()).resolves.toBe(false);
-    expect(declined.confirm).toHaveBeenCalledWith({
-      message: "Quit Opensteer completely?",
-      detail: expect.stringContaining("This Mac is your Home."),
-    });
+    expect(declined.confirm).toHaveBeenCalledWith(
+      {
+        message: "Quit Opensteer completely?",
+        detail: expect.stringContaining("This Mac is your Home."),
+      },
+      declined.shutdown.signal,
+    );
     expect(declined.shutdown.requested).toBe(false);
 
-    const accepted = fixture({ ...nothing, hostsHome: true }, true);
+    const accepted = fixture(hosting, true);
     await expect(accepted.mode.quitCompletely()).resolves.toBe(true);
     await accepted.exited();
+  });
+
+  it("asks nothing when SIGTERM arrives while Quit Completely reads what is running", async () => {
+    let finish!: (snapshot: ActivitySnapshot) => void;
+    const { confirm, exited, mode, shutdown } = fixture(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const quitting = mode.quitCompletely();
+    process.emit("SIGTERM");
+    finish({ ...nothing, hostsHome: true });
+    await expect(quitting).resolves.toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(shutdown.requested).toBe(true);
+    await exited();
   });
 
   it.each([
     ["logout, restart or power off", (power: EventEmitter) => power.emit("shutdown")],
     ["SIGTERM", () => process.emit("SIGTERM")],
   ])("shuts down fully and without a question for %s", async (_name, terminate) => {
-    const { confirm, exited, mode, power, shutdown, stopped, window } = fixture({
-      ...nothing,
-      hostsHome: true,
-    });
+    const { confirm, exited, mode, power, routing, shutdown, stopped, window } = fixture(
+      async () => ({ ...nothing, hostsHome: true }),
+    );
+    routing.attach(mode);
     terminate(power);
     expect(shutdown.requested).toBe(true);
     await exited();
     expect(stopped).toHaveBeenCalledTimes(1);
     expect(confirm).not.toHaveBeenCalled();
-    mode.quitRequested();
+    click(menuItem(routing.actions, "quit"));
     expect(window.hide).not.toHaveBeenCalled();
   });
+});
 
-  it("lets an update install run the full shutdown, then hand off", async () => {
-    const { mode, shutdown, stopped } = fixture({ ...nothing, hostsHome: true });
-    const install = vi.fn();
-    void shutdown.requestUpdate(install);
-    await vi.waitFor(() => expect(install).toHaveBeenCalledTimes(1));
-    expect(stopped).toHaveBeenCalledTimes(1);
-    await expect(mode.quitCompletely()).resolves.toBe(true);
+describe("Dock", () => {
+  it("hides again when Electron ignored a hide that followed a show too closely", () => {
+    const { advance, docked, mode } = fixture();
+    mode.windowVisibility(true);
+    mode.windowVisibility(false);
+    expect(docked()).toBe(true);
+    advance(dockHideRetryMs);
+    expect(docked()).toBe(false);
+  });
+
+  it("keeps the Dock icon when the window came back before the retry", () => {
+    const { advance, docked, mode } = fixture();
+    mode.windowVisibility(true);
+    mode.windowVisibility(false);
+    mode.windowVisibility(true);
+    advance(dockHideRetryMs);
+    expect(docked()).toBe(true);
   });
 });
 
 describe("quit confirmation", () => {
-  it("needs none when nothing would stop that matters", () => {
+  it("needs none when everything was read and nothing would stop that matters", () => {
     expect(quitCompletelyConfirmation(nothing)).toBeNull();
     expect(quitCompletelyConfirmation({ ...nothing, deviceHomes: ["Office"] })).toBeNull();
   });
 
+  it("asks when it cannot tell what is using this Mac", () => {
+    expect(
+      quitCompletelyConfirmation({ ...nothing, known: false, deviceHomes: ["Office"] })?.detail,
+    ).toBe(
+      "Agents may be using this Mac. Quitting stops them and disconnects this Mac from Office. Opensteer can’t tell right now whether agents are using this Mac.",
+    );
+  });
+
   it("names the Home and what is using this Mac", () => {
     expect(
-      quitCompletelyConfirmation({
-        hostsHome: true,
-        deviceHomes: [],
-        activity: ["Running: Book flights"],
-      })?.detail,
+      quitCompletelyConfirmation({ ...nothing, hostsHome: true, lines: ["Running: Book flights"] })
+        ?.detail,
     ).toBe(
       "This Mac is your Home. Quitting stops it: your phone and other devices can’t reach it, and agents stop until you open Opensteer again. Using this Mac now: Running: Book flights.",
     );
     expect(
       quitCompletelyConfirmation({
-        hostsHome: false,
+        ...nothing,
         deviceHomes: ["Office", "Lab", "Studio"],
-        activity: ["An agent is using apps on this Mac"],
+        lines: ["An agent is using apps on this Mac"],
       })?.detail,
     ).toBe(
       "Agents are using this Mac. Quitting stops them and disconnects this Mac from Office, Lab and Studio. Using this Mac now: An agent is using apps on this Mac.",

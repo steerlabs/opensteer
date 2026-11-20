@@ -1,3 +1,6 @@
+/** The popover's one document; its bridge and handlers answer nothing else. */
+export const menuBarPopoverUrl = "app://opensteer/menu-bar.html";
+
 export const menuBarChannels = {
   status: "opensteer-menu-bar:status",
   statusChanged: "opensteer-menu-bar:status-changed",

@@ -64,20 +64,31 @@ export class OpenAtLoginService {
   }
 }
 
-const OpenAtLoginChoiceSchema = z.object({
-  turnedOff: z.boolean(),
-  applied: z.boolean().nullable(),
+const OpenAtLoginRecordSchema = z.object({
+  version: z.literal(2),
+  /** The person's own choice in Opensteer; null until they make one. */
+  choice: z.enum(["on", "off"]).nullable(),
+  /** What Opensteer last asked macOS for. */
+  registered: z.boolean(),
 });
-export type OpenAtLoginChoice = z.infer<typeof OpenAtLoginChoiceSchema>;
+export type OpenAtLoginRecord = z.infer<typeof OpenAtLoginRecordSchema>;
+/** What the build before menu bar mode saved, when the person had a Home or a Device. */
+const PreviousChoiceSchema = z.object({ turnedOff: z.boolean(), applied: z.boolean().nullable() });
+
+export interface OpenAtLoginEligibility {
+  readonly hostsHome: boolean;
+  readonly enrolledRunners: boolean;
+}
 
 export interface OpenAtLoginChoiceStore {
-  load(): Promise<OpenAtLoginChoice>;
-  save(choice: OpenAtLoginChoice): Promise<void>;
+  /** The saved record, a previous build's choice migrated, or null when there is none. */
+  load(eligibility: OpenAtLoginEligibility): Promise<OpenAtLoginRecord | null>;
+  save(record: OpenAtLoginRecord): Promise<void>;
 }
 
 export function openAtLoginChoiceFileStore(filePath: string): OpenAtLoginChoiceStore {
   return {
-    load: async () => {
+    load: async (eligibility) => {
       const text = await readFile(filePath, "utf8").catch(() => null);
       let value: unknown = null;
       try {
@@ -85,16 +96,25 @@ export function openAtLoginChoiceFileStore(filePath: string): OpenAtLoginChoiceS
       } catch {
         value = null;
       }
-      return OpenAtLoginChoiceSchema.safeParse(value).data ?? { turnedOff: false, applied: null };
+      const record = OpenAtLoginRecordSchema.safeParse(value);
+      if (record.success) return record.data;
+      const previous = PreviousChoiceSchema.safeParse(value);
+      if (!previous.success) return null;
+      return {
+        version: 2,
+        choice: previous.data.turnedOff ? "off" : null,
+        registered: previous.data.applied ?? eligibility.enrolledRunners,
+      };
     },
-    save: (choice) => replacePrivateFileAtomically(filePath, `${JSON.stringify(choice)}\n`),
+    save: (record) => replacePrivateFileAtomically(filePath, `${JSON.stringify(record)}\n`),
   };
 }
 
 /**
- * Opensteer opens at login while this Mac hosts a Home or lends itself to
- * one, unless the person turned that off — here, or in System Settings'
- * Login Items, which this notices rather than undoing.
+ * Opensteer opens at login while this Mac hosts a Home or lends itself to one,
+ * unless the person turned that off here. It asks macOS only when what it
+ * wants changes, never to undo what the person set in System Settings' Login
+ * Items, and it shows what macOS will actually do.
  */
 export class OpenAtLoginPolicy {
   readonly #service: Pick<OpenAtLoginService, "sync">;
@@ -112,28 +132,50 @@ export class OpenAtLoginPolicy {
     this.#systemEnabled = options.systemEnabled;
   }
 
-  /** Resolves whether Opensteer now opens at login. */
-  async sync(eligible: boolean): Promise<boolean> {
-    const saved = await this.#choices.load();
-    const turnedOff =
-      saved.turnedOff || (saved.applied === true && this.#systemEnabled() === false);
-    return await this.#apply(eligible, turnedOff);
-  }
-
-  async choose(on: boolean, eligible: boolean): Promise<boolean> {
-    return await this.#apply(eligible, !on);
-  }
-
-  async turnedOff(): Promise<boolean> {
-    return (await this.#choices.load()).turnedOff;
-  }
-
-  async #apply(eligible: boolean, turnedOff: boolean): Promise<boolean> {
-    const wanted = eligible && !turnedOff;
+  async sync(eligibility: OpenAtLoginEligibility): Promise<void> {
+    const record = await this.#record(eligibility);
+    const wanted = eligible(eligibility) && record.choice !== "off";
+    if (wanted === record.registered) {
+      await this.#choices.save(record);
+      return;
+    }
     await this.#service.sync(wanted);
-    await this.#choices.save({ turnedOff, applied: wanted });
-    return wanted;
+    await this.#choices.save({ ...record, registered: wanted });
   }
+
+  async choose(on: boolean, eligibility: OpenAtLoginEligibility): Promise<void> {
+    const wanted = eligible(eligibility) && on;
+    await this.#service.sync(wanted);
+    await this.#choices.save({ version: 2, choice: on ? "on" : "off", registered: wanted });
+  }
+
+  async effective(
+    eligibility: OpenAtLoginEligibility,
+  ): Promise<{ readonly on: boolean; readonly available: boolean }> {
+    const record = await this.#record(eligibility);
+    return {
+      on: this.#systemEnabled() ?? record.registered,
+      available: eligible(eligibility),
+    };
+  }
+
+  /**
+   * A Mac with no record yet keeps whatever the previous build registered:
+   * that build opened at login exactly when this Mac had a Device Runner.
+   */
+  async #record(eligibility: OpenAtLoginEligibility): Promise<OpenAtLoginRecord> {
+    return (
+      (await this.#choices.load(eligibility)) ?? {
+        version: 2,
+        choice: null,
+        registered: eligibility.enrolledRunners,
+      }
+    );
+  }
+}
+
+function eligible(eligibility: OpenAtLoginEligibility): boolean {
+  return eligibility.hostsHome || eligibility.enrolledRunners;
 }
 
 export function shouldOpenDesktopWindowAtLaunch(input: {

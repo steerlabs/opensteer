@@ -932,7 +932,10 @@ export class DesktopBrowserPresentationManager {
       if (presentation.owner === owner && presentation.pending?.placement)
         pages.push(presentation.pending);
     if (owner.current?.page) pages.push(owner.current.page);
-    const views = pages.map((page) => page.native.view);
+    // The launcher alone moves a page between its own host and this window, so
+    // a page parked out of a hidden window is never pulled back in here.
+    const inWindow = new Set(owner.window.contentView.children);
+    const views = pages.map((page) => page.native.view).filter((view) => inWindow.has(view));
     if (owner.overlays.size || !owner.current?.page) views.push(owner.window.appView);
     const existing = owner.window.contentView.children.slice(-views.length);
     if (views.some((view, index) => existing[index] !== view)) {

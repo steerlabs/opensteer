@@ -1465,7 +1465,18 @@ describe("Electron geometry lifecycle", () => {
     const drain = async () => {
       for (let index = 0; index < operations.length; index++) await operations[index];
     };
-    return { browser, page, native, view, host, unbind, drain, releaseInput, serialize };
+    return {
+      browser,
+      page,
+      native,
+      view,
+      host,
+      unbind,
+      drain,
+      operations,
+      releaseInput,
+      serialize,
+    };
   }
 
   it("keeps provider TLS domains in the existing hub ownership until the page releases", async () => {
@@ -1708,31 +1719,116 @@ describe("Electron geometry lifecycle", () => {
     },
   );
 
-  it("parks a page shown in a hidden window in its own host, and returns it when shown", async () => {
-    const { browser, native, view, host, drain } = await launch();
-    const window = new BaseWindow({}) as unknown as (typeof electron.hosts)[number];
+  describe("a page in a hidden window", () => {
     const stage = { x: 280, y: 52, width: 800, height: 600 };
-    try {
-      native.mount(window as unknown as BaseWindow, stage, vi.fn());
-      await drain();
-      expect(window.contentView.addChildView).toHaveBeenCalledExactlyOnceWith(view);
-      expect(view.getBounds()).toEqual(stage);
+    type Host = (typeof electron.hosts)[number];
+    type View = (typeof electron.views)[number];
+    /** The host the view was last added to, by the order Electron saw the calls. */
+    const parentOf = (view: View, hosts: readonly Host[]) => {
+      let parent: Host | null = null;
+      let latest = -1;
+      for (const candidate of hosts) {
+        const { calls, invocationCallOrder } = candidate.contentView.addChildView.mock;
+        calls.forEach(([child], index) => {
+          if (child === view && invocationCallOrder[index]! > latest) {
+            latest = invocationCallOrder[index]!;
+            parent = candidate;
+          }
+        });
+      }
+      return parent;
+    };
+    const mounted = async () => {
+      const launched = await launch();
+      const window = new BaseWindow({}) as unknown as Host;
+      launched.native.mount(window as unknown as BaseWindow, stage, vi.fn());
+      await launched.drain();
+      return { ...launched, window };
+    };
 
-      native.setParked(true);
-      expect(host.contentView.addChildView).toHaveBeenLastCalledWith(view);
-      expect(view.getBounds()).toEqual({ ...stage, x: 0, y: 0 });
-      native.setStage({ ...stage, width: 820 });
-      await drain();
-      expect(window.contentView.addChildView).toHaveBeenCalledTimes(1);
-      expect(view.getBounds()).toMatchObject({ x: 0, y: 0 });
+    it("rests in its own host at its own origin, then returns to its place in the window", async () => {
+      const { browser, drain, host, native, view, window } = await mounted();
+      try {
+        expect(parentOf(view, [host, window])).toBe(window);
+        native.setParked(true);
+        expect(parentOf(view, [host, window])).toBe(host);
+        expect(view.getBounds()).toEqual({ ...stage, x: 0, y: 0 });
+        await drain();
+        native.setParked(false);
+        await drain();
+        expect(parentOf(view, [host, window])).toBe(window);
+        expect(view.getBounds()).toEqual(stage);
+      } finally {
+        await browser.close();
+      }
+    });
 
-      native.setParked(false);
-      await drain();
-      expect(window.contentView.addChildView).toHaveBeenCalledTimes(2);
-      expect(view.getBounds()).toMatchObject({ x: 280, y: 52 });
-    } finally {
-      await browser.close();
-    }
+    it("settles a resize while parked instead of placing it again forever", async () => {
+      const { browser, drain, host, native, operations, view, window } = await mounted();
+      try {
+        native.setParked(true);
+        native.setStage({ ...stage, width: 820 });
+        await drain();
+        const settled = operations.length;
+        const writes = view.setBounds.mock.calls.length;
+        await drain();
+        expect(operations.length).toBe(settled);
+        expect(view.setBounds.mock.calls.length).toBe(writes);
+        expect(parentOf(view, [host, window])).toBe(host);
+        expect(view.getBounds()).toEqual({ x: 0, y: 0, width: 820, height: 600 });
+        native.setParked(false);
+        await drain();
+        expect(parentOf(view, [host, window])).toBe(window);
+        expect(view.getBounds()).toEqual({ ...stage, width: 820 });
+      } finally {
+        await browser.close();
+      }
+    });
+
+    it("lands in its place, not at the corner, after a quick hide and show", async () => {
+      const { browser, drain, host, native, view, window } = await mounted();
+      try {
+        native.setParked(true);
+        native.setParked(false);
+        await drain();
+        expect(parentOf(view, [host, window])).toBe(window);
+        expect(view.getBounds()).toEqual(stage);
+      } finally {
+        await browser.close();
+      }
+    });
+
+    it("never joins a window that hid before its first placement", async () => {
+      const { browser, drain, host, native, view } = await launch();
+      const window = new BaseWindow({}) as unknown as Host;
+      try {
+        native.mount(window as unknown as BaseWindow, stage, vi.fn());
+        native.setParked(true);
+        await drain();
+        expect(window.contentView.addChildView).not.toHaveBeenCalled();
+        expect(parentOf(view, [host, window])).toBe(host);
+        native.setParked(false);
+        await drain();
+        expect(parentOf(view, [host, window])).toBe(window);
+        expect(view.getBounds()).toEqual(stage);
+      } finally {
+        await browser.close();
+      }
+    });
+
+    it("stays in its own host when it closes while parked", async () => {
+      const { browser, drain, host, native, view, window } = await mounted();
+      try {
+        native.setParked(true);
+        native.unmount();
+        native.setParked(false);
+        await drain();
+        expect(parentOf(view, [host, window])).toBe(host);
+        expect(window.contentView.addChildView).toHaveBeenCalledTimes(1);
+      } finally {
+        await browser.close();
+      }
+    });
   });
 
   it("attaches a page remounted while its placement waited only to its latest window", async () => {

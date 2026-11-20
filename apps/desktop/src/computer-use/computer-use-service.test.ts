@@ -38,6 +38,7 @@ import { createHelperAppProvider } from "../../../runner/src/computer-apps/helpe
 import { ComputerAppModuleHandler } from "../../../runner/src/computer-apps/module-handler.js";
 
 import { ComputerUseService } from "./computer-use-service.js";
+import { openAgentAdmission, type AgentAdmission } from "../app/agent-admission.js";
 import { computerUseFrameReader, encodeComputerUseFrame } from "./helper-frames.js";
 import type { ComputerUseHelperProcess } from "./helper-install.js";
 import {
@@ -654,24 +655,54 @@ describe.skipIf(!onMac)("the helper connection's lifetime", () => {
 });
 
 describe.skipIf(!onMac)("the person's Stop from the menu bar", () => {
-  it("ends every agent session at once and refuses Runners until resumed", async () => {
-    const harness = await lifetimeHarness({});
+  it("ends agent sessions, keeps the helper for the person's views, and refuses agents until resumed", async () => {
+    const admission = openAgentAdmission();
+    const harness = await lifetimeHarness({ admission });
     await harness.observe();
     expect(harness.computerUse.agentSessions).toBe(1);
 
-    await harness.computerUse.pause();
-    await vi.waitFor(() => expect(harness.helper.connections()).toBe(0), { timeout: 2_000 });
+    admission.close();
+    harness.computerUse.pause();
     expect(harness.computerUse.agentSessions).toBe(0);
+    await vi.waitFor(() =>
+      expect(harness.events).toContainEqual(
+        expect.objectContaining({
+          event: "session.stopped",
+          params: expect.objectContaining({ reason: "user", sessionId: harness.sessionId }),
+        }),
+      ),
+    );
+    await vi.waitFor(() => expect(harness.helper.methods).toContain("session.close"));
+    expect(harness.helper.connections()).toBe(1);
     const methods = harness.helper.methods.length;
     await expect(
       harness.call("session.open", { sessionId: harness.sessionId, threadTitle: null }),
     ).resolves.toMatchObject({ error: { code: "stopped-by-user" } });
     expect(harness.helper.methods).toHaveLength(methods);
+    await expect(harness.probe()).resolves.toMatchObject({ permissions: expect.anything() });
 
-    harness.computerUse.resume();
+    admission.reopen();
     await expect(
       harness.call("session.open", { sessionId: harness.sessionId, threadTitle: null }),
     ).resolves.toEqual({ sessionId: harness.sessionId });
+  });
+
+  it("never sends an open that waited on installation through a Stop, even after Resume", async () => {
+    const admission = openAgentAdmission();
+    const harness = await lifetimeHarness({ admission, running: false });
+    const install = gate();
+    harness.helper.state.installGate = install.waiting;
+    const opened = harness.call("session.open", {
+      sessionId: harness.sessionId,
+      threadTitle: null,
+    });
+    await vi.waitFor(() => expect(harness.helper.commands).toContain("/usr/bin/plutil"));
+    admission.close();
+    harness.computerUse.pause();
+    admission.reopen();
+    install.release();
+    await expect(opened).resolves.toMatchObject({ error: { code: "stopped-by-user" } });
+    expect(harness.helper.methods).not.toContain("session.open");
   });
 });
 
@@ -741,6 +772,7 @@ function gate(): { readonly release: () => void; readonly waiting: Promise<void>
  * socket, for what the helper connection does between requests.
  */
 async function lifetimeHarness(options: {
+  readonly admission?: AgentAdmission;
   readonly idleDisconnectMs?: number;
   readonly ownerViewVersion?: number;
   readonly installed?: boolean;
@@ -772,6 +804,7 @@ async function lifetimeHarness(options: {
     platform: "darwin",
     run: helper.run,
     teamId: null,
+    ...(options.admission ? { admission: options.admission } : {}),
   });
   cleanups.push(async () => computerUse.stop());
   const bridge = await computerUse.startForSlot("dep_2f1a2b4c-5d6e-4f80-9a1b-2c3d4e5f6071");
@@ -785,6 +818,11 @@ async function lifetimeHarness(options: {
   await new Promise<void>((resolvePromise, rejectPromise) => {
     socket.once("open", resolvePromise);
     socket.once("error", rejectPromise);
+  });
+  const events: unknown[] = [];
+  socket.on("message", (data: Buffer) => {
+    const frame = JSON.parse(data.toString("utf8")) as { readonly kind?: string };
+    if (frame.kind === "event") events.push(frame);
   });
   let nextId = 1;
   const call = async (method: string, params: unknown, timeoutMs = 5_000): Promise<unknown> => {
@@ -809,6 +847,7 @@ async function lifetimeHarness(options: {
     call,
     clock,
     computerUse,
+    events,
     close: async () => await call("session.close", { sessionId }),
     helper,
     sessionId,

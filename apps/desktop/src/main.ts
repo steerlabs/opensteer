@@ -202,6 +202,9 @@ import { OpensteerOwnOrigins } from "./passwords/own-origins.js";
 import { PasswordsLoginAuthority } from "./passwords/login-authority.js";
 import { AgentBrowserGate } from "./browser/agent-browser-gate.js";
 import { DesktopLocalStop, localStopFileStore } from "./app/local-stop.js";
+import { AgentAdmission } from "./app/agent-admission.js";
+import { activityIdle, DesktopActivity } from "./app/desktop-activity.js";
+import { DesktopQuitRouting } from "./app/quit-routing.js";
 import {
   backgroundNoticeBody,
   backgroundNoticeFileStore,
@@ -210,6 +213,7 @@ import {
 } from "./app/background-mode.js";
 import {
   DesktopBackgroundUpdate,
+  forgetHiddenRelaunch,
   rememberHiddenRelaunch,
   takeHiddenRelaunch,
 } from "./app/background-update.js";
@@ -261,6 +265,16 @@ const shutdown = new DesktopShutdown({
   log: reportEvent,
   hideWindow: () => activeMainProcess?.hideWindow(),
 });
+const quitRouting = new DesktopQuitRouting({
+  shutdown,
+  hideWindows: () => {
+    for (const window of BaseWindow.getAllWindows()) window.hide();
+  },
+  log: reportEvent,
+});
+quitRouting.installAtReady(app, (quit) =>
+  Menu.setApplicationMenu(createDesktopApplicationMenu({ quit, workspaceContents: () => null })),
+);
 app.on("open-url", (event, url) => {
   if (mcpAuthorizationLinks.accept(url)) {
     event.preventDefault();
@@ -515,7 +529,10 @@ async function runDesktop(
     },
   });
   void iphone.start().catch(() => reportEvent("desktop.iphone.unavailable"));
+  // Closed until the person's saved Stop is read; every agent path checks it.
+  const admission = new AgentAdmission();
   const computerUse = new ComputerUseService({
+    admission,
     appBundleId: loaded.config.release.id,
     appVersion: app.getVersion(),
     bundledHelperPath: () =>
@@ -605,7 +622,7 @@ async function runDesktop(
   const bridgeToken = randomBytes(32).toString("base64url");
   const preloadPath = path.join(import.meta.dirname, "preload.cjs");
   const panelWebPreferences = desktopWebPreferences(loaded.config, bridgeToken, preloadPath);
-  const agentBrowserGate = new AgentBrowserGate();
+  const agentBrowserGate = new AgentBrowserGate(admission);
   const personalLocalRuntimes: PersonalLocalRuntimePort = {
     startBrowser: (input) =>
       startLocalBrowserRuntime({
@@ -843,7 +860,7 @@ async function runDesktop(
     autofillPreload: path.join(import.meta.dirname, "autofill-preload.cjs"),
     glassPreload: path.join(import.meta.dirname, "glass-preload.cjs"),
     onError: (error) => reportNonFatal("desktop.browser.presentation-failed", error),
-    quit: () => background?.quitRequested(),
+    quit: () => quitRouting.actions.hide(),
   });
   const passkeys = new DesktopPasskeyRequests({
     presentations: browserPresentation,
@@ -858,6 +875,7 @@ async function runDesktop(
       hostTransport.closeDeploymentConnections(DeploymentIdSchema.parse(deploymentId));
   });
   const localRunner = new LocalRunnerService(loaded.config, {
+    admission,
     assertAccountSource: (source) => nativeAuth.assertAccountSource(source),
     fenceDeployment: (deploymentId) => {
       for (const sessions of sessionOwners) sessions.blockDeployment(deploymentId);
@@ -908,7 +926,7 @@ async function runDesktop(
     stop: (signal) => localRunner.shutdown(signal),
   });
   const localStop = new DesktopLocalStop({
-    browser: agentBrowserGate,
+    admission,
     computerUse,
     runners: localRunner,
     store: localStopFileStore(path.join(loaded.config.dataDirectory, "local-stop.json")),
@@ -935,21 +953,23 @@ async function runDesktop(
         ? app.getLoginItemSettings().openAtLogin
         : null,
   });
-  const openAtLoginEligible = async () =>
-    (await personalFiles.load()) !== null || (await localRunner.hasEnrolledRunners());
+  const openAtLoginEligibility = async () => ({
+    hostsHome: (await personalFiles.load()) !== null,
+    enrolledRunners: await localRunner.hasEnrolledRunners(),
+  });
   let openAtLoginTail = Promise.resolve();
   const syncOpenAtLogin = () => {
     if (shutdown.requested) return;
     openAtLoginTail = openAtLoginTail
       .then(async () => {
-        const eligible = await openAtLoginEligible();
-        if (!shutdown.requested) await openAtLogin.sync(eligible);
+        const eligibility = await openAtLoginEligibility();
+        if (!shutdown.requested) await openAtLogin.sync(eligibility);
       })
       .catch((error: unknown) => reportNonFatal("desktop.open-at-login.failed", error));
   };
   const chooseOpenAtLogin = (on: boolean): Promise<void> => {
     const choosing = openAtLoginTail.then(async () => {
-      await openAtLogin.choose(on, await openAtLoginEligible());
+      await openAtLogin.choose(on, await openAtLoginEligibility());
     });
     openAtLoginTail = choosing.catch((error: unknown) =>
       reportNonFatal("desktop.open-at-login.failed", error),
@@ -1365,7 +1385,7 @@ async function runDesktop(
       },
       restart: () => {
         app.relaunch();
-        shutdown.request("start-fresh", () => app.exit(0));
+        shutdown.request("start-fresh");
       },
     }),
     integrationAuthorizations,
@@ -1471,11 +1491,11 @@ async function runDesktop(
     onCreated: (window) => {
       workspaceContents = window.webContents;
       appWindow = window;
-      window.on("show", () => background?.windowShown());
-      window.on("hide", () => {
-        background?.windowHidden();
-        backgroundUpdate?.evaluate();
-      });
+      for (const event of ["show", "hide", "minimize", "restore"] as const)
+        window.on(event as "show", () => {
+          background?.windowVisibility(windowVisible());
+          if (!windowVisible()) backgroundUpdate?.evaluate();
+        });
       let detachMcpAuthorization = () => {};
       window.webContents.on("did-finish-load", () => {
         detachMcpAuthorization();
@@ -1502,7 +1522,7 @@ async function runDesktop(
     },
     bridgeToken,
     preloadPath,
-    quit: () => background?.quitRequested(),
+    quit: () => quitRouting.actions.hide(),
   });
   let updateReady = false;
   const installUpdate = () => {
@@ -1516,19 +1536,25 @@ async function runDesktop(
   });
   const hiddenRelaunchPath = path.join(loaded.config.dataDirectory, "relaunch-hidden.json");
   // The new version comes back the way this one was left: in the menu bar, or showing.
-  const requestInstall = async () => {
-    if (!windowVisible())
+  // `stillDue` is the background install's last look, right before the handoff.
+  const requestInstall = async (stillDue?: () => Promise<boolean>) => {
+    const hidden = !windowVisible();
+    if (hidden)
       await rememberHiddenRelaunch(hiddenRelaunchPath).catch((error: unknown) =>
         reportNonFatal("desktop.update.hidden-relaunch-failed", error),
       );
+    if (stillDue && !(await stillDue())) {
+      if (hidden) await forgetHiddenRelaunch(hiddenRelaunchPath).catch(() => undefined);
+      throw new Error("Agent work started before the update could install.");
+    }
     await shutdown.requestUpdate(installUpdate);
   };
   desktopUpdateExecutor = new DesktopUpdateExecutor({
     supervisor: desktopSupervisor,
     updater,
-    install: requestInstall,
+    install: () => requestInstall(),
   });
-  const restartToUpdate = () => updater.restart(requestInstall);
+  const restartToUpdate = () => updater.restart(() => requestInstall());
   const restartFromMenu = () => {
     void restartToUpdate().catch(() => reportEvent("desktop.update.restart-refused", {}));
   };
@@ -1566,39 +1592,51 @@ async function runDesktop(
         ...result,
       });
   };
+  const hostedHome = async () => {
+    const manifest = await personalFiles.load();
+    return manifest
+      ? {
+          deploymentId: manifest.deploymentId,
+          state: personal.status.state,
+          runnerId: manifest.runnerId,
+        }
+      : null;
+  };
+  const deviceHomes = async () => {
+    const snapshot = access.snapshot();
+    return await Promise.all(
+      [...(await localRunner.joinedDeploymentIds())].map(async (deploymentId) => {
+        const status = await localRunner.status(deploymentId);
+        return {
+          deploymentId,
+          name:
+            snapshot.deployments.find((deployment) => deployment.id === deploymentId)?.name ??
+            "your Home",
+          runner: status.runner.state,
+          signedOut: status.membership?.sessionState === "sign-in-again",
+          runnerId: status.runner.runnerId,
+        };
+      }),
+    );
+  };
+  const selectedHome = () => {
+    const snapshot = access.snapshot();
+    return (
+      snapshot.deployments.find((deployment) => deployment.id === snapshot.selectedDeploymentId) ??
+      null
+    );
+  };
+  const ownerHost = (deploymentId: string) =>
+    createForwardedHostApi(hostTransport, DeploymentIdSchema.parse(deploymentId));
+  const localActivity = () => ({
+    appSessions: computerUse.agentSessions,
+    browserTabs: agentBrowserGate.agentTabs,
+  });
   const menuBarService = new DesktopMenuBarService({
-    hostedHome: async () => {
-      const manifest = await personalFiles.load();
-      return manifest
-        ? {
-            deploymentId: manifest.deploymentId,
-            state: personal.status.state,
-            runnerId: manifest.runnerId,
-          }
-        : null;
-    },
-    deviceHomes: async () => {
-      const snapshot = access.snapshot();
-      return await Promise.all(
-        [...(await localRunner.joinedDeploymentIds())].map(async (deploymentId) => {
-          const status = await localRunner.status(deploymentId);
-          return {
-            deploymentId,
-            name:
-              snapshot.deployments.find((deployment) => deployment.id === deploymentId)?.name ??
-              "your Home",
-            runner: status.runner.state,
-            signedOut: status.membership?.sessionState === "sign-in-again",
-            runnerId: status.runner.runnerId,
-          };
-        }),
-      );
-    },
+    hostedHome,
+    deviceHomes,
     selected: () => {
-      const snapshot = access.snapshot();
-      const selected = snapshot.deployments.find(
-        (deployment) => deployment.id === snapshot.selectedDeploymentId,
-      );
+      const selected = selectedHome();
       return selected
         ? {
             deploymentId: selected.id,
@@ -1606,15 +1644,19 @@ async function runDesktop(
           }
         : null;
     },
-    host: (deploymentId) =>
-      createForwardedHostApi(hostTransport, DeploymentIdSchema.parse(deploymentId)),
-    local: () => ({
-      appSessions: computerUse.agentSessions,
-      browserTabs: agentBrowserGate.inUse,
-    }),
-    stopped: () => localStop.stopped,
-    openAtLogin: async () => !(await openAtLogin.turnedOff()),
+    host: ownerHost,
+    local: localActivity,
+    stop: () => ({ stopped: localStop.stopped, problem: localStop.problem }),
+    openAtLogin: async () => openAtLogin.effective(await openAtLoginEligibility()),
     log: reportEvent,
+  });
+  // Quitting and updating read what is using this Mac fresh, from one place.
+  const activity = new DesktopActivity({
+    hostedHome,
+    deviceHomes,
+    selected: () => selectedHome()?.id ?? null,
+    host: ownerHost,
+    local: localActivity,
   });
   const backgroundNotice = backgroundNoticeFileStore(
     path.join(loaded.config.dataDirectory, "menu-bar-notice.json"),
@@ -1623,7 +1665,15 @@ async function runDesktop(
   background = new DesktopBackgroundMode({
     shutdown,
     window: { hide: () => appWindow?.hide() },
-    ...(dock ? { dock: { hide: () => dock.hide(), show: () => dock.show() } } : {}),
+    ...(dock
+      ? {
+          dock: {
+            hide: () => dock.hide(),
+            show: () => dock.show(),
+            isVisible: () => dock.isVisible(),
+          },
+        }
+      : {}),
     notice: {
       ...backgroundNotice,
       show: () => {
@@ -1635,8 +1685,8 @@ async function runDesktop(
           }).show();
       },
     },
-    work: () => menuBarService.quitWork(),
-    confirm: async ({ message, detail }) => {
+    work: () => activity.snapshot(),
+    confirm: async ({ message, detail }, signal) => {
       app.focus({ steal: true });
       const { response } = await dialog.showMessageBox({
         type: "warning",
@@ -1645,23 +1695,16 @@ async function runDesktop(
         cancelId: 1,
         message,
         detail,
+        signal,
       });
       return response === 0;
     },
     log: reportEvent,
   });
-  const quitCompletely = async () => {
-    await background?.quitCompletely();
-  };
+  quitRouting.attach(background);
   Menu.setApplicationMenu(
     createDesktopApplicationMenu({
-      quit: {
-        hide: () => background?.quitRequested(),
-        completely: () =>
-          void quitCompletely().catch((error: unknown) =>
-            reportNonFatal("desktop.quit-completely.failed", error),
-          ),
-      },
+      quit: quitRouting.actions,
       displayName: resolveDesktopAppBranding(app.getVersion()).displayName,
       workspaceContents: (window) => (mainWindows.owns(window) ? window.webContents : null),
       browserKey: (key) => browserPresentation.menuKey(key),
@@ -1718,17 +1761,15 @@ async function runDesktop(
 
   updater.subscribe((state) => {
     showDesktopUpdateMenuItem(Menu.getApplicationMenu(), state);
-    const ready = state.status === "downloaded";
-    shutdown.setUpdateInstaller(ready && state.reservedBy !== "remote" ? installUpdate : undefined);
-    updateReady = ready;
+    updateReady = state.status === "downloaded";
   });
   updater.start(shutdown.signal);
   shutdown.signal.throwIfAborted();
   backgroundUpdate = new DesktopBackgroundUpdate({
     updater,
-    install: requestInstall,
+    install: (stillDue) => requestInstall(stillDue),
     windowVisible,
-    activeWork: () => menuBarService.activeWork(true),
+    idle: async () => activityIdle(await activity.snapshot()),
     stopping: () => shutdown.requested,
     log: reportEvent,
   });
@@ -1740,6 +1781,7 @@ async function runDesktop(
       backgroundUpdate?.evaluate();
     }),
     localStop.subscribe(menuBarChanged),
+    admission.subscribe(menuBarChanged),
     localRunner.subscribe(menuBarChanged),
     personal.subscribe(menuBarChanged),
     access.subscribe(menuBarChanged),
@@ -1754,7 +1796,9 @@ async function runDesktop(
         app.focus({ steal: true });
         await mainProcess.activate();
       },
-      quitCompletely,
+      quitCompletely: async () => {
+        await background?.quitCompletely();
+      },
     },
     stopped: () => localStop.stopped,
     ipcMain,
@@ -1803,6 +1847,11 @@ async function runDesktop(
       .reconcile()
       .catch((error: unknown) => reportNonFatal("desktop.local-runner.resume-failed", error));
   };
+  const notifyRunnersSleeping = () => {
+    if (shutdown.requested) return;
+    localRunner.notifySleeping();
+  };
+  powerMonitor.on("suspend", notifyRunnersSleeping);
   powerMonitor.on("resume", refreshOnSystemResume);
 
   app.on("activate", () => {
@@ -1839,6 +1888,7 @@ async function runDesktop(
     timeoutMs: 1_000,
     stop: () => {
       browserPresentation.endAll();
+      powerMonitor.off("suspend", notifyRunnersSleeping);
       powerMonitor.off("resume", refreshOnSystemResume);
       detachPersonalRemoteInitialization();
       detachAccountDirectoryRefresh();
@@ -1877,13 +1927,14 @@ async function runDesktop(
   const relaunchedHidden = await takeHiddenRelaunch(hiddenRelaunchPath);
   const openWindow =
     !relaunchedHidden &&
+    !quitRouting.quitBeforeStart &&
     shouldOpenDesktopWindowAtLaunch({
       arguments: process.argv,
       wasOpenedAtLogin:
         process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin,
     });
   // Opened at login or back from a background update: straight to the menu bar.
-  if (!openWindow) background.windowHidden();
+  if (!openWindow) background.windowVisibility(false);
   const starting = mainProcess.start({ openWindow });
   if (webLinks.pending || mcpAuthorizationLinks.pending) mainProcess.focus();
   await starting;

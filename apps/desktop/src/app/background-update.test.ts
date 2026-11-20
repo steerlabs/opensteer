@@ -44,13 +44,13 @@ describe("background update rule", () => {
 
 function fixture(input: {
   visible?: boolean;
-  busy?: boolean[];
+  idle?: (boolean | "unknown")[];
   status?: DesktopUpdateState["status"];
 }) {
   let current = state(input.status ? { status: input.status } : {});
   const listeners = new Set<(value: DesktopUpdateState) => void>();
-  const busy = [...(input.busy ?? [false])];
-  const install = vi.fn(async () => undefined);
+  const answers = [...(input.idle ?? [true])];
+  const installed = vi.fn();
   const restart = vi.fn(async (run: () => Promise<void>) => {
     await run();
   });
@@ -63,9 +63,17 @@ function fixture(input: {
       },
       restart,
     },
-    install,
+    // As main's install does: asks once more, right before the handoff.
+    install: async (stillDue) => {
+      if (!(await stillDue())) throw new Error("deferred");
+      installed();
+    },
     windowVisible: () => input.visible ?? false,
-    activeWork: async () => busy.shift() ?? false,
+    idle: async () => {
+      const answer = answers.length > 1 ? answers.shift()! : answers[0]!;
+      if (answer === "unknown") throw new Error("Home unreachable");
+      return answer;
+    },
     stopping: () => false,
     log: vi.fn(),
     recheckMs: 1_000,
@@ -74,16 +82,15 @@ function fixture(input: {
     current = { ...current, ...change };
     for (const listener of listeners) listener(current);
   };
-  return { background, install, publish, restart };
+  return { background, installed, publish, restart };
 }
 
 describe("background update", () => {
   it("installs as soon as a download stages while the app is in the menu bar", async () => {
-    const { background, install, publish } = fixture({ status: "downloading" });
+    const { background, installed, publish } = fixture({ status: "downloading" });
     background.start(new AbortController().signal);
-    await vi.waitFor(() => expect(install).not.toHaveBeenCalled());
     publish({ status: "downloaded" });
-    await vi.waitFor(() => expect(install).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(installed).toHaveBeenCalledTimes(1));
   });
 
   it("never restarts under an open window", async () => {
@@ -94,27 +101,38 @@ describe("background update", () => {
     expect(restart).not.toHaveBeenCalled();
   });
 
-  it("waits for agent work on this Mac to finish, looking again later", async () => {
+  it("waits while it cannot tell what is using this Mac", async () => {
     vi.useFakeTimers();
-    const { background, install } = fixture({ busy: [true, true, false] });
+    const { background, installed, restart } = fixture({ idle: ["unknown", "unknown", true] });
     background.start(new AbortController().signal);
     await vi.advanceTimersByTimeAsync(0);
-    expect(install).not.toHaveBeenCalled();
+    expect(restart).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(install).not.toHaveBeenCalled();
+    expect(installed).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(install).toHaveBeenCalledTimes(1);
+    expect(installed).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks again at the handoff and backs off if work started meanwhile", async () => {
+    vi.useFakeTimers();
+    const { background, installed, restart } = fixture({ idle: [true, false, true, true] });
+    background.start(new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(restart).toHaveBeenCalledTimes(1);
+    expect(installed).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(installed).toHaveBeenCalledTimes(1);
   });
 
   it("stops looking once the app is shutting down", async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
-    const { background, install } = fixture({ busy: [true] });
+    const { background, installed } = fixture({ idle: [false] });
     background.start(controller.signal);
     await vi.advanceTimersByTimeAsync(0);
     controller.abort();
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(install).not.toHaveBeenCalled();
+    expect(installed).not.toHaveBeenCalled();
   });
 });
 

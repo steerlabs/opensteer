@@ -8,6 +8,7 @@ import {
   app,
   BrowserWindow,
   dialog,
+  Menu,
   powerMonitor,
   session,
   utilityProcess,
@@ -21,7 +22,9 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { configureDesktopApplicationPaths } from "../src/app/application-paths.js";
+import { createDesktopApplicationMenu } from "../src/app/application-menu.js";
 import { DesktopBackgroundMode } from "../src/app/background-mode.js";
+import { DesktopQuitRouting, type QuitActions } from "../src/app/quit-routing.js";
 import { DesktopShutdown } from "../src/app/desktop-shutdown.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
 import { electronBrowserPartition } from "../src/browser/electron-browser-launcher.js";
@@ -77,6 +80,18 @@ const shutdown = new DesktopShutdown({
     for (const window of BrowserWindow.getAllWindows()) window.hide();
   },
 });
+// The app's own quit wiring: the production menu, installed at ready as main installs it.
+const quitRouting = new DesktopQuitRouting({
+  shutdown,
+  hideWindows: () => {
+    for (const window of BrowserWindow.getAllWindows()) window.hide();
+  },
+  log,
+});
+const installQuitMenu = (quit: QuitActions) =>
+  Menu.setApplicationMenu(createDesktopApplicationMenu({ quit, workspaceContents: () => null }));
+if (app.isReady()) installQuitMenu(quitRouting.actions);
+else quitRouting.installAtReady(app, installQuitMenu);
 const watchdog = setTimeout(() => {
   log("test.watchdog");
   shutdown.request("test-timeout");
@@ -588,9 +603,6 @@ async function run(): Promise<void> {
   });
   if (trial === "logout") process.once("SIGUSR2", () => powerMonitor.emit("shutdown"));
   if (trial === "background" || trial === "quit-completely") {
-    // The app's own routing: the app menu's Quit (Cmd+Q) and the window's quit
-    // shortcut call quitRequested; the menus' Quit Opensteer Completely calls
-    // quitCompletely. Nothing here can press keys, so signals stand in for them.
     const background = new DesktopBackgroundMode({
       shutdown,
       window: { hide: () => shell.hide() },
@@ -599,21 +611,30 @@ async function run(): Promise<void> {
         markSeen: async () => undefined,
         show: () => log("test.background-notice"),
       },
-      work: async () => ({ hostsHome: true, deviceHomes: [], activity: [] }),
+      work: async () => ({ known: true, hostsHome: true, deviceHomes: [], lines: [] }),
       confirm: async ({ detail }) => {
         log("test.quit-confirmed", { detail });
         return true;
       },
       log,
     });
+    quitRouting.attach(background);
+    // Nothing here can press Cmd+Q, so a signal clicks the very menu item that has it.
+    const item = (id: string) => {
+      const found = Menu.getApplicationMenu()?.getMenuItemById(id);
+      assert(found, `The app menu has no ${id} item`);
+      return found;
+    };
+    assert.equal(item("quit").accelerator, "CommandOrControl+Q");
+    log("test.quit-menu", { accelerator: item("quit").accelerator ?? "" });
     process.once("SIGUSR1", () => {
-      background.quitRequested();
+      item("quit").click();
       // Still serving after Cmd+Q: the Host answers, so the phone stays connected.
       void rpc("machines.list").then(
         () => log("test.backgrounded", { hostServing: true }),
         (error: unknown) => log("test.failed", { error: String(error) }),
       );
     });
-    process.once("SIGHUP", () => void background.quitCompletely());
+    process.once("SIGHUP", () => item("quit-completely").click());
   }
 }

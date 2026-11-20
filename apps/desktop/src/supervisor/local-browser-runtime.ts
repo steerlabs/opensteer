@@ -36,7 +36,7 @@ export interface LocalBrowserRuntimeOptions {
    * the only path to it the Host can attribute to this Mac today.
    */
   readonly loginAuthority?: BrowserLoginAuthority;
-  /** The person's Stop on this Mac: ends and refuses every attachment while it holds. */
+  /** The person's Stop on this Mac: refuses an agent's tabs and commands while it holds. */
   readonly agentGate?: AgentBrowserGate;
 }
 
@@ -48,11 +48,12 @@ class GatedBrowserRuntime extends BrowserRuntime {
     this.#gate = gate;
   }
 
-  override async attach(
-    ...input: Parameters<BrowserRuntime["attach"]>
+  override attach(
+    ...[ticket, sink, options = {}]: Parameters<BrowserRuntime["attach"]>
   ): Promise<BrowserAttachment> {
-    this.#gate.assertOpen();
-    return this.#gate.admit(await super.attach(...input));
+    return this.#gate.attach(ticket, sink, options.signal, (signal) =>
+      super.attach(ticket, sink, { ...options, signal }),
+    );
   }
 }
 
@@ -121,7 +122,7 @@ export async function startLocalBrowserRuntime(
     runtimeId: options.runtimeId,
     sessionFilesRoot: sessionFilesRoot(profileRoot),
     ...(options.loginAuthority ? { loginAuthority: options.loginAuthority } : {}),
-    ticketVerifier,
+    ticketVerifier: options.agentGate ? options.agentGate.verifier(ticketVerifier) : ticketVerifier,
   };
   const runtime = options.agentGate
     ? new GatedBrowserRuntime(runtimeOptions, options.agentGate)
