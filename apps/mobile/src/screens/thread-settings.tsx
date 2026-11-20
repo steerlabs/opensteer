@@ -72,6 +72,7 @@ import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { EngineMark } from "../thread/settings/engine-mark.js";
 import { ReasoningSlider } from "../thread/settings/reasoning-slider.js";
 import { Symbol } from "../ui/symbol.js";
+import { useShowTab } from "../tabs/viewer-open.js";
 import { placementSignIn, useAccountSignIn } from "./use-account-sign-in.js";
 
 export type ThreadSettingsScreenProps = StaticScreenProps<{
@@ -799,10 +800,16 @@ function ModelPickerList(
     };
   }, []);
   const [signedIn, setSignedIn] = useState<string | null>(null);
-  const accountSignIn = useAccountSignIn(props.hostClient, (outcome) => {
-    if (outcome.kind === "done") setSignedIn(outcome.message);
-    else props.onFailure(outcome.message);
-  });
+  const { selection } = useMobileState();
+  const showTab = useShowTab(selection.deploymentId ?? "");
+  const accountSignIn = useAccountSignIn(
+    props.hostClient,
+    (outcome) => {
+      if (outcome.kind === "done") setSignedIn(outcome.message);
+      else props.onFailure(outcome.message);
+    },
+    selection.deploymentId === null ? {} : { showTab },
+  );
   const chooseAccount = (row: AccountRow): void => {
     if (row.action.kind === "sign-in") {
       if (props.disabledReason !== null) return;

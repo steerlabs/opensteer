@@ -11,6 +11,7 @@ import { useBackgroundModels } from "./settings-background-models.js";
 import type { AiAccountsForm, BackgroundModelsForm } from "./settings-form.types.js";
 import { engineInstallationUpdateModel } from "./settings-model.js";
 import { SettingsPageLayout } from "./settings-page-layout.js";
+import { useShowTab } from "../tabs/viewer-open.js";
 import { useSettingsHost } from "./use-settings-host.js";
 export function AiSettingsController(): ReactNode {
   const page = "ai";
@@ -92,7 +93,7 @@ export function AiSettingsController(): ReactNode {
   return hostClient === null ? (
     <SettingsPageLayout>{form(null, null)}</SettingsPageLayout>
   ) : (
-    <WithHost host={hostClient} key={selection.deploymentId}>
+    <WithHost deploymentId={selection.deploymentId} host={hostClient} key={selection.deploymentId}>
       {form}
     </WithHost>
   );
@@ -103,10 +104,12 @@ function WithHost(props: {
     backgroundModels: BackgroundModelsForm | null,
     aiAccounts: AiAccountsForm,
   ) => ReactNode;
+  readonly deploymentId: string | null;
   readonly host: HostClient;
 }): ReactNode {
   const backgroundModels = useBackgroundModels(props.host);
-  const accounts = useAiAccounts(props.host);
+  const showTab = useShowTab(props.deploymentId ?? "");
+  const accounts = useAiAccounts(props.host, props.deploymentId === null ? undefined : showTab);
   return (
     <>
       <SettingsPageLayout>{props.children(backgroundModels, accounts.form)}</SettingsPageLayout>

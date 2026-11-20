@@ -396,6 +396,14 @@
   font-size: var(--text-md);
 }
 
+.account-sign-in-aside {
+  margin: var(--space-8) var(--space-12) 0;
+}
+
+.account-sign-in-aside > .btn + .btn {
+  margin-left: 0;
+}
+
 .account-sign-in__alternative + .account-sign-in__alternative {
   margin-left: 0;
 }

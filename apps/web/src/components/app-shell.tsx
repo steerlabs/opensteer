@@ -139,7 +139,11 @@ import {
   usePersistedPaneSize,
   type PaneSizeRange,
 } from "./pane-resize-handle.js";
-import { AccountSignInDialog, type AddHarnessAccount } from "./account-sign-in-dialog.js";
+import {
+  AccountSignInAside,
+  AccountSignInDialog,
+  type AddHarnessAccount,
+} from "./account-sign-in-dialog.js";
 import { useToast } from "./toast.js";
 import { useTeams } from "../team/team-attachments.js";
 import { presentFailure } from "./use-action.js";
@@ -270,6 +274,9 @@ const selectNothing = () => null;
 const selectAttentionCount = (snapshot: HostSnapshot) =>
   snapshot.needsYouCount ?? taskAttention(snapshot).length;
 
+/** Asks the shell to open with Needs you showing, as the Mac menu bar does. */
+export const needsYouSearchParam = "needs-you";
+
 export function AppShell({
   deploymentAccess = null,
   desktopBridge: suppliedDesktopBridge = null,
@@ -365,6 +372,8 @@ export function AppShell({
     readonly title: string;
     readonly whereLabel: string;
   } | null>(null);
+  /** The person is finishing this sign-in in a tab of the Home's browser. */
+  const [accountSignInAside, setAccountSignInAside] = useState(false);
   const [localExecutionStatus, setLocalExecutionStatus] =
     useState<DesktopLocalExecutionStatus | null>(null);
   const [localStatusFailed, setLocalStatusFailed] = useState(false);
@@ -600,6 +609,7 @@ export function AppShell({
         flow: startAccountSignIn({
           client: hostClient,
           errorMessage: signInFailureWords,
+          localRunnerId,
           target: {
             environmentId: placement.environmentId,
             harnessInstanceId: placement.harnessInstanceId,
@@ -614,13 +624,14 @@ export function AppShell({
         whereLabel: placement.whereLabel,
       });
     },
-    [harnessAuthenticationEnvironmentIds, hostClient, toast],
+    [harnessAuthenticationEnvironmentIds, hostClient, localRunnerId, toast],
   );
   // The flow outlives a dialog closing but not the shell: leaving this
   // Deployment must not keep signing in, or leave an account half added, unseen.
   const accountSignInFlow = useRef<AccountSignInFlow | null>(null);
   useEffect(() => {
     accountSignInFlow.current = accountSignIn?.flow ?? null;
+    setAccountSignInAside(false);
   }, [accountSignIn]);
   useEffect(() => () => void accountSignInFlow.current?.cancel(), []);
   const addHarnessAccount = useCallback(
@@ -639,6 +650,7 @@ export function AppShell({
         flow: startAccountSignIn({
           client: hostClient,
           errorMessage: signInFailureWords,
+          localRunnerId,
           target: { kind: "create", request },
           ...(selectMethod ? { selectMethod } : {}),
         }),
@@ -648,7 +660,7 @@ export function AppShell({
         whereLabel,
       });
     },
-    [hostClient],
+    [hostClient, localRunnerId],
   );
   const refreshHarnessCatalog = useCallback(
     async (placement: ThreadPlacementOption) => {
@@ -832,6 +844,14 @@ export function AppShell({
     openNotification(notificationTarget);
     onNotificationTargetOpened?.();
   }, [deploymentId, notificationTarget, onNotificationTargetOpened, openNotification]);
+  // The Mac menu bar's Needs you opens Home with Needs you showing.
+  useEffect(() => {
+    if (!deploymentId || !new URLSearchParams(location.search).has(needsYouSearchParam)) return;
+    setNeedsYouNotification({ deploymentId, id: `menu-bar:${location.key}` });
+    setSidebarCollapsed(false);
+    setMobileNavigationOpen(true);
+    navigateTo(location.pathname, { replace: true });
+  }, [deploymentId, location.key, location.pathname, location.search, navigateTo, setSidebarCollapsed]);
 
   // ⌘N / Ctrl+N opens Home, where every new task starts.
   useEffect(() => {
@@ -940,7 +960,8 @@ export function AppShell({
     navigationDrawerElement,
   );
   const overlayOpen =
-    accountSignIn !== null || (!fullWindow && mobileNavigation && mobileNavigationOpen);
+    (accountSignIn !== null && !accountSignInAside) ||
+    (!fullWindow && mobileNavigation && mobileNavigationOpen);
   const shellClassName = setupMode
     ? "app-shell app-shell--settings app-shell--setup"
     : fullWindow
@@ -1094,6 +1115,18 @@ export function AppShell({
               it, because it outlives navigation and every mutating control on
               those pages is disabled while it runs. */}
                   <DeploymentOperationBanner bridge={localBridge} snapshot={deploymentAccess} />
+                  {accountSignIn && accountSignInAside ? (
+                    <AccountSignInAside
+                      flow={accountSignIn.flow}
+                      onCancel={() => closeAccountSignIn(accountSignIn.flow)}
+                      onDone={(state) => {
+                        finishAccountSignIn(state.accountLabel, accountSignIn.added);
+                        accountSignIn.onAdded?.(state.harnessInstanceId);
+                      }}
+                      onReturn={() => setAccountSignInAside(false)}
+                      title={accountSignIn.title}
+                    />
+                  ) : null}
                   {thisDevice ? (
                     <FinishSetupBar
                       device={thisDevice}
@@ -1125,7 +1158,7 @@ export function AppShell({
                   </SidebarChromeProvider>
                 </main>
 
-                {accountSignIn ? (
+                {accountSignIn && !accountSignInAside ? (
                   <AccountSignInDialog
                     continued={accountSignIn.continued}
                     flow={accountSignIn.flow}
@@ -1142,6 +1175,10 @@ export function AppShell({
                           }
                         : undefined
                     }
+                    onShowTab={(tabId) => {
+                      setAccountSignInAside(true);
+                      nav.showPlace({ kind: "tab", tabId });
+                    }}
                     title={accountSignIn.title}
                     whereLabel={accountSignIn.whereLabel}
                   />

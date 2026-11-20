@@ -239,7 +239,7 @@ const piLoginLineMaxBytes = 64 * 1_024;
 const primaryConnectionSlot = "primary";
 
 export const piIsolatedServiceDetail =
-  "Pi has no command sandbox of its own, so it runs only on a computer you own.";
+  "Pi has no command sandbox of its own, so it runs only on a computer where Opensteer runs as you.";
 
 export interface PiHarnessDependencies {
   /** Pi's staged `dist/bundle/cli.js`, as the catalog's `script` runtime names it. */
@@ -261,6 +261,7 @@ export interface PiHarnessDependencies {
 
 export class PiHarnessDriver implements HarnessDriver {
   readonly kind = HarnessIdSchema.parse("pi");
+  readonly isolatedServiceRefusal = piIsolatedServiceDetail;
   readonly sources = piSources;
   /** `piAccessModeGate` translates each of them into the tool names the extension stops on. */
   readonly accessModes = piAccessModes;

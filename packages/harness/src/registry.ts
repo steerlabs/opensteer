@@ -65,6 +65,7 @@ export class HarnessRegistry {
   readonly #preparationListeners = new Set<(instanceId: HarnessInstanceId) => void>();
   readonly #installationResolver = new EngineInstallationResolver();
   readonly #log: HarnessLog | undefined;
+  #boundary: HarnessRuntimeBoundary["kind"] | undefined;
   #closed = false;
   /**
    * Every instance mutation and adapter creation runs on this one chain, so a
@@ -75,6 +76,15 @@ export class HarnessRegistry {
 
   constructor(options: { readonly log?: HarnessLog } = {}) {
     this.#log = options.log;
+  }
+
+  /**
+   * The boundary every engine on this Runner runs inside. An engine that
+   * refuses it is unavailable here, with its own reason, before anyone adds
+   * an account that could never run.
+   */
+  adoptRuntimeBoundary(boundary: HarnessRuntimeBoundary): void {
+    this.#boundary = boundary.kind;
   }
 
   /**
@@ -117,7 +127,7 @@ export class HarnessRegistry {
     )
       return registered.driver;
     const executable = registered.installed.locate();
-    if (!executable) return { unavailable: registered.installed.missing };
+    if (!executable) return { unavailable: this.#missing(registered.installed) };
     let driver = registered.installedDrivers.get(executable);
     if (!driver) {
       driver = registered.installed.create(executable);
@@ -126,12 +136,25 @@ export class HarnessRegistry {
     return driver;
   }
 
+  #missing(installed: HarnessInstalledEngine): string {
+    return this.#boundary === "isolated-service"
+      ? (installed.missingWhereIsolated ?? installed.missing)
+      : installed.missing;
+  }
+
   #availability(registered: RegisteredDriver): {
     readonly readiness: HarnessDriverReadiness;
     readonly sources: readonly HarnessSourceDescriptor[];
   } {
     if (registered.readiness.status === "unavailable") {
       return { readiness: registered.readiness, sources: [] };
+    }
+    const refusal = registered.driver.isolatedServiceRefusal;
+    if (this.#boundary === "isolated-service" && refusal) {
+      return {
+        readiness: normalizeReadiness({ reason: refusal, status: "unavailable" }),
+        sources: [],
+      };
     }
     const installed = registered.installed;
     if (!installed || installed.locate()) {
@@ -148,7 +171,7 @@ export class HarnessRegistry {
       readiness:
         sources.length > 0
           ? registered.readiness
-          : normalizeReadiness({ reason: installed.missing, status: "unavailable" }),
+          : normalizeReadiness({ reason: this.#missing(installed), status: "unavailable" }),
       sources,
     };
   }

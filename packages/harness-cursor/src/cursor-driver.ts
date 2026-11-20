@@ -162,7 +162,8 @@ export interface CursorRunFailure {
 /** How long a denial note may be, in the bytes the Request schema counts. */
 const cursorDenialNoteMaxBytes = 20_000;
 
-const cursorIsolatedServiceDetail = "Cursor runs only on a computer you signed in on.";
+const cursorIsolatedServiceDetail =
+  "Cursor keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.";
 const cursorSignInDetail = "Sign in to use Cursor. Run `agent login` on this computer.";
 
 export interface CursorHarnessDependencies {
@@ -177,6 +178,7 @@ export interface CursorHarnessDependencies {
 
 export class CursorHarnessDriver implements HarnessDriver {
   readonly kind = HarnessIdSchema.parse("cursor");
+  readonly isolatedServiceRefusal = cursorIsolatedServiceDetail;
   readonly sources = cursorSources;
   /**
    * `cursorAccessModeHooks` translates each of them into hook events, all

@@ -23,7 +23,12 @@ import {
   PluginOAuthStatusSchema,
 } from "./plugin-oauth.js";
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
-import { AgentGrantSchema, DeviceIdSchema, DeviceDriverGenerationSchema } from "@opensteer/core";
+import {
+  AgentGrantSchema,
+  DeviceIdSchema,
+  DeviceDriverGenerationSchema,
+  TabIdSchema,
+} from "@opensteer/core";
 import { MachineListSummarySchema } from "./machines.js";
 import { OwnerWindowInfoSchema } from "./computer-use.js";
 import {
@@ -786,6 +791,16 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("harness.authentication.cancel"),
   }),
+  /**
+   * Opens a pending browser sign-in that returns to the engine's own computer
+   * in that computer's browser, as a tab the person finishes it in.
+   */
+  z.strictObject({
+    environmentId: EnvironmentIdSchema,
+    harnessInstanceId: HarnessInstanceIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("harness.authentication.browse"),
+  }),
   DeviceMachineRevokeCommandSchema,
   DeviceMachineRenameCommandSchema,
   z.strictObject({
@@ -861,6 +876,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     accessMode: ThreadAccessModeSchema.optional(),
     grant: AgentGrantSchema.optional(),
     type: z.literal("connection.update"),
+  }),
+  /** The person checked what the agent's last uncertain action did. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    connectionId: AgentConnectionIdSchema,
+    type: z.literal("connection.uncertain.acknowledge"),
   }),
   /** Takes a revoked or expired connection off the list. */
   z.strictObject({
@@ -1284,6 +1305,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   harnessAuthenticationEnvelopeSchema.extend({ type: z.literal("harness.authentication.submit") }),
   harnessAuthenticationEnvelopeSchema.extend({ type: z.literal("harness.authentication.logout") }),
   harnessAuthenticationEnvelopeSchema.extend({ type: z.literal("harness.authentication.cancel") }),
+  z.object({ tabId: TabIdSchema, type: z.literal("harness.authentication.browse") }),
   z.object({ type: z.literal("machine.revoke") }),
   z.object({ type: z.literal("machine.rename") }),
   z.object({ type: z.literal("machine.session.bind") }),
@@ -1319,6 +1341,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("connection.revoke") }),
   z.object({ type: z.literal("connection.update"), connection: AgentConnectionSchema }),
   z.object({ type: z.literal("connection.remove") }),
+  z.object({ type: z.literal("connection.uncertain.acknowledge") }),
   z.object({
     type: z.literal("connection.authorize"),
     completionPath: z.string().startsWith("/oauth/mcp/complete?"),

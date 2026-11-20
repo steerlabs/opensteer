@@ -10,6 +10,7 @@ import { z } from "zod";
 import { describe, expect, it, vi } from "vitest";
 import { HarnessRegistry } from "./registry.js";
 import {
+  isolatedServiceHarnessRuntimeBoundary,
   nativeUserHarnessRuntimeBoundary,
   type HarnessAdapter,
   type HarnessCapabilities,
@@ -927,6 +928,52 @@ describe("HarnessRegistry installed engines", () => {
       await registry.close();
     },
   );
+});
+
+describe("HarnessRegistry on an isolated-service Runner", () => {
+  const refusal = "This engine runs only on a computer where Opensteer runs as you.";
+
+  it("reports an engine that refuses the boundary as unavailable before any account exists", async () => {
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver({ isolatedServiceRefusal: refusal }));
+    // On a person's own computer the same engine is offered as usual.
+    registry.adoptRuntimeBoundary(nativeUserHarnessRuntimeBoundary);
+    expect(registry.listDrivers()).toEqual([
+      { kind: driverKind, readiness: { status: "runtime-check" } },
+    ]);
+    expect(registry.driverSources(driverKind)).toEqual(testSources);
+
+    registry.adoptRuntimeBoundary(isolatedServiceHarnessRuntimeBoundary);
+    expect(registry.listDrivers()).toEqual([
+      { kind: driverKind, readiness: { reason: refusal, status: "unavailable" } },
+    ]);
+    expect(registry.canRunDriver(driverKind)).toBe(false);
+    expect(registry.driverSources(driverKind)).toBeUndefined();
+    expect(registry.driverAccessModes(driverKind)).toBeUndefined();
+    await expect(inspect(registry)).resolves.toEqual({ detail: refusal, status: "unavailable" });
+    await registry.close();
+  });
+
+  it("says a missing installed engine is not part of the computer, not something to install", () => {
+    const missing = "Install the CLI, then restart Opensteer.";
+    const missingWhereIsolated = "The CLI isn’t included on this computer, so it can’t run here.";
+    const engine = {
+      create: () => driver({}),
+      locate: () => undefined,
+      missing,
+      missingWhereIsolated,
+      scope: "all" as const,
+    };
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver({}), { status: "runtime-check" }, engine);
+    expect(registry.listDrivers()).toEqual([
+      { kind: driverKind, readiness: { reason: missing, status: "unavailable" } },
+    ]);
+    registry.adoptRuntimeBoundary(isolatedServiceHarnessRuntimeBoundary);
+    expect(registry.listDrivers()).toEqual([
+      { kind: driverKind, readiness: { reason: missingWhereIsolated, status: "unavailable" } },
+    ]);
+  });
 });
 
 function driver(overrides: Partial<HarnessDriver>): HarnessDriver {

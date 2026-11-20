@@ -149,7 +149,7 @@ import {
  * Runner belongs to the one person whose credentials those are.
  */
 const opencodeNativeUserOnlyDetail =
-  "OpenCode has no command sandbox of its own, so it runs only on a computer you own.";
+  "OpenCode has no command sandbox of its own, so it runs only on a computer where Opensteer runs as you.";
 
 const opencodeIsolatedProfileDetail =
   "An OpenCode account keeps its own private credential store, so it needs a private profile.";
@@ -206,6 +206,7 @@ export interface OpencodeHarnessDependencies {
 
 export class OpencodeHarnessDriver implements HarnessDriver {
   readonly kind = HarnessIdSchema.parse("opencode");
+  readonly isolatedServiceRefusal = opencodeNativeUserOnlyDetail;
   readonly sources = opencodeSources;
   /**
    * Three modes, each an explicit `permission` table. `auto` is not declared:

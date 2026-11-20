@@ -4,6 +4,7 @@ import {
   type AccountSignInState,
   type AddAccountChoice,
 } from "@opensteer/client/host";
+import type { TabId } from "@opensteer/core";
 import type { HarnessSetupMethod, HarnessSourceDescriptor } from "@opensteer/protocol";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ActivityIndicator, Linking, Pressable, StyleSheet, View } from "react-native";
@@ -44,6 +45,8 @@ export function AccountSignInSheet(props: {
   readonly onDone: (state: Extract<AccountSignInState, { readonly kind: "done" }>) => void;
   /** Leaves this sign-in for the other sources the engine offers. */
   readonly onOtherSources?: (() => void) | null;
+  /** Shows a tab of the Home's browser, where a sign-in that returns there is finished. */
+  readonly onShowTab?: ((tabId: TabId) => void) | null;
   readonly title: string;
   readonly whereLabel: string;
 }): ReactNode {
@@ -57,6 +60,7 @@ export function AccountSignInSheet(props: {
   const code = pending && pending.inputPrompt === undefined ? pending.userCode : null;
 
   const [opened, setOpened] = useState(false);
+  const [here, setHere] = useState(false);
   const [unopenedUrl, setUnopenedUrl] = useState<string | null>(null);
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -66,6 +70,7 @@ export function AccountSignInSheet(props: {
   const methodId = signingIn?.methodId ?? null;
   useEffect(() => {
     setOpened(false);
+    setHere(false);
     setUnopenedUrl(null);
     setValue("");
   }, [methodId]);
@@ -262,6 +267,35 @@ export function AccountSignInSheet(props: {
           onPress={() => void copyCode(code).then(() => open(url))}
         />
       );
+  } else if (pending && signingIn?.homeBrowser && props.onShowTab && flow && !here) {
+    const homeBrowser = signingIn.homeBrowser;
+    const showTab = props.onShowTab;
+    body = (
+      <>
+        <AppText>
+          {`This sign-in finishes on ${whereLabel}. It opens there as a browser tab you use from here, and the tab closes when you’re done.`}
+        </AppText>
+        {failed}
+        {homeBrowser.error === null ? null : (
+          <Notice detail={homeBrowser.error} title="That browser didn’t open" />
+        )}
+        <SecondaryButton label="Open on this device" onPress={() => setHere(true)} />
+        {alternatives}
+      </>
+    );
+    footer = (
+      <PrimaryButton
+        busy={homeBrowser.opening}
+        label={`Open in ${whereLabel}’s browser`}
+        onPress={() => {
+          if (homeBrowser.tabId !== null) showTab(homeBrowser.tabId);
+          else
+            void flow.openHomeBrowser().then((tabId) => {
+              if (tabId !== null) showTab(tabId);
+            });
+        }}
+      />
+    );
   } else if (pending) {
     const url = pending.verificationUrl;
     const asking = opened || url === undefined;
@@ -322,6 +356,51 @@ export function AccountSignInSheet(props: {
   );
 }
 
+/**
+ * Stands in for the sign-in sheet while the person finishes in a tab of the
+ * Home's browser, on the screen they will come back to. It keeps the sign-in
+ * going, finishes it when it succeeds, and hands back to the sheet for anything
+ * the person must read or decide.
+ */
+export function AccountSignInAside(props: {
+  readonly flow: AccountSignInFlow;
+  readonly onCancel: () => void;
+  readonly onDone: (state: Extract<AccountSignInState, { readonly kind: "done" }>) => void;
+  readonly onReturn: () => void;
+  readonly title: string;
+}): ReactNode {
+  const { flow, onDone, onReturn } = props;
+  const state = useSyncExternalStore(flow.subscribe, flow.getState);
+  const settled = useRef(false);
+  useEffect(() => {
+    if (settled.current) return;
+    if (state.kind === "done") {
+      settled.current = true;
+      onDone(state);
+    } else if (
+      state.kind === "failed" ||
+      state.kind === "duplicate" ||
+      (state.kind === "signing-in" && (state.error !== null || state.homeBrowser === null))
+    ) {
+      settled.current = true;
+      onReturn();
+    }
+  }, [onDone, onReturn, state]);
+  return (
+    <View accessibilityLiveRegion="polite" style={styles.aside}>
+      <AppText role="secondary" tone="soft">
+        {state.kind === "finishing"
+          ? "Signed in. Finishing up…"
+          : `${props.title}: finish signing in in the browser tab.`}
+      </AppText>
+      <View style={styles.asideActions}>
+        <SecondaryButton compact label="Cancel" onPress={props.onCancel} />
+        <PrimaryButton compact label="Back to sign-in" onPress={onReturn} />
+      </View>
+    </View>
+  );
+}
+
 function Said(props: { readonly children: string }): ReactNode {
   return (
     <View accessibilityLiveRegion="polite">
@@ -342,6 +421,17 @@ function Status(props: { readonly children: string }): ReactNode {
 }
 
 const styles = StyleSheet.create({
+  aside: {
+    backgroundColor: color.surfaceCode,
+    borderColor: color.lineStrong,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: space[8],
+    marginHorizontal: space[20],
+    marginVertical: space[12],
+    padding: space[12],
+  },
+  asideActions: { flexDirection: "row", gap: space[8], justifyContent: "flex-end" },
   body: { gap: space[16], paddingHorizontal: space[20], paddingTop: space[12] },
   code: {
     alignItems: "center",

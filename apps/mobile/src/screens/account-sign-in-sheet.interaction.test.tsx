@@ -5,7 +5,8 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Linking } from "react-native";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AccountSignInSheet } from "./account-sign-in-sheet.js";
+import type { TabId } from "@opensteer/core";
+import { AccountSignInAside, AccountSignInSheet } from "./account-sign-in-sheet.js";
 
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
 vi.mock("expo-haptics", () => ({ selectionAsync: vi.fn(async () => undefined) }));
@@ -72,13 +73,14 @@ vi.mock("../ui/sheet.js", () => ({
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-function fakeFlow(initial: AccountSignInState) {
+function fakeFlow(initial: AccountSignInState, tabId: TabId | null = null) {
   let state = initial;
   const listeners = new Set<() => void>();
   const flow: AccountSignInFlow = {
     cancel: vi.fn(async () => undefined),
     chooseMethod: vi.fn(),
     getState: () => state,
+    openHomeBrowser: vi.fn(async () => tabId),
     keepDuplicate: vi.fn(),
     removeDuplicate: vi.fn(async () => undefined),
     retry: vi.fn(),
@@ -99,6 +101,7 @@ function fakeFlow(initial: AccountSignInState) {
 const signingIn = (error: string | null = null): AccountSignInState => ({
   error,
   harnessInstanceId: "account",
+  homeBrowser: null,
   kind: "signing-in",
   methodId: "device",
   methods: [
@@ -124,7 +127,11 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
-async function render(flow: AccountSignInFlow, onDone = vi.fn()) {
+async function render(
+  flow: AccountSignInFlow,
+  onDone = vi.fn(),
+  onShowTab: ((tabId: TabId) => void) | null = null,
+) {
   root = createRoot(document.body.appendChild(document.createElement("div")));
   await act(async () =>
     root!.render(
@@ -133,6 +140,7 @@ async function render(flow: AccountSignInFlow, onDone = vi.fn()) {
         flow={flow}
         onClose={vi.fn()}
         onDone={onDone}
+        onShowTab={onShowTab}
         title="Sign in to Codex"
         whereLabel="Studio Mac"
       />,
@@ -214,5 +222,81 @@ describe("the account sign-in sheet", () => {
     expect(document.body.textContent).not.toContain("Waiting for you to finish");
     await press("Try again");
     expect(flow.retry).toHaveBeenCalledOnce();
+  });
+});
+
+describe("a sign-in that returns to the Home's computer", () => {
+  const authorizationUrl =
+    "https://accounts.example.test/auth?redirect_uri=http%3A%2F%2F127.0.0.1%3A51121%2Fcallback";
+  const tabId = "tab_0192f4a1-1111-4000-8000-000000000001" as TabId;
+  const returning = (
+    error: string | null = null,
+    shown: TabId | null = null,
+  ): AccountSignInState => ({
+    error: null,
+    harnessInstanceId: "account",
+    homeBrowser: { error, opening: false, tabId: shown, url: authorizationUrl },
+    kind: "signing-in",
+    methodId: "google",
+    methods: [{ kind: "browser-code", label: "Google", methodId: "google" }],
+    session: {
+      userCode: "",
+      view: {
+        codeReplaced: false,
+        inputKind: "code",
+        inputPrompt: "Paste the complete address from the browser after it redirects",
+        kind: "pending",
+        returnsToComputer: true,
+        userCode: "",
+        verificationUrl: authorizationUrl,
+      },
+    },
+  });
+
+  it("opens in the Home's browser and shows that tab, never on the phone", async () => {
+    const onShowTab = vi.fn();
+    const { flow } = fakeFlow(returning(), tabId);
+    await render(flow, vi.fn(), onShowTab);
+    expect(document.body.textContent).toContain("This sign-in finishes on Studio Mac");
+    await press("Open in Studio Mac’s browser");
+    expect(flow.openHomeBrowser).toHaveBeenCalledOnce();
+    expect(onShowTab).toHaveBeenCalledWith(tabId);
+    expect(Linking.openURL).not.toHaveBeenCalled();
+  });
+
+  it("says why the Home's browser refused, and can still open on the phone", async () => {
+    const { flow } = fakeFlow(returning("The computer this AI engine runs on has no browser."));
+    await render(flow, vi.fn(), vi.fn());
+    expect(document.body.textContent).toContain("has no browser");
+    await press("Open on this device");
+    await press("Open sign-in page");
+    expect(Linking.openURL).toHaveBeenCalledWith(authorizationUrl);
+  });
+
+  it("keeps the sign-in going from the screen underneath, then finishes or hands back", async () => {
+    const { flow, move } = fakeFlow(returning(null, tabId));
+    const onDone = vi.fn();
+    const onReturn = vi.fn();
+    root = createRoot(document.body.appendChild(document.createElement("div")));
+    await act(async () =>
+      root!.render(
+        <AccountSignInAside
+          flow={flow}
+          onCancel={vi.fn()}
+          onDone={onDone}
+          onReturn={onReturn}
+          title="Sign in to Antigravity"
+        />,
+      ),
+    );
+    expect(document.body.textContent).toContain("finish signing in in the browser tab");
+    const done = {
+      accountLabel: "person@example.test",
+      harnessInstanceId: "account",
+      kind: "done",
+    } as const;
+    await move(done);
+    expect(onDone).toHaveBeenCalledExactlyOnceWith(done);
+    expect(onReturn).not.toHaveBeenCalled();
   });
 });

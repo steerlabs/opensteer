@@ -141,12 +141,12 @@ function apiKeyFile(providerState: HarnessProviderState) {
   });
 }
 
+const antigravityNativeUserDetail =
+  "Antigravity keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.";
+
 function assertNativeUser(context: Pick<HarnessInspectionContext, "runtimeBoundary">): void {
   if (context.runtimeBoundary.kind !== "native-user") {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Antigravity runs only on a computer owned by one person",
-    });
+    throw new OpensteerError({ code: "forbidden", message: antigravityNativeUserDetail });
   }
 }
 
@@ -561,6 +561,7 @@ export function antigravitySessionPolicy(protocolVersion: 1 | 2): AcpSessionPoli
 
 export class AntigravityHarnessDriver implements HarnessDriver {
   readonly kind = HarnessIdSchema.parse("antigravity");
+  readonly isolatedServiceRefusal = antigravityNativeUserDetail;
   readonly sources = antigravitySources;
   readonly accessModes = [
     "approval-required",
@@ -628,10 +629,7 @@ export class AntigravityHarnessDriver implements HarnessDriver {
 
   async inspect(context: HarnessInspectionContext): Promise<HarnessInspectionResult> {
     if (context.runtimeBoundary.kind !== "native-user") {
-      return {
-        detail: "Antigravity runs only on a computer owned by one person",
-        status: "unavailable",
-      };
+      return { detail: antigravityNativeUserDetail, status: "unavailable" };
     }
     const unavailable = antigravityUnavailableReason();
     if (unavailable) return { detail: unavailable, status: "unavailable" };

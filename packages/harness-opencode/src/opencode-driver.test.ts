@@ -323,7 +323,8 @@ describe("OpenCode inspection", () => {
       runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
     });
     expect(result).toEqual({
-      detail: "OpenCode has no command sandbox of its own, so it runs only on a computer you own.",
+      detail:
+        "OpenCode has no command sandbox of its own, so it runs only on a computer where Opensteer runs as you.",
       status: "unavailable",
     });
   });

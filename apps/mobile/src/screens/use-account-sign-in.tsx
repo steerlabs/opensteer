@@ -10,9 +10,10 @@ import {
   type HostClient,
   type ThreadPlacementOption,
 } from "@opensteer/client/host";
+import type { TabId } from "@opensteer/core";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AccessibilityInfo } from "react-native";
-import { AccountSignInSheet } from "./account-sign-in-sheet.js";
+import { AccountSignInAside, AccountSignInSheet } from "./account-sign-in-sheet.js";
 import { failureWords } from "../ui/client-feedback.js";
 
 export type AccountSignInOutcome =
@@ -36,8 +37,14 @@ interface OpenSheet {
 export function useAccountSignIn(
   client: HostClient,
   report: (outcome: AccountSignInOutcome) => void,
+  options: {
+    /** Shows a tab of the Home's browser, pushed over this screen. */
+    readonly showTab?: (tabId: TabId) => void;
+  } = {},
 ) {
   const [open, setOpen] = useState<OpenSheet | null>(null);
+  /** The person is finishing this sign-in in a tab of the Home's browser. */
+  const [aside, setAside] = useState(false);
   const flowRef = useRef<AccountSignInFlow | null>(null);
   const nextKey = useRef(0);
   useEffect(
@@ -61,6 +68,7 @@ export function useAccountSignIn(
       target,
     });
     flowRef.current = flow;
+    setAside(false);
     setOpen({
       added: target.kind === "create",
       choosing: null,
@@ -138,6 +146,7 @@ export function useAccountSignIn(
   const close = (): void => {
     const flow = flowRef.current;
     flowRef.current = null;
+    setAside(false);
     setOpen(null);
     // The sheet is gone by now, so a cleanup that failed can only be said on the screen under it.
     void flow?.cancel().then(() => {
@@ -146,27 +155,47 @@ export function useAccountSignIn(
     });
   };
 
+  const done = (added: boolean, accountLabel: string | null): void => {
+    flowRef.current = null;
+    setAside(false);
+    setOpen(null);
+    const message = added
+      ? accountLabel
+        ? `Added ${accountLabel}`
+        : "Account added"
+      : accountLabel
+        ? `Signed in as ${accountLabel}`
+        : "Signed in";
+    void AccessibilityInfo.announceForAccessibility(message);
+    report({ kind: "done", message });
+  };
+  const showTab = options.showTab;
   const sheet: ReactNode =
-    open === null ? null : (
+    open === null ? null : aside && open.flow ? (
+      <AccountSignInAside
+        flow={open.flow}
+        key={open.key}
+        onCancel={close}
+        onDone={({ accountLabel }) => done(open.added, accountLabel)}
+        onReturn={() => setAside(false)}
+        title={open.title}
+      />
+    ) : (
       <AccountSignInSheet
         choosing={open.choosing}
         flow={open.flow}
         key={open.key}
         onClose={close}
         onOtherSources={open.otherSources}
-        onDone={({ accountLabel }) => {
-          flowRef.current = null;
-          setOpen(null);
-          const message = open.added
-            ? accountLabel
-              ? `Added ${accountLabel}`
-              : "Account added"
-            : accountLabel
-              ? `Signed in as ${accountLabel}`
-              : "Signed in";
-          void AccessibilityInfo.announceForAccessibility(message);
-          report({ kind: "done", message });
-        }}
+        onDone={({ accountLabel }) => done(open.added, accountLabel)}
+        onShowTab={
+          showTab
+            ? (tabId) => {
+                setAside(true);
+                showTab(tabId);
+              }
+            : null
+        }
         title={open.title}
         whereLabel={open.whereLabel}
       />

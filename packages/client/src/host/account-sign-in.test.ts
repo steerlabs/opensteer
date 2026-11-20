@@ -45,6 +45,11 @@ function fixture(
     setupMethods?: HarnessSetupMethod[];
     catalogStatus?: string;
     allowed?: boolean;
+    /** The Runner the account's work location is on, and the one in front of the reader. */
+    runnerId?: string;
+    localRunnerId?: string | null;
+    refuseBrowse?: string;
+    authentication?: HarnessAuthenticationEnvelope["authentication"];
   } = {},
 ) {
   const harness = {
@@ -76,7 +81,7 @@ function fixture(
     catalogs = [{ ...makeCatalog("ready"), harnessInstanceId: duplicateId }, ...catalogs];
   let envelope: HarnessAuthenticationEnvelope = {
     environmentStatus: "connected",
-    authentication: {
+    authentication: options.authentication ?? {
       status: "pending",
       challenge: {
         kind: "device-code",
@@ -94,6 +99,7 @@ function fixture(
   const cancelResponse = deferred<void>();
   const attempts = new Set<string>();
   const slots: string[] = [];
+  const browsed: string[] = [];
   const client: Parameters<typeof startAccountSignIn>[0]["client"] = {
     getSnapshot: () =>
       ({
@@ -103,6 +109,7 @@ function fixture(
             id: environmentId,
             harnessAuthenticationAllowed: options.allowed ?? true,
             harnessCatalogs: catalogs,
+            runnerId: options.runnerId ?? null,
           },
         ],
       }) as unknown as HostSnapshot,
@@ -137,6 +144,11 @@ function fixture(
         }
         case "harness.authentication.submit":
           return { ...envelope, type: command.type };
+        case "harness.authentication.browse": {
+          browsed.push(command.harnessInstanceId);
+          if (options.refuseBrowse) throw new Error(options.refuseBrowse);
+          return { tabId: `tab_${browsed.length}`, type: command.type } as HostApiCommandOutput;
+        }
         case "harness.authentication.cancel": {
           if (options.refuseCancel) throw new Error("Cancellation refused");
           attempts.clear();
@@ -168,10 +180,15 @@ function fixture(
     client,
     target,
     errorMessage: (cause) => (cause instanceof Error ? cause.message : "Failed"),
+    ...(options.localRunnerId === undefined ? {} : { localRunnerId: options.localRunnerId }),
   });
   return {
     flow,
     attempts,
+    browsed,
+    challenge(value: HarnessAuthenticationEnvelope["authentication"]) {
+      envelope = { environmentStatus: "connected", authentication: value };
+    },
     slots,
     client,
     accounts: () => accounts,
@@ -396,6 +413,34 @@ describe("account completion", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("starts over with a fresh code after the provider's code expires", async () => {
+    const test = fixture({ existing: true });
+    await flush();
+    test.challenge({ status: "failed", detail: "The sign-in code expired" });
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(test.flow.getState()).toMatchObject({
+      kind: "signing-in",
+      error: "The sign-in code expired",
+    });
+
+    test.challenge({
+      status: "pending",
+      challenge: {
+        kind: "device-code",
+        userCode: "WXYZ-9876",
+        verificationUrl: "https://example.com/device",
+      },
+    });
+    test.flow.retry();
+    await flush();
+    expect(test.flow.getState()).toMatchObject({
+      kind: "signing-in",
+      error: null,
+      session: { view: { kind: "pending", userCode: "WXYZ-9876", codeReplaced: false } },
+    });
+    await test.flow.cancel();
+  });
+
   it("bounds watching even when the Runner never reconnects", async () => {
     const test = fixture();
     await flush();
@@ -450,5 +495,119 @@ describe("account completion", () => {
     await flush();
     expect(test.slots).toEqual(["local"]);
     await test.flow.cancel();
+  });
+});
+
+describe("a sign-in read from another device than the engine's computer", () => {
+  const runnerId = createId("runner");
+  const returning = (port: number) => ({
+    status: "pending" as const,
+    challenge: {
+      kind: "browser-code" as const,
+      authorizationUrl: `https://accounts.example.test/auth?redirect_uri=${encodeURIComponent(
+        `http://127.0.0.1:${port}/oauth-callback`,
+      )}`,
+      inputPrompt: "Paste the complete address from the browser after it redirects",
+    },
+  });
+  const signingIn = (test: ReturnType<typeof fixture>) => {
+    const state = test.flow.getState();
+    if (state.kind !== "signing-in") throw new Error(`Expected signing-in, got ${state.kind}`);
+    return state;
+  };
+
+  it("opens a page that returns to that computer in its browser, as a tab to show", async () => {
+    const test = fixture({
+      existing: true,
+      runnerId,
+      localRunnerId: null,
+      authentication: returning(51121),
+    });
+    await flush();
+    expect(signingIn(test).session?.view).toMatchObject({
+      kind: "pending",
+      returnsToComputer: true,
+    });
+    expect(signingIn(test).homeBrowser).toMatchObject({ opening: false, tabId: null });
+
+    await expect(test.flow.openHomeBrowser()).resolves.toBe("tab_1");
+    expect(test.browsed).toEqual([harnessInstanceId]);
+    expect(signingIn(test).homeBrowser).toMatchObject({ error: null, tabId: "tab_1" });
+
+    // Polling the same page keeps its tab; a new page needs a new one.
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(signingIn(test).homeBrowser?.tabId).toBe("tab_1");
+    test.challenge(returning(51122));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(signingIn(test).homeBrowser).toMatchObject({ tabId: null, opening: false });
+    await test.flow.cancel();
+  });
+
+  it("says why when that computer has no browser, and the page still opens here", async () => {
+    const test = fixture({
+      existing: true,
+      runnerId,
+      localRunnerId: null,
+      refuseBrowse: "The computer this AI engine runs on has no browser to finish this sign-in in.",
+      authentication: returning(51121),
+    });
+    await flush();
+    await expect(test.flow.openHomeBrowser()).resolves.toBeNull();
+    expect(signingIn(test).homeBrowser).toEqual({
+      error: "The computer this AI engine runs on has no browser to finish this sign-in in.",
+      opening: false,
+      tabId: null,
+      url: returning(51121).challenge.authorizationUrl,
+    });
+    expect(signingIn(test).session?.view).toMatchObject({
+      verificationUrl: returning(51121).challenge.authorizationUrl,
+    });
+    await test.flow.cancel();
+  });
+
+  it("leaves the page on this device when this device is the engine's computer", async () => {
+    const test = fixture({
+      existing: true,
+      runnerId,
+      localRunnerId: runnerId,
+      authentication: returning(51121),
+    });
+    await flush();
+    expect(signingIn(test).homeBrowser).toBeNull();
+    await expect(test.flow.openHomeBrowser()).resolves.toBeNull();
+    expect(test.browsed).toEqual([]);
+    await test.flow.cancel();
+  });
+
+  it("keeps codes, pasted codes and keys on this device, wherever the engine runs", async () => {
+    for (const authentication of [
+      {
+        status: "pending" as const,
+        challenge: {
+          kind: "device-code" as const,
+          userCode: "ABCD-1234",
+          verificationUrl: "https://example.com/device",
+        },
+      },
+      {
+        status: "pending" as const,
+        challenge: {
+          kind: "browser-code" as const,
+          authorizationUrl:
+            "https://claude.example.test/oauth/authorize?redirect_uri=https%3A%2F%2Fplatform.example.test%2Foauth%2Fcode%2Fcallback",
+          inputPrompt: "Paste code here if prompted",
+        },
+      },
+      {
+        status: "pending" as const,
+        challenge: { kind: "secret-input" as const, inputLabel: "API key" },
+      },
+    ]) {
+      const test = fixture({ existing: true, runnerId, localRunnerId: null, authentication });
+      await flush();
+      expect(signingIn(test).homeBrowser).toBeNull();
+      expect(signingIn(test).session?.view).not.toHaveProperty("returnsToComputer");
+      await test.flow.cancel();
+    }
   });
 });

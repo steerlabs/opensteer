@@ -4,6 +4,7 @@ import type {
   AccountSignInState,
   HarnessAuthenticationView,
 } from "@opensteer/client/host";
+import type { TabId } from "@opensteer/core";
 import type { HarnessSetupMethod, HostApiCommandInput } from "@opensteer/protocol";
 import { copyText } from "@opensteer/shared/clipboard";
 import { Dialog } from "./dialog.js";
@@ -42,6 +43,7 @@ export function AccountSignInDialog({
   onClose,
   onDone,
   onOtherSources,
+  onShowTab,
   title,
   whereLabel,
 }: {
@@ -51,6 +53,8 @@ export function AccountSignInDialog({
   readonly onClose: () => void;
   readonly onDone: (state: Extract<AccountSignInState, { readonly kind: "done" }>) => void;
   readonly onOtherSources?: (() => void) | undefined;
+  /** Shows a tab of the Home's browser, where a sign-in that returns there is finished. */
+  readonly onShowTab?: ((tabId: TabId) => void) | undefined;
   readonly title: string;
   readonly whereLabel: string;
 }) {
@@ -62,6 +66,7 @@ export function AccountSignInDialog({
   const code = pending && pending.inputPrompt === undefined ? pending.userCode : null;
 
   const [choosing, setChoosing] = useState(false);
+  const [here, setHere] = useState(false);
   const [opened, setOpened] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const [value, setValue] = useState("");
@@ -74,6 +79,7 @@ export function AccountSignInDialog({
   const methodId = signingIn?.methodId ?? null;
   useEffect(() => {
     setChoosing(false);
+    setHere(false);
     setOpened(false);
     setOpenError(null);
     setValue("");
@@ -344,6 +350,45 @@ export function AccountSignInDialog({
         ) : null}
       </>
     );
+  } else if (pending && signingIn?.homeBrowser && onShowTab && !here) {
+    const homeBrowser = signingIn.homeBrowser;
+    const show = () => {
+      if (homeBrowser.tabId !== null) onShowTab(homeBrowser.tabId);
+      else
+        void flow.openHomeBrowser().then((tabId) => {
+          if (tabId !== null) onShowTab(tabId);
+        });
+    };
+    footer = (
+      <>
+        {alternatives}
+        {cancel}
+        <button className="btn" onClick={() => setHere(true)} type="button">
+          Open on this device
+        </button>
+        <button
+          className="btn btn--primary"
+          disabled={homeBrowser.opening}
+          onClick={show}
+          type="button"
+        >
+          {homeBrowser.opening ? "Opening…" : `Open in ${whereLabel}’s browser`}
+        </button>
+      </>
+    );
+    body = (
+      <div className="account-sign-in__form">
+        <p className="account-sign-in__lead">
+          This sign-in finishes on {whereLabel}. It opens there as a browser tab you use from here,
+          and the tab closes when you’re done.
+        </p>
+        {failure !== null || homeBrowser.error !== null ? (
+          <div className="notice notice--error" role="alert">
+            {failure ?? homeBrowser.error}
+          </div>
+        ) : null}
+      </div>
+    );
   } else if (pending) {
     footer = (
       <>
@@ -497,5 +542,56 @@ function DeviceCode({
         <Status>Waiting for you to finish in your browser…</Status>
       ) : null}
     </>
+  );
+}
+
+/**
+ * Stands in for the sign-in dialog while the person finishes in a tab of the
+ * Home's browser. It keeps the sign-in going, finishes it when it succeeds, and
+ * hands back to the dialog for anything the person must read or decide.
+ */
+export function AccountSignInAside({
+  flow,
+  onCancel,
+  onDone,
+  onReturn,
+  title,
+}: {
+  readonly flow: AccountSignInFlow;
+  readonly onCancel: () => void;
+  readonly onDone: (state: Extract<AccountSignInState, { readonly kind: "done" }>) => void;
+  readonly onReturn: () => void;
+  readonly title: string;
+}) {
+  const state = useSyncExternalStore(flow.subscribe, flow.getState);
+  const settled = useRef(false);
+  useEffect(() => {
+    if (settled.current) return;
+    if (state.kind === "done") {
+      settled.current = true;
+      onDone(state);
+    } else if (
+      state.kind === "failed" ||
+      state.kind === "duplicate" ||
+      (state.kind === "signing-in" && (state.error !== null || state.homeBrowser === null))
+    ) {
+      settled.current = true;
+      onReturn();
+    }
+  }, [onDone, onReturn, state]);
+  return (
+    <div className="notice notice--accent account-sign-in-aside" role="status">
+      <div>
+        {state.kind === "finishing"
+          ? "Signed in. Finishing up…"
+          : `${title}: finish signing in in the browser tab.`}
+      </div>
+      <button className="btn btn--small" onClick={onReturn} type="button">
+        Back to sign-in
+      </button>
+      <button className="btn btn--small btn--ghost" onClick={onCancel} type="button">
+        Cancel
+      </button>
+    </div>
   );
 }

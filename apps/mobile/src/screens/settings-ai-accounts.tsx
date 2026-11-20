@@ -10,6 +10,7 @@ import {
   type HostSnapshot,
 } from "@opensteer/client/host";
 import { useHostSelector, useUnreadableResources } from "@opensteer/client/react";
+import type { TabId } from "@opensteer/core";
 import { useState, type ReactNode } from "react";
 import { Alert } from "react-native";
 import { notDone, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
@@ -44,7 +45,11 @@ function menuAction(action: AiEngineAction): readonly AiAccountAction[] {
 
 const accountKinds = ["environment", "harness", "harness-catalog"] as const;
 
-export function useAiAccounts(host: HostClient): {
+export function useAiAccounts(
+  host: HostClient,
+  /** Shows a tab of the Home's browser, where a sign-in that returns there is finished. */
+  showTab?: (tabId: TabId) => void,
+): {
   readonly form: AiAccountsForm;
   readonly sheet: ReactNode;
 } {
@@ -54,10 +59,14 @@ export function useAiAccounts(host: HostClient): {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
   const [signInFailure, setSignInFailure] = useState<string | null>(null);
-  const signIn = useAccountSignIn(host, (outcome) => {
-    setConfirmation(outcome.kind === "done" ? outcome.message : null);
-    setSignInFailure(outcome.kind === "failed" ? outcome.message : null);
-  });
+  const signIn = useAccountSignIn(
+    host,
+    (outcome) => {
+      setConfirmation(outcome.kind === "done" ? outcome.message : null);
+      setSignInFailure(outcome.kind === "failed" ? outcome.message : null);
+    },
+    showTab ? { showTab } : {},
+  );
   const hasHarness = (id: string) => host.getSnapshot().harnesses.find((row) => row.id === id);
   const refreshModels = useScreenAction(host, "harness-catalog-refresh", {
     label: "refresh the models",

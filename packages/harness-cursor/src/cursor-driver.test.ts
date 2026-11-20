@@ -71,7 +71,9 @@ describe("Cursor runtime boundary", () => {
         mode === "start"
           ? fixture.adapter.startSession(fixture.context)
           : fixture.adapter.resumeSession(fixture.reference, fixture.context);
-      await expect(open).rejects.toThrow("Cursor runs only on a computer you signed in on.");
+      await expect(open).rejects.toThrow(
+        "Cursor keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.",
+      );
       await expect(open).rejects.toMatchObject({ code: "forbidden" });
       // Nothing was launched and nothing was written for a Run that cannot run.
       expect(await fixture.invocations()).toEqual([]);
@@ -237,7 +239,8 @@ describe("Cursor inspection", () => {
   it("refuses the isolated-service boundary outright", async () => {
     const result = await inspect({ runtimeBoundary: isolatedServiceHarnessRuntimeBoundary });
     expect(result).toEqual({
-      detail: "Cursor runs only on a computer you signed in on.",
+      detail:
+        "Cursor keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.",
       status: "unavailable",
     });
   });

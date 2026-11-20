@@ -131,6 +131,42 @@ describe("engineGroups", () => {
     stateKind: "isolated",
   });
 
+  it("on a Linux Home, offers only engines that can run there and says why the rest can't", () => {
+    const sandboxed = "runs only on a computer where Opensteer runs as you.";
+    const refused: Record<string, string> = {
+      antigravity: `Antigravity keeps its sign-in in the computer's own account, so it ${sandboxed}`,
+      claude: "Claude Code isn’t included on this computer, so it can’t run here.",
+      cursor: `Cursor keeps its sign-in in the computer's own account, so it ${sandboxed}`,
+      grok: `Grok keeps its sign-in in the computer's own account, so it ${sandboxed}`,
+      muse: `Muse Code keeps its sign-in in the computer's own account, so it ${sandboxed}`,
+      opencode: `OpenCode has no command sandbox of its own, so it ${sandboxed}`,
+      pi: `Pi has no command sandbox of its own, so it ${sandboxed}`,
+    };
+    const home: EnvironmentSummary = {
+      ...environment,
+      // What a Linux Home's isolated-service Runner reports.
+      providerStateModes: ["isolated"],
+      harnessDrivers: environment.harnessDrivers.flatMap((driver): HarnessDriverSummary[] => {
+        const reason = refused[driver.driverKind];
+        if (driver.driverKind === "legacy-engine") return [];
+        return reason
+          ? [{ driverKind: driver.driverKind, readiness: "unavailable", reason }]
+          : [driver];
+      }),
+    };
+    const groups = engineGroups(home, []);
+    expect(groups.filter((group) => group.addable).map((group) => group.driverKind)).toEqual([
+      "codex",
+    ]);
+    expect(
+      Object.fromEntries(
+        groups
+          .filter((group) => !group.addable)
+          .map((group) => [group.driverKind, group.unavailableReason]),
+      ),
+    ).toEqual(refused);
+  });
+
   it("lists every usable engine in catalog order with its accounts, whether or not it has any", () => {
     const groups = engineGroups(environment, [account("claude", "Claude Code")]);
 

@@ -108,7 +108,8 @@ const museApiKeyFileName = ".opensteer-meta-api-key";
 /** Muse's limit on a typed answer to one of its questions (msp `UserInputAnswer.freeText`). */
 const museFreeTextMaxLength = 500;
 const mintUuid = createUuidV7Mint();
-const nativeUserOnlyDetail = "Muse Code runs only on a computer you own.";
+const nativeUserOnlyDetail =
+  "Muse Code keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.";
 
 const museSources = [
   {
@@ -171,6 +172,7 @@ export interface MuseHarnessDependencies {
 
 export class MuseHarnessDriver implements HarnessDriver {
   readonly kind = HarnessIdSchema.parse("muse");
+  readonly isolatedServiceRefusal = nativeUserOnlyDetail;
   readonly sources = museSources;
   readonly accessModes = [
     "approval-required",

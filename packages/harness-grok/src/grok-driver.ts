@@ -68,7 +68,8 @@ const grokSourceId = "xai";
 const grokApiKeySetupMethodId = "xai-api-key";
 const grokDeviceSetupMethodId = "grok-device-code";
 const grokConnectionSlot = "primary";
-const grokNativeUserDetail = "Grok runs only on a computer you signed in on.";
+const grokNativeUserDetail =
+  "Grok keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.";
 const grokAuthenticationDetail = "Sign in to Grok or add an xAI API key.";
 const grokAuthenticationTimeoutMs = 5 * 60_000;
 const grokApiKeyFileName = "opensteer-xai-api-key";
@@ -120,6 +121,7 @@ export interface GrokHarnessDependencies {
 
 export class GrokHarnessDriver implements HarnessDriver {
   readonly kind = HarnessIdSchema.parse("grok");
+  readonly isolatedServiceRefusal = grokNativeUserDetail;
   readonly sources = grokSources;
   readonly accessModes = grokAccessModes;
   readonly capabilities = grokCapabilities;

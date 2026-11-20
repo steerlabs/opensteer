@@ -106,7 +106,8 @@ describe("Muse Code inspection", () => {
         runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       }),
     ).toEqual({
-      detail: "Muse Code runs only on a computer you own.",
+      detail:
+        "Muse Code keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.",
       status: "unavailable",
     });
     expect(await fixture.messages()).toEqual([]);

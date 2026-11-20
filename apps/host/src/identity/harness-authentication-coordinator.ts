@@ -86,6 +86,9 @@ export interface HarnessAuthenticationRunnerRegistry {
  */
 export class HarnessAuthenticationCoordinator {
   readonly #attempts = new Map<string, HarnessAuthenticationAttempt>();
+  readonly #ended = new Set<
+    (environmentId: EnvironmentId, harnessInstanceId: HarnessInstanceId) => void
+  >();
   readonly #harnesses: HarnessAuthenticationHarnessSource;
   readonly #maximumLifetimeMs: number;
   readonly #now: () => number;
@@ -271,9 +274,27 @@ export class HarnessAuthenticationCoordinator {
     return this.#liveAttempts(environmentId).some((attempt) => attempt.driverKind === driverKind);
   }
 
+  /** Whether someone is still signing this AI engine in. */
+  isLive(environmentId: EnvironmentId, harnessInstanceId: HarnessInstanceId): boolean {
+    return this.#liveAttempt(environmentId, harnessInstanceId) !== undefined;
+  }
+
+  /**
+   * Hears every attempt end: settled, cancelled, replaced by another way in, or
+   * past its deadline. What an attempt opened for the person closes with it.
+   */
+  onAttemptEnded(
+    listener: (environmentId: EnvironmentId, harnessInstanceId: HarnessInstanceId) => void,
+  ): () => void {
+    this.#ended.add(listener);
+    return () => this.#ended.delete(listener);
+  }
+
   #deleteAttempt(attempt: HarnessAuthenticationAttempt): void {
     const key = this.#key(attempt.environmentId, attempt.harnessInstanceId);
-    if (this.#attempts.get(key) === attempt) this.#attempts.delete(key);
+    if (this.#attempts.get(key) !== attempt) return;
+    this.#attempts.delete(key);
+    for (const listener of this.#ended) listener(attempt.environmentId, attempt.harnessInstanceId);
   }
 
   #deleteIfTerminal(
@@ -334,7 +355,7 @@ export class HarnessAuthenticationCoordinator {
     const key = this.#key(environmentId, harnessInstanceId);
     const attempt = this.#attempts.get(key);
     if (attempt && attempt.hardExpiresAt <= this.#now()) {
-      this.#attempts.delete(key);
+      this.#deleteAttempt(attempt);
       return undefined;
     }
     return attempt;
@@ -365,9 +386,9 @@ export class HarnessAuthenticationCoordinator {
   #liveAttempts(environmentId: EnvironmentId): HarnessAuthenticationAttempt[] {
     const now = this.#now();
     const live: HarnessAuthenticationAttempt[] = [];
-    for (const [key, attempt] of this.#attempts) {
+    for (const attempt of this.#attempts.values()) {
       if (attempt.hardExpiresAt <= now) {
-        this.#attempts.delete(key);
+        this.#deleteAttempt(attempt);
       } else if (attempt.environmentId === environmentId) {
         live.push(attempt);
       }
