@@ -33,7 +33,7 @@ export function transcriptCard(
         ...(item.teamSource ? { teamSource: item.teamSource } : {}),
         ...(item.delivery ? { delivery: item.delivery } : {}),
         messageKind,
-        body: preview,
+        body: item.text ?? preview,
         published: view.published ?? true,
         ...(item.attachments ? { attachments: item.attachments } : {}),
         ...(item.pages ? { pages: item.pages } : {}),
@@ -168,7 +168,7 @@ export function nodeTranscriptCard(
       kind: "node-message",
       id: item.id,
       createdAt: item.createdAt,
-      text: item.view.preview ?? "",
+      text: item.text ?? item.view.preview ?? "",
       itemRevision: item.revision,
       previewTruncated: item.view.truncated === true,
     };

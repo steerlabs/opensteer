@@ -158,7 +158,7 @@ export function visibleTranscript(
 
 export function messageBody(content: ReadonlyArray<Record<string, unknown>>): string {
   return content
-    .map((part) => (part.type === "text" && typeof part.text === "string" ? part.text : ""))
+    .flatMap((part) => (part.type === "text" && typeof part.text === "string" ? [part.text] : []))
     .join("\n")
     .trim();
 }

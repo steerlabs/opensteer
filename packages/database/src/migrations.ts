@@ -20,11 +20,13 @@ import {
   answeredQuestionRecordsMigrationName,
   applyAnsweredQuestionRecords,
   applyBrowserSessionTabsIndex,
+  applyInlineTranscriptMessages,
   applyPersonalStateSchema,
   browserSessionTabsIndexMigrationName,
   applyDropDeviceAccessCount,
   applyTaskApprovalReceipts,
   dropDeviceAccessCountMigrationName,
+  inlineTranscriptMessagesMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import {
@@ -603,6 +605,7 @@ export function migrationProvider(options?: {
               [answeredQuestionRecordsMigrationName]: { up: applyAnsweredQuestionRecords },
               [dropDeviceAccessCountMigrationName]: { up: applyDropDeviceAccessCount },
               [browserSessionTabsIndexMigrationName]: { up: applyBrowserSessionTabsIndex },
+              [inlineTranscriptMessagesMigrationName]: { up: applyInlineTranscriptMessages },
             }
           : {}),
       };

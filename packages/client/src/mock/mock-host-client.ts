@@ -4826,8 +4826,12 @@ export class MockHostClient implements HostClient {
     return store;
   }
 
-  async readTranscriptItem(threadId: string, itemId: string) {
-    const result = await this.rpc["transcript.item.get"]({ threadId, itemId });
+  async readTranscriptItem(threadId: string, itemId: string, nodeId?: string) {
+    const result = await this.rpc["transcript.item.get"]({
+      threadId,
+      itemId,
+      ...(nodeId ? { nodeId } : {}),
+    });
     return result.ok ? result.data : undefined;
   }
 

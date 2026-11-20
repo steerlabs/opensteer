@@ -169,11 +169,10 @@ test("buffers selected detail until shell authority is synchronized and rejects 
   expect(f.sent.some((frame) => frame.type === "client.ack")).toBe(false);
   expect(f.stream.receive({ ...f.detailSnapshot(), subscriptionId: "shell" })).toBe(false);
   expect(f.stream.receive(f.detailSnapshot([{ ...item, nodeId }]))).toBe(false);
-  const big = Array.from({ length: 50 }, (_, index) => ({
+  const big = Array.from({ length: 10 }, (_, index) => ({
     ...item,
     id: String(index),
-    view: { preview: "🦊".repeat(490) },
-    author: { kind: "human" as const, principalId: "a".repeat(255), displayName: "ℝ".repeat(150) },
+    text: "a".repeat(120 * 1024),
   }));
   const oversized = f.detailSnapshot(big);
   // The Host measures encoded frames; the client checks the bytes it received.
@@ -4349,4 +4348,94 @@ describe("reads that race a repair", () => {
       reader.dispose();
     }
   });
+});
+
+test("a repair snapshot retires stale live text for finalized items and checkpoint packs oversized live windows by bytes", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const replyId = createId("message");
+  f.stream.receive({
+    type: "host.live",
+    subscriptionId: f.address.subscriptionId,
+    generation: f.address.generation,
+    handle: 1,
+    scope: f.detail.scope,
+    liveBootId: crypto.randomUUID(),
+    runId: createId("run"),
+    attemptId: createId("runAttempt"),
+    bindingGeneration: 1,
+    itemId: replyId,
+    streamId: replyId,
+    afterSequence: "1",
+    update: {
+      operation: "replace",
+      offset: 0,
+      totalLength: 10,
+      text: "partial...",
+      incomplete: false,
+    },
+  });
+  expect(f.detail.text.get(replyId)?.text).toBe("partial...");
+
+  // Repair snapshot delivers the finalized message item without a separate close frame.
+  const finalItem = {
+    ...item,
+    id: replyId,
+    messageId: replyId,
+    position: "2",
+    revision: "2",
+    text: "Complete final answer",
+    view: { preview: "Complete final answer", published: true },
+  };
+  f.stream.receive({
+    ...f.detailSnapshot([finalItem]),
+    throughSequence: "2",
+  });
+  expect(f.detail.text.get(replyId)).toBeUndefined();
+  expect(f.detail.transcript.getSnapshot().items.get(replyId)).toMatchObject({
+    id: replyId,
+    text: "Complete final answer",
+  });
+
+  // When a live thread grows past the 1 MiB checkpoint ceiling, `checkpoint()` packs the newest
+  // contiguous suffix that fits instead of dropping the whole save.
+  const largeItems = Array.from({ length: 6 }, (_, index) => {
+    const id = createId("message");
+    return {
+      ...item,
+      id,
+      messageId: id,
+      position: String(10 + index),
+      revision: String(10 + index),
+      text: "z".repeat(250 * 1024),
+      view: { preview: "z".repeat(100), published: true },
+    };
+  });
+  for (const [index, large] of largeItems.entries()) {
+    f.stream.receive({
+      type: "host.changes",
+      subscriptionId: f.address.subscriptionId,
+      generation: f.address.generation,
+      scope: f.detail.scope,
+      fromSequence: index === 0 ? "2" : String(9 + index),
+      throughSequence: String(10 + index),
+      changes: [
+        {
+          sequence: String(10 + index),
+          ordinal: 0,
+          entityKind: "item",
+          entityId: large.id,
+          operation: "upsert",
+          value: large,
+        },
+      ],
+    });
+  }
+  const saved = f.detail.transcript.checkpoint();
+  expect(saved).toBeDefined();
+  expect(saved!.items.length).toBeGreaterThan(0);
+  expect(saved!.items.length).toBeLessThan(largeItems.length);
+  expect(saved!.items.at(-1)?.id).toBe(largeItems.at(-1)!.id);
+  expect(saved!.nextBefore?.beforeId).toBe(saved!.items[0]?.id);
 });

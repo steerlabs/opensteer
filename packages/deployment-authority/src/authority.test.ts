@@ -325,10 +325,16 @@ describe("Host descriptor", () => {
 
   it("serves a personal caller the lower current version while the windows overlap", () => {
     const own = apiVersionHeaders("personal");
-    expect(own).toEqual({ [hostApiVersionHeader]: "64", [hostApiCurrentHeader]: "64" });
-    expect(negotiatedHostApiVersion(own)).toBe(64);
+    expect(own).toEqual({
+      [hostApiVersionHeader]: String(minimumHostApiVersion),
+      [hostApiCurrentHeader]: String(hostApiVersion),
+    });
+    expect(negotiatedHostApiVersion(own)).toBe(hostApiVersion);
     expect(
-      negotiatedHostApiVersion({ [hostApiVersionHeader]: "63", [hostApiCurrentHeader]: "63" }),
+      negotiatedHostApiVersion({
+        [hostApiVersionHeader]: String(minimumHostApiVersion - 1),
+        [hostApiCurrentHeader]: String(minimumHostApiVersion - 1),
+      }),
     ).toBeNull();
     expect(
       negotiatedHostApiVersion({

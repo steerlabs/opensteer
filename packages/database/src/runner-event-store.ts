@@ -166,7 +166,7 @@ async function publishRunnerMessage(
   attempt: RunAttemptRow,
 ) {
   const message = messageFromRow(row);
-  const { published, visible, isTurnStart, view, refs } = describeTranscriptMessage({
+  const { published, visible, isTurnStart, view, refs, messageText } = describeTranscriptMessage({
     ...message,
     edited: false,
     admittedSeed: false,
@@ -217,6 +217,8 @@ async function publishRunnerMessage(
       refs,
     },
     { position: visible ? thread.nextTranscriptPosition : null },
+    undefined,
+    messageText,
   );
 }
 

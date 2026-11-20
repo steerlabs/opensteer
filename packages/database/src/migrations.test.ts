@@ -11,6 +11,7 @@ import {
   answeredQuestionRecordsMigrationName,
   browserSessionTabsIndexMigrationName,
   dropDeviceAccessCountMigrationName,
+  inlineTranscriptMessagesMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 it("exposes the fresh, uniquely named Host baseline and the migrations after it", async () => {
@@ -57,6 +58,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     answeredQuestionRecordsMigrationName,
     dropDeviceAccessCountMigrationName,
     browserSessionTabsIndexMigrationName,
+    inlineTranscriptMessagesMigrationName,
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

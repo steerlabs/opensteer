@@ -1296,4 +1296,24 @@ describe("an app's card and its tab", () => {
   });
 });
 
+it.each([false, true])(
+  "renders full assistant replies with no expand button (Chat: %s)",
+  (conversation) => {
+    const view = setup(conversation);
+    const fullText = `${"Mobile assistant answer. ".repeat(80)}MOBILE_FINAL_WORD`;
+    view.render([
+      {
+        ...note,
+        runId: null,
+        id: "assistant-long",
+        body: fullText,
+        previewTruncated: false,
+      },
+    ]);
+    expect(view.container.textContent).toContain("MOBILE_FINAL_WORD");
+    expect(view.container.textContent).not.toContain("Read full reply");
+    expect(view.container.textContent).not.toContain("Show full message");
+  },
+);
+
 vi.mock("../report-mail.js", () => ({ contactSupport: vi.fn() }));

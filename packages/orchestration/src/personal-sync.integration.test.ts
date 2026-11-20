@@ -1,4 +1,7 @@
-import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
+import {
+  scopedPersonalApiVersion,
+  ScopedHostMessageSchema,
+} from "@opensteer/protocol/personal-sync";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, test } from "vitest";
 import {
@@ -115,7 +118,7 @@ test("wakes independent device generations after a PostgreSQL resource-only comm
     ] as const) {
       entry.socket.attach({
         type: "client.attach",
-        apiVersion: 64,
+        apiVersion: scopedPersonalApiVersion,
         generation,
         interests: ["settings"],
         installed: { settings: "0" },

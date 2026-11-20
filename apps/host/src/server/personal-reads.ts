@@ -525,15 +525,19 @@ export function createPersonalReads(
       });
       if (result.kind === "unavailable") return unavailable();
       if (result.kind === "revision-conflict") return changed();
-      return rpcSuccess(
-        hostApi["transcript.item.get"].success.parse({
-          item: (await decorateItems(requireSession(context), [result.item]))[0]!,
-          body: result.body,
-          truncated: result.truncated,
-          threadId: input.threadId,
-          nodeId: input.nodeId ?? null,
-        }),
-      );
+      const decorated = (await decorateItems(requireSession(context), [result.item]))[0]!;
+      const envelope = {
+        item: decorated,
+        body: result.body,
+        truncated: result.truncated,
+        threadId: input.threadId,
+        nodeId: input.nodeId ?? null,
+      };
+      const bounded =
+        Buffer.byteLength(JSON.stringify(envelope)) <= 1024 * 1024
+          ? envelope
+          : { ...envelope, body: null, truncated: true };
+      return rpcSuccess(hostApi["transcript.item.get"].success.parse(bounded));
     },
     "resources.detail.get": async (input, context) =>
       rpcSuccess(await resources.detail(requireSession(context), input)),

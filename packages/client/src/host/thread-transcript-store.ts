@@ -1,4 +1,5 @@
-import type { AssignmentSummary } from "@opensteer/core";
+import { utf8ByteLength, type AssignmentSummary } from "@opensteer/core";
+import { personalCheckpointMaxBytes } from "./personal-stream-cache.js";
 import type { PersonalResumeCursor, ScopedHostMessage } from "@opensteer/protocol/personal-sync";
 import type { PersonalInputQueue, WaitingInputView } from "@opensteer/protocol";
 import type {
@@ -690,20 +691,46 @@ export class ThreadTranscriptStore {
   checkpoint(state = this.#state): DetailSnapshot | undefined {
     const { snapshot, items } = state;
     if (!snapshot || !this.canCheckpoint(state)) return;
-    const history = state.historyIds.slice(-50).map((id) => items.get(id)!);
-    const boundary = history[0];
-    const nextBefore =
-      state.historyIds.length > history.length && boundary && state.cursorScope
-        ? { ...state.cursorScope, beforeId: boundary.id, beforePosition: boundary.position }
-        : snapshot.nextBefore;
     const { inputQueue: _inputQueue, ...rest } = snapshot;
-    return {
+    const activeItems = [...state.activeIds].map((id) => items.get(id)!);
+    const baseSnapshot = {
       ...rest,
-      nextBefore,
-      items: history,
-      activeItems: [...state.activeIds].map((id) => items.get(id)!),
+      nextBefore: snapshot.nextBefore,
+      items: [] as TranscriptItem[],
+      activeItems,
       ...(state.inputQueue ? { inputQueue: state.inputQueue.items } : {}),
     };
+    // Pack the newest contiguous suffix that fits inside the checkpoint budget so a live thread
+    // that grew past 1 MiB still persists a valid, resumable cut without exceeding the cache cap.
+    const baseBytes = utf8ByteLength(JSON.stringify(baseSnapshot));
+    const budget = personalCheckpointMaxBytes - baseBytes - 4096;
+    if (budget < 0) return;
+    const candidates = state.historyIds.slice(-50).map((id) => items.get(id)!);
+    const packed: TranscriptItem[] = [];
+    let bytes = 0;
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      const candidate = candidates[index]!;
+      const size = utf8ByteLength(JSON.stringify(candidate)) + 1;
+      if (bytes + size > budget) break;
+      bytes += size;
+      packed.push(candidate);
+    }
+    if (packed.length === 0 && candidates.length > 0) return;
+    const history = packed.reverse();
+    const boundary = history[0];
+    const trimmed = state.historyIds.length > history.length;
+    if (trimmed && (!boundary || !state.cursorScope)) return;
+    const nextBefore =
+      trimmed && boundary && state.cursorScope
+        ? { ...state.cursorScope, beforeId: boundary.id, beforePosition: boundary.position }
+        : snapshot.nextBefore;
+    const checkpointSnapshot: DetailSnapshot = {
+      ...baseSnapshot,
+      nextBefore,
+      items: history,
+    };
+    if (utf8ByteLength(JSON.stringify(checkpointSnapshot)) > personalCheckpointMaxBytes) return;
+    return checkpointSnapshot;
   }
 
   #set(state: TranscriptState) {
