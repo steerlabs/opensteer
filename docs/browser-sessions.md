@@ -60,6 +60,15 @@ failing, so the engine's own teardown and a supervisor restart still run. Page d
 ids, states, fixed reasons, counts and durations, never a URL, title or page content; they cover
 what the runtime observed, not every cause.
 
+Before Close and admission move to comparing what the catalog says should exist with what the
+runtime holds, the Host makes that comparison in shadow from facts it already has: the open tabs and
+eligible Run attempts from one consistent catalog read, and the surfaces the runtime already
+reports. It logs what it would destroy, which open tabs have no page, and which holds a Run may no
+longer keep, and acts on none of it. It adds nothing to any wire, and it runs only when a commit
+changes the catalog or Run authority or the runtime reports a change, never on a timer, so an idle
+Host does no work for it. The runtime reports no catalog generation, so a page bound at an earlier
+generation of a reopened tab is recognised only by the generation the Host bound it at.
+
 ## Agents address tabs
 
 Agents see what the person sees: profiles and one list of tabs. Browser Harness is a disposable

@@ -71,6 +71,7 @@ import {
   withDatabaseOperationSignal,
   withoutDatabaseOperationSignal,
   type BrowserHistoryStore,
+  type BrowserSessionCut,
 } from "@opensteer/database";
 import {
   browserCaptureMaxTargets,
@@ -137,6 +138,8 @@ import { LegacyBrowserClipboard } from "./browser-legacy-clipboard.js";
 import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import { browserViewerEditingVersion, browserViewerMessage } from "./browser-viewer-protocol.js";
+import type { ShadowCatalog, ShadowInventory } from "./shadow-comparison.js";
+import { ShadowHostSession } from "./shadow-host.js";
 import { PasskeyService, type PasskeyViewer } from "./passkey-service.js";
 
 const olderBrowserDialogSchema = BrowserDialogSchema.omit({ id: true });
@@ -144,6 +147,8 @@ const olderBrowserDialogSchema = BrowserDialogSchema.omit({ id: true });
 const maxBrowserCommandBytes = 1_100_000;
 const maxBrowserFrameBytes = 8 * 1_024 * 1_024;
 const maxBrowserTextBytes = 1 * 1_024 * 1_024;
+/** Phone runtimes report their own engines; the shadow comparison is for desktop and standalone. */
+const phoneEngines = new Set(["wkwebview", "android-webview"]);
 const maxPendingAgentRequests = 32;
 const agentRequestTimeoutMs = 15_000;
 /** An open's work budget; it also bounds waiting for this computer's browser to arrive. */
@@ -344,6 +349,11 @@ export interface BrowserSessionRepository {
     readonly runtimeId: string;
   }): Promise<BrowserSessionRecord>;
   countBrowserSessionAttachments(sessionId: BrowserSessionId): Promise<number>;
+  /** One consistent read of a session's open tabs and Run eligibility; null if it is gone. */
+  readBrowserSessionCut?(
+    ownerId: UserId,
+    sessionId: BrowserSessionId,
+  ): Promise<BrowserSessionCut | null>;
   /** A person brought a browser, or one of its pages, into a conversation. */
   recordBrowserSessionUse(input: {
     readonly sessionId: BrowserSessionId;
@@ -683,6 +693,8 @@ export class BrowserService {
   >();
   readonly #actors = new Map<string, BrowserActor>();
   readonly #actorKeys = new Map<string, string | null>();
+  /** Shadow comparisons of the catalog with what each session's runtime reports. */
+  readonly #shadows = new Map<BrowserSessionId, ShadowHostSession>();
   readonly #activityTimers = new Map<string, NodeJS.Timeout>();
   readonly #activityPending = new Map<
     string,
@@ -858,7 +870,11 @@ export class BrowserService {
     };
     this.#connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
     this.#onSessionsChanged = (sessionIds) => {
-      for (const id of sessionIds) this.#brokers.get(id)?.refreshSessionState();
+      for (const id of sessionIds) {
+        this.#brokers.get(id)?.refreshSessionState();
+        // Attachments changed: who may use the session is part of its comparison.
+        this.#shadows.get(id)?.catalogChanged();
+      }
       this.#invalidatePageSessions(sessionIds);
       options.onSessionsChanged(sessionIds);
     };
@@ -2268,6 +2284,63 @@ export class BrowserService {
     this.#invalidatePageSessions([sessionId]);
     this.#actorKeys.set(key, actor.token);
     if (this.#actorKeys.size > 4096) this.#actorKeys.delete(this.#actorKeys.keys().next().value!);
+  }
+
+  /** A commit may have changed the catalog or Run authority behind every shadow comparison. */
+  shadowCatalogChanged(): void {
+    for (const shadow of this.#shadows.values()) shadow.catalogChanged();
+  }
+
+  #startShadow(sessionId: BrowserSessionId, ownerId: UserId): void {
+    if (
+      !this.#workspaceTabs ||
+      !this.#repository.readBrowserSessionCut ||
+      this.#shadows.has(sessionId)
+    )
+      return;
+    const shadow = new ShadowHostSession({
+      session: sessionId,
+      read: () => this.#shadowCatalog(sessionId, ownerId),
+      inventory: () => this.#shadowInventory(sessionId),
+    });
+    this.#shadows.set(sessionId, shadow);
+    shadow.catalogChanged();
+  }
+
+  async #shadowCatalog(
+    sessionId: BrowserSessionId,
+    ownerId: UserId,
+  ): Promise<ShadowCatalog | null> {
+    const cut = await this.#repository.readBrowserSessionCut?.(ownerId, sessionId);
+    if (!cut) return null;
+    return {
+      ended: cut.state === "closing" || cut.state === "closed" || cut.state === "failed",
+      tabs: new Map(cut.tabs.map((tab) => [tab.tabId, tab.generation])),
+      closed: new Set(cut.closed),
+      eligible: new Set(
+        cut.bindings.flatMap(({ run }) =>
+          run && run.refusal === null && run.bindingGeneration !== null
+            ? [`${run.runId}:${run.bindingGeneration}`]
+            : [],
+        ),
+      ),
+    };
+  }
+
+  /** What the runtime reports for the session now, with what the Host knows of each surface. */
+  #shadowInventory(sessionId: BrowserSessionId): ShadowInventory | null {
+    const facts = this.#brokers.get(sessionId)?.shadowFacts();
+    if (!facts) return null;
+    const prefix = `${sessionId}:`;
+    const admitted = new Map<string, number>();
+    for (const [key, generation] of this.#workspacePageGenerations)
+      if (key.startsWith(prefix)) admitted.set(key.slice(prefix.length), generation);
+    const holders = [];
+    for (const actor of this.#actors.values())
+      if (actor.sessionId === sessionId)
+        for (const surface of actor.surfaces.keys())
+          holders.push({ surface, run: actor.runId, bindingGeneration: actor.generation });
+    return { ...facts, admitted, holders };
   }
 
   #restoreHoldings(sessionId: BrowserSessionId, viewers?: readonly UserId[]): Promise<void> {
@@ -3889,6 +3962,8 @@ export class BrowserService {
   }
 
   #invalidatePageSessions(sessionIds: readonly BrowserSessionId[]) {
+    // Who acts on or holds these sessions' pages changed: their comparisons may too.
+    for (const id of sessionIds) this.#shadows.get(id)?.inventoryChanged();
     const ids = [...this.#workspacePageGenerations.keys()].flatMap((key) => {
       const session = sessionIds.find((id) => key.startsWith(`${id}:`));
       return session ? [BrowserSurfaceIdSchema.parse(key.slice(session.length + 1))] : [];
@@ -4548,7 +4623,10 @@ export class BrowserService {
                   },
                 }
               : {}),
-            onTabsChanged: () => this.#queueTabDescriptors(sessionId),
+            onTabsChanged: () => {
+              this.#queueTabDescriptors(sessionId);
+              this.#shadows.get(sessionId)?.inventoryChanged();
+            },
             onRecordsChanged: (ids) => this.tabInventoryChanged(sessionId, ids),
             onActivity: (activity) => this.#runtimeActivity(sessionId, activity),
             cdpBoundary: target.cdpBoundary === true,
@@ -4607,6 +4685,8 @@ export class BrowserService {
               this.#forgetActing(sessionId);
               this.#announcePresence(sessionId);
               this.#brokers.delete(sessionId);
+              this.#shadows.get(sessionId)?.stop();
+              this.#shadows.delete(sessionId);
               this.#sessionProfiles.delete(sessionId);
               this.#holdings.delete(sessionId);
               this.#announcedPresence.delete(sessionId);
@@ -4635,6 +4715,13 @@ export class BrowserService {
           }
           await this.#flushTabDescriptors(sessionId);
           if (initialTabId) onInitialPage?.(initialTabId);
+          // A Personal workspace session on a desktop or standalone runtime: compared in shadow.
+          if (
+            tabRestore &&
+            target.stateImport === true &&
+            !phoneEngines.has(target.localProfileStorage?.engine ?? "")
+          )
+            this.#startShadow(sessionId, input.ownerId);
           stage = "session-read";
           const latest = await this.#repository.getBrowserSessionForOwner(sessionId, input.ownerId);
           const session = await this.#personSession(latest ?? record, input.ownerId);
@@ -5589,6 +5676,26 @@ export class HostedBrowserBroker {
     }
     this.#sessionStateGeneration++;
     await this.#sendSessionState();
+  }
+
+  /** What this runtime reports now, and who uses which tab, for the Host's shadow comparison. */
+  shadowFacts(): Pick<ShadowInventory, "surfaces" | "pending" | "personUsed" | "viewing"> | null {
+    // Only a whole, committed inventory is compared.
+    if (!this.live || this.#tabs.state !== "committed") return null;
+    const surfaces = new Map<string, "live" | "suspended">();
+    for (const [id, row] of this.#tabs.rows) surfaces.set(id, row.state ?? "live");
+    const viewing = new Set<string>();
+    for (const outlet of this.#consumers.values()) {
+      const id =
+        outlet.subscription === null ? null : (outlet.surfaceId ?? this.#tabs.meta?.activeId);
+      if (id) viewing.add(id);
+    }
+    return {
+      surfaces,
+      pending: new Set(this.#dirtyTabs.keys()),
+      personUsed: new Set(this.#personUse.tabs),
+      viewing,
+    };
   }
 
   refreshSessionState(): void {

@@ -54,6 +54,7 @@ import {
 } from "./browser-profile-storage-store.js";
 
 import { databaseOperationOptions } from "./operation-budget.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { type DatabaseSchema } from "./schema.js";
 import {
   findCommandByIdempotency,
@@ -481,6 +482,219 @@ export async function createBrowserSession(
         "updatedAt",
       ])
       .executeTakeFirstOrThrow(databaseOperationOptions());
+  });
+}
+
+/** Why a Run binding may not use its session now, from the same facts as tool admission. */
+export type BrowserBindingRefusal =
+  | "no-run"
+  | "binding"
+  | "finishing"
+  | "lease"
+  | "status"
+  | "grant"
+  | "attempt"
+  | "thread"
+  | "cancelled";
+
+export interface BrowserSessionCut {
+  readonly state: HostedBrowserSessionState;
+  /** The session's open page tabs, by catalog identity. */
+  readonly tabs: readonly { readonly tabId: string; readonly generation: number }[];
+  /** Its page tabs the catalog has closed. */
+  readonly closed: readonly string[];
+  /**
+   * Its attachments. A Run's binding is eligible only while its execution
+   * binding holds as tool admission checks it (no finish under way, a live
+   * provider lease on the agent's home computer, matching binding
+   * generations, an active Run, its thread's environment still admitted for
+   * its owner, no cancelled ancestor assignment) and an active grant exists
+   * at that binding generation; it then names the Run's current attempt and binding
+   * generation, so holds match exactly the actors issued for it. Any other
+   * binding (a thread, Trigger or Watch) is not a Run and names no attempt.
+   */
+  readonly bindings: readonly {
+    readonly bindingId: string;
+    readonly run: {
+      readonly runId: RunId;
+      readonly attempt: string | null;
+      readonly bindingGeneration: number | null;
+      readonly refusal: BrowserBindingRefusal | null;
+    } | null;
+  }[];
+}
+
+/**
+ * One session's open catalog tabs and its attachments' eligibility, read in
+ * one repeatable-read snapshot so the two describe the same moment. Null when
+ * the session does not exist: no information, never an empty set.
+ */
+export async function readBrowserSessionCut(
+  database: Kysely<DatabaseSchema>,
+  ownerId: UserId,
+  sessionId: BrowserSessionId,
+  now: () => number = Date.now,
+): Promise<BrowserSessionCut | null> {
+  return withPersonalReadTransaction(database, async (transaction) => {
+    const session = await transaction
+      .selectFrom("browserSessions")
+      .select("state")
+      .where("id", "=", sessionId)
+      .executeTakeFirst(databaseOperationOptions());
+    if (!session) return null;
+    const [tabs, attachments] = await Promise.all([
+      transaction
+        .selectFrom("personalTabs")
+        .select(["id", "generation", "closedAt"])
+        .where("ownerId", "=", ownerId)
+        .where("kind", "=", "page")
+        .where(sql<string>`page_binding->>'sessionId'`, "=", sessionId)
+        .orderBy("id")
+        .execute(databaseOperationOptions()),
+      transaction
+        .selectFrom("browserSessionAttachments")
+        .select("agentBindingId")
+        .where("sessionId", "=", sessionId)
+        .orderBy("agentBindingId")
+        .execute(databaseOperationOptions()),
+    ]);
+    const runIds = attachments.flatMap((row) => {
+      const runId = bindingRunId(row.agentBindingId);
+      return runId ? [runId] : [];
+    });
+    const [facts, attempts, grants, cancelled] = runIds.length
+      ? await Promise.all([
+          transaction
+            .selectFrom("runs")
+            .innerJoin("personalSettings", "personalSettings.ownerId", "runs.requestedBy")
+            .leftJoin("providerSessions", (join) =>
+              join
+                .onRef("providerSessions.id", "=", "runs.providerSessionId")
+                .on("providerSessions.active", "=", true),
+            )
+            .leftJoin("runners", "runners.id", "providerSessions.runnerId")
+            .leftJoin("threads", "threads.id", "runs.threadId")
+            .leftJoin("users", "users.id", "runs.requestedBy")
+            // Thread admission: the thread's environment is on the owner's agent home computer.
+            .leftJoin("executionEnvironments", (join) =>
+              join
+                .onRef("executionEnvironments.id", "=", "threads.environmentId")
+                .onRef(
+                  "executionEnvironments.runnerId",
+                  "=",
+                  "personalSettings.agentHomeComputerId",
+                ),
+            )
+            .select([
+              "runs.id as runId",
+              "personalSettings.singletonKey",
+              "users.disabledAt",
+              "executionEnvironments.id as admittedEnvironmentId",
+              "runs.finishIntent",
+              "runs.harnessInstanceId as runHarnessInstanceId",
+              "runs.status as runStatus",
+              "runs.bindingGeneration as runBindingGeneration",
+              "personalSettings.agentHomeComputerId",
+              "providerSessions.bindingGeneration",
+              "providerSessions.harnessInstanceId as providerSessionHarnessInstanceId",
+              "providerSessions.leaseExpiresAt",
+              "providerSessions.runnerBootId",
+              "providerSessions.runnerId",
+              "providerSessions.status as providerSessionStatus",
+              "runners.revokedAt",
+            ])
+            .where("runs.id", "in", runIds)
+            .execute(databaseOperationOptions()),
+          transaction
+            .selectFrom("runAttempts")
+            .select(["runId", "id"])
+            .where("runId", "in", runIds)
+            .where("status", "=", "current")
+            .execute(databaseOperationOptions()),
+          transaction
+            .selectFrom("grants")
+            .select(["runId", "bindingGeneration", "runnerId", "runnerBootId"])
+            .where("runId", "in", runIds)
+            .where("status", "=", "active")
+            .execute(databaseOperationOptions()),
+          // Every Run whose assignment, or any ancestor of it, was cancelled: one query for all.
+          sql<{ run_id: string }>`
+            with recursive ancestors(run_id, id, parent_assignment_id, status) as (
+              select r.id, d.id, d.parent_assignment_id, d.status
+              from runs r join delegations d on d.id = r.assignment_id
+              where r.id = any(${runIds}::text[])
+              union
+              select a.run_id, p.id, p.parent_assignment_id, p.status
+              from delegations p join ancestors a on p.id = a.parent_assignment_id
+            )
+            select distinct run_id from ancestors where status = 'cancelled'
+          `
+            .execute(transaction)
+            .then((result) => new Set(result.rows.map((row) => row.run_id))),
+        ])
+      : [[], [], [], new Set<string>()];
+    const factsByRun = new Map(facts.map((row) => [row.runId, row]));
+    const attemptByRun = new Map<string, string>(attempts.map((row) => [row.runId, row.id]));
+    const at = now();
+    const refusal = (runId: RunId): BrowserBindingRefusal | null => {
+      const fact = factsByRun.get(runId);
+      if (!fact) return "no-run";
+      if (fact.finishIntent !== null) return "finishing";
+      if (
+        fact.singletonKey !== "personal" ||
+        fact.disabledAt !== null ||
+        fact.admittedEnvironmentId === null
+      )
+        return "thread";
+      if (cancelled.has(runId)) return "cancelled";
+      if (!["starting", "running", "waiting"].includes(fact.runStatus)) return "status";
+      if (
+        fact.runBindingGeneration === null ||
+        fact.bindingGeneration !== fact.runBindingGeneration ||
+        fact.runHarnessInstanceId !== fact.providerSessionHarnessInstanceId ||
+        fact.runnerId === null ||
+        fact.runnerId !== fact.agentHomeComputerId ||
+        fact.revokedAt !== null ||
+        ["stopped", "broken"].includes(fact.providerSessionStatus ?? "stopped")
+      )
+        return "binding";
+      if (fact.leaseExpiresAt === null || fact.leaseExpiresAt.getTime() <= at) return "lease";
+      if (
+        !grants.some(
+          (grant) =>
+            grant.runId === runId &&
+            Number(grant.bindingGeneration) === Number(fact.runBindingGeneration) &&
+            grant.runnerId === fact.runnerId &&
+            grant.runnerBootId === fact.runnerBootId,
+        )
+      )
+        return "grant";
+      if (!attemptByRun.has(runId)) return "attempt";
+      return null;
+    };
+    return {
+      state: session.state,
+      tabs: tabs.flatMap((row) =>
+        row.closedAt ? [] : [{ tabId: row.id, generation: Number(row.generation) }],
+      ),
+      closed: tabs.flatMap((row) => (row.closedAt ? [row.id] : [])),
+      bindings: attachments.map(({ agentBindingId }) => {
+        const runId = bindingRunId(agentBindingId);
+        if (!runId) return { bindingId: agentBindingId, run: null };
+        const refused = refusal(runId);
+        const fact = factsByRun.get(runId);
+        return {
+          bindingId: agentBindingId,
+          run: {
+            runId,
+            attempt: refused ? null : (attemptByRun.get(runId) ?? null),
+            bindingGeneration:
+              refused || !fact?.runBindingGeneration ? null : Number(fact.runBindingGeneration),
+            refusal: refused,
+          },
+        };
+      }),
+    };
   });
 }
 
