@@ -27,9 +27,10 @@ export const CloudComputerInstallerUrlSchema = z
     return !url.username && !url.password && !/[?#]/u.test(value);
   });
 /** Public feed for in-place updates. Every candidate still has to pin its image digests. */
-export const CloudComputerReleaseManifestUrlSchema = CloudComputerInstallerUrlSchema.refine(
-  (value) => /^https:\/\/[a-zA-Z0-9.:/_=%+-]+$/u.test(value),
-);
+export const CloudComputerReleaseManifestUrlSchema = z
+  .string()
+  .regex(/^https:\/\/[a-zA-Z0-9.:/_=%+-]+$/u)
+  .pipe(CloudComputerInstallerUrlSchema);
 export const CloudComputerInstallerSha256Schema = z.string().regex(/^[0-9a-f]{64}$/u);
 
 export const CloudComputerReleaseSchema = z.object({

@@ -704,7 +704,7 @@ export class OrganizationStore {
       await create(tx, assignment.cloudComputerId, assignment.id);
       return assignment;
     });
-    return this.#view(this.#db, id, assignment.id);
+    return (await this.#view(this.#db, id, assignment.id)).view;
   }
 
   async beginOffboard(
@@ -769,7 +769,7 @@ export class OrganizationStore {
     assignmentId: WorkAssignmentId,
   ) {
     await this.#member(this.#db, id, account, true);
-    return this.#view(this.#db, id, assignmentId);
+    return (await this.#view(this.#db, id, assignmentId)).view;
   }
 
   async finishOffboard(
@@ -788,7 +788,7 @@ export class OrganizationStore {
         .executeTakeFirst();
       await this.#advance(tx, org, assignmentId);
     });
-    return this.#view(this.#db, id, assignmentId);
+    return (await this.#view(this.#db, id, assignmentId)).view;
   }
 
   async #advance(tx: Tx, org: Organization, only?: WorkAssignmentId) {
@@ -1122,12 +1122,9 @@ export class OrganizationStore {
       .where("state", "!=", "ended")
       .executeTakeFirst();
     if (!assignment) return null;
-    const {
-      assignee: _assignee,
-      audit: _audit,
-      ...visible
-    } = await this.#view(this.#db, id, assignment.id);
-    return { assignment: visible, policy: WorkPolicySchema.parse(org.policy) };
+    const { view, deploymentId } = await this.#view(this.#db, id, assignment.id);
+    const { assignee: _assignee, audit: _audit, ...visible } = view;
+    return { assignment: { ...visible, deploymentId }, policy: WorkPolicySchema.parse(org.policy) };
   }
 
   async admin(id: OrganizationId, account: ControlPlaneAccountId) {
@@ -1168,7 +1165,9 @@ export class OrganizationStore {
         members,
         invitations: invites.map(invitationView),
         assignments: await Promise.all(
-          assignments.map(({ id: assignment }) => this.#view(tx, id, assignment)),
+          assignments.map(
+            async ({ id: assignment }) => (await this.#view(tx, id, assignment)).view,
+          ),
         ),
         policy: WorkPolicySchema.parse(org.policy),
         policyRevision: org.policyRevision,
@@ -1180,7 +1179,7 @@ export class OrganizationStore {
     db: DB,
     id: OrganizationId,
     assignmentId: WorkAssignmentId,
-  ): Promise<WorkAssignmentView> {
+  ): Promise<{ view: WorkAssignmentView; deploymentId: DeploymentId | null }> {
     const row = await db
       .selectFrom("workAssignments")
       .selectAll()
@@ -1199,6 +1198,8 @@ export class OrganizationStore {
         "state",
         "phase",
         "hostname",
+        "deploymentId",
+        "hostKeyFingerprint",
         "bootstrapReceiptAt",
         "tombstonedAt",
         "claimError",
@@ -1229,7 +1230,7 @@ export class OrganizationStore {
       home.state === "active" &&
       home.phase === "ready" &&
       Boolean(home.bootstrapReceiptAt);
-    return {
+    const view: WorkAssignmentView = {
       organizationId: id,
       organizationName: org.name,
       assignmentId,
@@ -1262,6 +1263,13 @@ export class OrganizationStore {
       deleted,
       retainUntil: row.retainUntil?.toISOString() ?? null,
       audit: auditStatus(row),
+    };
+    return {
+      view,
+      deploymentId:
+        home.deploymentId && home.hostKeyFingerprint
+          ? DeploymentIdSchema.parse(home.deploymentId)
+          : null,
     };
   }
 

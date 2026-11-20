@@ -5,6 +5,9 @@ import {
   CloudComputerDeleteRequestSchema,
   CloudComputerDesiredResponseSchema,
   CloudComputerIdSchema,
+  CloudComputerEgressResponseSchema,
+  CloudComputerReleaseManifestUrlSchema,
+  cloudComputerEgressPath,
   CloudComputerViewSchema,
   cloudComputerDeleteConfirmation,
   CloudComputerDesiredSchema,
@@ -200,4 +203,24 @@ describe("Cloud Computer view facts", () => {
   ])("rejects placeholder or unsupported facts %o", (fields) => {
     expect(CloudComputerViewSchema.safeParse({ ...preparing, ...fields }).success).toBe(false);
   });
+});
+
+it("accepts only a credential-free HTTPS update feed and the egress-only refresh response", () => {
+  expect(
+    CloudComputerReleaseManifestUrlSchema.parse("https://releases.example.com/managed.json"),
+  ).toBe("https://releases.example.com/managed.json");
+  for (const url of [
+    "http://releases.example.com/feed",
+    "https://secret@releases.example.com/feed",
+    "https://releases.example.com/feed?token=secret",
+    "https://releases.example.com/feed#secret",
+    "https://releases.example.com/feed\n",
+  ])
+    expect(CloudComputerReleaseManifestUrlSchema.safeParse(url).success).toBe(false);
+  const id = CloudComputerIdSchema.parse(desired.id);
+  expect(cloudComputerEgressPath(id)).toBe(`/v1/cloud-computers/${id}/egress`);
+  expect(CloudComputerEgressResponseSchema.parse({})).toEqual({});
+  expect(
+    CloudComputerEgressResponseSchema.safeParse({ backup: { password: "secret" } }).success,
+  ).toBe(false);
 });

@@ -871,11 +871,7 @@ export class CloudComputerStore {
       .execute();
     for (const attempt of checkouts)
       await run(() => this.#recoverCheckout(attempt.accountId, attempt.requestId));
-    const deferred = await this.#db
-      .selectFrom("cloudComputerStripeEvents")
-      .select(["id", "type", sql<string>`deferred_checkout::text`.as("checkoutJson")])
-      .where("deferredCheckout", "is not", null)
-      .execute();
+    const deferred = await this.#deferredCheckouts();
     for (const event of deferred)
       await run(async () => {
         await this.applyStripeEvent({
@@ -901,6 +897,16 @@ export class CloudComputerStore {
     await run(async () => this.#options.organizations?.reconcile(onError));
   }
 
+  #deferredCheckouts() {
+    // Read Stripe's stored JSON as text to preserve its snake-case wire keys.
+    return this.#db
+      .selectFrom("cloudComputerStripeEvents")
+      .select(["id", "type", "receivedAt", sql<string>`deferred_checkout::text`.as("checkoutJson")])
+      .where("deferredCheckout", "is not", null)
+      .orderBy("receivedAt")
+      .execute();
+  }
+
   async unresolvedCheckouts() {
     const [paidAttempts, events] = await Promise.all([
       this.#db
@@ -910,17 +916,12 @@ export class CloudComputerStore {
         .where("paidAt", "is not", null)
         .orderBy("paidAt")
         .execute(),
-      this.#db
-        .selectFrom("cloudComputerStripeEvents")
-        .select(["id", "receivedAt", "deferredCheckout"])
-        .where("deferredCheckout", "is not", null)
-        .orderBy("receivedAt")
-        .execute(),
+      this.#deferredCheckouts(),
     ]);
     return {
       paidAttempts,
-      deferredEvents: events.map(({ id, receivedAt, deferredCheckout }) => {
-        const parsed = StripePaidCheckoutSchema.safeParse(deferredCheckout);
+      deferredEvents: events.map(({ id, receivedAt, checkoutJson }) => {
+        const parsed = StripePaidCheckoutSchema.safeParse(JSON.parse(checkoutJson));
         if (!parsed.success) return { eventId: id, receivedAt, invalidPayment: true };
         const { id: sessionId, subscription, metadata } = parsed.data;
         return {
@@ -1842,6 +1843,9 @@ export class CloudComputerStore {
       hostKeyFingerprint: row.hostKeyFingerprint,
       bootstrapExpiresAt: row.bootstrapExpiresAt,
       bootCompletedAt: row.bootCompletedAt,
+      readinessStartedAt: row.readinessStartedAt,
+      generationReady: row.generationReady,
+      everReady: row.everReady,
       deletionRequestedAt: row.deletionRequestedAt,
       tombstonedAt: row.tombstonedAt,
       billingStatus: row.billingStatus,

@@ -16,7 +16,7 @@ const safeMessages = new Set([
 export function billingErrorDetails(error: unknown) {
   if (error instanceof ControlPlaneError) {
     return {
-      type: error.name,
+      type: "ControlPlaneError",
       code: error.code,
       status: error.status,
       message: safeMessages.has(error.message) ? error.message : "Account billing request failed",

@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { brokerProviderFixture } from "./auth/hosted-oauth-broker.test-support.js";
 import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import { opensteerAccountNativeOAuthClients } from "@opensteer/core";
@@ -25,6 +28,64 @@ const validEnvironment = {
   OPENSTEER_CONNECT_CLOUDFLARE_WORKERS_ROUTE_BYPASS: "on",
   OPENSTEER_CONNECT_CREDENTIAL_DERIVATION_SECRET: "d".repeat(32),
 } satisfies NodeJS.ProcessEnv;
+
+it("loads optional managed Home settings from the Account runtime directory", () => {
+  const directory = mkdtempSync(join(tmpdir(), "managed-home-config-"));
+  const environment = { ...validEnvironment, OPENSTEER_MANAGED_HOME_CONFIG_DIRECTORY: directory };
+  try {
+    expect(loadControlPlaneConfig(environment).cloudComputers).toBeUndefined();
+    const files = {
+      OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL: "home@example.iam.gserviceaccount.com",
+      OPENSTEER_CLOUD_COMPUTER_DOMAIN: "homes.example.com",
+      OPENSTEER_CLOUD_COMPUTER_REGION: "ash",
+      OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE: "cpx22",
+      OPENSTEER_CLOUD_COMPUTER_RELEASE_JSON: JSON.stringify({
+        version: "1.0.0",
+        installerUrl: "https://releases.example.com/install",
+        installerSha256: "a".repeat(64),
+        images: Object.fromEntries(
+          ["host", "runner", "browser-runtime", "browser-egress", "channel-runtime", "gateway"].map(
+            (name) => [name, `registry.example.com/${name}@sha256:${"b".repeat(64)}`],
+          ),
+        ),
+      }),
+      OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL: "https://releases.example.com/managed.json",
+      OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY: "sk_test_123456789",
+      OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET: "whsec_123456789",
+      OPENSTEER_CLOUD_COMPUTER_STRIPE_PORTAL_CONFIGURATION_ID: "bpc_personal",
+      OPENSTEER_CLOUD_COMPUTER_STRIPE_PRICE_ID: "price_personal",
+      OPENSTEER_CLOUD_COMPUTER_PLAN_NAME: "Personal",
+      OPENSTEER_CLOUD_COMPUTER_CURRENCY: "usd",
+      OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR: "2900",
+      OPENSTEER_ORGANIZATION_STRIPE_PRICE_ID: "price_seat",
+      OPENSTEER_ORGANIZATION_CURRENCY: "usd",
+      OPENSTEER_ORGANIZATION_PRICE_MINOR: "4900",
+    };
+    for (const [name, value] of Object.entries(files)) {
+      writeFileSync(join(directory, name), value + "\n", { mode: 0o600 });
+    }
+    const config = loadControlPlaneConfig({
+      ...environment,
+      OPENSTEER_CLOUD_COMPUTER_REGION: "hel1",
+    });
+    expect(config.cloudComputers).toMatchObject({
+      stripeKey: files.OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY,
+      stripeWebhookSecret: files.OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET,
+      releaseManifestUrl: files.OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL,
+      region: "hel1",
+    });
+    expect(config.organizationOffer).toMatchObject({ priceId: "price_seat", amountMinor: 4900 });
+    expect(() =>
+      loadControlPlaneConfig({
+        ...environment,
+        OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL:
+          "https://user:password@releases.example.com/feed",
+      }),
+    ).toThrow("Missing or invalid OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL");
+  } finally {
+    rmSync(directory, { recursive: true });
+  }
+});
 
 let apnsPrivateKey: string;
 let fcmPrivateKey: string;

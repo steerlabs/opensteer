@@ -248,7 +248,9 @@ export const WorkAssignmentViewSchema = z.strictObject({
 export type WorkAssignmentView = z.infer<typeof WorkAssignmentViewSchema>;
 export const WorkHomeResponseSchema = z
   .strictObject({
-    assignment: WorkAssignmentViewSchema.omit({ assignee: true, audit: true }),
+    assignment: WorkAssignmentViewSchema.omit({ assignee: true, audit: true }).extend({
+      deploymentId: DeploymentIdSchema.nullable().optional(),
+    }),
     policy: WorkPolicySchema,
   })
   .nullable();

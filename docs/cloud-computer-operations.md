@@ -51,6 +51,12 @@ Customer (Desktop / Mobile / Web)
 
 Cloud Computer turns on in Account as soon as any `OPENSTEER_CLOUD_COMPUTER_*` variable is present. Every `OPENSTEER_CLOUD_COMPUTER_*` variable also accepts a `<NAME>_FILE` variant that reads the value from a file and trims trailing whitespace. Setting both `<NAME>` and `<NAME>_FILE` fails startup.
 
+In the Kubernetes manifest, put non-secret settings in the `account-env` ConfigMap and Stripe secrets in the existing `opensteer-account-runtime` JSON secret. Use the base names as JSON keys, such as `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY`. The init container stages present `OPENSTEER_CLOUD_COMPUTER_*` and `OPENSTEER_ORGANIZATION_*` keys as mode `0600` files. Account uses the file when there is no explicit environment or `_FILE` setting for that key. Publish a new version of the runtime secret and point the manifest's SecretProviderClass to it when the values change.
+
+To enable organization seats, set `OPENSTEER_ORGANIZATION_STRIPE_PRICE_ID` to a recurring price distinct from the personal price, plus `OPENSTEER_ORGANIZATION_CURRENCY` and `OPENSTEER_ORGANIZATION_PRICE_MINOR`. `OPENSTEER_ORGANIZATION_PRICE_INTERVAL` defaults to `month`. Organization billing uses the same Stripe credentials and webhook as personal Cloud Computers.
+
+When an organization admin creates an invitation, the website shows a link for the admin to share with the invitee. Sending the link is manual. The invitee accepts while signed in with the invited, verified email address.
+
 Account also requires its core variables to be valid for Cloud Computer: `OPENSTEER_CONTROL_PLANE_DATABASE_URL`, `OPENSTEER_CONTROL_PLANE_PUBLIC_URL` (must be `https://`), `OPENSTEER_PORTAL_ORIGIN` (must be `https://` and differ from the Account origin), and `OPENSTEER_ADOPTION_OPERATION_KEY` (seals pool credentials, bootstrap tokens, setup codes, and backup passwords at rest). `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL` must differ from `OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL`.
 
 | Env var                                                   | Meaning                                                                                         | Required | Default | Secret source          |
@@ -60,6 +66,7 @@ Account also requires its core variables to be valid for Cloud Computer: `OPENST
 | `OPENSTEER_CLOUD_COMPUTER_REGION`                         | Hetzner location assigned to new Cloud Computers                                                | Yes      | None    | ConfigMap / non-secret |
 | `OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE`                    | Hetzner server type assigned to new Cloud Computers                                             | Yes      | None    | ConfigMap / non-secret |
 | `OPENSTEER_CLOUD_COMPUTER_RELEASE_JSON`                   | JSON release manifest (`version`, `installerUrl`, `installerSha256`, `images`)                  | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL`           | Public HTTPS feed for digest-pinned in-place updates                                            | No       | None    | ConfigMap / non-secret |
 | `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY`              | Stripe secret or restricted key (`sk_live_...`, `rk_live_...`, `sk_test_...`, or `rk_test_...`) | Yes      | None    | Secret (`_FILE` mount) |
 | `OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET`          | Stripe webhook signing secret (`whsec_...`)                                                     | Yes      | None    | Secret (`_FILE` mount) |
 | `OPENSTEER_CLOUD_COMPUTER_STRIPE_PRICE_ID`                | Recurring Stripe Price ID (`price_...`) used in Checkout                                        | Yes      | None    | ConfigMap / non-secret |
@@ -168,14 +175,27 @@ The operator CLI lives in the Account image as `dist/cloud-computer-operator-mai
 node dist/cloud-computer-operator-main.js <command> [args...]
 ```
 
-Every command prints JSON to stdout and exits `0` on success, or prints an error message to stderr and exits `1`.
+Commands print JSON to stdout. Invalid operations print an error to stderr and exit `1`. Run `node dist/cloud-computer-operator-main.js --help` for command syntax.
+
+### Diagnostics and recovery
+
+| Command                     | What it shows or changes                                                                                                                                                                                                                                                                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list` / `show <id>`        | Account and work assignment IDs, desired state and observed phase, generation and revision, hostname, current and previous provider server IDs, IPs, pinned deployment ID and key fingerprint, bootstrap expiry and completion, deletion intent and tombstone, billing and egress status, claim attempt/receipt/error, and last reconciler error. |
+| `lease-show`                | Holder UUID, expiry, and whether the lease expired. Returns `null` if no lease is recorded.                                                                                                                                                                                                                                                       |
+| `lease-release <holder>`    | Removes the named holder's lease only after expiry. A renewed lease or a different holder is refused.                                                                                                                                                                                                                                             |
+| `checkout-list`             | Open attempts known to be paid and deferred webhook completions, with Account and Stripe IDs for investigation. Checkout URLs and raw event bodies are omitted.                                                                                                                                                                                   |
+| `billing-reconcile`         | Runs the same personal and organization billing reconciliation as the Account worker. `ran: false` means another worker holds the billing lock. Inspect the `errors` array even when `ran: true`.                                                                                                                                                 |
+| `claim-retry <computer-id>` | Clears a recorded claim failure on an active, provisioned Home, starts a fresh claim deadline, and queues it for the worker. Run after diagnosing the error. The existing Home identity and generation are retained.                                                                                                                              |
+
+Claim error codes are `timeout`, `setup-failed`, and `claim-failed`. The operator output omits credentials and raw failure payloads.
 
 ### Reuse rule for released entries
 
 When a Cloud Computer is deleted, Account releases its egress endpoint and backup target with `computerId: null` and `needsRotation: true`.
 
 - A row with `needsRotation: true` is **never assigned** to another Cloud Computer.
-- A row with `needsRotation: true` **cannot be removed** with `egress-remove` or `backup-remove`.
+- An unassigned, unreserved row can be removed even when `needsRotation: true`. Revoke its credentials upstream before removal. Removal retires the old backup prefix and prevents re-registering a removed proxy with its former password.
 - Before rotating a released entry back into service:
   - For an **egress endpoint**, change the proxy password at the provider first, then run `egress-rotate` with the new password.
   - For a **backup target**, revoke the previous S3 principal, keep the previous prefix retired, and remove its objects after retention. Create a new principal scoped to a fresh, non-overlapping prefix. Run `backup-rotate` with the new `prefix`, `accessKeyId`, and `secretAccessKey`.
@@ -190,7 +210,7 @@ Put the proxy password in a root-only file (`chmod 0600`) so it stays out of she
   node dist/cloud-computer-operator-main.js egress-list
   ```
 
-  Returns `[{"id":"<uuid>","computerId":null,"needsRotation":false}]`.
+  Shows the endpoint ID, URL, username, optional public IP, assignment, and rotation status. Passwords are omitted.
 
 - **Add** (`url` must be a bare `https://host:port` origin without credentials, path, query, or fragment; `username` and password max 255 chars):
 
@@ -208,13 +228,21 @@ Put the proxy password in a root-only file (`chmod 0600`) so it stays out of she
 
   Returns `{"rotated":true}`.
 
-- **Remove** (only when `computerId` is `null` and `needsRotation` is `false`):
+- **Remove** (only when unassigned; revoke the old proxy password with the provider first):
 
   ```bash
   node dist/cloud-computer-operator-main.js egress-remove <endpoint-uuid>
   ```
 
   Returns `{"removed":true}`.
+
+- **Assign after boot** (requires an active, booted Home and a free endpoint):
+
+  ```bash
+  node dist/cloud-computer-operator-main.js egress-assign <computer-id>
+  ```
+
+  Returns the assigned endpoint ID and recorded public address. Repeating it returns the same assignment. A Home with egress refresh support consumes the assignment on its next refresh.
 
 ### Backup targets
 
@@ -226,7 +254,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
   node dist/cloud-computer-operator-main.js backup-list
   ```
 
-  Returns `[{"id":"<uuid>","endpoint":"...","bucket":"...","prefix":"...","computerId":null,"needsRotation":false}]`.
+  Shows the location, assignment, and rotation status. `reserved: true` marks a Checkout reservation. `reservation` shows its Account, request and Stripe session IDs, expiry and paid time when available.
 
 - **Add**: write a mode `0600` JSON file containing these five fields and no others (`endpoint` is a bare `https://` origin, `bucket` is 3–63 lowercase characters, `prefix` matches `^[a-z0-9_-]+(?:/[a-z0-9_-]+)*$`, credentials max 255 chars):
 
@@ -262,7 +290,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
   Returns `{"rotated":true}`. Delete the temporary JSON file afterward.
 
-- **Remove** (only when unassigned, unreserved, and `needsRotation` is `false`):
+- **Remove** (only when unassigned and unreserved; revoke its S3 principal first):
 
   ```bash
   node dist/cloud-computer-operator-main.js backup-remove <target-uuid>
@@ -282,7 +310,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
    - Stripe sends `checkout.session.completed` (or `checkout.session.async_payment_succeeded`) to `POST /v1/cloud-computers/stripe-webhook`.
    - Account creates the `cc_<uuid>` record (`state: active`, `phase: provisioning`, `generation: 1`, `revision: 1`), binds the reserved backup target, generates a hostname `<token>.<OPENSTEER_CLOUD_COMPUTER_DOMAIN>`, generates a setup code and backup encryption password, and seals a bootstrap token.
    - Customer sees `status: "preparing"` ("Setting up") and `egress: "pending"`.
-   - Operator can run `node dist/cloud-computer-operator-main.js show <id>` and see `{"id":"cc_...","egress":"pending","status":"preparing"}`.
+   - Operator can run `node dist/cloud-computer-operator-main.js show <id>` and see `phase: "provisioning"`.
 3. **Server created**:
    - On its next poll (`GET /v1/cloud-computers/desired`), the reconciler sees the active record with no VM, verifies the revision via `POST /v1/cloud-computers/:id/check`, ensures the `opensteer-cloud-computers` firewall exists, creates Hetzner server `os-cc-<uuid>-1` (`start_after_create: false`) with labels `opensteer.com/cloud-computer=<id>` and `opensteer.com/generation=1`, powers it on, writes the Cloudflare `A` record (and `AAAA` if `ipv6Enabled`), and reports `phase: "booting"` with `providerServerId` and IP to `POST /v1/cloud-computers/:id/status`.
    - Reporting `providerServerId` starts the 20-minute bootstrap token timer in Account.
@@ -296,8 +324,8 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
    - Customer sees `status: "preparing"` and `egress: "assigned"` (or `"unavailable"`).
 5. **Boot-complete**:
    - Once all containers are healthy, the installer reads the local Host discovery document (`/.well-known/opensteer` on loopback) and calls `POST /v1/cloud-computers/:id/boot-complete` with `{ hostname, bootstrapToken, identity: { deploymentId, hostKeyFingerprint } }`.
-   - Account pins that `deploymentId` and `hostKeyFingerprint`, marks `bootCompletedAt`, clears the bootstrap token, and marks the Home as having been ready (`everReady`).
-   - The VM enables `opensteer-home.service`, `opensteer-home-update.timer` (hourly), `opensteer-home-backup.timer` (daily), and `opensteer-home-maintain.timer` (every 15 seconds, verifying the pod firewall and container health), and deletes the bootstrap token and boot result files.
+   - Account pins that `deploymentId` and `hostKeyFingerprint`, marks `bootCompletedAt` and clears the bootstrap token. The subsequent accepted `ready` report marks the generation ready.
+   - The VM enables `opensteer-home.service`, the daily backup timer, and the maintenance timer, then deletes the bootstrap token and boot result files. With installer support for `releaseManifestUrl`, a configured feed also enables the hourly update timer.
 6. **Ready**:
    - On its next poll, the reconciler makes a direct HTTPS request to the VM's IP using the Home hostname as SNI and `Host`, verifies the signed `/.well-known/opensteer` envelope matches the pinned `deploymentId` and `hostKeyFingerprint`, and reports `phase: "ready"` to Account.
    - Customer still sees `status: "preparing"` until Account finishes claiming the Home.
@@ -307,7 +335,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
    - The Opensteer Account stays this Home's sign-in authority by design: the owner signs in through it, a different Account subject can never claim the Home, and the Home's link to the Account cannot be removed (deleting the Cloud Computer ends it).
    - Account verifies the receipt, registers the Home in `deployments` for the buyer, and records `bootstrapReceiptAt`.
    - Customer now sees `status: "ready"` ("Running") with `address: "https://<hostname>"`, and the Home appears in their Opensteer list.
-   - Operator can run `node dist/cloud-computer-operator-main.js show <id>` (`status: "ready"`, `address`, `egress`) or on the VM run `sudo opensteer-home status` (prints `Version ...`, `docker compose ps`, and `Claimed`).
+   - Operator can run `node dist/cloud-computer-operator-main.js show <id>` (`phase: "ready"` and a non-null `claim.receiptAt`) or on the VM run `sudo opensteer-home status` (prints `Version ...`, `docker compose ps`, and `Claimed`).
 
 ### Suspend, resume, cancel, resubscribe, delete
 
@@ -340,17 +368,17 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
 ### Setup that never becomes ready
 
-- **How to recognise it**: `node dist/cloud-computer-operator-main.js show <id>` shows `status: "needs_attention"` with reason `"The Cloud Computer did not become ready before its deadline."` (from the reconciler after `OPENSTEER_HOME_READINESS_TIMEOUT_MS`, default 10 minutes), `"Your Cloud Computer took too long to set up. Contact support."` (from the claimer after 60 minutes), or `"Your Cloud Computer couldn’t be set up for your Account. Contact support."` (permanent claim error). Account logs `Cloud Computer claim failed` on claim errors.
+- **How to recognise it**: `show <id>` reports `phase: "failed"` with a `lastError` or a claim error under `claim.error` after the VM reaches `ready`. Account logs `Cloud Computer claim failed` on claim failures.
 - **What the system does**: The reconciler retries transient provider/DNS/discovery errors on every pass until `OPENSTEER_HOME_READINESS_TIMEOUT_MS` elapses, then reports `phase: "failed"` with `lastError`. The claimer retries transient errors with exponential backoff (up to 60 seconds) for 60 minutes from `readinessStartedAt`, then records `claimError` and stops retrying.
 - **What the operator does**:
   1. Check `show <id>`, Account logs (`Cloud Computer claim failed`), and reconciler logs (`home-provisioner.pass.failed`) to see whether provisioning, boot, discovery, or claiming failed.
   2. If the VM is reachable by console/SSH, inspect `systemctl status opensteer-home-managed.service`, `journalctl -u opensteer-home-managed.service`, and `sudo opensteer-home status` / `sudo opensteer-home logs <service>`.
   3. If the Home has never been ready, run `node dist/cloud-computer-operator-main.js reissue-bootstrap <id>` to rebuild it with a fresh bootstrap token.
-  4. If the Home already finished `boot-complete` (`everReady`), fix the underlying issue on the VM or replace it from a backup snapshot with `replace <computer-id> <snapshot-id>`.
+  4. For a `ready` Home with a claim error, fix the underlying issue and run `claim-retry <computer-id>`. Use snapshot replacement if the previously ready personal Home cannot be recovered.
 
 ### Expired bootstrap token
 
-- **How to recognise it**: `show <id>` returns `status: "needs_attention"` with reason `"The Cloud Computer’s boot credential expired."` (or `"A bootstrap token is required to create this Cloud Computer."`). On the VM, `journalctl -u opensteer-home-managed.service` shows `The Account refused Cloud Computer boot: the bootstrap token is invalid, spent, or expired (HTTP 401).` (or HTTP `403`/`409`/`410`) and exit code `78`.
+- **How to recognise it**: Compare a non-null `bootstrapExpiresAt` in `show <id>` to the current time. Check `lastError` and the VM's `journalctl -u opensteer-home-managed.service` for a rejected boot credential (HTTP `401`, exit code `78`).
 - **What the system does**: Bootstrap tokens expire 20 minutes after the reconciler first reports `providerServerId`. `opensteer-home-managed.service` has `RestartPreventExitStatus=78`, so it stops retrying once Account rejects the token. The reconciler stops trying to create a server without a token.
 - **What the operator does**:
   - Run:
@@ -368,7 +396,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 - **How to recognise it**: A Home that was previously ready (`everReady`) is unrecoverable in place (corrupted disk, broken VM, failed host) and the customer needs a fresh VM restored from a known-good restic snapshot.
 - **What the system does**: No automatic path ever replaces a ready Home.
 - **What the operator does**:
-  1. Find the exact restic snapshot ID (`8` to `64` lowercase hex characters) in the Cloud Computer's S3 backup prefix.
+  1. On the source VM, run `sudo opensteer-home snapshots` to find a restic snapshot ID (8–64 lowercase hex characters). It reads the repository using the VM's root-only credential files. Account has no snapshot list. If the source VM is unavailable, use a previously recorded snapshot ID or the existing backup recovery procedure with the repository credentials.
   2. Run:
 
      ```bash
@@ -377,16 +405,16 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
   3. Account bumps `generation`, stores `restoreSnapshot`, issues a fresh bootstrap token, removes the old deployment entry and OIDC client, and moves the record back to `provisioning`.
   4. The reconciler powers off the previous VM. The new VM restores the named snapshot before sending `boot-complete`. The reconciler verifies the pinned identity and Account claims the restored Home. The previous VM stays off until the owner completes a sign-in to the replacement, then the reconciler deletes it.
-  5. Watch progress with `node dist/cloud-computer-operator-main.js show <computer-id>` until `status` returns to `"ready"`.
+  5. Watch progress with `node dist/cloud-computer-operator-main.js show <computer-id>` until `phase` is `"ready"` and `claim.receiptAt` is set.
 
 ### Second reconciler started by mistake
 
 - **How to recognise it**: Reconciler logs emit `{"event":"home-provisioner.lease.conflict","service":"Account","status":409}` on stderr, or a pod fails at startup if `OPENSTEER_HOME_PROVISIONER_REPLICAS` is not `"1"`.
-- **What the system does**: Account holds a single-holder lease (`POST /v1/cloud-computers/lease`, header `x-opensteer-provisioner-lease`, 10-minute TTL). Any second instance gets HTTP `409` on lease acquisition and on every `desired`, `check`, and `status` call, so it cannot make provider changes.
+- **What the system does**: Account holds a single-holder lease (`POST /v1/cloud-computers/lease`, header `x-opensteer-provisioner-lease`, 10-minute TTL). A second instance gets HTTP `409` on lease acquisition. Without the current lease the `desired`, `check`, and `status` routes return HTTP `403`.
 - **What the operator does**:
   1. Scale the `home-provisioner` Deployment back to `1` replica and verify `strategy.type: Recreate` in `deploy/home-provisioner/deployment.yaml`.
   2. Terminate any stray pod or local process running `home-provisioner`.
-  3. If the previous holder died without releasing the lease, wait for its 10-minute lease TTL to expire; the surviving reconciler acquires the lease automatically on its next 10-second loop.
+  3. Run `lease-show`. If the previous holder died, wait until its lease expires. The surviving reconciler can then acquire it automatically. Use `lease-release <holder>` to clear the expired lease explicitly.
 
 ### Provider rate limits
 
@@ -408,7 +436,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 ### DNS or identity mismatch
 
 - **How to recognise it**:
-  - `show <id>` shows `status: "needs_attention"` with `"The Cloud Computer DNS operation failed."` (Cloudflare rejected a pre-existing `CNAME` or an `A`/`AAAA` record lacking the `Opensteer Cloud Computer` comment, or another DNS error occurred).
+  - `show <id>` shows `lastError: "The Cloud Computer DNS operation failed."` (Cloudflare rejected a pre-existing `CNAME` or an `A`/`AAAA` record lacking the `Opensteer Cloud Computer` comment, or another DNS error occurred).
   - Or `show <id>` shows `"The Cloud Computer reported a different Home identity for this generation."` (reconciler probed the VM IP with SNI/Host and saw a different `deploymentId` or `hostKeyFingerprint` than the one pinned at `boot-complete`).
   - Or Account logs `Cloud Computer claim failed` with `The Cloud Computer answered as a different Home` and sets `status: "needs_attention"`, reason `"Your Cloud Computer couldn’t be set up for your Account. Contact support."`.
 - **What the system does**: On an identity mismatch, the reconciler deletes the Cloudflare DNS record so traffic does not reach the wrong host, reports `phase: "failed"`, and stops publishing DNS. On a pre-existing foreign DNS record, Cloudflare calls fail closed without overwriting the foreign record.
@@ -419,12 +447,12 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
 ### Stripe outage during delete
 
-- **How to recognise it**: `show <id>` shows `status: "needs_attention"` with reason `"Deletion is waiting for Stripe cancellation."`. Account logs `Cloud Computer billing reconciliation failed`.
+- **How to recognise it**: `show <id>` has a `deletionRequestedAt` timestamp while billing has yet to reach `"canceled"`. The customer view reports that deletion is waiting for Stripe cancellation.
 - **What the system does**: Account records `deletionRequestedAt` and refuses to delete the VM until Stripe confirms the subscription is canceled. Account's 60-second billing reconciler retries canceling the Stripe subscription on every pass. Once Stripe succeeds, Account marks `state: "deleted"`, cancels the VM and DNS via the reconciler, and releases the pools for rotation.
 - **What the operator does**:
   1. Check Stripe's status page and Account's outbound network connectivity and `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY`.
   2. Once Stripe is reachable again, wait up to 60 seconds for the billing reconciler to finish the cancellation, or re-run `node dist/cloud-computer-operator-main.js delete <id>` to trigger the cancellation immediately.
-  3. Confirm `show <id>` transitions to `status: "deleted"`.
+  3. Confirm `show <id>` reaches `phase: "deleted"` and has a `tombstonedAt` timestamp.
 
 ### Missed webhook
 
@@ -432,21 +460,26 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 - **What the system does**: Account's background billing reconciler runs at startup and every 60 seconds. It reconciles open checkouts against Stripe, processes deferred checkouts, and refreshes every active or suspended subscription directly from Stripe. Missed webhooks self-heal within 60 seconds as long as Account can reach Stripe.
 - **What the operator does**:
   1. Check Stripe Dashboard -> Developers -> Webhooks for delivery errors to `/v1/cloud-computers/stripe-webhook` (HTTP `401` indicates a mismatched `OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET`; HTTP `404` indicates Cloud Computer is disabled on Account).
-  2. Check Account logs for `Cloud Computer billing reconciliation failed`.
+  2. Check Account logs for `Cloud Computer billing reconciliation failed` and its redacted `error` field. Use `checkout-list` to find deferred or unresolved payments and `billing-reconcile` to run a pass now.
   3. Fix the webhook secret or Stripe connectivity; the 60-second reconciler catches up automatically (and you can also resend failed events in Stripe, which are deduplicated by event ID).
 
 ### No free backup target or egress endpoint
 
 - **How to recognise it**:
-  - **Backup pool empty**: Customer checkout fails with HTTP `503` (`"Cloud Computer checkout is not available right now"`). `node dist/cloud-computer-operator-main.js backup-list` shows every row has a non-null `computerId` or `needsRotation: true` (note: rows currently reserved by an open checkout still show `computerId: null` in `backup-list`).
-  - **Egress pool empty**: `show <id>` shows `"egress": "unavailable"` (customer sees Browser IP: "Browsing paused"). `node dist/cloud-computer-operator-main.js egress-list` shows every row has a non-null `computerId` or `needsRotation: true`.
+  - **Backup pool empty**: Customer checkout fails with HTTP `503` (`"Cloud Computer checkout is not available right now"`). `node dist/cloud-computer-operator-main.js backup-list` shows every row has a non-null `computerId`, `reserved: true`, or `needsRotation: true`.
+  - **Egress pool empty**: `show <id>` shows `egressUnavailable: true` (customer sees Browser IP: "Browsing paused"). `node dist/cloud-computer-operator-main.js egress-list` shows every row has a non-null `computerId` or `needsRotation: true`.
 - **What the system does**:
   - With no free backup target, Account refuses new checkouts.
-  - With no free egress endpoint, boot still completes and the Home comes up, but without an upstream proxy and marked `egress: "unavailable"`.
+  - With no free egress endpoint, boot still completes and the Home comes up, but without an upstream proxy and the customer sees browsing paused.
 - **What the operator does**:
   1. Add new entries with `backup-add` / `egress-add`, or rotate released entries (`needsRotation: true`) with `backup-rotate` / `egress-rotate`.
   2. New checkouts succeed immediately once a backup target is free.
-  3. Because egress credentials are delivered during `POST /v1/cloud-computers/:id/boot`, a Home that booted with `egress: "unavailable"` does not pick up a newly added egress endpoint automatically; either wait for a `replace` or configure the egress secret files on the VM manually.
+  3. Run `egress-assign <computer-id>`. The Home can then fetch its exclusive credentials without rebuilding. Installed versions without the VM refresh support still require the VM-side change below.
+
+### Managed Home installer contract
+
+- **Release feed.** The boot response has an optional `releaseManifestUrl`. The installer must validate it as a public HTTPS URL without credentials, query, or fragment, write it to the root-only `config.env` as the quoted `OPENSTEER_HOME_RELEASE_MANIFEST_URL`, and enable the managed update timer only when the URL is present. Boot still uses the six image digests in the pinned `release`. The update and rollback paths must require digests for all six services and must fail closed if a feed provides image tags. Publishing a feed or changing an Account setting does not modify an already installed VM's configuration.
+- **Late browser egress.** From the root maintenance task, when the Home still has no upstream, call `GET /v1/cloud-computers/<id>/egress` on its configured Account origin. Use HTTP Basic with `OPENSTEER_HOME_OIDC_CLIENT_ID` and `secrets/oidc_client_secret` from installation. Pass the authorization data through a root-only file or stdin, outside the process arguments and logs. A successful response contains either `{}` or `{"egress":{"url":"…","username":"…","password":"…"}}`. Throttle polling to once a minute. When credentials arrive, write the three root-only egress secret files and apply the existing egress Compose configuration, preserving the browser egress firewall boundary. Keep browsing paused after an empty response or failed refresh, and do not overwrite working credentials on errors. Account rejects a revoked or superseded credential and a suspended or deleting Home.
 
 ### Restoring a backup by hand on the VM
 

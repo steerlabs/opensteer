@@ -725,6 +725,10 @@ integration("Cloud Computer Account service", () => {
       assignmentId: assignment.assignmentId,
     };
     expect(assignment).toMatchObject(marker);
+    expect(await runCloudComputerOperator(cloud, ["show", assignment.computerId])).toMatchObject({
+      accountId: assignee.id,
+      workAssignmentId: assignment.assignmentId,
+    });
     expect((await assign(payload)).json()).toMatchObject({
       assignmentId: assignment.assignmentId,
       computerId: assignment.computerId,
@@ -733,7 +737,13 @@ integration("Cloud Computer Account service", () => {
     const assignmentPath = `${org.path}/assignments/${assignment.assignmentId}`;
     const hostPath = `${organizationWorkPath}/${assignment.assignmentId}`;
     const homePath = `${org.path}/work-home`;
-    const ownerPath = accountCloudComputerPath(CloudComputerIdSchema.parse(assignment.computerId));
+    const computerId = CloudComputerIdSchema.parse(assignment.computerId);
+    const ownerPath = accountCloudComputerPath(computerId);
+    const readWorkHome = async () => {
+      const response = await requestAs(assignee, "GET", homePath);
+      expect(response.statusCode).toBe(200);
+      return WorkHomeResponseSchema.parse(response.json());
+    };
     const paths = [
       ["GET", `${org.path}/admin`, undefined],
       ["POST", `${org.path}/seats`, { requestId: randomUUID(), seats: 2 }],
@@ -769,7 +779,16 @@ integration("Cloud Computer Account service", () => {
     });
     expect((await requestAs(outsider, "GET", homePath)).statusCode).toBe(403);
     expect((await requestAs(other, "GET", homePath)).json()).toBeNull();
-    expect((await requestAs(assignee, "GET", ownerPath)).statusCode).toBe(200);
+    expect(await readWorkHome()).toMatchObject({
+      assignment: { ...marker, homeStatus: "preparing", deploymentId: null },
+    });
+    const ownerRead = await requestAs(assignee, "GET", ownerPath);
+    expect(ownerRead.statusCode).toBe(200);
+    expect(ownerRead.json()).toMatchObject({ id: computerId, work: marker });
+    expect(await cloud.show(computerId, assignee.id)).toMatchObject({
+      id: computerId,
+      work: marker,
+    });
     expect(
       (await requestAs(assignee, "GET", accountCloudComputersPath)).json().computers,
     ).toMatchObject([{ id: assignment.computerId, work: marker }]);
@@ -882,6 +901,9 @@ integration("Cloud Computer Account service", () => {
     await pass();
     expect(booted?.work).toEqual(marker);
     expect((await complete(desired)).json()).toEqual({ completed: true });
+    expect(await readWorkHome()).toMatchObject({
+      assignment: { ...marker, homeStatus: "preparing", deploymentId: identity.deploymentId },
+    });
     await pass();
     const home = fakeHome({ hostname: desired.hostname, boot: booted! });
     expect(await claimer(home.fetch).runOnce()).toBe(1);
@@ -890,10 +912,8 @@ integration("Cloud Computer Account service", () => {
     expect(home.state.receipt?.document.work).toEqual(marker);
     expect(dns).toBe(true);
     const address = `https://${desired.hostname}`;
-    expect(
-      WorkHomeResponseSchema.parse((await requestAs(assignee, "GET", homePath)).json()),
-    ).toMatchObject({
-      assignment: { ...marker, homeStatus: "ready", address },
+    expect(await readWorkHome()).toMatchObject({
+      assignment: { ...marker, homeStatus: "ready", address, deploymentId: identity.deploymentId },
       policy: defaultWorkPolicy,
     });
     expect((await requestAs(other, "GET", homePath)).json()).toBeNull();
@@ -1734,7 +1754,7 @@ integration("Cloud Computer Account service", () => {
 
     await expect(cloud.mutate(id, "reissue")).rejects.toThrow("working Home");
     await expect(cloud.mutate(id, "replace", undefined, "")).rejects.toThrow("snapshot");
-    await cloud.mutate(id, "replace", undefined, "aabbccdd");
+    await runCloudComputerOperator(cloud, ["replace", id, "aabbccdd"]);
     const replacement = (await getDesired(id))!;
     expect(replacement).toMatchObject({
       generation: pinned.generation + 1,
@@ -1824,7 +1844,11 @@ integration("Cloud Computer Account service", () => {
     expect(await runCloudComputerOperator(cloud, ["show", id])).toMatchObject({
       claim: { error: "setup-failed", receiptAt: null },
     });
-    now = new Date(now.getTime() + 61 * 60_000);
+    await database
+      .updateTable("cloudComputers")
+      .set({ readinessStartedAt: new Date(now.getTime() - 61 * 60_000) })
+      .where("id", "=", id)
+      .executeTakeFirstOrThrow();
     expect(await runCloudComputerOperator(cloud, ["claim-retry", id])).toEqual({ queued: true });
     const home = fakeHome({ hostname: computer.hostname, boot: booted });
     expect(await claimer(home.fetch).runOnce()).toBe(1);
@@ -1832,6 +1856,7 @@ integration("Cloud Computer Account service", () => {
     expect(await runCloudComputerOperator(cloud, ["show", id])).toMatchObject({
       claim: { error: null, receiptAt: expect.any(Date) },
       generation: computer.generation,
+      readinessStartedAt: now,
     });
     await expect(runCloudComputerOperator(cloud, ["claim-retry", id])).rejects.toThrow(
       "no eligible failed claim",
@@ -1854,7 +1879,7 @@ integration("Cloud Computer Account service", () => {
       generation: computer.generation,
       revision: computer.revision,
       hostname: computer.hostname,
-      providerServerId: 7,
+      providerServerId: "7",
       ipv4: "192.0.2.7",
       bootstrapExpiresAt: expect.any(Date),
       deletionRequestedAt: null,
@@ -2287,6 +2312,9 @@ integration("Cloud Computer Account service", () => {
       ).deferredCheckout,
     ).toMatchObject({ id: order.session.id });
     expect(await runCloudComputerOperator(cloud, ["checkout-list"])).toMatchObject({
+      paidAttempts: [
+        { accountId: account.id, requestId: order.requestId, paidAt: expect.any(Date) },
+      ],
       deferredEvents: [
         {
           eventId: "evt_fenced",
