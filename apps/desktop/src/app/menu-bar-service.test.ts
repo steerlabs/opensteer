@@ -1,7 +1,8 @@
 import { createId } from "@opensteer/core";
 import { MachineSummarySchema, type MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { activityIdle, DesktopActivity, type HomeHost } from "./desktop-activity.js";
+import { activityIdle, DesktopActivity, fencedIdle, type HomeHost } from "./desktop-activity.js";
+import { AgentAdmission } from "./agent-admission.js";
 import type { MenuBarInput } from "@opensteer/client/computers";
 import {
   DesktopMenuBarService,
@@ -23,9 +24,10 @@ import {
 const runnerId = createId("runner");
 const unreported = { checkedAt: null, detail: null, readiness: "unavailable" as const };
 
-function machine(id: string, revision: number): MachineSummary {
+function machine(id: string, revision: number, selfRunnerId?: string): MachineSummary {
   return MachineSummarySchema.parse({
     id,
+    ...(selfRunnerId ? { selfRunnerId } : {}),
     kind: "computer",
     name: "Studio",
     ownership: "mine",
@@ -79,16 +81,23 @@ function fakeHost(
     conflict?: boolean;
     fail?: boolean;
     needsYou?: Readonly<Record<string, number | "unreachable">>;
-    holdAttention?: boolean;
+    holdAttention?: boolean | string;
   } = {},
 ) {
-  const state = { revision: input.revision ?? 4, fail: input.fail ?? false };
+  const state = {
+    revision: input.revision ?? 4,
+    fail: input.fail ?? false,
+    /** The row this Mac's Runner has in the Home; another Device can take its place. */
+    thisMacId: runnerId as string,
+    listsThisMac: true,
+  };
   const dispatched: unknown[] = [];
   const reads: { resolve: () => void }[] = [];
   let holdReads = false;
   const attention = (deploymentId: string) =>
     vi.fn(async () => {
-      if (input.holdAttention) await new Promise<void>(() => undefined);
+      if (input.holdAttention === true || input.holdAttention === deploymentId)
+        await new Promise<void>(() => undefined);
       const count = input.needsYou?.[deploymentId] ?? 0;
       if (count === "unreachable") throw new Error("Host unreachable");
       return { ok: true as const, data: { needsYou: count, unread: false } };
@@ -107,9 +116,15 @@ function fakeHost(
       const revision = state.revision;
       if (holdReads) await new Promise<void>((resolve) => reads.push({ resolve }));
       if (state.fail) throw new Error("Host unreachable");
+      const thisMac =
+        state.thisMacId === runnerId
+          ? machine(runnerId, revision)
+          : machine(state.thisMacId, revision, runnerId);
       return {
         ok: true as const,
-        data: { machines: [machine(createId("runner"), 1), machine(runnerId, revision)] },
+        data: {
+          machines: [machine(createId("runner"), 1), ...(state.listsThisMac ? [thisMac] : [])],
+        },
       };
     }) as unknown as HomeHost["machines.list"],
     "personal.shell.get": vi.fn(async () => {
@@ -118,8 +133,8 @@ function fakeHost(
         ok: true as const,
         data: {
           tasks: [
-            { status: "running", title: "Book flights" },
-            { status: "idle", title: "Done thing" },
+            { id: "thr_flights", status: "running", title: "Book flights" },
+            { id: "thr_done", status: "idle", title: "Done thing" },
           ],
         },
       };
@@ -153,10 +168,7 @@ function fakeHost(
   };
 }
 
-interface Local {
-  apps: MenuBarInput["local"]["apps"];
-  tabs: MenuBarInput["local"]["tabs"];
-}
+type Local = MenuBarInput["local"];
 
 function service(
   host: HomeHost | ((deploymentId: string) => HomeHost),
@@ -165,7 +177,8 @@ function service(
     devices?: MenuBarDeviceHome[];
     selected?: string;
     local?: Local;
-    stopRow?: (id: string) => boolean;
+    stopRow?: (id: string) => Promise<boolean> | boolean;
+    phase?: MenuBarInput["stop"]["phase"];
   } = {},
 ) {
   const local: Local = input.local ?? { apps: [], tabs: [] };
@@ -175,7 +188,7 @@ function service(
     selected: () => ({ deploymentId: input.selected ?? "dep_home", devicesAvailable: true }),
     host: typeof host === "function" ? host : () => host,
     local: () => local,
-    stop: () => ({ stopped: false, stoppedAt: null, problem: null }),
+    stop: () => ({ phase: input.phase ?? "running", stoppedAt: null, problem: null }),
     stopRow: input.stopRow ?? (() => false),
     openAtLogin: async () => ({ on: true, available: true }),
     log: vi.fn(),
@@ -216,13 +229,64 @@ describe("menu bar state from this Mac alone", () => {
     expect((await menu.status()).needsYou).toEqual({
       line: "3 need you",
       deploymentId: "dep_home",
+      partial: false,
     });
     const unreachable = fakeHost({ needsYou: { dep_home: 0, dep_office: "unreachable" } });
     const quiet = service(unreachable.hostFor, { devices: [office()] });
     await quiet.refresh();
     const status = await quiet.status();
-    expect(status.needsYou).toBeNull();
-    expect(status.icon.attention).toBe(false);
+    expect(status.needsYou).toEqual({
+      line: "Couldn’t check Office for what needs you",
+      deploymentId: "dep_office",
+      partial: true,
+    });
+  });
+
+  it("shows each Home's count as it answers, as partial while another has not", async () => {
+    const fake = fakeHost({ needsYou: { dep_home: 2 }, holdAttention: "dep_office" });
+    const menu = service(fake.hostFor, { devices: [office()] });
+    const changed = vi.fn();
+    menu.subscribe(changed);
+    void menu.refresh();
+    await vi.waitFor(async () =>
+      expect((await menu.status()).needsYou).toEqual({
+        line: "At least 2 need you",
+        deploymentId: "dep_home",
+        partial: true,
+      }),
+    );
+    expect(changed).toHaveBeenCalled();
+  });
+
+  it("forgets a Home's count once this Mac no longer works for it", async () => {
+    const devices = [office()];
+    const menu = service(fakeHost().hostFor, { hosted: null, devices });
+    menu.noteNeedsYou("dep_office", 2);
+    expect((await menu.status()).needsYou?.line).toBe("2 need you");
+    devices.pop();
+    expect((await menu.status()).needsYou).toBeNull();
+    devices.push(office());
+    expect((await menu.status()).needsYou).toBeNull();
+  });
+
+  it("draws the status item from what main holds, without reading a Home", async () => {
+    let phase: MenuBarInput["stop"]["phase"] = "running";
+    const fake = fakeHost({ holdAttention: true });
+    const menu = new DesktopMenuBarService({
+      hostedHome: () => new Promise(() => undefined),
+      deviceHomes: () => new Promise(() => undefined),
+      selected: () => null,
+      host: fake.hostFor,
+      local: () => ({ apps: [], tabs: [] }),
+      stop: () => ({ phase, stoppedAt: null, problem: null }),
+      stopRow: () => false,
+      openAtLogin: () => new Promise(() => undefined),
+      log: vi.fn(),
+    });
+    expect(menu.icon()).toEqual({ attention: false, unreachable: false, stopped: false });
+    phase = "stopping";
+    menu.noteNeedsYou("dep_home", 1);
+    expect(menu.icon()).toEqual({ attention: true, unreachable: false, stopped: true });
   });
 
   it("takes the window's live count for the Home it shows, and redraws", async () => {
@@ -236,15 +300,52 @@ describe("menu bar state from this Mac alone", () => {
     expect((await menu.status()).icon.attention).toBe(true);
   });
 
-  it("stops one row the way its kind is stopped, and refuses one that already ended", () => {
+  it("stops one row the way its kind is stopped, and refuses one that already ended", async () => {
     const stopRow = vi.fn((id: string) => id === "apps:cus_1");
     const menu = service(fakeHost().hostFor, { stopRow });
     const changed = vi.fn();
     menu.subscribe(changed);
-    menu.stopRow("apps:cus_1");
+    await menu.stopRow("apps:cus_1");
     expect(stopRow).toHaveBeenCalledWith("apps:cus_1");
-    expect(changed).toHaveBeenCalledOnce();
-    expect(() => menu.stopRow("apps:cus_gone")).toThrow(/already ended/);
+    expect(changed).toHaveBeenCalled();
+    await expect(menu.stopRow("apps:cus_gone")).rejects.toThrow(/already ended/);
+  });
+
+  it("keeps a task of this Mac's Home as stopping while its Stop goes out, and failed when it did not", async () => {
+    const fake = fakeHost();
+    const sent = Promise.withResolvers<boolean>();
+    let attempt = 0;
+    const menu = service(fake.hostFor, {
+      stopRow: () => (++attempt === 1 ? sent.promise : Promise.reject(new Error("unreachable"))),
+    });
+    await menu.refresh();
+    const row = async () =>
+      (await menu.status()).rightNow.find((candidate) => candidate.id === "home:thr_flights");
+    expect(await row()).toMatchObject({ kind: "task", stoppable: true, state: "active" });
+    const stopping = menu.stopRow("home:thr_flights");
+    expect(await row()).toMatchObject({ state: "stopping" });
+    sent.resolve(true);
+    await stopping;
+    await expect(menu.stopRow("home:thr_flights")).rejects.toThrow("unreachable");
+    expect(await row()).toMatchObject({ state: "failed" });
+  });
+
+  it("keeps a Device's Run as stopping until its Runner no longer reports it", async () => {
+    const runs = [
+      { deploymentId: "dep_office", runId: "run_1", engine: "Codex", purpose: "task" as const },
+    ];
+    const menu = service(fakeHost().hostFor, {
+      devices: [office()],
+      local: { apps: [], tabs: [], runs } as Local,
+      stopRow: () => true,
+    });
+    await menu.stopRow("runner:dep_office:run_1");
+    expect((await menu.status()).rightNow[0]).toMatchObject({
+      id: "runner:dep_office:run_1",
+      state: "stopping",
+    });
+    runs.pop();
+    expect((await menu.status()).rightNow).toEqual([]);
   });
 });
 
@@ -271,7 +372,13 @@ describe("menu bar service", () => {
     const { host, dispatched } = fakeHost();
     const menu = service(host);
     await menu.refresh();
-    await menu.setSwitch({ deploymentId: "dep_home", capability: "apps", on: true, revision: 4 });
+    await menu.setSwitch({
+      deploymentId: "dep_home",
+      machineId: runnerId,
+      capability: "apps",
+      on: true,
+      revision: 4,
+    });
     expect(dispatched).toEqual([
       expect.objectContaining({
         type: "machine.access.update",
@@ -290,7 +397,13 @@ describe("menu bar service", () => {
     state.revision = 5;
     await menu.refresh();
     await expect(
-      menu.setSwitch({ deploymentId: "dep_home", capability: "apps", on: true, revision: 4 }),
+      menu.setSwitch({
+        deploymentId: "dep_home",
+        machineId: runnerId,
+        capability: "apps",
+        on: true,
+        revision: 4,
+      }),
     ).rejects.toThrow(switchConflictSentence);
     expect(dispatched).toEqual([]);
   });
@@ -304,6 +417,7 @@ describe("menu bar service", () => {
     await vi.waitFor(() => expect(fake.host["machines.list"]).toHaveBeenCalledTimes(2));
     const writing = menu.setSwitch({
       deploymentId: "dep_home",
+      machineId: runnerId,
       capability: "apps",
       on: true,
       revision: 4,
@@ -315,12 +429,42 @@ describe("menu bar service", () => {
     expect((await menu.status()).thisMac?.revision).toBe(5);
   });
 
+  it("refuses a click on one Device's switch once another Device took its place at the same revision", async () => {
+    const { host, dispatched, state } = fakeHost();
+    const menu = service(host);
+    await menu.refresh();
+    const shown = (await menu.status()).thisMac;
+    expect(shown?.machineId).toBe(runnerId);
+    state.thisMacId = "rnr_replacement";
+    await menu.refresh();
+    expect((await menu.status()).thisMac).toMatchObject({
+      machineId: "rnr_replacement",
+      revision: 4,
+    });
+    await expect(
+      menu.setSwitch({
+        deploymentId: "dep_home",
+        machineId: shown!.machineId,
+        capability: "apps",
+        on: true,
+        revision: shown!.revision!,
+      }),
+    ).rejects.toThrow(switchConflictSentence);
+    expect(dispatched).toEqual([]);
+  });
+
   it("says when another device changed the switch first", async () => {
     const { host } = fakeHost({ conflict: true });
     const menu = service(host);
     await menu.refresh();
     await expect(
-      menu.setSwitch({ deploymentId: "dep_home", capability: "files", on: false, revision: 4 }),
+      menu.setSwitch({
+        deploymentId: "dep_home",
+        machineId: runnerId,
+        capability: "files",
+        on: false,
+        revision: 4,
+      }),
     ).rejects.toThrow(switchConflictSentence);
   });
 
@@ -329,10 +473,22 @@ describe("menu bar service", () => {
     const menu = service(host);
     await menu.refresh();
     await expect(
-      menu.setSwitch({ deploymentId: "dep_home", capability: "apps", on: true, revision: 4 }),
+      menu.setSwitch({
+        deploymentId: "dep_home",
+        machineId: runnerId,
+        capability: "apps",
+        on: true,
+        revision: 4,
+      }),
     ).rejects.toThrow(/can’t be changed/);
     await expect(
-      menu.setSwitch({ deploymentId: "dep_other", capability: "apps", on: true, revision: 4 }),
+      menu.setSwitch({
+        deploymentId: "dep_other",
+        machineId: runnerId,
+        capability: "apps",
+        on: true,
+        revision: 4,
+      }),
     ).rejects.toThrow(/can’t be changed/);
     expect(dispatched).toEqual([]);
   });
@@ -344,14 +500,12 @@ describe("activity for quitting and updating", () => {
     input: {
       hosted?: { deploymentId: string; runnerId: string } | null;
       devices?: MenuBarDeviceHome[];
-      selected?: string | null;
-      local?: { appSessions: number; browserTabs: number };
+      local?: { appSessions: number; browserTabs: number; runs?: number };
     },
   ) =>
     new DesktopActivity({
       hostedHome: async () => (input.hosted === undefined ? hostedHome : input.hosted),
       deviceHomes: async () => input.devices ?? [],
-      selected: () => (input.selected === undefined ? "dep_home" : input.selected),
       host: () => host,
       local: () => input.local ?? { appSessions: 0, browserTabs: 0 },
     });
@@ -370,39 +524,80 @@ describe("activity for quitting and updating", () => {
 
   it("is idle only when everything was read and nothing is running", async () => {
     const { host } = fakeHost();
-    const idle = await activity(host, {
-      hosted: null,
-      devices: [office()],
-      selected: "dep_office",
-    }).snapshot();
+    const idle = await activity(host, { hosted: null, devices: [office()] }).snapshot();
     expect(idle).toMatchObject({ known: true, lines: [] });
     expect(activityIdle(idle)).toBe(true);
   });
 
-  it("is unknown, never idle, for the hosted Home while another Home is shown", async () => {
+  it("reads every Home this Mac works for, whichever one the window shows", async () => {
     const { host } = fakeHost();
-    const snapshot = await activity(host, {
-      devices: [office()],
-      selected: "dep_office",
+    const read = vi.fn((_deploymentId: string) => host);
+    const snapshot = await new DesktopActivity({
+      hostedHome: async () => hostedHome,
+      deviceHomes: async () => [office(), { ...office(), deploymentId: "dep_lab", name: "Lab" }],
+      host: read,
+      local: () => ({ appSessions: 0, browserTabs: 0, runs: 1 }),
     }).snapshot();
-    expect(snapshot.known).toBe(false);
-    expect(activityIdle(snapshot)).toBe(false);
+    expect(read.mock.calls.map(([deploymentId]) => deploymentId)).toEqual([
+      "dep_home",
+      "dep_office",
+      "dep_lab",
+    ]);
+    expect(snapshot).toMatchObject({
+      known: true,
+      deviceHomes: ["Office", "Lab"],
+      lines: ["Running: Book flights", "A Device on this Mac is running a task"],
+    });
   });
 
-  it("is unknown for a Device Runner working for a Home the window does not show", async () => {
-    const { host } = fakeHost();
-    const snapshot = await activity(host, {
-      hosted: null,
-      devices: [office(), { ...office(), deploymentId: "dep_lab", name: "Lab" }],
-      selected: "dep_office",
-    }).snapshot();
-    expect(snapshot).toMatchObject({ known: false, deviceHomes: ["Office", "Lab"] });
+  it("is unknown when a Home does not list this Mac's Runner", async () => {
+    const fake = fakeHost();
+    fake.state.listsThisMac = false;
+    const snapshot = await activity(fake.host, { hosted: null, devices: [office()] }).snapshot();
+    expect(snapshot.known).toBe(false);
+    expect(activityIdle(snapshot)).toBe(false);
   });
 
   it("is unknown when the Home cannot be read", async () => {
     const { host } = fakeHost({ fail: true });
     const snapshot = await activity(host, {}).snapshot();
     expect(snapshot.known).toBe(false);
+  });
+
+  it("fences the update's last look so nothing new starts before the restart", async () => {
+    const admission = new AgentAdmission();
+    admission.reopen();
+    let openDuringLook: boolean | null = null;
+    const busy = await fencedIdle(
+      admission,
+      () => false,
+      async () => {
+        openDuringLook = admission.open;
+        return false;
+      },
+    );
+    expect(openDuringLook).toBe(false);
+    expect(busy.idle).toBe(false);
+    expect(admission.open).toBe(true);
+
+    const idle = await fencedIdle(
+      admission,
+      () => false,
+      async () => true,
+    );
+    expect(idle.idle).toBe(true);
+    expect(admission.open).toBe(false);
+    idle.release();
+    expect(admission.open).toBe(true);
+
+    // A Stop the person pressed meanwhile is never undone by the update backing off.
+    const stopped = await fencedIdle(
+      admission,
+      () => true,
+      async () => false,
+    );
+    expect(stopped.idle).toBe(false);
+    expect(admission.open).toBe(false);
   });
 });
 

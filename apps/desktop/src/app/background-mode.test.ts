@@ -183,6 +183,38 @@ describe("quit routing through the production app menu", () => {
     await accepted.exited();
   });
 
+  it("still asks, saying it cannot tell, when what is running here cannot be read", async () => {
+    const { confirm, mode } = fixture(async () => {
+      throw new Error("Device status unavailable");
+    }, false);
+    await expect(mode.quitCompletely()).resolves.toBe(false);
+    expect(confirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.stringContaining("can’t tell right now whether agents are using this Mac"),
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("lets a termination dismiss the open question and shut down", async () => {
+    const { confirm, exited, mode, shutdown } = fixture(async () => ({
+      ...nothing,
+      hostsHome: true,
+    }));
+    confirm.mockImplementationOnce(
+      (_question, signal: AbortSignal) =>
+        new Promise<boolean>((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        ),
+    );
+    const quitting = mode.quitCompletely();
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalled());
+    process.emit("SIGTERM");
+    await expect(quitting).resolves.toBe(true);
+    expect(shutdown.requested).toBe(true);
+    await exited();
+  });
+
   it("asks nothing when SIGTERM arrives while Quit Completely reads what is running", async () => {
     let finish!: (snapshot: ActivitySnapshot) => void;
     const { confirm, exited, mode, shutdown } = fixture(

@@ -5,6 +5,7 @@ import {
   RunnerWorkerEnginesRecheckMessageSchema,
   RunnerWorkerPowerMessageSchema,
   RunnerWorkerSecretsMessageSchema,
+  RunnerWorkerStopRunMessageSchema,
 } from "./supervisor/runner-worker-secrets.js";
 
 // Before the Runner holds any credential in memory.
@@ -28,6 +29,8 @@ const delivered = new Promise<Readonly<Record<string, string>> | null>((resolveP
 let recheckEngines: () => void = () => undefined;
 let notifySleeping: () => void = () => undefined;
 let notifyAwake: () => void = () => undefined;
+// A Run can only be running once the daemon has started.
+let stopRun: (runId: string) => boolean = () => false;
 
 parent.on("message", (event) => {
   const value = event.data as { type?: unknown };
@@ -38,6 +41,11 @@ parent.on("message", (event) => {
   }
   if (RunnerWorkerEnginesRecheckMessageSchema.safeParse(event.data).success) {
     recheckEngines();
+    return;
+  }
+  const stop = RunnerWorkerStopRunMessageSchema.safeParse(event.data);
+  if (stop.success) {
+    stopRun(stop.data.runId);
     return;
   }
   const power = RunnerWorkerPowerMessageSchema.safeParse(event.data);
@@ -58,6 +66,18 @@ void delivered
         notifySleeping = control.notifySleeping;
         notifyAwake = control.notifyAwake;
         recheckEngines = control.recheckEngines;
+        stopRun = control.stopRun;
+      },
+      onActivity: (runs) => {
+        parent.postMessage({
+          runs: runs.map(({ runId, startedAt, purpose, engine }) => ({
+            runId,
+            startedAt,
+            purpose,
+            engine,
+          })),
+          type: "runner.worker.activity",
+        });
       },
       onConnected: ({ environmentId, runnerId }) => {
         parent.postMessage({ environmentId, runnerId, type: "runner.worker.connected" });

@@ -367,8 +367,8 @@ export class ComputerUseService {
    * already closed, refuses what an agent asks next and what it asked before
    * the Stop but had not yet sent. The person's own views keep working.
    */
-  pause(): void {
-    for (const bridge of this.#bridges.values()) bridge.endAgentSessions();
+  async pause(): Promise<void> {
+    await Promise.all([...this.#bridges.values()].map((bridge) => bridge.endAgentSessions()));
   }
 
   resume(): void {
@@ -596,12 +596,20 @@ export class ComputerUseService {
             "This Mac's helper does not support owner input.",
           );
       }
-      // Installing and the handshake can outlast a Stop; the frame is written
-      // only if the agent's admission is still the current one.
-      if (options.admission !== undefined && !this.#admission.current(options.admission))
+      // Installing, connecting and the handshake can outlast a Stop; the
+      // frame is written only if the agent's admission is still the current
+      // one at the moment of the write.
+      const { admission, admitted: alsoAdmitted, ...requestOptions } = options;
+      const admitted = () =>
+        (admission === undefined || this.#admission.current(admission)) &&
+        (alsoAdmitted?.() ?? true);
+      if (!admitted())
         throw new ComputerUseHelperFailure("stopped-by-user", computerUseStoppedSentence);
-      const { admission: _admission, ...requestOptions } = options;
-      const result = await client.request(method, params, { ...requestOptions, deadline });
+      const result = await client.request(method, params, {
+        ...requestOptions,
+        deadline,
+        ...(admission !== undefined || alsoAdmitted ? { admitted } : {}),
+      });
       if (method === "permissions.get" || method === "permissions.request") {
         this.#rememberPermissions(result);
       }

@@ -112,10 +112,11 @@ describe("Needs you", () => {
     }
   });
 
-  it("says nothing when no Home could say", async () => {
+  it("says it could not check, never a count, when no Home could say", async () => {
     const view = await render(bridge(menuBarStates.unreachable));
     try {
-      expect(view.text()).not.toMatch(/needs? you/);
+      expect(view.text()).toContain("Couldn’t check Office Mini for what needs you");
+      expect(view.text()).not.toMatch(/\d+ needs? you/);
     } finally {
       await view.close();
     }
@@ -131,11 +132,34 @@ describe("Right now", () => {
       expect(view.text()).toContain("Book flights");
       expect(view.text()).toContain("Notes");
       expect(view.text()).toContain("A browser profile");
-      expect(view.text()).toContain("Files and commands");
+      expect(view.text()).toContain("Clean up downloads");
+      expect(view.text()).toContain("Working on this Mac");
       const stops = Array.from(view.node.querySelectorAll(".menu-bar__row-stop"));
-      expect(stops.map((stop) => stop.getAttribute("aria-label"))).toEqual(["Stop Book flights"]);
+      expect(stops.map((stop) => stop.getAttribute("aria-label"))).toEqual([
+        "Stop Book flights",
+        "Stop Clean up downloads",
+      ]);
       await act(async () => (stops[0] as HTMLButtonElement).click());
       expect(value.stopRow).toHaveBeenCalledWith({ id: "apps:cus_1" });
+    } finally {
+      await view.close();
+    }
+  });
+
+  it("shows a row being stopped as stopping, and one whose Stop failed with Stop again", async () => {
+    const value = bridge(menuBarStates.rowStates);
+    const view = await render(value);
+    try {
+      expect(view.text()).toContain("Claude Code");
+      expect(view.text()).toContain("Stopping…");
+      expect(view.text()).toContain("Didn’t stop. Try again.");
+      expect(view.text()).toContain("Commands from Office Mini");
+      const stops = Array.from(view.node.querySelectorAll(".menu-bar__row-stop"));
+      expect(stops.map((stop) => stop.getAttribute("aria-label"))).toEqual([
+        "Stop Clean up downloads",
+      ]);
+      await act(async () => (stops[0] as HTMLButtonElement).click());
+      expect(value.stopRow).toHaveBeenCalledWith({ id: "home:thr_1" });
     } finally {
       await view.close();
     }
@@ -152,6 +176,7 @@ describe("This Mac", () => {
       await act(async () => input.click());
       expect(value.setSwitch).toHaveBeenCalledWith({
         deploymentId: "dep_home",
+        machineId: "rnr_00000000-0000-4000-8000-000000000001",
         capability: "apps",
         on: true,
         revision: 7,
@@ -190,6 +215,35 @@ describe("Stop everything", () => {
       expect(view.text()).toMatch(/Stopped everything on this Mac at .+\./);
       await act(async () => view.button("Resume")!.click());
       expect(value.resume).toHaveBeenCalledOnce();
+    } finally {
+      await view.close();
+    }
+  });
+
+  it("says stopping, with nothing else to press, until the Stop is confirmed", async () => {
+    const value = bridge(menuBarStates.stopping);
+    const view = await render(value);
+    try {
+      expect(view.text()).toContain("Stopping agents on this Mac…");
+      expect(view.text()).not.toMatch(/Stopped everything/);
+      expect(view.button("Resume")).toBeUndefined();
+      expect(view.button("Stop everything on this Mac")).toBeUndefined();
+    } finally {
+      await view.close();
+    }
+  });
+
+  it("never says stopped for a Stop that did not finish, and offers Stop everything again", async () => {
+    const value = bridge(menuBarStates.stopFailed);
+    const view = await render(value);
+    try {
+      expect(view.text()).not.toMatch(/Stopped everything/);
+      expect(view.button("Resume")).toBeUndefined();
+      expect(view.node.querySelector('[role="alert"]')?.textContent).toMatch(
+        /didn’t stop \(tasks on this Mac’s Home\)\. Press Stop everything to try again\./,
+      );
+      await act(async () => view.button("Stop everything on this Mac")!.click());
+      expect(value.stop).toHaveBeenCalledOnce();
     } finally {
       await view.close();
     }

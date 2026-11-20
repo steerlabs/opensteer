@@ -11,6 +11,7 @@ export const menuBarMaxHomes = 3;
 export const menuBarMaxRows = 3;
 
 const MenuBarCapabilitySchema = z.enum(["browser", "apps", "files"]);
+const MenuBarRowKindSchema = z.enum(["browser", "apps", "files", "task"]);
 const Text = z.string().min(1).max(600);
 
 export const MenuBarSwitchSchema = z.strictObject({
@@ -39,7 +40,8 @@ export type MenuBarHomeLine = z.infer<typeof MenuBarHomeLineSchema>;
  */
 export const MenuBarRowSchema = z.strictObject({
   id: z.string().min(1).max(300),
-  kind: MenuBarCapabilitySchema,
+  /** What the thing is, from the record it came from: never a label guessed for it. */
+  kind: MenuBarRowKindSchema,
   actor: z.strictObject({
     label: Text,
     name: z.string().min(1).max(120).nullable(),
@@ -48,21 +50,46 @@ export const MenuBarRowSchema = z.strictObject({
   using: Text,
   /** This Mac can stop this one thing itself, the way the Home's Stop does. */
   stoppable: z.boolean(),
+  /**
+   * A row being stopped stays until its end is confirmed; one whose Stop was
+   * not confirmed says so and can be stopped again.
+   */
+  state: z.enum(["active", "stopping", "failed"]),
 });
 export type MenuBarRow = z.infer<typeof MenuBarRowSchema>;
 
+/**
+ * The person's Stop for this Mac. `stopping` until what was using this Mac is
+ * confirmed ended, `stopped` once it is, `failed` when something did not stop
+ * or the Stop could not be saved, with `problem` saying what and Stop
+ * everything offered again.
+ */
+export const MenuBarStopPhaseSchema = z.enum(["running", "stopping", "stopped", "failed"]);
+export type MenuBarStopPhase = z.infer<typeof MenuBarStopPhaseSchema>;
+
 export const MenuBarStatusSchema = z.strictObject({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
   title: Text,
   homes: z.array(MenuBarHomeLineSchema).max(menuBarMaxHomes),
   moreHomes: z.string().min(1).max(40).nullable(),
   noHome: Text.nullable(),
-  /** Only when a Home this Mac can read has something; never a zero or a guess. */
-  needsYou: z.strictObject({ line: Text, deploymentId: z.string().min(1).max(255) }).nullable(),
+  /**
+   * What the Homes that answered have for the person, partial when one did
+   * not answer; a Home that could not be read is never counted as zero.
+   */
+  needsYou: z
+    .strictObject({
+      line: Text,
+      deploymentId: z.string().min(1).max(255),
+      partial: z.boolean(),
+    })
+    .nullable(),
   rightNow: z.array(MenuBarRowSchema).max(menuBarMaxRows),
   thisMac: z
     .strictObject({
       deploymentId: z.string().min(1).max(255),
+      /** The Device these switches belong to; a change is written to it alone. */
+      machineId: z.string().min(1).max(255),
       editable: z.boolean(),
       /** The policy revision these switches show; a change is written against it. */
       revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
@@ -71,8 +98,8 @@ export const MenuBarStatusSchema = z.strictObject({
     .nullable(),
   thisMacNote: Text.nullable(),
   stop: z.strictObject({
-    stopped: z.boolean(),
-    /** When everything was stopped, as an ISO time; the popover writes it in local time. */
+    phase: MenuBarStopPhaseSchema,
+    /** When everything was confirmed stopped, as an ISO time; the popover writes it in local time. */
     stoppedAt: z.iso.datetime().nullable(),
     offline: Text.nullable(),
     problem: Text.nullable(),
@@ -85,6 +112,8 @@ export type MenuBarStatus = z.infer<typeof MenuBarStatusSchema>;
 
 export const MenuBarSwitchInputSchema = z.strictObject({
   deploymentId: z.string().min(1).max(255),
+  /** The Device whose switch the person flipped. */
+  machineId: z.string().min(1).max(255),
   capability: MenuBarCapabilitySchema,
   on: z.boolean(),
   /** The revision the person saw when they flipped it. */
@@ -127,13 +156,16 @@ export interface MenuBarInput {
     readonly signedOut: boolean;
   }[];
   readonly stop: {
-    readonly stopped: boolean;
+    readonly phase: MenuBarStopPhase;
     readonly stoppedAt: string | null;
     readonly problem: string | null;
   };
   /** This Mac's row in the Home the window shows, once that Home answered. */
   readonly thisMac: ({ readonly deploymentId: string } & MenuBarMachine) | null;
-  /** Each Home's Needs you count; null where the Home could not be read. */
+  /**
+   * Each Home's Needs you count once it answered; null where its last read
+   * failed. A Home with no entry has not answered yet.
+   */
   readonly needsYou: ReadonlyMap<string, number | null>;
   /** What this Mac itself knows is using it. */
   readonly local: {
@@ -141,13 +173,33 @@ export interface MenuBarInput {
       readonly sessionId: string;
       readonly threadTitle: string | null;
       readonly app: string | null;
+      readonly state?: MenuBarRow["state"];
     }[];
+    /** Browser sessions an agent is acting in, one per session. */
     readonly tabs: readonly { readonly sessionId: string; readonly profile: boolean }[];
+    /** Runs the Device Runners on this Mac are working on, whatever their Home's reach. */
+    readonly runs?: readonly {
+      readonly deploymentId: string;
+      readonly runId: string;
+      readonly engine: string;
+      readonly purpose: "task" | "voice" | "background-job";
+      readonly state?: MenuBarRow["state"];
+    }[];
   };
-  /** Work a readable Home reports on this Mac; absent when no Home answered. */
+  /** Typed records a readable Home reports about work on this Mac; null when none answered. */
   readonly homeWork: {
-    readonly runningTasks: readonly string[];
-    readonly sessions: readonly { readonly threadId: string; readonly threadTitle: string }[];
+    /** Tasks this Mac's own Home is running here. */
+    readonly tasks: readonly {
+      readonly threadId: string;
+      readonly title: string;
+      readonly state?: MenuBarRow["state"];
+    }[];
+    /** Shells other computers' agents hold open on this Mac. */
+    readonly shells: readonly {
+      readonly id: string;
+      readonly threadTitle: string;
+      readonly callerMachineName: string;
+    }[];
   } | null;
   readonly openAtLogin: { readonly on: boolean; readonly available: boolean };
 }
@@ -155,6 +207,7 @@ export interface MenuBarInput {
 export function menuBarStatus(input: MenuBarInput): MenuBarStatus {
   const homes = menuBarHomes(input);
   const shown = homes.slice(0, menuBarMaxHomes);
+  const stopped = input.stop.phase !== "running";
   const unreachable = homes.find((home) => !home.reachable);
   const unreachableName = unreachable
     ? ((input.hostedHome?.deploymentId === unreachable.deploymentId
@@ -165,7 +218,7 @@ export function menuBarStatus(input: MenuBarInput): MenuBarStatus {
   const needsYou = menuBarNeedsYou(input);
   const thisMac = switchesFor(input.thisMac);
   return MenuBarStatusSchema.parse({
-    schemaVersion: 2,
+    schemaVersion: 3,
     title: menuBarWords("menubar.title"),
     homes: shown,
     moreHomes:
@@ -181,8 +234,8 @@ export function menuBarStatus(input: MenuBarInput): MenuBarStatus {
         ? menuBarWords("menubar.thisMac.unreadable")
         : null,
     stop: {
-      stopped: input.stop.stopped,
-      stoppedAt: input.stop.stopped ? input.stop.stoppedAt : null,
+      phase: input.stop.phase,
+      stoppedAt: input.stop.phase === "stopped" ? input.stop.stoppedAt : null,
       offline: unreachableName
         ? menuBarWords("menubar.stopAll.offline", { home: unreachableName })
         : null,
@@ -192,7 +245,7 @@ export function menuBarStatus(input: MenuBarInput): MenuBarStatus {
     icon: {
       attention: needsYou !== null,
       unreachable: homes.length > 0 && homes.every((home) => !home.reachable),
-      stopped: input.stop.stopped,
+      stopped,
     },
   });
 }
@@ -212,44 +265,77 @@ export function menuBarHomes(input: MenuBarInput): MenuBarHomeLine[] {
     homes.push({
       deploymentId: home.deploymentId,
       line: menuBarWords("menubar.home", { home: home.name }),
-      ...deviceStatus(home, input.stop.stopped),
+      ...deviceStatus(home, input.stop.phase !== "running", input.needsYou.get(home.deploymentId)),
     });
   }
   return homes;
 }
 
-/** The sum across the Homes that answered; nothing at all when none has any, or none answered. */
+/**
+ * The sum across the Homes that answered, said as partial while another has
+ * not answered or could not be read; a Home that could not be read is never a
+ * zero. Nothing when every Home answered with nothing.
+ */
 export function menuBarNeedsYou(input: MenuBarInput): MenuBarStatus["needsYou"] {
+  const homes = homeNames(input);
   let count = 0;
   let first: string | null = null;
-  for (const [deploymentId, value] of input.needsYou) {
+  let unread: string | null = null;
+  let partial = false;
+  for (const [deploymentId] of homes) {
+    const value = input.needsYou.get(deploymentId);
+    if (value === undefined || value === null) {
+      partial = true;
+      if (value === null) unread ??= deploymentId;
+      continue;
+    }
     if (!value) continue;
     count += value;
     first ??= deploymentId;
   }
-  if (!count || !first) return null;
+  if (count && first)
+    return {
+      line: partial
+        ? menuBarWords("menubar.needsYouPartial", { count })
+        : count === 1
+          ? menuBarWords("menubar.needsYouOne")
+          : menuBarWords("menubar.needsYou", { count }),
+      deploymentId: first,
+      partial,
+    };
+  if (!unread) return null;
   return {
-    line:
-      count === 1
-        ? menuBarWords("menubar.needsYouOne")
-        : menuBarWords("menubar.needsYou", { count }),
-    deploymentId: first,
+    line: menuBarWords("menubar.needsYouUnread", { home: homes.get(unread) ?? "your Home" }),
+    deploymentId: unread,
+    partial: true,
   };
 }
 
+function homeNames(input: MenuBarInput): Map<string, string> {
+  const names = new Map<string, string>();
+  if (input.hostedHome) names.set(input.hostedHome.deploymentId, input.hostedHome.name);
+  for (const home of input.deviceHomes)
+    if (!names.has(home.deploymentId)) names.set(home.deploymentId, home.name);
+  return names;
+}
+
 /**
- * Up to three things using this Mac: what the Mac itself holds first, so the
- * rows are right while every Home is unreachable, then what a Home reports.
+ * Up to three things using this Mac, each from a record that says what it is:
+ * what the Mac itself holds first, so the rows are right while every Home is
+ * unreachable, then what a Home reports.
  */
 export function menuBarRightNow(input: MenuBarInput): MenuBarRow[] {
   const agent = { label: menuBarWords("menubar.rightNow.agent"), name: null, markOrigin: null };
+  const titled = (title: string | null | undefined) =>
+    title?.trim() ? { ...agent, label: title.trim() } : agent;
   const rows: MenuBarRow[] = [
     ...input.local.apps.map((session): MenuBarRow => ({
       id: `apps:${session.sessionId}`,
       kind: "apps",
-      actor: session.threadTitle ? { ...agent, label: session.threadTitle } : agent,
+      actor: titled(session.threadTitle),
       using: session.app ?? menuBarWords("menubar.rightNow.app"),
       stoppable: true,
+      state: session.state ?? "active",
     })),
     ...input.local.tabs.map((tab): MenuBarRow => ({
       id: `browser:${tab.sessionId}`,
@@ -257,36 +343,47 @@ export function menuBarRightNow(input: MenuBarInput): MenuBarRow[] {
       actor: agent,
       using: menuBarWords(tab.profile ? "menubar.rightNow.profile" : "menubar.rightNow.tab"),
       stoppable: false,
+      state: "active",
+    })),
+    ...(input.local.runs ?? []).map((run): MenuBarRow => ({
+      id: `runner:${run.deploymentId}:${run.runId}`,
+      kind: "task",
+      actor: { label: run.engine, name: null, markOrigin: null },
+      using: menuBarWords(
+        run.purpose === "background-job"
+          ? "menubar.rightNow.backgroundJob"
+          : run.purpose === "voice"
+            ? "menubar.rightNow.voice"
+            : "menubar.rightNow.running",
+      ),
+      stoppable: true,
+      state: run.state ?? "active",
+    })),
+    ...(input.homeWork?.tasks ?? []).map((task): MenuBarRow => ({
+      id: `home:${task.threadId}`,
+      kind: "task",
+      actor: {
+        label: task.title.trim() || menuBarWords("menubar.rightNow.task"),
+        name: null,
+        markOrigin: null,
+      },
+      using: menuBarWords("menubar.rightNow.running"),
+      stoppable: true,
+      state: task.state ?? "active",
+    })),
+    ...(input.homeWork?.shells ?? []).map((shell): MenuBarRow => ({
+      id: `shell:${shell.id}`,
+      kind: "files",
+      actor: {
+        label: shell.threadTitle.trim() || menuBarWords("menubar.rightNow.task"),
+        name: null,
+        markOrigin: null,
+      },
+      using: menuBarWords("menubar.rightNow.shell", { machine: shell.callerMachineName }),
+      stoppable: false,
+      state: "active",
     })),
   ];
-  const seen = new Set<string>();
-  for (const session of input.homeWork?.sessions ?? []) {
-    if (seen.has(session.threadId)) continue;
-    seen.add(session.threadId);
-    rows.push({
-      id: `files:${session.threadId}`,
-      kind: "files",
-      actor: {
-        label: session.threadTitle.trim() || menuBarWords("menubar.rightNow.task"),
-        name: null,
-        markOrigin: null,
-      },
-      using: menuBarWords("menubar.rightNow.files"),
-      stoppable: false,
-    });
-  }
-  for (const [index, title] of (input.homeWork?.runningTasks ?? []).entries())
-    rows.push({
-      id: `files:task:${index}`,
-      kind: "files",
-      actor: {
-        label: title.trim() || menuBarWords("menubar.rightNow.task"),
-        name: null,
-        markOrigin: null,
-      },
-      using: menuBarWords("menubar.rightNow.files"),
-      stoppable: false,
-    });
   return rows
     .slice(0, menuBarMaxRows)
     .map((row) => ({ ...row, actor: { ...row.actor, label: clip(row.actor.label, 120) } }));
@@ -353,18 +450,29 @@ function hostedStatus(
   }
 }
 
+/**
+ * A Device Home's line. Whether the Home can be reached does not depend on the
+ * person's Stop: while stopped, its last read says it, not the stopped worker.
+ */
 function deviceStatus(
   home: MenuBarInput["deviceHomes"][number],
   stopped: boolean,
+  read: number | null | undefined,
 ): Pick<MenuBarHomeLine, "reachable" | "status" | "tone"> {
-  if (stopped)
-    return { tone: "off", reachable: true, status: menuBarWords("menubar.status.paused") };
   if (home.signedOut)
     return {
       tone: "attention",
       reachable: false,
       status: menuBarWords("menubar.status.signedOut", { home: home.name }),
     };
+  if (stopped)
+    return read === null
+      ? {
+          tone: "attention",
+          reachable: false,
+          status: menuBarWords("menubar.status.unreachable", { home: home.name }),
+        }
+      : { tone: "off", reachable: true, status: menuBarWords("menubar.status.paused") };
   if (home.runner === "running")
     return { tone: "ok", reachable: true, status: menuBarWords("menubar.status.connected") };
   if (home.runner === "failed")
@@ -423,6 +531,7 @@ function switchesFor(entry: MenuBarInput["thisMac"]): MenuBarStatus["thisMac"] {
   );
   return {
     deploymentId: entry.deploymentId,
+    machineId: machine.id,
     editable: machine.access !== null,
     revision: machine.access?.revision ?? null,
     switches,

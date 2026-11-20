@@ -182,6 +182,19 @@ describe("OpenAtLoginPolicy", () => {
     expect(synced).toEqual([true]);
   });
 
+  it("keeps a login item the person disabled in System Settings through losing and regaining a Home", async () => {
+    const { synced, system, value } = policy();
+    await value.sync(home);
+    system.enabled = false;
+    await value.sync(nothing);
+    await value.sync(home);
+    expect(synced).toEqual([true]);
+    await expect(value.effective(home)).resolves.toMatchObject({ on: false });
+    // The person's own switch here still turns it back on.
+    await value.choose(true, home);
+    expect(synced).toEqual([true, true]);
+  });
+
   it("keeps an item the person disabled before upgrading", async () => {
     const { synced, value } = policy({ system: { enabled: false } });
     await value.sync({ hostsHome: true, enrolledRunners: true });

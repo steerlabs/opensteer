@@ -31,12 +31,16 @@ export interface PlaceRow {
   readonly status: DeploymentStatusInfo;
   /** Too old for this app, and listed here with a route to reach it for an update. */
   readonly updatable: boolean;
+  /** "Work · {organization}" when an organization pays for and governs this Home. */
+  readonly work?: string | undefined;
 }
 
 export interface PlaceRowContext {
   /** What this computer is called from itself: "This Mac" on macOS. */
   readonly thisComputer: string;
   readonly facts?: ReadonlyMap<string, ComputerFacts>;
+  /** Each work Home's badge, by Home. */
+  readonly work?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -97,6 +101,7 @@ function placeRow(
       !current,
     status,
     updatable: status.label === hostNeedsUpdateLabel,
+    work: context.work?.get(deployment.id),
   };
 }
 

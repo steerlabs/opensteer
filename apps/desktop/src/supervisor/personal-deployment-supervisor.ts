@@ -108,6 +108,12 @@ const defaultMaximumRestartBackoffMs = 30_000;
 const defaultRestartResetAfterMs = 5 * 60_000;
 
 interface PersonalDeploymentSupervisorOptions {
+  /**
+   * Where this app saves the person's Stop for this Mac. The hosting Runner
+   * reads it at each admission, so no new agent work starts here while it
+   * says stopped, and the Home keeps that work queued until Resume.
+   */
+  readonly agentStopFile?: string;
   readonly userDataDirectory?: string;
   readonly syncExtensionDirectory?: typeof syncBrowserExtensionDirectory;
   readonly dataReset?: PersonalDataReset;
@@ -228,6 +234,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #allocatePort: () => Promise<number>;
   readonly #passkeys: boolean;
   readonly #baseEnvironment: Readonly<Record<string, string>>;
+  readonly #agentStopFile: string | undefined;
   readonly #catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
   readonly #computerName: () => Promise<string>;
   readonly #personFullName: () => Promise<string | null>;
@@ -290,6 +297,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#allocatePort = options.allocatePort ?? allocateLoopbackPort;
     this.#passkeys = options.passkeys === true;
     this.#baseEnvironment = options.baseEnvironment ?? filterUserEnvironment(process.env);
+    this.#agentStopFile = options.agentStopFile;
     this.#userEnvironment =
       options.userEnvironment ??
       (options.baseEnvironment
@@ -840,6 +848,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
             url: browser.url,
           },
           computerUse,
+          this.#agentStopFile,
         ),
       );
       await this.#startupStep("runner", () =>
@@ -2134,6 +2143,7 @@ function runnerSpec(
     readonly url: URL;
   },
   computerUse: { readonly token: string; readonly url: URL } | null,
+  agentStopFile?: string,
 ): PersonalProcessSpec {
   return {
     arguments: [],
@@ -2171,6 +2181,7 @@ function runnerSpec(
       OPENSTEER_RUNNER_ID: manifest.runnerId,
       OPENSTEER_RUNNER_KIND: "main",
       OPENSTEER_RUNNER_NAME: manifest.name,
+      ...(agentStopFile ? { OPENSTEER_RUNNER_AGENT_STOP_FILE: agentStopFile } : {}),
     },
     executable: release.entrypoints.runner,
     // Never in the environment: every Runner credential travels on stdin,

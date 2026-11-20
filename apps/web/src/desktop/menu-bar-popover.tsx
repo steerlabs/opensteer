@@ -72,11 +72,36 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
       detach();
     };
   }, [bridge]);
-  const stopped = status?.stop.stopped === true;
+  const phase = status?.stop.phase ?? "running";
   const stopProblem = status?.stop.problem ?? stopFailure;
+  const stopEverything = (
+    <button
+      className="menu-bar__stop-all"
+      disabled={stopping.has("stop")}
+      onClick={() => void stopAct("stop", () => bridge.stop())}
+      type="button"
+    >
+      {menuBarWords("menubar.stopAll")}
+    </button>
+  );
+  // Stopped is said only once everything is confirmed ended. While a Stop is
+  // under way nothing else is offered; one that did not finish offers Stop
+  // everything again, never Resume in its place.
   const stopSection = (
     <section className="menu-bar__section menu-bar__stop" aria-live="polite">
-      {stopped ? (
+      {phase === "running" ? (
+        <>
+          {stopEverything}
+          {status?.stop.offline ? <p className="menu-bar__quiet">{status.stop.offline}</p> : null}
+        </>
+      ) : phase === "stopping" ? (
+        <p className="menu-bar__stopped">{menuBarWords("menubar.stopping")}</p>
+      ) : phase === "failed" ? (
+        <>
+          {stopEverything}
+          <p className="menu-bar__quiet">{menuBarWords("menubar.stopped.detail")}</p>
+        </>
+      ) : (
         <>
           {status?.stop.stoppedAt ? (
             <p className="menu-bar__stopped">{menuBarStoppedLine(status.stop.stoppedAt)}</p>
@@ -90,17 +115,6 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
           >
             {menuBarWords("menubar.resume")}
           </button>
-        </>
-      ) : (
-        <>
-          <button
-            className="menu-bar__stop-all"
-            onClick={() => void stopAct("stop", () => bridge.stop())}
-            type="button"
-          >
-            {menuBarWords("menubar.stopAll")}
-          </button>
-          {status?.stop.offline ? <p className="menu-bar__quiet">{status.stop.offline}</p> : null}
         </>
       )}
       {stopProblem ? (
@@ -169,6 +183,7 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
                   void act(`switch:${capability}`, () =>
                     bridge.setSwitch({
                       deploymentId: thisMac.deploymentId,
+                      machineId: thisMac.machineId,
                       capability,
                       on,
                       revision,
@@ -268,9 +283,15 @@ function RightNowRow({
       </span>
       <span className="menu-bar__row-text">
         <span className="menu-bar__row-title">{name}</span>
-        <span className="menu-bar__detail">{row.using}</span>
+        <span className="menu-bar__detail">
+          {row.state === "failed" ? menuBarWords("menubar.row.failed") : row.using}
+        </span>
       </span>
-      {row.stoppable ? (
+      {row.state === "stopping" ? (
+        <span className="menu-bar__detail menu-bar__row-state">
+          {menuBarWords("menubar.row.stopping")}
+        </span>
+      ) : row.stoppable ? (
         <button
           aria-label={`${menuBarWords("menubar.stop")} ${name}`}
           className="btn btn--ghost menu-bar__row-stop"

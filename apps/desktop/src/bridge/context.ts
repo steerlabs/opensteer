@@ -195,7 +195,8 @@ export interface DesktopBridgeOptions {
     /** This app's page in the system's notification settings, where the system has one. */
     readonly openSettings: () => Promise<void>;
     /** The window's live Needs you count for the Home it shows, as it badges the app. */
-    readonly badgeCount?: (count: number) => void;
+    /** The Home the count came from, when the window says. */
+    readonly badgeCount?: (count: number, deploymentId?: string) => void;
   };
   readonly tailscale: {
     readonly share: () => Promise<DesktopTailscaleShareResult>;

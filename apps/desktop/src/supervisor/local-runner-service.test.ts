@@ -1529,6 +1529,108 @@ describe("LocalRunnerService", () => {
     expect(running.fork).not.toHaveBeenCalled();
   });
 
+  it("never launches a start asked for before a Stop, even after Resume", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const first = targets.add("https://first.opensteer.test");
+    const admission = openAgentAdmission();
+    const running = fixture(await configuration(directory), targets, undefined, undefined, {
+      admission,
+    });
+    const starting = running.service.start(startInput(first.deploymentId));
+    admission.close();
+    admission.reopen();
+    await expect(starting).rejects.toThrow(AgentsStoppedError);
+    expect(running.fork).not.toHaveBeenCalled();
+  });
+
+  it("issues no prepared enrollment that was asked for before a Stop", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://prepared.opensteer.test");
+    const admission = openAgentAdmission();
+    const running = fixture(await configuration(directory), targets, undefined, undefined, {
+      admission,
+    });
+    const input = { deploymentId: target.deploymentId, runnerName: "Mac", runAgents: false };
+    const prepared = await running.service.prepareDeviceSetup(input);
+    const command = {
+      type: "runner.enrollment.createLocal" as const,
+      name: input.runnerName,
+      allowedModules: ["shell" as const],
+      idempotencyKey: "across-stop",
+      preparedIdentity: prepared,
+    };
+    const issue = vi.fn(async () => undefined);
+    const issuance = running.service.withPreparedEnrollment(target.deploymentId, command, issue);
+    admission.close();
+    admission.reopen();
+    await expect(issuance).rejects.toThrow(AgentsStoppedError);
+    expect(issue).not.toHaveBeenCalled();
+    admission.close();
+    await expect(
+      running.service.withPreparedEnrollment(target.deploymentId, command, issue),
+    ).rejects.toThrow(AgentsStoppedError);
+    expect(issue).not.toHaveBeenCalled();
+  });
+
+  it("keeps a Device's browser for the person through Stop and uses it again on Resume", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const first = targets.add("https://first.opensteer.test");
+    const admission = openAgentAdmission();
+    const stopBrowser = vi.fn(async () => undefined);
+    const browser = vi.fn(async (input: { runtimeId: string }) => ({
+      bridgeToken: "t".repeat(43),
+      signIn: false,
+      personFill: false,
+      runtimeId: input.runtimeId,
+      stop: stopBrowser,
+      url: new URL("http://127.0.0.1:7788/"),
+    }));
+    const running = fixture(await configuration(directory), targets, undefined, browser, {
+      admission,
+    });
+    const starting = running.service.start(startInput(first.deploymentId));
+    await eventually(() => running.children.length === 1);
+    connect(childAt(running.children, 0));
+    await starting;
+
+    admission.close();
+    const pausing = running.service.pause();
+    await eventually(() => hasStopMessage(childAt(running.children, 0)));
+    childAt(running.children, 0).emit("exit", 0);
+    await pausing;
+    expect(stopBrowser).not.toHaveBeenCalled();
+
+    admission.reopen();
+    const resuming = running.service.resume();
+    await eventually(() => running.children.length === 2);
+    connect(childAt(running.children, 1));
+    await resuming;
+    expect(browser).toHaveBeenCalledOnce();
+    expect(stopBrowser).not.toHaveBeenCalled();
+  });
+
+  it("says a Stop did not finish while a Device Runner has not been seen to exit", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const first = targets.add("https://stuck.opensteer.test");
+    const admission = openAgentAdmission();
+    const running = fixture(await configuration(directory), targets, undefined, undefined, {
+      admission,
+      stubborn: true,
+      stopTimeouts: { forcedMs: 20, gracefulMs: 20, removalMs: 10_000 },
+    });
+    const starting = running.service.start(startInput(first.deploymentId));
+    await eventually(() => running.children.length === 1);
+    connect(childAt(running.children, 0));
+    await starting;
+    admission.close();
+    await expect(running.service.pause()).rejects.toThrow(/did not confirm they stopped/);
+    childAt(running.children, 0).emit("exit", 0);
+  });
+
   it("does not disturb either Runner when only the viewed Deployment changes", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
@@ -2515,6 +2617,59 @@ describe("LocalRunnerService", () => {
       secondWorker.emit("exit", 0);
       await shutdown;
     }
+  });
+
+  it("shows each Runner's work through an outage and stops one Run in its own worker", async () => {
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://activity.opensteer.test");
+    const running = fixture(await configuration(await temporaryDirectory()), targets);
+    const start = running.service.start(startInput(target.deploymentId, "Studio Mac"));
+    const worker = await vi.waitFor(() => childAt(running.children, 0));
+    connect(worker);
+    await start;
+    const changed = vi.fn();
+    running.service.subscribe(changed);
+    const run = {
+      runId: "run_01JQ5Z8M4C6Y0Q2R3S4T5V6W7X",
+      startedAt: "2026-11-20T09:00:00.000Z",
+      purpose: "task",
+      engine: "Claude Code",
+    } as const;
+    try {
+      worker.emit("message", { runs: [run], type: "runner.worker.activity" });
+      await vi.waitFor(() =>
+        expect(running.service.localActivity()).toEqual([
+          { ...run, deploymentId: target.deploymentId },
+        ]),
+      );
+      expect(changed).toHaveBeenCalled();
+
+      // The Home went out of reach; the Runner keeps working and stays listed.
+      worker.emit("message", { type: "runner.worker.reconnecting" });
+      await vi.waitFor(() =>
+        expect(running.service.status(target.deploymentId)).resolves.toMatchObject({
+          runner: { state: "starting" },
+        }),
+      );
+      expect(running.service.localActivity()).toHaveLength(1);
+
+      expect(running.service.stopRun(target.deploymentId, "run_unknown")).toBe(false);
+      expect(running.service.stopRun(target.deploymentId, run.runId)).toBe(true);
+      expect(worker.messages.at(-1)).toEqual({
+        runId: run.runId,
+        type: "runner.worker.stop-run",
+      });
+
+      worker.emit("message", { runs: [], type: "runner.worker.activity" });
+      await vi.waitFor(() => expect(running.service.localActivity()).toEqual([]));
+      worker.emit("message", { runs: [run], type: "runner.worker.activity" });
+      await vi.waitFor(() => expect(running.service.localActivity()).toHaveLength(1));
+    } finally {
+      const shutdown = running.service.shutdown();
+      worker.emit("exit", 0);
+      await shutdown;
+    }
+    expect(running.service.localActivity()).toEqual([]);
   });
 
   it("follows a running computer through a disconnect and back to running", async () => {

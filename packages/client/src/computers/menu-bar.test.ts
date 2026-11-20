@@ -46,7 +46,7 @@ const thisMac = (input: { readonly home?: boolean; readonly sessions?: number } 
 const base: MenuBarInput = {
   hostedHome: null,
   deviceHomes: [],
-  stop: { stopped: false, stoppedAt: null, problem: null },
+  stop: { phase: "running", stoppedAt: null, problem: null },
   thisMac: null,
   needsYou: new Map(),
   local: { apps: [], tabs: [] },
@@ -128,28 +128,76 @@ describe("menu bar header", () => {
 });
 
 describe("Needs you", () => {
+  const homes = (...ids: string[]) =>
+    ids.map((id) => ({ ...office(), deploymentId: id, name: id.slice(4) }));
+
   it("adds up the Homes that answered and opens the first that has any", () => {
     const status = menuBarStatus({
       ...base,
+      deviceHomes: homes("dep_home", "dep_office", "dep_lab"),
       needsYou: new Map([
         ["dep_home", 0],
         ["dep_office", 2],
         ["dep_lab", 1],
       ]),
     });
-    expect(status.needsYou).toEqual({ line: "3 need you", deploymentId: "dep_office" });
+    expect(status.needsYou).toEqual({
+      line: "3 need you",
+      deploymentId: "dep_office",
+      partial: false,
+    });
     expect(status.icon.attention).toBe(true);
-    expect(menuBarStatus({ ...base, needsYou: new Map([["dep_home", 1]]) }).needsYou?.line).toBe(
-      "1 needs you",
-    );
+    expect(
+      menuBarStatus({
+        ...base,
+        deviceHomes: homes("dep_home"),
+        needsYou: new Map([["dep_home", 1]]),
+      }).needsYou?.line,
+    ).toBe("1 needs you");
   });
 
-  it("says nothing, not zero, when no Home could be read or none has any", () => {
-    expect(menuBarStatus({ ...base, needsYou: new Map([["dep_home", null]]) }).needsYou).toBe(null);
-    expect(menuBarStatus({ ...base, needsYou: new Map([["dep_home", 0]]) }).needsYou).toBe(null);
-    expect(menuBarStatus({ ...base, needsYou: new Map([["dep_home", null]]) }).icon.attention).toBe(
-      false,
-    );
+  it("says a count is partial while another Home has not answered or could not be read", () => {
+    const deviceHomes = homes("dep_office", "dep_lab");
+    expect(
+      menuBarStatus({ ...base, deviceHomes, needsYou: new Map([["dep_office", 2]]) }).needsYou,
+    ).toEqual({ line: "At least 2 need you", deploymentId: "dep_office", partial: true });
+    expect(
+      menuBarStatus({
+        ...base,
+        deviceHomes,
+        needsYou: new Map([
+          ["dep_office", 2],
+          ["dep_lab", null],
+        ]),
+      }).needsYou?.line,
+    ).toBe("At least 2 need you");
+  });
+
+  it("never turns a Home it could not read into a zero, and is silent when all answered none", () => {
+    const deviceHomes = homes("dep_office", "dep_lab");
+    const unread = menuBarStatus({
+      ...base,
+      deviceHomes,
+      needsYou: new Map([
+        ["dep_office", 0],
+        ["dep_lab", null],
+      ]),
+    });
+    expect(unread.needsYou).toEqual({
+      line: "Couldn’t check lab for what needs you",
+      deploymentId: "dep_lab",
+      partial: true,
+    });
+    const clear = menuBarStatus({
+      ...base,
+      deviceHomes,
+      needsYou: new Map([
+        ["dep_office", 0],
+        ["dep_lab", 0],
+      ]),
+    });
+    expect(clear.needsYou).toBeNull();
+    expect(clear.icon.attention).toBe(false);
   });
 });
 
@@ -169,6 +217,7 @@ describe("Right now", () => {
         actor: { label: "Book flights", name: null, markOrigin: null },
         using: "Notes",
         stoppable: true,
+        state: "active",
       },
     ]);
   });
@@ -198,21 +247,35 @@ describe("Right now", () => {
     ]);
   });
 
-  it("adds files and commands a readable Home reports, after what this Mac knows", () => {
+  it("names each row from the record it came from, after what this Mac itself knows", () => {
     const status = menuBarStatus({
       ...base,
-      local: { apps: [{ sessionId: "cus_1", threadTitle: "Sort inbox", app: "Mail" }], tabs: [] },
+      local: {
+        apps: [],
+        tabs: [],
+        runs: [
+          {
+            deploymentId: "dep_office",
+            runId: "run_1",
+            engine: "Claude Code",
+            purpose: "task",
+            state: "stopping",
+          },
+        ],
+      },
       homeWork: {
-        runningTasks: ["Book flights", "Pay bills"],
-        sessions: [{ threadId: "thr_1", threadTitle: "Clean up downloads" }],
+        tasks: [{ threadId: "thr_2", title: "Book flights" }],
+        shells: [{ id: "shs_1", threadTitle: "Clean up downloads", callerMachineName: "Home" }],
       },
     });
-    expect(status.rightNow.map((row) => [row.kind, row.actor.label, row.using])).toEqual([
-      ["apps", "Sort inbox", "Mail"],
-      ["files", "Clean up downloads", "Files and commands"],
-      ["files", "Book flights", "Files and commands"],
+    expect(
+      status.rightNow.map((row) => [row.id, row.kind, row.actor.label, row.using, row.stoppable]),
+    ).toEqual([
+      ["runner:dep_office:run_1", "task", "Claude Code", "Working on this Mac", true],
+      ["home:thr_2", "task", "Book flights", "Working on this Mac", true],
+      ["shell:shs_1", "files", "Clean up downloads", "Commands from Home", false],
     ]);
-    expect(status.rightNow.every((row) => row.kind === "apps" || !row.stoppable)).toBe(true);
+    expect(status.rightNow[0]?.state).toBe("stopping");
   });
 
   it("is empty when nothing uses this Mac", () => {
@@ -229,6 +292,7 @@ describe("This Mac and Stop everything", () => {
     });
     expect(status.thisMac).toMatchObject({
       deploymentId: "dep_office",
+      machineId: "rnr_thismac",
       editable: true,
       revision: 3,
       switches: [
@@ -267,16 +331,42 @@ describe("This Mac and Stop everything", () => {
     const status = menuBarStatus({
       ...base,
       deviceHomes: [office("disabled")],
-      stop: { stopped: true, stoppedAt: "2026-11-20T10:42:00.000Z", problem: null },
+      needsYou: new Map([["dep_office", 0]]),
+      stop: { phase: "stopped", stoppedAt: "2026-11-20T10:42:00.000Z", problem: null },
     });
     expect(status.stop).toEqual({
-      stopped: true,
+      phase: "stopped",
       stoppedAt: "2026-11-20T10:42:00.000Z",
       offline: null,
       problem: null,
     });
     expect(status.homes[0]?.status).toBe("Stopped on this Mac");
     expect(status.icon).toEqual({ attention: false, unreachable: false, stopped: true });
+  });
+
+  it("keeps a Home that cannot be reached unreachable when the person stops this Mac", () => {
+    for (const home of [office("failed"), office("running", true)]) {
+      const status = menuBarStatus({
+        ...base,
+        deviceHomes: [home],
+        needsYou: new Map([["dep_office", null]]),
+        stop: { phase: "stopped", stoppedAt: "2026-11-20T10:42:00.000Z", problem: null },
+      });
+      expect(status.homes[0]?.reachable).toBe(false);
+      expect(status.icon.unreachable).toBe(true);
+      expect(status.stop.offline).toBe("Works even while Office Mini is unreachable.");
+    }
+  });
+
+  it("never says stopped while a Stop is still under way or did not finish", () => {
+    for (const phase of ["stopping", "failed"] as const) {
+      const status = menuBarStatus({
+        ...base,
+        stop: { phase, stoppedAt: "2026-11-20T10:42:00.000Z", problem: null },
+      });
+      expect(status.stop).toMatchObject({ phase, stoppedAt: null });
+      expect(status.icon.stopped).toBe(true);
+    }
   });
 });
 

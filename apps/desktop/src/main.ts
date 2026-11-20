@@ -202,8 +202,9 @@ import { OpensteerOwnOrigins } from "./passwords/own-origins.js";
 import { PasswordsLoginAuthority } from "./passwords/login-authority.js";
 import { AgentBrowserGate } from "./browser/agent-browser-gate.js";
 import { DesktopLocalStop, localStopFileStore } from "./app/local-stop.js";
+import { HostedHomeStop } from "./app/hosted-home-stop.js";
 import { AgentAdmission } from "./app/agent-admission.js";
-import { activityIdle, DesktopActivity } from "./app/desktop-activity.js";
+import { activityIdle, DesktopActivity, fencedIdle } from "./app/desktop-activity.js";
 import { DesktopQuitRouting } from "./app/quit-routing.js";
 import { appRoutes, appRouteScript } from "./app/app-route.js";
 import { menuBarWords } from "@opensteer/client/computers";
@@ -656,7 +657,10 @@ async function runDesktop(
       }
     },
   };
+  // The person's Stop for this Mac, which this Mac's own Home's Runner reads too.
+  const localStopPath = path.join(loaded.config.dataDirectory, "local-stop.json");
   const personal = new PersonalDeploymentSupervisor({
+    agentStopFile: localStopPath,
     userDataDirectory: app.getPath("userData"),
     accountIssuer: loaded.config.accountUrl,
     catalog: deploymentCatalog,
@@ -927,11 +931,27 @@ async function runDesktop(
     timeoutMs: 8_000,
     stop: (signal) => localRunner.shutdown(signal),
   });
+  // This Mac's own Home's work ends through that Home's Stop, under its own
+  // owner session whichever Home the window shows.
+  const hostedHomeStop = new HostedHomeStop({
+    hostedHome: async () => {
+      const manifest = await personalFiles.load();
+      return manifest
+        ? { deploymentId: manifest.deploymentId, state: personal.status.state }
+        : null;
+    },
+    host: (deploymentId) =>
+      createForwardedHostApi(hostTransport, DeploymentIdSchema.parse(deploymentId), {
+        anyHome: true,
+      }),
+  });
   const localStop = new DesktopLocalStop({
     admission,
     computerUse,
     runners: localRunner,
-    store: localStopFileStore(path.join(loaded.config.dataDirectory, "local-stop.json")),
+    browser: agentBrowserGate,
+    home: hostedHomeStop,
+    store: localStopFileStore(localStopPath),
     log: reportEvent,
   });
   // Before any Runner starts: a Stop the person left in place still holds.
@@ -1338,7 +1358,7 @@ async function runDesktop(
   const loginSession = new DesktopLoginSession(powerMonitor, process.platform);
   const detachLoginSession = integrationAuthorizations.useLoginSession(loginSession);
   let workspaceContents: Electron.WebContents | null = null;
-  let noteBadgeCount: (count: number) => void = () => undefined;
+  let noteBadgeCount: (count: number, deploymentId?: string) => void = () => undefined;
   const unregisterBridge = registerDesktopBridge({
     updates: {
       state: () => updater.state(),
@@ -1470,7 +1490,7 @@ async function runDesktop(
           { activate: true },
         );
       },
-      badgeCount: (count) => noteBadgeCount(count),
+      badgeCount: (count, deploymentId) => noteBadgeCount(count, deploymentId),
     },
     tailscale: {
       share: () => personalRemote.shareOverTailscale(),
@@ -1634,11 +1654,15 @@ async function runDesktop(
       null
     );
   };
+  // Main reads each Home under that Home's own owner session, selected or not.
   const ownerHost = (deploymentId: string) =>
-    createForwardedHostApi(hostTransport, DeploymentIdSchema.parse(deploymentId));
+    createForwardedHostApi(hostTransport, DeploymentIdSchema.parse(deploymentId), {
+      anyHome: true,
+    });
   const localActivity = () => ({
     appSessions: computerUse.agentSessions,
     browserTabs: agentBrowserGate.agentTabs,
+    runs: localRunner.localActivity().length,
   });
   const menuBarService = new DesktopMenuBarService({
     hostedHome,
@@ -1656,27 +1680,40 @@ async function runDesktop(
     local: () => ({
       apps: computerUse.agentSessionDetails(),
       tabs: agentBrowserGate.agentTabDetails(),
+      runs: localRunner.localActivity(),
     }),
     stop: () => ({
-      stopped: localStop.stopped,
+      phase: localStop.phase,
       stoppedAt: localStop.stoppedAt,
       problem: localStop.problem,
     }),
-    // An agent's app session stops as the helper's own Stop ends one. A tab or
-    // shell work is stopped through its Home, so only that Home's Stop ends it.
-    stopRow: (id) => id.startsWith("apps:") && computerUse.stopAgentSession(id.slice(5)),
+    // Each row stops the way its own Stop ends it: an app session as the
+    // helper's Stop does, a Device's Run through its Runner's interrupt, and a
+    // task of this Mac's own Home through that Home's Stop. A tab or a shell
+    // belongs to its Home's Stop alone.
+    stopRow: async (id) => {
+      if (id.startsWith("apps:")) return computerUse.stopAgentSession(id.slice(5));
+      const runner = /^runner:(dep_[^:]+):(.+)$/u.exec(id);
+      if (runner) return localRunner.stopRun(DeploymentIdSchema.parse(runner[1]), runner[2]!);
+      if (id.startsWith("home:")) {
+        const manifest = await personalFiles.load();
+        if (!manifest) return false;
+        await hostedHomeStop.stopTask(manifest.deploymentId, id.slice(5));
+        return true;
+      }
+      return false;
+    },
     openAtLogin: async () => openAtLogin.effective(await openAtLoginEligibility()),
     log: reportEvent,
   });
-  noteBadgeCount = (count) => {
-    const selected = access.snapshot().selectedDeploymentId;
-    if (selected) menuBarService.noteNeedsYou(selected, count);
+  // A count is the Home's that sent it, never whichever Home is selected when it lands.
+  noteBadgeCount = (count, deploymentId) => {
+    if (deploymentId) menuBarService.noteNeedsYou(deploymentId, count);
   };
   // Quitting and updating read what is using this Mac fresh, from one place.
   const activity = new DesktopActivity({
     hostedHome,
     deviceHomes,
-    selected: () => selectedHome()?.id ?? null,
     host: ownerHost,
     local: localActivity,
   });
@@ -1708,18 +1745,43 @@ async function runDesktop(
       },
     },
     work: () => activity.snapshot(),
+    // Parented, so macOS shows it as a sheet that waits without blocking main
+    // and that the shutdown's signal can dismiss; an unparented one cannot be.
     confirm: async ({ message, detail }, signal) => {
+      signal.throwIfAborted();
       app.focus({ steal: true });
-      const { response } = await dialog.showMessageBox({
-        type: "warning",
-        buttons: [menuBarWords("menubar.quit"), menuBarWords("common.cancel")],
-        defaultId: 1,
-        cancelId: 1,
-        message,
-        detail,
-        signal,
+      const parent = new BrowserWindow({
+        width: 420,
+        height: 1,
+        show: false,
+        frame: false,
+        transparent: true,
+        hasShadow: false,
+        resizable: false,
+        minimizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        skipTaskbar: true,
+        alwaysOnTop: true,
+        title: app.getName(),
       });
-      return response === 0;
+      try {
+        parent.center();
+        parent.show();
+        const { response } = await dialog.showMessageBox(parent, {
+          type: "warning",
+          buttons: [menuBarWords("menubar.quit"), menuBarWords("common.cancel")],
+          defaultId: 1,
+          cancelId: 1,
+          message,
+          detail,
+          signal,
+        });
+        signal.throwIfAborted();
+        return response === 0;
+      } finally {
+        if (!parent.isDestroyed()) parent.destroy();
+      }
     },
     log: reportEvent,
   });
@@ -1789,7 +1851,21 @@ async function runDesktop(
   shutdown.signal.throwIfAborted();
   backgroundUpdate = new DesktopBackgroundUpdate({
     updater,
-    install: (stillDue) => requestInstall(stillDue),
+    // The last look is fenced: nothing new starts between it and the restart,
+    // and admission opens again if the update backs off.
+    install: async (stillDue) => {
+      let release = () => {};
+      try {
+        await requestInstall(async () => {
+          const fenced = await fencedIdle(admission, () => localStop.stopped, stillDue);
+          release = fenced.release;
+          return fenced.idle;
+        });
+      } catch (error) {
+        release();
+        throw error;
+      }
+    },
     windowVisible,
     idle: async () => activityIdle(await activity.snapshot()),
     stopping: () => shutdown.requested,

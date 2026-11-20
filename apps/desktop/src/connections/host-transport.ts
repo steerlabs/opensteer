@@ -308,7 +308,18 @@ export class DesktopHostTransport extends HostTransport {
    * body is read here first so a session that lapsed can be recovered and the
    * request replayed. A transport failure is named in a header.
    */
-  forward(deploymentId: DeploymentId, path: string, request: Request): Promise<Response> {
+  forward(
+    deploymentId: DeploymentId,
+    path: string,
+    request: Request,
+    options: {
+      /**
+       * Main's own call to that Home, answered under that Home's own session
+       * whether or not it is the selected one, as summary reads are.
+       */
+      readonly anyHome?: boolean;
+    } = {},
+  ): Promise<Response> {
     const requestId = DesktopHostRequestIdSchema.safeParse(
       request.headers.get(desktopHostRequestIdHeader),
     );
@@ -351,6 +362,7 @@ export class DesktopHostTransport extends HostTransport {
       (exchange) => {
         settled = exchange;
       },
+      options.anyHome === true,
     )
       .catch((error: unknown) => this.#refused(path, error))
       .finally(
@@ -389,6 +401,7 @@ export class DesktopHostTransport extends HostTransport {
     sameSession: () => void,
     sameSelection: () => void,
     relaying: (settled: Promise<void>) => void,
+    anyHome = false,
   ): Promise<Response> {
     const pathname = path.split("?", 1)[0]!;
     const headers: Partial<Record<ForwardedHeader, string>> = {};
@@ -399,9 +412,11 @@ export class DesktopHostTransport extends HostTransport {
     const teamUpload = request.headers.get("x-opensteer-team-upload");
     const expectedSession = request.headers.get(expectedMutationSessionHeader);
     const summary =
-      request.method === "POST" &&
-      (pathname === "/v1/rpc/attention.get" || pathname === "/v1/rpc/teams.links.list");
-    const transport = await this.#transport(deploymentId, summary);
+      anyHome ||
+      (request.method === "POST" &&
+        (pathname === "/v1/rpc/attention.get" || pathname === "/v1/rpc/teams.links.list"));
+    // Every wait before the exchange ends with the caller's signal, too.
+    const transport = await untilAborted(this.#transport(deploymentId, summary), signal);
     // Only the personal selection's own requests answer to it; team and chooser reads don't.
     const arrived =
       transport === this
@@ -417,7 +432,7 @@ export class DesktopHostTransport extends HostTransport {
     if (request.body) {
       // The body can take a while; the Account, route and attachment it was sent under are
       // fixed first, and every send of it, a replay included, is checked against them.
-      attachment = await transport.current();
+      attachment = await untilAborted(transport.current(), signal);
       if (attachment.resolved.deploymentId !== deploymentId)
         throw new HostTransportError("deployment-changed");
       const retained = transport.retainAuthorization(attachment);
@@ -1234,4 +1249,29 @@ function parseJson(bytes: Uint8Array): unknown {
   } catch {
     return null;
   }
+}
+
+/** `work`, or the signal's reason as soon as it aborts; the work itself runs on. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    void work.catch(() => undefined);
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolvePromise, rejectPromise) => {
+    const abort = () => {
+      void work.catch(() => undefined);
+      rejectPromise(signal.reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolvePromise(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        rejectPromise(error);
+      },
+    );
+  });
 }

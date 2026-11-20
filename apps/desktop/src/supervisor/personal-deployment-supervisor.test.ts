@@ -1400,6 +1400,17 @@ describe("PersonalDeploymentSupervisor", () => {
      * targeted restart could lose Runs, strand the Runner, or outlive the
      * crash-loop guard.
      */
+    it("hands the hosting Runner this Mac's saved Stop, so no new agent work starts while stopped", async () => {
+      const fixture = supervisorFixture(null, undefined, undefined, undefined, {
+        agentStopFile: "/Users/test/Library/Application Support/Opensteer/local-stop.json",
+      });
+      await fixture.supervisor.start();
+      expect(specsOf(fixture, "runner")[0]!.environment.OPENSTEER_RUNNER_AGENT_STOP_FILE).toBe(
+        "/Users/test/Library/Application Support/Opensteer/local-stop.json",
+      );
+      await fixture.supervisor.stop();
+    });
+
     it("restarts only a crashed Host, on its pinned origin and credentials, while the Runner keeps running", async () => {
       const fixture = supervisorFixture(null);
       await fixture.supervisor.start();
@@ -1817,6 +1828,7 @@ function supervisorFixture(
     readonly passkeys?: boolean;
     readonly dataReset?: PersonalDataReset;
     readonly files?: PersonalDeploymentFilesystemPort;
+    readonly agentStopFile?: string;
   } = {},
 ) {
   const lifecycle: string[] = [];
@@ -1901,6 +1913,7 @@ function supervisorFixture(
       ? { userDataDirectory: "/test", syncExtensionDirectory: restarts.syncExtensionDirectory }
       : {}),
     ...(restarts.dataReset ? { dataReset: restarts.dataReset } : {}),
+    ...(restarts.agentStopFile ? { agentStopFile: restarts.agentStopFile } : {}),
     passkeys: restarts.passkeys === true,
     allocatePort: async () => nextPort++,
     log: (event, fields) => logs.push({ event, ...fields }),

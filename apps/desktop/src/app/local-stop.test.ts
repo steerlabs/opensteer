@@ -82,8 +82,61 @@ it("closes admission before anything is awaited and saves before waiting on tear
   expect(admission.current(ticket)).toBe(false);
   expect(() => admission.admit()).toThrow(AgentsStoppedError);
   await stopping;
-  expect(calls[0]).toBe("save:true:closed");
+  expect(calls).toEqual(["save:true:closed", "computer-use:pause:closed", "runners:pause:closed"]);
   expect(stored()).toBe(true);
+  expect(stop.phase).toBe("stopped");
+});
+
+it("tears nothing down and claims nothing until the Stop is saved, so a crash before then loses nothing", async () => {
+  const save = Promise.withResolvers<void>();
+  const saving = Promise.withResolvers<void>();
+  let saved = false;
+  const { calls, stop } = fixture({
+    store: {
+      save: async (value) => {
+        saving.resolve();
+        await save.promise;
+        saved = value.stopped;
+      },
+    },
+  });
+  await stop.restore();
+  const stopping = stop.stop();
+  await saving.promise;
+  // The app could die here: nothing was ended, and nothing says it was.
+  expect(calls).toEqual([]);
+  expect(stop.phase).toBe("stopping");
+  expect(stop.stoppedAt).toBeNull();
+  expect(saved).toBe(false);
+  save.resolve();
+  await stopping;
+  expect(calls).toEqual(["computer-use:pause:closed", "runners:pause:closed"]);
+  expect(stop.phase).toBe("stopped");
+});
+
+it("says stopping until teardown is confirmed, and runs Resume only after it settles", async () => {
+  const { admission, calls, computerUse, stop } = fixture();
+  await stop.restore();
+  const ended = Promise.withResolvers<void>();
+  computerUse.pause.mockImplementationOnce(() => ended.promise);
+  const stopping = stop.stop();
+  await vi.waitFor(() => expect(computerUse.pause).toHaveBeenCalled());
+  expect(stop.phase).toBe("stopping");
+  expect(stop.stoppedAt).toBeNull();
+  const resuming = stop.resume();
+  for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+  expect(admission.open).toBe(false);
+  expect(calls).not.toContain("save:false:closed");
+  ended.resolve();
+  await stopping;
+  await resuming;
+  expect(calls.slice(-3)).toEqual([
+    "save:false:closed",
+    "computer-use:resume:open",
+    "runners:resume:open",
+  ]);
+  expect(admission.open).toBe(true);
+  expect(stop.phase).toBe("running");
 });
 
 it("reports a Stop it could not save, stays stopped, and saves on the retry", async () => {
@@ -100,11 +153,14 @@ it("reports a Stop it could not save, stays stopped, and saves on the retry", as
   await stop.restore();
   await expect(stop.stop()).rejects.toThrow(/couldn’t save/);
   expect(admission.open).toBe(false);
+  expect(stop.phase).toBe("failed");
+  expect(stop.stoppedAt).toBeNull();
   expect(stop.problem).toMatch(/Press Stop everything to try again/);
   fail = false;
   await stop.stop();
   expect(saves).toEqual([true]);
   expect(stop.problem).toBeNull();
+  expect(stop.phase).toBe("stopped");
 });
 
 it("reports teardown that failed instead of success", async () => {
@@ -115,6 +171,12 @@ it("reports teardown that failed instead of success", async () => {
   });
   await expect(stop.stop()).rejects.toThrow(/didn’t stop \(apps\)/);
   expect(stop.stopped).toBe(true);
+  expect(stop.phase).toBe("failed");
+  expect(stop.stoppedAt).toBeNull();
+  // Stop everything again retries, and only a confirmed end is called stopped.
+  await stop.stop();
+  expect(stop.phase).toBe("stopped");
+  expect(stop.problem).toBeNull();
 });
 
 it("opens admission only after Resume is saved, and not at all when saving fails", async () => {
@@ -140,12 +202,14 @@ it("lets a Stop pressed while Resume saves win", async () => {
   });
   const writes: boolean[] = [];
   let first = true;
+  const saving = Promise.withResolvers<void>();
   const { admission, stop } = fixture({
     saved: true,
     store: {
       save: async (value) => {
         if (first) {
           first = false;
+          saving.resolve();
           await held;
         }
         writes.push(value.stopped);
@@ -154,6 +218,7 @@ it("lets a Stop pressed while Resume saves win", async () => {
   });
   await stop.restore();
   const resuming = stop.resume();
+  await saving.promise;
   const stopping = stop.stop();
   release();
   await Promise.all([resuming, stopping]);

@@ -1,5 +1,8 @@
-/** Where the menu bar opens the app: the Home's start, with Needs you at its side, or Settings. */
-export const appRoutes = { needsYou: "/", settings: "/settings" } as const;
+/**
+ * Where the menu bar opens the app: Home with Needs you showing (the shell's
+ * `needsYouSearchParam`), or Settings.
+ */
+export const appRoutes = { needsYou: "/?needs-you", settings: "/settings" } as const;
 
 /**
  * Moves the app window's page to one of its own routes without reloading it,

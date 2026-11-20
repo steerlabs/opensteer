@@ -37,17 +37,22 @@ export interface MenuBarDeviceHome {
 export interface DesktopMenuBarServiceOptions {
   readonly hostedHome: () => Promise<MenuBarHostedHome | null>;
   readonly deviceHomes: () => Promise<readonly MenuBarDeviceHome[]>;
-  /** The Home the window shows: the one Host desktop main holds an owner session for. */
+  /** The Home the window shows, whose switches for this Mac the popover offers. */
   readonly selected: () => {
     readonly deploymentId: string;
     readonly devicesAvailable: boolean;
   } | null;
+  /** Each Home's typed API under that Home's own owner session, selected or not. */
   readonly host: (deploymentId: string) => HomeHost;
   /** What this Mac itself knows is using it; read on every status, never from a Home. */
   readonly local: () => MenuBarInput["local"];
   readonly stop: () => MenuBarInput["stop"];
-  /** One thing in Right now, stopped the way the Home's Stop stops that kind. */
-  readonly stopRow: (id: string) => boolean;
+  /**
+   * One thing in Right now, stopped the way the Home's Stop stops that kind.
+   * Resolves once the stop was handed on; throws when it could not be, or
+   * false when that thing had already ended.
+   */
+  readonly stopRow: (id: string) => Promise<boolean> | boolean;
   readonly openAtLogin: () => Promise<MenuBarInput["openAtLogin"]>;
   readonly log: ShutdownLog;
 }
@@ -59,15 +64,22 @@ interface ShownRead extends HomeRead {
 /**
  * What the menu bar shows. The header, Right now and Stop come from what
  * desktop main itself holds, so the popover is right with every Home out of
- * reach and never waits for one. Reads of a Home only add to it: this Mac's
- * switches and the work the selected Home reports, and each Home's Needs you.
- * It informs the person; quitting and updating read activity for themselves.
+ * reach and never waits for one. Reads of a Home only add to it, each
+ * published as it answers: this Mac's switches in the Home the window shows,
+ * the tasks this Mac's own Home is running, shells on this Mac, and each
+ * Home's Needs you. It informs the person; quitting and updating read activity
+ * for themselves.
  */
 export class DesktopMenuBarService {
   readonly #options: DesktopMenuBarServiceOptions;
   readonly #listeners = new Set<() => void>();
   readonly #needsYou = new Map<string, number | null>();
+  /** Rows the person stopped from here, until their end shows. */
+  readonly #rowStates = new Map<string, "stopping" | "failed">();
   #read: ShownRead | null = null;
+  #hostedRead: HomeRead | null = null;
+  /** Whether every Home was out of reach when status was last worked out. */
+  #unreachable = false;
   #reading: Promise<void> | null = null;
 
   constructor(options: DesktopMenuBarServiceOptions) {
@@ -84,7 +96,7 @@ export class DesktopMenuBarService {
     for (const listener of this.#listeners) listener();
   }
 
-  /** The window's own live count for the Home it shows, as it badges the app. */
+  /** The window's own live count for the Home it came from, as it badges the app. */
   noteNeedsYou(deploymentId: string, count: number): void {
     if (this.#needsYou.get(deploymentId) === count) return;
     this.#needsYou.set(deploymentId, count);
@@ -101,8 +113,35 @@ export class DesktopMenuBarService {
       ...(hostedHome ? [hostedHome.deploymentId] : []),
       ...deviceHomes.map((home) => home.deploymentId),
     ]);
+    // A Home this Mac no longer works for keeps nothing here.
+    for (const deploymentId of this.#needsYou.keys())
+      if (!homes.has(deploymentId)) this.#needsYou.delete(deploymentId);
     const read = this.#read && homes.has(this.#read.deploymentId) ? this.#read : null;
-    return menuBarStatus({
+    const hostedRead =
+      hostedHome && this.#hostedRead?.deploymentId === hostedHome.deploymentId
+        ? this.#hostedRead
+        : null;
+    const local = this.#options.local();
+    const reads = [read, hostedRead].filter((value): value is HomeRead => value !== null);
+    const shells = new Map<
+      string,
+      { id: string; threadTitle: string; callerMachineName: string }
+    >();
+    for (const value of reads)
+      for (const session of value.machine?.access?.activeSessions ?? [])
+        shells.set(session.id, {
+          id: session.id,
+          threadTitle: session.threadTitle,
+          callerMachineName: session.callerMachineName,
+        });
+    // A Run the person stopped is gone once its Runner no longer reports it.
+    const reported = new Set(
+      (local.runs ?? []).map((run) => `runner:${run.deploymentId}:${run.runId}`),
+    );
+    for (const id of this.#rowStates.keys())
+      if (id.startsWith("runner:") && !reported.has(id)) this.#rowStates.delete(id);
+    const state = (id: string) => this.#rowStates.get(id) ?? "active";
+    const status = menuBarStatus({
       hostedHome: hostedHome && {
         deploymentId: hostedHome.deploymentId,
         name: hostedHome.name,
@@ -117,23 +156,71 @@ export class DesktopMenuBarService {
             devicesAvailable: read.devicesAvailable,
           }
         : null,
-      needsYou: new Map([...this.#needsYou].filter(([deploymentId]) => homes.has(deploymentId))),
-      local: this.#options.local(),
-      homeWork: read
+      needsYou: new Map(this.#needsYou),
+      local: {
+        ...local,
+        runs: (local.runs ?? []).map((run) => ({
+          ...run,
+          state: state(`runner:${run.deploymentId}:${run.runId}`),
+        })),
+      },
+      homeWork: reads.length
         ? {
-            runningTasks: read.runningTasks,
-            sessions: (read.machine?.access?.activeSessions ?? []).map((session) => ({
-              threadId: session.threadId,
-              threadTitle: session.threadTitle,
+            tasks: (hostedRead?.tasks ?? []).map((task) => ({
+              ...task,
+              state: state(`home:${task.threadId}`),
             })),
+            shells: [...shells.values()],
           }
         : null,
       openAtLogin,
     });
+    this.#unreachable = status.icon.unreachable;
+    return status;
   }
 
-  stopRow(id: string): void {
-    if (!this.#options.stopRow(id)) throw new Error("That already ended.");
+  /**
+   * The status item's glyph from what main already holds, without reading a
+   * Home or anything that could wait: the person's Stop as it is now, the
+   * Needs you counts last heard, and reachability as last worked out.
+   */
+  icon(): MenuBarStatus["icon"] {
+    return {
+      attention: [...this.#needsYou.values()].some((count) => count === null || count > 0),
+      unreachable: this.#unreachable,
+      stopped: this.#options.stop().phase !== "running",
+    };
+  }
+
+  /**
+   * Stops one row. It shows as stopping until its end shows, or as failed with
+   * Stop offered again when the stop could not be handed on.
+   */
+  async stopRow(id: string): Promise<void> {
+    this.#rowStates.set(id, "stopping");
+    this.changed();
+    let stopped: boolean;
+    try {
+      stopped = await this.#options.stopRow(id);
+    } catch (error) {
+      this.#rowStates.set(id, "failed");
+      this.changed();
+      throw error;
+    }
+    if (!stopped) {
+      this.#rowStates.delete(id);
+      this.changed();
+      throw new Error("That already ended.");
+    }
+    // A task's end shows in the Home's next read; a Runner's in its next report.
+    if (id.startsWith("home:"))
+      void this.refresh()
+        .catch(() => undefined)
+        .finally(() => {
+          this.#rowStates.delete(id);
+          this.changed();
+        });
+    else if (!id.startsWith("runner:")) this.#rowStates.delete(id);
     this.changed();
   }
 
@@ -152,8 +239,9 @@ export class DesktopMenuBarService {
   }
 
   /**
-   * Writes one switch against the revision the person saw. A change made
-   * elsewhere since then is refused, never applied on top of it.
+   * Writes one switch of the Device the person saw, against the revision they
+   * saw. A change made elsewhere since then, or a different Device now in its
+   * place, is refused, never applied on top of it.
    */
   async setSwitch(input: MenuBarSwitchInput): Promise<void> {
     const read = this.#read;
@@ -168,7 +256,7 @@ export class DesktopMenuBarService {
       await this.#refreshAfter();
       throw new Error(menuBarWords("menubar.switch.unavailable"));
     }
-    if (access.revision !== input.revision) {
+    if (machine.id !== input.machineId || access.revision !== input.revision) {
       await this.#refreshAfter();
       throw new Error(switchConflictSentence);
     }
@@ -178,7 +266,7 @@ export class DesktopMenuBarService {
         await this.#options.host(input.deploymentId)["commands.dispatch"](
           DeviceMachineAccessUpdateCommandSchema.parse({
             type: "machine.access.update",
-            deviceId: machine.id,
+            deviceId: input.machineId,
             policy: withDeviceSwitch(access.policy, input.capability, input.on),
             expectedRevision: input.revision,
             idempotencyKey: crypto.randomUUID(),
@@ -193,6 +281,7 @@ export class DesktopMenuBarService {
     if (conflict) throw new Error(switchConflictSentence);
   }
 
+  /** Every Home is read at once, and each result shows as soon as it arrives. */
   async #refresh(): Promise<void> {
     const [hostedHome, deviceHomes] = await Promise.all([
       this.#options.hostedHome(),
@@ -202,11 +291,12 @@ export class DesktopMenuBarService {
       ...(hostedHome ? [hostedHome.deploymentId] : []),
       ...deviceHomes.map((home) => home.deploymentId),
     ];
-    await Promise.all([
-      this.#readShown(hostedHome, deviceHomes),
-      ...[...new Set(homes)].map((deploymentId) => this.#readNeedsYou(deploymentId)),
+    const published = <T>(work: Promise<T>) => work.finally(() => this.changed());
+    await Promise.allSettled([
+      published(this.#readShown(hostedHome, deviceHomes)),
+      published(this.#readHosted(hostedHome)),
+      ...[...new Set(homes)].map((deploymentId) => published(this.#readNeedsYou(deploymentId))),
     ]);
-    this.changed();
   }
 
   async #readNeedsYou(deploymentId: string): Promise<void> {
@@ -219,6 +309,24 @@ export class DesktopMenuBarService {
       this.#needsYou.set(deploymentId, attention.needsYou);
     } catch {
       this.#needsYou.set(deploymentId, null);
+    }
+  }
+
+  /** This Mac's own Home: the tasks running here, whichever Home the window shows. */
+  async #readHosted(hostedHome: MenuBarHostedHome | null): Promise<void> {
+    if (!hostedHome) {
+      this.#hostedRead = null;
+      return;
+    }
+    try {
+      this.#hostedRead = await readHome(this.#options.host(hostedHome.deploymentId), {
+        deploymentId: hostedHome.deploymentId,
+        runnerId: hostedHome.runnerId,
+        hosted: true,
+      });
+    } catch {
+      this.#options.log("desktop.menu-bar.host-read-failed", {});
+      this.#hostedRead = null;
     }
   }
 
@@ -237,7 +345,7 @@ export class DesktopMenuBarService {
       const read = await readHome(this.#options.host(selected.deploymentId), {
         deploymentId: selected.deploymentId,
         runnerId: hosted?.runnerId ?? device?.runnerId ?? null,
-        hosted: hosted !== null,
+        hosted: false,
       });
       this.#read = { ...read, devicesAvailable: selected.devicesAvailable };
     } catch {

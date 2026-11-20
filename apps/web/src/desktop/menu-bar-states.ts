@@ -35,7 +35,7 @@ function thisMac(home: boolean) {
 const nothing: MenuBarInput = {
   hostedHome: null,
   deviceHomes: [],
-  stop: { stopped: false, stoppedAt: null, problem: null },
+  stop: { phase: "running", stoppedAt: null, problem: null },
   thisMac: null,
   needsYou: new Map(),
   local: { apps: [], tabs: [] },
@@ -96,14 +96,52 @@ export const menuBarStates = {
       tabs: [{ sessionId: "bsn_1", profile: true }],
     },
     homeWork: {
-      runningTasks: [],
-      sessions: [{ threadId: "thr_1", threadTitle: "Clean up downloads" }],
+      tasks: [{ threadId: "thr_1", title: "Clean up downloads" }],
+      shells: [],
+    },
+  }),
+  /** A Device's Run being stopped from its row, and a task whose Stop did not go out. */
+  rowStates: menuBarStatus({
+    ...nothing,
+    ...studio,
+    deviceHomes: [office("running")],
+    local: {
+      apps: [],
+      tabs: [],
+      runs: [
+        {
+          deploymentId: "dep_office",
+          runId: "run_1",
+          engine: "Claude Code",
+          purpose: "task",
+          state: "stopping",
+        },
+      ],
+    },
+    homeWork: {
+      tasks: [{ threadId: "thr_1", title: "Clean up downloads", state: "failed" }],
+      shells: [{ id: "shs_1", threadTitle: "Rename photos", callerMachineName: "Office Mini" }],
+    },
+  }),
+  stopping: menuBarStatus({
+    ...nothing,
+    ...studio,
+    stop: { phase: "stopping", stoppedAt: null, problem: null },
+  }),
+  stopFailed: menuBarStatus({
+    ...nothing,
+    ...studio,
+    stop: {
+      phase: "failed",
+      stoppedAt: null,
+      problem:
+        "Some agent work on this Mac didn’t stop (tasks on this Mac’s Home). Press Stop everything to try again.",
     },
   }),
   stopped: menuBarStatus({
     ...nothing,
     ...studio,
-    stop: { stopped: true, stoppedAt: "2026-11-20T18:42:00.000Z", problem: null },
+    stop: { phase: "stopped", stoppedAt: "2026-11-20T18:42:00.000Z", problem: null },
   }),
 } satisfies Record<string, MenuBarStatus>;
 

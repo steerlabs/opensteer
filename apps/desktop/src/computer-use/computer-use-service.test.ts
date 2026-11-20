@@ -662,7 +662,7 @@ describe.skipIf(!onMac)("the person's Stop from the menu bar", () => {
     expect(harness.computerUse.agentSessions).toBe(1);
 
     admission.close();
-    harness.computerUse.pause();
+    await harness.computerUse.pause();
     expect(harness.computerUse.agentSessions).toBe(0);
     await vi.waitFor(() =>
       expect(harness.events).toContainEqual(
@@ -672,7 +672,7 @@ describe.skipIf(!onMac)("the person's Stop from the menu bar", () => {
         }),
       ),
     );
-    await vi.waitFor(() => expect(harness.helper.methods).toContain("session.close"));
+    expect(harness.helper.methods).toContain("session.close");
     expect(harness.helper.connections()).toBe(1);
     const methods = harness.helper.methods.length;
     await expect(
@@ -691,13 +691,17 @@ describe.skipIf(!onMac)("the person's Stop from the menu bar", () => {
     const harness = await lifetimeHarness({});
     await harness.observe();
     expect(harness.computerUse.agentSessionDetails()).toEqual([
-      { sessionId: harness.sessionId, threadTitle: null, app: "Notes" },
+      { sessionId: harness.sessionId, threadTitle: null, app: "Notes", state: "active" },
     ]);
     const changed = vi.fn();
     harness.computerUse.onAgentSessionsChanged(changed);
     expect(harness.computerUse.stopAgentSession(harness.sessionId)).toBe(true);
     expect(changed).toHaveBeenCalled();
-    expect(harness.computerUse.agentSessionDetails()).toEqual([]);
+    // The row stays, stopping, until the helper confirms the close.
+    expect(harness.computerUse.agentSessionDetails()).toEqual([
+      expect.objectContaining({ sessionId: harness.sessionId, state: "stopping" }),
+    ]);
+    await vi.waitFor(() => expect(harness.computerUse.agentSessionDetails()).toEqual([]));
     await vi.waitFor(() =>
       expect(harness.events).toContainEqual(
         expect.objectContaining({
@@ -711,6 +715,64 @@ describe.skipIf(!onMac)("the person's Stop from the menu bar", () => {
     expect(harness.computerUse.stopAgentSession(harness.sessionId)).toBe(false);
   });
 
+  it("closes a session the person stopped while it was opening, once the open returns", async () => {
+    const harness = await lifetimeHarness({});
+    const open = gate();
+    harness.helper.state.openGate = open.waiting;
+    const opened = harness.call("session.open", {
+      sessionId: harness.sessionId,
+      threadTitle: null,
+    });
+    await vi.waitFor(() => expect(harness.helper.methods).toContain("session.open"));
+    expect(harness.computerUse.stopAgentSession(harness.sessionId)).toBe(true);
+    expect(harness.helper.methods).not.toContain("session.close");
+    expect(harness.computerUse.agentSessionDetails()).toEqual([
+      expect.objectContaining({ state: "stopping" }),
+    ]);
+    open.release();
+    await expect(opened).resolves.toMatchObject({ error: { code: "stopped-by-user" } });
+    await vi.waitFor(() => expect(harness.helper.methods).toContain("session.close"));
+    await vi.waitFor(() => expect(harness.computerUse.agentSessionDetails()).toEqual([]));
+  });
+
+  it("refuses work queued for a stopped session and keeps its row failed while its close fails", async () => {
+    const harness = await lifetimeHarness({});
+    await harness.observe();
+    harness.helper.state.closeFails = true;
+    expect(harness.computerUse.stopAgentSession(harness.sessionId)).toBe(true);
+    const observed = harness.helper.methods.filter((method) => method === "session.observe").length;
+    await expect(
+      harness.call("session.observe", {
+        app: { access: "read", identity: notesIdentity },
+        includeScreenshot: true,
+        window: "window-1",
+        sessionId: harness.sessionId,
+      }),
+    ).resolves.toMatchObject({ error: { code: "stopped-by-user" } });
+    expect(harness.helper.methods.filter((method) => method === "session.observe")).toHaveLength(
+      observed,
+    );
+    await vi.waitFor(() =>
+      expect(harness.computerUse.agentSessionDetails()).toEqual([
+        expect.objectContaining({ sessionId: harness.sessionId, state: "failed" }),
+      ]),
+    );
+    // Stop again from the row: the close is retried and the row goes once it is confirmed.
+    harness.helper.state.closeFails = false;
+    expect(harness.computerUse.stopAgentSession(harness.sessionId)).toBe(true);
+    await vi.waitFor(() => expect(harness.computerUse.agentSessionDetails()).toEqual([]));
+  });
+
+  it("says Stop did not finish while an agent session's close is not confirmed", async () => {
+    const admission = openAgentAdmission();
+    const harness = await lifetimeHarness({ admission });
+    await harness.observe();
+    harness.helper.state.closeFails = true;
+    admission.close();
+    await expect(harness.computerUse.pause()).rejects.toThrow(/did not confirm/);
+    expect(harness.computerUse.agentSessions).toBe(1);
+  });
+
   it("never sends an open that waited on installation through a Stop, even after Resume", async () => {
     const admission = openAgentAdmission();
     const harness = await lifetimeHarness({ admission, running: false });
@@ -722,7 +784,7 @@ describe.skipIf(!onMac)("the person's Stop from the menu bar", () => {
     });
     await vi.waitFor(() => expect(harness.helper.commands).toContain("/usr/bin/plutil"));
     admission.close();
-    harness.computerUse.pause();
+    await harness.computerUse.pause();
     admission.reopen();
     install.release();
     await expect(opened).resolves.toMatchObject({ error: { code: "stopped-by-user" } });
@@ -966,6 +1028,10 @@ async function fakeHelper(
   }
   const socketPath = computerUseHelperSocketPath(home);
   const state = {
+    /** While set, a `session.open` is answered only once it settles. */
+    openGate: null as Promise<void> | null,
+    /** The helper refuses `session.close`. */
+    closeFails: false,
     installFails: false,
     /** While set, reading a bundle's version — the start of installing — waits for it. */
     installGate: null as Promise<void> | null,
@@ -1097,6 +1163,15 @@ async function fakeHelper(
             socket,
             "error" in outcome ? { error: outcome.error, id } : { id, result: outcome },
           );
+          continue;
+        }
+        if (method === "session.close" && state.closeFails) {
+          writeToClient(socket, { error: { code: "failed", message: "stuck" }, id });
+          continue;
+        }
+        if (method === "session.open" && state.openGate) {
+          const held = state.openGate;
+          void held.then(() => writeToClient(socket, { id, result: answer(method, params) }));
           continue;
         }
         writeToClient(socket, { id, result: answer(method, params) });

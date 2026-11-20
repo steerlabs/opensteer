@@ -43,6 +43,7 @@ import type { HostSessionRecovery } from "@opensteer/client/auth";
 import { DesktopAccessProjection } from "./access-projection.js";
 import { DesktopHostTransport } from "./host-transport.js";
 import { forwardHostRoute } from "../app/host-route.js";
+import { createForwardedHostApi } from "./desktop-host-api.js";
 import type {
   PersonalHostRuntimeRecord,
   PersonalHostRuntimeSource,
@@ -2919,6 +2920,45 @@ describe("Desktop Host route admission", () => {
     }
   });
 
+  it("ends a forwarded request when its own signal aborts while its route is still being resolved", async () => {
+    const first = deployment("Home", "https://home.example.test", "personal");
+    const store = catalogStore([first], first.authority.document.deploymentId);
+    let stalled = false;
+    const catalog = {
+      ...store,
+      load: async () => {
+        if (stalled) await new Promise<never>(() => undefined);
+        return await store.load();
+      },
+    };
+    const network = {
+      request: vi.fn(async () => Response.json({ ok: true, data: {} })),
+      openWebSocket: vi.fn(() => socket()),
+    };
+    const transport = desktopHostTransport({ catalog, network });
+    const id = first.authority.document.deploymentId;
+    const caller = new AbortController();
+    try {
+      stalled = true;
+      const pending = transport.forward(
+        id,
+        "/v1/rpc/attention.get",
+        new Request(`app://opensteer/host/${id}/v1/rpc/attention.get`, {
+          method: "POST",
+          body: "{}",
+          headers: { [desktopHostRequestIdHeader]: crypto.randomUUID() },
+          signal: caller.signal,
+        }),
+      );
+      caller.abort();
+      const response = await pending;
+      expect(response.headers.get(desktopHostTransportErrorHeader)).toBe("cancelled");
+      expect(network.request).not.toHaveBeenCalled();
+    } finally {
+      transport.dispose();
+    }
+  });
+
   it("refuses a request its renderer already cancelled, or one it can't cancel, before sending it", async () => {
     const { gate, request, route, transport } = fixture();
     gate.resolve();
@@ -3207,6 +3247,41 @@ describe("joined team routing", () => {
         send(transport, expectedDeploymentId, "/v1/rpc/attention.get"),
       ).rejects.toMatchObject({ code: "deployment-changed" });
       expect(network.request).toHaveBeenCalledTimes(2);
+    } finally {
+      transport.dispose();
+    }
+  });
+
+  it("answers main's own calls to a Home that is not selected only when main asks for that Home", async () => {
+    const first = deployment("Work", "https://work.example.test", "personal");
+    const second = deployment("This Mac", "http://127.0.0.1:4310", "personal");
+    const catalog = catalogStore([first, second], first.authority.document.deploymentId);
+    const requested: string[] = [];
+    const network = {
+      request: vi.fn(async ({ url }: HostNetworkRequest) => {
+        requested.push(String(url));
+        return Response.json({ ok: true, data: { commandId: "cmd_1", status: "accepted" } });
+      }),
+      openWebSocket: vi.fn(() => socket()),
+    };
+    const transport = desktopHostTransport({ catalog, network });
+    const hosted = second.authority.document.deploymentId;
+    const dispatch = (anyHome: boolean) =>
+      createForwardedHostApi(transport, hosted, { anyHome })["commands.dispatch"]({
+        type: "run.interrupt",
+        runId: createId("run"),
+        threadId: createId("thread"),
+        idempotencyKey: crypto.randomUUID(),
+      });
+    try {
+      // Without asking, a Home that is not selected is not reached at all.
+      await expect(dispatch(false)).resolves.toMatchObject({ ok: false });
+      expect(requested).toEqual([]);
+      await dispatch(true);
+      expect(requested).toEqual(["http://127.0.0.1:4310/v1/rpc/commands.dispatch"]);
+      expect((await catalog.load()).selectedDeploymentId).toBe(
+        first.authority.document.deploymentId,
+      );
     } finally {
       transport.dispose();
     }

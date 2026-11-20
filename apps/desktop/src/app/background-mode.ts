@@ -125,11 +125,20 @@ export class DesktopBackgroundMode {
   async #quitCompletely(): Promise<boolean> {
     const { shutdown } = this.#options;
     if (shutdown.requested) return true;
-    const work = await this.#options.work();
+    // An inventory that cannot be read is unknown, and the question still asks.
+    const work = await this.#options.work().catch((): ActivitySnapshot => ({
+      known: false,
+      hostsHome: false,
+      deviceHomes: [],
+      lines: [],
+    }));
     if (shutdown.requested) return true;
     const confirmation = quitCompletelyConfirmation(work);
     if (confirmation) {
-      const confirmed = await this.#options.confirm(confirmation, shutdown.signal);
+      // A question the shutdown dismissed is answered by the shutdown.
+      const confirmed = await this.#options
+        .confirm(confirmation, shutdown.signal)
+        .catch(() => false);
       if (shutdown.requested) return true;
       if (!confirmed) {
         this.#options.log("desktop.background.quit-cancelled", {});

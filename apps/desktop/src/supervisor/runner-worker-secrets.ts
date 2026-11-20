@@ -34,3 +34,24 @@ export const RunnerWorkerPowerMessageSchema = z.strictObject({
   type: z.enum(["runner.worker.power.sleeping", "runner.worker.power.awake"]),
 });
 export type RunnerWorkerPowerMessage = z.infer<typeof RunnerWorkerPowerMessageSchema>;
+
+/** The person stopped one Run from this Mac's menu bar; the worker's Runner interrupts it. */
+export const RunnerWorkerStopRunMessageSchema = z.strictObject({
+  runId: z.string().min(1).max(200),
+  type: z.literal("runner.worker.stop-run"),
+});
+
+/** One Run the worker's Runner is doing work for, as this Mac may show it. */
+export const RunnerWorkerRunSchema = z.strictObject({
+  runId: z.string().min(1).max(200),
+  startedAt: z.iso.datetime(),
+  purpose: z.enum(["task", "voice", "background-job"]),
+  engine: z.string().min(1).max(200),
+});
+export type RunnerWorkerRun = z.infer<typeof RunnerWorkerRunSchema>;
+
+/** Every Run the worker's Runner is doing work for, sent each time that changes. */
+export const RunnerWorkerActivityMessageSchema = z.strictObject({
+  runs: z.array(RunnerWorkerRunSchema).max(256),
+  type: z.literal("runner.worker.activity"),
+});

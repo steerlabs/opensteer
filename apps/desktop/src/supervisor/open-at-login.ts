@@ -133,7 +133,9 @@ export class OpenAtLoginPolicy {
   }
 
   async sync(eligibility: OpenAtLoginEligibility): Promise<void> {
-    const record = await this.#record(eligibility);
+    const loaded = await this.#record(eligibility);
+    const record = this.#observed(loaded);
+    if (record !== loaded) await this.#choices.save(record);
     const wanted = eligible(eligibility) && record.choice !== "off";
     if (wanted === record.registered) {
       await this.#choices.save(record);
@@ -160,8 +162,9 @@ export class OpenAtLoginPolicy {
   }
 
   /**
-   * A Mac with no record yet keeps whatever the previous build registered:
-   * that build opened at login exactly when this Mac had a Device Runner.
+   * A Mac with no record yet starts from what the previous build registered:
+   * that build opened at login exactly when this Mac had a Device Runner. What
+   * macOS says now is then read against it like any other record.
    */
   async #record(eligibility: OpenAtLoginEligibility): Promise<OpenAtLoginRecord> {
     return (
@@ -171,6 +174,17 @@ export class OpenAtLoginPolicy {
         registered: eligibility.enrolledRunners,
       }
     );
+  }
+
+  /**
+   * macOS saying something other than what Opensteer last asked it for is the
+   * person's choice in System Settings, and is kept as theirs: losing and
+   * regaining a Home later never undoes it.
+   */
+  #observed(record: OpenAtLoginRecord): OpenAtLoginRecord {
+    const system = this.#systemEnabled();
+    if (system === null || system === record.registered) return record;
+    return { version: 2, choice: system ? "on" : "off", registered: system };
   }
 }
 

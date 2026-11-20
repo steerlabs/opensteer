@@ -220,6 +220,11 @@ export interface ComputerUseHelperRequestOptions {
    * main writes the frame only while that admission is still current.
    */
   readonly admission?: number;
+  /**
+   * Read in the same turn as the frame's write: false means it is never
+   * written, and the request fails as stopped by the person.
+   */
+  readonly admitted?: () => boolean;
 }
 
 type HelperResults = typeof computerUseHelperResults;
@@ -358,6 +363,7 @@ export class ComputerUseHelperClient {
       params,
       { at: deadline },
       options.signal,
+      options.admitted,
     )) as ComputerUseHelperResult<Method>;
   }
 
@@ -771,6 +777,7 @@ export class ComputerUseHelperClient {
     params: unknown,
     due: ComputerUseDeadline,
     signal?: AbortSignal,
+    admitted?: () => boolean,
   ): Promise<unknown> {
     if (signal?.aborted) {
       throw new ComputerUseHelperFailure("failed", "The computer use request was cancelled.");
@@ -794,6 +801,15 @@ export class ComputerUseHelperClient {
       const timeoutMs = Math.min(computerUseMaxTimeoutMs, Math.floor(due.at - this.#now()));
       if (timeoutMs <= 0) {
         rejectPromise(outOfTime());
+        return;
+      }
+      if (admitted && !admitted()) {
+        rejectPromise(
+          new ComputerUseHelperFailure(
+            "stopped-by-user",
+            "Agents were stopped on this Mac from the Opensteer menu bar.",
+          ),
+        );
         return;
       }
       let settled = false;

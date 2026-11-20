@@ -114,7 +114,7 @@ export function menuBarPopoverBounds(item: Rectangle, workArea: Rectangle): Rect
 export interface DesktopMenuBarOptions {
   readonly service: Pick<
     DesktopMenuBarService,
-    "changed" | "refresh" | "setSwitch" | "status" | "stopRow" | "subscribe"
+    "changed" | "icon" | "refresh" | "setSwitch" | "status" | "stopRow" | "subscribe"
   >;
   readonly actions: {
     stop(): Promise<void>;
@@ -161,8 +161,8 @@ export class DesktopMenuBar {
     tray.on("right-click", () => void this.toggle());
     this.#tray = tray;
     this.#register();
-    this.#detach = this.#options.service.subscribe(() => void this.#redraw());
-    void this.#redraw();
+    this.#detach = this.#options.service.subscribe(() => this.#redraw());
+    this.#redraw();
   }
 
   /** Opens the popover under the item, or closes it when it already shows. */
@@ -191,7 +191,7 @@ export class DesktopMenuBar {
     if (popover.isDestroyed()) return;
     popover.show();
     popover.focus();
-    void this.#redraw();
+    this.#redraw();
     void this.#options.service.refresh().catch(() => undefined);
   }
 
@@ -255,14 +255,50 @@ export class DesktopMenuBar {
     return popover;
   }
 
-  /** Main pushes on change: the status item always, the popover while it shows. */
-  async #redraw(): Promise<void> {
-    const status = MenuBarStatusSchema.parse(await this.#options.service.status());
-    if (this.#tray && this.#glyph !== JSON.stringify(status.icon))
-      this.#tray.setImage(this.#image(status.icon));
+  /**
+   * Main redraws on change: the status item at once from what main holds, and
+   * the popover, while it shows, with one full status at a time. Changes that
+   * arrive meanwhile fold into one more, and a failure is logged, never thrown.
+   */
+  #redraw(): void {
+    this.#drawIcon(this.#options.service.icon());
     const popover = this.#popover;
-    if (popover && !popover.isDestroyed() && popover.isVisible())
-      popover.webContents.send(menuBarChannels.statusChanged, status);
+    if (!popover || popover.isDestroyed() || !popover.isVisible()) return;
+    if (this.#pushing) {
+      this.#pushAgain = true;
+      return;
+    }
+    this.#pushing = true;
+    void (async () => {
+      do {
+        this.#pushAgain = false;
+        const status = MenuBarStatusSchema.parse(await this.#options.service.status());
+        this.#drawIcon(status.icon);
+        const shown = this.#popover;
+        if (shown && !shown.isDestroyed() && shown.isVisible())
+          shown.webContents.send(menuBarChannels.statusChanged, status);
+      } while (this.#pushAgain);
+    })()
+      .catch((error: unknown) =>
+        this.#options.log("desktop.menu-bar.redraw-failed", {
+          message: error instanceof Error ? error.message : "failed",
+        }),
+      )
+      .finally(() => {
+        this.#pushing = false;
+        // A change that landed after the last look still gets its push.
+        if (this.#pushAgain) {
+          this.#pushAgain = false;
+          this.#redraw();
+        }
+      });
+  }
+
+  #pushing = false;
+  #pushAgain = false;
+
+  #drawIcon(icon: MenuBarIcon): void {
+    if (this.#tray && this.#glyph !== JSON.stringify(icon)) this.#tray.setImage(this.#image(icon));
   }
 
   #register(): void {

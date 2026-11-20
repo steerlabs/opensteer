@@ -71,9 +71,16 @@ export function createDesktopHostApi(options: {
  */
 export function createForwardedHostApi(
   transport: {
-    forward(deploymentId: DeploymentId, path: string, request: Request): Promise<Response>;
+    forward(
+      deploymentId: DeploymentId,
+      path: string,
+      request: Request,
+      options?: { readonly anyHome?: boolean },
+    ): Promise<Response>;
   },
   deploymentId: DeploymentId,
+  /** Answer every call under that Home's own session, selected or not. */
+  options: { readonly anyHome?: boolean } = {},
 ): HostApiClient {
   return createHttpHostApiClient({
     baseUrl: new URL("https://selected-home.invalid"),
@@ -84,7 +91,9 @@ export function createForwardedHostApi(
       headers.set(desktopHostRequestIdHeader, crypto.randomUUID());
       const request = new Request(input, { ...init, headers });
       const url = new URL(request.url);
-      return transport.forward(deploymentId, `${url.pathname}${url.search}`, request);
+      return options.anyHome
+        ? transport.forward(deploymentId, `${url.pathname}${url.search}`, request, options)
+        : transport.forward(deploymentId, `${url.pathname}${url.search}`, request);
     },
     onAuthenticationRequired: () => undefined,
   });
