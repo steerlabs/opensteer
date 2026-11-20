@@ -408,6 +408,14 @@ integration("Machine access audit, transfer and realtime", () => {
             (message.session as { readonly id: string }).id === sessionId,
         ),
       ).toHaveLength(1);
+      // Each device's socket receives the end on its own; wait for this one's before counting.
+      await waitForValueOf(async () =>
+        bystanderFeed.messages.find(
+          (message) =>
+            message.type === "host.machine.access.session.ended" &&
+            (message.session as { readonly id: string }).id === sessionId,
+        ),
+      );
       // Reach is what lets a Run connect; it never makes a viewer a manager.
       expect(
         bystanderFeed.messages.filter((message) =>
