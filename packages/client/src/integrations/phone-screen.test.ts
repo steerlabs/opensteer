@@ -27,6 +27,24 @@ describe("a Mac-driven phone's status", () => {
     ]);
   });
 
+  it("tells the person that screen control returns when the driving Mac wakes", () => {
+    const phone = mockIphoneScreenDevice("driver-offline");
+    expect(
+      phoneScreenStatus({
+        ...phone,
+        phoneDisplay: {
+          ...phone.phoneDisplay!,
+          control: { state: "unavailable", reason: { kind: "driver-asleep" } },
+        },
+      }),
+    ).toEqual({
+      label: "Alex’s MacBook Pro is asleep",
+      fix: "Screen control comes back when Alex’s MacBook Pro wakes.",
+      tone: "waiting",
+      needsSetup: false,
+    });
+  });
+
   it("says nothing for a phone no Mac drives", () => {
     const ready = mockIphoneScreenDevice("ready");
     expect(

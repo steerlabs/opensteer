@@ -120,4 +120,15 @@ describe("removing a device", () => {
     );
     expect(deviceRemoval(machine({ kind: "home" }), none)).toBeNull();
   });
+
+  it("explains asleep devices calmly and hides the notice for online or offline ones", async () => {
+    const { deviceAsleepDetail } = await import("./device-page-model.js");
+    expect(
+      deviceAsleepDetail(machine({ asleepSince: "2026-04-12T10:15:00.000Z", status: "offline" })),
+    ).toBe("Its tabs and apps wait until it wakes. Agents can’t use it meanwhile.");
+    expect(deviceAsleepDetail(machine({ status: "offline" }))).toBeNull();
+    expect(
+      deviceAsleepDetail(machine({ asleepSince: "2026-04-12T10:15:00.000Z", status: "online" })),
+    ).toBeNull();
+  });
 });

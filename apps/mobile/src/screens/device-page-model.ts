@@ -1,12 +1,13 @@
 import {
   deviceAccessRows,
+  deviceAsleepDetail,
   deviceRemovalProfiles,
   isHomeDevice,
   type DeviceCapability,
 } from "@opensteer/client/computers";
 import type { MachineSummary } from "@opensteer/protocol";
 
-export { isHomeDevice as isHome };
+export { deviceAsleepDetail, isHomeDevice as isHome };
 export type { DeviceCapability as DeviceSwitchKey };
 
 interface DeviceSwitchRow {

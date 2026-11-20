@@ -1065,7 +1065,9 @@ export function computerDisplayScope(
 function captureRefused(machine: MachineSummary): boolean {
   if (machine.phoneDisplay) {
     const { state, reason } = machine.phoneDisplay.view;
-    return state !== "ready" && reason?.kind !== "driver-offline";
+    return (
+      state !== "ready" && reason?.kind !== "driver-offline" && reason?.kind !== "driver-asleep"
+    );
   }
   return (
     machine.computerUse?.permissions?.screenRecording === "denied" ||

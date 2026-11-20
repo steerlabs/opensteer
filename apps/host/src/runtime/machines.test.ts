@@ -858,6 +858,116 @@ it("preserves the self Device descriptor when adding stored Device identity", ()
   expect(summary?.device).toEqual(ownDevice.device);
 });
 
+it.each([false, true])(
+  "projects an asleep Mac and its iPhone even with stale screen readiness (%s)",
+  (screenConnected) => {
+    const macId = createId("runner");
+    const phoneId = DeviceIdSchema.parse(createId("device"));
+    const asleepAt = new Date("2026-04-12T10:15:00.000Z");
+    const sleepingMac = runner({
+      id: macId,
+      connected: false,
+      asleepSince: asleepAt,
+      lastSeenAt: asleepAt,
+      name: "Studio MacBook",
+      device: { app: "opensteer", form: "laptop", platform: "macos" },
+      allowedModules: ["browser", "integrations", "shell"],
+      modules: {
+        browser: { runtimeId: "rt-1", wireVersion: 2 },
+        integrations: { platform: "darwin", protocolVersion: 4 },
+        shell: {
+          fullDiskAccess: true,
+          hostPublicKey:
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH",
+          platform: "darwin",
+        },
+      },
+    });
+    const projected = projectMachines({
+      access: new Map(),
+      apps: new Map(),
+      deploymentOwnsMainComputer: true,
+      pendingRunners: [],
+      runners: [sleepingMac],
+      threadsByEnvironment: new Map(),
+      devices: [
+        {
+          device: {
+            id: DeviceIdSchema.parse(macId),
+            kind: "computer",
+            platform: "macos",
+            form: "laptop",
+            name: sleepingMac.name,
+            ownerKind: "user",
+            removedAt: null,
+            accessPolicy: {
+              ...machineAccessPolicyDefault,
+              apps: true,
+              browser: true,
+              reach: "owner",
+            },
+          },
+          drivers: [
+            {
+              role: "self",
+              runnerId: macId,
+              runnerName: sleepingMac.name,
+              generation: 1,
+              attached: true,
+            },
+          ],
+          selfRunnerId: macId,
+          screenStatus: null,
+          screenConnected: false,
+          phoneAccess: null,
+        },
+        {
+          device: {
+            id: phoneId,
+            kind: "phone",
+            platform: "ios",
+            form: "phone",
+            name: "Work iPhone",
+            ownerKind: "user",
+            removedAt: null,
+            accessPolicy: { ...machineAccessPolicyDefault, apps: true, browser: false },
+          },
+          drivers: [
+            {
+              role: "screen",
+              runnerId: macId,
+              runnerName: sleepingMac.name,
+              generation: 1,
+              attached: true,
+            },
+          ],
+          selfRunnerId: null,
+          screenStatus: null,
+          screenConnected,
+          screenAsleep: true,
+          phoneAccess: "read-write",
+        },
+      ],
+    });
+    const mac = DeviceMachineSummarySchema.parse(projected[0]);
+    expect(mac.status).toBe("offline");
+    expect(mac.asleepSince).toBe(asleepAt.toISOString());
+    expect(mac.capabilities.browser.reason).toEqual({ kind: "driver-asleep" });
+    expect(mac.capabilities.apps.reason).toEqual({ kind: "driver-asleep" });
+    expect(mac.capabilities.files.reason).toEqual({ kind: "driver-asleep" });
+
+    const phone = DeviceMachineSummarySchema.parse(projected[1]);
+    expect(phone.asleepSince).toBeUndefined();
+    for (const availability of [
+      phone.phoneDisplay?.control,
+      phone.phoneDisplay?.input,
+      phone.phoneDisplay?.view,
+    ]) {
+      expect(availability).toEqual({ state: "unavailable", reason: { kind: "driver-asleep" } });
+    }
+  },
+);
+
 it.each([
   ["ready", null, true, "ready", null, "ready", null],
   [

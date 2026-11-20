@@ -41,3 +41,24 @@ it.each(["device-access-off", "device-offline"] as const)(
     ).toMatchObject({ reason, computerId: machineId, capability: "apps" });
   },
 );
+
+it("distinguishes device-asleep refusals with computer_asleep and calm wake guidance", () => {
+  const machineId = createId("runner");
+  const error = new DeviceAccessRefusal("device-asleep", DeviceIdSchema.parse(machineId), "apps");
+  expect(error.code).toBe("runner_offline");
+  const failure = agentToolFailure(error, "write");
+  expect(failure).toMatchObject({
+    capability: "apps",
+    computerId: machineId,
+    reason: "device-asleep",
+  });
+  const result = agentToolFailureResult(failure);
+  expect(result.structuredContent.error).toEqual({
+    code: "computer_asleep",
+    message: error.message,
+    next: expect.stringContaining(machineId),
+  });
+  expect(result.content[0]!.text).toMatch(/asleep/iu);
+  expect(result.content[0]!.text).toMatch(/wakes/iu);
+  expect(result.content[0]!.text).toMatch(/do not request access/iu);
+});

@@ -198,6 +198,14 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
     phone.setup?.location === "driver-mac"
       ? ` in Opensteer on ${phone.setup.driverRunnerName}`
       : " in Opensteer on its driving Mac";
+  if (reason === "driver-asleep")
+    return blocked(
+      "computer_asleep",
+      `${phone.name}'s screen driver is asleep.`,
+      phone.definitionId === "iphone-screen"
+        ? `It will work again when its driving Mac wakes${phone.setup?.location === "driver-mac" ? ` (${phone.setup.driverRunnerName})` : ""}; other work can continue.`
+        : "It will work again when the device wakes; other work can continue.",
+    );
   if (reason === "driver-offline" || (phone.state === "offline" && reason !== "not-connected"))
     return blocked(
       "computer_offline",

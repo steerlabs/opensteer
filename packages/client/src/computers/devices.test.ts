@@ -281,3 +281,53 @@ it("addresses self and attached screen access by their Device ids", () => {
     phone.id,
   );
 });
+
+it("projects asleep devices with calm status and explanation in devicesView and computerStatus", async () => {
+  const { computerStatus, deviceAsleepDetail, deviceAsleepExplanation, isDeviceAsleep } =
+    await import("./index.js");
+  const { phoneScreenStatus } = await import("../integrations/phone-screen.js");
+  const now = new Date("2026-04-12T10:35:00.000Z");
+  const asleepSince = "2026-04-12T10:15:00.000Z";
+  const sleeping = MachineSummarySchema.parse({
+    ...machine("rnr_mac", "computer"),
+    asleepSince,
+    lastSeenAt: asleepSince,
+    name: "Studio iMac",
+    status: "offline",
+  });
+  expect(isDeviceAsleep(sleeping)).toBe(true);
+  expect(deviceAsleepDetail(sleeping)).toBe(deviceAsleepExplanation);
+  expect(computerStatus(sleeping, now)).toEqual({
+    label: "Asleep · seen 20m",
+    tone: "waiting",
+  });
+
+  const view = devicesView({ machines: [sleeping], sessions: [], hereId: null });
+  expect(view.devices[0]).toMatchObject({
+    asleep: true,
+    asleepDetail: deviceAsleepExplanation,
+    label: "Studio iMac",
+  });
+  expect(view.devices[0]?.status).toMatch(/^Asleep/u);
+
+  // Online device ignores stale asleepSince.
+  const awake = { ...sleeping, status: "online" as const };
+  expect(isDeviceAsleep(awake)).toBe(false);
+  expect(deviceAsleepDetail(awake)).toBeNull();
+
+  // iPhone driven by a sleeping Mac reports the Mac as asleep.
+  const phone = mockIphoneScreenDevice();
+  const sleepingPhone: typeof phone = {
+    ...phone,
+    phoneDisplay: {
+      ...phone.phoneDisplay!,
+      control: { reason: { kind: "driver-asleep" }, state: "unavailable" },
+    },
+  };
+  expect(phoneScreenStatus(sleepingPhone)).toEqual({
+    fix: "Screen control comes back when Alex’s MacBook Pro wakes.",
+    label: "Alex’s MacBook Pro is asleep",
+    needsSetup: false,
+    tone: "waiting",
+  });
+});

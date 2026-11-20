@@ -1,8 +1,10 @@
 export { cancelDeviceSetup } from "@opensteer/client/computers";
 import { deviceAccess, type DeviceInitialAccess, type MachineSummary } from "@opensteer/protocol";
 import {
+  computerStatus,
   deviceAccessRows,
   hostsDeployment,
+  isDeviceAsleep,
   type DeviceAccessRow,
   type DeviceCapability,
 } from "@opensteer/client/computers";
@@ -128,6 +130,7 @@ export function deviceStatusLine(machine: MachineSummary, now = new Date()): str
       ? `Setting up · expires ${expiryWords(new Date(machine.expiresAt), now)}`
       : "Setting up";
   if (machine.status !== "offline") return "Needs an update";
+  if (isDeviceAsleep(machine)) return computerStatus(machine, now).label;
   if (!machine.lastSeenAt) return "Offline";
   return `Offline · last seen ${lastSeenWords(new Date(machine.lastSeenAt), now)}`;
 }

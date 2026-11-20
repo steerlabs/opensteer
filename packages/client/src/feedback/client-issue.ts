@@ -102,6 +102,7 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   "browser-input-owner-conflict": "Someone else is using this page.",
   "personal-remote-access-off": "Turn on Use from anywhere to add a computer.",
   "device-offline": "Open Opensteer on the device and keep it open, then try again.",
+  "device-asleep": "This device is asleep. Wait until it wakes, then try again.",
   "computer-app-connecting": "Opensteer on the device is still connecting. Try again in a moment.",
   "computer-app-not-offered":
     "This device doesn't offer the app. Check for an Opensteer update on the device.",

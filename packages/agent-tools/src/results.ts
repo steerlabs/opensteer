@@ -26,11 +26,15 @@ const legacyErrorCodes = new Map<string, string>([
   ["runner_offline", "computer_offline"],
   ["device-offline", "computer_offline"],
   ["computer-offline", "computer_offline"],
+  ["device-asleep", "computer_asleep"],
+  ["computer-asleep", "computer_asleep"],
   ["outcome-unknown", "outcome_unknown"],
 ]);
 const classifiedErrorCodes = new Map<string, string>([
   ["device-offline", "computer_offline"],
   ["computer-offline", "computer_offline"],
+  ["device-asleep", "computer_asleep"],
+  ["computer-asleep", "computer_asleep"],
   ["outcome-unknown", "outcome_unknown"],
   ["outcome_unknown", "outcome_unknown"],
   ["port_in_use", "port_in_use"],
@@ -45,7 +49,14 @@ export function normalizeToolError(failure: AgentToolFailure): ToolError {
   let next = failure.next ?? null;
   if (failure.computerId && failure.capability && !next?.includes(failure.computerId)) {
     const target = `computerId=${failure.computerId}, access=${failure.capability}.`;
-    next = `${target} ${next ?? (failure.reason === "device-offline" ? "Check computer_list; do not request access while it is offline." : "Use computer_access_request if needed.")}`;
+    next = `${target} ${
+      next ??
+      (failure.reason === "device-asleep"
+        ? "Check computer_list; wait until it wakes and do not request access."
+        : failure.reason === "device-offline"
+          ? "Check computer_list; do not request access while it is offline."
+          : "Use computer_access_request if needed.")
+    }`;
   }
   return {
     code: code.slice(0, 100) || "internal_error",

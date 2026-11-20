@@ -645,7 +645,10 @@ export function phoneUseState(machine: MachineSummary): PhoneUseState {
     };
   }
   if (display.control.state === "ready") return { kind: "ready" };
-  if (reason?.kind === "driver-offline" && display.driver?.role !== "screen")
+  if (
+    (reason?.kind === "driver-offline" || reason?.kind === "driver-asleep") &&
+    display.driver?.role !== "screen"
+  )
     return { kind: "offline" };
   if (reason?.kind === "permission-required")
     return {

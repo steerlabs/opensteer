@@ -49,11 +49,36 @@ export function deviceMembership(input: DeviceMembershipInput): DeviceMembership
   return { state: input.membership?.state === "active" ? "ready" : "needs-setup" };
 }
 
+/** Designer copy for a sleeping Device on its detail page. */
+export const deviceAsleepExplanation =
+  "Its tabs and apps wait until it wakes. Agents can’t use it meanwhile.";
+
+/**
+ * Whether the Home currently reports this Device as asleep (disconnected after
+ * its Runner reported going to sleep, within the Home's sleep window).
+ */
+export function isDeviceAsleep(machine: Pick<MachineSummary, "status" | "asleepSince">): boolean {
+  return (
+    machine.status === "offline" &&
+    typeof machine.asleepSince === "string" &&
+    machine.asleepSince.length > 0
+  );
+}
+
+/** Calm explanation shown on a sleeping Device's page, or null when not asleep. */
+export function deviceAsleepDetail(
+  machine: Pick<MachineSummary, "status" | "asleepSince">,
+): string | null {
+  return isDeviceAsleep(machine) ? deviceAsleepExplanation : null;
+}
+
 export interface DeviceRow {
   readonly machine: MachineSummary;
   readonly sessions: readonly AuthSessionSummary[];
   readonly label: string;
   readonly status: string;
+  readonly asleep: boolean;
+  readonly asleepDetail: string | null;
   readonly capabilitySummary: string | null;
   readonly thisDevice: boolean;
 }
@@ -85,6 +110,8 @@ export function devicesView(input: {
         machine,
         sessions: input.sessions.filter((session) => session.deviceId === machine.id),
         label: machine.name,
+        asleep: isDeviceAsleep(machine),
+        asleepDetail: deviceAsleepDetail(machine),
         capabilitySummary: machine.phoneDisplay ? "Screen control" : null,
         status: isHomeDevice(machine)
           ? "Home · your agent runs here"

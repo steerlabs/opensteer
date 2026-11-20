@@ -4,6 +4,7 @@ import type { MachineSummary, RunnerDevicePlatform } from "@opensteer/protocol";
 import { formatRelativeTime } from "../host/thread-list-model.js";
 import { computerAppRows } from "../integrations/computer-apps.js";
 import { computerUseView, phoneUseView } from "../integrations/computer-use.js";
+import { isDeviceAsleep } from "./devices.js";
 
 /**
  * The Computers page, as every client reads it.
@@ -424,6 +425,13 @@ export function computerStatus(machine: MachineSummary, now = new Date()): Compu
     return {
       label: `Offline · Available while Opensteer is open on ${machine.name}`,
       tone: "offline",
+    };
+  }
+  if (isDeviceAsleep(machine)) {
+    const seen = machine.lastSeenAt ?? machine.asleepSince;
+    return {
+      label: seen ? `Asleep · seen ${formatRelativeTime(seen, now)}` : "Asleep",
+      tone: "waiting",
     };
   }
   return {

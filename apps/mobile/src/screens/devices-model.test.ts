@@ -161,4 +161,34 @@ describe("Devices on the phone", () => {
       opens: { kind: "set-up" },
     });
   });
+
+  it("shows Asleep with seen time for a sleeping Mac and names it for its screen-driven iPhone", () => {
+    const now = new Date("2026-04-12T10:35:00.000Z");
+    const asleepSince = "2026-04-12T10:15:00.000Z";
+    const sleepingMac = {
+      ...machines.find(({ name }) => name === "Studio Mac")!,
+      asleepSince,
+      lastSeenAt: asleepSince,
+      status: "offline" as const,
+    };
+    const iphone = mockIphoneScreenDevice();
+    const sleepingPhone = {
+      ...iphone,
+      phoneDisplay: {
+        ...iphone.phoneDisplay!,
+        control: { reason: { kind: "driver-asleep" as const }, state: "unavailable" as const },
+      },
+    };
+    const sections = deviceListSections({
+      here: { state: "none" },
+      machines: [sleepingMac, sleepingPhone],
+      noun: "iPhone",
+      now,
+      sessions: [],
+    });
+    expect(sections[0]?.rows.map(({ title, detail }) => `${title} — ${detail}`)).toEqual([
+      "Studio Mac — Asleep · seen 20m",
+      "Work iPhone — Alex’s MacBook Pro is asleep",
+    ]);
+  });
 });

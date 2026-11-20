@@ -1,4 +1,4 @@
-import type { RunnerConfig } from "@opensteer/config";
+import { parseRunnerConfig } from "@opensteer/config";
 import {
   RunnerBootIdSchema,
   RunnerToHostMessageSchema,
@@ -9,13 +9,13 @@ import {
 } from "@opensteer/protocol";
 import { FileRunnerIdentityStore } from "@opensteer/runner-client";
 import { randomBytes, randomUUID } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ReconnectingHostConnection } from "./host-connection.js";
 
@@ -28,7 +28,7 @@ afterEach(async () => {
   }
 });
 
-async function startMockPowerHost() {
+async function startMockPowerHost(acceptsPowerState: boolean) {
   const server = createServer();
   const wss = new WebSocketServer({ noServer: true });
   const received: RunnerToHostMessage[] = [];
@@ -62,6 +62,10 @@ async function startMockPowerHost() {
           generation += 1;
           ws.send(
             JSON.stringify({
+              ...(acceptsPowerState &&
+              parsed.descriptor.capabilities.includes(runnerPowerStateCapability)
+                ? { acceptsPowerState: true }
+                : {}),
               allowedModules: ["shell"],
               bootId: parsed.descriptor.bootId,
               connectionGeneration: generation,
@@ -83,15 +87,6 @@ async function startMockPowerHost() {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const { port } = server.address() as AddressInfo;
 
-  async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
-    await vi.waitFor(
-      () => {
-        if (!predicate()) throw new Error(`Waiting for ${label}`);
-      },
-      { interval: 10, timeout: 3_000 },
-    );
-  }
-
   async function flushSocket(socket: WebSocket | undefined): Promise<void> {
     if (!socket) throw new Error("Expected active WebSocket");
     const pong = once(socket, "pong");
@@ -105,7 +100,6 @@ async function startMockPowerHost() {
     received,
     sockets,
     url: `http://127.0.0.1:${port}`,
-    waitUntil,
     async close(): Promise<void> {
       for (const ws of sockets) ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
@@ -126,32 +120,27 @@ async function createPowerConnection(input: {
     environmentless: true,
   });
   const identity = await identityStore.loadOrCreate();
-  let connectedCount = 0;
+  const events = new EventEmitter();
   const connection = new ReconnectingHostConnection({
     bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
-    config: {
-      browserBridge: undefined,
-      controlCaPath: undefined,
-      dataDirectory: root,
-      deploymentShape: { kind: "personal" },
-      enrollmentToken: randomBytes(24).toString("base64url"),
-      hostUrl: new URL(input.hostUrl),
-      maxConcurrentRuns: 1,
-      maxConcurrentTriggerPrograms: 4,
-      mode: "development",
-      modules: ["shell"],
-      name: "Test Computer",
-      nodeExecutable: process.execPath,
-      runnerId: identity.runnerId,
-      runnerKind: "local",
-    } as unknown as RunnerConfig,
+    config: parseRunnerConfig({
+      OPENSTEER_DEPLOYMENT_KIND: "personal",
+      OPENSTEER_HOST_URL: input.hostUrl,
+      OPENSTEER_RUNNER_DATA_DIR: root,
+      OPENSTEER_RUNNER_ENROLLMENT_TOKEN: randomBytes(24).toString("base64url"),
+      OPENSTEER_MODE: "development",
+      OPENSTEER_RUNNER_MODULES: "shell",
+      OPENSTEER_RUNNER_NAME: "Test Computer",
+      OPENSTEER_RUNNER_ID: identity.runnerId,
+      OPENSTEER_RUNNER_KIND: "local",
+    }),
     device: input.device,
     fullDiskAccessProbe: { probe: async () => false },
     identity,
     identityStore,
     logger: { error: () => undefined, info: () => undefined },
     onConnected: () => {
-      connectedCount += 1;
+      events.emit("connected");
     },
     platform: input.platform,
     runtimeVersion: "0.0.0",
@@ -168,56 +157,42 @@ async function createPowerConnection(input: {
   });
   return {
     connection,
-    connectedCount: () => connectedCount,
+    connected: () => once(events, "connected"),
   };
 }
 
 describe("ReconnectingHostConnection power sleep notification", () => {
-  it("advertises runner-power-state-v1 on macOS and sends runner.power.sleeping once per connection", async () => {
-    const host = await startMockPowerHost();
-    const { connection, connectedCount } = await createPowerConnection({
+  it("sends one fenced notice per sleep and allows another after waking on the same connection", async () => {
+    const host = await startMockPowerHost(true);
+    const { connection, connected } = await createPowerConnection({
       device: { app: "opensteer", form: "laptop", platform: "macos" },
       hostUrl: host.url,
       platform: "darwin",
     });
+    const ready = connected();
     const abort = new AbortController();
     const running = connection.run(abort.signal);
+    const notices = () => host.received.filter((frame) => frame.type === "runner.power.sleeping");
 
     try {
-      await host.waitUntil(
-        () => host.received.filter((m) => m.type === "runner.auxiliary.ticket-request").length >= 1,
-        "first connect ready",
-      );
+      await ready;
       expect(host.descriptors[0]?.capabilities).toContain(runnerPowerStateCapability);
-
-      // Calling notifySleeping twice on the same socket sends exactly one fenced frame.
       await connection.notifySleeping();
       await connection.notifySleeping();
-      await host.waitUntil(
-        () => host.received.filter((m) => m.type === "runner.power.sleeping").length === 1,
-        "first runner.power.sleeping",
-      );
       await host.flushSocket(host.sockets[0]);
-      const firstBatch = host.received.filter((m) => m.type === "runner.power.sleeping");
-      expect(firstBatch).toHaveLength(1);
-      expect(firstBatch[0]?.connectionGeneration).toBe(1);
+      expect(notices().map((notice) => notice.connectionGeneration)).toEqual([1]);
 
-      // Drop the first socket; after reconnect on wake, a new sleep notifies again with the new fence.
+      connection.notifyAwake();
+      await connection.notifySleeping();
+      await host.flushSocket(host.sockets[0]);
+      expect(notices().map((notice) => notice.connectionGeneration)).toEqual([1, 1]);
+
+      const reconnected = connected();
       host.sockets[0]?.terminate();
-      await host.waitUntil(
-        () =>
-          connectedCount() === 2 &&
-          host.received.filter((m) => m.type === "runner.auxiliary.ticket-request").length >= 2,
-        "reconnect after wake",
-      );
+      await reconnected;
       await connection.notifySleeping();
-      await host.waitUntil(
-        () => host.received.filter((m) => m.type === "runner.power.sleeping").length === 2,
-        "second runner.power.sleeping",
-      );
-      const secondBatch = host.received.filter((m) => m.type === "runner.power.sleeping");
-      expect(secondBatch).toHaveLength(2);
-      expect(secondBatch[1]?.connectionGeneration).toBe(2);
+      await host.flushSocket(host.sockets[1]);
+      expect(notices().map((notice) => notice.connectionGeneration)).toEqual([1, 1, 2]);
     } finally {
       abort.abort();
       await running;
@@ -225,27 +200,46 @@ describe("ReconnectingHostConnection power sleep notification", () => {
     }
   });
 
-  it("never advertises runner-power-state-v1 or sends runner.power.sleeping on Linux", async () => {
-    const host = await startMockPowerHost();
-    const { connection, connectedCount } = await createPowerConnection({
-      device: { form: "server", platform: "linux" },
-      hostUrl: host.url,
+  it.each([
+    {
       platform: "linux",
-    });
-    const abort = new AbortController();
-    const running = connection.run(abort.signal);
-
-    try {
-      await host.waitUntil(() => connectedCount() === 1, "linux connect");
-      expect(host.descriptors[0]?.capabilities).not.toContain(runnerPowerStateCapability);
-
-      await connection.notifySleeping();
-      await host.flushSocket(host.sockets[0]);
-      expect(host.received.filter((m) => m.type === "runner.power.sleeping")).toHaveLength(0);
-    } finally {
-      abort.abort();
-      await running;
-      await host.close();
-    }
-  });
+      device: { form: "server", platform: "linux" },
+      accepts: true,
+      advertises: false,
+    },
+    {
+      platform: "darwin",
+      device: { form: "laptop", platform: "macos" },
+      accepts: false,
+      advertises: true,
+    },
+  ] as const)(
+    "avoids sending a notice with $platform and Host opt-in $accepts",
+    async (fixture) => {
+      const host = await startMockPowerHost(fixture.accepts);
+      const { connection, connected } = await createPowerConnection({
+        device: fixture.device,
+        hostUrl: host.url,
+        platform: fixture.platform,
+      });
+      const ready = connected();
+      const abort = new AbortController();
+      const running = connection.run(abort.signal);
+      try {
+        await ready;
+        expect(host.descriptors[0]?.capabilities.includes(runnerPowerStateCapability)).toBe(
+          fixture.advertises,
+        );
+        await connection.notifySleeping();
+        await host.flushSocket(host.sockets[0]);
+        expect(
+          host.received.filter((frame) => frame.type === "runner.power.sleeping"),
+        ).toHaveLength(0);
+      } finally {
+        abort.abort();
+        await running;
+        await host.close();
+      }
+    },
+  );
 });

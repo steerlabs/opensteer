@@ -5,7 +5,7 @@ import {
   RunnerAppStateSchema,
   RunnerAppsSyncResultSchema,
 } from "./apps.js";
-import { RunMaintenanceSchema } from "@opensteer/core";
+import { RunMaintenanceSchema, isLoopbackHostname } from "@opensteer/core";
 export { TeamTurnContextSchema, type TeamTurnContext } from "@opensteer/core";
 import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { ComputerFolderSchema } from "@opensteer/core";
@@ -1033,6 +1033,24 @@ export const HarnessAuthenticationStateViewSchema = z.discriminatedUnion("status
 export type HarnessAuthenticationState = z.infer<typeof HarnessAuthenticationStateSchema>;
 
 /**
+ * Whether a browser sign-in finishes only on the engine's own computer: its
+ * authorization sends the browser back to a loopback `redirect_uri`, which a
+ * browser anywhere else cannot reach. Read from the address itself, so it holds
+ * for every engine without each one declaring it.
+ */
+export function harnessChallengeReturnsToLoopback(
+  challenge: Extract<HarnessAuthenticationState, { status: "pending" }>["challenge"],
+): boolean {
+  if (challenge.kind !== "browser-code") return false;
+  try {
+    const redirect = new URL(challenge.authorizationUrl).searchParams.get("redirect_uri");
+    return redirect !== null && isLoopbackHostname(new URL(redirect).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The model servers an account of a Model server source can talk to, by the
  * API each one answers. `generic` is any server with an OpenAI model list.
  */
@@ -1195,6 +1213,7 @@ export type RunnerAgentsModule = z.infer<typeof RunnerAgentsModuleSchema>;
 export const RunnerBrowserModuleSchema = z
   .object({
     standardCdp: z.literal(1).optional().catch(undefined),
+    wholeContextCdp: z.literal(1).optional().catch(undefined),
     cardFill: z
       .number()
       .int()

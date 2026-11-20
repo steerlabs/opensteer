@@ -47,6 +47,8 @@ export function deviceReasonLabel(reason: DeviceCapabilityReason | null): string
       return "Not connected";
     case "driver-offline":
       return "Driver offline";
+    case "driver-asleep":
+      return "Driver asleep";
     case "connecting":
     case "unreported":
       return "Connecting…";

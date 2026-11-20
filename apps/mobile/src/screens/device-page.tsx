@@ -40,6 +40,7 @@ import { useMobileNotifications, usePushRegistration } from "../ui/notifications
 import { confirmDestructive } from "./confirm.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import {
+  deviceAsleepDetail,
   deviceRemoval,
   deviceSwitches,
   isHome,
@@ -47,6 +48,7 @@ import {
 } from "./device-page-model.js";
 import { deviceKindLabel } from "./devices-model.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
+import { homeCloudComputerSection } from "./cloud-computer-entry.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 
 type Props = StaticScreenProps<{ readonly deploymentId: string; readonly machineId: string }>;
@@ -296,6 +298,7 @@ function DevicePage(props: {
         .join(" · ");
   const notificationsOn = push.status === "registered" && wantsAlerts(push.preferences);
   const screen = screenMac === null ? null : screenSection();
+  const asleepDetail = isHome(machine) ? null : deviceAsleepDetail(machine);
 
   /** A Mac-driven phone: its status, Apps, approval, holder and screen, and its two ways out. */
   function screenSection() {
@@ -486,6 +489,23 @@ function DevicePage(props: {
           : []),
       ],
     },
+    ...(asleepDetail !== null && screen === null
+      ? [
+          {
+            key: "asleep",
+            title: "",
+            rows: [
+              {
+                key: "asleep",
+                kind: "status" as const,
+                tone: "attention" as const,
+                label: "Asleep",
+                detail: asleepDetail,
+              },
+            ],
+          } satisfies NativeSettingsSection,
+        ]
+      : []),
     ...(screen
       ? [screen.card]
       : ([
@@ -596,6 +616,12 @@ function DevicePage(props: {
             },
           ]),
   ];
+  const cloud = homeCloudComputerSection({
+    home: isHome(machine),
+    exposure: props.hostClient.getSnapshot().identityConfig?.exposure,
+    onOpen: () => navigation.navigate("CloudComputer"),
+  });
+  if (cloud) sections.push(cloud);
   return <NativeSettingsPage sections={sections} />;
 }
 

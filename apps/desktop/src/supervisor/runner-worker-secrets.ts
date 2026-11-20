@@ -30,10 +30,7 @@ export const runnerWorkerEnginesRecheckMessage: z.infer<
   typeof RunnerWorkerEnginesRecheckMessageSchema
 > = { type: "runner.worker.engines.recheck" };
 
-/** Tells the worker's Runner that this computer is about to sleep. */
-export const RunnerWorkerPowerSleepingMessageSchema = z.strictObject({
-  type: z.literal("runner.worker.power.sleeping"),
+export const RunnerWorkerPowerMessageSchema = z.strictObject({
+  type: z.enum(["runner.worker.power.sleeping", "runner.worker.power.awake"]),
 });
-export const runnerWorkerPowerSleepingMessage: z.infer<
-  typeof RunnerWorkerPowerSleepingMessageSchema
-> = { type: "runner.worker.power.sleeping" };
+export type RunnerWorkerPowerMessage = z.infer<typeof RunnerWorkerPowerMessageSchema>;

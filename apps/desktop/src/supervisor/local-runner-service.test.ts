@@ -2469,6 +2469,54 @@ describe("LocalRunnerService", () => {
     await expect(running.service.hasEnrolledRunners()).resolves.toBe(false);
   });
 
+  it("posts one notice to each running worker and continues past a worker that has exited", async () => {
+    const targets = mutableTargetAuthority();
+    const first = targets.add("https://first.opensteer.test");
+    const second = targets.add("https://second.opensteer.test");
+    const running = fixture(await configuration(await temporaryDirectory()), targets);
+    const fork = running.fork.getMockImplementation()!;
+    async function start(target: DesktopLocalRunnerTarget) {
+      const spawned = Promise.withResolvers<FakeUtilityProcess>();
+      running.fork.mockImplementationOnce((...args) => {
+        const child = fork(...args);
+        spawned.resolve(running.children.at(-1)!);
+        return child;
+      });
+      const started = running.service.start(startInput(target.deploymentId, "Studio Mac"));
+      const child = await spawned.promise;
+      connect(child);
+      await started;
+      return child;
+    }
+    const firstWorker = await start(first);
+    const secondWorker = await start(second);
+    try {
+      expect(running.service.notifySleeping()).toBeUndefined();
+      for (const worker of [firstWorker, secondWorker]) {
+        expect(
+          worker.messages.filter(
+            (message) =>
+              message &&
+              typeof message === "object" &&
+              "type" in message &&
+              message.type === "runner.worker.power.sleeping",
+          ),
+        ).toHaveLength(1);
+      }
+
+      vi.spyOn(firstWorker, "postMessage").mockImplementationOnce(() => {
+        throw new Error("worker exited");
+      });
+      expect(running.service.notifyAwake()).toBeUndefined();
+      expect(secondWorker.messages.at(-1)).toEqual({ type: "runner.worker.power.awake" });
+    } finally {
+      const shutdown = running.service.shutdown();
+      firstWorker.emit("exit", 0);
+      secondWorker.emit("exit", 0);
+      await shutdown;
+    }
+  });
+
   it("follows a running computer through a disconnect and back to running", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();

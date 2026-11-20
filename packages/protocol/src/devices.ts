@@ -55,6 +55,7 @@ export const DeviceCapabilityReasonSchema = z.strictObject({
     "unsupported",
     "not-connected",
     "driver-offline",
+    "driver-asleep",
     "connecting",
     "unreported",
     "driver-update-required",

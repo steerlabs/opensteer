@@ -22,6 +22,7 @@ import type {
 import { createId, OpensteerError, placeInputFailure } from "@opensteer/core";
 import {
   agentHomeFilesCapability,
+  runnerPowerStateCapability,
   type HostAppRequest,
   type HostHomeFileRequest,
   type HostOutputImageUpload,
@@ -518,6 +519,8 @@ interface RunnerConnection {
   catalogRequestRevision: number;
   catalogGeneration: number;
   lastSeenAt: number;
+  /** Timestamp when this connection last reported `runner.power.sleeping`. */
+  sleepAnnouncedAtMs: number | undefined;
 }
 interface RunnerRegistryOptions {
   readonly commandAckTimeoutMs?: number;
@@ -539,6 +542,19 @@ const defaultExecutionLeaseMs = 90_000;
 const eventAckBatchMs = 200;
 const maximumConnectionLeaseMs = 5 * 60_000;
 const maximumHeartbeatClockSkewMs = 30_000;
+/**
+ * How long a computer that reported going to sleep stays "asleep" while
+ * disconnected before the Home treats it as offline again (7 days). Covers
+ * multi-day standby/hibernation (e.g. a closed MacBook over a weekend or trip)
+ * without leaving a powered-off or abandoned computer marked asleep forever.
+ */
+export const runnerMaxAsleepDurationMs = 7 * 24 * 60 * 60 * 1_000;
+/**
+ * A fresh heartbeat arriving more than this long after `runner.power.sleeping`
+ * proves the computer stayed awake (e.g. sleep cancelled or Dark Wake), so a
+ * later crash does not look like sleep.
+ */
+const sleepAnnouncementHeartbeatClearMs = 5_000;
 
 /**
  * A request a person is waiting on in the app. It ends before the client's own
@@ -596,6 +612,8 @@ export class RunnerRegistry {
    * newer one came and went is still refused.
    */
   readonly #highestGeneration = new Map<RunnerId, number>();
+  /** Timestamp (`asleepSince`) for disconnected Runners that reported sleep. */
+  readonly #asleep = new Map<RunnerId, { readonly since: number; readonly generation: number }>();
   readonly #lifetime = new AbortController();
   #closing = false;
   #closePromise: Promise<void> | undefined;
@@ -717,8 +735,10 @@ export class RunnerRegistry {
       ownedTriggerOccurrenceIds: new Set(),
       observedRunIds: new Set(),
       observedTriggerOccurrenceIds: new Set(),
+      sleepAnnouncedAtMs: undefined,
     };
     connection.leaseTimer = this.#leaseTimer(connection);
+    this.#asleep.delete(identity.runnerId);
     this.#byRunner.set(identity.runnerId, connection);
     this.#byPeer.set(peer.id, connection);
     for (const environmentId of identity.environmentIds)
@@ -737,6 +757,9 @@ export class RunnerRegistry {
         // Several renewals fit in one execution lease, so one lost heartbeat
         // never costs a Run its lease.
         heartbeatIntervalMs: Math.min(15_000, Math.floor(this.#executionLeaseMs / 4)),
+        ...(identity.capabilities.includes(runnerPowerStateCapability)
+          ? { acceptsPowerState: true as const }
+          : {}),
         ...agentHome,
         serverTime: new Date(now).toISOString(),
         type: "host.welcome",
@@ -814,6 +837,25 @@ export class RunnerRegistry {
   }
   isRunnerConnected(runnerId: RunnerId): boolean {
     return this.#byRunner.has(runnerId);
+  }
+  /**
+   * When this disconnected Runner reported it was going to sleep, or null when
+   * it is online, never reported sleep, was removed, or exceeded the sleep bound.
+   */
+  asleepSince(runnerId: RunnerId, generation?: number): Date | null {
+    if (this.#closing || this.#byRunner.has(runnerId)) return null;
+    const sleep = this.#asleep.get(runnerId);
+    if (!sleep) return null;
+    if (this.#now() - sleep.since >= runnerMaxAsleepDurationMs) {
+      this.#asleep.delete(runnerId);
+      return null;
+    }
+    return generation === undefined || sleep.generation === generation
+      ? new Date(sleep.since)
+      : null;
+  }
+  isRunnerAsleep(runnerId: RunnerId): boolean {
+    return this.asleepSince(runnerId) !== null;
   }
 
   /**
@@ -1080,7 +1122,10 @@ export class RunnerRegistry {
         .filter((connection) => connection.identity.personalRemoteAccessGeneration !== null)
         // Not the revoked code: every session riding this connection would then
         // end as `machine-revoked` rather than as the disconnection this is.
-        .map((connection) => this.#disconnect(connection, new Error(reason), 1001)),
+        .map((connection) => {
+          connection.sleepAnnouncedAtMs = undefined;
+          return this.#disconnect(connection, new Error(reason), 1001);
+        }),
     );
   }
 
@@ -1102,11 +1147,13 @@ export class RunnerRegistry {
   ): Promise<boolean> {
     const connection = this.#byRunner.get(identity.runnerId);
     if (!connection || connection.identity.connectionId !== identity.connectionId) return false;
+    connection.sleepAnnouncedAtMs = undefined;
     await this.#disconnect(connection, new Error(options.reason), options.code);
     return true;
   }
   async revoke(runnerId: RunnerId): Promise<void> {
     this.#revokedRunnerIds.add(runnerId);
+    this.#asleep.delete(runnerId);
     const connection = this.#byRunner.get(runnerId);
     if (connection) {
       await this.#disconnect(
@@ -1848,11 +1895,14 @@ export class RunnerRegistry {
     signal: AbortSignal,
   ): Promise<RunnerHomeFileResult> {
     const connection = this.#byRunner.get(runnerId);
-    if (!connection)
+    if (!connection) {
+      const asleep = this.isRunnerAsleep(runnerId);
       throw new OpensteerError({
         code: "runner_offline",
-        message: "The hosting computer is offline",
+        ...(asleep ? { reason: "device-asleep" } : {}),
+        message: asleep ? "The hosting computer is asleep" : "The hosting computer is offline",
       });
+    }
     if (!connection.identity.capabilities.includes(agentHomeFilesCapability))
       throw new OpensteerError({
         code: "conflict",
@@ -2426,8 +2476,19 @@ export class RunnerRegistry {
           await this.#runHook(() => this.#hooks.onModuleReadiness?.(connection.identity, changed));
         break;
       }
+      case "runner.power.sleeping":
+        if (connection.identity.capabilities.includes(runnerPowerStateCapability)) {
+          connection.sleepAnnouncedAtMs = this.#now();
+        }
+        break;
       case "runner.heartbeat":
         this.#renewLease(connection, message.sentAt);
+        if (
+          connection.sleepAnnouncedAtMs !== undefined &&
+          this.#now() - connection.sleepAnnouncedAtMs > sleepAnnouncementHeartbeatClearMs
+        ) {
+          connection.sleepAnnouncedAtMs = undefined;
+        }
         // A heartbeat is a bounded point-in-time observation, not execution
         // authority. Retaining every identifier a faulty Runner ever reported
         // would permit unbounded Host memory growth. Host-dispatched ownership
@@ -2952,6 +3013,7 @@ export class RunnerRegistry {
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
     this.#closing = true;
+    this.#asleep.clear();
     this.#lifetime.abort(new Error("Runner registry is closing"));
     this.#closePromise = this.#close();
     return this.#closePromise;
@@ -2999,6 +3061,20 @@ export class RunnerRegistry {
     if (connection.leaseTimer) clearTimeout(connection.leaseTimer);
     if (this.#byRunner.get(connection.identity.runnerId) === connection) {
       this.#byRunner.delete(connection.identity.runnerId);
+      const now = this.#now();
+      const graceMs = Math.max(this.#connectionLeaseMs + 30_000, 5 * 60_000);
+      if (
+        scope.reason === "lost" &&
+        connection.sleepAnnouncedAtMs !== undefined &&
+        now - connection.sleepAnnouncedAtMs <= graceMs
+      ) {
+        for (const [id, sleep] of this.#asleep)
+          if (now - sleep.since >= runnerMaxAsleepDurationMs) this.#asleep.delete(id);
+        this.#asleep.set(connection.identity.runnerId, {
+          generation: connection.identity.connectionGeneration,
+          since: connection.sleepAnnouncedAtMs,
+        });
+      }
     }
     // An auxiliary stream exists only beside a live primary connection: its
     // whole authority is the fence the primary handed it.

@@ -34,10 +34,13 @@ const keys = testHostAuthorityKeys();
 const personalCanonicalOrigin = "http://127.0.0.1:4173";
 const personalRouteOrigin = "https://route.example.com";
 const serverCanonicalOrigin = "https://host.example.com";
+const homeCanonicalOrigin = "https://home.example.com";
 const verifiedAt = "2026-09-01T00:00:00.000Z";
 
 export function testDeploymentConnection(input: {
   readonly deploymentId?: string;
+  /** A Home on its own server: personal, listed by its own HTTPS canonical origin. */
+  readonly home?: boolean;
   readonly kind?: DeploymentDisplayKind;
   readonly name?: string;
   /** A Personal computer whose signed route is live. Off means asleep. */
@@ -51,10 +54,15 @@ export function testDeploymentConnection(input: {
   readonly source?: DeploymentConnection["source"];
 }): DeploymentConnection {
   // A phone attaches to a personal computer; a team is the other kind of row.
-  const kind = input.kind ?? "personal";
+  const kind = input.home === true ? "personal" : (input.kind ?? "personal");
   const personal = kind === "personal";
   const document = testDiscoveryDocument({
-    canonicalOrigin: personal ? personalCanonicalOrigin : serverCanonicalOrigin,
+    canonicalOrigin:
+      input.home === true
+        ? homeCanonicalOrigin
+        : personal
+          ? personalCanonicalOrigin
+          : serverCanonicalOrigin,
     deploymentId: input.deploymentId ?? "dep_0192f4a1-1111-4000-8000-000000000001",
     personal,
   });
@@ -68,6 +76,17 @@ export function testDeploymentConnection(input: {
     name: input.name ?? (personal ? "Alex's Mac mini" : "host.example.com"),
     source: input.source ?? { kind: "manual" },
   };
+
+  if (input.home === true) {
+    return DeploymentConnectionSchema.parse({
+      ...common,
+      bootstrapMethods: ["password"],
+      endpoints: [{ kind: "canonical", origin: homeCanonicalOrigin, verifiedAt }],
+      name: input.name ?? "home.example.com",
+      preferredEndpointOrigin: null,
+      reachability: "canonical",
+    });
+  }
 
   if (!personal) {
     return DeploymentConnectionSchema.parse({

@@ -6,7 +6,12 @@ import {
   ComputerUseDataGrantSchema,
   type MachineSummary,
 } from "@opensteer/protocol";
-import { computerGlyph, deviceRemovalProfiles, hostsDeployment } from "@opensteer/client/computers";
+import {
+  computerGlyph,
+  deviceAsleepDetail,
+  deviceRemovalProfiles,
+  hostsDeployment,
+} from "@opensteer/client/computers";
 import {
   canRespondToRequests,
   fullAccessOnThisMac,
@@ -62,6 +67,7 @@ import { deviceNotificationsOn, setDeviceNotifications } from "./device-preferen
 import { IphoneWifiRow } from "./iphone-wifi-row.js";
 import { computerAppIdFromHash, devicesRoute } from "./device-routes.js";
 import { useThisDevice } from "./this-device.js";
+import { HomeCloudComputerRow } from "../settings/sections/cloud-computer.js";
 
 export function DevicePage() {
   const { deviceId } = useParams();
@@ -276,9 +282,16 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
     ? phoneScreenDisconnectCopy(machine.name, screenMac.name)
     : null;
   const confirmation = confirming === "disconnect" ? disconnect : confirming ? removal : null;
+  const asleepDetail = deviceAsleepDetail(machine);
   const statusTone =
     screen?.tone ??
-    (machine.status === "online" ? "online" : machine.status === "offline" ? "offline" : "waiting");
+    (asleepDetail !== null
+      ? "waiting"
+      : machine.status === "online"
+        ? "online"
+        : machine.status === "offline"
+          ? "offline"
+          : "waiting");
   const appsSwitch = switches.find((item) => item.capability === "apps");
   const driverGeneration = machine.phoneDisplay?.driver?.generation;
   // A disconnected iPhone can be set up again on any of the person's Macs; one
@@ -653,6 +666,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
               </span>
               {here ? <HerePin /> : null}
             </p>
+            {asleepDetail ? <p className="settings-footnote">{asleepDetail}</p> : null}
           </div>
         </header>
 
@@ -687,6 +701,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
                 <RemoteAccessCard />
               </div>
             ) : null}
+            <HomeCloudComputerRow />
             {snapshot.personalSettings ? (
               <section aria-labelledby="device-home-folder" className="settings-group">
                 <h2 className="settings-group__title" id="device-home-folder">

@@ -1,3 +1,4 @@
+import { createId } from "@opensteer/core";
 import { gatherComputerAccess } from "./computer-access.js";
 import type { DeviceService } from "./device-service.js";
 import { describe, expect, it } from "vitest";
@@ -38,6 +39,7 @@ describe("computer access", () => {
           new Map([["display:android-phone", { runId: holdingRun, threadTitle: "Calendar" }]]),
       },
       store: {
+        requesterGrant: async () => null,
         listDeviceComputerAppSetupRequests: async () => [],
         integrationRequests: { listPendingIntegrationAccessRequests: async () => [] },
       },
@@ -79,6 +81,7 @@ describe("computer access", () => {
         computerAppHolders: () => new Map(),
       },
       store: {
+        requesterGrant: async () => null,
         listDeviceComputerAppSetupRequests: async () => [
           {
             kind: "app",
@@ -125,6 +128,32 @@ describe("computer access", () => {
   ])("uses the most specific phone blocker", (overrides, code) => {
     expect(phoneDiscovery({ ...phone, ...overrides }).blocked?.code).toBe(code);
   });
+  it("tells the agent to wait for the screen-driving Mac without asking for access", () => {
+    expect(
+      phoneDiscovery({
+        ...phone,
+        phone: {
+          ...phone.phone,
+          name: "Work iPhone",
+          definitionId: "iphone-screen",
+          state: "offline",
+          availability: { state: "unavailable", reason: { kind: "driver-asleep" } },
+          setup: {
+            location: "driver-mac",
+            driverRunnerName: "Studio Mac",
+            driverRunnerId: createId("runner"),
+          },
+        },
+      }),
+    ).toEqual({
+      blocked: {
+        code: "computer_asleep",
+        message: "Work iPhone's screen driver is asleep.",
+        next: "It will work again when its driving Mac wakes (Studio Mac); other work can continue.",
+      },
+    });
+  });
+
   it("reports usable read access when the task cannot act", () => {
     expect(phoneDiscovery({ ...phone, callable: true, pendingPersonalGrant: true })).toEqual({
       access: "read",

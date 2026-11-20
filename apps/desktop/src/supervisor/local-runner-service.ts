@@ -75,7 +75,7 @@ import { computerName } from "./computer-name.js";
 import type { PersonalLocalBrowserHandle } from "./personal-local-runtime.js";
 import {
   runnerWorkerEnginesRecheckMessage,
-  runnerWorkerPowerSleepingMessage,
+  type RunnerWorkerPowerMessage,
   runnerWorkerSecretsMessage,
 } from "./runner-worker-secrets.js";
 import {
@@ -751,10 +751,21 @@ export class LocalRunnerService {
     }
   }
 
-  /** Best-effort notice to every supervised Device Runner that this computer is about to sleep. */
   notifySleeping(): void {
-    for (const slot of this.#runners.values()) {
-      if (slot.child) slot.child.postMessage(runnerWorkerPowerSleepingMessage);
+    this.#notifyPower({ type: "runner.worker.power.sleeping" });
+  }
+
+  notifyAwake(): void {
+    this.#notifyPower({ type: "runner.worker.power.awake" });
+  }
+
+  #notifyPower(message: RunnerWorkerPowerMessage): void {
+    for (const { child } of this.#runners.values()) {
+      try {
+        child?.postMessage(message);
+      } catch {
+        // A worker can exit before the supervisor sees its exit event.
+      }
     }
   }
 

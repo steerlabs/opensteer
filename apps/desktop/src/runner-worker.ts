@@ -3,7 +3,7 @@ import { runRunnerDaemon } from "@opensteer/runner";
 import { refuseInspectorSignal } from "./supervisor/inspector-signal.js";
 import {
   RunnerWorkerEnginesRecheckMessageSchema,
-  RunnerWorkerPowerSleepingMessageSchema,
+  RunnerWorkerPowerMessageSchema,
   RunnerWorkerSecretsMessageSchema,
 } from "./supervisor/runner-worker-secrets.js";
 
@@ -27,6 +27,7 @@ const delivered = new Promise<Readonly<Record<string, string>> | null>((resolveP
 // reads the engines fresh.
 let recheckEngines: () => void = () => undefined;
 let notifySleeping: () => void = () => undefined;
+let notifyAwake: () => void = () => undefined;
 
 parent.on("message", (event) => {
   const value = event.data as { type?: unknown };
@@ -39,8 +40,10 @@ parent.on("message", (event) => {
     recheckEngines();
     return;
   }
-  if (RunnerWorkerPowerSleepingMessageSchema.safeParse(event.data).success) {
-    notifySleeping();
+  const power = RunnerWorkerPowerMessageSchema.safeParse(event.data);
+  if (power.success) {
+    if (power.data.type === "runner.worker.power.sleeping") notifySleeping();
+    else notifyAwake();
     return;
   }
   const secrets = RunnerWorkerSecretsMessageSchema.safeParse(event.data);
@@ -53,6 +56,7 @@ void delivered
     await runRunnerDaemon(process.env, shutdown.signal, {
       control: (control) => {
         notifySleeping = control.notifySleeping;
+        notifyAwake = control.notifyAwake;
         recheckEngines = control.recheckEngines;
       },
       onConnected: ({ environmentId, runnerId }) => {

@@ -131,6 +131,12 @@ export const MachineSummarySchema = z.object({
   fullDiskAccess: z.boolean().nullable().default(null),
   /** The RunnerId once enrolled; the enrollment id while the row is pending. */
   id: z.string().min(1).max(255),
+  /**
+   * When this computer's Runner reported that it was going to sleep, while it
+   * remains disconnected and within the Home's asleep window. Additive so
+   * older clients ignore it and read `status: "offline"`.
+   */
+  asleepSince: z.string().nullable().optional(),
   lastSeenAt: z.string().nullable(),
   /**
    * The Opensteer build this computer runs, as its current connection said

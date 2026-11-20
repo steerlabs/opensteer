@@ -6,6 +6,7 @@ import {
   computerGlyph,
   devicesView,
   hostsDeployment,
+  isDeviceAsleep,
   type DeviceRow,
   type SignedInDeviceRow,
 } from "@opensteer/client/computers";
@@ -174,7 +175,7 @@ function DeviceListRow({ here, row }: { readonly here: boolean; readonly row: De
   const { machine } = row;
   const badge = deviceBadge(machine, here);
   const uses = deviceUsesLine(machine, snapshot.devicesAvailable === true);
-  const away = machine.status === "offline";
+  const away = machine.status === "offline" && !isDeviceAsleep(machine);
   return (
     <li className="devices-list__item">
       <Link
