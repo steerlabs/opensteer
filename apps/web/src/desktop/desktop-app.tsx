@@ -544,16 +544,22 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     // connection, which explains itself on the shared clock; only a refusal is
     // final enough for main's own words.
     // A Home reached at its own address is never a sleeping Mac; the line decides the rest.
-    const unreachableHome = selected ? (
+    const unreachableHome = (
       <UnreachableHomeLine
-        deploymentId={selected.id}
         desktopBridge={bridge}
-        exposure={selected.access === "native" ? "networked" : "loopback"}
-        hostedHere={selected.onThisComputer}
-        macName={selected.name}
-        portalOrigin={hostClient?.getSnapshot().identityConfig?.portalOrigin ?? null}
+        home={() =>
+          selected
+            ? {
+                exposure: selected.access === "native" ? "networked" : "loopback",
+                deploymentId: selected.id,
+                hostedHere: selected.onThisComputer,
+                macName: selected.name,
+                portalOrigin: hostClient?.getSnapshot().identityConfig?.portalOrigin ?? null,
+              }
+            : null
+        }
       />
-    ) : null;
+    );
     const otherComputers =
       snapshot.deployments.length > 1
         ? { label: "Other computers", onPress: () => selected && setChooserFor(selected.id) }

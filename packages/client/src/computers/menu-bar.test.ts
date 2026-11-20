@@ -346,7 +346,11 @@ describe("This Mac and Stop everything", () => {
   });
 
   it("says the Home shows this Mac as stopped too, once its row for this Mac does", () => {
-    const stop = { phase: "stopped" as const, stoppedAt: "2026-11-20T10:42:00.000Z", problem: null };
+    const stop = {
+      phase: "stopped" as const,
+      stoppedAt: "2026-11-20T10:42:00.000Z",
+      problem: null,
+    };
     const reported = MachineSummarySchema.parse({
       ...thisMac(),
       agentsStoppedSince: "2026-11-20T10:42:00.000Z",

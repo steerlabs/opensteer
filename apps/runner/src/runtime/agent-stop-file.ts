@@ -23,7 +23,10 @@ function readStop(path: string): StopState {
   }
   try {
     const stored = StoredStopSchema.parse(JSON.parse(text));
-    return { stopped: stored.stopped, at: stored.stopped && stored.at ? new Date(stored.at) : null };
+    return {
+      stopped: stored.stopped,
+      at: stored.stopped && stored.at ? new Date(stored.at) : null,
+    };
   } catch {
     return { stopped: true, at: null };
   }

@@ -26,7 +26,12 @@ import { useHostSelector } from "@opensteer/client/react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { tabRoute } from "../browser/surface-route.js";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Linking, Platform } from "react-native";
+import { Alert, Linking, Platform } from "react-native";
+import {
+  selectHomeDeploymentId,
+  selectHomeExposure,
+  usePhoneHome,
+} from "../computers/home-kind.js";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
@@ -41,8 +46,10 @@ import { confirmDestructive } from "./confirm.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import {
   deviceAsleepDetail,
+  deviceReachChoices,
   deviceRemoval,
   deviceSwitches,
+  deviceSwitchesFooter,
   isHome,
   type DeviceSwitchKey,
 } from "./device-page-model.js";
@@ -50,7 +57,13 @@ import { deviceKindLabel } from "./devices-model.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import { homeCloudComputerSection } from "./cloud-computer-entry.js";
 import { homeWorkSection, useWorkHomes } from "./work-home.js";
-import { workHomeBadges } from "@opensteer/client/computers";
+import {
+  cloudComputerDetail,
+  cloudWords,
+  deviceWords,
+  serverHomeFacts,
+  workHomeBadges,
+} from "@opensteer/client/computers";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 
 type Props = StaticScreenProps<{ readonly deploymentId: string; readonly machineId: string }>;
@@ -78,6 +91,11 @@ function DevicePage(props: {
   const client = useMobileClient();
   const { rows } = useMobileState();
   const workHomes = useWorkHomes();
+  const home = usePhoneHome({
+    exposure: useHostSelector(props.hostClient, selectHomeExposure),
+    deploymentId: useHostSelector(props.hostClient, selectHomeDeploymentId),
+  });
+  const homeKind = home.kind.kind;
   const machines = useHostSelector(props.hostClient, selectMachines);
   const devicesAvailable = useHostSelector(props.hostClient, selectDevices);
   const profiles = useHostSelector(props.hostClient, selectProfiles);
@@ -475,6 +493,135 @@ function DevicePage(props: {
     };
   }
 
+  /** Who may use Terminal and shared folders on it: the Reach the Host reads, as chips. */
+  const access = machine.access;
+  const reach: NativeSettingsSection | null =
+    access === null || screen !== null || thisDevice
+      ? null
+      : {
+          key: "reach",
+          title: "",
+          rows: [
+            {
+              key: "reach",
+              kind: "chips",
+              label: deviceWords("devices.reach.title"),
+              value: access.policy.reach,
+              choices: deviceReachChoices(access),
+              onChange: (value: string) => {
+                const next = deviceReachChoices(access).find((choice) => choice.value === value);
+                if (next === undefined || next.value === access.policy.reach) return;
+                Alert.alert(
+                  "Change device access?",
+                  "This changes which agents may use Terminal and shared folders on this computer.",
+                  [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "Apply",
+                      onPress: () =>
+                        run(
+                          async () => {
+                            const result = await props.hostClient.updateMachineAccess({
+                              expectedRevision: access.revision,
+                              policy: { ...access.policy, reach: next.value },
+                              deviceId: machine.id,
+                            });
+                            if (result.outcome === "conflict")
+                              setNote(
+                                "It changed on another device. Look again and try once more.",
+                              );
+                          },
+                          true,
+                          () =>
+                            props.hostClient
+                              .getSnapshot()
+                              .machines.find(({ id }) => id === machine.id)?.access?.policy
+                              .reach === next.value,
+                        ),
+                    },
+                  ],
+                );
+              },
+            },
+          ],
+        };
+
+  /** The Home's own page: a Mac's Remote access, a server's address, version and owner, a Cloud Computer's status. */
+  function homeSections(): NativeSettingsSection[] {
+    if (machine === null) return [];
+    if (homeKind === "mac")
+      return [
+        {
+          key: "home-remote",
+          title: "",
+          rows: [
+            {
+              key: "remote-access",
+              kind: "button",
+              label: remoteAccessLabel,
+              symbol: "globe",
+              opens: true,
+              onPress: () =>
+                navigation.navigate("SettingsAccount", { deploymentId: props.deploymentId }),
+            },
+          ],
+        },
+      ];
+    if (homeKind === "server") {
+      const facts = serverHomeFacts({
+        publicOrigin: props.hostClient.getSnapshot().identityConfig?.publicOrigin ?? null,
+        homeMachine: machine,
+        personal: props.hostClient.getSnapshot().deploymentShape?.kind === "personal",
+      });
+      const rows: NativeSettingsRow[] = [
+        ...(facts.address
+          ? [
+              {
+                key: "address",
+                kind: "text" as const,
+                label: facts.address.label,
+                detail: facts.address.value,
+              },
+            ]
+          : []),
+        ...(facts.version
+          ? [
+              {
+                key: "version",
+                kind: "text" as const,
+                label: facts.version.label,
+                detail: facts.version.value,
+              },
+            ]
+          : []),
+        ...(facts.owner ? [{ key: "owner", kind: "text" as const, label: facts.owner }] : []),
+      ];
+      return rows.length === 0 ? [] : [{ key: "home-server", title: "", rows }];
+    }
+    if (homeKind === "cloud" && home.computer !== null) {
+      const status = cloudComputerDetail(home.computer).status;
+      return [
+        {
+          key: "home-cloud",
+          title: cloudWords("cloud.status.title"),
+          rows: [
+            {
+              key: "cloud-status",
+              kind: "button",
+              label: cloudWords("cloud.title"),
+              detail: status.reason ? `${status.label} · ${status.reason}` : status.label,
+              symbol: "cloud",
+              opens: true,
+              ...(status.tone === "attention" ? { tone: "attention" as const } : {}),
+              onPress: () => navigation.navigate("CloudComputer"),
+            },
+          ],
+        },
+      ];
+    }
+    return [];
+  }
+
   const sections: NativeSettingsSection[] = [
     {
       key: "name",
@@ -519,8 +666,8 @@ function DevicePage(props: {
             title: "Your agent can use",
             ...(footer
               ? { footer }
-              : switches.footer !== null
-                ? { footer: { text: switches.footer } }
+              : deviceSwitchesFooter(switches) !== null
+                ? { footer: { text: deviceSwitchesFooter(switches)! } }
                 : {}),
             rows: [
               ...switches.rows.flatMap((row): NativeSettingsRow[] => [
@@ -551,6 +698,7 @@ function DevicePage(props: {
             ],
           },
         ] satisfies NativeSettingsSection[])),
+    ...(reach === null ? [] : [reach]),
     ...(thisDevice
       ? [
           {
@@ -627,11 +775,14 @@ function DevicePage(props: {
     ? homeWorkSection(work, (card) =>
         navigation.navigate("WorkHomeSee", { assignmentId: card.assignmentId }),
       )
-    : homeCloudComputerSection({
-        home: isHome(machine),
-        exposure: props.hostClient.getSnapshot().identityConfig?.exposure,
-        onOpen: () => navigation.navigate("CloudComputer"),
-      });
+    : homeKind === "mac"
+      ? homeCloudComputerSection({
+          home: isHome(machine),
+          exposure: props.hostClient.getSnapshot().identityConfig?.exposure,
+          onOpen: () => navigation.navigate("CloudComputer"),
+        })
+      : null;
+  if (isHome(machine)) sections.push(...homeSections());
   if (cloud) sections.push(cloud);
   return <NativeSettingsPage sections={sections} />;
 }
@@ -646,3 +797,6 @@ interface DeviceChange {
 const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
 const selectDevices = (snapshot: HostSnapshot) => snapshot.devicesAvailable === true;
 const selectProfiles = (snapshot: HostSnapshot) => snapshot.browserProfiles;
+
+/** Where Remote access is set: the Account page, by the name the app uses for it. */
+const remoteAccessLabel = deviceWords("home.remoteAccess");

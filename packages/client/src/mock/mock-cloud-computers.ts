@@ -61,7 +61,10 @@ export const mockCloudComputerDeploymentId = DeploymentIdSchema.parse(
 );
 const region = { id: "ash", label: "Ashburn, Virginia" } as const;
 
-function view(status: CloudComputerView["status"]): CloudComputerView {
+function view(
+  status: CloudComputerView["status"],
+  deploymentId: string = mockCloudComputerDeploymentId,
+): CloudComputerView {
   const id = mockCloudComputerId;
   switch (status) {
     case "preparing":
@@ -83,7 +86,7 @@ function view(status: CloudComputerView["status"]): CloudComputerView {
         egress: "assigned",
         status,
         address: mockCloudComputerAddress,
-        deploymentId: mockCloudComputerDeploymentId,
+        deploymentId: DeploymentIdSchema.parse(deploymentId),
         region,
         egressAddress: "203.0.113.24",
         renewsAt: "2026-12-20T00:00:00.000Z",
@@ -144,15 +147,22 @@ export class MockCloudComputerAccount implements CloudComputerAccount {
   #computers: CloudComputerView[];
   #reads = 0;
 
-  /** `workDeploymentId`: the listed Home the mock work Home is, so its badge shows. */
-  constructor(scene: MockCloudComputerScene = "none", workDeploymentId: string | null = null) {
+  /**
+   * `workDeploymentId`: the listed Home the mock work Home is, so its badge shows.
+   * `homeDeploymentId`: the listed Home the personal Cloud Computer is, when it is one.
+   */
+  constructor(
+    scene: MockCloudComputerScene = "none",
+    workDeploymentId: string | null = null,
+    homeDeploymentId: string | null = null,
+  ) {
     this.scene = scene;
     this.#workDeploymentId = workDeploymentId;
     this.#computers =
       scene === "preparing"
         ? [view("preparing")]
         : scene === "ready" || scene === "refused" || scene === "both"
-          ? [view("ready")]
+          ? [view("ready", homeDeploymentId ?? mockCloudComputerDeploymentId)]
           : scene === "attention"
             ? [view("needs_attention")]
             : scene === "suspended"

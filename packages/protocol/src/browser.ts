@@ -850,6 +850,7 @@ export const BrowserRuntimeSnapshotSchema = z
     ...runtimeSnapshotShape,
     cdpReplyBudget: z.literal(1).optional(),
     scriptAttachments: z.literal(1).optional(),
+    scriptCancellation: z.literal(1).optional(),
   })
   .superRefine((snapshot, context) => {
     if (
@@ -1345,6 +1346,7 @@ export const browserHostMethods = {
   listTabs: "Opensteer.listTabs",
   contextCandidate: "Opensteer.contextCandidate",
   closeScriptAttachment: "Opensteer.closeScriptAttachment",
+  cancelScriptCommand: "Opensteer.cancelScriptCommand",
 } as const;
 export const TargetedBrowserClientMessageSchema = BrowserClientMessageSchema.superRefine(
   (message, context) => {

@@ -348,16 +348,21 @@ it("says a Device whose person stopped agents on it is stopped, with the time, o
       status,
     });
     expect(isDeviceStopped(stopped)).toBe(true);
-    expect(deviceStoppedLabel(stopped, now, "en-US")).toBe(`Stopped on Studio iMac · since ${time}`);
+    expect(deviceStoppedLabel(stopped, now, "en-US")).toBe(
+      `Stopped on Studio iMac · since ${time}`,
+    );
     expect(computerStatus(stopped, now)).toEqual({
       label: deviceStoppedLabel(stopped, now),
       tone: "waiting",
     });
-    expect(devicesView({ machines: [stopped], sessions: [], hereId: null }).devices[0]?.status).toBe(
-      deviceStoppedLabel(stopped),
-    );
+    expect(
+      devicesView({ machines: [stopped], sessions: [], hereId: null }).devices[0]?.status,
+    ).toBe(deviceStoppedLabel(stopped));
   }
-  const running = MachineSummarySchema.parse({ ...machine("rnr_mac", "computer"), status: "online" });
+  const running = MachineSummarySchema.parse({
+    ...machine("rnr_mac", "computer"),
+    status: "online",
+  });
   expect(isDeviceStopped(running)).toBe(false);
   expect(computerStatus(running, now).label).toBe("Online");
 });

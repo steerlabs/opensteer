@@ -121,28 +121,37 @@ export function isAsleepStep(tool: ToolEntry): boolean {
   return asleepToolFailure(tool, []) !== null;
 }
 
-/**
- * The gate's asleep line for the Home a window was trying to reach, deciding its kind from
- * what that window knows: the Host's last-known exposure, the Account's views, and whether
- * the Home runs on this computer. The offer opens on the Opensteer website, since the gate
- * stands in for the app.
- */
-export function UnreachableHomeLine(props: {
-  readonly desktopBridge: OpensteerDesktopBridge | null | undefined;
+/** What a window knows of the Home it was trying to reach. */
+export interface UnreachableHome {
   readonly exposure: "loopback" | "networked";
   readonly deploymentId: string;
   readonly hostedHere: boolean;
   readonly macName: string;
   readonly portalOrigin: string | null;
+}
+
+/**
+ * The gate's asleep line for the Home a window was trying to reach, deciding its kind from
+ * what that window knows: the Host's last-known exposure, the Account's views, and whether
+ * the Home runs on this computer. `home` is read only when the line is drawn, so a gate
+ * that never shows it asks the Host for nothing. The offer opens on the Opensteer website,
+ * since the gate stands in for the app.
+ */
+export function UnreachableHomeLine(props: {
+  readonly desktopBridge: OpensteerDesktopBridge | null | undefined;
+  readonly home: () => UnreachableHome | null;
 }) {
   const cloud = useCloudComputer(cloudComputerAccountFor(props.desktopBridge));
+  const home = props.home();
+  if (!home) return null;
   const kind = homeKind({
-    exposure: props.exposure,
-    deploymentId: props.deploymentId,
-    hostedHere: props.hostedHere,
+    exposure: home.exposure,
+    deploymentId: home.deploymentId,
+    hostedHere: home.hostedHere,
     account: cloud.views,
   }).kind;
-  const { desktopBridge, portalOrigin } = props;
+  const { desktopBridge } = props;
+  const { portalOrigin } = home;
   const open = portalOrigin
     ? () => {
         const url = cloudComputerWebsite(portalOrigin, "home");
@@ -152,9 +161,9 @@ export function UnreachableHomeLine(props: {
     : null;
   return (
     <GateAsleepLine
-      deploymentId={props.deploymentId}
+      deploymentId={home.deploymentId}
       homeKind={kind}
-      macName={props.macName}
+      macName={home.macName}
       onOpen={open}
     />
   );

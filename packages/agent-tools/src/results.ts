@@ -58,10 +58,10 @@ export function normalizeToolError(failure: AgentToolFailure): ToolError {
       (failure.reason === "device-stopped"
         ? "Check computer_list; wait until the person resumes agents there and do not request access."
         : failure.reason === "device-asleep"
-        ? "Check computer_list; wait until it wakes and do not request access."
-        : failure.reason === "device-offline"
-          ? "Check computer_list; do not request access while it is offline."
-          : "Use computer_access_request if needed.")
+          ? "Check computer_list; wait until it wakes and do not request access."
+          : failure.reason === "device-offline"
+            ? "Check computer_list; do not request access while it is offline."
+            : "Use computer_access_request if needed.")
     }`;
   }
   return {

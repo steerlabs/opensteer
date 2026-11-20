@@ -4,7 +4,12 @@ import type { DeploymentId } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
-import { deploymentStatusDetail, deploymentStatusLabel } from "../client/deployment-rows.js";
+import {
+  deploymentStatusDetail,
+  deploymentStatusLabel,
+  isMacHomeRow,
+} from "../client/deployment-rows.js";
+import { GateAsleepLine } from "./gate-asleep-line.js";
 import { resetToDeployments } from "../navigation-ref.js";
 import { color, space } from "../theme.js";
 import { ConnectionGate, type ConnectionGateButton } from "../ui/connection-gate.js";
@@ -191,6 +196,9 @@ export function DeploymentGate(props: {
         line={refused}
         name={row.name}
         secondary={away}
+        unreachable={
+          <GateAsleepLine deploymentId={deploymentId} macHome={isMacHomeRow(row)} name={row.name} />
+        }
         signIn={{
           busy: working,
           label: deploymentRecoveryLabel(row),

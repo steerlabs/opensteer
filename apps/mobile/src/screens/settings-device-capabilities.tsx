@@ -98,36 +98,7 @@ export function SettingsDeviceCapabilities({
       ))}
       {machine.access ? (
         <>
-          <AppText>{`Access from other computers: ${machine.access.policy.reach}`}</AppText>
-          {(
-            [
-              "nobody",
-              ...(machine.access.ownerReachAvailable ? ["owner" as const] : []),
-              "deployment",
-            ] as const
-          ).map((reach) => (
-            <SecondaryButton
-              key={reach}
-              label={
-                reach === "nobody"
-                  ? "Allow no other computers"
-                  : reach === "owner"
-                    ? "Allow my agents"
-                    : "Allow agents in this Opensteer"
-              }
-              disabled={pending || machine.access!.policy.reach === reach}
-              onPress={() =>
-                Alert.alert(
-                  "Change device access?",
-                  "This changes which agents may use Terminal and shared folders on this computer.",
-                  [
-                    { text: "Cancel", style: "cancel" },
-                    { text: "Apply", onPress: () => change({ ...machine.access!.policy, reach }) },
-                  ],
-                )
-              }
-            />
-          ))}
+          {/* Who can use it is chosen on the Device page, as chips. */}
           {machine.allowedModules.includes("shell") ? (
             <SwitchRow
               label="Terminal"

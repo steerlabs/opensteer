@@ -3,7 +3,13 @@ import { withDeviceSwitch as withSwitch } from "@opensteer/client/computers";
 import { mockDeviceMachine } from "@opensteer/client/mock";
 import type { MachineAccessPolicy, MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
-import { deviceRemoval, deviceSwitches, homeFixed } from "./device-page-model.js";
+import {
+  deviceReachChoices,
+  deviceRemoval,
+  deviceSwitches,
+  deviceSwitchesFooter,
+  homeFixed,
+} from "./device-page-model.js";
 
 const policy: MachineAccessPolicy = {
   apps: false,
@@ -82,6 +88,44 @@ describe("a device page's switches", () => {
     });
     expect(withSwitch(on, "files", false)).toEqual({ ...on, reach: "nobody" });
     expect(withSwitch({ ...on, reach: "deployment" }, "files", true).reach).toBe("owner");
+  });
+});
+
+describe("under a device's switches", () => {
+  it("says connected agents also need a profile or app chosen, and why switches can't change", () => {
+    const switches = deviceSwitches(machine({}), { devicesAvailable: true });
+    expect(deviceSwitchesFooter(switches)).toBe(
+      "Connected agents also need you to choose this Device’s profile or app for them.",
+    );
+    const older = deviceSwitches(machine({}), { devicesAvailable: false });
+    expect(deviceSwitchesFooter(older)).toBe(
+      "Update Opensteer on your Mac to change Browser and Apps. Connected agents also need you to choose this Device’s profile or app for them.",
+    );
+    const home = deviceSwitches(
+      machine({
+        kind: "home",
+        ownership: "deployment",
+        allowedModules: ["agents", "browser", "shell"],
+      }),
+      { devicesAvailable: true },
+    );
+    // A Home Mac's Apps switch is real, so the footer belongs under it too.
+    expect(home.rows.some(({ fixed }) => !fixed)).toBe(true);
+    expect(deviceSwitchesFooter(home)).toBe(
+      "Your Opensteer lives on this Mac, so it can't be removed. Connected agents also need you to choose this Device’s profile or app for them.",
+    );
+  });
+
+  it("offers exactly the Reach values the Host reads, with my agents only where it can", () => {
+    expect(deviceReachChoices({ ownerReachAvailable: true }).map(({ value }) => value)).toEqual([
+      "nobody",
+      "owner",
+      "deployment",
+    ]);
+    expect(deviceReachChoices({ ownerReachAvailable: false }).map(({ value }) => value)).toEqual([
+      "nobody",
+      "deployment",
+    ]);
   });
 });
 

@@ -2015,6 +2015,10 @@ function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; tur
     row.group === "computer" && only?.kind === "tool"
       ? only.integration?.computerApp?.computer
       : null;
+  // A step the Home refused because its Device sleeps says so whether or not the row is open.
+  const asleep = row.entries.find(
+    (entry): entry is ToolEntry => entry.kind === "tool" && isAsleepStep(entry),
+  );
   return (
     <div className={open ? "trace-step trace-step--open" : "trace-step"}>
       <StepHead
@@ -2031,6 +2035,7 @@ function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; tur
         ))}
         {...(single?.kind === "request" ? {} : { onToggle: () => setOpen(!open), open })}
       />
+      {asleep ? <AsleepStepLine tool={asleep} /> : null}
       {open && computer && !single ? <p className="trace-step__place">on {computer}</p> : null}
       {open && single?.kind === "tool" ? (
         <ToolDetail tool={single} />
@@ -2173,7 +2178,6 @@ function Step({
         onToggle={() => setOpen(!open)}
         open={open}
       />
-      {isAsleepStep(entry) ? <AsleepStepLine tool={entry} /> : null}
       {open ? <ToolDetail tool={entry} /> : null}
     </div>
   );

@@ -743,3 +743,33 @@ a.devices-row:focus-visible {
 .iphone-wifi__fix + .card__row {
   border-top: 1px solid var(--line);
 }
+
+/* ---- The asleep moment: one quiet line where work was blocked ---- */
+
+.asleep-moment {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-4) var(--space-12);
+  margin: var(--space-6) 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.asleep-moment__actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-12);
+}
+
+.asleep-moment__not-now {
+  color: var(--muted);
+}
+
+.asleep-moment--gate {
+  justify-content: center;
+  max-width: 34rem;
+  margin-inline: auto;
+  text-align: center;
+}

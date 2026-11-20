@@ -30,6 +30,13 @@ export const devicesCopy = {
   "devices.switch.footer":
     "Connected agents also need you to choose this Device’s profile or app for them.",
   "devices.reach.title": "Who can use it",
+  "devices.reach.nobody": "Allow no other computers",
+  "devices.reach.owner": "Allow my agents",
+  "devices.reach.deployment": "Allow agents in this Opensteer",
+  "devices.switch.browserDetail": "Open and use tabs",
+  "devices.switch.appsDetail": "See and control apps",
+  "devices.switch.filesDetail": "Read files and run commands",
+  "home.remoteAccess": "Remote access",
   "home.thisMac": "Running on this Mac",
   "home.address": "Address",
   "home.version": "Version",

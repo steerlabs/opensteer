@@ -141,6 +141,12 @@ export const menuBarStates = {
   stopped: menuBarStatus({
     ...nothing,
     ...studio,
+    // The Home's own row for this Mac says it is stopped too.
+    thisMac: {
+      deploymentId: "dep_home",
+      machine: { ...thisMac(false), agentsStoppedSince: "2026-11-20T18:42:00.000Z" },
+      devicesAvailable: true,
+    },
     stop: { phase: "stopped", stoppedAt: "2026-11-20T18:42:00.000Z", problem: null },
   }),
 } satisfies Record<string, MenuBarStatus>;

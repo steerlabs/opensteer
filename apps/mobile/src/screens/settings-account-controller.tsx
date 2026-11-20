@@ -24,6 +24,7 @@ import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { accountSettingsModel, signOutAccountInOrder } from "./settings-model.js";
 import { remoteAccessSections, type RemoteAccessRowAction } from "./settings-remote-access.js";
+import { homeAccountLinkSections, useHomeAccountLink } from "./settings-home-account-link.js";
 import { useSettingsHost } from "./use-settings-host.js";
 
 /** Account: who you are, using this computer from anywhere, and where you're signed in. */
@@ -52,7 +53,10 @@ function AccountSettingsContent(props: {
     rows.find((row) => row.deploymentId === enrolledIn && row.accountManaged) ?? null;
   const host = selection.hostClient;
   const snapshot = useSettingsHost(host);
-  const remote = usePersonalRemoteAccess(snapshot !== null ? host : null);
+  // A Home on its own server has no Remote access: its Account link has its own card.
+  const networked = snapshot?.identityConfig?.exposure === "networked";
+  const homeLink = useHomeAccountLink(snapshot !== null ? host : null, networked);
+  const remote = usePersonalRemoteAccess(snapshot !== null && !networked ? host : null);
   const sessionsRead = useMemo(
     () =>
       host === null
@@ -303,7 +307,19 @@ function AccountSettingsContent(props: {
       ...(accountError ? { footer: { text: accountError, tone: "danger" as const } } : {}),
     });
   }
-  if (host && snapshot !== null)
+  if (homeLink)
+    sections.push(
+      ...homeAccountLinkSections(homeLink.state, {
+        link: () => void homeLink.client.link(() => client.linkSelectedPersonalAccount()),
+        unlink: () => void homeLink.client.unlink(),
+        confirm: (question, proceed) =>
+          Alert.alert(question, undefined, [
+            { style: "cancel", text: "Cancel" },
+            { style: "destructive", text: "Unlink", onPress: proceed },
+          ]),
+      }),
+    );
+  else if (host && snapshot !== null)
     sections.push(
       ...remoteAccessSections(
         {

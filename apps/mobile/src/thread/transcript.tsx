@@ -54,6 +54,7 @@ import {
 import { voiceCallSeed } from "@opensteer/core";
 import { replyParts, type ReplyPart } from "@opensteer/shared/markdown";
 import { memo, useContext, useMemo, useRef, useState, type ReactNode } from "react";
+import { AsleepActivityLine, asleepToolOf } from "./asleep-activity-line.js";
 import { Pressable, StyleSheet, View } from "react-native";
 import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
 import { CodeLines, Markdown, PlainProse } from "../markdown/markdown.js";
@@ -1087,14 +1088,18 @@ function StepsRow(props: {
     (entry) => entry.kind === "request" && entry.requestId === props.highlightRequestId,
   );
   const [open, setOpen] = useState(false);
+  const asleep = asleepToolOf(row.entries);
 
   if (single !== undefined) {
     return (
-      <StepHead
-        head={row.head}
-        highlighted={highlighted}
-        {...(single.kind === "request" ? {} : { onPress: () => props.onOpenStep(single.id) })}
-      />
+      <View>
+        <StepHead
+          head={row.head}
+          highlighted={highlighted}
+          {...(single.kind === "request" ? {} : { onPress: () => props.onOpenStep(single.id) })}
+        />
+        {asleep === null ? null : <AsleepActivityLine tool={asleep} />}
+      </View>
     );
   }
   return (
@@ -1144,6 +1149,7 @@ function StepsRow(props: {
           )}
         </Animated.View>
       ) : null}
+      {asleep === null ? null : <AsleepActivityLine tool={asleep} />}
     </View>
   );
 }

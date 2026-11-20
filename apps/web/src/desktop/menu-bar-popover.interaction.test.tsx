@@ -213,6 +213,7 @@ describe("Stop everything", () => {
       expect(value.stop).toHaveBeenCalledOnce();
       await act(async () => value.push(menuBarStates.stopped));
       expect(view.text()).toMatch(/Stopped everything on this Mac at .+\./);
+      expect(view.text()).toContain("MacBook Pro shows this Mac as stopped too.");
       await act(async () => view.button("Resume")!.click());
       expect(value.resume).toHaveBeenCalledOnce();
     } finally {

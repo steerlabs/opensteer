@@ -6,11 +6,7 @@ import {
 } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import {
-  RunnerRegistry,
-  type RunnerIdentity,
-  type RunnerPeer,
-} from "./index.js";
+import { RunnerRegistry, type RunnerIdentity, type RunnerPeer } from "./index.js";
 
 class MemoryPeer implements RunnerPeer {
   readonly id: string;
@@ -124,9 +120,7 @@ describe("RunnerRegistry agents-stopped state", () => {
         stoppedAt: "2026-11-20T10:42:00.000Z",
         type: "runner.agents.stopped",
       });
-      expect(runners.agentsStoppedSince(runnerId)?.toISOString()).toBe(
-        "2026-11-20T10:42:00.000Z",
-      );
+      expect(runners.agentsStoppedSince(runnerId)?.toISOString()).toBe("2026-11-20T10:42:00.000Z");
       expect(runners.agentsStoppedSince(runnerId, 2)).toBeNull();
       expect(runners.areAgentsStopped(environmentId)).toBe(true);
       expect(onAgentWork).toHaveBeenLastCalledWith(

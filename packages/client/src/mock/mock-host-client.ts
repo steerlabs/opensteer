@@ -1868,6 +1868,8 @@ export interface MockHostClientOptions {
   grantsAvailable?: boolean;
   /** The Opensteer website this Home names, where Account billing happens; none by default. */
   portalOrigin?: string;
+  /** How the Home is reached: a networked server or Cloud Computer, not this computer. */
+  exposure?: "loopback" | "networked";
 }
 
 const mockWebhookOrigin = "https://mock.opensteer.invalid";
@@ -2166,6 +2168,13 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       }
     },
     "personal.remoteAccess.get": async () => rpcSuccess(client.remoteAdministration),
+    "personal.accountLink.get": async () =>
+      rpcSuccess({
+        accountIssuer: client.remoteAdministration.accountIssuer,
+        accountLink: client.remoteAdministration.access.accountLink,
+        authorityEnvelope: client.remoteAdministration.authorityEnvelope,
+        managed: false,
+      }),
     "apps.view": unsupportedMockRpc,
     "attachment.get": async ({ attachmentId }) => rpcSuccess(client.getAttachment(attachmentId)),
     "attachment.upload": async ({ attachmentId }, context) =>
@@ -3367,6 +3376,13 @@ async function executeMockCommand(
         },
       });
     }
+    case "personal.accountLink.unlink":
+      client.remoteAdministration = {
+        ...client.remoteAdministration,
+        access: { ...client.remoteAdministration.access, accountLink: null },
+        revision: client.remoteAdministration.revision + 1,
+      };
+      return rpcSuccess({ type: command.type });
     case "personal.accountLink.approve":
     case "personal.accountLink.complete":
     case "personal.accountLink.resume":
@@ -4925,6 +4941,11 @@ export class MockHostClient implements HostClient {
   /** Adds a settled task of `turns` asks, each a command and a reply, for long-thread journeys. */
   mockLongThread(turns: number): string {
     return this.#state.mockLongThread(turns);
+  }
+
+  /** A computer-use task whose last call the Home refused because a Mac was asleep. */
+  mockAsleepStep(): void {
+    this.#state.mockAsleepStep();
   }
 
   /** Rewrites one message's words in place, as a durable update or a streamed token would. */
@@ -6800,6 +6821,14 @@ class MockHostState {
     };
     if (options.portalOrigin && initial.identityConfig)
       initial.identityConfig = { ...initial.identityConfig, portalOrigin: options.portalOrigin };
+    if (options.exposure && initial.identityConfig)
+      initial.identityConfig = {
+        ...initial.identityConfig,
+        exposure: options.exposure,
+        ...(options.exposure === "networked"
+          ? { publicOrigin: "https://opensteer.example.com" }
+          : {}),
+      };
     const firstRun = options.world === "first-run";
     this.snapshot = firstRun ? firstRunWorld(initial) : initial;
     this.applyAutomaticEligibility();
@@ -7301,6 +7330,47 @@ class MockHostState {
     const entry = this.snapshot.transcripts[threadId]?.find(({ id }) => id === messageId);
     if (entry?.kind !== "message") throw new Error("No such message.");
     this.replaceEntryById(threadId, messageId, { ...entry, body });
+  }
+
+  mockAsleepStep(): void {
+    const machine = this.snapshot.machines.find(
+      ({ kind, name }) => kind === "computer" && name === "Alex's MacBook Pro",
+    );
+    const threadId = Object.keys(this.snapshot.transcripts).find((id) =>
+      this.snapshot.transcripts[id]?.some(
+        (entry) => entry.kind === "tool" && entry.callId === "computer-code",
+      ),
+    );
+    const entries = threadId ? this.snapshot.transcripts[threadId] : undefined;
+    if (!machine || !threadId || !entries) throw new Error("No computer-use task to refuse.");
+    const code = entries.find(
+      (entry): entry is ToolEntry => entry.kind === "tool" && entry.callId === "computer-code",
+    )!;
+    const refused: ToolEntry = {
+      ...code,
+      id: `tool:${code.runId}:computer-asleep`,
+      callId: "computer-asleep",
+      arguments: { computerId: machine.id, code: "await app('Messages').window().observe();" },
+      isError: true,
+      state: "failed",
+      output: {
+        text: JSON.stringify({
+          error: {
+            code: "computer_asleep",
+            message: `${machine.name} is asleep.`,
+            next: "It will work again when it wakes; other work can continue.",
+          },
+        }),
+      },
+    };
+    const at = entries.indexOf(code) + 1;
+    this.update({
+      ...this.snapshot,
+      transcripts: {
+        ...this.snapshot.transcripts,
+        [threadId]: [...entries.slice(0, at), refused, ...entries.slice(at)],
+      },
+    });
   }
 
   mockLongThread(turns: number): string {

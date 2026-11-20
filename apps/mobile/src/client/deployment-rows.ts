@@ -151,8 +151,17 @@ export function deploymentSignInLabel(signIn: DeploymentSignIn): string {
  */
 export function deploymentKindLabel(connection: DeploymentConnection): string {
   if (isNetworkedHome(connection.authority.document)) return "Home";
-  if (connection.kind === "personal") return "Personal computer";
+  if (connection.kind === "personal") return personalComputerKind;
   return "Team";
+}
+const personalComputerKind = "Personal computer";
+
+/**
+ * A Home on a person's own Mac: a personal deployment reached through it, never a networked
+ * server, Cloud Computer or work Home (those are "Home").
+ */
+export function isMacHomeRow(row: Pick<DeploymentRow, "kindLabel">): boolean {
+  return row.kindLabel === personalComputerKind;
 }
 
 export function deploymentStatusLabel(status: DeploymentStatus): string {
@@ -206,7 +215,7 @@ export function deploymentStatusDetail(row: DeploymentRow): string | null {
         ? "Enter a new pairing code from the computer that hosts it."
         : "Sign in to this deployment to see your work.";
     case "unavailable":
-      return row.kindLabel === "Personal computer"
+      return isMacHomeRow(row)
         ? "That computer is asleep or off its network."
         : "This deployment has no address this app can reach.";
     case "unverified":

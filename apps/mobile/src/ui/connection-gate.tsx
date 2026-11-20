@@ -37,6 +37,8 @@ export const ConnectionGate = memo(function ConnectionGate(props: {
   readonly detail: string;
   readonly primary?: ConnectionGateButton | null;
   readonly secondary?: ConnectionGateButton | null;
+  /** One quiet line of context under the explanation, such as a Mac that may be asleep. */
+  readonly below?: ReactNode;
 }): ReactNode {
   return (
     <Animated.View entering={dim} style={styles.gate}>
@@ -79,6 +81,7 @@ export const ConnectionGate = memo(function ConnectionGate(props: {
             ) : null}
           </View>
         ) : null}
+        {props.below ?? null}
       </Animated.View>
     </Animated.View>
   );

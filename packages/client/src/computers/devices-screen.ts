@@ -136,6 +136,15 @@ export function deviceScreenRow(
           tone: "online",
         }
       : { ...base, detail: screen.label, tone: screen.tone === "offline" ? "offline" : "waiting" };
+  // A phone with its own screen controller says what that controller is doing.
+  if (machine.phoneDisplay) {
+    const status = computerStatus(machine, options.now);
+    return {
+      ...base,
+      detail: status.label,
+      tone: status.tone === "online" ? "online" : status.tone === "offline" ? "offline" : "waiting",
+    };
+  }
   if (isDeviceAsleep(machine)) {
     const seen = machine.lastSeenAt ?? machine.asleepSince;
     return {

@@ -92,6 +92,7 @@ import {
   PersonalRemoteAdministrationIntentSchema,
   PersonalRemoteAdministrationOperationSchema,
   PersonalRemoteAdministrationStatusSchema,
+  PersonalAccountLinkStatusSchema,
   IssuePersonalPairingCodeResponseSchema,
   ApprovePersonalHostAccountLinkRequestSchema,
   ApprovePersonalHostAccountLinkResponseSchema,
@@ -848,6 +849,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("personal.accountLink.resume"),
   }),
+  /** Ends this Home's Account link here and at the Account, with no Remote access involved. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("personal.accountLink.unlink"),
+  }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     connectionId: AgentConnectionIdSchema,
@@ -1346,6 +1352,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("personal.accountLink.resume"),
     access: PersonalRemoteAccessStatusSchema,
   }),
+  z.object({ type: z.literal("personal.accountLink.unlink") }),
   z.object({ type: z.literal("connection.revoke") }),
   z.object({ type: z.literal("connection.update"), connection: AgentConnectionSchema }),
   z.object({ type: z.literal("connection.remove") }),
@@ -1857,6 +1864,7 @@ const hostApiGroup3 = defineRpc({
     emptyInputSchema,
     PersonalRemoteAdministrationStatusSchema,
   ),
+  "personal.accountLink.get": declaration("GET", emptyInputSchema, PersonalAccountLinkStatusSchema),
   "plugins.overview.get": declaration("GET", z.strictObject({}), PluginsOverviewViewSchema),
   "devices.overview.get": declaration("GET", z.strictObject({}), DevicesOverviewViewSchema),
   "plugins.installed.list": declaration(

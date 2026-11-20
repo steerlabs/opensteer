@@ -8,6 +8,11 @@ import { iphoneSetupNeeds, iphoneSetupOnMacSteps } from "@opensteer/client/integ
 import { connectDeviceDraftText } from "@opensteer/client/settings";
 import { useNavigation } from "@react-navigation/native";
 import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  selectHomeDeploymentId,
+  selectHomeExposure,
+  usePhoneHome,
+} from "../computers/home-kind.js";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { movePhoneHere } from "../phone-setup/move-phone-here.js";
@@ -83,6 +88,12 @@ export function DevicesSettingsController(): ReactNode {
   });
   const waiting = useHostValue(host, selectWaitingThreads, "");
   const iphoneAppsAvailable = useHostValue(host, (value) => value.iphoneAppsAvailable, false);
+  const devicesAvailable = useHostValue(host, selectDevicesAvailable, false);
+  const homeKind = usePhoneHome({
+    exposure: useHostValue(host, selectHomeExposure, undefined),
+    deploymentId: useHostValue(host, selectHomeDeploymentId, null),
+  }).kind;
+  const deploymentName = rows.find((row) => row.deploymentId === deploymentId)?.name ?? "";
 
   useLayoutEffect(() => {
     navigation.setOptions(
@@ -122,8 +133,11 @@ export function DevicesSettingsController(): ReactNode {
         sessions: sessions.data?.sessions ?? [],
         here,
         noun: thisPhoneNoun,
+        home: homeKind,
+        deploymentName,
+        devicesAvailable,
       }),
-    [here, sessions.data, snapshot?.machines],
+    [deploymentName, devicesAvailable, here, homeKind, sessions.data, snapshot?.machines],
   );
   const pluginRows = useMemo(
     () =>
@@ -220,6 +234,7 @@ export function DevicesSettingsController(): ReactNode {
           label: row.title,
           detail: row.detail,
           symbol: row.symbol,
+          ...(row.tone ? { tone: row.tone } : {}),
           opens:
             row.opens !== null && row.opens.kind !== "use-here" && row.opens.kind !== "session",
           onPress: () => open(row),
@@ -384,6 +399,9 @@ export function DevicesSettingsController(): ReactNode {
     </>
   );
 }
+
+const selectDevicesAvailable = (snapshot: HostSnapshot): boolean =>
+  snapshot.devicesAvailable === true;
 
 /** The Threads with a pending Request, as one string so a change elsewhere re-renders nothing. */
 const selectWaitingThreads = (snapshot: HostSnapshot): string =>

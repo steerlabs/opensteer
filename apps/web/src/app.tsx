@@ -161,24 +161,30 @@ export function App({
   // setup's own opening screen while setup continues and nothing is wrong.
   // Only whether it's interrupted: the app never redraws for every connection publish.
   const interrupted = useConnectionInterrupted(hostClient.connection);
-  // The Home this window last reached, for the asleep line if it can't be reached now.
-  const lastHome =
-    snapshot.machines.find(hostsDeployment)?.name ?? snapshot.identityConfig?.deployment.name;
   const appGate = useConnectionGate(hostClient.connection, {
     scope: "app",
     ready: snapshot.session !== "checking" && !interrupted,
     secondary: connectionGateSecondary,
-    unreachableAside:
-      snapshot.identityConfig && snapshot.deploymentId && lastHome ? (
-        <UnreachableHomeLine
-          deploymentId={snapshot.deploymentId}
-          desktopBridge={desktopBridge}
-          exposure={snapshot.identityConfig.exposure}
-          hostedHere={false}
-          macName={lastHome}
-          portalOrigin={snapshot.identityConfig.portalOrigin}
-        />
-      ) : null,
+    // The Home this window last reached, read only if the gate says it can't be reached.
+    unreachableAside: (
+      <UnreachableHomeLine
+        desktopBridge={desktopBridge}
+        home={() => {
+          const identity = snapshot.identityConfig;
+          const name =
+            snapshot.machines.find(hostsDeployment)?.name ?? identity?.deployment.name ?? null;
+          return identity && snapshot.deploymentId && name
+            ? {
+                exposure: identity.exposure,
+                deploymentId: snapshot.deploymentId,
+                hostedHere: false,
+                macName: name,
+                portalOrigin: identity.portalOrigin,
+              }
+            : null;
+        }}
+      />
+    ),
     onSignIn: () => void hostClient.refresh().catch(() => undefined),
     onUpdate: desktopBridge?.updates
       ? () => void desktopBridge.updates?.download().catch(() => undefined)

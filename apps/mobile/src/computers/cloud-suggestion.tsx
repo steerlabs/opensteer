@@ -8,7 +8,6 @@ import {
   type CloudSuggestionMemory,
   type HomeKind,
 } from "@opensteer/client/computers";
-import * as SecureStore from "expo-secure-store";
 import { useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { space } from "../theme.js";
@@ -18,8 +17,12 @@ import { AppText } from "../ui/primitives.js";
  * What this phone remembers about the Cloud Computer suggestion: one record in its own
  * key-value store, read once and shared by every screen that may show the suggestion.
  */
-type Memory = { readonly loaded: false } | { readonly loaded: true; readonly value: CloudSuggestionMemory | null };
+type Memory =
+  | { readonly loaded: false }
+  | { readonly loaded: true; readonly value: CloudSuggestionMemory | null };
 let memory: Memory = { loaded: false };
+// Loaded only when a moment needs it, so a screen that never shows one never loads it.
+const secureStore = () => import("expo-secure-store");
 let reading: Promise<void> | null = null;
 const listeners = new Set<() => void>();
 
@@ -29,16 +32,17 @@ function publish(next: Memory): void {
 }
 
 function read(): void {
-  reading ??= SecureStore.getItemAsync(cloudSuggestionStorageKey)
+  reading ??= secureStore()
+    .then((store) => store.getItemAsync(cloudSuggestionStorageKey))
     .then((text) => publish({ loaded: true, value: parseCloudSuggestionMemory(text) }))
     .catch(() => publish({ loaded: true, value: null }));
 }
 
 function remember(value: CloudSuggestionMemory): void {
   publish({ loaded: true, value });
-  void SecureStore.setItemAsync(cloudSuggestionStorageKey, JSON.stringify(value)).catch(
-    () => undefined,
-  );
+  void secureStore()
+    .then((store) => store.setItemAsync(cloudSuggestionStorageKey, JSON.stringify(value)))
+    .catch(() => undefined);
 }
 
 function subscribe(listener: () => void): () => void {
@@ -111,7 +115,11 @@ export function AsleepMoment(props: {
       </AppText>
       {suggestion.visible ? (
         <View style={[styles.actions, props.centered === true ? styles.middle : null]}>
-          <QuietLink label={cloudSuggestionWords.link} onPress={props.onOpenCloudComputer} tone="ember" />
+          <QuietLink
+            label={cloudSuggestionWords.link}
+            onPress={props.onOpenCloudComputer}
+            tone="ember"
+          />
           <QuietLink label={cloudSuggestionWords.notNow} onPress={suggestion.notNow} tone="muted" />
         </View>
       ) : null}

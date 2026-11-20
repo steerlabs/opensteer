@@ -130,15 +130,13 @@ export function deviceListSections(input: {
   // This phone's own unbound session is the phone itself, never "also signed in".
   const signedIn = screen.alsoSignedIn
     .filter(({ session }) => !session.current)
-    .map(
-      ({ session, label, status }): DeviceListRow => ({
-        key: session.id,
-        title: label,
-        detail: status,
-        symbol: session.form === "mobile" ? "smartphone" : "globe",
-        opens: { kind: "session", session },
-      }),
-    );
+    .map(({ session, label, status }): DeviceListRow => ({
+      key: session.id,
+      title: label,
+      detail: status,
+      symbol: session.form === "mobile" ? "smartphone" : "globe",
+      opens: { kind: "session", session },
+    }));
   const sections: DeviceListSection[] = [
     {
       key: "home",

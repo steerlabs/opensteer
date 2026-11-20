@@ -349,6 +349,33 @@ function press(container: HTMLElement, text: string): void {
   act(() => button.click());
 }
 
+describe("a step the Home refused because its Device is asleep", () => {
+  const refused = (code: string): ToolEntry => ({
+    ...command,
+    id: `tool:a:${code}`,
+    callId: `call-${code}`,
+    state: "failed",
+    isError: true,
+    arguments: { computerId: "rnr_air", url: "https://example.com" },
+    output: {
+      text: JSON.stringify({ error: { code, message: "MacBook Air is asleep.", next: null } }),
+    },
+    tool: { namespace: "opensteer", name: "browser_use" },
+  });
+
+  it("says it couldn't reach the Device, under the step, from the Home's own code", () => {
+    const { container, render } = setup(false);
+    render([run, refused("computer_asleep")]);
+    expect(container.textContent).toContain("Couldn’t reach a Device: asleep");
+  });
+
+  it("says nothing of sleep for any other failure", () => {
+    const { container, render } = setup(false);
+    render([run, refused("computer_offline")]);
+    expect(container.textContent).not.toContain("asleep");
+  });
+});
+
 describe("native transcript prose", () => {
   it("keeps finalized streamed prose outside row animations", () => {
     const { container, render } = setup();

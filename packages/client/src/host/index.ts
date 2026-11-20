@@ -83,6 +83,7 @@ export * from "./run-place-picture.js";
 
 export * from "./request-settlement.js";
 export * from "./personal-remote-access.js";
+export * from "./home-account-link.js";
 export * from "./remote-access.js";
 export * from "./browser-cursor.js";
 export * from "./connected-agents.js";

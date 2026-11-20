@@ -2523,9 +2523,9 @@ describe("MobileClient sign-in", () => {
     const { client, opened } = open(port.factory, privateFiles, {
       records,
       replacedHome: () => replaced,
-      fetch: async (input, init) => {
+      fetch: async (input) => {
         requested.push(String(input));
-        return testFetch(input, init);
+        return testFetch(input);
       },
     });
     const home = testDeploymentConnection({ home: true, deploymentId: otherId });
@@ -2557,9 +2557,9 @@ describe("MobileClient sign-in", () => {
     const later = open(port.factory, privateFiles, {
       records,
       replacedHome: () => replaced,
-      fetch: async (input, init) => {
+      fetch: async (input) => {
         requested.push(String(input));
-        return testFetch(input, init);
+        return testFetch(input);
       },
     });
     await later.client.initialize();

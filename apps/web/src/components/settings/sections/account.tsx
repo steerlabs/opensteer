@@ -12,6 +12,7 @@ import { SignOutDialog } from "../../places/place-account.js";
 import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 import { OwnerNameRow } from "./owner-name.js";
 import { RemoteAccessCard } from "./remote-access-card.js";
+import { HomeAccountLinkCard } from "./home-account-link-card.js";
 import { CloudComputerEntryRow, CloudComputerPage } from "./cloud-computer.js";
 import { WorkHomeSeePage } from "./work-home.js";
 
@@ -53,6 +54,7 @@ function AccountHome() {
         )}
       </SettingsGroup>
       <RemoteAccessCard />
+      <HomeAccountLinkCard />
       <SettingsGroup heading={null} headingId="settings-account-cloud">
         <CloudComputerEntryRow />
       </SettingsGroup>

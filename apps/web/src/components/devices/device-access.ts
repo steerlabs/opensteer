@@ -28,14 +28,14 @@ export const capabilityLabel: Readonly<Record<DeviceCapability, string>> = {
 /** The setup screen's words, about the Mac the person is sitting at. */
 export const capabilityDetailHere: Readonly<Record<DeviceCapability, string>> = {
   browser: "Open and use tabs on this Mac",
-  apps: "See and control apps",
-  files: "Read files and run commands",
+  apps: deviceWords("devices.switch.appsDetail"),
+  files: deviceWords("devices.switch.filesDetail"),
 };
 
 const capabilityDetail: Readonly<Record<DeviceCapability, string>> = {
-  browser: "Open and use tabs",
-  apps: "See and control apps",
-  files: "Read files and run commands",
+  browser: deviceWords("devices.switch.browserDetail"),
+  apps: deviceWords("devices.switch.appsDetail"),
+  files: deviceWords("devices.switch.filesDetail"),
 };
 
 const homeFixedDetail = "Always on. Your agent runs here.";

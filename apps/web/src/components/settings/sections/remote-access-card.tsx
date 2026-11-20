@@ -50,6 +50,12 @@ export interface RemoteAccessAdvanced {
 }
 
 export function RemoteAccessCard() {
+  // A Home on its own server is reached at its address; its Account link has its own card.
+  const networked = useShell().snapshot.identityConfig?.exposure === "networked";
+  return networked ? null : <RemoteAccessCardBody />;
+}
+
+function RemoteAccessCardBody() {
   return <RemoteAccessCardView model={useRemoteAccessCardModel()} />;
 }
 

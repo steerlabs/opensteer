@@ -238,8 +238,14 @@ async function renderOpensteer(): Promise<void> {
               // that state behind the mock desktop (`?mock-desktop=home`).
               const cloudScene =
                 mockCloudComputerScenes.find((scene) => scene === search.get("mock-cloud")) ?? null;
+              // `?mock-home=server|cloud`: the Home is reached at its own address, a server or
+              // (with `?mock-desktop=home&mock-cloud=ready`) the person's Cloud Computer.
+              const mockHome = search.get("mock-home");
               const client = new MockHostClient({
                 ...(cloudScene ? { portalOrigin: "https://app.opensteer.example" } : {}),
+                ...(mockHome === "server" || mockHome === "cloud"
+                  ? { exposure: "networked" as const }
+                  : {}),
                 ...(agents ? mockConnectedAgents(agents) : {}),
                 // `?mock-sessions=browser`: this window is a web browser's session.
                 ...(desktopScenario === "new-mac" || desktopScenario === "blocked"
@@ -256,6 +262,10 @@ async function renderOpensteer(): Promise<void> {
                 ...(subagents ? { subagents } : {}),
               });
               if (teamAsk) client.mockTeamAsk(teamAsk);
+              // `?mock-asleep-step`: the computer-use task's last call was refused, a Mac asleep.
+              if (search.has("mock-asleep-step")) client.mockAsleepStep();
+              // `?mock-unreachable`: the Home stops answering a moment after it opens.
+              if (search.has("mock-unreachable")) setTimeout(() => client.goOffline(), 1_500);
               // `?mock-iphone-setup` lets this window set up iPhones as Opensteer on a Mac does,
               // playing a whole setup; `?mock-iphone-setup=<state>` holds it at one state.
               const iphoneScene = search.get("mock-iphone-setup");
@@ -282,6 +292,7 @@ async function renderOpensteer(): Promise<void> {
                         // A mock work Home is the attached Home, so its badge shows.
                         client.getSnapshot().deploymentId ??
                           "dep_00000000-0000-4000-8000-000000000001",
+                        mockHome === "cloud" ? client.getSnapshot().deploymentId : null,
                       )
                     : null,
                 );

@@ -288,6 +288,19 @@ export type PersonalRemoteAdministrationStatus = z.infer<
   typeof PersonalRemoteAdministrationStatusSchema
 >;
 
+/**
+ * A Home's Opensteer Account link as its owner reads it, whatever Remote
+ * access is doing: a Home on its own server has no Remote access at all.
+ * `managed` is a Cloud Computer, which stays linked to the Account that owns it.
+ */
+export const PersonalAccountLinkStatusSchema = z.object({
+  accountIssuer: z.url().nullable(),
+  accountLink: z.object(PersonalRemoteAccountLinkSchema.shape).nullable(),
+  authorityEnvelope: IssuePersonalHostAccountLinkChallengeResponseSchema.shape.authorityEnvelope,
+  managed: z.boolean(),
+});
+export type PersonalAccountLinkStatus = z.infer<typeof PersonalAccountLinkStatusSchema>;
+
 export const PersonalRemoteExecutorProgressSchema = z.strictObject({
   operationId: z.string().uuid(),
   state: z.enum(["running", "succeeded", "failed"]),
