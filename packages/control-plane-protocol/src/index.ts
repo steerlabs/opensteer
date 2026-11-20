@@ -1,3 +1,4 @@
+import { CloudComputerReasonCodeSchema } from "./cloud-computers.js";
 import {
   AuthSessionIdSchema,
   AuthAdmissionIdSchema,
@@ -35,6 +36,8 @@ import { HostedTeamIdSchema } from "./hosted-teams.js";
 export * from "./account-id.js";
 export * from "./connect.js";
 export * from "./cloud-computers.js";
+export * from "./cloud-computer-copy.js";
+export * from "./organizations.js";
 export * from "./notifications.js";
 export * from "./oauth-broker.js";
 
@@ -1302,6 +1305,7 @@ export const ControlPlaneErrorReasonSchema = z.enum([
   "hosted-team-owner-required",
   "hosted-teams-remain",
   "account-deletion-in-progress",
+  ...CloudComputerReasonCodeSchema.options,
 ]);
 export type ControlPlaneErrorReason = z.infer<typeof ControlPlaneErrorReasonSchema>;
 

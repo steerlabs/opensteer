@@ -1,8 +1,16 @@
 import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
-import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
+import {
+  ControlPlaneAccountIdSchema,
+  OrganizationIdSchema,
+} from "@opensteer/control-plane-protocol";
 import { expect, it, vi } from "vitest";
-import { CloudComputerStripe, decodeStripeEvent, verifyStripeSignature } from "./stripe.js";
+import {
+  CloudComputerStripe,
+  decodeStripeEvent,
+  subscriptionRenewal,
+  verifyStripeSignature,
+} from "./stripe.js";
 
 const key = "sk_test_fake_secret_never_log";
 const webhookSecret = "whsec_test_only";
@@ -171,6 +179,48 @@ it("sends form-encoded Checkout and Billing Portal requests and redacts Stripe f
   }
 });
 
+it("returns a Checkout and Billing Portal to the address the call names", async () => {
+  const fields: Record<string, string>[] = [];
+  const server = createServer(async (req, res) => {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of req) chunks.push(chunk);
+    fields.push(Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString())));
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ id: "cs_test_checkout", url: "https://billing.stripe.test/session" }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing fake Stripe address");
+    const stripe = new CloudComputerStripe({
+      key,
+      baseUrl: new URL(`http://127.0.0.1:${address.port}/v1/`),
+      returnUrl: new URL("https://account.example.test"),
+    });
+    const pages = new URL("https://opensteer.example.test/cloud-computer");
+    await stripe.checkout({
+      accountId: ControlPlaneAccountIdSchema.parse("acct_00000000-0000-4000-8000-000000000001"),
+      requestId: "00000000-0000-4000-8000-000000000001",
+      priceId: "price_1",
+      returnUrl: pages,
+    });
+    await stripe.portal("cus_1", pages);
+    expect(fields[0]).toMatchObject({
+      success_url:
+        "https://opensteer.example.test/cloud-computer?cloud-computer=checkout-completed",
+      cancel_url: "https://opensteer.example.test/cloud-computer",
+    });
+    expect(fields[1]).toMatchObject({
+      return_url: "https://opensteer.example.test/cloud-computer",
+    });
+  } finally {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections();
+    });
+  }
+});
+
 it("validates the configured recurring offer and issues an immediate Stripe cancellation", async () => {
   const provider = vi.spyOn(globalThis, "fetch");
   const actual = {
@@ -206,6 +256,114 @@ it("validates the configured recurring offer and issues an immediate Stripe canc
         "does not match",
       );
     await expect(stripe.cancel("sub_1")).resolves.toBeUndefined();
+  } finally {
+    provider.mockRestore();
+  }
+});
+
+it("submits organization Checkout and uses pending updates only for increases", async () => {
+  const accountId = ControlPlaneAccountIdSchema.parse("acct_00000000-0000-4000-8000-000000000001");
+  const id = OrganizationIdSchema.parse("org_00000000-0000-4000-8000-000000000001");
+  const requestId = "00000000-0000-4000-8000-000000000001";
+  const calls: { path: string; headers: Headers; fields: Record<string, string> }[] = [];
+  const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
+    const path = new URL(String(input)).pathname;
+    calls.push({
+      path,
+      headers: new Headers(options?.headers),
+      fields: Object.fromEntries(new URLSearchParams(String(options?.body))),
+    });
+    return path === "/v1/checkout/sessions"
+      ? Response.json({ id: "cs_seats", url: "https://checkout.example.test/seats" })
+      : Response.json({ id: "si_seats" });
+  });
+  try {
+    const stripe = new CloudComputerStripe({
+      key,
+      returnUrl: new URL("https://account.example.test"),
+    });
+    await stripe.checkout({
+      accountId,
+      requestId,
+      priceId: "price_seats",
+      organization: { id, quantity: 4 },
+    });
+    await stripe.updateSeatQuantity({
+      item: "si_seats",
+      organization: id,
+      requestId,
+      quantity: 6,
+      increase: true,
+    });
+    await stripe.updateSeatQuantity({
+      item: "si_seats",
+      organization: id,
+      requestId,
+      quantity: 3,
+      increase: false,
+    });
+    expect(calls[0]).toMatchObject({
+      path: "/v1/checkout/sessions",
+      fields: {
+        "line_items[0][quantity]": "4",
+        "line_items[0][price]": "price_seats",
+        "metadata[organization_id]": id,
+        "subscription_data[metadata][organization_id]": id,
+      },
+    });
+    expect(calls[0]?.headers.get("idempotency-key")).toBe(`organization:${id}:${requestId}`);
+    expect(calls[1]).toMatchObject({
+      path: "/v1/subscription_items/si_seats",
+      fields: {
+        quantity: "6",
+        payment_behavior: "pending_if_incomplete",
+        proration_behavior: "always_invoice",
+      },
+    });
+    expect(calls[2]?.fields).toEqual({ quantity: "3", proration_behavior: "none" });
+  } finally {
+    provider.mockRestore();
+  }
+});
+
+it("reads renewal from the subscription item and omits scheduled cancellation", async () => {
+  const periodEnd = 1_800_000_000;
+  const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+    Response.json({
+      id: "sub_renews",
+      customer: "cus_renews",
+      status: "active",
+      latest_invoice: { status: "paid", attempt_count: 1 },
+      metadata: {},
+      current_period_end: periodEnd - 30,
+      items: {
+        has_more: false,
+        data: [
+          {
+            id: "si_renews",
+            quantity: 1,
+            price: { id: "price_1", currency: "usd" },
+            current_period_end: periodEnd,
+          },
+        ],
+      },
+    }),
+  );
+  try {
+    const stripe = new CloudComputerStripe({
+      key,
+      returnUrl: new URL("https://account.example.test"),
+    });
+    const subscription = await stripe.subscription("sub_renews");
+    expect(subscriptionRenewal(subscription, "active")).toEqual(new Date(periodEnd * 1000));
+    expect(subscriptionRenewal(subscription, "past_due")).toBeNull();
+    expect(
+      subscriptionRenewal({ ...subscription, cancel_at_period_end: true }, "active"),
+    ).toBeNull();
+    expect(subscriptionRenewal({ ...subscription, cancel_at: periodEnd - 1 }, "active")).toBeNull();
+    expect(
+      subscriptionRenewal({ ...subscription, items: { has_more: false, data: [] } }, "active"),
+    ).toBeNull();
   } finally {
     provider.mockRestore();
   }

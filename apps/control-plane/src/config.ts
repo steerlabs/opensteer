@@ -1,3 +1,4 @@
+import { loadOrganizationOffer, type OrganizationOffer } from "./organizations/config.js";
 import { loadCloudComputerConfig, type CloudComputerConfig } from "./cloud-computers/config.js";
 import {
   HostedOAuthProviderRegistrySchema,
@@ -283,6 +284,7 @@ export interface ControlPlaneConfig {
    */
   readonly hostedTeams?: { readonly provisionerEmail: string };
   readonly cloudComputers?: CloudComputerConfig;
+  readonly organizationOffer?: OrganizationOffer;
   readonly listenHost: string;
   readonly listenPort: number;
 }
@@ -323,6 +325,15 @@ export function loadControlPlaneConfig(
     throw new Error("Account and portal origins must differ");
   }
   const cloudComputers = loadCloudComputerConfig(environment);
+  const organizationOffer = loadOrganizationOffer(environment);
+  if (
+    organizationOffer &&
+    (!cloudComputers || organizationOffer.priceId === cloudComputers.stripePriceId)
+  ) {
+    throw new Error(
+      "Organization billing requires Cloud Computers and a distinct Stripe seat price",
+    );
+  }
   if (
     cloudComputers &&
     cloudComputers.provisionerEmail === parsed.OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL
@@ -334,6 +345,7 @@ export function loadControlPlaneConfig(
   }
   const config = {
     ...(cloudComputers ? { cloudComputers } : {}),
+    ...(organizationOffer ? { organizationOffer } : {}),
     environment: parsed.NODE_ENV,
     databaseUrl: parsed.OPENSTEER_CONTROL_PLANE_DATABASE_URL,
     publicOrigin: parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL,

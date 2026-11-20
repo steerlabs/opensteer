@@ -1,3 +1,4 @@
+import { requireOrganizationAccountDeletionAllowed } from "../organizations/identity.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   HostedTeamBootstrapReceiptSchema,
@@ -962,6 +963,7 @@ export async function beginAccountDeletion(
         throw new ControlPlaneError("conflict", "Account deletion already in progress.", {
           reason: "account-deletion-in-progress",
         });
+      await requireOrganizationAccountDeletionAllowed(transaction, accountId);
       await transaction
         .updateTable("users")
         .set({ deletionAttemptId: attemptId, deletionFencedUntil: fenceUntil() })

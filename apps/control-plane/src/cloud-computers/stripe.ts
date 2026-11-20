@@ -1,8 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
+import {
+  ControlPlaneAccountIdSchema,
+  OrganizationIdSchema,
+} from "@opensteer/control-plane-protocol";
 import type {
   ControlPlaneAccountId,
   CloudComputerPlanSchema,
+  OrganizationId,
 } from "@opensteer/control-plane-protocol";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { z } from "zod";
@@ -15,7 +19,11 @@ const stripeToken = (prefix: string) =>
 const customerId = stripeToken("cus");
 const subscriptionId = stripeToken("sub");
 const sessionId = stripeToken("cs");
-const metadata = z.object({ account_id: ControlPlaneAccountIdSchema, request_id: z.uuid() });
+const metadata = z.object({
+  account_id: ControlPlaneAccountIdSchema,
+  request_id: z.uuid(),
+  organization_id: OrganizationIdSchema.optional(),
+});
 const objectId = z.object({ id: subscriptionId });
 const invoiceSubscription = z.object({
   subscription: subscriptionId.nullish(),
@@ -131,7 +139,11 @@ const price = z.object({
     })
     .nullable(),
 });
+const stripeTimestamp = z.number().int().positive().max(253_402_300_799);
 const stripeSubscription = z.object({
+  cancel_at: stripeTimestamp.nullish(),
+  cancel_at_period_end: z.boolean().optional(),
+  pending_update: z.object({ expires_at: z.number().int().positive() }).nullish(),
   pause_collection: z.object({ behavior: z.string() }).nullish(),
   id: subscriptionId,
   customer: customerId,
@@ -156,6 +168,8 @@ const stripeSubscription = z.object({
     has_more: z.boolean(),
     data: z.array(
       z.object({
+        id: stripeToken("si").optional(),
+        current_period_end: stripeTimestamp.optional(),
         price: z.object({ id: stripeToken("price"), currency: z.string() }),
         quantity: z.number().int(),
       }),
@@ -167,6 +181,9 @@ export interface CheckoutInput {
   readonly accountId: ControlPlaneAccountId;
   readonly requestId: string;
   readonly priceId: string;
+  readonly organization?: { id: OrganizationId; quantity: number };
+  /** Where Stripe sends the person back; the client's return address when absent. */
+  readonly returnUrl?: URL;
 }
 
 interface StripeOptions {
@@ -183,8 +200,12 @@ export class CloudComputerStripe {
   }
 
   checkout(input: CheckoutInput) {
-    const success = new URL(this.#options.returnUrl);
-    success.searchParams.set("cloud-computer", "checkout-completed");
+    const returnUrl = input.returnUrl ?? this.#options.returnUrl;
+    const success = new URL(returnUrl);
+    success.searchParams.set(
+      input.organization ? "organization" : "cloud-computer",
+      "checkout-completed",
+    );
     return this.#request(
       "checkout/sessions",
       createdSession,
@@ -193,23 +214,31 @@ export class CloudComputerStripe {
         "allowed_payment_method_types[0]": "card",
         payment_method_collection: "always",
         "line_items[0][price]": input.priceId,
-        "line_items[0][quantity]": "1",
+        "line_items[0][quantity]": String(input.organization?.quantity ?? 1),
+        ...(input.organization
+          ? {
+              "metadata[organization_id]": input.organization.id,
+              "subscription_data[metadata][organization_id]": input.organization.id,
+            }
+          : {}),
         client_reference_id: input.accountId,
         "metadata[account_id]": input.accountId,
         "metadata[request_id]": input.requestId,
         "subscription_data[metadata][account_id]": input.accountId,
         "subscription_data[metadata][request_id]": input.requestId,
         success_url: success.toString(),
-        cancel_url: this.#options.returnUrl.toString(),
+        cancel_url: returnUrl.toString(),
       },
-      `cloud-computer:${input.accountId}:${input.requestId}`,
+      input.organization
+        ? `organization:${input.organization.id}:${input.requestId}`
+        : `cloud-computer:${input.accountId}:${input.requestId}`,
     );
   }
 
-  portal(customer: string) {
+  portal(customer: string, returnUrl: URL = this.#options.returnUrl) {
     return this.#request("billing_portal/sessions", hostedSession, {
       customer: customerId.parse(customer),
-      return_url: this.#options.returnUrl.toString(),
+      return_url: returnUrl.toString(),
     });
   }
 
@@ -240,15 +269,19 @@ export class CloudComputerStripe {
     }
   }
 
-  async findCheckout(
-    input: Pick<CheckoutInput, "accountId" | "requestId"> & {
-      sessionId: string | null;
-      createdAt: Date;
-    },
-  ) {
+  async findCheckout(input: {
+    accountId: ControlPlaneAccountId | null;
+    requestId: string;
+    organizationId?: OrganizationId;
+    sessionId: string | null;
+    createdAt: Date;
+  }) {
     const matches = (record: z.infer<typeof checkoutRecord>) =>
-      record.metadata?.account_id === input.accountId &&
-      record.metadata.request_id === input.requestId;
+      record.metadata?.request_id === input.requestId &&
+      record.metadata.organization_id === input.organizationId &&
+      (input.accountId
+        ? record.metadata.account_id === input.accountId
+        : input.organizationId !== undefined);
     let record: z.infer<typeof checkoutRecord> | undefined;
     if (input.sessionId) {
       record = await this.#request(
@@ -294,6 +327,32 @@ export class CloudComputerStripe {
     };
   }
 
+  async updateSeatQuantity(input: {
+    item: string;
+    organization: OrganizationId;
+    requestId: string;
+    quantity: number;
+    increase: boolean;
+  }) {
+    const item = stripeToken("si").parse(input.item);
+    const changed = await this.#request(
+      `subscription_items/${item}`,
+      z.object({ id: stripeToken("si") }),
+      {
+        quantity: String(input.quantity),
+        ...(input.increase
+          ? {
+              proration_behavior: "always_invoice",
+              payment_behavior: "pending_if_incomplete",
+            }
+          : { proration_behavior: "none" }),
+      },
+      `organization-seats:${input.organization}:${input.requestId}`,
+    );
+    if (changed.id !== item)
+      throw new ControlPlaneError("unavailable", "Stripe returned another subscription item");
+  }
+
   async cancel(id: string): Promise<void> {
     const canceled = z.object({ id: subscriptionId, status: z.literal("canceled") });
     const result = await this.#request(
@@ -337,7 +396,9 @@ export class CloudComputerStripe {
       const bytes = await readBoundedResponse(response, { maximumBytes: 512 * 1024, signal });
       return schema.parse(JSON.parse(new TextDecoder().decode(bytes)));
     } catch {
-      throw new ControlPlaneError("unavailable", "Stripe billing is temporarily unavailable");
+      throw new ControlPlaneError("unavailable", "Stripe billing is temporarily unavailable", {
+        reason: "cloud-computer-billing-problem",
+      });
     }
   }
 }
@@ -366,6 +427,21 @@ export function billingStatus(subscription: StripeSubscription): BillingStatus {
     default:
       return "inactive";
   }
+}
+
+export function subscriptionRenewal(
+  subscription: StripeSubscription,
+  billing: BillingStatus,
+): Date | null {
+  const end = subscription.items.data[0]?.current_period_end;
+  if (
+    billing !== "active" ||
+    end === undefined ||
+    subscription.cancel_at_period_end ||
+    (subscription.cancel_at != null && subscription.cancel_at <= end)
+  )
+    return null;
+  return new Date(end * 1000);
 }
 
 export function matchesPrice(

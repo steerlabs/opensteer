@@ -1,4 +1,13 @@
 import type {
+  OrganizationTable,
+  OrganizationMemberTable,
+  OrganizationInvitationTable,
+  OrganizationCheckoutTable,
+  WorkAssignmentTable,
+  WorkAuditRecordTable,
+  WorkAuditBatchTable,
+} from "../organizations/tables.js";
+import type {
   CloudComputerCheckoutTable,
   CloudComputerBackupTargetTable,
   CloudComputerEgressEndpointTable,
@@ -558,6 +567,13 @@ export interface HostedTeamTable {
 export type HostedTeamStoredStage = "reserving" | "starting" | "configuring" | "ready" | "failed";
 
 export interface ControlPlaneDatabaseSchema {
+  organizations: OrganizationTable;
+  organizationMembers: OrganizationMemberTable;
+  organizationInvitations: OrganizationInvitationTable;
+  organizationCheckouts: OrganizationCheckoutTable;
+  workAssignments: WorkAssignmentTable;
+  workAuditRecords: WorkAuditRecordTable;
+  workAuditBatches: WorkAuditBatchTable;
   cloudComputers: CloudComputerTable;
   cloudComputerBackupTargets: CloudComputerBackupTargetTable;
   cloudComputerCheckouts: CloudComputerCheckoutTable;

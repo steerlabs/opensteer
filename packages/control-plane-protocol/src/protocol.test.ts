@@ -7,6 +7,7 @@ import {
   CompletePersonalHostAccountLinkResponseSchema,
   IssuePersonalHostAccountLinkChallengeResponseSchema,
   ControlPlaneAccountIdSchema,
+  CloudComputerReasonCodeSchema,
   ControlPlaneErrorReasonSchema,
   ControlPlaneErrorResponseSchema,
   DeploymentProvisioningResultSchema,
@@ -59,6 +60,7 @@ describe("control-plane protocol", () => {
       "hosted-team-owner-required",
       "hosted-teams-remain",
       "account-deletion-in-progress",
+      ...CloudComputerReasonCodeSchema.options,
     ]);
     expect(
       ControlPlaneErrorResponseSchema.safeParse({

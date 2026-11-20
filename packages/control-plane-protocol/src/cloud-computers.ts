@@ -4,6 +4,7 @@ import {
   HostKeyFingerprintSchema,
 } from "@opensteer/core";
 import { z } from "zod";
+import { WorkHomeMarkerSchema } from "./organizations.js";
 import { ControlPlaneAccountIdSchema, prefixedIdSchema } from "./account-id.js";
 
 export const CloudComputerIdSchema = prefixedIdSchema("cc")
@@ -244,6 +245,7 @@ export const CloudComputerBootResponseSchema = z.strictObject({
   release: CloudComputerBootReleaseSchema,
   egress: CloudComputerEgressSchema.optional(),
   managedHome: CloudComputerManagedHomeSchema.optional(),
+  work: WorkHomeMarkerSchema.optional(),
   ipv6Enabled: z.boolean(),
   restoreSnapshot: CloudComputerSnapshotSchema.optional(),
   backup: z.strictObject({
@@ -274,22 +276,68 @@ export const CloudComputerPlanSchema = z.object({
   interval: z.enum(["day", "week", "month", "year"]).optional(),
 });
 
+export const CloudComputerReasonCodeSchema = z.enum([
+  "cloud-computer-already-exists",
+  "cloud-computer-no-capacity",
+  "cloud-computer-sales-not-open",
+  "cloud-computer-billing-problem",
+  "cloud-computer-work-managed",
+  "cloud-computer-checkout-expired",
+  "cloud-computer-checkout-complete",
+  "cloud-computer-checkout-in-progress",
+  "cloud-computer-checkout-unavailable",
+  "cloud-computer-billing-web-only",
+  "cloud-computer-delete-confirmation-required",
+  "cloud-computer-not-found",
+  "cloud-computer-deleted",
+  "cloud-computer-owner-suspended",
+  "cloud-computer-operator-suspended",
+  "cloud-computer-deletion-pending",
+  "cloud-computer-claim-failed",
+  "cloud-computer-bootstrap-expired",
+  "cloud-computer-provisioning-failed",
+]);
+export type CloudComputerReasonCode = z.infer<typeof CloudComputerReasonCodeSchema>;
+
+export const CloudComputerRegionSchema = z.object({
+  id: CloudComputerLocationSchema,
+  label: z.string().trim().min(1).max(120),
+});
+export const CloudComputerEgressAddressSchema = z.union([z.ipv4(), z.ipv6()]);
+export const CloudComputerPreparationStepSchema = z.object({
+  id: z.enum(["payment", "machine", "opensteer", "claim"]),
+  state: z.enum(["done", "current", "pending", "failed"]),
+});
+export type CloudComputerPreparationStep = z.infer<typeof CloudComputerPreparationStepSchema>;
+
 const cloudComputerViewFields = {
   id: CloudComputerIdSchema,
   egress: z.enum(["pending", "assigned", "unavailable"]),
+  deploymentId: DeploymentIdSchema.optional(),
+  region: CloudComputerRegionSchema.optional(),
+  egressAddress: CloudComputerEgressAddressSchema.optional(),
+  renewsAt: z.iso.datetime().optional(),
+};
+const cloudComputerReasonFields = {
+  reason: z.string().min(1).max(1000),
+  reasonCode: CloudComputerReasonCodeSchema.optional(),
 };
 export const CloudComputerViewSchema = z.discriminatedUnion("status", [
-  z.object({ ...cloudComputerViewFields, status: z.literal("preparing") }),
+  z.object({
+    ...cloudComputerViewFields,
+    status: z.literal("preparing"),
+    steps: z.array(CloudComputerPreparationStepSchema).optional(),
+  }),
   z.object({ ...cloudComputerViewFields, status: z.literal("ready"), address: httpsUrl }),
   z.object({
     ...cloudComputerViewFields,
+    ...cloudComputerReasonFields,
     status: z.literal("needs_attention"),
-    reason: z.string().min(1).max(1000),
   }),
   z.object({
     ...cloudComputerViewFields,
+    ...cloudComputerReasonFields,
     status: z.literal("suspended"),
-    reason: z.string().min(1).max(1000),
   }),
   z.object({ ...cloudComputerViewFields, status: z.literal("deleted") }),
 ]);
@@ -359,6 +407,7 @@ export const ManagedHomeClaimClaimsSchema = z
     jti: prefixedIdSchema("mhc"),
     authority: ManagedHomeClaimAuthoritySchema,
     claim: ManagedHomeClaimTargetSchema,
+    work: WorkHomeMarkerSchema.optional(),
     owner: z.strictObject({
       email: z.email().max(320),
       displayName: z.string().trim().min(1).max(120),
@@ -402,6 +451,7 @@ export const ManagedHomeClaimReceiptDocumentSchema = z.strictObject({
   account: z.strictObject({ issuer: bareHttpsOrigin, subject: ControlPlaneAccountIdSchema }),
   authority: ManagedHomeClaimAuthoritySchema.extend({ hostInstanceId: HostInstanceIdSchema }),
   claim: ManagedHomeClaimTargetSchema,
+  work: WorkHomeMarkerSchema.optional(),
   linkGeneration: base64Url43,
   claimedAt: z.iso.datetime({ offset: true }),
 });
@@ -440,6 +490,15 @@ export function managedHomeClaimReceiptSigningBytes(
       documentVersion: document.documentVersion,
       linkGeneration: document.linkGeneration,
       purpose: document.purpose,
+      ...(document.work
+        ? {
+            work: {
+              organizationId: document.work.organizationId,
+              organizationName: document.work.organizationName,
+              assignmentId: document.work.assignmentId,
+            },
+          }
+        : {}),
     })}`,
   );
 }

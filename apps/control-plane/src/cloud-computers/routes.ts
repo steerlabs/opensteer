@@ -60,7 +60,9 @@ export function registerCloudComputerRoutes(
   async function browser(request: FastifyRequest) {
     const principal = await write(request);
     if (principal.kind !== "session")
-      throw new ControlPlaneError("forbidden", "Open billing from the Opensteer Account website");
+      throw new ControlPlaneError("forbidden", "Open billing from the Opensteer Account website", {
+        reason: "cloud-computer-billing-web-only",
+      });
     return principal.accountId;
   }
 
@@ -176,7 +178,9 @@ export function registerCloudComputerRoutes(
     const { id } = params.parse(request.params);
     const { confirmation } = CloudComputerDeleteRequestSchema.parse(request.body);
     if (confirmation !== cloudComputerDeleteConfirmation(id)) {
-      throw new ControlPlaneError("bad_request", "Confirm deletion of this Cloud Computer");
+      throw new ControlPlaneError("bad_request", "Confirm deletion of this Cloud Computer", {
+        reason: "cloud-computer-delete-confirmation-required",
+      });
     }
     return CloudComputerViewSchema.parse(await store.mutate(id, "delete", accountId));
   });

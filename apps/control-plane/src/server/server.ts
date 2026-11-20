@@ -1,3 +1,5 @@
+import { registerOrganizationRoutes } from "../organizations/routes.js";
+import type { OrganizationStore } from "../organizations/store.js";
 import {
   registerCloudComputerRoutes,
   type CloudComputerRouteOptions,
@@ -84,6 +86,8 @@ export async function createControlPlaneServer(
     readonly connectLifecycle: ConnectLifecycleService;
     readonly hostedOAuthBroker?: HostedOAuthBrokerService;
     readonly cloudComputers?: CloudComputerRouteOptions;
+    readonly organizations?: OrganizationStore;
+    readonly workHomeFetch?: typeof globalThis.fetch;
     /** Teams Opensteer hosts, and the check that admits only their provisioner. */
     readonly hostedTeams?: {
       readonly store: HostedTeamStore;
@@ -198,6 +202,9 @@ export async function createControlPlaneServer(
           : {}),
         fonts,
         ...(dependencies.hostedTeams ? { hostedTeams: dependencies.hostedTeams.store } : {}),
+        ...(dependencies.cloudComputers
+          ? { cloudComputers: dependencies.cloudComputers.store }
+          : {}),
         portalOrigin: dependencies.portalOrigin,
         portalSessions: dependencies.portalSessions,
         ...(dependencies.personalRemoteAccount
@@ -217,6 +224,13 @@ export async function createControlPlaneServer(
     registerCloudComputerRoutes(app, {
       ...dependencies.cloudComputers,
       authenticator: dependencies.authenticator,
+    });
+  }
+  if (dependencies.organizations && dependencies.cloudComputers) {
+    registerOrganizationRoutes(app, {
+      ...dependencies,
+      organizations: dependencies.organizations,
+      cloudComputers: dependencies.cloudComputers.store,
     });
   }
   if (dependencies.hostedTeams) {
@@ -266,6 +280,19 @@ export async function createControlPlaneServer(
   const authHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     requireAccountHost(request);
     assertAuthorizeRequestSecurity(request, dependencies.publicOrigin);
+    const url = new URL(request.url, dependencies.publicOrigin);
+    if (url.pathname === `${controlPlaneAuthPath}/oauth2/authorize` && dependencies.organizations) {
+      const clientId =
+        (request.method === "POST" ? parseForm(request.body).client_id : undefined) ??
+        url.searchParams.get("client_id");
+      if (clientId)
+        await dependencies.organizations.requireSignIn(clientId, async () => {
+          const session = await dependencies.auth.api.getSession({
+            headers: toWebHeaders(request.headers),
+          });
+          return session?.user.id;
+        });
+    }
     const response = await dependencies.auth.handler(
       toFetchRequest(request, dependencies.publicOrigin),
     );

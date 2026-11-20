@@ -3,6 +3,7 @@ import type {
   CloudComputerDesired,
   CloudComputerId,
   CloudComputerReport,
+  WorkAssignmentId,
   ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
 import type { NullableTimestamp, Timestamp } from "../database/schema.js";
@@ -14,6 +15,7 @@ export type BillingStatus =
 export interface CloudComputerTable {
   id: CloudComputerId;
   accountId: ControlPlaneAccountId | null;
+  workAssignmentId: Generated<WorkAssignmentId | null>;
   generation: number;
   state: CloudComputerDesired["state"];
   hostname: string;
@@ -51,6 +53,7 @@ export interface CloudComputerTable {
   stripePriceId: string;
   billingCurrency: string;
   billingStatus: BillingStatus;
+  renewsAt: Generated<Date | null>;
   revision: Generated<number>;
   everReady: Generated<boolean>;
   createAttempted: Generated<boolean>;
@@ -86,6 +89,7 @@ export interface CloudComputerEgressEndpointTable {
   url: string;
   username: string;
   sealedPassword: string;
+  publicAddress: Generated<string | null>;
   needsRotation: Generated<boolean>;
   computerId: CloudComputerId | null;
 }

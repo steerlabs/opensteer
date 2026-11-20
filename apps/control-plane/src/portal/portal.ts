@@ -1,4 +1,6 @@
 import { registerTeamSetupPortal } from "../adoption/team-setup.js";
+import { registerCloudComputerPortal } from "../cloud-computers/portal-routes.js";
+import type { CloudComputerStore } from "../cloud-computers/store.js";
 import type { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
 import {
   hostedTeamRows,
@@ -113,6 +115,8 @@ type PortalFlow = z.infer<typeof FlowSchema>;
 interface PortalDependencies {
   readonly accountDeletion: AccountDeletionService;
   readonly auth: ControlPlaneAuth;
+  /** Present when this Account offers Cloud Computers. */
+  readonly cloudComputers?: CloudComputerStore;
   /** Where "Get the desktop app" points; without it the row is absent. */
   readonly desktopDownloadUrl?: string;
   readonly iosAppUrl?: string;
@@ -378,6 +382,15 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         fonts,
         guard,
         hostedTeams: dependencies.hostedTeams,
+        portalOrigin: origin,
+        readSession,
+        signInPath: portalSignInPath,
+      });
+
+      registerCloudComputerPortal(app, {
+        cloudComputers: dependencies.cloudComputers,
+        fonts,
+        guard,
         portalOrigin: origin,
         readSession,
         signInPath: portalSignInPath,

@@ -283,6 +283,13 @@ export const databaseLockOrder = [
   "control-plane:cloud_computer_stripe_events",
   // Account authority precedes session, notification and Personal-link mutations.
   "control-plane:users",
+  "control-plane:organizations",
+  "control-plane:organization_members",
+  "control-plane:organization_invitations",
+  "control-plane:organization_checkouts",
+  "control-plane:work_assignments",
+  "control-plane:work_audit_records",
+  "control-plane:work_audit_batches",
   "control-plane:auth_sessions",
   "control-plane:notification_devices",
   "control-plane:notification_deliveries",

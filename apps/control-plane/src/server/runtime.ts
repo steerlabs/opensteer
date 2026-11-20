@@ -1,4 +1,6 @@
+import { OrganizationStore } from "../organizations/store.js";
 import { CloudComputerClaimer, HttpManagedHomeClient } from "../cloud-computers/claim.js";
+import { cloudComputerPortalPath } from "../cloud-computers/portal-pages.js";
 import { CloudComputerStore } from "../cloud-computers/store.js";
 import { CloudComputerStripe } from "../cloud-computers/stripe.js";
 import { appleClientSecret } from "../auth/apple-sign-in.js";
@@ -82,14 +84,23 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         })
       : undefined;
     const cloud = config.cloudComputers;
-    const cloudComputers = cloud
-      ? new CloudComputerStore(database, {
-          config: cloud,
-          accountOrigin: config.publicOrigin,
-          cipher: new HostedTeamSetupTokenCipher(config.adoptionOperationKey),
-          stripe: new CloudComputerStripe({ key: cloud.stripeKey, returnUrl: config.publicOrigin }),
-        })
+    const stripe = cloud
+      ? new CloudComputerStripe({ key: cloud.stripeKey, returnUrl: config.publicOrigin })
       : undefined;
+    const organizations = stripe
+      ? new OrganizationStore(database, { stripe, offer: config.organizationOffer })
+      : undefined;
+    const cloudComputers =
+      cloud && stripe
+        ? new CloudComputerStore(database, {
+            config: cloud,
+            accountOrigin: config.publicOrigin,
+            cipher: new HostedTeamSetupTokenCipher(config.adoptionOperationKey),
+            stripe,
+            ...(organizations ? { organizations } : {}),
+            returnUrl: new URL(cloudComputerPortalPath, config.portalOrigin),
+          })
+        : undefined;
     const store = new ControlPlaneStore(database, config.publicOrigin, {
       adoptionCompletionGrantIssuer: new BetterAuthAccountAdoptionCompletionGrantIssuer(
         auth,
@@ -145,6 +156,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         authenticator: new ControlPlaneAuthenticator(auth, database, config.publicOrigin),
         connectLifecycle,
         ...(hostedOAuthBroker ? { hostedOAuthBroker } : {}),
+        ...(organizations ? { organizations } : {}),
         ...(cloud && cloudComputers
           ? {
               cloudComputers: {
@@ -198,6 +210,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     await hostedOAuthBrokerStore?.purgeExpired(new Date());
     const billingError = () => server.log.error("Cloud Computer billing reconciliation failed");
     await cloudComputers?.checkOffer().catch(billingError);
+    await organizations?.checkOffer().catch(billingError);
     await server.listen({ host: config.listenHost, port: config.listenPort });
 
     server.log.info({ apns: Boolean(apns), fcm: Boolean(fcm) }, "Push providers configured");

@@ -9,7 +9,7 @@ import { CloudComputerStore } from "./store.js";
 import { CloudComputerStripe } from "./stripe.js";
 
 const usage =
-  "Usage: cloud-computer-operator-main.js list | show <id> | suspend <id> <reason> | unsuspend <id> | delete <id> | reissue-bootstrap <id> | egress-list | egress-add <url> <username> <password-file> | egress-remove <id> | egress-rotate <id> <username> <password-file> | backup-list | backup-add <json-file> | backup-rotate <id> <json-file> | backup-remove <id> | replace <computer-id> <snapshot-id>";
+  "Usage: cloud-computer-operator-main.js list | show <id> | suspend <id> <reason> | unsuspend <id> | delete <id> | reissue-bootstrap <id> | egress-list | egress-add <url> <username> <password-file> [public-ip] | egress-address <id> <public-ip|clear> | egress-remove <id> | egress-rotate <id> <username> <password-file> | backup-list | backup-add <json-file> | backup-rotate <id> <json-file> | backup-remove <id> | replace <computer-id> <snapshot-id>";
 
 async function main([action, subject, ...args]: readonly string[]): Promise<void> {
   const config = loadControlPlaneConfig();
@@ -47,12 +47,16 @@ async function main([action, subject, ...args]: readonly string[]): Promise<void
         password: readFileSync(args[1]!, "utf8").trimEnd(),
       });
       result = { rotated: true };
-    } else if (action === "egress-add" && subject && args.length === 2) {
+    } else if (action === "egress-address" && subject && args.length === 1) {
+      await store.setEgressAddress(z.uuid().parse(subject), args[0] === "clear" ? null : args[0]!);
+      result = { updated: true };
+    } else if (action === "egress-add" && subject && (args.length === 2 || args.length === 3)) {
       result = {
         id: await store.addEgressEndpoint({
           url: subject,
           username: args[0]!,
           password: readFileSync(args[1]!, "utf8").trimEnd(),
+          ...(args[2] !== undefined ? { publicAddress: args[2] } : {}),
         }),
       };
     } else if (action === "egress-remove" && args.length === 0) {

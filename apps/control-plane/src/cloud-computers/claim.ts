@@ -249,6 +249,7 @@ export class CloudComputerClaimer {
         },
         claim: { cloudComputerId: job.id, generation: job.generation },
         owner: material.owner,
+        ...(material.work ? { work: material.work } : {}),
         link: {
           generation: material.linkGeneration,
           hostCredentialSha256: createHash("sha256")
@@ -284,6 +285,9 @@ export class CloudComputerClaimer {
       answered.authority.hostKeyFingerprint !== job.hostKeyFingerprint ||
       answered.claim.cloudComputerId !== job.id ||
       answered.claim.generation !== job.generation ||
+      answered.work?.organizationId !== material.work?.organizationId ||
+      answered.work?.organizationName !== material.work?.organizationName ||
+      answered.work?.assignmentId !== material.work?.assignmentId ||
       answered.linkGeneration !== material.linkGeneration
     )
       throw new ManagedHomeError("The Cloud Computer answered for a different claim", {

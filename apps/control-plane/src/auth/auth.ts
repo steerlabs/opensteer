@@ -1,5 +1,9 @@
+import { APIError } from "better-auth/api";
+import { resolveSigningKey } from "better-auth/plugins/jwt";
+import { SignJWT } from "jose";
 import { oauthProvider } from "@better-auth/oauth-provider";
 import {
+  CloudComputerIdSchema,
   ControlPlaneAccountIdSchema,
   controlPlaneOAuthScopes,
   personProfileReceiptClaim,
@@ -21,6 +25,13 @@ import { appleOrigin } from "./apple-sign-in.js";
 import { AccountProfiles } from "../account/account-profiles.js";
 import { isOfficialNativeReference } from "../database/store.js";
 import { appReviewSignIn, type AppReviewSignInConfig } from "./app-review-sign-in.js";
+
+const accountJwks = {
+  gracePeriod: 30 * 24 * 60 * 60,
+  keyPairConfig: { alg: "EdDSA", crv: "Ed25519" },
+  rotationInterval: 90 * 24 * 60 * 60,
+} as const;
+const accountJwksSchema = { jwks: { modelName: "authJwks" } } as const;
 
 export const controlPlaneAuthPath = "/api/auth";
 /**
@@ -163,12 +174,8 @@ export function createControlPlaneAuth(
           audience: config.publicOrigin.origin,
           issuer: config.publicOrigin.origin,
         },
-        jwks: {
-          gracePeriod: 30 * 24 * 60 * 60,
-          keyPairConfig: { alg: "EdDSA", crv: "Ed25519" },
-          rotationInterval: 90 * 24 * 60 * 60,
-        },
-        schema: { jwks: { modelName: "authJwks" } },
+        jwks: accountJwks,
+        schema: accountJwksSchema,
       }),
       oauthProvider({
         accessTokenExpiresIn: 5 * 60,
@@ -198,8 +205,26 @@ export function createControlPlaneAuth(
         enforcePerClientResources: false,
         // 1.7 moved profile and email claims to userinfo, but released desktop
         // and mobile clients read the Account email from the ID token.
-        customIdTokenClaims: ({ user, scopes }) =>
-          scopes.includes("email") ? { email: user.email } : {},
+        customIdTokenClaims: async ({ user, scopes, metadata }) => {
+          const id = CloudComputerIdSchema.safeParse(metadata?.cloudComputerId);
+          if (id.success) {
+            const assignment = await database
+              .selectFrom("cloudComputers")
+              .innerJoin("workAssignments", "workAssignments.id", "cloudComputers.workAssignmentId")
+              .select(["workAssignments.assigneeAccountId", "workAssignments.state"])
+              .where("cloudComputers.id", "=", id.data)
+              .executeTakeFirst();
+            if (
+              assignment &&
+              (assignment.state !== "active" || assignment.assigneeAccountId !== user.id)
+            ) {
+              throw new APIError("FORBIDDEN", {
+                message: "Sign-in to this work Home is not allowed",
+              });
+            }
+          }
+          return scopes.includes("email") ? { email: user.email } : {};
+        },
         // A team Host's browser sign-in applies the same signed, numbered name a native app relays.
         customUserInfoClaims: async ({ user, scopes }) =>
           scopes.includes("profile") && profiles
@@ -448,4 +473,18 @@ export function isRecentAccountAuthentication(value: Date | null | undefined, no
 
 function internalAuthId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID()}`;
+}
+
+/** Policy documents use the Account JWKS without the JWT plugin's automatic token expiry. */
+export async function signAccountDocument(
+  auth: ControlPlaneAuth,
+  document: JWTPayload,
+): Promise<string> {
+  // The library's key resolver only reads the context; there is no HTTP endpoint for this signer.
+  const context = { context: await auth.$context } as Parameters<typeof resolveSigningKey>[0];
+  const key = await resolveSigningKey(context, { jwks: accountJwks, schema: accountJwksSchema });
+  if (!key) throw new ControlPlaneError("unavailable", "The Account signing key is unavailable");
+  return new SignJWT(document)
+    .setProtectedHeader({ alg: key.alg, kid: key.kid })
+    .sign(key.privateKey);
 }

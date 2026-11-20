@@ -4,6 +4,7 @@ import {
   CloudComputerHostnameSchema,
   CloudComputerLocationSchema,
   CloudComputerPlanSchema,
+  CloudComputerRegionSchema,
   CloudComputerReleaseSchema,
 } from "@opensteer/control-plane-protocol";
 import { z } from "zod";
@@ -49,6 +50,10 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
     ),
     domain: read("DOMAIN", CloudComputerHostnameSchema.max(214)),
     region: read("REGION", CloudComputerLocationSchema),
+    ...(env[`${prefix}REGION_LABEL`] !== undefined ||
+    env[`${prefix}REGION_LABEL_FILE`] !== undefined
+      ? { regionLabel: read("REGION_LABEL", CloudComputerRegionSchema.shape.label) }
+      : {}),
     serverType: read("SERVER_TYPE", CloudComputerLocationSchema),
     release,
     stripeKey: read(
@@ -85,3 +90,21 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
 }
 
 export type CloudComputerConfig = NonNullable<ReturnType<typeof loadCloudComputerConfig>>;
+
+const hetznerLocationLabels = new Map([
+  ["ash", "Ashburn, VA"],
+  ["hil", "Hillsboro, OR"],
+  ["fsn1", "Falkenstein"],
+  ["nbg1", "Nuremberg"],
+  ["hel1", "Helsinki"],
+  ["sin", "Singapore"],
+]);
+
+export function cloudComputerRegion(
+  id: string,
+  config: Pick<CloudComputerConfig, "region" | "regionLabel">,
+) {
+  const label =
+    (id === config.region ? config.regionLabel : undefined) ?? hetznerLocationLabels.get(id);
+  return label ? { id, label } : undefined;
+}

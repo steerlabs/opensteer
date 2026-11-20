@@ -4,6 +4,23 @@ import {
   accountCloudComputerCheckoutPath,
   accountCloudComputerPath,
   accountCloudComputersPath,
+  accountOrganizationsPath,
+  canonicalWorkAuditRecord,
+  defaultWorkPolicy,
+  MyOrganizationsResponseSchema,
+  OrganizationAdminResponseSchema,
+  organizationWorkPath,
+  WorkAssignmentViewSchema,
+  WorkAuditPushSchema,
+  WorkHomeResponseSchema,
+  WorkPolicyClaimsSchema,
+  WorkPolicyResponseSchema,
+  workAuditFlushPath,
+  WorkAuditFlushClaimsSchema,
+  workAuditGenesisHash,
+  workAuditSigningBytes,
+  type WorkAuditRecord,
+  type WorkPolicy,
   CloudComputerBootResponseSchema,
   CloudComputerDesiredResponseSchema,
   CloudComputerIdSchema,
@@ -51,7 +68,8 @@ import { createControlPlaneServer } from "../server/server.js";
 import { CloudComputerClaimer, HttpManagedHomeClient } from "./claim.js";
 import { loadCloudComputerConfig } from "./config.js";
 import { CloudComputerStore } from "./store.js";
-import type { StripeBilling, StripeSubscription } from "./stripe.js";
+import type { CloudComputerStripe, StripeBilling, StripeSubscription } from "./stripe.js";
+import { OrganizationStore } from "../organizations/store.js";
 
 const url = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 // The focused integration launcher supplies a disposable Account database.
@@ -111,14 +129,15 @@ integration("Cloud Computer Account service", () => {
   });
   const stripe = {
     checkout,
-    portal: vi.fn(async (_customer: string) => ({ url: portalUrl })),
+    portal: vi.fn<StripeBilling["portal"]>(async () => ({ url: portalUrl })),
     subscription: vi.fn(async (id: string) => subscriptions.get(id)!),
     validateOffer: vi.fn<StripeBilling["validateOffer"]>(async () => {}),
     findCheckout: vi.fn<StripeBilling["findCheckout"]>(async () => undefined),
     cancel: vi.fn<StripeBilling["cancel"]>(async (id) => {
       subscriptions.set(id, { ...subscriptions.get(id)!, status: "canceled" });
     }),
-  } satisfies StripeBilling;
+    updateSeatQuantity: vi.fn<CloudComputerStripe["updateSeatQuantity"]>(async () => {}),
+  } satisfies StripeBilling & Pick<CloudComputerStripe, "updateSeatQuantity">;
   const logs: string[] = [];
   let now = new Date();
   let app: Awaited<ReturnType<typeof createControlPlaneServer>>;
@@ -129,7 +148,19 @@ integration("Cloud Computer Account service", () => {
     googleClientSecret: "test-secret",
   });
   const cipher = new HostedTeamSetupTokenCipher(Buffer.alloc(32, 5).toString("base64url"));
+  const organizations = new OrganizationStore(database, {
+    stripe,
+    now: () => now,
+    offer: {
+      priceId: "price_seat",
+      name: "Work seat",
+      currency: "usd",
+      amountMinor: 4900,
+      interval: "month",
+    },
+  });
   const cloud = new CloudComputerStore(database, {
+    organizations,
     config,
     accountOrigin: publicOrigin,
     cipher,
@@ -138,6 +169,7 @@ integration("Cloud Computer Account service", () => {
   });
   const kickBootstrap = vi.fn();
   const claimErrors: unknown[] = [];
+  const workHomeFetch = vi.fn<typeof globalThis.fetch>();
   const directory = new ControlPlaneStore(database, publicOrigin, { portalOrigin });
   const claimer = (
     fetch: typeof globalThis.fetch,
@@ -178,7 +210,12 @@ integration("Cloud Computer Account service", () => {
         "base64url",
       ),
     };
-    const state: { claims: number; receipt?: ManagedHomeClaimReceipt; owner?: string } = {
+    const state: {
+      claims: number;
+      receipt?: ManagedHomeClaimReceipt;
+      owner?: string;
+      hostCredential?: string;
+    } = {
       claims: 0,
     };
     const answer = (status: number) => Response.json({ error: { status } }, { status });
@@ -237,6 +274,7 @@ integration("Cloud Computer Account service", () => {
           hostKeyFingerprint: hostKeyFingerprint(homeSpki),
         },
         claim: claims.claim,
+        ...(claims.work ? { work: claims.work } : {}),
         linkGeneration: claims.link.generation,
         claimedAt: new Date().toISOString(),
       });
@@ -250,6 +288,7 @@ integration("Cloud Computer Account service", () => {
         ).toString("base64url"),
       });
       state.owner = claims.sub;
+      state.hostCredential = request.hostCredential;
       return Response.json(state.receipt);
     };
     return { fetch, state };
@@ -268,12 +307,14 @@ integration("Cloud Computer Account service", () => {
     url: string;
     headers?: Record<string, string>;
     payload?: unknown;
+    redirect?: RequestInit["redirect"];
   }) {
     const headers = new Headers(input.headers);
     if (input.payload !== undefined && !headers.has("content-type"))
       headers.set("content-type", "application/json");
     const response = await fetch(new URL(input.url, listener), {
       method: input.method,
+      redirect: input.redirect ?? "follow",
       headers,
       ...(input.payload === undefined
         ? {}
@@ -312,6 +353,8 @@ integration("Cloud Computer Account service", () => {
         auth,
         authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
         connectLifecycle,
+        organizations,
+        workHomeFetch,
         cloudComputers: {
           store: cloud,
           kickBootstrap,
@@ -333,7 +376,7 @@ integration("Cloud Computer Account service", () => {
   });
 
   beforeEach(async () => {
-    await sql`truncate table cloud_computer_egress_endpoints, cloud_computer_backup_targets, cloud_computer_provisioner_lease, cloud_computers, cloud_computer_stripe_events, cloud_computer_checkouts`.execute(
+    await sql`truncate table work_audit_batches, work_audit_records, work_assignments, organization_invitations, organization_members, organization_checkouts, organizations, cloud_computer_egress_endpoints, cloud_computer_backup_targets, cloud_computer_provisioner_lease, cloud_computers, cloud_computer_stripe_events, cloud_computer_checkouts`.execute(
       database,
     );
     await database.deleteFrom("deployments").where("id", "=", identity.deploymentId).execute();
@@ -348,7 +391,10 @@ integration("Cloud Computer Account service", () => {
     kickBootstrap.mockClear();
     logs.length = 0;
     now = new Date();
+    stripe.updateSeatQuantity.mockReset().mockResolvedValue(undefined);
+    workHomeFetch.mockReset();
     await cloud.checkOffer();
+    await organizations.checkOffer();
     await cloud.addBackupTarget({
       endpoint: "https://s3.example.test",
       bucket: "test-backups",
@@ -486,7 +532,15 @@ integration("Cloud Computer Account service", () => {
     expect(response.statusCode, response.body).toBe(200);
     expect(response.json()).toEqual({ url: checkoutUrl });
     expect((await webhook("checkout.session.completed", order.session)).statusCode).toBe(200);
-    const id = (await cloud.list(account.id))[0]!.id;
+    const id = (
+      await database
+        .selectFrom("cloudComputers")
+        .select("id")
+        .where("accountId", "=", account.id)
+        .where("workAssignmentId", "is", null)
+        .where("tombstonedAt", "is", null)
+        .executeTakeFirstOrThrow()
+    ).id;
     return { account, order, id };
   }
 
@@ -547,6 +601,744 @@ integration("Cloud Computer Account service", () => {
     ).toEqual({ recorded: true });
     return CloudComputerBootResponseSchema.parse((await boot(computer)).json());
   }
+
+  function requestAs(
+    account: Awaited<ReturnType<typeof createAccount>>,
+    method: string,
+    url: string,
+    payload?: unknown,
+  ) {
+    return http({
+      method,
+      url,
+      headers: account.headers,
+      ...(payload !== undefined ? { payload } : {}),
+    });
+  }
+
+  async function buyOrganization(admin: Awaited<ReturnType<typeof createAccount>>, seats: number) {
+    const order = purchase(admin.id);
+    const input = { requestId: order.requestId, name: "Workspace", seats };
+    const started = await requestAs(admin, "POST", `${accountOrganizationsPath}/checkout`, input);
+    expect(started.statusCode, started.body).toBe(200);
+    const submitted = checkout.mock.calls.at(-1)?.[0];
+    expect(submitted?.organization).toMatchObject({ quantity: seats });
+    expect(submitted?.priceId).toBe("price_seat");
+    const id = submitted!.organization!.id;
+    const metadata = { ...order.session.metadata, organization_id: id };
+    const subscription = {
+      ...order.details,
+      metadata,
+      items: {
+        has_more: false,
+        data: [{ id: "si_seat", quantity: seats, price: { id: "price_seat", currency: "usd" } }],
+      },
+    } satisfies StripeSubscription;
+    subscriptions.set(order.subscription, subscription);
+    const completed = { ...order.session, metadata };
+    const eventId = `evt_${randomUUID().replaceAll("-", "")}`;
+    expect((await webhook("checkout.session.completed", completed, eventId)).statusCode).toBe(200);
+    expect((await webhook("checkout.session.completed", completed, eventId)).statusCode).toBe(200);
+    expect((await webhook("checkout.session.completed", completed)).statusCode).toBe(200);
+    const index = MyOrganizationsResponseSchema.parse(
+      (await requestAs(admin, "GET", accountOrganizationsPath)).json(),
+    );
+    expect(index.organizations).toEqual([{ id, name: "Workspace", role: "admin" }]);
+    const path = `${accountOrganizationsPath}/${id}`;
+    const read = async () => {
+      const response = await requestAs(admin, "GET", `${path}/admin`);
+      expect(response.statusCode, response.body).toBe(200);
+      return OrganizationAdminResponseSchema.parse(response.json());
+    };
+    expect((await read()).seats).toEqual({ paid: seats, assigned: 0, free: seats, pending: null });
+    return { id, path, read, subscription };
+  }
+
+  async function invite(
+    orgPath: string,
+    admin: Awaited<ReturnType<typeof createAccount>>,
+    account: Awaited<ReturnType<typeof createAccount>>,
+    wrong?: Awaited<ReturnType<typeof createAccount>>,
+  ) {
+    const email = `${account.id}@example.test`;
+    const invited = await requestAs(admin, "POST", `${orgPath}/invitations`, {
+      email,
+      role: "member",
+    });
+    expect(invited.statusCode, invited.body).toBe(200);
+    const info = invited.json();
+    const acceptPath = `${accountOrganizationsPath}/invitations/${info.id}/accept`;
+    if (wrong) expect((await requestAs(wrong, "POST", acceptPath)).statusCode).toBe(403);
+    const inbox = MyOrganizationsResponseSchema.parse(
+      (await requestAs(account, "GET", accountOrganizationsPath)).json(),
+    );
+    expect(inbox.invitations).toHaveLength(1);
+    expect(inbox.invitations[0]).toMatchObject({ id: info.id, email });
+    expect((await requestAs(account, "POST", acceptPath)).statusCode).toBe(200);
+    expect((await requestAs(account, "POST", acceptPath)).statusCode).toBe(409);
+  }
+
+  it("provisions work through the real listener, fences policy, audit and offboarding by assignment", async () => {
+    const admin = await createAccount();
+    const first = await createAccount();
+    const second = await createAccount();
+    const outsider = await createAccount();
+    const org = await buyOrganization(admin, 1);
+    await invite(org.path, admin, first, outsider);
+    await invite(org.path, admin, second);
+    const candidates = [first, second].map((account) => ({
+      account,
+      payload: { requestId: randomUUID(), accountId: account.id },
+    }));
+    const assign = (payload: (typeof candidates)[number]["payload"]) =>
+      requestAs(admin, "POST", `${org.path}/assignments`, payload);
+    const competing = await Promise.all(candidates.map(({ payload }) => assign(payload)));
+    expect(competing.map((result) => result.statusCode).sort()).toEqual([200, 409]);
+    const winner = competing.findIndex((result) => result.statusCode === 200);
+    const { account: assignee, payload } = candidates[winner]!;
+    const { account: other } = candidates[1 - winner]!;
+    const assignment = WorkAssignmentViewSchema.parse(competing[winner]!.json());
+    const marker = {
+      organizationId: org.id,
+      organizationName: "Workspace",
+      assignmentId: assignment.assignmentId,
+    };
+    expect(assignment).toMatchObject(marker);
+    expect((await assign(payload)).json()).toMatchObject({
+      assignmentId: assignment.assignmentId,
+      computerId: assignment.computerId,
+    });
+    expect((await org.read()).seats).toMatchObject({ paid: 1, assigned: 1, free: 0 });
+    const assignmentPath = `${org.path}/assignments/${assignment.assignmentId}`;
+    const hostPath = `${organizationWorkPath}/${assignment.assignmentId}`;
+    const homePath = `${org.path}/work-home`;
+    const ownerPath = accountCloudComputerPath(CloudComputerIdSchema.parse(assignment.computerId));
+    const paths = [
+      ["GET", `${org.path}/admin`, undefined],
+      ["POST", `${org.path}/seats`, { requestId: randomUUID(), seats: 2 }],
+      ["POST", `${org.path}/invitations`, { email: "another@example.test", role: "member" }],
+      ["PUT", `${org.path}/members/${admin.id}`, { role: "member" }],
+      ["DELETE", `${org.path}/members/${admin.id}`, undefined],
+      ["POST", `${org.path}/assignments`, payload],
+      ["POST", `${assignmentPath}/offboard`, { retentionSeconds: 0 }],
+      ["PUT", `${org.path}/policy`, { expectedRevision: 1, policy: defaultWorkPolicy }],
+      ["GET", `${assignmentPath}/audit`, undefined],
+    ] as const;
+    for (const account of [assignee, outsider]) {
+      for (const [method, url, body] of paths)
+        expect((await requestAs(account, method, url, body)).statusCode, `${method} ${url}`).toBe(
+          403,
+        );
+    }
+    expect(
+      (await requestAs(admin, "PUT", `${org.path}/members/${admin.id}`, { role: "member" }))
+        .statusCode,
+    ).toBe(409);
+    expect((await requestAs(admin, "DELETE", `${org.path}/members/${admin.id}`)).statusCode).toBe(
+      409,
+    );
+    expect(
+      (await requestAs(admin, "DELETE", `${org.path}/members/${assignee.id}`)).statusCode,
+    ).toBe(409);
+    await expect(directory.beginAccountDeletion(admin.id)).rejects.toMatchObject({
+      code: "conflict",
+    });
+    await expect(directory.beginAccountDeletion(assignee.id)).rejects.toMatchObject({
+      code: "conflict",
+    });
+    expect((await requestAs(outsider, "GET", homePath)).statusCode).toBe(403);
+    expect((await requestAs(other, "GET", homePath)).json()).toBeNull();
+    expect((await requestAs(assignee, "GET", ownerPath)).statusCode).toBe(200);
+    expect((await requestAs(admin, "GET", ownerPath)).statusCode).toBe(404);
+    const forbiddenSuspend = await requestAs(assignee, "POST", `${ownerPath}/suspend`);
+    expect(forbiddenSuspend.statusCode).toBe(403);
+    expect(forbiddenSuspend.json()).toMatchObject({
+      error: {
+        reason: "cloud-computer-work-managed",
+        message: "This Cloud Computer is managed by its organization",
+      },
+    });
+    expect((await requestAs(assignee, "POST", `${ownerPath}/resume`)).statusCode).toBe(403);
+    expect(
+      (await requestAs(assignee, "POST", accountCloudComputerBillingPortalPath)).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await requestAs(assignee, "DELETE", ownerPath, {
+          confirmation: cloudComputerDeleteConfirmation(
+            CloudComputerIdSchema.parse(assignment.computerId),
+          ),
+        })
+      ).statusCode,
+    ).toBe(403);
+    await expect(
+      cloud.mutate(CloudComputerIdSchema.parse(assignment.computerId), "replace"),
+    ).rejects.toMatchObject({ code: "forbidden" });
+
+    const desired = (await getDesired(CloudComputerIdSchema.parse(assignment.computerId)))!;
+    let server:
+      | {
+          id: number;
+          generation: number;
+          status: "off" | "running";
+          ipv4: string;
+          ipv6: null;
+          firewalls: readonly [];
+        }
+      | undefined;
+    let booted: CloudComputerBootResponse | undefined;
+    let dns = false;
+    const { accountClient } = await vi.importActual<{
+      accountClient: (
+        origin: URL,
+        token: () => Promise<string>,
+        http: { timeoutMs: number },
+        holder: string,
+      ) => object;
+    }>("../../../home-provisioner/src/account.js");
+    const options = {
+      account: accountClient(listener, async () => provisionerToken, { timeoutMs: 5000 }, lease),
+      provider: {
+        ensureFirewall: async () => 1,
+        ensureFirewallAttached: async () => true,
+        listManaged: async () => [],
+        find: async () => (server ? [server] : []),
+        create: async ({ generation, userData }: { generation: number; userData: string }) => {
+          expect(userData).toContain(desired.bootstrapToken);
+          server = {
+            id: 7,
+            generation,
+            status: "off",
+            ipv4: "192.0.2.7",
+            ipv6: null,
+            firewalls: [],
+          };
+          return server;
+        },
+        describe: async () => server,
+        powerOn: async () => {
+          if (!booted) {
+            const response = await boot(desired);
+            expect(response.statusCode, response.body).toBe(200);
+            booted = CloudComputerBootResponseSchema.parse(response.json());
+          }
+          server = { ...server!, status: "running" };
+        },
+        powerOff: async () => {
+          server = { ...server!, status: "off" };
+        },
+        delete: async () => {
+          server = undefined;
+        },
+      },
+      dns: {
+        listManaged: async () => [],
+        ensureRecords: async () => {
+          dns = true;
+        },
+        removeRecords: async () => {
+          dns = false;
+        },
+      },
+      discover: async () => identity,
+      accountOrigin: publicOrigin,
+      image: "image",
+      defaultRegion: "ash",
+      defaultServerType: "cpx22",
+      concurrency: 1,
+      readinessTimeoutMs: 10_000,
+    };
+    const { Reconciler } = await vi.importActual<{
+      Reconciler: new (input: typeof options) => { pass: (signal: AbortSignal) => Promise<void> };
+    }>("../../../home-provisioner/src/reconcile.js");
+    const reconciler = new Reconciler(options);
+    const pass = () => reconciler.pass(new AbortController().signal);
+    await pass();
+    expect(booted?.work).toEqual(marker);
+    expect((await complete(desired)).json()).toEqual({ completed: true });
+    await pass();
+    const home = fakeHome({ hostname: desired.hostname, boot: booted! });
+    expect(await claimer(home.fetch).runOnce()).toBe(1);
+    expect(claimErrors).toEqual([]);
+    expect(home.state.owner).toBe(assignee.id);
+    expect(home.state.receipt?.document.work).toEqual(marker);
+    expect(dns).toBe(true);
+    const address = `https://${desired.hostname}`;
+    expect(
+      WorkHomeResponseSchema.parse((await requestAs(assignee, "GET", homePath)).json()),
+    ).toMatchObject({
+      assignment: { ...marker, homeStatus: "ready", address },
+      policy: defaultWorkPolicy,
+    });
+    expect((await requestAs(other, "GET", homePath)).json()).toBeNull();
+    expect((await directory.listDeployments(admin.id)).length).toBe(0);
+
+    const authorize = new URL("/api/auth/oauth2/authorize", publicOrigin);
+    const verifier = "a".repeat(43);
+    authorize.search = new URLSearchParams({
+      client_id: booted!.managedHome!.oidc.clientId,
+      redirect_uri: `${address}/v1/auth/oidc/callback`,
+      response_type: "code",
+      scope: "openid profile email",
+      state: randomUUID(),
+      code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+      code_challenge_method: "S256",
+    }).toString();
+    expect((await requestAs(admin, "GET", authorize.pathname + authorize.search)).statusCode).toBe(
+      403,
+    );
+    async function issueCode() {
+      const signedIn = await http({
+        method: "GET",
+        url: authorize.pathname + authorize.search,
+        headers: { ...assignee.headers, accept: "text/html" },
+        redirect: "manual",
+      });
+      expect(signedIn.statusCode).toBe(200);
+      const authorized = signedIn.json();
+      expect(authorized.redirect).toBe(true);
+      const callback = new URL(authorized.url);
+      expect(callback.origin).toBe(address);
+      expect(callback.pathname).toBe("/v1/auth/oidc/callback");
+      const code = callback.searchParams.get("code");
+      expect(code).toBeTruthy();
+      return code!;
+    }
+    function redeemCode(code: string) {
+      const oauth = booted!.managedHome!.oidc;
+      return http({
+        method: "POST",
+        url: "/api/auth/oauth2/token",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          authorization:
+            "Basic " + Buffer.from(`${oauth.clientId}:${oauth.clientSecret}`).toString("base64"),
+          host: publicOrigin.host,
+        },
+        payload: new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          code_verifier: verifier,
+          redirect_uri: `${address}/v1/auth/oidc/callback`,
+        }).toString(),
+      });
+    }
+
+    const jwks = createLocalJWKSet((await http({ method: "GET", url: "/api/auth/jwks" })).json());
+    const signedIn = await redeemCode(await issueCode());
+    expect(signedIn.statusCode).toBe(200);
+    const ownerToken = await jwtVerify(signedIn.json().id_token, jwks, {
+      issuer: publicOrigin.origin,
+      audience: booted!.managedHome!.oidc.clientId,
+      algorithms: ["EdDSA"],
+    });
+    expect(ownerToken.payload.sub).toBe(assignee.id);
+    const unusedCode = await issueCode();
+    const headers = { authorization: `Bearer ${home.state.hostCredential}` };
+    const hostCall = (method: string, action: string, payload?: unknown) =>
+      http({
+        method,
+        url: `${hostPath}/${action}`,
+        headers,
+        ...(payload === undefined ? {} : { payload }),
+      });
+    const policy: WorkPolicy = {
+      ...defaultWorkPolicy,
+      externalMaxMode: "full-access",
+      allowTasks: true,
+    };
+    expect(
+      await requestAs(admin, "PUT", `${org.path}/policy`, { expectedRevision: 1, policy }),
+    ).toMatchObject({ statusCode: 200 });
+    expect((await org.read()).assignments[0]?.policyStatus).toBe("Pending on Home");
+    const response = await hostCall("GET", "policy");
+    expect(response.statusCode, response.body).toBe(200);
+    const { assertion } = WorkPolicyResponseSchema.parse(response.json());
+    const { payload: claims } = await jwtVerify(assertion, jwks, {
+      issuer: publicOrigin.origin,
+      audience: identity.deploymentId,
+      algorithms: ["EdDSA"],
+    });
+    expect(WorkPolicyClaimsSchema.parse(claims)).toMatchObject({
+      assignmentId: assignment.assignmentId,
+      deploymentId: identity.deploymentId,
+      policy,
+      revision: 2,
+      state: "active",
+    });
+    expect(claims.exp).toBeUndefined();
+    expect((await hostCall("POST", "applied", { revision: 3 })).statusCode).toBe(400);
+    expect((await hostCall("POST", "applied", { revision: 2 })).json()).toEqual({
+      appliedRevision: 2,
+    });
+    expect((await hostCall("POST", "applied", { revision: 1 })).json()).toEqual({
+      appliedRevision: 2,
+    });
+    expect((await org.read()).assignments[0]?.policyStatus).toBe("Applied");
+
+    const buildAudit = (from: number, previous: string) => {
+      const record: WorkAuditRecord = {
+        kind: "policy.applied",
+        revision: 2,
+        sequence: from,
+        at: now.toISOString(),
+      };
+      const headHash = createHash("sha256")
+        .update(Buffer.from(previous, "hex"))
+        .update(canonicalWorkAuditRecord(record))
+        .digest("hex");
+      const body = {
+        assignmentId: assignment.assignmentId,
+        fromSequence: from,
+        records: [record],
+        headHash,
+      };
+      return WorkAuditPushSchema.parse({
+        ...body,
+        signature: sign(null, workAuditSigningBytes(body), homeKeys.privateKey).toString(
+          "base64url",
+        ),
+      });
+    };
+    const batch = buildAudit(1, workAuditGenesisHash);
+    expect(
+      (await hostCall("POST", "audit", { ...batch, signature: "x".repeat(86) })).statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await hostCall("POST", "audit", {
+          ...batch,
+          records: [{ ...batch.records[0], url: "https://secret.example" }],
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect((await hostCall("POST", "audit", batch)).json()).toEqual({ lastSequence: 1 });
+    expect((await hostCall("POST", "audit", batch)).json()).toEqual({ lastSequence: 1 });
+    const next = buildAudit(2, batch.headHash);
+    const third = buildAudit(3, next.headHash);
+    const fourth = buildAudit(4, third.headHash);
+    const gap = {
+      ...third,
+      records: [...third.records, ...fourth.records],
+      headHash: fourth.headHash,
+    };
+    const signedGap = {
+      ...gap,
+      signature: sign(null, workAuditSigningBytes(gap), homeKeys.privateKey).toString("base64url"),
+    };
+    expect((await hostCall("POST", "audit", signedGap)).statusCode).toBe(409);
+    const exportAudit = () => requestAs(admin, "GET", `${assignmentPath}/audit?after=0`);
+    const exported = await exportAudit();
+    expect(exported.headers).toMatchObject({
+      "x-opensteer-audit-last-sequence": "1",
+      "x-opensteer-audit-gap-expected": "2",
+      "x-opensteer-audit-gap-received": "4",
+    });
+    expect(exported.headers["x-opensteer-audit-last-received-at"]).toBe(now.toISOString());
+    expect(exported.body).toBe(canonicalWorkAuditRecord(batch.records[0]!) + "\n");
+    expect((await hostCall("POST", "audit", next)).statusCode).toBe(200);
+    expect((await hostCall("POST", "audit", third)).json()).toEqual({ lastSequence: 3 });
+    expect((await exportAudit()).headers["x-opensteer-audit-gap-expected"]).toBe("4");
+    expect((await hostCall("POST", "audit", fourth)).json()).toEqual({ lastSequence: 4 });
+    expect((await exportAudit()).headers["x-opensteer-audit-gap-expected"]).toBeUndefined();
+    expect((await requestAs(admin, "GET", `${assignmentPath}/audit?after=2`)).body).toBe(
+      [third, fourth].map((batch) => canonicalWorkAuditRecord(batch.records[0]!) + "\n").join(""),
+    );
+
+    let flushVerified = false;
+    workHomeFetch.mockImplementation(async (target, init) => {
+      const url = new URL(String(target));
+      expect(url.origin).toBe(address);
+      expect(url.pathname).toBe(workAuditFlushPath);
+      const assertion = JSON.parse(String(init?.body)).assertion as string;
+      const verified = await jwtVerify(assertion, jwks, {
+        issuer: publicOrigin.origin,
+        audience: address,
+        algorithms: ["EdDSA"],
+      });
+      expect(WorkAuditFlushClaimsSchema.parse(verified.payload)).toMatchObject({
+        assignmentId: assignment.assignmentId,
+        deploymentId: identity.deploymentId,
+      });
+      expect(
+        (await requestAs(assignee, "GET", authorize.pathname + authorize.search)).statusCode,
+      ).toBe(403);
+      expect(server?.status).toBe("running");
+      flushVerified = true;
+      return new Response(null, { status: 204 });
+    });
+    const offboarded = await requestAs(admin, "POST", `${assignmentPath}/offboard`, {
+      retentionSeconds: 0,
+    });
+    expect(offboarded.statusCode, offboarded.body).toBe(200);
+    expect(offboarded.json()).toMatchObject({
+      state: "offboarding",
+      signInCut: true,
+      suspended: false,
+      deleted: false,
+    });
+    expect(workHomeFetch).toHaveBeenCalledOnce();
+    expect(flushVerified).toBe(true);
+    const token = await redeemCode(unusedCode);
+    expect(token.statusCode).toBe(401);
+    expect(token.json()).toMatchObject({ error: "invalid_client" });
+    expect((await org.read()).seats.free).toBe(0);
+    await pass();
+    expect(dns).toBe(false);
+    expect(server?.status).toBe("off");
+    const onBillingError = vi.fn();
+    await cloud.reconcileBilling(onBillingError);
+    expect(onBillingError).not.toHaveBeenCalled();
+    const suspended = await org.read();
+    expect(suspended.assignments[0]).toMatchObject({
+      state: "offboarding",
+      suspended: true,
+      deleted: false,
+    });
+    expect(suspended.seats.free).toBe(0);
+    await pass();
+    expect(server).toBeUndefined();
+    expect((await org.read()).seats.free).toBe(0);
+    await cloud.reconcileBilling(onBillingError);
+    expect(onBillingError).not.toHaveBeenCalled();
+    const ended = await org.read();
+    expect(ended.assignments[0]).toMatchObject({
+      state: "ended",
+      signInCut: true,
+      deleted: true,
+      audit: { lastSequence: 4 },
+    });
+    expect(ended.seats.free).toBe(1);
+    const successor = await assign({ requestId: randomUUID(), accountId: other.id });
+    expect(successor.statusCode, successor.body).toBe(200);
+    expect(successor.json().computerId).not.toBe(assignment.computerId);
+    expect(
+      (await getDesired(CloudComputerIdSchema.parse(successor.json().computerId)))?.restoreSnapshot,
+    ).toBeUndefined();
+    expect((await cloud.listBackupTargets()).filter((target) => target.needsRotation)).toHaveLength(
+      1,
+    );
+  });
+
+  it("confirms changes with Stripe, refuses reductions below occupancy, and reconciles billing suspension", async () => {
+    const admin = await createAccount();
+    const member = await createAccount();
+    const org = await buyOrganization(admin, 1);
+    await invite(org.path, admin, member);
+    const pending = { requestId: randomUUID(), seats: 2 };
+    const assign = (accountId: ControlPlaneAccountId) =>
+      requestAs(admin, "POST", `${org.path}/assignments`, { accountId, requestId: randomUUID() });
+    const changed = await requestAs(admin, "POST", `${org.path}/seats`, pending);
+    expect(changed.statusCode, changed.body).toBe(200);
+    expect(changed.json().seats).toEqual({ paid: 1, pending: 2, assigned: 0, free: 1 });
+    expect(stripe.updateSeatQuantity).toHaveBeenCalledWith({
+      item: "si_seat",
+      organization: org.id,
+      requestId: pending.requestId,
+      quantity: 2,
+      increase: true,
+    });
+    const first = await assign(admin.id);
+    expect(first.statusCode, first.body).toBe(200);
+    expect((await assign(member.id)).statusCode).toBe(409);
+    const sub = org.subscription;
+    const id = CloudComputerIdSchema.parse(first.json().computerId);
+    subscriptions.set(sub.id, {
+      ...sub,
+      pending_update: { expires_at: Math.floor(now.getTime() / 1000) + 300 },
+      latest_invoice: { status: "open", attempt_count: 1 },
+    });
+    expect((await webhook("invoice.payment_failed", { subscription: sub.id })).statusCode).toBe(
+      200,
+    );
+    expect((await getDesired(id))?.state).toBe("active");
+    expect((await org.read()).seats).toMatchObject({ paid: 1, assigned: 1, free: 0, pending: 2 });
+    subscriptions.set(sub.id, {
+      ...sub,
+      items: { has_more: false, data: [{ ...sub.items.data[0]!, quantity: 2 }] },
+    });
+    expect((await webhook("customer.subscription.updated", { id: sub.id })).statusCode).toBe(200);
+    expect((await org.read()).seats).toEqual({ paid: 2, pending: null, assigned: 1, free: 1 });
+    expect((await assign(member.id)).statusCode).toBe(200);
+    expect(
+      (await requestAs(admin, "POST", `${org.path}/seats`, { requestId: randomUUID(), seats: 1 }))
+        .statusCode,
+    ).toBe(409);
+    subscriptions.set(sub.id, { ...subscriptions.get(sub.id)!, status: "past_due" });
+    expect((await webhook("invoice.payment_failed", { subscription: sub.id })).statusCode).toBe(
+      200,
+    );
+    expect((await getDesired(id))?.state).toBe("suspended");
+    expect((await org.read()).seats.free).toBe(0);
+    subscriptions.set(sub.id, { ...subscriptions.get(sub.id)!, status: "active" });
+    const errors = vi.fn();
+    await cloud.reconcileBilling(errors);
+    expect(errors).not.toHaveBeenCalled();
+    expect((await getDesired(id))?.state).toBe("active");
+    await cloud.addBackupTarget({
+      endpoint: "https://s3.example.test",
+      bucket: "test-backups",
+      prefix: "personal",
+      accessKeyId: "access-c",
+      secretAccessKey: "secret-c",
+    });
+    const personal = await buy(admin);
+    expect(personal.id).not.toBe(id);
+    expect((await cloud.list(admin.id)).map((computer) => computer.id)).toEqual([personal.id]);
+    expect(
+      WorkHomeResponseSchema.parse((await requestAs(admin, "GET", `${org.path}/work-home`)).json())
+        ?.assignment.computerId,
+    ).toBe(id);
+    subscriptions.set(sub.id, { ...subscriptions.get(sub.id)!, status: "canceled" });
+    expect((await webhook("customer.subscription.deleted", { id: sub.id })).statusCode).toBe(200);
+    expect((await getDesired(id))?.state).toBe("suspended");
+    expect((await getDesired(personal.id))?.state).toBe("active");
+  });
+
+  it("reports only observed preparation, location, Home identity, egress and Stripe renewal facts", async () => {
+    const { id, account, order } = await buy();
+    const path = accountCloudComputerPath(id);
+    const read = async () => {
+      const response = await requestAs(account, "GET", path);
+      expect(response.statusCode, response.body).toBe(200);
+      return response.json();
+    };
+    const steps = (machine: string, opensteer: string, claim: string) => [
+      { id: "payment", state: "done" },
+      { id: "machine", state: machine },
+      { id: "opensteer", state: opensteer },
+      { id: "claim", state: claim },
+    ];
+    const initial = await read();
+    expect(initial).toMatchObject({
+      status: "preparing",
+      region: { id: "ash", label: "Ashburn, VA" },
+      steps: steps("current", "pending", "pending"),
+    });
+    for (const key of ["deploymentId", "egressAddress", "renewsAt", "lastBackupAt"])
+      expect(initial).not.toHaveProperty(key);
+
+    const endpoint = await cloud.addEgressEndpoint({
+      url: "https://proxy.example.test",
+      username: "user",
+      password: "test-password",
+    });
+    const preparing = (await getDesired(id))!;
+    const install = await bootable(preparing);
+    const booted = await read();
+    expect(booted).toMatchObject({
+      status: "preparing",
+      egress: "assigned",
+      steps: steps("done", "current", "pending"),
+    });
+    expect(booted).not.toHaveProperty("deploymentId");
+    expect(booted).not.toHaveProperty("egressAddress");
+    await expect(cloud.setEgressAddress(endpoint, "proxy.example.test")).rejects.toThrow(
+      "Invalid browser egress address",
+    );
+    await cloud.setEgressAddress(endpoint, "203.0.113.5");
+    expect((await read()).egressAddress).toBe("203.0.113.5");
+    await cloud.setEgressAddress(endpoint, null);
+    expect(await read()).not.toHaveProperty("egressAddress");
+
+    expect((await complete(preparing)).statusCode).toBe(200);
+    expect(await read()).toMatchObject({
+      status: "preparing",
+      deploymentId: identity.deploymentId,
+      steps: steps("done", "current", "pending"),
+    });
+    expect((await report((await getDesired(id))!)).json()).toEqual({ recorded: true });
+    expect(await read()).toMatchObject({
+      status: "preparing",
+      steps: steps("done", "done", "current"),
+    });
+    const home = fakeHome({ hostname: preparing.hostname, boot: install });
+    expect(await claimer(home.fetch).runOnce()).toBe(1);
+
+    const period = Math.floor(now.getTime() / 1000) + 3600;
+    const stripePeriod = (current_period_end: number) => ({
+      ...order.details,
+      items: { has_more: false, data: [{ ...order.details.items.data[0]!, current_period_end }] },
+    });
+    subscriptions.set(order.subscription, stripePeriod(period));
+    expect(
+      (await webhook("customer.subscription.updated", { id: order.subscription })).statusCode,
+    ).toBe(200);
+    const ready = await read();
+    expect(ready).toMatchObject({
+      status: "ready",
+      deploymentId: identity.deploymentId,
+      renewsAt: new Date(period * 1000).toISOString(),
+    });
+    expect(ready).not.toHaveProperty("steps");
+
+    subscriptions.set(order.subscription, stripePeriod(period + 3600));
+    const billingErrors = vi.fn();
+    await cloud.reconcileBilling(billingErrors);
+    expect(billingErrors).not.toHaveBeenCalled();
+    const listed = await requestAs(account, "GET", accountCloudComputersPath);
+    expect(listed.json().computers).toMatchObject([
+      {
+        id,
+        deploymentId: identity.deploymentId,
+        renewsAt: new Date((period + 3600) * 1000).toISOString(),
+      },
+    ]);
+    subscriptions.set(order.subscription, {
+      ...stripePeriod(period + 3600),
+      cancel_at_period_end: true,
+    });
+    expect(
+      (await webhook("customer.subscription.updated", { id: order.subscription })).statusCode,
+    ).toBe(200);
+    expect(await read()).not.toHaveProperty("renewsAt");
+  });
+
+  it("returns distinct client reasons for purchase refusals and billing trouble", async () => {
+    const { id, account, order } = await buy();
+    const checkoutFor = (buyer: typeof account) =>
+      requestAs(buyer, "POST", accountCloudComputerCheckoutPath, { requestId: randomUUID() });
+    const duplicate = await checkoutFor(account);
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.json()).toMatchObject({
+      error: {
+        reason: "cloud-computer-already-exists",
+        message: "This Account already has a Cloud Computer subscription",
+      },
+    });
+
+    await buy();
+    const buyer = await createAccount();
+    const atCapacity = await checkoutFor(buyer);
+    expect(atCapacity.statusCode).toBe(503);
+    expect(atCapacity.json()).toMatchObject({
+      error: {
+        reason: "cloud-computer-no-capacity",
+        message: "Cloud Computer checkout is not available right now",
+      },
+    });
+    stripe.validateOffer.mockRejectedValueOnce(new Error("Invalid offer"));
+    await expect(cloud.checkOffer()).rejects.toThrow("Invalid offer");
+    const salesClosed = await checkoutFor(buyer);
+    expect(salesClosed.statusCode).toBe(503);
+    expect(salesClosed.json()).toMatchObject({
+      error: {
+        reason: "cloud-computer-sales-not-open",
+        message: "Cloud Computer checkout is not available right now",
+      },
+    });
+
+    subscriptions.set(order.subscription, { ...order.details, status: "past_due" });
+    expect(
+      (await webhook("invoice.payment_failed", { subscription: order.subscription })).statusCode,
+    ).toBe(200);
+    const billed = await requestAs(account, "GET", accountCloudComputerPath(id));
+    expect(billed.json()).toMatchObject({
+      status: "suspended",
+      reason: "Your subscription needs attention.",
+      reasonCode: "cloud-computer-billing-problem",
+    });
+  });
 
   it("mounts every Cloud Computer route in the production Fastify composition", async () => {
     const prefix = "/v1/cloud-computers";
@@ -742,7 +1534,10 @@ integration("Cloud Computer Account service", () => {
         })
       ).json(),
     ).toEqual({ url: portalUrl });
-    expect(stripe.portal).toHaveBeenCalledWith(order.customer);
+    expect(stripe.portal).toHaveBeenCalledOnce();
+    const [customer, returnUrl] = stripe.portal.mock.calls[0]!;
+    expect(customer).toBe(order.customer);
+    expect(returnUrl).toBeUndefined();
     expect(
       (
         await http({

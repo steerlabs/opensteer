@@ -1,3 +1,4 @@
+import { requireOrganizationAccountDeletionAllowed } from "../organizations/identity.js";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -1584,6 +1585,7 @@ export class ControlPlaneStore {
         account.deletionFencedUntil <= new Date()
       )
         throw new ControlPlaneError("unavailable", "Deleting your Account stopped. Try again.");
+      await requireOrganizationAccountDeletionAllowed(transaction, accountId);
       await transaction
         .selectFrom("authSessions")
         .select("id")
