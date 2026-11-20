@@ -250,6 +250,7 @@ interface BridgeOwner {
   readonly ownerInputVersion: 2 | undefined;
   readonly videoProfile: 1 | undefined;
   readonly opening: Set<ComputerUseSessionId>;
+  readonly iphoneLifetime: AbortController;
   readonly passwords: Set<string>;
   iphone?: IphoneRunnerConnection | undefined;
 }
@@ -629,6 +630,7 @@ export class ComputerUseBridgeServer {
     // does not try to close a session the helper has not opened yet.
     const owner: BridgeOwner = {
       alive: true,
+      iphoneLifetime: new AbortController(),
       ownerInputVersion,
       videoProfile,
       opening: new Set(),
@@ -700,6 +702,7 @@ export class ComputerUseBridgeServer {
     });
     socket.once("close", () => {
       owner.alive = false;
+      owner.iphoneLifetime.abort();
       owner.iphone?.close();
       for (const id of owner.passwords) {
         this.#ownership.releasePassword(id, owner);
@@ -754,16 +757,18 @@ export class ComputerUseBridgeServer {
         refuse("unsupported", "iPhone control is unavailable on this connection.");
         return;
       }
+      const request = new AbortController();
       try {
         const call = owner.iphone.request(
           phoneMethod.data,
           iphoneRunnerParams[phoneMethod.data].parse(params),
-          { deadline },
+          { deadline, signal: AbortSignal.any([request.signal, owner.iphoneLifetime.signal]) },
         );
         const outcome = await this.#within(call, deadline);
         if (outcome.kind === "answer")
           answer(iphoneRunnerResults[phoneMethod.data].parse(outcome.value));
         else if (outcome.kind === "late") {
+          request.abort();
           const session = iphoneRunnerParams["iphone.session.close"].strip().safeParse(params);
           if (session.success)
             void owner.iphone
@@ -1307,7 +1312,11 @@ function asFailure(error: unknown): {
             ? "no-session"
             : error.code === "phone-in-use"
               ? "busy"
-              : "failed",
+              : error.code === "phone-disconnected" || error.code === "candidate-gone"
+                ? "device-offline"
+                : error.code === "cancelled"
+                  ? "stopped-by-user"
+                  : "failed",
       message: `iPhone: ${error.code}.`,
     };
   }

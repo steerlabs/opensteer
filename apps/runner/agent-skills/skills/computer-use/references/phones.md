@@ -19,7 +19,7 @@ interface alone can do.
 ## Bind
 
 `await phones()` lists visible phones, including blocked ones, each with `name`, `computerId`, `platform`
-(`android` or `ios`), `definitionId`, `navigation` (button ids), `actions` and either `access` (`read` or `read-write`) or `blocked: {code,message,next}`. Blocked targets throw that same error when bound; follow `next`.
+(`android` or `ios`), `definitionId`, `navigation` (button ids), `actions` and either `access` (`read` or `read-write`) or `blocked: {code,message,next}`. An approved iPhone can also report its `lastKnown` status. Bind and observe to check its state now.
 `const p = await phone(nameOrComputerId)` binds one; when two share a name, it lists their
 computerIds. `tab(tabId)` binds a phone tab exactly. `computer_list` shows each phone's
 `phoneDisplay`, including the Mac driving an iPhone.
@@ -27,7 +27,9 @@ computerIds. `tab(tabId)` binds a phone tab exactly. `computer_list` shows each 
 ## Operate
 
 Look, act, look. `await p.observe()` returns the screen, lock state, foreground app, element tree
-and screenshot. Each action returns the phone's new observation; target from the latest one.
+and screenshot when available. A Mac-driven iPhone may return only live status (`locked`, `screen`,
+and `reason`), with no coordinates for input. The handle's `actions` and `navigation` update after
+an observation. Each action returns the phone's resulting observation or status.
 
 - A target is an element index from the tree, or `[x, y]` screenshot pixels. An iPhone's tree is
   often empty: act by screenshot coordinates.
@@ -56,8 +58,11 @@ phone's screen lock; app and website passwords use [app sign-in](sign-in.md).
 
 ## Unavailable
 
-The shared access contract maps device reasons into `blocked` errors with a concrete `next` action. An unavailable phone is the person's to fix. Say once what they need to do, then continue other
-work or stop; never poll, loop or reach it through its Mac.
+Check an approved iPhone again when the person says they unlocked or woke it. Use the live result
+to decide whether to continue, try another authorized tool that meets the request, or ask the person
+for a step only they can take. An unreadable display state is uncertain even when the lock state is
+known. Repeating an unchanged check gives you the same information. A Mac-driven iPhone supports
+agent screenshots and control when ready. It does not offer a live video view for the person.
 
 | Underlying device reason                                                                                   | Ask the person to                                                  |
 | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |

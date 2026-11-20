@@ -923,6 +923,10 @@ export class TabService implements TabServicePort {
     if (current.generation !== row.generation) conflict();
     return binding;
   }
+  async authorizeBind(claims: RunToolScope, tabId: TabId): Promise<void> {
+    await this.#row({ kind: "run", claims }, tabId);
+  }
+
   async authorizeShow(claims: RunToolScope, tabId: TabId): Promise<void> {
     const actor = { kind: "run", claims } as const;
     await this.#row(actor, tabId);

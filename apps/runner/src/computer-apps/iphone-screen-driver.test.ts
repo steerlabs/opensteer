@@ -228,6 +228,11 @@ function fixture() {
   return {
     bridge,
     connection,
+    async observe(...args: Parameters<typeof connection.observe>) {
+      const result = await connection.observe(...args);
+      if (!result.observation) throw new Error("Expected a captured observation.");
+      return { observation: result.observation };
+    },
     driver,
     events,
     a,
@@ -247,7 +252,7 @@ describe("iPhone screen driver", () => {
     async (direction) => {
       const f = fixture();
       const context = f.context();
-      const { observation } = await f.connection.observe(context, observeParams);
+      const { observation } = await f.observe(context, observeParams);
       const result = await f.connection.act(context, {
         observationId: observation.observationId,
         actions: [{ type: "scroll", target: { x: 1, y: 198 }, direction, amount: 3 }],
@@ -293,7 +298,7 @@ describe("iPhone screen driver", () => {
   it("maps partial native scroll receipts back to phone actions and never replays them", async () => {
     const f = fixture();
     const context = f.context();
-    const { observation } = await f.connection.observe(context, observeParams);
+    const { observation } = await f.observe(context, observeParams);
     f.bridge.replies.set("iphone.perform", async () => ({
       error: { code: "cancelled", effect: "unknown", completedSteps: 3 },
     }));
@@ -321,7 +326,7 @@ describe("iPhone screen driver", () => {
   it("rejects scroll expansion beyond the native batch bound before any effect", async () => {
     const f = fixture();
     const context = f.context();
-    const { observation } = await f.connection.observe(context, observeParams);
+    const { observation } = await f.observe(context, observeParams);
     const scroll = {
       type: "scroll" as const,
       target: { x: 20, y: 30 },
@@ -340,8 +345,8 @@ describe("iPhone screen driver", () => {
     const f = fixture();
     const a = f.context();
     const b = f.context(f.b);
-    const first = await f.connection.observe(a, observeParams);
-    const second = await f.connection.observe(b, observeParams);
+    const first = await f.observe(a, observeParams);
+    const second = await f.observe(b, observeParams);
     expect(IphoneScreenObservationResultSchema.safeParse(first).success).toBe(true);
     expect(first.observation.observationId).not.toBe(second.observation.observationId);
     const wrong = await f.connection.act(b, {
@@ -376,7 +381,7 @@ describe("iPhone screen driver", () => {
     async (change) => {
       const f = fixture();
       const context = f.context();
-      const { observation } = await f.connection.observe(context, observeParams);
+      const { observation } = await f.observe(context, observeParams);
       if (change === "generation")
         f.connection.replaceAssignments([{ ...f.a, generation: 2 }, f.b]);
       if (change === "epoch") f.bridge.target(f.a.deviceId, 2);
@@ -413,7 +418,7 @@ describe("iPhone screen driver", () => {
         state: { lock: "unlocked", display: "on", rotation, displayId: 0 },
         screenshot: { mimeType: "image/jpeg", base64: "test", width, height },
       });
-      const { observation } = await f.connection.observe(context, observeParams);
+      const { observation } = await f.observe(context, observeParams);
       expect(observation.geometry).toEqual({ width, height });
       await f.connection.act(context, {
         observationId: observation.observationId,
@@ -429,7 +434,7 @@ describe("iPhone screen driver", () => {
   it("keeps incomplete unqualified AX descriptive, escaped and without indices or fabricated frames", async () => {
     const f = fixture();
     const context = f.context();
-    const { observation } = await f.connection.observe(context, observeParams);
+    const { observation } = await f.observe(context, observeParams);
     expect(observation.tree).toContain('button "Send \\"now\\""');
     expect(observation.tree).toContain("partial");
     expect(observation.tree).toContain("coordinates");
@@ -454,7 +459,7 @@ describe("iPhone screen driver", () => {
   ])("preflights the whole batch before effects: $type", async (action) => {
     const f = fixture();
     const context = f.context();
-    const { observation } = await f.connection.observe(context, observeParams);
+    const { observation } = await f.observe(context, observeParams);
     const result = await f.connection.act(context, {
       observationId: observation.observationId,
       actions: [tap, action] as Parameters<typeof f.connection.act>[1]["actions"],
@@ -469,7 +474,7 @@ describe("iPhone screen driver", () => {
   it("keeps unknown outcomes and the known prefix, never repeats a lost perform", async () => {
     const f = fixture();
     const context = f.context();
-    const { observation } = await f.connection.observe(context, observeParams);
+    const { observation } = await f.observe(context, observeParams);
     f.bridge.replies.set("iphone.perform", async () => {
       throw new ComputerUseBridgeError("outcome-unknown", "lost");
     });
@@ -486,7 +491,7 @@ describe("iPhone screen driver", () => {
     });
     for (const listener of f.bridge.connections) listener("connected");
     expect(f.bridge.effects).toHaveLength(1);
-    const fresh = await f.connection.observe(context, observeParams);
+    const fresh = await f.observe(context, observeParams);
     f.bridge.replies.set("iphone.perform", async () => ({
       error: { code: "outcome-unknown", effect: "unknown", completedSteps: 1 },
     }));
@@ -510,7 +515,7 @@ describe("iPhone screen driver", () => {
         started.resolve();
         return held.promise;
       });
-      const capture = f.connection.observe(context, observeParams);
+      const capture = f.observe(context, observeParams);
       const rejected = expect(capture).rejects.toBeInstanceOf(ComputerUseBridgeError);
       await startedWithin(started.promise);
       if (interruption === "cancel")
@@ -543,7 +548,7 @@ describe("iPhone screen driver", () => {
     async (interruption) => {
       const f = fixture();
       const context = f.context();
-      const { observation } = await f.connection.observe(context, observeParams);
+      const { observation } = await f.observe(context, observeParams);
       const held = deferred<unknown>();
       const started = deferred<void>();
       f.bridge.replies.set("iphone.perform", async () => {
@@ -591,7 +596,7 @@ describe("iPhone screen driver", () => {
     const page = await f.connection.installedApps(context, { query: "", limit: 1, offset: 0 });
     expect(page).toEqual({ apps: [{ appId: "example.app", label: "Example" }], total: 1 });
     expect(f.bridge.sessions.size).toBe(0);
-    const { observation } = await f.connection.observe(context, observeParams);
+    const { observation } = await f.observe(context, observeParams);
     await f.connection.act(context, {
       observationId: observation.observationId,
       actions: [{ type: "launch", appId: "unlisted.app" }],
@@ -601,7 +606,7 @@ describe("iPhone screen driver", () => {
     f.bridge.replies.set("iphone.perform", async () => ({
       error: { code: "app-not-launchable", effect: "not-started", completedSteps: 0 },
     }));
-    const next = await f.connection.observe(context, observeParams);
+    const next = await f.observe(context, observeParams);
     const refused = await f.connection.act(context, {
       observationId: next.observation.observationId,
       actions: [{ type: "launch", appId: "missing.app" }],
@@ -617,7 +622,7 @@ describe("iPhone screen driver", () => {
     f.bridge.observation = native({
       state: { lock: "unknown", display: "on", rotation: 0, displayId: 0 },
     });
-    const { observation } = await f.connection.observe(context, observeParams);
+    const { observation } = await f.observe(context, observeParams);
     expect(observation).toMatchObject({
       locked: null,
       secureLock: null,
@@ -628,12 +633,12 @@ describe("iPhone screen driver", () => {
     f.bridge.observation = native({
       foreground: { appId: "com.opensteer.opensteer", label: "Opensteer" },
     });
-    expect(
-      (await f.connection.observe(context, observeParams)).observation.screenshotUnavailable,
-    ).toBe("opensteer-app");
+    expect((await f.observe(context, observeParams)).observation.screenshotUnavailable).toBe(
+      "opensteer-app",
+    );
     expect(f.events.at(-1)).toMatchObject({ actions: ["navigate", "launch", "wait"] });
     f.bridge.observation = native({ foreground: null });
-    expect((await f.connection.observe(context, observeParams)).observation).toMatchObject({
+    expect((await f.observe(context, observeParams)).observation).toMatchObject({
       foreground: null,
       screenshot: { mime: "image/jpeg" },
       screenshotUnavailable: null,
@@ -651,7 +656,7 @@ describe("iPhone screen driver", () => {
   it("refuses a changed native geometry revision without input", async () => {
     const f = fixture();
     const context = f.context();
-    const { observation } = await f.connection.observe(context, observeParams);
+    const { observation } = await f.observe(context, observeParams);
     f.bridge.observation = native({ geometryRevision: 2 });
     const result = await f.connection.act(context, {
       observationId: observation.observationId,
@@ -663,10 +668,48 @@ describe("iPhone screen driver", () => {
     expect(f.bridge.effects).toHaveLength(0);
   });
 
+  it("reports fresh state without issuing input authority, and recovers on the same session", async () => {
+    const f = fixture();
+    const context = f.context();
+    const { observation } = await f.observe(context, observeParams);
+    f.bridge.target(context.deviceId, 1, "phone-locked");
+    f.bridge.replies.set("iphone.observe", async () => ({
+      nativeEpoch: 1,
+      state: { lock: "unlocked", display: "unknown", rotation: null, displayId: 0 },
+      reason: "screen-state-unknown",
+    }));
+    expect(await f.connection.observe(context, observeParams)).toEqual({
+      observation: null,
+      status: { locked: false, screen: "unknown", reason: "screen-state-unknown" },
+    });
+    expect(f.events.at(-1)).toMatchObject({
+      availability: { state: "unavailable", reason: { kind: "protected" } },
+      actions: [],
+    });
+    const refused = await f.connection.act(context, {
+      observationId: observation.observationId,
+      actions: [tap],
+      includeScreenshot: false,
+    });
+    expect(refused.error?.code).toBe("stale-observation");
+    expect(f.bridge.effects).toHaveLength(0);
+    f.bridge.replies.delete("iphone.observe");
+    const fresh = await f.observe(context, observeParams);
+    expect(
+      await f.connection.act(context, {
+        observationId: fresh.observation.observationId,
+        actions: [tap],
+        includeScreenshot: false,
+      }),
+    ).toMatchObject({ error: null });
+    expect(f.bridge.sessions.has(context.sessionId)).toBe(true);
+    expect(f.bridge.cancelled).not.toContain(context.sessionId);
+  });
+
   it("does not promote successful observation into qualified native input", async () => {
     const f = fixture();
     const context = f.context();
-    await f.connection.observe(context, observeParams);
+    await f.observe(context, observeParams);
     for (const listener of f.bridge.events)
       listener({
         kind: "event",
@@ -679,7 +722,7 @@ describe("iPhone screen driver", () => {
           reason: "qualification-required",
         },
       });
-    const { observation } = await f.connection.observe(context, observeParams);
+    const { observation } = await f.observe(context, observeParams);
     expect(f.events.at(-1)).toMatchObject({
       availability: { state: "unavailable", reason: { kind: "unsupported" } },
       actions: [],
@@ -696,7 +739,7 @@ describe("iPhone screen driver", () => {
   it("withdraws observations omitted by the desktop target snapshot", async () => {
     const f = fixture();
     const context = f.context();
-    const { observation } = await f.connection.observe(context, observeParams);
+    const { observation } = await f.observe(context, observeParams);
     const before = f.events.length;
     f.bridge.replies.set("iphone.targets", async () => ({ targets: [] }));
     f.connection.replaceAssignments([f.a, f.b]);
@@ -725,7 +768,7 @@ describe("iPhone screen driver", () => {
   it("checks the original deadline and read-only authority before input", async () => {
     const f = fixture();
     const context = f.context();
-    const { observation } = await f.connection.observe(context, observeParams);
+    const { observation } = await f.observe(context, observeParams);
     const readonly = await f.connection.act(
       { ...context, access: "read" },
       { observationId: observation.observationId, actions: [tap], includeScreenshot: false },
@@ -754,11 +797,11 @@ describe("iPhone screen driver", () => {
       f.bridge.sessions.add(p.sessionId);
       return { nativeEpoch: 1 };
     });
-    const capture = f.connection.observe(context, observeParams);
+    const capture = f.observe(context, observeParams);
     const refused = expect(capture).rejects.toMatchObject({ code: "stopped-by-user" });
     await startedWithin(started.promise);
     f.connection.cancel({ ...context, type: "host.integrations.cancel" });
-    const other = await f.connection.observe(f.context(f.b), observeParams);
+    const other = await f.observe(f.context(f.b), observeParams);
     expect(other.observation.observationId).toBeTruthy();
     opened.resolve({});
     await refused;
@@ -769,7 +812,7 @@ describe("iPhone screen driver", () => {
   it("orders replacement assignments and withdraws them on detach", async () => {
     const f = fixture();
     const context = f.context();
-    await f.connection.observe(context, observeParams);
+    await f.observe(context, observeParams);
     f.connection.replaceAssignments([{ ...f.a, generation: 2 }]);
     await f.connection.installedApps(
       { ...context, driverGeneration: 2 },

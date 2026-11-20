@@ -224,12 +224,12 @@ export type PhoneDisplayObservation = z.infer<typeof PhoneDisplayObservationSche
 export const PhoneDisplayObservationResultSchema = z.strictObject({
   observation: PhoneDisplayObservationSchema,
 });
-export const PhoneDisplayActResultSchema = z
-  .strictObject({
-    error: ComputerUseErrorSchema.shape.error.nullable(),
-    observation: PhoneDisplayObservationSchema.nullable(),
-    performed: z.array(ComputerUsePerformedSchema).max(computerUseMaxActions),
-  })
+const phoneDisplayActResultSchema = z.strictObject({
+  error: ComputerUseErrorSchema.shape.error.nullable(),
+  observation: PhoneDisplayObservationSchema.nullable(),
+  performed: z.array(ComputerUsePerformedSchema).max(computerUseMaxActions),
+});
+export const PhoneDisplayActResultSchema = phoneDisplayActResultSchema
   .refine(
     (result) => result.error !== null || result.observation !== null,
     "Successful actions require an observation",
@@ -306,12 +306,31 @@ export const IphoneScreenObservationSchema = PhoneDisplayObservationSchema.refin
       ["locked", "screen-off", "protected"].includes(observation.screenshotUnavailable ?? "")),
   "iPhones expose screen content only when explicitly unlocked",
 );
-export const IphoneScreenObservationResultSchema = z.strictObject({
-  observation: IphoneScreenObservationSchema,
+export const IphoneScreenStatusSchema = z.strictObject({
+  locked: z.boolean().nullable(),
+  screen: z.enum(["on", "off", "unknown"]),
+  reason: z.enum(["locked", "lock-state-unknown", "screen-off", "screen-state-unknown"]),
 });
-export const IphoneScreenActResultSchema = PhoneDisplayActResultSchema.safeExtend({
-  observation: IphoneScreenObservationSchema.nullable(),
-});
+export type IphoneScreenStatus = z.infer<typeof IphoneScreenStatusSchema>;
+export const IphoneScreenObservationResultSchema = z.union([
+  z.strictObject({ observation: IphoneScreenObservationSchema }),
+  z.strictObject({ observation: z.null(), status: IphoneScreenStatusSchema }),
+]);
+export const IphoneScreenActResultSchema = phoneDisplayActResultSchema
+  .extend({
+    observation: IphoneScreenObservationSchema.nullable(),
+    status: IphoneScreenStatusSchema.optional(),
+  })
+  .refine(
+    (result) =>
+      !(result.observation && result.status) &&
+      (result.error !== null || result.observation !== null || result.status !== undefined),
+    "An iPhone action returns a capture, screen status, or an error",
+  )
+  .refine(
+    (result) => result.error?.code !== "stale-observation" || result.performed.length === 0,
+    "Stale observations perform no actions",
+  );
 function neutralResult(operation: PhoneDisplayOperation, value: unknown) {
   switch (operation) {
     case "observe":

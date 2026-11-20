@@ -104,6 +104,15 @@ type Observation struct {
 	ClearReason      wire.Reason `json:"clearReason"`
 	Screenshot       *Screenshot `json:"screenshot"`
 }
+
+// ScreenStatus is a state-only observation. It contains no capture, app identity,
+// geometry credential, or token that perform can accept.
+type ScreenStatus struct {
+	NativeEpoch uint64      `json:"nativeEpoch"`
+	State       DeviceState `json:"state"`
+	Reason      wire.Reason `json:"reason"`
+}
+
 type Screenshot struct {
 	MimeType string `json:"mimeType"`
 	Base64   string `json:"base64"`
@@ -195,8 +204,11 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	if err != nil {
 		return nil, err
 	}
-	if err = before.safe(); err != nil {
-		return nil, err
+	if reason := before.screenBlocker(); reason != "" {
+		if err := guard(); err != nil {
+			return nil, err
+		}
+		return &ScreenStatus{NativeEpoch: p.NativeEpoch, State: before, Reason: reason}, nil
 	}
 	first := s.foreground(ctx)
 	png, err := s.backend.Capture(ctx, before.uniqueID)
@@ -221,15 +233,22 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 		ax = AXSnapshot{Nodes: []AXNode{}, Coverage: AXCoverage{CoordinateSpace: "unqualified", Status: "unavailable", Reason: "accessibility-unavailable"}}
 	}
 	foreground := settleForeground(first, last, ax.Foreground)
+	private := foreground != nil && foreground.AppID == opensteerAppID
+	if private {
+		ax = AXSnapshot{Nodes: []AXNode{}, Coverage: AXCoverage{CoordinateSpace: "unqualified", Status: "unavailable", Reason: "accessibility-unavailable"}}
+	}
 	after, err := s.backend.State(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if !before.same(after) {
-		return nil, wire.Fail(wire.StaleObservation)
-	}
 	if err := guard(); err != nil {
 		return nil, err
+	}
+	if reason := after.screenBlocker(); reason != "" {
+		return &ScreenStatus{NativeEpoch: p.NativeEpoch, State: after, Reason: reason}, nil
+	}
+	if !before.same(after) {
+		return nil, wire.Fail(wire.StaleObservation)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -238,7 +257,7 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	}
 	s.revision++
 	o := &Observation{ObservationToken: uuid.New().String(), NativeEpoch: p.NativeEpoch, GeometryRevision: s.revision, Geometry: g, State: before, Nodes: ax.Nodes, Coverage: ax.Coverage, Foreground: foreground, Buttons: []string{"home", "lock", "volumeUp", "volumeDown"}, TextReason: wire.UnsupportedText, ClearReason: wire.UnsupportedClear}
-	if *p.IncludeScreenshot {
+	if *p.IncludeScreenshot && !private {
 		o.Screenshot = &Screenshot{MimeType: "image/jpeg", Base64: base64.StdEncoding.EncodeToString(jpeg), Width: g.Width, Height: g.Height}
 	}
 	s.observation = o

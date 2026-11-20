@@ -10,16 +10,21 @@ import type { NativeReplTabTarget } from "../native-tab-targets.js";
 import { ComputerUseError } from "../computer-use-service.js";
 import type { ReplReply } from "./messages.js";
 
+export interface ExistingNativeTab {
+  readonly tabId: TabId;
+  authorize(): Promise<void>;
+}
+
 export interface NativeTabBindingOptions {
   selfDeviceId(runnerId: RunnerId): Promise<DeviceId>;
-  tabs: Pick<TabServicePort, "get" | "authorizeShow">;
+  tabs: Pick<TabServicePort, "get" | "authorizeBind">;
   lookup(ownerId: UserId, tabId: TabId): Promise<NativeReplTabTarget>;
   connections(): Promise<readonly DeviceComputerConnection[]>;
   blocked?(target: NativeReplTabTarget): Promise<Blocked | undefined>;
   bind(
     connection: DeviceComputerConnection,
     target: NativeReplTabTarget,
-    beforeAcquired: () => Promise<void>,
+    existingTab: ExistingNativeTab,
   ): Promise<ReplReply>;
 }
 export async function bindNativeTab(
@@ -29,7 +34,7 @@ export async function bindNativeTab(
 ): Promise<ReplReply> {
   let expected: NativeReplTabTarget | undefined;
   const authorize = async () => {
-    await options.tabs.authorizeShow(claims, tabId);
+    await options.tabs.authorizeBind(claims, tabId);
     if (!expected) return;
     const current = await options.lookup(claims.requestedBy, tabId);
     if (
@@ -76,7 +81,7 @@ export async function bindNativeTab(
     });
   if (!connection) throw refused("not_found", "This tab is unavailable.");
   await authorize();
-  const reply = await options.bind(connection, target, authorize);
+  const reply = await options.bind(connection, target, { tabId, authorize });
   await authorize();
   const value = reply.value;
   if (!value || typeof value !== "object" || Array.isArray(value) || value.tabId !== tabId)

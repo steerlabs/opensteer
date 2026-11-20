@@ -76,6 +76,7 @@ it.each(["read", "read-write"] as const)(
       signal: new AbortController().signal,
     };
     const { observation } = await connection.observe(context, { includeScreenshot: true });
+    if (!observation) throw new Error("Expected a captured observation.");
     expect(observation.screenshot).not.toBeNull();
     expect((await f.service.targets(ownerA.deploymentId))[0]).toMatchObject({
       ready: true,
@@ -140,7 +141,7 @@ it.each(["read", "read-write"] as const)(
     expect((await f.service.targets(ownerA.deploymentId))[0]?.ready).toBe(false);
     physicallyLocked = false;
     const refreshed = await connection.observe(context, { includeScreenshot: true });
-    expect(refreshed.observation.screenshot).not.toBeNull();
+    expect(refreshed.observation?.screenshot).toBeTruthy();
     expect(f.native.epoch).toBe(epoch);
     const recovered = events
       .filter((event) => event.type === "runner.integrations.device-status")

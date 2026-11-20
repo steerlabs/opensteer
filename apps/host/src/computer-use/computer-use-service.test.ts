@@ -2442,14 +2442,11 @@ describe("iPhone agent readiness", () => {
           state: operation.operation === "act" ? "unavailable" : "ready",
         })),
       });
-      await expect(f.act([{ type: "navigate", to: "home" }])).rejects.toThrow(
-        "input is unavailable",
-      );
+      // An old input status cannot veto dispatch. The assigned driver validates the snapshot.
+      expect((await f.act([{ type: "navigate", to: "home" }])).error).toBeNull();
       f.setStatus({ ...f.status, actions: ["wait"] });
-      await expect(f.act([{ type: "tap", target: { x: 10, y: 20 } }])).rejects.toThrow(
-        "does not advertise tap",
-      );
-      expect(f.host.sent).toHaveLength(1);
+      expect((await f.act([{ type: "tap", target: { x: 10, y: 20 } }])).error).toBeNull();
+      expect(f.host.sent).toHaveLength(3);
     } finally {
       await f.host.service.shutdown();
     }
@@ -2468,9 +2465,7 @@ describe("iPhone agent readiness", () => {
         })),
       });
       try {
-        await expect(f.act([{ type: "navigate", to: "home" }])).rejects.toThrow("not ready");
         expect((await f.observe()).error).toBeNull();
-        f.setStatus(f.status);
         expect((await f.act([{ type: "navigate", to: "home" }])).error).toBeNull();
         expect(f.host.sent.map(({ operation }) => operation)).toEqual(["observe", "act"]);
       } finally {
