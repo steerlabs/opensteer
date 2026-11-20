@@ -602,9 +602,9 @@ export function migrationProvider(options?: {
               [taskApprovalReceiptsMigrationName]: { up: applyTaskApprovalReceipts },
               [answeredQuestionRecordsMigrationName]: { up: applyAnsweredQuestionRecords },
               [dropDeviceAccessCountMigrationName]: { up: applyDropDeviceAccessCount },
+              [browserSessionTabsIndexMigrationName]: { up: applyBrowserSessionTabsIndex },
             }
           : {}),
-        [browserSessionTabsIndexMigrationName]: { up: applyBrowserSessionTabsIndex },
       };
     },
   };
