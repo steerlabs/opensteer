@@ -183,7 +183,7 @@ export class BrowserScriptService {
       this.#bindings.set(agentBindingId, binding);
     }
     if (binding.ownerId !== ownerId)
-      throw refused("forbidden", "This browser binding is unavailable.");
+      throw refused("forbidden", "Browser access for this task is unavailable.");
     const key = JSON.stringify([
       agentBindingId,
       ownerId,

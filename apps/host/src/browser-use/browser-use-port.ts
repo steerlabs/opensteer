@@ -85,7 +85,7 @@ export function createBrowserUsePort({
   async function bind({ binding, threadId }: AdmittedPage, call: BrowserUseCall): Promise<Target> {
     call.signal.throwIfAborted();
     if (binding.backend !== "cdp")
-      throw refused("conflict", "This tab does not support the Browser Harness CDP backend.");
+      throw refused("conflict", "This tab cannot run browser scripts.");
     let target: Target | undefined;
     let root: string | undefined;
     const detached = new Set<string>();
@@ -215,7 +215,8 @@ export function createBrowserUsePort({
         ...(sessionId === undefined ? {} : { sessionId }),
       });
       if (!parsed.success) throw refused("bad_request", "Invalid CDP command.");
-      if (method === "Opensteer.fillLogin" || method === "Opensteer.fillCard")
+      if ((method === "Opensteer.fillLogin" || method === "Opensteer.fillCard") &&
+        !authority.agentBindingId.startsWith("session:"))
         throw refused(
           "forbidden",
           "Saved-login and card fills require their own approved Request.",

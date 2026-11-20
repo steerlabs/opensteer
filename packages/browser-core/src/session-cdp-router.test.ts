@@ -219,6 +219,61 @@ describe("SessionCdpRouter", () => {
     await router.close();
   });
 
+  it.each(["browser root", "page session"])(
+    "carries the script reply budget into a nested command from the %s",
+    async (route) => {
+      const backend = new FakeBackend();
+      const router = new SessionCdpRouter(backend);
+      router.registerSession("session", "root", async () => true, "/files/a");
+      const child = Promise.withResolvers<string>();
+      router.openScriptAttachment(
+        "session",
+        "script",
+        "root",
+        { maxBytes: 4096, maxDepth: 32, maxEntries: 200 },
+        (event) => {
+          if (event.method === "Target.attachedToTarget")
+            child.resolve(String(event.parameters.sessionId));
+        },
+      );
+      const parent = (await router.send("session", {
+        method: "Target.attachToTarget",
+        parameters: { targetId: "root" },
+        scriptAttachmentId: "script",
+      })) as { sessionId: string };
+      const page = backend.channels.get("root")!;
+      page.emit("Target.attachedToTarget", {
+        targetInfo: { targetId: "frame", type: "iframe" },
+        sessionId: "physical-frame",
+      });
+      const dispatch = vi.spyOn(page, "send").mockImplementation(async (_method, parameters) => {
+        const request = JSON.parse(String(parameters?.message)) as { id: number };
+        page.emit("Target.receivedMessageFromTarget", {
+          sessionId: "physical-frame",
+          message: JSON.stringify({ id: request.id, result: { data: "x".repeat(256) } }),
+        });
+        return {};
+      });
+      try {
+        await expect(
+          router.send("session", {
+            method: "Target.sendMessageToTarget",
+            parameters: {
+              sessionId: await child.promise,
+              message: JSON.stringify({ id: 1, method: "Runtime.evaluate" }),
+            },
+            scriptAttachmentId: "script",
+            replyBudget: { maxBytes: 128, maxDepth: 10, maxEntries: 100 },
+            ...(route === "page session" ? { sessionId: parent.sessionId } : {}),
+          }),
+        ).rejects.toMatchObject({ code: "too_large" });
+        expect(dispatch).toHaveBeenCalledOnce();
+      } finally {
+        await router.close();
+      }
+    },
+  );
+
   it("opens a virtual browser root and announces only owned pages before replying", async () => {
     const backend = new FakeBackend();
     const root = { targetId: "root-a", type: "page", browserContextId: "profile" };

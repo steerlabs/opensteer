@@ -437,9 +437,9 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       await page.getByRole("button", { name: "Open popup" }).click();
       const { targetInfos } = await page.cdp("Target.getTargets");
       const popup = targetInfos.find(({url}) => url.endsWith("/popup"));
-      const handle = await openPage(popup.surfaceId);
-      await handle.locator("h1").waitFor();
-      print(await handle.locator("h1").innerText());
+      globalThis.popupPage = await openPage(popup.surfaceId);
+      await popupPage.locator("h1").waitFor();
+      print(await popupPage.locator("h1").innerText());
     `),
       ),
     ).toBe("Popup");
@@ -497,15 +497,11 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     }
 
     const abandoned = hold("/abandoned");
+    const continueScript = hold("/continue");
     try {
       const unfinished = run(`
-        await page.cdp("Network.enable");
         void page.js("fetch('/abandoned').then(r => r.text())").catch(() => {});
-        for (;;) {
-          if (page.drainEvents().some(({ method, params }) =>
-            method === "Network.requestWillBeSent" && params.request.url.endsWith("/abandoned"))) break;
-          await sleep(20);
-        }
+        await popupPage.gotoUrl(${JSON.stringify(`${origin}/continue`)});
         return "done";
       `);
       await Promise.race([
@@ -514,11 +510,13 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           throw new Error(JSON.stringify(result));
         }),
       ]);
+      continueScript.release.resolve();
       expect(await unfinished).toMatchObject({
         isError: true,
         structuredContent: { error: { code: "outcome-unknown" } },
       });
     } finally {
+      continueScript.release.resolve();
       abandoned.release.resolve();
     }
     const stop = hold("/stop");

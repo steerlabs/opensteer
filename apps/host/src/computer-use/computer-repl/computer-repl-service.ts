@@ -163,7 +163,7 @@ export class ReplService<Request extends AnyReplRequest> {
         failure(
           this.#events
             ? "This browser context has ended."
-            : "This Run's computer context has ended.",
+            : "This task's access to the computer has ended.",
         ),
       );
     if (
@@ -188,7 +188,7 @@ export class ReplService<Request extends AnyReplRequest> {
         failure(
           this.#events
             ? "Browser code is already running for this context. Wait for that call to finish."
-            : "Computer code is already running for this Run. Wait for that call to finish.",
+            : "Computer code is already running for this task. Wait for that call to finish.",
         ),
       );
     if (!resident) {

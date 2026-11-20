@@ -43,6 +43,9 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
     response.end("<button onclick=\"this.textContent = 'Clicked in frame'\">Frame button</button>");
   }, "localhost");
   const responseBody = "response\n".repeat(75_000);
+  const requestDuringSettlement = Promise.withResolvers<void>();
+  const finishSettlementRequest = Promise.withResolvers<void>();
+  cleanup.push(async () => finishSettlementRequest.resolve());
   const origin = await fixtureServer((request, response) => {
     switch (request.url) {
       case "/worker.js":
@@ -51,6 +54,10 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
         return;
       case "/data":
         response.end(responseBody);
+        return;
+      case "/wait-for-settlement":
+        requestDuringSettlement.resolve();
+        void finishSettlementRequest.promise.then(() => response.end("finished"));
         return;
       case "/file":
         response.setHeader("Content-Disposition", 'attachment; filename="fixture.txt"');
@@ -367,6 +374,54 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
       true,
     ),
   ).rejects.toThrow();
+
+  if (profile.identity.kind !== "profile-local") throw new Error("Expected a saved profile.");
+  const profileId = profile.identity.binding.profileId;
+  const closingClient = await runtime.attachStandardCdp(
+    ticket({ standardCdp: "whole-context" }),
+    () => undefined,
+    new AbortController().signal,
+  );
+  const closedGeneration = standardLeaseGeneration;
+  const settlingPage = asRecord(
+    await closingClient.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: rootTargetId, flatten: true },
+    }),
+  );
+  const pendingWork = closingClient.send({
+    method: "Runtime.evaluate",
+    sessionId: String(settlingPage.sessionId),
+    parameters: {
+      awaitPromise: true,
+      expression: 'fetch("/wait-for-settlement").then((response) => response.text())',
+    },
+  });
+  void pendingWork.catch(() => undefined);
+  await requestDuringSettlement.promise;
+  let acknowledged = false;
+  const settling = runtime
+    .reconcileStandardCdpLease({ profileId, generation: closedGeneration })
+    .then(() => {
+      acknowledged = true;
+    });
+  expect(closingClient.signal.aborted).toBe(true);
+  await expect(closingClient.send({ method: "Browser.getVersion" })).rejects.toThrow();
+  await expect(pendingWork).rejects.toThrow();
+  expect(acknowledged).toBe(false);
+  finishSettlementRequest.resolve();
+  await settling;
+  const pendingGeneration = ++standardLeaseGeneration;
+  const lateTicket = () =>
+    ticket({
+      standardCdp: "whole-context",
+      standardCdpLease: { bindingId: "run:fixture", generation: pendingGeneration },
+    });
+  await runtime.reconcileStandardCdpLease({ profileId, generation: pendingGeneration });
+  await expect(
+    runtime.attachStandardCdp(lateTicket(), () => undefined, new AbortController().signal),
+  ).rejects.toThrow("Whole-context CDP requires an exclusive saved profile");
+  await expect(connect(lateTicket(), true)).rejects.toThrow("CDP attachment rejected");
 
   const bridge = await startHarnessBridge(agent, sessionSink);
   cleanup.push(() => bridge.close());
