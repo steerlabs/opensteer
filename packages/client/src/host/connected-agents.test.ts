@@ -87,7 +87,7 @@ describe("Settings connected agents", () => {
     const host = new MockHostClient({
       latencyMs: 0,
       connections: [row],
-      agentGrantsAvailable: false,
+      grantsAvailable: false,
     });
     const rpc = vi.fn(host.rpc["connections.list"]);
     Object.defineProperty(host.rpc, "connections.list", { value: rpc, configurable: true });
@@ -176,7 +176,7 @@ describe("Settings connected agents", () => {
     const host = new MockHostClient({
       latencyMs: 0,
       connections: [row],
-      agentGrantsAvailable: false,
+      grantsAvailable: false,
     });
     let resolve:
       ((value: Awaited<ReturnType<(typeof host.rpc)["connections.list"]>>) => void) | undefined;
@@ -251,28 +251,30 @@ function grantedFixture(patch: Partial<AgentConnection> = {}): AgentConnection {
   };
 }
 
-describe("Connected agents with grants (agent-grants-v1)", () => {
+describe("Connected agents with grants", () => {
   it("lists ended connections only from a Home that keeps their outcome", async () => {
     const stopped = grantedFixture({ state: "stopped", revokedAt: new Date().toISOString() });
     for (const grants of [true, false]) {
       const host = new MockHostClient({
         latencyMs: 0,
         connections: [stopped],
-        agentGrantsAvailable: grants,
+        grantsAvailable: grants,
       });
       const list = vi.fn(host.rpc["connections.list"]);
       Object.defineProperty(host.rpc, "connections.list", { value: list, configurable: true });
       const resource = new ConnectedAgentsClient(host);
+      const loaded = Promise.withResolvers<void>();
+      const unsubscribe = resource.subscribe(() => {
+        if (resource.getSnapshot().connections !== null) loaded.resolve();
+      });
       const stop = resource.start();
       try {
-        await vi.waitFor(() => expect(resource.getSnapshot().connections).not.toBeNull());
-        expect(list).toHaveBeenCalledWith(
-          grants ? { includeRevoked: true } : {},
-          expect.anything(),
-        );
+        await loaded.promise;
+        expect(list.mock.calls.map(([input]) => input)).toEqual([{}]);
         expect(resource.getSnapshot().grantsAvailable).toBe(grants);
         expect(resource.getSnapshot().connections).toEqual(grants ? [stopped] : []);
       } finally {
+        unsubscribe();
         stop();
         host.dispose();
       }
@@ -354,47 +356,56 @@ describe("Connected agents with grants (agent-grants-v1)", () => {
     }
   });
 
-  it("sends the chosen grant with an approval, and only to a Home that takes it", async () => {
-    const host = new MockHostClient({
-      latencyMs: 0,
-      connectionConsent: {
-        requestId: "r".repeat(43),
-        clientName: "Grok",
-        redirectUri: "https://grok.com/cb",
-        resource: "https://host.test/internal/v1/mcp",
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      },
-    });
-    try {
-      const dispatch = vi.spyOn(host, "dispatch");
-      const profileId = await createDedicatedProfile(host, { name: "Grok", homeRunnerId: null });
-      expect(dispatch).toHaveBeenLastCalledWith(
-        expect.objectContaining({ type: "browser.profile.create", input: { name: "Grok" } }),
-      );
-      const consent = unwrapRpcResult(
-        await host.rpc["connections.authorization.get"]({ requestId: "r".repeat(43) }),
-      );
-      const grant = {
-        scope: "selected" as const,
-        tasks: false,
-        resources: [{ kind: "browser-profile" as const, profileId: profileId as never }],
-      };
-      await answerAgentConnection(host, consent, {
-        kind: "approve",
-        label: "Grok",
-        accessMode: "approval-required",
-        grant,
+  it.each([true, false])(
+    "honors the consent response when grants support is %s",
+    async (grantsAvailable) => {
+      const host = new MockHostClient({
+        latencyMs: 0,
+        grantsAvailable,
+        connectionConsent: {
+          requestId: "r".repeat(43),
+          clientName: "Grok",
+          redirectUri: "https://grok.com/cb",
+          resource: "https://host.test/internal/v1/mcp",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
       });
-      expect(dispatch).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          type: "connection.authorize",
-          decision: { kind: "approve", label: "Grok", accessMode: "approval-required", grant },
-        }),
-      );
-      const [connection] = unwrapRpcResult(await host.rpc["connections.list"]({})).connections;
-      expect(connection?.grant).toEqual(grant);
-    } finally {
-      host.dispose();
-    }
-  });
+      try {
+        const dispatch = vi.spyOn(host, "dispatch");
+        const profileId = await createDedicatedProfile(host, { name: "Grok", homeRunnerId: null });
+        expect(dispatch).toHaveBeenLastCalledWith(
+          expect.objectContaining({ type: "browser.profile.create", input: { name: "Grok" } }),
+        );
+        const consent = unwrapRpcResult(
+          await host.rpc["connections.authorization.get"]({ requestId: "r".repeat(43) }),
+        );
+        const grant = {
+          scope: "selected" as const,
+          tasks: false,
+          resources: [{ kind: "browser-profile" as const, profileId: profileId as never }],
+        };
+        await answerAgentConnection(host, consent, {
+          kind: "approve",
+          label: "Grok",
+          accessMode: "approval-required",
+          grant,
+        });
+        expect(dispatch).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            type: "connection.authorize",
+            decision: {
+              kind: "approve",
+              label: "Grok",
+              accessMode: "approval-required",
+              ...(grantsAvailable ? { grant } : {}),
+            },
+          }),
+        );
+        const [connection] = unwrapRpcResult(await host.rpc["connections.list"]({})).connections;
+        expect(connection?.grant).toEqual(grantsAvailable ? grant : { scope: "everything" });
+      } finally {
+        host.dispose();
+      }
+    },
+  );
 });

@@ -11,6 +11,7 @@ import {
   draftSharedProfiles,
   setDraftPluginAccess,
   toggleDraftResource,
+  workPolicyLimits,
   type AgentGrantDraft,
   type AppOption,
   type BrowserOptions,
@@ -19,6 +20,7 @@ import {
   type PluginOptions,
 } from "@opensteer/client/host";
 import type { AgentOptionsRead } from "@opensteer/client/react";
+import type { WorkPolicy } from "@opensteer/control-plane-protocol";
 import type { ThreadAccessMode } from "@opensteer/core";
 import type {
   NativeSettingsFooter,
@@ -40,6 +42,8 @@ export interface AgentGrantContext {
   readonly apps: AgentOptionsRead<readonly AppOption[]>;
   readonly plugins: AgentOptionsRead<PluginOptions>;
   readonly disabled: boolean;
+  /** A work Home's effective policy, once the Home reports it; it rules choices out. */
+  readonly workPolicy?: WorkPolicy | undefined;
 }
 
 export function agentGrantSections(
@@ -52,6 +56,7 @@ export function agentGrantSections(
   },
 ): readonly NativeSettingsSection[] {
   const { agent, draft, disabled } = context;
+  const limits = workPolicyLimits(context.workPolicy);
   const scope: NativeSettingsSection = {
     key: "scope",
     title: agentWords("consent.scope.title"),
@@ -69,9 +74,9 @@ export function agentGrantSections(
         key: "everything",
         kind: "choice",
         label: agentWords("consent.scope.everything.label"),
-        detail: agentWords("consent.scope.everything.detail"),
+        detail: limits.everything ?? agentWords("consent.scope.everything.detail"),
         selected: draft.scope === "everything",
-        disabled,
+        disabled: disabled || (limits.everything !== null && draft.scope !== "everything"),
         onPress: () => context.onScope("everything"),
       },
     ],
@@ -144,9 +149,9 @@ export function agentGrantSections(
           key: "tasks",
           kind: "toggle",
           label: agentWords("consent.tasks.title"),
-          detail: agentWords("consent.tasks.detail", { agent, home: context.home }),
+          detail: limits.tasks ?? agentWords("consent.tasks.detail", { agent, home: context.home }),
           value: draft.tasks,
-          disabled,
+          disabled: disabled || (limits.tasks !== null && !draft.tasks),
           onChange: context.onTasks,
         },
       ],
@@ -167,7 +172,10 @@ export function agentModeSection(props: {
   readonly mode: ThreadAccessMode;
   readonly disabled: boolean;
   readonly onMode: (mode: ThreadAccessMode) => void;
+  /** A work Home's effective policy, once the Home reports it; it caps the mode. */
+  readonly workPolicy?: WorkPolicy | undefined;
 }): NativeSettingsSection {
+  const limits = workPolicyLimits(props.workPolicy);
   return {
     key: "mode",
     title: agentWords("consent.safety.title"),
@@ -175,9 +183,9 @@ export function agentModeSection(props: {
       key: option.mode,
       kind: "choice",
       label: option.label,
-      detail: connectionModeDescriptions[option.mode],
+      detail: limits.mode(option.mode) ?? connectionModeDescriptions[option.mode],
       selected: props.mode === option.mode,
-      disabled: props.disabled,
+      disabled: props.disabled || (limits.mode(option.mode) !== null && props.mode !== option.mode),
       onPress: () => props.onMode(option.mode),
     })),
   };

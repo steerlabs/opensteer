@@ -851,7 +851,14 @@ export function AppShell({
     setSidebarCollapsed(false);
     setMobileNavigationOpen(true);
     navigateTo(location.pathname, { replace: true });
-  }, [deploymentId, location.key, location.pathname, location.search, navigateTo, setSidebarCollapsed]);
+  }, [
+    deploymentId,
+    location.key,
+    location.pathname,
+    location.search,
+    navigateTo,
+    setSidebarCollapsed,
+  ]);
 
   // ⌘N / Ctrl+N opens Home, where every new task starts.
   useEffect(() => {
@@ -870,13 +877,17 @@ export function AppShell({
   // person, as the collapsed sidebar does. Leaving this Deployment clears it.
   useEffect(() => {
     if (!localBridge) return;
-    const show = (count: number) =>
-      void localBridge.setBadgeCount({ count }).catch(() => {
-        // A badge the operating system will not draw changes nothing the app shows.
-      });
-    show(attention);
-    return () => show(0);
-  }, [attention, localBridge]);
+    // The count names the Home it is for, so the menu bar never credits it to
+    // another; clearing on the way out names none.
+    const show = (count: number, from: string | null) =>
+      void localBridge
+        .setBadgeCount({ count, ...(from ? { deploymentId: from } : {}) })
+        .catch(() => {
+          // A badge the operating system will not draw changes nothing the app shows.
+        });
+    show(attention, deploymentId ?? null);
+    return () => show(0, null);
+  }, [attention, deploymentId, localBridge]);
 
   useEffect(() => {
     if (!localBridge || !localExecutionDeploymentId) {

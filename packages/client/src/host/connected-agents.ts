@@ -31,7 +31,6 @@ export interface ConnectedAgentsSnapshot {
   readonly revoked: ReadonlySet<string>;
   /** The connection whose edit lost to a newer change; the list was read again. */
   readonly conflict: string | null;
-  /** The Home stores grants (`agent-grants-v1`); without it consent stays the simple one. */
   readonly grantsAvailable: boolean;
 }
 export type ConnectedAgentAction = "revoke" | "update" | "remove";
@@ -63,9 +62,23 @@ type ConnectedAgentsHost = Pick<
   HostClient,
   "connection" | "rpc" | "dispatch" | "subscribe" | "getSnapshot" | "subscribeConnectionsChanged"
 >;
+
+async function readConnectedAgents(client: Pick<ConnectedAgentsHost, "rpc">, signal?: AbortSignal) {
+  const { connections, endedConnections } = unwrapRpcResult(
+    await client.rpc["connections.list"]({}, signal ? { signal } : undefined),
+  );
+  return {
+    connections: endedConnections?.length
+      ? [...connections, ...endedConnections].sort(
+          (left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt),
+        )
+      : connections,
+    grantsAvailable: endedConnections !== undefined,
+  };
+}
+
 export class ConnectedAgentsClient {
-  readonly read: ClientRead<readonly AgentConnection[]>;
-  readonly #client: ConnectedAgentsHost;
+  readonly read: ClientRead<Awaited<ReturnType<typeof readConnectedAgents>>>;
   readonly #listeners = new Set<() => void>();
   readonly #revokes: ReturnType<typeof createClientActionFamily<string, void>>;
   readonly #updates: ReturnType<
@@ -80,10 +93,7 @@ export class ConnectedAgentsClient {
   #starts = 0;
   #action: ClientAction<never, unknown> | null = null;
   #revoked = new Set<string>();
-  #grantsAvailable: boolean;
   constructor(client: ConnectedAgentsHost) {
-    this.#client = client;
-    this.#grantsAvailable = client.getSnapshot().agentGrantsAvailable === true;
     this.#state = {
       connections: null,
       error: null,
@@ -92,19 +102,12 @@ export class ConnectedAgentsClient {
       pendingAction: null,
       revoked: noRevokes,
       conflict: null,
-      grantsAvailable: this.#grantsAvailable,
+      grantsAvailable: false,
     };
     this.read = createClientRead(client, {
       key: "connected-agents",
       label: "connected agents",
-      read: async (signal) =>
-        unwrapRpcResult(
-          await client.rpc["connections.list"](
-            // Ended connections stay listed with their outcome until the person removes them.
-            client.getSnapshot().agentGrantsAvailable === true ? { includeRevoked: true } : {},
-            { signal },
-          ),
-        ).connections,
+      read: (signal) => readConnectedAgents(client, signal),
       subscribeInvalidation: (listener) => client.subscribeConnectionsChanged(listener),
     });
     this.#revokes = createClientActionFamily(client, {
@@ -119,9 +122,7 @@ export class ConnectedAgentsClient {
         });
       },
       reconcile: async (connectionId) => {
-        const { connections } = unwrapRpcResult(
-          await client.rpc["connections.list"]({ includeRevoked: true }),
-        );
+        const { connections } = await readConnectedAgents(client);
         const row = connections.find((candidate) => candidate.id === connectionId);
         return !row || row.revokedAt || (row.state !== undefined && row.state !== "active")
           ? { kind: "confirmed", value: undefined }
@@ -178,7 +179,8 @@ export class ConnectedAgentsClient {
     const read = this.read.getSnapshot(),
       action = this.#action?.getSnapshot();
     const issue = action?.issue ?? read.issue;
-    const connections = read.status === "ready" ? read.data : null;
+    const data = read.status === "ready" ? read.data : null;
+    const connections = data?.connections ?? null;
     // A revoke stays this client's own fact only until the Home lists its outcome.
     if (connections && this.#revoked.size) {
       for (const id of this.#revoked) {
@@ -194,25 +196,12 @@ export class ConnectedAgentsClient {
       pending: action?.running ? this.#state.pending : null,
       pendingAction: action?.running ? this.#state.pendingAction : null,
       revoked: this.#revoked.size ? new Set(this.#revoked) : noRevokes,
-      grantsAvailable: this.#grantsAvailable,
+      grantsAvailable: data?.grantsAvailable === true,
     });
-  };
-  #capabilityChanged = (): void => {
-    const available = this.#client.getSnapshot().agentGrantsAvailable === true;
-    if (available === this.#grantsAvailable) return;
-    this.#grantsAvailable = available;
-    this.read.invalidate();
-    this.#changed();
   };
   start(): () => void {
     if (this.#starts++ === 0) {
-      const releaseRead = this.read.subscribe(this.#changed);
-      const releaseHost = this.#client.subscribe(this.#capabilityChanged);
-      this.#release = () => {
-        releaseRead();
-        releaseHost();
-      };
-      this.#capabilityChanged();
+      this.#release = this.read.subscribe(this.#changed);
       this.#changed();
     }
     let released = false;
@@ -336,29 +325,114 @@ export function externalAgentAddresses(input: {
 
 /**
  * The agents Settings explains how to connect, in the order it lists them.
- * Each `step` is the one thing to do in that agent; Opensteer supplies the
- * address before it and the approval after it. An agent joins this list only
- * once it has been seen to connect end to end.
+ * Each `step` is what to do in that agent; Opensteer supplies the address before
+ * it and the approval after it. `reach: "internet"` marks cloud-hosted agents
+ * that connect from the vendor's servers and cannot use a private-network or
+ * loopback address; `reach: "any"` marks local apps, CLIs, and generic clients
+ * that can also connect locally or over a private network.
  */
 export const externalAgentGuides = [
   {
     id: "chatgpt",
     name: "ChatGPT",
     providerId: "openai",
+    reach: "internet",
     summary: "Use Opensteer from ChatGPT.",
-    step: "In ChatGPT's settings, open Apps and create an app with this address. Choose OAuth.",
+    step: "On Business or Enterprise plans, an admin must allow Create plugins with MCPs in Workspace settings → Permissions & roles. Open chatgpt.com/plugins, select +, then Add custom MCP server. Enter this address under Connection, choose OAuth, check I understand and want to continue, and select Create as a plugin.",
   },
   {
     id: "claude",
     name: "Claude",
     providerId: "anthropic",
-    summary: "Use Opensteer from Claude.",
-    step: "In Claude, open Settings, then Connectors, and add a custom connector with this address.",
+    reach: "internet",
+    summary: "Use Opensteer from Claude on the web, desktop, or mobile.",
+    step: "Free plans allow one custom connector; on Team or Enterprise plans, an Owner must first add it in Organization settings → Connectors. In Claude, open Customize → Connectors, click + Add, then Add custom connector. Enter this address, click Continue, choose Register automatically if asked for OAuth client, and click Add.",
+  },
+  {
+    id: "grok",
+    name: "Grok",
+    providerId: "xai",
+    reach: "internet",
+    summary: "Use Opensteer from Grok.",
+    step: "On Grok Business or Enterprise plans, a team admin must first add it in console.x.ai under Grok Business → Connectors. Open grok.com/connectors, click New Connector, select Custom, enter this address, and complete sign-in.",
+  },
+  {
+    id: "perplexity",
+    name: "Perplexity",
+    providerId: null,
+    reach: "internet",
+    summary: "Use Opensteer from Perplexity.",
+    step: "In an Enterprise organization, an admin must turn on Allow members to add custom connectors in Organization settings → Connectors. Open Plugins in the sidebar, select Add custom → Add MCP connector, choose Remote, enter this address, set Authentication to OAuth under Advanced, check the acknowledgement, select Add, then open the card to sign in.",
+  },
+  {
+    id: "mistral",
+    name: "Mistral Le Chat",
+    providerId: "mistral",
+    reach: "internet",
+    summary: "Use Opensteer from Mistral Le Chat.",
+    step: "Requires an administrator (you are one by default on Free, Pro, and Student plans). Open Connectors, click + Add Connector, switch to Custom MCP Connector, enter a name with no spaces and this address as Server URL, click Connect, and sign in.",
+  },
+  {
+    id: "claude-code",
+    name: "Claude Code",
+    providerId: "anthropic",
+    reach: "any",
+    summary: "Use Opensteer from Claude Code in your terminal.",
+    step: "In your terminal, run claude mcp add --transport http opensteer <address>, then run claude mcp login opensteer (or open /mcp in Claude Code) to sign in.",
+  },
+  {
+    id: "codex",
+    name: "Codex",
+    providerId: "openai",
+    reach: "any",
+    summary: "Use Opensteer from Codex CLI, the ChatGPT desktop app, or the IDE extension.",
+    step: "In your terminal, run codex mcp add opensteer --url <address>, then run codex mcp login opensteer. Or in the ChatGPT desktop app, open Settings → MCP servers → Add server, choose Streamable HTTP, save, select Restart, and select Authenticate.",
+  },
+  {
+    id: "cursor",
+    name: "Cursor",
+    providerId: "cursor",
+    reach: "any",
+    summary: "Use Opensteer from Cursor.",
+    step: "Add an entry under mcpServers with this address as url (and no Authorization header) in ~/.cursor/mcp.json, save, then open Customize → MCPs and sign in when prompted.",
+  },
+  {
+    id: "vscode",
+    name: "VS Code",
+    providerId: null,
+    reach: "any",
+    summary: "Use Opensteer from GitHub Copilot in VS Code.",
+    step: "Enable AI features and select Copilot in Chat. Run MCP: Add Server from the Command Palette (or Chat: Open Customizations → MCP Servers → Add Server), choose HTTP (HTTP or Server-Sent Events), enter this address, pick Global → Copilot Global, and sign in when prompted.",
+  },
+  {
+    id: "gemini-cli",
+    name: "Gemini CLI",
+    providerId: "google",
+    reach: "any",
+    summary: "Use Opensteer from Gemini CLI.",
+    step: "In your terminal, run gemini mcp add --transport http --scope user opensteer <address>, then start Gemini CLI and run /mcp auth opensteer to sign in.",
+  },
+  {
+    id: "zed",
+    name: "Zed",
+    providerId: null,
+    reach: "any",
+    summary: "Use Opensteer from Zed.",
+    step: "In Zed, open Settings → AI → MCP Servers, click Add Server, choose Add Remote Server, enter this address with no Authorization header, and sign in when prompted.",
+  },
+  {
+    id: "devin-local",
+    name: "Devin Local (Windsurf)",
+    providerId: null,
+    reach: "any",
+    summary: "Use Opensteer from Devin Desktop (formerly Windsurf) or Devin CLI.",
+    step: "In your terminal, run devin mcp add -s user opensteer <address>, then run devin mcp login opensteer. You can also manage it under Customize → MCPs in Devin Desktop.",
   },
   {
     id: "other",
     name: "Another agent",
     providerId: null,
+    reach: "any",
     summary: "Any agent that supports MCP with OAuth sign-in.",
     step: "Add a remote MCP server with this address, and choose OAuth when it asks how to sign in.",
   },
@@ -366,6 +440,7 @@ export const externalAgentGuides = [
   readonly id: string;
   readonly name: string;
   readonly providerId: string | null;
+  readonly reach: "internet" | "any";
   readonly summary: string;
   readonly step: string;
 }[];
@@ -413,13 +488,13 @@ export function externalAgentsReach(input: {
 
 /** What one guide offers as its first step: the address, or why that agent can't use it. */
 export function guideAddress(
-  guide: Pick<ExternalAgentGuide, "name" | "providerId">,
+  guide: Pick<ExternalAgentGuide, "name" | "reach">,
   reach: Extract<ExternalAgentsReach, { kind: "ready" }>,
 ):
   | { readonly kind: "address"; readonly url: string }
   | { readonly kind: "blocked"; readonly detail: string } {
-  // Only "Another agent" may be one running somewhere that can see a private network.
-  if (reach.reach === "private-network" && guide.providerId !== null)
+  // Cloud agents connect from the vendor's servers, so a private network address can't work.
+  if (reach.reach === "private-network" && guide.reach === "internet")
     return {
       kind: "blocked",
       detail: `${guide.name} can’t reach a private network address. Switch Remote access to your Opensteer Account, under Advanced.`,
@@ -480,7 +555,6 @@ export async function answerAgentConnection(
         readonly kind: "approve";
         readonly label: string;
         readonly accessMode: ThreadAccessMode;
-        /** Sent only to a Home with `agent-grants-v1`; without it the agent may do everything. */
         readonly grant?: AgentGrant;
       },
 ): Promise<string> {
@@ -495,7 +569,7 @@ export async function answerAgentConnection(
             kind: "approve",
             label: decision.label.trim(),
             accessMode: decision.accessMode,
-            ...(decision.grant ? { grant: decision.grant } : {}),
+            ...(consent.grantsAvailable && decision.grant ? { grant: decision.grant } : {}),
           },
   });
   if (result.type !== "connection.authorize") throw new Error("Unexpected consent result.");

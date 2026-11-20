@@ -6,6 +6,7 @@ import {
   signTestDiscoveryEnvelope,
   signTestPersonalAccessRoute,
   testHostAuthorityKeys,
+  testHostIdentityProofAnswer,
 } from "@opensteer/client/test-support";
 import {
   DeploymentIdSchema,
@@ -36,6 +37,22 @@ const personalRouteOrigin = "https://route.example.com";
 const serverCanonicalOrigin = "https://host.example.com";
 const homeCanonicalOrigin = "https://home.example.com";
 const verifiedAt = "2026-09-01T00:00:00.000Z";
+
+/**
+ * What a saved Home's address answers when a client asks it to prove itself:
+ * the same Home, or (`replaced`) a different Opensteer now serving there.
+ */
+export function testHomeProofAnswer(
+  url: string,
+  connection: DeploymentConnection,
+  replaced = false,
+): Response | null {
+  return testHostIdentityProofAnswer(
+    url,
+    connection.authority,
+    replaced ? testHostAuthorityKeys() : keys,
+  );
+}
 
 export function testDeploymentConnection(input: {
   readonly deploymentId?: string;

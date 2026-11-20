@@ -276,7 +276,14 @@ async function renderOpensteer(): Promise<void> {
                 return attachMockDesktop(
                   client,
                   desktopScenario,
-                  cloudScene ? new MockCloudComputerAccount(cloudScene) : null,
+                  cloudScene
+                    ? new MockCloudComputerAccount(
+                        cloudScene,
+                        // A mock work Home is the attached Home, so its badge shows.
+                        client.getSnapshot().deploymentId ??
+                          "dep_00000000-0000-4000-8000-000000000001",
+                      )
+                    : null,
                 );
               const downloadsScript = new URLSearchParams(window.location.search).get(
                 "mock-downloads",

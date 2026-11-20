@@ -37,7 +37,7 @@ export class PrivateDeploymentConnectionService {
 
   async connect(input: DesktopConnectPrivateDeploymentInput | unknown): Promise<void> {
     const parsed = DesktopConnectPrivateDeploymentInputSchema.parse(input);
-    if (parsed.kind === "team") {
+    if (parsed.kind === "address") {
       const verified = await verifyDeploymentAddress({ fetch: this.#fetch, origin: parsed.origin });
       await this.#catalog.upsertAndSelect(
         deploymentConnectionFromVerifiedEndpoints({

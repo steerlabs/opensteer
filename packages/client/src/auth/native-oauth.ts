@@ -39,8 +39,10 @@ import {
   type TeamSessionExchangeResponse,
 } from "@opensteer/protocol";
 import {
+  HostDescriptorSchema,
   hostAuthorityIdentityMatches,
   hostKeyFingerprint,
+  verifyHostIdentityProof,
   teamApiVersion,
   teamApiVersionHeader,
   teamOAuthVersionParameter,
@@ -149,6 +151,7 @@ const accountRenewalFailedDetail =
 const hostUnreachableDetail =
   "This server couldn’t be reached. Check your connection and try again.";
 const hostRenewalFailedDetail = "This server couldn’t renew your sign-in. Try again in a moment.";
+export const differentHomeDetail = "This address now answers as a different Opensteer.";
 const revocationUnconfirmedDetail =
   "Signed out locally; server-side revocation could not be confirmed.";
 const hostAuthorizationTimedOutDetail = "Authorization timed out. Sign in again.";
@@ -276,6 +279,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
   #hostDetails = new Map<string, string>();
   #disposed = false;
   readonly #hostControllers = new Map<DeploymentId, AbortController>();
+  /** Homes that proved, in this app session, that their address still answers as them. */
+  readonly #provenHomes = new Set<string>();
   #initialized = false;
   readonly #credentialMutations = new MutationQueue();
   #storageError: ClientOperationError | null = null;
@@ -524,6 +529,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
     entry.assertCurrent();
     await this.#beforeHostChange(connection);
     await this.#ensureStorageReady();
+    entry.assertCurrent();
+    await this.#proveSameHome(connection);
     entry.assertCurrent();
     const key = hostAttachmentKey(connection);
     this.#hostDetails.delete(key);
@@ -1051,6 +1058,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     if (!credential || !credentialMatchesConnection(credential, connection)) {
       return null;
     }
+    await this.#proveSameHome(connection);
     if (
       Date.parse(credential.accessTokenExpiresAt) >
       this.#now().getTime() + accessTokenRefreshSkewMs
@@ -1101,10 +1109,58 @@ export class NativeOAuthManager implements HostCredentialProvider {
     return this.#refreshHostCredential(connection, credential);
   }
 
+  /**
+   * A saved Home at its own address signs a fresh nonce with the key saved for
+   * it before this app sends it anything: the address may now be served by a
+   * different Opensteer, which must receive no refresh token, bearer or sign-in.
+   */
+  async #proveSameHome(connection: DeploymentConnection): Promise<void> {
+    if (connection.kind !== "personal" || !usesHostNativeOAuth(connection)) return;
+    const saved = connection.authority;
+    const key = `${saved.document.deploymentId}:${saved.publicKey.spki}:${saved.document.canonicalOrigin}`;
+    if (this.#provenHomes.has(key)) return;
+    const nonce = encodeBase64Url(this.#randomBytes(32));
+    const endpoint = `${new URL("/.well-known/opensteer", saved.document.canonicalOrigin).href}?proof=${nonce}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(new Error("The server timed out.")),
+      this.#networkTimeoutMs,
+    );
+    unrefTimer(timeout);
+    let body: unknown;
+    try {
+      const response = await this.#fetch(endpoint, {
+        cache: "no-store",
+        credentials: "omit",
+        headers: { accept: "application/json" },
+        method: "GET",
+        redirect: "error",
+        referrerPolicy: "no-referrer",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`The server answered ${response.status}.`);
+      body = await readBoundedJson(response, boundedJsonOptions);
+    } catch (error) {
+      throw new ClientOperationError(hostUnreachableDetail, "transient", { cause: error });
+    } finally {
+      clearTimeout(timeout);
+    }
+    const descriptor = HostDescriptorSchema.safeParse(body);
+    const proof = descriptor.success ? descriptor.data.identityProof : undefined;
+    if (
+      !proof ||
+      proof.nonce !== nonce ||
+      !verifyHostIdentityProof({ saved, nonce, signature: proof.signature })
+    )
+      throw new ClientOperationError(differentHomeDetail, "blocked");
+    this.#provenHomes.add(key);
+  }
+
   async #refreshHostCredential(
     connection: DeploymentConnection,
     credential: HostCredential,
   ): Promise<string | null> {
+    await this.#proveSameHome(connection);
     const deploymentId = connection.authority.document.deploymentId;
     const key = hostAttachmentKey(connection);
     const owner = this.#teamRuntime;

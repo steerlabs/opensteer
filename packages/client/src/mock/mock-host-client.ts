@@ -1864,8 +1864,8 @@ export interface MockHostClientOptions {
   sessions?: readonly AuthSessionSummary[];
   connections?: readonly import("@opensteer/protocol").AgentConnection[];
   connectionConsent?: import("@opensteer/protocol").AgentConnectionConsent;
-  /** Whether this Host advertises `agent-grants-v1`; true by default. */
-  agentGrantsAvailable?: boolean;
+  /** Whether the connection reads report grants support. Defaults to true. */
+  grantsAvailable?: boolean;
   /** The Opensteer website this Home names, where Account billing happens; none by default. */
   portalOrigin?: string;
 }
@@ -2146,11 +2146,21 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
               )?.id ?? null,
         }),
       ),
-    "connections.list": async (input) =>
-      rpcSuccess({ connections: client.listConnections(input.includeRevoked === true) }),
+    "connections.list": async (input) => {
+      const connections = client.listConnections(input.includeRevoked === true);
+      if (!client.grantsAvailable) return rpcSuccess({ connections });
+      const activeIds = new Set(connections.map((connection) => connection.id));
+      return rpcSuccess({
+        connections,
+        endedConnections: client.listConnections(true).filter(({ id }) => !activeIds.has(id)),
+      });
+    },
     "connections.authorization.get": async ({ requestId }) => {
       try {
-        return rpcSuccess(client.connectionConsent(requestId));
+        return rpcSuccess({
+          ...client.connectionConsent(requestId),
+          ...(client.grantsAvailable ? { grantsAvailable: true as const } : {}),
+        });
       } catch (error) {
         return mockRefusal(error);
       }
@@ -5828,6 +5838,7 @@ class MockHostState {
   agentHomeSettings: AgentHomeSettings = {};
   agentHomeSettingsFile: AgentHomeSettingsFileView = { status: "missing" };
   readonly automaticModels: NonNullable<MockHostClientOptions["automaticModels"]>;
+  readonly grantsAvailable: boolean;
   private connections: import("@opensteer/protocol").AgentConnection[];
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
   private connectionDecision: { requestId: string; fingerprint: string } | null = null;
@@ -6776,6 +6787,7 @@ class MockHostState {
         })),
       ]),
     ];
+    this.grantsAvailable = options.grantsAvailable ?? true;
     this.latencyMs = options.latencyMs ?? 420;
     this.replies = options.replies ?? "scripted";
     this.now = options.now ?? (() => new Date());
@@ -6785,7 +6797,6 @@ class MockHostState {
 
       quietTasksAvailable: options.quietTasksAvailable ?? true,
       agentImagesAvailable: options.agentImagesAvailable ?? true,
-      agentGrantsAvailable: options.agentGrantsAvailable ?? true,
     };
     if (options.portalOrigin && initial.identityConfig)
       initial.identityConfig = { ...initial.identityConfig, portalOrigin: options.portalOrigin };

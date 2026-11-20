@@ -84,6 +84,7 @@ import { DeploymentMenu } from "./deployment-menu.js";
 import { phoneLeaves } from "./device-page-model.js";
 import { useSetupScanner } from "./setup-scanner.js";
 import { Welcome } from "./welcome.js";
+import { useWorkBadges } from "./work-home.js";
 
 const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus>([
   "connected",
@@ -103,6 +104,8 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
   readonly onRemove: (row: DeploymentRow) => void;
   readonly onSignOut: (row: DeploymentRow) => void;
   readonly row: DeploymentRow;
+  /** "Work · {organization}" when an organization pays for and governs this Home. */
+  readonly work?: string | undefined;
 }): ReactNode {
   const row = props.row;
   const detail = deploymentStatusDetail(row);
@@ -142,6 +145,11 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
           <AppText numberOfLines={1} role="title">
             {row.name}
           </AppText>
+          {props.work ? (
+            <AppText numberOfLines={1} role="caption" tone="muted">
+              {props.work}
+            </AppText>
+          ) : null}
           <View style={styles.statusLine}>
             <StatusDot
               live={row.status === "connecting" || row.status === "reconnecting"}
@@ -401,6 +409,7 @@ export function DeploymentsScreen(): ReactNode {
   const { account, directory, rows, selection } = useMobileState();
   const enrolledIn = useIphoneAppsState(useIphoneApps()).snapshot.enrollment?.deploymentId ?? null;
   const attention = useOtherComputersAttention(rows, selection.deploymentId);
+  const workBadges = useWorkBadges();
   const switching = route.name === "DeploymentSwitcher";
   const listInsets = useListContentInsets(space[32]);
   const column = useReadingColumn();
@@ -725,6 +734,7 @@ export function DeploymentsScreen(): ReactNode {
               onRemove={confirmRemove}
               onSignOut={confirmSignOut}
               row={row}
+              work={workBadges.get(row.deploymentId)}
             />
           ))}
         </RowGroup>

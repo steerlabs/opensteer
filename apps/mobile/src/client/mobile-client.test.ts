@@ -39,7 +39,10 @@ import { DeploymentIdSchema } from "@opensteer/core";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { SessionExchangeResponseSchema } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { testDeploymentConnection } from "../../test-support/deployment-fixtures.js";
+import {
+  testDeploymentConnection,
+  testHomeProofAnswer,
+} from "../../test-support/deployment-fixtures.js";
 import { MemorySecureStore } from "../platform/memory-secure-store.js";
 import { createSecureRecordStore } from "../platform/secure-record-store.js";
 import { createDeploymentCredentials } from "./deployment-credentials.js";
@@ -401,6 +404,8 @@ function open(
     readonly openIntegrationAuthorization?: MobileClientOptions["openIntegrationAuthorization"];
     readonly records?: MobileClientOptions["records"];
     readonly savedViewStore?: MobileClientOptions["savedViewStore"];
+    /** A different Opensteer now answers at a saved Home's address. */
+    readonly replacedHome?: () => boolean;
   } = {},
 ) {
   const opened: string[] = [];
@@ -417,6 +422,13 @@ function open(
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
       );
       if (url.pathname.includes("well-known")) {
+        const home = (await client.catalog.load()).deployments.find(
+          (connection) =>
+            connection.authority.document.canonicalOrigin === url.origin &&
+            connection.kind === "personal",
+        );
+        const proof = home && testHomeProofAnswer(url.href, home, options.replacedHome?.());
+        if (proof) return proof;
         const connection = (await client.catalog.load()).deployments.find(
           (connection) =>
             connection.authority.document.canonicalOrigin === url.origin &&
@@ -2497,6 +2509,65 @@ describe("MobileClient sign-in", () => {
     expect(client.oauth.hostCredentialState(home).status).toBe("signed-out");
     expect(await client.oauth.authorizationHeader(home)).toBeNull();
     client.dispose();
+  });
+
+  it("sends nothing to a different Opensteer now answering at a saved Home's address", async () => {
+    let replaced = true;
+    const requested: string[] = [];
+    const port = testPort({ held: true });
+    const privateFiles = new MemoryPrivateFilesystem();
+    const records = createSecureRecordStore({
+      keyPrefix: "test",
+      secureStore: new MemorySecureStore(),
+    });
+    const { client, opened } = open(port.factory, privateFiles, {
+      records,
+      replacedHome: () => replaced,
+      fetch: async (input, init) => {
+        requested.push(String(input));
+        return testFetch(input, init);
+      },
+    });
+    const home = testDeploymentConnection({ home: true, deploymentId: otherId });
+    await client.catalog.upsert(asInput(home));
+    await client.initialize();
+
+    // No sign-in opens for an address that cannot prove it is the saved Home.
+    await expect(client.signIn(otherId)).rejects.toThrow(
+      "This address now answers as a different Opensteer.",
+    );
+    expect(opened).toEqual([]);
+
+    // The real Home signs this person in.
+    replaced = false;
+    const signingIn = client.signIn(otherId);
+    await vi.waitFor(() => expect(opened).toHaveLength(1), { timeout: 1000 });
+    const authorize = new URL(opened[0]!);
+    await client.oauth.handleCallback(
+      `${opensteerMobileHostOAuthCallback}?code=home-code&iss=https%3A%2F%2Fhome.example.com&state=${authorize.searchParams.get("state")}`,
+    );
+    await signingIn;
+    expect(client.oauth.hostCredentialState(home).status).toBe("signed-in");
+    client.dispose();
+
+    // A later app session finds a different server there: neither its bearer
+    // nor its refresh token leaves the phone.
+    replaced = true;
+    requested.length = 0;
+    const later = open(port.factory, privateFiles, {
+      records,
+      replacedHome: () => replaced,
+      fetch: async (input, init) => {
+        requested.push(String(input));
+        return testFetch(input, init);
+      },
+    });
+    await later.client.initialize();
+    await expect(later.client.oauth.authorizationHeader(home)).rejects.toThrow(
+      "This address now answers as a different Opensteer.",
+    );
+    expect(requested.filter((url) => !url.includes("well-known"))).toEqual([]);
+    later.client.dispose();
   });
 
   it("clears a team's cached authority before revocation and retries a failed cleanup", async () => {

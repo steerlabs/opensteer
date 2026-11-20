@@ -8,6 +8,7 @@ import { Icon } from "../icon.js";
 import { ErrorNotice } from "../onboarding-card.js";
 import { PlaceList } from "./place-list.js";
 import { PlaceSignInCard } from "./place-account.js";
+import { usePlaceWorkBadges } from "../settings/sections/work-home.js";
 
 /** Places in the switch dialog, checked while open. Choosing or adding one closes it. */
 export function PlaceMenuPlaces({
@@ -22,6 +23,7 @@ export function PlaceMenuPlaces({
   const [error, setError] = useState<string | null>(null);
   const computers = snapshot.deployments.filter((row) => row.kind === "personal");
   const facts = useComputerFacts(factsStore, computers);
+  const work = usePlaceWorkBadges(bridge);
   useEffect(() => {
     const check = () => void bridge.checkDeployments().catch(() => undefined);
     check();
@@ -29,8 +31,8 @@ export function PlaceMenuPlaces({
     return () => window.removeEventListener("focus", check);
   }, [bridge]);
   const personalIds = new Set<string>(computers.map((row) => row.id));
-  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts }).filter((row) =>
-    personalIds.has(row.id),
+  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts, work }).filter(
+    (row) => personalIds.has(row.id),
   );
   const run = (operation: () => Promise<void>, then?: () => void) => {
     setPending(true);

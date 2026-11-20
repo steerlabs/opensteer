@@ -15,6 +15,7 @@ import { CopyBlock } from "../../copy-block.js";
 import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
 import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
+import { SetupSteps, WorkHomeCards, WorkHomeRow, useWorkHomeBadge } from "./work-home.js";
 
 export const cloudComputerPath = "/settings/account/cloud-computer";
 
@@ -27,17 +28,22 @@ const accounts = new WeakMap<OpensteerDesktopBridge, CloudComputerAccount>();
  */
 export function useCloudComputerAccount(): CloudComputerAccount | null {
   const { desktopBridge } = useShell();
-  return useMemo(() => {
-    if (!desktopBridge?.cloudComputerRead || !desktopBridge.cloudComputerAct) return null;
-    let account = accounts.get(desktopBridge);
-    if (!account) {
-      const read = desktopBridge.cloudComputerRead.bind(desktopBridge);
-      const act = desktopBridge.cloudComputerAct.bind(desktopBridge);
-      account = { read, act };
-      accounts.set(desktopBridge, account);
-    }
-    return account;
-  }, [desktopBridge]);
+  return useMemo(() => cloudComputerAccountFor(desktopBridge), [desktopBridge]);
+}
+
+/** The one Cloud Computer account for a desktop bridge, so every screen shares its read. */
+export function cloudComputerAccountFor(
+  desktopBridge: OpensteerDesktopBridge | null | undefined,
+): CloudComputerAccount | null {
+  if (!desktopBridge?.cloudComputerRead || !desktopBridge.cloudComputerAct) return null;
+  let account = accounts.get(desktopBridge);
+  if (!account) {
+    const read = desktopBridge.cloudComputerRead.bind(desktopBridge);
+    const act = desktopBridge.cloudComputerAct.bind(desktopBridge);
+    account = { read, act };
+    accounts.set(desktopBridge, account);
+  }
+  return account;
 }
 
 function useOpenWebsite() {
@@ -129,6 +135,7 @@ export function CloudComputerPage() {
       {back}
       <SectionHeader title={cloudWords("cloud.title")} lead={cloudWords("cloud.lead")} />
       {screen.kind === "loading" ? <p role="status">{cloudWords("cloud.loading")}</p> : null}
+      <WorkHomeCards cards={cloud.work} />
       {screen.kind === "failed" ? (
         <AccountFailure
           kind={screen.failure.kind}
@@ -191,16 +198,20 @@ export function CloudComputerPage() {
               <strong className="connected-agent__status-label">
                 {cloudWords("cloud.preparing.title")}
               </strong>
-              <ol className="connected-agent__steps">
-                <li data-state="current">
-                  <span aria-hidden />
-                  {cloudWords("cloud.step.machine")}
-                </li>
-                <li data-state="pending">
-                  <span aria-hidden />
-                  {cloudWords("cloud.step.ready")}
-                </li>
-              </ol>
+              {screen.computer.steps ? (
+                <SetupSteps steps={screen.computer.steps} />
+              ) : (
+                <ol className="connected-agent__steps">
+                  <li data-state="current">
+                    <span aria-hidden />
+                    {cloudWords("cloud.step.machine")}
+                  </li>
+                  <li data-state="pending">
+                    <span aria-hidden />
+                    {cloudWords("cloud.step.ready")}
+                  </li>
+                </ol>
+              )}
             </div>
           </div>
           <p className="settings-footnote">
@@ -312,7 +323,9 @@ function ComputerStatus({
   const remove = cloudComputerDeleteInput(computer.id, typed);
   return (
     <>
-      {computer.address ? <ReadyActions address={computer.address} /> : null}
+      {computer.address ? (
+        <ReadyActions address={computer.address} deploymentId={computer.deploymentId} />
+      ) : null}
       <SettingsGroup heading={cloudWords("cloud.status.title")} headingId="cloud-computer-status">
         <div className="card__row">
           <span aria-hidden className={`status-dot status-dot--${dotTone(computer.status.tone)}`} />
@@ -340,9 +353,16 @@ function ComputerStatus({
             <span className="card__row-detail">{computer.browserIp.detail}</span>
           </span>
         </div>
+        {computer.browserAddress ? (
+          <SettingsRow title={cloudWords("cloud.ip.address")} detail={computer.browserAddress} />
+        ) : null}
+        {computer.region ? (
+          <SettingsRow title={cloudWords("cloud.region")} detail={computer.region} />
+        ) : null}
       </SettingsGroup>
       <SettingsGroup heading={cloudWords("cloud.plan.title")} headingId="cloud-computer-plan">
         <SettingsRow
+          detail={computer.renews ?? undefined}
           title={planLine}
           action={
             onBilling ? (
@@ -389,19 +409,21 @@ function ComputerStatus({
         ) : null}
       </SettingsGroup>
       <SettingsError message={actionFailure} />
-      <div className="connected-agent__end">
-        <button
-          className="btn btn--danger"
-          disabled={busy}
-          onClick={() => {
-            setTyped("");
-            setConfirming("delete");
-          }}
-          type="button"
-        >
-          {pending === "delete" ? cloudWords("cloud.deleting") : cloudWords("cloud.delete")}
-        </button>
-      </div>
+      {computer.canDelete ? (
+        <div className="connected-agent__end">
+          <button
+            className="btn btn--danger"
+            disabled={busy}
+            onClick={() => {
+              setTyped("");
+              setConfirming("delete");
+            }}
+            type="button"
+          >
+            {pending === "delete" ? cloudWords("cloud.deleting") : cloudWords("cloud.delete")}
+          </button>
+        </div>
+      ) : null}
       {confirming === "suspend" ? (
         <Dialog
           title={cloudWords("cloud.suspend.title")}
@@ -472,14 +494,21 @@ function ComputerStatus({
  * Devices. Each uses the app's existing paths: the Account lists the Cloud Computer as
  * a Home, and opening a Home this Mac doesn't host offers the existing "Set up this Mac".
  */
-function ReadyActions({ address }: { readonly address: string }) {
+function ReadyActions({
+  address,
+  deploymentId,
+}: {
+  readonly address: string;
+  readonly deploymentId: string | null;
+}) {
   const { deploymentAccess, desktopBridge } = useShell();
   const navigate = useNavigate();
-  const origin = new URL(address).origin;
+  // The Account names the Home it pinned; until it has, the Home isn't listed yet.
   const listed =
-    deploymentAccess?.deployments.find(
-      (deployment) => safeOrigin(deployment.canonicalOrigin) === origin,
-    ) ?? null;
+    deploymentId === null
+      ? null
+      : (deploymentAccess?.deployments.find((deployment) => deployment.id === deploymentId) ??
+        null);
   const open = (path: string | null) => {
     if (!desktopBridge) {
       window.open(address, "_blank", "noopener,noreferrer");
@@ -546,20 +575,14 @@ function ReadyActions({ address }: { readonly address: string }) {
   );
 }
 
-function safeOrigin(value: string): string | null {
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * The Cloud Computer on a Home's own page: offered on a Mac Home; on a networked Home,
  * shown only when it is the person's Cloud Computer, with its status; never on a server.
  */
 export function HomeCloudComputerRow() {
-  const { snapshot } = useShell();
+  const { desktopDeployment, snapshot } = useShell();
+  const work = useWorkHomeBadge(desktopDeployment?.id);
+  if (work) return <WorkHomeRow card={work} />;
   const exposure = snapshot.identityConfig?.exposure;
   if (exposure !== "networked")
     return (
@@ -567,17 +590,15 @@ export function HomeCloudComputerRow() {
         <CloudComputerEntryRow />
       </SettingsGroup>
     );
-  return <NetworkedHomeCloudRow publicOrigin={snapshot.identityConfig?.publicOrigin ?? null} />;
+  return <NetworkedHomeCloudRow deploymentId={desktopDeployment?.id ?? null} />;
 }
 
-function NetworkedHomeCloudRow({ publicOrigin }: { readonly publicOrigin: string | null }) {
+function NetworkedHomeCloudRow({ deploymentId }: { readonly deploymentId: string | null }) {
   const account = useCloudComputerAccount();
   const cloud = useCloudComputer(account);
   const screen = cloud.screen;
   if (screen.kind !== "computer" && screen.kind !== "preparing") return null;
-  const address = screen.computer.address;
-  if (address === null || publicOrigin === null || safeOrigin(address) !== safeOrigin(publicOrigin))
-    return null;
+  if (deploymentId === null || screen.computer.deploymentId !== deploymentId) return null;
   return (
     <SettingsGroup heading={null} headingId="device-home-cloud">
       <SettingsRow

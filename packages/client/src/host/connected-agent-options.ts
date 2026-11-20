@@ -58,6 +58,8 @@ export function agentBrowserOptions(
   snapshot: Pick<HostSnapshot, "browserProfiles" | "browserProfileHomes" | "machines">,
 ): BrowserOptions {
   const profiles = snapshot.browserProfiles.flatMap((profile): ProfileOption[] => {
+    // Where an AI engine signs in is the person's own; no agent's grant may name it.
+    if (profile.purpose === "engine-sign-in") return [];
     const resource = AgentGrantResourceSchema.safeParse({
       kind: "browser-profile",
       profileId: profile.id,

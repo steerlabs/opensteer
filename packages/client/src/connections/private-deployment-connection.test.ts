@@ -162,7 +162,7 @@ describe("PrivateDeploymentConnectionService", () => {
     const service = new PrivateDeploymentConnectionService({ catalog, fetch, sessions });
 
     await service.connect({
-      kind: "team",
+      kind: "address",
       origin: discovery.document.canonicalOrigin,
     });
 
@@ -197,7 +197,7 @@ describe("PrivateDeploymentConnectionService", () => {
     );
     const service = new PrivateDeploymentConnectionService({ catalog, fetch, sessions });
 
-    await service.connect({ kind: "team", origin: home.document.canonicalOrigin });
+    await service.connect({ kind: "address", origin: home.document.canonicalOrigin });
 
     expect(fetch).toHaveBeenCalledWith(
       `${home.document.canonicalOrigin}/.well-known/opensteer`,
@@ -235,7 +235,7 @@ describe("PrivateDeploymentConnectionService", () => {
       sessions,
     });
     await expect(
-      unclaimedService.connect({ kind: "team", origin: unclaimed.document.canonicalOrigin }),
+      unclaimedService.connect({ kind: "address", origin: unclaimed.document.canonicalOrigin }),
     ).rejects.toThrow(/has no owner yet/u);
 
     const mac = selfHostedDiscovery("http://127.0.0.1:4310", "personal");
@@ -245,7 +245,7 @@ describe("PrivateDeploymentConnectionService", () => {
       sessions,
     });
     await expect(
-      macService.connect({ kind: "team", origin: mac.document.canonicalOrigin }),
+      macService.connect({ kind: "address", origin: mac.document.canonicalOrigin }),
     ).rejects.toThrow(/reached by Remote access/u);
 
     await expect(
@@ -269,7 +269,7 @@ describe("PrivateDeploymentConnectionService", () => {
     ).rejects.toThrow();
     await expect(
       service.connect({
-        kind: "team",
+        kind: "address",
         origin: "https://self-hosted.example.test",
         pairingCode,
       }),

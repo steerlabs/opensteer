@@ -657,6 +657,8 @@ export interface BrowserProfileSummary {
   homeRunnerId: string | null;
   id: string;
   name: string;
+  /** The profile an AI engine signs in through; never offered to a connected agent. */
+  purpose?: "engine-sign-in" | undefined;
 }
 
 /** Every browser runs on a computer, and a computer is a Runner. */
@@ -940,8 +942,6 @@ export interface HostSnapshot {
   iphoneAppsAvailable: boolean;
   /** The Host serves `devices-v1`: device setup choices, session binding and the Browser and Apps switches. */
   devicesAvailable?: boolean;
-  /** The Host serves `agent-grants-v1`: connected agents carry a grant a person chooses and edits. */
-  agentGrantsAvailable?: boolean;
   ownerViewWindowsAvailable?: boolean;
   /** The Host advertises voice-run-v1: a call's agent runs as a Run with Opensteer's tools. */
   voiceAvailable?: boolean;

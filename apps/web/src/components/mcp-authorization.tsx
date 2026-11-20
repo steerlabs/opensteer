@@ -41,7 +41,6 @@ type Load =
   | { readonly kind: "failed" }
   | { readonly kind: "missing" };
 
-const selectGrantsAvailable = (snapshot: HostSnapshot) => snapshot.agentGrantsAvailable === true;
 const selectProfiles = (snapshot: HostSnapshot) => snapshot.browserProfiles;
 const selectProfileHomes = (snapshot: HostSnapshot) => snapshot.browserProfileHomes;
 const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
@@ -67,7 +66,6 @@ export function McpAuthorization({
   readonly desktopBridge?: Pick<OpensteerDesktopBridge, "openExternalUrl"> | null;
   readonly onClose?: (() => void) | undefined;
 }) {
-  const grantsAvailable = useHostSelector(client, selectGrantsAvailable);
   const profiles = useHostSelector(client, selectProfiles);
   const profileHomes = useHostSelector(client, selectProfileHomes);
   const machines = useHostSelector(client, selectMachines);
@@ -79,6 +77,7 @@ export function McpAuthorization({
   });
   const home = agentHomeName({ machines, identityConfig });
   const [load, setLoad] = useState<Load>({ kind: "loading" });
+  const grantsAvailable = load.kind === "ready" && load.consent.grantsAvailable === true;
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"allow" | "deny" | null>(null);

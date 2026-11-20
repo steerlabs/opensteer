@@ -101,6 +101,8 @@ describe("Connected agents: adding an agent", () => {
     const page = await mount(host);
     await vi.waitFor(() => expect(page.textContent).toContain("Turn on Remote access first"));
     expect(button("Add ChatGPT").disabled).toBe(true);
+    expect(button("Add Perplexity").disabled).toBe(true);
+    expect(button("Add Claude Code").disabled).toBe(false);
     await act(async () => button("Add Another agent").click());
     const dialog = document.querySelector('[role="dialog"]')!;
     // A Personal Host reached on its own computer offers its loopback address.

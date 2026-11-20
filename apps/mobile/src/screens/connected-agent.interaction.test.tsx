@@ -335,7 +335,7 @@ describe("one connected agent on the phone", () => {
       grok,
       new MockHostClient({
         latencyMs: 0,
-        agentGrantsAvailable: false,
+        grantsAvailable: false,
         connections: mockConnectedAgents("seeded").connections.map(
           ({ grant: _grant, ...connection }) => connection,
         ),

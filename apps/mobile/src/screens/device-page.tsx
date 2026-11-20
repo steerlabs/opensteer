@@ -49,6 +49,8 @@ import {
 import { deviceKindLabel } from "./devices-model.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import { homeCloudComputerSection } from "./cloud-computer-entry.js";
+import { homeWorkSection, useWorkHomes } from "./work-home.js";
+import { workHomeBadges } from "@opensteer/client/computers";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 
 type Props = StaticScreenProps<{ readonly deploymentId: string; readonly machineId: string }>;
@@ -75,6 +77,7 @@ function DevicePage(props: {
   const navigation = useNavigation();
   const client = useMobileClient();
   const { rows } = useMobileState();
+  const workHomes = useWorkHomes();
   const machines = useHostSelector(props.hostClient, selectMachines);
   const devicesAvailable = useHostSelector(props.hostClient, selectDevices);
   const profiles = useHostSelector(props.hostClient, selectProfiles);
@@ -616,11 +619,17 @@ function DevicePage(props: {
             },
           ]),
   ];
-  const cloud = homeCloudComputerSection({
-    home: isHome(machine),
-    exposure: props.hostClient.getSnapshot().identityConfig?.exposure,
-    onOpen: () => navigation.navigate("CloudComputer"),
-  });
+  // A work Home says whose it is and what they can see; it is never offered a Cloud Computer.
+  const work = isHome(machine) ? workHomeBadges(workHomes).get(props.deploymentId) : undefined;
+  const cloud = work
+    ? homeWorkSection(work, (card) =>
+        navigation.navigate("WorkHomeSee", { assignmentId: card.assignmentId }),
+      )
+    : homeCloudComputerSection({
+        home: isHome(machine),
+        exposure: props.hostClient.getSnapshot().identityConfig?.exposure,
+        onOpen: () => navigation.navigate("CloudComputer"),
+      });
   if (cloud) sections.push(cloud);
   return <NativeSettingsPage sections={sections} />;
 }

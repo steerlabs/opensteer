@@ -5,7 +5,9 @@ import { createRoot, type Root } from "react-dom/client";
 import {
   MockCloudComputerAccount,
   mockCloudComputerAddress,
+  mockCloudComputerDeploymentId,
   mockCloudComputerId,
+  mockWorkAddress,
   type MockCloudComputerScene,
 } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -85,13 +87,18 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-const cloudDeployment = "dep_00000000-0000-4000-8000-0000000000cc";
+const cloudDeployment = mockCloudComputerDeploymentId;
+const workDeployment = "dep_00000000-0000-4000-8000-0000000000dd";
 
 async function open(
   scene: MockCloudComputerScene,
-  options: { readonly listed?: boolean; readonly portalOrigin?: string | null } = {},
+  options: {
+    readonly listed?: boolean;
+    readonly portalOrigin?: string | null;
+    readonly account?: MockCloudComputerAccount;
+  } = {},
 ) {
-  const account = new MockCloudComputerAccount(scene);
+  const account = options.account ?? new MockCloudComputerAccount(scene, workDeployment);
   const read = vi.spyOn(account, "read");
   const actSpy = vi.spyOn(account, "act");
   state.client = {
@@ -101,7 +108,10 @@ async function open(
     openDeployment: vi.fn(async () => undefined),
   };
   if (options.listed !== false)
-    state.rows = [{ deploymentId: cloudDeployment, origin: mockCloudComputerAddress }];
+    state.rows = [
+      { deploymentId: cloudDeployment, origin: mockCloudComputerAddress },
+      { deploymentId: workDeployment, origin: mockWorkAddress },
+    ];
   root = createRoot(document.body.appendChild(document.createElement("div")));
   await act(async () => root!.render(<CloudComputerScreen />));
   await vi.waitFor(() => expect(section("loading")).toBeUndefined());
@@ -154,10 +164,36 @@ describe("Opensteer Cloud Computer on the phone", () => {
     expect(read).toHaveBeenCalledTimes(2);
   });
 
-  it("shows one honest step while preparing", async () => {
+  it("shows the Account's own setup steps while preparing", async () => {
     await open("preparing");
     expect(row("preparing", "status")).toMatchObject({
       label: "Preparing your Cloud Computer",
+      steps: [
+        { label: "Payment received", state: "done" },
+        { label: "Setting up your computer", state: "current" },
+        { label: "Starting Opensteer", state: "pending" },
+        { label: "Linking it to your Account", state: "pending" },
+      ],
+    });
+  });
+
+  it("shows one honest step while preparing when the Account reports none", async () => {
+    const account = new MockCloudComputerAccount("preparing");
+    const real = account.read.bind(account);
+    account.read = async () => {
+      const result = await real();
+      return result.ok
+        ? {
+            ...result,
+            data: {
+              ...result.data,
+              computers: [{ id: mockCloudComputerId, egress: "pending", status: "preparing" }],
+            },
+          }
+        : result;
+    };
+    await open("preparing", { account });
+    expect(row("preparing", "status")).toMatchObject({
       steps: [
         { label: "Setting up your computer", state: "current" },
         { label: "Ready", state: "pending" },
@@ -183,7 +219,12 @@ describe("Opensteer Cloud Computer on the phone", () => {
       detail: mockCloudComputerAddress,
     });
     expect(row("status", "ip").label).toBe("Browser IP · Assigned");
-    expect(row("plan", "plan").label).toBe("$20.00 a month");
+    expect(row("status", "browser-address")).toMatchObject({ detail: "203.0.113.24" });
+    expect(row("status", "region")).toMatchObject({ detail: "Ashburn, Virginia" });
+    expect(row("plan", "plan")).toMatchObject({
+      label: "$20.00 a month",
+      detail: "Renews Dec 20, 2026",
+    });
     expect(row("website-billing", "address")).toMatchObject({
       detail: "https://app.opensteer.example/cloud-computer/billing",
     });
@@ -277,5 +318,46 @@ describe("Opensteer Cloud Computer on the phone", () => {
   it("names no website it doesn't have", async () => {
     await open("none", { portalOrigin: null });
     expect(section("website-checkout")?.rows).toEqual([]);
+  });
+});
+
+describe("work Homes on the phone", () => {
+  const labels = (key: string) => section(key)?.rows.map((candidate) => candidate.label) ?? [];
+  const workKey = "work-was_00000000-0000-4000-8000-0000000000a1";
+  it("shows a work Home as its own card, with no billing, suspend or delete", async () => {
+    await open("work");
+    expect(section(workKey)?.title).toBe("Acme Robotics · Work Home");
+    expect(row(workKey, "status")).toMatchObject({ label: "Running", detail: mockWorkAddress });
+    expect(section(workKey)?.footer?.text).toBe(
+      "Managed by Acme Robotics: they pay for it and can suspend or delete it.",
+    );
+    expect(labels("work-policy-was_00000000-0000-4000-8000-0000000000a1")).toContain(
+      "Most an outside agent may do on its own: Supervised",
+    );
+    for (const key of [workKey, "work-policy-was_00000000-0000-4000-8000-0000000000a1"])
+      for (const word of ["Manage billing", "Suspend", "Delete Cloud Computer"])
+        expect(labels(key)).not.toContain(word);
+    // No personal one: the offer still shows, after the work Home.
+    expect(row("price", "price").label).toBe("$20.00 a month");
+  });
+
+  it("opens a work Home by the Home the Account pinned, and goes to what its organization can see", async () => {
+    await open("work");
+    await press(row(workKey, "open"));
+    const client = state.client as { openDeployment: ReturnType<typeof vi.fn> };
+    expect(client.openDeployment).toHaveBeenCalledWith(workDeployment);
+    await press(row("work-policy-was_00000000-0000-4000-8000-0000000000a1", "see"));
+    expect(state.navigate).toHaveBeenCalledWith("WorkHomeSee", {
+      assignmentId: "was_00000000-0000-4000-8000-0000000000a1",
+    });
+  });
+
+  it("shows both, or only the personal one when there is no work Home", async () => {
+    await open("both");
+    expect(section(workKey)).toBeDefined();
+    expect(row("plan", "plan").label).toBe("$20.00 a month");
+    act(() => root?.unmount());
+    await open("ready");
+    expect(section(workKey)).toBeUndefined();
   });
 });

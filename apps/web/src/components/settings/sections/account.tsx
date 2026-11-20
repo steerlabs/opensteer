@@ -13,6 +13,7 @@ import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../pri
 import { OwnerNameRow } from "./owner-name.js";
 import { RemoteAccessCard } from "./remote-access-card.js";
 import { CloudComputerEntryRow, CloudComputerPage } from "./cloud-computer.js";
+import { WorkHomeSeePage } from "./work-home.js";
 
 /**
  * The Opensteer Account: the one thing in the product anybody signs in to,
@@ -24,6 +25,7 @@ export function AccountSection() {
     <Routes>
       <Route index element={<AccountHome />} />
       <Route path="cloud-computer" element={<CloudComputerPage />} />
+      <Route path="cloud-computer/work/:assignmentId" element={<WorkHomeSeePage />} />
     </Routes>
   );
 }

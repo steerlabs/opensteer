@@ -5,7 +5,9 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import {
   MockCloudComputerAccount,
   mockCloudComputerAddress,
+  mockCloudComputerDeploymentId,
   mockCloudComputerId,
+  mockWorkAddress,
   type MockCloudComputerScene,
 } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +28,8 @@ function Where() {
   return null;
 }
 
-const cloudDeployment = "dep_00000000-0000-4000-8000-0000000000cc";
+const cloudDeployment = mockCloudComputerDeploymentId;
+const workDeployment = "dep_00000000-0000-4000-8000-0000000000dd";
 
 function bridgeFor(account: MockCloudComputerAccount | null, listed = true) {
   return {
@@ -55,7 +58,10 @@ async function mount(
     desktopBridge: bridge,
     deploymentAccess: {
       deployments: bridge?.listed
-        ? [{ id: cloudDeployment, canonicalOrigin: mockCloudComputerAddress }]
+        ? [
+            { id: cloudDeployment, canonicalOrigin: mockCloudComputerAddress },
+            { id: workDeployment, canonicalOrigin: mockWorkAddress },
+          ]
         : [],
     },
     snapshot: {
@@ -119,8 +125,39 @@ describe("Opensteer Cloud Computer on desktop", () => {
     await vi.waitFor(() => expect(page.textContent).toContain("Preparing your Cloud Computer"));
   });
 
-  it("shows one honest step while preparing, never invented progress", async () => {
+  it("shows the Account's own setup steps while preparing", async () => {
     const page = await mount(bridgeFor(scene("preparing")));
+    expect(
+      [...page.querySelectorAll(".connected-agent__steps li")].map((li) => [
+        li.textContent,
+        li.getAttribute("data-state"),
+      ]),
+    ).toEqual([
+      ["Payment received", "done"],
+      ["Setting up your computer", "current"],
+      ["Starting Opensteer", "pending"],
+      ["Linking it to your Account", "pending"],
+    ]);
+    expect(page.textContent).toContain("What changes");
+  });
+
+  it("shows one honest step while preparing when the Account reports none", async () => {
+    const account = scene("preparing");
+    const bridge = bridgeFor(account);
+    bridge.cloudComputerRead = vi.fn(async () => {
+      const result = await account.read();
+      if (!result.ok) return result;
+      return {
+        ...result,
+        data: {
+          ...result.data,
+          computers: [
+            { id: mockCloudComputerId, egress: "pending" as const, status: "preparing" as const },
+          ],
+        },
+      };
+    });
+    const page = await mount(bridge);
     expect(
       [...page.querySelectorAll(".connected-agent__steps li")].map((li) => [
         li.textContent,
@@ -130,7 +167,6 @@ describe("Opensteer Cloud Computer on desktop", () => {
       ["Setting up your computer", "current"],
       ["Ready", "pending"],
     ]);
-    expect(page.textContent).toContain("What changes");
   });
 
   it("is ready: opens the Home, its Connected agents, and this Mac's setup on it", async () => {
@@ -140,6 +176,9 @@ describe("Opensteer Cloud Computer on desktop", () => {
     expect(page.textContent).toContain("Running");
     expect(page.textContent).toContain(mockCloudComputerAddress);
     expect(page.textContent).toContain("Browser IP · Assigned");
+    expect(page.textContent).toContain("Browser address203.0.113.24");
+    expect(page.textContent).toContain("RegionAshburn, Virginia");
+    expect(page.textContent).toContain("Renews Dec 20, 2026");
     await act(async () => button(page, "Open it").click());
     expect(bridge.select).toHaveBeenLastCalledWith({ deploymentId: cloudDeployment });
     const starts = () =>
@@ -277,5 +316,54 @@ describe("Opensteer Cloud Computer on desktop", () => {
   it("offers no checkout without a website to open it on", async () => {
     const page = await mount(bridgeFor(scene("none")), { portalOrigin: null });
     expect(button(page, "Continue to checkout").disabled).toBe(true);
+  });
+});
+
+describe("work Homes on the Cloud Computer screen", () => {
+  it("shows a work Home as its own card, with no billing, suspend or delete", async () => {
+    const page = await mount(bridgeFor(new MockCloudComputerAccount("work", workDeployment)));
+    const card = page.querySelector(".work-home");
+    expect(card?.querySelector("h2")?.textContent).toBe("Acme Robotics · Work Home");
+    expect(card?.textContent).toContain("Running");
+    expect(card?.textContent).toContain(mockWorkAddress);
+    expect(card?.textContent).toContain(
+      "Managed by Acme Robotics: they pay for it and can suspend or delete it.",
+    );
+    expect(card?.textContent).toContain("Most an outside agent may do on its own: Supervised");
+    expect(card?.textContent).toContain("Agents may run tasks: Allowed");
+    for (const word of ["Manage billing", "Suspend", "Delete Cloud Computer"])
+      expect(card?.textContent).not.toContain(word);
+    // No personal one yet: the offer still shows beside it.
+    expect(page.querySelector(".cloud-computer__price")).not.toBeNull();
+  });
+
+  it("opens a work Home by the Home the Account pinned", async () => {
+    const bridge = bridgeFor(new MockCloudComputerAccount("work", workDeployment));
+    const page = await mount(bridge);
+    const open = page.querySelector<HTMLButtonElement>(".work-home button");
+    expect(open?.textContent).toBe("Open it");
+    await act(async () => open!.click());
+    expect(bridge.select).toHaveBeenLastCalledWith({ deploymentId: workDeployment });
+  });
+
+  it("shows both a personal Cloud Computer and a work Home", async () => {
+    const page = await mount(bridgeFor(new MockCloudComputerAccount("both", workDeployment)));
+    expect(page.querySelectorAll(".work-home")).toHaveLength(1);
+    expect(page.textContent).toContain("Cloud Computer is ready");
+    expect(button(page, "Manage billing")).toBeTruthy();
+  });
+
+  it("shows none when the person has no work Home", async () => {
+    const page = await mount(bridgeFor(scene("ready")));
+    expect(page.querySelectorAll(".work-home")).toHaveLength(0);
+  });
+
+  it("links to what the organization can see, read from the record schema", async () => {
+    const page = await mount(bridgeFor(new MockCloudComputerAccount("work", workDeployment)));
+    const link = [...page.querySelectorAll("a")].find((a) => a.textContent === "Open");
+    await act(async () => link!.click());
+    expect(path).toBe(
+      "/settings/account/cloud-computer/work/was_00000000-0000-4000-8000-0000000000a1",
+    );
   });
 });

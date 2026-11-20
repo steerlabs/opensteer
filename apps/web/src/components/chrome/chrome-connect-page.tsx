@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { opensteerChromeLiveTabsExtensionId } from "@opensteer/protocol/browser-sources";
+import { useEffect, useState } from "react";
 import {
   chromeConnectPageUrl,
   readChromeConnectLink,
@@ -34,6 +35,16 @@ export type ChromeConnectLinkState =
 export function ChromeConnectCard({ state }: { readonly state: ChromeConnectLinkState }) {
   const environment = useChromeConnectEnvironment({ desktopBridge: null, hostHere: null });
   const [copied, setCopied] = useState<boolean | null>(null);
+  const [liveTabsInstalled, setLiveTabsInstalled] = useState(false);
+  useEffect(() => {
+    if (!state.link || environment.place !== "chromium") return;
+    const probe = new Image();
+    probe.onload = () => setLiveTabsInstalled(true);
+    probe.src = `chrome-extension://${opensteerChromeLiveTabsExtensionId}/icons/probe.png`;
+    return () => {
+      probe.onload = null;
+    };
+  }, [environment.place, state.link]);
 
   if (!state.link) {
     return (
@@ -64,6 +75,20 @@ export function ChromeConnectCard({ state }: { readonly state: ChromeConnectLink
           invitation={invitation}
           linkExtensionDirectory={extensionDirectory}
         />
+        {liveTabsInstalled && (
+          <button
+            className="btn"
+            type="button"
+            onClick={() => {
+              window.open(
+                `chrome-extension://${opensteerChromeLiveTabsExtensionId}/connect.html#${invitation}`,
+                "_blank",
+              );
+            }}
+          >
+            Pair Opensteer Live Tabs
+          </button>
+        )}
         {otherBrowser && environment.place !== "phone" ? (
           <div className="chrome-connect-page__copy">
             <button

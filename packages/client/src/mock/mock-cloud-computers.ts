@@ -1,13 +1,18 @@
 import {
   CloudComputerIdSchema,
+  OrganizationIdSchema,
+  WorkAssignmentIdSchema,
   cloudComputerDeleteConfirmation,
+  defaultWorkPolicy,
   type CloudComputerListResponse,
   type CloudComputerView,
 } from "@opensteer/control-plane-protocol";
+import { DeploymentIdSchema } from "@opensteer/core";
 import type {
   DesktopCloudComputerActInput,
   DesktopCloudComputerActResult,
   DesktopCloudComputerReadResult,
+  DesktopWorkHome,
 } from "@opensteer/protocol/desktop";
 import type { CloudComputerAccount } from "../connections/account-cloud-computers.js";
 
@@ -27,6 +32,10 @@ export const mockCloudComputerScenes = [
   "signed-out",
   "unreachable",
   "unavailable",
+  /** A work Home an organization assigned, and no personal Cloud Computer. */
+  "work",
+  /** A personal Cloud Computer and a work Home. */
+  "both",
 ] as const;
 export type MockCloudComputerScene = (typeof mockCloudComputerScenes)[number];
 
@@ -41,13 +50,44 @@ const plan: CloudComputerListResponse["plan"] = {
   interval: "month",
 };
 
+export const mockWorkComputerId = CloudComputerIdSchema.parse(
+  "cc_00000000-0000-4000-8000-0000000000c2",
+);
+export const mockWorkAddress = "https://w3r8.cloud.opensteer.example";
+export const mockOrganizationName = "Acme Robotics";
+/** The Home the mock's ready Cloud Computer is, as the Account pins it. */
+export const mockCloudComputerDeploymentId = DeploymentIdSchema.parse(
+  "dep_00000000-0000-4000-8000-0000000000c1",
+);
+const region = { id: "ash", label: "Ashburn, Virginia" } as const;
+
 function view(status: CloudComputerView["status"]): CloudComputerView {
   const id = mockCloudComputerId;
   switch (status) {
     case "preparing":
-      return { id, egress: "pending", status };
+      return {
+        id,
+        egress: "pending",
+        status,
+        region,
+        steps: [
+          { id: "payment", state: "done" },
+          { id: "machine", state: "current" },
+          { id: "opensteer", state: "pending" },
+          { id: "claim", state: "pending" },
+        ],
+      };
     case "ready":
-      return { id, egress: "assigned", status, address: mockCloudComputerAddress };
+      return {
+        id,
+        egress: "assigned",
+        status,
+        address: mockCloudComputerAddress,
+        deploymentId: mockCloudComputerDeploymentId,
+        region,
+        egressAddress: "203.0.113.24",
+        renewsAt: "2026-12-20T00:00:00.000Z",
+      };
     case "needs_attention":
       return {
         id,
@@ -62,17 +102,56 @@ function view(status: CloudComputerView["status"]): CloudComputerView {
   }
 }
 
+/** A ready work Home for `organizationName`, as the Account shows its assignee. */
+export function mockWorkHome(deploymentId: string | null = null): DesktopWorkHome {
+  const organizationId = OrganizationIdSchema.parse("org_00000000-0000-4000-8000-0000000000a1");
+  const assignmentId = WorkAssignmentIdSchema.parse("was_00000000-0000-4000-8000-0000000000a1");
+  return {
+    home: {
+      assignment: {
+        organizationId,
+        organizationName: mockOrganizationName,
+        assignmentId,
+        computerId: mockWorkComputerId,
+        state: "active",
+        homeStatus: "ready",
+        reason: null,
+        address: mockWorkAddress,
+        policyRevision: 3,
+        appliedRevision: 3,
+        policyStatus: "Applied",
+        signInCut: false,
+        suspended: false,
+        deleted: false,
+        retainUntil: null,
+      },
+      policy: { ...defaultWorkPolicy, allowTasks: true },
+    },
+    computer: {
+      id: mockWorkComputerId,
+      egress: "assigned",
+      status: "ready",
+      address: mockWorkAddress,
+      region,
+      ...(deploymentId ? { deploymentId: DeploymentIdSchema.parse(deploymentId) } : {}),
+    },
+  };
+}
+
 export class MockCloudComputerAccount implements CloudComputerAccount {
   readonly scene: MockCloudComputerScene;
+  readonly #workDeploymentId: string | null;
   #computers: CloudComputerView[];
   #reads = 0;
 
-  constructor(scene: MockCloudComputerScene = "none") {
+  /** `workDeploymentId`: the listed Home the mock work Home is, so its badge shows. */
+  constructor(scene: MockCloudComputerScene = "none", workDeploymentId: string | null = null) {
     this.scene = scene;
+    this.#workDeploymentId = workDeploymentId;
     this.#computers =
       scene === "preparing"
         ? [view("preparing")]
-        : scene === "ready" || scene === "refused"
+        : scene === "ready" || scene === "refused" || scene === "both"
           ? [view("ready")]
           : scene === "attention"
             ? [view("needs_attention")]
@@ -111,7 +190,9 @@ export class MockCloudComputerAccount implements CloudComputerAccount {
       if (this.#reads === 3) this.#computers = [view("preparing")];
       if (this.#reads === 6) this.#computers = [view("ready")];
     }
-    return { ok: true, data: { computers: [...this.#computers], plan } };
+    const work =
+      this.scene === "work" || this.scene === "both" ? [mockWorkHome(this.#workDeploymentId)] : [];
+    return { ok: true, data: { computers: [...this.#computers], plan }, work };
   }
 
   async act(input: DesktopCloudComputerActInput): Promise<DesktopCloudComputerActResult> {

@@ -99,7 +99,7 @@ function consentHost(
 ) {
   const client = new MockHostClient({
     latencyMs: 0,
-    agentGrantsAvailable: options.grants ?? true,
+    grantsAvailable: options.grants ?? true,
     connectionConsent: {
       requestId,
       clientName: "Grok",

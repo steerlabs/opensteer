@@ -15,8 +15,9 @@ import { ErrorNotice, OnboardingCard } from "../onboarding-card.js";
 import { OptionRow } from "../option-row.js";
 import { PlaceList } from "./place-list.js";
 import { PlaceAccountFooter, SignOutDialog } from "./place-account.js";
+import { usePlaceWorkBadges } from "../settings/sections/work-home.js";
 
-export type ConnectKind = "pairing" | "team";
+export type ConnectKind = "pairing" | "address";
 
 function EntryRow({
   detail,
@@ -66,7 +67,7 @@ function SecondaryPaths({
           <span aria-hidden>·</span>
         </>
       ) : null}
-      <button className="link-btn" onClick={() => onConnect("team")} type="button">
+      <button className="link-btn" onClick={() => onConnect("address")} type="button">
         Add a Home by address
       </button>
     </p>
@@ -341,7 +342,8 @@ export function DesktopChooser({
     (row) => deploymentPolicy({ kind: row.kind }).services.personal,
   );
   const facts = useComputerFacts(places.facts, personal);
-  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts });
+  const work = usePlaceWorkBadges(bridge);
+  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts, work });
   const thisMac = thisComputerLabel().replace(/^This /u, "this ");
   // Opensteers elsewhere this person could mean instead of a new one here. An
   // Account listing that can't be opened right now still counts: its kind is
@@ -500,7 +502,7 @@ export function DesktopConnect({
     const parsed = DesktopConnectPrivateDeploymentInputSchema.safeParse(
       kind === "pairing"
         ? { kind: "personal-pairing", origin: origin.trim(), pairingCode: code.trim() }
-        : { kind: "self-hosted", origin: origin.trim() },
+        : { kind: "address", origin: origin.trim() },
     );
     if (!parsed.success) {
       setFormError(parsed.error.issues[0]?.message ?? "Enter a valid Opensteer address.");

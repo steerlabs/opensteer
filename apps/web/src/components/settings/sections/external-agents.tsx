@@ -78,7 +78,7 @@ function ConnectedAgentsList({
   // Setup takes its baseline from the loaded list, so it waits for the first read.
   const available = (entry: ExternalAgentGuide) =>
     agents.connections !== null &&
-    (reach.kind === "ready" || (entry.providerId === null && thisComputer !== null));
+    (reach.kind === "ready" || (entry.reach === "any" && thisComputer !== null));
   return (
     <>
       <SectionHeader title={agentWords("agents.settings.label")} lead={agentWords("agents.lead")} />
@@ -155,7 +155,7 @@ function ConnectedAgentsList({
           guide={guide}
           onClose={() => setGuide(null)}
           reach={reach}
-          thisComputer={guide.providerId === null ? thisComputer : null}
+          thisComputer={guide.reach === "any" ? thisComputer : null}
         />
       ) : null}
     </>

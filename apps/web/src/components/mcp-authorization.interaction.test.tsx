@@ -16,7 +16,7 @@ afterEach(() => {
 
 describe("signed-in MCP connection consent", () => {
   it("discards an old approval response after the window receives another request", async () => {
-    host = new MockHostClient({ latencyMs: 0, agentGrantsAvailable: false });
+    host = new MockHostClient({ latencyMs: 0, grantsAvailable: false });
     Object.defineProperty(host.rpc, "connections.authorization.get", {
       value: vi.fn(async ({ requestId }: { requestId: string }) => ({
         ok: true,
@@ -174,7 +174,7 @@ describe("signed-in MCP connection consent", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
   it("keeps the simple consent on a Home without grants, and defaults to an approval ceiling", async () => {
-    host = new MockHostClient({ latencyMs: 0, agentGrantsAvailable: false });
+    host = new MockHostClient({ latencyMs: 0, grantsAvailable: false });
     Object.defineProperty(host.rpc, "connections.authorization.get", {
       value: vi.fn(async () => ({
         ok: true,

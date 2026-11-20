@@ -4,6 +4,7 @@ import {
   cloudWords,
   type CloudComputerDetail,
   type CloudComputerScreen as CloudScreen,
+  type WorkHomeCard,
 } from "@opensteer/client/computers";
 import { useCloudComputer } from "@opensteer/client/react";
 import type { DesktopCloudComputerActInput } from "@opensteer/protocol/desktop";
@@ -15,6 +16,7 @@ import { useCopy } from "../ui/copy-mark.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
+import { workHomeSections } from "./work-home.js";
 
 /**
  * Opensteer Cloud Computer on the phone. Checkout and billing happen on the Opensteer
@@ -38,12 +40,11 @@ export function CloudComputerScreen(): ReactNode {
     });
     return () => subscription.remove();
   }, [refresh]);
-  const listed = (address: string) => {
-    const origin = new URL(address).origin;
-    return rows.find((row) => safeOrigin(row.origin) === origin) ?? null;
-  };
-  const open = (address: string, then: "home" | "agents") => {
-    const row = listed(address);
+  // The Account names the Home it pinned; until it has, the Home isn't listed yet.
+  const listed = (deploymentId: string | null) =>
+    deploymentId === null ? null : (rows.find((row) => row.deploymentId === deploymentId) ?? null);
+  const open = (deploymentId: string, then: "home" | "agents") => {
+    const row = listed(deploymentId);
     if (!row) return;
     void client.openDeployment(row.deploymentId).then(() => {
       if (then === "home") resetToDeployment(row.deploymentId);
@@ -53,6 +54,8 @@ export function CloudComputerScreen(): ReactNode {
   const act = (input: DesktopCloudComputerActInput) => void cloud.act?.(input);
   const sections = cloudComputerSections({
     screen: cloud.screen,
+    work: cloud.work,
+    onSeeWork: (card) => navigation.navigate("WorkHomeSee", { assignmentId: card.assignmentId }),
     pending: cloud.pending,
     actionFailure: cloud.actionFailure,
     portalOrigin: client.portalOrigin,
@@ -60,9 +63,9 @@ export function CloudComputerScreen(): ReactNode {
     onCopy: (text) => void copy(text),
     onRetry: () => void refresh?.(),
     onSignIn: () => navigation.goBack(),
-    listed: (address) => listed(address) !== null,
-    onOpen: (address) => open(address, "home"),
-    onAgents: (address) => open(address, "agents"),
+    listed: (deploymentId) => listed(deploymentId) !== null,
+    onOpen: (deploymentId) => open(deploymentId, "home"),
+    onAgents: (deploymentId) => open(deploymentId, "agents"),
     onSuspend: (computer) =>
       Alert.alert(cloudWords("cloud.suspend.title"), cloudWords("cloud.suspend.body"), [
         { text: "Cancel", style: "cancel" },
@@ -118,14 +121,6 @@ export function CloudComputerScreen(): ReactNode {
   );
 }
 
-function safeOrigin(value: string): string | null {
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
-}
-
 const points = [
   ["cloud.point.awake.title", "cloud.point.awake.detail"],
   ["cloud.point.ip.title", "cloud.point.ip.detail"],
@@ -157,6 +152,9 @@ function changes(): NativeSettingsSection {
 /** The screen as Settings sections: pure, so each state is checked without a device. */
 export function cloudComputerSections(props: {
   readonly screen: CloudScreen;
+  /** Work Homes organizations assigned this person, shown beside the personal screen. */
+  readonly work?: readonly WorkHomeCard[];
+  readonly onSeeWork?: (card: WorkHomeCard) => void;
   readonly pending: "suspend" | "resume" | "delete" | null;
   readonly actionFailure: string | null;
   readonly portalOrigin: string | null;
@@ -164,13 +162,27 @@ export function cloudComputerSections(props: {
   readonly onCopy: (text: string) => void;
   readonly onRetry: () => void;
   readonly onSignIn: () => void;
-  readonly listed: (address: string) => boolean;
-  readonly onOpen: (address: string) => void;
-  readonly onAgents: (address: string) => void;
+  readonly listed: (deploymentId: string | null) => boolean;
+  readonly onOpen: (deploymentId: string) => void;
+  readonly onAgents: (deploymentId: string) => void;
   readonly onSuspend: (computer: CloudComputerDetail) => void;
   readonly onResume: (computer: CloudComputerDetail) => void;
   readonly onDelete: (computer: CloudComputerDetail) => void;
 }): readonly NativeSettingsSection[] {
+  const personal = personalSections(props);
+  const work = workHomeSections(props.work ?? [], {
+    listed: props.listed,
+    onOpen: props.onOpen,
+    onSee: props.onSeeWork ?? (() => undefined),
+  });
+  if (work.length === 0) return personal;
+  const [lead, ...rest] = personal;
+  return lead ? [lead, ...work, ...rest] : work;
+}
+
+function personalSections(
+  props: Parameters<typeof cloudComputerSections>[0],
+): readonly NativeSettingsSection[] {
   const { screen } = props;
   const lead: NativeSettingsSection = {
     key: "lead",
@@ -279,7 +291,7 @@ export function cloudComputerSections(props: {
             kind: "status",
             tone: "neutral",
             label: cloudWords("cloud.preparing.title"),
-            steps: [
+            steps: screen.computer.steps ?? [
               { label: cloudWords("cloud.step.machine"), state: "current" },
               { label: cloudWords("cloud.step.ready"), state: "pending" },
             ],
@@ -296,7 +308,8 @@ export function cloudComputerSections(props: {
   const address = computer.address;
   const sections: NativeSettingsSection[] = [lead];
   if (address !== null) {
-    const listed = props.listed(address);
+    const { deploymentId } = computer;
+    const listed = props.listed(deploymentId);
     sections.push({
       key: "ready",
       title: "",
@@ -307,7 +320,9 @@ export function cloudComputerSections(props: {
           label: cloudWords("cloud.ready.open"),
           detail: computer.host ?? address,
           disabled: !listed,
-          onPress: () => props.onOpen(address),
+          onPress: () => {
+            if (deploymentId) props.onOpen(deploymentId);
+          },
         },
         {
           key: "agents",
@@ -315,7 +330,9 @@ export function cloudComputerSections(props: {
           label: cloudWords("cloud.ready.reconnect"),
           opens: true,
           disabled: !listed,
-          onPress: () => props.onAgents(address),
+          onPress: () => {
+            if (deploymentId) props.onAgents(deploymentId);
+          },
         },
       ],
       ...(listed ? {} : { footer: { text: cloudWords("cloud.ready.notListed") } }),
@@ -348,13 +365,40 @@ export function cloudComputerSections(props: {
         label: `${cloudWords("cloud.ip.title")} · ${computer.browserIp.label}`,
         detail: computer.browserIp.detail,
       },
+      ...(computer.browserAddress
+        ? [
+            {
+              key: "browser-address",
+              kind: "text" as const,
+              label: cloudWords("cloud.ip.address"),
+              detail: computer.browserAddress,
+            },
+          ]
+        : []),
+      ...(computer.region
+        ? [
+            {
+              key: "region",
+              kind: "text" as const,
+              label: cloudWords("cloud.region"),
+              detail: computer.region,
+            },
+          ]
+        : []),
     ],
     ...(computer.status.reason ? { footer: { text: computer.status.reason } } : {}),
   });
   sections.push({
     key: "plan",
     title: cloudWords("cloud.plan.title"),
-    rows: [{ key: "plan", kind: "text", label: screen.plan.line }],
+    rows: [
+      {
+        key: "plan",
+        kind: "text",
+        label: screen.plan.line,
+        ...(computer.renews ? { detail: computer.renews } : {}),
+      },
+    ],
   });
   sections.push(website("billing", cloudWords("cloud.plan.manageWeb")));
   const power: NativeSettingsRow[] = [];
@@ -376,14 +420,15 @@ export function cloudComputerSections(props: {
       disabled: busy,
       onPress: () => props.onResume(computer),
     });
-  power.push({
-    key: "delete",
-    kind: "button",
-    label: props.pending === "delete" ? cloudWords("cloud.deleting") : cloudWords("cloud.delete"),
-    destructive: true,
-    disabled: busy,
-    onPress: () => props.onDelete(computer),
-  });
+  if (computer.canDelete)
+    power.push({
+      key: "delete",
+      kind: "button",
+      label: props.pending === "delete" ? cloudWords("cloud.deleting") : cloudWords("cloud.delete"),
+      destructive: true,
+      disabled: busy,
+      onPress: () => props.onDelete(computer),
+    });
   sections.push({
     key: "power",
     title: "",

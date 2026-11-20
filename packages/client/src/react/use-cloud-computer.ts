@@ -7,6 +7,7 @@ const loading: CloudComputerSnapshot = {
   screen: { kind: "loading" },
   pending: null,
   actionFailure: null,
+  work: [],
 };
 const detachedSubscribe = () => () => {};
 const detachedSnapshot = () => loading;

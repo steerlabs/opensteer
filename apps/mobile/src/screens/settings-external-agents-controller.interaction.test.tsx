@@ -2,6 +2,7 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { externalAgentGuides } from "@opensteer/client/host";
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
@@ -106,7 +107,7 @@ describe("Connected agents on the phone", () => {
     await open(
       new MockHostClient({
         latencyMs: 0,
-        agentGrantsAvailable: false,
+        grantsAvailable: false,
         connections: mockConnectedAgents("seeded").connections,
       }),
     );
@@ -171,11 +172,9 @@ describe("Connected agents on the phone", () => {
         true,
       ),
     );
-    expect(section("add")?.rows.map((row) => row.label)).toEqual([
-      "ChatGPT",
-      "Claude",
-      "Another agent",
-    ]);
+    expect(section("add")?.rows.map((row) => row.label)).toEqual(
+      externalAgentGuides.map((guide) => guide.name),
+    );
     expect(section("notice")).toBeUndefined();
   });
 });

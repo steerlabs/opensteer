@@ -1478,3 +1478,34 @@ a.connected-agents__row:focus-visible {
   height: 16px;
   color: var(--green);
 }
+
+/* An organization's work Home: its badge wherever the Home is named, and its card. */
+.work-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-left: var(--space-8);
+  padding: 1px var(--space-8);
+  border: 1px solid var(--rim-plate);
+  border-radius: 999px;
+  background: var(--sheen) var(--fill-plate);
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+.work-badge svg {
+  width: 11px;
+  height: 11px;
+}
+.card__row-title > .work-badge:first-child {
+  margin-left: 0;
+}
+.work-home__subtitle {
+  margin-top: var(--space-12);
+}
+.work-see__list {
+  margin: var(--space-4) 0 0;
+  padding-left: 1.1em;
+}

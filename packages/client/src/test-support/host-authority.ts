@@ -8,6 +8,7 @@ import {
   hostApiVersion,
   teamApiVersion,
   hostDiscoverySigningBytes,
+  hostIdentityProofBytes,
   type HostBootstrapMethod,
   type HostCapability,
   type HostDescriptor,
@@ -73,6 +74,41 @@ export function signTestDiscoveryEnvelope(
     publicKey: { algorithm: "Ed25519", spki: keys.spki },
     signature: encodeBase64Url(ed25519.sign(hostDiscoverySigningBytes(discovery), keys.secretKey)),
   };
+}
+
+/**
+ * A Home's `/.well-known/opensteer?proof=` answer for `url`, signed with
+ * `keys` as the Home `authority` names, or null for any other request. A test
+ * that swaps the server at a saved address passes a different key set.
+ */
+export function testHostIdentityProofAnswer(
+  url: string,
+  authority: HostDiscoveryEnvelope,
+  keys: TestHostAuthorityKeys,
+): Response | null {
+  const parsed = new URL(url);
+  const nonce = parsed.searchParams.get("proof");
+  if (parsed.pathname !== "/.well-known/opensteer" || nonce === null) return null;
+  const answering = signTestDiscoveryEnvelope(authority.document, keys);
+  return Response.json(
+    HostDescriptorSchema.parse({
+      kind: "personal",
+      apiVersion: hostApiVersion,
+      currentApiVersion: hostApiVersion,
+      authority: answering,
+      bootstrapMethods: ["password"],
+      capabilities: [],
+      identityProof: {
+        nonce,
+        signature: encodeBase64Url(
+          ed25519.sign(
+            hostIdentityProofBytes({ nonce, document: authority.document }),
+            keys.secretKey,
+          ),
+        ),
+      },
+    }),
+  );
 }
 
 export function signTestPersonalAccessRoute(

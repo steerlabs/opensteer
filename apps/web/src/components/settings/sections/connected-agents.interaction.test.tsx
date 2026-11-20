@@ -290,7 +290,7 @@ describe("one connected agent", () => {
     const scene = mockConnectedAgents("seeded");
     host = new MockHostClient({
       latencyMs: 0,
-      agentGrantsAvailable: false,
+      grantsAvailable: false,
       connections: scene.connections.map(({ grant: _grant, ...row }) => row),
     });
     const page = await mount(host, `${base}/${grok}`);

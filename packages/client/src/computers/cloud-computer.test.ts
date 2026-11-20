@@ -5,9 +5,19 @@ import {
   cloudComputerFailure,
 } from "../connections/account-cloud-computers.js";
 import { AccountRequestError } from "../connections/account-deployment-directory.js";
-import { MockCloudComputerAccount, mockCloudComputerId } from "../mock/mock-cloud-computers.js";
+import {
+  MockCloudComputerAccount,
+  mockCloudComputerId,
+  mockWorkComputerId,
+  mockWorkHome,
+} from "../mock/mock-cloud-computers.js";
 import {
   CloudComputerClient,
+  cloudComputerDetail,
+  cloudComputerScreen,
+  currentCloudComputer,
+  workHomeBadges,
+  workHomeCard,
   cloudComputerDeleteInput,
   cloudComputerHomeKind,
   cloudComputerPlanView,
@@ -151,12 +161,7 @@ describe("Cloud Computer screen", () => {
     const { store, stop } = await started(new MockCloudComputerAccount("ready"));
     const screen = store.getSnapshot().screen;
     if (screen.kind !== "computer") throw new Error("not ready");
-    expect(screen.computer.unreported).toEqual({
-      region: null,
-      browserIpAddress: null,
-      lastBackupAt: null,
-      renewsAt: null,
-    });
+    expect(screen.computer.unreported).toEqual({ lastBackupAt: null });
     stop();
   });
 
@@ -224,6 +229,7 @@ describe("Cloud Computer Account client", () => {
     await client.act({ action: "delete", id, confirmation: `DELETE:${id}` });
     expect(accountRequest.mock.calls).toEqual([
       ["/v1/account/cloud-computers", { method: "GET" }],
+      ["/v1/account/organizations", { method: "GET" }],
       [`/v1/account/cloud-computers/${id}/suspend`, { method: "POST", body: "{}" }],
       [
         `/v1/account/cloud-computers/${id}`,
@@ -305,5 +311,244 @@ describe("where a Cloud Computer is offered", () => {
     expect(cloudSuggestionAllowed(null, 0)).toBe(true);
     expect(cloudSuggestionAllowed(1_000, 1_000 + cloudSuggestionQuietMs - 1)).toBe(false);
     expect(cloudSuggestionAllowed(1_000, 1_000 + cloudSuggestionQuietMs)).toBe(true);
+  });
+});
+
+describe("what the Account reports about a Cloud Computer", () => {
+  const id = CloudComputerIdSchema.parse("cc_00000000-0000-4000-8000-0000000000bb");
+  it("shows region, browser address, renewal and the Home only when the Account gives them", () => {
+    const bare = cloudComputerDetail(
+      { id, egress: "assigned", status: "ready", address: "https://a.example" },
+      "en-US",
+    );
+    expect(bare).toMatchObject({
+      deploymentId: null,
+      region: null,
+      browserAddress: null,
+      renews: null,
+      steps: null,
+    });
+    const full = cloudComputerDetail(
+      {
+        id,
+        egress: "assigned",
+        status: "ready",
+        address: "https://a.example",
+        deploymentId: "dep_00000000-0000-4000-8000-0000000000c1" as never,
+        region: { id: "ash", label: "Ashburn, Virginia" } as never,
+        egressAddress: "203.0.113.24",
+        renewsAt: "2026-12-20T12:00:00.000Z",
+      },
+      "en-US",
+    );
+    expect(full).toMatchObject({
+      deploymentId: "dep_00000000-0000-4000-8000-0000000000c1",
+      region: "Ashburn, Virginia",
+      browserAddress: "203.0.113.24",
+      renews: "Renews Dec 20, 2026",
+    });
+  });
+
+  it("shows the real setup steps, or nothing more than the honest one when there are none", () => {
+    expect(cloudComputerDetail({ id, egress: "pending", status: "preparing" }).steps).toBeNull();
+    expect(
+      cloudComputerDetail({ id, egress: "pending", status: "preparing", steps: [] }).steps,
+    ).toBeNull();
+    expect(
+      cloudComputerDetail({
+        id,
+        egress: "pending",
+        status: "preparing",
+        steps: [
+          { id: "payment", state: "done" },
+          { id: "machine", state: "failed" },
+          { id: "opensteer", state: "pending" },
+          { id: "claim", state: "pending" },
+        ],
+      }).steps,
+    ).toEqual([
+      { id: "payment", label: "Payment received", state: "done" },
+      { id: "machine", label: "Setting up your computer", state: "failed" },
+      { id: "opensteer", label: "Starting Opensteer", state: "pending" },
+      { id: "claim", label: "Linking it to your Account", state: "pending" },
+    ]);
+  });
+
+  it("words a status by its reason code, falling back to the Account's sentence", () => {
+    expect(
+      cloudComputerDetail({
+        id,
+        egress: "assigned",
+        status: "suspended",
+        reason: "You paused this Cloud Computer.",
+        reasonCode: "cloud-computer-owner-suspended",
+      }).status.reason,
+    ).toBe("You paused this Cloud Computer.");
+    expect(
+      cloudComputerDetail({
+        id,
+        egress: "assigned",
+        status: "suspended",
+        reason: "Paused by Opensteer for a disk check.",
+        reasonCode: "cloud-computer-operator-suspended",
+      }).status.reason,
+    ).toBe("Paused by Opensteer for a disk check.");
+    expect(
+      cloudComputerDetail({ id, egress: "assigned", status: "suspended", reason: "Older Account." })
+        .status.reason,
+    ).toBe("Older Account.");
+  });
+
+  it("offers neither suspend nor delete while a deletion waits on the payment provider", () => {
+    const pending = cloudComputerDetail({
+      id,
+      egress: "assigned",
+      status: "needs_attention",
+      reason: "Deletion is waiting for Stripe cancellation.",
+      reasonCode: "cloud-computer-deletion-pending",
+    });
+    expect(pending).toMatchObject({ canSuspend: false, canResume: false, canDelete: false });
+    expect(pending.status.reason).toBe("Deleting. Waiting for Stripe to end the subscription.");
+  });
+
+  it("words a refusal by its reason code, with the one thing to do next", () => {
+    expect(
+      cloudComputerFailure(
+        new AccountRequestError({
+          code: "conflict",
+          status: 409,
+          message: "This Account already has a checkout in progress",
+          reason: "cloud-computer-checkout-in-progress",
+        }),
+      ).message,
+    ).toMatch(/^You already started a checkout\. Finish the checkout/u);
+    expect(
+      cloudComputerFailure(
+        new AccountRequestError({
+          code: "unavailable",
+          status: 409,
+          message: "Your subscription ended.",
+          reason: "cloud-computer-billing-problem",
+        }),
+      ).message,
+    ).toBe("Your subscription ended. Fix the payment in Manage billing. Nothing on it is deleted.");
+  });
+});
+
+describe("work Homes", () => {
+  const plan = { name: "Cloud", currency: "usd", amountMinor: 2000, interval: "month" } as const;
+  it("draws a work Home as its own card: status, address, policy, who manages it, no billing", () => {
+    const card = workHomeCard(mockWorkHome("dep_00000000-0000-4000-8000-0000000000d1"), "en-US");
+    expect(card).toMatchObject({
+      title: "Acme Robotics · Work Home",
+      badge: "Work · Acme Robotics",
+      status: { label: "Running", tone: "good" },
+      address: "https://w3r8.cloud.opensteer.example",
+      deploymentId: "dep_00000000-0000-4000-8000-0000000000d1",
+      managed: "Managed by Acme Robotics: they pay for it and can suspend or delete it.",
+      seeTitle: "What Acme Robotics can see",
+    });
+    expect(card.policy.map(({ value }) => value)).toEqual([
+      "Supervised",
+      "Allowed",
+      "Not allowed",
+      "Only the work Home’s own Cloud Computer",
+    ]);
+    expect(Object.keys(card)).not.toEqual(expect.arrayContaining(["canSuspend", "canDelete"]));
+    expect(workHomeBadges([card]).get("dep_00000000-0000-4000-8000-0000000000d1")?.badge).toBe(
+      "Work · Acme Robotics",
+    );
+    expect(workHomeBadges([workHomeCard(mockWorkHome(null))]).size).toBe(0);
+  });
+
+  it("says sign-in is cut first, and the organization's reason", () => {
+    const home = mockWorkHome();
+    const cut = workHomeCard({
+      ...home,
+      home: {
+        ...home.home,
+        assignment: {
+          ...home.home.assignment,
+          state: "offboarding",
+          signInCut: true,
+          homeStatus: "suspended",
+          suspended: true,
+          address: null,
+          reason: "Your organization ended this assignment.",
+        },
+      },
+      computer: null,
+    });
+    expect(cut.status).toEqual({
+      label: "Sign-in cut",
+      tone: "attention",
+      reason: "Your organization ended this assignment.",
+    });
+    expect(cut.deploymentId).toBeNull();
+  });
+
+  it("shows personal only, work only, both or neither, and never a work Home twice", async () => {
+    for (const [scene, kind, work] of [
+      ["none", "offer", 0],
+      ["ready", "computer", 0],
+      ["work", "offer", 1],
+      ["both", "computer", 1],
+    ] as const) {
+      const { store, stop } = await started(new MockCloudComputerAccount(scene));
+      expect(store.getSnapshot().screen.kind).toBe(kind);
+      expect(store.getSnapshot().work).toHaveLength(work);
+      stop();
+    }
+    const work = [mockWorkHome()];
+    const listed = { id: mockWorkComputerId, egress: "assigned", status: "preparing" } as const;
+    expect(currentCloudComputer([listed], work)).toBeNull();
+    expect(
+      cloudComputerScreen({
+        read: { kind: "ready", data: { computers: [listed], plan }, work },
+        checkoutOpened: false,
+        deleted: false,
+      }).kind,
+    ).toBe("offer");
+  });
+
+  it("keeps the personal screen when the organization reads fail", async () => {
+    const accountRequest = vi.fn(async (path: string) => {
+      if (path.endsWith("/cloud-computers"))
+        return {
+          computers: [{ id: mockCloudComputerId, egress: "pending", status: "preparing" }],
+          plan,
+        };
+      throw new AccountRequestError({ code: null, status: 503, message: "down" });
+    });
+    const result = await new AccountCloudComputerClient({ transport: { accountRequest } }).read();
+    expect(result).toMatchObject({ ok: true });
+    expect(result.ok && result.work).toBeUndefined();
+  });
+
+  it("reads each organization's work Home and its Cloud Computer, tolerating a missing one", async () => {
+    const home = mockWorkHome();
+    const accountRequest = vi.fn(async (path: string) => {
+      if (path.endsWith("/cloud-computers")) return { computers: [], plan };
+      if (path === "/v1/account/organizations")
+        return {
+          organizations: [
+            { id: home.home.assignment.organizationId, name: "Acme Robotics", role: "member" },
+            { id: "org_00000000-0000-4000-8000-0000000000a2", name: "Beta", role: "admin" },
+          ],
+          invitations: [],
+        };
+      if (path.endsWith("0000000000a1/work-home")) return home.home;
+      if (path.endsWith("/work-home")) return null;
+      throw new AccountRequestError({ code: "not_found", status: 404, message: "gone" });
+    });
+    const result = await new AccountCloudComputerClient({ transport: { accountRequest } }).read();
+    expect(result.ok && result.work).toEqual([{ home: home.home, computer: null }]);
+    expect(accountRequest.mock.calls.map(([path]) => path)).toEqual([
+      "/v1/account/cloud-computers",
+      "/v1/account/organizations",
+      "/v1/account/organizations/org_00000000-0000-4000-8000-0000000000a1/work-home",
+      "/v1/account/organizations/org_00000000-0000-4000-8000-0000000000a2/work-home",
+      `/v1/account/cloud-computers/${mockWorkComputerId}`,
+    ]);
   });
 });

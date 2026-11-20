@@ -1,6 +1,17 @@
 export {
   cloudComputerCopy,
   cloudComputerPriceLine,
+  cloudComputerReasonNext,
+  cloudComputerReasonSentence,
+  cloudComputerStepLabel,
   cloudWords,
   type CloudComputerCopyId,
+  orgModeLabel,
+  orgWords,
+  organizationCopy,
+  workAuditExcluded,
+  workAuditRecordKinds,
+  workHomeStatusLabel,
+  workPolicyLines,
+  type OrganizationCopyId,
 } from "@opensteer/control-plane-protocol";

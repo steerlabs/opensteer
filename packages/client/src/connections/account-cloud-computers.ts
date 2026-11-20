@@ -1,7 +1,13 @@
 import {
   CloudComputerListResponseSchema,
+  CloudComputerReasonCodeSchema,
   CloudComputerViewSchema,
+  MyOrganizationsResponseSchema,
+  WorkHomeResponseSchema,
   accountCloudComputerPath,
+  accountOrganizationsPath,
+  cloudComputerReasonNext,
+  cloudComputerReasonSentence,
   accountCloudComputerResumePath,
   accountCloudComputerSuspendPath,
   accountCloudComputersPath,
@@ -11,6 +17,7 @@ import type {
   DesktopCloudComputerActResult,
   DesktopCloudComputerFailure,
   DesktopCloudComputerReadResult,
+  DesktopWorkHome,
 } from "@opensteer/protocol/desktop";
 import { AccountRequestError } from "./account-deployment-directory.js";
 import { cloudWords } from "../computers/cloud-computer-copy.js";
@@ -44,7 +51,7 @@ export function cloudComputerFailure(error: unknown): DesktopCloudComputerFailur
     if (error.status === 401) return { kind: "signed-out", message: signedOut };
     if (error.status === 429 || error.status >= 500)
       return { kind: "unreachable", message: unreachable };
-    return { kind: "refused", message: error.message.slice(0, 1000) };
+    return { kind: "refused", message: refusalWords(error).slice(0, 1000) };
   }
   if (error instanceof Error && /isn't available yet|isn’t available yet/u.test(error.message))
     return { kind: "unavailable", message: unavailable };
@@ -66,7 +73,9 @@ export class AccountCloudComputerClient implements CloudComputerAccount {
     if (!transport) return { ok: false, failure: { kind: "unavailable", message: unavailable } };
     try {
       const body = await transport.accountRequest(accountCloudComputersPath, { method: "GET" });
-      return { ok: true, data: CloudComputerListResponseSchema.parse(body) };
+      const data = CloudComputerListResponseSchema.parse(body);
+      const work = await workHomes(transport);
+      return { ok: true, data, ...(work === null ? {} : { work }) };
     } catch (error) {
       return { ok: false, failure: cloudComputerFailure(error) };
     }
@@ -90,5 +99,63 @@ export class AccountCloudComputerClient implements CloudComputerAccount {
     } catch (error) {
       return { ok: false, failure: cloudComputerFailure(error) };
     }
+  }
+}
+
+/**
+ * The Account's refusal in the app's own words where it has them for the reason code,
+ * else the Account's sentence as given.
+ */
+function refusalWords(error: AccountRequestError): string {
+  const reason = CloudComputerReasonCodeSchema.safeParse(error.reason);
+  if (!reason.success) return error.message;
+  const sentence = cloudComputerReasonSentence(reason.data) ?? error.message;
+  const next = cloudComputerReasonNext(reason.data);
+  return next ? `${sentence} ${next}` : sentence;
+}
+
+/**
+ * The work Homes organizations assigned this person, each with its Cloud Computer when
+ * the Account shows it. Null when the organization reads fail: the personal Cloud
+ * Computer still shows, and nothing is said about work that could not be read.
+ */
+async function workHomes(transport: AccountRequestTransport): Promise<DesktopWorkHome[] | null> {
+  try {
+    const mine = MyOrganizationsResponseSchema.parse(
+      await transport.accountRequest(accountOrganizationsPath, { method: "GET" }),
+    );
+    const homes = await Promise.all(
+      mine.organizations.map(async (organization) =>
+        WorkHomeResponseSchema.parse(
+          await transport.accountRequest(
+            `${accountOrganizationsPath}/${encodeURIComponent(organization.id)}/work-home`,
+            { method: "GET" },
+          ),
+        ),
+      ),
+    );
+    return await Promise.all(
+      homes.flatMap((home) =>
+        home === null
+          ? []
+          : [
+              (async (): Promise<DesktopWorkHome> => {
+                try {
+                  const computer = CloudComputerViewSchema.parse(
+                    await transport.accountRequest(
+                      accountCloudComputerPath(home.assignment.computerId),
+                      { method: "GET" },
+                    ),
+                  );
+                  return { home, computer };
+                } catch {
+                  return { home, computer: null };
+                }
+              })(),
+            ],
+      ),
+    );
+  } catch {
+    return null;
   }
 }

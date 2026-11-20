@@ -338,6 +338,23 @@ describe("consent option sources", () => {
     },
   ] as never;
 
+  it("never offers the AI engine sign-in profile to an agent", () => {
+    const options = agentBrowserOptions({
+      browserProfiles: [
+        { id: profile, name: "Shopping", homeRunnerId: null },
+        {
+          id: "bpr_00000000-0000-4000-8000-000000000005",
+          name: "AI engine sign-in",
+          homeRunnerId: null,
+          purpose: "engine-sign-in",
+        },
+      ],
+      browserProfileHomes: [],
+      machines,
+    });
+    expect(options.profiles.map((option) => option.id)).toEqual([profile]);
+  });
+
   it("lists profiles with their Device and where a new profile can live", () => {
     const options = agentBrowserOptions({
       browserProfiles: [

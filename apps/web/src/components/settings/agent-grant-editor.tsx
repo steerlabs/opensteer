@@ -13,6 +13,7 @@ import {
   draftSharedProfiles,
   setDraftPluginAccess,
   toggleDraftResource,
+  workPolicyLimits,
   type AgentGrantDraft,
   type AppOption,
   type BrowserOptions,
@@ -25,6 +26,7 @@ import {
   useAgentPluginOptions,
   type AgentOptionsRead,
 } from "@opensteer/client/react";
+import type { WorkPolicy } from "@opensteer/control-plane-protocol";
 import type { ThreadAccessMode } from "@opensteer/core";
 import { Icon } from "../icon.js";
 import { SettingsSegmented } from "./primitives.js";
@@ -45,6 +47,7 @@ export function AgentGrantEditor({
   draft,
   home,
   onChange,
+  workPolicy,
 }: {
   readonly agent: string;
   readonly browser: BrowserOptions;
@@ -53,7 +56,10 @@ export function AgentGrantEditor({
   readonly draft: AgentGrantDraft;
   readonly home: string;
   readonly onChange: (draft: AgentGrantDraft) => void;
+  /** A work Home's effective policy, once the Home reports it; it rules choices out. */
+  readonly workPolicy?: WorkPolicy | undefined;
 }) {
+  const limits = workPolicyLimits(workPolicy);
   const [open, setOpen] = useState<Disclosure>(null);
   const apps = useAgentAppOptions(client, open === "apps" || hasKind(draft, "computer-app"));
   const plugins = useAgentPluginOptions(client, open === "plugins" || hasKind(draft, "plugin"));
@@ -79,6 +85,7 @@ export function AgentGrantEditor({
             label={agentWords("consent.scope.everything.label")}
             name="agent-grant-scope"
             onSelect={() => onChange({ ...draft, scope: "everything" })}
+            unavailable={limits.everything}
             value="everything"
           />
         </div>
@@ -194,7 +201,7 @@ export function AgentGrantEditor({
                   {agentWords("consent.tasks.title")}
                 </span>
                 <span className="card__row-detail" id="agent-grant-tasks-detail">
-                  {agentWords("consent.tasks.detail", { agent, home })}
+                  {limits.tasks ?? agentWords("consent.tasks.detail", { agent, home })}
                 </span>
               </span>
               <span className="card__row-actions">
@@ -203,7 +210,7 @@ export function AgentGrantEditor({
                   aria-labelledby="agent-grant-tasks"
                   checked={draft.tasks}
                   className="switch"
-                  disabled={disabled}
+                  disabled={disabled || (limits.tasks !== null && !draft.tasks)}
                   onChange={(event) => onChange({ ...draft, tasks: event.currentTarget.checked })}
                   role="switch"
                   type="checkbox"
@@ -246,12 +253,16 @@ export function ConnectionModeChoices({
   mode,
   onChange,
   showSettingsNote,
+  workPolicy,
 }: {
   readonly disabled: boolean;
   readonly mode: ThreadAccessMode;
   readonly onChange: (mode: ThreadAccessMode) => void;
   readonly showSettingsNote: boolean;
+  /** A work Home's effective policy, once the Home reports it; it caps the mode. */
+  readonly workPolicy?: WorkPolicy | undefined;
 }) {
+  const limits = workPolicyLimits(workPolicy);
   return (
     <fieldset className="settings-group" disabled={disabled}>
       <legend className="settings-group__title">{agentWords("consent.safety.title")}</legend>
@@ -264,6 +275,7 @@ export function ConnectionModeChoices({
             label={option.label}
             name="agent-consent-mode"
             onSelect={() => onChange(option.mode)}
+            unavailable={limits.mode(option.mode)}
             value={option.mode}
           />
         ))}
@@ -281,6 +293,7 @@ function Choice({
   label,
   name,
   onSelect,
+  unavailable = null,
   value,
 }: {
   readonly checked: boolean;
@@ -288,14 +301,26 @@ function Choice({
   readonly label: string;
   readonly name: string;
   readonly onSelect: () => void;
+  /** Why this choice can't be made here; it stays visible, disabled, with the reason. */
+  readonly unavailable?: string | null;
   readonly value: string;
 }) {
   return (
-    <label className="card__row agent-consent__mode">
-      <input checked={checked} name={name} onChange={onSelect} type="radio" value={value} />
+    <label
+      aria-disabled={unavailable === null ? undefined : true}
+      className="card__row agent-consent__mode"
+    >
+      <input
+        checked={checked}
+        disabled={unavailable !== null && !checked}
+        name={name}
+        onChange={onSelect}
+        type="radio"
+        value={value}
+      />
       <span className="card__row-body">
         <span className="card__row-title">{label}</span>
-        <span className="card__row-detail">{detail}</span>
+        <span className="card__row-detail">{unavailable ?? detail}</span>
       </span>
     </label>
   );

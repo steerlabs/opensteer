@@ -61,7 +61,6 @@ type Load =
   | { readonly kind: "answered" }
   | { readonly kind: "failed" };
 
-const selectGrants = (snapshot: HostSnapshot) => snapshot.agentGrantsAvailable === true;
 const selectProfiles = (snapshot: HostSnapshot) => snapshot.browserProfiles;
 const selectHomes = (snapshot: HostSnapshot) => snapshot.browserProfileHomes;
 const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
@@ -74,7 +73,6 @@ function AgentAuthorization(props: {
 }) {
   const navigation = useNavigation();
   const { host, requestId } = props;
-  const grantsAvailable = useHostSelector(host, selectGrants);
   const profiles = useHostSelector(host, selectProfiles);
   const homes = useHostSelector(host, selectHomes);
   const machines = useHostSelector(host, selectMachines);
@@ -87,6 +85,7 @@ function AgentAuthorization(props: {
   const home = agentHomeName({ machines, identityConfig });
   const [attempt, setAttempt] = useState(0);
   const [load, setLoad] = useState<Load>({ kind: "loading" });
+  const grantsAvailable = load.kind === "ready" && load.consent.grantsAvailable === true;
   const [label, setLabel] = useState("");
   const [mode, setMode] = useState<ThreadAccessMode>("approval-required");
   const [draft, setDraft] = useState<AgentGrantDraft | null>(null);

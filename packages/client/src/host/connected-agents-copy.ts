@@ -34,8 +34,7 @@ export const connectedAgentsCopy = {
   "agents.add.step3":
     "Approve the request in Opensteer when {name} asks. You’ll choose what it can use.",
   "remoteAccess.turnOnFirst.title": "Turn on Remote access first",
-  "remoteAccess.turnOnFirst.detail":
-    "These agents run in the cloud and reach Opensteer through it.",
+  "remoteAccess.turnOnFirst.detail": "Cloud agents reach Opensteer through it.",
   "remoteAccess.turnOnFirst.action": "Turn on",
   "remoteAccess.unreadable": "Couldn’t check Remote access",
 
