@@ -167,3 +167,37 @@ it("requires a revision on reports and validates a boot-complete identity", () =
     CloudComputerBootCompleteRequestSchema.safeParse({ ...body, identity: undefined }).success,
   ).toBe(false);
 });
+
+describe("Cloud Computer view facts", () => {
+  const preparing = { id: desired.id, status: "preparing", egress: "assigned" };
+
+  it("preserves older responses and round trips known facts", () => {
+    expect(CloudComputerViewSchema.parse(preparing)).toEqual(preparing);
+    const current = {
+      ...preparing,
+      deploymentId: identity.deploymentId,
+      region: { id: "ash", label: "Ashburn, VA" },
+      egressAddress: "2001:db8::7",
+      renewsAt: "2027-01-15T00:00:00.000Z",
+      steps: [{ id: "claim", state: "current" }],
+    };
+    expect(CloudComputerViewSchema.parse(current)).toEqual(current);
+    const suspended = {
+      ...preparing,
+      status: "suspended",
+      reason: "Your subscription needs attention.",
+      reasonCode: "cloud-computer-billing-problem",
+    };
+    expect(CloudComputerViewSchema.parse(suspended)).toEqual(suspended);
+  });
+
+  it.each([
+    { region: { id: "ash", label: "" } },
+    { egressAddress: "gateway.example.test" },
+    { renewsAt: null },
+    { deploymentId: "unknown" },
+    { steps: [{ id: "backup", state: "current" }] },
+  ])("rejects placeholder or unsupported facts %o", (fields) => {
+    expect(CloudComputerViewSchema.safeParse({ ...preparing, ...fields }).success).toBe(false);
+  });
+});

@@ -36,6 +36,24 @@ export class RemoteRequestError extends OpensteerError {
   }
 }
 
+export class ProviderWriteRejected extends Error {
+  readonly original: RemoteRequestError;
+  constructor(original: RemoteRequestError) {
+    super(original.message);
+    this.original = original;
+  }
+}
+
+export async function confirmProviderAcceptance<T>(write: Promise<T>): Promise<T> {
+  try {
+    return await write;
+  } catch (error) {
+    if (error instanceof RemoteRequestError && error.status >= 400 && error.status < 500)
+      throw new ProviderWriteRejected(error);
+    throw error;
+  }
+}
+
 export async function request<T>(
   service: Service,
   url: URL,

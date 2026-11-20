@@ -42,7 +42,13 @@ type Organization = Selectable<OrganizationTable>;
 type Assignment = Selectable<WorkAssignmentTable>;
 type Billing = Pick<
   CloudComputerStripe,
-  "checkout" | "findCheckout" | "subscription" | "cancel" | "validateOffer" | "updateSeatQuantity"
+  | "checkout"
+  | "findCheckout"
+  | "subscription"
+  | "cancel"
+  | "validateOffer"
+  | "updateSeatQuantity"
+  | "portal"
 >;
 type CreateComputer = CloudComputerStore["createWorkComputer"];
 const flushWindowMs = 3_000;
@@ -71,16 +77,36 @@ export class OrganizationStore {
   readonly #stripe: Billing;
   readonly #offer: OrganizationOffer | undefined;
   readonly #now: () => Date;
+  readonly #returnUrl: URL | undefined;
   #offerValid = false;
 
   constructor(
     db: DB,
-    options: { stripe: Billing; offer?: OrganizationOffer | undefined; now?: () => Date },
+    options: {
+      stripe: Billing;
+      offer?: OrganizationOffer | undefined;
+      now?: () => Date;
+      /** Where Stripe's checkout and billing pages send an admin back. */
+      returnUrl?: URL;
+    },
   ) {
     this.#db = db;
     this.#stripe = options.stripe;
     this.#offer = options.offer;
     this.#now = options.now ?? (() => new Date());
+    this.#returnUrl = options.returnUrl;
+  }
+
+  /** The per-seat offer, once Stripe confirmed it; absent while organizations can't be sold. */
+  get offer(): OrganizationOffer | undefined {
+    return this.#offerValid ? this.#offer : undefined;
+  }
+
+  async billingPortal(id: OrganizationId, account: ControlPlaneAccountId) {
+    const org = await this.#db.transaction().execute((tx) => this.#admin(tx, id, account));
+    return this.#returnUrl
+      ? this.#stripe.portal(org.stripeCustomerId, this.#returnUrl)
+      : this.#stripe.portal(org.stripeCustomerId);
   }
 
   async checkOffer() {
@@ -151,6 +177,7 @@ export class OrganizationStore {
       requestId: attempt.requestId,
       priceId: attempt.stripePriceId,
       organization: { id: attempt.organizationId, quantity: attempt.seats },
+      ...(this.#returnUrl ? { returnUrl: this.#returnUrl } : {}),
     });
     const saved = await this.#db
       .updateTable("organizationCheckouts")
@@ -363,12 +390,12 @@ export class OrganizationStore {
       .executeTakeFirst();
   }
 
-  async reconcile(onError: () => void) {
+  async reconcile(onError: (error: unknown) => void) {
     const attempt = async (job: () => Promise<unknown>) => {
       try {
         await job();
-      } catch {
-        onError();
+      } catch (error) {
+        onError(error);
       }
     };
     const orgs = await this.#db.selectFrom("organizations").select("id").execute();

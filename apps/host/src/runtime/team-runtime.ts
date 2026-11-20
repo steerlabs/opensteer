@@ -22,7 +22,7 @@ import {
   type HostKeyFingerprint,
 } from "@opensteer/core";
 import {
-  HostDescriptorSchema,
+  TeamHostDescriptorSchema,
   apiNegotiation,
   minimumTeamApiVersion,
   teamApiVersionHeader,
@@ -394,7 +394,7 @@ export async function createTeamHostRuntime(input: {
       ready && !draining && bus.healthy ? { ok: true } : reply.code(503).send({ ok: false }),
     );
     app.get("/.well-known/opensteer", () =>
-      HostDescriptorSchema.parse({
+      TeamHostDescriptorSchema.parse({
         ...apiNegotiation("team"),
         minimumApiVersion: minimumTeamApiVersion,
         authority: envelope,

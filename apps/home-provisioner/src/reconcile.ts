@@ -1,9 +1,12 @@
+import { randomUUID } from "node:crypto";
+import { ProviderWriteRejected } from "./http.js";
 import { refused } from "@opensteer/core";
 import type {
   CloudComputerCheck,
   CloudComputerDesired,
   CloudComputerId,
   CloudComputerReport,
+  CloudComputerProviderWrite,
 } from "@opensteer/control-plane-protocol";
 import { accountRefused, type AccountApi } from "./account.js";
 import { renderUserData } from "./boot.js";
@@ -160,6 +163,39 @@ export class Reconciler {
       this.#now() - Date.parse(computer.readinessStartedAt) >= this.#options.readinessTimeoutMs
         ? report("failed", "The Cloud Computer did not become ready before its deadline.")
         : report(phase);
+    const pending = new Map(
+      (computer.pendingProviderWrites ?? []).map((write) => [write.token, write]),
+    );
+    const finish = async (token: string) => {
+      await this.#check(id, { operation: "finish-provider-write", token }, signal);
+      pending.delete(token);
+    };
+    const observe = async (token: string) => {
+      if (pending.has(token)) await finish(token);
+    };
+    const journal = async <T>(
+      kind: CloudComputerProviderWrite["kind"],
+      action: (token: string) => Promise<T>,
+      serverId?: number,
+    ): Promise<T> => {
+      const token = randomUUID();
+      const write = { kind, token, generation, ...(serverId === undefined ? {} : { serverId }) };
+      await this.#check(id, { operation: "begin-provider-write", revision, write }, signal);
+      pending.set(token, write);
+      let result: T;
+      try {
+        result = await action(token);
+      } catch (error) {
+        if (error instanceof ProviderWriteRejected) {
+          await finish(token);
+          throw error.original;
+        }
+        if (error instanceof Superseded) await finish(token);
+        throw error;
+      }
+      await finish(token);
+      return result;
+    };
     const act = async <T>(
       action: (job: AbortSignal, check: () => Promise<void>) => Promise<T>,
       create = false,
@@ -170,7 +206,7 @@ export class Reconciler {
       await check();
       return action(job, check);
     };
-    const withdraw = () => act((job, check) => dns.removeRecords(hostname, job, check));
+    const withdraw = () => act((job, check) => dns.removeRecords(hostname, job, check, observe));
     let failure: Failure = "The Cloud Computer provider operation failed.";
 
     try {
@@ -182,43 +218,80 @@ export class Reconciler {
       const previous = servers.filter((server) => server.generation < generation);
       current = matching[0];
 
-      if (state !== "active") {
-        failure = "The Cloud Computer DNS operation failed.";
-        await withdraw();
-        failure = "The Cloud Computer provider operation failed.";
-        let settled = true;
-        for (const server of servers) {
-          if (state === "suspended" && server.status === "off") continue;
-          if (server.status !== "deleting") {
-            if (state === "deleted")
-              await act((job, check) => provider.delete(server.id, job, check));
-            else await act((job, check) => provider.powerOff(server.id, job, check));
-          }
-          const observed = await provider.describe(server.id, signal);
-          if (current?.id === server.id) current = observed;
-          if (observed && (state === "deleted" || observed.status !== "off")) settled = false;
+      for (const write of pending.values()) {
+        if (
+          (write.kind === "create" &&
+            servers.some((server) => server.generation === write.generation)) ||
+          (write.kind === "power-on" &&
+            servers.some((server) => server.id === write.serverId && server.status === "running"))
+        ) {
+          await finish(write.token);
         }
+      }
+      if (state !== "active") {
+        const network = withdraw();
+        const power = (async () => {
+          let settled = true;
+          for (const server of servers) {
+            if (state === "suspended" && server.status === "off") continue;
+            if (server.status !== "deleting") {
+              if (state === "deleted")
+                await act((job, check) => provider.delete(server.id, job, check));
+              else await act((job, check) => provider.powerOff(server.id, job, check));
+            }
+            const observed = await provider.describe(server.id, signal, server.generation);
+            if (current?.id === server.id) current = observed;
+            if (observed && (state === "deleted" || observed.status !== "off")) settled = false;
+          }
+          return settled;
+        })();
+        const [dnsResult, vmResult] = await Promise.allSettled([network, power]);
+        for (const result of [dnsResult, vmResult]) {
+          if (
+            result.status === "rejected" &&
+            (accountRefused(result.reason) || result.reason instanceof Superseded)
+          )
+            throw result.reason;
+        }
+        if (vmResult.status === "rejected") throw vmResult.reason;
+        if (dnsResult.status === "rejected") {
+          failure = "The Cloud Computer DNS operation failed.";
+          throw dnsResult.reason;
+        }
+        if (state === "deleted" && vmResult.value) {
+          for (const write of pending.values()) {
+            if (write.kind === "power-on") await finish(write.token);
+          }
+        }
+        const settled = vmResult.value && !pending.size;
         if (state === "deleted") return report(settled ? "deleted" : "deleting");
         return report(settled ? "suspended" : "provisioning");
       }
 
+      if ([...pending.values()].some(({ kind }) => kind === "dns-a" || kind === "dns-aaaa")) {
+        failure = "The Cloud Computer DNS operation failed.";
+        for (const token of (await dns.observeWrites?.(hostname, signal)) ?? [])
+          await observe(token);
+        failure = "The Cloud Computer provider operation failed.";
+      }
+      if ([...pending.values()].some(({ kind }) => kind === "create"))
+        return unready("provisioning");
       if (matching.length > 1)
         return report("failed", "The Cloud Computer has more than one server for this generation.");
       if (current?.status === "deleting") return unready("provisioning");
       if (!current && !computer.bootstrapToken)
         return report("failed", "A bootstrap token is required to create this Cloud Computer.");
       if (previous.some((server) => server.status !== "off")) {
-        failure = "The Cloud Computer DNS operation failed.";
-        await withdraw();
-        failure = "The Cloud Computer provider operation failed.";
         for (const old of previous) {
           if (old.status === "deleting") return unready("provisioning");
           if (old.status !== "off") {
             await act((job, check) => provider.powerOff(old.id, job, check));
-            const observed = await provider.describe(old.id, signal);
+            const observed = await provider.describe(old.id, signal, old.generation);
             if (observed && observed.status !== "off") return unready("provisioning");
           }
         }
+        failure = "The Cloud Computer DNS operation failed.";
+        await withdraw();
       }
 
       const firewallId = await act((job, check) => ensureFirewall(job, check));
@@ -233,18 +306,20 @@ export class Reconciler {
         });
         current = await act(
           (job, check) =>
-            provider.create(
-              {
-                id,
-                generation,
-                region: computer.region ?? this.#options.defaultRegion,
-                serverType: computer.serverType ?? this.#options.defaultServerType,
-                image: this.#options.image,
-                firewallId,
-                userData,
-              },
-              job,
-              check,
+            journal("create", () =>
+              provider.create(
+                {
+                  id,
+                  generation,
+                  region: computer.region ?? this.#options.defaultRegion,
+                  serverType: computer.serverType ?? this.#options.defaultServerType,
+                  image: this.#options.image,
+                  firewallId,
+                  userData,
+                },
+                job,
+                check,
+              ),
             ),
           true,
         );
@@ -263,8 +338,12 @@ export class Reconciler {
       )
         return unready("provisioning");
       if (current.status === "off") {
-        await act((job, check) => provider.powerOn(server.id, job, check));
-        current = await provider.describe(server.id, signal);
+        if ([...pending.values()].some(({ kind }) => kind === "power-on"))
+          return unready("provisioning");
+        await act((job, check) =>
+          journal("power-on", () => provider.powerOn(server.id, job, check), server.id),
+        );
+        current = await provider.describe(server.id, signal, server.generation);
       }
       if (current?.status !== "running") return unready("provisioning");
       const addresses = { ipv4: current.ipv4, ipv6: computer.ipv6Enabled ? current.ipv6 : null };
@@ -278,31 +357,43 @@ export class Reconciler {
               .map((ip) => discover(hostname, ip, signal)),
           )
         : [];
-      if (
+      const invalid =
         pinned &&
         replies.some(
           (identity) =>
-            identity &&
-            (identity.deploymentId !== pinned.deploymentId ||
-              identity.hostKeyFingerprint !== pinned.hostKeyFingerprint),
-        )
+            identity === "invalid" ||
+            (identity &&
+              (identity.deploymentId !== pinned.deploymentId ||
+                identity.hostKeyFingerprint !== pinned.hostKeyFingerprint)),
+        );
+      if (
+        invalid ||
+        (computer.dnsQuarantined && (!replies.length || replies.some((identity) => !identity)))
       ) {
-        failure = "The Cloud Computer DNS operation failed.";
-        await withdraw();
+        try {
+          await withdraw();
+        } catch (error) {
+          if (error instanceof Superseded || accountRefused(error)) throw error;
+          this.#options.onError?.(error);
+        }
         return report(
           "failed",
           "The Cloud Computer reported a different Home identity for this generation.",
         );
       }
       failure = "The Cloud Computer DNS operation failed.";
-      await act((job, check) => dns.ensureRecords(hostname, addresses, job, check));
+      await act((job, check) =>
+        dns.ensureRecords(hostname, addresses, job, check, (type, publish) =>
+          journal(type === "A" ? "dns-a" : "dns-aaaa", publish),
+        ),
+      );
       if (!replies.length || replies.some((identity) => !identity)) return unready("booting");
 
       failure = "The Cloud Computer provider operation failed.";
-      for (const old of previous) {
+      for (const old of computer.restoreSnapshot && !computer.replacementVerified ? [] : previous) {
         if (old.status !== "deleting")
           await act((job, check) => provider.delete(old.id, job, check));
-        if (await provider.describe(old.id, signal)) return unready("booting");
+        if (await provider.describe(old.id, signal, old.generation)) return unready("booting");
       }
       return report("ready");
     } catch (error) {

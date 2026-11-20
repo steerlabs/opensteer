@@ -1,20 +1,20 @@
 import { request as httpsRequest } from "node:https";
 import type { RequestOptions } from "node:https";
 import type { CloudComputerIdentity } from "@opensteer/control-plane-protocol";
-import { refused } from "@opensteer/core";
+
 import {
   HostDiscoveryEnvelopeSchema,
   hostKeyFingerprint,
   verifyHostDiscoveryEnvelope,
 } from "@opensteer/deployment-authority";
 import { z } from "zod";
-import { json, request, type HttpOptions } from "./http.js";
+import { json, request, RemoteRequestError, type HttpOptions } from "./http.js";
 
 export type DiscoverHome = (
   hostname: string,
   address: string,
   signal: AbortSignal,
-) => Promise<CloudComputerIdentity | undefined>;
+) => Promise<CloudComputerIdentity | "invalid" | undefined>;
 
 const descriptor = z.object({
   kind: z.literal("personal"),
@@ -31,19 +31,27 @@ export function discoverHome(http: HttpOptions): DiscoverHome {
         { ...http, fetch: http.fetch ?? pinnedFetch(hostname, address) },
         signal,
         (text) => {
-          const { authority } = json(descriptor)(text);
-          const doc = verifyHostDiscoveryEnvelope(authority);
-          if (doc.canonicalOrigin !== origin || doc.deploymentShape.kind !== "personal") {
-            throw refused("conflict", "Home discovery does not match its public origin");
+          try {
+            const { authority } = json(descriptor)(text);
+            const doc = verifyHostDiscoveryEnvelope(authority);
+            if (doc.canonicalOrigin !== origin || doc.deploymentShape.kind !== "personal")
+              return "invalid" as const;
+            return {
+              deploymentId: doc.deploymentId,
+              hostKeyFingerprint: hostKeyFingerprint(authority.publicKey.spki),
+            };
+          } catch {
+            return "invalid" as const;
           }
-          return {
-            deploymentId: doc.deploymentId,
-            hostKeyFingerprint: hostKeyFingerprint(authority.publicKey.spki),
-          };
         },
       );
-    } catch {
+    } catch (error) {
       signal.throwIfAborted();
+      if (
+        error instanceof RemoteRequestError &&
+        (error.status === 421 || (error.status >= 300 && error.status < 400))
+      )
+        return "invalid";
       return undefined;
     }
   };
@@ -77,14 +85,20 @@ function pinnedFetch(hostname: string, address: string): typeof fetch {
           let size = 0;
           response.on("data", (chunk: Buffer) => {
             size += chunk.byteLength;
-            if (size > 64 * 1024) response.destroy(new Error("Home discovery is too large"));
-            else chunks.push(chunk);
+            if (size > 64 * 1024) {
+              resolve(new Response(null, { status: 421 }));
+              response.destroy();
+            } else chunks.push(chunk);
           });
           response.once("error", reject);
           response.once("end", () => resolve(new Response(Buffer.concat(chunks), { status })));
         },
       );
-      req.once("error", reject);
+      req.once("error", (error: NodeJS.ErrnoException) => {
+        if (error.code === "ERR_TLS_CERT_ALTNAME_INVALID")
+          resolve(new Response(null, { status: 421 }));
+        else reject(error);
+      });
       req.end();
     });
 }

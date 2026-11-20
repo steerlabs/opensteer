@@ -1,3 +1,5 @@
+import type { CloudComputerPreparationStep, CloudComputerReasonCode } from "./cloud-computers.js";
+
 /**
  * Every word the Opensteer Cloud Computer screens show, by stable id. Web, desktop, phone
  * and the Opensteer website all read these, so they say the same thing; this module is the
@@ -118,6 +120,39 @@ export const cloudComputerCopy = {
   "cloud.web.noBilling": "There’s no Cloud Computer subscription on this Account yet.",
   "cloud.web.typeWord": "Type delete in the box to confirm.",
   "cloud.web.managed": "Your organization manages this Cloud Computer. Ask them to change it.",
+  "cloud.web.personal": "Your own Cloud Computer",
+  "cloud.step.payment": "Payment received",
+  "cloud.step.opensteer": "Starting Opensteer",
+  "cloud.step.claim": "Linking it to your Account",
+  "cloud.step.failed": "This step didn’t finish.",
+  "cloud.region": "Region",
+  "cloud.ip.address": "Browser address",
+  "cloud.renews": "Renews {date}",
+  "cloud.reason.already-exists": "You already have a Cloud Computer.",
+  "cloud.reason.no-capacity":
+    "There’s no room for a new Cloud Computer right now. Nothing was charged.",
+  "cloud.reason.sales-not-open": "Cloud Computers aren’t on sale yet.",
+  "cloud.reason.work-managed": "Your organization manages this Cloud Computer.",
+  "cloud.reason.checkout-expired": "This checkout expired.",
+  "cloud.reason.checkout-complete": "This checkout is already paid.",
+  "cloud.reason.checkout-in-progress": "You already started a checkout.",
+  "cloud.reason.checkout-unavailable": "Checkout isn’t available right now. Nothing was charged.",
+  "cloud.reason.billing-web-only": "Billing is managed on the Opensteer website.",
+  "cloud.reason.delete-confirmation-required": "Type delete to confirm.",
+  "cloud.reason.not-found": "This Cloud Computer isn’t on your Account.",
+  "cloud.reason.deleted": "This Cloud Computer was deleted.",
+  "cloud.reason.owner-suspended": "You paused this Cloud Computer.",
+  "cloud.reason.deletion-pending": "Deleting. Waiting for Stripe to end the subscription.",
+  "cloud.reason.bootstrap-expired": "Its setup took too long to start.",
+  "cloud.next.already-exists": "You already have one. Manage it below.",
+  "cloud.next.no-capacity": "Try again later.",
+  "cloud.next.sales-not-open": "Try again later.",
+  "cloud.next.work-managed": "Ask your organization to change it.",
+  "cloud.next.checkout-expired": "Start again to get a fresh checkout.",
+  "cloud.next.checkout-in-progress":
+    "Finish the checkout you already started. If you closed it, it expires within a day and you can start again.",
+  "cloud.next.checkout-unavailable": "Try again later.",
+  "cloud.next.billing-problem": "Fix the payment in Manage billing. Nothing on it is deleted.",
 } as const;
 
 export type CloudComputerCopyId = keyof typeof cloudComputerCopy;
@@ -155,4 +190,29 @@ export function cloudComputerPriceLine(
       ? cloudWords("cloud.price", { price, interval: plan.interval })
       : cloudWords("cloud.priceOnce", { price }),
   };
+}
+
+/**
+ * The app's own sentence for an Account reason code, or null where the Account's sentence
+ * carries details the app doesn't have (an operator's note, a setup error, which billing
+ * problem) and must be shown as given.
+ */
+export function cloudComputerReasonSentence(
+  code: CloudComputerReasonCode | undefined,
+): string | null {
+  if (!code) return null;
+  const id = `cloud.reason.${code.replace(/^cloud-computer-/u, "")}`;
+  return Object.hasOwn(cloudComputerCopy, id) ? cloudWords(id as CloudComputerCopyId) : null;
+}
+
+/** What to do next after a refusal with this reason code, when there is one thing to do. */
+export function cloudComputerReasonNext(code: CloudComputerReasonCode | undefined): string | null {
+  if (!code) return null;
+  const id = `cloud.next.${code.replace(/^cloud-computer-/u, "")}`;
+  return Object.hasOwn(cloudComputerCopy, id) ? cloudWords(id as CloudComputerCopyId) : null;
+}
+
+/** The words for each preparation step the Account reports, in its order. */
+export function cloudComputerStepLabel(id: CloudComputerPreparationStep["id"]): string {
+  return cloudWords(id === "machine" ? "cloud.step.machine" : `cloud.step.${id}`);
 }

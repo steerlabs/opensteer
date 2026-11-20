@@ -1,5 +1,9 @@
 import { loadOrganizationOffer, type OrganizationOffer } from "./organizations/config.js";
-import { loadCloudComputerConfig, type CloudComputerConfig } from "./cloud-computers/config.js";
+import {
+  loadCloudComputerConfig,
+  withManagedHomeConfigFiles,
+  type CloudComputerConfig,
+} from "./cloud-computers/config.js";
 import {
   HostedOAuthProviderRegistrySchema,
   type HostedOAuthProviderApplication,
@@ -324,8 +328,9 @@ export function loadControlPlaneConfig(
   if (parsed.OPENSTEER_PORTAL_ORIGIN.origin === parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL.origin) {
     throw new Error("Account and portal origins must differ");
   }
-  const cloudComputers = loadCloudComputerConfig(environment);
-  const organizationOffer = loadOrganizationOffer(environment);
+  const managedHomeEnvironment = withManagedHomeConfigFiles(environment);
+  const cloudComputers = loadCloudComputerConfig(managedHomeEnvironment);
+  const organizationOffer = loadOrganizationOffer(managedHomeEnvironment);
   if (
     organizationOffer &&
     (!cloudComputers || organizationOffer.priceId === cloudComputers.stripePriceId)

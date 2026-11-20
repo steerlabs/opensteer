@@ -190,12 +190,6 @@ export const HostCapabilitySchema = z.enum([
 
   "task-marks-v1",
   /**
-   * Connected agents carry a grant: `connection.authorize` takes one, `connection.update` edits it
-   * by revision, `connection.remove` takes a revoked one off `connections.list`, and the list
-   * reports each connection's state.
-   */
-  "agent-grants-v1",
-  /**
    * A conversation's family can be read without its history: `triggers.list`
    * filters by `anchorThreadId`, and `thread.assignments.list` by `open`.
    */
@@ -265,7 +259,7 @@ export const HostIdentityProofSchema = z.strictObject({
 });
 export type HostIdentityProof = z.infer<typeof HostIdentityProofSchema>;
 
-export const HostDescriptorSchema = z.object({
+export const TeamHostDescriptorSchema = z.object({
   kind: DeploymentKindSchema,
   /**
    * A team's current version. A personal Host's minimum: a client from before
@@ -280,7 +274,10 @@ export const HostDescriptorSchema = z.object({
   authority: HostDiscoveryEnvelopeSchema,
   bootstrapMethods: z.array(HostBootstrapMethodSchema).max(4),
   capabilities: z.array(z.string().min(1).max(64)).max(64),
-  /** Present when the request carried `?proof=<nonce>`. */
+});
+
+export const HostDescriptorSchema = TeamHostDescriptorSchema.extend({
+  /** Present when a Personal request carried `?proof=<nonce>`. */
   identityProof: HostIdentityProofSchema.optional(),
 });
 export type HostDescriptor = z.infer<typeof HostDescriptorSchema>;

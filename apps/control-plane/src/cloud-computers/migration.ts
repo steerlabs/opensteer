@@ -5,14 +5,14 @@ export const cloudComputersMigration: Migration = {
   async up(database) {
     await sql`
       create table public.cloud_computer_checkouts (
-        account_id text not null references public.users(id) on delete cascade,
+        account_id text not null,
         request_id uuid not null,
         expires_at timestamptz not null,
         stripe_session_id text unique,
         url text,
         stripe_price_id text not null,
         currency text not null,
-        status text not null check (status in ('open', 'completed', 'expired')),
+        status text not null check (status in ('open', 'completed', 'expired', 'refunded')),
         primary key (account_id, request_id)
       )
     `.execute(database);

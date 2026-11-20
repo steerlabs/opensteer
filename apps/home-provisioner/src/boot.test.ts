@@ -26,7 +26,7 @@ const config = z.strictObject({
       content: z.string(),
     }),
   ),
-  runcmd: z.tuple([z.tuple([z.literal("bash"), z.literal("-c"), z.string()])]),
+  runcmd: z.array(z.array(z.string())),
 });
 const userData = (text: string) => {
   expect(text.startsWith("#cloud-config\n")).toBe(true);
@@ -38,7 +38,7 @@ it("writes exactly the approved fields and excludes the token from installer arg
   const rendered = renderUserData(input);
   const parsed = userData(rendered);
   const { bootstrapToken, ...publicSpec } = spec;
-  expect(parsed.write_files).toEqual([
+  expect(parsed.write_files.slice(0, 2)).toEqual([
     {
       path: "/root/opensteer-home-boot.json",
       owner: "root:root",
@@ -46,13 +46,21 @@ it("writes exactly the approved fields and excludes the token from installer arg
       content: JSON.stringify(publicSpec),
     },
     {
-      path: "/run/opensteer-home-bootstrap-token",
+      path: "/root/opensteer-home-bootstrap-token",
       owner: "root:root",
       permissions: "0600",
       content: bootstrapToken,
     },
   ]);
-  expect(parsed.runcmd[0][2]).not.toContain(bootstrapToken);
+  expect(parsed.write_files[3]?.content).toContain("Restart=on-failure");
+  expect(parsed.write_files[3]?.content).toContain(
+    "ConditionPathExists=/root/opensteer-home-bootstrap-token",
+  );
+  expect(parsed.runcmd).toEqual([
+    ["systemctl", "daemon-reload"],
+    ["systemctl", "enable", "--now", "--no-block", "opensteer-home-download.service"],
+  ]);
+  expect(parsed.write_files[2]?.content).not.toContain(bootstrapToken);
   expect(rendered).not.toContain("unrelated_");
 });
 
@@ -74,9 +82,8 @@ cp "$DOWNLOAD" "$2"
     );
     const hash = valid ? spec.installerSha256 : "0".repeat(64);
     const parsed = userData(renderUserData({ ...spec, installerSha256: hash }));
-    const script = parsed.runcmd[0][2]
-      .replaceAll("/root/", `${temp}/`)
-      .replaceAll("/run/", `${temp}/`);
+    const script = parsed.write_files[2]?.content.replaceAll("/root/", `${temp}/`);
+    if (!script) throw Error("Missing installer download script");
     const result = spawnSync("bash", ["-c", script], {
       env: {
         ...process.env,
@@ -97,7 +104,7 @@ cp "$DOWNLOAD" "$2"
       expect(result.status).toBe(1);
       expect(() => readFileSync(marker)).toThrow(/ENOENT/u);
     }
-    expect(() => readFileSync(token)).toThrow(/ENOENT/u);
+    expect(readFileSync(token, "utf8")).toBe(spec.bootstrapToken);
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }

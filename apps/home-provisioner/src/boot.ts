@@ -19,7 +19,9 @@ const HomeBootSpecSchema = z.object({
 export type HomeBootSpec = z.infer<typeof HomeBootSpecSchema>;
 
 const specPath = "/root/opensteer-home-boot.json";
-const tokenPath = "/run/opensteer-home-bootstrap-token";
+const tokenPath = "/root/opensteer-home-bootstrap-token";
+const downloadPath = "/root/opensteer-home-download.sh";
+const downloadUnit = "opensteer-home-download.service";
 const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 
 export function renderUserData(input: HomeBootSpec): string {
@@ -30,11 +32,30 @@ export function renderUserData(input: HomeBootSpec): string {
     "set -eu",
     "umask 077",
     "installer=$(mktemp /root/opensteer-home-installer.XXXXXX)",
-    `trap 'rm -f "$installer" ${tokenPath}' EXIT`,
-    `curl -q --fail --silent --show-error --proto '=https' --max-time 120 --output "$installer" -- ${quote(spec.installerUrl)}`,
+    `trap 'rm -f "$installer"' EXIT`,
+    `curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 120 --output "$installer" -- ${quote(spec.installerUrl)}`,
     `printf '%s  %s\\n' '${spec.installerSha256}' "$installer" | sha256sum -c - >/dev/null`,
     `bash "$installer" --boot-spec ${specPath} --bootstrap-token-file ${tokenPath}`,
   ].join("\n");
+
+  const unit = `[Unit]
+Description=Download the Opensteer Home installer
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=${tokenPath}
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash ${downloadPath}
+Restart=on-failure
+RestartSec=10s
+RestartSteps=5
+RestartMaxDelaySec=60s
+
+[Install]
+WantedBy=multi-user.target
+`;
 
   return (
     "#cloud-config\n" +
@@ -42,8 +63,18 @@ export function renderUserData(input: HomeBootSpec): string {
       write_files: [
         { path: specPath, owner: "root:root", permissions: "0600", content: JSON.stringify(spec) },
         { path: tokenPath, owner: "root:root", permissions: "0600", content: bootstrapToken },
+        { path: downloadPath, owner: "root:root", permissions: "0600", content: script },
+        {
+          path: `/etc/systemd/system/${downloadUnit}`,
+          owner: "root:root",
+          permissions: "0600",
+          content: unit,
+        },
       ],
-      runcmd: [["bash", "-c", script]],
+      runcmd: [
+        ["systemctl", "daemon-reload"],
+        ["systemctl", "enable", "--now", "--no-block", downloadUnit],
+      ],
     }) +
     "\n"
   );

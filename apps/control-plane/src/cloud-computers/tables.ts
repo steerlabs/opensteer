@@ -2,6 +2,7 @@ import type { ColumnType, Generated } from "kysely";
 import type {
   CloudComputerDesired,
   CloudComputerId,
+  CloudComputerProviderWrite,
   CloudComputerReport,
   WorkAssignmentId,
   ControlPlaneAccountId,
@@ -56,6 +57,8 @@ export interface CloudComputerTable {
   renewsAt: Generated<Date | null>;
   revision: Generated<number>;
   everReady: Generated<boolean>;
+  generationReady: Generated<boolean>;
+  dnsQuarantined: Generated<boolean>;
   createAttempted: Generated<boolean>;
   bootCompletedAt: NullableTimestamp;
   completedBootDigest: string | null;
@@ -63,6 +66,8 @@ export interface CloudComputerTable {
   restoreSnapshot: string | null;
   ipv6Enabled: Generated<boolean>;
   deletionRequestedAt: NullableTimestamp;
+  ownerAccessAt: Generated<Date | null>;
+  pendingProviderWrites: ColumnType<CloudComputerProviderWrite[], string | undefined, string>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
   reportedAt: NullableTimestamp;
@@ -77,11 +82,13 @@ export interface CloudComputerCheckoutTable {
   createdAt: Timestamp;
   lastStripeAttemptAt: NullableTimestamp;
   targetComputerId: CloudComputerId | null;
+  paidAt: Generated<Date | null>;
+  returnUrl: Generated<string | null>;
   stripeSessionId: string | null;
   url: string | null;
   stripePriceId: string;
   currency: string;
-  status: "open" | "completed" | "expired";
+  status: "open" | "completed" | "expired" | "refunded";
 }
 
 export interface CloudComputerEgressEndpointTable {
@@ -90,6 +97,7 @@ export interface CloudComputerEgressEndpointTable {
   username: string;
   sealedPassword: string;
   publicAddress: Generated<string | null>;
+  retired: Generated<boolean>;
   needsRotation: Generated<boolean>;
   computerId: CloudComputerId | null;
 }
@@ -111,4 +119,11 @@ export interface CloudComputerBackupTargetTable {
   computerId: CloudComputerId | null;
   checkoutKey: string | null;
   needsRotation: Generated<boolean>;
+}
+
+export interface CloudComputerBackupNamespaceTable {
+  endpoint: string;
+  bucket: string;
+  prefix: string;
+  principalFingerprint: string;
 }

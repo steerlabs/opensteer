@@ -1,5 +1,7 @@
 import { registerTeamSetupPortal } from "../adoption/team-setup.js";
 import { registerCloudComputerPortal } from "../cloud-computers/portal-routes.js";
+import { registerOrganizationPortal } from "../organizations/portal-routes.js";
+import type { OrganizationStore } from "../organizations/store.js";
 import type { CloudComputerStore } from "../cloud-computers/store.js";
 import type { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
 import {
@@ -117,6 +119,10 @@ interface PortalDependencies {
   readonly auth: ControlPlaneAuth;
   /** Present when this Account offers Cloud Computers. */
   readonly cloudComputers?: CloudComputerStore;
+  /** Present when this Account offers organizations. */
+  readonly organizations?: OrganizationStore;
+  /** How offboarding reaches a work Home to ask for its last audit records. */
+  readonly workHomeFetch?: typeof globalThis.fetch;
   /** Where "Get the desktop app" points; without it the row is absent. */
   readonly desktopDownloadUrl?: string;
   readonly iosAppUrl?: string;
@@ -389,6 +395,26 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
 
       registerCloudComputerPortal(app, {
         cloudComputers: dependencies.cloudComputers,
+        organizations: dependencies.organizations,
+        openHome: async (accountId, deploymentId) => {
+          const home = await store.deploymentForAccount(accountId, deploymentId);
+          return home?.lifecycle === "active" && home.reachability === "canonical"
+            ? deploymentOrigin(home.canonicalOrigin)
+            : null;
+        },
+        fonts,
+        guard,
+        portalOrigin: origin,
+        readSession,
+        signInPath: portalSignInPath,
+      });
+
+      registerOrganizationPortal(app, {
+        organizations: dependencies.organizations,
+        cloudComputers: dependencies.cloudComputers,
+        auth,
+        publicOrigin,
+        ...(dependencies.workHomeFetch ? { workHomeFetch: dependencies.workHomeFetch } : {}),
         fonts,
         guard,
         portalOrigin: origin,

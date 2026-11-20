@@ -120,7 +120,9 @@ function harness({ concurrency = 2 } = {}) {
     acquire: vi.fn(async () => {}),
     check: vi.fn<AccountApi["check"]>(async (id, check) => {
       const row = status.desired.find((computer) => computer.id === id);
-      return check.operation === "orphan" ? !row : check.revision === row?.revision;
+      if (check.operation === "orphan") return !row;
+      if (check.operation === "finish-provider-write") return Boolean(row);
+      return check.revision === row?.revision;
     }),
     desired: vi.fn(async () => status.desired),
     report: vi.fn<AccountApi["report"]>(async (report) => {
@@ -298,8 +300,8 @@ describe("Cloud Computer reconciliation", () => {
         h.status.desired = [{ ...home, generation: 2 }];
         await h.pass();
         expect(h.calls).toEqual([
-          "removeDns",
           "powerOff:1",
+          "removeDns",
           "firewall",
           "create:2",
           "powerOn:2",
@@ -375,8 +377,13 @@ describe("Cloud Computer reconciliation", () => {
         await h.pass();
         expect(h.last()?.phase).toBe("deleting");
         await h.restart();
-        expect(h.calls).toEqual(["removeDns", "delete:1", "removeDns", "delete:1"]);
-        expect(h.provider.describe).toHaveBeenLastCalledWith(server.id, expect.any(AbortSignal));
+        expect(h.calls.filter((call) => call === "removeDns")).toHaveLength(2);
+        expect(h.calls.filter((call) => call === "delete:1")).toHaveLength(2);
+        expect(h.provider.describe).toHaveBeenLastCalledWith(
+          server.id,
+          expect.any(AbortSignal),
+          server.generation,
+        );
         expect(h.last()).toMatchObject({
           phase: "deleted",
           providerServerId: null,

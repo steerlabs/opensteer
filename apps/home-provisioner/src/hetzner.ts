@@ -2,11 +2,18 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   CloudComputerGenerationSchema,
   CloudComputerIdSchema,
+  type CloudComputerProviderWrite,
   type CloudComputerId,
 } from "@opensteer/control-plane-protocol";
 import { refused } from "@opensteer/core";
 import { z } from "zod";
-import { json, RemoteRequestError, request, type HttpOptions } from "./http.js";
+import {
+  confirmProviderAcceptance,
+  json,
+  RemoteRequestError,
+  request,
+  type HttpOptions,
+} from "./http.js";
 import type { CreateVm, VmProvider, VmServer } from "./provider.js";
 
 const homeLabel = "opensteer.com/cloud-computer";
@@ -200,6 +207,7 @@ export class HetznerCloud implements VmProvider {
       generation: number;
       providerServerId?: number | undefined;
       previousProviderServerId?: number | undefined;
+      pendingProviderWrites?: CloudComputerProviderWrite[] | undefined;
     },
   ): Promise<readonly VmServer[]> {
     const found = new Map(
@@ -208,29 +216,45 @@ export class HetznerCloud implements VmProvider {
         .map((entry) => [entry.id, server(entry)]),
     );
     if (!expected) return [...found.values()];
-    for (const serverId of [expected.providerServerId, expected.previousProviderServerId]) {
-      if (serverId && !found.has(serverId)) {
-        const entry = await this.#describe(serverId, signal);
-        if (entry && managedServer(entry)?.id !== id) {
-          throw refused(
-            "conflict",
-            "Recorded Hetzner server identity does not match this Cloud Computer",
-          );
-        }
-        if (entry) found.set(entry.id, server(entry));
-      }
-    }
-    if (![...found.values()].some((entry) => entry.generation === expected.generation)) {
-      const name = serverName(id, expected.generation);
+    const generations = new Set([
+      expected.generation,
+      ...(expected.pendingProviderWrites ?? [])
+        .filter(({ kind }) => kind === "create")
+        .map(({ generation }) => generation),
+    ]);
+    for (const generation of generations) {
+      if ([...found.values()].some((entry) => entry.generation === generation)) continue;
+      const name = serverName(id, generation);
       for (const entry of await this.#list({ name }, signal)) {
         if (entry.name === name) found.set(entry.id, server(entry));
+      }
+    }
+    for (const serverId of [expected.providerServerId, expected.previousProviderServerId]) {
+      if (!serverId || found.has(serverId)) continue;
+      const entry = await this.#describe(serverId, signal);
+      if (!entry) continue;
+      const identity = managedServer(entry);
+      if (identity && identity.id !== id)
+        throw refused(
+          "conflict",
+          "Recorded Hetzner server identity does not match this Cloud Computer",
+        );
+      if (identity) found.set(entry.id, server(entry));
+      else {
+        found.set(
+          entry.id,
+          server(
+            entry,
+            serverId === expected.providerServerId ? expected.generation : expected.generation - 1,
+          ),
+        );
       }
     }
     return [...found.values()];
   }
 
   async listManaged(signal: AbortSignal) {
-    return (await this.#list({ label_selector: homeLabel }, signal)).flatMap((entry) => {
+    return (await this.#list({}, signal)).flatMap((entry) => {
       const identity = managedServer(entry);
       return identity ? [{ id: identity.id, server: server(entry) }] : [];
     });
@@ -281,13 +305,13 @@ export class HetznerCloud implements VmProvider {
         check,
       );
     } catch (error) {
-      if (!isConflict(error)) throw error;
+      if (!isConflict(error)) return confirmProviderAcceptance(Promise.reject(error));
       const existing = await this.#find(input.id, signal, input.generation);
       const match = existing[0];
       if (existing.length === 1 && match?.name === name) return server(match);
       const byName = (await this.#list({ name }, signal)).find((entry) => entry.name === name);
       if (byName) return server(byName);
-      throw error;
+      return confirmProviderAcceptance(Promise.reject(error));
     }
 
     if (
@@ -303,9 +327,13 @@ export class HetznerCloud implements VmProvider {
     return current;
   }
 
-  async describe(id: number, signal: AbortSignal): Promise<VmServer | undefined> {
+  async describe(
+    id: number,
+    signal: AbortSignal,
+    knownGeneration?: number,
+  ): Promise<VmServer | undefined> {
     const entry = await this.#describe(id, signal);
-    return entry ? server(entry) : undefined;
+    return entry ? server(entry, knownGeneration) : undefined;
   }
 
   async #describe(id: number, signal: AbortSignal) {
@@ -321,7 +349,17 @@ export class HetznerCloud implements VmProvider {
   }
 
   async powerOn(id: number, signal: AbortSignal, check?: () => Promise<void>) {
-    await this.#serverAction(`servers/${id}/actions/poweron`, "POST", signal, check);
+    const { action } = await confirmProviderAcceptance(
+      this.#request(
+        `servers/${id}/actions/poweron`,
+        actionResponse,
+        signal,
+        "POST",
+        undefined,
+        check,
+      ),
+    );
+    await this.#actions("servers", [action], signal);
   }
 
   async powerOff(id: number, signal: AbortSignal, check?: () => Promise<void>) {
@@ -329,10 +367,10 @@ export class HetznerCloud implements VmProvider {
     const deadline = AbortSignal.any([signal, graceful]);
     try {
       await this.#serverAction(`servers/${id}/actions/shutdown`, "POST", deadline, check);
-      let current = await this.describe(id, deadline);
+      let current = await this.#describe(id, deadline);
       while (current && current.status !== "off" && current.status !== "deleting") {
         await this.#wait(1_000, deadline);
-        current = await this.describe(id, deadline);
+        current = await this.#describe(id, deadline);
       }
       return;
     } catch (error) {
@@ -341,7 +379,7 @@ export class HetznerCloud implements VmProvider {
       if (error instanceof RemoteRequestError && [401, 403, 429].includes(error.status))
         throw error;
     }
-    const current = await this.describe(id, signal);
+    const current = await this.#describe(id, signal);
     if (!current || current.status === "off" || current.status === "deleting") return;
     await this.#serverAction(`servers/${id}/actions/poweroff`, "POST", signal, check);
   }
@@ -446,18 +484,22 @@ function serverName(id: CloudComputerId, generation: number) {
 
 function managedServer(input: HetznerVm) {
   const name = /^os-cc-([0-9a-f-]{36})-(\d+)$/u.exec(input.name);
-  const id = CloudComputerIdSchema.safeParse(name ? `cc_${name[1]}` : input.labels[homeLabel]);
-  const generation = CloudComputerGenerationSchema.safeParse(
-    Number(name?.[2] ?? input.labels[generationLabel]),
-  );
+  if (name) {
+    const id = CloudComputerIdSchema.safeParse(`cc_${name[1]}`);
+    const generation = CloudComputerGenerationSchema.safeParse(Number(name[2]));
+    if (id.success && generation.success && serverName(id.data, generation.data) === input.name)
+      return { id: id.data, generation: generation.data };
+  }
+  const id = CloudComputerIdSchema.safeParse(input.labels[homeLabel]);
+  const generation = CloudComputerGenerationSchema.safeParse(Number(input.labels[generationLabel]));
   return id.success && generation.success
     ? { id: id.data, generation: generation.data }
     : undefined;
 }
 
-function server(input: HetznerVm): VmServer {
-  const identity = managedServer(input);
-  if (!identity)
+function server(input: HetznerVm, knownGeneration?: number): VmServer {
+  const generation = managedServer(input)?.generation ?? knownGeneration;
+  if (generation === undefined)
     throw refused("conflict", "A Hetzner server has an invalid Cloud Computer identity");
   const { ipv4, ipv6, firewalls } = input.public_net;
   let ipv6Address = null;
@@ -470,7 +512,7 @@ function server(input: HetznerVm): VmServer {
   }
   return {
     id: input.id,
-    generation: identity.generation,
+    generation,
     status:
       input.status === "off" || input.status === "running" || input.status === "deleting"
         ? input.status

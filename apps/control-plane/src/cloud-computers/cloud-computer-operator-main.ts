@@ -1,88 +1,41 @@
-import { readFileSync } from "node:fs";
-import { CloudComputerIdSchema } from "@opensteer/control-plane-protocol";
-import { z } from "zod";
+import { organizationsPortalPath } from "../organizations/portal-pages.js";
 import { loadControlPlaneConfig } from "../config.js";
 import { createControlPlaneDatabase } from "../database/database.js";
 import { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
+import { OrganizationStore } from "../organizations/store.js";
 import { ControlPlaneError } from "../server/errors.js";
+import { cloudComputerOperatorUsage, runCloudComputerOperator } from "./operator.js";
 import { CloudComputerStore } from "./store.js";
 import { CloudComputerStripe } from "./stripe.js";
 
-const usage =
-  "Usage: cloud-computer-operator-main.js list | show <id> | suspend <id> <reason> | unsuspend <id> | delete <id> | reissue-bootstrap <id> | egress-list | egress-add <url> <username> <password-file> [public-ip] | egress-address <id> <public-ip|clear> | egress-remove <id> | egress-rotate <id> <username> <password-file> | backup-list | backup-add <json-file> | backup-rotate <id> <json-file> | backup-remove <id> | replace <computer-id> <snapshot-id>";
-
-async function main([action, subject, ...args]: readonly string[]): Promise<void> {
+async function main(args: readonly string[]): Promise<void> {
+  if (!args.length || (args.length === 1 && ["--help", "help"].includes(args[0]!))) {
+    console.info(cloudComputerOperatorUsage);
+    return;
+  }
   const config = loadControlPlaneConfig();
   const cloud = config.cloudComputers;
   if (!cloud) throw new ControlPlaneError("unavailable", "Cloud Computers are disabled");
   const db = createControlPlaneDatabase({
     connectionString: config.databaseUrl,
-    maxConnections: 1,
+    // Billing reconciliation keeps its advisory lock on one session while using the other.
+    maxConnections: 2,
+  });
+  const stripe = new CloudComputerStripe({ key: cloud.stripeKey, returnUrl: config.publicOrigin });
+  const organizations = new OrganizationStore(db, {
+    stripe,
+    offer: config.organizationOffer,
+    returnUrl: new URL(organizationsPortalPath, config.portalOrigin),
   });
   const store = new CloudComputerStore(db, {
     config: cloud,
     accountOrigin: config.publicOrigin,
     cipher: new HostedTeamSetupTokenCipher(config.adoptionOperationKey),
-    stripe: new CloudComputerStripe({ key: cloud.stripeKey, returnUrl: config.portalOrigin }),
+    stripe,
+    organizations,
   });
   try {
-    let result: unknown;
-    if (action === "list" && !subject) result = await store.list();
-    else if (action === "egress-list" && !subject) result = await store.listEgressEndpoints();
-    else if (action === "backup-list" && !subject) result = await store.listBackupTargets();
-    else if (action === "backup-add" && subject && args.length === 0)
-      result = { id: await store.addBackupTarget(JSON.parse(readFileSync(subject, "utf8"))) };
-    else if (action === "backup-rotate" && subject && args.length === 1) {
-      await store.rotateBackupTarget(
-        z.uuid().parse(subject),
-        JSON.parse(readFileSync(args[0]!, "utf8")),
-      );
-      result = { rotated: true };
-    } else if (action === "backup-remove" && subject && args.length === 0) {
-      await store.removeBackupTarget(z.uuid().parse(subject));
-      result = { removed: true };
-    } else if (action === "egress-rotate" && subject && args.length === 2) {
-      await store.rotateEgressEndpoint(z.uuid().parse(subject), {
-        username: args[0]!,
-        password: readFileSync(args[1]!, "utf8").trimEnd(),
-      });
-      result = { rotated: true };
-    } else if (action === "egress-address" && subject && args.length === 1) {
-      await store.setEgressAddress(z.uuid().parse(subject), args[0] === "clear" ? null : args[0]!);
-      result = { updated: true };
-    } else if (action === "egress-add" && subject && (args.length === 2 || args.length === 3)) {
-      result = {
-        id: await store.addEgressEndpoint({
-          url: subject,
-          username: args[0]!,
-          password: readFileSync(args[1]!, "utf8").trimEnd(),
-          ...(args[2] !== undefined ? { publicAddress: args[2] } : {}),
-        }),
-      };
-    } else if (action === "egress-remove" && args.length === 0) {
-      await store.removeEgressEndpoint(z.uuid().parse(subject));
-      result = { removed: true };
-    } else {
-      if (!subject) throw new ControlPlaneError("bad_request", usage);
-      const id = CloudComputerIdSchema.parse(subject);
-      if (action === "show" && args.length === 0) result = await store.show(id);
-      else if (action === "delete" && args.length === 0) result = await store.mutate(id, "delete");
-      else if (action === "suspend" && args.length > 0)
-        result = await store.mutate(
-          id,
-          "operator-suspend",
-          undefined,
-          args.join(" ").trim().slice(0, 1000),
-        );
-      else if (action === "unsuspend" && args.length === 0)
-        result = await store.mutate(id, "operator-unsuspend");
-      else if (action === "replace" && args.length === 1)
-        result = await store.mutate(id, "replace", undefined, args[0]);
-      else if (action === "reissue-bootstrap" && args.length === 0)
-        result = await store.mutate(id, "reissue");
-      else throw new ControlPlaneError("bad_request", usage);
-    }
-    console.info(JSON.stringify(result));
+    console.info(JSON.stringify(await runCloudComputerOperator(store, args)));
   } finally {
     await db.destroy();
   }

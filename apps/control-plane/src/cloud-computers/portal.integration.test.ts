@@ -52,6 +52,7 @@ const config = loadCloudComputerConfig({
   OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY: "sk_test_abcdefghijklmno",
   OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET: webhookSecret,
   OPENSTEER_CLOUD_COMPUTER_STRIPE_PRICE_ID: "price_1",
+  OPENSTEER_CLOUD_COMPUTER_STRIPE_PORTAL_CONFIGURATION_ID: "bpc_cloud",
   OPENSTEER_CLOUD_COMPUTER_PLAN_NAME: "Cloud Computer",
   OPENSTEER_CLOUD_COMPUTER_CURRENCY: "usd",
   OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR: "2900",
@@ -68,6 +69,14 @@ integration("Cloud Computer website pages", () => {
     portal: vi.fn<StripeBilling["portal"]>(async () => ({ url: billingUrl })),
     subscription: vi.fn(async (id: string) => subscriptions.get(id)!),
     validateOffer: vi.fn<StripeBilling["validateOffer"]>(async () => {}),
+    validatePortal: vi.fn<StripeBilling["validatePortal"]>(async () => {}),
+    expireCheckout: vi.fn<StripeBilling["expireCheckout"]>(async (id) => ({
+      id,
+      status: "expired",
+      url: null,
+      payment: undefined,
+    })),
+    refundCheckout: vi.fn<StripeBilling["refundCheckout"]>(async () => true),
     findCheckout: vi.fn<StripeBilling["findCheckout"]>(async () => undefined),
     cancel: vi.fn<StripeBilling["cancel"]>(async () => {}),
   } satisfies StripeBilling;
@@ -118,7 +127,7 @@ integration("Cloud Computer website pages", () => {
   });
 
   beforeEach(async () => {
-    await sql`truncate table cloud_computer_egress_endpoints, cloud_computers, cloud_computer_stripe_events, cloud_computer_checkouts, cloud_computer_backup_targets cascade`.execute(
+    await sql`truncate table cloud_computer_egress_endpoints, cloud_computers, cloud_computer_stripe_events, cloud_computer_checkouts, cloud_computer_backup_namespaces, cloud_computer_backup_targets cascade`.execute(
       database,
     );
     for (const mock of Object.values(stripe)) mock.mockClear();
@@ -195,7 +204,7 @@ integration("Cloud Computer website pages", () => {
     const billing = await page("/cloud-computer/billing", person);
     expect(billing.status).toBe(303);
     expect(billing.headers.get("location")).toBe(billingUrl);
-    expect(stripe.portal).toHaveBeenCalledWith(customer, pagesUrl);
+    expect(stripe.portal).toHaveBeenCalledWith(customer, pagesUrl, "bpc_cloud");
   });
 
   it("suspends, resumes and deletes only after the typed word, for its owner alone", async () => {
@@ -237,7 +246,7 @@ integration("Cloud Computer website pages", () => {
     await database.updateTable("cloudComputers").set({ state: "deleted" }).execute();
     const refused = await post("/cloud-computer/suspend", person, { id: computer!.id });
     expect(refused.status).toBe(409);
-    expect(refused.body).toContain("This Cloud Computer is deleted");
+    expect(refused.body).toContain(escapeHtml(cloudWords("cloud.reason.deleted")));
     expect(refused.body).toContain(escapeHtml(cloudWords("cloud.web.next.other")));
   });
 

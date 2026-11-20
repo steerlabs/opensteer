@@ -4,10 +4,25 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { refused } from "@opensteer/core";
 import { z } from "zod";
-import { json, RemoteRequestError, request, type HttpOptions } from "./http.js";
-import type { Addresses, DnsProvider } from "./provider.js";
+import {
+  confirmProviderAcceptance,
+  json,
+  RemoteRequestError,
+  request,
+  type HttpOptions,
+} from "./http.js";
+import type { Addresses, DnsProvider, PublishDnsWrite } from "./provider.js";
 
 const owner = "Opensteer Cloud Computer";
+const taggedOwner = owner + ":";
+function writeToken(comment: string | null | undefined) {
+  if (!comment?.startsWith(taggedOwner)) return;
+  const token = z.uuid().safeParse(comment.slice(taggedOwner.length));
+  return token.success ? token.data : undefined;
+}
+function managed(comment: string | null | undefined) {
+  return comment === owner || Boolean(writeToken(comment));
+}
 const recordSchema = z.object({
   id: z.string().regex(/^[a-f0-9]{32}$/u),
   name: z.string(),
@@ -49,12 +64,13 @@ export class CloudflareDns implements DnsProvider {
     addresses: Addresses,
     signal: AbortSignal,
     check?: () => Promise<void>,
+    publish?: PublishDnsWrite,
   ): Promise<void> {
     const existing = await this.#list(hostname, signal);
     if (
       existing.some(
         ({ type, comment }) =>
-          type === "CNAME" || ((type === "A" || type === "AAAA") && comment !== owner),
+          type === "CNAME" || ((type === "A" || type === "AAAA") && !managed(comment)),
       )
     ) {
       throw refused("conflict", "The Cloud Computer DNS name is already in use");
@@ -75,24 +91,44 @@ export class CloudflareDns implements DnsProvider {
       }
       if (content === null) continue;
       const body = { type, content, name: hostname, ttl: 1, proxied: false, comment: owner };
-      if (!current) {
+      if (!current || current.proxied !== false || !sameAddress(type, current.content, content)) {
         await check?.();
-        await this.#request(this.#records, savedResponse, signal, "POST", body);
-      } else if (current.proxied !== false || !sameAddress(type, current.content, content)) {
-        await check?.();
-        await this.#request(this.#record(current.id), savedResponse, signal, "PATCH", body);
+        const url = current ? this.#record(current.id) : this.#records;
+        const method = current ? "PATCH" : "POST";
+        if (publish) {
+          await publish(type, async (token) => {
+            await confirmProviderAcceptance(
+              this.#request(url, savedResponse, signal, method, {
+                ...body,
+                comment: taggedOwner + token,
+              }),
+            );
+          });
+        } else {
+          await this.#request(url, savedResponse, signal, method, body);
+        }
       }
     }
+  }
+
+  async observeWrites(hostname: string, signal: AbortSignal) {
+    return (await this.#list(hostname, signal)).flatMap((entry) => {
+      const token = writeToken(entry.comment);
+      return token ? [token] : [];
+    });
   }
 
   async removeRecords(
     hostname: string,
     signal: AbortSignal,
     check?: () => Promise<void>,
+    observed?: (token: string) => Promise<void>,
   ): Promise<void> {
     for (const record of await this.#list(hostname, signal)) {
-      if ((record.type === "A" || record.type === "AAAA") && record.comment === owner) {
+      if ((record.type === "A" || record.type === "AAAA") && managed(record.comment)) {
         await check?.();
+        const token = writeToken(record.comment);
+        if (token) await observed?.(token);
         await this.#delete(record.id, signal);
       }
     }
@@ -108,11 +144,11 @@ export class CloudflareDns implements DnsProvider {
   }
 
   async listManaged(signal: AbortSignal) {
-    const records = await this.#lookup({ "comment.exact": owner }, signal);
+    const records = await this.#lookup({ "comment.startswith": owner }, signal);
     return records.flatMap((record) => {
       const label = record.name.split(".")[0] ?? "";
       const id = CloudComputerIdSchema.safeParse(label.replace(/^cc-/u, "cc_"));
-      return record.comment === owner &&
+      return managed(record.comment) &&
         (record.type === "A" || record.type === "AAAA") &&
         id.success
         ? [{ id: id.data, hostname: record.name }]

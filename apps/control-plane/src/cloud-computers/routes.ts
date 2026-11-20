@@ -16,7 +16,9 @@ import {
   CloudComputerDeleteRequestSchema,
   cloudComputerDeleteConfirmation,
   CloudComputerDesiredResponseSchema,
+  CloudComputerDesiredPageSchema,
   CloudComputerIdSchema,
+  CloudComputerEgressResponseSchema,
   CloudComputerListResponseSchema,
   CloudComputerReportResponseSchema,
   CloudComputerReportSchema,
@@ -97,7 +99,8 @@ export function registerCloudComputerRoutes(
   app.get(cloudComputersDesiredPath, async (request, reply) => {
     privateResponse(reply);
     await requireLease(request);
-    return CloudComputerDesiredResponseSchema.parse({ computers: await store.desired() });
+    const { after, limit } = CloudComputerDesiredPageSchema.parse(request.query);
+    return CloudComputerDesiredResponseSchema.parse(await store.desired(after, limit));
   });
 
   app.post(`${provisionerPath}/status`, async (request, reply) => {
@@ -136,11 +139,27 @@ export function registerCloudComputerRoutes(
       return CloudComputerBootResponseSchema.parse(await store.boot(id, body.data));
     });
 
+  const egressLimit = new BootRateLimit();
+  app.get(`${provisionerPath}/egress`, async (request, reply) => {
+    privateResponse(reply);
+    const { id } = params.parse(request.params);
+    if (!egressLimit.allow(id, request.ip))
+      return reply
+        .code(429)
+        .header("retry-after", "60")
+        .send({
+          error: { code: "rate_limited", message: "Too many Cloud Computer egress requests" },
+        });
+    return CloudComputerEgressResponseSchema.parse(
+      await store.egressForHome(id, request.headers.authorization),
+    );
+  });
+
   app.get(accountCloudComputersPath, async (request, reply) => {
     privateResponse(reply);
     const { accountId } = await read(request);
     return CloudComputerListResponseSchema.parse({
-      computers: await store.list(accountId),
+      computers: await store.listForAccount(accountId),
       plan: store.plan,
     });
   });

@@ -458,12 +458,23 @@ it("recovers a labelled server by recorded ID or deterministic name when its lab
   await withServer(
     [
       { method: "GET", path: "/v1/servers", response: { servers: [], meta: meta() } },
-      { method: "GET", path: "/v1/servers/12", response: { server: drifted } },
+      {
+        method: "GET",
+        path: "/v1/servers",
+        matches: (url) => expect(url.searchParams.get("name")).toBe(name),
+        response: { servers: [drifted], meta: meta() },
+      },
       { method: "GET", path: "/v1/servers", response: { servers: [], meta: meta() } },
       {
         method: "GET",
         path: "/v1/servers",
         matches: (url) => expect(url.searchParams.get("name")).toBe(name),
+        response: { servers: [drifted], meta: meta() },
+      },
+      {
+        method: "GET",
+        path: "/v1/servers",
+        matches: (url) => expect(url.searchParams.has("label_selector")).toBe(false),
         response: { servers: [drifted], meta: meta() },
       },
     ],
@@ -474,6 +485,9 @@ it("recovers a labelled server by recorded ID or deterministic name when its lab
         provider.find(id, signal, { generation: 3, providerServerId: 12 }),
       ).resolves.toMatchObject(expected);
       await expect(provider.find(id, signal, { generation: 3 })).resolves.toMatchObject(expected);
+      await expect(provider.listManaged(signal)).resolves.toMatchObject([
+        { id, server: expected[0] },
+      ]);
     },
   );
 });

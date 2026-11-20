@@ -7,6 +7,7 @@ import {
 import { expect, it, vi } from "vitest";
 import {
   CloudComputerStripe,
+  StripePaidCheckoutSchema,
   decodeStripeEvent,
   subscriptionRenewal,
   verifyStripeSignature,
@@ -364,6 +365,228 @@ it("reads renewal from the subscription item and omits scheduled cancellation", 
     expect(
       subscriptionRenewal({ ...subscription, items: { has_more: false, data: [] } }, "active"),
     ).toBeNull();
+  } finally {
+    provider.mockRestore();
+  }
+});
+
+it("uses an attempt's fixed Checkout expiry and rereads a Session when expiry loses the race", async () => {
+  const id = ControlPlaneAccountIdSchema.parse("acct_00000000-0000-4000-8000-000000000001");
+  const requestId = "00000000-0000-4000-8000-000000000001";
+  const payment = {
+    id: "cs_test_attempt",
+    status: "complete",
+    url: null,
+    mode: "subscription",
+    client_reference_id: id,
+    metadata: { account_id: id, request_id: requestId },
+    payment_status: "paid",
+    invoice: "in_attempt",
+    currency: "usd",
+    subscription: "sub_attempt",
+    customer: "cus_attempt",
+  };
+  const calls: Array<{
+    path: string;
+    method: string | undefined;
+    form: URLSearchParams;
+    headers: Headers;
+  }> = [];
+  const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    calls.push({
+      path,
+      method: init?.method,
+      form: new URLSearchParams(String(init?.body ?? "")),
+      headers: new Headers(init?.headers),
+    });
+    if (path.endsWith("/expire")) return Response.json({}, { status: 400 });
+    return path.endsWith("/cs_test_attempt")
+      ? Response.json(payment)
+      : Response.json({ id: "cs_test_attempt", url: "https://checkout.example.test/session" });
+  });
+  try {
+    const stripe = new CloudComputerStripe({
+      key,
+      returnUrl: new URL("https://account.example.test"),
+    });
+    const attempt = {
+      accountId: id,
+      requestId,
+      priceId: "price_1",
+      expiresAt: new Date(timestamp * 1000),
+    };
+    await stripe.checkout(attempt);
+    await stripe.checkout(attempt);
+    expect(calls[0]?.form.get("expires_at")).toBe(String(timestamp));
+    expect(calls[0]?.headers.get("idempotency-key")).toBe(`cloud-computer:${id}:${requestId}`);
+    expect(calls[1]).toEqual(calls[0]);
+    expect(await stripe.expireCheckout("cs_test_attempt")).toMatchObject({
+      status: "complete",
+      payment: { invoice: "in_attempt" },
+    });
+    expect(calls.slice(2).map(({ path, method }) => [path, method])).toEqual([
+      ["/v1/checkout/sessions/cs_test_attempt/expire", "POST"],
+      ["/v1/checkout/sessions/cs_test_attempt", "GET"],
+    ]);
+  } finally {
+    provider.mockRestore();
+  }
+});
+
+it("refunds the Checkout invoice payment and waits for Stripe's confirmed refund", async () => {
+  const refund = {
+    id: "re_attempt",
+    amount: 2900,
+    status: "pending",
+    metadata: { opensteer_invoice_payment: "inpay_attempt" },
+  };
+  let existing: object[] = [];
+  const sent = vi.fn();
+  const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/v1/invoice_payments") {
+      expect(url.searchParams.get("invoice")).toBe("in_attempt");
+      return Response.json({
+        has_more: false,
+        data: [
+          {
+            id: "inpay_attempt",
+            status: "paid",
+            amount_paid: 2900,
+            payment: { type: "payment_intent", payment_intent: "pi_attempt" },
+          },
+        ],
+      });
+    }
+    expect(url.pathname).toBe("/v1/refunds");
+    if (init?.method === "GET") {
+      expect(url.searchParams.get("payment_intent")).toBe("pi_attempt");
+      return Response.json({ has_more: false, data: existing });
+    }
+    sent(
+      Object.fromEntries(new URLSearchParams(String(init?.body))),
+      new Headers(init?.headers).get("idempotency-key"),
+    );
+    existing = [refund];
+    return Response.json(refund);
+  });
+  try {
+    const stripe = new CloudComputerStripe({
+      key,
+      returnUrl: new URL("https://account.example.test"),
+    });
+    const checkout = StripePaidCheckoutSchema.parse({
+      id: "cs_attempt",
+      mode: "subscription",
+      customer: "cus_attempt",
+      subscription: "sub_attempt",
+      currency: "usd",
+      payment_status: "paid",
+      invoice: "in_attempt",
+      client_reference_id: "acct_00000000-0000-4000-8000-000000000001",
+      metadata: {
+        account_id: "acct_00000000-0000-4000-8000-000000000001",
+        request_id: "00000000-0000-4000-8000-000000000001",
+      },
+    });
+    await expect(stripe.refundCheckout(checkout)).resolves.toBe(false);
+    await expect(stripe.refundCheckout(checkout)).resolves.toBe(false);
+    existing = [{ ...refund, status: "succeeded" }];
+    await expect(stripe.refundCheckout(checkout)).resolves.toBe(true);
+    expect(sent).toHaveBeenCalledExactlyOnceWith(
+      {
+        payment_intent: "pi_attempt",
+        amount: "2900",
+        "metadata[opensteer_invoice_payment]": "inpay_attempt",
+      },
+      "cloud-computer-refund:inpay_attempt:first",
+    );
+  } finally {
+    provider.mockRestore();
+  }
+});
+
+it("opens only the validated dedicated portal configuration with the call's return URL", async () => {
+  const features = {
+    customer_update: { enabled: false },
+    invoice_history: { enabled: false },
+    subscription_update: { enabled: false },
+    payment_method_update: { enabled: true },
+    subscription_cancel: { enabled: true },
+  };
+  const configuration = { id: "bpc_cloud", active: true, is_default: false, features };
+  const portal = vi.fn();
+  const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/v1/billing_portal/configurations/bpc_cloud")
+      return Response.json(configuration);
+    expect(url.pathname).toBe("/v1/billing_portal/sessions");
+    portal(Object.fromEntries(new URLSearchParams(String(init?.body))));
+    return Response.json({ url: "https://billing.example.test" });
+  });
+  try {
+    const stripe = new CloudComputerStripe({
+      key,
+      returnUrl: new URL("https://account.example.test"),
+    });
+    await expect(stripe.validatePortal("bpc_cloud")).resolves.toBeUndefined();
+    await stripe.portal(
+      "cus_attempt",
+      new URL("https://pages.example.test/cloud-computer"),
+      "bpc_cloud",
+    );
+    expect(portal).toHaveBeenCalledExactlyOnceWith({
+      customer: "cus_attempt",
+      configuration: "bpc_cloud",
+      return_url: "https://pages.example.test/cloud-computer",
+    });
+    configuration.is_default = true;
+    await expect(stripe.validatePortal("bpc_cloud")).rejects.toThrow("unsupported changes");
+    configuration.is_default = false;
+    features.subscription_update.enabled = true;
+    await expect(stripe.validatePortal("bpc_cloud")).rejects.toThrow("unsupported changes");
+  } finally {
+    provider.mockRestore();
+  }
+});
+
+it("finds an ambiguous Checkout beyond the first twenty pages", async () => {
+  const accountId = ControlPlaneAccountIdSchema.parse("acct_00000000-0000-4000-8000-000000000001");
+  const requestId = "00000000-0000-4000-8000-000000000001";
+  let page = 0;
+  const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = new URL(String(input));
+    expect(url.searchParams.get("created[lte]")).toBe(String(timestamp + 3600));
+    if (page) expect(url.searchParams.get("starting_after")).toBe(`cs_page_${page}`);
+    page++;
+    return Response.json({
+      has_more: page < 21,
+      data: [
+        {
+          id: `cs_page_${page}`,
+          status: "open",
+          url: "https://checkout.example.test/session",
+          metadata: page === 21 ? { account_id: accountId, request_id: requestId } : {},
+        },
+      ],
+    });
+  });
+  try {
+    const stripe = new CloudComputerStripe({
+      key,
+      returnUrl: new URL("https://account.example.test"),
+    });
+    await expect(
+      stripe.findCheckout({
+        accountId,
+        requestId,
+        sessionId: null,
+        createdAt: new Date(timestamp * 1000),
+        expiresAt: new Date((timestamp + 3600) * 1000),
+      }),
+    ).resolves.toMatchObject({ id: "cs_page_21", status: "open" });
+    expect(page).toBe(21);
   } finally {
     provider.mockRestore();
   }

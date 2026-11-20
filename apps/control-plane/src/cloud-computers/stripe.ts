@@ -44,6 +44,7 @@ export const StripePaidCheckoutSchema = checkout.extend({
   subscription: subscriptionId,
   currency: z.string(),
   payment_status: z.enum(["paid", "unpaid", "no_payment_required"]),
+  invoice: stripeToken("in").nullish(),
 });
 const eventSchema = z.object({
   id: stripeToken("evt"),
@@ -86,8 +87,22 @@ export function decodeStripeEvent(raw: Buffer): StripeEvent {
       case "checkout.session.async_payment_succeeded":
       case "checkout.session.completed": {
         const result = StripePaidCheckoutSchema.safeParse(data.object);
-        if (!result.success || result.data.payment_status !== "paid")
+        if (!result.success) {
+          const status = z
+            .object({ payment_status: z.string().optional(), mode: z.string().optional() })
+            .parse(data.object);
+          if (
+            status.payment_status === "paid" &&
+            status.mode !== "payment" &&
+            status.mode !== "setup"
+          )
+            throw new ControlPlaneError(
+              "unavailable",
+              "Could not interpret a paid Stripe Checkout Session",
+            );
           return { ...base, operation: "ignore" };
+        }
+        if (result.data.payment_status !== "paid") return { ...base, operation: "ignore" };
         return { ...base, operation: "completed", checkout: result.data };
       }
       case "checkout.session.expired": {
@@ -110,11 +125,40 @@ export function decodeStripeEvent(raw: Buffer): StripeEvent {
       default:
         return { ...base, operation: "ignore" };
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof ControlPlaneError) throw error;
     throw new ControlPlaneError("bad_request", "Invalid Stripe event");
   }
 }
 
+type StripePaidCheckout = z.infer<typeof StripePaidCheckoutSchema>;
+const invoicePayments = z.object({
+  has_more: z.boolean(),
+  data: z.array(
+    z.object({
+      id: stripeToken("inpay"),
+      status: z.string(),
+      amount_paid: z
+        .number()
+        .int()
+        .nonnegative()
+        .nullable()
+        .transform((amount) => amount ?? 0),
+      payment: z.object({
+        type: z.string(),
+        payment_intent: stripeToken("pi").nullish(),
+        charge: stripeToken("ch").nullish(),
+      }),
+    }),
+  ),
+});
+const refundRecord = z.object({
+  id: stripeToken("re"),
+  amount: z.number().int().positive(),
+  status: z.enum(["pending", "requires_action", "succeeded", "failed", "canceled"]),
+  metadata: z.record(z.string(), z.string()),
+});
+const refundList = z.object({ has_more: z.boolean(), data: z.array(refundRecord) });
 const hostedSession = z.object({ url: z.url({ protocol: /^https$/u }) });
 const createdSession = hostedSession.extend({ id: sessionId });
 const checkoutRecord = z
@@ -123,8 +167,26 @@ const checkoutRecord = z
     status: z.enum(["open", "complete", "expired"]),
     url: z.url({ protocol: /^https$/u }).nullable(),
     metadata: z.record(z.string(), z.string()).nullable(),
+    payment_status: z.enum(["paid", "unpaid", "no_payment_required"]).optional(),
   })
   .passthrough();
+function checkoutResult(record: z.infer<typeof checkoutRecord>) {
+  const paid = StripePaidCheckoutSchema.safeParse(record);
+  if (record.payment_status === "paid" && !paid.success)
+    throw new ControlPlaneError(
+      "unavailable",
+      "Could not interpret a paid Stripe Checkout Session",
+    );
+  return {
+    id: record.id,
+    status: record.status,
+    url: record.url,
+    payment: paid.success && paid.data.payment_status === "paid" ? paid.data : undefined,
+    ...(record.subscription != null
+      ? { subscription: subscriptionId.parse(record.subscription) }
+      : {}),
+  };
+}
 const checkoutPage = z.object({ has_more: z.boolean(), data: z.array(checkoutRecord) });
 const price = z.object({
   id: stripeToken("price"),
@@ -184,6 +246,7 @@ export interface CheckoutInput {
   readonly organization?: { id: OrganizationId; quantity: number };
   /** Where Stripe sends the person back; the client's return address when absent. */
   readonly returnUrl?: URL;
+  readonly expiresAt?: Date;
 }
 
 interface StripeOptions {
@@ -213,6 +276,9 @@ export class CloudComputerStripe {
         mode: "subscription",
         "allowed_payment_method_types[0]": "card",
         payment_method_collection: "always",
+        ...(input.expiresAt
+          ? { expires_at: String(Math.floor(input.expiresAt.getTime() / 1000)) }
+          : {}),
         "line_items[0][price]": input.priceId,
         "line_items[0][quantity]": String(input.organization?.quantity ?? 1),
         ...(input.organization
@@ -235,10 +301,11 @@ export class CloudComputerStripe {
     );
   }
 
-  portal(customer: string, returnUrl: URL = this.#options.returnUrl) {
+  portal(customer: string, returnUrl: URL = this.#options.returnUrl, configuration?: string) {
     return this.#request("billing_portal/sessions", hostedSession, {
       customer: customerId.parse(customer),
       return_url: returnUrl.toString(),
+      ...(configuration ? { configuration: stripeToken("bpc").parse(configuration) } : {}),
     });
   }
 
@@ -275,6 +342,7 @@ export class CloudComputerStripe {
     organizationId?: OrganizationId;
     sessionId: string | null;
     createdAt: Date;
+    expiresAt?: Date;
   }) {
     const matches = (record: z.infer<typeof checkoutRecord>) =>
       record.metadata?.request_id === input.requestId &&
@@ -293,38 +361,153 @@ export class CloudComputerStripe {
     } else {
       const query = new URLSearchParams({
         "created[gte]": String(Math.floor(input.createdAt.getTime() / 1000)),
+        ...(input.expiresAt
+          ? { "created[lte]": String(Math.floor(input.expiresAt.getTime() / 1000)) }
+          : {}),
         limit: "100",
       });
-      for (let page = 0; ; page++) {
-        if (page === 20)
-          throw new ControlPlaneError(
-            "unavailable",
-            "Stripe Checkout lookup could not be completed",
-          );
+      for (;;) {
         const result = await this.#request(`checkout/sessions?${query}`, checkoutPage);
-        for (const candidate of result.data.filter(matches)) {
-          if (record)
-            throw new ControlPlaneError(
-              "unavailable",
-              "More than one Stripe Checkout Session matched",
-            );
-          record = candidate;
-        }
-        if (!result.has_more) break;
+        record = result.data.find(matches);
+        if (record || !result.has_more) break;
         const last = result.data.at(-1);
-        if (!last)
+        if (!last || query.get("starting_after") === last.id)
           throw new ControlPlaneError("unavailable", "Stripe Checkout pagination was incomplete");
         query.set("starting_after", last.id);
       }
     }
     if (!record) return undefined;
-    const paid = StripePaidCheckoutSchema.safeParse(record);
-    return {
-      id: record.id,
-      status: record.status,
-      url: record.url,
-      payment: paid.success && paid.data.payment_status === "paid" ? paid.data : undefined,
-    };
+    return checkoutResult(record);
+  }
+
+  async expireCheckout(id: string) {
+    try {
+      const record = await this.#request(
+        `checkout/sessions/${sessionId.parse(id)}/expire`,
+        checkoutRecord,
+        {},
+      );
+      if (record.id !== id || record.status !== "expired")
+        throw new ControlPlaneError("unavailable", "Stripe did not confirm Checkout expiry");
+      return checkoutResult(record);
+    } catch (error) {
+      const record = await this.#request(
+        `checkout/sessions/${sessionId.parse(id)}`,
+        checkoutRecord,
+      );
+      if (record.id !== id || record.status === "open") throw error;
+      return checkoutResult(record);
+    }
+  }
+
+  async validatePortal(id: string): Promise<void> {
+    const enabled = z.object({ enabled: z.boolean() });
+    const config = await this.#request(
+      `billing_portal/configurations/${stripeToken("bpc").parse(id)}`,
+      z.object({
+        id: stripeToken("bpc"),
+        active: z.boolean(),
+        is_default: z.boolean(),
+        features: z.object({
+          customer_update: enabled,
+          invoice_history: enabled,
+          subscription_update: enabled,
+          payment_method_update: enabled,
+          subscription_cancel: enabled,
+        }),
+      }),
+    );
+    if (
+      config.id !== id ||
+      !config.active ||
+      config.is_default ||
+      !config.features.payment_method_update.enabled ||
+      !config.features.subscription_cancel.enabled ||
+      config.features.customer_update.enabled ||
+      config.features.invoice_history.enabled ||
+      config.features.subscription_update.enabled
+    ) {
+      throw new ControlPlaneError(
+        "unavailable",
+        "Cloud Computer billing portal allows unsupported changes",
+        {
+          reason: "cloud-computer-billing-problem",
+        },
+      );
+    }
+  }
+
+  async refundCheckout(checkout: StripePaidCheckout): Promise<boolean> {
+    const invoice =
+      checkout.invoice ??
+      (
+        await this.#request(
+          `checkout/sessions/${sessionId.parse(checkout.id)}`,
+          StripePaidCheckoutSchema,
+        )
+      ).invoice;
+    if (!invoice) throw new ControlPlaneError("unavailable", "Paid Stripe Checkout has no invoice");
+    const query = new URLSearchParams({ invoice, limit: "100" });
+    const payments = await this.#request(`invoice_payments?${query}`, invoicePayments);
+    const paid = payments.data.filter((item) => item.status === "paid" && item.amount_paid > 0);
+    if (payments.has_more || !paid.length)
+      throw new ControlPlaneError(
+        "unavailable",
+        "Stripe Checkout payments could not be established",
+      );
+
+    let settled = true;
+    for (const item of paid) {
+      const source =
+        item.payment.type === "payment_intent" && item.payment.payment_intent
+          ? { payment_intent: item.payment.payment_intent }
+          : item.payment.type === "charge" && item.payment.charge
+            ? { charge: item.payment.charge }
+            : undefined;
+      if (!source)
+        throw new ControlPlaneError(
+          "unavailable",
+          "Stripe Checkout payment is not refundable by the Account",
+        );
+      const previous = await this.#request(
+        `refunds?${new URLSearchParams({ ...source, limit: "100" })}`,
+        refundList,
+      );
+      if (previous.has_more)
+        throw new ControlPlaneError(
+          "unavailable",
+          "Stripe Checkout refunds could not be established",
+        );
+      const matching = previous.data.filter(
+        (refund) => refund.metadata.opensteer_invoice_payment === item.id,
+      );
+      if (
+        matching.some(
+          (refund) => refund.status === "succeeded" && refund.amount === item.amount_paid,
+        )
+      )
+        continue;
+      if (
+        matching.some(
+          (refund) => refund.status === "pending" || refund.status === "requires_action",
+        )
+      ) {
+        settled = false;
+        continue;
+      }
+      const refund = await this.#request(
+        "refunds",
+        refundRecord,
+        {
+          ...source,
+          amount: String(item.amount_paid),
+          "metadata[opensteer_invoice_payment]": item.id,
+        },
+        `cloud-computer-refund:${item.id}:${matching[0]?.id ?? "first"}`,
+      );
+      settled = refund.status === "succeeded" && refund.amount === item.amount_paid && settled;
+    }
+    return settled;
   }
 
   async updateSeatQuantity(input: {
@@ -406,18 +589,21 @@ export class CloudComputerStripe {
 export type StripeSubscription = Awaited<ReturnType<CloudComputerStripe["subscription"]>>;
 export type StripeBilling = Pick<
   CloudComputerStripe,
-  "checkout" | "portal" | "subscription" | "cancel" | "findCheckout" | "validateOffer"
+  | "checkout"
+  | "portal"
+  | "subscription"
+  | "cancel"
+  | "findCheckout"
+  | "validateOffer"
+  | "expireCheckout"
+  | "refundCheckout"
+  | "validatePortal"
 >;
 
 export function billingStatus(subscription: StripeSubscription): BillingStatus {
   switch (subscription.status) {
     case "active":
-      if (subscription.pause_collection) return "inactive";
-      if (subscription.latest_invoice?.status === "paid") return "active";
-      return subscription.latest_invoice?.status === "open" &&
-        subscription.latest_invoice.attempt_count > 0
-        ? "payment_failed"
-        : "inactive";
+      return subscription.pause_collection ? "inactive" : "active";
     case "past_due":
     case "unpaid":
     case "canceled":

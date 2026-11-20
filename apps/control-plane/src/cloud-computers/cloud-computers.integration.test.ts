@@ -1,3 +1,4 @@
+import { ControlPlaneError } from "../server/errors.js";
 import { createHash, createHmac, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import {
   accountCloudComputerBillingPortalPath,
@@ -26,6 +27,7 @@ import {
   CloudComputerIdSchema,
   CloudComputerIdentitySchema,
   cloudComputerBootPath,
+  cloudComputerEgressPath,
   cloudComputerBootCompletePath,
   cloudComputerLeasePath,
   cloudComputerLeaseHeader,
@@ -68,6 +70,7 @@ import { createControlPlaneServer } from "../server/server.js";
 import { CloudComputerClaimer, HttpManagedHomeClient } from "./claim.js";
 import { loadCloudComputerConfig } from "./config.js";
 import { CloudComputerStore } from "./store.js";
+import { cloudComputerOperatorUsage, runCloudComputerOperator } from "./operator.js";
 import type { CloudComputerStripe, StripeBilling, StripeSubscription } from "./stripe.js";
 import { OrganizationStore } from "../organizations/store.js";
 
@@ -82,6 +85,7 @@ const webhookSecret = "whsec_abcdefghijklmno";
 const checkoutUrl = "https://checkout.stripe.example.test/pay";
 const portalUrl = "https://billing.stripe.example.test/session";
 const digest = "a".repeat(64);
+const releaseManifestUrl = "https://releases.example.test/managed/stable.json";
 const services = [
   "host",
   "runner",
@@ -103,9 +107,11 @@ const config = loadCloudComputerConfig({
       services.map((service) => [service, `example.test/${service}@sha256:${digest}`]),
     ),
   }),
+  OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL: releaseManifestUrl,
   OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY: "sk_test_abcdefghijklmno",
   OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET: webhookSecret,
   OPENSTEER_CLOUD_COMPUTER_STRIPE_PRICE_ID: "price_1",
+  OPENSTEER_CLOUD_COMPUTER_STRIPE_PORTAL_CONFIGURATION_ID: "bpc_cloud",
   OPENSTEER_CLOUD_COMPUTER_PLAN_NAME: "Cloud Computer",
   OPENSTEER_CLOUD_COMPUTER_CURRENCY: "usd",
   OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR: "2900",
@@ -132,6 +138,14 @@ integration("Cloud Computer Account service", () => {
     portal: vi.fn<StripeBilling["portal"]>(async () => ({ url: portalUrl })),
     subscription: vi.fn(async (id: string) => subscriptions.get(id)!),
     validateOffer: vi.fn<StripeBilling["validateOffer"]>(async () => {}),
+    validatePortal: vi.fn<StripeBilling["validatePortal"]>(async () => {}),
+    expireCheckout: vi.fn<StripeBilling["expireCheckout"]>(async (id) => ({
+      id,
+      status: "expired",
+      url: null,
+      payment: undefined,
+    })),
+    refundCheckout: vi.fn<StripeBilling["refundCheckout"]>(async () => true),
     findCheckout: vi.fn<StripeBilling["findCheckout"]>(async () => undefined),
     cancel: vi.fn<StripeBilling["cancel"]>(async (id) => {
       subscriptions.set(id, { ...subscriptions.get(id)!, status: "canceled" });
@@ -139,6 +153,7 @@ integration("Cloud Computer Account service", () => {
     updateSeatQuantity: vi.fn<CloudComputerStripe["updateSeatQuantity"]>(async () => {}),
   } satisfies StripeBilling & Pick<CloudComputerStripe, "updateSeatQuantity">;
   const logs: string[] = [];
+  const billingAttention = vi.fn<(message: string) => void>();
   let now = new Date();
   let app: Awaited<ReturnType<typeof createControlPlaneServer>>;
   const auth = createControlPlaneAuth(database, {
@@ -161,6 +176,7 @@ integration("Cloud Computer Account service", () => {
   });
   const cloud = new CloudComputerStore(database, {
     organizations,
+    onBillingAttention: billingAttention,
     config,
     accountOrigin: publicOrigin,
     cipher,
@@ -276,6 +292,7 @@ integration("Cloud Computer Account service", () => {
         claim: claims.claim,
         ...(claims.work ? { work: claims.work } : {}),
         linkGeneration: claims.link.generation,
+        hostCredentialSha256: claims.link.hostCredentialSha256,
         claimedAt: new Date().toISOString(),
       });
       state.receipt = ManagedHomeClaimReceiptSchema.parse({
@@ -376,7 +393,7 @@ integration("Cloud Computer Account service", () => {
   });
 
   beforeEach(async () => {
-    await sql`truncate table work_audit_batches, work_audit_records, work_assignments, organization_invitations, organization_members, organization_checkouts, organizations, cloud_computer_egress_endpoints, cloud_computer_backup_targets, cloud_computer_provisioner_lease, cloud_computers, cloud_computer_stripe_events, cloud_computer_checkouts`.execute(
+    await sql`truncate table work_audit_batches, work_audit_records, work_assignments, organization_invitations, organization_members, organization_checkouts, organizations, cloud_computer_egress_endpoints, cloud_computer_backup_namespaces, cloud_computer_backup_targets, cloud_computer_provisioner_lease, cloud_computers, cloud_computer_stripe_events, cloud_computer_checkouts`.execute(
       database,
     );
     await database.deleteFrom("deployments").where("id", "=", identity.deploymentId).execute();
@@ -386,6 +403,10 @@ integration("Cloud Computer Account service", () => {
     stripe.subscription.mockClear();
     stripe.portal.mockClear();
     stripe.cancel.mockClear();
+    stripe.validatePortal.mockReset().mockResolvedValue(undefined);
+    stripe.expireCheckout.mockClear();
+    stripe.refundCheckout.mockReset().mockResolvedValue(true);
+    billingAttention.mockClear();
     stripe.findCheckout.mockReset().mockResolvedValue(undefined);
     stripe.validateOffer.mockReset().mockResolvedValue(undefined);
     kickBootstrap.mockClear();
@@ -749,6 +770,11 @@ integration("Cloud Computer Account service", () => {
     expect((await requestAs(outsider, "GET", homePath)).statusCode).toBe(403);
     expect((await requestAs(other, "GET", homePath)).json()).toBeNull();
     expect((await requestAs(assignee, "GET", ownerPath)).statusCode).toBe(200);
+    expect(
+      (await requestAs(assignee, "GET", accountCloudComputersPath)).json().computers,
+    ).toMatchObject([{ id: assignment.computerId, work: marker }]);
+    expect((await requestAs(other, "GET", accountCloudComputersPath)).json().computers).toEqual([]);
+
     expect((await requestAs(admin, "GET", ownerPath)).statusCode).toBe(404);
     const forbiddenSuspend = await requestAs(assignee, "POST", `${ownerPath}/suspend`);
     expect(forbiddenSuspend.statusCode).toBe(403);
@@ -1535,7 +1561,8 @@ integration("Cloud Computer Account service", () => {
       ).json(),
     ).toEqual({ url: portalUrl });
     expect(stripe.portal).toHaveBeenCalledOnce();
-    const [customer, returnUrl] = stripe.portal.mock.calls[0]!;
+    const [customer, returnUrl, configuration] = stripe.portal.mock.calls[0]!;
+    expect(configuration).toBe("bpc_cloud");
     expect(customer).toBe(order.customer);
     expect(returnUrl).toBeUndefined();
     expect(
@@ -1794,6 +1821,261 @@ integration("Cloud Computer Account service", () => {
     });
     expect(await claimer(impostor.fetch).runOnce()).toBe(0);
     await expect(directory.listDeployments(account.id)).resolves.toEqual([]);
+    expect(await runCloudComputerOperator(cloud, ["show", id])).toMatchObject({
+      claim: { error: "setup-failed", receiptAt: null },
+    });
+    now = new Date(now.getTime() + 61 * 60_000);
+    expect(await runCloudComputerOperator(cloud, ["claim-retry", id])).toEqual({ queued: true });
+    const home = fakeHome({ hostname: computer.hostname, boot: booted });
+    expect(await claimer(home.fetch).runOnce()).toBe(1);
+    expect(home.state.owner).toBe(account.id);
+    expect(await runCloudComputerOperator(cloud, ["show", id])).toMatchObject({
+      claim: { error: null, receiptAt: expect.any(Date) },
+      generation: computer.generation,
+    });
+    await expect(runCloudComputerOperator(cloud, ["claim-retry", id])).rejects.toThrow(
+      "no eligible failed claim",
+    );
+  });
+
+  it("diagnoses a Home with operator list and show without printing boot secrets", async () => {
+    const { account, id } = await buy();
+    const computer = (await getDesired(id))!;
+    const booted = await bootable(computer);
+    expect(booted.releaseManifestUrl).toBe(releaseManifestUrl);
+    expect(booted.release.images.host).toMatch(/@sha256:/u);
+    const run = (...args: string[]) => runCloudComputerOperator(cloud, args);
+    expect(await run("show", id)).toMatchObject({
+      id,
+      accountId: account.id,
+      workAssignmentId: null,
+      state: "active",
+      phase: "provisioning",
+      generation: computer.generation,
+      revision: computer.revision,
+      hostname: computer.hostname,
+      providerServerId: 7,
+      ipv4: "192.0.2.7",
+      bootstrapExpiresAt: expect.any(Date),
+      deletionRequestedAt: null,
+    });
+    expect((await complete(computer)).statusCode).toBe(200);
+    const pinned = (await getDesired(id))!;
+    expect((await report(pinned)).statusCode).toBe(200);
+    const view = await run("show", id);
+    expect(view).toMatchObject({
+      phase: "ready",
+      deploymentId: identity.deploymentId,
+      hostKeyFingerprint: identity.hostKeyFingerprint,
+      bootCompletedAt: expect.any(Date),
+      claim: { error: null, receiptAt: null },
+      lastError: null,
+    });
+    expect(await run("list")).toEqual([view]);
+    const output = JSON.stringify(view);
+    for (const secret of [
+      computer.bootstrapToken,
+      booted.managedHome?.oidc.clientSecret,
+      booted.setupCodeDigest,
+      booted.backup.password,
+      booted.backup.secretAccessKey,
+    ])
+      expect(output).not.toContain(secret!);
+    expect(cloudComputerOperatorUsage).toContain("sudo opensteer-home snapshots");
+    stripe.cancel.mockRejectedValueOnce(new Error("Stripe is unreachable"));
+    await run("delete", id);
+    expect(await run("show", id)).toMatchObject({ deletionRequestedAt: expect.any(Date) });
+  });
+
+  it("lists reserved backup targets and removes released targets without permitting old prefixes", async () => {
+    const account = await createAccount();
+    const order = purchase(account.id);
+    expect(
+      (
+        await requestAs(account, "POST", accountCloudComputerCheckoutPath, {
+          requestId: order.requestId,
+        })
+      ).statusCode,
+    ).toBe(200);
+    const run = (...args: string[]) => runCloudComputerOperator(cloud, args);
+    const pool = await cloud.listBackupTargets();
+    const reserved = pool.find((target) => target.reserved)!;
+    expect(await run("backup-list")).toContainEqual(
+      expect.objectContaining({
+        id: reserved.id,
+        computerId: null,
+        reservation: {
+          accountId: account.id,
+          requestId: order.requestId,
+          stripeSessionId: order.session.id,
+          expiresAt: expect.any(Date),
+          paidAt: null,
+        },
+      }),
+    );
+    expect(JSON.stringify(pool)).not.toMatch(/secret-[ab]|access-[ab]|checkout\.stripe/u);
+    await expect(run("backup-remove", reserved.id)).rejects.toThrow("reserved");
+    expect((await webhook("checkout.session.completed", order.session)).statusCode).toBe(200);
+    const id = (await cloud.list(account.id))[0]!.id;
+    await expect(run("backup-remove", reserved.id)).rejects.toThrow("assigned");
+    await run("delete", id);
+    const deleting = (await getDesired(id))!;
+    await report(deleting, {
+      phase: "deleted",
+      providerServerId: null,
+      ipv4: null,
+      observedIdentity: null,
+    });
+    expect(await run("backup-list")).toContainEqual(
+      expect.objectContaining({
+        id: reserved.id,
+        needsRotation: true,
+        reserved: false,
+      }),
+    );
+    expect(await run("backup-remove", reserved.id)).toEqual({ removed: true });
+    expect(await run("backup-list")).not.toContainEqual(
+      expect.objectContaining({ id: reserved.id }),
+    );
+    await expect(
+      cloud.addBackupTarget({
+        endpoint: reserved.endpoint,
+        bucket: reserved.bucket,
+        prefix: reserved.prefix,
+        accessKeyId: "new-key",
+        secretAccessKey: "new-secret",
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("assigns a late egress endpoint and serves it only to the current booted Home", async () => {
+    const { account, id } = await buy();
+    const computer = (await getDesired(id))!;
+    const booted = await bootable(computer);
+    expect(booted.egress).toBeUndefined();
+    const oidc = booted.managedHome!.oidc;
+    const credentials = (secret: string) =>
+      `Basic ${Buffer.from(`${oidc.clientId}:${secret}`).toString("base64")}`;
+    const read = (authorization?: string) =>
+      http({
+        method: "GET",
+        url: cloudComputerEgressPath(id),
+        ...(authorization ? { headers: { authorization } } : {}),
+      });
+    const run = (...args: string[]) => runCloudComputerOperator(cloud, args);
+    expect((await read(credentials(oidc.clientSecret))).statusCode).toBe(401);
+    await expect(run("egress-assign", id)).rejects.toThrow("active and booted");
+    expect((await complete(computer)).statusCode).toBe(200);
+    expect((await read(credentials(oidc.clientSecret))).json()).toEqual({});
+    await expect(run("egress-assign", id)).rejects.toThrow("No browser egress endpoint");
+    const proxy = {
+      url: "https://late.example.test",
+      username: "late-user",
+      password: "late-password",
+    };
+    const endpointId = await cloud.addEgressEndpoint({ ...proxy, publicAddress: "192.0.2.8" });
+    expect(await run("egress-assign", id)).toEqual({ endpointId, publicAddress: "192.0.2.8" });
+    expect(await run("egress-assign", id)).toEqual({ endpointId, publicAddress: "192.0.2.8" });
+    expect(await run("egress-list")).toEqual([
+      {
+        id: endpointId,
+        computerId: id,
+        needsRotation: false,
+        url: proxy.url,
+        username: proxy.username,
+        publicAddress: "192.0.2.8",
+      },
+    ]);
+    const authorized = await read(credentials(oidc.clientSecret));
+    expect(authorized.statusCode).toBe(200);
+    expect(authorized.headers["cache-control"]).toBe("no-store");
+    expect(authorized.json()).toEqual({ egress: proxy });
+    expect((await read()).statusCode).toBe(401);
+    expect((await read(credentials("ocs_" + "A".repeat(43)))).statusCode).toBe(401);
+    expect((await read(`Bearer ${computer.bootstrapToken}`)).statusCode).toBe(401);
+    await expect(run("egress-remove", endpointId)).rejects.toThrow("assigned");
+    expect(
+      (await requestAs(account, "POST", `${accountCloudComputerPath(id)}/suspend`)).statusCode,
+    ).toBe(200);
+    expect((await read(credentials(oidc.clientSecret))).statusCode).toBe(401);
+    await run("delete", id);
+    const deleting = (await getDesired(id))!;
+    await report(deleting, {
+      phase: "deleted",
+      providerServerId: null,
+      ipv4: null,
+      observedIdentity: null,
+    });
+    expect(await run("egress-list")).toContainEqual(
+      expect.objectContaining({ id: endpointId, needsRotation: true }),
+    );
+    expect(await run("egress-remove", endpointId)).toEqual({ removed: true });
+    expect(await run("egress-list")).toEqual([]);
+    await expect(cloud.addEgressEndpoint(proxy)).rejects.toThrow("new password");
+    await expect(
+      cloud.addEgressEndpoint({ ...proxy, password: "new-late-password" }),
+    ).resolves.toBe(endpointId);
+    expect(logs.join("")).not.toContain(proxy.password);
+  });
+
+  it("shows the lease and atomically releases only the named expired holder", async () => {
+    const run = (...args: string[]) => runCloudComputerOperator(cloud, args);
+    expect(await run("lease-show")).toMatchObject({
+      holder: lease,
+      expiresAt: expect.any(Date),
+      expired: false,
+    });
+    await expect(run("lease-release", lease)).rejects.toThrow("expired lease");
+    now = new Date(now.getTime() + 10 * 60_000 + 1);
+    expect(await run("lease-show")).toMatchObject({ holder: lease, expired: true });
+    await expect(run("lease-release", randomUUID())).rejects.toThrow("expired lease");
+    expect(await run("lease-release", lease)).toEqual({ released: true });
+    expect(await run("lease-show")).toBeNull();
+    const holder = randomUUID();
+    expect(
+      (
+        await http({
+          method: "POST",
+          url: cloudComputerLeasePath,
+          headers: leaseHeaders(),
+          payload: { holder },
+        })
+      ).statusCode,
+    ).toBe(200);
+    await expect(run("lease-release", lease)).rejects.toThrow("expired lease");
+    expect(await run("lease-show")).toMatchObject({ holder, expired: false });
+  });
+
+  it("runs billing once through the shared advisory lock and redacts diagnostic errors", async () => {
+    const run = () => runCloudComputerOperator(cloud, ["billing-reconcile"]);
+    await database.connection().execute(async (connection) => {
+      await sql`select pg_advisory_lock(hashtextextended('cloud-computer-billing-reconcile',0))`.execute(
+        connection,
+      );
+      try {
+        expect(await run()).toEqual({ ran: false, errors: [] });
+      } finally {
+        await sql`select pg_advisory_unlock(hashtextextended('cloud-computer-billing-reconcile',0))`.execute(
+          connection,
+        );
+      }
+    });
+    stripe.validateOffer.mockRejectedValueOnce(
+      new ControlPlaneError("unavailable", "sk_test_private", {
+        cause: new Error("webhook-secret-private"),
+      }),
+    );
+    expect(await run()).toEqual({
+      ran: true,
+      errors: [
+        {
+          type: "ControlPlaneError",
+          code: "unavailable",
+          status: 503,
+          message: "Account billing request failed",
+        },
+      ],
+    });
   });
 
   it("assigns egress exclusively and releases it only upon a confirmed tombstone", async () => {
@@ -1842,10 +2124,27 @@ integration("Cloud Computer Account service", () => {
     await expect(cloud.checkout(customer.id, order.requestId)).rejects.toThrow(
       "not available right now",
     );
+    await expect(
+      cloud.rotateBackupTarget(retired.id, {
+        prefix: retired.prefix,
+        accessKeyId: "access-c",
+        secretAccessKey: "secret-c",
+      }),
+    ).rejects.toThrow("current or retired target");
     await cloud.rotateBackupTarget(retired.id, {
+      prefix: "third",
       accessKeyId: "access-c",
       secretAccessKey: "secret-c",
     });
+    await expect(
+      cloud.addBackupTarget({
+        endpoint: retired.endpoint,
+        bucket: retired.bucket,
+        prefix: retired.prefix,
+        accessKeyId: "access-d",
+        secretAccessKey: "secret-d",
+      }),
+    ).rejects.toThrow("current or retired target");
     await cloud.rotateEgressEndpoint(endpointId, {
       username: "egress-user",
       password: "rotated-password",
@@ -1853,6 +2152,7 @@ integration("Cloud Computer Account service", () => {
     const third = await buy(customer);
     const config = await bootable((await getDesired(third.id))!);
     expect(config.backup.accessKeyId).toBe("access-c");
+    expect(config.backup.prefix).toBe("third");
     expect(config.egress?.password).toBe("rotated-password");
   });
 
@@ -1901,27 +2201,73 @@ integration("Cloud Computer Account service", () => {
     expect(same.backup).toEqual(config.backup);
   });
 
-  it("recovers an abandoned Checkout create and durably defers payment during an Account deletion fence", async () => {
+  it("keeps capacity while a Checkout create is in flight and reuses the original Stripe parameters", async () => {
     const account = await createAccount();
-    const lost = purchase(account.id);
-    checkout.mockRejectedValueOnce(new Error("Checkout create never reached Stripe"));
-    await expect(cloud.checkout(account.id, lost.requestId)).rejects.toThrow(
-      "never reached Stripe",
-    );
-    now = new Date(now.getTime() + 60_001);
     const order = purchase(account.id);
-    expect(await cloud.checkout(account.id, order.requestId)).toEqual({ url: checkoutUrl });
-    expect(stripe.findCheckout).toHaveBeenCalledWith(
-      expect.objectContaining({ requestId: lost.requestId, sessionId: null }),
-    );
-    expect(
-      await database
-        .selectFrom("cloudComputerCheckouts")
-        .select("status")
-        .where("requestId", "=", lost.requestId)
-        .executeTakeFirst(),
-    ).toEqual({ status: "expired" });
+    const entered = Promise.withResolvers<void>();
+    const completeCreate = Promise.withResolvers<void>();
+    checkout.mockImplementationOnce(async () => {
+      entered.resolve();
+      await completeCreate.promise;
+      return { id: order.session.id, url: checkoutUrl };
+    });
+    const first = requestAs(account, "POST", accountCloudComputerCheckoutPath, {
+      requestId: order.requestId,
+    });
+    await entered.promise;
+    try {
+      now = new Date(now.getTime() + 60_001);
+      const competing = await requestAs(account, "POST", accountCloudComputerCheckoutPath, {
+        requestId: randomUUID(),
+      });
+      expect(competing.json()).toMatchObject({
+        error: { reason: "cloud-computer-checkout-in-progress" },
+      });
+      expect(checkout.mock.calls).toHaveLength(2);
+      expect(checkout.mock.calls[1]).toEqual(checkout.mock.calls[0]);
+      await buy();
+      const buyer = await createAccount();
+      const full = await requestAs(buyer, "POST", accountCloudComputerCheckoutPath, {
+        requestId: randomUUID(),
+      });
+      expect(full.json()).toMatchObject({ error: { reason: "cloud-computer-no-capacity" } });
+    } finally {
+      completeCreate.resolve();
+      await first;
+    }
+    expect((await first).statusCode).toBe(200);
+  });
 
+  it("closes a completed but unpaid Checkout only after Stripe confirms cancellation", async () => {
+    const account = await createAccount();
+    const initial = purchase(account.id);
+    const start = (requestId: string) =>
+      requestAs(account, "POST", accountCloudComputerCheckoutPath, { requestId });
+    expect((await start(initial.requestId)).statusCode).toBe(200);
+    const unpaid = {
+      id: initial.session.id,
+      status: "complete",
+      url: null,
+      subscription: initial.subscription,
+      payment: undefined,
+    } as const;
+    stripe.findCheckout.mockResolvedValueOnce(unpaid).mockResolvedValueOnce(unpaid);
+    const replacement = purchase(account.id);
+    expect((await start(replacement.requestId)).statusCode).toBe(200);
+    expect(stripe.cancel).toHaveBeenCalledWith(initial.subscription);
+    expect(stripe.refundCheckout).not.toHaveBeenCalled();
+  });
+
+  it("durably defers payment during an Account deletion fence", async () => {
+    const account = await createAccount();
+    const order = purchase(account.id);
+    expect(
+      (
+        await requestAs(account, "POST", accountCloudComputerCheckoutPath, {
+          requestId: order.requestId,
+        })
+      ).statusCode,
+    ).toBe(200);
     await database
       .updateTable("users")
       .where("id", "=", account.id)
@@ -1940,9 +2286,25 @@ integration("Cloud Computer Account service", () => {
           .executeTakeFirstOrThrow()
       ).deferredCheckout,
     ).toMatchObject({ id: order.session.id });
+    expect(await runCloudComputerOperator(cloud, ["checkout-list"])).toMatchObject({
+      deferredEvents: [
+        {
+          eventId: "evt_fenced",
+          stripeSessionId: order.session.id,
+          stripeSubscriptionId: order.subscription,
+          accountId: account.id,
+          requestId: order.requestId,
+        },
+      ],
+    });
     now = new Date(now.getTime() + 60_002);
-    await cloud.reconcileBilling(() => {
-      throw new Error("unexpected periodic billing failure");
+    expect(await runCloudComputerOperator(cloud, ["billing-reconcile"])).toEqual({
+      ran: true,
+      errors: [],
+    });
+    expect(await runCloudComputerOperator(cloud, ["checkout-list"])).toEqual({
+      deferredEvents: [],
+      paidAttempts: [],
     });
     expect(await cloud.list(account.id)).toHaveLength(1);
     expect(
@@ -1982,6 +2344,16 @@ integration("Cloud Computer Account service", () => {
     expect(computer?.status).toBe("preparing");
     subscriptions.set(order.subscription, {
       ...order.details,
+      latest_invoice: { status: "draft", attempt_count: 0 },
+    });
+    expect(
+      (await webhook("customer.subscription.updated", { id: order.subscription })).statusCode,
+    ).toBe(200);
+    expect(
+      (await requestAs(customer, "GET", accountCloudComputerPath(computer!.id))).json(),
+    ).toMatchObject({ status: "preparing" });
+    subscriptions.set(order.subscription, {
+      ...order.details,
       pause_collection: { behavior: "void" },
     });
     await tick();
@@ -1991,29 +2363,124 @@ integration("Cloud Computer Account service", () => {
     expect(await cloud.show(computer!.id)).toMatchObject({ status: "preparing" });
   });
 
-  it("does not recreate a deleted Home when a pending resubscription pays late", async () => {
+  it("holds deletion pending while a completion wins the Stripe expiry race, then refunds", async () => {
     const { id, account, order } = await buy();
     subscriptions.set(order.subscription, { ...order.details, status: "canceled" });
     await cloud.reconcileBilling(() => {
-      throw new Error("unexpected periodic billing failure");
+      throw new Error("unexpected billing failure");
     });
     const second = purchase(account.id);
-    await cloud.checkout(account.id, second.requestId);
-    await cloud.mutate(id, "delete", account.id);
-    const deletion = (await getDesired(id))!;
     expect(
       (
-        await report(deletion, {
-          phase: "deleted",
-          providerServerId: null,
-          ipv4: null,
-          observedIdentity: null,
+        await requestAs(account, "POST", accountCloudComputerCheckoutPath, {
+          requestId: second.requestId,
         })
-      ).json(),
-    ).toEqual({ recorded: true });
-    expect((await webhook("checkout.session.completed", second.session)).statusCode).toBe(200);
+      ).statusCode,
+    ).toBe(200);
+    const payment = { ...second.session, mode: "subscription", payment_status: "paid" } as const;
+    const open = {
+      id: second.session.id,
+      status: "open",
+      url: checkoutUrl,
+      payment: undefined,
+    } as const;
+    const complete = { id: second.session.id, status: "complete", url: null, payment } as const;
+    const expiryStarted = Promise.withResolvers<void>();
+    const completePayment = Promise.withResolvers<void>();
+    stripe.findCheckout.mockResolvedValue(open);
+    stripe.expireCheckout.mockImplementationOnce(async () => {
+      expiryStarted.resolve();
+      await completePayment.promise;
+      stripe.findCheckout.mockResolvedValue(complete);
+      return complete;
+    });
+    stripe.refundCheckout.mockResolvedValue(false);
+    const deletion = requestAs(account, "DELETE", accountCloudComputerPath(id), {
+      confirmation: cloudComputerDeleteConfirmation(id),
+    });
+    await expiryStarted.promise;
+    const racingEvent = webhook("checkout.session.completed", payment, "evt_race_completed");
+    completePayment.resolve();
+    const pending = await deletion;
+    expect(pending.json()).toMatchObject({
+      status: "needs_attention",
+      reasonCode: "cloud-computer-deletion-pending",
+    });
+    expect((await racingEvent).statusCode).toBe(200);
+    expect(stripe.expireCheckout).toHaveBeenCalledWith(second.session.id);
     expect(stripe.cancel).toHaveBeenCalledWith(second.subscription);
-    expect(await cloud.list(account.id)).toMatchObject([{ id, status: "deleted" }]);
+    expect(stripe.refundCheckout).toHaveBeenCalledWith(payment);
+    expect((await getDesired(id))?.state).not.toBe("deleted");
+
+    stripe.refundCheckout.mockResolvedValue(true);
+    await cloud.reconcileBilling(() => {
+      throw new Error("unexpected billing failure");
+    });
+    expect((await getDesired(id))?.state).toBe("deleted");
+    expect((await requestAs(account, "GET", accountCloudComputerPath(id))).json()).toMatchObject({
+      status: "deleted",
+    });
+  });
+
+  it("expires an open payable Checkout before allowing deletion", async () => {
+    const { id, account, order } = await buy();
+    subscriptions.set(order.subscription, { ...order.details, status: "canceled" });
+    await cloud.reconcileBilling(() => {
+      throw new Error("unexpected billing failure");
+    });
+    const next = purchase(account.id);
+    expect(
+      (
+        await requestAs(account, "POST", accountCloudComputerCheckoutPath, {
+          requestId: next.requestId,
+        })
+      ).statusCode,
+    ).toBe(200);
+    stripe.findCheckout.mockResolvedValueOnce({
+      id: next.session.id,
+      status: "open",
+      url: checkoutUrl,
+      payment: undefined,
+    });
+    const deleted = await requestAs(account, "DELETE", accountCloudComputerPath(id), {
+      confirmation: cloudComputerDeleteConfirmation(id),
+    });
+    expect(stripe.expireCheckout).toHaveBeenCalledWith(next.session.id);
+    expect(stripe.refundCheckout).not.toHaveBeenCalled();
+    expect(deleted.json()).toMatchObject({ status: "deleted" });
+  });
+
+  it("refunds a paid attempt after its fulfillment bound and logs the reason", async () => {
+    const account = await createAccount();
+    const order = purchase(account.id);
+    expect(
+      (
+        await requestAs(account, "POST", accountCloudComputerCheckoutPath, {
+          requestId: order.requestId,
+        })
+      ).statusCode,
+    ).toBe(200);
+    await database
+      .updateTable("cloudComputerBackupTargets")
+      .set({ needsRotation: true, checkoutKey: null })
+      .execute();
+    const paid = { ...order.session, mode: "subscription", payment_status: "paid" } as const;
+    expect((await webhook("checkout.session.completed", paid, "evt_unfulfilled")).statusCode).toBe(
+      200,
+    );
+    expect(stripe.refundCheckout).not.toHaveBeenCalled();
+    now = new Date(now.getTime() + 15 * 60_000 + 1);
+    await cloud.reconcileBilling(() => {
+      throw new Error("unexpected billing failure");
+    });
+    expect(stripe.cancel).toHaveBeenCalledWith(order.subscription);
+    expect(stripe.refundCheckout).toHaveBeenCalledWith(paid);
+    expect(billingAttention).toHaveBeenCalledWith(
+      expect.stringContaining("Cancelling and refunding"),
+    );
+    expect((await requestAs(account, "GET", accountCloudComputersPath)).json().computers).toEqual(
+      [],
+    );
   });
 
   it("continues to find and cancel a pending Checkout after Account deletion", async () => {
@@ -2027,7 +2494,7 @@ integration("Cloud Computer Account service", () => {
         .select("requestId")
         .where("accountId", "=", owner.id)
         .execute(),
-    ).toEqual([]);
+    ).toEqual([{ requestId: order.requestId }]);
     stripe.findCheckout.mockResolvedValueOnce({
       id: order.session.id,
       status: "complete",
@@ -2038,6 +2505,9 @@ integration("Cloud Computer Account service", () => {
       throw new Error("unexpected periodic billing failure");
     });
     expect(stripe.cancel).toHaveBeenCalledWith(order.subscription);
+    expect(stripe.refundCheckout).toHaveBeenCalledWith(
+      expect.objectContaining({ id: order.session.id }),
+    );
     expect(
       await database
         .selectFrom("cloudComputerBackupTargets")
@@ -2045,6 +2515,457 @@ integration("Cloud Computer Account service", () => {
         .where("checkoutKey", "is not", null)
         .execute(),
     ).toEqual([]);
+  });
+
+  async function liveReconciler(input: {
+    id: CloudComputerDesired["id"];
+    holder?: string;
+    server?: FakeVm;
+    invalidDiscovery?: boolean;
+    unreachableDiscovery?: boolean;
+  }) {
+    const { accountClient } = await vi.importActual<{
+      accountClient(
+        origin: URL,
+        token: () => Promise<string>,
+        http: { timeoutMs: number },
+        holder: string,
+      ): object;
+    }>("../../../home-provisioner/src/account.js");
+    const { discoverHome } = await vi.importActual<{
+      discoverHome(http: { timeoutMs: number; fetch: typeof fetch }): () => Promise<unknown>;
+    }>("../../../home-provisioner/src/discovery.js");
+    const machine = { server: input.server, previous: undefined as FakeVm | undefined };
+    const provider = {
+      ensureFirewall: async () => 1,
+      ensureFirewallAttached: async () => true,
+      listManaged: async () => [],
+      find: async (id: string) =>
+        id === input.id ? [machine.server, machine.previous].filter(Boolean) : [],
+      create: vi.fn(
+        async (
+          { generation }: { generation: number },
+          _signal: AbortSignal,
+          check?: () => Promise<void>,
+        ) => {
+          await check?.();
+          return (machine.server = vm(generation, "off"));
+        },
+      ),
+      describe: async (id: number) =>
+        [machine.server, machine.previous].find((server) => server?.id === id),
+      powerOn: async () => {
+        machine.server = { ...machine.server!, status: "running" };
+      },
+      powerOff: vi.fn(async (id: number) => {
+        if (machine.server && machine.server.id === id)
+          machine.server = { ...machine.server, status: "off" };
+        if (machine.previous && machine.previous.id === id)
+          machine.previous = { ...machine.previous, status: "off" };
+      }),
+      delete: vi.fn(async (id: number) => {
+        if (machine.server?.id === id) machine.server = undefined;
+        if (machine.previous?.id === id) machine.previous = undefined;
+      }),
+    };
+    const dnsState = { token: undefined as string | undefined, published: false };
+    const dns = {
+      listManaged: async () => [],
+      observeWrites: async () => (dnsState.token ? [dnsState.token] : []),
+      ensureRecords: vi.fn(
+        async (
+          _host: string,
+          _addresses: object,
+          _signal: AbortSignal,
+          _check?: () => Promise<void>,
+          publish?: (type: "A", send: (token: string) => Promise<void>) => Promise<void>,
+        ) => {
+          await publish?.("A", async (token) => {
+            dnsState.token = token;
+            dnsState.published = true;
+          });
+        },
+      ),
+      removeRecords: vi.fn(
+        async (
+          _host: string,
+          _signal: AbortSignal,
+          _check?: () => Promise<void>,
+          observed?: (token: string) => Promise<void>,
+        ) => {
+          if (dnsState.token) await observed?.(dnsState.token);
+          dnsState.token = undefined;
+          dnsState.published = false;
+        },
+      ),
+    };
+    const options = {
+      account: accountClient(
+        listener,
+        async () => provisionerToken,
+        { timeoutMs: 5000 },
+        input.holder ?? lease,
+      ),
+      provider,
+      dns,
+      discover:
+        input.invalidDiscovery || input.unreachableDiscovery
+          ? discoverHome({
+              timeoutMs: 5000,
+              fetch: async () =>
+                input.unreachableDiscovery
+                  ? new Response(null, { status: 503 })
+                  : Response.json({ kind: "personal", authority: {} }),
+            })
+          : async () => identity,
+      accountOrigin: publicOrigin,
+      image: "image",
+      defaultRegion: "ash",
+      defaultServerType: "cpx22",
+      concurrency: 1,
+      readinessTimeoutMs: 20 * 60_000,
+    };
+    const { Reconciler } = await vi.importActual<{
+      Reconciler: new (input: typeof options) => { pass(signal: AbortSignal): Promise<void> };
+    }>("../../../home-provisioner/src/reconcile.js");
+    function pass(holder = input.holder ?? lease) {
+      const client = accountClient(
+        listener,
+        async () => provisionerToken,
+        { timeoutMs: 5000 },
+        holder,
+      );
+      return new Reconciler({ ...options, account: client }).pass(AbortSignal.timeout(8000));
+    }
+    return { pass, machine, provider, dns, dnsState };
+  }
+
+  type FakeVm = ReturnType<typeof vm>;
+  function vm(generation: number, status: "off" | "running") {
+    return { id: 6 + generation, generation, status, ipv4: "192.0.2.7", ipv6: null, firewalls: [] };
+  }
+
+  it.each(["create", "dns-a"] as const)(
+    "keeps pools reserved when a journaled %s lands after the lease changes",
+    async (kind) => {
+      const { id, account } = await buy();
+      const harness = await liveReconciler({
+        id,
+        ...(kind === "dns-a" ? { server: vm(1, "running") } : {}),
+      });
+      const dispatched = Promise.withResolvers<void>();
+      const deliver = Promise.withResolvers<void>();
+      if (kind === "create") {
+        harness.provider.create.mockImplementationOnce(async ({ generation }, _signal, check) => {
+          await check?.();
+          dispatched.resolve();
+          await deliver.promise;
+          return (harness.machine.server = vm(generation, "off"));
+        });
+      } else {
+        harness.dns.ensureRecords.mockImplementationOnce(
+          async (_host, _addresses, _signal, check, publish) => {
+            await check?.();
+            await publish?.("A", async (token) => {
+              dispatched.resolve();
+              await deliver.promise;
+              harness.dnsState.token = token;
+              harness.dnsState.published = true;
+            });
+          },
+        );
+      }
+      const old = harness.pass().catch((error: unknown) => error);
+      await dispatched.promise;
+      const holder = randomUUID();
+      try {
+        const journaled = await getDesired(id);
+        expect(journaled?.pendingProviderWrites).toMatchObject([{ kind, generation: 1 }]);
+        expect(
+          (
+            await requestAs(account, "DELETE", accountCloudComputerPath(id), {
+              confirmation: cloudComputerDeleteConfirmation(id),
+            })
+          ).statusCode,
+        ).toBe(200);
+        now = new Date(now.getTime() + 11 * 60_000);
+        await harness.pass(holder);
+        const premature = await database
+          .selectFrom("cloudComputers")
+          .select(["phase", "tombstonedAt"])
+          .where("id", "=", id)
+          .executeTakeFirstOrThrow();
+        expect(premature).toEqual({ phase: "deleting", tombstonedAt: null });
+        expect((await cloud.listBackupTargets()).some((entry) => entry.computerId === id)).toBe(
+          true,
+        );
+      } finally {
+        deliver.resolve();
+        await old;
+      }
+      await harness.pass(holder);
+      expect(harness.machine.server).toBeUndefined();
+      expect(harness.dnsState.published).toBe(false);
+      expect((await cloud.listBackupTargets()).some((entry) => entry.needsRotation)).toBe(true);
+    },
+  );
+
+  it("powers off a suspended Home even when withdrawing DNS fails", async () => {
+    const { id, account } = await buy();
+    const harness = await liveReconciler({ id, server: vm(1, "running") });
+    harness.dnsState.published = true;
+    harness.dns.removeRecords.mockRejectedValueOnce(new Error("Cloudflare unavailable"));
+    expect(
+      (await requestAs(account, "POST", `${accountCloudComputerPath(id)}/suspend`)).statusCode,
+    ).toBe(200);
+    await harness.pass();
+    expect(harness.machine.server?.status).toBe("off");
+    expect(harness.dnsState.published).toBe(true);
+    await harness.pass();
+    expect(harness.dnsState.published).toBe(false);
+  });
+
+  it("withdraws DNS for an invalid discovery response at the pinned address", async () => {
+    const { id, account } = await buy();
+    const computer = (await getDesired(id))!;
+    await bootable(computer);
+    expect((await complete(computer)).statusCode).toBe(200);
+    const harness = await liveReconciler({ id, server: vm(1, "running"), invalidDiscovery: true });
+    harness.dnsState.published = true;
+    await harness.pass();
+    expect(harness.dnsState.published).toBe(false);
+    expect(harness.dns.ensureRecords).not.toHaveBeenCalled();
+    expect((await requestAs(account, "GET", accountCloudComputerPath(id))).json()).toMatchObject({
+      status: "needs_attention",
+    });
+    const unreachable = await liveReconciler({
+      id,
+      server: vm(1, "running"),
+      unreachableDiscovery: true,
+    });
+    await unreachable.pass();
+    expect(unreachable.dns.ensureRecords).not.toHaveBeenCalled();
+    expect((await getDesired(id))?.dnsQuarantined).toBe(true);
+  });
+
+  it("returns all desired rows through the listener's cursor pages", async () => {
+    const first = await buy();
+    const second = await buy();
+    const page = async (cursor?: string) => {
+      const response = await http({
+        method: "GET",
+        url: `${cloudComputersDesiredPath}?limit=1${cursor ? "&after=" + cursor : ""}`,
+        headers: leaseHeaders(),
+      });
+      expect(response.statusCode).toBe(200);
+      return CloudComputerDesiredResponseSchema.parse(response.json());
+    };
+    const one = await page();
+    expect(one.computers).toHaveLength(1);
+    expect(one.next).toBe(one.computers[0]?.id);
+    const two = await page(one.next);
+    expect(two.computers).toHaveLength(1);
+    expect(two.next).toBeUndefined();
+    expect([one.computers[0]?.id, two.computers[0]?.id]).toEqual([first.id, second.id].sort());
+  });
+
+  it("keeps the predecessor powered off until the restored Home is claimed and its owner signs in", async () => {
+    const { id, account } = await buy();
+    const first = (await getDesired(id))!;
+    await bootable(first);
+    expect((await complete(first)).statusCode).toBe(200);
+    expect((await report((await getDesired(id))!)).json()).toEqual({ recorded: true });
+    await cloud.mutate(id, "replace", undefined, "aabbccdd");
+    const restored = (await getDesired(id))!;
+    const current = vm(restored.generation, "running");
+    expect(
+      (
+        await report(restored, {
+          phase: "provisioning",
+          providerServerId: current.id,
+          observedIdentity: null,
+        })
+      ).json(),
+    ).toEqual({ recorded: true });
+    const response = await boot(restored);
+    expect(response.statusCode, response.body).toBe(200);
+    const install = CloudComputerBootResponseSchema.parse(response.json());
+    expect(install.restoreSnapshot).toBe("aabbccdd");
+    expect((await complete(restored)).statusCode).toBe(200);
+    const harness = await liveReconciler({ id, server: current });
+    harness.machine.previous = vm(first.generation, "running");
+    await harness.pass();
+    expect(harness.machine.previous?.status).toBe("off");
+    expect(harness.provider.delete).not.toHaveBeenCalled();
+
+    const home = fakeHome({ hostname: restored.hostname, boot: install });
+    expect(await claimer(home.fetch).runOnce()).toBe(1);
+    await harness.pass();
+    expect(harness.provider.delete).not.toHaveBeenCalled();
+
+    const oidc = install.managedHome!.oidc;
+    const redirect = `https://${restored.hostname}/v1/auth/oidc/callback`;
+    const verifier = "x".repeat(43);
+    const query = new URLSearchParams({
+      client_id: oidc.clientId,
+      redirect_uri: redirect,
+      response_type: "code",
+      scope: "openid profile email",
+      state: randomUUID(),
+      code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+      code_challenge_method: "S256",
+    });
+    const authorized = await requestAs(account, "GET", `/api/auth/oauth2/authorize?${query}`);
+    expect(authorized.statusCode).toBe(200);
+    const code = new URL(authorized.json().url).searchParams.get("code");
+    expect(code).toBeTruthy();
+    const token = await http({
+      method: "POST",
+      url: "/api/auth/oauth2/token",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        host: publicOrigin.host,
+        authorization:
+          "Basic " + Buffer.from(`${oidc.clientId}:${oidc.clientSecret}`).toString("base64"),
+      },
+      payload: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: code!,
+        code_verifier: verifier,
+        redirect_uri: redirect,
+      }).toString(),
+    });
+    expect(token.statusCode).toBe(200);
+    expect((await getDesired(id))?.replacementVerified).toBe(true);
+    await harness.pass();
+    expect(harness.provider.delete).toHaveBeenCalledWith(
+      vm(first.generation, "off").id,
+      expect.any(AbortSignal),
+      expect.any(Function),
+    );
+    expect(harness.machine.previous).toBeUndefined();
+  });
+
+  it("renews an unused token in place when only the create fence was checked", async () => {
+    const { id } = await buy();
+    const current = (await getDesired(id))!;
+    const check = await http({
+      method: "POST",
+      url: `/v1/cloud-computers/${id}/check`,
+      headers: leaseHeaders(),
+      payload: { operation: "create", revision: current.revision },
+    });
+    expect(check.json()).toEqual({ allowed: true });
+    await cloud.mutate(id, "reissue");
+    const updated = (await getDesired(id))!;
+    expect(updated.generation).toBe(current.generation);
+    expect(updated.bootstrapToken).not.toBe(current.bootstrapToken);
+  });
+
+  it("requires the dedicated Stripe portal configuration at the account-facing endpoint", async () => {
+    const { account } = await buy();
+    stripe.validatePortal.mockRejectedValueOnce(
+      new ControlPlaneError("unavailable", "Unsupported portal configuration", {
+        reason: "cloud-computer-billing-problem",
+      }),
+    );
+    const blocked = await requestAs(account, "POST", accountCloudComputerBillingPortalPath);
+    expect(blocked.statusCode).toBe(503);
+    expect(blocked.json()).toMatchObject({ error: { reason: "cloud-computer-billing-problem" } });
+    expect(stripe.portal).not.toHaveBeenCalled();
+
+    const opened = await requestAs(account, "POST", accountCloudComputerBillingPortalPath);
+    expect(opened.json()).toEqual({ url: portalUrl });
+    expect(stripe.portal.mock.calls[0]?.[2]).toBe("bpc_cloud");
+  });
+
+  it("reissues a never-ready boot-completed Home with a clean pin and fresh credentials", async () => {
+    const { id } = await buy();
+    await cloud.addEgressEndpoint({
+      url: "https://old.example.test",
+      username: "first-user",
+      password: "first-secret",
+    });
+    const original = (await getDesired(id))!;
+    const first = await bootable(original);
+    expect((await complete(original)).statusCode).toBe(200);
+    await cloud.addEgressEndpoint({
+      url: "https://new.example.test",
+      username: "next-user",
+      password: "next-secret",
+    });
+    await cloud.mutate(id, "reissue");
+    const next = (await getDesired(id))!;
+    expect(next.generation).toBe(original.generation + 1);
+    expect(next.observedIdentity).toBeUndefined();
+    expect(next.bootCompleted).toBe(false);
+    expect((await complete(original)).statusCode).toBe(401);
+    const replacement = await bootable(next);
+    expect(replacement.setupCodeDigest).not.toBe(first.setupCodeDigest);
+    expect(replacement.managedHome?.oidc.clientSecret).not.toBe(
+      first.managedHome?.oidc.clientSecret,
+    );
+    expect(replacement.backup.prefix).not.toBe(first.backup.prefix);
+    expect(replacement.backup.password).not.toBe(first.backup.password);
+    expect(replacement.egress?.username).toBe("next-user");
+    expect((await cloud.listEgressEndpoints()).filter((entry) => entry.needsRotation)).toHaveLength(
+      1,
+    );
+  });
+
+  it("reissues a never-ready replacement against a newly staged repository", async () => {
+    const { id } = await buy();
+    const first = (await getDesired(id))!;
+    await bootable(first);
+    expect((await complete(first)).statusCode).toBe(200);
+    expect((await report((await getDesired(id))!)).json()).toEqual({ recorded: true });
+    await cloud.mutate(id, "replace", undefined, "aabbccdd");
+    const previous = (await getDesired(id))!;
+    await bootable(previous);
+    expect((await complete(previous)).statusCode).toBe(200);
+    await expect(cloud.mutate(id, "reissue")).rejects.toThrow(
+      "fresh backup target containing the named snapshot",
+    );
+
+    const targetId = await cloud.addBackupTarget({
+      endpoint: "https://s3.example.test",
+      bucket: "test-backups",
+      prefix: "prepared-restore",
+      accessKeyId: "access-prepared",
+      secretAccessKey: "secret-prepared",
+    });
+    await cloud.mutate(
+      id,
+      "reissue",
+      undefined,
+      JSON.stringify({ targetId, password: "new-restore-password" }),
+    );
+    const desired = (await getDesired(id))!;
+    expect(desired).toMatchObject({
+      generation: previous.generation + 1,
+      restoreSnapshot: "aabbccdd",
+    });
+    expect(desired.observedIdentity).toBeUndefined();
+    const boot = await bootable(desired);
+    expect(boot).toMatchObject({
+      restoreSnapshot: "aabbccdd",
+      backup: { prefix: "prepared-restore", password: "new-restore-password" },
+    });
+  });
+
+  it("returns a retryable failure and logs a malformed paid subscription Checkout", async () => {
+    const paid = await webhook("checkout.session.completed", {
+      id: "cs_malformed",
+      mode: "subscription",
+      payment_status: "paid",
+      stray: "private-input",
+    });
+    expect(paid.statusCode).toBe(503);
+    expect(paid.json()).toMatchObject({
+      error: { message: "Could not interpret a paid Stripe Checkout Session" },
+    });
+    expect(logs.join("")).toContain("Could not interpret a paid Stripe Checkout Session");
+    expect(logs.join("")).not.toContain("private-input");
   });
 
   it("rate limits boot attempts and admits only signed Stripe webhooks", async () => {

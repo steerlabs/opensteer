@@ -31,6 +31,9 @@ import {
   WorkPolicyUpdateResponseSchema,
   WorkPolicyClaimsSchema,
   WorkPolicyResponseSchema,
+  type ControlPlaneAccountId,
+  type OrganizationId,
+  type WorkAssignmentId,
 } from "@opensteer/control-plane-protocol";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -179,47 +182,11 @@ export function registerOrganizationRoutes(
       const principal = await writer(request);
       const { organizationId, assignmentId } = assignmentParams.parse(request.params);
       const { retentionSeconds } = OrganizationOffboardRequestSchema.parse(request.body);
-      const offboard = await organizations.beginOffboard(
-        organizationId,
-        principal,
-        assignmentId,
-        retentionSeconds,
-      );
-      if (!offboard.started) {
-        return WorkAssignmentViewSchema.parse(
-          await organizations.offboardingStatus(organizationId, principal, assignmentId),
-        );
-      }
-      const { home } = offboard;
-      if (home) {
-        try {
-          const iat = Math.floor(Date.now() / 1000);
-          const claims = WorkAuditFlushClaimsSchema.parse({
-            tokenUse: "opensteer-work-audit-flush",
-            iss: options.publicOrigin.origin,
-            aud: home.origin,
-            assignmentId,
-            deploymentId: home.deploymentId,
-            iat,
-            exp: iat + 30,
-          });
-          const { token } = await options.auth.api.signJWT({ body: { payload: claims } });
-          const response = await workHomeFetch(new URL(workAuditFlushPath, home.origin), {
-            method: "POST",
-            redirect: "error",
-            credentials: "omit",
-            cache: "no-store",
-            signal: AbortSignal.timeout(2_000),
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(WorkAuditFlushRequestSchema.parse({ assertion: token })),
-          });
-          await response.body?.cancel();
-        } catch {
-          // Offboarding cannot wait for an unreachable Home or its audit outbox.
-        }
-      }
       return WorkAssignmentViewSchema.parse(
-        await organizations.finishOffboard(organizationId, principal, assignmentId),
+        await offboardWorkAssignment(
+          { ...options, workHomeFetch },
+          { organizationId, account: principal, assignmentId, retentionSeconds },
+        ),
       );
     });
     privateApp.put(`${orgPath}/policy`, async (request) =>
@@ -291,4 +258,64 @@ export function registerOrganizationRoutes(
         .send(WorkAuditAcknowledgmentSchema.parse({ lastSequence: result.lastSequence }));
     });
   });
+}
+
+/**
+ * Ends a work assignment: cuts sign-in, asks a live Home to flush its audit outbox (best
+ * effort, bounded), then powers it off and schedules its deletion. Repeating it reports
+ * where the assignment stands.
+ */
+export async function offboardWorkAssignment(
+  options: {
+    readonly organizations: OrganizationStore;
+    readonly auth: ControlPlaneAuth;
+    readonly publicOrigin: URL;
+    readonly workHomeFetch: typeof globalThis.fetch;
+  },
+  input: {
+    readonly organizationId: OrganizationId;
+    readonly account: ControlPlaneAccountId;
+    readonly assignmentId: WorkAssignmentId;
+    readonly retentionSeconds: number;
+  },
+) {
+  const { organizations } = options;
+  const { organizationId, account, assignmentId } = input;
+  const offboard = await organizations.beginOffboard(
+    organizationId,
+    account,
+    assignmentId,
+    input.retentionSeconds,
+  );
+  if (!offboard.started)
+    return organizations.offboardingStatus(organizationId, account, assignmentId);
+  const { home } = offboard;
+  if (home) {
+    try {
+      const iat = Math.floor(Date.now() / 1000);
+      const claims = WorkAuditFlushClaimsSchema.parse({
+        tokenUse: "opensteer-work-audit-flush",
+        iss: options.publicOrigin.origin,
+        aud: home.origin,
+        assignmentId,
+        deploymentId: home.deploymentId,
+        iat,
+        exp: iat + 30,
+      });
+      const { token } = await options.auth.api.signJWT({ body: { payload: claims } });
+      const response = await options.workHomeFetch(new URL(workAuditFlushPath, home.origin), {
+        method: "POST",
+        redirect: "error",
+        credentials: "omit",
+        cache: "no-store",
+        signal: AbortSignal.timeout(2_000),
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(WorkAuditFlushRequestSchema.parse({ assertion: token })),
+      });
+      await response.body?.cancel();
+    } catch {
+      // Offboarding cannot wait for an unreachable Home or its audit outbox.
+    }
+  }
+  return organizations.finishOffboard(organizationId, account, assignmentId);
 }

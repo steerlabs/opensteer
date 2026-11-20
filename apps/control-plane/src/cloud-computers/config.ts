@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
 import {
   CloudComputerBootReleaseSchema,
   CloudComputerHostnameSchema,
@@ -6,10 +7,30 @@ import {
   CloudComputerPlanSchema,
   CloudComputerRegionSchema,
   CloudComputerReleaseSchema,
+  CloudComputerReleaseManifestUrlSchema,
 } from "@opensteer/control-plane-protocol";
 import { z } from "zod";
 
 const prefix = "OPENSTEER_CLOUD_COMPUTER_";
+
+/** Resolve settings staged by the Account deployment's optional runtime secret mount. */
+export function withManagedHomeConfigFiles(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const directory = env.OPENSTEER_MANAGED_HOME_CONFIG_DIRECTORY;
+  if (directory === undefined) return env;
+  const result = { ...env };
+  for (const file of readdirSync(directory, { withFileTypes: true })) {
+    if (
+      !file.isFile() ||
+      !/^OPENSTEER_(?:CLOUD_COMPUTER|ORGANIZATION)_[A-Z0-9_]+$/u.test(file.name) ||
+      file.name.endsWith("_FILE")
+    )
+      continue;
+    const variable = `${file.name}_FILE`;
+    if (env[file.name] === undefined && env[variable] === undefined)
+      result[variable] = join(directory, file.name);
+  }
+  return result;
+}
 
 export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
   if (!Object.keys(env).some((key) => key.startsWith(prefix) && env[key] !== undefined)) return;
@@ -56,6 +77,10 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
       : {}),
     serverType: read("SERVER_TYPE", CloudComputerLocationSchema),
     release,
+    ...(env[`${prefix}RELEASE_MANIFEST_URL`] !== undefined ||
+    env[`${prefix}RELEASE_MANIFEST_URL_FILE`] !== undefined
+      ? { releaseManifestUrl: read("RELEASE_MANIFEST_URL", CloudComputerReleaseManifestUrlSchema) }
+      : {}),
     stripeKey: read(
       "STRIPE_SECRET_KEY",
       z.string().regex(/^(?:sk|rk)_(?:test|live)_[A-Za-z0-9]{8,}$/u),
@@ -63,6 +88,10 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
     stripeWebhookSecret: read(
       "STRIPE_WEBHOOK_SECRET",
       z.string().regex(/^whsec_[A-Za-z0-9]{8,}$/u),
+    ),
+    stripePortalConfigurationId: read(
+      "STRIPE_PORTAL_CONFIGURATION_ID",
+      z.string().regex(/^bpc_[A-Za-z0-9_]{1,128}$/u),
     ),
     stripePriceId: read("STRIPE_PRICE_ID", z.string().regex(/^price_[A-Za-z0-9]{1,128}$/u)),
     plan: {

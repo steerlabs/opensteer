@@ -198,6 +198,11 @@ status alone never proves an external effect did not happen. New pods migrate at
 first and drop or rename only once no running release reads the old shape. Secrets stay in
 Secret Manager; [deploy/account](../deploy/account) holds only their names and versions.
 
+Rollback is forward-only once a release has migrated. The Account and the Host both refuse to
+start against a database that recorded a migration they do not know, so an earlier image cannot
+be redeployed over a migrated database. Roll forward with a fix, or restore the database snapshot
+taken before the migrating release together with that earlier image.
+
 Outside this repo, the GitHub environment `account` (main only) is the sole caller the Workload
 Identity provider `github-account-deployer` in `opensteer-admin`'s `github` pool admits. Its
 service account, `gha-account-deployer@opensteer-admin`, may push to the `staging` Artifact

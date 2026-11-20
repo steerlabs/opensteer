@@ -26,6 +26,10 @@ export const CloudComputerInstallerUrlSchema = z
     const url = new URL(value);
     return !url.username && !url.password && !/[?#]/u.test(value);
   });
+/** Public feed for in-place updates. Every candidate still has to pin its image digests. */
+export const CloudComputerReleaseManifestUrlSchema = CloudComputerInstallerUrlSchema.refine(
+  (value) => /^https:\/\/[a-zA-Z0-9.:/_=%+-]+$/u.test(value),
+);
 export const CloudComputerInstallerSha256Schema = z.string().regex(/^[0-9a-f]{64}$/u);
 
 export const CloudComputerReleaseSchema = z.object({
@@ -44,6 +48,14 @@ export type CloudComputerIdentity = z.infer<typeof CloudComputerIdentitySchema>;
 export const CloudComputerSnapshotSchema = z.string().regex(/^[0-9a-f]{8,64}$/u);
 export const CloudComputerDesiredRevisionSchema = z.number().int().positive();
 
+export const CloudComputerProviderWriteSchema = z.strictObject({
+  token: z.uuid(),
+  kind: z.enum(["create", "dns-a", "dns-aaaa", "power-on"]),
+  generation: CloudComputerGenerationSchema,
+  serverId: z.number().int().positive().optional(),
+});
+export type CloudComputerProviderWrite = z.infer<typeof CloudComputerProviderWriteSchema>;
+
 export const CloudComputerDesiredSchema = z
   .object({
     id: CloudComputerIdSchema,
@@ -61,6 +73,9 @@ export const CloudComputerDesiredSchema = z
     ipv6Enabled: z.boolean().optional(),
     restoreSnapshot: CloudComputerSnapshotSchema.optional(),
     bootCompleted: z.boolean().optional(),
+    replacementVerified: z.boolean().optional(),
+    dnsQuarantined: z.boolean().optional(),
+    pendingProviderWrites: z.array(CloudComputerProviderWriteSchema).max(4).optional(),
     // Account sets this on activation and generation bumps to preserve the initial deadline.
     readinessStartedAt: z.iso.datetime({ offset: true }).optional(),
     // Account echoes the first accepted identity for this generation across provisioner restarts.
@@ -72,7 +87,12 @@ export const CloudComputerDesiredSchema = z
   });
 export type CloudComputerDesired = z.infer<typeof CloudComputerDesiredSchema>;
 
+export const CloudComputerDesiredPageSchema = z.object({
+  after: CloudComputerIdSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+});
 export const CloudComputerDesiredResponseSchema = z.object({
+  next: CloudComputerIdSchema.optional(),
   computers: z
     .array(CloudComputerDesiredSchema)
     .max(10_000)
@@ -153,6 +173,12 @@ export const CloudComputerLeaseSchema = z.strictObject({ holder: z.uuid() });
 export const CloudComputerCheckSchema = z.discriminatedUnion("operation", [
   z.strictObject({ operation: z.literal("orphan") }),
   z.strictObject({
+    operation: z.literal("begin-provider-write"),
+    revision: CloudComputerDesiredRevisionSchema,
+    write: CloudComputerProviderWriteSchema,
+  }),
+  z.strictObject({ operation: z.literal("finish-provider-write"), token: z.uuid() }),
+  z.strictObject({
     operation: z.enum(["mutate", "create"]),
     revision: CloudComputerDesiredRevisionSchema,
   }),
@@ -205,6 +231,11 @@ export const CloudComputerEgressSchema = z.strictObject({
   password: secret.max(255),
 });
 
+export const CloudComputerEgressResponseSchema = z.strictObject({
+  egress: CloudComputerEgressSchema.optional(),
+});
+export const cloudComputerEgressPath = (id: CloudComputerId) => `/v1/cloud-computers/${id}/egress`;
+
 export const CloudComputerBootRequestSchema = z.strictObject({
   hostname: CloudComputerHostnameSchema,
   bootstrapToken: CloudComputerBootstrapTokenSchema,
@@ -243,6 +274,7 @@ export const CloudComputerBootResponseSchema = z.strictObject({
   accountOrigin: httpsUrl.refine((value) => new URL(value).origin === value),
   setupCodeDigest: CloudComputerInstallerSha256Schema,
   release: CloudComputerBootReleaseSchema,
+  releaseManifestUrl: CloudComputerReleaseManifestUrlSchema.optional(),
   egress: CloudComputerEgressSchema.optional(),
   managedHome: CloudComputerManagedHomeSchema.optional(),
   work: WorkHomeMarkerSchema.optional(),
@@ -313,6 +345,7 @@ export type CloudComputerPreparationStep = z.infer<typeof CloudComputerPreparati
 const cloudComputerViewFields = {
   id: CloudComputerIdSchema,
   egress: z.enum(["pending", "assigned", "unavailable"]),
+  work: WorkHomeMarkerSchema.optional(),
   deploymentId: DeploymentIdSchema.optional(),
   region: CloudComputerRegionSchema.optional(),
   egressAddress: CloudComputerEgressAddressSchema.optional(),
@@ -405,7 +438,8 @@ export const ManagedHomeClaimClaimsSchema = z
     iat: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     exp: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     jti: prefixedIdSchema("mhc"),
-    authority: ManagedHomeClaimAuthoritySchema,
+    // The installation that answered the discovery this claim was built from.
+    authority: ManagedHomeClaimAuthoritySchema.extend({ hostInstanceId: HostInstanceIdSchema }),
     claim: ManagedHomeClaimTargetSchema,
     work: WorkHomeMarkerSchema.optional(),
     owner: z.strictObject({
@@ -453,6 +487,8 @@ export const ManagedHomeClaimReceiptDocumentSchema = z.strictObject({
   claim: ManagedHomeClaimTargetSchema,
   work: WorkHomeMarkerSchema.optional(),
   linkGeneration: base64Url43,
+  /** The digest of the Account link credential the Home committed with this claim. */
+  hostCredentialSha256: base64Url43,
   claimedAt: z.iso.datetime({ offset: true }),
 });
 export type ManagedHomeClaimReceiptDocument = z.infer<typeof ManagedHomeClaimReceiptDocumentSchema>;
@@ -488,6 +524,7 @@ export function managedHomeClaimReceiptSigningBytes(
       },
       claimedAt: document.claimedAt,
       documentVersion: document.documentVersion,
+      hostCredentialSha256: document.hostCredentialSha256,
       linkGeneration: document.linkGeneration,
       purpose: document.purpose,
       ...(document.work

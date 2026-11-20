@@ -6,11 +6,11 @@ import {
   CloudComputerBootResponseSchema,
   CloudComputerDesiredSchema,
   CloudComputerEgressSchema,
+  CloudComputerManagedHomeSchema,
   CloudComputerEgressAddressSchema,
   type CloudComputerPreparationStep,
   CloudComputerIdSchema,
   CloudComputerSnapshotSchema,
-  ControlPlaneAccountIdSchema,
   type CloudComputerBootCompleteRequest,
   type CloudComputerCheck,
   type CloudComputerBootRequest,
@@ -27,7 +27,14 @@ import { digestSecret, equalSecretDigests } from "@opensteer/shared/secretDigest
 import { z } from "zod";
 import { DeploymentIdSchema, HostKeyFingerprintSchema } from "@opensteer/core";
 import type { HostDiscoveryEnvelope } from "@opensteer/deployment-authority";
-import { sql, type Kysely, type Selectable, type Transaction, type Updateable } from "kysely";
+import {
+  sql,
+  type ExpressionBuilder,
+  type Kysely,
+  type Selectable,
+  type Transaction,
+  type Updateable,
+} from "kysely";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
 import type { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
 import { ControlPlaneError } from "../server/errors.js";
@@ -45,14 +52,18 @@ import {
   type StripeBilling,
   type StripeEvent,
 } from "./stripe.js";
-import type { BillingStatus, CloudComputerTable } from "./tables.js";
+import type {
+  BillingStatus,
+  CloudComputerEgressEndpointTable,
+  CloudComputerTable,
+} from "./tables.js";
 
 type Database = Kysely<ControlPlaneDatabaseSchema>;
 type TransactionDb = Transaction<ControlPlaneDatabaseSchema>;
 type Computer = Selectable<CloudComputerTable>;
 interface OrganizationBilling {
   applyEvent(tx: TransactionDb, event: StripeEvent): Promise<boolean>;
-  reconcile(onError: () => void): Promise<void>;
+  reconcile(onError: (error: unknown) => void): Promise<void>;
 }
 
 type Mutation =
@@ -64,8 +75,9 @@ type Mutation =
   | "reissue"
   | "replace";
 const bootstrapLifetimeMs = 20 * 60_000;
-const checkoutLifetimeMs = 24 * 60 * 60_000;
-const unknownCheckoutGraceMs = 60_000;
+const checkoutLifetimeMs = 2 * 60 * 60_000;
+const checkoutCreationWindowMs = 31 * 60_000;
+const paidFulfillmentDeadlineMs = 15 * 60_000;
 const emptyDigest = "0".repeat(64);
 const claimLeaseMs = 2 * 60_000;
 
@@ -78,6 +90,8 @@ export interface CloudComputerClaimJob {
   readonly deploymentId: string;
   readonly hostKeyFingerprint: string;
   readonly attempt: number;
+  /** The desired-state revision the attempt was leased at; any change supersedes it. */
+  readonly revision: number;
   readonly readinessStartedAt: Date;
 }
 
@@ -90,6 +104,7 @@ interface StoreOptions {
   readonly cipher: HostedTeamSetupTokenCipher;
   readonly stripe: StripeBilling;
   readonly now?: () => Date;
+  readonly onBillingAttention?: (message: string) => void;
   readonly organizations?: OrganizationBilling;
   /** Where Stripe's checkout and billing pages send the person back. */
   readonly returnUrl?: URL;
@@ -114,6 +129,7 @@ export class CloudComputerStore {
   async checkOffer(): Promise<void> {
     try {
       await this.#options.stripe.validateOffer(this.#options.config.stripePriceId, this.plan);
+      await this.#options.stripe.validatePortal(this.#options.config.stripePortalConfigurationId);
       this.#offerValid = true;
     } catch (error) {
       this.#offerValid = false;
@@ -135,7 +151,7 @@ export class CloudComputerStore {
       .where("status", "=", "open")
       .executeTakeFirst();
     if (previous && (previous.requestId !== requestId || previous.lastStripeAttemptAt)) {
-      await this.#recoverCheckout(accountId, previous.requestId, previous.requestId !== requestId);
+      await this.#recoverCheckout(accountId, previous.requestId);
     }
     const outcome = await this.#db.transaction().execute(async (tx) => {
       const now = this.#now();
@@ -149,17 +165,24 @@ export class CloudComputerStore {
         throw new ControlPlaneError("conflict", "This checkout expired", {
           reason: "cloud-computer-checkout-expired",
         });
-      if (replay?.url) return { url: replay.url };
-      if (replay?.status === "completed")
-        throw new ControlPlaneError("conflict", "This checkout is complete", {
-          reason: "cloud-computer-checkout-complete",
-        });
       const existing = await tx
         .selectFrom("cloudComputers")
         .selectAll()
         .where("accountId", "=", accountId)
         .where("tombstonedAt", "is", null)
         .executeTakeFirst();
+      if (replay?.status === "completed" && replay.url && !existing?.deletionRequestedAt)
+        return { url: replay.url };
+      if (replay?.status === "completed" || replay?.status === "refunded" || replay?.paidAt)
+        throw new ControlPlaneError("conflict", "This checkout is complete", {
+          reason: "cloud-computer-checkout-complete",
+        });
+      if (replay?.url && !existing?.deletionRequestedAt) return { url: replay.url };
+      const expiresAt = replay?.expiresAt ?? new Date(now.getTime() + checkoutLifetimeMs);
+      if (expiresAt.getTime() - now.getTime() < checkoutCreationWindowMs)
+        throw new ControlPlaneError("conflict", "Checkout is awaiting confirmation from Stripe", {
+          reason: "cloud-computer-checkout-in-progress",
+        });
       if (existing && (existing.billingStatus !== "canceled" || existing.deletionRequestedAt))
         throw new ControlPlaneError(
           "conflict",
@@ -210,7 +233,8 @@ export class CloudComputerStore {
             createdAt: now,
             lastStripeAttemptAt: now,
             targetComputerId: existing?.id ?? null,
-            expiresAt: new Date(now.getTime() + checkoutLifetimeMs),
+            expiresAt,
+            returnUrl: this.#options.returnUrl?.toString() ?? null,
           })
           .executeTakeFirst();
       } else {
@@ -225,7 +249,11 @@ export class CloudComputerStore {
           .set({ lastStripeAttemptAt: now })
           .executeTakeFirst();
       }
-      return { priceId: replay?.stripePriceId ?? this.#options.config.stripePriceId };
+      return {
+        priceId: replay?.stripePriceId ?? this.#options.config.stripePriceId,
+        expiresAt,
+        returnUrl: replay ? replay.returnUrl : (this.#options.returnUrl?.toString() ?? null),
+      };
     });
     if ("url" in outcome) return { url: outcome.url! };
 
@@ -234,13 +262,15 @@ export class CloudComputerStore {
       accountId,
       requestId,
       priceId: outcome.priceId,
-      ...(this.#options.returnUrl ? { returnUrl: this.#options.returnUrl } : {}),
+      expiresAt: outcome.expiresAt,
+      ...(outcome.returnUrl ? { returnUrl: new URL(outcome.returnUrl) } : {}),
     });
     const result = await this.#db
       .updateTable("cloudComputerCheckouts")
       .where("accountId", "=", accountId)
       .where("requestId", "=", requestId)
-      .where("status", "!=", "expired")
+      .where("status", "=", "open")
+      .where("paidAt", "is", null)
       .where((eb) =>
         eb.or([eb("stripeSessionId", "is", null), eb("stripeSessionId", "=", session.id)]),
       )
@@ -253,13 +283,18 @@ export class CloudComputerStore {
     return { url: session.url };
   }
 
-  async #recoverCheckout(
-    accountId: ControlPlaneAccountId,
-    requestId: string,
-    releaseUnknown: boolean,
-  ) {
+  #billingAttention(message: string) {
+    (this.#options.onBillingAttention ?? console.error)(message);
+  }
+
+  async #recoverCheckout(accountId: ControlPlaneAccountId, requestId: string) {
     const recovered = await this.#db.transaction().execute(async (tx) => {
-      if (!(await lockOwner(tx, accountId, this.#now()))) return;
+      const owner = await tx
+        .selectFrom("users")
+        .select("deletionFencedUntil")
+        .where("id", "=", accountId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
       const row = await tx
         .selectFrom("cloudComputerCheckouts")
         .selectAll()
@@ -269,39 +304,98 @@ export class CloudComputerStore {
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!row) return;
-      const session = await this.#options.stripe.findCheckout({
+      const deleting = await tx
+        .selectFrom("cloudComputers")
+        .select("id")
+        .where("accountId", "=", accountId)
+        .where("deletionRequestedAt", "is not", null)
+        .where("tombstonedAt", "is", null)
+        .executeTakeFirst();
+      const close = !owner || Boolean(deleting);
+      let session = await this.#options.stripe.findCheckout({
         accountId,
         requestId,
         sessionId: row.stripeSessionId,
         createdAt: row.createdAt,
+        expiresAt: row.expiresAt,
       });
-      if (session?.payment) return session.payment;
       const write = tx
         .updateTable("cloudComputerCheckouts")
         .where("accountId", "=", accountId)
         .where("requestId", "=", requestId);
       if (
-        session?.status === "expired" ||
-        (!session &&
-          releaseUnknown &&
-          this.#now().getTime() - (row.lastStripeAttemptAt ?? row.createdAt).getTime() >=
-            unknownCheckoutGraceMs)
+        !session &&
+        !row.stripeSessionId &&
+        !row.paidAt &&
+        row.expiresAt.getTime() - this.#now().getTime() >= checkoutCreationWindowMs &&
+        (close ||
+          this.#now().getTime() - (row.lastStripeAttemptAt ?? row.createdAt).getTime() >= 60_000)
       ) {
-        await write.set({ status: "expired" }).executeTakeFirst();
+        const created = await this.#options.stripe.checkout({
+          accountId,
+          requestId,
+          priceId: row.stripePriceId,
+          expiresAt: row.expiresAt,
+          ...(row.returnUrl ? { returnUrl: new URL(row.returnUrl) } : {}),
+        });
+        session = { ...created, status: "open", payment: undefined };
+      }
+      if (!session) {
+        if (row.expiresAt <= this.#now())
+          this.#billingAttention(
+            "Stripe Checkout is unresolved after its expiry. Its capacity reservation is held.",
+          );
+        return;
+      }
+      if (close && session.status === "open")
+        session = await this.#options.stripe.expireCheckout(session.id);
+      if (session.status === "complete" && !session.payment && !row.paidAt) {
+        if (!session.subscription)
+          throw new ControlPlaneError(
+            "unavailable",
+            "Unpaid Stripe Checkout has no subscription to cancel",
+          );
+        const subscription = await this.#options.stripe.subscription(session.subscription);
+        if (subscription.id !== session.subscription)
+          throw new ControlPlaneError("unavailable", "Stripe returned another subscription");
+        if (billingStatus(subscription) !== "canceled")
+          await this.#options.stripe.cancel(session.subscription);
+        const confirmed = await this.#options.stripe.findCheckout({
+          accountId,
+          requestId,
+          sessionId: session.id,
+          createdAt: row.createdAt,
+          expiresAt: row.expiresAt,
+        });
+        if (!confirmed || confirmed.status !== "complete")
+          throw new ControlPlaneError("unavailable", "Stripe did not confirm the unpaid Checkout");
+        session = confirmed;
+      }
+      if (session.payment) {
+        await write
+          .set({ stripeSessionId: session.id, paidAt: row.paidAt ?? this.#now() })
+          .executeTakeFirst();
+        return session.payment;
+      }
+      if (session.status === "expired" || (session.status === "complete" && !row.paidAt)) {
+        await write
+          .set({ status: "expired", stripeSessionId: session.id, url: null })
+          .executeTakeFirst();
         await releaseCheckoutTarget(tx, accountId, requestId);
-      } else if (session) {
-        await write.set({ stripeSessionId: session.id, url: session.url }).executeTakeFirst();
+      } else {
+        await write
+          .set({ stripeSessionId: session.id, url: close || row.paidAt ? null : session.url })
+          .executeTakeFirst();
       }
       return undefined;
     });
-    if (recovered) {
+    if (recovered)
       await this.applyStripeEvent({
         id: `reconcile_${recovered.id}`,
         type: "checkout.session.completed",
         operation: "completed",
         checkout: recovered,
       });
-    }
   }
 
   async billingPortal(accountId: ControlPlaneAccountId) {
@@ -312,10 +406,9 @@ export class CloudComputerStore {
       .orderBy("createdAt", "desc")
       .executeTakeFirst();
     if (!billing) throw missing();
-    const { returnUrl, stripe } = this.#options;
-    return returnUrl
-      ? stripe.portal(billing.stripeCustomerId, returnUrl)
-      : stripe.portal(billing.stripeCustomerId);
+    const { config, returnUrl, stripe } = this.#options;
+    await stripe.validatePortal(config.stripePortalConfigurationId);
+    return stripe.portal(billing.stripeCustomerId, returnUrl, config.stripePortalConfigurationId);
   }
 
   async applyStripeEvent(event: StripeEvent): Promise<void> {
@@ -362,21 +455,15 @@ export class CloudComputerStore {
           .set({ deferredCheckout: paid ? JSON.stringify(paid) : null })
           .executeTakeFirst();
       if (accountId !== checkout.client_reference_id) {
-        if (paid) await defer();
+        if (paid) await this.#cancelAndRefund(paid, defer);
         return;
       }
-      if (!(await lockOwner(tx, accountId, this.#now()))) {
-        if (paid) await defer();
-        else {
-          const owner = await tx
-            .selectFrom("users")
-            .select("id")
-            .where("id", "=", accountId)
-            .executeTakeFirst();
-          if (!owner) await releaseCheckoutTarget(tx, accountId, requestId);
-        }
-        return;
-      }
+      const owner = await tx
+        .selectFrom("users")
+        .select("deletionFencedUntil")
+        .where("id", "=", accountId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
       const attempt = await tx
         .selectFrom("cloudComputerCheckouts")
         .selectAll()
@@ -384,39 +471,74 @@ export class CloudComputerStore {
         .where("requestId", "=", requestId)
         .forNoKeyUpdate()
         .executeTakeFirst();
-      if (
-        !attempt ||
-        (attempt.stripeSessionId !== null && attempt.stripeSessionId !== checkout.id) ||
-        (attempt.status !== "open" && attempt.status !== "expired")
-      ) {
-        if (paid && attempt?.stripeSessionId !== checkout.id) await defer();
+      if (!attempt || (attempt.stripeSessionId && attempt.stripeSessionId !== checkout.id)) {
+        if (paid) {
+          this.#billingAttention(
+            "Paid Stripe Checkout could not be matched to its Account attempt.",
+          );
+          await this.#cancelAndRefund(paid, defer);
+        }
         return;
       }
+      if (attempt.status === "completed" || attempt.status === "refunded") return;
       const writeAttempt = tx
         .updateTable("cloudComputerCheckouts")
         .where("accountId", "=", accountId)
         .where("requestId", "=", requestId);
       if (event.operation === "expired") {
+        if (attempt.paidAt) return;
         await writeAttempt
-          .set({ status: "expired", stripeSessionId: checkout.id })
+          .set({ status: "expired", stripeSessionId: checkout.id, url: null })
           .executeTakeFirst();
         await releaseCheckoutTarget(tx, accountId, requestId);
         return;
       }
       const payment = event.checkout;
-      const subscription = await this.#options.stripe.subscription(payment.subscription);
+      const paidAt = attempt.paidAt ?? this.#now();
+      await writeAttempt.set({ paidAt, stripeSessionId: checkout.id }).executeTakeFirst();
+      const refund = async () => {
+        if (await this.#cancelAndRefund(payment, defer)) {
+          await writeAttempt.set({ status: "refunded", url: null }).executeTakeFirst();
+          await releaseCheckoutTarget(tx, accountId, requestId);
+        }
+      };
+      if (!owner || attempt.status === "expired") {
+        await refund();
+        return;
+      }
+      const expired = this.#now().getTime() - paidAt.getTime() >= paidFulfillmentDeadlineMs;
+      if (owner.deletionFencedUntil && owner.deletionFencedUntil > this.#now()) {
+        if (expired) await refund();
+        else await defer();
+        return;
+      }
+      const subscription = await this.#options.stripe
+        .subscription(payment.subscription)
+        .catch(() => undefined);
+      if (!subscription) {
+        await defer();
+        if (expired)
+          this.#billingAttention(
+            "Paid Cloud Computer fulfillment timed out. Stripe cancellation and refund are pending.",
+          );
+        return;
+      }
       if (
         subscription.id !== payment.subscription ||
         subscription.customer !== payment.customer ||
         subscription.metadata["account_id"] !== accountId ||
-        subscription.metadata["request_id"] !== requestId ||
+        subscription.metadata["request_id"] !== requestId
+      ) {
+        this.#billingAttention("Paid Stripe Checkout did not match its subscription.");
+        await defer();
+        return;
+      }
+      if (
         !matchesPrice(subscription, attempt.stripePriceId, attempt.currency) ||
         payment.currency !== attempt.currency
       ) {
-        throw new ControlPlaneError(
-          "unavailable",
-          "Stripe checkout does not match the Cloud Computer price",
-        );
+        await refund();
+        return;
       }
 
       const existing = await tx
@@ -426,24 +548,22 @@ export class CloudComputerStore {
         .where("tombstonedAt", "is", null)
         .forNoKeyUpdate()
         .executeTakeFirst();
+      if (expired && existing?.stripeSubscriptionId !== payment.subscription) {
+        await refund();
+        return;
+      }
       if (
-        attempt.targetComputerId &&
-        (existing?.id !== attempt.targetComputerId ||
-          existing.deletionRequestedAt ||
-          existing.state === "deleted")
+        existing?.deletionRequestedAt ||
+        (attempt.targetComputerId && existing?.id !== attempt.targetComputerId)
       ) {
-        if (billingStatus(subscription) !== "canceled")
-          await this.#options.stripe.cancel(payment.subscription);
-        await writeAttempt
-          .set({ status: "completed", stripeSessionId: checkout.id, url: null })
-          .executeTakeFirst();
-        await releaseCheckoutTarget(tx, accountId, requestId);
+        await refund();
         return;
       }
       if (existing) {
         if (existing.stripeSubscriptionId === payment.subscription) return;
-        if (existing.billingStatus !== "canceled" || existing.deletionRequestedAt) {
-          await defer();
+        if (existing.billingStatus !== "canceled") {
+          if (expired) await refund();
+          else await defer();
           return;
         }
         const billing = billingStatus(subscription);
@@ -487,7 +607,8 @@ export class CloudComputerStore {
           .orderBy("id")
           .executeTakeFirst());
       if (!target) {
-        await defer();
+        if (expired) await refund();
+        else await defer();
         return;
       }
       await this.#createComputer(tx, {
@@ -520,6 +641,33 @@ export class CloudComputerStore {
         .set({ status: "completed", stripeSessionId: checkout.id })
         .executeTakeFirst();
     });
+  }
+
+  async #cancelAndRefund(
+    payment: z.infer<typeof StripePaidCheckoutSchema>,
+    defer: () => Promise<unknown>,
+  ) {
+    this.#billingAttention(
+      "Paid Cloud Computer Checkout could not be fulfilled. Cancelling and refunding it.",
+    );
+    try {
+      const subscription = await this.#options.stripe.subscription(payment.subscription);
+      if (
+        subscription.id !== payment.subscription ||
+        subscription.customer !== payment.customer ||
+        subscription.metadata["account_id"] !== payment.metadata.account_id ||
+        subscription.metadata["request_id"] !== payment.metadata.request_id ||
+        subscription.metadata["organization_id"] !== undefined
+      )
+        throw new ControlPlaneError("unavailable", "Stripe returned another subscription");
+      if (billingStatus(subscription) !== "canceled")
+        await this.#options.stripe.cancel(subscription.id);
+      if (await this.#options.stripe.refundCheckout(payment)) return true;
+    } catch {
+      this.#billingAttention("Cloud Computer Checkout cancellation or refund is pending.");
+    }
+    await defer();
+    return false;
   }
 
   async createWorkComputer(tx: TransactionDb, id: CloudComputerId, assignmentId: WorkAssignmentId) {
@@ -639,6 +787,18 @@ export class CloudComputerStore {
     }
     const billing = billingStatus(subscription);
     if (row.deletionRequestedAt) {
+      const payable = await tx
+        .selectFrom("cloudComputerCheckouts")
+        .select("requestId")
+        .where("status", "=", "open")
+        .where((eb) =>
+          eb.or([
+            eb("targetComputerId", "=", row.id),
+            ...(row.accountId ? [eb("accountId", "=", row.accountId)] : []),
+          ]),
+        )
+        .executeTakeFirst();
+      if (payable) return;
       if (billing !== "canceled") await this.#options.stripe.cancel(id);
       const now = this.#now();
       await tx
@@ -676,21 +836,22 @@ export class CloudComputerStore {
       .executeTakeFirst();
   }
 
-  async reconcileBilling(onError: () => void) {
+  async reconcileBilling(onError: (error: unknown) => void) {
     const run = async (action: () => Promise<unknown>) => {
       try {
         await action();
-      } catch {
-        onError();
+      } catch (error) {
+        onError(error);
       }
     };
-    await run(() => this.checkOffer());
-    await this.#db.connection().execute(async (connection) => {
+    return this.#db.connection().execute(async (connection) => {
       const acquired = await sql<{ locked: boolean }>`select pg_try_advisory_lock(
         hashtextextended('cloud-computer-billing-reconcile',0)) as locked`.execute(connection);
-      if (!acquired.rows[0]?.locked) return;
+      if (!acquired.rows[0]?.locked) return false;
       try {
+        await run(() => this.checkOffer());
         await this.#billingPass(run, onError);
+        return true;
       } finally {
         await sql`select pg_advisory_unlock(hashtextextended('cloud-computer-billing-reconcile',0))`.execute(
           connection,
@@ -699,14 +860,17 @@ export class CloudComputerStore {
     });
   }
 
-  async #billingPass(run: (action: () => Promise<unknown>) => Promise<void>, onError: () => void) {
+  async #billingPass(
+    run: (action: () => Promise<unknown>) => Promise<void>,
+    onError: (error: unknown) => void,
+  ) {
     const checkouts = await this.#db
       .selectFrom("cloudComputerCheckouts")
       .select(["accountId", "requestId"])
       .where("status", "=", "open")
       .execute();
     for (const attempt of checkouts)
-      await run(() => this.#recoverCheckout(attempt.accountId, attempt.requestId, true));
+      await run(() => this.#recoverCheckout(attempt.accountId, attempt.requestId));
     const deferred = await this.#db
       .selectFrom("cloudComputerStripeEvents")
       .select(["id", "type", sql<string>`deferred_checkout::text`.as("checkoutJson")])
@@ -714,43 +878,12 @@ export class CloudComputerStore {
       .execute();
     for (const event of deferred)
       await run(async () => {
-        const payload: unknown = JSON.parse(event.checkoutJson);
-        if (event.type === "account.checkout.orphaned") {
-          await this.#recoverOrphanedCheckout(event.id, orphanedCheckoutSchema.parse(payload));
-          return;
-        }
-        const checkout = StripePaidCheckoutSchema.parse(payload);
-        const account = await this.#db
-          .selectFrom("users")
-          .select("id")
-          .where("id", "=", checkout.metadata.account_id)
-          .executeTakeFirst();
-        if (account) {
-          await this.applyStripeEvent({
-            id: event.id,
-            type: event.type,
-            operation: "completed",
-            checkout,
-          });
-        } else {
-          const subscription = await this.#options.stripe.subscription(checkout.subscription);
-          if (billingStatus(subscription) !== "canceled")
-            await this.#options.stripe.cancel(checkout.subscription);
-          await this.#db
-            .updateTable("cloudComputerStripeEvents")
-            .where("id", "=", event.id)
-            .set({ deferredCheckout: null })
-            .executeTakeFirst();
-          await this.#db
-            .updateTable("cloudComputerBackupTargets")
-            .where(
-              "checkoutKey",
-              "=",
-              checkoutKey(checkout.metadata.account_id, checkout.metadata.request_id),
-            )
-            .set({ checkoutKey: null })
-            .executeTakeFirst();
-        }
+        await this.applyStripeEvent({
+          id: event.id,
+          type: event.type,
+          operation: "completed",
+          checkout: StripePaidCheckoutSchema.parse(JSON.parse(event.checkoutJson)),
+        });
       });
     const rows = await this.#db
       .selectFrom("cloudComputers")
@@ -768,30 +901,57 @@ export class CloudComputerStore {
     await run(async () => this.#options.organizations?.reconcile(onError));
   }
 
-  async #recoverOrphanedCheckout(id: string, attempt: z.infer<typeof orphanedCheckoutSchema>) {
-    const session = await this.#options.stripe.findCheckout({
-      ...attempt,
-      createdAt: new Date(attempt.createdAt),
-    });
-    if (session?.payment) {
-      const subscription = await this.#options.stripe.subscription(session.payment.subscription);
-      if (billingStatus(subscription) !== "canceled")
-        await this.#options.stripe.cancel(subscription.id);
-    } else if (
-      session?.status !== "expired" &&
-      (session ||
-        this.#now().getTime() - Date.parse(attempt.lastAttemptAt) < unknownCheckoutGraceMs)
-    ) {
-      return;
-    }
-    await this.#db.transaction().execute(async (tx) => {
-      await tx
-        .updateTable("cloudComputerStripeEvents")
-        .where("id", "=", id)
-        .set({ deferredCheckout: null })
-        .executeTakeFirst();
-      await releaseCheckoutTarget(tx, attempt.accountId, attempt.requestId);
-    });
+  async unresolvedCheckouts() {
+    const [paidAttempts, events] = await Promise.all([
+      this.#db
+        .selectFrom("cloudComputerCheckouts")
+        .select(["accountId", "requestId", "stripeSessionId", "paidAt", "targetComputerId"])
+        .where("status", "=", "open")
+        .where("paidAt", "is not", null)
+        .orderBy("paidAt")
+        .execute(),
+      this.#db
+        .selectFrom("cloudComputerStripeEvents")
+        .select(["id", "receivedAt", "deferredCheckout"])
+        .where("deferredCheckout", "is not", null)
+        .orderBy("receivedAt")
+        .execute(),
+    ]);
+    return {
+      paidAttempts,
+      deferredEvents: events.map(({ id, receivedAt, deferredCheckout }) => {
+        const parsed = StripePaidCheckoutSchema.safeParse(deferredCheckout);
+        if (!parsed.success) return { eventId: id, receivedAt, invalidPayment: true };
+        const { id: sessionId, subscription, metadata } = parsed.data;
+        return {
+          eventId: id,
+          receivedAt,
+          stripeSessionId: sessionId,
+          stripeSubscriptionId: subscription,
+          accountId: metadata.account_id,
+          requestId: metadata.request_id,
+          organizationId: metadata.organization_id,
+        };
+      }),
+    };
+  }
+
+  async provisionerLease() {
+    const result = await sql<{ holder: string; expiresAt: Date }>`
+      select holder, expires_at as "expiresAt" from cloud_computer_provisioner_lease where singleton
+    `.execute(this.#db);
+    const lease = result.rows[0];
+    return lease ? { ...lease, expired: lease.expiresAt <= this.#now() } : null;
+  }
+
+  async releaseProvisionerLease(holder: string) {
+    const result = await sql`
+      delete from cloud_computer_provisioner_lease
+      where singleton and holder = ${holder}::uuid and expires_at <= ${this.#now()}
+      returning holder
+    `.execute(this.#db);
+    if (result.rows.length !== 1)
+      throw new ControlPlaneError("conflict", "The holder does not have an expired lease");
   }
 
   async lease(holder: string, acquire: boolean): Promise<boolean> {
@@ -822,6 +982,19 @@ export class CloudComputerStore {
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (check.operation === "orphan") return !row || row.tombstonedAt !== null;
+      if (check.operation === "finish-provider-write") {
+        if (!row || row.tombstonedAt) return false;
+        await tx
+          .updateTable("cloudComputers")
+          .where("id", "=", id)
+          .set({
+            pendingProviderWrites: JSON.stringify(
+              row.pendingProviderWrites.filter(({ token }) => token !== check.token),
+            ),
+          })
+          .executeTakeFirst();
+        return true;
+      }
       if (
         !row ||
         row.revision !== check.revision ||
@@ -829,12 +1002,24 @@ export class CloudComputerStore {
         (row.deletionRequestedAt && row.state === "active")
       )
         return false;
-      if (check.operation === "create") {
-        if (!needsVm(row) || !row.bootstrapDigest) return false;
+      if (check.operation === "create") return needsVm(row) && Boolean(row.bootstrapDigest);
+      if (check.operation === "begin-provider-write") {
+        const { write } = check;
+        if (
+          row.state !== "active" ||
+          write.generation !== row.generation ||
+          row.pendingProviderWrites.some(({ kind }) => kind === write.kind) ||
+          (write.kind === "create" && (!needsVm(row) || !row.bootstrapDigest)) ||
+          (write.kind === "power-on" && String(write.serverId) !== row.providerServerId)
+        )
+          return false;
         await tx
           .updateTable("cloudComputers")
-          .set({ createAttempted: true })
           .where("id", "=", id)
+          .set({
+            pendingProviderWrites: JSON.stringify([...row.pendingProviderWrites, write]),
+            ...(write.kind === "create" ? { createAttempted: true } : {}),
+          })
           .executeTakeFirst();
       }
       return true;
@@ -877,16 +1062,18 @@ export class CloudComputerStore {
     });
   }
 
-  async desired(): Promise<CloudComputerDesired[]> {
-    const rows = await this.#db
+  async desired(after?: CloudComputerId, limit = 100) {
+    let query = this.#db
       .selectFrom("cloudComputers")
       .selectAll()
       .where("tombstonedAt", "is", null)
-      .orderBy("createdAt")
-      .limit(10_000)
-      .execute();
-    return Promise.all(
-      rows.map(async (snapshot) => {
+      .orderBy("id")
+      .limit(limit + 1);
+    if (after) query = query.where("id", ">", after);
+    const rows = await query.execute();
+    const page = rows.slice(0, limit);
+    const computers = await Promise.all(
+      page.map(async (snapshot) => {
         let row = snapshot;
         if (needsVm(row) && !row.bootstrapDigest) {
           row = await this.#db.transaction().execute(async (tx) => {
@@ -926,6 +1113,13 @@ export class CloudComputerStore {
           ipv6Enabled: row.ipv6Enabled,
           restoreSnapshot: row.restoreSnapshot ?? undefined,
           bootCompleted: row.bootCompletedAt !== null,
+          ...(row.dnsQuarantined ? { dnsQuarantined: true } : {}),
+          replacementVerified:
+            !row.restoreSnapshot ||
+            Boolean(row.bootCompletedAt && row.bootstrapReceiptAt && row.ownerAccessAt),
+          ...(row.pendingProviderWrites.length
+            ? { pendingProviderWrites: row.pendingProviderWrites }
+            : {}),
           state: row.state,
           hostname: row.hostname,
           region: row.region,
@@ -944,6 +1138,7 @@ export class CloudComputerStore {
         });
       }),
     );
+    return { computers, ...(rows.length > limit ? { next: page.at(-1)!.id } : {}) };
   }
 
   async report(report: CloudComputerReport) {
@@ -960,6 +1155,8 @@ export class CloudComputerStore {
         row.generation !== report.generation ||
         row.tombstonedAt !== null ||
         !phaseMatchesState(row.state, report.phase) ||
+        ((report.phase === "deleted" || report.phase === "suspended") &&
+          row.pendingProviderWrites.length !== 0) ||
         (report.phase === "ready" && (!row.bootCompletedAt || !report.observedIdentity))
       ) {
         return { recorded: false, kick: false };
@@ -990,7 +1187,11 @@ export class CloudComputerStore {
           lastError: report.lastError,
           reportedAt: now,
           updatedAt: now,
-          ...(ready ? { everReady: true } : {}),
+          ...(ready ? { everReady: true, generationReady: true, dnsQuarantined: false } : {}),
+          ...(report.lastError ===
+          "The Cloud Computer reported a different Home identity for this generation."
+            ? { dnsQuarantined: true }
+            : {}),
           ...(deleted ? clearBootToken : {}),
           ...(row.bootstrapDigest && !row.bootstrapExpiresAt && report.providerServerId
             ? {
@@ -1052,31 +1253,7 @@ export class CloudComputerStore {
       )
         throw invalidBoot();
 
-      const endpoints = tx.selectFrom("cloudComputerEgressEndpoints").selectAll();
-      let endpoint = await endpoints.where("computerId", "=", id).executeTakeFirst();
-      if (!endpoint) {
-        endpoint = await endpoints
-          .where("computerId", "is", null)
-          .where("needsRotation", "=", false)
-          .orderBy("id")
-          .forUpdate()
-          .skipLocked()
-          .limit(1)
-          .executeTakeFirst();
-        if (endpoint) {
-          await tx
-            .updateTable("cloudComputerEgressEndpoints")
-            .set({ computerId: id })
-            .where("id", "=", endpoint.id)
-            .executeTakeFirst();
-        }
-      }
-      await tx
-        .updateTable("cloudComputers")
-        .set({ egressUnavailable: !endpoint })
-        .where("id", "=", id)
-        .executeTakeFirst();
-
+      const endpoint = await this.#assignEgress(tx, id);
       const managedHome = await this.#managedHome(tx, row);
       const marker = await workMarker(tx, row.workAssignmentId);
       const { cipher } = this.#options;
@@ -1110,15 +1287,10 @@ export class CloudComputerStore {
           version: row.release.version,
           images: row.release.images,
         }),
-        ...(endpoint
-          ? {
-              egress: {
-                url: endpoint.url,
-                username: endpoint.username,
-                password: cipher.open(`egress:${endpoint.id}`, 1, endpoint.sealedPassword),
-              },
-            }
+        ...(this.#options.config.releaseManifestUrl
+          ? { releaseManifestUrl: this.#options.config.releaseManifestUrl }
           : {}),
+        ...(endpoint ? { egress: this.#egressCredentials(endpoint) } : {}),
         backup: {
           endpoint: backupEndpoint,
           bucket,
@@ -1129,6 +1301,107 @@ export class CloudComputerStore {
           password: cipher.open(`backup:${id}`, 1, row.sealedBackupPassword),
         },
       };
+    });
+  }
+
+  #egressCredentials(endpoint: Selectable<CloudComputerEgressEndpointTable>) {
+    return {
+      url: endpoint.url,
+      username: endpoint.username,
+      password: this.#options.cipher.open(`egress:${endpoint.id}`, 1, endpoint.sealedPassword),
+    };
+  }
+
+  async #assignEgress(tx: TransactionDb, id: CloudComputerId) {
+    const endpoints = tx.selectFrom("cloudComputerEgressEndpoints").selectAll();
+    let endpoint = await endpoints.where("computerId", "=", id).executeTakeFirst();
+    if (!endpoint) {
+      endpoint = await endpoints
+        .where("computerId", "is", null)
+        .where("needsRotation", "=", false)
+        .orderBy("id")
+        .forUpdate()
+        .skipLocked()
+        .limit(1)
+        .executeTakeFirst();
+      if (endpoint) {
+        await tx
+          .updateTable("cloudComputerEgressEndpoints")
+          .set({ computerId: id })
+          .where("id", "=", endpoint.id)
+          .executeTakeFirst();
+      }
+    }
+    await tx
+      .updateTable("cloudComputers")
+      .set({ egressUnavailable: !endpoint })
+      .where("id", "=", id)
+      .executeTakeFirst();
+    return endpoint;
+  }
+
+  async assignEgress(id: CloudComputerId) {
+    return this.#db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom("cloudComputers")
+        .selectAll()
+        .where("id", "=", id)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row) throw missing();
+      if (
+        row.state !== "active" ||
+        row.deletionRequestedAt ||
+        !row.bootCompletedAt ||
+        !(await computerOwner(tx, row, true))
+      )
+        throw new ControlPlaneError("conflict", "The Cloud Computer must be active and booted");
+      const endpoint = await this.#assignEgress(tx, id);
+      if (!endpoint)
+        throw new ControlPlaneError("unavailable", "No browser egress endpoint is available");
+      return { endpointId: endpoint.id, publicAddress: endpoint.publicAddress };
+    });
+  }
+
+  async egressForHome(id: CloudComputerId, authorization: string | undefined) {
+    const basic = /^Basic ([A-Za-z0-9+/]{1,256}={0,2})$/iu.exec(authorization ?? "");
+    const [clientId, clientSecret, extra] = basic
+      ? Buffer.from(basic[1]!, "base64").toString("utf8").split(":")
+      : [];
+    const credentials =
+      extra === undefined
+        ? CloudComputerManagedHomeSchema.shape.oidc.safeParse({ clientId, clientSecret })
+        : undefined;
+    const unauthorized = () => new ControlPlaneError("unauthorized", "Invalid Home credentials");
+    if (!credentials?.success) throw unauthorized();
+    return this.#db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom("cloudComputers")
+        .selectAll()
+        .where("id", "=", id)
+        .forShare()
+        .executeTakeFirst();
+      const expected = row?.sealedOidcClientSecret
+        ? digestSecret(
+            this.#options.cipher.open(`oidc:${id}`, row.generation, row.sealedOidcClientSecret),
+          )
+        : emptyDigest;
+      const valid = equalSecretDigests(digestSecret(credentials.data.clientSecret), expected);
+      if (
+        !valid ||
+        !row?.bootCompletedAt ||
+        row.deletionRequestedAt ||
+        row.state !== "active" ||
+        row.oidcClientId !== credentials.data.clientId ||
+        !(await computerOwner(tx, row, true))
+      )
+        throw unauthorized();
+      const endpoint = await tx
+        .selectFrom("cloudComputerEgressEndpoints")
+        .selectAll()
+        .where("computerId", "=", id)
+        .executeTakeFirst();
+      return endpoint ? { egress: this.#egressCredentials(endpoint) } : {};
     });
   }
 
@@ -1247,6 +1520,7 @@ export class CloudComputerStore {
         .where("bootstrapReceiptAt", "is", null)
         .where("claimError", "is", null)
         .where("tombstonedAt", "is", null)
+        .where("deletionRequestedAt", "is", null)
         .where("deploymentId", "is not", null)
         .where((eb) =>
           eb.or([
@@ -1287,6 +1561,7 @@ export class CloudComputerStore {
         deploymentId: row.deploymentId!,
         hostKeyFingerprint: row.hostKeyFingerprint!,
         attempt: row.claimAttempt + 1,
+        revision: row.revision,
         readinessStartedAt: row.readinessStartedAt,
       };
     });
@@ -1297,8 +1572,7 @@ export class CloudComputerStore {
     const computer = await this.#db
       .selectFrom("cloudComputers")
       .selectAll()
-      .where("id", "=", job.id)
-      .where("generation", "=", job.generation)
+      .where((eb) => claimFence(eb, job))
       .where("state", "=", "active")
       .executeTakeFirst();
     if (!computer || (await computerOwner(this.#db, computer, true)) !== job.accountId)
@@ -1338,8 +1612,7 @@ export class CloudComputerStore {
   #claimRow(job: CloudComputerClaimJob) {
     return this.#db
       .updateTable("cloudComputers")
-      .where("id", "=", job.id)
-      .where("generation", "=", job.generation)
+      .where((eb) => claimFence(eb, job))
       .where("bootstrapReceiptAt", "is", null);
   }
 
@@ -1363,6 +1636,11 @@ export class CloudComputerStore {
       const row = await lockedComputer(tx, job.id);
       if (
         row.generation !== job.generation ||
+        row.claimAttempt !== job.attempt ||
+        row.revision !== job.revision ||
+        row.state !== "active" ||
+        row.deletionRequestedAt !== null ||
+        row.hostKeyFingerprint !== job.hostKeyFingerprint ||
         row.deploymentId !== job.deploymentId ||
         (await computerOwner(tx, row, true)) !== job.accountId ||
         row.tombstonedAt !== null ||
@@ -1374,12 +1652,33 @@ export class CloudComputerStore {
       const deploymentId = DeploymentIdSchema.parse(job.deploymentId);
       const listed = await tx
         .selectFrom("deployments")
-        .select(["ownerAccountId"])
+        .select(["canonicalOrigin", "hostKeyFingerprint", "ownerAccountId"])
         .where("id", "=", deploymentId)
         .forUpdate()
         .executeTakeFirst();
       if (listed && listed.ownerAccountId !== job.accountId)
         throw new ControlPlaneError("conflict", "This Home is already listed for another Account");
+      // The owner's own listing is accepted only as this very Home with this very credential.
+      if (listed) {
+        const credential = await tx
+          .selectFrom("deploymentCredentials")
+          .select("tokenHash")
+          .where("deploymentId", "=", deploymentId)
+          .executeTakeFirst();
+        if (
+          listed.hostKeyFingerprint !== job.hostKeyFingerprint ||
+          listed.canonicalOrigin !== receipt.document.authority.canonicalOrigin ||
+          credential?.tokenHash !==
+            hashCredential(
+              this.#options.cipher.open(
+                `host-credential:${row.id}`,
+                row.generation,
+                row.sealedHostCredential,
+              ),
+            )
+        )
+          throw new ControlPlaneError("conflict", "This Home is already listed as another Home");
+      }
       if (!listed) {
         await tx
           .insertInto("deployments")
@@ -1463,6 +1762,28 @@ export class CloudComputerStore {
     return this.#views(rows);
   }
 
+  async listForAccount(accountId: ControlPlaneAccountId): Promise<CloudComputerView[]> {
+    const rows = await this.#db
+      .selectFrom("cloudComputers")
+      .selectAll()
+      .where((eb) =>
+        eb.or([
+          eb("accountId", "=", accountId),
+          eb(
+            "workAssignmentId",
+            "in",
+            eb
+              .selectFrom("workAssignments")
+              .select("workAssignments.id")
+              .where("assigneeAccountId", "=", accountId),
+          ),
+        ]),
+      )
+      .orderBy("createdAt", "desc")
+      .execute();
+    return this.#views(rows);
+  }
+
   async show(id: CloudComputerId, accountId?: ControlPlaneAccountId): Promise<CloudComputerView> {
     let query = this.#db.selectFrom("cloudComputers").selectAll().where("id", "=", id);
     if (accountId)
@@ -1484,6 +1805,93 @@ export class CloudComputerStore {
     return (await this.#views([row]))[0]!;
   }
 
+  async operatorList() {
+    const rows = await this.#db
+      .selectFrom("cloudComputers")
+      .selectAll()
+      .orderBy("createdAt", "desc")
+      .execute();
+    return Promise.all(rows.map((row) => this.#operatorView(row)));
+  }
+
+  async operatorShow(id: CloudComputerId) {
+    const row = await this.#db
+      .selectFrom("cloudComputers")
+      .selectAll()
+      .where("id", "=", id)
+      .executeTakeFirst();
+    if (!row) throw missing();
+    return this.#operatorView(row);
+  }
+
+  async #operatorView(row: Computer) {
+    return {
+      id: row.id,
+      accountId: await computerOwner(this.#db, row, false),
+      workAssignmentId: row.workAssignmentId,
+      state: row.state,
+      phase: row.phase,
+      generation: row.generation,
+      revision: row.revision,
+      hostname: row.hostname,
+      providerServerId: row.providerServerId,
+      previousProviderServerId: row.previousProviderServerId,
+      ipv4: row.ipv4,
+      ipv6: row.ipv6,
+      deploymentId: row.deploymentId,
+      hostKeyFingerprint: row.hostKeyFingerprint,
+      bootstrapExpiresAt: row.bootstrapExpiresAt,
+      bootCompletedAt: row.bootCompletedAt,
+      deletionRequestedAt: row.deletionRequestedAt,
+      tombstonedAt: row.tombstonedAt,
+      billingStatus: row.billingStatus,
+      egressUnavailable: row.egressUnavailable,
+      claim: {
+        attempt: row.claimAttempt,
+        nextAt: row.claimNextAt,
+        receiptAt: row.bootstrapReceiptAt,
+        error: operatorClaimError(row.claimError),
+      },
+      lastError: row.lastError,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  async retryClaim(id: CloudComputerId) {
+    return this.#db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom("cloudComputers")
+        .selectAll()
+        .where("id", "=", id)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row) throw missing();
+      if (
+        row.state !== "active" ||
+        row.phase !== "ready" ||
+        !row.deploymentId ||
+        !row.claimError ||
+        row.bootstrapReceiptAt ||
+        row.deletionRequestedAt ||
+        row.tombstonedAt ||
+        !(await computerOwner(tx, row, true))
+      )
+        throw new ControlPlaneError("conflict", "The Cloud Computer has no eligible failed claim");
+      const now = this.#now();
+      await tx
+        .updateTable("cloudComputers")
+        .where("id", "=", id)
+        .set({
+          claimError: null,
+          claimNextAt: null,
+          claimAttempt: row.claimAttempt + 1,
+          readinessStartedAt: now,
+          updatedAt: now,
+        })
+        .executeTakeFirstOrThrow();
+    });
+  }
+
   async #views(rows: readonly Computer[]) {
     if (rows.length === 0) return [];
     const endpoints = await this.#db
@@ -1497,7 +1905,15 @@ export class CloudComputerStore {
       .execute();
     const assigned = new Map(endpoints.map((endpoint) => [endpoint.computerId, endpoint]));
     const now = this.#now();
-    return rows.map((row) => view(row, assigned.get(row.id), this.#options.config, now));
+    return Promise.all(
+      rows.map(async (row) => {
+        const status = view(row, assigned.get(row.id), this.#options.config, now);
+        const work = row.workAssignmentId
+          ? await workMarker(this.#db, row.workAssignmentId)
+          : undefined;
+        return work ? { ...status, work } : status;
+      }),
+    );
   }
 
   async mutate(
@@ -1507,8 +1923,25 @@ export class CloudComputerStore {
     reason?: string,
   ) {
     const subscription = await this.#db.transaction().execute(async (tx) => {
+      if (action === "delete") {
+        const target = await tx
+          .selectFrom("cloudComputers")
+          .select("accountId")
+          .where("id", "=", id)
+          .executeTakeFirst();
+        if (target?.accountId)
+          await tx
+            .selectFrom("users")
+            .select("id")
+            .where("id", "=", target.accountId)
+            .forNoKeyUpdate()
+            .executeTakeFirst();
+      }
       const row = await lockedComputer(tx, id);
-      if (row.workAssignmentId) {
+      if (
+        row.workAssignmentId &&
+        !(action === "reissue" && !accountId && (await computerOwner(tx, row, true)))
+      ) {
         if (accountId && (await computerOwner(tx, row, false)) !== accountId) throw missing();
         throw new ControlPlaneError(
           "forbidden",
@@ -1533,12 +1966,18 @@ export class CloudComputerStore {
           .set({ deletionRequestedAt: row.deletionRequestedAt ?? now, updatedAt: now })
           .executeTakeFirst();
         return row.stripeSubscriptionId;
-      } else if (action === "reissue" && (row.everReady || row.bootCompletedAt)) {
+      } else if (action === "reissue" && row.generationReady) {
         throw new ControlPlaneError(
           "conflict",
           "A working Home can only be replaced from a named backup snapshot",
         );
-      } else if (action === "reissue" && !row.providerServerId && !row.createAttempted) {
+      } else if (
+        action === "reissue" &&
+        !row.providerServerId &&
+        !row.createAttempted &&
+        !row.bootCompletedAt &&
+        !row.sealedHostCredential
+      ) {
         if (row.state !== "active")
           throw new ControlPlaneError("conflict", "Resume before reissuing bootstrap");
         changes = {
@@ -1558,16 +1997,52 @@ export class CloudComputerStore {
             "Replacing a ready Home requires a valid backup snapshot ID",
           );
         }
+        if (action === "replace" && row.restoreSnapshot && !row.ownerAccessAt)
+          throw new ControlPlaneError(
+            "conflict",
+            "Use bootstrap reissue to recover this unverified replacement",
+          );
+        const credentialsIssued = Boolean(row.sealedHostCredential);
+        let staged: { targetId: string; password: string } | undefined;
+        if (action === "reissue" && credentialsIssued && row.restoreSnapshot) {
+          const parsed = reissueRestoreSchema.safeParse(reason);
+          if (!parsed.success)
+            throw new ControlPlaneError(
+              "conflict",
+              "Supply a fresh backup target containing the named snapshot and a new repository password",
+            );
+          staged = parsed.data;
+          const previousPassword =
+            row.sealedBackupPassword &&
+            this.#options.cipher.open(`backup:${id}`, 1, row.sealedBackupPassword);
+          if (staged.password === previousPassword)
+            throw new ControlPlaneError(
+              "conflict",
+              "The staged backup must use a new repository password",
+            );
+        }
         const generation = row.generation + 1;
         const setupCode = newSecret();
         changes = {
           ...clearBootToken,
           generation,
+          generationReady: false,
+          dnsQuarantined: false,
           bootCompletedAt: null,
           completedBootDigest: null,
           createAttempted: false,
           previousProviderServerId: row.providerServerId ?? row.previousProviderServerId,
-          restoreSnapshot: snapshot?.success ? snapshot.data : null,
+          restoreSnapshot: snapshot?.success ? snapshot.data : row.restoreSnapshot,
+          ownerAccessAt: null,
+          ...(action === "reissue" && credentialsIssued
+            ? {
+                sealedBackupPassword: this.#options.cipher.seal(
+                  `backup:${id}`,
+                  1,
+                  staged?.password ?? newSecret(),
+                ),
+              }
+            : {}),
           phase: "provisioning",
           readinessStartedAt: now,
           reportedAt: null,
@@ -1589,7 +2064,41 @@ export class CloudComputerStore {
           claimError: null,
         };
         // The next generation is a new Home; the Account forgets the one it replaces.
-        await forgetHome(tx, row, false);
+        await forgetHome(tx, row, action === "reissue");
+        if (action === "reissue" && credentialsIssued) {
+          await tx
+            .updateTable("cloudComputerEgressEndpoints")
+            .where("computerId", "=", id)
+            .set({ computerId: null, needsRotation: true })
+            .executeTakeFirst();
+          let available = tx
+            .selectFrom("cloudComputerBackupTargets")
+            .select("id")
+            .where("computerId", "is", null)
+            .where("checkoutKey", "is", null)
+            .where("needsRotation", "=", false);
+          if (staged) available = available.where("id", "=", staged.targetId);
+          const replacement = await available
+            .orderBy("id")
+            .forUpdate()
+            .skipLocked()
+            .executeTakeFirst();
+          if (!replacement)
+            throw new ControlPlaneError(
+              "unavailable",
+              "A fresh backup target is required to reissue bootstrap",
+            );
+          await tx
+            .updateTable("cloudComputerBackupTargets")
+            .where("computerId", "=", id)
+            .set({ computerId: null, needsRotation: true })
+            .executeTakeFirst();
+          await tx
+            .updateTable("cloudComputerBackupTargets")
+            .where("id", "=", replacement.id)
+            .set({ computerId: id })
+            .executeTakeFirst();
+        }
       } else {
         const ownerSuspended = action === "suspend" || (action !== "resume" && row.ownerSuspended);
         const operatorSuspension =
@@ -1617,6 +2126,24 @@ export class CloudComputerStore {
     });
     if (subscription) {
       try {
+        const target = await this.#db
+          .selectFrom("cloudComputers")
+          .select("accountId")
+          .where("id", "=", id)
+          .executeTakeFirstOrThrow();
+        const attempts = await this.#db
+          .selectFrom("cloudComputerCheckouts")
+          .select(["accountId", "requestId"])
+          .where("status", "=", "open")
+          .where((eb) =>
+            eb.or([
+              eb("targetComputerId", "=", id),
+              ...(target.accountId ? [eb("accountId", "=", target.accountId)] : []),
+            ]),
+          )
+          .execute();
+        for (const attempt of attempts)
+          await this.#recoverCheckout(attempt.accountId, attempt.requestId);
         await this.#db.transaction().execute((tx) => this.#refreshSubscription(tx, subscription));
       } catch {
         // Keep the durable request for the next billing pass.
@@ -1636,23 +2163,54 @@ export class CloudComputerStore {
     }).safeParse(endpoint);
     if (!parsed.success)
       throw new ControlPlaneError("bad_request", "Invalid browser egress endpoint");
-    const id = randomUUID();
-    const row = await this.#db
-      .insertInto("cloudComputerEgressEndpoints")
-      .values({
-        id,
-        url: new URL(parsed.data.url).origin,
-        username: parsed.data.username,
-        publicAddress: parsed.data.publicAddress ?? null,
-        computerId: null,
-        sealedPassword: this.#options.cipher.seal(`egress:${id}`, 1, parsed.data.password),
-        needsRotation: false,
-      })
-      .onConflict((conflict) => conflict.column("url").doNothing())
-      .returning("id")
-      .executeTakeFirst();
-    if (!row) throw new ControlPlaneError("conflict", "Browser egress endpoint already exists");
-    return row.id;
+    const { username, password, publicAddress } = parsed.data;
+    const url = new URL(parsed.data.url).origin;
+    const cipher = this.#options.cipher;
+    return this.#db.transaction().execute(async (tx) => {
+      const id = randomUUID();
+      const row = await tx
+        .insertInto("cloudComputerEgressEndpoints")
+        .values({
+          id,
+          url,
+          username,
+          publicAddress: publicAddress ?? null,
+          computerId: null,
+          sealedPassword: cipher.seal(`egress:${id}`, 1, password),
+          needsRotation: false,
+        })
+        .onConflict((conflict) => conflict.column("url").doNothing())
+        .returning("id")
+        .executeTakeFirst();
+      if (row) return row.id;
+      const retired = await tx
+        .selectFrom("cloudComputerEgressEndpoints")
+        .select(["id", "sealedPassword"])
+        .where("url", "=", url)
+        .where("retired", "=", true)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!retired)
+        throw new ControlPlaneError("conflict", "Browser egress endpoint already exists");
+      const context = `egress:${retired.id}`;
+      if (cipher.open(context, 1, retired.sealedPassword) === password)
+        throw new ControlPlaneError(
+          "conflict",
+          "A retired egress endpoint requires a new password",
+        );
+      await tx
+        .updateTable("cloudComputerEgressEndpoints")
+        .where("id", "=", retired.id)
+        .set({
+          username,
+          publicAddress: publicAddress ?? null,
+          sealedPassword: cipher.seal(context, 1, password),
+          needsRotation: false,
+          retired: false,
+        })
+        .executeTakeFirstOrThrow();
+      return retired.id;
+    });
   }
 
   async setEgressAddress(id: string, address: string | null): Promise<void> {
@@ -1663,6 +2221,7 @@ export class CloudComputerStore {
     const updated = await this.#db
       .updateTable("cloudComputerEgressEndpoints")
       .where("id", "=", id)
+      .where("retired", "=", false)
       .set({ publicAddress: parsed.data })
       .executeTakeFirst();
     if (updated.numUpdatedRows !== 1n) {
@@ -1672,12 +2231,13 @@ export class CloudComputerStore {
 
   async removeEgressEndpoint(id: string): Promise<void> {
     const result = await this.#db
-      .deleteFrom("cloudComputerEgressEndpoints")
+      .updateTable("cloudComputerEgressEndpoints")
       .where("id", "=", id)
       .where("computerId", "is", null)
-      .where("needsRotation", "=", false)
+      .where("retired", "=", false)
+      .set({ needsRotation: true, retired: true, publicAddress: null })
       .executeTakeFirst();
-    if (result.numDeletedRows !== 1n) {
+    if (result.numUpdatedRows !== 1n) {
       throw new ControlPlaneError(
         "conflict",
         "Browser egress endpoint is assigned or does not exist",
@@ -1700,6 +2260,7 @@ export class CloudComputerStore {
       !row ||
       row.computerId ||
       !row.needsRotation ||
+      row.retired ||
       this.#options.cipher.open(`egress:${id}`, 1, row.sealedPassword) === parsed.data.password
     ) {
       throw new ControlPlaneError(
@@ -1707,10 +2268,11 @@ export class CloudComputerStore {
         "This endpoint requires a new password and must be awaiting rotation",
       );
     }
-    await this.#db
+    const result = await this.#db
       .updateTable("cloudComputerEgressEndpoints")
       .where("id", "=", id)
       .where("needsRotation", "=", true)
+      .where("retired", "=", false)
       .where("sealedPassword", "=", row.sealedPassword)
       .set({
         username: parsed.data.username,
@@ -1718,6 +2280,8 @@ export class CloudComputerStore {
         needsRotation: false,
       })
       .executeTakeFirst();
+    if (result.numUpdatedRows !== 1n)
+      throw new ControlPlaneError("conflict", "The browser egress endpoint changed");
   }
 
   async addBackupTarget(input: unknown) {
@@ -1729,22 +2293,7 @@ export class CloudComputerStore {
       await sql`select pg_advisory_xact_lock(hashtextextended('cloud-computer-backup-pool',0))`.execute(
         tx,
       );
-      const existing = await tx
-        .selectFrom("cloudComputerBackupTargets")
-        .select("prefix")
-        .where("endpoint", "=", location.endpoint)
-        .where("bucket", "=", location.bucket)
-        .execute();
-      if (
-        existing.some(
-          ({ prefix }) =>
-            prefix === location.prefix ||
-            prefix.startsWith(location.prefix + "/") ||
-            location.prefix.startsWith(prefix + "/"),
-        )
-      ) {
-        throw new ControlPlaneError("conflict", "This backup prefix overlaps another target");
-      }
+      await reserveBackupNamespace(tx, location, digestSecret(accessKeyId));
       const inserted = await tx
         .insertInto("cloudComputerBackupTargets")
         .values({
@@ -1765,31 +2314,47 @@ export class CloudComputerStore {
   }
 
   async rotateBackupTarget(id: string, input: unknown) {
-    const credentials = backupTargetSchema
-      .pick({ accessKeyId: true, secretAccessKey: true })
+    const parsed = backupTargetSchema
+      .pick({ prefix: true, accessKeyId: true, secretAccessKey: true })
       .safeParse(input);
-    if (!credentials.success)
-      throw new ControlPlaneError("bad_request", "Invalid backup credentials");
-    const { accessKeyId, secretAccessKey } = credentials.data;
-    const fingerprint = digestSecret(accessKeyId);
-    const result = await this.#db
-      .updateTable("cloudComputerBackupTargets")
-      .where("id", "=", id)
-      .where("computerId", "is", null)
-      .where("checkoutKey", "is", null)
-      .where("needsRotation", "=", true)
-      .where("principalFingerprint", "!=", fingerprint)
-      .set({
-        principalFingerprint: fingerprint,
-        sealedCredentials: this.#sealBackup(id, accessKeyId, secretAccessKey),
-        needsRotation: false,
-      })
-      .executeTakeFirst();
-    if (result.numUpdatedRows !== 1n)
+    if (!parsed.success)
       throw new ControlPlaneError(
-        "conflict",
-        "This backup target needs a new storage principal and must be awaiting rotation",
+        "bad_request",
+        "A new backup prefix and credentials are required",
       );
+    const { prefix, accessKeyId, secretAccessKey } = parsed.data;
+    const fingerprint = digestSecret(accessKeyId);
+    await this.#db.transaction().execute(async (tx) => {
+      await sql`select pg_advisory_xact_lock(hashtextextended('cloud-computer-backup-pool',0))`.execute(
+        tx,
+      );
+      const target = await tx
+        .selectFrom("cloudComputerBackupTargets")
+        .select(["endpoint", "bucket"])
+        .where("id", "=", id)
+        .where("computerId", "is", null)
+        .where("checkoutKey", "is", null)
+        .where("needsRotation", "=", true)
+        .where("principalFingerprint", "!=", fingerprint)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!target)
+        throw new ControlPlaneError(
+          "conflict",
+          "This backup target needs a new storage principal and must be awaiting rotation",
+        );
+      await reserveBackupNamespace(tx, { ...target, prefix }, fingerprint);
+      await tx
+        .updateTable("cloudComputerBackupTargets")
+        .where("id", "=", id)
+        .set({
+          prefix,
+          principalFingerprint: fingerprint,
+          sealedCredentials: this.#sealBackup(id, accessKeyId, secretAccessKey),
+          needsRotation: false,
+        })
+        .executeTakeFirst();
+    });
   }
 
   #sealBackup(id: string, accessKey: string, secretKey: string) {
@@ -1802,11 +2367,42 @@ export class CloudComputerStore {
   }
 
   async listBackupTargets() {
-    return this.#db
-      .selectFrom("cloudComputerBackupTargets")
-      .select(["id", "endpoint", "bucket", "prefix", "computerId", "needsRotation"])
-      .orderBy("id")
+    const rows = await this.#db
+      .selectFrom("cloudComputerBackupTargets as target")
+      .leftJoin("cloudComputerCheckouts as attempt", (join) =>
+        join
+          .onRef(
+            "target.checkoutKey",
+            "=",
+            sql<string>`attempt.account_id || '/' || attempt.request_id`,
+          )
+          .on("attempt.status", "=", "open"),
+      )
+      .select([
+        "target.id",
+        "target.endpoint",
+        "target.bucket",
+        "target.prefix",
+        "target.computerId",
+        "target.needsRotation",
+        "target.checkoutKey",
+        "attempt.accountId",
+        "attempt.requestId",
+        "attempt.stripeSessionId",
+        "attempt.expiresAt",
+        "attempt.paidAt",
+      ])
+      .orderBy("target.id")
       .execute();
+    return rows.map(
+      ({ checkoutKey, accountId, requestId, stripeSessionId, expiresAt, paidAt, ...target }) => ({
+        ...target,
+        reserved: checkoutKey !== null,
+        reservation: accountId
+          ? { accountId, requestId, stripeSessionId, expiresAt, paidAt }
+          : null,
+      }),
+    );
   }
 
   async removeBackupTarget(id: string) {
@@ -1815,7 +2411,6 @@ export class CloudComputerStore {
       .where("id", "=", id)
       .where("computerId", "is", null)
       .where("checkoutKey", "is", null)
-      .where("needsRotation", "=", false)
       .executeTakeFirst();
     if (result.numDeletedRows !== 1n)
       throw new ControlPlaneError(
@@ -1827,19 +2422,37 @@ export class CloudComputerStore {
   async listEgressEndpoints() {
     return this.#db
       .selectFrom("cloudComputerEgressEndpoints")
-      .select(["id", "computerId", "needsRotation", "publicAddress"])
+      .select(["id", "url", "username", "computerId", "needsRotation", "publicAddress"])
+      .where("retired", "=", false)
       .orderBy("id")
       .execute();
   }
 }
 
-const orphanedCheckoutSchema = z.object({
-  accountId: ControlPlaneAccountIdSchema,
-  requestId: z.uuid(),
-  sessionId: z.string().nullable(),
-  createdAt: z.iso.datetime({ offset: true }),
-  lastAttemptAt: z.iso.datetime({ offset: true }),
-});
+function operatorClaimError(reason: string | null) {
+  if (!reason) return null;
+  if (reason === "Your Cloud Computer took too long to set up. Contact support.") return "timeout";
+  if (reason === "Your Cloud Computer couldn’t be set up for your Account. Contact support.")
+    return "setup-failed";
+  return "claim-failed";
+}
+
+const reissueRestoreSchema = z
+  .string()
+  .transform((value, ctx) => {
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      ctx.addIssue({ code: "custom", message: "Invalid backup target JSON" });
+      return z.NEVER;
+    }
+  })
+  .pipe(
+    z.strictObject({
+      targetId: z.uuid(),
+      password: CloudComputerBootResponseSchema.shape.backup.shape.password,
+    }),
+  );
 
 const backupTargetSchema = z.strictObject({
   ...CloudComputerBootResponseSchema.shape.backup.pick({
@@ -1855,6 +2468,40 @@ const backupTargetSchema = z.strictObject({
 
 function checkoutKey(account: ControlPlaneAccountId, request: string) {
   return `${account}/${request}`;
+}
+
+async function reserveBackupNamespace(
+  tx: TransactionDb,
+  namespace: { endpoint: string; bucket: string; prefix: string },
+  principalFingerprint: string,
+) {
+  const existing = await tx
+    .selectFrom("cloudComputerBackupNamespaces")
+    .select("prefix")
+    .where("endpoint", "=", namespace.endpoint)
+    .where("bucket", "=", namespace.bucket)
+    .execute();
+  if (
+    existing.some(
+      ({ prefix }) =>
+        prefix === namespace.prefix ||
+        prefix.startsWith(namespace.prefix + "/") ||
+        namespace.prefix.startsWith(prefix + "/"),
+    )
+  ) {
+    throw new ControlPlaneError(
+      "conflict",
+      "This backup prefix overlaps a current or retired target",
+    );
+  }
+  const reserved = await tx
+    .insertInto("cloudComputerBackupNamespaces")
+    .values({ ...namespace, principalFingerprint })
+    .onConflict((conflict) => conflict.column("principalFingerprint").doNothing())
+    .returning("prefix")
+    .executeTakeFirst();
+  if (!reserved)
+    throw new ControlPlaneError("conflict", "This storage principal is already registered");
 }
 
 async function releaseCheckoutTarget(
@@ -2145,4 +2792,21 @@ function missing() {
   return new ControlPlaneError("not_found", "Cloud Computer was not found", {
     reason: "cloud-computer-not-found",
   });
+}
+
+/** The row exactly as a claim attempt leased it: a later attempt, edit, delete or re-pin wins. */
+function claimFence(
+  eb: ExpressionBuilder<ControlPlaneDatabaseSchema, "cloudComputers">,
+  job: CloudComputerClaimJob,
+) {
+  return eb.and([
+    eb("id", "=", job.id),
+    eb("generation", "=", job.generation),
+    eb("claimAttempt", "=", job.attempt),
+    eb("revision", "=", job.revision),
+    eb("deploymentId", "=", job.deploymentId),
+    eb("hostKeyFingerprint", "=", job.hostKeyFingerprint),
+    eb("deletionRequestedAt", "is", null),
+    eb("tombstonedAt", "is", null),
+  ]);
 }

@@ -53,21 +53,22 @@ Cloud Computer turns on in Account as soon as any `OPENSTEER_CLOUD_COMPUTER_*` v
 
 Account also requires its core variables to be valid for Cloud Computer: `OPENSTEER_CONTROL_PLANE_DATABASE_URL`, `OPENSTEER_CONTROL_PLANE_PUBLIC_URL` (must be `https://`), `OPENSTEER_PORTAL_ORIGIN` (must be `https://` and differ from the Account origin), and `OPENSTEER_ADOPTION_OPERATION_KEY` (seals pool credentials, bootstrap tokens, setup codes, and backup passwords at rest). `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL` must differ from `OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL`.
 
-| Env var                                          | Meaning                                                                                         | Required | Default | Secret source          |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------- | -------- | ------- | ---------------------- |
-| `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL`     | Google service account email (`*.iam.gserviceaccount.com`) allowed to call reconciler routes    | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_DOMAIN`                | DNS suffix for Home hostnames (lowercase DNS name, max 214 chars)                               | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_REGION`                | Hetzner location assigned to new Cloud Computers                                                | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE`           | Hetzner server type assigned to new Cloud Computers                                             | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_RELEASE_JSON`          | JSON release manifest (`version`, `installerUrl`, `installerSha256`, `images`)                  | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY`     | Stripe secret or restricted key (`sk_live_...`, `rk_live_...`, `sk_test_...`, or `rk_test_...`) | Yes      | None    | Secret (`_FILE` mount) |
-| `OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret (`whsec_...`)                                                     | Yes      | None    | Secret (`_FILE` mount) |
-| `OPENSTEER_CLOUD_COMPUTER_STRIPE_PRICE_ID`       | Recurring Stripe Price ID (`price_...`) used in Checkout                                        | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_PLAN_NAME`             | Customer-visible plan name (1–120 chars)                                                        | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_CURRENCY`              | Three-letter lowercase ISO currency code (for example `usd`)                                    | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR`           | Positive integer price in minor currency units (for example `2000` for `$20.00`)                | Yes      | None    | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_PRICE_INTERVAL`        | Billing interval (`day`, `week`, `month`, or `year`)                                            | No       | `month` | ConfigMap / non-secret |
-| `OPENSTEER_CLOUD_COMPUTER_IPV6`                  | Publish IPv6 `AAAA` records and enable IPv6 Compose ports (`off` or `on`)                       | No       | `off`   | ConfigMap / non-secret |
+| Env var                                                   | Meaning                                                                                         | Required | Default | Secret source          |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------- | ------- | ---------------------- |
+| `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL`              | Google service account email (`*.iam.gserviceaccount.com`) allowed to call reconciler routes    | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_DOMAIN`                         | DNS suffix for Home hostnames (lowercase DNS name, max 214 chars)                               | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_REGION`                         | Hetzner location assigned to new Cloud Computers                                                | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE`                    | Hetzner server type assigned to new Cloud Computers                                             | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_RELEASE_JSON`                   | JSON release manifest (`version`, `installerUrl`, `installerSha256`, `images`)                  | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY`              | Stripe secret or restricted key (`sk_live_...`, `rk_live_...`, `sk_test_...`, or `rk_test_...`) | Yes      | None    | Secret (`_FILE` mount) |
+| `OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET`          | Stripe webhook signing secret (`whsec_...`)                                                     | Yes      | None    | Secret (`_FILE` mount) |
+| `OPENSTEER_CLOUD_COMPUTER_STRIPE_PRICE_ID`                | Recurring Stripe Price ID (`price_...`) used in Checkout                                        | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_STRIPE_PORTAL_CONFIGURATION_ID` | Dedicated Stripe Customer Portal configuration (`bpc_...`)                                      | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_PLAN_NAME`                      | Customer-visible plan name (1–120 chars)                                                        | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_CURRENCY`                       | Three-letter lowercase ISO currency code (for example `usd`)                                    | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR`                    | Positive integer price in minor currency units (for example `2000` for `$20.00`)                | Yes      | None    | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_PRICE_INTERVAL`                 | Billing interval (`day`, `week`, `month`, or `year`)                                            | No       | `month` | ConfigMap / non-secret |
+| `OPENSTEER_CLOUD_COMPUTER_IPV6`                           | Publish IPv6 `AAAA` records and enable IPv6 Compose ports (`off` or `on`)                       | No       | `off`   | ConfigMap / non-secret |
 
 ### Home reconciler environment
 
@@ -109,7 +110,7 @@ Managed VMs receive their configuration automatically during boot and store it u
 1. **Stripe**:
    - Create one active recurring Stripe Price with `usage_type: licensed` and `interval_count: 1`. Its `currency`, `unit_amount`, and `recurring.interval` must match `OPENSTEER_CLOUD_COMPUTER_CURRENCY`, `OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR`, and `OPENSTEER_CLOUD_COMPUTER_PRICE_INTERVAL`. Account verifies this against Stripe at startup and every 60 seconds; checkout returns HTTP `503` until the offer validates.
    - Account pins Stripe API version `2026-11-18.endive` and creates Checkout Sessions with `allowed_payment_method_types[0]=card` and `payment_method_collection=always`.
-   - Enable the Stripe Customer Portal on the Stripe account so `POST /v1/account/cloud-computers/billing-portal` can open billing management sessions.
+   - Create a dedicated non-default Stripe Customer Portal configuration. Enable payment-method updates and subscription cancellation. Disable subscription changes, customer updates and invoice history. Set its ID in Account configuration.
    - Create a webhook endpoint pointing to `https://<account-origin>/v1/cloud-computers/stripe-webhook` subscribed to these seven events:
      - `checkout.session.completed`
      - `checkout.session.async_payment_succeeded`
@@ -177,7 +178,7 @@ When a Cloud Computer is deleted, Account releases its egress endpoint and backu
 - A row with `needsRotation: true` **cannot be removed** with `egress-remove` or `backup-remove`.
 - Before rotating a released entry back into service:
   - For an **egress endpoint**, change the proxy password at the provider first, then run `egress-rotate` with the new password.
-  - For a **backup target**, revoke the previous S3 principal, delete the previous customer's objects under that prefix, create a new S3 principal scoped only to that bucket and prefix, then run `backup-rotate` with the new `accessKeyId` and `secretAccessKey`.
+  - For a **backup target**, revoke the previous S3 principal, keep the previous prefix retired, and remove its objects after retention. Create a new principal scoped to a fresh, non-overlapping prefix. Run `backup-rotate` with the new `prefix`, `accessKeyId`, and `secretAccessKey`.
 
 ### Egress endpoints
 
@@ -245,10 +246,11 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
   Returns `{"id":"<uuid>"}`. Delete the temporary JSON file afterward.
 
-- **Rotate** (only when `computerId` is `null`, not reserved by an open checkout, and `needsRotation` is `true`; `accessKeyId` must differ from the previous principal): write a mode `0600` JSON file containing only `accessKeyId` and `secretAccessKey`:
+- **Rotate** (only when `computerId` is `null`, not reserved by an open checkout, and `needsRotation` is `true`; `accessKeyId` must differ from the previous principal): write a mode `0600` JSON file containing a new prefix and new credentials:
 
   ```json
   {
+    "prefix": "slot-0001-rotation-0002",
     "accessKeyId": "AKIA_NEW...",
     "secretAccessKey": "..."
   }
@@ -300,8 +302,9 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
    - On its next poll, the reconciler makes a direct HTTPS request to the VM's IP using the Home hostname as SNI and `Host`, verifies the signed `/.well-known/opensteer` envelope matches the pinned `deploymentId` and `hostKeyFingerprint`, and reports `phase: "ready"` to Account.
    - Customer still sees `status: "preparing"` until Account finishes claiming the Home.
 7. **Claimed for its buyer**:
-   - Account's background claimer (runs every 5 seconds) discovers `https://<hostname>/.well-known/opensteer`, verifies it matches the pinned identity, signs an EdDSA managed-Home claim assertion, and sends `POST /v1/managed-home/claim` with the sealed setup code and Account link credential.
-   - The Home verifies the assertion, commits the owner and Account link, and returns a Host-signed claim receipt.
+   - Account's background claimer (runs every 5 seconds) resolves the hostname once and, over one pinned TLS connection that follows no redirect, reads `https://<hostname>/.well-known/opensteer`, verifies it matches the pinned identity, signs an EdDSA managed-Home claim assertion naming the Host instance that answered, and only then sends `POST /v1/managed-home/claim` with the sealed setup code and Account link credential.
+   - The Home verifies the assertion, commits the owner and Account link, and returns a Host-signed claim receipt that names the digest of the link credential it installed. The same claim again returns that receipt; with a different credential it is refused.
+   - The Opensteer Account stays this Home's sign-in authority by design: the owner signs in through it, a different Account subject can never claim the Home, and the Home's link to the Account cannot be removed (deleting the Cloud Computer ends it).
    - Account verifies the receipt, registers the Home in `deployments` for the buyer, and records `bootstrapReceiptAt`.
    - Customer now sees `status: "ready"` ("Running") with `address: "https://<hostname>"`, and the Home appears in their Opensteer list.
    - Operator can run `node dist/cloud-computer-operator-main.js show <id>` (`status: "ready"`, `address`, `egress`) or on the VM run `sudo opensteer-home status` (prints `Version ...`, `docker compose ps`, and `Claimed`).
@@ -356,8 +359,9 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
     node dist/cloud-computer-operator-main.js reissue-bootstrap <id>
     ```
 
-  - If no VM was ever created or attempted, Account renews the bootstrap token in place without bumping `generation`. If a VM was already created or attempted (and never completed boot), Account bumps `generation`, records the old VM as `previousProviderServerId`, and the reconciler deletes the old VM and boots a new one.
-  - Account refuses `reissue-bootstrap` with `"A working Home can only be replaced from a named backup snapshot"` if the Home was ever ready (`everReady` or `bootCompletedAt` set). That prevents wiping customer data by mistake; use `replace` instead.
+  - If no create was dispatched and no boot credential was exchanged, Account renews the token in place. Once a VM was dispatched or boot exchanged credentials, reissue bumps the generation, clears the pin, and retires the issued egress and backup credentials. An unused backup target must be available.
+  - A generation that reported ready must be replaced from a named backup snapshot.
+  - If a never-ready replacement already exchanged credentials, prepare an unused registered backup target containing the named snapshot with a new repository password. Pass a mode `0600` JSON file with `{ "targetId": "<uuid>", "password": "<new repository password>" }` as the final argument to `reissue-bootstrap`. The existing repository and its credentials are then quarantined.
 
 ### Replacing a broken Home from a snapshot
 
@@ -372,7 +376,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
      ```
 
   3. Account bumps `generation`, stores `restoreSnapshot`, issues a fresh bootstrap token, removes the old deployment entry and OIDC client, and moves the record back to `provisioning`.
-  4. The reconciler powers off the previous VM (keeping it until the replacement is ready), boots a new VM (`os-cc-<uuid>-<new-gen>`) which runs `backup_command managed-restore <snapshot-id>` during `opensteer-home-managed.service`, calls `boot-complete`, switches Cloudflare DNS, verifies the pinned identity, deletes the old VM, and Account claims the restored Home.
+  4. The reconciler powers off the previous VM. The new VM restores the named snapshot before sending `boot-complete`. The reconciler verifies the pinned identity and Account claims the restored Home. The previous VM stays off until the owner completes a sign-in to the replacement, then the reconciler deletes it.
   5. Watch progress with `node dist/cloud-computer-operator-main.js show <computer-id>` until `status` returns to `"ready"`.
 
 ### Second reconciler started by mistake

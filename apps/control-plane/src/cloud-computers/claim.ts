@@ -1,5 +1,10 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { createPublicHttpsFetch } from "@opensteer/access/host";
+import { Agent } from "node:https";
+import {
+  createPublicHttpsFetch,
+  resolvePublicAddress,
+  type ResolvedPublicAddress,
+} from "@opensteer/access/host";
 import {
   ManagedHomeClaimClaimsSchema,
   ManagedHomeClaimReceiptSchema,
@@ -36,74 +41,148 @@ export class ManagedHomeError extends Error {
   }
 }
 
-/** The two Home routes Account uses to claim a managed Home. */
+/** How Account claims a managed Home, as one exchange with one endpoint. */
 export interface ManagedHomeClient {
-  /** The Home's signed discovery, verified; never a credential sent. */
-  discover(origin: string): Promise<HostDiscoveryEnvelope>;
-  claim(origin: string, request: ManagedHomeClaimRequest): Promise<ManagedHomeClaimReceipt>;
+  /**
+   * Reads the Home's signed discovery, hands it to `prepare`, and sends the
+   * claim `prepare` builds only to the endpoint that just answered with that
+   * discovery. `prepare` throws to send nothing.
+   */
+  claim(
+    origin: string,
+    prepare: (envelope: HostDiscoveryEnvelope) => Promise<ManagedHomeClaimRequest>,
+  ): Promise<{
+    readonly envelope: HostDiscoveryEnvelope;
+    readonly receipt: ManagedHomeClaimReceipt;
+  }>;
 }
 
+const managedHomeResponseBytes = 64 * 1_024;
+const managedHomeTimeoutMilliseconds = 15_000;
+
 export class HttpManagedHomeClient implements ManagedHomeClient {
-  readonly #fetch: typeof globalThis.fetch;
+  readonly #fetch: typeof globalThis.fetch | undefined;
+  readonly #resolve: (hostname: string) => Promise<ResolvedPublicAddress>;
+  readonly #ca: string | undefined;
 
-  constructor(options: { readonly fetch?: typeof globalThis.fetch } = {}) {
-    this.#fetch =
-      options.fetch ?? createPublicHttpsFetch({ maxResponseBytes: 64 * 1_024, timeoutMs: 15_000 });
+  constructor(
+    options: {
+      /** Replaces the whole transport; tests that stand in for a Home. */
+      readonly fetch?: typeof globalThis.fetch;
+      /** Where the Home's hostname is dialled; public DNS, checked, by default. */
+      readonly resolve?: (hostname: string) => Promise<ResolvedPublicAddress>;
+      /** Extra trust roots; tests only. */
+      readonly ca?: string;
+    } = {},
+  ) {
+    this.#fetch = options.fetch;
+    this.#resolve = options.resolve ?? resolvePublicAddress;
+    this.#ca = options.ca;
   }
 
-  async discover(origin: string): Promise<HostDiscoveryEnvelope> {
-    const response = await this.#request(origin, "/.well-known/opensteer", { method: "GET" });
-    // A Home still starting answers from its proxy; only the claim itself refuses for good.
-    if (!response.ok)
-      throw new ManagedHomeError(
-        `The Cloud Computer isn't serving its Home yet (HTTP ${response.status})`,
-        {
+  async claim(
+    origin: string,
+    prepare: (envelope: HostDiscoveryEnvelope) => Promise<ManagedHomeClaimRequest>,
+  ): Promise<{
+    readonly envelope: HostDiscoveryEnvelope;
+    readonly receipt: ManagedHomeClaimReceipt;
+  }> {
+    // One address and one kept-alive TLS connection for both requests: the
+    // material goes only to the server whose discovery was just verified.
+    let agent: Agent | undefined;
+    let fetch = this.#fetch;
+    if (!fetch) {
+      let address: ResolvedPublicAddress;
+      try {
+        address = await this.#resolve(new URL(origin).hostname);
+      } catch (cause) {
+        throw new ManagedHomeError("The Cloud Computer's address didn't resolve", {
           permanent: false,
-        },
-      );
-    const descriptor = HostDescriptorSchema.safeParse(await readJson(response));
-    if (!descriptor.success || descriptor.data.kind !== "personal")
-      throw new ManagedHomeError("The Cloud Computer isn't serving its Home yet", {
-        permanent: false,
-      });
-    try {
-      verifyHostDiscoveryEnvelope(descriptor.data.authority);
-    } catch (cause) {
-      throw new ManagedHomeError("The Cloud Computer's identity didn't verify", {
-        permanent: true,
-        cause,
+          cause,
+        });
+      }
+      agent = new Agent({ keepAlive: true, maxSockets: 1 });
+      fetch = createPublicHttpsFetch({
+        agent,
+        maxResponseBytes: managedHomeResponseBytes,
+        resolve: async () => address,
+        timeoutMs: managedHomeTimeoutMilliseconds,
+        ...(this.#ca ? { ca: this.#ca } : {}),
       });
     }
-    return descriptor.data.authority;
+    try {
+      const envelope = await discover(fetch, origin);
+      const request = await prepare(envelope);
+      const response = await send(fetch, origin, managedHomeClaimPath, {
+        method: "POST",
+        body: JSON.stringify(request),
+        headers: { "content-type": "application/json" },
+      });
+      if (!response.ok) throw homeAnswered(response.status);
+      const receipt = ManagedHomeClaimReceiptSchema.safeParse(await readJson(response));
+      if (!receipt.success)
+        throw new ManagedHomeError("The Cloud Computer answered with something else", {
+          permanent: true,
+        });
+      return { envelope, receipt: receipt.data };
+    } finally {
+      agent?.destroy();
+    }
   }
+}
 
-  async claim(origin: string, request: ManagedHomeClaimRequest): Promise<ManagedHomeClaimReceipt> {
-    const response = await this.#request(origin, managedHomeClaimPath, {
-      method: "POST",
-      body: JSON.stringify(request),
-      headers: { "content-type": "application/json" },
+async function discover(
+  fetch: typeof globalThis.fetch,
+  origin: string,
+): Promise<HostDiscoveryEnvelope> {
+  const response = await send(fetch, origin, "/.well-known/opensteer", { method: "GET" });
+  // A Home still starting answers from its proxy; only the claim itself refuses for good.
+  if (!response.ok)
+    throw new ManagedHomeError(
+      `The Cloud Computer isn't serving its Home yet (HTTP ${response.status})`,
+      { permanent: false },
+    );
+  const descriptor = HostDescriptorSchema.safeParse(await readJson(response));
+  if (!descriptor.success || descriptor.data.kind !== "personal")
+    throw new ManagedHomeError("The Cloud Computer isn't serving its Home yet", {
+      permanent: false,
     });
-    if (!response.ok) throw homeAnswered(response.status);
-    const receipt = ManagedHomeClaimReceiptSchema.safeParse(await readJson(response));
-    if (!receipt.success)
-      throw new ManagedHomeError("The Cloud Computer answered with something else", {
-        permanent: true,
-      });
-    return receipt.data;
+  try {
+    verifyHostDiscoveryEnvelope(descriptor.data.authority);
+  } catch (cause) {
+    throw new ManagedHomeError("The Cloud Computer's identity didn't verify", {
+      permanent: true,
+      cause,
+    });
   }
+  return descriptor.data.authority;
+}
 
-  async #request(origin: string, path: string, init: RequestInit): Promise<Response> {
-    try {
-      return await this.#fetch(new URL(path, origin), {
-        ...init,
-        cache: "no-store",
-        credentials: "omit",
-        redirect: "error",
-      });
-    } catch (cause) {
-      throw new ManagedHomeError("The Cloud Computer didn't answer", { permanent: false, cause });
-    }
+/** A redirect is never followed: the claim goes to the Home's own origin or nowhere. */
+async function send(
+  fetch: typeof globalThis.fetch,
+  origin: string,
+  path: string,
+  init: RequestInit,
+): Promise<Response> {
+  let response: Response;
+  try {
+    response = await fetch(new URL(path, origin), {
+      ...init,
+      cache: "no-store",
+      credentials: "omit",
+      redirect: "manual",
+    });
+  } catch (cause) {
+    throw new ManagedHomeError("The Cloud Computer didn't answer", { permanent: false, cause });
   }
+  if (response.status >= 300 && response.status < 400) {
+    await response.body?.cancel();
+    throw new ManagedHomeError("The Cloud Computer redirected instead of answering", {
+      permanent: false,
+    });
+  }
+  return response;
 }
 
 /**
@@ -219,51 +298,52 @@ export class CloudComputerClaimer {
 
   async #claim(job: CloudComputerClaimJob): Promise<void> {
     const origin = `https://${job.hostname}`;
-    const envelope = await this.#home.discover(origin);
-    const document = envelope.document;
-    // Only the Home Account pinned at ready is ever claimed; anything else is never trusted.
-    if (
-      document.deploymentShape.kind !== "personal" ||
-      document.canonicalOrigin !== origin ||
-      document.deploymentId !== job.deploymentId ||
-      hostKeyFingerprint(envelope.publicKey.spki) !== job.hostKeyFingerprint
-    )
-      throw new ManagedHomeError("The Cloud Computer answered as a different Home", {
-        permanent: true,
-      });
     const material = await this.#store.claimMaterial(job);
-    const issuedAt = Math.floor(this.#now() / 1_000);
-    const assertion = await this.#sign(
-      ManagedHomeClaimClaimsSchema.parse({
-        tokenUse: "opensteer-managed-home-claim",
-        iss: this.#issuer,
-        aud: origin,
-        sub: job.accountId,
-        iat: issuedAt,
-        exp: issuedAt + 120,
-        jti: `mhc_${crypto.randomUUID()}`,
-        authority: {
-          canonicalOrigin: origin,
-          deploymentId: job.deploymentId,
-          hostKeyFingerprint: job.hostKeyFingerprint,
-        },
-        claim: { cloudComputerId: job.id, generation: job.generation },
-        owner: material.owner,
-        ...(material.work ? { work: material.work } : {}),
-        link: {
-          generation: material.linkGeneration,
-          hostCredentialSha256: createHash("sha256")
-            .update(material.hostCredential, "utf8")
-            .digest("base64url"),
-        },
-      }),
-    );
-    const receipt = await this.#home.claim(origin, {
-      schemaVersion: 1,
-      setupCode: material.setupCode,
-      assertion,
-      hostCredential: material.hostCredential,
+    const credentialDigest = createHash("sha256")
+      .update(material.hostCredential, "utf8")
+      .digest("base64url");
+    const { envelope, receipt } = await this.#home.claim(origin, async (envelope) => {
+      const document = envelope.document;
+      // Only the Home Account pinned at boot-complete is ever sent the material.
+      if (
+        document.deploymentShape.kind !== "personal" ||
+        document.canonicalOrigin !== origin ||
+        document.deploymentId !== job.deploymentId ||
+        hostKeyFingerprint(envelope.publicKey.spki) !== job.hostKeyFingerprint
+      )
+        throw new ManagedHomeError("The Cloud Computer answered as a different Home", {
+          permanent: true,
+        });
+      const issuedAt = Math.floor(this.#now() / 1_000);
+      const assertion = await this.#sign(
+        ManagedHomeClaimClaimsSchema.parse({
+          tokenUse: "opensteer-managed-home-claim",
+          iss: this.#issuer,
+          aud: origin,
+          sub: job.accountId,
+          iat: issuedAt,
+          exp: issuedAt + 120,
+          jti: `mhc_${crypto.randomUUID()}`,
+          authority: {
+            canonicalOrigin: origin,
+            deploymentId: job.deploymentId,
+            hostInstanceId: document.hostInstanceId,
+            hostKeyFingerprint: job.hostKeyFingerprint,
+          },
+          claim: { cloudComputerId: job.id, generation: job.generation },
+          owner: material.owner,
+          ...(material.work ? { work: material.work } : {}),
+          link: { generation: material.linkGeneration, hostCredentialSha256: credentialDigest },
+        }),
+      );
+      return {
+        schemaVersion: 1,
+        setupCode: material.setupCode,
+        assertion,
+        hostCredential: material.hostCredential,
+      };
     });
+    const document = envelope.document;
     const answered = receipt.document;
     if (
       receipt.publicKey.spki !== envelope.publicKey.spki ||
@@ -288,7 +368,8 @@ export class CloudComputerClaimer {
       answered.work?.organizationId !== material.work?.organizationId ||
       answered.work?.organizationName !== material.work?.organizationName ||
       answered.work?.assignmentId !== material.work?.assignmentId ||
-      answered.linkGeneration !== material.linkGeneration
+      answered.linkGeneration !== material.linkGeneration ||
+      answered.hostCredentialSha256 !== credentialDigest
     )
       throw new ManagedHomeError("The Cloud Computer answered for a different claim", {
         permanent: true,

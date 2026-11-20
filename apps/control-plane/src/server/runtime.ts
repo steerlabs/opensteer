@@ -1,3 +1,4 @@
+import { billingErrorDetails } from "../cloud-computers/billing-error.js";
 import { AgentDirectoryStore } from "../agent-directory/store.js";
 import { OrganizationStore } from "../organizations/store.js";
 import { CloudComputerClaimer, HttpManagedHomeClient } from "../cloud-computers/claim.js";
@@ -215,7 +216,11 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     await personalRemoteAccount.purgeExpired();
     await portalSessions.purgeExpired();
     await hostedOAuthBrokerStore?.purgeExpired(new Date());
-    const billingError = () => server.log.error("Cloud Computer billing reconciliation failed");
+    const billingError = (error: unknown) =>
+      server.log.error(
+        { error: billingErrorDetails(error) },
+        "Cloud Computer billing reconciliation failed",
+      );
     await cloudComputers?.checkOffer().catch(billingError);
     await organizations?.checkOffer().catch(billingError);
     await server.listen({ host: config.listenHost, port: config.listenPort });
@@ -269,7 +274,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
       : undefined;
     cloudComputerClaimer?.start();
 
-    let billingPass: Promise<void> | undefined;
+    let billingPass: Promise<boolean | void> | undefined;
     const runBilling = () => {
       if (!billingPass && cloudComputers) {
         billingPass = cloudComputers

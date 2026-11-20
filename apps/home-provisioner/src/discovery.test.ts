@@ -46,7 +46,7 @@ it.each(["valid", "wrong-origin", "invalid-signature"])(
             deploymentId: document.deploymentId,
             hostKeyFingerprint: hostKeyFingerprint(spki),
           }
-        : undefined,
+        : "invalid",
     );
     expect(fetch).toHaveBeenCalledWith(
       new URL(`https://${hostname}/.well-known/opensteer`),
@@ -63,3 +63,16 @@ it("dials the provider address with the hostname as SNI and Host", () => {
     rejectUnauthorized: true,
   });
 });
+
+it.each([302, 421, 503])(
+  "distinguishes an invalid endpoint from a temporary outage (HTTP %i)",
+  async (status) => {
+    const discover = discoverHome({
+      timeoutMs: 1000,
+      fetch: async () => new Response(null, { status }),
+    });
+    await expect(discover(hostname, "192.0.2.7", new AbortController().signal)).resolves.toBe(
+      status === 503 ? undefined : "invalid",
+    );
+  },
+);

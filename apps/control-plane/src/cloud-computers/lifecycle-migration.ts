@@ -9,15 +9,15 @@ export const cloudComputerLifecycleMigration: Migration = {
         add column boot_completed_at timestamptz,
         add column completed_boot_digest text,
         add column ever_ready boolean not null default false,
+        add column generation_ready boolean not null default false,
+        add column dns_quarantined boolean not null default false,
         add column create_attempted boolean not null default false,
         add column previous_provider_server_id text,
         add column restore_snapshot text,
         add column ipv6_enabled boolean not null default false,
-        add column deletion_requested_at timestamptz
-    `.execute(database);
-    await sql`
-      update public.cloud_computers set ever_ready = true
-      where deployment_id is not null or phase = 'ready' or bootstrap_receipt_at is not null
+        add column deletion_requested_at timestamptz,
+        add column owner_access_at timestamptz,
+        add column pending_provider_writes jsonb not null default '[]'::jsonb
     `.execute(database);
     await sql`
       create function public.cloud_computer_advance_revision() returns trigger
@@ -54,7 +54,9 @@ export const cloudComputerLifecycleMigration: Migration = {
     `.execute(database);
     await sql`
       alter table public.cloud_computer_egress_endpoints
-        add column needs_rotation boolean not null default true
+        add column needs_rotation boolean not null default true,
+        add column retired boolean not null default false,
+        add check (not retired or (needs_rotation and computer_id is null))
     `.execute(database);
     await sql`
       create table public.cloud_computer_backup_targets (
@@ -72,38 +74,24 @@ export const cloudComputerLifecycleMigration: Migration = {
       )
     `.execute(database);
     await sql`
+      create table public.cloud_computer_backup_namespaces (
+        endpoint text not null,
+        bucket text not null,
+        prefix text not null,
+        principal_fingerprint text not null unique,
+        primary key (endpoint, bucket, prefix)
+      )
+    `.execute(database);
+    await sql`
       alter table public.cloud_computer_checkouts
         add column created_at timestamptz not null default now(),
         add column last_stripe_attempt_at timestamptz,
-        add column target_computer_id text
-    `.execute(database);
-    await sql`
-      update public.cloud_computer_checkouts set created_at = expires_at - interval '2 hours'
+        add column target_computer_id text,
+        add column paid_at timestamptz,
+        add column return_url text
     `.execute(database);
     await sql`
       alter table public.cloud_computer_stripe_events add column deferred_checkout jsonb
-    `.execute(database);
-    await sql`
-      create function public.cloud_computer_keep_checkout_after_account_delete() returns trigger
-      language plpgsql as $$
-      begin
-        insert into public.cloud_computer_stripe_events (id,type,received_at,deferred_checkout)
-        values (
-          'orphan_checkout:' || old.account_id || '/' || old.request_id,
-          'account.checkout.orphaned', now(),
-          jsonb_build_object('accountId', old.account_id, 'requestId', old.request_id,
-            'sessionId', old.stripe_session_id, 'createdAt', old.created_at,
-            'lastAttemptAt', coalesce(old.last_stripe_attempt_at, old.created_at))
-        ) on conflict (id) do nothing;
-        return old;
-      end
-      $$
-    `.execute(database);
-    await sql`
-      create trigger cloud_computer_keep_checkout_after_account_delete
-      before delete on public.cloud_computer_checkouts for each row
-      when (old.status = 'open')
-      execute function public.cloud_computer_keep_checkout_after_account_delete()
     `.execute(database);
   },
 };

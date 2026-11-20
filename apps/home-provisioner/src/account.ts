@@ -96,16 +96,24 @@ export function accountClient(
       ).allowed;
     },
     async desired(signal) {
-      const { computers } = await request(
-        "Account",
-        new URL(cloudComputersDesiredPath, origin),
-        { ...http, maximumResponseBytes: 64 * 1024 * 1024 },
-        signal,
-        json(CloudComputerDesiredResponseSchema),
-        {
-          headers: await headers(signal),
-        },
-      );
+      const computers: CloudComputerDesired[] = [];
+      let after: CloudComputerId | undefined;
+      do {
+        const url = new URL(cloudComputersDesiredPath, origin);
+        if (after) url.searchParams.set("after", after);
+        const page = await request(
+          "Account",
+          url,
+          http,
+          signal,
+          json(CloudComputerDesiredResponseSchema),
+          { headers: await headers(signal) },
+        );
+        if (page.next && (page.next <= (after ?? "") || page.next !== page.computers.at(-1)?.id))
+          throw new Error("Account returned an invalid Cloud Computer cursor");
+        computers.push(...page.computers);
+        after = page.next;
+      } while (after);
       return computers;
     },
     async report(report, signal) {
