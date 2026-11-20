@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:https";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -12,6 +12,9 @@ import {
   hostKeyFingerprint,
   verifyHostDiscoveryEnvelope,
 } from "../packages/deployment-authority/src/index.ts";
+
+import { decodeBrowserFrameEnvelope } from "../packages/protocol/src/browser.ts";
+import { scopedPersonalApiVersion } from "../packages/protocol/src/personal-sync.ts";
 
 import { quote, redact } from "./verify-home-deployment-support.mjs";
 
@@ -129,6 +132,11 @@ function caddyRoot(managed = false) {
   ]);
 }
 
+function lookupLoopback(_host, options, done) {
+  if (options.all) done(null, [{ address: "127.0.0.1", family: 4 }]);
+  else done(null, "127.0.0.1", 4);
+}
+
 function client(host, port, ca) {
   return (path, { body, cookie, negotiation = true } = {}) =>
     new Promise((accept, reject) => {
@@ -147,10 +155,7 @@ function client(host, port, ca) {
           path,
           method: body ? "POST" : "GET",
           headers,
-          lookup: (_host, options, done) =>
-            options.all
-              ? done(null, [{ address: "127.0.0.1", family: 4 }])
-              : done(null, "127.0.0.1", 4),
+          lookup: lookupLoopback,
         },
         (response) => {
           let text = "";
@@ -178,6 +183,17 @@ function client(host, port, ca) {
 
 function rpc(api, name, body, cookie) {
   return api(`/v1/rpc/${name}${body ? "" : "?input=%7B%7D"}`, { body, cookie });
+}
+
+function readRpc(api, name, input, cookie) {
+  return api(`/v1/rpc/${name}?input=${encodeURIComponent(JSON.stringify(input))}`, { cookie });
+}
+
+async function dispatch(api, cookie, command) {
+  return expectStatus(
+    await rpc(api, "commands.dispatch", { ...command, idempotencyKey: randomUUID() }, cookie),
+    200,
+  ).data;
 }
 
 function expectStatus(result, status) {
@@ -270,78 +286,220 @@ function assertNetworkProbes(cid, image, pid, running) {
   );
 }
 
-async function browserJourney(api, cookie, ca, expectedFailure) {
-  const target = "https://example.com/";
-  const opened = expectStatus(
-    await rpc(
-      api,
-      "commands.dispatch",
-      {
-        type: "tab.open",
-        idempotencyKey: randomUUID(),
-        target: { kind: "page", guest: true, url: target },
-      },
-      cookie,
-    ),
-    200,
-  );
-  const activated = expectStatus(
-    await rpc(
-      api,
-      "commands.dispatch",
-      {
-        type: "tab.activate",
-        idempotencyKey: randomUUID(),
-        tabId: opened.data.tab.tabId,
-      },
-      cookie,
-    ),
-    200,
-  );
-  const { sessionId } = activated.data.viewer;
-  assert.ok(sessionId);
+const launchProof = `
+  require() {
+    label=$1
+    shift
+    "$@" || { printf '%s' "$label" >&2; exit 1; }
+  }
+  require 'Agent home working directory' test "$(pwd -P)" = /workspaces
+  require 'read Agent home input' test "$(cat home-proof-input)" = agent-home
+  require 'mask Runner identity' test ! -r /var/lib/opensteer/identity.json
+  for file in main_token environment_id browser_token; do
+    require "mask Runner secret $file" test ! -r "/var/lib/opensteer/.secrets/$file"
+  done
+  runner_pid=$(cat home-proof-runner-pid)
+  require 'prevent access through Runner proc root' test ! -r "/proc/$runner_pid/root/var/lib/opensteer/identity.json"
+  require 'mask Runner process environment' test ! -r "/proc/$runner_pid/environ"
+  require 'browser harness executable' test -x "$OPENSTEER_BROWSER_HARNESS"
+  printf '%s' confined > home-proof-result
+`;
+
+const verifyHarnessLaunch = `function verifyHarnessLaunch() {
+  const proof = launchProofShell("/bin/sh", ["-ec", launchProof], { encoding: "utf8" });
+  if (proof.status !== 0) {
+    const reason = proof.stderr?.trim() || proof.error?.message || \`exit \${proof.status}\`;
+    writeFileSync("/workspaces/home-proof-result", \`failed: \${reason}\`);
+    throw new Error(\`Container harness confinement or Agent home failed: \${reason}\`);
+  }
+}`;
+
+const publicPage = { url: "https://example.com/", title: "Example Domain" };
+const loopbackOrigin = "http://127.0.0.1:4369";
+
+function startLoopbackServer() {
+  docker([
+    "exec",
+    "-d",
+    container("runner"),
+    "node",
+    "-e",
+    `
+      const server = require('node:http').createServer((request, response) => {
+        response.setHeader('Content-Type', 'text/html; charset=utf-8');
+        if (request.url === '/seed') {
+          response.setHeader('Set-Cookie', 'home-proof=restored; Path=/; Max-Age=86400; HttpOnly');
+          response.end('<title>Home profile seeded</title>');
+        } else if (request.url === '/check') {
+          const saved = request.headers.cookie?.split('; ').includes('home-proof=restored');
+          response.end(saved ? '<title>Home profile restored</title>' : '<title>Home profile missing</title>');
+        } else {
+          response.end('<title>Runner loopback</title>');
+        }
+      });
+      server.listen(4369, '127.0.0.1');
+    `,
+  ]);
+}
+
+async function waitForHarnessCatalog(api, cookie, ca, environmentId, harnessInstanceId) {
+  const socket = new WebSocket(`wss://${hostname}:${bind + 1}/v1/realtime`, {
+    ca,
+    headers: { ...apiVersionHeaders("personal"), origin, cookie },
+    lookup: lookupLoopback,
+  });
+  let lastCatalog;
+  let deadline;
+  try {
+    await new Promise((resolve, reject) => {
+      deadline = setTimeout(
+        () =>
+          reject(new Error(`Harness catalog did not become ready: ${JSON.stringify(lastCatalog)}`)),
+        30_000,
+      );
+      socket.once("open", () => {
+        socket.send(
+          JSON.stringify({
+            type: "client.attach",
+            apiVersion: scopedPersonalApiVersion,
+            generation: 1,
+            interests: ["harness-catalog"],
+            installed: {},
+          }),
+        );
+      });
+      socket.once("error", reject);
+      socket.once("close", (code, reason) =>
+        reject(new Error(`Catalog stream closed before readiness (${code} ${reason})`)),
+      );
+      socket.on("message", async (data) => {
+        try {
+          const frame = JSON.parse(data.toString());
+          if (frame.type !== "host.resource") return;
+          if (frame.reply)
+            expectStatus(
+              await rpc(
+                api,
+                "harness.catalog.refresh",
+                { environmentId, harnessInstanceId },
+                cookie,
+              ),
+              200,
+            );
+          else if (!("harness-catalog" in frame.revisions)) return;
+          const catalog = expectStatus(
+            await readRpc(
+              api,
+              "resources.detail.get",
+              { kind: "harness-catalog", id: environmentId },
+              cookie,
+            ),
+            200,
+          )
+            .data.data.environments.flatMap((entry) => entry.harnessCatalogs)
+            .find((candidate) => candidate.harnessInstanceId === harnessInstanceId);
+          if (catalog?.status === "ready") resolve();
+          if (catalog) {
+            lastCatalog = { status: catalog.status, detail: catalog.detail };
+            assert.ok(
+              ["preparing", "ready"].includes(catalog.status),
+              catalog.detail ?? catalog.status,
+            );
+          }
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+  } finally {
+    clearTimeout(deadline);
+    socket.terminate();
+  }
+}
+
+async function browserJourney(
+  api,
+  cookie,
+  ca,
+  { url = publicPage.url, title = publicPage.title, expectedFailure = false, profileId } = {},
+) {
+  const { tab } = await dispatch(api, cookie, {
+    type: "tab.open",
+    target: { kind: "page", url, ...(profileId ? { profileId } : { guest: true }) },
+  });
+  const { viewer } = await dispatch(api, cookie, { type: "tab.activate", tabId: tab.tabId });
+  const { sessionId, surfaceId } = viewer;
+  assert.ok(sessionId && surfaceId);
   const socket = new WebSocket(
     `wss://${hostname}:${bind + 1}/v1/browser-sessions/${sessionId}/connect?mode=watch`,
     {
       ca,
       headers: { ...apiVersionHeaders("personal"), origin, cookie },
-      lookup: (_host, _options, done) => done(null, "127.0.0.1", 4),
+      lookup: lookupLoopback,
     },
   );
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error("No committed browser page or navigation failure")),
-      30_000,
-    );
-    socket.on("message", (data, binary) => {
-      if (binary) return;
-      const frame = JSON.parse(data.toString());
-      const surfaces =
-        frame.type === "browser.snapshot" ? frame.surfaces : frame.surface ? [frame.surface] : [];
-      for (const surface of surfaces) {
-        if (surface.navigationFailed) {
-          if (expectedFailure) resolve();
-          else reject(new Error("Browser failed to load the public page"));
+  try {
+    await new Promise((resolve, reject) => {
+      let lastSurface;
+      const timer = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `No browser navigation result for ${url}. Last surface: ${JSON.stringify(lastSurface)}`,
+            ),
+          ),
+        30_000,
+      );
+      socket.on("message", (data, binary) => {
+        try {
+          if (binary) {
+            const { header } = decodeBrowserFrameEnvelope(new Uint8Array(data));
+            if (header.watchToken)
+              socket.send(JSON.stringify({ type: "stream.ack", token: header.watchToken }));
+            return;
+          }
+          const frame = JSON.parse(data.toString());
+          if (frame.type === "browser.error") throw new Error(frame.error.message);
+          if (frame.type === "browser.snapshot")
+            socket.send(JSON.stringify({ type: "stream.subscribe", surfaceId }));
+          const surfaces =
+            frame.type === "browser.snapshot"
+              ? frame.surfaces
+              : frame.surface
+                ? [frame.surface]
+                : [];
+          for (const surface of surfaces) {
+            if (surface.id !== surfaceId) continue;
+            lastSurface = { url: surface.url, title: surface.title, loading: surface.loading };
+            if (surface.navigationFailed) {
+              if (expectedFailure) resolve();
+              else reject(new Error(`Browser failed to load ${url}`));
+            }
+            if (surface.url === url && surface.title === title && !surface.loading) {
+              if (expectedFailure)
+                reject(new Error("The browser reached the public page through a bogus upstream"));
+              else resolve();
+            }
+            if (surface.url === url && surface.title === "Home profile missing" && !surface.loading)
+              reject(new Error("Chromium did not send the persisted profile cookie"));
+          }
+        } catch (error) {
+          reject(error);
         }
-        if (surface.url === target && surface.title === "Example Domain" && !surface.loading) {
-          if (expectedFailure)
-            reject(new Error("The browser reached the public page through a bogus upstream"));
-          else resolve();
-        }
-      }
+      });
+      socket.once("error", reject);
+      socket.once("close", (code, reason) => {
+        clearTimeout(timer);
+        reject(new Error(`Browser stream closed before a navigation result (${code} ${reason})`));
+      });
     });
-    socket.once("error", reject);
-    socket.once("close", () =>
-      reject(new Error("Browser stream closed before a navigation result")),
-    );
-    socket.once("close", () => clearTimeout(timer));
-  }).finally(() => socket.terminate());
-  const listing = docker(["top", container("browser-runtime"), "-eo", "args"]);
-  assert.match(
-    listing,
-    /\/ms-playwright\/.*(chrome|chromium)/u,
-    "Chromium did not launch in browser-runtime",
-  );
+    const listing = docker(["top", container("browser-runtime"), "-eo", "pid,args"]);
+    assert.match(listing, /\/ms-playwright\/.*(chrome|chromium)/u);
+    assert.doesNotMatch(listing, /(?:^|\s)--no-sandbox(?:\s|$)/u);
+  } finally {
+    socket.terminate();
+    await dispatch(api, cookie, { type: "tab.close", tabIds: [tab.tabId] });
+  }
 }
 
 async function managedProof(directory, bootPackage) {
@@ -402,6 +560,7 @@ async function managedProof(directory, bootPackage) {
         res.writeHead(200, { "content-type": "application/json" }).end(
           JSON.stringify({
             setupCodeDigest,
+            accountOrigin: `https://host.lima.internal:${server.address().port}`,
             release: manifest,
             backup: {
               repository: "s3:https://storage.example.test/home",
@@ -465,8 +624,7 @@ async function managedProof(directory, bootPackage) {
     assert.match(second.stderr, /bootstrap token has already been used/u);
     assert.equal(requests, 2);
     assert.equal(accepted, 1);
-    const started = vm("operator start", { managed: true, allowFailure: true });
-    vm("load_compose; compose up -d --wait --pull never gateway", { managed: true });
+    vm("operator start", { managed: true });
     const managedApi = client(managedHostname, bind + 3, caddyRoot(true));
     const config = expectStatus(await rpc(managedApi, "auth.config"), 200).data;
     assert.equal(config.setupState, "required");
@@ -475,8 +633,6 @@ async function managedProof(directory, bootPackage) {
       200,
     );
     assert.ok(admission.cookie);
-    if (started.status !== 0)
-      console.error("The managed core started while the full pod was unhealthy.");
   } finally {
     server.close();
     await once(server, "close");
@@ -500,7 +656,11 @@ let setupToken;
 let ownerCookie;
 let userId;
 let runnerBoot;
+let runnerId;
+let environmentId;
+let browserProfileId;
 let backupSucceeded;
+let restoreSucceeded;
 try {
   const built = await check("build all six Home images for Colima linux/arm64", () => {
     const revision = checked(result("git", ["rev-parse", "HEAD"]), "Cannot read source revision");
@@ -531,7 +691,7 @@ try {
     checked(build, "Home build failed");
   });
   if (!built) throw new Error("The deployment proof needs the source-built images.");
-  await check("prepare the local Home and stage the standalone installer", () => {
+  const prepared = await check("prepare the local Home and stage the standalone installer", () => {
     checked(
       result("bash", [resolve(recipe, "package-installer.sh"), bootPackage]),
       "Installer packaging failed",
@@ -539,6 +699,31 @@ try {
     assert.deepEqual(
       checked(result("ls", ["-1", bundleDirectory]), "Installer bundle directory unavailable"),
       "opensteer-home-installer.sh",
+    );
+    const fixtureDirectory = resolve(checkoutTemp, "codex");
+    mkdirSync(fixtureDirectory);
+    const fixtures = resolve(root, "packages/harness-codex/src/test-fixtures");
+    const original = readFileSync(resolve(fixtures, "fake-codex-app-server.mjs"), "utf8");
+    const captureFile = "capture-records.mjs";
+    writeFileSync(
+      resolve(fixtureDirectory, captureFile),
+      readFileSync(resolve(fixtures, captureFile)),
+    );
+    assert.match(original, /case "turn\/start":/u);
+    writeFileSync(
+      resolve(fixtureDirectory, "engine.mjs"),
+      `import { spawnSync as launchProofShell } from 'node:child_process';\n${verifyHarnessLaunch}\nconst launchProof = ${JSON.stringify(launchProof)};\n${original
+        .replace("createRequire(import.meta.url)", 'createRequire("/app/package.json")')
+        .replace(
+          'case "turn/start":',
+          'case "turn/start":\n      if (!ephemeralThreads.has(message.params.threadId)) verifyHarnessLaunch();',
+        )}`,
+      { mode: 0o644 },
+    );
+    writeFileSync(
+      resolve(fixtureDirectory, "codex"),
+      '#!/bin/sh\nexec node /home-proof-codex/engine.mjs "$@"\n',
+      { mode: 0o755 },
     );
     setupToken = new URL(
       vm(`
@@ -548,6 +733,20 @@ try {
     `),
     ).hash.match(/^#token=(.+)$/u)?.[1];
     assert.ok(setupToken);
+    vm(`cat > "$OPENSTEER_HOME_DIR/compose.proof.yaml" <<'OPENSTEER_HOME_PROOF'
+services:
+  runner:
+    volumes:
+      - ${fixtureDirectory}:/home-proof-codex:ro
+    environment:
+      OPENSTEER_CODEX_EXECUTABLE: /home-proof-codex/codex
+OPENSTEER_HOME_PROOF
+awk '/^  local args=/{ recipe=1 } { print } recipe && /compose.yaml/ {
+  print "  args+=(-f \\"$home_dir/compose.proof.yaml\\")"
+  recipe=0
+}' "$OPENSTEER_HOME_DIR/common.sh" > "$OPENSTEER_HOME_DIR/common.proof.sh"
+mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
+`);
   });
   await check(
     "all seven Compose services are healthy",
@@ -555,16 +754,22 @@ try {
       const started = vm("operator start", { allowFailure: true });
       if (started.status !== 0) {
         const states = ["postgres", ...components].map((name) => {
-          const id = container(name);
-          return `${name} ${docker(["inspect", "--format", "{{.State.Status}}/{{.State.Health.Status}}", id])}`;
+          try {
+            return `${name} ${health(name)}`;
+          } catch {
+            return `${name} was not created`;
+          }
         });
-        const browser = result("docker", ["logs", "--tail", "3", container("browser-runtime")]);
-        throw new Error(`${states.join("\n")}\n${browser.stdout}${browser.stderr}`);
+        const logs = ["host", "runner", "browser-runtime", "channel-runtime"].map((name) => {
+          const output = result("docker", ["logs", "--tail", "8", `${project}-${name}-1`]);
+          return `${name}\n${output.stdout}${output.stderr}`;
+        });
+        throw new Error(`${started.stderr}\n${states.join("\n")}\n${logs.join("\n")}`);
       }
       for (const service of ["postgres", ...components])
         assert.equal(health(service), "running/healthy");
     },
-    Boolean(setupToken),
+    Boolean(prepared),
   );
   await check(
     "HTTPS validates against Caddy's CA and discovery signature and hostname verify",
@@ -593,10 +798,9 @@ try {
     "setup-link rotates admission and invalidates the old link",
     async () => {
       const oldToken = setupToken;
-      const renewed = vm("operator setup-link", { allowFailure: true });
-      setupToken = new URL(renewed.stdout.trim()).hash.match(/^#token=(.+)$/u)?.[1];
+      const renewed = vm("operator setup-link");
+      setupToken = new URL(renewed).hash.match(/^#token=(.+)$/u)?.[1];
       assert.ok(setupToken && setupToken !== oldToken);
-      vm("load_compose; compose up -d --wait --pull never gateway");
       expectStatus(await rpc(api, "auth.setup.exchange", { token: oldToken }), 403);
     },
     Boolean(discovery),
@@ -641,24 +845,151 @@ try {
   );
   await check(
     "hosting Runner self-enrolled and is online",
-    () => {
+    async () => {
       assert.equal(health("runner"), "running/healthy");
       const info = JSON.parse(
         docker(["exec", container("runner"), "cat", "/var/lib/opensteer/readiness/connected.json"]),
       );
       assert.equal(info.state, "connected");
       runnerBoot = info.bootId;
+      ({ runnerId, environmentId } = JSON.parse(
+        docker([
+          "exec",
+          container("runner"),
+          "node",
+          "-e",
+          `
+          const { runnerId, environmentId } = require('/var/lib/opensteer/identity.json');
+          console.log(JSON.stringify({ runnerId, environmentId }));
+        `,
+        ]),
+      ));
+      assert.equal(
+        expectStatus(
+          await readRpc(
+            api,
+            "personal.readiness.get",
+            {
+              kind: "runner",
+              environmentId,
+              runnerId,
+            },
+            ownerCookie,
+          ),
+          200,
+        ).data.ready,
+        true,
+      );
     },
     Boolean(discovery),
   );
   await check(
+    "a Host-started Codex harness cannot read Runner credentials and can read and write Agent home",
+    async () => {
+      docker([
+        "exec",
+        container("runner"),
+        "sh",
+        "-ec",
+        `
+        test -r /var/lib/opensteer/identity.json
+        test -r /var/lib/opensteer/.secrets/main_token
+        printf '%s' ${quote("agent-home")} > /workspaces/home-proof-input
+        node -p "require('/var/lib/opensteer/readiness/connected.json').pid" > /workspaces/home-proof-runner-pid
+      `,
+      ]);
+      const { harness } = await dispatch(api, ownerCookie, {
+        type: "harness.create",
+        environmentId,
+        driverKind: "codex",
+        sourceId: "openai",
+        name: "Home containment proof",
+        stateKind: "isolated",
+      });
+      await waitForHarnessCatalog(api, ownerCookie, ca, environmentId, harness.id);
+      const { thread } = await dispatch(api, ownerCookie, {
+        type: "thread.create",
+        environmentId,
+        harnessInstanceId: harness.id,
+        title: "Home containment proof",
+        modelSelection: {
+          providerId: "openai",
+          modelId: "gpt-5.6-sol",
+          options: { effort: "low" },
+        },
+      });
+      const pending = spawn(
+        "docker",
+        [
+          "exec",
+          container("runner"),
+          "node",
+          "-e",
+          `
+        const fs = require('node:fs');
+        const path = '/workspaces/home-proof-result';
+        const watch = fs.watch('/workspaces', (event, name) => { if (name === 'home-proof-result') read(); });
+        const timeout = setTimeout(() => { watch.close(); process.exitCode = 1; }, 30000);
+        function read() {
+          if (!fs.existsSync(path)) return;
+          const result = fs.readFileSync(path, 'utf8');
+          if (!result) return;
+          clearTimeout(timeout);
+          watch.close();
+          console.log(result);
+        }
+        read();
+      `,
+        ],
+        { env, stdio: ["ignore", "pipe", "inherit"] },
+      );
+      const proof = once(pending, "close");
+      let output = "";
+      pending.stdout.on("data", (data) => {
+        output += data;
+      });
+      try {
+        await dispatch(api, ownerCookie, {
+          type: "thread.sendMessage",
+          threadId: thread.id,
+          content: [{ type: "text", text: "Run the Home confinement fixture." }],
+        });
+        const exit = await proof;
+        if (exit[0] !== 0) {
+          const details = ["host", "runner"].flatMap((service) => {
+            const { stdout, stderr } = result("docker", [
+              "logs",
+              "--tail",
+              "100",
+              container(service),
+            ]);
+            return `${stdout}\n${stderr}`
+              .split("\n")
+              .filter((line) => /run\.failed|Runner command dispatch failed/u.test(line));
+          });
+          assert.deepEqual(
+            exit,
+            [0, null],
+            ["No result from the sandboxed shell", ...details].join("\n"),
+          );
+        }
+        assert.equal(output.trim(), "confined");
+      } finally {
+        if (pending.exitCode === null) pending.kill();
+        await proof;
+      }
+    },
+    Boolean(runnerId),
+  );
+  await check(
     "Host opens a tab and Chromium loads a public HTTPS page through direct egress",
-    () => browserJourney(api, ownerCookie, ca, false),
+    () => browserJourney(api, ownerCookie, ca),
     Boolean(runnerBoot),
   );
   await check(
-    "bogus upstream fails closed in Chromium",
+    "bogus upstream fails closed for public HTTPS and Chromium still reaches Runner loopback",
     async () => {
+      startLoopbackServer();
       vm(`load_compose
       printf '%s' https://upstream.invalid:443 | save_secret "$home_dir/secrets/egress_url"
       printf '%s' invalid | save_secret "$home_dir/secrets/egress_username"
@@ -666,7 +997,11 @@ try {
       compose up -d --wait --force-recreate browser-egress browser-runtime
     `);
       try {
-        await browserJourney(api, ownerCookie, ca, true);
+        await browserJourney(api, ownerCookie, ca, { expectedFailure: true });
+        await browserJourney(api, ownerCookie, ca, {
+          url: `${loopbackOrigin}/`,
+          title: "Runner loopback",
+        });
       } finally {
         vm(`load_compose
         rm -f "$home_dir/secrets/"egress_{url,username,password}
@@ -730,8 +1065,7 @@ try {
     "restart preserves claim and the owner session over HTTPS",
     async () => {
       vm("operator stop");
-      vm("operator start", { allowFailure: true });
-      vm("load_compose; compose up -d --wait --pull never gateway");
+      vm("operator start");
       assert.equal(expectStatus(await rpc(api, "auth.config"), 200).data.setupState, "complete");
       assert.equal(
         expectStatus(await api("/v1/auth/session", { cookie: ownerCookie }), 200).json.session.user
@@ -752,6 +1086,28 @@ try {
       assert.equal(info.state, "connected");
     },
     Boolean(runnerBoot),
+  );
+  await check(
+    "a Host-owned native Chromium profile stores a persistent cookie before backup",
+    async () => {
+      startLoopbackServer();
+      const { profile } = await dispatch(api, ownerCookie, {
+        type: "browser.profile.create",
+        input: { name: "Home backup profile", homeRunnerId: runnerId },
+      });
+      await browserJourney(api, ownerCookie, ca, {
+        url: `${loopbackOrigin}/seed`,
+        title: "Home profile seeded",
+        profileId: profile.id,
+      });
+      await browserJourney(api, ownerCookie, ca, {
+        url: `${loopbackOrigin}/check`,
+        title: "Home profile restored",
+        profileId: profile.id,
+      });
+      browserProfileId = profile.id;
+    },
+    Boolean(runnerId),
   );
   const bucketReady = await check(
     "start a private disposable S3-compatible bucket",
@@ -807,12 +1163,8 @@ try {
   await check(
     "operator creates one encrypted restic snapshot containing PostgreSQL and durable volumes",
     () => {
-      const backedUp = vm("OPENSTEER_HOME_BACKUP_NETWORK=host operator backup", {
-        allowFailure: true,
-      });
-      assert.match(backedUp.stdout, /snapshot [0-9a-f]+ saved/u, redact(backedUp.stderr));
-      if (backedUp.status !== 0)
-        console.error("The snapshot was saved while the full pod was unable to restart.");
+      const backedUp = vm("OPENSTEER_HOME_BACKUP_NETWORK=host operator backup");
+      assert.match(backedUp, /snapshot [0-9a-f]+ saved/u);
       backupSucceeded = true;
     },
     Boolean(bucketReady),
@@ -829,14 +1181,8 @@ try {
         `label=com.docker.compose.project=${project}`,
       ]);
       assert.equal(wipe, "");
-      const restored = vm("OPENSTEER_HOME_BACKUP_NETWORK=host operator restore", {
-        allowFailure: true,
-      });
-      assert.match(
-        restored.stdout,
-        /Restore will overwrite the database/u,
-        redact(restored.stderr),
-      );
+      const restored = vm("OPENSTEER_HOME_BACKUP_NETWORK=host operator restore");
+      assert.match(restored, /Restore will overwrite the database/u);
       const restoredApi = client(hostname, bind + 1, caddyRoot());
       const current = expectStatus(await restoredApi("/.well-known/opensteer"), 200).json.authority;
       const document = verifyHostDiscoveryEnvelope(current);
@@ -855,12 +1201,27 @@ try {
           .session.user.id,
         userId,
       );
-      if (restored.status !== 0)
-        console.error(
-          "Restored Host credentials and data verified while the full pod was unable to restart.",
-        );
+      api = restoredApi;
+      ca = caddyRoot();
+      ownerCookie = expectStatus(
+        await rpc(restoredApi, "auth.password.signIn", { email, password }),
+        200,
+      ).cookie;
+      restoreSucceeded = true;
     },
-    backupSucceeded,
+    Boolean(backupSucceeded),
+  );
+  await check(
+    "restored Chromium profile sends its original cookie to the loopback app",
+    async () => {
+      startLoopbackServer();
+      await browserJourney(api, ownerCookie, ca, {
+        url: `${loopbackOrigin}/check`,
+        title: "Home profile restored",
+        profileId: browserProfileId,
+      });
+    },
+    Boolean(browserProfileId && restoreSucceeded),
   );
   await check(
     "standalone installer consumes a managed bootstrap token and starts an unclaimed Host for its digest",
@@ -874,6 +1235,12 @@ try {
       if (s3Id) docker(["rm", "-f", s3Id]);
       cleanupProject(project, s3VolumeCreated ? [s3Volume] : []);
       cleanupProject(managedProject);
+      for (const managed of [false, true]) {
+        vm(
+          'if [[ -f "$OPENSTEER_HOME_DIR/common.sh" ]]; then load_compose; remove_runner_apparmor; fi',
+          { managed },
+        );
+      }
     } finally {
       try {
         for (const image of [

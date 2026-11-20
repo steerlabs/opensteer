@@ -103,7 +103,10 @@ export async function runRunnerDaemon(
      * engines now rather than at the next heartbeat. Called once, before the
      * first connection.
      */
-    readonly control?: (control: { readonly recheckEngines: () => void }) => void;
+    readonly control?: (control: {
+      readonly notifySleeping: () => void;
+      readonly recheckEngines: () => void;
+    }) => void;
     readonly onConnected?: (identity: {
       readonly environmentId: EnvironmentId | null;
       readonly runnerId: RunnerId;
@@ -121,6 +124,9 @@ export async function runRunnerDaemon(
 ): Promise<void> {
   const config = consumeRunnerConfig(environment, options.secrets);
   const applicationConfig = consumeRunnerApplicationConfig(environment);
+  if (applicationConfig.isolateHarnesses && process.platform !== "linux") {
+    throw new Error("OPENSTEER_RUNNER_ISOLATE_HARNESSES requires a Linux Runner.");
+  }
   const readiness = applicationConfig.readinessPath
     ? new RunnerReadinessFile(applicationConfig.readinessPath)
     : undefined;
@@ -194,7 +200,12 @@ export async function runRunnerDaemon(
       ...(started.shellModule ? { shellModule: started.shellModule } : {}),
     });
     const running = connection;
-    options.control?.({ recheckEngines: () => running.recheckEngines() });
+    options.control?.({
+      notifySleeping: () => {
+        void running.notifySleeping();
+      },
+      recheckEngines: () => running.recheckEngines(),
+    });
     await connection.run(shutdown.signal);
   } finally {
     signal?.removeEventListener("abort", externalAbort);
@@ -285,6 +296,7 @@ async function startAgentsRunner(input: {
   await attachmentCache.reset();
   const agentSkills = await loadAgentSkillBundle(execution.agentSkillsDirectory);
   const harnessRuntimeBoundary = harnessRuntimeBoundaryForRunner({
+    isolateHarnesses: applicationConfig.isolateHarnesses,
     deploymentKind: config.deploymentShape.kind,
     runnerKind: config.runnerKind,
   });
@@ -297,6 +309,7 @@ async function startAgentsRunner(input: {
             environment[name] ? [[name, environment[name]]] : [],
           ),
         ),
+        requireFreshProc: applicationConfig.isolateHarnesses,
         stateDirectory: resolve(config.dataDirectory, "private", "harness-state"),
         workspaceRoots: [],
       })

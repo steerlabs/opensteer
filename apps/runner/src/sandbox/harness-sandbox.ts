@@ -52,6 +52,7 @@ export interface HarnessSandboxOptions {
   readonly dataDirectory: string;
   /** The Runner's own environment: HOME, TMPDIR, and PATH shape the boot proof. */
   readonly environment: Readonly<Record<string, string>>;
+  readonly requireFreshProc?: boolean;
   /** Where harness profiles live under the data directory; the boot proof stages its fixture there. */
   readonly stateDirectory: string;
   /**
@@ -369,10 +370,16 @@ export class HarnessSandbox implements HarnessProcessSandbox {
       workspaceRoots.push(await realpath(root));
     }
     const bubblewrap = options.bubblewrapExecutable ?? "bwrap";
+    const freshProc = await freshProcSupported(bubblewrap, options.environment);
+    if (options.requireFreshProc && !freshProc) {
+      throw new Error(
+        "Runner harness isolation requires a private PID namespace with a fresh procfs mount. On Docker, use security_opt: systempaths=unconfined with the Runner's seccomp profile.",
+      );
+    }
     const layout = {
       ...(options.attachmentRoot ? { attachmentRoot: await realpath(options.attachmentRoot) } : {}),
       dataDirectory: await realpath(options.dataDirectory),
-      freshProc: await freshProcSupported(bubblewrap, options.environment),
+      freshProc,
       temporaryDirectory: await realpath(tmpdir()),
       workspaceRoots,
     };

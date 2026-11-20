@@ -1,0 +1,4 @@
+services:
+  runner:
+    security_opt:
+      - apparmor:${OPENSTEER_HOME_RUNNER_APPARMOR:?Runner AppArmor profile required}

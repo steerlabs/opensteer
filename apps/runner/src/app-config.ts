@@ -32,6 +32,7 @@ const RunnerApplicationEnvironmentSchema = z.object({
     .min(1)
     .refine(isAbsolute, "OPENSTEER_NATIVE_FS_HELPER must be an absolute path")
     .default(defaultNativeFsHelperBinary),
+  OPENSTEER_RUNNER_ISOLATE_HARNESSES: z.enum(["true", "false"]).default("false"),
   OPENSTEER_OPENSSL_BINARY: z.string().trim().min(1).default("openssl"),
   OPENSTEER_RUNNER_READINESS_PATH: z
     .string()
@@ -42,6 +43,7 @@ const RunnerApplicationEnvironmentSchema = z.object({
 });
 
 export interface RunnerApplicationConfig {
+  readonly isolateHarnesses: boolean;
   readonly nativeFsHelperBinary: string;
   readonly opensslBinary: string;
   readonly readinessPath?: string;
@@ -52,6 +54,7 @@ export function parseRunnerApplicationConfig(
 ): RunnerApplicationConfig {
   const parsed = RunnerApplicationEnvironmentSchema.parse(environment);
   return {
+    isolateHarnesses: parsed.OPENSTEER_RUNNER_ISOLATE_HARNESSES === "true",
     nativeFsHelperBinary: parsed.OPENSTEER_NATIVE_FS_HELPER,
     opensslBinary: parsed.OPENSTEER_OPENSSL_BINARY,
     ...(parsed.OPENSTEER_RUNNER_READINESS_PATH

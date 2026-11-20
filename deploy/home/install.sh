@@ -37,6 +37,9 @@ if [[ -n $managed && $prepare == false ]]; then
     command -v "$program" >/dev/null || missing=true
   done
   docker compose version >/dev/null 2>&1 || missing=true
+  if [[ -d /sys/kernel/security/apparmor ]]; then
+    command -v apparmor_parser >/dev/null || missing=true
+  fi
   if $missing; then
     # shellcheck source=/dev/null
     source /etc/os-release
@@ -44,7 +47,7 @@ if [[ -n $managed && $prepare == false ]]; then
       fail "Managed package provisioning requires Ubuntu 24.04 LTS, or an image with Docker Compose and the installer tools preinstalled."
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    packages=(ca-certificates curl jq openssl util-linux iptables)
+    packages=(apparmor ca-certificates curl jq openssl util-linux iptables)
     if ! docker compose version >/dev/null 2>&1; then packages+=(docker.io docker-compose-v2); fi
     apt-get install -y --no-install-recommends "${packages[@]}"
     systemctl enable --now docker.service
@@ -135,6 +138,16 @@ else
     for item in repository password accessKeyId secretAccessKey; do
       jq -er ".backup.$item" "$result" > "$home_dir/secrets/backup_$item"
     done
+    # A Cloud Computer's Home is claimed by its Account and signs its owner in with it.
+    # shellcheck disable=SC2034 # Written to config.env through ${!key} below.
+    if jq -e '.managedHome != null' "$result" >/dev/null; then
+      jq -er .managedHome.oidc.clientSecret "$result" | save_secret "$home_dir/secrets/oidc_client_secret"
+      OPENSTEER_HOME_LOCAL_PASSWORD_ENABLED=false
+      OPENSTEER_HOME_MANAGED_ID=$(jq -er .managedHome.cloudComputerId "$result")
+      OPENSTEER_HOME_MANAGED_GENERATION=$(jq -er .managedHome.generation "$result")
+      OPENSTEER_HOME_ACCOUNT_ORIGIN=$(jq -er .accountOrigin "$result")
+      OPENSTEER_HOME_OIDC_CLIENT_ID=$(jq -er .managedHome.oidc.clientId "$result")
+    fi
   elif [[ -n ${OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL:-} || -n ${OPENSTEER_BROWSER_EGRESS_UPSTREAM_USERNAME:-} || -n ${OPENSTEER_BROWSER_EGRESS_UPSTREAM_PASSWORD_FILE:-} ]]; then
     [[ -n ${OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL:-} && -n ${OPENSTEER_BROWSER_EGRESS_UPSTREAM_USERNAME:-} &&
       -s ${OPENSTEER_BROWSER_EGRESS_UPSTREAM_PASSWORD_FILE:-} ]] || fail "Configure all three browser egress upstream inputs."
@@ -145,7 +158,8 @@ else
   valid_value='^[a-zA-Z0-9.:/_?&=%+-]+$'
   {
     printf 'OPENSTEER_HOME_HOSTNAME=%s\n' "$hostname"
-    for suffix in BIND_IP HTTP_PORT HTTPS_PORT RUNNER_CPUS RUNNER_MEMORY BROWSER_CPUS BROWSER_MEMORY RELEASE_MANIFEST_URL; do
+    for suffix in BIND_IP HTTP_PORT HTTPS_PORT RUNNER_CPUS RUNNER_MEMORY BROWSER_CPUS BROWSER_MEMORY RELEASE_MANIFEST_URL \
+      LOCAL_PASSWORD_ENABLED MANAGED_ID MANAGED_GENERATION ACCOUNT_ORIGIN OIDC_CLIENT_ID; do
       key="OPENSTEER_HOME_$suffix"
       value=${!key:-}
       if [[ -n $value ]]; then
@@ -157,22 +171,24 @@ else
   if $local_tls; then printf 'tls internal\n'; else printf '# Automatic public TLS\n'; fi > "$home_dir/tls.caddy"
 fi
 
-for name in compose.yaml compose.egress.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh; do
+for name in compose.yaml compose.egress.yaml compose.apparmor.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh; do
   if [[ "$source_dir/$name" != "$home_dir/$name" ]]; then
     install -m 0600 "$source_dir/$name" "$home_dir/$name"
   fi
 done
 chmod 0700 "$home_dir/"{firewall.sh,opensteer-home,install-scheduler.sh}
+# Compose mounts it on every Home; a bring-your-own Home's stays empty.
+[[ -e "$home_dir/secrets/oidc_client_secret" ]] || : | save_secret "$home_dir/secrets/oidc_client_secret"
 chmod 0444 "$home_dir/tls.caddy"
 if [[ -f "$staging/config.env" ]]; then
   mv -- "$staging/config.env" "$home_dir/config.env"
   if [[ -n $managed ]]; then rm -f -- "$result"; fi
 fi
 if $prepare; then
-  install_browser_policy
+  install_sandbox_policies
 else
   compose pull --quiet
-  install_browser_policy
+  install_sandbox_policies
   "$home_dir/install-scheduler.sh" "$home_dir"
   # The service takes the same operation lock.
   flock -u 9

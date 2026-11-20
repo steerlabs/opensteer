@@ -7,9 +7,27 @@ import {
   shippedHarnessKinds,
 } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
-import { consumeRunnerApplicationConfig, parseAgentExecutionConfig } from "./app-config.js";
+import {
+  consumeRunnerApplicationConfig,
+  parseAgentExecutionConfig,
+  parseRunnerApplicationConfig,
+} from "./app-config.js";
 
 describe("Runner application configuration", () => {
+  it("requires explicit opt-in to harness isolation", () => {
+    expect(parseRunnerApplicationConfig({}).isolateHarnesses).toBe(false);
+    expect(
+      parseRunnerApplicationConfig({ OPENSTEER_RUNNER_ISOLATE_HARNESSES: "false" })
+        .isolateHarnesses,
+    ).toBe(false);
+    expect(
+      parseRunnerApplicationConfig({ OPENSTEER_RUNNER_ISOLATE_HARNESSES: "true" }).isolateHarnesses,
+    ).toBe(true);
+    expect(() =>
+      parseRunnerApplicationConfig({ OPENSTEER_RUNNER_ISOLATE_HARNESSES: "yes" }),
+    ).toThrow();
+  });
+
   it("defaults to existing packaged harness executables", async () => {
     const { harnessExecutables } = parseAgentExecutionConfig({});
     for (const kind of shippedHarnessKinds) {

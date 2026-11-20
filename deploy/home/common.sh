@@ -13,7 +13,16 @@ lock_home() {
 compose() {
   local args=(--project-directory "$home_dir" --env-file "$home_dir/config.env"
     --env-file "${release_env:-$home_dir/images.env}" -f "$home_dir/compose.yaml")
+  if [[ -s "$home_dir/runner-apparmor.name" ]]; then
+    export OPENSTEER_HOME_RUNNER_APPARMOR
+    OPENSTEER_HOME_RUNNER_APPARMOR=$(cat "$home_dir/runner-apparmor.name")
+    args+=(-f "$home_dir/compose.apparmor.yaml")
+  fi
   if [[ -s "$home_dir/secrets/egress_url" ]]; then args+=(-f "$home_dir/compose.egress.yaml"); fi
+  local -x OPENSTEER_HOME_OIDC_CLIENT_SECRET_PATH=''
+  if [[ -s "$home_dir/secrets/oidc_client_secret" ]]; then
+    OPENSTEER_HOME_OIDC_CLIENT_SECRET_PATH=/run/secrets/oidc_client_secret
+  fi
   docker compose "${args[@]}" "$@"
 }
 
@@ -67,15 +76,45 @@ release_to_env() {
 
 compose_project() { compose config --format json | jq -er '.name'; }
 
-install_browser_policy() {
-  local image tmp
-  image=$(compose config --format json | jq -er '.services["browser-runtime"].image') || return
-  tmp=$(mktemp "$home_dir/chromium-oci.XXXXXX") || return
-  if docker run --rm --network none --entrypoint cat "$image" /usr/local/share/opensteer/chromium-oci.json > "$tmp"; then
-    mv -f -- "$tmp" "$home_dir/chromium-oci.json"
+install_sandbox_policies() {
+  local service policy image tmp
+  for service in browser-runtime runner; do
+    case "$service" in
+      browser-runtime) policy=chromium-oci.json ;;
+      runner) policy=runner-oci.json ;;
+    esac
+    image=$(compose config --format json | jq -er --arg service "$service" '.services[$service].image') || return
+    tmp=$(mktemp "$home_dir/$policy.XXXXXX") || return
+    if docker run --rm --network none --entrypoint cat "$image" "/usr/local/share/opensteer/$policy" > "$tmp"; then
+      mv -f -- "$tmp" "$home_dir/$policy"
+    else
+      rm -f -- "$tmp"
+      return 1
+    fi
+  done
+}
+
+runner_apparmor_rules() {
+  printf 'abi <abi/4.0>,\nprofile %s flags=(unconfined) {\n  userns,\n}\n' "$1"
+}
+
+prepare_runner_apparmor() {
+  local profile name
+  name=$(compose_project) || return
+  profile="${name}-runner-userns"
+  if docker info --format '{{json .SecurityOptions}}' | jq -e 'any(.[]; startswith("name=apparmor"))' >/dev/null; then
+    command -v apparmor_parser >/dev/null || fail "Install the apparmor package for the Home Runner profile."
+    runner_apparmor_rules "$profile" | apparmor_parser -r -K || return
+    printf '%s\n' "$profile" > "$home_dir/runner-apparmor.name"
   else
-    rm -f -- "$tmp"
-    return 1
+    rm -f -- "$home_dir/runner-apparmor.name"
+  fi
+}
+
+remove_runner_apparmor() {
+  if [[ -s "$home_dir/runner-apparmor.name" ]]; then
+    runner_apparmor_rules "$(cat "$home_dir/runner-apparmor.name")" | apparmor_parser -R
+    rm -f -- "$home_dir/runner-apparmor.name"
   fi
 }
 
@@ -88,6 +127,7 @@ start_host() {
 }
 
 start_pod() {
+  prepare_runner_apparmor || return
   start_host || return
   compose up -d --wait --pull never || return
 }

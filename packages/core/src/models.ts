@@ -150,6 +150,8 @@ export const RunnerCapabilitySchema = z.enum([
   "agent-home-settings-v1",
   // Creates/canonicalizes Agent home and serves rooted Agent-home file operations over the primary connection.
   "agent-home-files-v1",
+  // Reports computer power transitions (such as going to sleep) on the primary connection.
+  "runner-power-state-v1",
   "settings-plugin-policy-v1",
   "assignments-v1",
   // Runs a successor attempt of a Run from the Host's next ordinal, and stops

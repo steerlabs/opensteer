@@ -71,6 +71,7 @@ case "${1:-}" in
     if [[ $# == 2 ]]; then
       echo 'Removing Home configuration, database, keys, agent work, and browser profiles.'
       compose down --volumes
+      remove_runner_apparmor
       if [[ -f /etc/systemd/system/opensteer-home.service ]] &&
          grep -Fxq "ExecStart=$home_dir/opensteer-home start" /etc/systemd/system/opensteer-home.service; then
         rm -f /etc/systemd/system/opensteer-home{.service,-update.service,-update.timer,-backup.service,-backup.timer}
@@ -78,7 +79,7 @@ case "${1:-}" in
         systemctl daemon-reload
       fi
       rm -rf -- "$home_dir/secrets"
-      rm -f -- "$home_dir/"{config.env,images.env,tls.caddy,chromium-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh}
+      rm -f -- "$home_dir/"{config.env,images.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.apparmor.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh}
       rmdir -- "$home_dir" 2>/dev/null || true
     else
       compose down

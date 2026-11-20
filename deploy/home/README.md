@@ -48,7 +48,19 @@ For a static ISP upstream, pass `OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL`,
 `OPENSTEER_BROWSER_EGRESS_UPSTREAM_USERNAME` and
 `OPENSTEER_BROWSER_EGRESS_UPSTREAM_PASSWORD_FILE` during install. The egress
 proxy alone receives those credentials through file mounts. Without an
-upstream, the proxy makes direct public-network connections.
+upstream, the proxy makes direct public-network connections. Chromium keeps its
+implicit loopback bypass for local app servers. The pod firewall also blocks private and
+link-local destinations outside loopback.
+
+Task shells run in bubblewrap. The Runner identity and its enrollment and
+browser bridge secret mounts are under the masked Runner data directory. The
+sandbox re-exposes Agent home, the active engine profile, and Run-specific files
+and keeps the loopback network for browser and MCP access. Linux must support
+unprivileged user namespaces. On AppArmor hosts, install `apparmor` so the
+operator can load the Runner user-namespace profile. The Runner container runs
+with zero capabilities and the image's seccomp policy. The Runner requires a
+private PID namespace and a fresh `/proc` for each sandbox. In Compose,
+`systempaths=unconfined` allows bubblewrap to mount that procfs.
 
 ## Backup and recovery
 

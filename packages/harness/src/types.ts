@@ -97,8 +97,8 @@ export interface HarnessCapabilities {
  *
  * `native-user` means the Runner process belongs to exactly one person and runs
  * as them, so the provider sign-ins already on that computer are theirs to use.
- * `isolated-service` means the Runner executes work for a Deployment's users at
- * large, so every profile gets a Runner-private provider home instead.
+ * `isolated-service` means the Runner protects its own state from engines and
+ * gives each profile a Runner-managed provider home.
  */
 export interface HarnessRuntimeBoundary {
   readonly kind: "native-user" | "isolated-service";
@@ -197,13 +197,15 @@ export const isolatedServiceHarnessRuntimeBoundary: HarnessRuntimeBoundary = Obj
   kind: "isolated-service",
 });
 
-/** Team servers run no engines; personal engines retain their native access-mode sandbox. */
 export function harnessRuntimeBoundaryForRunner(runner: {
+  readonly isolateHarnesses?: boolean;
   readonly deploymentKind: DeploymentKind;
   readonly runnerKind: ExecutionEnvironmentKind;
 }): HarnessRuntimeBoundary {
   if (runner.deploymentKind !== "personal") throw new Error("Team servers cannot run agents");
-  return nativeUserHarnessRuntimeBoundary;
+  return runner.isolateHarnesses
+    ? isolatedServiceHarnessRuntimeBoundary
+    : nativeUserHarnessRuntimeBoundary;
 }
 
 /**
@@ -839,6 +841,12 @@ export interface HarnessDriver {
   /** Additional process-environment variables this provider may inherit. */
   readonly environmentVariables?: readonly string[];
   /**
+   * Why this engine cannot run on an `isolated-service` Runner, when it cannot.
+   * The Runner reports the engine unavailable with it, so nobody adds an
+   * account there that could never run.
+   */
+  readonly isolatedServiceRefusal?: string;
+  /**
    * How wide this driver's native session store reaches. Defaulting to
    * `profile` keeps a driver that has never thought about account switching on
    * the conservative side: its profiles stay mutually unresumable.
@@ -881,6 +889,8 @@ export interface HarnessInstalledEngine {
   readonly create: (executable: string) => HarnessDriver;
   /** Why an account using the person's own sign-in cannot run on this computer. */
   readonly missing: string;
+  /** Said instead of `missing` on an `isolated-service` Runner, where nobody installs anything. */
+  readonly missingWhereIsolated?: string;
   /** Which profiles use this executable: shipped alternatives are ambient-only. */
   readonly scope?: "ambient" | "all";
   readonly update?: InstalledEngineUpdateFacts;

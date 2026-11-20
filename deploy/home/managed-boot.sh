@@ -13,6 +13,9 @@
 #     "password": "...", "accessKeyId": "...", "secretAccessKey": "..."}
 # }
 # The egress object and releaseManifestUrl (an HTTPS update feed) are optional.
+# A managed Home also receives "managedHome": {"cloudComputerId", "generation",
+#   "oidc": {"clientId", "clientSecret"}}, the claim it accepts and the OIDC client
+#   the Account registered for its owner's Account sign-in.
 # CI publishes immutable digest references.
 set -euo pipefail
 umask 077
@@ -59,6 +62,12 @@ jq -e '
     all(.[]; $images[.] | secret))) and
   (.releaseManifestUrl == null or (.releaseManifestUrl | secret and startswith("https://"))) and
   (.egress == null or (.egress | (.url|secret) and (.username|secret) and (.password|secret))) and
+  (.managedHome == null or (.managedHome |
+    (.cloudComputerId | type == "string" and test("^cc_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")) and
+    (.generation | type == "number" and . >= 1 and . == floor) and
+    (.oidc.clientId | type == "string" and test("^occ_[0-9a-f-]{36}$")) and
+    (.oidc.clientSecret | type == "string" and test("^ocs_[A-Za-z0-9_-]{43}$")))) and
+  (.accountOrigin | type == "string" and test("^https://[a-zA-Z0-9.-]+(:[0-9]+)?$")) and
   (.backup | (.repository|secret and startswith("s3:")) and (.password|secret) and (.accessKeyId|secret) and (.secretAccessKey|secret))
 ' "$response" >/dev/null 2>&1 || fail "The Account returned invalid Home boot configuration."
 install -m 0600 "$response" "$output"

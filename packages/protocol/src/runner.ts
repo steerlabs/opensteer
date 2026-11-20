@@ -1130,6 +1130,18 @@ const runnerMessageBase = {} as const;
 const fencedMessageBase = { ...RunnerConnectionFenceSchema.shape } as const;
 
 /**
+ * Capability advertised by Runners that notify the Home when their computer is
+ * about to sleep (macOS/Windows desktop Runners; never Linux or Android).
+ */
+export const runnerPowerStateCapability = "runner-power-state-v1" as const;
+
+export const RunnerPowerSleepingSchema = z.strictObject({
+  ...fencedMessageBase,
+  type: z.literal("runner.power.sleeping"),
+});
+export type RunnerPowerSleeping = z.infer<typeof RunnerPowerSleepingSchema>;
+
+/**
  * Everything an agent-executing machine offers. Only this module carries an
  * environment, harnesses and storage: a Runner that exists to relay a browser
  * or a messaging transport has no work location and must not be made to invent
@@ -1182,6 +1194,7 @@ export type RunnerAgentsModule = z.infer<typeof RunnerAgentsModuleSchema>;
 
 export const RunnerBrowserModuleSchema = z
   .object({
+    standardCdp: z.literal(1).optional().catch(undefined),
     cardFill: z
       .number()
       .int()
@@ -1948,6 +1961,7 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     requestId: CorrelationIdSchema,
     result: RunnerVoiceResultSchema,
   }),
+  RunnerPowerSleepingSchema,
 ]);
 export type RunnerOperationalMessage = z.infer<typeof RunnerOperationalMessageSchema>;
 
@@ -1996,6 +2010,7 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     connectionLeaseExpiresAt: IsoDateTimeSchema,
     environmentIds: z.array(EnvironmentIdSchema).max(100),
     heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),
+    acceptsPowerState: z.literal(true).optional(),
     agentHome: ComputerFolderSchema.optional(),
     agentHomeIsProvisional: z.literal(true).optional(),
     serverTime: IsoDateTimeSchema,

@@ -40,7 +40,7 @@ update_home() {
   done
 
   release_env="$candidate" compose pull --quiet
-  release_env="$candidate" install_browser_policy
+  release_env="$candidate" install_sandbox_policies
   compose down
   if release_env="$candidate" start_pod; then
     mv -f -- "$candidate" "$active"
@@ -50,7 +50,7 @@ update_home() {
   printf '%s\n' "Home $new_version did not become healthy. Restoring $old_version." >&2
   release_env="$candidate" compose down
   mv -f -- "$previous" "$active"
-  install_browser_policy
+  install_sandbox_policies
   start_pod
   fail "The update was rolled back."
 }

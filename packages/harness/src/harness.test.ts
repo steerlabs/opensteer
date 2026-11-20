@@ -153,12 +153,22 @@ describe("harness runtime boundary", () => {
     ).toThrow("Team servers cannot run agents");
   });
 
-  it("keeps every Personal Runner native-user", () => {
+  it("defaults Personal Runners to native-user", () => {
     for (const runnerKind of ["main", "local", "managed"] as const) {
       expect(harnessRuntimeBoundaryForRunner({ deploymentKind: "personal", runnerKind })).toEqual(
         nativeUserHarnessRuntimeBoundary,
       );
     }
+  });
+
+  it("isolates an opted-in Personal Runner", () => {
+    expect(
+      harnessRuntimeBoundaryForRunner({
+        deploymentKind: "personal",
+        runnerKind: "main",
+        isolateHarnesses: true,
+      }),
+    ).toEqual({ kind: "isolated-service" });
   });
 });
 

@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  HarnessSandbox,
   harnessSandboxMounts,
   harnessSandboxRequired,
   programSandboxMounts,
@@ -354,6 +355,26 @@ describe("harness sandbox mounts", () => {
 });
 
 describe("harness sandbox without a fresh procfs", () => {
+  it("refuses an explicitly isolated Runner when it cannot mount a fresh procfs", async () => {
+    const fixture = await createFixture();
+    const bubblewrapExecutable = join(fixture.externalRoot, "bubblewrap-proc-refusal");
+    await writeFile(
+      bubblewrapExecutable,
+      '#!/bin/sh\nprintf "bwrap: Can\'t mount proc\\n" >&2\nexit 1\n',
+      { mode: 0o700 },
+    );
+    await expect(
+      HarnessSandbox.create({
+        bubblewrapExecutable,
+        dataDirectory: fixture.dataDirectory,
+        environment: fixture.environment,
+        requireFreshProc: true,
+        stateDirectory: fixture.privateRoot,
+        workspaceRoots: [],
+      }),
+    ).rejects.toThrow("Runner harness isolation requires a private PID namespace");
+  });
+
   it("binds the container's /proc writable and keeps the pid namespace shared", async () => {
     const fixture = await createFixture();
     const args = await mounts(fixture, {}, fixture.environment, { freshProc: false });

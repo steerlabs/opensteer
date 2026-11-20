@@ -21,6 +21,7 @@ import {
   HomeFileOutputImageExtensionSchema,
   agentHomeFilesCapability,
   homeFilesOutputImageMaxBytes,
+  runnerPowerStateCapability,
   sameRunnerConnectionFence,
   computerAppMaxTimeoutMs,
 } from "@opensteer/protocol";
@@ -276,6 +277,8 @@ export interface ReconnectingHostConnectionOptions {
   readonly onDisconnected?: () => Promise<void> | void;
   /** Called once, instead of reconnecting, when the Host revokes this identity. */
   readonly onRevoked?: () => Promise<void> | void;
+  /** Host OS platform override for tests; defaults to `process.platform`. */
+  readonly platform?: NodeJS.Platform;
   readonly runtimeVersion: string;
   readonly shellModule?: PreparedShellModule;
 }
@@ -286,6 +289,7 @@ export class ReconnectingHostConnection {
   readonly #bootId: RunnerDescriptor["bootId"];
   readonly #config: Omit<RunnerConfig, "enrollmentToken">;
   readonly #device: RunnerDescriptor["device"];
+  readonly #platform: NodeJS.Platform;
   readonly #fullDiskAccessProbe: FullDiskAccessProbeOptions;
   readonly #identityStore: ReconnectingHostConnectionOptions["identityStore"];
   readonly #computerUse: PreparedIntegrationsModule["computerUse"];
@@ -339,6 +343,14 @@ export class ReconnectingHostConnection {
   /** Set after the Host rejects this Runner's persisted key; see `#proof`. */
   #reenroll = false;
   #socket: WebSocket | undefined;
+  /** Authenticated sink for the active primary socket, so power transitions send fenced frames once. */
+  #activeSink:
+    | {
+        readonly sink: CausallyOrderedRunnerSink;
+        readonly socket: WebSocket;
+        sleepingSent: boolean;
+      }
+    | undefined;
   /** The engines the current socket's hello advertised; see `recheckEngines`. */
   #advertisedEngines: { readonly signature: string; readonly socket: WebSocket } | undefined;
   /** The work this socket is serving, so a recheck can see whether any is still queued. */
@@ -356,6 +368,7 @@ export class ReconnectingHostConnection {
     const { enrollmentToken, ...config } = options.config;
     this.#config = config;
     this.#device = options.device;
+    this.#platform = options.platform ?? process.platform;
     this.#enrollmentCredential = runnerEnrollmentCredential(enrollmentToken);
     this.#fullDiskAccess = options.shellModule?.descriptor.fullDiskAccess;
     this.#fullDiskAccessProbe = options.fullDiskAccessProbe ?? {};
@@ -471,6 +484,36 @@ export class ReconnectingHostConnection {
   }
 
   /**
+   * Whether this computer reports sleep transitions to its Home. Linux servers
+   * and Android Agent Phones never advertise or send power-state frames.
+   */
+  #supportsPowerState(): boolean {
+    const devicePlatform = this.#device?.platform;
+    if (devicePlatform === "linux" || devicePlatform === "android") return false;
+    if (devicePlatform === "macos" || devicePlatform === "windows") return true;
+    return this.#platform === "darwin" || this.#platform === "win32";
+  }
+
+  /**
+   * Tells the Home on the current primary connection that this computer is
+   * about to sleep. Best effort, sent at most once per connection, and never
+   * sent on Linux or Android.
+   */
+  notifySleeping(): Promise<void> {
+    if (!this.#supportsPowerState()) return Promise.resolve();
+    const active = this.#activeSink;
+    if (!active || active.socket !== this.#socket) return Promise.resolve();
+    if (active.socket.readyState !== WebSocket.OPEN || active.sleepingSent)
+      return Promise.resolve();
+    active.sleepingSent = true;
+    return active.sink.send({ type: "runner.power.sleeping" }).catch(() => undefined);
+  }
+
+  notifyAwake(): void {
+    if (this.#activeSink) this.#activeSink.sleepingSent = false;
+  }
+
+  /**
    * The Host learns this computer's engines only from a hello, so when a CLI
    * has appeared or gone since this socket's, the Runner reconnects to say
    * hello again. Runs survive that; trigger programs do not, so it waits while
@@ -575,6 +618,12 @@ export class ReconnectingHostConnection {
       if (disallowed) {
         throw new Error(`This Runner's enrollment does not allow the ${disallowed.module} module`);
       }
+      if (welcome.acceptsPowerState && this.#supportsPowerState())
+        this.#activeSink = { sink, sleepingSent: false, socket };
+      await this.#onConnected?.({
+        environmentId: this.#agents ? this.#identity.environmentId : null,
+        runnerId: this.#identity.runnerId,
+      });
       await this.#serve(
         socket,
         sink,
@@ -612,6 +661,7 @@ export class ReconnectingHostConnection {
       socket.off("close", onClose);
       socket.off("error", onError);
       socket.off("error", absorbSocketError);
+      if (this.#activeSink?.socket === socket) this.#activeSink = undefined;
       if (this.#socket === socket) this.#socket = undefined;
       if (this.#advertisedEngines?.socket === socket) this.#advertisedEngines = undefined;
       if (sink) {
@@ -709,10 +759,6 @@ export class ReconnectingHostConnection {
       environmentId: this.#identity.environmentId,
       runnerId: this.#identity.runnerId,
     });
-    await this.#onConnected?.({
-      environmentId: this.#agents ? this.#identity.environmentId : null,
-      runnerId: this.#identity.runnerId,
-    });
     // Only a module that is actually running is reported ready. A reach-only
     // computer says nothing here; its shell module reports itself once its own
     // stream is open.
@@ -744,6 +790,7 @@ export class ReconnectingHostConnection {
         ...(agents?.runFileOptions || agents?.runtime.homeFileOptions?.()
           ? [agentHomeFilesCapability]
           : []),
+        ...(this.#supportsPowerState() ? [runnerPowerStateCapability] : []),
         ...(agents ? ([runEventsCapability] as const) : []),
         ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
           ? ["voice-run-v1" as const]

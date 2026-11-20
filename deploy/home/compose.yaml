@@ -48,7 +48,12 @@ services:
       OPENSTEER_PORT: "4310"
       OPENSTEER_CANONICAL_ORIGIN: https://${OPENSTEER_HOME_HOSTNAME:?Home hostname required}
       OPENSTEER_SIGNUP_POLICY: closed
-      OPENSTEER_LOCAL_PASSWORD_ENABLED: "true"
+      OPENSTEER_LOCAL_PASSWORD_ENABLED: ${OPENSTEER_HOME_LOCAL_PASSWORD_ENABLED:-true}
+      OPENSTEER_MANAGED_HOME_ID: ${OPENSTEER_HOME_MANAGED_ID:-}
+      OPENSTEER_MANAGED_HOME_GENERATION: ${OPENSTEER_HOME_MANAGED_GENERATION:-}
+      OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN: ${OPENSTEER_HOME_ACCOUNT_ORIGIN:-}
+      OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: ${OPENSTEER_HOME_OIDC_CLIENT_ID:-}
+      OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET_FILE: ${OPENSTEER_HOME_OIDC_CLIENT_SECRET_PATH:-}
       OPENSTEER_DATABASE_URL_FILE: /run/secrets/database_url
       OPENSTEER_AUTH_SECRET_FILE: /run/secrets/auth_secret
       OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE: /run/secrets/setup_digest
@@ -59,7 +64,16 @@ services:
       OPENSTEER_HOST_PRIVATE_KEY_PATH: /var/lib/opensteer/keys/host-private.pem
       OPENSTEER_HOST_PUBLIC_KEY_PATH: /var/lib/opensteer/keys/host-public.pem
       OPENSTEER_AGENT_HOME: /workspaces
-    secrets: [database_url, auth_secret, setup_digest, main_token, messaging_token, environment_id]
+    secrets:
+      [
+        database_url,
+        auth_secret,
+        setup_digest,
+        main_token,
+        messaging_token,
+        environment_id,
+        oidc_client_secret,
+      ]
     volumes:
       - host-data:/var/lib/opensteer
       - postgres-socket:/var/run/postgresql:ro
@@ -99,20 +113,32 @@ services:
     cpus: ${OPENSTEER_HOME_RUNNER_CPUS:-4}
     mem_limit: ${OPENSTEER_HOME_RUNNER_MEMORY:-8g}
     memswap_limit: ${OPENSTEER_HOME_RUNNER_MEMORY:-8g}
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./runner-oci.json
+      # Docker masks paths in /proc by default, preventing bubblewrap from mounting its own procfs.
+      - systempaths=unconfined
     environment:
       HOME: /home/opensteer
       OPENSTEER_DEPLOYMENT_KIND: personal
       OPENSTEER_MODE: production
       OPENSTEER_HOST_URL: http://127.0.0.1:4310
-      OPENSTEER_ENVIRONMENT_ID_FILE: /run/secrets/environment_id
+      OPENSTEER_ENVIRONMENT_ID_FILE: /var/lib/opensteer/.secrets/environment_id
       OPENSTEER_RUNNER_KIND: main
+      OPENSTEER_RUNNER_ISOLATE_HARNESSES: "true"
       OPENSTEER_RUNNER_DATA_DIR: /var/lib/opensteer
       OPENSTEER_RUNNER_READINESS_PATH: /var/lib/opensteer/readiness/connected.json
-      OPENSTEER_RUNNER_ENROLLMENT_TOKEN_FILE: /run/secrets/main_token
+      OPENSTEER_RUNNER_ENROLLMENT_TOKEN_FILE: /var/lib/opensteer/.secrets/main_token
       OPENSTEER_BROWSER_RUNTIME_ID: browser-main
       OPENSTEER_BROWSER_BRIDGE_URL: http://127.0.0.1:4312
-      OPENSTEER_BROWSER_BRIDGE_TOKEN_FILE: /run/secrets/browser_token
-    secrets: [environment_id, main_token, browser_token]
+      OPENSTEER_BROWSER_BRIDGE_TOKEN_FILE: /var/lib/opensteer/.secrets/browser_token
+    secrets:
+      - source: environment_id
+        target: /var/lib/opensteer/.secrets/environment_id
+      - source: main_token
+        target: /var/lib/opensteer/.secrets/main_token
+      - source: browser_token
+        target: /var/lib/opensteer/.secrets/browser_token
     volumes:
       - runner-data:/var/lib/opensteer
       - agent-home:/workspaces
@@ -221,6 +247,8 @@ secrets:
     file: ./secrets/auth_secret
   setup_digest:
     file: ./secrets/setup_digest
+  oidc_client_secret:
+    file: ./secrets/oidc_client_secret
   main_token:
     file: ./secrets/main_token
   messaging_token:
