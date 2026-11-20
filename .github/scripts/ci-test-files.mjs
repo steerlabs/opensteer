@@ -26,6 +26,7 @@ export const realBrowserTests = [
   "apps/browser-runtime/src/browser/navigation.test.ts",
   "apps/browser-runtime/src/browser/passkey-provider.test.ts",
   "apps/browser-runtime/src/browser/person-save.test.ts",
+  "apps/browser-runtime/src/browser/playwright-cdp.test.ts",
   "apps/browser-runtime/src/browser/session-files.test.ts",
   "apps/web/src/components/apps/app-isolation.test.ts",
   "apps/web/src/components/workspace/workspace-tabs-chromium.interaction.test.tsx",

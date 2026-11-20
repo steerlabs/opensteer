@@ -246,7 +246,10 @@ async function startFollowSession(
         parameters,
         sessionId,
       ),
+    browser,
+    cdpRouter,
     claims,
+    files,
     closeBrowser: () => browser.close(),
     /** Every command the platform sent the page, in order. */
     commands: (surfaceId: BrowserSurfaceId) => {

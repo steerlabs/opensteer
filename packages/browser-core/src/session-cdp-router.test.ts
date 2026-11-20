@@ -3,6 +3,7 @@ import {
   SessionCdpRouter,
   type BrowserCdpBackend,
   type CdpChannel,
+  type CdpEvent,
   type CdpParameters,
 } from "./session-cdp-router.js";
 
@@ -80,6 +81,10 @@ class FakeBackend implements BrowserCdpBackend {
   send(method: string, parameters?: CdpParameters): Promise<unknown> {
     this.commands.push({ method, ...(parameters ? { parameters } : {}) });
     if (method === "Target.getTargets") return Promise.resolve({ targetInfos: this.targetInfos });
+    if (method === "Target.getTargetInfo")
+      return Promise.resolve({
+        targetInfo: this.targetInfos.find((info) => info.targetId === parameters?.targetId),
+      });
     if (method === "Target.createTarget") {
       const targetId = `created-${this.nextTarget++}`;
       this.targetInfos.push({ targetId, type: "page", url: "about:blank" });
@@ -94,6 +99,164 @@ class FakeBackend implements BrowserCdpBackend {
 }
 
 describe("SessionCdpRouter", () => {
+  it("opens a virtual browser root and announces only owned pages before replying", async () => {
+    const backend = new FakeBackend();
+    const root = { targetId: "root-a", type: "page", browserContextId: "profile" };
+    backend.targetInfos = [root, { targetId: "root-b", type: "page", browserContextId: "profile" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    router.registerSession("b", "root-b", async () => true, "/files/b");
+    const events: CdpEvent[] = [];
+    router.onEvent("a", (event) => events.push(event));
+    const enable = {
+      method: "Target.setAutoAttach",
+      parameters: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+    };
+
+    const enabled = router.send("a", enable);
+    await expect(
+      router.send("a", {
+        method: "Browser.setDownloadBehavior",
+        parameters: { behavior: "allowAndName", downloadPath: "/agent" },
+      }),
+    ).resolves.toEqual({});
+    await expect(enabled).resolves.toEqual({});
+    const attached = events.filter((event) => event.method === "Target.attachedToTarget");
+    expect(attached).toEqual([
+      {
+        method: "Target.attachedToTarget",
+        parameters: {
+          sessionId: expect.any(String),
+          targetInfo: { ...root, attached: true },
+          waitingForDebugger: false,
+        },
+        sequence: expect.any(Number),
+      },
+    ]);
+    const sessionId = attached[0]?.parameters.sessionId;
+    await expect(router.send("a", { method: "Target.getTargetInfo" })).resolves.toMatchObject({
+      targetInfo: { type: "browser", targetId: "browser_a" },
+    });
+    await expect(
+      router.send("a", {
+        method: "Target.attachToTarget",
+        parameters: { targetId: "root-a", flatten: true },
+      }),
+    ).resolves.toEqual({ sessionId });
+    expect([...backend.channels.keys()]).toEqual(["root-a"]);
+    expect(backend.commands).toEqual([
+      { method: "Target.getTargetInfo", parameters: { targetId: "root-a" } },
+    ]);
+    expect(events).toEqual(attached);
+
+    await router.send("a", { method: "Target.detachFromTarget", parameters: { sessionId } });
+    expect(events.at(-1)).toMatchObject({
+      method: "Target.detachedFromTarget",
+      parameters: { sessionId, targetId: "root-a" },
+    });
+    const explicit = await router.send("a", {
+      method: "Target.attachToTarget",
+      parameters: { targetId: "root-a", flatten: true },
+    });
+    expect(events.at(-1)).toMatchObject({
+      method: "Target.attachedToTarget",
+      parameters: explicit,
+    });
+    expect(explicit).not.toEqual({ sessionId });
+    await router.close();
+  });
+
+  it("announces new pages from creation, opener inheritance and ledger claims and retires them", async () => {
+    const backend = new FakeBackend();
+    backend.targetInfos = [{ targetId: "root-a", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    const attached = new Map<string, CdpParameters>();
+    const seen = new Map(["popup", "claimed"].map((id) => [id, Promise.withResolvers<void>()]));
+    const detached: CdpParameters[] = [];
+    router.onEvent("a", (event) => {
+      if (event.method === "Target.attachedToTarget") {
+        const { targetId } = event.parameters.targetInfo as { targetId: string };
+        attached.set(targetId, event.parameters);
+        seen.get(targetId)?.resolve();
+      }
+      if (event.method === "Target.detachedFromTarget") detached.push(event.parameters);
+    });
+    const enable = {
+      method: "Target.setAutoAttach",
+      parameters: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+    };
+    await router.send("a", enable);
+    await expect(
+      router.send("a", {
+        method: "Target.createTarget",
+        parameters: { url: "about:blank" },
+      }),
+    ).resolves.toEqual({ targetId: "created-1" });
+    expect(attached.has("created-1")).toBe(true);
+
+    const popup = { targetId: "popup", type: "page", openerId: "root-a" };
+    const claimed = { targetId: "claimed", type: "page" };
+    backend.targetInfos.push(popup, claimed);
+    backend.emit("Target.targetCreated", { targetInfo: popup });
+    backend.emit("Target.targetCreated", { targetInfo: claimed });
+    router.claimTarget("a", "claimed");
+    await Promise.all([...seen.values()].map(({ promise }) => promise));
+    expect([...attached.keys()].sort()).toEqual(["claimed", "created-1", "popup", "root-a"]);
+    for (const parameters of attached.values())
+      expect(parameters.targetInfo).toMatchObject({ browserContextId: "a" });
+
+    backend.emit("Target.targetDestroyed", { targetId: "popup" });
+    router.releaseTarget("a", "claimed");
+    expect(detached).toEqual(
+      ["popup", "claimed"].map((targetId) => ({
+        targetId,
+        sessionId: attached.get(targetId)?.sessionId,
+      })),
+    );
+    expect(backend.channels.get("popup")?.closed).toBe(true);
+    const oldId = attached.get("root-a")?.sessionId;
+    await router.send("a", {
+      method: "Target.setAutoAttach",
+      parameters: { autoAttach: false, flatten: true },
+    });
+    expect(router.listOwnedTargets("a")).toEqual(["root-a", "created-1"]);
+    await router.send("a", enable);
+    expect(attached.get("root-a")?.sessionId).not.toBe(oldId);
+    await router.close();
+  });
+
+  it("replays owned discovery targets without replaying a racing live announcement", async () => {
+    const backend = new FakeBackend();
+    const root = { targetId: "root-a", type: "page" };
+    const popup = { targetId: "popup", type: "page", openerId: "root-a" };
+    const directory = Promise.withResolvers<unknown>();
+    vi.spyOn(backend, "send").mockReturnValueOnce(directory.promise);
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    router.registerSession("b", "root-b", async () => true, "/files/b");
+    const events: CdpEvent[] = [];
+    router.onEvent("a", (event) => events.push(event));
+    await router.send("a", {
+      method: "Target.setDiscoverTargets",
+      parameters: { discover: false },
+    });
+    const replay = router.send("a", {
+      method: "Target.setDiscoverTargets",
+      parameters: { discover: true },
+    });
+    backend.emit("Target.targetCreated", { targetInfo: popup });
+    directory.resolve({ targetInfos: [root, popup, { targetId: "root-b", type: "page" }] });
+    await replay;
+    expect(events.map(({ method, parameters }) => ({ method, parameters }))).toEqual(
+      [popup, root].map((targetInfo) => ({
+        method: "Target.targetCreated",
+        parameters: { targetInfo },
+      })),
+    );
+    await router.close();
+  });
+
   it("routes both activation commands to session selection without activating the engine", async () => {
     const backend = new FakeBackend();
     const router = new SessionCdpRouter(backend);

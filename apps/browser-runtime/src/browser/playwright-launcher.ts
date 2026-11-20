@@ -1622,11 +1622,38 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
     this.handle.eventRelay.observeDomain("Target.getTargets");
   }
 
-  async attach(targetId: string): Promise<CdpChannel> {
+  async attach(targetId: string, waitForPage = false): Promise<CdpChannel> {
     if (this.closed) throw new Error("Browser CDP backend is closed.");
-    const page = await this.context.pageByTargetId(targetId);
-    if (!page) throw new Error("CDP target is not an attachable page in this Profile Host.");
-    return page.agentCdp();
+    const missingPage = () =>
+      new Error("CDP target is not an attachable page in this Profile Host.");
+    if (!waitForPage) {
+      const page = await this.context.pageByTargetId(targetId);
+      if (!page) throw missingPage();
+      return page.agentCdp();
+    }
+    const found = Promise.withResolvers<PlaywrightPageHandle>();
+    const onPage = (page: BrowserPage) => {
+      if (page instanceof PlaywrightPageHandle) {
+        void page.targetId().then(
+          (id) => {
+            if (id === targetId && !page.isClosed() && !page.closeRequested) found.resolve(page);
+          },
+          () => undefined,
+        );
+      }
+    };
+    // Chromium can announce a popup before Playwright exposes the initialized page.
+    this.context.onPage(onPage);
+    try {
+      const page = await withTimeout(
+        this.context.pageByTargetId(targetId).then((page) => page ?? found.promise),
+        targetLookupMs,
+        { timeoutError: missingPage },
+      );
+      return page.agentCdp();
+    } finally {
+      this.context.offPage(onPage);
+    }
   }
 
   assertScope(_method: string, parameters: CdpParameters): void {
