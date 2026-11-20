@@ -1,0 +1,113 @@
+import { sql } from "kysely";
+import type { Migration } from "kysely/migration";
+
+export const cloudComputersMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table public.cloud_computer_checkouts (
+        account_id text not null references public.users(id) on delete cascade,
+        request_id uuid not null,
+        expires_at timestamptz not null,
+        stripe_session_id text unique,
+        url text,
+        stripe_price_id text not null,
+        currency text not null,
+        status text not null check (status in ('open', 'completed', 'expired')),
+        primary key (account_id, request_id)
+      )
+    `.execute(database);
+    await sql`
+      create unique index cloud_computer_one_open_checkout
+      on public.cloud_computer_checkouts (account_id) where status = 'open'
+    `.execute(database);
+    await sql`
+      create table public.cloud_computers (
+        id text primary key,
+        account_id text references public.users(id) on delete set null,
+        generation integer not null check (generation > 0),
+        state text not null check (state in ('active', 'suspended', 'deleted')),
+        hostname text not null unique,
+        region text not null,
+        server_type text not null,
+        release jsonb not null,
+        setup_code_digest text,
+        sealed_setup_code text,
+        bootstrap_digest text,
+        sealed_bootstrap_token text,
+        bootstrap_expires_at timestamptz,
+        sealed_backup_password text,
+        bootstrap_receipt jsonb,
+        bootstrap_receipt_at timestamptz,
+        readiness_started_at timestamptz not null,
+        phase text not null check (phase in ('provisioning','booting','ready','suspended','deleting','deleted','failed')),
+        provider_server_id text,
+        ipv4 text,
+        ipv6 text,
+        deployment_id text,
+        host_key_fingerprint text,
+        last_error text,
+        operator_suspension text,
+        owner_suspended boolean not null default false,
+        egress_unavailable boolean not null default false,
+        stripe_checkout_id text not null unique,
+        stripe_customer_id text not null,
+        stripe_subscription_id text not null unique,
+        stripe_price_id text not null,
+        billing_currency text not null,
+        billing_status text not null,
+        created_at timestamptz not null,
+        updated_at timestamptz not null,
+        reported_at timestamptz,
+        deleted_at timestamptz,
+        tombstoned_at timestamptz
+      )
+    `.execute(database);
+    await sql`
+      create unique index cloud_computer_one_live_per_account on public.cloud_computers (account_id)
+      where tombstoned_at is null
+    `.execute(database);
+    await sql`
+      create index cloud_computers_owner on public.cloud_computers (account_id, created_at desc)
+    `.execute(database);
+    await sql`
+      create table public.cloud_computer_egress_endpoints (
+        id uuid primary key,
+        url text not null,
+        username text not null,
+        sealed_password text not null,
+        computer_id text unique references public.cloud_computers(id),
+        unique (url)
+      )
+    `.execute(database);
+    await sql`
+      create table public.cloud_computer_stripe_events (
+        id text primary key,
+        type text not null,
+        received_at timestamptz not null
+      )
+    `.execute(database);
+    await sql`
+      create function public.cloud_computer_orphan_tombstone() returns trigger
+      language plpgsql as $$
+      begin
+        new.state := 'deleted';
+        new.phase := 'deleting';
+        new.setup_code_digest := null;
+        new.sealed_setup_code := null;
+        new.sealed_bootstrap_token := null;
+        new.bootstrap_digest := null;
+        new.bootstrap_expires_at := null;
+        new.sealed_backup_password := null;
+        new.deleted_at := now();
+        return new;
+      end
+      $$
+    `.execute(database);
+    await sql`
+      create trigger cloud_computer_orphan_tombstone
+      before update of account_id on public.cloud_computers for each row
+      when (old.account_id is not null and new.account_id is null and new.state <> 'deleted')
+      execute function public.cloud_computer_orphan_tombstone()
+    `.execute(database);
+  },
+};

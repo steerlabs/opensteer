@@ -28,6 +28,7 @@ interface ReconcilerOptions {
 
 interface Observation {
   readonly generation: number;
+  readonly readinessStartedAt: string | undefined;
   unreadySince: number | undefined;
   identity: CloudComputerIdentity | undefined;
   reported: string | undefined;
@@ -85,10 +86,15 @@ export class Reconciler {
     const { id, generation } = computer;
     let observation = this.#observations.get(id);
     if (observation && observation.generation > generation) return;
-    if (observation?.generation !== generation) {
+    if (
+      !observation ||
+      observation.generation !== generation ||
+      observation.readinessStartedAt !== computer.readinessStartedAt
+    ) {
       observation = {
         generation,
-        identity: undefined,
+        readinessStartedAt: computer.readinessStartedAt,
+        identity: observation?.generation === generation ? observation.identity : undefined,
         unreadySince: undefined,
         reported: undefined,
       };

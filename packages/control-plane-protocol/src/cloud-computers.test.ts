@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  CloudComputerBootRequestSchema,
+  CloudComputerDeleteRequestSchema,
   CloudComputerDesiredResponseSchema,
+  CloudComputerIdSchema,
+  CloudComputerViewSchema,
+  cloudComputerDeleteConfirmation,
   CloudComputerDesiredSchema,
   CloudComputerReportResponseSchema,
   CloudComputerReportSchema,
@@ -116,4 +121,34 @@ describe("Cloud Computer provisioner wire contract", () => {
       }).success,
     ).toBe(true);
   });
+});
+
+it("validates boot inputs and keeps installation secrets off Account views", () => {
+  expect(
+    CloudComputerBootRequestSchema.safeParse({ hostname: desired.hostname, bootstrapToken: "abc" })
+      .success,
+  ).toBe(true);
+  expect(
+    CloudComputerBootRequestSchema.safeParse({
+      hostname: desired.hostname,
+      bootstrapToken: "abc",
+      setupCode: "leak",
+    }).success,
+  ).toBe(false);
+  const id = CloudComputerIdSchema.parse(desired.id);
+  expect(
+    CloudComputerDeleteRequestSchema.parse({ confirmation: cloudComputerDeleteConfirmation(id) }),
+  ).toEqual({ confirmation: `DELETE:${id}` });
+  expect(
+    CloudComputerViewSchema.safeParse({ id, status: "ready", egress: "assigned" }).success,
+  ).toBe(false);
+  expect(
+    CloudComputerViewSchema.parse({
+      id,
+      status: "ready",
+      egress: "assigned",
+      address: "https://home.example.com",
+      setupCode: "leak",
+    }),
+  ).not.toHaveProperty("setupCode");
 });

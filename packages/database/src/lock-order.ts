@@ -274,6 +274,7 @@ export const databaseLockOrder = [
   "control-plane:hosted_oauth_broker_attempts",
   "control-plane:hosted_oauth_broker_refreshes",
   "control-plane:portal_sessions",
+  "control-plane:cloud_computer_stripe_events",
   // Account authority precedes session, notification and Personal-link mutations.
   "control-plane:users",
   "control-plane:auth_sessions",
@@ -295,6 +296,9 @@ export const databaseLockOrder = [
   // Deleting a hosted team removes the Deployment adopted at its address first, and an
   // adoption, retried ones included, fences its team's claim after its own locks.
   "control-plane:hosted_teams",
+  "control-plane:cloud_computer_checkouts",
+  "control-plane:cloud_computers",
+  "control-plane:cloud_computer_egress_endpoints",
   "control-plane:cloud_deployment_operations",
   "control-plane:oauth_refresh_token",
   "control-plane:oauth_consents",

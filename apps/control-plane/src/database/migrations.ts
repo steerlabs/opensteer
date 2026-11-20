@@ -1,6 +1,7 @@
 import { personNameFromEmail } from "@opensteer/core";
 import { type Kysely, sql } from "kysely";
 import { Migrator, type Migration, type MigrationResultSet } from "kysely/migration";
+import { cloudComputersMigration } from "../cloud-computers/migration.js";
 import { CONTROL_PLANE_BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import type { ControlPlaneDatabaseSchema } from "./schema.js";
 
@@ -508,6 +509,8 @@ const migrationProvider = {
       "0022_account_name_revision": accountNameRevisionMigration,
       "0023_plugin_oauth_refresh_binding": pluginOAuthRefreshBindingMigration,
       "0024_plugin_oauth_only_broker": pluginOAuthOnlyBrokerMigration,
+      "0026_cloud_computers": cloudComputersMigration,
+      "0027_personal_home_account_link": personalHomeAccountLinkMigration,
     };
   },
 };
@@ -678,6 +681,23 @@ export const accountNameRevisionMigration: Migration = {
  * While an Account is being deleted, nothing may give it a hosted team. Add-only: a previous
  * release never sets them, and deletes the row they sit on.
  */
+/**
+ * A Home on its own server links to an Account and is reached at its canonical
+ * origin, so a canonical row may now carry an Account link. Only loosened: a
+ * previous release never writes one and keeps every row it writes valid.
+ */
+export const personalHomeAccountLinkMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.deployments
+      drop constraint if exists control_plane_deployments_account_link_check,
+      add constraint control_plane_deployments_account_link_check check (
+        reachability = 'canonical' or account_link is not null
+      )
+    `.execute(database);
+  },
+};
+
 const accountDeletionFenceMigration: Migration = {
   async up(database) {
     await sql`

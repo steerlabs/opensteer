@@ -1,3 +1,4 @@
+import { loadCloudComputerConfig, type CloudComputerConfig } from "./cloud-computers/config.js";
 import {
   HostedOAuthProviderRegistrySchema,
   type HostedOAuthProviderApplication,
@@ -281,6 +282,7 @@ export interface ControlPlaneConfig {
    * named; that identity alone may read desired teams and report their status.
    */
   readonly hostedTeams?: { readonly provisionerEmail: string };
+  readonly cloudComputers?: CloudComputerConfig;
   readonly listenHost: string;
   readonly listenPort: number;
 }
@@ -320,7 +322,18 @@ export function loadControlPlaneConfig(
   if (parsed.OPENSTEER_PORTAL_ORIGIN.origin === parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL.origin) {
     throw new Error("Account and portal origins must differ");
   }
+  const cloudComputers = loadCloudComputerConfig(environment);
+  if (
+    cloudComputers &&
+    cloudComputers.provisionerEmail === parsed.OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL
+  ) {
+    throw new Error("Cloud Computer provisioner needs a distinct Google service account");
+  }
+  if (cloudComputers && parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL.protocol !== "https:") {
+    throw new Error("Cloud Computers require an HTTPS Account origin");
+  }
   const config = {
+    ...(cloudComputers ? { cloudComputers } : {}),
     environment: parsed.NODE_ENV,
     databaseUrl: parsed.OPENSTEER_CONTROL_PLANE_DATABASE_URL,
     publicOrigin: parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL,

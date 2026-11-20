@@ -1,3 +1,9 @@
+import type {
+  CloudComputerCheckoutTable,
+  CloudComputerEgressEndpointTable,
+  CloudComputerStripeEventTable,
+  CloudComputerTable,
+} from "../cloud-computers/tables.js";
 import type { NotificationPreviewEnvelope } from "@opensteer/core";
 import type { DeploymentLifecycle } from "@opensteer/core";
 import type {
@@ -551,6 +557,10 @@ export interface HostedTeamTable {
 export type HostedTeamStoredStage = "reserving" | "starting" | "configuring" | "ready" | "failed";
 
 export interface ControlPlaneDatabaseSchema {
+  cloudComputers: CloudComputerTable;
+  cloudComputerCheckouts: CloudComputerCheckoutTable;
+  cloudComputerEgressEndpoints: CloudComputerEgressEndpointTable;
+  cloudComputerStripeEvents: CloudComputerStripeEventTable;
   hostedTeams: HostedTeamTable;
   cloudDeploymentOperations: CloudDeploymentOperationTable;
   users: UserTable;

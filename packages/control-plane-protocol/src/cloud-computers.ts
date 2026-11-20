@@ -138,3 +138,129 @@ export const cloudComputersDesiredPath = "/v1/cloud-computers/desired";
 // Account checks that the URL ID matches the body and fences writes on the current generation.
 export const cloudComputerStatusPath = (id: CloudComputerId) =>
   `/v1/cloud-computers/${encodeURIComponent(id)}/status`;
+
+const httpsUrl = z
+  .url({ protocol: /^https$/u })
+  .max(2048)
+  .refine((value) => {
+    const url = new URL(value);
+    return !url.username && !url.password;
+  });
+const secret = z
+  .string()
+  .min(1)
+  .max(8192)
+  .refine((value) => !/\p{Cc}/u.test(value));
+const pinnedImage = z
+  .string()
+  .max(512)
+  .regex(/^[a-z0-9./_:-]+@sha256:[0-9a-f]{64}$/u);
+
+export const CloudComputerBootReleaseSchema = z.strictObject({
+  version: CloudComputerReleaseSchema.shape.version,
+  images: z.strictObject({
+    host: pinnedImage,
+    runner: pinnedImage,
+    "browser-runtime": pinnedImage,
+    "browser-egress": pinnedImage,
+    "channel-runtime": pinnedImage,
+    gateway: pinnedImage,
+  }),
+});
+export const CloudComputerEgressSchema = z.strictObject({
+  url: httpsUrl.refine((value) => {
+    const url = new URL(value);
+    return url.pathname === "/" && !url.search && !url.hash;
+  }),
+  username: secret.max(255),
+  password: secret.max(255),
+});
+
+export const CloudComputerBootRequestSchema = z.strictObject({
+  hostname: CloudComputerHostnameSchema,
+  bootstrapToken: CloudComputerBootstrapTokenSchema,
+});
+export type CloudComputerBootRequest = z.infer<typeof CloudComputerBootRequestSchema>;
+
+export const CloudComputerBootResponseSchema = z.strictObject({
+  hostname: CloudComputerHostnameSchema,
+  accountOrigin: httpsUrl.refine((value) => new URL(value).origin === value),
+  setupCodeDigest: CloudComputerInstallerSha256Schema,
+  release: CloudComputerBootReleaseSchema,
+  egress: CloudComputerEgressSchema.optional(),
+  backup: z.strictObject({
+    endpoint: httpsUrl.refine((value) => new URL(value).origin === value),
+    bucket: z
+      .string()
+      .min(3)
+      .max(63)
+      .regex(/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/u),
+    prefix: z
+      .string()
+      .min(1)
+      .max(512)
+      .regex(/^[a-z0-9_-]+(?:\/[a-z0-9_-]+)*$/u),
+    repository: z.string().startsWith("s3:https://").max(4096),
+    accessKeyId: secret,
+    secretAccessKey: secret,
+    password: secret,
+  }),
+});
+export type CloudComputerBootResponse = z.infer<typeof CloudComputerBootResponseSchema>;
+export const cloudComputerBootPath = (id: CloudComputerId) => `/v1/cloud-computers/${id}/boot`;
+
+export const CloudComputerPlanSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  currency: z.string().regex(/^[a-z]{3}$/u),
+  amountMinor: z.number().int().positive(),
+});
+
+const cloudComputerViewFields = {
+  id: CloudComputerIdSchema,
+  egress: z.enum(["pending", "assigned", "unavailable"]),
+};
+export const CloudComputerViewSchema = z.discriminatedUnion("status", [
+  z.object({ ...cloudComputerViewFields, status: z.literal("preparing") }),
+  z.object({ ...cloudComputerViewFields, status: z.literal("ready"), address: httpsUrl }),
+  z.object({
+    ...cloudComputerViewFields,
+    status: z.literal("needs_attention"),
+    reason: z.string().min(1).max(1000),
+  }),
+  z.object({
+    ...cloudComputerViewFields,
+    status: z.literal("suspended"),
+    reason: z.string().min(1).max(1000),
+  }),
+  z.object({ ...cloudComputerViewFields, status: z.literal("deleted") }),
+]);
+export type CloudComputerView = z.infer<typeof CloudComputerViewSchema>;
+
+export const CloudComputerListResponseSchema = z.object({
+  computers: z.array(CloudComputerViewSchema),
+  plan: CloudComputerPlanSchema,
+});
+
+export type CloudComputerListResponse = z.infer<typeof CloudComputerListResponseSchema>;
+
+export const CloudComputerCheckoutRequestSchema = z.strictObject({ requestId: z.uuid() });
+export type CloudComputerCheckoutRequest = z.infer<typeof CloudComputerCheckoutRequestSchema>;
+export const CloudComputerBillingUrlResponseSchema = z.object({ url: httpsUrl });
+export type CloudComputerBillingUrlResponse = z.infer<typeof CloudComputerBillingUrlResponseSchema>;
+export const CloudComputerDeleteRequestSchema = z.strictObject({
+  confirmation: z.templateLiteral(["DELETE:", CloudComputerIdSchema]),
+});
+export type CloudComputerDeleteRequest = z.infer<typeof CloudComputerDeleteRequestSchema>;
+export const cloudComputerDeleteConfirmation = (id: CloudComputerId) => `DELETE:${id}` as const;
+
+export const accountCloudComputersPath = "/v1/account/cloud-computers";
+export const accountCloudComputerCheckoutPath = `${accountCloudComputersPath}/checkout`;
+export const accountCloudComputerBillingPortalPath = `${accountCloudComputersPath}/billing-portal`;
+export const accountCloudComputerPath = (id: CloudComputerId) =>
+  `${accountCloudComputersPath}/${id}`;
+export const cloudComputerStripeWebhookPath = "/v1/cloud-computers/stripe-webhook";
+
+export const accountCloudComputerSuspendPath = (id: CloudComputerId) =>
+  `${accountCloudComputerPath(id)}/suspend`;
+export const accountCloudComputerResumePath = (id: CloudComputerId) =>
+  `${accountCloudComputerPath(id)}/resume`;

@@ -1,3 +1,5 @@
+import { CloudComputerStore } from "../cloud-computers/store.js";
+import { CloudComputerStripe } from "../cloud-computers/stripe.js";
 import { appleClientSecret } from "../auth/apple-sign-in.js";
 import {
   ControlPlaneAuthenticator,
@@ -77,6 +79,15 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
           ownerCheck,
         })
       : undefined;
+    const cloud = config.cloudComputers;
+    const cloudComputers = cloud
+      ? new CloudComputerStore(database, {
+          config: cloud,
+          accountOrigin: config.publicOrigin,
+          cipher: new HostedTeamSetupTokenCipher(config.adoptionOperationKey),
+          stripe: new CloudComputerStripe({ key: cloud.stripeKey, returnUrl: config.publicOrigin }),
+        })
+      : undefined;
     const store = new ControlPlaneStore(database, config.publicOrigin, {
       adoptionCompletionGrantIssuer: new BetterAuthAccountAdoptionCompletionGrantIssuer(
         auth,
@@ -132,6 +143,18 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         authenticator: new ControlPlaneAuthenticator(auth, database, config.publicOrigin),
         connectLifecycle,
         ...(hostedOAuthBroker ? { hostedOAuthBroker } : {}),
+        ...(cloud && cloudComputers
+          ? {
+              cloudComputers: {
+                store: cloudComputers,
+                stripeWebhookSecret: cloud.stripeWebhookSecret,
+                verifyProvisioner: googleServiceAccountVerifier({
+                  audience: config.publicOrigin.origin,
+                  email: cloud.provisionerEmail,
+                }),
+              },
+            }
+          : {}),
         ...(config.hostedTeams && hostedTeams
           ? {
               hostedTeams: {
