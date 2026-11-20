@@ -1,4 +1,4 @@
-import { requestDecisionRevision } from "@opensteer/client/host";
+import { requestDecision } from "@opensteer/client/host";
 import {
   useEffect,
   useId,
@@ -24,6 +24,7 @@ import {
   passwordSignInPrivacy,
   unwrapRpcResult,
   type HostClient,
+  type RequestView,
   type PasswordSignInAccount,
   type PasswordSignInAccountGroup,
   type PasswordSignInAccountRow,
@@ -53,14 +54,14 @@ export function ThreadPasswordSignInAction({
   request,
 }: {
   readonly disabled: boolean;
-  readonly request: Request;
+  readonly request: RequestView;
 }) {
   const { hostClient } = useShell();
   return (
     <CredentialRequestBody
       client={hostClient}
       disabled={disabled}
-      key={request.id}
+      key={JSON.stringify([request.id, request.reviewedRevision])}
       request={request}
     />
   );
@@ -84,7 +85,7 @@ export function PasswordSignInRequestBody({
 }: {
   readonly client: PasswordSignInRequestClient;
   readonly disabled: boolean;
-  readonly request: Request;
+  readonly request: RequestView;
 }) {
   const payload = request.payload.kind === "browser.password-sign-in" ? request.payload : null;
   const pending = request.status === "pending";
@@ -161,8 +162,7 @@ export function PasswordSignInRequestBody({
       execute: () =>
         client.dispatch({
           idempotencyKey,
-          requestId: request.id,
-          ...requestDecisionRevision(request),
+          ...requestDecision(request),
           type: "browser.password-sign-in.respond",
           decision: { kind: "decline" },
         }),
@@ -185,8 +185,7 @@ export function PasswordSignInRequestBody({
       execute: () =>
         client.dispatch({
           type: "browser.password-sign-in.respond",
-          requestId: request.id,
-          ...requestDecisionRevision(request),
+          ...requestDecision(request),
           idempotencyKey: mutationIdempotencyKey(`password-sign-in:${request.id}`),
           decision: {
             kind: "approve",

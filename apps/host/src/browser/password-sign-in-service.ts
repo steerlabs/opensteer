@@ -655,6 +655,7 @@ export class PasswordSignInService {
     if ((await this.#requests.revision(input.requestId)) !== input.expectedRevision)
       throw new OpensteerError({
         code: "conflict",
+        reason: "request-changed",
         message: "Sign-in Request changed. Open it again.",
       });
     const operation = this.#operations.get(

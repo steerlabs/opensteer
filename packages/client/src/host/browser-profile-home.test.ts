@@ -1,3 +1,4 @@
+import { requestDecision } from "./client.js";
 import { describe, expect, it } from "vitest";
 import { createId, RequestSchema } from "@opensteer/core";
 import { browserAccessResponse, browserProfileHomeCommand } from "./browser-access.js";
@@ -47,7 +48,10 @@ describe("home-aware profile commands", () => {
       };
       const result = await client.rpc["commands.dispatch"]({
         type: "request.respond",
-        requestId: request.id,
+        ...requestDecision(
+          client.getSnapshot().waitingRequests.find((entry) => entry.request.id === request.id)!
+            .request,
+        ),
         idempotencyKey: "approve",
         response,
       });
@@ -95,6 +99,7 @@ describe("home-aware profile commands", () => {
           {
             type: "request.respond",
             idempotencyKey: "approve",
+            expectedRevision: "0",
             requestId: createId("request"),
             response: {
               kind: "external",

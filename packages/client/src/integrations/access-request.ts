@@ -14,7 +14,7 @@ import type {
 import { integrationToolEffect } from "@opensteer/integration-core/effect";
 import type { Request } from "@opensteer/core";
 import { mutationIdempotencyKey, unwrapRpcResult } from "../host/host-session-client.js";
-import type { HostClient } from "../host/index.js";
+import type { HostClient, RequestView } from "../host/index.js";
 
 /**
  * What one access Request for a device data app or a local server comes to,
@@ -26,7 +26,34 @@ export interface LoadedAccessRequest {
   readonly dashboard: IntegrationDashboard;
   readonly platform: IntegrationPlatformDashboardView;
   readonly request: Extract<Request["payload"], { kind: "integration.access" }>;
-  readonly reviewedRevision?: string | undefined;
+}
+
+export interface ReviewedAccessRequest extends LoadedAccessRequest {
+  readonly id: Request["id"];
+  readonly reviewedRevision: string | undefined;
+}
+
+/** A targeted read after an install can arrive before the conversation catches up. */
+export function loadAccessRequest(
+  { dashboard, platform }: Pick<LoadedAccessRequest, "dashboard" | "platform">,
+  request: RequestView,
+  previous: ReviewedAccessRequest | null = null,
+): ReviewedAccessRequest | null {
+  if (request.status !== "pending" || request.payload.kind !== "integration.access") return null;
+  const revision = request.reviewedRevision;
+  if (
+    previous?.id === request.id &&
+    previous.reviewedRevision !== undefined &&
+    (revision === undefined || BigInt(previous.reviewedRevision) > BigInt(revision))
+  )
+    return { ...previous, dashboard, platform };
+  return {
+    dashboard,
+    platform,
+    id: request.id,
+    request: request.payload,
+    reviewedRevision: revision,
+  };
 }
 
 /**
@@ -102,7 +129,7 @@ export async function resolveIntegrationAccess(
     readonly accountsCount: number;
     readonly installationTitle: string;
     readonly requestId: string;
-    readonly expectedRevision?: string | undefined;
+    readonly expectedRevision: string;
     readonly selectedAccount: {
       readonly accountIdentifier: string | null;
       readonly displayName: string;
@@ -114,7 +141,7 @@ export async function resolveIntegrationAccess(
   await hostClient.dispatch({
     idempotencyKey: mutationIdempotencyKey(`request:${requestId}`),
     requestId,
-    ...(input.expectedRevision === undefined ? {} : { expectedRevision: input.expectedRevision }),
+    expectedRevision: input.expectedRevision,
     response: {
       kind: "external",
       value: {

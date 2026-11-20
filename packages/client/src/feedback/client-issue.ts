@@ -90,6 +90,8 @@ export function clientIssueFromFailure(
 }
 
 const rejectionReasons: Readonly<Record<string, string>> = {
+  "request-changed": "This request changed. Review it before answering.",
+  "request-review-required": "Review the latest request before answering.",
   forbidden: "You don't have access.",
   "permission-denied": "You don't have access.",
   "access-denied": "You don't have access.",

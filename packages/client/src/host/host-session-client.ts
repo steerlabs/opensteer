@@ -94,7 +94,6 @@ import {
   type Attachment,
   type ExecutionPreferences,
   type NotificationView,
-  type Request,
   type RunId,
   type Sequence,
   type Thread,
@@ -136,7 +135,13 @@ import type {
   TeamAskDecision,
   WaitingMessageEditor,
 } from "./client.js";
-import { HostClientRequestError, mainDoneTasks, resourceBackedFields } from "./client.js";
+import {
+  HostClientRequestError,
+  mainDoneTasks,
+  requestReviewRequired,
+  resourceBackedFields,
+  type RequestView,
+} from "./client.js";
 import { rawSnapshot, trackSnapshot, type SnapshotReader } from "./host-snapshot-store.js";
 import { browserProfileHomeCommand } from "./browser-access.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
@@ -1035,11 +1040,7 @@ export class HttpHostClient {
         parsedCommand.type === "browser.password-sign-in.respond") &&
       parsedCommand.expectedRevision === undefined
     )
-      throw new HostClientRequestError({
-        code: "conflict",
-        status: 409,
-        message: "Review the latest request before answering.",
-      });
+      throw requestReviewRequired();
     const needsDevices =
       parsedCommand.type === "machine.session.bind" ||
       (parsedCommand.type === "machine.access.update" &&
@@ -2112,6 +2113,7 @@ export class HttpHostClient {
           for (;;) {
             const page: {
               requests: HostSnapshot["waitingRequests"];
+              reviewedRevisions?: Readonly<Record<string, string>> | undefined;
               window: import("@opensteer/protocol").DurableWindow;
               pendingRequestsRevision: string;
             } = unwrapRpcResult(
@@ -2121,7 +2123,15 @@ export class HttpHostClient {
               ),
             );
             if (!read.current()) return;
-            read_.push(...page.requests);
+            for (const entry of page.requests) {
+              read_.push({
+                ...entry,
+                request: {
+                  ...entry.request,
+                  reviewedRevision: page.reviewedRevisions?.[entry.request.id],
+                },
+              });
+            }
             revisions.add(page.pendingRequestsRevision);
             if (!page.window.hasMore) break;
             before = page.window.nextBefore ?? null;
@@ -3349,7 +3359,7 @@ export class HttpHostClient {
     prefix: "input-cancel" | "input-steer",
     messageId: string,
     identity: string,
-    command: (idempotencyKey: string) => HostApiCommandInput,
+    command: (idempotencyKey: string) => ClientCommandInput,
   ): Promise<void> {
     const key = `${prefix}:${identity}`;
     const held = this.#threadInputMutationKeys.get(key);
@@ -3583,7 +3593,7 @@ export class HttpHostClient {
     return promise;
   }
 
-  async readRequest(threadId: string, requestId: string): Promise<Request | null> {
+  async readRequest(threadId: string, requestId: string): Promise<RequestView | null> {
     const generation = this.#viewerGeneration;
     const { requests, reviewedRevisions } = unwrapRpcResult(
       await this.rpc["thread.requests.list"]({
@@ -3597,8 +3607,7 @@ export class HttpHostClient {
       ({ id, originatingThreadId }) => id === requestId && originatingThreadId === threadId,
     );
     if (!request) return null;
-    const reviewed = { ...request, reviewedRevision: reviewedRevisions?.[request.id] };
-    return reviewed;
+    return { ...request, reviewedRevision: reviewedRevisions?.[request.id] };
   }
 
   /** Opens Done: a person opening it sees it read again from its first page. */

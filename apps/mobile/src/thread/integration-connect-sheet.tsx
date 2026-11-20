@@ -1,8 +1,7 @@
-import { requestDecisionRevision } from "@opensteer/client/host";
+import { requestDecision, type RequestView } from "@opensteer/client/host";
 import { computerTargetId } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
-import { isPhoneDisplayDefinitionId, RunnerIdSchema, type Request } from "@opensteer/core";
-import { includeDeviceAccessRequests } from "@opensteer/protocol";
+import { isPhoneDisplayDefinitionId, RunnerIdSchema } from "@opensteer/core";
 import {
   mutationIdempotencyKey,
   unwrapRpcResult,
@@ -20,6 +19,8 @@ import {
   computerConnectionState,
   connectCard,
   integrationRequestStillPending,
+  loadAccessRequest,
+  type ReviewedAccessRequest,
   setPhoneUseAccess,
   resolveIntegrationAccess,
   type AccessPlan,
@@ -57,7 +58,7 @@ const sameCardHostState = (a: CardHostState, b: CardHostState) =>
  */
 export function IntegrationConnectCard(props: {
   readonly hostClient: HostClient;
-  readonly request: Request;
+  readonly request: RequestView;
   readonly disabled?: boolean;
   readonly disabledReason?: string | null;
   readonly canStartResponse?: () => boolean;
@@ -69,7 +70,7 @@ export function IntegrationConnectCard(props: {
   const aiSharing = useAiSharing();
   const payload =
     props.request.payload.kind === "integration.access" ? props.request.payload : null;
-  const [updatedAccess, setLoaded] = useState<LoadedAccessRequest | null>(null);
+  const [updatedAccess, setLoaded] = useState<ReviewedAccessRequest | null>(null);
   const [step, setStep] = useState<Step>("review");
   const [busy, setBusy] = useState(false);
   const [stop, setStop] = useState<string | null>(null);
@@ -108,7 +109,8 @@ export function IntegrationConnectCard(props: {
             ]).then(([dashboard, platform]) => ({ dashboard, platform })),
   });
   const refresh = access.refresh;
-  const loaded = access.data === null ? null : updatedAccess;
+  const loaded = access.data && updatedAccess?.id === props.request.id ? updatedAccess : null;
+  const decision = (view = loaded) => requestDecision(view ?? props.request);
   const answering = useScreenAction(props.hostClient, `integration-request:${props.request.id}`, {
     label: "send your answer",
     done: "sent",
@@ -187,16 +189,8 @@ export function IntegrationConnectCard(props: {
       setLoaded(null);
       return;
     }
-    setLoaded((current) => ({
-      ...data,
-      request:
-        current &&
-        ((payload.installationId === null && current.request.installationId !== null) ||
-          (payload.requestedServerId === null && current.request.requestedServerId !== null))
-          ? current.request
-          : payload,
-    }));
-  }, [access.data, payload]);
+    setLoaded((current) => loadAccessRequest(data, props.request, current));
+  }, [access.data, props.request]);
 
   const showForm = (next: Step): void => {
     setStep(next);
@@ -277,9 +271,7 @@ export function IntegrationConnectCard(props: {
         access: effectiveAccess,
         accountsCount: nextPlan.accounts.length,
         installationTitle: nextPlan.installationTitle,
-        requestId: props.request.id,
-        expectedRevision:
-          loaded?.reviewedRevision ?? requestDecisionRevision(props.request).expectedRevision,
+        ...decision(current),
         selectedAccount: nextPlan.selectedAccount,
       });
     }
@@ -309,38 +301,23 @@ export function IntegrationConnectCard(props: {
       if (!payload || !loaded || !card?.primary) return;
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${props.request.id}:install`),
-        ...requestDecisionRevision(props.request),
-        requestId: props.request.id,
+        ...decision(),
         response: { kind: "choice", optionId: "installed" },
         type: "request.respond",
       });
-      let before: string | undefined;
-      let updated: Request | undefined;
-      let reviewedRevision: string | undefined;
-      do {
-        const page = unwrapRpcResult(
-          await props.hostClient.rpc["thread.requests.list"]({
-            ...includeDeviceAccessRequests,
-            threadId: props.request.originatingThreadId,
-            limit: 100,
-            ...(before ? { before } : {}),
-          }),
-        );
-        updated = page.requests.find((candidate) => candidate.id === props.request.id);
-        if (updated) reviewedRevision = page.reviewedRevisions?.[updated.id];
-        if (updated || !page.window.hasMore) break;
-        if (!page.window.nextBefore)
-          throw new Error("Thread Request page is missing its continuation cursor.");
-        before = page.window.nextBefore;
-      } while (before);
-      if (updated?.payload.kind !== "integration.access")
+      const updated = await props.hostClient.readRequest(
+        props.request.originatingThreadId,
+        props.request.id,
+      );
+      if (updated?.status !== "pending" || updated.payload.kind !== "integration.access")
         throw new ConnectStop("This request is no longer available.");
       const [dashboard, platform] = await Promise.all([
         props.hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
         props.hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
       ]);
       if (generation !== operationGeneration.current) return;
-      const next = { dashboard, platform, request: updated.payload, reviewedRevision };
+      const next = loadAccessRequest({ dashboard, platform }, updated);
+      if (!next) return;
       setLoaded(next);
       // A catalog app goes on to its computer, or to its server, on the same card.
       const nextCard = connectCard({ loaded: next, allowChanges });
@@ -389,8 +366,7 @@ export function IntegrationConnectCard(props: {
     run(async (generation) => {
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${props.request.id}:server:${serverId}`),
-        ...requestDecisionRevision(props.request),
-        requestId: props.request.id,
+        ...decision(),
         response: { kind: "choice", optionId: `server:${serverId}` },
         type: "request.respond",
       });
@@ -402,8 +378,7 @@ export function IntegrationConnectCard(props: {
     run(async (generation) => {
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${props.request.id}`),
-        ...requestDecisionRevision(props.request),
-        requestId: props.request.id,
+        ...decision(),
         response: { kind: "external", value: { decision: "declined" } },
         type: "request.respond",
       });
@@ -419,9 +394,7 @@ export function IntegrationConnectCard(props: {
           access: effectiveAccess,
           accountsCount: 0,
           installationTitle: plan.installationTitle,
-          requestId: props.request.id,
-          expectedRevision:
-            loaded?.reviewedRevision ?? requestDecisionRevision(props.request).expectedRevision,
+          ...decision(),
           selectedAccount: null,
         });
         if (generation === operationGeneration.current) props.onResponded();

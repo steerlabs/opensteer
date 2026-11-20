@@ -1,4 +1,4 @@
-import { requestDecisionRevision } from "@opensteer/client/host";
+import { requestDecision } from "@opensteer/client/host";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   mutationIdempotencyKey,
@@ -132,14 +132,15 @@ function PasswordsOnThisMac({
       await Promise.all(
         waitingSignIns.map(async (request) => {
           if (request.payload.kind !== "browser.password-sign-in") return;
+          const review = requestDecision(request);
+          const attempt = JSON.stringify([review.requestId, review.expectedRevision]);
           const key =
-            declineKeys.current.get(request.id) ??
+            declineKeys.current.get(attempt) ??
             mutationIdempotencyKey(`password-sign-in:${request.id}`);
-          declineKeys.current.set(request.id, key);
+          declineKeys.current.set(attempt, key);
           return client.dispatch({
             idempotencyKey: key,
-            ...requestDecisionRevision(request),
-            requestId: request.id,
+            ...review,
             type: "browser.password-sign-in.respond",
             decision: { kind: "decline" },
           });

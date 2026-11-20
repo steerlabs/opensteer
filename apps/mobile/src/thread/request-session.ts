@@ -1,5 +1,5 @@
-import { requestDecisionRevision } from "@opensteer/client/host";
-import { hasSecretRequestFields, type Request } from "@opensteer/core";
+import type { RequestView } from "@opensteer/client/host";
+import { hasSecretRequestFields } from "@opensteer/core";
 import type { BrowserAccessSelection } from "@opensteer/client/host";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { BrowserSignInOutcome } from "@opensteer/protocol/browser-sources";
@@ -92,16 +92,20 @@ function sharedSession(key: string): RequestSession {
  * A secret stays with the one surface it was typed into and goes when that
  * closes, because this store outlives every screen.
  */
-export function useRequestSession(request: Request, userId: string | null): RequestSession {
+export function useRequestSession(
+  request: RequestView,
+  deploymentId: string | null,
+  userId: string | null,
+): RequestSession {
   // A shared Thread's Request reaches everyone in it, and an unsent answer is one person's.
-  const revision = requestDecisionRevision(request).expectedRevision;
+  const revision = request.reviewedRevision;
   const secret = hasSecretRequestFields(request);
   const session = useMemo(
     () =>
       secret
         ? createSession()
-        : sharedSession(`${userId ?? "signed-out"}|${request.id}|${revision ?? ""}`),
-    [userId, request.id, revision, secret],
+        : sharedSession(JSON.stringify([deploymentId, userId, request.id, revision])),
+    [deploymentId, userId, request.id, revision, secret],
   );
   useSyncExternalStore(
     (listener) => {

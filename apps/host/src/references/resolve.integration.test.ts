@@ -330,7 +330,22 @@ describeStore("personal reference handlers", (it) => {
         options: [{ id: "csv", label: "CSV", hint: "other" }],
       },
     });
-    await f.database.insertInto("requests").values(requestInsert(request)).execute();
+    await f.database
+      .insertInto("requests")
+      .values({ ...requestInsert(request), revision: "41" })
+      .execute();
+    const handler = createThreadRequestHandler(f.store);
+    const read = async (...args: Parameters<typeof handler>) => rpcData(await handler(...args));
+    const input = { threadId: run.threadId, requestId: request.id };
+    for (const query of [
+      input,
+      { threadId: run.threadId },
+      { threadId: run.threadId, review: [{ id: request.id, revision: "41" }] },
+    ]) {
+      const pending = await read(query, context(run.userId));
+      expect(pending.requests).toMatchObject([{ id: request.id, status: "pending" }]);
+      expect(pending.reviewedRevisions).toEqual({ [request.id]: "41" });
+    }
     await f.database
       .updateTable("requests")
       .set({
@@ -342,11 +357,9 @@ describeStore("personal reference handlers", (it) => {
       })
       .where("id", "=", request.id)
       .execute();
-    const handler = createThreadRequestHandler(f.store);
-    const read = async (...args: Parameters<typeof handler>) => rpcData(await handler(...args));
-    const input = { threadId: run.threadId, requestId: request.id };
     const result = await read(input, context(run.userId));
     expect(result.requests).toHaveLength(1);
+    expect(result.reviewedRevisions).toEqual({});
     expect(result.requests[0]).toMatchObject({
       id: request.id,
       status: "fulfilled",

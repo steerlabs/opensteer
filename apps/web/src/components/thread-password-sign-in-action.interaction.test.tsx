@@ -44,7 +44,7 @@ async function mount(
       <PasswordSignInRequestBody
         client={client}
         disabled={false}
-        request={mockPasswordSignInRequest()}
+        request={{ ...mockPasswordSignInRequest(), reviewedRevision: "12" }}
       />,
     ),
   );

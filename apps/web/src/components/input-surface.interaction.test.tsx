@@ -3,14 +3,18 @@ import {
   initializeMessageOutbox,
   createMessageOutboxStorage,
   disposeMessageOutbox,
+  HttpHostClient,
+  type ClientCommandInput,
   type HostClient,
+  type RequestView,
+  type WaitingRequestView,
 } from "@opensteer/client/host";
 import { controlledClientSession, testHostConnection } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createId, WaitingRequestSchema, type Request, type WaitingRequest } from "@opensteer/core";
+import { createId, WaitingRequestSchema, type Request } from "@opensteer/core";
 import { MemoryRouter } from "react-router";
 import { deriveSurface, TabStore } from "@opensteer/client/host";
 import { InputSurface, RequestStack } from "./input-surface.js";
@@ -33,7 +37,7 @@ const shell = vi.hoisted(() => ({
   desktopBridge: null,
   desktopDeployment: null,
   hostClient: {
-    dispatch: vi.fn(async () => undefined),
+    dispatch: vi.fn<(command: ClientCommandInput) => Promise<unknown>>(async () => undefined),
     // The composer's place list reads the catalog; this conversation has none.
     getSnapshot: vi.fn(() => noPlaces),
     subscribe: vi.fn(() => () => undefined),
@@ -78,7 +82,7 @@ const shell = vi.hoisted(() => ({
     activeTasks: [],
     threads: [{ id: "thread" }],
     user: { id: "viewer" },
-    waitingRequests: [] as WaitingRequest[],
+    waitingRequests: [] as WaitingRequestView[],
   },
   reportActionError: vi.fn(),
   localExecutionStatus: null,
@@ -186,7 +190,7 @@ it("keeps a reply tapped before sign-in changed in the draft", async () => {
   }
 });
 
-function request(presentation: Request["presentation"]): Request {
+function request(presentation: Request["presentation"]): RequestView {
   return {
     callId: "call",
     cancellationReason: null,
@@ -201,6 +205,7 @@ function request(presentation: Request["presentation"]): Request {
     presentation,
     requestedBy: createId("user"),
     requiredActor: "owner",
+    reviewedRevision: "0",
     resolvedAt: null,
     resolvedBy: null,
     response: null,
@@ -409,7 +414,7 @@ describe("answering a question", () => {
   function question(
     fields: Extract<Request["presentation"], { kind: "form" }>["fields"],
     kind: "harness.input" | "person.question" = "harness.input",
-  ): Request {
+  ): RequestView {
     const asked = request({ kind: "form", title: "How should I backfill?", fields });
     return kind === "harness.input"
       ? asked
@@ -424,7 +429,7 @@ describe("answering a question", () => {
     secret: false,
     ...overrides,
   });
-  function mount(requests: Request[]) {
+  function mount(requests: RequestView[]) {
     const node = document.createElement("div");
     document.body.append(node);
     root = createRoot(node);
@@ -468,6 +473,48 @@ describe("answering a question", () => {
     expect(composerField(node).closest("[hidden]")).not.toBeNull();
     await act(async () => option(node, "Batches").click());
     expect(sent()).toEqual([{ kind: "form", answers: { q: ["Batches"] } }]);
+  });
+
+  it("sends the displayed question revision through the real Host client", async () => {
+    const seen: unknown[] = [];
+    const client = new HttpHostClient({
+      baseUrl: "http://personal-host.test",
+      fetch: async (input, init) => {
+        expect(new URL(String(input)).pathname).toBe("/v1/rpc/commands.dispatch");
+        seen.push(JSON.parse(String(init?.body)));
+        return Response.json({ ok: true, data: { type: "request.respond" } });
+      },
+    });
+    shell.hostClient.dispatch.mockImplementationOnce((command) => client.dispatch(command));
+    const asked = { ...question([field("q")], "person.question"), reviewedRevision: "38" };
+    try {
+      const node = mount([asked]);
+      await act(async () => option(node, "Batches").click());
+      expect(seen).toEqual([
+        expect.objectContaining({
+          type: "request.respond",
+          requestId: asked.id,
+          expectedRevision: "38",
+          response: { kind: "form", answers: { q: ["Batches"] } },
+        }),
+      ]);
+      expect(node.textContent).not.toContain("Couldn't send your answer");
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("opens a changed revision with a fresh draft", async () => {
+    const asked = question([field("q", { multiSelect: true })]);
+    let node = mount([asked]);
+    await act(async () => option(node, "Batches").click());
+    expect(option(node, "Batches").getAttribute("aria-checked")).toBe("true");
+    act(() => root.unmount());
+    node.remove();
+    node = mount([{ ...asked, reviewedRevision: "1" }]);
+    expect(option(node, "Batches").getAttribute("aria-checked")).toBe("false");
+    expect(answerButton(node).disabled).toBe(true);
+    expect(sent()).toEqual([]);
   });
 
   it("keeps a half-typed answer when its view goes away and comes back, and when the Request is read again", async () => {
@@ -676,16 +723,18 @@ it.each(["live", "durable"] as const)(
         : {}),
     };
     const chatId = createId("thread");
+    const { reviewedRevision, ...pending } = approval;
+    const waiting = WaitingRequestSchema.parse({
+      assignments: [],
+      subagent: null,
+      presentation: {
+        threadId: chatId,
+        workerThread: { id: approval.originatingThreadId, title: "Light memory worker" },
+      },
+      request: pending,
+    });
     shell.snapshot.waitingRequests = [
-      WaitingRequestSchema.parse({
-        assignments: [],
-        subagent: null,
-        presentation: {
-          threadId: chatId,
-          workerThread: { id: approval.originatingThreadId, title: "Light memory worker" },
-        },
-        request: approval,
-      }),
+      { ...waiting, request: { ...waiting.request, reviewedRevision } },
     ];
     await act(async () =>
       root.render(

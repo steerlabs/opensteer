@@ -1,3 +1,4 @@
+import { requestDecision } from "@opensteer/client/host";
 // @vitest-environment happy-dom
 
 import { act } from "react";
@@ -28,7 +29,7 @@ async function seededRequest(): Promise<{ pending: Request; settled: Request }> 
     const pending = (await host.readRequest(threadId, requestId))!;
     await host.dispatch({
       idempotencyKey: "settle",
-      requestId,
+      ...requestDecision(pending),
       response: { kind: "choice", optionId: "approve" },
       type: "request.respond",
     });

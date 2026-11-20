@@ -1,3 +1,4 @@
+import { requestDecision } from "./client.js";
 import { normalizeToolOutput } from "@opensteer/core";
 import { expect, it } from "vitest";
 import { readCardUseResult } from "./cards.js";
@@ -20,7 +21,7 @@ it("settles card consent without reporting a login or payment and keeps choices 
     await expect(
       client.dispatch({
         type: "browser.password-sign-in.respond",
-        requestId: request.id,
+        ...requestDecision((await client.readRequest(request.originatingThreadId, request.id))!),
         idempotencyKey: "wrong-kind",
         decision: {
           kind: "approve",
@@ -33,7 +34,7 @@ it("settles card consent without reporting a login or payment and keeps choices 
     ).rejects.toThrow();
     const result = await client.dispatch({
       type: "browser.password-sign-in.respond",
-      requestId: request.id,
+      ...requestDecision((await client.readRequest(request.originatingThreadId, request.id))!),
       idempotencyKey: "card",
       decision: {
         kind: "approve-card",
@@ -64,7 +65,7 @@ it("refuses stale selections and exposes an empty chooser without persisting met
     client.cardUseMockStates.set(request.id, "changed");
     const changed = await client.dispatch({
       type: "browser.password-sign-in.respond",
-      requestId: request.id,
+      ...requestDecision((await client.readRequest(request.originatingThreadId, request.id))!),
       idempotencyKey: "stale-card",
       decision: {
         kind: "approve-card",

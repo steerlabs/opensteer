@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Request } from "@opensteer/core";
+import type { RequestView } from "@opensteer/client/host";
 import type { ChromeConnectEnvironment } from "./chrome/chrome-environment.js";
 import {
   BrowserSignInRequestBody,
@@ -222,13 +222,14 @@ function text(): string {
   return container?.textContent ?? "";
 }
 
-function signInRequest(): Request {
+function signInRequest(): RequestView {
   return {
     callId: "call-1",
     cancellationReason: null,
     createdAt: "2026-09-18T12:00:00.000Z",
     id: "req_00000000-0000-4000-8000-000000000004",
     kind: "browser.sign-in",
+    reviewedRevision: "12",
     mode: "durable",
     originatingOccurrenceId: null,
     originatingRunId: null,
@@ -250,5 +251,5 @@ function signInRequest(): Request {
     resolvedBy: null,
     response: null,
     status: "pending",
-  } as unknown as Request;
+  } as unknown as RequestView;
 }

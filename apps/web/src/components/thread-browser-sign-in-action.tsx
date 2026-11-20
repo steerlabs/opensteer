@@ -1,6 +1,6 @@
-import { requestDecisionRevision } from "@opensteer/client/host";
+import { requestDecision } from "@opensteer/client/host";
 import { useEffect, useId, useRef, useState } from "react";
-import type { BrowserSourceId, Request } from "@opensteer/core";
+import type { BrowserSourceId } from "@opensteer/core";
 import {
   browserSignInProblemClearsInChrome,
   browserSignInProblemMessage,
@@ -13,6 +13,7 @@ import {
   type ChromeSignInAvailability,
   type ChromeSignInChoice,
   type HostClient,
+  type RequestView,
 } from "@opensteer/client/host";
 import {
   BrowserSignInRequestResponseSchema,
@@ -34,7 +35,7 @@ export function ThreadBrowserSignInAction({
   request,
 }: {
   readonly disabled: boolean;
-  readonly request: Request;
+  readonly request: RequestView;
 }) {
   const { hostClient, snapshot } = useShell();
   const environment = useShellChromeEnvironment();
@@ -48,7 +49,7 @@ export function ThreadBrowserSignInAction({
       client={hostClient}
       disabled={disabled}
       environment={environment}
-      key={request.id}
+      key={JSON.stringify([request.id, request.reviewedRevision])}
       profileName={profileName}
       request={request}
     />
@@ -79,7 +80,7 @@ export function BrowserSignInRequestBody({
   readonly disabled: boolean;
   readonly environment: ChromeConnectEnvironment;
   readonly profileName: string | null;
-  readonly request: Request;
+  readonly request: RequestView;
 }) {
   const payload = request.payload.kind === "browser.sign-in" ? request.payload : null;
   const site = payload?.site ?? null;
@@ -134,8 +135,7 @@ export function BrowserSignInRequestBody({
               ? { decision: "allow", sourceId }
               : { decision: "decline" },
           idempotencyKey: mutationIdempotencyKey(`browser-sign-in:${request.id}`),
-          requestId: request.id,
-          ...requestDecisionRevision(request),
+          ...requestDecision(request),
           type: "browser.sign-in.respond",
         }),
     })
@@ -173,16 +173,23 @@ export function BrowserSignInRequestBody({
     allowedStatus.current = status;
     if (status !== "available" || before === "available") return;
     // Removing the site since the Allow withdraws it; retrying would add it back.
+    let current = true;
     void client.rpc["browser.sources.get"]({})
       .then(unwrapRpcResult)
       .then((state) => {
+        if (!current) return;
         if (browserSitePreferredSource(state, site) === pinned.sourceId) {
           respondRef.current("allow", pinned.sourceId);
         } else {
           setRetryStopped(true);
         }
       })
-      .catch(() => setRetryStopped(true));
+      .catch(() => {
+        if (current) setRetryStopped(true);
+      });
+    return () => {
+      current = false;
+    };
   }, [client, inspection, pinned, retryable, site]);
 
   if (!payload || !site) return <ActionNote alert>This sign-in request is invalid.</ActionNote>;

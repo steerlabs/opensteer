@@ -196,11 +196,27 @@ export interface HarnessSummary {
   automaticEligible?: boolean | undefined;
 }
 
-export function requestDecisionRevision(request: Pick<Request, "id">): {
-  expectedRevision?: string;
+/** The revision belongs to the request body returned by the same Host read. */
+export type RequestView = Request & { readonly reviewedRevision?: string | undefined };
+export type WaitingRequestView = Omit<WaitingRequest, "request"> & {
+  readonly request: Extract<RequestView, { status: "pending" }>;
+};
+
+export function requestReviewRequired(): HostClientRequestError {
+  return new HostClientRequestError({
+    code: "conflict",
+    reason: "request-review-required",
+    status: 409,
+    message: "Review the latest request before answering.",
+  });
+}
+
+export function requestDecision(request: Pick<RequestView, "id" | "reviewedRevision">): {
+  requestId: Request["id"];
+  expectedRevision: string;
 } {
-  const revision = "reviewedRevision" in request ? request.reviewedRevision : undefined;
-  return typeof revision === "string" ? { expectedRevision: revision } : {};
+  if (request.reviewedRevision === undefined) throw requestReviewRequired();
+  return { requestId: request.id, expectedRevision: request.reviewedRevision };
 }
 
 export interface ThreadSummary {
@@ -836,7 +852,7 @@ export interface HostSnapshot {
    * asked, each with the handed-out work it holds up. "Needs you" on a task,
    * a sidebar row and the questions above a conversation all read this.
    */
-  waitingRequests: readonly WaitingRequest[];
+  waitingRequests: readonly WaitingRequestView[];
   /**
    * The resource kinds whose first read has landed for this viewer. Until a kind is here, its
    * fields are unknown rather than empty: a surface says it is loading, never "none".
@@ -1275,7 +1291,7 @@ export interface HostClient extends TabsClient {
    * One Request of a task by id, settled or not; null once the Host has none.
    * Asks for device Requests as the rest of this client's Request reads do.
    */
-  readRequest(threadId: string, requestId: string): Promise<Request | null>;
+  readRequest(threadId: string, requestId: string): Promise<RequestView | null>;
 
   loadDoneTasks(deploymentId?: string): Promise<void>;
   loadEarlierDoneTasks(deploymentId?: string): Promise<void>;
