@@ -128,7 +128,10 @@ import {
   computerUseHoldingOf,
   endComputerUseSessions,
 } from "./computer-app-approval-service.js";
-import { computerObservationContent } from "./computer-use-tool-result.js";
+import {
+  computerObservationContent,
+  iphoneScreenStatusContent,
+} from "./computer-use-tool-result.js";
 import { IntegrationAuthorizationRequiredError } from "./integration-authorization-required.js";
 
 /** What moving a file between a Run and a computer app needs from the Host. */
@@ -219,7 +222,7 @@ export class DeviceService {
     ((target: import("../tabs/ports.js").DeviceNativeTargetAcquired) => Promise<TabId>) | undefined;
   readonly #onTabUsed: ((claims: RunToolScope, tabId: TabId, title: string) => void) | undefined;
   readonly #nativeTabs: Pick<NativeTabTargets, "acquired" | "captureMembership"> | undefined;
-  readonly #tabs: Pick<TabServicePort, "get" | "authorizeShow"> | undefined;
+  readonly #tabs: Pick<TabServicePort, "get" | "authorizeBind"> | undefined;
   readonly #nativeTabTarget:
     ((ownerId: UserId, tabId: TabId) => Promise<NativeReplTabTarget>) | undefined;
   readonly computerRepl: ComputerReplService;
@@ -265,7 +268,7 @@ export class DeviceService {
     ) => Promise<TabId>;
     readonly onTabUsed?: (claims: RunToolScope, tabId: TabId, title: string) => void;
     readonly nativeTabs?: Pick<NativeTabTargets, "acquired" | "captureMembership">;
-    readonly tabs?: Pick<TabServicePort, "get" | "authorizeShow">;
+    readonly tabs?: Pick<TabServicePort, "get" | "authorizeBind">;
     readonly nativeTabTarget?: (ownerId: UserId, tabId: TabId) => Promise<NativeReplTabTarget>;
     readonly computerToolEnabled?: (
       context: RunCapabilityClaims<string>,
@@ -1012,6 +1015,8 @@ export class DeviceService {
       const phone = access.phones.find(
         (entry) => (entry.connectionId ?? entry.connection?.connectionId) === target,
       );
+      // Preserve the live iPhone refusal instead of rewriting it from discovery.
+      if (phone?.definitionId === iphoneScreenDefinitionId) throw error;
       const machine = access.machines.find((entry) =>
         entry.apps.some((app) => app.connectionId === target),
       );
@@ -1265,8 +1270,10 @@ export class DeviceService {
           await start(connection, scope);
           return send();
         });
+      const iphone = scope.kind === "display" && scope.definitionId === iphoneScreenDefinitionId;
       if (operation === "release")
         released = await guarded(() => computerUse.releaseSession(run, placement.deviceId));
+      else if (iphone && operation === "bind") await guarded(async () => undefined);
       else if (lease) {
         const dispatch =
           row === "act"
@@ -1331,12 +1338,21 @@ export class DeviceService {
         content.push(
           ...computerObservationContent(result.observation, renderImages, placement.runnerName),
         );
+      } else if (result?.kind === "display" && result.status && args.emit !== false) {
+        content.push(iphoneScreenStatusContent(result.status, placement.runnerName));
       }
+      const toolResult =
+        iphone && result?.kind === "display"
+          ? {
+              ...result,
+              controls: await this.#replPhoneControls(placement.deviceId, iphoneScreenDefinitionId),
+            }
+          : result;
       if (result?.error)
         throw Object.assign(result.error, {
           performed,
           content,
-          value: JSON.parse(JSON.stringify(result)),
+          value: JSON.parse(JSON.stringify(toolResult)),
         });
       const value =
         operation === "release"
@@ -1347,7 +1363,7 @@ export class DeviceService {
               ? { window: result?.window }
               : mac && row === "act"
                 ? { performed }
-                : result;
+                : toolResult;
       if (operation === "bind") {
         if (!this.#nativeTabs || run.aud !== "opensteer-run-tools")
           throw refused("conflict", "The tab service is unavailable.");

@@ -57,6 +57,7 @@ export interface TabServicePort {
   get(ownerId: UserId, tabId: TabId): Promise<Tab>;
   bootstrap(ownerId: UserId, maxBytes: number): Promise<TabBootstrap>;
   requireOpenPage(claims: RunToolScope, tabId: TabId): Promise<PageAgentBinding>;
+  authorizeBind(claims: RunToolScope, tabId: TabId): Promise<void>;
   authorizeShow(claims: RunToolScope, tabId: TabId): Promise<void>;
   appsChanged(appIds: AppId[]): void;
 }

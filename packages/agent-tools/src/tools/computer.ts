@@ -102,7 +102,7 @@ export const computer_use = defineAgentTool({
   name: "computer_use",
   title: "Operate Mac apps and phones",
   description:
-    "Run JavaScript to operate approved Mac windows and phone screens (Android Agent Phones and Mac-driven iPhones); variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps() and phones() list visible targets with either access (read/read-write) or blocked {code,message,next}; app(query) and phone(query) match name, id or computerId and throw that blocked error when access is missing. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it.",
+    "Run JavaScript to operate approved Mac windows and phone screens (Android Agent Phones and Mac-driven iPhones); variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps() and phones() list visible targets with either access (read/read-write) or blocked {code,message,next}; app(query) and phone(query) match name, id or computerId and throw that blocked error when access is missing. An approved iPhone can have a lastKnown status; observe it for a live result. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it.",
   input: z.strictObject({ code: z.string().min(1).max(65536) }),
   output: ComputerUseOutputSchema,
   capability: "computerUse",
@@ -147,7 +147,7 @@ export const computer_apps = defineAgentTool({
   name: "computer_apps",
   title: "List Mac apps and phones",
   description:
-    "List Macs set up for computer use and phone screens (Android Agent Phones and Mac-driven iPhones). Each visible app or phone has access (read/read-write) or blocked {code,message,next}; follow its next step. A computer can also carry its own blocker. Pass a computerId to list that Mac's or phone's installed apps, filtered by query; phone apps include the opaque appId that launch takes. Listing grants no access; ask with app_access_request.",
+    "List Macs set up for computer use and phone screens (Android Agent Phones and Mac-driven iPhones). Each visible app or phone has access (read/read-write) or blocked {code,message,next}. An approved iPhone can also report its lastKnown status. A computer can carry its own blocker. Pass a computerId to list that Mac's or phone's installed apps, filtered by query; phone apps include the opaque appId that launch takes. Listing grants no access; ask with app_access_request.",
   input: ComputerAppsInputSchema,
   output: ComputerAppsOutputSchema,
   access: "read",

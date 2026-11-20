@@ -57,7 +57,7 @@ describe("native tab binding", () => {
       selfDeviceId: async (id) => DeviceIdSchema.parse(id),
       tabs: {
         get: async () => ({ ...tab, kind: "phone" }) as Tab,
-        authorizeShow: async () => undefined,
+        authorizeBind: async () => undefined,
       },
       lookup: async () => ({ kind: "phone", computerId, tabGeneration: 1 }),
       connections: async () => [],
@@ -69,7 +69,7 @@ describe("native tab binding", () => {
       code: "forbidden",
       reason: blocked.code,
     });
-    options.tabs.authorizeShow = async () => {
+    options.tabs.authorizeBind = async () => {
       throw new Error("concealed");
     };
     await expect(bindNativeTab(options, claims, tabId)).rejects.toThrow("concealed");
@@ -77,9 +77,9 @@ describe("native tab binding", () => {
   it("uses the private exact-window lookup and rechecks closure before acquisition", async () => {
     let open = true;
     let tabGeneration = 1;
-    const tabs: Pick<TabServicePort, "get" | "authorizeShow"> = {
+    const tabs: Pick<TabServicePort, "get" | "authorizeBind"> = {
       get: async () => tab,
-      authorizeShow: async () => {
+      authorizeBind: async () => {
         if (!open) throw new Error("not_found");
       },
     };

@@ -102,7 +102,7 @@ export async function gatherComputerAccess(
   const phone = (entry: (typeof inventory.phones)[number]) => {
     const refs = entry.connection ? computerToolRefs(tools, entry.connection.connectionId) : {};
     if (!hasRun) return runRequired;
-    return phoneDiscovery({
+    const access = phoneDiscovery({
       phone: {
         ...entry,
         definitionId: entry.definitionId === "iphone-screen" ? "iphone-screen" : "android-phone",
@@ -125,6 +125,10 @@ export async function gatherComputerAccess(
         computerUseHolderKey({ kind: "display", definitionId: entry.definitionId }),
       ),
     });
+    const reason = entry.availability?.reason?.kind;
+    return entry.definitionId === "iphone-screen" && reason && access.access
+      ? { ...access, lastKnown: reason }
+      : access;
   };
   return {
     ...inventory,

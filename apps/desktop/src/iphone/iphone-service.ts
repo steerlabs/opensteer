@@ -409,6 +409,10 @@ export class IphoneService {
       );
       if (observation.nativeEpoch !== binding.epoch)
         throw new IphoneServiceError("stale-native-epoch");
+      if ("reason" in observation)
+        throw new IphoneServiceError(
+          observation.reason === "wake-on-phone-required" ? "screen-off" : observation.reason,
+        );
       if (observation.state.lock !== "unlocked")
         throw new IphoneServiceError(
           observation.state.lock === "locked" ? "phone-locked" : "lock-state-unknown",
@@ -686,6 +690,8 @@ export class IphoneService {
     }
     if (method === "iphone.session.open" && session) throw new IphoneServiceError("phone-in-use");
     const binding = await this.#binding(record);
+    if (method === "iphone.session.open" || method === "iphone.installedApps")
+      this.#cancelProbe(record.udid);
     const native = await this.#connect();
     const authorized = () => {
       const live = this.#slots.get(deploymentId);

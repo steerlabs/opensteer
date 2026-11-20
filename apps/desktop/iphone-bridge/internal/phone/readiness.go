@@ -2,6 +2,8 @@ package phone
 
 import (
 	"context"
+	"log/slog"
+
 	"github.com/steerlabs/opensteer/iphone-bridge/internal/wire"
 )
 
@@ -55,9 +57,7 @@ func (s *Session) capabilities() wire.Capabilities {
 			if s.stateReason != "" {
 				return reasonPointer(s.stateReason)
 			}
-			if err := s.state.safe(); err != nil {
-				return reasonPointer(Classify(err, wire.LockUnknown).Code)
-			}
+			return reasonPointer(s.state.screenBlocker())
 		}
 		return nil
 	}
@@ -73,14 +73,28 @@ func (s *Session) capabilities() wire.Capabilities {
 }
 func (s *Session) Probe(ctx context.Context) error {
 	state, err := s.screenState().backend.State(ctx)
-	s.mu.Lock()
-	s.state = state
-	s.stateReason = ""
-	if err != nil {
-		s.stateReason = Classify(err, wire.NativeServiceFailed).Code
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-	s.mu.Unlock()
+	var reason wire.Reason
+	if err != nil {
+		reason = Classify(err, wire.NativeServiceFailed).Code
+	}
+	s.recordScreenState(state, reason)
 	return err
+}
+
+func (s *Session) recordScreenState(state DeviceState, reason wire.Reason) {
+	s.mu.Lock()
+	changed := s.state.Lock != state.Lock || s.state.Display != state.Display || s.stateReason != reason
+	s.state, s.stateReason = state, reason
+	s.mu.Unlock()
+	if changed {
+		if reason == "" {
+			reason = state.screenBlocker()
+		}
+		slog.Debug("bridge.screen-state", "lock", state.Lock, "display", state.Display, "reason", string(reason))
+	}
 }
 func (s *Session) stopControl() error {
 	s.mu.Lock()

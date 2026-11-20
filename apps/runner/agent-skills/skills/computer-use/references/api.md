@@ -36,7 +36,7 @@ await win.observe({ screenshot: true }); // look again, with a picture
   `setValue(index, value)`, `scroll(target, direction, amount)`; a target is an element index or
   `[x, y]` screenshot pixels. Actions never look again: call `observe()` when you need to see the
   result. `Window.act([...])` sends several actions as one batch.
-- `phones()` lists visible phones with either `access` or `blocked`; `phone(query)` matches name, id or computerId and gives a `Phone`, or throws its blocked error with `next`. Its advertised `navigation` and `actions` say what that phone accepts: `observe()`, `tap`, `longPress`, `swipe`, `drag`, `scroll`, `type`, `clear`, `navigate(button)`, `launch(appId)`, `wake`, `wait(ms)`, `installedApps({ query })` and `release()`; see [phones](phones.md). `sleep(ms)` pauses.
+- `phones()` lists visible phones with either `access` or `blocked`; `phone(query)` matches name, id or computerId and gives a `Phone`, or throws its blocked error with `next`. An approved iPhone can include a `lastKnown` hint. `observe()` checks the phone and can return live status without a picture or input coordinates. Its advertised `navigation` and `actions` say what that phone accepts: `observe()`, `tap`, `longPress`, `swipe`, `drag`, `scroll`, `type`, `clear`, `navigate(button)`, `launch(appId)`, `wake`, `wait(ms)`, `installedApps({ query })` and `release()`; see [phones](phones.md). `sleep(ms)` pauses.
 
 Errors throw `ComputerError` with `code`, a plain `message`, and `performed` (what completed before
 the failure). Catch them in code when you can recover; never repeat an action whose outcome is

@@ -427,6 +427,8 @@ async function handle(input: unknown) {
           context.snapshots.set(`${item.request.target}:${window}`, observation.snapshot);
         if (typeof observation.observationId === "string")
           context.phones.set(item.request.target ?? "", observation.observationId);
+      } else if (observation === null && item.request.target) {
+        context.phones.delete(item.request.target);
       }
     }
     if (

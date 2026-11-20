@@ -202,9 +202,11 @@ func (s *Session) Done() <-chan struct{} {
 	}
 	return s.tunnel.Done()
 }
-func Classify(err error, fallback wire.Reason) *wire.Failure {
+func Classify(err error, fallback wire.Reason) (result *wire.Failure) {
 	if err != nil {
-		slog.Debug("bridge.native-error", "err", err, "reason", string(fallback))
+		defer func() {
+			slog.Debug("bridge.native-error", "err", err, "reason", string(result.Code))
+		}()
 	}
 	if errors.Is(err, ios.ErrRSDIdentityMismatch) {
 		return wire.Fail(wire.IdentityMismatch)

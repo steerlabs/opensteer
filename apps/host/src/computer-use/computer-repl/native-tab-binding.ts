@@ -12,7 +12,7 @@ import type { ReplReply } from "./messages.js";
 
 export interface NativeTabBindingOptions {
   selfDeviceId(runnerId: RunnerId): Promise<DeviceId>;
-  tabs: Pick<TabServicePort, "get" | "authorizeShow">;
+  tabs: Pick<TabServicePort, "get" | "authorizeBind">;
   lookup(ownerId: UserId, tabId: TabId): Promise<NativeReplTabTarget>;
   connections(): Promise<readonly DeviceComputerConnection[]>;
   blocked?(target: NativeReplTabTarget): Promise<Blocked | undefined>;
@@ -29,7 +29,7 @@ export async function bindNativeTab(
 ): Promise<ReplReply> {
   let expected: NativeReplTabTarget | undefined;
   const authorize = async () => {
-    await options.tabs.authorizeShow(claims, tabId);
+    await options.tabs.authorizeBind(claims, tabId);
     if (!expected) return;
     const current = await options.lookup(claims.requestedBy, tabId);
     if (
