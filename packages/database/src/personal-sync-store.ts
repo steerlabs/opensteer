@@ -1,10 +1,14 @@
 import type { DatabaseSchema } from "./schema.js";
 import {
+  answeredQuestion,
+  answeredQuestionPreviewBytes,
+  answeredQuestionWithin,
   OpensteerError,
   utf8Prefix,
   type DeploymentId,
   type ExecutionNode,
   type ExecutionNodeId,
+  type Request,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
@@ -272,10 +276,13 @@ export type NodeFacts = Omit<
   Selectable<ExecutionNodeTable>,
   "nativeRef" | "sessionRef" | "originCallId" | "startedAt" | "endedAt"
 > & { readonly startedAt: Date | string; readonly endedAt: Date | string | null };
+/** A settled agent question's facts, read beside its card like a node's. */
+export type QuestionFacts = Pick<Request, "kind" | "presentation" | "response" | "status">;
 type Item = Pick<Selectable<TranscriptItemTable>, (typeof itemColumns)[number]> & {
   readonly place?: PlaceView | null;
   readonly body?: Selectable<TranscriptItemTable>["body"];
   readonly node?: NodeFacts | null;
+  readonly question?: QuestionFacts | null;
 };
 
 /**
@@ -307,6 +314,32 @@ const nodeFacts = sql<NodeFacts | null>`case when kind = 'node' then (
     'cachedInputTokens',n.cached_input_tokens::text,'cacheWriteTokens',n.cache_write_tokens::text,
     'reasoningTokens',n.reasoning_tokens::text,'costUsd',n.cost_usd::text)
   from execution_nodes n where n.id = transcript_items.execution_node_id) end`;
+
+/**
+ * A settled agent question's facts, read beside its card when drawn, so every
+ * receipt shows the same record however long ago it was answered. Each text is
+ * read no longer than the whole record may be, so the record drawn from these
+ * is the one drawn from the full Request, and a page reads little per card.
+ */
+const questionFacts = sql<QuestionFacts | null>`case when kind = 'request' then (
+  select jsonb_build_object('kind',r.kind,'status',r.status,
+    'presentation',jsonb_strip_nulls(jsonb_build_object(
+      'kind',r.presentation->'kind','title',r.presentation->'title',
+      'detail',left(r.presentation->>'detail',${sql.lit(answeredQuestionPreviewBytes)}),
+      'fields',(select jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
+          'id',f.field->'id','secret',f.field->'secret',
+          'prompt',left(f.field->>'prompt',${sql.lit(answeredQuestionPreviewBytes)}),
+          'choices',(select jsonb_agg(jsonb_build_object('label',c->'label','value',c->'value'))
+            from jsonb_array_elements(f.field->'choices') c))) order by f.at)
+        from jsonb_array_elements(r.presentation->'fields') with ordinality f(field,at)))),
+    'response',case when r.response->>'kind' = 'form' then jsonb_build_object('kind','form',
+      'answers',coalesce((select jsonb_object_agg(a.key,(select coalesce(jsonb_agg(
+          left(v.value,${sql.lit(answeredQuestionPreviewBytes)}) order by v.at),'[]'::jsonb)
+        from jsonb_array_elements_text(a.value) with ordinality v(value,at)))
+        from jsonb_each(r.response->'answers') a),'{}'::jsonb))
+      else r.response end)
+  from requests r where r.id = transcript_items.request_id
+    and r.kind = 'person.question' and r.status in ('fulfilled','declined')) end`;
 
 export function itemView(row: Item) {
   const {
@@ -363,13 +396,18 @@ export function itemView(row: Item) {
       });
     case "tool":
       return TranscriptItemSchema.parse({ ...base, toolCallId: row.toolCallId, tool, completedAt });
-    case "request":
+    case "request": {
+      const question = row.question ? answeredQuestion(row.question) : null;
       return TranscriptItemSchema.parse({
         ...base,
         requestId: row.requestId,
         requestKind,
         waitedSince,
+        ...(question
+          ? { question: answeredQuestionWithin(question, answeredQuestionPreviewBytes) }
+          : {}),
       });
+    }
     case "node":
       return TranscriptItemSchema.parse({
         ...base,
@@ -418,6 +456,7 @@ export function drawableItems(tx: Read, scope: DetailScope) {
     .select(itemColumns)
     .select(sql<PlaceView | null>`case when kind = 'place' then body end`.as("place"))
     .select(nodeFacts.as("node"))
+    .select(questionFacts.as("question"))
     .where("visible", "=", true)
     .where("threadId", "=", scope.threadId);
   return scope.kind === "node"

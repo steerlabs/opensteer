@@ -643,6 +643,15 @@ export async function applyTaskApprovalReceipts(database: Kysely<DatabaseSchema>
   `.execute(database);
 }
 
+export const answeredQuestionRecordsMigrationName = "0040_answered_question_records";
+/**
+ * An answered question's card now carries what was asked and the answer, read beside it, so
+ * every client's sync starts over: a cursor from before it holds those cards without them.
+ */
+export async function applyAnsweredQuestionRecords(database: Kysely<DatabaseSchema>) {
+  await sql`update client_sync_state set epoch = gen_random_uuid()`.execute(database);
+}
+
 export async function applyPersonalStateSchema(transaction: Kysely<DatabaseSchema>) {
   await sql.raw(retainedStateDdl).execute(transaction);
   await sql.raw(currentStateIndexes).execute(transaction);

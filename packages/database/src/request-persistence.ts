@@ -114,7 +114,7 @@ export function refreshRequestState(
             .returningAll()
             .executeTakeFirstOrThrow();
           // The receipt is drawn where `itemView` places it, which may be the task for a node's ask.
-          const shown = itemView(item);
+          const shown = itemView({ ...item, question: request });
           mutation.change(
             {
               scopeKey: shown.nodeId ? `node:${shown.nodeId}` : `thread:${threadId}`,

@@ -3404,7 +3404,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "additionalProperties": false,
       "properties": {
         "detail": {
-          "description": "What you noticed, why it matters to the person, and the work you prepared.",
+          "description": "Markdown shown above the questions. Lead with the work itself: words the person would send go first, in a draft fence, exactly as they would go out. Then at most two short sentences the decision needs. Leave out IDs, timestamps and how the work got here.",
           "maxLength": 20000,
           "minLength": 1,
           "type": "string",

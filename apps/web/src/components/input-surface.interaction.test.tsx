@@ -249,7 +249,7 @@ describe("request surface connectivity", () => {
     });
 
     expect(node.textContent).toContain("Wants to use Preview on Studio");
-    expect(node.querySelector(".action-detail")?.textContent).toBe("Compare the two drafts.");
+    expect(node.querySelector(".request-detail")?.textContent).toBe("Compare the two drafts.");
     expect(node.textContent).toContain("Can see · Allow on this device");
     expect(
       [...node.querySelectorAll(".action-buttons button")].map(({ textContent }) => textContent),

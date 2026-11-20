@@ -52,6 +52,7 @@ export * from "./use-asset-image.js";
 export * from "./use-reference.js";
 
 export * from "./use-transcript-message.js";
+export * from "./use-answered-question.js";
 export * from "./use-plugin-engine.js";
 export * from "./use-plugin-icon.js";
 export * from "./use-plugin-section.js";

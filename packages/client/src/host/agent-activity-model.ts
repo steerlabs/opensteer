@@ -3,6 +3,7 @@ import { pageSiteLabel } from "./surfaces.js";
 import {
   imageGenerationToolName,
   isIntegrationGatewayTool,
+  type AnsweredQuestion,
   type AssignmentSummary,
   type WaitingRequest,
   type MessageAuthor,
@@ -160,7 +161,18 @@ export type TranscriptGroup =
       /** It joined a Run already under way, as a steer does, rather than starting one. */
       readonly joinedRun?: true;
     }
+  | {
+      readonly key: string;
+      readonly kind: "question";
+      readonly entry: AnsweredQuestionEntry;
+    }
   | { readonly key: string; readonly kind: "turn"; readonly turn: Turn };
+
+export type AnsweredQuestionEntry = RequestReceiptEntry & { readonly question: AnsweredQuestion };
+
+function isAnsweredQuestion(entry: TranscriptEntry): entry is AnsweredQuestionEntry {
+  return entry.kind === "request" && entry.question !== undefined;
+}
 
 /**
  * The transcript in reading order. Entries keep their first-arrival order; a
@@ -203,6 +215,13 @@ export function groupTranscriptEntries(
     if (entry.kind === "app") {
       open = null;
       slots.push({ kind: "group", group: { kind: "app", entry, key: entry.id } });
+      continue;
+    }
+    // An answered question is the person's part of the conversation: it stands
+    // where it was answered, which can be long after its Run stopped waiting.
+    if (isAnsweredQuestion(entry)) {
+      open = null;
+      slots.push({ group: { entry, key: entry.id, kind: "question" }, kind: "group" });
       continue;
     }
     if (entry.kind === "delegation") {

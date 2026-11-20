@@ -426,6 +426,7 @@ async function runDesktop(
   const iphone = new IphoneService({
     store: new IphoneStore(privateFiles, iphoneFiles),
     supported: process.platform === "darwin",
+    mac: iphoneMacSupport,
     startNative: async () => {
       const binary = await verifyIphoneBridge({
         binary: bundledIphoneBridgePath({

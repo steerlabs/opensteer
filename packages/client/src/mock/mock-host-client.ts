@@ -118,6 +118,8 @@ import {
   type MockDevicePlugin,
 } from "./mock-devices.js";
 import {
+  answeredQuestionPreviewBytes,
+  answeredQuestionWithin,
   matchModelSelection,
   storedModelSelection as coreStoredModelSelection,
 } from "@opensteer/core";
@@ -6565,7 +6567,11 @@ class MockHostState {
   }
   private referenceRequestReceipt(request: Exclude<Request, { status: "pending" }>) {
     this.referenceRequests.set(request.id, request);
-    const receipt = requestReceipt(request);
+    const whole = requestReceipt(request);
+    // As the Host's card carries it: cut to fit, the whole left to a read of the Request.
+    const receipt = whole.question
+      ? { ...whole, question: answeredQuestionWithin(whole.question, answeredQuestionPreviewBytes) }
+      : whole;
     keepMockReceiptAsker(receipt, request);
     return receipt;
   }
@@ -13956,7 +13962,7 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
           payload: { kind: "person.question" },
           presentation: {
             detail:
-              "Northwind billed the August design retainer twice (Aug 3 and Aug 17, $1,200 each). I drafted a refund request to billing@northwind.example citing both invoice numbers, and can book the second charge as a receivable until it comes back.",
+              "```draft\nHi Northwind billing,\n\nYou charged our August design retainer twice, on Aug 3 and Aug 17 ($1,200 each, invoices NW-2291 and NW-2307). Could you refund the second charge to the card on file?\n\nThanks!\n```\n\nTo billing@northwind.example. I'll book the second charge as a receivable until it comes back.",
             fields: [
               {
                 choices: [

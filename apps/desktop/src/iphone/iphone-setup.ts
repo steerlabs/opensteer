@@ -25,6 +25,8 @@ type Transaction = {
   listeners: Set<(state: DesktopIphoneSetupStatus) => void>;
   cleanups: (() => void)[];
   macWatch?: () => void;
+  macWatchChecking?: boolean;
+  prepareImageRevision?: number;
   xcodeApp?: string;
   xcodeRequested?: boolean;
   revealed?: string;
@@ -47,6 +49,10 @@ const phoneWaits = new Set<DesktopIphoneSetupReason>([
   "screen-state-unknown",
   "lock-state-unknown",
   "wake-on-phone-required",
+]);
+const macImageWaits = new Set<DesktopIphoneSetupReason>([
+  "developer-image-missing",
+  "developer-image-incompatible",
 ]);
 export class IphoneSetup {
   readonly #service: IphoneService;
@@ -190,11 +196,15 @@ export class IphoneSetup {
       throw new IphoneServiceError("no-session");
     await this.#mac.help(action, t.xcodeApp);
     this.#active(t);
-    if (action === "get-xcode") {
+    if (action === "get-xcode" && t.state.stage === "mac") {
       t.xcodeRequested = true;
       this.#set(t, { state: "waiting", reason: "xcode-installing", action: "none" });
+      this.#wake(t);
+    } else if (action === "open-xcode" && t.state.stage === "mac") {
+      this.#wake(t);
+    } else if (action === "open-local-network") {
+      this.#wake(t);
     }
-    this.#wake(t);
     return this.#snapshot(t);
   }
   async retry(setupId: string): Promise<DesktopIphoneSetupStatus> {
@@ -332,7 +342,8 @@ export class IphoneSetup {
           t.state.state === "waiting" &&
           t.state.stage !== "mac" &&
           t.state.stage !== "connect" &&
-          t.state.reason !== "assignment-pending"
+          t.state.reason !== "assignment-pending" &&
+          !(t.state.reason && macImageWaits.has(t.state.reason))
         )
           t.timer = setTimeout(() => this.#wake(t), 2000);
       });
@@ -352,10 +363,10 @@ export class IphoneSetup {
         await this.#service.discover();
         const support = await this.#mac.inspect();
         this.#active(t);
-        const images = await this.#service.refreshImages(support.imageRoots, signal);
+        const builds = await this.#service.refreshImages(support.imageRoots, signal);
         this.#active(t);
         if (support.xcodeApps[0]) t.xcodeApp = support.xcodeApps[0];
-        if (!support.xcodeApps.length || !images) {
+        if (!support.xcodeApps.length || !builds.length) {
           this.#set(t, {
             state: "waiting",
             reason: support.xcodeApps.length
@@ -443,10 +454,14 @@ export class IphoneSetup {
         } else {
           const support = await this.#mac.inspect();
           this.#active(t);
+          if (support.xcodeApps[0]) t.xcodeApp = support.xcodeApps[0];
           await this.#service.refreshImages(support.imageRoots, signal);
           this.#active(t);
+          t.prepareImageRevision = this.#service.imageRevision;
           await this.#service.prepare(record, signal);
           this.#active(t);
+          t.macWatch?.();
+          delete t.macWatch;
           await this.#service.firstObserve(record, signal);
           this.#active(t);
           this.#set(t, { stage: "wifi", state: "decide", reason: null, action: "choose-wifi" });
@@ -596,11 +611,56 @@ export class IphoneSetup {
   #working(t: Transaction): void {
     this.#set(t, { state: "working", reason: null, action: "none" });
   }
+  #watchPrepareImages(t: Transaction): void {
+    if (t.macWatch) return;
+    t.macWatch = this.#mac.watch(() => {
+      if (
+        t.controller.signal.aborted ||
+        t.macWatchChecking ||
+        t.state.stage !== "prepare" ||
+        t.state.state !== "waiting" ||
+        !(t.state.reason && macImageWaits.has(t.state.reason))
+      )
+        return;
+      t.macWatchChecking = true;
+      void (async () => {
+        try {
+          const support = await this.#mac.inspect();
+          if (t.controller.signal.aborted) return;
+          if (support.xcodeApps[0]) t.xcodeApp = support.xcodeApps[0];
+          await this.#service.refreshImages(support.imageRoots, t.controller.signal);
+          if (t.controller.signal.aborted) return;
+          if (this.#service.imageRevision !== t.prepareImageRevision) {
+            t.prepareImageRevision = this.#service.imageRevision;
+            this.#wake(t);
+          }
+        } catch {
+          // Next watch tick or manual retry will recheck.
+        } finally {
+          t.macWatchChecking = false;
+        }
+      })();
+    });
+  }
   #failure(t: Transaction, error: unknown): void {
     const parsed = DesktopIphoneSetupReasonSchema.safeParse(
       error instanceof IphoneServiceError ? error.code : "native-service-failed",
     );
     const reason = parsed.success ? parsed.data : "native-service-failed";
+    if (t.state.stage === "prepare" && macImageWaits.has(reason)) {
+      this.#watchPrepareImages(t);
+      this.#set(t, {
+        state: "waiting",
+        reason,
+        action:
+          reason === "developer-image-incompatible"
+            ? "get-xcode"
+            : t.xcodeApp
+              ? "open-xcode"
+              : "get-xcode",
+      });
+      return;
+    }
     this.#set(t, {
       state:
         phoneWaits.has(reason) || reason === "local-network-permission-required"

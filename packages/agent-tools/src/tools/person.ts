@@ -114,7 +114,9 @@ export const ask_person = defineAgentTool({
       .min(1)
       .max(requestTextMaxLength)
       .optional()
-      .describe("What you noticed, why it matters to the person, and the work you prepared."),
+      .describe(
+        "Markdown shown above the questions. Lead with the work itself: words the person would send go first, in a draft fence, exactly as they would go out. Then at most two short sentences the decision needs. Leave out IDs, timestamps and how the work got here.",
+      ),
     questions: z.array(AskPersonQuestionSchema).min(1).max(askPersonQuestionLimit),
     operationKey: OperationKeySchema.optional(),
   }),

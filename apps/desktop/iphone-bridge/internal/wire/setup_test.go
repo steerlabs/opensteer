@@ -38,4 +38,19 @@ func TestSetupGoldensAndImageRootBounds(t *testing.T) {
 			}
 		}
 	}
+	for _, method := range []string{"setup.prepareDeveloperServices", "binding.probe", "session.open"} {
+		params := `{"localPhoneId":"p","nativeEpoch":1}`
+		if method == "binding.probe" {
+			params = `{"bindingToken":"tok"}`
+		} else if method == "session.open" {
+			params = `{"bindingToken":"tok","sessionId":"s","runId":"r","access":"observe"}`
+		}
+		raw := `{"kind":"request","protocolVersion":1,"id":1,"timeoutMs":120000,"method":"` + method + `","params":` + params + `}`
+		if _, err := DecodeRequest([]byte(raw)); err != nil {
+			t.Fatalf("rejected 120s mount budget for %s: %v", method, err)
+		}
+	}
+	if _, err := DecodeRequest([]byte(`{"kind":"request","protocolVersion":1,"id":1,"timeoutMs":120000,"method":"setup.inspect","params":{"localPhoneId":"p","nativeEpoch":1}}`)); err == nil {
+		t.Fatal("accepted 120s timeout for non-mounting setup.inspect")
+	}
 }

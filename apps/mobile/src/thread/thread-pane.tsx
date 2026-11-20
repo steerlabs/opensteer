@@ -684,11 +684,13 @@ function ThreadPaneForUser(
 
   // A link may name the Request it is about. A Request still pending is docked
   // in the composer, which is already on screen; one already answered left its
-  // record among the steps of the turn that asked it, and the link goes there.
+  // record, an answered question as its own row and any other among the steps
+  // of the turn that asked it, and the link goes there.
   const { onOpenThread, requestId } = props;
   const receiptId = useMemo(() => {
     if (requestId === null) return null;
     for (const group of groups) {
+      if (group.kind === "question" && group.entry.requestId === requestId) return group.entry.id;
       if (group.kind !== "turn") continue;
       const receipt = group.turn.work.find(
         (entry) => entry.kind === "request" && entry.requestId === requestId,
@@ -1952,7 +1954,7 @@ function linkedPlace(
   const index = drawn.findIndex(({ group }) =>
     reply !== null
       ? group.key === reply
-      : group.kind === "message"
+      : group.kind === "message" || group.kind === "question"
         ? group.entry.id === entryId
         : group.kind === "turn" && group.turn.work.some(({ id }) => id === entryId),
   );

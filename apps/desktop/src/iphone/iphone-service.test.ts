@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { FakeIphoneNative, fixture, ownerA, ownerB } from "./test-support.js";
+import { FakeIphoneMacSupport, FakeIphoneNative, fixture, ownerA, ownerB } from "./test-support.js";
 import { IphoneServiceError } from "./iphone-store.js";
 import { IphoneService } from "./iphone-service.js";
 import type { IphoneRunnerEvent } from "@opensteer/protocol/iphone-bridge";
@@ -529,28 +529,342 @@ it("qualifies first observe with runtime's content protection", async () => {
   }
 });
 
-it("tries the next image only after a known compatibility refusal", async () => {
+it("delegates DDI selection to the bridge with mount timeout and propagates failures", async () => {
   const f = await fixture();
   cleanups.push(f.cleanup);
   const record = await f.service.reserve(ownerA, "candidate", crypto.randomUUID());
-  f.native.images = [
-    { handle: "old", build: "old" },
-    { handle: "compatible", build: "new" },
-  ];
   const signal = new AbortController().signal;
-  await f.service.refreshImages(["/synthetic/images"], signal);
-  const request = f.native.request.bind(f.native);
-  vi.spyOn(f.native, "request").mockImplementation(async (method, params, schema) => {
-    if (
-      method === "setup.prepareDeveloperServices" &&
-      (params as { imageHandle: string }).imageHandle === "old"
-    )
-      throw new IphoneServiceError("developer-image-incompatible");
-    return request(method, params, schema);
-  });
   await expect(f.service.prepare(record, signal)).resolves.toBeUndefined();
-  f.native.failures.set("setup.prepareDeveloperServices", new IphoneServiceError("phone-in-use"));
-  await expect(f.service.prepare(record, signal)).rejects.toMatchObject({ code: "phone-in-use" });
+  expect(f.native.calls.find((c) => c.method === "setup.prepareDeveloperServices")).toMatchObject({
+    params: { localPhoneId: "candidate", nativeEpoch: 1 },
+    timeoutMs: 120000,
+  });
+  f.native.failures.set(
+    "setup.prepareDeveloperServices",
+    new IphoneServiceError("developer-image-incompatible"),
+  );
+  await expect(f.service.prepare(record, signal)).rejects.toMatchObject({
+    code: "developer-image-incompatible",
+  });
+});
+
+it("gives runtime probes the mount budget and auto-heals when Xcode updates", async () => {
+  const mac = new FakeIphoneMacSupport();
+  const f = await fixture({ mac });
+  cleanups.push(f.cleanup);
+  f.native.probeReady = false;
+  let incompatible = true;
+  const originalRequest = f.native.request.bind(f.native);
+  vi.spyOn(f.native, "request").mockImplementation(async (method, params, schema, opts) => {
+    if (method === "binding.probe") {
+      f.native.calls.push({
+        method,
+        params,
+        ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      });
+      if (incompatible) {
+        f.native.roster = {
+          revision: f.native.roster.revision + 1,
+          candidates: f.native.roster.candidates.map((candidate) => ({
+            ...candidate,
+            capabilities: {
+              observe: "developer-image-incompatible",
+              act: "developer-image-incompatible",
+              launch: "developer-image-incompatible",
+              installedApps: "developer-image-incompatible",
+              text: "unsupported-text",
+              clear: "unsupported-clear",
+              indexedTargets: "geometry-unavailable",
+              liveVideo: "unsupported",
+            },
+          })),
+        };
+        f.native.publish();
+        throw new IphoneServiceError("developer-image-incompatible");
+      }
+      f.native.ready(false);
+      return schema.parse({});
+    }
+    return originalRequest(method, params, schema, opts);
+  });
+  await f.bind();
+  await vi.waitFor(() =>
+    expect(f.native.calls.some((c) => c.method === "binding.probe")).toBe(true),
+  );
+  expect(f.native.calls.find((c) => c.method === "binding.probe")?.timeoutMs).toBe(120000);
+  expect((await f.service.targets(ownerA.deploymentId))[0]).toMatchObject({
+    ready: false,
+    reason: "developer-image-incompatible",
+  });
+  expect(mac.listeners.size).toBe(1);
+
+  // Unchanged Xcode check does not spam probes.
+  const probesBefore = f.native.calls.filter((c) => c.method === "binding.probe").length;
+  const refreshesBefore = f.native.calls.filter((c) => c.method === "images.refresh").length;
+  f.native.images = [{ build: "test" }];
+  mac.changed();
+  await vi.waitFor(() =>
+    expect(f.native.calls.filter((c) => c.method === "images.refresh").length).toBeGreaterThan(
+      refreshesBefore,
+    ),
+  );
+  await Promise.resolve();
+  expect(f.native.calls.filter((c) => c.method === "binding.probe").length).toBe(probesBefore);
+
+  // Once Xcode updates to a newer DDI build, IphoneService refreshes images, re-probes, and stops watching.
+  incompatible = false;
+  f.native.images = [{ build: "27B52" }];
+  mac.changed();
+  await vi.waitFor(async () => {
+    expect((await f.service.targets(ownerA.deploymentId))[0]).toMatchObject({
+      ready: true,
+      reason: null,
+    });
+  });
+  expect(mac.listeners.size).toBe(0);
+});
+
+it("returns iphone.targets promptly during a slow probe, passes 120s to session open, and probes a new route epoch", async () => {
+  const f = await fixture();
+  cleanups.push(f.cleanup);
+  await f.bind();
+  const events: IphoneRunnerEvent[] = [];
+  const connection = f.service.forSlot(ownerA).connect((event) => events.push(event));
+  cleanups.push(async () => connection.close());
+
+  // First observe passes the 120s DDI mount budget to session.open.
+  const record = (await f.store.records())[0]!;
+  await f.service.firstObserve(record, new AbortController().signal);
+  expect(f.native.calls.filter((c) => c.method === "session.open").at(-1)?.timeoutMs).toBe(120000);
+
+  // Hold binding.probe so iphone.targets must return immediately without awaiting the slow mount.
+  const heldProbe = Promise.withResolvers<void>();
+  f.native.held.set("binding.probe", heldProbe.promise);
+  const assignment = {
+    deviceId: f.deviceId,
+    generation: 1,
+    role: "screen" as const,
+    definitionId: "iphone-screen" as const,
+  };
+  const targets = await connection.request(
+    "iphone.targets",
+    { assignments: [assignment] },
+    f.options(),
+  );
+  expect(targets.targets).toHaveLength(1);
+  await vi.waitFor(
+    () => expect(f.native.calls.some((c) => c.method === "binding.probe")).toBe(true),
+    { timeout: 1000 },
+  );
+
+  // While epoch 1's probe is still held, the phone switches to Wi-Fi epoch 2.
+  const probesBefore = f.native.calls.filter((c) => c.method === "binding.probe").length;
+  f.native.held.delete("binding.probe");
+  f.native.epoch = 2;
+  f.native.roster = {
+    revision: f.native.roster.revision + 1,
+    candidates: [
+      {
+        ...f.native.roster.candidates[0]!,
+        nativeEpoch: 2,
+        transport: "wifi",
+      },
+    ],
+  };
+  f.native.publish();
+  heldProbe.resolve();
+
+  // Epoch 2 must get its own fresh probe and publish ready via iphone.targetsChanged.
+  await vi.waitFor(
+    () =>
+      expect(f.native.calls.filter((c) => c.method === "binding.probe").length).toBeGreaterThan(
+        probesBefore,
+      ),
+    { timeout: 1000 },
+  );
+  await vi.waitFor(
+    () =>
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: "iphone.targetsChanged",
+          params: expect.objectContaining({ deviceId: f.deviceId, nativeEpoch: 2, ready: true }),
+        }),
+      ),
+    { timeout: 1000 },
+  );
+
+  // Runtime iphone.session.open respects a caller deadline above 30s up to 120s.
+  await connection.request(
+    "iphone.session.open",
+    {
+      deviceId: f.deviceId,
+      driverGeneration: 1,
+      sessionId: "session-long",
+      runId: "run-long",
+      access: "observe",
+    },
+    { deadline: Date.now() + 90_000 },
+  );
+  const openTimeout = f.native.calls.filter((c) => c.method === "session.open").at(-1)?.timeoutMs;
+  expect(openTimeout).toBeGreaterThan(30_000);
+  expect(openTimeout).toBeLessThanOrEqual(120_000);
+});
+
+it("does not reacquire a binding after slot close during recovery and retries when setup refreshes images first", async () => {
+  const mac = new FakeIphoneMacSupport();
+  const f = await fixture({ mac });
+  cleanups.push(f.cleanup);
+  f.native.probeReady = false;
+  let incompatible = true;
+  const originalRequest = f.native.request.bind(f.native);
+  vi.spyOn(f.native, "request").mockImplementation(async (method, params, schema, opts) => {
+    if (method === "binding.probe") {
+      f.native.calls.push({
+        method,
+        params,
+        ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      });
+      if (incompatible) {
+        f.native.roster = {
+          revision: f.native.roster.revision + 1,
+          candidates: f.native.roster.candidates.map((candidate) => ({
+            ...candidate,
+            capabilities: {
+              observe: "developer-image-incompatible",
+              act: "developer-image-incompatible",
+              launch: "developer-image-incompatible",
+              installedApps: "developer-image-incompatible",
+              text: "unsupported-text",
+              clear: "unsupported-clear",
+              indexedTargets: "geometry-unavailable",
+              liveVideo: "unsupported",
+            },
+          })),
+        };
+        f.native.publish();
+        throw new IphoneServiceError("developer-image-incompatible");
+      }
+      f.native.ready(false);
+      return schema.parse({});
+    }
+    return originalRequest(method, params, schema, opts);
+  });
+
+  await f.bind();
+  await vi.waitFor(
+    async () =>
+      expect((await f.service.targets(ownerA.deploymentId))[0]).toMatchObject({
+        ready: false,
+        reason: "developer-image-incompatible",
+      }),
+    { timeout: 1000 },
+  );
+  expect(mac.listeners.size).toBe(1);
+
+  // Even if another caller (such as Setup) refreshes images first with a CFBundleVersion bump,
+  // the blocked bound phone still retries and recovers.
+  incompatible = false;
+  f.native.images = [{ build: "test", version: "27.2.52.0" }];
+  await f.service.refreshImages(["/Applications/Xcode.app/Contents/Developer"]);
+  await vi.waitFor(
+    async () =>
+      expect((await f.service.targets(ownerA.deploymentId))[0]).toMatchObject({
+        ready: true,
+        reason: null,
+      }),
+    { timeout: 1000 },
+  );
+  expect(mac.listeners.size).toBe(0);
+
+  // If a recovery probe pauses in mac.inspect() while the slot closes, it must stop watching
+  // and never reacquire a binding after slot close.
+  incompatible = true;
+  f.native.roster = {
+    revision: f.native.roster.revision + 1,
+    candidates: f.native.roster.candidates.map((candidate) => ({
+      ...candidate,
+      nativeEpoch: 2,
+      capabilities: {
+        observe: "developer-image-incompatible",
+        act: "developer-image-incompatible",
+        launch: "developer-image-incompatible",
+        installedApps: "developer-image-incompatible",
+        text: "unsupported-text",
+        clear: "unsupported-clear",
+        indexedTargets: "geometry-unavailable",
+        liveVideo: "unsupported",
+      },
+    })),
+  };
+  const inspectHeld = Promise.withResolvers<void>();
+  vi.spyOn(mac, "inspect").mockImplementationOnce(async () => {
+    await inspectHeld.promise;
+    return {
+      xcodeApps: ["/Applications/Xcode.app"],
+      xcodeInstalling: false,
+      imageRoots: ["/Applications/Xcode.app/Contents/Developer"],
+    };
+  });
+  const acquiresBefore = f.native.calls.filter((c) => c.method === "binding.acquire").length;
+  f.native.publish();
+  await vi.waitFor(() => expect(mac.inspect).toHaveBeenCalledOnce(), { timeout: 1000 });
+  const stopping = f.service.stopForSlot(ownerA.deploymentId);
+  try {
+    await vi.waitFor(() => expect(mac.listeners.size).toBe(0), { timeout: 1000 });
+  } finally {
+    inspectHeld.resolve();
+  }
+  await stopping;
+  expect(f.native.calls.filter((c) => c.method === "binding.acquire").length).toBe(acquiresBefore);
+});
+
+it("releases a newly acquired binding when a probe is canceled while binding.acquire is in flight", async () => {
+  const f = await fixture();
+  cleanups.push(f.cleanup);
+  await f.bind();
+  await f.service.stop();
+  const service = f.restart();
+  await service.start();
+  const heldAcquire = Promise.withResolvers<void>();
+  let acquireSignal: AbortSignal | undefined;
+  let acquireStarted = false;
+  const originalRequest = f.native.request.bind(f.native);
+  vi.spyOn(f.native, "request").mockImplementation(async (method, params, schema, opts) => {
+    if (method === "binding.acquire") {
+      acquireStarted = true;
+      acquireSignal = opts?.signal;
+      f.native.calls.push({ method, params });
+      await heldAcquire.promise;
+      return schema.parse({ bindingToken: "late-binding-token" });
+    }
+    return originalRequest(method, params, schema, opts);
+  });
+  const connection = service.forSlot(ownerA).connect(() => undefined);
+  cleanups.push(async () => connection.close());
+  await connection.request(
+    "iphone.targets",
+    {
+      assignments: [
+        { deviceId: f.deviceId, generation: 1, role: "screen", definitionId: "iphone-screen" },
+      ],
+    },
+    f.options(),
+  );
+  await vi.waitFor(() => expect(acquireStarted).toBe(true), { timeout: 1000 });
+  expect(acquireSignal).toBeUndefined();
+  connection.close();
+  heldAcquire.resolve();
+  await vi.waitFor(
+    () =>
+      expect(
+        f.native.calls.some(
+          (c) =>
+            c.method === "binding.release" &&
+            (c.params as { bindingToken?: string }).bindingToken === "late-binding-token",
+        ),
+      ).toBe(true),
+    { timeout: 1000 },
+  );
 });
 
 it("refuses first observations with stale epochs or unusable geometry", async () => {

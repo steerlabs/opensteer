@@ -2,75 +2,13 @@ package phone
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
-	"os"
-	"path/filepath"
-	"syscall"
+	"log/slog"
+	"slices"
 
-	"github.com/google/uuid"
 	"github.com/steerlabs/opensteer/iphone-bridge/internal/wire"
 )
 
-func (m *Manager) loadSelectedImages() error {
-	f, err := m.root.OpenFile("images.v1.json", os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return wire.Fail(wire.NotInitialized)
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || !privateFile(info) {
-		return wire.Fail(wire.NotInitialized)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, 300001))
-	if err != nil || len(data) > 300000 {
-		return wire.Fail(wire.NotInitialized)
-	}
-	selected := map[string]string{}
-	if wire.StrictDecode(data, &selected) != nil || len(selected) > 64 {
-		return wire.Fail(wire.NotInitialized)
-	}
-	for id, path := range selected {
-		if (len(id) == 0 || len(id) > 128) || !filepath.IsAbs(path) || len(path) > 4096 {
-			return wire.Fail(wire.NotInitialized)
-		}
-	}
-	m.selectedImages = selected
-	return nil
-}
-func (m *Manager) saveSelectedImages() error {
-	data, err := json.Marshal(m.selectedImages)
-	if err != nil {
-		return err
-	}
-	name := "images-" + uuid.New().String() + ".tmp"
-	f, err := m.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return Classify(err, wire.NativeServiceFailed)
-	}
-	defer m.root.Remove(name)
-	_, err = f.Write(data)
-	if err == nil {
-		err = f.Sync()
-	}
-	err = errors.Join(err, f.Close())
-	if err == nil {
-		err = m.root.Rename(name, "images.v1.json")
-	}
-	if err == nil {
-		directory, e := m.root.Open(".")
-		if e == nil {
-			err = errors.Join(directory.Sync(), directory.Close())
-		} else {
-			err = e
-		}
-	}
-	return ClassifyOrNil(err, wire.NativeServiceFailed)
-}
 func (m *Manager) mountSelectedImage(ctx context.Context, p *localPhone, s *Session, path string) error {
 	image, err := ValidateImage(path)
 	if err != nil {
@@ -87,29 +25,80 @@ func (m *Manager) mountSelectedImage(ctx context.Context, p *localPhone, s *Sess
 	defer cleanup()
 	return m.mountImage(ctx, s, m.device(p), staged)
 }
+
+func servicePresent(s *Session, name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.services.GetPort(name) > 0
+}
+
 func developerServicesPresent(s *Session) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.services.GetPort(screenshotService) > 0 && s.services.GetPort(hidService) > 0 && s.services.GetPort(deviceInfoService) > 0
 }
+
+// ensureDeveloperServices is the single setup and runtime gate for DDI-backed services.
+// It reuses live services already exposed by the iPhone and only mounts a local DDI when missing.
 func (m *Manager) ensureDeveloperServices(ctx context.Context, p *localPhone, s *Session) error {
-	m.mu.Lock()
-	path := m.selectedImages[p.identity]
-	m.mu.Unlock()
-	if path == "" {
-		return nil
-	}
-	if err := s.Refresh(ctx); err != nil {
-		return err
+	if s.newRSD != nil {
+		if err := s.Refresh(ctx); err != nil {
+			s.setDDIReason("")
+			return err
+		}
 	}
 	if developerServicesPresent(s) {
+		s.setDDIReason("")
+		slog.Debug("bridge.service", "service", "developer-image", "reason", "already-present")
 		return nil
 	}
-	if err := m.mountSelectedImage(ctx, p, s, path); err != nil {
+	failDDI := func(err error, fallback wire.Reason) error {
+		s.setDDIReason(Classify(err, fallback).Code)
 		return err
 	}
-	if !developerServicesPresent(s) {
-		return wire.Fail(wire.ServiceMissing)
+	m.mu.Lock()
+	paths := slices.Clone(m.imagePaths)
+	m.mu.Unlock()
+	if len(paths) == 0 {
+		slog.Debug("bridge.service", "service", "developer-image", "reason", string(wire.ImageMissing))
+		return failDDI(wire.Fail(wire.ImageMissing), wire.ImageMissing)
 	}
-	return nil
+	var lastIncompatible error
+	allMissing := true
+	for _, path := range paths {
+		err := m.mountSelectedImage(ctx, p, s, path)
+		if err == nil {
+			if !developerServicesPresent(s) {
+				slog.Debug("bridge.service", "service", "developer-image", "reason", string(wire.ServiceMissing))
+				return failDDI(wire.Fail(wire.ServiceMissing), wire.ServiceMissing)
+			}
+			s.setDDIReason("")
+			slog.Debug("bridge.service", "service", "developer-image", "reason", "mounted")
+			return nil
+		}
+		var failure *wire.Failure
+		if errors.As(err, &failure) {
+			if failure.Code == wire.ImageMissing {
+				continue
+			}
+			allMissing = false
+			if failure.Code == wire.ImageIncompatible {
+				lastIncompatible = err
+				continue
+			}
+			slog.Debug("bridge.service", "service", "developer-image", "reason", string(failure.Code))
+			return failDDI(err, wire.ImageMountFailed)
+		}
+		allMissing = false
+		return failDDI(err, wire.ImageMountFailed)
+	}
+	if allMissing {
+		slog.Debug("bridge.service", "service", "developer-image", "reason", string(wire.ImageMissing))
+		return failDDI(wire.Fail(wire.ImageMissing), wire.ImageMissing)
+	}
+	slog.Debug("bridge.service", "service", "developer-image", "reason", string(wire.ImageIncompatible))
+	if lastIncompatible != nil {
+		return failDDI(lastIncompatible, wire.ImageIncompatible)
+	}
+	return failDDI(wire.Fail(wire.ImageIncompatible), wire.ImageIncompatible)
 }

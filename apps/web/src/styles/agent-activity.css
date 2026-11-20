@@ -1975,3 +1975,75 @@ button.computer-now__where:focus-visible .work__chevron {
   width: 14px;
   height: 14px;
 }
+
+/* ---- An answered question: what was asked, then the person's answer ---- */
+
+.answered-question {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding-left: var(--space-14);
+  border-left: 2px solid var(--line);
+}
+
+.answered-question__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.answered-question__head .icon {
+  width: 13px;
+  height: 13px;
+  color: var(--green);
+}
+
+.answered-question__title {
+  margin: 0;
+  color: var(--text);
+  font-weight: var(--weight-strong);
+}
+
+/* What was asked reads as the conversation does, not as the card's aside. */
+.answered-question .request-detail {
+  color: var(--text);
+  font-size: var(--text-2xl);
+  line-height: 1.5;
+}
+
+.answered-question__answer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.answered-question__prompt {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.answered-question__words {
+  margin: 0;
+  padding: var(--space-4) var(--space-12);
+  border-radius: var(--radius-md);
+  background: var(--green-wash);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.answered-question__issue {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.answered-question__retry {
+  color: var(--text-soft);
+  text-decoration: underline;
+}

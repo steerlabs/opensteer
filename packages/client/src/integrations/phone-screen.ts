@@ -77,7 +77,7 @@ export function phoneScreenStatus(machine: MachineSummary): PhoneScreenStatus | 
     case "paused":
       return {
         label: "Busy",
-        fix: `Quit Xcode or any other app connected to the iPhone on ${mac.name}. If it stays busy, restart the iPhone.`,
+        fix: `Another session or app on ${mac.name} is actively using this iPhone. Close it, or restart the iPhone if it stays busy.`,
         tone: "waiting",
         needsSetup: false,
       };
@@ -95,11 +95,17 @@ export function phoneScreenStatus(machine: MachineSummary): PhoneScreenStatus | 
         tone: "waiting",
         needsSetup: true,
       };
-    case "setup-required":
     case "permission-required":
       return {
+        label: "Needs Local Network access",
+        fix: `On ${mac.name}, open System Settings › Privacy & Security › Local Network and turn on Opensteer.`,
+        tone: "waiting",
+        needsSetup: true,
+      };
+    case "setup-required":
+      return {
         label: "Needs setup",
-        fix: `Something on the iPhone or ${mac.name} changed since setup.`,
+        fix: `Finish iPhone setup on ${mac.name} — Xcode or USB setup needs attention.`,
         tone: "waiting",
         needsSetup: true,
       };

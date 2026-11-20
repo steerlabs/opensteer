@@ -17,6 +17,8 @@ import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { TEAM_COPIES_SQL, teamCopiesMigrationName } from "./team-copies-migration.js";
 import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
 import {
+  answeredQuestionRecordsMigrationName,
+  applyAnsweredQuestionRecords,
   applyPersonalStateSchema,
   applyTaskApprovalReceipts,
   taskApprovalReceiptsMigrationName,
@@ -594,6 +596,7 @@ export function migrationProvider(options?: {
           ? {
               [personalCurrentStateMigrationName]: { up: applyPersonalStateSchema },
               [taskApprovalReceiptsMigrationName]: { up: applyTaskApprovalReceipts },
+              [answeredQuestionRecordsMigrationName]: { up: applyAnsweredQuestionRecords },
             }
           : {}),
       };

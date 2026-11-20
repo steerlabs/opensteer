@@ -271,6 +271,7 @@ function mockScopedItem(
           entry.kind === "request"
             ? { title: entry.title.slice(0, 192), preview: entry.outcome.slice(0, 400) }
             : { status: "pending" },
+        ...(entry.kind === "request" && entry.question ? { question: entry.question } : {}),
       });
     case "run":
       return TranscriptItemSchema.parse({
