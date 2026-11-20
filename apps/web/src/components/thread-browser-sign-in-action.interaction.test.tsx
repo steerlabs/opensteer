@@ -35,12 +35,14 @@ let root: Root | null = null;
 let container: HTMLElement | null = null;
 let statuses: Record<string, Status>;
 let grantSource: string | null;
+let waitForGrant: Promise<void> | undefined;
 let outcomes: object[];
 let dispatch: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.useFakeTimers();
   grantSource = macId;
+  waitForGrant = undefined;
   outcomes = [];
   dispatch = vi.fn(async () => ({
     outcome: outcomes.shift() ?? {
@@ -120,6 +122,26 @@ describe("BrowserSignInRequestBody after Allow", () => {
     expect(allowedSources()).toEqual([macId, macId]);
   });
 
+  it("keeps the grant check running across repeated signed-in inspections", async () => {
+    statuses = { [macId]: "available", [workId]: "offline" };
+    outcomes = [problem("stopped")];
+    const grant = Promise.withResolvers<void>();
+    waitForGrant = grant.promise;
+    await render();
+    await click("Allow");
+    statuses = { ...statuses, [macId]: "stopped" };
+    await tick(1);
+    statuses = { ...statuses, [macId]: "available" };
+    await tick(2);
+    expect(allowedSources()).toEqual([macId]);
+
+    await act(async () => grant.resolve());
+    await settle();
+    expect(allowedSources()).toEqual([macId, macId]);
+    await tick(2);
+    expect(allowedSources()).toHaveLength(2);
+  });
+
   it("leaves a problem no inspection can clear to the person", async () => {
     statuses = { [macId]: "available", [workId]: "offline" };
     outcomes = [problem("runtime-outdated")];
@@ -146,22 +168,25 @@ async function render(): Promise<void> {
     connection: localSession.connection,
     dispatch,
     rpc: {
-      "browser.sources.get": vi.fn(async () => ({
-        data: {
-          sites: grantSource
-            ? [
-                {
-                  createdAt: "2026-09-18T12:00:00.000Z",
-                  lastSignedInAt: null,
-                  preferredSourceId: grantSource,
-                  site,
-                },
-              ]
-            : [],
-          sources: [],
-        },
-        ok: true,
-      })),
+      "browser.sources.get": vi.fn(async () => {
+        await waitForGrant;
+        return {
+          data: {
+            sites: grantSource
+              ? [
+                  {
+                    createdAt: "2026-09-18T12:00:00.000Z",
+                    lastSignedInAt: null,
+                    preferredSourceId: grantSource,
+                    site,
+                  },
+                ]
+              : [],
+            sources: [],
+          },
+          ok: true,
+        };
+      }),
       "browser.sources.inspect": vi.fn(async () => ({
         data: {
           candidates: [

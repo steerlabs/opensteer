@@ -164,14 +164,14 @@ export function BrowserSignInRequestBody({
     pinned?.outcome.status === "problem" &&
     browserSignInProblemClearsInChrome(pinned.outcome.problem) &&
     !retryStopped;
+  const pinnedStatus = inspection?.candidates.find(
+    ({ sourceId }) => sourceId === pinned?.sourceId,
+  )?.status;
   useEffect(() => {
-    if (!retryable || !pinned || !inspection || !site) return;
-    const status = inspection.candidates.find(
-      (candidate) => candidate.sourceId === pinned.sourceId,
-    )?.status;
+    if (!pending || !retryable || !pinned || !site || pinnedStatus === undefined) return;
     const before = allowedStatus.current;
-    allowedStatus.current = status;
-    if (status !== "available" || before === "available") return;
+    allowedStatus.current = pinnedStatus;
+    if (pinnedStatus !== "available" || before === "available") return;
     // Removing the site since the Allow withdraws it; retrying would add it back.
     let current = true;
     void client.rpc["browser.sources.get"]({})
@@ -190,7 +190,7 @@ export function BrowserSignInRequestBody({
     return () => {
       current = false;
     };
-  }, [client, inspection, pinned, retryable, site]);
+  }, [client, pending, pinned, pinnedStatus, retryable, site]);
 
   if (!payload || !site) return <ActionNote alert>This sign-in request is invalid.</ActionNote>;
   if (!pending) {
