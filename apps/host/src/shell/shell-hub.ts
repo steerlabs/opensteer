@@ -68,7 +68,7 @@ export type ShellHubStore = Pick<
   | "getMachineAccessTarget"
   | "getThreadForOwner"
   | "reserveShellSession"
-  | "resolveAuthority"
+  | "admitExecution"
 >;
 
 interface ShellControlEntry {
@@ -1129,11 +1129,15 @@ export class ShellHub implements ShellControlStreamHandler {
    */
   async #lineageAdmits(scope: RunToolScope): Promise<boolean> {
     try {
-      const authority = await this.#options.store.resolveAuthority({
+      const execution = await this.#options.store.admitExecution({
         ownerUserId: scope.requestedBy,
         subject: { kind: "binding", bindingId: `run:${scope.runId}` },
       });
-      return authority.lineage?.grant.scope !== "selected";
+      // A shell is an effect: lineaged work needs a mode that allows effects without review.
+      return (
+        execution.agentConnection === null ||
+        (execution.agentConnection.grant.scope === "everything" && execution.mode === "full-access")
+      );
     } catch {
       return false;
     }

@@ -32,6 +32,7 @@ import {
   type RunId,
   type RunnerId,
   type UserId,
+  type ThreadId,
 } from "@opensteer/core";
 import type {
   AdministrationCommandIdentity,
@@ -705,7 +706,7 @@ export class DeviceService {
         if (blocked) throw new ToolBlockedError(blocked);
         const [connection, authority] = await Promise.all([
           this.#store.getDeviceComputerConnectionForCall({ connectionId, ownerUserId }),
-          this.#store.listCallableTools({ ownerUserId, threadId: caller.threadId }),
+          this.#store.listCallableTools(callerRequester(ownerUserId, caller)),
         ]);
         const current = authority.find(
           (candidate) =>
@@ -1081,8 +1082,7 @@ export class DeviceService {
           ? "observe"
           : "act";
     const tools =
-      facts?.tools ??
-      (await this.listCallableTools({ ownerUserId: run.requestedBy, threadId: caller.threadId }));
+      facts?.tools ?? (await this.listCallableTools(callerRequester(run.requestedBy, caller)));
     const callable = tools.find(
       (candidate) =>
         candidate.grant.connectionId === target &&
@@ -1526,9 +1526,7 @@ export class DeviceService {
     if (request.operation === "installedApps") {
       const owner = caller.run.requestedBy;
       const connectionId = IntegrationConnectionIdSchema.parse(request.target);
-      const row = (
-        await this.listCallableTools({ ownerUserId: owner, threadId: caller.threadId })
-      ).find(
+      const row = (await this.listCallableTools(callerRequester(owner, caller))).find(
         (candidate) =>
           candidate.grant.connectionId === connectionId &&
           candidate.tool.name === "observe" &&
@@ -1903,4 +1901,14 @@ function computerUseScope(
   if (computerAppNamesApp(definition.config)) return app ? { app, kind: "app" } : null;
   if (!isPhoneDisplayDefinitionId(definition.id) || app !== null) return null;
   return { definitionId: definition.id, kind: "display" };
+}
+
+/** A tool caller's exact execution: its Run's binding when it has one, otherwise its task. */
+function callerRequester(
+  ownerUserId: UserId,
+  caller: { readonly run: { readonly runId: string } | null; readonly threadId: ThreadId },
+): IntegrationRequester {
+  return caller.run
+    ? { ownerUserId, agentBindingId: `run:${caller.run.runId}` }
+    : { ownerUserId, threadId: caller.threadId };
 }

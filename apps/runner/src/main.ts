@@ -11,7 +11,7 @@ import {
   readProcessSecrets,
 } from "@opensteer/shared/processSecrets";
 import { ensurePrivateDirectory } from "@opensteer/shared/privateFiles";
-import type { EnvironmentId, RunnerId } from "@opensteer/core";
+import { RunIdSchema, type EnvironmentId, type RunnerId } from "@opensteer/core";
 import { harnessRuntimeBoundaryForRunner } from "@opensteer/harness";
 import { RunnerBootIdSchema, type RunnerDescriptor } from "@opensteer/protocol";
 import {
@@ -33,7 +33,12 @@ import { cacheRunPlugins, prunePluginCache } from "./skills/plugin-cache.js";
 import { JsonRunnerLogger } from "./runtime/logger.js";
 import { AgentHomeManager } from "./folders/agent-home.js";
 import { verifyNodeExecutable } from "./runtime/node-executable.js";
-import { RunnerRuntime, type RunnerRuntimeOptions } from "./runtime/runtime.js";
+import {
+  RunnerRuntime,
+  type RunnerLocalActivity,
+  type RunnerRuntimeOptions,
+} from "./runtime/runtime.js";
+import { agentStopFile } from "./runtime/agent-stop-file.js";
 import { ExecutionContainment } from "./runtime/execution-containment.js";
 import { RunnerReadinessFile } from "./runtime/readiness-file.js";
 import { describeRunnerDevice } from "./device.js";
@@ -105,8 +110,21 @@ export async function runRunnerDaemon(
      */
     readonly control?: (control: {
       readonly notifySleeping: () => void;
+      readonly notifyAwake: () => void;
       readonly recheckEngines: () => void;
+      /**
+       * The person stopped one Run on this computer. It ends through the same
+       * interrupt the Home's Stop uses, so the Home records it as interrupted,
+       * when it next hears from this Runner if it is out of reach now. False
+       * when no such Run is running here.
+       */
+      readonly stopRun: (runId: string) => boolean;
     }) => void;
+    /**
+     * The Runs this Runner is doing work for, each time that changes and once
+     * when the daemon starts. A Runner that runs no agents never calls it.
+     */
+    readonly onActivity?: (runs: readonly RunnerLocalActivity[]) => void;
     readonly onConnected?: (identity: {
       readonly environmentId: EnvironmentId | null;
       readonly runnerId: RunnerId;
@@ -147,6 +165,7 @@ export async function runRunnerDaemon(
   const bootId = RunnerBootIdSchema.parse(`rbt_${randomUUID()}`);
   let started: StartedRunner | undefined;
   let connection: ReconnectingHostConnection | undefined;
+  let stopActivity: (() => void) | undefined;
   try {
     const identityStore = new FileRunnerIdentityStore({
       dataDirectory: config.dataDirectory,
@@ -200,15 +219,28 @@ export async function runRunnerDaemon(
       ...(started.shellModule ? { shellModule: started.shellModule } : {}),
     });
     const running = connection;
+    const runtime = started.agents?.runtime;
     options.control?.({
       notifySleeping: () => {
         void running.notifySleeping();
       },
+      notifyAwake: () => running.notifyAwake(),
       recheckEngines: () => running.recheckEngines(),
+      stopRun: (runId) => {
+        const parsed = RunIdSchema.safeParse(runId);
+        return parsed.success && (runtime?.stopRunLocally(parsed.data) ?? false);
+      },
     });
+    const onActivity = options.onActivity;
+    if (runtime && onActivity) {
+      const watched = runtime;
+      stopActivity = watched.subscribeLocalActivity(() => onActivity(watched.localActivity()));
+      onActivity(watched.localActivity());
+    }
     await connection.run(shutdown.signal);
   } finally {
     signal?.removeEventListener("abort", externalAbort);
+    stopActivity?.();
     connection?.close();
     await readiness?.disconnected();
     await started?.close();
@@ -357,6 +389,9 @@ async function startAgentsRunner(input: {
       logger,
     ),
     harnessRuntimeBoundary,
+    ...(applicationConfig.agentStopFile
+      ? { agentWorkStopped: agentStopFile(applicationConfig.agentStopFile) }
+      : {}),
     ...(harnessSandbox ? { harnessSandbox } : {}),
     plugins: cacheRunPlugins,
     logger,

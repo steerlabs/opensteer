@@ -1,9 +1,25 @@
+import type { BrowserRuntime } from "@opensteer/browser-runtime-core";
+import type { StandardCdpMode } from "@opensteer/protocol/standard-cdp";
+import {
+  StandardCdpTickets,
+  standardCdpConnectPrefix,
+  type CdpAuthority,
+  type StandardCdpFacts,
+  type StandardCdpTicketClaims,
+} from "./standard-cdp-tickets.js";
+import { directStandardTransport, relayStandardTransport } from "./standard-cdp-transport.js";
 import type { DeviceId } from "@opensteer/core";
 import { authorizeTabTarget } from "../tabs/tab-authority.js";
 import type { PageTabsPort } from "../tabs/tab-service.js";
 import type { TabActor } from "../tabs/ports.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
-import { TabStore, type TabRecord, type TabWrite } from "@opensteer/database";
+import {
+  TabStore,
+  executionAccess,
+  selectedGrantOf,
+  type TabRecord,
+  type TabWrite,
+} from "@opensteer/database";
 import type { PageBinding, TabOpenedBy, TabTarget } from "@opensteer/core";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import {
@@ -285,6 +301,7 @@ export interface BrowserSessionRepository {
       lineageThreadIds: ThreadId[];
     }[]
   >;
+  listBrowserSessionAttachmentBindings?(sessionId: BrowserSessionId): Promise<readonly string[]>;
   listBrowserPlaceHoldings(sessionId: BrowserSessionId): Promise<
     readonly {
       agentBindingId: string;
@@ -481,6 +498,8 @@ export interface BrowserRuntimeTarget {
   readonly navigationAttributionVersion?: boolean;
   readonly tabRestoreVersion?: boolean;
   readonly popupFollowVersion?: boolean;
+  /** The Runtime reads the attach ticket's `actor` claim. */
+  readonly actorClaim?: boolean;
   readonly captureRegion?: boolean;
   readonly rasterDemand?: boolean;
   readonly passkeys?: boolean;
@@ -489,6 +508,15 @@ export interface BrowserRuntimeTarget {
   /** The computer whose Runner relays this Runtime, as this Deployment names it. */
   readonly computer?: { readonly name: string; readonly runnerId: RunnerId };
   connect(ticket: string): BrowserRuntimeConnection;
+  readonly wholeContextCdp?: boolean;
+  readonly standardRuntime?: Pick<BrowserRuntime, "attachStandardCdp">;
+  connectStandard?(
+    ticket: string,
+    signal: AbortSignal,
+  ): Promise<{
+    readonly connection: BrowserRuntimeConnection;
+    readonly mode: StandardCdpMode;
+  }>;
 }
 
 export type BrowserRuntimePlacement = BrowserPlacement & { readonly agents?: boolean };
@@ -571,6 +599,13 @@ export type ApplySiteCookiesResult = "applied" | "session-closed" | "runtime-out
 export interface StartBrowserSessionResult {
   readonly session: HostedBrowserSession;
   readonly wasExisting: boolean;
+}
+
+interface ConfirmedCdpDispatch {
+  readonly maxBytes: number;
+  readonly maxDepth: number;
+  readonly maxEntries: number;
+  readonly signal?: AbortSignal;
 }
 
 type BrowserCdpRequest = Extract<BrowserClientMessage, { readonly type: "cdp.command" }>;
@@ -672,6 +707,13 @@ interface BrowserActor {
   >;
   usageTail?: Promise<void>;
   seq: number;
+}
+
+interface StandardCdpEntry {
+  readonly claims: StandardCdpTicketClaims;
+  mode?: StandardCdpMode;
+  since?: string;
+  close(reason: string): void;
 }
 
 export class BrowserService {
@@ -781,6 +823,8 @@ export class BrowserService {
   readonly #requireAgentAccess: (runnerId: RunnerId) => Promise<void>;
   readonly #requireAgentVisibility: (runnerId: RunnerId) => Promise<void>;
   readonly #detachRunnerAgents: BrowserServiceOptions["detachRunnerAgents"];
+  readonly standardCdpTickets = new StandardCdpTickets();
+  readonly #standardCdpAttachments = new Map<string, StandardCdpEntry>();
   readonly #deviceAttachments = new Map<string, { runnerId: RunnerId; close: () => void }>();
   withRunnerAdmission<T>(runnerId: RunnerId, action: () => Promise<T>): Promise<T> {
     return this.#agentAdmissions.run(runnerId, action);
@@ -1457,12 +1501,15 @@ export class BrowserService {
     ownerId: UserId,
     input: BrowserTabOpenCommand,
     agent?: { ownerId: UserId; agentBindingId: string; threadId: ThreadId },
+    confirmedSignal?: AbortSignal,
   ): Promise<BrowserTabOpenResult> {
+    confirmedSignal?.throwIfAborted();
     const expiresAt = Date.now() + 20_000;
     const cancellation = new AbortController();
     const budget: BrowserTabOpenBudget = {
-      signal: cancellation.signal,
+      signal: confirmedSignal ? AbortSignal.any([confirmedSignal, cancellation.signal]) : cancellation.signal,
       expiresAt: expiresAt - 2_000,
+      ...(confirmedSignal ? { confirmed: true } : {}),
     };
     const timeout = () =>
       new OpensteerError({
@@ -1474,10 +1521,12 @@ export class BrowserService {
     timer.unref?.();
     try {
       return await withDatabaseOperationSignal(budget.signal, budget.expiresAt, () =>
-        withTimeout(this.#openTab(ownerId, input, budget, agent), browserOpenWorkMs, {
-          signal: budget.signal,
-          timeoutError: timeout,
-        }),
+        confirmedSignal
+          ? this.#openTab(ownerId, input, budget, agent)
+          : withTimeout(this.#openTab(ownerId, input, budget, agent), browserOpenWorkMs, {
+              signal: budget.signal,
+              timeoutError: timeout,
+            }),
       );
     } catch (error) {
       cancellation.abort(error);
@@ -1637,7 +1686,19 @@ export class BrowserService {
           }
           budget.signal.throwIfAborted();
           if (agent) {
-            await this.admitAgentBrowser(agent, "read-write", record ? [record] : []);
+            await this.admitAgentBrowser(
+              agent,
+              "read-write",
+              record ? [record] : [],
+              this.#repository,
+              false,
+              record
+                ? undefined
+                : {
+                    profileId:
+                      opening && "profileId" in opening ? (opening.profileId ?? null) : null,
+                  },
+            );
             await this.#requireAgentAccess(runnerId);
           }
           binding = {
@@ -1791,6 +1852,7 @@ export class BrowserService {
         // turning browser access off cannot land between them.
         const send = async () => {
           if (agent) await this.admitAgentBrowser(agent, "read-write", [record]);
+          budget.signal.throwIfAborted();
           this.#requireOpenableSession(record);
           // A submitted initial page cannot be repeated after an uncertain start.
           if (binding.browserStarted)
@@ -1804,6 +1866,8 @@ export class BrowserService {
               "browser-session-unavailable",
               "This browser is not ready to open a page. Try again shortly.",
             );
+          if (budget.confirmed && !broker.supportsCdpReplyBudget)
+            throw new OpensteerError({ code: "conflict", message: "Update the browser computer to run browser scripts." });
           const navigationId =
             command.url && !agent
               ? broker.beginHistoryNavigation(ownerId, command.typed === true)
@@ -1811,6 +1875,7 @@ export class BrowserService {
           budget.pageRequested = true;
           const request = broker.requestCdp({
             type: "cdp.command",
+            ...(budget.confirmed ? { replyBudget: { maxBytes: 4096, maxDepth: 8, maxEntries: 64 } } : {}),
             requestId: randomUUID(),
             ...(navigationId ? { navigationId } : {}),
             command: {
@@ -1835,7 +1900,7 @@ export class BrowserService {
                 ...(command.viewport === undefined ? {} : { viewport: command.viewport }),
               },
             },
-          });
+          }, budget.confirmed ? budget.signal : undefined);
           // Awaited just after the lane releases; a rejection meanwhile is not unhandled.
           request.catch(() => undefined);
           return { broker, navigationId, request };
@@ -2671,6 +2736,7 @@ export class BrowserService {
       return { kind: "page", sessionId: session.id, surfaceId: row.id };
     },
     bind: (claims, row) => this.bindPage(claims, row),
+    bindBrowserScript: (actor, row) => this.#bindWorkspacePage(actor.authority, row, actor.signal),
     closeViewers: async (_ownerId, row) => {
       if (row.pageBinding)
         this.#brokers.get(row.pageBinding.sessionId)?.removePersonTab(row.id, row.generation);
@@ -2729,7 +2795,7 @@ export class BrowserService {
         ? actor.ownerId
         : actor.kind === "run"
           ? actor.claims.requestedBy
-          : actor.caller.userId;
+          : actor.kind === "browser-binding" ? actor.authority.ownerId : actor.caller.userId;
     if (actor.kind === "connection")
       throw new OpensteerError({
         code: "forbidden",
@@ -2743,7 +2809,7 @@ export class BrowserService {
             threadId: actor.claims.threadId,
             environmentId: actor.claims.environmentId,
           }
-        : undefined;
+        : actor.kind === "browser-binding" ? { ...actor.authority, threadId: actor.threadId } : undefined;
     const profiles = await this.#repository.listBrowserProfiles(ownerId);
     const profile =
       "profileId" in target ? profiles.find((profile) => profile.id === target.profileId) : null;
@@ -2763,6 +2829,7 @@ export class BrowserService {
             await this.#repository.listEligibleBrowserRunners(ownerId),
           )
         : undefined;
+    if (actor.kind === "browser-binding") actor.signal?.throwIfAborted();
     const opened = await this.openTab(
       ownerId,
       {
@@ -2784,6 +2851,7 @@ export class BrowserService {
         ...(target.viewport ? { viewport: target.viewport } : {}),
       },
       agent,
+      actor.kind === "browser-binding" ? actor.signal : undefined,
     );
     const record = await this.#repository.getBrowserSessionForOwner(opened.sessionId, ownerId);
     if (!record)
@@ -2800,7 +2868,7 @@ export class BrowserService {
       ?.clientRows(this.#presence(record.id))
       .records.get(opened.tabId);
     const openedBy: TabOpenedBy =
-      actor.kind === "run" ? { taskId: actor.claims.threadId } : "person";
+      agent ? { taskId: agent.threadId } : "person";
     this.#workspacePageGenerations.set(`${record.id}:${opened.tabId}`, 1);
     return {
       id: opened.tabId,
@@ -2830,7 +2898,8 @@ export class BrowserService {
   async #restoreWorkspacePage(
     ownerId: UserId,
     initial: TabRecord,
-    claims?: RunToolScope,
+    agent?: CdpAuthority,
+    signal?: AbortSignal,
   ): Promise<BrowserSessionRecord> {
     if (!this.#workspaceTabs)
       throw new OpensteerError({ code: "not_found", message: "Workspace tabs are unavailable." });
@@ -2838,6 +2907,7 @@ export class BrowserService {
     return this.#serializeKey(
       `workspace-restore:${initial.pageBinding?.lineageId ?? initial.id}`,
       async () => {
+        signal?.throwIfAborted();
         let row = await this.#requireWorkspaceGeneration(ownerId, initial);
         const binding = row.pageBinding;
         if (!binding)
@@ -2849,7 +2919,6 @@ export class BrowserService {
           binding.sessionId,
           ownerId,
         );
-        const agent = claims ? { ownerId, agentBindingId: `run:${claims.runId}` } : undefined;
         if (agent && previous) await this.admitAgentBrowser(agent, "read-write", [previous]);
         const broker = this.#brokers.get(binding.sessionId);
         if (previous && broker?.live && broker.pageOf(row.id)) {
@@ -2864,6 +2933,12 @@ export class BrowserService {
             code: "forbidden",
             message: "This browser computer is unavailable.",
           });
+        // The exact profile, or Guest, this restore starts.
+        if (agent)
+          await this.admitAgentBrowser(agent, "read-write", [], this.#repository, false, {
+            profileId: row.profileId,
+          });
+        signal?.throwIfAborted();
         const sessionId = createBrowserSessionId();
         this.#workspacePageGenerations.set(`${sessionId}:${row.id}`, row.generation);
         const dormant = (await tabs.snapshot(ownerId)).rows
@@ -2886,12 +2961,12 @@ export class BrowserService {
           initialUrl: row.url!,
           placement: { kind: "runner", runnerId: rowRunnerId },
           ...(row.profileId ? { profileId: row.profileId } : { fresh: true }),
-          origin: claims ? "agent" : "person",
+          origin: agent ? "agent" : "person",
           ...(agent ? { agentBindingId: agent.agentBindingId } : {}),
           opener:
             previous?.opener ??
-            (claims
-              ? { kind: "task", threadId: claims.threadId, runId: claims.runId }
+            (agent
+              ? await this.#repository.browserSessionOpenerForBinding(agent.agentBindingId, ownerId)
               : { kind: "person", userId: ownerId }),
         });
         await finish();
@@ -2908,22 +2983,25 @@ export class BrowserService {
     );
   }
   async bindPage(claims: RunToolScope, row: TabRecord) {
-    const agent = { ownerId: claims.requestedBy, agentBindingId: `run:${claims.runId}` };
+    return this.#bindWorkspacePage({ ownerId: claims.requestedBy, agentBindingId: `run:${claims.runId}` }, row);
+  }
+  async #bindWorkspacePage(agent: CdpAuthority, row: TabRecord, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     await this.admitAgentBrowser(agent);
-    const current = await this.#requireWorkspaceGeneration(claims.requestedBy, row);
+    const current = await this.#requireWorkspaceGeneration(agent.ownerId, row);
     const old = current.pageBinding;
     const live =
       old &&
       this.#brokers.get(old.sessionId)?.live &&
       this.#brokers.get(old.sessionId)?.pageOf(row.id);
-    const session = await this.#restoreWorkspacePage(claims.requestedBy, current, claims);
+    const session = await this.#restoreWorkspacePage(agent.ownerId, current, agent, signal);
     const { backend } = await this.#admitAgentBackend(
       { ...agent, sessionId: session.id },
       undefined,
       true,
     );
-    await this.#requireWorkspaceGeneration(claims.requestedBy, row);
-    await this.pageTabs.admitted!((await this.#workspaceTabs!.get(claims.requestedBy, row.id))!);
+    await this.#requireWorkspaceGeneration(agent.ownerId, row);
+    await this.pageTabs.admitted!((await this.#workspaceTabs!.get(agent.ownerId, row.id))!);
     await this.#recordAgentTabPlace(agent, session, row.id);
     return { tabId: row.id, sessionId: session.id, backend, reloaded: !live };
   }
@@ -3155,6 +3233,10 @@ export class BrowserService {
         code: "forbidden",
         message: "This browser profile is unavailable.",
       });
+    // The exact profile, or Guest, before any browser starts for this binding.
+    await this.admitAgentBrowser(input, "read-write", [], this.#repository, false, {
+      profileId: input.profileId ?? null,
+    });
     const opening = {
       agentBindingId: input.agentBindingId,
       ...(chosenRunnerId ? { chosenRunnerId } : {}),
@@ -3280,9 +3362,12 @@ export class BrowserService {
     },
     requested?: "cdp" | "actions",
     hold = false,
+    captureAuthority?: (
+      facts: Pick<StandardCdpFacts, "grantRevision" | "agentConnectionId">,
+    ) => void,
   ) {
     const record = input.sessionId
-      ? await this.#usableAgentSession(input, input.sessionId)
+      ? await this.#usableAgentSession(input, input.sessionId, captureAuthority === undefined)
       : await this.#followedAgentSession(input);
     await this.#requireAgentAccess(record.runnerId);
     const broker = this.#brokers.get(record.id);
@@ -3306,7 +3391,15 @@ export class BrowserService {
         "The browser cannot keep your tab separate from the agent's tab. Update Opensteer on that computer, then reopen the tab.",
       );
     // Attaching is new access; a command on an open attachment follows its Run's end.
-    await this.admitAgentBrowser(input, "read-write", [record], this.#repository, !hold);
+    await this.admitAgentBrowser(
+      input,
+      "read-write",
+      [record],
+      this.#repository,
+      !hold && !captureAuthority,
+      undefined,
+      captureAuthority,
+    );
     if (hold && input.sessionId) await this.#holdForAgent(input, record);
     return { record, broker, backend };
   }
@@ -3424,10 +3517,230 @@ export class BrowserService {
     };
   }
 
+  async issueStandardCdpTicket(input: {
+    readonly authority: CdpAuthority;
+    readonly browserSessionId: BrowserSessionId;
+    readonly mode: StandardCdpMode;
+    readonly ttl?: number;
+  }): Promise<{ readonly ticket: string; readonly path: string; readonly mode: StandardCdpMode }> {
+    const { facts, mode } = await this.#standardCdpAdmission(input);
+    if (this.#closed || this.#endedBindings.has(input.authority.agentBindingId))
+      throw new BrowserCdpConnectionEnded("This browser authority has ended.");
+    const ticket = this.standardCdpTickets.issue({ ...input, facts, mode });
+    return { ticket, path: `${standardCdpConnectPrefix}${ticket}`, mode };
+  }
+
+  async attachStandardCdpForAgent(claims: StandardCdpTicketClaims, signal: AbortSignal) {
+    const id = randomUUID();
+    const ending = new AbortController();
+    const entry: StandardCdpEntry = {
+      claims,
+      close: (reason) => ending.abort(new BrowserCdpConnectionEnded(reason)),
+    };
+    this.#standardCdpAttachments.set(id, entry);
+    const life = AbortSignal.any([signal, ending.signal, this.#closing.signal]);
+    life.addEventListener("abort", () => this.#standardCdpAttachments.delete(id), { once: true });
+    const verify = async () => {
+      life.throwIfAborted();
+      const admitted = await this.#standardCdpAdmission(claims);
+      if (
+        JSON.stringify(admitted.facts) !== JSON.stringify(claims.facts) ||
+        (entry.mode === "whole-context" && admitted.mode !== entry.mode)
+      )
+        throw new BrowserCdpConnectionEnded(
+          "This browser authority changed. Request a new attachment.",
+        );
+      life.throwIfAborted();
+      return admitted;
+    };
+    try {
+      life.throwIfAborted();
+      const record = await this.#usableAgentSession(
+        claims.authority,
+        claims.browserSessionId,
+        false,
+      );
+      return await this.withRunnerAdmission(record.runnerId, async () => {
+        const admitted = await verify();
+        const { target, broker, mode, identity } = admitted;
+        entry.mode = mode;
+        const unsubscribe = broker.subscribeCdp(
+          () => undefined,
+          () => entry.close("Browser Session ended."),
+        );
+        this.#deviceAttachments.set(id, {
+          runnerId: record.runnerId,
+          close: () => entry.close("Browser access on this computer ended."),
+        });
+        life.addEventListener(
+          "abort",
+          () => {
+            unsubscribe();
+            this.#deviceAttachments.delete(id);
+          },
+          { once: true },
+        );
+        life.throwIfAborted();
+        const ticket = this.#signer.issue({
+          access: "read-write",
+          creationOrigin: "agent",
+          ...(target.actorClaim ? { actor: "agent" } : {}),
+          standardCdp: mode,
+          identity: identity ?? { kind: "fresh" },
+          runtimeId: target.runtimeId,
+          sessionId: admitted.record.id,
+          subject: claims.authority.ownerId,
+        });
+        const transport = target.standardRuntime
+          ? await directStandardTransport(target.standardRuntime, ticket, life)
+          : await target.connectStandard!(ticket, life).then(({ connection, mode: effective }) =>
+              relayStandardTransport(connection, effective),
+            );
+        const close = () => transport.close();
+        if (life.aborted) close();
+        else life.addEventListener("abort", close, { once: true });
+        life.throwIfAborted();
+        transport.signal.addEventListener("abort", () => ending.abort(transport.signal.reason), {
+          once: true,
+        });
+        if (transport.signal.aborted) {
+          entry.close("Browser Runtime ended.");
+          life.throwIfAborted();
+        }
+        entry.mode = transport.mode;
+        entry.since = new Date().toISOString();
+        return {
+          ...transport,
+          signal: life,
+          close: () => entry.close("CDP client disconnected."),
+          reauthorize: async () => {
+            await verify();
+          },
+          send: async (frame: Buffer) => {
+            const { work } = await this.withRunnerAdmission(record.runnerId, async () => {
+              await verify();
+              return { work: transport.send(frame) };
+            });
+            await work;
+          },
+        };
+      });
+    } catch (error) {
+      this.#standardCdpAttachments.delete(id);
+      entry.close("CDP attachment refused.");
+      throw error;
+    }
+  }
+
+  closeStandardCdpForBinding(agentBindingId: string, reason: string): void {
+    this.standardCdpTickets.revoke(agentBindingId);
+    for (const { claims, close } of this.#standardCdpAttachments.values())
+      if (claims.authority.agentBindingId === agentBindingId) close(reason);
+  }
+
+  closeStandardCdpForConnection(connectionId: string, reason: string): void {
+    const bindings = this.standardCdpTickets.bindingsForConnection(connectionId);
+    for (const { claims } of this.#standardCdpAttachments.values())
+      if (claims.facts.agentConnectionId === connectionId)
+        bindings.add(claims.authority.agentBindingId);
+    for (const binding of bindings) this.closeStandardCdpForBinding(binding, reason);
+  }
+
+  listStandardCdpAttachmentsForBinding(agentBindingId: string) {
+    return [...this.#standardCdpAttachments.values()].flatMap(({ claims, mode, since }) =>
+      claims.authority.agentBindingId === agentBindingId && mode && since
+        ? [
+            {
+              browserSessionId: claims.browserSessionId,
+              profileId: claims.facts.profileId,
+              mode,
+              since,
+            },
+          ]
+        : [],
+    );
+  }
+
+  async #standardCdpAdmission(
+    input: Pick<StandardCdpTicketClaims, "authority" | "browserSessionId" | "mode">,
+  ) {
+    const { authority, browserSessionId } = input;
+    if (
+      this.#closed ||
+      this.#endedBindings.has(authority.agentBindingId) ||
+      (authority.expiresAt !== undefined && authority.expiresAt <= Date.now())
+    )
+      throw new BrowserCdpConnectionEnded("This browser authority has ended.");
+    let grant: Pick<StandardCdpFacts, "grantRevision" | "agentConnectionId"> = {
+      grantRevision: null,
+      agentConnectionId: null,
+    };
+    const { record, broker } = await this.#admitAgentBackend(
+      { ...authority, sessionId: browserSessionId },
+      "cdp",
+      false,
+      (facts) => {
+        grant = facts;
+      },
+    );
+    const held = await this.#repository.listActiveBrowserSessionsForAgentBinding(
+      authority.agentBindingId,
+    );
+    if (!held.some(({ id }) => id === record.id))
+      throw new BrowserCdpConnectionEnded("This binding does not hold that Browser Session.");
+    const target = this.#resolveTarget(placementOf(record));
+    if (
+      !broker.live ||
+      !target ||
+      target.runtimeId !== record.runtimeId ||
+      target.placementKey !== record.placementKey ||
+      (!target.connectStandard && !target.standardRuntime)
+    )
+      throw new BrowserCdpConnectionEnded("This Browser Session has no standard CDP runtime.");
+    const identity =
+      record.profileId && this.#localProfiles
+        ? await this.#localProfiles.identity(record.profileId, record.runnerId, target, false)
+        : null;
+    if (record.profileId && !identity)
+      throw new BrowserCdpConnectionEnded("The saved browser profile is unavailable.");
+    const facts: StandardCdpFacts = {
+      profileId: record.profileId,
+      profileBindingId: identity?.binding.bindingId ?? null,
+      runtimeId: target.runtimeId,
+      placementKey: target.placementKey,
+      ...grant,
+    };
+    let mode: StandardCdpMode = "session";
+    if (input.mode === "whole-context" && record.profileId && target.wholeContextCdp) {
+      const holders = await this.#repository.listBrowserSessionAttachmentBindings?.(record.id);
+      const others = await this.#repository.listBrowserSessions(authority.ownerId);
+      if (
+        holders?.length === 1 &&
+        holders[0] === authority.agentBindingId &&
+        !others.some(
+          (other) =>
+            other.id !== record.id &&
+            other.profileId === record.profileId &&
+            !isTerminal(other.state),
+        ) &&
+        ![...this.#standardCdpAttachments.values()].some(
+          (other) =>
+            other.claims.facts.profileId === record.profileId &&
+            other.claims.authority.agentBindingId !== authority.agentBindingId,
+        )
+      )
+        mode = "whole-context";
+    }
+    if (this.#closed || this.#endedBindings.has(authority.agentBindingId))
+      throw new BrowserCdpConnectionEnded("This browser authority has ended.");
+    return { facts, mode, record, target, broker, identity };
+  }
+
   async attachCdpForAgent(
     input: {
       readonly agentBindingId: string;
       readonly ownerId: UserId;
+      readonly expiresAt?: number;
       readonly sessionId?: BrowserSessionId;
     },
     onEvent: (event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"]) => void,
@@ -3440,7 +3753,7 @@ export class BrowserService {
      * its way; `result` settles with the browser's answer. Commands dispatched
      * in turn reach the browser in that order, whenever each is answered.
      */
-    dispatch(command: BrowserCdpRequest["command"]): Promise<{ readonly result: Promise<unknown> }>;
+    dispatch(command: BrowserCdpRequest["command"], confirmed?: ConfirmedCdpDispatch): Promise<{ readonly result: Promise<unknown> }>;
     request(command: BrowserCdpRequest["command"]): Promise<unknown>;
   }> {
     const record = input.sessionId
@@ -3455,6 +3768,7 @@ export class BrowserService {
     input: {
       readonly agentBindingId: string;
       readonly ownerId: UserId;
+      readonly expiresAt?: number;
       readonly sessionId?: BrowserSessionId;
     },
     onEvent: (event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"]) => void,
@@ -3467,7 +3781,7 @@ export class BrowserService {
      * its way; `result` settles with the browser's answer. Commands dispatched
      * in turn reach the browser in that order, whenever each is answered.
      */
-    dispatch(command: BrowserCdpRequest["command"]): Promise<{ readonly result: Promise<unknown> }>;
+    dispatch(command: BrowserCdpRequest["command"], confirmed?: ConfirmedCdpDispatch): Promise<{ readonly result: Promise<unknown> }>;
     request(command: BrowserCdpRequest["command"]): Promise<unknown>;
   }> {
     const { record, broker } = await this.#admitAgentBackend(input, "cdp", true);
@@ -3534,9 +3848,16 @@ export class BrowserService {
     // fences apply until then. The answer arrives on `result`.
     const dispatch = async (
       command: BrowserCdpRequest["command"],
+      confirmed?: ConfirmedCdpDispatch,
     ): Promise<{ readonly result: Promise<unknown> }> => {
       return this.withRunnerAdmission(record.runnerId, async () => {
+        confirmed?.signal?.throwIfAborted();
+        if (confirmed && input.expiresAt !== undefined && input.expiresAt <= Date.now())
+          throw new OpensteerError({ code: "forbidden", message: "Browser authority expired." });
         const bindingWasEnded = this.#endedBindings.has(input.agentBindingId);
+        if (confirmed && bindingWasEnded) assertAttached(false);
+        if (confirmed && !broker.supportsCdpReplyBudget)
+          throw new OpensteerError({ code: "conflict", message: "Update the browser computer to run browser scripts." });
         const lease =
           command.method === "Opensteer.fillLogin" || command.method === "Opensteer.fillCard"
             ? z.object({ loginRef: z.string() }).safeParse(
@@ -3621,13 +3942,19 @@ export class BrowserService {
         assertAttached(bindingWasEnded);
         this.#noteAgentCommand(record.id, input.agentBindingId);
         assertAttached(bindingWasEnded);
+        const replyBudget = confirmed && {
+          maxBytes: Math.min(confirmed.maxBytes, maxBrowserTextBytes - 4096),
+          maxDepth: confirmed.maxDepth,
+          maxEntries: confirmed.maxEntries,
+        };
         const answered = broker.requestCdp({
+          ...(replyBudget ? { replyBudget } : {}),
           command,
           ...(actorToken ? { actorToken } : {}),
           ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
           requestId: globalThis.crypto.randomUUID(),
           type: "cdp.command",
-        });
+        }, confirmed?.signal);
         return {
           result: answered.then(async (response) => {
             if (
@@ -4434,6 +4761,7 @@ export class BrowserService {
       const ticket = this.#signer.issue({
         creationOrigin:
           origin === "person" && record.opener?.kind === "person" ? "person" : "agent",
+        ...(target.actorClaim ? { actor: origin === "person" ? "person" : "agent" } : {}),
         ...(input.operationBudget
           ? {
               operationExpiresAt: new Date(input.operationBudget.expiresAt).toISOString(),
@@ -4723,6 +5051,11 @@ export class BrowserService {
       | "assertActiveGrant"
     > = this.#repository,
     endedBindingAnswers = false,
+    /** A browser about to start or restore: its exact profile, or null for Guest. */
+    opening?: { readonly profileId: BrowserProfileId | null },
+    captureAuthority?: (
+      facts: Pick<StandardCdpFacts, "grantRevision" | "agentConnectionId">,
+    ) => void,
   ) {
     if (!input.agentBindingId)
       throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
@@ -4750,9 +5083,16 @@ export class BrowserService {
         ownerUserId: input.ownerId,
         agentBindingId: input.agentBindingId,
         explicitAccess: "read-write",
-        grantTarget: "actor",
+        ...(opening?.profileId
+          ? { grantTarget: { kind: "browser-profile", profileId: opening.profileId } }
+          : {}),
       });
-      if (!authority.access || (access === "read-write" && authority.access !== "read-write"))
+      const grant = selectedGrantOf(authority.execution);
+      captureAuthority?.({
+        grantRevision: authority.execution.agentConnection?.grantRevision ?? null,
+        agentConnectionId: authority.execution.agentConnection?.agentConnectionId ?? null,
+      });
+      if (!executionAccess(authority.execution, access))
         throw new OpensteerError({
           code: "forbidden",
           message:
@@ -4760,20 +5100,21 @@ export class BrowserService {
               ? "This task has read-only browser access and cannot drive or change tabs."
               : "This task cannot read browser tabs.",
         });
-      // A connection's selected grant reaches only the browser profiles it names.
-      const grant = authority.authority.lineage?.grant;
+      // A connection's selected grant reaches only the browser profiles it names, checked on the
+      // exact profile before anything starts; Guest is never one of them.
+      const profiles = [
+        ...records.map((record) => record.profileId),
+        ...(opening ? [opening.profileId] : []),
+      ];
       if (
-        grant?.scope === "selected" &&
-        (!grant.resources.some((resource) => resource.kind === "browser-profile") ||
-          records.some(
-            (record) =>
-              !record.profileId ||
-              !agentGrantAllows(
-                grant,
-                { kind: "browser-profile", profileId: record.profileId },
-                access,
-              ),
-          ))
+        grant &&
+        (profiles.length
+          ? profiles.some(
+              (profileId) =>
+                !profileId ||
+                !agentGrantAllows(grant, { kind: "browser-profile", profileId }, access),
+            )
+          : !grant.resources.some((resource) => resource.kind === "browser-profile"))
       )
         throw new OpensteerError({
           code: "forbidden",
@@ -4842,9 +5183,8 @@ export class BrowserService {
           await repository.resolveResourceAccess({
             ownerUserId: input.ownerId,
             agentBindingId: input.agentBindingId,
-            grantTarget: "actor",
           })
-        ).authority.lineage?.grant
+        ).execution.agentConnection?.grant
       : undefined;
     // A selected grant reaches only the sessions of the profiles it names.
     const records = (await repository.listBrowserSessions(input.ownerId)).filter(
@@ -4897,6 +5237,18 @@ export class BrowserService {
     },
     record: BrowserSessionRecord,
   ): Promise<void> {
+    if (
+      record.profileId &&
+      [...this.#standardCdpAttachments.values()].some(
+        ({ claims, mode }) =>
+          mode === "whole-context" &&
+          claims.facts.profileId === record.profileId &&
+          claims.authority.agentBindingId !== input.agentBindingId,
+      )
+    )
+      throw new BrowserCdpConnectionEnded(
+        "Another task holds exclusive access to this browser profile.",
+      );
     const [attached, credits] = await Promise.all([
       this.#repository.attachBrowserSession({
         agentBindingId: input.agentBindingId,
@@ -4970,6 +5322,7 @@ export class BrowserService {
   }
 
   #forgetAgentBinding(agentBindingId: string): void {
+    this.closeStandardCdpForBinding(agentBindingId, "The browser task ended.");
     for (const attachment of this.#actionAttachments.values())
       if (attachment.binding === agentBindingId) attachment.close();
     for (const actor of this.#actors.values())
@@ -5474,7 +5827,7 @@ export class HostedBrowserBroker {
       readonly expectedType: "cdp.result";
       readonly reject: (error: unknown) => void;
       readonly resolve: (response: BrowserCdpResponse) => void;
-      readonly timeout: NodeJS.Timeout;
+      readonly timeout: NodeJS.Timeout | undefined;
     }
   >();
   /**
@@ -6048,7 +6401,12 @@ export class HostedBrowserBroker {
     });
   }
 
-  requestCdp(message: BrowserCdpRequest): Promise<BrowserCdpResponse> {
+  get supportsCdpReplyBudget(): boolean {
+    return this.#snapshot?.cdpReplyBudget === 1;
+  }
+
+  requestCdp(message: BrowserCdpRequest, signal?: AbortSignal): Promise<BrowserCdpResponse> {
+    signal?.throwIfAborted();
     const parsed = BrowserClientMessageSchema.parse(message) as BrowserCdpRequest;
     if (this.#settled || !this.#runtimeReady) {
       return Promise.reject(
@@ -6070,7 +6428,7 @@ export class HostedBrowserBroker {
       );
     }
     return new Promise<BrowserCdpResponse>((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      const timeout = parsed.replyBudget ? undefined : setTimeout(() => {
         this.#pendingCdpRequests.delete(parsed.requestId);
         reject(
           new OpensteerError({
@@ -6080,14 +6438,14 @@ export class HostedBrowserBroker {
           }),
         );
       }, agentRequestTimeoutMs);
-      timeout.unref();
+      timeout?.unref();
       this.#pendingCdpRequests.set(parsed.requestId, {
         expectedType: "cdp.result",
         reject,
         resolve,
         timeout,
       });
-      void this.#sendCommand(parsed).catch((error) => {
+      void this.#sendCommand(parsed, signal).catch((error) => {
         const pending = this.#pendingCdpRequests.get(parsed.requestId);
         if (!pending) return;
         clearTimeout(pending.timeout);
@@ -7340,7 +7698,7 @@ export class HostedBrowserBroker {
     return operation;
   }
 
-  #sendCommand(message: BrowserClientMessage): Promise<void> {
+  #sendCommand(message: BrowserClientMessage, signal?: AbortSignal): Promise<void> {
     if (
       message.type === "navigation.reload" &&
       message.ignoreCache !== undefined &&
@@ -7355,6 +7713,7 @@ export class HostedBrowserBroker {
     const operation = this.#commandTail.then(
       () =>
         new Promise<void>((resolve, reject) => {
+          signal?.throwIfAborted();
           if (
             this.#settled ||
             this.#protocolFailed ||
@@ -8111,6 +8470,7 @@ const editingServerKinds = new Set<string>([
 ]);
 
 interface BrowserTabOpenBudget {
+  readonly confirmed?: true;
   readonly signal: AbortSignal;
   readonly expiresAt: number;
   admitted?: BrowserTabOpenBinding;

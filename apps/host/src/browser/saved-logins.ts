@@ -31,6 +31,8 @@ interface AgentCall {
   readonly callId: string;
   readonly reason: string;
   readonly site: string;
+  /** Set by this service from the Run's lineage; callers never supply it. */
+  readonly scope?: string;
 }
 
 export type SavedLoginInput = AgentCall & {
@@ -59,6 +61,7 @@ export class SavedLoginService {
   readonly #refusesSite: (site: string) => Promise<boolean>;
   readonly #onLoginSaved: (offer: PasswordsOffer) => Promise<void>;
   readonly #stoppedByPerson: (threadId: ThreadId) => Promise<boolean>;
+  readonly #lineageScope: (ownerId: UserId, runId: RunId) => Promise<string | undefined>;
   readonly #now: () => number;
   readonly #offers: PasswordsOffers;
   readonly #calls = new Map<string, number[]>();
@@ -75,6 +78,11 @@ export class SavedLoginService {
     readonly onLoginSaved: (offer: PasswordsOffer) => Promise<void>;
     /** Whether the person stopped the Thread's newest Run themselves. */
     readonly stoppedByPerson: (threadId: ThreadId) => Promise<boolean>;
+    /**
+     * The scope a fill for this Run must not leave: for a connected agent's lineage, its
+     * connection, grant revision and execution; undefined for the person's own work.
+     */
+    readonly lineageScope?: (ownerId: UserId, runId: RunId) => Promise<string | undefined>;
     readonly onError?: (error: unknown) => void;
     readonly now?: () => number;
   }) {
@@ -84,6 +92,7 @@ export class SavedLoginService {
     this.#refusesSite = signInSiteRefusal(options);
     this.#onLoginSaved = options.onLoginSaved;
     this.#stoppedByPerson = options.stoppedByPerson;
+    this.#lineageScope = options.lineageScope ?? (async () => undefined);
     this.#now = options.now ?? Date.now;
     this.#offers = new PasswordsOffers({
       now: this.#now,
@@ -93,7 +102,9 @@ export class SavedLoginService {
     });
   }
 
-  async useSavedLogin(input: SavedLoginInput): Promise<SavedLoginResult> {
+  async useSavedLogin(unscoped: SavedLoginInput): Promise<SavedLoginResult> {
+    const scope = await this.#lineageScope(unscoped.ownerId, unscoped.runId);
+    const input = { ...unscoped, ...(scope ? { scope } : {}) };
     const site = parseSignInSite(input.site);
     if (await this.#refusesSite(site)) return unavailable(site, "not-allowed");
     const target =
@@ -128,7 +139,9 @@ export class SavedLoginService {
     return result;
   }
 
-  async useCard(input: CardUseInput): Promise<UseCardResult> {
+  async useCard(unscoped: CardUseInput): Promise<UseCardResult> {
+    const scope = await this.#lineageScope(unscoped.ownerId, unscoped.runId);
+    const input = { ...unscoped, ...(scope ? { scope } : {}) };
     const site = parseSignInSite(input.site);
     const unavailable = (reason: Extract<UseCardResult, { status: "unavailable" }>["reason"]) => ({
       status: "unavailable" as const,
@@ -243,7 +256,7 @@ export class SavedLoginService {
           code: "conflict",
           message: "This call already asked for a different site.",
         });
-      return this.#passwords.replayResult(prior, input.deploymentId);
+      return this.#passwords.replayResult(prior, input.deploymentId, input.scope);
     }
     if (sessionId !== null) {
       if (!target?.live) return unavailable(site, "session-closed");

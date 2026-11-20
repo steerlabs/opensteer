@@ -38,7 +38,7 @@ export function callerContext(caller: AgentCaller) {
 export function callerListScope(caller: AgentCaller): AgentThreadListScope {
   const lineage = callerLineage(caller);
   return lineage?.grant.scope === "selected"
-    ? { kind: "connection", connectionId: lineage.connectionId }
+    ? { kind: "connection", connectionId: lineage.agentConnectionId }
     : { kind: "personal" };
 }
 const actions = {

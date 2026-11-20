@@ -60,6 +60,12 @@ type Settlement = Parameters<RequestStore["settlePasswordSignInRequest"]>[0]["se
 type Finish = "settled" | "ended-elsewhere" | "retrying";
 
 interface Call {
+  /**
+   * The authority a fill is scoped to beyond its deployment and site: for work in a connected
+   * agent's lineage, its connection, grant revision and execution. Absent for the person's own
+   * work, which shares leases as before.
+   */
+  readonly scope?: string | undefined;
   readonly sessionId?: string | undefined;
   readonly surfaceId?: import("@opensteer/protocol").BrowserSurfaceId | undefined;
   readonly credential?: "card" | undefined;
@@ -349,7 +355,7 @@ export class PasswordSignInService {
   }
 
   /** What a call already answered by `request` learns again. */
-  replayResult(request: Request, deploymentId?: DeploymentId): SavedLoginResult {
+  replayResult(request: Request, deploymentId?: DeploymentId, scope?: string): SavedLoginResult {
     const result = savedLoginRequestResult(request);
     if (
       result.status !== "unavailable" ||
@@ -358,7 +364,7 @@ export class PasswordSignInService {
       request.payload.kind !== "browser.password-sign-in"
     )
       return result;
-    return this.#ready(deploymentId, result.site, request.payload.credential) ?? result;
+    return this.#ready(deploymentId, result.site, request.payload.credential, scope) ?? result;
   }
 
   leaseForOperation(operationId: string): PasswordLoginLease | null {
@@ -410,9 +416,15 @@ export class PasswordSignInService {
     return lease;
   }
 
-  #ready(deploymentId: DeploymentId, site: string, credential?: "card"): SavedLoginResult | null {
+  #ready(
+    deploymentId: DeploymentId,
+    site: string,
+    credential: "card" | undefined,
+    scope: string | undefined,
+  ): SavedLoginResult | null {
     for (const lease of this.#leases.values()) {
       if (
+        this.#operations.get(lease.operationId)?.starter.scope === scope &&
         lease.deploymentId === deploymentId &&
         lease.site === site &&
         Boolean(lease.publicCard) === (credential === "card") &&
@@ -446,7 +458,7 @@ export class PasswordSignInService {
     if (this.#closed) return Promise.resolve(unavailable(input.site, "unsupported"));
     const own = this.#calls.get(callKey(input));
     if (own) this.#assertScope(own, input);
-    const ready = this.#ready(input.deploymentId, input.site, input.credential);
+    const ready = this.#ready(input.deploymentId, input.site, input.credential, input.scope);
     if (ready) {
       this.#bindToLease(ready, input);
       return Promise.resolve(ready);
@@ -457,7 +469,10 @@ export class PasswordSignInService {
       own ?? this.#bySite.get(siteKey(input.deploymentId, input.site, input.credential));
     if (!operation) return null;
     this.#assertScope(operation, input);
-    if (operation.starter.deploymentId !== input.deploymentId)
+    if (
+      operation.starter.deploymentId !== input.deploymentId ||
+      operation.starter.scope !== input.scope
+    )
       return Promise.resolve(unavailable(input.site, "busy"));
     const recorded = operation.answers.get(callKey(input));
     if (recorded) return Promise.resolve(recorded);
@@ -479,7 +494,7 @@ export class PasswordSignInService {
     const admitted = prior.then(async (): Promise<Operation | SavedLoginResult> => {
       const own = this.#calls.get(callKey(input));
       if (own) this.#assertScope(own, input);
-      const ready = this.#ready(input.deploymentId, input.site, input.credential);
+      const ready = this.#ready(input.deploymentId, input.site, input.credential, input.scope);
       if (ready) {
         this.#bindToLease(ready, input);
         return ready;
@@ -490,7 +505,10 @@ export class PasswordSignInService {
           : own) ?? this.#bySite.get(key);
       if (existing) {
         this.#assertScope(existing, input);
-        if (existing.starter.deploymentId !== input.deploymentId)
+        if (
+          existing.starter.deploymentId !== input.deploymentId ||
+          existing.starter.scope !== input.scope
+        )
           return unavailable(input.site, "busy");
         this.#recordCall(existing, input);
         return existing;
@@ -858,7 +876,7 @@ export class PasswordSignInService {
       operation.settlement.response.outcome === "authorized"
     )
       return (
-        this.#ready(call.deploymentId, operation.site, call.credential) ??
+        this.#ready(call.deploymentId, operation.site, call.credential, call.scope) ??
         unavailable(operation.site, "expired")
       );
     return operation.result ?? directResult(operation.site, operation.settlement ?? interrupted());

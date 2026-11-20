@@ -134,7 +134,12 @@ export class LocalServerRegistry {
     return result.registration;
   }
 
-  async list(owner: UserId, store = this.#options.store) {
+  /** `visible` scopes the servers before anything about them is projected. */
+  async list(
+    owner: UserId,
+    store = this.#options.store,
+    visible: (serverId: string) => boolean = () => true,
+  ) {
     const [plugins, servers, installations] = await Promise.all([
       store.plugins.list(),
       store.localMcp.list(),
@@ -146,7 +151,7 @@ export class LocalServerRegistry {
         const installation = installations.find(({ pluginId }) => pluginId === plugin.id);
         const device = pluginDeviceFromManifest(installation?.manifest);
         return servers
-          .filter(({ installationId }) => installationId === installation?.id)
+          .filter(({ id, installationId }) => installationId === installation?.id && visible(id))
           .map((server) => {
             const { state, detail } = localServerStatus(server);
             return {

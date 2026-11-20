@@ -36,6 +36,7 @@ export interface BrowserSourceRecord {
   readonly createdAt: Date;
   readonly revokedAt: Date | null;
   readonly lastSeenAt: Date | null;
+  readonly liveTabsOnly?: boolean;
 }
 
 export interface BrowserSiteGrantRecord {
@@ -75,6 +76,7 @@ const sourceColumns = [
   "browserSources.createdAt",
   "browserSources.revokedAt",
   "browserSources.lastSeenAt",
+  "browserSources.liveTabsOnly",
 ] as const;
 const grantColumns = [
   "id",
@@ -168,6 +170,7 @@ export class BrowserSourceStore {
     readonly name: string;
     readonly origin: string;
     readonly routeGeneration: number | null;
+    readonly liveTabsOnly?: boolean;
     readonly replaces: { readonly sourceId: BrowserSourceId; readonly tokenHash: string } | null;
   }): Promise<BrowserSourceRecord> {
     return commitPersonalMutation(this.#database, async (transaction, mutation) => {
@@ -210,6 +213,7 @@ export class BrowserSourceStore {
             .where("id", "=", input.replaces.sourceId)
             .where("ownerId", "=", pairing.ownerId)
             .where("tokenHash", "=", input.replaces.tokenHash)
+            .where("liveTabsOnly", "=", input.liveTabsOnly ?? false)
             .forNoKeyUpdate()
             .executeTakeFirst()
         : undefined;
@@ -244,8 +248,18 @@ export class BrowserSourceStore {
           lastSeenAt: null,
           pairedOrigin: input.origin,
           pairedRouteGeneration: input.routeGeneration,
+          liveTabsOnly: input.liveTabsOnly ?? false,
         })
-        .returning(["id", "ownerId", "name", "generation", "createdAt", "revokedAt", "lastSeenAt"])
+        .returning([
+          "id",
+          "ownerId",
+          "name",
+          "generation",
+          "createdAt",
+          "revokedAt",
+          "lastSeenAt",
+          "liveTabsOnly",
+        ])
         .executeTakeFirstOrThrow();
       if (replaced) {
         const preferring = await transaction

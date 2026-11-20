@@ -47,6 +47,7 @@ import {
   type ThreadId,
   type TriggerOccurrenceId,
   type TriggerWatchActivationId,
+  type AgentSessionId,
   type UserId,
   type WaitingRequest,
 } from "@opensteer/core";
@@ -137,17 +138,26 @@ export type RequestOriginInput =
   | {
       readonly originatingOccurrenceId?: never;
       readonly originatingWatchActivationId?: never;
+      readonly originatingAgentSessionId?: never;
       readonly originatingRunId: RunId;
     }
   | {
       readonly originatingOccurrenceId: TriggerOccurrenceId;
       readonly originatingWatchActivationId?: never;
+      readonly originatingAgentSessionId?: never;
       readonly originatingRunId?: never;
     }
   | {
       readonly originatingRunId?: never;
       readonly originatingOccurrenceId?: never;
       readonly originatingWatchActivationId: TriggerWatchActivationId;
+      readonly originatingAgentSessionId?: never;
+    }
+  | {
+      readonly originatingRunId?: never;
+      readonly originatingOccurrenceId?: never;
+      readonly originatingWatchActivationId?: never;
+      readonly originatingAgentSessionId: AgentSessionId;
     };
 interface CreateRequestFields {
   readonly callId: string;
@@ -2899,6 +2909,9 @@ async function createRequestInTransaction(
     id: createId("request"),
     originatingOccurrenceId: input.originatingOccurrenceId ?? null,
     originatingWatchActivationId: input.originatingWatchActivationId ?? null,
+    ...(input.originatingAgentSessionId
+      ? { originatingAgentSessionId: input.originatingAgentSessionId }
+      : {}),
     originatingRunId: input.originatingRunId ?? null,
     resolvedAt: null,
     resolvedBy: null,
@@ -2911,20 +2924,25 @@ async function createRequestInTransaction(
     // Call identity is unique per origin through a partial index, so the
     // conflict target has to name that index's predicate too.
     .onConflict((conflict) =>
-      input.originatingWatchActivationId !== undefined
+      input.originatingAgentSessionId !== undefined
         ? conflict
-            .columns(["originatingWatchActivationId", "callId"])
-            .where("originatingWatchActivationId", "is not", null)
+            .columns(["originatingAgentSessionId", "callId"])
+            .where("originatingAgentSessionId", "is not", null)
             .doNothing()
-        : input.originatingRunId === undefined
+        : input.originatingWatchActivationId !== undefined
           ? conflict
-              .columns(["originatingOccurrenceId", "callId"])
-              .where("originatingOccurrenceId", "is not", null)
+              .columns(["originatingWatchActivationId", "callId"])
+              .where("originatingWatchActivationId", "is not", null)
               .doNothing()
-          : conflict
-              .columns(["originatingRunId", "callId"])
-              .where("originatingRunId", "is not", null)
-              .doNothing(),
+          : input.originatingRunId === undefined
+            ? conflict
+                .columns(["originatingOccurrenceId", "callId"])
+                .where("originatingOccurrenceId", "is not", null)
+                .doNothing()
+            : conflict
+                .columns(["originatingRunId", "callId"])
+                .where("originatingRunId", "is not", null)
+                .doNothing(),
     )
     .returningAll()
     .executeTakeFirst();
@@ -3219,6 +3237,7 @@ function boundedProfileName(value: string): string {
 type RequestOriginSelector = {
   readonly originatingOccurrenceId?: TriggerOccurrenceId | null;
   readonly originatingWatchActivationId?: TriggerWatchActivationId | null | undefined;
+  readonly originatingAgentSessionId?: AgentSessionId | null | undefined;
   readonly originatingRunId?: RunId | null;
 };
 
@@ -3235,6 +3254,8 @@ export function requestOriginOf(input: RequestOriginSelector): RequestOriginInpu
   }
   if (input.originatingWatchActivationId != null)
     return { originatingWatchActivationId: input.originatingWatchActivationId };
+  if (input.originatingAgentSessionId != null)
+    return { originatingAgentSessionId: input.originatingAgentSessionId };
   throw new OpensteerError({
     code: "bad_request",
     message: "A Request must originate from a Run or an automation occurrence",
@@ -3265,11 +3286,13 @@ function callIdentityFilter(
   return (expression: ExpressionBuilder<DatabaseSchema, "requests">) =>
     expression.and([
       expression("callId", "=", input.callId),
-      origin.originatingWatchActivationId !== undefined
-        ? expression("originatingWatchActivationId", "=", origin.originatingWatchActivationId)
-        : origin.originatingRunId === undefined
-          ? expression("originatingOccurrenceId", "=", origin.originatingOccurrenceId)
-          : expression("originatingRunId", "=", origin.originatingRunId),
+      origin.originatingAgentSessionId !== undefined
+        ? expression("originatingAgentSessionId", "=", origin.originatingAgentSessionId)
+        : origin.originatingWatchActivationId !== undefined
+          ? expression("originatingWatchActivationId", "=", origin.originatingWatchActivationId)
+          : origin.originatingRunId === undefined
+            ? expression("originatingOccurrenceId", "=", origin.originatingOccurrenceId)
+            : expression("originatingRunId", "=", origin.originatingRunId),
     ]);
 }
 function originMismatchMessage(input: RequestOriginSelector): string {
@@ -3292,6 +3315,31 @@ async function lockRequestOrigin(
   lock = true,
 ): Promise<LockedRequestOrigin | undefined> {
   const origin = requestOriginOf(input);
+  if (origin.originatingAgentSessionId !== undefined) {
+    const parent = await transaction
+      .selectFrom("agentSessions")
+      .select("threadId")
+      .where("id", "=", origin.originatingAgentSessionId)
+      .executeTakeFirst();
+    if (!parent) return undefined;
+    if (lock) await lockRequestThreads(transaction, [parent.threadId]);
+    const session = await transaction
+      .selectFrom("agentSessions")
+      .innerJoin("threads", "threads.id", "agentSessions.threadId")
+      .select(["agentSessions.status", "agentSessions.userId", "threads.environmentId"])
+      .where("agentSessions.id", "=", origin.originatingAgentSessionId)
+      .$if(lock, (q) => q.forNoKeyUpdate("agentSessions"))
+      .executeTakeFirst();
+    return session
+      ? {
+          environmentId: session.environmentId,
+          requestedBy: session.userId,
+          runId: null,
+          running: session.status === "active",
+          threadId: parent.threadId,
+        }
+      : undefined;
+  }
   if (origin.originatingWatchActivationId !== undefined) {
     if (lock) {
       const parent = await transaction

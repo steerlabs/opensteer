@@ -358,10 +358,8 @@ export class LocalProviders {
         ? { ownerUserId: caller.userId }
         : caller.kind === "connection"
           ? { ownerUserId: caller.userId, connectionId: caller.connectionId }
-          : {
-              ownerUserId: caller.userId,
-              threadId: caller.kind === "run" ? caller.thread.id : caller.anchor.id,
-            };
+          : // The exact execution, so its own lineage and mode decide, never another Run's.
+            { ownerUserId: caller.userId, agentBindingId: caller.key };
     const facts = this.#options.devices.localDiscoveryFacts(requester.ownerUserId);
     const [inventory, callables] = await Promise.all([
       store

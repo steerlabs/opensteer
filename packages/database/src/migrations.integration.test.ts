@@ -775,7 +775,7 @@ describe("fresh personal/team lineage", () => {
     ).toEqual([]);
     expect(await database.selectFrom("agentHomeSettings").selectAll().execute()).toEqual([]);
   });
-  it("gives existing connections exactly their old authority and backfills only proven lineage", async () => {
+  it("gives existing connections their old authority, backfills only queued connection inputs, and exposes lineage through the work view", async () => {
     await migrateToLatest(database, migrationsBefore(agentGrantsMigrationName));
     const owner = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
     const connectionId = `mcn_${crypto.randomUUID()}`;
@@ -839,7 +839,8 @@ describe("fresh personal/team lineage", () => {
         .orderBy("title")
         .execute(),
     ).toEqual([
-      { id: delegated.id, originConnectionId: connectionId },
+      // Existing tasks stay the person's: a mutable queue order never proves lineage.
+      { id: delegated.id, originConnectionId: null },
       { id: own.id, originConnectionId: null },
     ]);
     expect(
@@ -860,8 +861,20 @@ describe("fresh personal/team lineage", () => {
         .orderBy("connectionId")
         .execute(),
     ).toEqual([
-      { id: sent.run.id, connectionId },
+      { id: sent.run.id, connectionId: null },
       { id: typed.run.id, connectionId: null },
+    ]);
+    // Dequeue reads inputs through `thread_work_inputs`, so the view must carry the new column.
+    expect(
+      await database
+        .selectFrom("threadWorkInputs")
+        .select(["messageId", "connectionId"])
+        .where("threadId", "in", [delegated.id, own.id] as never)
+        .orderBy("idempotencyKey")
+        .execute(),
+    ).toEqual([
+      { messageId: sent.message.id, connectionId },
+      { messageId: typed.message.id, connectionId: null },
     ]);
     expect(await database.selectFrom("triggers").select("originConnectionId").execute()).toEqual(
       [],

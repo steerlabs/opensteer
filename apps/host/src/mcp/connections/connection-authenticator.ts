@@ -19,6 +19,7 @@ export interface AuthenticatedConnection {
   readonly grant: AgentGrant;
   readonly grantRevision: number;
   readonly consentVersion: number;
+  readonly expiresAt: number;
 }
 
 /** No session cache: an MCP session ID never substitutes for a live bearer check. */
@@ -39,6 +40,7 @@ export class ConnectionAuthenticator {
       grant: connection.grant ?? everythingAgentGrant,
       grantRevision: connection.grantRevision ?? 1,
       consentVersion: connection.consentVersion ?? 1,
+      expiresAt: Date.parse(connection.expiresAt),
     };
   }
 }

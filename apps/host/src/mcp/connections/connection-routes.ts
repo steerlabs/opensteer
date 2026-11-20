@@ -256,7 +256,12 @@ export function createConnectionRpcHandlers(
 export type ConnectionCommand = Extract<
   HostApiCommand,
   {
-    type: "connection.revoke" | "connection.authorize" | "connection.update" | "connection.remove";
+    type:
+      | "connection.revoke"
+      | "connection.authorize"
+      | "connection.update"
+      | "connection.remove"
+      | "connection.uncertain.acknowledge";
   }
 >;
 export function isConnectionCommand(command: HostApiCommand): command is ConnectionCommand {
@@ -264,7 +269,8 @@ export function isConnectionCommand(command: HostApiCommand): command is Connect
     command.type === "connection.revoke" ||
     command.type === "connection.authorize" ||
     command.type === "connection.update" ||
-    command.type === "connection.remove"
+    command.type === "connection.remove" ||
+    command.type === "connection.uncertain.acknowledge"
   );
 }
 /** What a connection change leaves for the runtime once it committed. */
@@ -277,6 +283,39 @@ export interface ConnectionCommandEffects {
   ) => Promise<void>;
   /** Ends what the connection's lineage holds open in this process, such as MCP sessions. */
   readonly closeLineage?: (connectionId: string) => Promise<void>;
+}
+/**
+ * The runtime's effects for connection commands: a revoke or expiry is driven to completion as
+ * one durable cleanup (one pass at a time, also on a timer and at startup), a narrowing stops the
+ * lineage's live Runs, and both close what this process holds open for the lineage.
+ */
+export function connectionCommandEffects(options: {
+  readonly store: Pick<
+    import("@opensteer/database").OpensteerStore,
+    "driveConnectionCleanups" | "stopConnectionLineage"
+  >;
+  readonly closeLineage: (connectionId: string) => Promise<void>;
+  readonly onFailure: (error: unknown, connectionId?: string) => void;
+}): ConnectionCommandEffects & { readonly driveCleanups: () => Promise<void> } {
+  let pass: Promise<void> | null = null;
+  const driveCleanups = (): Promise<void> =>
+    (pass ??= (async () => {
+      try {
+        const { failures } = await options.store.driveConnectionCleanups();
+        for (const error of failures) options.onFailure(error);
+      } finally {
+        pass = null;
+      }
+    })());
+  return {
+    driveCleanups,
+    closeLineage: options.closeLineage,
+    stopLineage: async (userId, connectionId, reason) => {
+      if (reason === "disconnect") return driveCleanups();
+      const { failures } = await options.store.stopConnectionLineage(userId, connectionId, reason);
+      for (const error of failures) options.onFailure(error, connectionId);
+    },
+  };
 }
 export async function handleConnectionCommand(
   oauth: ConnectionOAuth,
@@ -307,6 +346,9 @@ export async function handleConnectionCommand(
     case "connection.remove":
       await oauth.store.remove(session.user.id, command.connectionId);
       return { type: "connection.remove" as const };
+    case "connection.uncertain.acknowledge":
+      await oauth.store.acknowledgeUncertain(session.user.id, command.connectionId);
+      return { type: "connection.uncertain.acknowledge" as const };
     case "connection.authorize":
       return oauth.decide(command, session.user.id, session.id);
   }

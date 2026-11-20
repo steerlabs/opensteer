@@ -4,7 +4,10 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
-import { opensteerChromeExtensionId } from "@opensteer/protocol/browser-sources";
+import {
+  opensteerChromeExtensionId,
+  opensteerChromeLiveTabsExtensionId,
+} from "@opensteer/protocol/browser-sources";
 
 const maximumStaticFileBytes = 64 * 1_024 * 1_024;
 const maximumStaticDistributionBytes = 256 * 1_024 * 1_024;
@@ -189,7 +192,7 @@ function sendStaticFile(reply: FastifyReply, filePath: string, bytes: Buffer) {
  * HEIC photo decoder runs in a worker it creates from its own code, so blob
  * workers are allowed; it needs neither eval nor WebAssembly.
  */
-const staticContentSecurityPolicy = `default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob: chrome-extension://${opensteerChromeExtensionId}; style-src 'self'; script-src 'self'; worker-src blob:; frame-src 'self' https: http://*.localhost:*; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`;
+const staticContentSecurityPolicy = `default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob: chrome-extension://${opensteerChromeExtensionId} chrome-extension://${opensteerChromeLiveTabsExtensionId}; style-src 'self'; script-src 'self'; worker-src blob:; frame-src 'self' https: http://*.localhost:*; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`;
 
 function applyStaticSecurityHeaders(reply: FastifyReply): void {
   void reply

@@ -29,7 +29,7 @@ const selected = AgentGrantSchema.parse({
       deviceId: device,
       app: { kind: "mac-app", bundleId: "com.Example.App", teamId: "ABCDE12345" },
     },
-    { kind: "plugin", target: { kind: "installed", pluginId: "gmail" }, access: "read" },
+    { kind: "plugin", target: { kind: "installed", pluginId: "gmail" }, access: "read-write" },
     { kind: "plugin", target: { kind: "installed", pluginId: "gmail" }, access: "read-write" },
     { kind: "plugin", target: { kind: "local-server", serverId: server }, access: "read" },
     { kind: "browser-profile", profileId: profile },
@@ -65,6 +65,50 @@ describe("agent grants", () => {
       ),
     ).toMatchObject({ access: "read-write" });
     expect(AgentGrantSchema.parse(selected)).toEqual(selected);
+  });
+
+  it("refuses two different statements about one resource instead of merging them", () => {
+    const base = { scope: "selected", tasks: false } as const;
+    const plugin = (access: "read" | "read-write") => ({
+      kind: "plugin",
+      target: { kind: "installed", pluginId: "gmail" },
+      access,
+    });
+    expect(
+      AgentGrantSchema.safeParse({ ...base, resources: [plugin("read"), plugin("read-write")] })
+        .success,
+    ).toBe(false);
+    const app = (teamId: string | null, deviceId = device) => ({
+      kind: "computer-app",
+      approvalId: approval,
+      deviceId,
+      app: { kind: "mac-app", bundleId: "com.example.app", teamId },
+    });
+    expect(
+      AgentGrantSchema.safeParse({ ...base, resources: [app("ABCDE12345"), app(null)] }).success,
+    ).toBe(false);
+    expect(
+      AgentGrantSchema.safeParse({
+        ...base,
+        resources: [
+          app("ABCDE12345"),
+          app("ABCDE12345", "dev_00000000-0000-4000-8000-0000000000de"),
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("treats a changed signer or Device on the same approval as a withdrawal", () => {
+    if (selected.scope !== "selected") throw new Error("selected");
+    const resigned = AgentGrantSchema.parse({
+      ...selected,
+      resources: selected.resources.map((resource) =>
+        resource.kind === "computer-app"
+          ? { ...resource, app: { ...resource.app, teamId: "ZZZZZ99999" } }
+          : resource,
+      ),
+    });
+    expect(agentGrantNarrowed(selected, resigned)).toBe(true);
   });
 
   it("bounds the grant and refuses unknown shapes", () => {

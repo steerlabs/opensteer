@@ -22,19 +22,54 @@ export async function gatherComputerAccess(
     | "listCallableTools"
     | "computerToolEnabled"
     | "computerUseVersion"
-  >,
+  > & {
+    readonly store: Pick<DeviceService["store"], "requesterGrant">;
+  },
   input: IntegrationRequester & { readonly runId?: RunId },
   run?: RunCapabilityClaims<string>,
   callableTools?: readonly CallableIntegrationTool[],
 ) {
   const hasRun = !!(run || input.runId);
-  const [inventory, tools, setupRequests, accessRequests, enabled] = await Promise.all([
-    platform.computerAppApprovals.computerUseInventory(input.ownerUserId),
-    callableTools ?? platform.listCallableTools(input),
-    platform.store.listDeviceComputerAppSetupRequests(input.ownerUserId),
-    platform.store.integrationRequests.listPendingIntegrationAccessRequests(input.ownerUserId),
-    run ? platform.computerToolEnabled(run) : hasRun,
-  ]);
+  const [ownerInventory, tools, ownerSetupRequests, ownerAccessRequests, enabled, grant] =
+    await Promise.all([
+      platform.computerAppApprovals.computerUseInventory(input.ownerUserId),
+      callableTools ?? platform.listCallableTools(input),
+      platform.store.listDeviceComputerAppSetupRequests(input.ownerUserId),
+      platform.store.integrationRequests.listPendingIntegrationAccessRequests(input.ownerUserId),
+      run ? platform.computerToolEnabled(run) : hasRun,
+      platform.store.requesterGrant(input),
+    ]);
+  // A selected grant learns only the Devices, apps and phone screens it names: the inventory is
+  // scoped before anything is projected, and the person's pending setup is none of its business.
+  const selected = grant?.scope === "selected" ? grant : null;
+  const grantedApps = selected?.resources.flatMap((resource) =>
+    resource.kind === "computer-app" ? [resource] : [],
+  );
+  const inventory = grantedApps
+    ? {
+        ...ownerInventory,
+        machines: ownerInventory.machines.flatMap((machine) => {
+          const apps = machine.apps.filter((entry) =>
+            grantedApps.some(
+              (resource) =>
+                resource.approvalId === entry.connectionId.toLowerCase() &&
+                resource.deviceId === machine.deviceId,
+            ),
+          );
+          return apps.length ? [{ ...machine, apps }] : [];
+        }),
+        phones: ownerInventory.phones.filter((phone) =>
+          grantedApps.some(
+            (resource) =>
+              resource.deviceId === phone.deviceId &&
+              resource.app.kind === "phone-screen" &&
+              resource.app.definitionId === phone.definitionId,
+          ),
+        ),
+      }
+    : ownerInventory;
+  const setupRequests = selected ? [] : ownerSetupRequests;
+  const accessRequests = selected ? [] : ownerAccessRequests;
   const runRequired: { blocked: Blocked; access?: never } = {
     blocked: {
       code: "unavailable",
@@ -128,6 +163,8 @@ export async function gatherComputerAccess(
   };
   return {
     ...inventory,
+    /** Whether a selected grant scoped this inventory: it names apps, never a whole Mac. */
+    grantScoped: selected !== null,
     tools,
     appEntries: (machine: (typeof inventory.machines)[number]) => [
       ...machine.apps.map((entry) => ({

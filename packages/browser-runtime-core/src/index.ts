@@ -21,3 +21,14 @@ export type { BrowserOpenTiming } from "./runtime.js";
 
 export { normalizeElectronCursor } from "./browser/cursor-hints.js";
 export { pageWithTarget } from "./browser/target-lookup.js";
+
+export {
+  SessionCdpRouter,
+  SessionCdpRouterError,
+  type BrowserCdpBackend,
+  type CdpChannel,
+  type CdpParameters,
+  type StandardCdpAttachment,
+} from "@opensteer/browser-core";
+
+export { boundedJsonSize, type JsonSizeBudget } from "@opensteer/browser-core/bounded-json";

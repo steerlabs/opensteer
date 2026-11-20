@@ -62,6 +62,7 @@ export class TriggerService {
     },
     actorThreadId: ThreadId | null,
     actorAccessMode?: ThreadAccessMode,
+    actorConnectionId?: string,
   ) {
     await this.#assertProgramCompatible(
       input.ownerId,
@@ -74,6 +75,7 @@ export class TriggerService {
     const { trigger, revision, wasDuplicate } = await this.#store.create({
       actorThreadId,
       ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(actorConnectionId ? { actorConnectionId } : {}),
       anchorThreadId: input.anchorThreadId,
       createdBy: input.ownerId,
       idempotencyKey: input.idempotencyKey,
@@ -107,9 +109,13 @@ export class TriggerService {
       readonly systemRole?: Parameters<TriggerStore["listForOwner"]>[0]["systemRole"];
       readonly limit?: number;
       readonly anchorThreadId?: Parameters<TriggerStore["listForOwner"]>[0]["anchorThreadId"];
+      readonly originConnectionId?: string;
     },
   ) {
     return this.#store.listForOwner({
+      ...(input.originConnectionId === undefined
+        ? {}
+        : { originConnectionId: input.originConnectionId }),
       ...(input.systemRole
         ? {
             systemRole: input.systemRole,
@@ -142,6 +148,7 @@ export class TriggerService {
     input: Omit<Parameters<TriggerStore["update"]>[0], "ownerId" | "actorThreadId">,
     actorThreadId: ThreadId | null,
     actorAccessMode?: ThreadAccessMode,
+    actorConnectionId?: string,
   ) {
     const current = await this.get(ownerId, input.triggerId, 1);
     await this.#assertProgramCompatible(
@@ -154,6 +161,7 @@ export class TriggerService {
       ownerId,
       actorThreadId,
       ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(actorConnectionId ? { actorConnectionId } : {}),
     });
     this.#onChanged?.();
     if (updated.trigger.kind === "watch") this.#onWatchChanged?.(updated.trigger.id);
@@ -164,12 +172,14 @@ export class TriggerService {
     input: Omit<Parameters<TriggerStore["setStatus"]>[0], "ownerId" | "actorThreadId">,
     actorThreadId: ThreadId | null,
     actorAccessMode?: ThreadAccessMode,
+    actorConnectionId?: string,
   ) {
     const trigger = await this.#store.setStatus({
       ...input,
       ownerId,
       actorThreadId,
       ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(actorConnectionId ? { actorConnectionId } : {}),
     });
     this.#onChanged?.();
     if (trigger.kind === "watch") this.#onWatchChanged?.(trigger.id);
@@ -180,12 +190,14 @@ export class TriggerService {
     input: Omit<Parameters<TriggerStore["setNextFire"]>[0], "ownerId" | "actorThreadId">,
     actorThreadId: ThreadId | null,
     actorAccessMode?: ThreadAccessMode,
+    actorConnectionId?: string,
   ) {
     const trigger = await this.#store.setNextFire({
       ...input,
       ownerId,
       actorThreadId,
       ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(actorConnectionId ? { actorConnectionId } : {}),
     });
     this.#onChanged?.();
     return trigger;
@@ -197,6 +209,7 @@ export class TriggerService {
     actorThreadId: ThreadId | null,
     idempotencyKey?: string,
     actorAccessMode?: ThreadAccessMode,
+    actorConnectionId?: string,
   ) {
     const occurrence = await this.#store.enqueueManual({
       ...(idempotencyKey === undefined
@@ -209,6 +222,7 @@ export class TriggerService {
       triggerId,
       actorThreadId,
       ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(actorConnectionId ? { actorConnectionId } : {}),
     });
     this.#onChanged?.();
     this.#onOccurrenceQueued(occurrence);
@@ -242,11 +256,13 @@ export class TriggerService {
     },
     actorThreadId: ThreadId | null,
     actorAccessMode?: ThreadAccessMode,
+    actorConnectionId?: string,
   ) {
     const result = await this.#store.cancelPendingOccurrences(ownerId, {
       ...input,
       actorThreadId,
       ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(actorConnectionId ? { actorConnectionId } : {}),
     });
     if (result.canceledOccurrenceIds.length > 0 && this.#onChanged) {
       this.#onChanged();
@@ -260,6 +276,10 @@ export class TriggerService {
     context?: {
       readonly accessMode: ThreadAccessMode;
       readonly operationKey?: string;
+      /** A selected grant lists only its own lineage's automations. */
+      readonly originConnectionId?: string;
+      /** The external agent connection the actor works for. */
+      readonly agentConnectionId?: string;
     },
   ): Promise<unknown> {
     const input = TriggerControlInputSchema.parse(value);
@@ -274,11 +294,17 @@ export class TriggerService {
           },
           actorThreadId,
           context?.accessMode,
+          context?.agentConnectionId,
         );
       }
       case "list":
         return {
-          triggers: await this.list(ownerId, input),
+          triggers: await this.list(ownerId, {
+            ...input,
+            ...(context?.originConnectionId
+              ? { originConnectionId: context.originConnectionId }
+              : {}),
+          }),
         };
       case "get":
         return this.get(ownerId, input.triggerId, input.occurrenceLimit);
@@ -306,9 +332,16 @@ export class TriggerService {
           },
           actorThreadId,
           context?.accessMode,
+          context?.agentConnectionId,
         );
       case "set_status":
-        return this.setStatus(ownerId, input, actorThreadId, context?.accessMode);
+        return this.setStatus(
+          ownerId,
+          input,
+          actorThreadId,
+          context?.accessMode,
+          context?.agentConnectionId,
+        );
       case "set_next_fire":
         return this.setNextFire(
           ownerId,
@@ -318,6 +351,7 @@ export class TriggerService {
           },
           actorThreadId,
           context?.accessMode,
+          context?.agentConnectionId,
         );
       case "run":
         return {
@@ -328,6 +362,7 @@ export class TriggerService {
             actorThreadId,
             context?.operationKey,
             context?.accessMode,
+            context?.agentConnectionId,
           ),
         };
       case "cancel":
@@ -343,6 +378,7 @@ export class TriggerService {
           },
           actorThreadId,
           context?.accessMode,
+          context?.agentConnectionId,
         );
     }
   }

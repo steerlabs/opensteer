@@ -500,6 +500,8 @@ export type PluginAuthorization = z.infer<typeof AuthorizationSchema>;
 export const AuthorizationResultSchema = z.strictObject({
   allowed: z.boolean(),
   grants: z.record(z.string(), z.enum(["all", "read-only", "off"])).optional(),
+  /** For a connection's selected grant: the only apps it may learn exist. */
+  visible: z.array(z.string()).optional(),
 });
 export type PluginAuthorizationResult = z.infer<typeof AuthorizationResultSchema>;
 export const HostToolSchema = z.strictObject({

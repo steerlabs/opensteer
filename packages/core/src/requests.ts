@@ -7,6 +7,7 @@ import { z } from "zod";
 import { BrowserSiteSchema } from "./browser-sources.js";
 import { ComputerAppIdentitySchema } from "./computer-app.js";
 import {
+  AgentSessionIdSchema,
   AssignmentIdSchema,
   BrowserProfileIdSchema,
   BrowserSurfaceIdSchema,
@@ -600,6 +601,8 @@ const requestBaseShape = {
    */
   originatingOccurrenceId: TriggerOccurrenceIdSchema.nullable(),
   originatingWatchActivationId: TriggerWatchActivationIdSchema.nullable().optional(),
+  /** An external agent's session, for a Request about its direct work. */
+  originatingAgentSessionId: AgentSessionIdSchema.nullable().optional(),
   /** The subagent of the originating Run that asked; absent for the Run's own agent. */
   originatingNodeId: ExecutionNodeIdSchema.optional(),
   originatingRunId: RunIdSchema.nullable(),
@@ -622,6 +625,7 @@ function validateRequestInvariants(
     readonly mode: RequestMode;
     readonly originatingOccurrenceId: string | null;
     readonly originatingWatchActivationId?: string | null | undefined;
+    readonly originatingAgentSessionId?: string | null | undefined;
     readonly originatingRunId: string | null;
     readonly payload: RequestPayload;
     readonly resolvedBy?: UserId | null;
@@ -651,12 +655,13 @@ function validateRequestInvariants(
       request.originatingRunId,
       request.originatingOccurrenceId,
       request.originatingWatchActivationId,
+      request.originatingAgentSessionId,
     ].filter((id) => id != null).length !== 1
   ) {
     context.addIssue({
       code: "custom",
       message:
-        "A Request originates from exactly one of a Run, a Trigger Occurrence or a Watch activation",
+        "A Request originates from exactly one of a Run, a Trigger Occurrence, a Watch activation or an agent session",
       path: ["originatingRunId"],
     });
   }

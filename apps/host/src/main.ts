@@ -24,6 +24,10 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
     delete environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE;
     delete environment.OPENSTEER_NATIVE_MODEL_API_KEY;
     delete environment.OPENSTEER_NATIVE_MODEL_API_KEY_FILE;
+    delete environment.OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN;
+    delete environment.OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN_FILE;
+    delete environment.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET;
+    delete environment.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET_FILE;
   }
   let lastProgressAt = -Infinity;
   let lastStage: string | undefined;

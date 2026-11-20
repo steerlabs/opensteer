@@ -64,6 +64,7 @@ export class ManagedHomeClaimService {
     const authority = this.#authority;
     if (
       claims.authority.deploymentId !== authority.deploymentId ||
+      claims.authority.hostInstanceId !== authority.hostInstanceId ||
       claims.authority.hostKeyFingerprint !== authority.hostKeyFingerprint ||
       claims.authority.canonicalOrigin !== authority.canonicalOrigin
     )
@@ -81,7 +82,8 @@ export class ManagedHomeClaimService {
         message: "This claim is for another generation of this Cloud Computer",
         reason: "managed-home-generation-stale",
       });
-    if (claims.link.hostCredentialSha256 !== sha256(request.hostCredential))
+    const credentialDigest = sha256(request.hostCredential);
+    if (claims.link.hostCredentialSha256 !== credentialDigest)
       throw new OpensteerError({
         code: "forbidden",
         message: "The Account link credential does not match this claim",
@@ -94,6 +96,7 @@ export class ManagedHomeClaimService {
       authority,
       claim: claims.claim,
       linkGeneration: claims.link.generation,
+      hostCredentialSha256: credentialDigest,
       claimedAt: this.#now().toISOString(),
     });
     const receipt = ManagedHomeClaimReceiptSchema.parse({
@@ -135,8 +138,16 @@ export class ManagedHomeClaimService {
       setupCode: request.setupCode,
       subject: claims.sub,
     });
+    const committed = ManagedHomeClaimReceiptSchema.parse(result.receipt);
+    // The same claim again answers its first receipt only with the credential it installed.
+    if (result.replayed && committed.document.hostCredentialSha256 !== credentialDigest)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This Home was claimed with a different Account link credential",
+        reason: "managed-home-link-mismatch",
+      });
     if (!result.replayed) this.#onClaimed();
-    return ManagedHomeClaimReceiptSchema.parse(result.receipt);
+    return committed;
   }
 }
 

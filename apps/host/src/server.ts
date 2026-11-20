@@ -1,3 +1,6 @@
+import { registerStandardCdpRoute } from "./browser/standard-cdp-route.js";
+import { standardCdpConnectPrefix } from "./browser/standard-cdp-tickets.js";
+import { standardCdpMessageMaxBytes } from "@opensteer/protocol/standard-cdp";
 import { registerPluginWebhookRoutes } from "./plugins/plugin-webhook-routes.js";
 import { registerPluginOAuthRoutes } from "./plugins/plugin-oauth-routes.js";
 import { withClientSendKeys } from "./threads/client-send-keys.js";
@@ -19,7 +22,10 @@ import { isLoopbackHostname, isPhoneDisplayDefinitionId } from "@opensteer/core"
 import type { TabService } from "./tabs/tab-service.js";
 import type { AgentToolActivityStore } from "@opensteer/database";
 import { registerAgentToolRoute } from "./mcp/agent-tool-route.js";
-import { registerAgentPageBindingRoute } from "./browser/trigger-cdp-bridge.js";
+import {
+  registerAgentPageBindingRoute,
+  runBrowserCapability,
+} from "./browser/trigger-cdp-bridge.js";
 import { handleAppCommand } from "./apps/app-routes.js";
 import { createAssetUrlHandlers } from "./assets/asset-service.js";
 import { createReferenceHandlers, createThreadRequestHandler } from "./references/resolve.js";
@@ -30,7 +36,10 @@ import type { AssetService } from "./assets/asset-service.js";
 import type { DeviceAccessService } from "./administration/device-access-service.js";
 import type { DeviceDriverManagementPort } from "./administration/device-driver-service.js";
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
-import { installTrustedProxy } from "./identity/anonymous-client-address.js";
+import {
+  installClientAddress,
+  installTrustedProxy,
+} from "./identity/anonymous-client-address.js";
 import { registerManagedHomeClaimRoute } from "./identity/managed-home-claim.js";
 import { deviceAccess } from "@opensteer/protocol";
 import {
@@ -131,6 +140,8 @@ import {
 } from "@opensteer/database";
 import {
   HostDescriptorSchema,
+  HostIdentityProofSchema,
+  hostIdentityProofBytes,
   hostApiVersion,
   minimumHostApiVersion,
   type HostBootstrapMethod,
@@ -193,6 +204,7 @@ import {
   type ShellModuleEvent,
   runFileMaxBytes,
   runFileNameHeader,
+  runFileProofHeader,
   runFileTransferContentType,
 } from "@opensteer/protocol";
 import {
@@ -270,6 +282,7 @@ import type { ComputerUseService } from "./computer-use/computer-use-service.js"
 import type { DisplayStreamHub } from "./computer-use/display-stream-hub.js";
 import type { CredentialService } from "./identity/credential-service.js";
 import type { HarnessAuthenticationCoordinator } from "./identity/harness-authentication-coordinator.js";
+import { HarnessSignInBrowser } from "./identity/harness-sign-in-browser.js";
 import { createIdentityRpcHandlers, registerIdentityRoutes } from "./identity/identity-routes.js";
 import {
   sealRequestResponse,
@@ -366,6 +379,16 @@ export interface HostServerDependencies {
   readonly teamLinks: () => Promise<PersonalTeamLinks>;
   readonly connections?: ConnectionOAuth;
   readonly connectionEffects?: ConnectionCommandEffects;
+  /** Settles a person's answer to a Request about an external agent's direct operation. */
+  readonly agentOperations?: {
+    respond(input: {
+      readonly requestId: import("@opensteer/core").RequestId;
+      readonly expectedRevision: string;
+      readonly resolvedBy: import("@opensteer/core").UserId;
+      readonly settlementSessionId: string;
+      readonly response: import("@opensteer/core").RequestResponse;
+    }): Promise<void>;
+  };
   readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
   readonly fetch?: typeof globalThis.fetch;
@@ -412,6 +435,8 @@ export interface HostServerDependencies {
   readonly placeContext: Pick<PlaceContextService, "assertIncludable">;
   readonly credentials: CredentialService;
   readonly discovery: HostDiscoveryEnvelope;
+  /** Signs with this Host's key, so a client can prove an address still answers as this Home. */
+  readonly signHostProof?: (bytes: Uint8Array) => string;
   readonly egress: EgressService;
   readonly integrations: {
     readonly access: AccessRequests;
@@ -478,6 +503,7 @@ export async function createHostServer(
         return (
           hasAppAuthority(request.headers) ||
           path.startsWith("/media/") ||
+          path.startsWith(standardCdpConnectPrefix) ||
           path.startsWith("/hooks/v1/plugins/") ||
           path.startsWith("/v1/integration-authorizations/") ||
           path === "/v1/plugin-oauth/callback"
@@ -486,6 +512,7 @@ export async function createHostServer(
     }),
   });
   installTrustedProxy(app, dependencies.trustedProxy ?? "loopback-cloudflared");
+  installClientAddress(app);
   const noSendKeys: ReadonlyMap<string, string> = new Map();
   const readSendKeys =
     (session: AuthenticatedHostSession["session"]) => async (ids: readonly MessageId[]) => {
@@ -531,6 +558,25 @@ export async function createHostServer(
     (fields, message) => app.log.warn(fields, message),
   );
   const harnessAuthenticationCoordinator = dependencies.harnessAuthenticationCoordinator;
+  const harnessSignInBrowser = new HarnessSignInBrowser({
+    browserAvailable: (runnerId) =>
+      dependencies.browser.resourcePlacements([runnerId]).some((placement) => placement.available),
+    closeTab: async (ownerId, tabId, idempotencyKey) => {
+      await dependencies.tabs.close({ kind: "person", ownerId }, [tabId], idempotencyKey);
+    },
+    createProfile: (input) => dependencies.browser.createProfile(input),
+    hasTab: (ownerId, tabId) =>
+      dependencies.tabs.get(ownerId, tabId).then(
+        () => true,
+        () => false,
+      ),
+    listProfiles: (ownerId) => dependencies.browser.listProfiles(ownerId),
+    onError: (error) => app.log.warn({ err: error }, "An AI engine sign-in tab did not close"),
+    openTab: async (ownerId, target, idempotencyKey) =>
+      (await dependencies.tabs.open({ kind: "person", ownerId }, target, idempotencyKey)).tab.tabId,
+  });
+  const stopFollowingSignIns = harnessSignInBrowser.follow(harnessAuthenticationCoordinator);
+  app.addHook("onClose", async () => stopFollowingSignIns());
   await app.register(websocket, {
     options: {
       maxPayload: maxBrowserRelayFrameBytes,
@@ -575,11 +621,15 @@ export async function createHostServer(
   const socketServer = app.websocketServer;
   const upgradeSocket = socketServer.handleUpgrade.bind(socketServer);
   socketServer.handleUpgrade = (request, socket, head, callback) => {
-    if (!realtimeSocketSessions.has(request)) return upgradeSocket(request, socket, head, callback);
+    const standardCdp = request.url?.startsWith(standardCdpConnectPrefix);
+    if (!standardCdp && !realtimeSocketSessions.has(request))
+      return upgradeSocket(request, socket, head, callback);
     // This server has no asynchronous verifyClient hook. ws copies the limit
     // into the connection's receiver synchronously during handleUpgrade.
     const limit = socketServer.options.maxPayload;
-    socketServer.options.maxPayload = personalClientFrameMaxBytes;
+    socketServer.options.maxPayload = standardCdp
+      ? standardCdpMessageMaxBytes
+      : personalClientFrameMaxBytes;
     try {
       upgradeSocket(request, socket, head, callback);
     } finally {
@@ -632,6 +682,7 @@ export async function createHostServer(
     personalRemoteAccess: dependencies.personalRemoteAccess?.service,
   });
   registerAgentCdpBridge(app, dependencies.browser, dependencies.runToolTokens);
+  registerStandardCdpRoute(app, dependencies.browser, dependencies.browserSources.liveTabs);
   registerAgentToolRoute(app, {
     callers: dependencies.agentTools.options.callers,
     service: dependencies.agentTools,
@@ -643,21 +694,7 @@ export async function createHostServer(
     dependencies.runToolTokens,
     dependencies.tabs,
     dependencies.agentTools.options.callers,
-    async (claims) => {
-      const run = await dependencies.store.database
-        .selectFrom("runs")
-        .innerJoin("harnessInstances", "harnessInstances.id", "runs.harnessInstanceId")
-        .select(["harnessInstances.driverKind", "runs.accessMode"])
-        .where("runs.id", "=", claims.runId)
-        .where("runs.requestedBy", "=", claims.requestedBy)
-        .executeTakeFirst();
-      if (!run)
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "This Run's browser access has ended.",
-        });
-      return run;
-    },
+    (claims) => runBrowserCapability(dependencies.store, claims),
   );
   registerBrowserSourceWire(
     app,
@@ -714,6 +751,9 @@ export async function createHostServer(
   app.get("/.well-known/opensteer", async (request, reply) => {
     setBrowserSourceExtensionCors(reply, request.headers.origin);
     void reply.header("cache-control", "no-store");
+    const proof = HostIdentityProofSchema.shape.nonce.safeParse(
+      (request.query as { readonly proof?: unknown }).proof,
+    );
     return HostDescriptorSchema.parse({
       kind: "personal",
       apiVersion: minimumHostApiVersion,
@@ -721,6 +761,19 @@ export async function createHostServer(
       authority: dependencies.discovery,
       bootstrapMethods: await advertisedBootstrapMethods(dependencies),
       capabilities: advertisedCapabilities(dependencies),
+      ...(proof.success && dependencies.signHostProof
+        ? {
+            identityProof: {
+              nonce: proof.data,
+              signature: dependencies.signHostProof(
+                hostIdentityProofBytes({
+                  nonce: proof.data,
+                  document: dependencies.discovery.document,
+                }),
+              ),
+            },
+          }
+        : {}),
     });
   });
   registerDesktopUpdateMaintenance(
@@ -1131,6 +1184,9 @@ export async function createHostServer(
           updateRequired: runner.updateRequired,
           phoneUpdate: phoneUpdates.projection(runner.id, runner.connectionGeneration, !!live),
           allowedModules: runner.allowedModules,
+          asleepSince: runner.revokedAt
+            ? null
+            : dependencies.runners.asleepSince(runner.id, runner.connectionGeneration),
           connected: !!live,
           device: runner.device,
           enrollmentId: runner.enrollmentId,
@@ -1218,16 +1274,28 @@ export async function createHostServer(
     const computerViews = new Map(registry.computerViews);
     const computerUseSessions = new Map(registry.computerUseSessions);
     const computerUseDisplayStreamSupported = new Map(registry.computerUseDisplayStreamSupported);
-    const driverIds = [...new Set(drivers.map(({ runnerId }) => runnerId))];
+    const visibleDeviceIds = new Set(devices.devices.map(({ id }) => id));
+    const driverIds = [
+      ...new Set(
+        drivers
+          .filter(({ deviceId }) => visibleDeviceIds.has(deviceId))
+          .map(({ runnerId }) => runnerId),
+      ),
+    ];
     const named =
-      page && driverIds.length
+      driverIds.length > 0
         ? await store.database
             .selectFrom("runners")
-            .select(["id", "name"])
+            .select(["id", "name", "revokedAt", "connectionGeneration"])
             .where("id", "in", driverIds)
             .execute()
-        : registry.runners;
+        : [];
     const runnerNames = new Map(named.map((runner) => [runner.id, runner.name]));
+    const activeDrivers = new Map(
+      named
+        .filter((runner) => !runner.revokedAt)
+        .map((runner) => [runner.id, Number(runner.connectionGeneration)]),
+    );
     const inputs = await Promise.all(
       devices.devices.map(async (device) => {
         const bindings = drivers.filter((binding) => binding.deviceId === device.id);
@@ -1266,6 +1334,10 @@ export async function createHostServer(
             !entry.computer.blockedAt &&
             isPhoneDisplayDefinitionId(entry.definitionId),
         );
+        const screenDriver = bindings.find(
+          (binding) => binding.role === "screen" && !binding.detachedAt,
+        );
+        const screenGeneration = screenDriver && activeDrivers.get(screenDriver.runnerId);
         return {
           device,
           selfRunnerId,
@@ -1276,8 +1348,17 @@ export async function createHostServer(
             attached: binding.detachedAt === null,
             runnerName: runnerNames.get(binding.runnerId) ?? "Computer",
           })),
+          screenAsleep:
+            !!screenDriver &&
+            screenGeneration !== undefined &&
+            dependencies.runners.asleepSince(screenDriver.runnerId, screenGeneration) !== null,
           screenStatus: dependencies.computerApps.deviceStatus(device.id),
-          screenConnected: dependencies.computerApps.attached(device.id),
+          screenConnected:
+            !!screenDriver &&
+            screenGeneration !== undefined &&
+            dependencies.runners.identityForRunner(screenDriver.runnerId)?.connectionGeneration ===
+              screenGeneration &&
+            dependencies.computerApps.attached(device.id),
           phoneAccess: connection?.computer?.access ?? null,
         };
       }),
@@ -2193,6 +2274,22 @@ export async function createHostServer(
           type: command.type,
         };
       }
+      case "harness.authentication.browse": {
+        const target = await admitHarnessAuthentication(session, {
+          environmentId: command.environmentId,
+          harnessInstanceId: command.harnessInstanceId,
+        });
+        return {
+          tabId: await harnessSignInBrowser.browse({
+            coordinator: harnessAuthenticationCoordinator,
+            ownerId: userId,
+            runnerId: dependencies.runners.identityForEnvironment(target.environment.id)?.runnerId,
+            signal: AbortSignal.timeout(30_000),
+            target,
+          }),
+          type: command.type,
+        };
+      }
       case "harness.authentication.logout": {
         const target = await admitHarnessAuthentication(session, {
           environmentId: command.environmentId,
@@ -2628,11 +2725,20 @@ export async function createHostServer(
           code: "bad_request",
           message: "This file has no size or name.",
         });
-      await dependencies.runFiles.upload(id, token, {
-        name: decodeURIComponent(name),
-        sizeBytes,
-        stream: request.body as Readable,
-      });
+      const peer = new AbortController();
+      reply.raw.once("close", () => peer.abort());
+      if (reply.raw.destroyed) peer.abort();
+      await dependencies.runFiles.uploadHttp(
+        id,
+        token,
+        {
+          name: decodeURIComponent(name),
+          sizeBytes,
+          stream: request.body as Readable,
+        },
+        peer.signal,
+        request.headers[runFileProofHeader],
+      );
       return reply.code(204).send();
     },
   );
@@ -2640,10 +2746,24 @@ export async function createHostServer(
   app.get("/v1/runner/file-transfers/:id", async (request, reply) => {
     const token = requireBearerToken(request);
     const { id } = z.strictObject({ id: z.uuid() }).parse(request.params);
-    const file = await dependencies.runFiles.download(id, token);
-    reply.raw.once("close", () =>
-      file.settled(reply.raw.writableFinished ? undefined : new Error("The download stopped.")),
+    const peer = new AbortController();
+    const stopped = new Error("The download stopped.");
+    const onClose = () => {
+      if (!reply.raw.writableFinished) peer.abort(stopped);
+    };
+    reply.raw.once("close", onClose);
+    if (reply.raw.destroyed) onClose();
+    const file = await dependencies.runFiles.downloadHttp(
+      id,
+      token,
+      peer.signal,
+      request.headers[runFileProofHeader],
     );
+    if (peer.signal.aborted) {
+      file.settled(stopped);
+      peer.signal.throwIfAborted();
+    }
+    reply.raw.once("close", () => file.settled(peer.signal.aborted ? stopped : undefined));
     return reply
       .header("cache-control", "no-store")
       .header("content-length", file.sizeBytes)
@@ -3373,6 +3493,8 @@ function runnerMessageLane(message: Parameters<RunnerRegistry["handle"]>[1]): st
       return `run:${message.progress.runId}`;
     case "runner.session-bound":
       return `run:${message.runId}`;
+    case "runner.output-image.publish":
+      return "output-images";
     case "runner.command-accepted":
     case "runner.command-rejected":
     case "runner.command-uncertain":

@@ -1,6 +1,12 @@
 import Fastify from "fastify";
 import { afterEach, expect, it, vi } from "vitest";
-import { createId, OpensteerError, type Thread, type ToolOutput } from "@opensteer/core";
+import {
+  createId,
+  OpensteerError,
+  type AgentGrant,
+  type Thread,
+  type ToolOutput,
+} from "@opensteer/core";
 import type { AgentToolActivityStore } from "@opensteer/database";
 import { agentToolHostRoutePath } from "@opensteer/protocol/agent-tool-relay";
 import type { RunCaller } from "./agent-caller.js";
@@ -19,7 +25,7 @@ const apps: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
-function fixture() {
+function fixture(grant?: AgentGrant) {
   const thread = {
     id: createId("thread"),
     environmentId: createId("environment"),
@@ -27,7 +33,7 @@ function fixture() {
     purpose: "task",
     teamOrigin: null,
   } as Thread;
-  const caller: RunCaller = {
+  let caller: RunCaller = {
     kind: "run",
     key: "run:root",
     userId: createId("user"),
@@ -39,6 +45,17 @@ function fixture() {
       environmentId: thread.environmentId,
       bindingGeneration: 1,
     } as RunCaller["claims"],
+    ...(grant
+      ? {
+          agentConnection: {
+            agentConnectionId: "mcn_lineage",
+            grant,
+            grantRevision: 1,
+            consentVersion: 2,
+            accessMode: "full-access" as const,
+          },
+        }
+      : {}),
   };
   let live = true;
   const callers = {
@@ -148,6 +165,13 @@ function fixture() {
     stop: () => {
       live = false;
       changed?.();
+    },
+    /** A grant edit committed: the next authentication sees the new revision. */
+    regrant: (next: AgentGrant) => {
+      caller = {
+        ...caller,
+        agentConnection: { ...caller.agentConnection!, grant: next, grantRevision: 2 },
+      };
     },
   };
 }
@@ -289,5 +313,44 @@ it.each(["Stop", "deadline"])(
     expect([...f.saved.values()]).toMatchObject([
       { status: "completed", startedAt: expect.any(Date) },
     ]);
+  },
+);
+
+it.each(["an in-flight", "a completed"])(
+  "refuses %s replay once a narrowed grant no longer offers the tool, returning nothing it produced",
+  async (stage) => {
+    const app = {
+      kind: "computer-app",
+      approvalId: `con_${crypto.randomUUID()}`,
+      deviceId: createId("device"),
+      app: { kind: "mac-app", bundleId: "com.apple.mail", teamId: null },
+    } as const;
+    const f = fixture({ scope: "selected", tasks: true, resources: [app] });
+    const entered = Promise.withResolvers<void>(),
+      held = Promise.withResolvers<void>();
+    f.handler.mockImplementation(async () => {
+      entered.resolve();
+      await held.promise;
+      return { total: 1, nextCursor: null, secret: "from the earlier grant" } as never;
+    });
+    const request = { callId: crypto.randomUUID(), name: "computer_apps", input: {} };
+    const first = f.call(request);
+    await withTimeout(entered.promise, 1000, {
+      timeoutError: () => new Error("Tool handler did not start"),
+    });
+    if (stage === "a completed") {
+      held.resolve();
+      expect((await first).json()).toMatchObject({ structuredContent: { total: 1 } });
+    }
+    f.regrant({ scope: "selected", tasks: true, resources: [] });
+    const replay = (await f.call(request)).json();
+    expect(replay).toMatchObject({
+      isError: true,
+      structuredContent: { error: { message: "This tool is unavailable to this caller" } },
+    });
+    expect(JSON.stringify(replay)).not.toContain("from the earlier grant");
+    held.resolve();
+    await first;
+    expect(f.handler).toHaveBeenCalledTimes(1);
   },
 );

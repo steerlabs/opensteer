@@ -55,6 +55,7 @@ import type { Kysely } from "kysely";
 import type { HostRuntimeOptions, TeamHostRuntime } from "./runtime.js";
 import { signHostDiscovery, type HostKeyPair } from "../identity/host-keys.js";
 import { HostAuthenticator, toWebHeaders } from "../identity/auth.js";
+import { installClientAddress } from "../identity/anonymous-client-address.js";
 import { createIdentityRpcHandlers, registerIdentityRoutes } from "../identity/identity-routes.js";
 import { registerHostApi, carryWebSocketVersion } from "../server/host-api-registration.js";
 import { installHostHttpBoundary } from "../server/host-http-boundary.js";
@@ -93,6 +94,7 @@ export async function createTeamHostRuntime(input: {
 }): Promise<TeamHostRuntime> {
   const { config, options, database, deployment, keys, hostKeyFingerprint } = input;
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 1024 * 1024 });
+  installClientAddress(app);
   const stopping = new AbortController();
   const lifetimes = new TeamLinkLifetimes();
   let services: Awaited<ReturnType<typeof startTeamServices>> | undefined;

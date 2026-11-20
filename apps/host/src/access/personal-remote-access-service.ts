@@ -7,6 +7,7 @@ import {
 } from "@opensteer/control-plane-protocol/broker-sealing";
 import {
   PersonalRemoteAdministration,
+  refuseManagedAccountUnlink,
   requirePersonalAdministrator,
 } from "./personal-remote-administration.js";
 import { isDeepStrictEqual } from "node:util";
@@ -696,6 +697,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     afterResponse?: (effect: () => void) => void,
   ): Promise<void> {
     await requirePersonalAdministrator(this.#database, caller.session);
+    await refuseManagedAccountUnlink(this.#database);
     const linked = await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
       await requireConnectDisabled(transaction);

@@ -16,10 +16,8 @@ import type { Kysely, Selectable } from "kysely";
 import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { databaseOperation } from "./operation-budget.js";
+import { lineageOutstanding } from "./connection-disconnect.js";
 import { jsonValue } from "./store-primitives.js";
-
-/** Run states whose execution may already have left the Home. */
-const handedOffRunStatuses = ["starting", "running", "waiting"] as const;
 
 export class AgentConnectionStore {
   readonly database: Kysely<DatabaseSchema>;
@@ -131,36 +129,27 @@ export class AgentConnectionStore {
       .$if(options.includeRevoked === true, (query) => query.where("removedAt", "is", null))
       .orderBy("createdAt", "desc")
       .execute();
-    const ended = rows.filter((row) => row.revokedAt !== null || row.expiresAt <= now);
-    const stopping = new Set(
-      ended.length
-        ? (
-            await this.database
-              .selectFrom("runs")
-              .select("connectionId")
-              .distinct()
-              .where(
-                "connectionId",
-                "in",
-                ended.map((row) => row.id),
-              )
-              .where("status", "in", handedOffRunStatuses)
-              .execute()
-          ).map((row) => row.connectionId)
-        : [],
+    // Derived from the durable cleanup record and what its lineage still holds.
+    const states = await Promise.all(
+      rows.map(async (row): Promise<AgentConnectionState> => {
+        if (row.revokedAt === null && row.expiresAt > now) return "active";
+        if (row.cleanupCompletedAt) return "stopped";
+        const outstanding = await lineageOutstanding(this.database, row.id);
+        if (outstanding.handedOff) return "stopping";
+        return row.revokedAt === null ? "expired" : "revoked";
+      }),
     );
-    return rows.map((row) =>
-      view(
-        row,
-        row.revokedAt === null && row.expiresAt > now
-          ? "active"
-          : stopping.has(row.id)
-            ? "stopping"
-            : row.revokedAt === null
-              ? "expired"
-              : "stopped",
-      ),
-    );
+    return rows.map((row, index) => view(row, states[index]!));
+  }
+  /** Clears "last action uncertain" once the person has checked. */
+  async acknowledgeUncertain(userId: UserId, id: string): Promise<void> {
+    await requirePersonalOwner(this.database, userId);
+    await this.database
+      .updateTable("agentConnections")
+      .set({ lastActionUncertainAt: null, lastActionUncertain: null })
+      .where("id", "=", id)
+      .where("userId", "=", userId)
+      .execute();
   }
   /** Revision-checked; returns whether the edit withdrew authority that live work may hold. */
   async update(
@@ -231,7 +220,15 @@ export class AgentConnectionStore {
       if (!row || row.revokedAt !== null) return false;
       await tx
         .updateTable("agentConnections")
-        .set({ revokedAt: this.now(), tokenHash: null, grantRevision: row.grantRevision + 1 })
+        .set({
+          revokedAt: this.now(),
+          tokenHash: null,
+          grantRevision: row.grantRevision + 1,
+          // One durable record: the Home drives cleanup to completion from here, even after a
+          // restart, and its state is read from what is still outstanding.
+          cleanupReason: "revoked",
+          cleanupRequestedAt: this.now(),
+        })
         .where("id", "=", row.id)
         .execute();
       return true;
@@ -242,7 +239,7 @@ export class AgentConnectionStore {
     await requirePersonalOwner(this.database, userId);
     const row = await this.database
       .selectFrom("agentConnections")
-      .select(["revokedAt", "expiresAt"])
+      .select(["revokedAt", "expiresAt", "cleanupCompletedAt"])
       .where("id", "=", id)
       .where("userId", "=", userId)
       .executeTakeFirst();
@@ -251,6 +248,13 @@ export class AgentConnectionStore {
       throw new OpensteerError({
         code: "conflict",
         message: "Disconnect this agent before removing it.",
+      });
+    // A connection whose work has not finished stopping stays visible until it has.
+    if (row.cleanupCompletedAt === null)
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "cleanup-outstanding",
+        message: "This agent's work is still stopping. Remove it once it has stopped.",
       });
     await this.database
       .updateTable("agentConnections")
@@ -280,9 +284,24 @@ function view(row: Selectable<AgentConnectionTable>, state: AgentConnectionState
     client: { fingerprint: row.clientFingerprint, redirectOrigin },
     state,
     lastActionUncertain: row.lastActionUncertainAt !== null,
+    lastActionUncertainDetail: row.lastActionUncertainAt
+      ? {
+          at: row.lastActionUncertainAt.toISOString(),
+          device: detailText(row.lastActionUncertain, "device"),
+          task: detailText(row.lastActionUncertain, "task"),
+          taskId: detailText(row.lastActionUncertain, "taskId"),
+          tool: detailText(row.lastActionUncertain, "tool"),
+          reason: detailText(row.lastActionUncertain, "reason"),
+        }
+      : null,
     revokedAt: row.revokedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
     expiresAt: row.expiresAt.toISOString(),
   };
+}
+
+function detailText(detail: Readonly<Record<string, unknown>> | null, key: string): string | null {
+  const value = detail?.[key];
+  return typeof value === "string" ? value : null;
 }

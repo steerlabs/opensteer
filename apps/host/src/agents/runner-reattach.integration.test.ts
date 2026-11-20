@@ -1203,6 +1203,37 @@ integration("Runs that outlive their connection", () => {
       "stop delivered",
     );
   }, 120_000);
+  it("records a Run its computer stopped as interrupted, at once while the Home is reachable", async () => {
+    const { stack: active } = await start({ executionLeaseMs: 60_000 });
+    const threadId = await thread(active, "Stopped on this computer");
+    const runId = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
+    await waitFor(async () => (await liveAssistant(active, threadId)) === heldText, 30_000, "held");
+    expect(active.stopRunLocally(runId)).toBe(true);
+    await waitFor(
+      async () => (await run(active, runId)).status === "interrupted",
+      30_000,
+      "local stop reported",
+    );
+  }, 120_000);
+  it("records a Run its computer stopped while the Home was unreachable once it reattaches", async () => {
+    const { stack: active } = await start({ executionLeaseMs: 60_000 });
+    const threadId = await thread(active, "Stopped here while away");
+    const runId = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
+    await waitFor(async () => (await liveAssistant(active, threadId)) === heldText, 30_000, "held");
+    active.network.block();
+    expect(active.stopRunLocally(runId)).toBe(true);
+    // The Runner has ended it and holds the report while the Home is out of reach.
+    await vi.waitFor(() => expect(active.settledRunEvent(runId)?.type).toBe("run.interrupted"), {
+      timeout: 30_000,
+    });
+    expect((await run(active, runId)).status).toBe("running");
+    active.network.unblock();
+    await waitFor(
+      async () => (await run(active, runId)).status === "interrupted",
+      30_000,
+      "local stop replayed",
+    );
+  }, 120_000);
   it("delivers an answer to a Request given while the Runner was unreachable", async () => {
     const { stack: active } = await start({
       executionLeaseMs: 60_000,

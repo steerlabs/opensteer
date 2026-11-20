@@ -416,6 +416,10 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   if (networkedPersonal && isLoopbackHostname(config.canonicalOrigin.hostname)) {
     throw new Error("A networked Personal Host requires its public canonical origin");
   }
+  // In every mode: the native apps refuse a Home at plain HTTP anyway.
+  if (networkedPersonal && config.canonicalOrigin.protocol !== "https:") {
+    throw new Error("A networked Personal Host requires an https canonical origin");
+  }
   if (personal !== (config.personal !== undefined)) {
     throw new Error("Only a Personal Host requires hosting environment and agent home settings");
   }
@@ -433,16 +437,16 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   if (exposure.localOwnerClaim && config.identity.initialOwnerEnrollment !== undefined) {
     throw new Error("A loopback Personal Host uses the app-held local owner claim");
   }
-  if (networkedPersonal && config.identity.signupPolicy === "open") {
-    throw new Error("A networked Personal Host cannot allow open signup");
+  if (personal && config.identity.signupPolicy === "open") {
+    throw new Error("A Personal Host cannot allow open signup: its owner claims it");
   }
-  if (
-    networkedPersonal &&
-    !config.identity.localPasswordEnabled &&
-    config.identity.oidcConfigPath === undefined &&
-    config.managedHome === undefined
-  ) {
-    throw new Error("A networked Personal Host requires password or OIDC sign-in");
+  // A Home on its own server is claimed with its setup link and a password; the
+  // runtime wires OIDC sign-in only for a managed Home's Opensteer Account.
+  if (networkedPersonal && config.managedHome === undefined) {
+    if (!config.identity.localPasswordEnabled)
+      throw new Error("A networked Personal Host requires password sign-in to be claimed");
+    if (config.identity.oidcConfigPath !== undefined)
+      throw new Error("A networked Personal Host does not support OIDC sign-in");
   }
   if (config.managedHome) {
     if (!networkedPersonal || config.account !== undefined)
@@ -501,6 +505,12 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   }
 }
 
+/** Secrets a production Host never takes from its process environment. */
+const secretsReadFromFilesOnly = new Set<string>([
+  "OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN",
+  "OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET",
+]);
+
 export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   const values = { ...environment };
   for (const name of [
@@ -512,6 +522,13 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     "OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET",
   ] as const) {
     const file = environment[`${name}_FILE`];
+    if (
+      !file &&
+      environment[name] !== undefined &&
+      (environment.OPENSTEER_MODE ?? "development") === "production" &&
+      secretsReadFromFilesOnly.has(name)
+    )
+      throw new Error(`${name} must be delivered as ${name}_FILE in production`);
     if (!file) continue;
     if (environment[name] !== undefined)
       throw new Error(`Configure exactly one of ${name} or ${name}_FILE`);

@@ -3,6 +3,8 @@ import { deviceAccessStates } from "@opensteer/database";
 import type { z } from "zod";
 import {
   OpensteerError,
+  agentGrantAllows,
+  type DeviceId,
   formatReferenceLink,
   DeviceIdSchema,
   type ExecutionPreferencesViewSchema,
@@ -17,7 +19,7 @@ import {
   isAdministrationCommand,
   type AdministrationCommand,
 } from "../../administration/administration-service.js";
-import type { AgentCaller } from "../agent-caller.js";
+import { callerLineage, type AgentCaller } from "../agent-caller.js";
 import { computerIds } from "../computer-ids.js";
 import { operationId } from "../operations.js";
 import type { ToolCall, AgentToolHandlers } from "./types.js";
@@ -229,7 +231,35 @@ export class AdministrationToolHandlers {
       store.listDeviceDrivers({ includeDetached: true }),
       computerIds(store, caller.userId),
     ]);
-    const pageDeviceIds = new Set(page.devices.map((device) => device.id));
+    // A selected grant sees only the Devices of the apps and phone screens it names, scoped
+    // before anything is projected, with nothing about shells or other Devices.
+    const grant = callerLineage(caller)?.grant;
+    const grantedDevices =
+      grant?.scope === "selected"
+        ? new Set(
+            grant.resources.flatMap((resource) =>
+              resource.kind === "computer-app" ? [resource.deviceId] : [],
+            ),
+          )
+        : null;
+    let scoped = page;
+    if (grantedDevices) {
+      const devices: (typeof page.devices)[number][] = [];
+      let cursor: DeviceId | undefined;
+      for (;;) {
+        const next = await store.listDevices({
+          ...(cursor ? { after: cursor } : {}),
+          ownerId: caller.userId,
+          includeDeployment: true,
+          limit: 100,
+        });
+        devices.push(...next.devices.filter((device) => grantedDevices.has(device.id)));
+        if (!next.nextCursor) break;
+        cursor = DeviceIdSchema.parse(next.nextCursor);
+      }
+      scoped = { ...page, devices, nextCursor: null };
+    }
+    const pageDeviceIds = new Set(scoped.devices.map((device) => device.id));
     const runnerIds = [
       ...new Set(
         drivers
@@ -259,10 +289,13 @@ export class AdministrationToolHandlers {
       deploymentOwnsMainComputer: true,
       pendingRunners: [],
       access: new Map(),
-      apps: new Map(page.devices.map((device) => [device.id, hub.status(device.id) ?? []])),
+      apps: new Map(scoped.devices.map((device) => [device.id, hub.status(device.id) ?? []])),
       threadsByEnvironment: new Map(),
       runners: pageRunners.map((runner) => ({
         ...runner,
+        asleepSince: runner.revokedAt
+          ? null
+          : runners.asleepSince(runner.id, runner.connectionGeneration),
         modules: runner.moduleDescriptors,
         ownerName: null,
         connected: runners.isRunnerConnected(runner.id),
@@ -277,38 +310,54 @@ export class AdministrationToolHandlers {
         runtimeVersion: null,
         ownedByViewer: true,
       })),
-      devices: page.devices.map((device) => ({
-        device,
-        selfRunnerId:
-          drivers.find(
-            (binding) =>
-              binding.deviceId === device.id && binding.role === "self" && !binding.detachedAt,
-          )?.runnerId ?? null,
-        drivers: drivers
-          .filter((binding) => binding.deviceId === device.id)
-          .map((binding) => ({
-            role: binding.role,
-            runnerId: binding.runnerId,
-            generation: binding.generation,
-            attached: binding.detachedAt === null,
-            runnerName: byRunner.get(binding.runnerId)?.name ?? "Computer",
-          })),
-        screenConnected: hub.attached(device.id),
-        screenStatus: hub.deviceStatus(device.id),
-        phoneAccess:
-          connections.find(
-            (entry) =>
-              entry.computer?.deviceId === device.id &&
-              entry.status !== "revoked" &&
-              !entry.computer.blockedAt &&
-              isPhoneDisplayDefinitionId(entry.definitionId),
-          )?.computer?.access ?? null,
-      })),
+      devices: scoped.devices.map((device) => {
+        const screenDriver = drivers.find(
+          (binding) =>
+            binding.deviceId === device.id && binding.role === "screen" && !binding.detachedAt,
+        );
+        const screenRunner = screenDriver && byRunner.get(screenDriver.runnerId);
+        return {
+          device,
+          selfRunnerId:
+            drivers.find(
+              (binding) =>
+                binding.deviceId === device.id && binding.role === "self" && !binding.detachedAt,
+            )?.runnerId ?? null,
+          drivers: drivers
+            .filter((binding) => binding.deviceId === device.id)
+            .map((binding) => ({
+              role: binding.role,
+              runnerId: binding.runnerId,
+              generation: binding.generation,
+              attached: binding.detachedAt === null,
+              runnerName: byRunner.get(binding.runnerId)?.name ?? "Computer",
+            })),
+          screenAsleep:
+            !!screenRunner &&
+            !screenRunner.revokedAt &&
+            runners.asleepSince(screenRunner.id, screenRunner.connectionGeneration) !== null,
+          screenConnected:
+            !!screenRunner &&
+            !screenRunner.revokedAt &&
+            runners.identityForRunner(screenRunner.id)?.connectionGeneration ===
+              screenRunner.connectionGeneration &&
+            hub.attached(device.id),
+          screenStatus: hub.deviceStatus(device.id),
+          phoneAccess:
+            connections.find(
+              (entry) =>
+                entry.computer?.deviceId === device.id &&
+                entry.status !== "revoked" &&
+                !entry.computer.blockedAt &&
+                isPhoneDisplayDefinitionId(entry.definitionId),
+            )?.computer?.access ?? null,
+        };
+      }),
     });
     return {
-      nextCursor: page.nextCursor,
+      nextCursor: scoped.nextCursor,
       computers: await Promise.all(
-        page.devices.map(async (device) => {
+        scoped.devices.map(async (device) => {
           const self = drivers.find(
             (driver) =>
               driver.deviceId === device.id && driver.role === "self" && !driver.detachedAt,
@@ -344,6 +393,8 @@ export class AdministrationToolHandlers {
                 runnerName: byRunner.get(driver.runnerId)?.name ?? "Computer",
               })),
             online: summary?.status === "online",
+            asleep: Boolean(summary?.asleepSince),
+            ...(summary?.asleepSince ? { asleepSince: summary.asleepSince } : {}),
             hosting: environmentId !== undefined,
             canRunTasks: environmentId !== undefined && this.canExecute(environmentId),
             capabilities: runner?.capabilities ?? [],
@@ -351,7 +402,8 @@ export class AdministrationToolHandlers {
             ...(summary?.phoneDisplay ? { phoneDisplay: summary.phoneDisplay } : {}),
             revoked: device.removedAt !== null,
             access,
-            sessions: self ? await store.listActiveShellSessions(self.runnerId) : [],
+            sessions:
+              self && !grantedDevices ? await store.listActiveShellSessions(self.runnerId) : [],
           };
         }),
       ),
@@ -360,16 +412,24 @@ export class AdministrationToolHandlers {
   async browser_profile_list({ caller }: ToolCall<"browser_profile_list">) {
     await this.service.actor(caller);
     const { browser, browserSources } = this.service.dependencies;
-    const [profiles, sources] = await Promise.all([
+    const [allProfiles, sources] = await Promise.all([
       browser.listAgentProfiles(caller.userId),
       browserSources.listState({ ownerId: caller.userId }),
     ]);
+    // A selected grant sees only the profiles it names, and none of the person's sign-in sites.
+    const grant = callerLineage(caller)?.grant;
+    const selected = grant?.scope === "selected" ? grant : null;
+    const profiles = selected
+      ? allProfiles.filter((profile) =>
+          agentGrantAllows(selected, { kind: "browser-profile", profileId: profile.id }, "read"),
+        )
+      : allProfiles;
     return {
       profiles: profiles.map(({ home, ...profile }) => ({
         ...profile,
         home: home && { computerId: home.runnerId, name: home.name, reachable: home.reachable },
       })),
-      sites: sources.sites,
+      sites: selected ? [] : sources.sites,
     };
   }
   async opensteer_messaging_bridge_list({ caller }: ToolCall<"opensteer_messaging_bridge_list">) {

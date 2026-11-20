@@ -205,8 +205,8 @@ export class IdentityService {
   }
 
   #createAuth() {
-    return createOpensteerAuth(this.#database, this.#options, (request, email) =>
-      this.#requireSignupAdmission(request, email),
+    return createOpensteerAuth(this.#database, this.#options, (request) =>
+      this.#requireSignupAdmission(request),
     );
   }
 
@@ -1729,7 +1729,9 @@ export class IdentityService {
     input: PasswordSignup,
     headers: Headers,
   ): Promise<TokenFreeAuthResponse<{ readonly session: AuthenticatedSession }>> {
-    if (!this.#options.localPasswordEnabled) {
+    // A Home has one owner and admits nobody else by sign-up: its owner is created
+    // only by the claim below. Open sign-up exists for development identities alone.
+    if (!this.#options.localPasswordEnabled || this.#options.signupPolicy !== "open") {
       throw new OpensteerError({ code: "not_found", message: "Password signup is disabled" });
     }
     return this.#signUpPassword(input, headers);
@@ -1746,9 +1748,6 @@ export class IdentityService {
       });
     }
     const email = normalizeIdentityEmail(input.email);
-    if (this.#options.signupPolicy !== "open") {
-      await this.#reserveSignupAdmission(headers, email);
-    }
     const displayName = personNameFromSignIn(input.displayName, email);
     const response = await this.#auth.handler(
       new Request(new URL(`${internalAuthPath}/sign-up/email`, this.#options.publicOrigin), {
@@ -1797,6 +1796,12 @@ export class IdentityService {
     return this.#serializeOwnerSetup(() => this.#claimInitialOwnerNow(credentials, headers));
   }
 
+  /**
+   * Creates the owner, their password credential and spends both setup proofs
+   * (the enrollment and this browser's admission) in one transaction, and only
+   * then signs them in. A crash or refusal leaves either nothing or a finished
+   * claim; one admission can never yield a second user.
+   */
   async #claimInitialOwnerNow(
     credentials: PasswordSignup,
     headers: Headers,
@@ -1805,45 +1810,146 @@ export class IdentityService {
     if (!admission || admission.purpose !== "setup") {
       throw new OpensteerError({ code: "forbidden", message: "Setup admission required" });
     }
-    const email = normalizeIdentityEmail(credentials.email);
-    const existing = await this.#database
-      .selectFrom("users")
-      .select("id")
-      .where("email", "=", email)
-      .executeTakeFirst();
-    // A Personal Host has one owner. Once anybody holds it, a setup admission
-    // signs nobody else up; the owner's own retry is answered below.
-    if (!this.#options.team) {
-      const owner = await this.#database
-        .selectFrom("users")
-        .select("id")
-        .where("disabledAt", "is", null)
-        .executeTakeFirst();
-      if (owner && owner.id !== existing?.id)
-        throw new OpensteerError({ code: "conflict", message: "Setup is already complete" });
+    if (!IdentityPasswordSchema.safeParse(credentials.password).success) {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: `Password must contain between ${identityPasswordMinLength} and ${identityPasswordMaxLength} characters`,
+      });
     }
+    const email = normalizeIdentityEmail(credentials.email);
+    const passwords = (await this.#auth.$context).password;
+    const passwordHash = await passwords.hash(credentials.password);
+    await this.#database.transaction().execute(async (transaction) => {
+      await sqlAdvisoryLock(transaction, "initial-owner-setup");
+      const now = new Date();
+      const enrollment = await transaction
+        .selectFrom("ownerEnrollments")
+        .selectAll()
+        .where("id", "=", admission.subjectSelector)
+        .where("kind", "=", "initial")
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      const held = await transaction
+        .selectFrom("authAdmissions")
+        .select(["consumedBy", "expiresAt"])
+        .where("id", "=", admission.id)
+        .forUpdate()
+        .executeTakeFirst();
+      const owner = await transaction
+        .selectFrom("users")
+        .select(["email", "id"])
+        .where("disabledAt", "is", null)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (owner) {
+        // The owner's own retry: their claim committed and only the answer was lost.
+        if (owner.email === email && enrollment?.consumedBy === owner.id) return;
+        // An owner an interrupted claim of an earlier release created: finished
+        // only by the person who knows that owner's password.
+        const credential =
+          owner.email === email && enrollment && !enrollment.consumedAt
+            ? await transaction
+                .selectFrom("authAccounts")
+                .select("password")
+                .where("userId", "=", owner.id)
+                .where("providerId", "=", "credential")
+                .executeTakeFirst()
+            : undefined;
+        if (
+          !credential?.password ||
+          !held ||
+          held.consumedBy ||
+          held.expiresAt <= now ||
+          enrollment!.expiresAt <= now ||
+          !(await passwords.verify({ hash: credential.password, password: credentials.password }))
+        )
+          throw new OpensteerError({ code: "conflict", message: "Setup is already complete" });
+        await this.#spendSetupProofs(transaction, enrollment!.id, admission.id, owner.id, now);
+        return;
+      }
+      if (
+        !enrollment ||
+        enrollment.consumedAt ||
+        enrollment.expiresAt <= now ||
+        !held ||
+        held.consumedBy ||
+        held.expiresAt <= now
+      )
+        throw new OpensteerError({ code: "forbidden", message: "Setup enrollment is invalid" });
+      const userId = createId("user");
+      await transaction
+        .insertInto("users")
+        .values({
+          createdAt: now,
+          disabledAt: null,
+          displayName: personNameFromSignIn(credentials.displayName, email),
+          email,
+          emailVerified: false,
+          id: userId,
+          image: null,
+          updatedAt: now,
+        })
+        .executeTakeFirstOrThrow();
+      await transaction
+        .insertInto("authAccounts")
+        .values({
+          accountId: userId,
+          createdAt: now,
+          id: createId("authAccount"),
+          password: passwordHash,
+          providerId: "credential",
+          updatedAt: now,
+          userId,
+        })
+        .executeTakeFirstOrThrow();
+      await this.#spendSetupProofs(transaction, enrollment.id, admission.id, userId, now);
+    });
 
-    // Re-running setup against an account that already exists is the normal
-    // recovery path, not an error: an earlier attempt may have created the user
-    // before the Host was claimed.
-    const authenticated = existing
-      ? await this.#signInPassword({ email, password: credentials.password }, headers)
-      : await this.#signUpPassword(
-          {
-            email,
-            password: credentials.password,
-            ...(credentials.displayName ? { displayName: credentials.displayName } : {}),
-          },
-          headers,
-        );
-
-    const authenticatedHeaders = headersWithResponseCookies(headers, authenticated.headers);
-    const completion = await this.completeInitialOwnerSetup(authenticatedHeaders);
-    const session = await this.requireSession(authenticatedHeaders);
+    const authenticated = await this.#signInPassword(
+      { email, password: credentials.password },
+      headers,
+    );
     const merged = new Headers();
     for (const cookie of authenticated.headers.getSetCookie()) merged.append("set-cookie", cookie);
-    for (const cookie of completion.headers.getSetCookie()) merged.append("set-cookie", cookie);
-    return { data: { session }, headers: merged, status: 200 };
+    for (const cookie of clearAdmissionCookie(this.#options.publicOrigin).getSetCookie())
+      merged.append("set-cookie", cookie);
+    return { data: { session: authenticated.data.session }, headers: merged, status: 200 };
+  }
+
+  async #spendSetupProofs(
+    transaction: Transaction<DatabaseSchema>,
+    enrollmentId: string,
+    admissionId: AuthAdmissionId,
+    owner: UserId,
+    now: Date,
+  ): Promise<void> {
+    await transaction
+      .updateTable("ownerEnrollments")
+      .set({ consumedAt: now, consumedBy: owner })
+      .where("id", "=", enrollmentId)
+      .where("consumedAt", "is", null)
+      .executeTakeFirstOrThrow();
+    const admitted = await transaction
+      .updateTable("authAdmissions")
+      .set({ consumedAt: now, consumedBy: owner })
+      .where("id", "=", admissionId)
+      .where("consumedAt", "is", null)
+      .executeTakeFirst();
+    if (admitted.numUpdatedRows !== 1n)
+      throw new OpensteerError({ code: "conflict", message: "Admission was already consumed" });
+    await transaction
+      .insertInto("securityAudit")
+      .values({
+        action: "instance.initial-owner-claimed",
+        actorSessionId: null,
+        actorUserId: owner,
+        id: createId("securityAudit"),
+        metadata: sqlJson({}),
+        requestId: null,
+        targetId: owner,
+        targetType: "user",
+      })
+      .executeTakeFirstOrThrow();
   }
 
   /**
@@ -2646,36 +2752,7 @@ export class IdentityService {
     return row;
   }
 
-  async #reserveSignupAdmission(headers: Headers, email: string): Promise<void> {
-    const admission = await this.#admissionFromHeaders(headers);
-    if (!admission || admission.consumedBy) {
-      throw new OpensteerError({ code: "forbidden", message: "Signup admission required" });
-    }
-    const now = new Date();
-    let update = this.#database
-      .updateTable("authAdmissions")
-      .set({ reservedAt: now, reservedEmail: email })
-      .where("id", "=", admission.id)
-      .where("consumedAt", "is", null);
-    if (admission.purpose !== "setup") {
-      // An invitation names the address it was issued for, so its admission
-      // pins that address. A setup admission proves possession of the Host's
-      // own credential and says nothing about which address should own it, so
-      // correcting a mistyped email must not require waiting out the admission.
-      update = update.where((expression) =>
-        expression.or([
-          expression("reservedEmail", "is", null),
-          expression("reservedEmail", "=", email),
-        ]),
-      );
-    }
-    const result = await update.executeTakeFirst();
-    if (result.numUpdatedRows !== 1n) {
-      throw new OpensteerError({ code: "forbidden", message: "Signup admission is unavailable" });
-    }
-  }
-
-  async #requireSignupAdmission(request: Request | undefined, email: string): Promise<void> {
+  async #requireSignupAdmission(request: Request | undefined): Promise<void> {
     if (this.#options.team) {
       const proof = request ? await this.#admissionFromHeaders(request.headers) : null;
       if (!proof) throw new APIError("FORBIDDEN", { message: "Team admission required" });
@@ -2683,28 +2760,8 @@ export class IdentityService {
       return;
     }
     if (this.#options.signupPolicy === "open") return;
-    if (!request) throw new APIError("FORBIDDEN", { message: "Signup admission required" });
-    const admission = await this.#admissionFromHeaders(request.headers);
-    if (
-      !admission ||
-      admission.consumedBy ||
-      (admission.reservedEmail !== null && admission.reservedEmail !== email)
-    ) {
-      throw new APIError("FORBIDDEN", { message: "Signup admission required" });
-    }
-    if (admission.purpose === "invitation")
-      throw new APIError("FORBIDDEN", { message: "Team admission required" });
-    if (admission.purpose === "setup") {
-      const enrollment = await this.#database
-        .selectFrom("ownerEnrollments")
-        .select(["consumedAt", "expiresAt"])
-        .where("id", "=", admission.subjectSelector)
-        .where("kind", "=", "initial")
-        .executeTakeFirst();
-      if (!enrollment || enrollment.consumedAt || enrollment.expiresAt <= new Date()) {
-        throw new APIError("FORBIDDEN", { message: "Signup admission required" });
-      }
-    }
+    // A Home's one owner is created by its setup claim, never by a sign-up.
+    throw new APIError("FORBIDDEN", { message: "Signup admission required" });
   }
 
   async #consumeAdmission(id: AuthAdmissionId, userId: UserId): Promise<void> {
@@ -2756,6 +2813,7 @@ function createOpensteerAuth(
       storeAccountCookie: false,
     },
     advanced: {
+      ipAddress: { ipAddressHeaders: [vettedClientAddressHeader] },
       cookies: {
         session_token: {
           attributes: { httpOnly: true, path: "/", sameSite: "lax", secure },
@@ -3462,9 +3520,16 @@ async function assertSuccessfulBetterAuthResponse(response: Response): Promise<v
   });
 }
 
+/**
+ * The one header the sign-in library reads a client's address from. The Host
+ * sets it at ingress to the address its own proxy policy vetted and overwrites
+ * any value a client sent; forwarding headers never reach the library.
+ */
+export const vettedClientAddressHeader = "x-opensteer-client-address";
+
 function forwardedAuthHeaders(headers: Headers, json = false): Headers {
   const forwarded = new Headers();
-  for (const name of ["cookie", "origin", "referer", "user-agent", "x-forwarded-for"]) {
+  for (const name of ["cookie", "origin", "referer", "user-agent", vettedClientAddressHeader]) {
     const value = headers.get(name);
     if (value) forwarded.set(name, value);
   }

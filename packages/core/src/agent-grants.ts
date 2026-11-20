@@ -101,19 +101,23 @@ export function agentGrantPluginTargetKey(target: AgentGrantPluginTarget): strin
   }
 }
 
-function canonicalAgentGrant(grant: z.output<typeof AgentGrantInputSchema>): AgentGrant {
+function canonicalAgentGrant(
+  grant: z.output<typeof AgentGrantInputSchema>,
+  context: z.RefinementCtx,
+): AgentGrant {
   if (grant.scope === "everything") return { scope: "everything" };
   const byKey = new Map<string, AgentGrantResource>();
   for (const resource of grant.resources) {
     const key = agentGrantResourceKey(resource);
     const held = byKey.get(key);
-    if (held?.kind === "plugin" && resource.kind === "plugin") {
-      byKey.set(key, {
-        ...held,
-        access:
-          held.access === "read-write" || resource.access === "read-write" ? "read-write" : "read",
+    // Two different statements about one resource are refused, never merged.
+    if (held && JSON.stringify(held) !== JSON.stringify(resource))
+      context.addIssue({
+        code: "custom",
+        message: `The grant names ${key} twice with different terms`,
+        path: ["resources"],
       });
-    } else if (!held) byKey.set(key, resource);
+    else if (!held) byKey.set(key, resource);
   }
   return {
     scope: "selected",
@@ -224,12 +228,10 @@ export function agentGrantNarrowed(before: AgentGrant, after: AgentGrant): boole
       (candidate) => agentGrantResourceKey(candidate) === agentGrantResourceKey(resource),
     );
     if (!kept) return true;
-    return (
-      resource.kind === "plugin" &&
-      kept.kind === "plugin" &&
-      resource.access === "read-write" &&
-      kept.access === "read"
-    );
+    if (resource.kind === "plugin" && kept.kind === "plugin")
+      return resource.access === "read-write" && kept.access === "read";
+    // Any other change to one approval's terms (another Device or signer) withdraws the original.
+    return JSON.stringify(kept) !== JSON.stringify(resource);
   });
 }
 

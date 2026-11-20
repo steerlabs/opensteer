@@ -217,7 +217,7 @@ export function compositeBackend(
   const raw: McpBackend<Error> = {
     listApps: (input) =>
       Effect.gen(function* () {
-        const { grants } = yield* checked("listApps");
+        const { grants, visible } = yield* checked("listApps");
         const installed = yield* engine.apps.list({
           owner,
           ...(input?.ids === undefined ? {} : { ids: input.ids }),
@@ -237,16 +237,19 @@ export function compositeBackend(
             activeVersion: version(entry),
           })),
         ];
-        return listing.map((app) => {
-          namespaces.set(app.id, app.slug);
-          // The person's setting first, then what keeps a local provider.
-          const blocked =
-            pluginAccessBlocked(grants?.[app.id], false) ??
-            providers.find((entry) => entry.id === app.id)?.blocked;
-          if (blocked) appBlockers.set(app.id, blocked);
-          else appBlockers.delete(app.id);
-          return blocked ? { ...app, blocked } : app;
-        });
+        // A selected grant is never told what else the person installed.
+        return listing
+          .filter((app) => !visible || visible.includes(app.id))
+          .map((app) => {
+            namespaces.set(app.id, app.slug);
+            // The person's setting first, then what keeps a local provider.
+            const blocked =
+              pluginAccessBlocked(grants?.[app.id], false) ??
+              providers.find((entry) => entry.id === app.id)?.blocked;
+            if (blocked) appBlockers.set(app.id, blocked);
+            else appBlockers.delete(app.id);
+            return blocked ? { ...app, blocked } : app;
+          });
       }),
     listAccounts: (input) =>
       Effect.gen(function* () {

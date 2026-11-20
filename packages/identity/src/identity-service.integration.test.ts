@@ -280,7 +280,7 @@ integration("IdentityService", () => {
         },
         new Headers({ origin: "http://127.0.0.1:4310" }),
       ),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({ code: "not_found" });
     expect(await database.selectFrom("users").select("id").execute()).toEqual([]);
   });
 
@@ -1764,6 +1764,64 @@ integration("IdentityService", () => {
     ]);
   });
 
+  it("creates a Home's owner only in the claim's own transaction, and never by sign-up", async () => {
+    const token = "one-admission-one-owner-token-with-entropy";
+    const identity = identityService({
+      initialOwnerEnrollment: {
+        expiresAt: new Date(Date.now() + 3_600_000),
+        tokenDigest: digestSecret(token),
+      },
+    });
+    await identity.initialize();
+    const admitted = await identity.exchangeInitialOwnerEnrollment(token);
+    const headers = () =>
+      new Headers({ cookie: cookieHeader(admitted.headers), origin: "http://127.0.0.1:4310" });
+
+    // The setup admission admits no generic sign-up.
+    await expect(
+      identity.signUpPassword(
+        { email: "side-door@example.test", password: "side-door-password-123" },
+        headers(),
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(database.selectFrom("users").select("id").execute()).resolves.toEqual([]);
+
+    // The proof lapses between admission and claim: nothing at all is created,
+    // where the claim used to sign the person up before checking it.
+    await database
+      .updateTable("ownerEnrollments")
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .execute();
+    await expect(
+      identity.claimInitialOwner(
+        { email: "owner@example.test", password: "owner-password-123" },
+        headers(),
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(database.selectFrom("users").select("id").execute()).resolves.toEqual([]);
+    await expect(database.selectFrom("authSessions").select("id").execute()).resolves.toEqual([]);
+
+    // Two claims race on one admission: one owner, and the admission is spent by them.
+    await database
+      .updateTable("ownerEnrollments")
+      .set({ expiresAt: new Date(Date.now() + 3_600_000) })
+      .execute();
+    const raced = await Promise.allSettled(
+      ["first@example.test", "second@example.test"].map((email) =>
+        identity.claimInitialOwner({ email, password: "owner-password-123" }, headers()),
+      ),
+    );
+    expect(raced.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const users = await database.selectFrom("users").select("id").execute();
+    expect(users).toHaveLength(1);
+    await expect(
+      database.selectFrom("authAdmissions").select("consumedBy").execute(),
+    ).resolves.toEqual([{ consumedBy: users[0]!.id }]);
+    await expect(
+      database.selectFrom("ownerEnrollments").select("consumedBy").execute(),
+    ).resolves.toEqual([{ consumedBy: users[0]!.id }]);
+  });
+
   it("keeps an operator's setup code fixed across restarts and re-issues it while unclaimed", async () => {
     const originalToken = "original-owner-token-with-entropy";
     const originalExpiry = new Date(Date.now() + 3_600_000);
@@ -2373,53 +2431,32 @@ integration("IdentityService", () => {
     const firstExchange = await identity.exchangeInitialOwnerEnrollment(`  ${token}\n`);
     const firstAdmissionCookie = cookieHeader(firstExchange.headers);
 
-    // Invalid credentials are rejected before the admission is reserved.
+    // Invalid credentials are refused before anything is created or spent.
     await expect(
-      identity.signUpPassword(
-        {
-          displayName: "Owner",
-          email: "owner@example.com",
-          password: "short",
-        },
+      identity.claimInitialOwner(
+        { email: "owner@example.com", password: "short" },
         new Headers({ cookie: firstAdmissionCookie, origin }),
       ),
     ).rejects.toMatchObject({ code: "bad_request" });
-    const unreservedAdmission = await database
-      .selectFrom("authAdmissions")
-      .selectAll()
-      .executeTakeFirstOrThrow();
-    expect(unreservedAdmission.reservedEmail).toBeNull();
-
-    // Model an interrupted signup after the admission was reserved but before setup completed.
-    await database
-      .updateTable("authAdmissions")
-      .set({ reservedAt: new Date(), reservedEmail: "owner@example.com" })
-      .where("id", "=", unreservedAdmission.id)
-      .executeTakeFirstOrThrow();
     const firstAdmission = await database
       .selectFrom("authAdmissions")
       .selectAll()
       .executeTakeFirstOrThrow();
-    expect(firstAdmission.reservedEmail).toBe("owner@example.com");
+    expect(firstAdmission.consumedAt).toBeNull();
 
+    // The browser lost its admission: exchanging the code again rotates it.
     const secondExchange = await identity.exchangeInitialOwnerEnrollment(token);
     const secondAdmissionCookie = cookieHeader(secondExchange.headers);
     expect(secondAdmissionCookie).not.toBe(firstAdmissionCookie);
 
     const admissions = await database.selectFrom("authAdmissions").selectAll().execute();
     expect(admissions).toHaveLength(1);
-    expect(admissions[0]).toMatchObject({
-      consumedAt: null,
-      purpose: "setup",
-      reservedAt: null,
-      reservedEmail: null,
-    });
+    expect(admissions[0]).toMatchObject({ consumedAt: null, purpose: "setup" });
     expect(admissions[0]?.id).not.toBe(firstAdmission.id);
 
     await expect(
-      identity.signUpPassword(
+      identity.claimInitialOwner(
         {
-          displayName: "Stale Owner",
           email: "stale-owner@example.com",
           password: "correct horse battery staple",
         },
@@ -2427,30 +2464,17 @@ integration("IdentityService", () => {
       ),
     ).rejects.toMatchObject({ code: "forbidden" });
 
-    const signup = await identity.signUpPassword(
+    const claimed = await identity.claimInitialOwner(
       {
-        displayName: "Owner",
         email: "owner@example.com",
         password: "correct horse battery staple",
       },
       new Headers({ cookie: secondAdmissionCookie, origin }),
     );
-    const completed = await identity.completeInitialOwnerSetup(
-      new Headers({
-        cookie: `${secondAdmissionCookie}; ${cookieHeader(signup.headers)}`,
-        origin,
-      }),
-    );
-
-    expect(completed.userId).toBe(signup.data.session.user.id);
     await expect(identity.configuration()).resolves.toMatchObject({ setupState: "complete" });
-    await expect(
-      database
-        .selectFrom("users")
-        .select("id")
-        .where("id", "=", completed.userId)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ id: completed.userId });
+    await expect(database.selectFrom("users").select("id").execute()).resolves.toEqual([
+      { id: claimed.data.session.user.id },
+    ]);
   });
 });
 

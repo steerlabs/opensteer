@@ -107,10 +107,21 @@ export const agentToolFamilies: Readonly<Record<AgentToolName, ToolFamily>> = {
   opensteer_knowledge_save: "personal",
 };
 
-/** Whether a grant offers a tool; no grant is the person's own work, which keeps every tool. */
-export function grantOffersTool(grant: AgentGrant | undefined, name: AgentToolName): boolean {
-  if (!grant || grant.scope === "everything") return true;
+/**
+ * Whether a grant offers a tool; no grant is the person's own work, which keeps every tool. The
+ * person's settings, reads included, reach a connection only with `everything` at `full-access`.
+ */
+export function grantOffersTool(
+  grant: AgentGrant | undefined,
+  name: AgentToolName,
+  accessMode: ThreadAccessMode = "full-access",
+): boolean {
+  if (!grant) return true;
   const family = agentToolFamilies[name];
+  if (grant.scope === "everything")
+    return accessMode === "full-access" || family === "widen" || family === "personal"
+      ? true
+      : !(family as readonly AgentGrantToolFamily[]).includes("settings");
   if (family === "widen" || family === "personal") return false;
   const granted = agentGrantToolFamilies(grant);
   return family.some((member) => granted.has(member));
@@ -136,6 +147,6 @@ export function toolsFor(caller: {
       (tool.access !== "settings" || caller.accessMode === "full-access") &&
       (!("team" in tool) || (caller.kind === "run" && caller.teamsAvailable === true)) &&
       (!("knowledge" in tool) || (caller.kind === "run" && caller.knowledge === true)) &&
-      grantOffersTool(caller.grant, tool.name),
+      grantOffersTool(caller.grant, tool.name, caller.accessMode),
   );
 }

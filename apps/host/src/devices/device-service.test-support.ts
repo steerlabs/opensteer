@@ -201,6 +201,7 @@ export function platform(input: {
           requireDeviceSelfRunnerId: async (id) => RunnerIdSchema.parse(id),
           requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
           computerAppRunner: vi.fn(async () => null),
+          requesterGrant: async () => null,
           listDeviceComputerAppSetupRequests: async () => [],
           listGrants: vi.fn(async () => []),
           // A fake's Request methods serve both stores the platform reads them from.

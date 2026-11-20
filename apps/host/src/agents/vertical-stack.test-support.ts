@@ -85,6 +85,8 @@ export interface VerticalStack {
   readonly network: Pick<NetworkPartition, "block" | "drop" | "unblock">;
   readonly agentHomePreparations: readonly Parameters<AgentHomeAccess["prepare"]>[0][];
   settledRunEvent(runId: RunId): import("@opensteer/protocol").PendingAgentEvent | undefined;
+  /** The person's Stop for one Run on the computer running it, as that computer's menu bar sends it. */
+  stopRunLocally(runId: RunId): boolean;
   crashRunner(beforeRestart?: () => Promise<void>): Promise<void>;
   /** A separate database/Deployment using this harness; closed with this fixture. */
   startAdditionalPersonal(): Promise<VerticalStack>;

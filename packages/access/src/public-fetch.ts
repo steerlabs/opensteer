@@ -1,7 +1,11 @@
-import { request as httpsRequest, type RequestOptions } from "node:https";
+import { request as httpsRequest, type Agent, type RequestOptions } from "node:https";
 import { Readable } from "node:stream";
 import { OpensteerError } from "@opensteer/core";
-import { resolvePublicAddress, tlsServerName } from "./public-network.js";
+import {
+  resolvePublicAddress,
+  tlsServerName,
+  type ResolvedPublicAddress,
+} from "./public-network.js";
 
 const forbiddenRequestHeaders = new Set([
   "connection",
@@ -37,8 +41,18 @@ export function createPublicHttpsFetch(
     readonly maxRequestBytes?: number;
     readonly maxResponseBytes?: number;
     readonly timeoutMs?: number;
+    /**
+     * Where a hostname is dialled. A caller that must reach one endpoint for
+     * several requests resolves it once and passes that one address here.
+     */
+    readonly resolve?: (hostname: string) => Promise<ResolvedPublicAddress>;
+    /** Keeps requests on one connection, so a later one reaches the server an earlier one checked. */
+    readonly agent?: Agent;
+    /** Extra trust roots; tests only, against a Home serving a certificate they made. */
+    readonly ca?: string;
   } = {},
 ): typeof fetch {
+  const resolve = options.resolve ?? resolvePublicAddress;
   const maxRequestBytes = positiveInteger(options.maxRequestBytes ?? 8 * 1_024 * 1_024);
   const maxResponseBytes = positiveInteger(options.maxResponseBytes ?? 16 * 1_024 * 1_024);
   const timeoutMs = positiveInteger(options.timeoutMs ?? 60_000);
@@ -60,7 +74,7 @@ export function createPublicHttpsFetch(
         : Buffer.from(await request.arrayBuffer());
     if (body.byteLength > maxRequestBytes)
       throw denied("Connector request exceeded its byte limit");
-    const address = await resolvePublicAddress(url.hostname);
+    const address = await resolve(url.hostname);
     const headers: Record<string, string> = {};
     request.headers.forEach((value, name) => {
       if (!forbiddenRequestHeaders.has(name.toLowerCase())) headers[name.toLowerCase()] = value;
@@ -77,6 +91,8 @@ export function createPublicHttpsFetch(
       path: `${url.pathname}${url.search}`,
       port: url.port || 443,
       ...(servername ? { servername } : {}),
+      ...(options.agent ? { agent: options.agent } : {}),
+      ...(options.ca ? { ca: options.ca } : {}),
     };
     return new Promise<Response>((resolveResponse, reject) => {
       let responseStarted = false;

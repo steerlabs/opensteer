@@ -20,7 +20,7 @@ import { vi } from "vitest";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type { ShellByteSocket } from "./shell-byte-pump.js";
 import type { ShellControlPeer } from "./shell-control-stream.js";
-import type { ShellHubOptions } from "./shell-hub.js";
+import type { ShellHubOptions, ShellHubStore } from "./shell-hub.js";
 
 export function auxiliaryStream(input: {
   readonly leaseExpiresAt?: string;
@@ -234,12 +234,10 @@ export function fakeShellStore(
       return { ended: true };
     },
     requireSelfDeviceId: async (id: RunnerId) => DeviceIdSchema.parse(id),
-    resolveAuthority: async () => ({
-      mode: "full-access",
-      lineage: null,
-      threadId: null,
-      runId: null,
-    }),
+    admitExecution: async () =>
+      ({ mode: "full-access", agentConnection: null }) as unknown as Awaited<
+        ReturnType<ShellHubStore["admitExecution"]>
+      >,
     getMachineAccessTarget: async () => {
       await state.gateTarget?.();
       return state.present

@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { harnessRuntimeExpectedVersion, shippedHarnessKinds } from "@opensteer/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { harnessDriverFactories } from "./harness-drivers.js";
-import { harnessRuntimeArtifactVersionMismatches } from "./verify-harness-runtimes.js";
+import {
+  harnessRuntimeArtifactVersionMismatches,
+  verifyInstalledClaudeVersion,
+} from "./verify-harness-runtimes.js";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -15,6 +18,19 @@ afterEach(async () => {
 describe("harness runtime verification", () => {
   it("finds every resolved engine artifact at exactly the catalog's pin without executing it", async () => {
     await expect(harnessRuntimeArtifactVersionMismatches()).resolves.toEqual([]);
+  });
+
+  it("requires the exact pinned version of an installed Claude CLI when requested", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-claude-pin-"));
+    directories.push(directory);
+    const executable = join(directory, "cli.js");
+    await writeFile(executable, 'console.log("2.1.294 (Claude Code)");');
+    await expect(
+      verifyInstalledClaudeVersion(executable, "2.1.294", {}, process.execPath),
+    ).resolves.toBeUndefined();
+    await expect(
+      verifyInstalledClaudeVersion(executable, "2.1.295", {}, process.execPath),
+    ).rejects.toThrow(/printed 2\.1\.294, expected 2\.1\.295/u);
   });
 
   it.each(shippedHarnessKinds)(

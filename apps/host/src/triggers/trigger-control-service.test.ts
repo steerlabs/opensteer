@@ -295,9 +295,10 @@ function makeService(options: {
       name: "Opensteer",
     })),
     getThreadForOwner: vi.fn(async () => anchor),
-    resolveAuthority: vi.fn(async () => ({
+    bindingAgentConnectionId: async () => null,
+    admitExecution: vi.fn(async () => ({
       mode: "full-access" as const,
-      lineage: null,
+      agentConnection: null,
       threadId: null,
       runId: null,
     })),

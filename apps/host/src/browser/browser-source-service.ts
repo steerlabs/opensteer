@@ -1,3 +1,10 @@
+import {
+  BrowserSourcePairV6InputSchema,
+  browserSourceTabWire,
+  browserSourceTabFrameBytes,
+  browserSourceTabBufferedBytes,
+} from "@opensteer/browser-source-wire/frames";
+import type { ChromeSharedTabs } from "./chrome-shared-tabs.js";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
@@ -20,7 +27,6 @@ import type { BrowserSessionId } from "@opensteer/protocol";
 import {
   BrowserSignInRequestResponseSchema,
   BrowserSourceClientMessageSchema,
-  BrowserSourcePairInputSchema,
   browserSourceWireCurrent,
   browserSourceWireFloor,
   maxBrowserSourceFrameBytes,
@@ -95,6 +101,8 @@ type AgentCopyInput = {
 type ClientMessage = BrowserSourceClientMessage | BrowserSourceClientFrame;
 type SourceReply = Extract<ClientMessage, { operationId: string }>;
 type SourceSocket = {
+  tabRelay?: ReturnType<ChromeSharedTabs["connectSource"]>;
+  readonly liveTabsOnly: boolean;
   readonly sourceId: BrowserSourceId;
   readonly ownerId: UserId;
   readonly generation: number;
@@ -162,6 +170,7 @@ type SignInRequests = Pick<
  * checks the site scope, re-checks authority, and sends `state.import` itself.
  */
 export class BrowserSourceService {
+  readonly liveTabs: ChromeSharedTabs | undefined;
   readonly #deploymentId: DeploymentId;
   readonly #store: BrowserSourceStore;
   readonly #requests: SignInRequests;
@@ -188,6 +197,7 @@ export class BrowserSourceService {
   #closed = false;
 
   constructor(options: {
+    readonly liveTabs?: ChromeSharedTabs;
     readonly deploymentId: DeploymentId;
     readonly store: BrowserSourceStore;
     readonly requests: SignInRequests;
@@ -200,6 +210,7 @@ export class BrowserSourceService {
     readonly onError?: (error: unknown) => void;
     readonly now?: () => number;
   }) {
+    this.liveTabs = options.liveTabs;
     this.#deploymentId = options.deploymentId;
     this.#store = options.store;
     this.#requests = options.requests;
@@ -242,8 +253,13 @@ export class BrowserSourceService {
     input: unknown,
     ingressOrigin: string,
   ): Promise<{ readonly sourceId: BrowserSourceId; readonly token: string }> {
-    const parsed = BrowserSourcePairInputSchema.parse(input);
-    if (parsed.version < browserSourceWireFloor || parsed.version > browserSourceWireCurrent) {
+    const parsed = BrowserSourcePairV6InputSchema.parse(input);
+    if (
+      parsed.version < browserSourceWireFloor ||
+      parsed.version > browserSourceWireCurrent ||
+      (parsed.capability === "live-tabs" &&
+        (parsed.version < browserSourceTabWire || !this.liveTabs))
+    ) {
       throw new OpensteerError({
         code: "bad_request",
         reason: "unsupported-version",
@@ -255,6 +271,7 @@ export class BrowserSourceService {
     const source = await this.#store.consumePairing({
       codeHash: digest(parsed.code),
       tokenHash: digest(token),
+      liveTabsOnly: parsed.capability === "live-tabs",
       name: parsed.name,
       origin: parsed.origin,
       routeGeneration: parsed.routeGeneration,
@@ -342,7 +359,10 @@ export class BrowserSourceService {
         socket.close(1009, "Frame too large");
         return;
       }
-      const message = readSourceMessage(bytes.toString("utf8"), tolerant);
+      const message = readSourceMessage(
+        bytes.toString("utf8"),
+        tolerant && wire.kind === "negotiated" ? wire.wire : 4,
+      );
       if (!message) {
         socket.close(1007, "Invalid source frame");
         return;
@@ -424,6 +444,24 @@ export class BrowserSourceService {
           .finally(() => socket.close(1000, "Disconnected in Chrome"));
         return;
       }
+      if (
+        message.type === "tab.shared" ||
+        message.type === "tab.unshared" ||
+        message.type === "tab.result" ||
+        message.type === "tab.event"
+      ) {
+        if (!peer.tabRelay) return;
+        if (bytes.byteLength > browserSourceTabFrameBytes) {
+          socket.close(1009, "Chrome tab frame too large");
+          return;
+        }
+        try {
+          peer.tabRelay.receive(message);
+        } catch {
+          socket.close(1007, "Invalid Chrome tab frame");
+        }
+        return;
+      }
       const pending = peer.pending.get(message.operationId);
       // A source can finish after the caller's timeout. Its stale reply must
       // not disconnect unrelated concurrent operations.
@@ -438,6 +476,7 @@ export class BrowserSourceService {
       clearPending();
       if (!peer) return;
       if (this.#connections.get(peer.sourceId) === peer) this.#connections.delete(peer.sourceId);
+      peer.tabRelay?.close();
       rejectPending(peer, new Error("Browser source disconnected"));
       void this.#store.markSeen(peer.sourceId).catch(this.#onError);
     });
@@ -453,7 +492,8 @@ export class BrowserSourceService {
     return {
       extensionDirectory: this.#extensionDirectory,
       sources: sources.map((source) => ({
-        connected: this.#isConnected(source.id),
+        connected: this.#connections.get(source.id)?.ready ?? false,
+        ...(source.liveTabsOnly ? { capability: "live-tabs" as const } : {}),
         createdAt: source.createdAt.toISOString(),
         id: source.id,
         lastSeenAt: source.lastSeenAt?.toISOString() ?? null,
@@ -478,7 +518,7 @@ export class BrowserSourceService {
     readonly url: string;
   }): Promise<BrowserSourceInspection> {
     const site = parseSignInSite(input.url);
-    const candidates = await this.#candidates(await this.#store.list(input.ownerId), site);
+    const candidates = await this.#candidates(await this.#cookieSources(input.ownerId), site);
     return {
       site,
       candidates: candidates.map((candidate) => ({
@@ -507,7 +547,10 @@ export class BrowserSourceService {
     readonly sourceId: BrowserSourceId;
   }): Promise<boolean> {
     const revoked = await this.#store.revoke(input);
-    if (revoked) this.#endConnections(input.sourceId, input.ownerId);
+    if (revoked) {
+      this.liveTabs?.closeForSource(input.sourceId);
+      this.#endConnections(input.sourceId, input.ownerId);
+    }
     return revoked;
   }
 
@@ -605,7 +648,7 @@ export class BrowserSourceService {
       site,
       deploymentId: target.deploymentId,
     });
-    const sources = await this.#store.list(input.ownerId);
+    const sources = await this.#cookieSources(input.ownerId);
     const candidates = grant ? [] : await this.#candidates(sources, site);
     if (!this.#admitCall(input.runId, sessionId, site)) return unavailable(site, "rate-limited");
     if (candidates.length > 0 && candidates.every((candidate) => candidate.status === "no-state"))
@@ -642,7 +685,7 @@ export class BrowserSourceService {
     const asked = await ask();
     // A Chrome that connected after `candidates` may have run its check before
     // this Request was stored; check again for it.
-    const connectedSince = (await this.#store.list(input.ownerId)).some(
+    const connectedSince = (await this.#cookieSources(input.ownerId)).some(
       (source) =>
         this.#isConnected(source.id) &&
         !candidates.some(
@@ -715,7 +758,7 @@ export class BrowserSourceService {
     }
     if (await this.#refusesSite(site)) return problem("not-allowed", site, null);
     const source = await this.#store.get(input.decision.sourceId, input.ownerId);
-    if (!source) {
+    if (!source || source.liveTabsOnly) {
       throw new OpensteerError({
         code: "not_found",
         message: "That Chrome is no longer connected.",
@@ -746,6 +789,7 @@ export class BrowserSourceService {
     if (this.#closed) return;
     this.#closed = true;
     clearInterval(this.#heartbeat);
+    this.liveTabs?.close();
     for (const socket of this.#sockets) socket.close(1001, "Host stopping");
     this.#connections.clear();
   }
@@ -766,6 +810,7 @@ export class BrowserSourceService {
 
   #sourceReady(peer: SourceSocket): void {
     void this.#store.markSeen(peer.sourceId).catch(this.#onError);
+    if (peer.liveTabsOnly) return;
     const previous = this.#drains.get(peer.ownerId) ?? Promise.resolve();
     const drain = previous
       .then(() => this.#drain(peer.ownerId, peer.sourceId))
@@ -792,7 +837,7 @@ export class BrowserSourceService {
         ownerId,
         sourceId,
       });
-      const sources = await this.#store.list(ownerId);
+      const sources = await this.#cookieSources(ownerId);
       const ready = sources.find((source) => source.id === sourceId);
       if (!ready) return;
       for (const request of page) {
@@ -882,7 +927,7 @@ export class BrowserSourceService {
     ownerId: UserId,
     site: string,
   ): Promise<BrowserSignInRequestResponse | null> {
-    const candidates = await this.#candidates(await this.#store.list(ownerId), site);
+    const candidates = await this.#candidates(await this.#cookieSources(ownerId), site);
     if (
       candidates.length === 0 ||
       !candidates.every((candidate) => candidate.status === "no-state")
@@ -1074,7 +1119,7 @@ export class BrowserSourceService {
   ): Promise<SourceChoice> {
     if (sourceId) {
       const source = await this.#store.get(sourceId, ownerId);
-      if (!source) {
+      if (!source || source.liveTabsOnly) {
         throw new OpensteerError({
           code: "not_found",
           message: "That Chrome is no longer connected.",
@@ -1086,7 +1131,7 @@ export class BrowserSourceService {
     }
     const [grant, sources] = await Promise.all([
       this.#store.getGrant({ ownerId, site, deploymentId }),
-      this.#store.list(ownerId),
+      this.#cookieSources(ownerId),
     ]);
     const preferred = sources.find((source) => source.id === grant?.preferredSourceId);
     if (preferred && this.#isConnected(preferred.id)) return { source: preferred };
@@ -1259,7 +1304,12 @@ export class BrowserSourceService {
   }
 
   #isConnected(sourceId: BrowserSourceId): boolean {
-    return this.#connections.get(sourceId)?.ready ?? false;
+    const peer = this.#connections.get(sourceId);
+    return peer?.ready === true && !peer.liveTabsOnly;
+  }
+
+  async #cookieSources(ownerId: UserId): Promise<readonly BrowserSourceRecord[]> {
+    return (await this.#store.list(ownerId)).filter((source) => !source.liveTabsOnly);
   }
 
   async #admitDestination(
@@ -1364,7 +1414,14 @@ export class BrowserSourceService {
       socket.close(1008, "Browser extension update required");
       return null;
     }
+    const liveTabsOnly = "capability" in message && message.capability === "live-tabs";
+    if (
+      liveTabsOnly !== !!source.liveTabsOnly ||
+      (liveTabsOnly && (wire.wire < browserSourceTabWire || !this.liveTabs))
+    )
+      throw new OpensteerError({ code: "forbidden", message: "Invalid Chrome source capability" });
     const peer: SourceSocket = {
+      liveTabsOnly,
       sourceId: source.id,
       ownerId: source.ownerId,
       generation: source.generation,
@@ -1388,8 +1445,30 @@ export class BrowserSourceService {
       }
       const previous = this.#connections.get(source.id);
       if (previous) {
+        previous.tabRelay?.close();
         rejectPending(previous, new Error("Browser source superseded"));
         previous.socket.close(1008, "New connection");
+      }
+      if (liveTabsOnly && this.liveTabs) {
+        const fail = () => socket.close(1013, "Chrome tab transport overloaded");
+        peer.tabRelay = this.liveTabs.connectSource({
+          sourceId: source.id,
+          ownerId: source.ownerId,
+          name: source.name,
+          fail,
+          write: (frame) => {
+            const data = JSON.stringify(frame);
+            if (socket.readyState !== WebSocket.OPEN) return false;
+            if (socket.bufferedAmount + Buffer.byteLength(data) > browserSourceTabBufferedBytes) {
+              fail();
+              return false;
+            }
+            socket.send(data, (error) => {
+              if (error) socket.close();
+            });
+            return true;
+          },
+        });
       }
       this.#connections.set(source.id, peer);
       peer.ready = true;
@@ -1397,7 +1476,8 @@ export class BrowserSourceService {
         JSON.stringify({
           type: "source.ready",
           sourceId: source.id,
-        } satisfies BrowserSourceHostMessage),
+          ...(liveTabsOnly ? { capability: "live-tabs" as const } : {}),
+        } satisfies BrowserSourceHostFrame),
       );
       return peer;
     } finally {
@@ -1409,6 +1489,11 @@ export class BrowserSourceService {
     peer: SourceSocket,
     message: Extract<BrowserSourceHostMessage, { operationId: string }>,
   ): Promise<SourceReply> {
+    if (peer.liveTabsOnly)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This Chrome connection shares live tabs.",
+      });
     if (!(await this.#destinationIsCurrent(peer))) {
       this.#routeChanged(peer.socket);
       throw new OpensteerError({ code: "runner_offline", message: "Browser source route changed" });
@@ -1605,8 +1690,8 @@ function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function readSourceMessage(raw: string, tolerant: boolean): ClientMessage | UnknownMessage | null {
-  if (tolerant) return readClientMessage(raw);
+function readSourceMessage(raw: string, wire: number): ClientMessage | UnknownMessage | null {
+  if (wire >= tolerantWire) return readClientMessage(raw, wire);
   try {
     return BrowserSourceClientMessageSchema.parse(JSON.parse(raw));
   } catch {

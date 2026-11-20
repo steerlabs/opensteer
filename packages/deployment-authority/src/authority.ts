@@ -254,6 +254,17 @@ export type HostCapability = z.infer<typeof HostCapabilitySchema>;
  * may add a field, and an older client must still read the epoch that tells it
  * so rather than fail the parse.
  */
+/**
+ * A Home's answer to a client's fresh nonce, signed with its Host key: what
+ * lets a client that saved a Home's key know the address still answers as
+ * that Home before it sends it any credential.
+ */
+export const HostIdentityProofSchema = z.strictObject({
+  nonce: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
+  signature: z.string().min(1).max(128),
+});
+export type HostIdentityProof = z.infer<typeof HostIdentityProofSchema>;
+
 export const HostDescriptorSchema = z.object({
   kind: DeploymentKindSchema,
   /**
@@ -269,8 +280,28 @@ export const HostDescriptorSchema = z.object({
   authority: HostDiscoveryEnvelopeSchema,
   bootstrapMethods: z.array(HostBootstrapMethodSchema).max(4),
   capabilities: z.array(z.string().min(1).max(64)).max(64),
+  /** Present when the request carried `?proof=<nonce>`. */
+  identityProof: HostIdentityProofSchema.optional(),
 });
 export type HostDescriptor = z.infer<typeof HostDescriptorSchema>;
+
+/** The bytes a Home signs to answer a nonce, naming the identity it answers as. */
+export function hostIdentityProofBytes(input: {
+  readonly nonce: string;
+  readonly document: Pick<
+    HostDiscoveryDocument,
+    "canonicalOrigin" | "deploymentId" | "hostInstanceId"
+  >;
+}): Uint8Array {
+  return new TextEncoder().encode(
+    `opensteer-host-identity-proof-v1\0${JSON.stringify({
+      nonce: input.nonce,
+      canonicalOrigin: input.document.canonicalOrigin,
+      deploymentId: input.document.deploymentId,
+      hostInstanceId: input.document.hostInstanceId,
+    })}`,
+  );
+}
 
 /** Whether this tree can speak to the Host that served a descriptor. */
 export type HostApiCompatibility = "client-too-old" | "compatible" | "host-too-old";

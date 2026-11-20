@@ -44,6 +44,18 @@ export const AgentConnectionSchema = z.object({
   state: AgentConnectionStateSchema.optional(),
   /** Contact was lost with work in its lineage mid-effect while it was being stopped. */
   lastActionUncertain: z.boolean().optional(),
+  /** What to check: the Device, the task or tool, and when contact was lost. */
+  lastActionUncertainDetail: z
+    .object({
+      at: z.iso.datetime({ offset: true }),
+      device: z.string().max(255).nullable(),
+      task: z.string().max(500).nullable(),
+      taskId: z.string().max(255).nullable(),
+      tool: z.string().max(100).nullable(),
+      reason: z.string().max(255).nullable(),
+    })
+    .nullable()
+    .optional(),
   revokedAt: z.iso.datetime({ offset: true }).nullable().optional(),
 
   createdAt: z.iso.datetime({ offset: true }),

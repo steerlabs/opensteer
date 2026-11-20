@@ -13,6 +13,8 @@ interface IssueBrowserAttachTicketInput {
   readonly access: "read-write";
   readonly standardCdp?: BrowserAttachTicketClaims["standardCdp"];
   readonly creationOrigin: "agent" | "person";
+  /** Whom the attachment acts for; only for a runtime that reads it. */
+  readonly actor?: "agent" | "person" | undefined;
   readonly operationExpiresAt?: string;
   readonly remainingBudgetMs?: number;
   readonly passkeys?: 1;
@@ -79,6 +81,7 @@ export class BrowserAttachTicketSigner {
       access: input.access,
       ...(input.standardCdp ? { standardCdp: input.standardCdp } : {}),
       creationOrigin: input.creationOrigin,
+      ...(input.actor ? { actor: input.actor } : {}),
       ...(input.basicInput === 1 ? { basicInput: 1 } : {}),
       ...(input.surfaceState === 1 ? { surfaceState: 1 } : {}),
       ...(input.personFillVersion ? { personFillVersion: input.personFillVersion } : {}),

@@ -938,9 +938,38 @@ describe("networked Personal Home", () => {
     expect(() => parseHostConfig({ ...home, OPENSTEER_SIGNUP_POLICY: "open" })).toThrow(
       /cannot allow open signup/u,
     );
+    // A Mac's loopback Home has one owner too: nobody signs up to it.
+    expect(() =>
+      parseHostConfig({ ...localHostEnvironment, OPENSTEER_SIGNUP_POLICY: "open" }),
+    ).toThrow(/cannot allow open signup/u);
     expect(() => parseHostConfig({ ...home, OPENSTEER_LOCAL_PASSWORD_ENABLED: "false" })).toThrow(
-      /requires password or OIDC sign-in/u,
+      /requires password sign-in to be claimed/u,
     );
+    // Nothing would wire an OIDC provider for a Home on its own server: no way to claim it.
+    expect(() =>
+      parseHostConfig({
+        ...home,
+        OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
+        OPENSTEER_OIDC_CONFIG_PATH: "/srv/opensteer/oidc.json",
+      }),
+    ).toThrow(/requires password sign-in to be claimed/u);
+    expect(() =>
+      parseHostConfig({ ...home, OPENSTEER_OIDC_CONFIG_PATH: "/srv/opensteer/oidc.json" }),
+    ).toThrow(/does not support OIDC sign-in/u);
+    // Development mode too: the native apps refuse a Home at plain HTTP.
+    expect(() =>
+      parseHostConfig({ ...home, OPENSTEER_CANONICAL_ORIGIN: "http://home.example.com" }),
+    ).toThrow(/requires an https canonical origin/u);
+    // Production takes these secrets from files only, never the process environment.
+    expect(() =>
+      parseHostConfig({
+        ...production,
+        OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN: "m".repeat(43),
+      }),
+    ).toThrow(/OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN must be delivered as .*_FILE/u);
+    expect(() =>
+      parseHostConfig({ ...production, OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET: "s".repeat(47) }),
+    ).toThrow(/OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET must be delivered as .*_FILE/u);
     expect(() =>
       parseHostConfig({
         ...home,

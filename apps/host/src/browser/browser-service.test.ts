@@ -5881,9 +5881,20 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return RunnerIdSchema.parse(deviceId);
   }
 
-  async resolveResourceAccess() {
+  async resolveResourceAccess(): ReturnType<
+    NonNullable<BrowserSessionRepository["resolveResourceAccess"]>
+  > {
     return {
-      authority: { mode: "full-access" as const, lineage: null, threadId: null, runId: null },
+      execution: {
+        mode: "full-access" as const,
+        agentConnection: null,
+        threadId: null,
+        runId: null,
+        taskMode: null,
+        runMode: null,
+        ownerUserId: createId("user"),
+        subject: { kind: "person" as const },
+      },
       grantAccess: "read-write" as const,
       access: "read-write" as const,
       runAccess: "read-write" as const,
@@ -8365,3 +8376,158 @@ it.each(["register", "inventory", "revoke", "offline", "expire", "close"] as con
     }
   },
 );
+
+/** A connected agent's selected grant, as the Home resolves it for any binding of its lineage. */
+class SelectedGrantRepository extends MemoryBrowserRepository {
+  granted: readonly BrowserProfileId[] = [];
+  override async resolveResourceAccess(): ReturnType<
+    NonNullable<BrowserSessionRepository["resolveResourceAccess"]>
+  > {
+    const base = await super.resolveResourceAccess();
+    return {
+      ...base,
+      execution: {
+        ...base.execution,
+        agentConnection: {
+          agentConnectionId: "mcn_selected",
+          grantRevision: 2,
+          consentVersion: 2,
+          accessMode: "full-access" as const,
+          grant: {
+            scope: "selected" as const,
+            tasks: true,
+            resources: this.granted.map((profileId) => ({
+              kind: "browser-profile" as const,
+              profileId,
+              access: "read-write" as const,
+            })),
+          },
+        },
+      },
+    };
+  }
+}
+
+describe("a connected agent's selected grant admits the exact profile before any browser starts", () => {
+  async function setup() {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    const withdrawn = await repository.createBrowserProfile({ ownerId, name: "Withdrawn" });
+    // The grant kept one profile and withdrew the other.
+    repository.granted = [kept.id];
+    const create = vi.spyOn(repository, "createBrowserSession"),
+      bind = vi.spyOn(repository, "bindBrowserTabOpen");
+    const service = freshService({ keys, runtime, repository });
+    const nothingStarted = () => {
+      expect(create).not.toHaveBeenCalled();
+      expect(bind).not.toHaveBeenCalled();
+      expect(runtime.connectionCount()).toBe(0);
+    };
+    return { ownerId, kept, withdrawn, service, runtime, create, nothingStarted };
+  }
+  const refusal = { code: "forbidden", message: expect.stringContaining("connected agent") };
+
+  it.each([
+    ["the withdrawn profile", "withdrawn"],
+    ["Guest", "guest"],
+  ] as const)("tab_open of %s starts, restores and opens nothing", async (_name, which) => {
+    const { ownerId, withdrawn, service, nothingStarted } = await setup();
+    await expect(
+      service.openTab(
+        ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `selected-${which}`,
+          identity:
+            which === "guest" ? { kind: "guest" } : { kind: "profile", profileId: withdrawn.id },
+        },
+        { ownerId, agentBindingId: "run:selected-open", threadId: createId("thread") },
+      ),
+    ).rejects.toMatchObject(refusal);
+    nothingStarted();
+  });
+
+  it.each([
+    ["an agent Run, the withdrawn profile", "run:selected-session", "withdrawn"],
+    ["an agent Run, Guest", "run:selected-session", "guest"],
+    ["an automation occurrence (its CDP opens Guest)", "trigger:selected-occurrence", "guest"],
+    ["a Watch activation (its CDP opens Guest)", "watch:selected-activation", "guest"],
+  ] as const)(
+    "a session for %s is refused before any browser starts",
+    async (_name, binding, which) => {
+      const { ownerId, withdrawn, service, nothingStarted } = await setup();
+      await expect(
+        service.openAgentSession({
+          agentBindingId: binding,
+          ownerId,
+          ...(which === "guest" ? { fresh: true as const } : { profileId: withdrawn.id }),
+        }),
+      ).rejects.toMatchObject(refusal);
+      nothingStarted();
+      expect(await service.listAgentSessions({ agentBindingId: binding, ownerId })).toEqual([]);
+    },
+  );
+
+  it.each([
+    ["its last browser record", false],
+    ["no browser record left", true],
+  ] as const)(
+    "binding a Guest page restores nothing for a selected grant, with %s",
+    async (_name, recordGone) => {
+      const keys = generateKeyPairSync("ed25519"),
+        runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+        ownerId = createId("user"),
+        repository = new SelectedGrantRepository(ownerId),
+        memory = memoryTabs();
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      repository.granted = [kept.id];
+      const service = freshService({
+        keys,
+        runtime,
+        repository,
+        tabs: memory.store,
+        tabRestoreVersion: true,
+      });
+      const descriptor = await service.pageTabs.open(
+        { kind: "person", ownerId },
+        { kind: "page", guest: true, url: "https://example.com/" },
+        "guest-restore",
+      );
+      await memory.add(descriptor);
+      await service.stop(ownerId, descriptor.pageBinding!.sessionId);
+      const create = vi.spyOn(repository, "createBrowserSession");
+      const connections = runtime.connectionCount();
+      if (recordGone) {
+        const lookup = repository.getBrowserSessionForOwner.bind(repository);
+        vi.spyOn(repository, "getBrowserSessionForOwner").mockImplementation(async (id, owner) =>
+          id === descriptor.pageBinding!.sessionId ? null : lookup(id, owner),
+        );
+      }
+      const claims = {
+        requestedBy: ownerId,
+        runId: createId("run"),
+        threadId: createId("thread"),
+      } as unknown as import("../agents/run-tool-tokens.js").RunToolScope;
+      await expect(service.bindPage(claims, memory.rows.get(descriptor.id)!)).rejects.toMatchObject(
+        refusal,
+      );
+      expect(create).not.toHaveBeenCalled();
+      expect(runtime.connectionCount()).toBe(connections);
+    },
+  );
+
+  it("still opens the profile the grant keeps", async () => {
+    const { ownerId, kept, service, runtime, create } = await setup();
+    const opened = await service.openAgentSession({
+      agentBindingId: "run:selected-kept",
+      ownerId,
+      profileId: kept.id,
+    });
+    expect(opened.wasExisting).toBe(false);
+    expect(create).toHaveBeenCalledOnce();
+    expect(runtime.connectionCount()).toBe(1);
+  });
+});

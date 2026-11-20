@@ -1132,9 +1132,10 @@ function makeService(options: {
         sourceId: native ? "native" : "openai",
       };
     },
-    resolveAuthority: async () => ({
+    bindingAgentConnectionId: async () => null,
+    admitExecution: async () => ({
       mode: "full-access" as const,
-      lineage: null,
+      agentConnection: null,
       threadId: null,
       runId: null,
     }),

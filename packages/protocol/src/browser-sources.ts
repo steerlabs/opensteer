@@ -46,6 +46,7 @@ export {
 } from "@opensteer/browser-source-wire/frames";
 
 export const BrowserSourceSummarySchema = z.object({
+  capability: z.literal("live-tabs").optional(),
   connected: z.boolean(),
   createdAt: IsoDateTimeSchema,
   id: BrowserSourceIdSchema,
@@ -203,3 +204,5 @@ export type BrowserSourcePairing = z.infer<typeof BrowserSourcePairingSchema>;
  * build checks that the manifest key still derives this ID.
  */
 export const opensteerChromeExtensionId = "oikoblakkddmchfnkdmhfcnljnadohkp";
+
+export const opensteerChromeLiveTabsExtensionId = "dhlhcgfhcemohdolojennbgaamlhjnao";

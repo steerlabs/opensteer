@@ -74,7 +74,12 @@ import { prepareHarnessProviderState } from "../harness/harness-provider-state.j
 import { createHarnessRegistry } from "../harness/harness-registry.js";
 import type { HarnessProcessSandbox, HarnessSandboxRunPlan } from "../sandbox/harness-sandbox.js";
 import { ExecutionContainment, executionScopeVariable } from "./execution-containment.js";
-import { RunnerRuntime, harnessProcessEnvironment, type RunnerMessageSink } from "./runtime.js";
+import {
+  RunnerRuntime,
+  agentWorkStoppedSentence,
+  harnessProcessEnvironment,
+  type RunnerMessageSink,
+} from "./runtime.js";
 import { warmEngineKey, WarmEnginePool } from "./warm-engine-pool.js";
 import { providerContinuationIdentityProjector } from "@opensteer/runner-client";
 
@@ -6365,6 +6370,7 @@ function configuredRuntime(input: {
     typeof RunnerRuntime
   >[0]["agentHome"]["prepare"];
   readonly watchSupervisor?: ConstructorParameters<typeof RunnerRuntime>[0]["watchSupervisor"];
+  readonly agentWorkStopped?: () => boolean;
 }): RunnerRuntime {
   return runtimeWithLeaseGrants(
     {
@@ -6389,6 +6395,7 @@ function configuredRuntime(input: {
       privateStateDirectory: input.privateStateDirectory ?? testPrivateStateRoot,
       projectContinuationIdentity,
       ...(input.watchSupervisor ? { watchSupervisor: input.watchSupervisor } : {}),
+      ...(input.agentWorkStopped ? { agentWorkStopped: input.agentWorkStopped } : {}),
       agentHome: {
         folder: async ({ path }: { readonly path: string }) => path,
         prepare:
@@ -6557,4 +6564,131 @@ it("creates the attachment directory before launch and drains file work before R
     await runtime.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+describe("this computer's own view and Stop of its Runs", () => {
+  function blockingRuntime(agentWorkStopped?: () => boolean) {
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      new FakeHarnessDriver("blocking-driver", () => new BlockingHarnessSession()),
+    );
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({
+      environmentId,
+      registry,
+      ...(agentWorkStopped ? { agentWorkStopped } : {}),
+    });
+    return { environmentId, registry, runtime };
+  }
+
+  const started = (messages: readonly RunnerOperationalReport[], runId: string) =>
+    messages.some(
+      (message) =>
+        message.type === "runner.event" &&
+        message.event.runId === runId &&
+        message.event.type === "run.started",
+    );
+  const terminals = (messages: readonly RunnerOperationalReport[]) =>
+    messages.flatMap((message) =>
+      message.type === "runner.event" && message.event.type === "run.interrupted"
+        ? [message.event.data]
+        : [],
+    );
+
+  it("lists a Run while it works and ends it on a local Stop as a plain interrupt", async () => {
+    const { environmentId, registry, runtime } = blockingRuntime();
+    const execute = executeCommand(environmentId, "blocking-driver");
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    const changed = vi.fn();
+    runtime.subscribeLocalActivity(changed);
+    try {
+      await reconcile(registry, execute);
+      const before = Date.now();
+      await expect(runtime.handleCommand(execute, sink)).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() => started(messages, execute.context.runId));
+      const [activity] = runtime.localActivity();
+      expect(runtime.localActivity()).toHaveLength(1);
+      expect(activity).toMatchObject({
+        runId: execute.context.runId,
+        threadId: execute.context.threadId,
+        purpose: execute.context.taskPurpose,
+        engine: execute.context.harness.name,
+      });
+      expect(Date.parse(activity!.startedAt)).toBeGreaterThanOrEqual(before - 1);
+      expect(changed).toHaveBeenCalled();
+
+      expect(runtime.stopRunLocally(execute.context.runId)).toBe(true);
+      expect(runtime.localActivity()).toEqual([]);
+      expect(runtime.stopRunLocally(execute.context.runId)).toBe(false);
+      await waitUntil(() => runtime.activeRunIds().length === 0);
+      expect(terminals(messages)).toEqual([{ status: "interrupted" }]);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("replays a local Stop made while the Home was out of reach once it reconnects", async () => {
+    const { environmentId, registry, runtime } = blockingRuntime();
+    const execute = executeCommand(environmentId, "blocking-driver");
+    const online: RunnerOperationalReport[] = [];
+    let reachable = true;
+    const first: RunnerMessageSink = {
+      send: async (message) => {
+        if (!reachable) throw new Error("connection lost");
+        online.push(message);
+      },
+    };
+    try {
+      await reconcile(registry, execute);
+      await runtime.handleCommand(execute, first);
+      await waitUntil(() => started(online, execute.context.runId));
+      reachable = false;
+      await runtime.connectionLost(first);
+
+      expect(runtime.stopRunLocally(execute.context.runId)).toBe(true);
+      await waitUntil(() => runtime.activeRunIds().length === 0);
+      expect(terminals(online)).toEqual([]);
+
+      const committed = online.filter((message) => message.type === "runner.event").length;
+      const inventory = runtime.attachInventory();
+      expect(inventory).toEqual([
+        expect.objectContaining({ runId: execute.context.runId, terminal: true }),
+      ]);
+      const reconnected: RunnerOperationalReport[] = [];
+      await runtime.attach(
+        {
+          ...testConnectionFence,
+          leaseMs: execute.context.executionLeaseMs,
+          results: [{ nextOrdinal: committed, runId: execute.context.runId, status: "attached" }],
+          type: "host.executions.attached",
+        },
+        { send: async (message) => void reconnected.push(message) },
+      );
+      expect(terminals(reconnected)).toEqual([{ status: "interrupted" }]);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("refuses new agent work, for the Home to retry, while the person has agents stopped here", async () => {
+    let stopped = true;
+    const { environmentId, registry, runtime } = blockingRuntime(() => stopped);
+    const execute = executeCommand(environmentId, "blocking-driver");
+    const sink: RunnerMessageSink = { send: async () => undefined };
+    try {
+      await reconcile(registry, execute);
+      await expect(runtime.handleCommand(execute, sink)).resolves.toEqual({
+        status: "rejected",
+        error: { code: "conflict", message: agentWorkStoppedSentence, retryable: true },
+      });
+      expect(runtime.localActivity()).toEqual([]);
+      stopped = false;
+      await expect(runtime.handleCommand(execute, sink)).resolves.toEqual({ status: "accepted" });
+      expect(runtime.stopRunLocally(execute.context.runId)).toBe(true);
+      await waitUntil(() => runtime.activeRunIds().length === 0);
+    } finally {
+      await runtime.close();
+    }
+  });
 });

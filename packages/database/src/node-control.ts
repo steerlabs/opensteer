@@ -28,7 +28,7 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import type { Kysely, Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import {
   assertThreadCaller,
@@ -38,7 +38,16 @@ import {
 import "./store-primitives.js";
 import { runHasActiveGrant } from "./run-grants.js";
 type Database = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
-export async function reachableNode(database: Database, nodeId: ExecutionNodeId, ownerId: UserId) {
+/**
+ * A subagent and its parent Run. With `selectedConnectionId`, only a node whose parent Run is in
+ * that connection's lineage is reachable.
+ */
+export async function reachableNode(
+  database: Database,
+  nodeId: ExecutionNodeId,
+  ownerId: UserId,
+  selectedConnectionId?: string,
+) {
   await requirePersonalOwner(database, ownerId);
   return database
     .selectFrom("executionNodes as node")
@@ -47,6 +56,13 @@ export async function reachableNode(database: Database, nodeId: ExecutionNodeId,
     .selectAll("node")
     .select(["runs.threadId", "runs.requestedBy"])
     .where("node.id", "=", nodeId)
+    .$if(selectedConnectionId !== undefined, (query) =>
+      query.where(
+        sql<string>`coalesce(runs.connection_id, threads.origin_connection_id)`,
+        "=",
+        selectedConnectionId!,
+      ),
+    )
     .executeTakeFirst();
 }
 export const NodeStopAuthoritySchema = z.object({

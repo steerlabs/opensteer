@@ -818,7 +818,7 @@ describe("HostCommandDispatcher model selection", () => {
         ],
       } as never,
       store: {
-        resolveAuthority: async () => ({ lineage: null, mode: "full-access" }),
+        admitExecution: async () => ({ agentConnection: null, mode: "full-access" }),
         acquireExecutionBinding: async () => ({
           bindingGeneration: 1,
           continuationEvent: null,
@@ -990,7 +990,7 @@ describe("HostCommandDispatcher run planning", () => {
           ],
         } as never,
         store: {
-          resolveAuthority: async () => ({ lineage: null, mode: "full-access" }),
+          admitExecution: async () => ({ agentConnection: null, mode: "full-access" }),
           acquireExecutionBinding: async () => ({
             bindingGeneration: 2,
             continuationEvent: null,

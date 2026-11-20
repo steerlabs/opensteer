@@ -70,10 +70,7 @@ export class DeviceToolHandlers {
     const requester: IntegrationRequester =
       caller.kind === "connection"
         ? { ownerUserId: caller.userId, connectionId: caller.connectionId }
-        : {
-            ownerUserId: caller.userId,
-            threadId: caller.kind === "run" ? caller.thread.id : caller.anchor.id,
-          };
+        : { ownerUserId: caller.userId, agentBindingId: caller.key };
     const run = caller.kind === "run" ? caller.claims : null;
     const { computerId, query, limit } = call.input;
     const offset = call.input.cursor ?? 0;
@@ -275,6 +272,25 @@ export class DeviceToolHandlers {
     }
     const machine = access.machines.find((candidate) => candidate.deviceId === deviceId);
     if (!machine) throw refused("not_found", unknownComputerUseMac(deviceId));
+    if (access.grantScoped) {
+      // A selected grant learns nothing else installed on the Mac: only its own apps, paged.
+      const needle = query.toLowerCase();
+      const granted = access
+        .appEntries(machine)
+        .filter(
+          (app) =>
+            !needle ||
+            app.name.toLowerCase().includes(needle) ||
+            app.bundleId.toLowerCase().includes(needle),
+        )
+        .map(({ id: _id, ...app }) => app);
+      const apps = granted.slice(offset, offset + limit);
+      return {
+        computer: { computerId: deviceId, name: machine.name, ...access.machine(machine), apps },
+        total: granted.length,
+        nextCursor: nextCursor(granted.length, apps.length),
+      };
+    }
     const installed = await approvals.installedComputerApps(
       { actorUserId: requester.ownerUserId, deviceId, query, limit, offset, icons: false },
       access.machines,

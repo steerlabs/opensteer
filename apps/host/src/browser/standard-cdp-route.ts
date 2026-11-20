@@ -9,7 +9,9 @@ import type { FastifyInstance } from "fastify";
 import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 import { unversionedRoute } from "../server/unversioned-route.js";
+import { OpensteerError } from "@opensteer/core";
 import { BrowserCdpConnectionEnded, type BrowserService } from "./browser-service.js";
+import type { ChromeSharedTabs } from "./chrome-shared-tabs.js";
 import { standardCdpConnectPrefix, type StandardCdpTicketClaims } from "./standard-cdp-tickets.js";
 import { RawCdpRequestSchema } from "./standard-cdp-transport.js";
 
@@ -24,7 +26,11 @@ const commandKey = (id: number, sessionId?: string) => JSON.stringify([id, sessi
 
 type StandardCdpBrowser = Pick<BrowserService, "standardCdpTickets" | "attachStandardCdpForAgent">;
 
-export function registerStandardCdpRoute(app: FastifyInstance, browser: StandardCdpBrowser): void {
+export function registerStandardCdpRoute(
+  app: FastifyInstance,
+  browser: StandardCdpBrowser,
+  chromeTabs?: ChromeSharedTabs,
+): void {
   const upgrades = new WeakMap<object, StandardCdpTicketClaims>();
   app.get(
     `${standardCdpConnectPrefix}:ticket`,
@@ -38,7 +44,8 @@ export function registerStandardCdpRoute(app: FastifyInstance, browser: Standard
         }
         const params = ticketParams.safeParse(request.params);
         const claims = params.success
-          ? browser.standardCdpTickets.consume(params.data.ticket)
+          ? (browser.standardCdpTickets?.consume(params.data.ticket) ??
+            chromeTabs?.standardCdpTickets.consume(params.data.ticket))
           : undefined;
         if (!claims) {
           void reply.code(401).send({ error: "Browser attachment ticket is invalid or expired" });
@@ -52,7 +59,12 @@ export function registerStandardCdpRoute(app: FastifyInstance, browser: Standard
       const claims = upgrades.get(request);
       upgrades.delete(request);
       if (!claims) socket.close(1008, "Browser attachment refused");
-      else relayStandardCdp(socket, claims, browser);
+      else
+        relayStandardCdp(
+          socket,
+          claims,
+          claims.sharedChromeTab && chromeTabs ? chromeTabs : browser,
+        );
     },
   );
 }
@@ -149,7 +161,8 @@ function relayStandardCdp(
       if (stopping.signal.aborted) return undefined;
       refusalTimer = setTimeout(() => end(1008, "Browser attachment refused"), 10_000);
       refusalTimer.unref();
-      return error instanceof BrowserCdpConnectionEnded
+      return error instanceof BrowserCdpConnectionEnded ||
+        (claims.sharedChromeTab && error instanceof OpensteerError)
         ? error.message
         : "Browser attachment refused.";
     },

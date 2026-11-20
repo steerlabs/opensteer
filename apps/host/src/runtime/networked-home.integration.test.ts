@@ -14,7 +14,11 @@ import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
 } from "@opensteer/database/test-support/database";
-import { apiVersionHeaders } from "@opensteer/deployment-authority";
+import {
+  HostDescriptorSchema,
+  apiVersionHeaders,
+  verifyHostIdentityProof,
+} from "@opensteer/deployment-authority";
 import {
   RunnerBootIdSchema,
   RunnerDescriptorSchema,
@@ -132,6 +136,28 @@ it("boots unclaimed, is claimed once through its setup link, and enrolls its com
       bootstrapMethods: ["password"],
     });
     expect(descriptor.json<{ capabilities: string[] }>().capabilities).toContain("native-oauth");
+    // A client that saved this Home asks it to sign a fresh nonce before trusting the address.
+    const nonce = randomBytes(32).toString("base64url");
+    const proven = HostDescriptorSchema.parse(
+      (
+        await host.app.inject({ method: "GET", url: `/.well-known/opensteer?proof=${nonce}` })
+      ).json(),
+    );
+    expect(proven.identityProof?.nonce).toBe(nonce);
+    expect(
+      verifyHostIdentityProof({
+        saved: proven.authority,
+        nonce,
+        signature: proven.identityProof!.signature,
+      }),
+    ).toBe(true);
+    expect(
+      verifyHostIdentityProof({
+        saved: proven.authority,
+        nonce: randomBytes(32).toString("base64url"),
+        signature: proven.identityProof!.signature,
+      }),
+    ).toBe(false);
     expect(descriptor.json<{ capabilities: string[] }>().capabilities).not.toContain(
       "personal-session-header",
     );
@@ -206,6 +232,20 @@ it("boots unclaimed, is claimed once through its setup link, and enrolls its com
       .where("id", "=", enrollment.id)
       .execute();
 
+    // The setup admission is no sign-up: it creates nobody outside the claim.
+    const admitted = await rpc(host, "auth.setup.exchange", { token: setupCode });
+    expect(
+      (
+        await rpc(
+          host,
+          "auth.password.signUp",
+          { email: "side-door@example.test", password },
+          cookies(admitted),
+        )
+      ).statusCode,
+    ).toBe(404);
+    expect(await host.store.database.selectFrom("users").select("id").execute()).toEqual([]);
+
     // Two browsers open the link; three claims race. Exactly one becomes the owner.
     const first = await rpc(host, "auth.setup.exchange", { token: setupCode });
     expect(first.statusCode).toBe(200);
@@ -248,6 +288,23 @@ it("boots unclaimed, is claimed once through its setup link, and enrolls its com
       headers: throughProxy,
     });
     expect(claimed.json()).toMatchObject({ data: { setupState: "complete" } });
+
+    // The sign-in library keys its limits on the address the proxy vetted:
+    // never on what the client wrote into forwarding or internal headers.
+    await host.store.database.deleteFrom("authRateLimits").execute();
+    const spoofed = await host.app.inject({
+      method: "POST",
+      url: "/v1/rpc/auth.password.signIn",
+      headers: {
+        ...throughProxy,
+        "x-forwarded-for": "198.51.100.66, 203.0.113.21",
+        "x-opensteer-client-address": "198.51.100.77",
+      },
+      payload: { email: owner.email, password: "not-the-owner-password" },
+    });
+    expect(spoofed.statusCode).not.toBe(200);
+    const limited = await host.store.database.selectFrom("authRateLimits").select("key").execute();
+    expect(limited.map(({ key }) => key.split("|")[0])).toEqual(["203.0.113.21"]);
 
     const signedIn = await rpc(host, "auth.password.signIn", { email: owner.email, password });
     expect(signedIn.statusCode).toBe(200);

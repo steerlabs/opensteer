@@ -18,6 +18,7 @@ import {
 } from "@opensteer/database/test-support/database";
 import { apiVersionHeaders, hostKeyFingerprint } from "@opensteer/deployment-authority";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
+import { refuseManagedAccountUnlink } from "../access/personal-remote-administration.js";
 import { createHostRuntime, type PersonalHostRuntime } from "./runtime.js";
 
 const home = "https://cc-home.example.test";
@@ -62,7 +63,11 @@ function managedConfig(databaseUrl: string, directory: string, port: number): Ho
 }
 
 async function assertion(
-  identity: { readonly deploymentId: string; readonly hostKeyFingerprint: string },
+  identity: {
+    readonly deploymentId: string;
+    readonly hostInstanceId: string;
+    readonly hostKeyFingerprint: string;
+  },
   overrides: {
     readonly subject?: string;
     readonly authority?: Partial<ManagedHomeClaimClaims["authority"]>;
@@ -94,12 +99,17 @@ async function assertion(
     .sign(accountKeys.privateKey);
 }
 
-function claim(host: PersonalHostRuntime, token: string, code = setupCode) {
+function claim(
+  host: PersonalHostRuntime,
+  token: string,
+  code = setupCode,
+  credential = hostCredential,
+) {
   return host.app.inject({
     method: "POST",
     url: managedHomeClaimPath,
     headers: { host: "cc-home.example.test", "x-forwarded-proto": "https" },
-    payload: { schemaVersion: 1, setupCode: code, assertion: token, hostCredential },
+    payload: { schemaVersion: 1, setupCode: code, assertion: token, hostCredential: credential },
   });
 }
 
@@ -116,13 +126,17 @@ it("is claimed once by its Account's signed assertion, and by nothing else", asy
 
     const descriptor = await host.app.inject({ method: "GET", url: "/.well-known/opensteer" });
     const discovery = descriptor.json<{
-      authority: { document: { deploymentId: string }; publicKey: { spki: string } };
+      authority: {
+        document: { deploymentId: string; hostInstanceId: string };
+        publicKey: { spki: string };
+      };
       bootstrapMethods: string[];
     }>();
     // Its owner signs in with the Opensteer Account; there is no password to set.
     expect(discovery.bootstrapMethods).toEqual(["oidc"]);
     const identity = {
       deploymentId: discovery.authority.document.deploymentId,
+      hostInstanceId: discovery.authority.document.hostInstanceId,
       hostKeyFingerprint: hostKeyFingerprint(discovery.authority.publicKey.spki),
     };
     const exchange = await host.app.inject({
@@ -143,6 +157,12 @@ it("is claimed once by its Account's signed assertion, and by nothing else", asy
       ],
       [
         assertion(identity, { authority: { hostKeyFingerprint: `sha256:${"b".repeat(43)}` } }),
+        undefined,
+        403,
+      ],
+      // Built from another installation's discovery: not this Home.
+      [
+        assertion(identity, { authority: { hostInstanceId: createId("hostInstance") } }),
         undefined,
         403,
       ],
@@ -191,6 +211,22 @@ it("is claimed once by its Account's signed assertion, and by nothing else", asy
     const replay = await claim(host, await assertion(identity, { subject: subjects[winner]! }));
     expect(replay.statusCode).toBe(200);
     expect(replay.json()).toEqual(receipt);
+    // The receipt names the credential it installed; the same claim with another is refused.
+    expect(receipt.document.hostCredentialSha256).toBe(
+      createHash("sha256").update(hostCredential).digest("base64url"),
+    );
+    const otherCredential = `osc_${randomBytes(32).toString("base64url")}`;
+    const swapped = await claim(
+      host,
+      await assertion(identity, { subject: subjects[winner]!, credential: otherCredential }),
+      setupCode,
+      otherCredential,
+    );
+    expect(swapped.statusCode).toBe(409);
+    // A Cloud Computer stays linked to the Account that owns it; nothing is written.
+    await expect(refuseManagedAccountUnlink(host.store.database)).rejects.toMatchObject({
+      reason: "managed-home-unlink-refused",
+    });
     expect(
       (await claim(host, await assertion(identity, { subject: subjects[1 - winner]! }))).statusCode,
     ).toBe(409);

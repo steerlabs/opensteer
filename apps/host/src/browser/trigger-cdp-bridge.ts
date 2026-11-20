@@ -16,7 +16,8 @@ import {
 } from "@opensteer/protocol/browser-actions";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import type { IncomingHttpHeaders } from "node:http";
-import type { EnvironmentId, UserId } from "@opensteer/core";
+import type { EnvironmentId, ThreadAccessMode, UserId } from "@opensteer/core";
+import type { OpensteerStore } from "@opensteer/database";
 import { BrowserSessionIdSchema, type BrowserSessionId } from "@opensteer/protocol";
 import type { FastifyInstance } from "fastify";
 import type WebSocket from "ws";
@@ -132,7 +133,7 @@ export function registerAgentPageBindingRoute(
   callers: Pick<AgentCallerResolver, "authenticate">,
   runBrowser: (
     claims: RunToolScope,
-  ) => Promise<{ driverKind: string; accessMode: import("@opensteer/core").ThreadAccessMode }>,
+  ) => Promise<{ driverKind: string; accessMode: ThreadAccessMode }>,
 ): void {
   app.post(
     `${browserAgentHostRoutePrefix}/pages/bind`,
@@ -159,6 +160,36 @@ export function registerAgentPageBindingRoute(
       }
     },
   );
+}
+
+/**
+ * What the page-bind gate decides on: the Run's engine and the mode it actually has, which a
+ * connected agent's lineage lowers to its effective mode.
+ */
+export async function runBrowserCapability(
+  store: Pick<OpensteerStore, "database" | "admitExecution">,
+  claims: Pick<RunToolScope, "runId" | "requestedBy">,
+): Promise<{ driverKind: string; accessMode: ThreadAccessMode }> {
+  const run = await store.database
+    .selectFrom("runs")
+    .innerJoin("harnessInstances", "harnessInstances.id", "runs.harnessInstanceId")
+    .select(["harnessInstances.driverKind", "runs.accessMode"])
+    .where("runs.id", "=", claims.runId)
+    .where("runs.requestedBy", "=", claims.requestedBy)
+    .executeTakeFirst();
+  if (!run)
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "This Run's browser access has ended.",
+    });
+  const execution = await store.admitExecution({
+    ownerUserId: claims.requestedBy,
+    subject: { kind: "binding", bindingId: `run:${claims.runId}` },
+  });
+  return {
+    driverKind: run.driverKind,
+    accessMode: execution.agentConnection ? execution.mode : run.accessMode,
+  };
 }
 
 export function registerTriggerCdpBridge(

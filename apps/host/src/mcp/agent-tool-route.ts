@@ -28,7 +28,10 @@ export function registerAgentToolRoute(
   app: FastifyInstance,
   options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
-    readonly service: Pick<OpensteerMcpService, "callToolResult" | "validateToolInput">;
+    readonly service: Pick<
+      OpensteerMcpService,
+      "callToolResult" | "validateToolInput" | "assertToolOffered"
+    >;
     readonly activity: Pick<AgentToolActivityStore, "start" | "complete">;
     readonly realtime: Pick<RealtimeHub, "observeScopes">;
   },
@@ -91,6 +94,13 @@ export function registerAgentToolRoute(
     } catch {
       // Rejected input is never persisted; its failed call still gets an activity pair.
     }
+    // A retry is answered only while the Run may still use this tool: a narrowed grant or a
+    // lowered mode refuses the replay as it would refuse the call.
+    const stillOffered = () =>
+      options.service.assertToolOffered(caller, name).then(
+        () => null,
+        (error: unknown) => agentToolFailureResult(agentToolFailure(error, "write")),
+      );
     const requestFingerprint = fingerprint({ name, input });
     const pending = active.get(callId);
     if (pending) {
@@ -100,7 +110,7 @@ export function registerAgentToolRoute(
           message: "This callId already names different arguments.",
           next: null,
         });
-      return pending.result;
+      return (await stillOffered()) ?? pending.result;
     }
     const deadline = request.headers["x-opensteer-deadline"];
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -127,6 +137,8 @@ export function registerAgentToolRoute(
         const activity = await options.activity.start(context, callId, name, args);
         started = activity.handle;
         if (activity.completed) {
+          const refused = await stillOffered();
+          if (refused) return refused;
           // Durable output is bounded and sanitized like every engine-reported tool result.
           if (activity.completed.output.truncation) return unknownOutcome();
           try {

@@ -40,6 +40,12 @@ const RunnerApplicationEnvironmentSchema = z.object({
     .min(1)
     .refine(isAbsolute, "OPENSTEER_RUNNER_READINESS_PATH must be an absolute path")
     .optional(),
+  OPENSTEER_RUNNER_AGENT_STOP_FILE: z
+    .string()
+    .trim()
+    .min(1)
+    .refine(isAbsolute, "OPENSTEER_RUNNER_AGENT_STOP_FILE must be an absolute path")
+    .optional(),
 });
 
 export interface RunnerApplicationConfig {
@@ -47,6 +53,11 @@ export interface RunnerApplicationConfig {
   readonly nativeFsHelperBinary: string;
   readonly opensslBinary: string;
   readonly readinessPath?: string;
+  /**
+   * The computer's own Stop, saved by the app that started this Runner. While
+   * it says stopped, this Runner admits no new agent work.
+   */
+  readonly agentStopFile?: string;
 }
 
 export function parseRunnerApplicationConfig(
@@ -59,6 +70,9 @@ export function parseRunnerApplicationConfig(
     opensslBinary: parsed.OPENSTEER_OPENSSL_BINARY,
     ...(parsed.OPENSTEER_RUNNER_READINESS_PATH
       ? { readinessPath: parsed.OPENSTEER_RUNNER_READINESS_PATH }
+      : {}),
+    ...(parsed.OPENSTEER_RUNNER_AGENT_STOP_FILE
+      ? { agentStopFile: parsed.OPENSTEER_RUNNER_AGENT_STOP_FILE }
       : {}),
   };
 }

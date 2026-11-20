@@ -26,6 +26,7 @@ import {
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import { agentGrantsMigrationName, applyAgentGrants } from "./agent-grants-migration.js";
+import { agentSessionsMigrationName, applyAgentSessions } from "./agent-sessions-migration.js";
 import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
@@ -602,6 +603,14 @@ export function migrationProvider(options?: {
               [answeredQuestionRecordsMigrationName]: { up: applyAnsweredQuestionRecords },
               [dropDeviceAccessCountMigrationName]: { up: applyDropDeviceAccessCount },
               [agentGrantsMigrationName]: { up: applyAgentGrants },
+              [agentSessionsMigrationName]: { up: applyAgentSessions },
+              "0044_chrome_live_tabs_source": {
+                async up(database: Kysely<unknown>) {
+                  await sql`alter table browser_sources add column live_tabs_only boolean not null default false`.execute(
+                    database,
+                  );
+                },
+              },
             }
           : {}),
       };

@@ -28,6 +28,31 @@ describe("BrowserAttachTicketSigner", () => {
     expect(claims).not.toHaveProperty("editingVersion");
     expect(claims).not.toHaveProperty("clipboard");
   });
+  it("says whom an attachment acts for only when asked to, so an older runtime never sees it", () => {
+    const keys = generateKeyPairSync("ed25519");
+    const signer = new BrowserAttachTicketSigner({ keyId: "home", privateKey: keys.privateKey });
+    const claimsOf = (actor?: "agent" | "person") =>
+      BrowserAttachTicketClaimsSchema.parse(
+        JSON.parse(
+          Buffer.from(
+            signer
+              .issue({
+                creationOrigin: "person",
+                ...(actor ? { actor } : {}),
+                access: "read-write",
+                identity: { kind: "fresh" },
+                runtimeId: "browser",
+                sessionId: createBrowserSessionId(),
+                subject: "usr_owner",
+              })
+              .split(".")[1]!,
+            "base64url",
+          ).toString(),
+        ),
+      );
+    expect(claimsOf("agent")).toMatchObject({ creationOrigin: "person", actor: "agent" });
+    expect(claimsOf()).not.toHaveProperty("actor");
+  });
   it("binds initial navigation to the signed ticket", () => {
     const keys = generateKeyPairSync("ed25519");
     const initialNavigation = { operationKey: "open:1", url: "https://example.test/" };

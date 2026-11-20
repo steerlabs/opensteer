@@ -157,9 +157,21 @@ export async function requestOriginEnvironment(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   request: Pick<
     Request,
-    "originatingOccurrenceId" | "originatingRunId" | "originatingWatchActivationId"
+    | "originatingOccurrenceId"
+    | "originatingRunId"
+    | "originatingWatchActivationId"
+    | "originatingAgentSessionId"
   >,
 ): Promise<EnvironmentId> {
+  if (request.originatingAgentSessionId)
+    return (
+      await database
+        .selectFrom("agentSessions")
+        .innerJoin("threads", "threads.id", "agentSessions.threadId")
+        .select("threads.environmentId")
+        .where("agentSessions.id", "=", request.originatingAgentSessionId)
+        .executeTakeFirstOrThrow()
+    ).environmentId;
   if (request.originatingRunId !== null) {
     const run = await database
       .selectFrom("runs")
@@ -201,6 +213,9 @@ export function requestFromRow(row: RequestRow): Request {
       : {}),
     originatingOccurrenceId: row.originatingOccurrenceId,
     originatingWatchActivationId: row.originatingWatchActivationId,
+    ...(row.originatingAgentSessionId
+      ? { originatingAgentSessionId: row.originatingAgentSessionId }
+      : {}),
     originatingRunId: row.originatingRunId,
     originatingThreadId: row.originatingThreadId,
     payload: row.payload,
@@ -225,6 +240,7 @@ export function requestInsert(request: Request) {
     originatingNodeId: request.originatingNodeId ?? null,
     originatingOccurrenceId: request.originatingOccurrenceId,
     originatingWatchActivationId: request.originatingWatchActivationId ?? null,
+    originatingAgentSessionId: request.originatingAgentSessionId ?? null,
     originatingRunId: request.originatingRunId,
     originatingThreadId: request.originatingThreadId,
     payload: jsonValue(request.payload),

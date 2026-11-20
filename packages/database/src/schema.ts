@@ -1,5 +1,12 @@
 import type {
   AgentGrant,
+  AgentOperationDecision,
+  AgentOperationId,
+  AgentOperationOutcome,
+  AgentOperationState,
+  AgentOperationTarget,
+  AgentSessionEndReason,
+  AgentSessionId,
   DeviceId,
   DeviceKind,
   DevicePlatform,
@@ -757,6 +764,8 @@ export interface ThreadTable {
   teamAskOrigin: Generated<boolean>;
   /** The connected agent whose lineage this task is in; immutable, inherited by child tasks. */
   originConnectionId: Generated<string | null>;
+  /** `external`: an agent session's task; it never starts a native Run. */
+  worker: Generated<"native" | "external">;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -1091,6 +1100,8 @@ export interface RequestTable {
   originatingWatchActivationId: Generated<
     import("@opensteer/core").TriggerWatchActivationId | null
   >;
+  /** The agent session that asked, for a Request about an external agent's direct work. */
+  originatingAgentSessionId: Generated<AgentSessionId | null>;
   /** The subagent of the originating Run that asked, if not its own agent. */
   originatingNodeId: Generated<ExecutionNodeId | null>;
   callId: string;
@@ -1476,6 +1487,7 @@ interface BrowserSessionUseTable {
 }
 
 interface BrowserSourceTable {
+  liveTabsOnly: Generated<boolean>;
   id: BrowserSourceId;
   ownerId: UserId;
   name: string;
@@ -1922,11 +1934,58 @@ export interface AgentConnectionTable {
   redirectUri: Generated<string | null>;
   /** Contact was lost with a handed-off execution in this lineage while it was being stopped. */
   lastActionUncertainAt: Generated<Date | null>;
+  /** What the person should check: the Device, tool, target and when. */
+  lastActionUncertain: Generated<Readonly<Record<string, unknown>> | null>;
+  /** Disconnect or expiry: one durable cleanup, driven to completion by the Home. */
+  cleanupReason: Generated<"revoked" | "expired" | null>;
+  cleanupRequestedAt: Generated<Date | null>;
+  cleanupCompletedAt: Generated<Date | null>;
   /** The person removed this revoked connection from their list. */
   removedAt: Generated<Date | null>;
 }
 
+export interface AgentSessionTable {
+  id: AgentSessionId;
+  connectionId: string;
+  userId: UserId;
+  threadId: ThreadId;
+  status: "active" | "ended";
+  startedAt: Generated<Date>;
+  lastActiveAt: Generated<Date>;
+  endedAt: Date | null;
+  endReason: AgentSessionEndReason | null;
+  stopNoticeDeliveredAt: Date | null;
+}
+
+export interface AgentOperationTable {
+  id: AgentOperationId;
+  sessionId: AgentSessionId;
+  connectionId: string;
+  userId: UserId;
+  operationKey: string;
+  tool: string;
+  argumentDigest: string;
+  target: JsonColumn<AgentOperationTarget>;
+  targetGeneration: string | null;
+  grantRevision: number;
+  mode: ThreadAccessMode;
+  effect: "read" | "write";
+  state: AgentOperationState;
+  decision: JsonColumn<AgentOperationDecision> | null;
+  requestId: RequestId | null;
+  calls: string;
+  agentReason: string | null;
+  handedOffAt: Date | null;
+  completedAt: Date | null;
+  outcome: AgentOperationOutcome | null;
+  resultSummary: JsonColumn<Readonly<Record<string, unknown>>> | null;
+  createdAt: Generated<Date>;
+  updatedAt: Generated<Date>;
+}
+
 export interface DatabaseSchema {
+  agentSessions: AgentSessionTable;
+  agentOperations: AgentOperationTable;
   pluginOauthRecords: {
     id: string;
     ownerUserId: UserId;
@@ -1948,6 +2007,7 @@ export interface DatabaseSchema {
     runId: RunId | null;
     occurrenceId: TriggerOccurrenceId | null;
     watchActivationId: import("@opensteer/core").TriggerWatchActivationId | null;
+    agentSessionId: Generated<AgentSessionId | null>;
     caller: string;
     mode: "ask" | "automatic";
     state:

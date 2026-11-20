@@ -125,10 +125,26 @@ export interface IntegrationToolSchemas {
 export type IntegrationRequester = {
   readonly ownerUserId: UserId;
 } & (
-  | { readonly threadId: ThreadId; readonly connectionId?: never }
-  | { readonly connectionId: string; readonly threadId?: undefined }
-  | { readonly threadId?: never; readonly connectionId?: never }
+  | { readonly threadId: ThreadId; readonly connectionId?: never; readonly agentBindingId?: never }
+  /** The exact execution: a Run, trigger or Watch binding, never another Run on its task. */
+  | { readonly agentBindingId: string; readonly threadId?: never; readonly connectionId?: never }
+  | {
+      readonly connectionId: string;
+      readonly threadId?: undefined;
+      readonly agentBindingId?: never;
+    }
+  | { readonly threadId?: never; readonly connectionId?: never; readonly agentBindingId?: never }
 );
+
+/** The requester as the resolver names it; `connectionId` here is the external agent's. */
+function requesterSubject(input: IntegrationRequester) {
+  return {
+    ownerUserId: input.ownerUserId,
+    ...(input.agentBindingId ? { agentBindingId: input.agentBindingId } : {}),
+    ...(input.connectionId ? { agentConnectionId: input.connectionId } : {}),
+    ...(input.threadId ? { threadId: input.threadId } : {}),
+  };
+}
 
 type IntegrationReadinessTarget = {
   readonly access: IntegrationAccess;
@@ -1292,8 +1308,8 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     ]);
     const activeGrants = grants.filter(({ status }) => status === "active");
     const { connections } = authority;
-    const requesterAccess = await resolveResourceAccess(this.database, input);
-    const lineageGrant = requesterAccess.authority.lineage?.grant;
+    const requesterAccess = await resolveResourceAccess(this.database, requesterSubject(input));
+    const lineageGrant = requesterAccess.execution.agentConnection?.grant;
     const grantedConnections =
       lineageGrant?.scope === "selected"
         ? await integrationConnectionGrantAccess(
@@ -1660,11 +1676,20 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     );
   }
 
+  /** The external agent grant a requester works under; null for the person's own work. */
+  async requesterGrant(input: IntegrationRequester) {
+    if (!input.agentBindingId && !input.connectionId && !input.threadId) return null;
+    return (
+      (await resolveResourceAccess(this.database, requesterSubject(input))).execution
+        .agentConnection?.grant ?? null
+    );
+  }
+
   async listCallableTools(
     input: IntegrationRequester,
   ): Promise<readonly CallableIntegrationTool[]> {
-    const authority = await resolveResourceAccess(this.database, input);
-    const grant = authority.authority.lineage?.grant;
+    const authority = await resolveResourceAccess(this.database, requesterSubject(input));
+    const grant = authority.execution.agentConnection?.grant;
     const permitted = async (tools: readonly CallableIntegrationTool[]) => {
       const granted =
         grant?.scope === "selected"

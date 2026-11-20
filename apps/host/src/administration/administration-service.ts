@@ -2,7 +2,11 @@ import { removeDevice } from "./device-removal.js";
 import { DeviceDriverService } from "./device-driver-service.js";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { createHash } from "node:crypto";
-import { type AdministrationCommandIdentity, requirePersonalOwner } from "@opensteer/database";
+import {
+  admitSettingsCaller,
+  type AdministrationCommandIdentity,
+  requirePersonalOwner,
+} from "@opensteer/database";
 import { z } from "zod";
 import {
   EnvironmentIdSchema,
@@ -204,6 +208,8 @@ export class AdministrationService {
         callerKind: caller.kind,
         callerKey: caller.key,
       },
+      admit: (transaction) =>
+        admitSettingsCaller(transaction, { ownerUserId: caller.userId, callerKey: caller.key }),
       output: async (result) => {
         let fields: Record<string, unknown> = {};
         if (command.type.startsWith("harness.")) {

@@ -69,3 +69,66 @@ export function localServerGrantAccess(
     target: { kind: "local-server", serverId },
   });
 }
+
+/** What stands in for a place the grant does not reach, so the agent knows one was left out. */
+export const ungrantedPlaceText =
+  "[A place outside what this connected agent may use was left out.]";
+
+/**
+ * A selected grant's view of message content: every place it does not reach (a browser page in
+ * another profile, an app or phone screen it was not given) is replaced by a short note.
+ */
+export async function grantedContent<Part extends { readonly type: string }>(
+  database: Kysely<DatabaseSchema>,
+  grant: AgentGrant,
+  parts: readonly Part[],
+): Promise<(Part | { readonly type: "text"; readonly text: string })[]> {
+  if (grant.scope === "everything") return [...parts];
+  return Promise.all(
+    parts.map(async (part) =>
+      (await placeGranted(database, grant, part))
+        ? part
+        : { type: "text", text: ungrantedPlaceText },
+    ),
+  );
+}
+async function placeGranted(
+  database: Kysely<DatabaseSchema>,
+  grant: AgentGrant,
+  part: { readonly type: string },
+): Promise<boolean> {
+  if (part.type === "browser-page") {
+    const { sessionId } = part as unknown as { readonly sessionId: string };
+    const row = await database
+      .selectFrom("browserSessions")
+      .select("profileId")
+      .where("id", "=", sessionId as never)
+      .executeTakeFirst();
+    return Boolean(
+      row?.profileId &&
+      agentGrantAccess(grant, { kind: "browser-profile", profileId: row.profileId }),
+    );
+  }
+  if (part.type !== "computer-app" && part.type !== "phone") return true;
+  const place = part as unknown as {
+    readonly machineId: string;
+    readonly app?: { readonly bundleId: string };
+  };
+  const rows = await database
+    .selectFrom("integrationConnections")
+    .select(["id", "deviceId", "computerApp", "integrationDefinitionId"])
+    .where("connectionKind", "=", "computer")
+    .where("deviceId", "=", place.machineId as never)
+    .where("status", "!=", "revoked")
+    .execute();
+  return rows.some((row) => {
+    const target = integrationConnectionGrantTarget(row);
+    if (target.kind !== "computer-app") return false;
+    const matches =
+      part.type === "phone"
+        ? target.app.kind === "phone-screen"
+        : target.app.kind === "mac-app" &&
+          target.app.bundleId.toLowerCase() === place.app?.bundleId.toLowerCase();
+    return matches && agentGrantAccess(grant, target) !== null;
+  });
+}

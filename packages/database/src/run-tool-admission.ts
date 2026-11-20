@@ -3,6 +3,7 @@ import "./connection.js";
 import {
   agentDelegationMaxDepth,
   threadAccessModeAtMost,
+  minThreadAccessMode,
   OpensteerError,
   type EnvironmentId,
   type RunId,
@@ -16,6 +17,8 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { assertActiveGrant } from "./execution-authority.js";
+import { admitExecution, bindingAgentConnectionId } from "./resource-access.js";
+import { lockLineageConnection } from "./thread-caller.js";
 import { WATCH_OBSERVATIONS_PER_HOUR } from "@opensteer/triggers";
 import { assertActiveTriggerExecutionBinding, assertActiveWatchBinding } from "./trigger-store.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -154,6 +157,10 @@ export async function admitRunToolCallInTransaction(
     throw new TypeError("Tool request fingerprint must be a SHA-256 hex digest");
   }
   const actionClass = actionClasses[input.action];
+  await lockLineageConnection(
+    transaction,
+    await bindingAgentConnectionId(transaction, `run:${input.runId}`),
+  );
   {
     const run = await transaction
       .selectFrom("runs")
@@ -197,7 +204,7 @@ export async function admitRunToolCallInTransaction(
       },
       executionNow,
     );
-    await assertOperationTargets(transaction, input.sourceThreadId, input);
+    await assertOperationTargets(transaction, input.sourceThreadId, input, `run:${input.runId}`);
     const existing = await transaction
       .selectFrom("agentControlRequests")
       .selectAll()
@@ -261,6 +268,10 @@ export async function admitTriggerControlRequestInTransaction(
     throw new TypeError("Trigger-control request fingerprint must be a SHA-256 hex digest");
   }
   const actionClass = actionClasses[input.action];
+  await lockLineageConnection(
+    transaction,
+    await bindingAgentConnectionId(transaction, `trigger:${input.occurrenceId}`),
+  );
   {
     const occurrence = await transaction
       .selectFrom("triggerOccurrences")
@@ -283,7 +294,12 @@ export async function admitTriggerControlRequestInTransaction(
       runnerId: input.runnerId,
       threadId: input.threadId,
     });
-    await assertOperationTargets(transaction, input.threadId, input);
+    await assertOperationTargets(
+      transaction,
+      input.threadId,
+      input,
+      `trigger:${input.occurrenceId}`,
+    );
     const existing = await transaction
       .selectFrom("triggerControlRequests")
       .selectAll()
@@ -340,6 +356,10 @@ export async function admitWatchControlRequestInTransaction(
   if (!/^[0-9a-f]{64}$/.test(input.requestFingerprint)) {
     throw new TypeError("Watch-control request fingerprint must be a SHA-256 hex digest");
   }
+  await lockLineageConnection(
+    transaction,
+    await bindingAgentConnectionId(transaction, `watch:${input.activationId}`),
+  );
   const activation = await transaction
     .selectFrom("triggerWatchActivations")
     .select("id")
@@ -353,7 +373,12 @@ export async function admitWatchControlRequestInTransaction(
     });
   }
   await assertActiveWatchBinding(transaction, input);
-  await assertOperationTargets(transaction, input.anchorThreadId, input);
+  await assertOperationTargets(
+    transaction,
+    input.anchorThreadId,
+    { ...input, requestedBy: input.createdBy },
+    `watch:${input.activationId}`,
+  );
   const existing = await transaction
     .selectFrom("watchControlRequests")
     .selectAll()
@@ -439,34 +464,52 @@ function triggerRequestIdConflict(requestId: string): OpensteerError {
     message: "Automation control request ID was already used with different input",
   });
 }
+/**
+ * The caller's mode as its whole lineage now allows it, against each target's mode as it would run.
+ * Work for a connection reaches only its own lineage's tasks, or the person's own with `everything`.
+ */
 async function assertOperationTargets(
   transaction: Transaction<DatabaseSchema>,
   sourceThreadId: ThreadId,
   input: {
     readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
     readonly targetThreadIds?: readonly ThreadId[];
+    readonly requestedBy: import("@opensteer/core").UserId;
   },
+  bindingId: string,
 ): Promise<void> {
   if (!input.accessMode) return;
-  const source = await transaction
-    .selectFrom("threads")
-    .selectAll()
-    .where("id", "=", sourceThreadId)
-    .executeTakeFirstOrThrow();
-  if (!threadAccessModeAtMost(input.accessMode, source.accessMode))
+  const execution = await admitExecution(transaction, {
+    ownerUserId: input.requestedBy,
+    subject: { kind: "binding", bindingId },
+    threadId: sourceThreadId,
+  });
+  const callerMode = execution.agentConnection ? execution.mode : execution.taskMode!;
+  if (!threadAccessModeAtMost(input.accessMode, callerMode))
     throw new OpensteerError({
       code: "forbidden",
       message: "Caller access mode was reduced",
     });
+  const connection = execution.agentConnection;
   for (const id of input.targetThreadIds ?? []) {
     const target = await transaction
       .selectFrom("threads")
       .selectAll()
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
+    const own = connection !== null && target.originConnectionId === connection.agentConnectionId;
     if (
-      !threadAccessModeAtMost(target.accessMode, input.accessMode) ||
-      !threadAccessModeAtMost(target.accessMode, source.accessMode)
+      connection &&
+      !own &&
+      (connection.grant.scope === "selected" || target.originConnectionId !== null)
+    )
+      throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
+    const targetMode = own
+      ? minThreadAccessMode(target.accessMode, connection.accessMode)
+      : target.accessMode;
+    if (
+      !threadAccessModeAtMost(targetMode, callerMode) ||
+      !threadAccessModeAtMost(targetMode, input.accessMode)
     )
       throw new OpensteerError({
         code: "forbidden",

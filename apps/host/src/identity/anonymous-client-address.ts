@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { TrustedProxy } from "@opensteer/config";
 import { isLoopbackHostname } from "@opensteer/core";
+import { vettedClientAddressHeader } from "@opensteer/identity";
 import type { HostApiServerContext } from "@opensteer/protocol";
 
 const trustedProxies = new WeakMap<IncomingMessage, TrustedProxy>();
@@ -11,6 +12,17 @@ const trustedProxies = new WeakMap<IncomingMessage, TrustedProxy>();
 export function installTrustedProxy(app: FastifyInstance, proxy: TrustedProxy): void {
   app.addHook("onRequest", async (request) => {
     trustedProxies.set(request.raw, proxy);
+  });
+}
+
+/**
+ * Replaces, at ingress, whatever a client said in the header the sign-in
+ * library reads its address from with the address this Host's own proxy policy
+ * vetted. Nothing downstream ever sees an address the client chose.
+ */
+export function installClientAddress(app: FastifyInstance): void {
+  app.addHook("onRequest", async (request) => {
+    request.headers[vettedClientAddressHeader] = anonymousClientAddress(request);
   });
 }
 

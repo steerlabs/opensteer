@@ -24,30 +24,37 @@ import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
 /**
- * Who an effect is for. A binding names an execution the Home issued (`run:`, `thread:`,
- * `trigger:`, `watch:`; the next phase adds `session:`); its lineage is read here, never taken
- * from the caller.
+ * Who an effect is for. A binding names an execution the Home issued (`run:`, `trigger:`,
+ * `watch:`, `thread:`; agent sessions add `session:`). Its facts are read here, never taken from
+ * the caller.
  */
 export type AuthoritySubject =
   | { readonly kind: "person" }
-  | { readonly kind: "connection"; readonly connectionId: string }
+  | { readonly kind: "connection"; readonly agentConnectionId: string }
   | { readonly kind: "binding"; readonly bindingId: string };
 
-/** The connected agent an execution works for, as it stands now. */
-export interface AuthorityLineage {
-  readonly connectionId: string;
+/** The external agent connection an execution works for, as it stands now. */
+export interface AgentConnectionAuthority {
+  readonly agentConnectionId: string;
   readonly grant: AgentGrant;
   readonly grantRevision: number;
   readonly consentVersion: number;
   readonly accessMode: ThreadAccessMode;
 }
 
-export interface ResolvedAuthority {
-  /** The minimum of every mode in the lineage; native owner work keeps today's rule. */
-  readonly mode: ThreadAccessMode;
-  readonly lineage: AuthorityLineage | null;
+/** One execution as the Home resolved it: whom it works for and every mode in its lineage. */
+export interface ExecutionAuthority {
+  readonly ownerUserId: UserId;
+  readonly subject: AuthoritySubject;
   readonly threadId: ThreadId | null;
   readonly runId: RunId | null;
+  /** Absent for the person's own work. */
+  readonly agentConnection: AgentConnectionAuthority | null;
+  readonly taskMode: ThreadAccessMode | null;
+  /** The Run's own snapshot, for a Run binding while that Run is active. */
+  readonly runMode: ThreadAccessMode | null;
+  /** The minimum of every mode in the lineage; the person's own work keeps its legacy rule. */
+  readonly mode: ThreadAccessMode;
 }
 
 const activeRunStatuses = ["queued", "starting", "running", "waiting"] as const;
@@ -57,17 +64,18 @@ function forbidden(message: string): OpensteerError {
 }
 export const lineageEndedMessage =
   "This connected agent's access ended. The person can reconnect it from Connected agents.";
+export const tasksWithdrawnMessage = "This connected agent may no longer ask your agents to work.";
 
-/** The live lineage connection, or a refusal: revoked or expired lineage has no authority. */
-export async function liveLineage(
+/** The live connection, or a refusal: a revoked or expired connection has no authority. */
+export async function liveAgentConnection(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
-  connectionId: string,
-): Promise<AuthorityLineage> {
+  agentConnectionId: string,
+): Promise<AgentConnectionAuthority> {
   const row = await database
     .selectFrom("agentConnections")
     .select(["id", "grant", "grantRevision", "consentVersion", "accessMode"])
-    .where("id", "=", connectionId)
+    .where("id", "=", agentConnectionId)
     .where("userId", "=", ownerUserId)
     .where("revokedAt", "is", null)
     .where("tokenHash", "is not", null)
@@ -75,7 +83,7 @@ export async function liveLineage(
     .executeTakeFirst();
   if (!row) throw forbidden(lineageEndedMessage);
   return {
-    connectionId: row.id,
+    agentConnectionId: row.id,
     grant: AgentGrantSchema.parse(row.grant),
     grantRevision: row.grantRevision,
     consentVersion: row.consentVersion,
@@ -83,54 +91,66 @@ export async function liveLineage(
   };
 }
 
-/** A binding's immutable lineage connection id, read before any lock is taken. */
-export async function bindingLineageConnectionId(
+/** The connection delegated work may still run for: live, and still granted Tasks. */
+export async function liveDelegatingConnection(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+): Promise<AgentConnectionAuthority> {
+  const connection = await liveAgentConnection(database, ownerUserId, agentConnectionId);
+  if (!agentGrantAllowsTasks(connection.grant)) throw forbidden(tasksWithdrawnMessage);
+  return connection;
+}
+
+/**
+ * A binding's immutable connection, read before any lock is taken: a Run's own, a task's origin,
+ * or an automation's origin. Nothing falls back to another execution's facts.
+ */
+export async function bindingAgentConnectionId(
   database: Kysely<DatabaseSchema>,
   bindingId: string,
 ): Promise<string | null> {
+  return (await bindingFacts(database, bindingId))?.agentConnectionId ?? null;
+}
+
+async function bindingFacts(
+  database: Kysely<DatabaseSchema>,
+  bindingId: string,
+): Promise<{
+  readonly threadId: ThreadId;
+  readonly runId: RunId | null;
+  readonly agentConnectionId: string | null;
+} | null> {
   if (bindingId.startsWith("run:")) {
+    const runId = RunIdSchema.parse(bindingId.slice(4));
     const row = await database
       .selectFrom("runs")
-      .innerJoin("threads", "threads.id", "runs.threadId")
-      .select(["runs.connectionId", "threads.originConnectionId"])
-      .where("runs.id", "=", RunIdSchema.parse(bindingId.slice(4)))
+      .select(["threadId", "connectionId"])
+      .where("id", "=", runId)
       .executeTakeFirst();
-    return row?.connectionId ?? row?.originConnectionId ?? null;
+    return row ? { threadId: row.threadId, runId, agentConnectionId: row.connectionId } : null;
   }
   if (bindingId.startsWith("thread:")) {
-    const id = ThreadIdSchema.parse(bindingId.slice(7));
-    const thread = await database
+    const threadId = ThreadIdSchema.parse(bindingId.slice(7));
+    const row = await database
       .selectFrom("threads")
       .select("originConnectionId")
-      .where("id", "=", id)
+      .where("id", "=", threadId)
       .executeTakeFirst();
-    if (thread?.originConnectionId) return thread.originConnectionId;
-    const run = await database
-      .selectFrom("runs")
-      .select("connectionId")
-      .where("threadId", "=", id)
-      .where("status", "in", activeRunStatuses)
-      .orderBy("createdAt", "desc")
-      .executeTakeFirst();
-    return run?.connectionId ?? null;
+    return row ? { threadId, runId: null, agentConnectionId: row.originConnectionId } : null;
   }
-  const trigger = bindingId.startsWith("trigger:")
+  const row = bindingId.startsWith("trigger:")
     ? await database
         .selectFrom("triggerOccurrences")
         .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-        .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
-        .select(["triggers.originConnectionId", "threads.originConnectionId as anchorConnectionId"])
+        .select(["triggers.anchorThreadId", "triggers.originConnectionId"])
         .where("triggerOccurrences.id", "=", TriggerOccurrenceIdSchema.parse(bindingId.slice(8)))
         .executeTakeFirst()
     : bindingId.startsWith("watch:")
       ? await database
           .selectFrom("triggerWatchActivations")
           .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
-          .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
-          .select([
-            "triggers.originConnectionId",
-            "threads.originConnectionId as anchorConnectionId",
-          ])
+          .select(["triggers.anchorThreadId", "triggers.originConnectionId"])
           .where(
             "triggerWatchActivations.id",
             "=",
@@ -138,102 +158,92 @@ export async function bindingLineageConnectionId(
           )
           .executeTakeFirst()
       : undefined;
-  return trigger?.originConnectionId ?? trigger?.anchorConnectionId ?? null;
+  return row
+    ? { threadId: row.anchorThreadId, runId: null, agentConnectionId: row.originConnectionId }
+    : null;
 }
 
 /**
- * The one authority rule. Resolves the subject's lineage server-side and intersects every
- * current ceiling; when nothing resolves the answer is a refusal, never `full-access`. A supplied
- * thread must be the binding's own.
+ * Is this execution still allowed at all? Resolves the subject server-side and intersects every
+ * live mode in its lineage; when nothing resolves the answer is a refusal, never `full-access`.
+ * A supplied thread must be the binding's own. It says nothing about any concrete resource:
+ * ask `authorizeTarget` for that.
  */
-export async function resolveAuthority(
+export async function admitExecution(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly ownerUserId: UserId;
     readonly subject: AuthoritySubject;
     readonly threadId?: ThreadId | undefined;
   },
-): Promise<ResolvedAuthority> {
+): Promise<ExecutionAuthority> {
   await assertPersonalOwner(database, input.ownerUserId);
-  const { subject } = input;
+  const { subject, ownerUserId } = input;
+  const base = { ownerUserId, subject, runId: null, runMode: null } as const;
   if (subject.kind === "person") {
-    if (input.threadId) await ownedThread(database, input.threadId, input.ownerUserId);
-    return { mode: "full-access", lineage: null, threadId: input.threadId ?? null, runId: null };
+    const task = input.threadId ? await ownedThread(database, input.threadId, ownerUserId) : null;
+    return {
+      ...base,
+      threadId: input.threadId ?? null,
+      agentConnection: null,
+      taskMode: task?.accessMode ?? null,
+      mode: "full-access",
+    };
   }
   if (subject.kind === "connection") {
-    const lineage = await liveLineage(database, input.ownerUserId, subject.connectionId);
+    const connection = await liveAgentConnection(database, ownerUserId, subject.agentConnectionId);
+    let taskMode: ThreadAccessMode | null = null;
     if (input.threadId) {
-      const thread = await ownedThread(database, input.threadId, input.ownerUserId);
-      if (lineage.grant.scope === "selected" && thread.originConnectionId !== lineage.connectionId)
-        throw forbidden("Task is unavailable");
-    }
-    return { mode: lineage.accessMode, lineage, threadId: input.threadId ?? null, runId: null };
-  }
-  const { bindingId } = subject;
-  let threadId: ThreadId | undefined;
-  let runId: RunId | null = null;
-  let bindingConnectionId: string | null = null;
-  if (bindingId.startsWith("run:")) {
-    runId = RunIdSchema.parse(bindingId.slice(4));
-    const run = await database
-      .selectFrom("runs")
-      .select(["threadId", "connectionId"])
-      .where("id", "=", runId)
-      .where("requestedBy", "=", input.ownerUserId)
-      .executeTakeFirst();
-    threadId = run?.threadId;
-    bindingConnectionId = run?.connectionId ?? null;
-  } else if (bindingId.startsWith("thread:")) {
-    threadId = ThreadIdSchema.parse(bindingId.slice(7));
-  } else if (bindingId.startsWith("trigger:")) {
-    const row = await database
-      .selectFrom("triggerOccurrences")
-      .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-      .select(["triggers.anchorThreadId", "triggers.originConnectionId"])
-      .where("triggerOccurrences.id", "=", TriggerOccurrenceIdSchema.parse(bindingId.slice(8)))
-      .executeTakeFirst();
-    threadId = row?.anchorThreadId;
-    bindingConnectionId = row?.originConnectionId ?? null;
-  } else if (bindingId.startsWith("watch:")) {
-    const row = await database
-      .selectFrom("triggerWatchActivations")
-      .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
-      .select(["triggers.anchorThreadId", "triggers.originConnectionId"])
-      .where(
-        "triggerWatchActivations.id",
-        "=",
-        TriggerWatchActivationIdSchema.parse(bindingId.slice(6)),
+      const thread = await ownedThread(database, input.threadId, ownerUserId);
+      if (
+        connection.grant.scope === "selected" &&
+        thread.originConnectionId !== connection.agentConnectionId
       )
-      .executeTakeFirst();
-    threadId = row?.anchorThreadId;
-    bindingConnectionId = row?.originConnectionId ?? null;
+        throw forbidden("Task is unavailable");
+      taskMode = thread.accessMode;
+    }
+    return {
+      ...base,
+      threadId: input.threadId ?? null,
+      agentConnection: connection,
+      taskMode,
+      mode: connection.accessMode,
+    };
   }
-  if (!threadId || (input.threadId && input.threadId !== threadId))
+  const facts = await bindingFacts(database, subject.bindingId);
+  if (!facts || (input.threadId && input.threadId !== facts.threadId))
     throw forbidden("Task authority is no longer available");
-  const thread = await ownedThread(database, threadId, input.ownerUserId);
-  const run = await database
-    .selectFrom("runs")
-    .select(["id", "accessMode", "connectionId"])
-    .where("threadId", "=", threadId)
-    .where("requestedBy", "=", input.ownerUserId)
-    .$if(runId !== null, (query) => query.where("id", "=", runId!))
-    .where("status", "in", activeRunStatuses)
-    .orderBy("createdAt", "desc")
-    .executeTakeFirst();
-  const lineageId =
-    bindingConnectionId ??
-    thread.originConnectionId ??
-    (bindingId.startsWith("thread:") ? (run?.connectionId ?? null) : null);
-  if (!lineageId)
-    return { mode: run?.accessMode ?? thread.accessMode, lineage: null, threadId, runId };
-  const lineage = await liveLineage(database, input.ownerUserId, lineageId);
-  if (!agentGrantAllowsTasks(lineage.grant))
-    throw forbidden("This connected agent may no longer ask your agents to work.");
+  const thread = await ownedThread(database, facts.threadId, ownerUserId);
+  const isRun = facts.runId !== null;
+  const isProgram =
+    subject.bindingId.startsWith("trigger:") || subject.bindingId.startsWith("watch:");
+  // A program's own mode is its anchor task's; another Run sharing the anchor is not its lineage.
+  const run = isProgram
+    ? undefined
+    : await database
+        .selectFrom("runs")
+        .select(["id", "accessMode"])
+        .where("threadId", "=", facts.threadId)
+        .where("requestedBy", "=", ownerUserId)
+        .$if(isRun, (query) => query.where("id", "=", facts.runId!))
+        .where("status", "in", activeRunStatuses)
+        .orderBy("createdAt", "desc")
+        .executeTakeFirst();
+  const runMode = run?.accessMode ?? null;
+  const execution = {
+    ...base,
+    threadId: facts.threadId,
+    runId: facts.runId,
+    taskMode: thread.accessMode,
+    runMode,
+  };
+  if (!facts.agentConnectionId)
+    return { ...execution, agentConnection: null, mode: runMode ?? thread.accessMode };
+  const connection = await liveDelegatingConnection(database, ownerUserId, facts.agentConnectionId);
   return {
-    mode: minThreadAccessMode(lineage.accessMode, thread.accessMode, run?.accessMode),
-    lineage,
-    threadId,
-    runId,
+    ...execution,
+    agentConnection: connection,
+    mode: minThreadAccessMode(connection.accessMode, thread.accessMode, runMode),
   };
 }
 
@@ -248,56 +258,80 @@ async function ownedThread(database: Kysely<DatabaseSchema>, id: ThreadId, owner
   return thread;
 }
 
-/** The grant's ceiling for a target, or for no target: only unlimited lineage passes. */
-export function lineageGrantAccess(
-  lineage: AuthorityLineage | null,
-  target: AgentGrantTarget | "actor" | undefined,
+/**
+ * May this admitted execution touch this concrete resource? The grant's ceiling only: the
+ * owner's own approval, its access level and the Device switch are intersected by the caller.
+ */
+export function authorizeTarget(
+  execution: Pick<ExecutionAuthority, "agentConnection">,
+  target: AgentGrantTarget,
 ): ResourceAccessLevel | null {
-  if (!lineage || target === "actor") return "read-write";
-  if (!target) return lineage.grant.scope === "everything" ? "read-write" : null;
-  return agentGrantAccess(lineage.grant, target);
+  return execution.agentConnection
+    ? agentGrantAccess(execution.agentConnection.grant, target)
+    : "read-write";
+}
+
+/**
+ * Direct operations need a consent the person made on the grant screen. A connection that kept
+ * its old `everything` at consent version 1 may delegate as before, but not act directly.
+ */
+export function directOperationsAllowed(connection: AgentConnectionAuthority): boolean {
+  return connection.consentVersion >= 2;
+}
+
+/** Whether an admitted execution reaches only what its connection's grant names. */
+export function selectedGrantOf(
+  execution: Pick<ExecutionAuthority, "agentConnection">,
+): Extract<AgentGrant, { scope: "selected" }> | null {
+  const grant = execution.agentConnection?.grant;
+  return grant?.scope === "selected" ? grant : null;
 }
 
 export interface ResourceAccessInput {
   readonly ownerUserId: UserId;
-  readonly connectionId?: string;
+  readonly agentConnectionId?: string;
+  /** Never an integration connection: an external agent is named `agentConnectionId`. */
+  readonly connectionId?: never;
   readonly threadId?: ThreadId | undefined;
   readonly agentBindingId?: string;
   readonly explicitAccess?: ResourceAccessLevel | null;
   readonly connectionCeiling?: ResourceAccessLevel | null;
-  /**
-   * The concrete thing the effect touches. Without one, a `selected` lineage is refused; `actor`
-   * asks only whether the execution itself still has authority.
-   */
-  readonly grantTarget?: AgentGrantTarget | "actor";
+  /** The concrete thing the effect touches. Without one, a `selected` grant is refused. */
+  readonly grantTarget?: AgentGrantTarget;
 }
 
 export function authoritySubject(input: {
-  readonly connectionId?: string | undefined;
+  readonly agentConnectionId?: string | undefined;
   readonly threadId?: ThreadId | undefined;
   readonly agentBindingId?: string | undefined;
 }): AuthoritySubject {
   if (input.agentBindingId) return { kind: "binding", bindingId: input.agentBindingId };
-  if (input.connectionId) return { kind: "connection", connectionId: input.connectionId };
+  if (input.agentConnectionId)
+    return { kind: "connection", agentConnectionId: input.agentConnectionId };
   if (input.threadId) return { kind: "binding", bindingId: `thread:${input.threadId}` };
   return { kind: "person" };
 }
 
+/** Both questions at once, for a caller with one concrete target in hand. */
 export async function resolveResourceAccess(
   database: Kysely<DatabaseSchema>,
   input: ResourceAccessInput,
 ) {
-  const authority = await resolveAuthority(database, {
+  const execution = await admitExecution(database, {
     ownerUserId: input.ownerUserId,
     subject: authoritySubject(input),
-    ...(input.threadId && (input.agentBindingId || input.connectionId)
+    ...(input.threadId && (input.agentBindingId || input.agentConnectionId)
       ? { threadId: input.threadId }
       : {}),
   });
-  const runAccess = integrationAccessCeilingForRun(authority.mode);
-  const grantAccess = lineageGrantAccess(authority.lineage, input.grantTarget);
+  const runAccess = integrationAccessCeilingForRun(execution.mode);
+  const grantAccess = input.grantTarget
+    ? authorizeTarget(execution, input.grantTarget)
+    : selectedGrantOf(execution)
+      ? null
+      : "read-write";
   return {
-    authority,
+    execution,
     runAccess,
     grantAccess,
     access: intersectResourceAccess(
@@ -308,6 +342,14 @@ export async function resolveResourceAccess(
       grantAccess,
     ),
   };
+}
+
+/** The execution's structural read/write ceiling, with no resource implied. */
+export function executionAccess(
+  execution: Pick<ExecutionAuthority, "mode">,
+  explicitAccess: ResourceAccessLevel | null = "read-write",
+): ResourceAccessLevel | null {
+  return intersectResourceAccess(explicitAccess, integrationAccessCeilingForRun(execution.mode));
 }
 
 export async function assertLineageCompatibleReuse(
@@ -327,22 +369,8 @@ export async function assertLineageCompatibleReuse(
     !target ||
     caller.createdBy !== target.createdBy ||
     !threadAccessModeAtMost(target.accessMode, caller.accessMode) ||
-    (caller.originConnectionId !== null &&
-      target.originConnectionId !== caller.originConnectionId &&
-      !(await everythingConnection(database, caller.originConnectionId)))
+    caller.originConnectionId !== target.originConnectionId
   )
     throw new OpensteerError({ code: "forbidden", message: "Start a new task for this work" });
   await assertPersonalOwner(database, caller.createdBy);
-}
-
-async function everythingConnection(
-  database: Kysely<DatabaseSchema>,
-  connectionId: string,
-): Promise<boolean> {
-  const row = await database
-    .selectFrom("agentConnections")
-    .select("grant")
-    .where("id", "=", connectionId)
-    .executeTakeFirst();
-  return row ? AgentGrantSchema.parse(row.grant).scope === "everything" : false;
 }

@@ -29,6 +29,7 @@ import {
   mcpServerMetadataPath,
 } from "./connection-oauth.js";
 import {
+  connectionCommandEffects,
   createConnectionRpcHandlers,
   handleConnectionCommand,
   isConnectionCommand,
@@ -111,11 +112,19 @@ async function fixture() {
     loopbackOriginAliases: true,
     remoteOrigin: async () => remoteOrigin,
   });
+  // The runtime's own effects: Disconnect drives its durable cleanup before it answers.
+  const effects = connectionCommandEffects({
+    store: fixture.store,
+    closeLineage: async () => {},
+    onFailure: (error) => {
+      throw error;
+    },
+  });
   registerHostApi(app, authenticator, {
     ...createConnectionRpcHandlers(oauth),
     "commands.dispatch": async (command, context) => {
       if (!isConnectionCommand(command)) throw new Error("Unexpected command");
-      return rpcSuccess(await handleConnectionCommand(oauth, command, context));
+      return rpcSuccess(await handleConnectionCommand(oauth, command, context, effects));
     },
   } as HostApiHandlers);
   const mcp = new McpServer({ name: "connection-authority-test", version: "1" });

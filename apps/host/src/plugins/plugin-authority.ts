@@ -70,8 +70,15 @@ export function pluginCaller(caller: AgentCaller): PluginCaller {
       : caller.kind === "program"
         ? [caller.program.kind, caller.key]
         : ["connection", caller.connectionId];
+  // Executions and their results belong to the lineage and grant revision that started them: a
+  // narrowed or reconnected agent cannot resume or read work started under its earlier authority.
+  const lineage = callerLineage(caller);
   return {
-    caller: `agent:${JSON.stringify([caller.userId, ...subject])}`,
+    caller: `agent:${JSON.stringify([
+      caller.userId,
+      ...subject,
+      ...(lineage ? [lineage.agentConnectionId, lineage.revision] : []),
+    ])}`,
     mode: caller.accessMode === "auto" || caller.accessMode === "full-access" ? "automatic" : "ask",
   };
 }
@@ -142,9 +149,9 @@ export class PluginAuthority {
       caller.userId,
     );
     if (!thread) return null;
-    if (!caller.lineage) return thread.accessMode;
+    if (!caller.agentConnection) return thread.accessMode;
     return (
-      await store.resolveAuthority({
+      await store.admitExecution({
         ownerUserId: caller.userId,
         subject: { kind: "binding", bindingId: caller.key },
       })
@@ -158,18 +165,31 @@ export class PluginAuthority {
     const lineage = callerLineage(caller);
     if (!lineage) return null;
     const live = await store
-      .resolveAuthority({
+      .admitExecution({
         ownerUserId: caller.userId,
         subject:
           caller.kind === "connection"
-            ? { kind: "connection", connectionId: caller.connectionId }
+            ? { kind: "connection", agentConnectionId: caller.connectionId }
             : { kind: "binding", bindingId: caller.key },
       })
       .catch(() => undefined);
-    if (!live?.lineage) return undefined;
-    const grant = live.lineage.grant;
+    // A changed revision is new authority: the call is refused, never reinterpreted.
+    if (!live?.agentConnection || live.agentConnection.grantRevision !== lineage.revision)
+      return undefined;
+    const grant = live.agentConnection.grant;
     if (grant.scope === "everything") return null;
     return {
+      visible: grant.resources.flatMap((resource) =>
+        resource.kind !== "plugin"
+          ? []
+          : [
+              resource.target.kind === "installed"
+                ? resource.target.pluginId
+                : resource.target.kind === "local-server"
+                  ? `app_server_${resource.target.serverId}`
+                  : `app_device_${resource.target.integrationConnectionId}`,
+            ],
+      ),
       access(plugin: string) {
         return agentGrantAccess(grant, { kind: "plugin", target: pluginGrantTarget(plugin) });
       },
@@ -322,7 +342,7 @@ export class PluginAuthority {
     )
       return { allowed: false, grants };
     signal?.throwIfAborted();
-    return { allowed: true, grants };
+    return { allowed: true, grants, ...(ceiling ? { visible: ceiling.visible } : {}) };
   }
   async assert(context: PluginCaller, operation: string, plugin?: string, execution?: string) {
     if (

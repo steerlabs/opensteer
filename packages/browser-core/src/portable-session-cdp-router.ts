@@ -10,6 +10,7 @@ export {
 } from "./standard-cdp-limits.js";
 import { contextScopedCdpMethods } from "./cdp-context.js";
 import { CdpProductIsolation } from "./cdp-product-isolation.js";
+import { boundedJsonSize, type JsonSizeBudget } from "./bounded-json.js";
 import { utf8Size } from "./bytes.js";
 
 export interface SessionCdpRouterPorts {
@@ -25,6 +26,7 @@ export type CdpParameters = Readonly<Record<string, unknown>>;
 
 export interface CdpCommand {
   readonly method: string;
+  readonly replyBudget?: JsonSizeBudget;
   readonly parameters?: CdpParameters;
   readonly sessionId?: string;
 }
@@ -46,6 +48,7 @@ export interface CdpChannel {
 
 export interface BrowserCdpBackend {
   readonly protectProductWorlds?: boolean;
+  readonly allowsProfileCookieReads?: boolean;
   /**
    * Opens a page channel that behaves as a fresh CDP session: its
    * `Runtime.enable` reports every live execution context before it resolves,
@@ -528,12 +531,16 @@ export class SessionCdpRouter {
   }
 
   /** Refuses exactly what `send` would refuse of a result the caller produced itself. */
-  admitPageResult(result: unknown): void {
-    this.#assertResultSize(result, this.#limits.maxResultBytes);
+  admitPageResult(result: unknown, budget?: JsonSizeBudget): void {
+    this.#assertResultSize(result, this.#limits.maxResultBytes, budget);
   }
 
-  #assertResultSize(result: unknown, maxResultBytes: number): void {
-    if (serializedBytes(result) > maxResultBytes) {
+  #assertResultSize(result: unknown, maxResultBytes: number, budget?: JsonSizeBudget): void {
+    if (boundedJsonSize(result, {
+      maxBytes: Math.min(maxResultBytes, budget?.maxBytes ?? maxResultBytes),
+      maxDepth: budget?.maxDepth ?? 32,
+      maxEntries: budget?.maxEntries ?? 65_536,
+    }) === undefined) {
       throw new SessionCdpRouterError(
         "too_large",
         "CDP result exceeds the bounded agent transport. Query a narrower result in the page.",
@@ -635,7 +642,13 @@ export class SessionCdpRouter {
     if (state.standard) {
       if (command.sessionId && !state.channels.has(command.sessionId))
         throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
-      if (contextScopedCdpMethods.has(command.method)) {
+      const pageCookieRead =
+        this.#backend.allowsProfileCookieReads &&
+        command.sessionId !== undefined &&
+        ["Network.getCookies", "Network.getAllCookies", "Storage.getCookies"].includes(
+          command.method,
+        );
+      if (contextScopedCdpMethods.has(command.method) && !pageCookieRead) {
         if (!state.standard.wholeContext)
           throw new SessionCdpRouterError(
             "forbidden",
@@ -662,7 +675,7 @@ export class SessionCdpRouter {
         state.contextOperations.add(pending);
         try {
           const result = await pending;
-          this.#assertResultSize(result, this.#sessionLimits(state).maxResultBytes);
+          this.#assertResultSize(result, this.#sessionLimits(state).maxResultBytes, command.replyBudget);
           return result;
         } finally {
           state.contextOperations.delete(pending);
@@ -671,7 +684,8 @@ export class SessionCdpRouter {
       const domain = command.method.split(".", 1)[0] ?? "";
       if (
         command.sessionId
-          ? !standardPageTargetMethods.has(command.method) &&
+          ? !pageCookieRead &&
+            !standardPageTargetMethods.has(command.method) &&
             (!standardPageDomains.has(domain) || browserWidePageMethods.has(command.method))
           : !standardRootTargets.has(command.method) && command.method !== "Browser.getVersion"
       )
@@ -704,7 +718,7 @@ export class SessionCdpRouter {
         : command.method.startsWith("Target.")
           ? await this.#sendTargetCommand(state, command)
           : await this.#backend.send(command.method, command.parameters);
-    this.#assertResultSize(result, this.#sessionLimits(state).maxResultBytes);
+    this.#assertResultSize(result, this.#sessionLimits(state).maxResultBytes, command.replyBudget);
     return result;
   }
 
@@ -1335,7 +1349,7 @@ export class SessionCdpRouter {
     if (!agentObservationMethods.has(command.method)) beforeActivity?.(attached.physicalTargetId);
     const captureScreenshot = state.standard?.captureScreenshot;
     const answerDialog = state.standard?.answerDialog;
-    return whileOpen(attached.pending, () => {
+    const send = () => {
       if (captureScreenshot && command.method === "Page.captureScreenshot")
         return captureScreenshot(
           attached.physicalTargetId,
@@ -1348,7 +1362,8 @@ export class SessionCdpRouter {
         command.method,
         agentObjectGroups(parameters, attached.virtualSessionId),
       );
-    });
+    };
+    return command.replyBudget ? send() : whileOpen(attached.pending, send);
   }
 
   // An agent's target selection cannot change a viewer's tab or native focus.
@@ -1525,7 +1540,7 @@ export class SessionCdpRouter {
   #endChannel(state: ConnectionState, attached: AttachedChannel): void {
     if (state.channels.get(attached.virtualSessionId) !== attached) return;
     state.channels.delete(attached.virtualSessionId);
-    if (attached.rootAttached) {
+    if (attached.rootAttached || !state.standard) {
       state.autoAttached?.delete(attached.physicalTargetId);
       this.#appendEvent(state, "Target.detachedFromTarget", {
         sessionId: attached.virtualSessionId,
@@ -1563,7 +1578,11 @@ export class SessionCdpRouter {
       sequence: state.nextSequence++,
       ...(sessionId ? { sessionId } : {}),
     };
-    if (serializedBytes(event) > this.#sessionLimits(state).maxEventBytes) {
+    if (boundedJsonSize(event, {
+      maxBytes: this.#sessionLimits(state).maxEventBytes,
+      maxDepth: 28,
+      maxEntries: 16_384,
+    }) === undefined) {
       if (state.standard) {
         state.standard.onOverflow?.();
         this.#closeConnection(state);

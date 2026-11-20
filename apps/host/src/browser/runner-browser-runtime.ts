@@ -282,6 +282,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       navigationAttributionVersion: browser.navigationAttributionVersion === 1,
       tabRestoreVersion: browser.tabRestoreVersion === 1,
       popupFollowVersion: browser.popupFollowVersion === 1,
+      actorClaim: browser.actorClaim === 1,
       captureRegion: browser.captureRegion === 1,
       rasterDemand: browser.rasterDemand === 1,
       computer: { name: stream.identity.name, runnerId: placement.runnerId },

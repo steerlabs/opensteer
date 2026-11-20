@@ -27,6 +27,7 @@ describe("public MCP discovery boundaries", () => {
       grant: { scope: "everything" } as const,
       grantRevision: 1,
       consentVersion: 1,
+      expiresAt: Date.now() + 60_000,
     };
     const authenticate = vi
       .spyOn(oauth.authenticator, "authenticate")

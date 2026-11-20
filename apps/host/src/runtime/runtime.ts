@@ -1,3 +1,4 @@
+import { ChromeSharedTabs } from "../browser/chrome-shared-tabs.js";
 import { ResourceRevisions } from "./personal-resource-revisions.js";
 import { PersonalLiveText } from "./personal-live-text.js";
 import {
@@ -32,12 +33,12 @@ import { TabStore, AgentToolActivityStore } from "@opensteer/database";
 import { TabService } from "../tabs/tab-service.js";
 import { NativeTabTargets } from "../computer-use/native-tab-targets.js";
 import {
-  tabOwner,
   tabComputer,
   tabComputers,
   authorizeTabTarget,
   authorizeTabActor,
-  authorizeTabRows,
+  deniedTabRows,
+  readableTabTasks,
   tabReadAuthority,
   canReadTab,
 } from "../tabs/tab-authority.js";
@@ -88,7 +89,7 @@ import { AdministrationService } from "../administration/administration-service.
 import { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
 import { HarnessCatalogReconciliationOwner } from "../agents/harness-catalogs.js";
 import { ThreadService } from "../threads/thread-service.js";
-import { ConnectionOAuth } from "../mcp/connections/index.js";
+import { ConnectionOAuth, connectionCommandEffects } from "../mcp/connections/index.js";
 import { AgentConnectionStore, recoverAssignmentResultWaits } from "@opensteer/database";
 import { createHmac } from "node:crypto";
 import { withFolderPluginPackage } from "../local-servers/folder-plugin-package.js";
@@ -167,7 +168,7 @@ import {
   type ShellSessionId,
 } from "@opensteer/protocol";
 import type { FastifyInstance } from "fastify";
-import { sign } from "node:crypto";
+import { sign, verify } from "node:crypto";
 import { resolve } from "node:path";
 import { AccountAdoptionControlClient } from "../access/account-adoption-control-client.js";
 
@@ -234,7 +235,10 @@ import { DefaultIntegrationAuthAttemptLifecycle } from "../access/integration-au
 import { AccessRequests } from "../devices/access-requests.js";
 import { DeviceService } from "../devices/device-service.js";
 import { LocalServerService } from "../local-servers/local-server-service.js";
-import { PluginPackageService } from "../local-servers/plugin-package-service.js";
+import {
+  packageStillGranted,
+  PluginPackageService,
+} from "../local-servers/plugin-package-service.js";
 import { DeviceToolHandlers } from "../mcp/handlers/devices.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { NotificationPreviewService } from "../notifications/notification-preview-service.js";
@@ -845,7 +849,15 @@ export async function createHostRuntime(
     // flight, so those callers address it through this indirection rather than
     // forcing the whole composition order to change.
     let runnerRegistry: RunnerRegistry | undefined;
-    const runFileRelay = new RunFileRelay();
+    const runFileRelay = new RunFileRelay(async (scope, payload, signature) => {
+      const runner = await store.runnerForAuthentication(scope.runnerId);
+      return (
+        !!runner &&
+        !runner.revokedAt &&
+        runner.connectionGeneration === scope.connectionGeneration &&
+        verify(null, Buffer.from(payload), runner.publicKeyPem, Buffer.from(signature, "base64url"))
+      );
+    });
     let disconnectBrowserSources = () => {};
     // Every Personal Host holds its Opensteer Account link here; only a Mac
     // Home also signs Remote access routes, because a networked Home's
@@ -945,6 +957,7 @@ export async function createHostRuntime(
           binding.role === "self"
             ? runners.isRunnerConnected(binding.runnerId)
             : computerApps.attached(deviceId),
+          { asleep: runners.isRunnerAsleep(binding.runnerId) },
         );
       },
       onDeviceInputWithdrawn: (deviceId) => displayStreams?.withdrawOwnerInput(deviceId),
@@ -965,6 +978,7 @@ export async function createHostRuntime(
           await store.requireSelfDeviceId(runnerId),
           "apps",
           runners.isRunnerConnected(runnerId),
+          { asleep: runners.isRunnerAsleep(runnerId) },
         ),
       packageSource: (serverId, runnerId, launch) =>
         pluginPackages?.computerSource(serverId, runnerId, launch),
@@ -1010,6 +1024,7 @@ export async function createHostRuntime(
       listMachines: async (ownerId) => {
         const drivers = await store.listDeviceDrivers({ includeDetached: true });
         const runnerNames = new Map<RunnerId, string>();
+        const activeGenerations = new Map<RunnerId, number>();
         const selfRunners = new Map<RunnerId, import("@opensteer/protocol").RunnerModules>();
         let runnerCursor: RunnerId | undefined;
         do {
@@ -1022,6 +1037,7 @@ export async function createHostRuntime(
           for (const runner of page.runners) {
             selfRunners.set(runner.id, runner.moduleDescriptors);
             runnerNames.set(runner.id, runner.name);
+            if (!runner.revokedAt) activeGenerations.set(runner.id, runner.connectionGeneration);
           }
           runnerCursor = page.nextCursor ?? undefined;
         } while (runnerCursor);
@@ -1044,6 +1060,7 @@ export async function createHostRuntime(
           for (const device of page.devices) {
             const bindings = drivers.filter((binding) => binding.deviceId === device.id);
             const screen = bindings.find((binding) => binding.role === "screen");
+            const screenGeneration = screen && activeGenerations.get(screen.runnerId);
             const self = bindings.find((binding) => binding.role === "self" && !binding.detachedAt);
             const platform = screen
               ? "ios"
@@ -1062,10 +1079,18 @@ export async function createHostRuntime(
                             state: "unavailable" as const,
                             reason: { kind: "not-connected" as const },
                           }
-                        : !runnerRegistry?.isRunnerConnected(screen.runnerId)
+                        : screenGeneration === undefined ||
+                            runnerRegistry?.identityForRunner(screen.runnerId)
+                              ?.connectionGeneration !== screenGeneration
                           ? {
                               state: "unavailable" as const,
-                              reason: { kind: "driver-offline" as const },
+                              reason: {
+                                kind:
+                                  screenGeneration !== undefined &&
+                                  runnerRegistry?.asleepSince(screen.runnerId, screenGeneration)
+                                    ? ("driver-asleep" as const)
+                                    : ("driver-offline" as const),
+                              },
                             }
                           : !device.accessPolicy.apps
                             ? {
@@ -1180,6 +1205,7 @@ export async function createHostRuntime(
           await store.requireSelfDeviceId(runnerId),
           "browser",
           runners.isRunnerConnected(runnerId),
+          { asleep: runners.isRunnerAsleep(runnerId) },
         ),
       requireAgentVisibility: async (runnerId) =>
         requireDeviceAccess(database, await store.requireSelfDeviceId(runnerId), "browser", true),
@@ -1288,6 +1314,7 @@ export async function createHostRuntime(
       passwordSignIns.validateLease({ ...input, deploymentId: deployment.id }),
     );
     const browserSources = new BrowserSourceService({
+      liveTabs: new ChromeSharedTabs(store),
       deploymentId: deployment.id,
       browser,
       canonicalOrigin: config.canonicalOrigin.origin,
@@ -1301,6 +1328,15 @@ export async function createHostRuntime(
     const savedLogins = new SavedLoginService({
       passwords: passwordSignIns,
       browser,
+      lineageScope: async (ownerId, runId) => {
+        const { agentConnection } = await store.admitExecution({
+          ownerUserId: ownerId,
+          subject: { kind: "binding", bindingId: `run:${runId}` },
+        });
+        return agentConnection
+          ? `${agentConnection.agentConnectionId}:${agentConnection.grantRevision}:${runId}`
+          : undefined;
+      },
       requests: store.requests,
       canonicalOrigin: config.canonicalOrigin.origin,
       currentRoute: async () => (await personalRemoteAccess?.status())?.route ?? null,
@@ -1475,26 +1511,8 @@ export async function createHostRuntime(
         };
       },
       canRead: canReadTab,
-      canReadTask: async (actor, id, db) =>
-        !!(await db
-          .selectFrom("threads")
-          .select("id")
-          .where("id", "=", id)
-          .where("createdBy", "=", tabOwner(actor))
-          .executeTakeFirst()),
-      readableTasks: async (actor, ids, db) =>
-        new Set(
-          ids.length
-            ? (
-                await db
-                  .selectFrom("threads")
-                  .select("id")
-                  .where("id", "in", ids)
-                  .where("createdBy", "=", tabOwner(actor))
-                  .execute()
-              ).map((row) => row.id)
-            : [],
-        ),
+      canReadTask: async (actor, id, db) => (await readableTabTasks(actor, [id], db)).has(id),
+      readableTasks: (actor, ids, db) => readableTabTasks(actor, ids, db),
       readAuthority: async (actor, db) => {
         const check = await tabReadAuthority(actor, db);
         return async (row) => {
@@ -1523,7 +1541,7 @@ export async function createHostRuntime(
         ),
       authorize: authorizeTabTarget,
       authorizeMembership: authorizeTabActor,
-      authorizeRows: authorizeTabRows,
+      deniedRows: deniedTabRows,
       onError: (error) => reportBrowserUsageError(error),
     });
     // A connection gaining authority settles Requests targeting the hosting
@@ -1541,6 +1559,19 @@ export async function createHostRuntime(
             runnerId,
             request,
             signal,
+            (binding, connectionSignal) => {
+              if (
+                request.type === "host.home-files.download" ||
+                request.type === "host.home-files.write"
+              ) {
+                runFileRelay.bind(
+                  request.transfer,
+                  request.type === "host.home-files.download" ? "PUT" : "GET",
+                  binding,
+                  connectionSignal,
+                );
+              }
+            },
           ),
       },
     });
@@ -1819,6 +1850,10 @@ export async function createHostRuntime(
           void devices
             .endComputerRun(reaction.runId)
             .catch((error) => reportComputerUseTeardownError(reaction.runId, error));
+          browserSources.liveTabs?.closeForBinding(
+            `run:${reaction.runId}`,
+            "The browser task ended.",
+          );
           void browser
             .detachAgentSessionsForBinding(`run:${reaction.runId}`)
             .catch(reportMutationFailure);
@@ -2248,6 +2283,7 @@ export async function createHostRuntime(
           const signal = AbortSignal.any([connectionSignal, AbortSignal.timeout(15_000)]);
           signal.throwIfAborted();
           const transfer = runFileRelay.open(request.sizeBytes);
+          runFileRelay.bind(transfer.upload, "PUT", request, signal);
           const onAbort = () => transfer.close(new Error("Output image upload ended"));
           signal.addEventListener("abort", onAbort, { once: true });
           void (async () => {
@@ -2921,6 +2957,10 @@ export async function createHostRuntime(
     await apps.collectGarbage();
     const deviceTools = new DeviceToolHandlers({ devices, access: accessRequests });
     const plugins = new PluginPackageService({
+      stillGranted: packageStillGranted({
+        store,
+        installed: (owner) => integrationPlatformStore.plugins.current(owner),
+      }),
       computer: { tokens, store: integrationPlatformStore, publicUrl: config.runtimeOrigin },
       snapshotDirectory: resolve(dataDirectory, "plugins", "data", "packages"),
       tokens: pluginsTokens,
@@ -3244,17 +3284,21 @@ export async function createHostRuntime(
             .executeTakeFirst(),
         ),
     });
+    // Disconnect and expiry share one durable cleanup; one pass at a time drives every open one.
+    const connectionEffects = connectionCommandEffects({
+      store,
+      closeLineage: (connectionId) => {
+        browser.closeStandardCdpForConnection(connectionId, "Agent connection authority ended.");
+        return agentTools.closeLineage(connectionId);
+      },
+      onFailure: (error, connectionId) =>
+        app.log.warn({ err: error, connectionId }, "A connected agent's work did not stop"),
+    });
+    const driveConnectionCleanups = connectionEffects.driveCleanups;
     const app = await createHostServer(
       {
         connections,
-        connectionEffects: {
-          closeLineage: (connectionId) => agentTools.closeLineage(connectionId),
-          stopLineage: async (userId, connectionId, reason) => {
-            const { failures } = await store.stopConnectionLineage(userId, connectionId, reason);
-            for (const error of failures)
-              app.log.warn({ err: error, connectionId }, "A connected agent's work did not stop");
-          },
-        },
+        connectionEffects,
         passkeys: config.passkeys === true,
         ...(notificationPreviews ? { notificationPreviews } : {}),
         ...(accountAdoptionControlClient
@@ -3305,6 +3349,7 @@ export async function createHostRuntime(
         placeContext,
         credentials,
         discovery: discoveryEnvelope,
+        signHostProof: (bytes) => sign(null, bytes, keys.privateKey).toString("base64url"),
         egress,
         execution,
         teamLinks: async () => (await ensureLinks()).links,
@@ -3360,6 +3405,17 @@ export async function createHostRuntime(
     );
     attachmentGcTimer.unref();
     app.addHook("onClose", async () => clearInterval(attachmentGcTimer));
+    const connectionCleanupTimer = setInterval(() => {
+      void driveConnectionCleanups().catch((error: unknown) =>
+        app.log.warn({ err: error }, "Connected agent cleanup failed"),
+      );
+    }, 30_000);
+    connectionCleanupTimer.unref();
+    app.addHook("onClose", async () => clearInterval(connectionCleanupTimer));
+    // A cleanup interrupted by the last shutdown finishes now.
+    void driveConnectionCleanups().catch((error: unknown) =>
+      app.log.warn({ err: error }, "Connected agent cleanup failed"),
+    );
     reportDispatchError = (error, commandId) =>
       app.log.warn({ err: error, commandId }, "Runner command dispatch failed");
     reportContinuationError = (error) => app.log.error({ err: error }, "Continuation failed");

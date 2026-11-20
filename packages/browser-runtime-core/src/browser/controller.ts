@@ -1,3 +1,4 @@
+import { boundedJsonSize } from "@opensteer/browser-core/bounded-json";
 import { DeploymentIdSchema } from "@opensteer/core";
 import {
   BrowserListTabsParametersSchema,
@@ -649,6 +650,7 @@ export class BrowserController {
       state: "ready",
       targetedStreamingVersion: 1,
       inputLanesVersion: 1,
+      cdpReplyBudget: 1,
       ...(this.claims.surfaceState === 1 ? { surfaceState: 1 } : {}),
       ...(this.saveAuthority
         ? { personFillVersion: 2 }
@@ -3235,6 +3237,7 @@ export class BrowserController {
       );
     const command: CdpCommand = {
       method: requested.method,
+      ...(message.replyBudget ? { replyBudget: message.replyBudget } : {}),
       ...(requested.parameters === undefined ? {} : { parameters: requested.parameters }),
       ...(requested.sessionId === undefined ? {} : { sessionId: requested.sessionId }),
     };
@@ -3365,11 +3368,12 @@ export class BrowserController {
         pointer: this.moveAgentPointer(actorToken, activitySurfaceId, aimed),
       });
     }
+    const reply = this.withTargetMetadata(command, result, attachedActivity);
+    if (message.replyBudget && boundedJsonSize(reply, message.replyBudget) === undefined)
+      throw new BrowserRuntimeError("bad_message", "Browser result exceeds its byte or nesting limit.", { reason: "browser-reply-limit" });
     await this.send({
       requestId: message.requestId,
-      result: BrowserCdpResultSchema.parse(
-        this.withTargetMetadata(command, result, attachedActivity),
-      ),
+      result: BrowserCdpResultSchema.parse(reply),
       type: "cdp.result",
     });
   }
@@ -3493,7 +3497,7 @@ export class BrowserController {
         ended.throwIfAborted();
         // Access may have changed while this waited, as `send` would recheck.
         this.cdpRouter.admitPageCommand(this.claims.sessionId, admitted);
-        return bounded(this.lookAt(page, cdp, geometry, request));
+        return bounded(this.lookAt(page, cdp, geometry, request, command.replyBudget));
       }),
     ).finally(() => page.offClose(closed));
   }
@@ -3503,6 +3507,7 @@ export class BrowserController {
     cdp: CdpSession,
     geometry: PageGeometry | null,
     { clip, format, quality }: z.infer<typeof screenshotParameters>,
+    budget?: CdpCommand["replyBudget"],
   ): Promise<ViewportCapture> {
     if (!geometry)
       throw new BrowserRuntimeError("conflict", "The page has no size yet.", { retryable: true });
@@ -3526,7 +3531,7 @@ export class BrowserController {
       throw new BrowserRuntimeError("conflict", "The page changed during the screenshot.", {
         retryable: true,
       });
-    this.cdpRouter.admitPageResult(capture);
+    this.cdpRouter.admitPageResult(capture, budget);
     return capture;
   }
 
@@ -3584,10 +3589,7 @@ export class BrowserController {
       const binding = await this.ledger.wake(parsed.data.surfaceId);
       if (reloaded) await this.drainTabs();
       const dialog = this.ledger.dialogOf(parsed.data.surfaceId);
-      await this.send({
-        type: "cdp.result",
-        requestId: message.requestId,
-        result: {
+      const result = {
           surfaceId: parsed.data.surfaceId,
           targetId: binding.targetId,
           documentId: binding.surface.documentId,
@@ -3595,8 +3597,10 @@ export class BrowserController {
           userActivity: this.ledger.targetActivity(binding.targetId) ?? null,
           pageResize: this.ledger.targetResize(binding.targetId) ?? null,
           reloaded,
-        },
-      });
+      };
+      if (message.replyBudget && boundedJsonSize(result, message.replyBudget) === undefined)
+        throw new BrowserRuntimeError("bad_message", "Browser result exceeds its byte or nesting limit.", { reason: "browser-reply-limit" });
+      await this.send({ type: "cdp.result", requestId: message.requestId, result });
       return;
     }
     if (

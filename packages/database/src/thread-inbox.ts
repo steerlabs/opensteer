@@ -35,9 +35,9 @@ import {
 } from "./memory-pass-store.js";
 import {
   assertLineageCompatibleReuse,
-  bindingLineageConnectionId,
-  lineageEndedMessage,
-  liveLineage,
+  bindingAgentConnectionId,
+  liveAgentConnection,
+  liveDelegatingConnection,
 } from "./resource-access.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import {
@@ -73,7 +73,6 @@ import {
   nonTerminalRunStatuses,
   ModelSelectionSchema,
   OpensteerError,
-  agentGrantAllowsTasks,
   ReplyTargetSchema,
   ThreadAccessModeSchema,
   ThreadInputPolicySchema,
@@ -1533,6 +1532,8 @@ export async function claimRunInputBatch(
     .where(
       sql<boolean>`thread_inputs.reply_target is not distinct from ${run.replyTarget === null ? null : JSON.stringify(run.replyTarget)}::jsonb`,
     )
+    // A Run reads only the reports of work done under its own lineage.
+    .where(sql<boolean>`thread_inputs.connection_id is not distinct from ${run.connectionId}`)
     .where("messages.sequence", "<=", throughSequence);
   const total = await eligible
     .select(({ fn }) => fn.countAll<string>().as("count"))
@@ -3228,22 +3229,22 @@ async function threadInputLineageId(
     case "connection":
       return source.connectionId;
     case "agent":
-      return bindingLineageConnectionId(transaction, `run:${source.runId}`);
+      return bindingAgentConnectionId(transaction, `run:${source.runId}`);
     case "trigger":
-      return bindingLineageConnectionId(transaction, `trigger:${source.occurrenceId}`);
+      return bindingAgentConnectionId(transaction, `trigger:${source.occurrenceId}`);
     case "watch":
-      return bindingLineageConnectionId(transaction, `watch:${source.activationId}`);
+      return bindingAgentConnectionId(transaction, `watch:${source.activationId}`);
     case "platform":
       return source.sourceRunId
-        ? bindingLineageConnectionId(transaction, `run:${source.sourceRunId}`)
+        ? bindingAgentConnectionId(transaction, `run:${source.sourceRunId}`)
         : null;
     default:
       return null;
   }
 }
 /**
- * A selected connection only ever touches tasks in its own lineage, and nothing else enters
- * one's tasks except the person; an `everything` connection may send wherever the person can.
+ * Work for a connection enters only its own lineage's tasks, or, for an `everything` grant, the
+ * person's own tasks. Nothing crosses into another connection's task; the person may type anywhere.
  */
 async function assertInputLineage(
   transaction: Transaction<DatabaseSchema>,
@@ -3252,8 +3253,8 @@ async function assertInputLineage(
   inputConnectionId: string | null,
 ): Promise<void> {
   if (!inputConnectionId || inputConnectionId === thread.originConnectionId) return;
-  const lineage = await liveLineage(transaction, owner, inputConnectionId);
-  if (lineage.grant.scope === "selected")
+  const connection = await liveAgentConnection(transaction, owner, inputConnectionId);
+  if (thread.originConnectionId !== null || connection.grant.scope !== "everything")
     throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
 }
 async function resolveThreadInputFacts(
@@ -4072,6 +4073,29 @@ export async function ensureQueuedRun(
       }
       continue;
     }
+    // The Run would work for the task's connection, else this input's: both must still allow it.
+    const candidateConnectionId = thread.originConnectionId ?? candidate.connectionId;
+    if (
+      candidateConnectionId &&
+      !(await liveDelegatingConnection(
+        transaction,
+        candidate.requestedBy,
+        candidateConnectionId,
+      ).then(
+        () => true,
+        () => false,
+      ))
+    ) {
+      const cancelled = await transaction
+        .updateTable("threadInputs")
+        .set({ cancelReason: "authority-revoked", state: "cancelled", updatedAt: new Date() })
+        .where("messageId", "=", candidate.messageId)
+        .where("state", "=", "pending")
+        .returningAll()
+        .executeTakeFirst();
+      if (cancelled) await refreshInputQueue(transaction, thread.id, cancelled.messageId);
+      continue;
+    }
     if (isGuaranteedCompletionKind(candidate.messageKind)) {
       seed = candidate;
       break;
@@ -4806,7 +4830,7 @@ async function deliverAssignmentReturnTransaction(
     .executeTakeFirstOrThrow();
   const returnRunId = assignment.resultRunId ?? assignment.childRunId;
   const returnConnectionId = returnRunId
-    ? await bindingLineageConnectionId(transaction, `run:${returnRunId}`)
+    ? await bindingAgentConnectionId(transaction, `run:${returnRunId}`)
     : null;
   await transaction
     .insertInto("threadInputs")
@@ -4881,10 +4905,9 @@ async function assignmentResultReader(
     });
   const { assignment } = locked;
   const authority = input.authority;
-  await assertThreadCaller(transaction, authority, {
-    threadId: assignment.childThreadId,
-    readOnly: true,
-  });
+  // Both ends of a delegation must be visible to the reader, not only the task that did the work.
+  for (const threadId of [assignment.parentThreadId, assignment.childThreadId])
+    await assertThreadCaller(transaction, authority, { threadId, readOnly: true });
   if (
     !(await threadExecutionIsAvailableToUser(
       transaction,
@@ -5701,7 +5724,7 @@ export async function delegateThreadInTransaction(
   await assertDelegationDepth(transaction, parent.id);
   // A child inherits its delegator's lineage; read after the delegator's row is locked, so it
   // either precedes a Disconnect that then reaches it, or sees that Disconnect and stops.
-  const childConnectionId = await bindingLineageConnectionId(
+  const childConnectionId = await bindingAgentConnectionId(
     transaction,
     input.origin.kind === "run"
       ? `run:${input.origin.parentRunId}`
@@ -5709,11 +5732,8 @@ export async function delegateThreadInTransaction(
         ? `trigger:${input.origin.occurrenceId}`
         : `watch:${input.origin.activationId}`,
   );
-  if (childConnectionId) {
-    const lineage = await liveLineage(transaction, input.createdBy, childConnectionId);
-    if (!agentGrantAllowsTasks(lineage.grant))
-      throw new OpensteerError({ code: "forbidden", message: lineageEndedMessage });
-  }
+  if (childConnectionId)
+    await liveDelegatingConnection(transaction, input.createdBy, childConnectionId);
   if (!parentCausalChainId) {
     throw new OpensteerError({
       code: "internal",

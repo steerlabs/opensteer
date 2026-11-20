@@ -48,6 +48,7 @@ import {
   type RequestId,
   type RuntimeMode,
   type RunId,
+  type TaskPurpose,
   type ThreadId,
   type ToolOutputImage,
   type TriggerOccurrenceId,
@@ -187,6 +188,11 @@ export interface RunnerRuntimeOptions {
   readonly harnessRuntimeBoundary: HarnessRuntimeBoundary;
   readonly logger?: RunnerLogger;
   readonly maxConcurrentRuns: number;
+  /**
+   * The person stopped agents on this computer. While true, new Runs and
+   * Trigger programs are refused as not ready, so the Home keeps them queued.
+   */
+  readonly agentWorkStopped?: () => boolean;
   readonly maxConcurrentTriggerPrograms?: number;
   readonly maxRunEventBytes?: number;
   readonly maxRunEvents?: number;
@@ -254,8 +260,21 @@ interface RunJournal {
   terminal: boolean;
 }
 
+/** One Run executing on this Runner, as the computer it runs on may show it. */
+export interface RunnerLocalActivity {
+  readonly runId: RunId;
+  readonly threadId: ThreadId;
+  /** When this Runner admitted the Run, as an ISO time. */
+  readonly startedAt: string;
+  readonly purpose: TaskPurpose;
+  /** The engine doing the work, as the person named it. */
+  readonly engine: string;
+}
+
 interface ActiveRun {
   interruptionCause?: "lease-lost";
+  /** When this Runner admitted the Run. */
+  readonly admittedAt: number;
   shutdown?: boolean;
   readonly abort: AbortController;
   readonly command: Extract<RunnerCommand, { readonly type: "run.execute" }>;
@@ -364,6 +383,9 @@ const terminalEventTypes = new Set<HarnessDurableEvent["type"]>([
   "run.interrupted",
 ]);
 
+export const agentWorkStoppedSentence =
+  "Agents are stopped on this computer. This starts when the person resumes them.";
+
 export class RunnerRuntime {
   readonly appServers: AppServerManager;
   readonly #attachmentCache: AttachmentCache | undefined;
@@ -428,6 +450,8 @@ export class RunnerRuntime {
   readonly #settledRuns = new Map<RunId, ActiveRun & { readonly settledAt: number }>();
   /** The connection Runs report on, once the Host has reattached them to it. */
   #connection: RunnerMessageSink | null = null;
+  readonly #publishingImages = new Set<string>();
+  readonly #imagePublishLifetime = new AbortController();
   /** When this Runner last announced its Runs; the answer's leases run from here. */
   #attachRequestedAt: number | undefined;
   #stopLeaseWatchdog: (() => void) | undefined;
@@ -544,8 +568,11 @@ export class RunnerRuntime {
     "activeActivationIds" | "close" | "connectionLost" | "reconcile"
   >;
   #draining = false;
+  readonly #agentWorkStopped: () => boolean;
+  readonly #activityListeners = new Set<() => void>();
 
   constructor(options: RunnerRuntimeOptions) {
+    this.#agentWorkStopped = options.agentWorkStopped ?? (() => false);
     this.#executionClock = options.executionClock;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
     this.#credentialRefreshClock = options.credentialRefreshClock ?? systemClock;
@@ -560,6 +587,7 @@ export class RunnerRuntime {
     this.#harnesses = options.harnesses;
     this.#plugins = options.plugins;
     this.#harnessRuntimeBoundary = options.harnessRuntimeBoundary;
+    options.harnesses.adoptRuntimeBoundary(options.harnessRuntimeBoundary);
     if (
       harnessSandboxRequired(platform(), options.harnessRuntimeBoundary) &&
       !options.harnessSandbox
@@ -631,6 +659,49 @@ export class RunnerRuntime {
 
   activeRunIds(): readonly RunId[] {
     return [...this.#runs.keys()];
+  }
+
+  /** The Runs still doing work here; one being stopped is no longer listed. */
+  localActivity(): readonly RunnerLocalActivity[] {
+    return [...this.#runs.values()]
+      .filter((active) => !active.interrupted && !active.abort.signal.aborted)
+      .map(({ admittedAt, command: { context } }) => ({
+        runId: context.runId,
+        threadId: context.threadId,
+        startedAt: new Date(admittedAt).toISOString(),
+        purpose: context.taskPurpose,
+        engine: context.harness.name,
+      }));
+  }
+
+  subscribeLocalActivity(listener: () => void): () => void {
+    this.#activityListeners.add(listener);
+    return () => this.#activityListeners.delete(listener);
+  }
+
+  /**
+   * The person stopped one Run on this computer. It ends as the Home's own
+   * Stop ends it, through the same interrupt, so the Home records it as
+   * interrupted; a Home out of reach hears it when the Runner reconnects.
+   */
+  stopRunLocally(runId: RunId): boolean {
+    const active = this.#runs.get(runId);
+    if (!active || active.interrupted) return false;
+    this.#endLocalAccess(active);
+    active.interrupted = true;
+    active.abort.abort(new Error("The person stopped this Run on this computer"));
+    this.#activityChanged();
+    return true;
+  }
+
+  #activityChanged(): void {
+    for (const listener of this.#activityListeners) {
+      try {
+        listener();
+      } catch {
+        // A watcher's failure never changes a Run.
+      }
+    }
   }
 
   /** An unacknowledged terminal outcome, after execution and cleanup have settled. */
@@ -2193,6 +2264,7 @@ export class RunnerRuntime {
   }
 
   async close(): Promise<void> {
+    this.#imagePublishLifetime.abort();
     this.#draining = true;
     await this.#cancelBackgroundText(() => true);
     const voiceClosed = this.#voice.close();
@@ -2236,6 +2308,7 @@ export class RunnerRuntime {
     sink: RunnerMessageSink,
   ): CommandDecision {
     if (this.#draining) return reject("conflict", "Runner is draining", true);
+    if (this.#agentWorkStopped()) return reject("conflict", agentWorkStoppedSentence, true);
     if (this.#harnessMaintenance.has(command.context.harnessInstanceId)) {
       return reject("conflict", "AI engine profile maintenance is in progress", true);
     }
@@ -2302,6 +2375,8 @@ export class RunnerRuntime {
     // A restarted Run's next attempt continues the Run's ordinals.
     const firstOrdinal = context.firstOrdinal ?? 0;
     const active: ActiveRun = {
+      // Wall time for the person; the lease clock may be a test clock.
+      admittedAt: Date.now(),
       abort: new AbortController(),
       command,
       emittedEventBytes: 0,
@@ -2369,6 +2444,7 @@ export class RunnerRuntime {
     }
     this.#runs.set(command.context.runId, active);
     this.#threads.set(command.context.threadId, command.context.runId);
+    this.#activityChanged();
     active.task = new Promise<void>((resolvePromise) => {
       setImmediate(() => {
         void this.#execute(active).then(resolvePromise, () => resolvePromise());
@@ -2382,6 +2458,7 @@ export class RunnerRuntime {
     sink: RunnerMessageSink,
   ): CommandDecision {
     if (this.#draining) return reject("conflict", "Runner is draining", true);
+    if (this.#agentWorkStopped()) return reject("conflict", agentWorkStoppedSentence, true);
     if (this.#triggerPrograms.has(command.context.occurrenceId)) {
       return reject("conflict", "Trigger occurrence is already active", false);
     }
@@ -3123,6 +3200,7 @@ export class RunnerRuntime {
           force: true,
         });
       this.#runs.delete(context.runId);
+      this.#activityChanged();
       if (termination === "unknown") {
         this.#holdUncontainedThread(context.threadId, context.runId, active.containmentScope);
       }
@@ -3215,33 +3293,46 @@ export class RunnerRuntime {
         }
         return event;
       }
-      if (event.type === "tool.completed" && event.data.output.images?.length) {
-        const connection = this.#connection;
-        const imageDirectory = this.#imageStore.directory;
-        if (connection?.publishOutputImage && imageDirectory) {
-          const publishing = new AbortController();
-          const signal = AbortSignal.any([active.abort.signal, publishing.signal]);
-          try {
-            await withTimeout(
-              Promise.all(
-                event.data.output.images.map(async (image) => {
-                  if (dirname(image.path) === imageDirectory)
-                    await connection.publishOutputImage?.(image, signal).catch(() => undefined);
-                }),
-              ),
-              15_000,
-              { signal, timeoutError: () => new Error("Output image publishing timed out") },
-            );
-          } catch {
-            // The transcript still refers to the Runner's recorded image.
-          } finally {
-            publishing.abort();
-          }
-        }
+      if (event.type === "tool.completed") {
+        for (const image of event.data.output.images ?? []) this.#publishStoredImage(image);
       }
       await this.#emitDurable(active, event);
     }
     return undefined;
+  }
+
+  #publishStoredImage(image: ToolOutputImage): void {
+    if (
+      dirname(image.path) !== this.#imageStore.directory ||
+      this.#publishingImages.has(image.path) ||
+      this.#publishingImages.size >= 8
+    )
+      return;
+    const lifetime = this.#imagePublishLifetime.signal;
+    this.#publishingImages.add(image.path);
+    void (async () => {
+      try {
+        for (let attempt = 0; attempt < 2 && !lifetime.aborted; attempt++) {
+          const connection = this.#connection;
+          if (!connection?.publishOutputImage) return;
+          const publishing = new AbortController();
+          const signal = AbortSignal.any([lifetime, publishing.signal]);
+          try {
+            await withTimeout(connection.publishOutputImage(image, signal), 15_000, {
+              signal,
+              timeoutError: () => new Error("Output image publishing timed out"),
+            });
+            return;
+          } catch {
+            // The transcript can read the Runner's stored image.
+          } finally {
+            publishing.abort();
+          }
+        }
+      } finally {
+        this.#publishingImages.delete(image.path);
+      }
+    })();
   }
 
   /**

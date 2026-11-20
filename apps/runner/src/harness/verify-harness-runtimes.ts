@@ -6,6 +6,7 @@ import {
   shippedHarnessKinds,
   type ShippedHarnessKind,
 } from "@opensteer/core";
+import { inspectClaudeExecutable } from "@opensteer/harness-claude";
 import { engineArtifactPackageVersion } from "@opensteer/harness";
 import { defaultHarnessExecutable } from "./harness-drivers.js";
 
@@ -82,4 +83,19 @@ export async function harnessRuntimeVersionMismatches(
     }),
   );
   return results.flat();
+}
+
+export async function verifyInstalledClaudeVersion(
+  executable: string,
+  expected: string,
+  environment: NodeJS.ProcessEnv,
+  nodeExecutable: string,
+): Promise<void> {
+  const inspection = await inspectClaudeExecutable(executable, environment, nodeExecutable);
+  if (inspection.status !== "available") throw new Error(inspection.detail);
+  if (inspection.version !== expected) {
+    throw new Error(
+      `Claude Code: ${inspection.executable} printed ${inspection.version}, expected ${expected}`,
+    );
+  }
 }

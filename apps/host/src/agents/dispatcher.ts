@@ -1,12 +1,13 @@
 import { runHasBrowserPages } from "./browser-capability.js";
 import { promptCacheExpiresAt } from "@opensteer/core";
-import { dispatchNodeStop, NodeStopAuthoritySchema } from "@opensteer/database";
+import { dispatchNodeStop, grantedContent, NodeStopAuthoritySchema } from "@opensteer/database";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import {
   ModelSelectionSchema,
   OpensteerError,
   agentGrantAccess,
   agentGrantToolFamilies,
+  type ContentPart,
   placeInputFailure,
   runnerAgentToolsFailure,
   RequestIdSchema,
@@ -17,6 +18,7 @@ import {
   ThreadIdSchema,
   type EnvironmentId,
   type ThreadId,
+  type RunId,
   type UserId,
 } from "@opensteer/core";
 import type {
@@ -459,7 +461,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     // The live connection check precedes every credential this Run is issued.
     const authority = await this.#store
-      .resolveAuthority({
+      .admitExecution({
         ownerUserId: command.requestedBy,
         subject: { kind: "binding", bindingId: `run:${context.run.id}` },
       })
@@ -469,11 +471,31 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           "failed",
         );
       });
-    const lineageGrant = authority.lineage?.grant;
+    const lineageGrant = authority.agentConnection?.grant;
     const selectedGrant = lineageGrant?.scope === "selected" ? lineageGrant : undefined;
     const grantFamilies = selectedGrant ? agentGrantToolFamilies(selectedGrant) : null;
-    const runAccessMode = authority.lineage ? authority.mode : context.run.accessMode;
-    const planAccessMode = authority.lineage ? authority.mode : context.thread.accessMode;
+    const runAccessMode = authority.agentConnection ? authority.mode : context.run.accessMode;
+    // A selected lineage reads only the places its grant reaches, in every message it is sent.
+    const scrub = async <Message extends { readonly content: readonly ContentPart[] }>(
+      messages: readonly Message[],
+    ): Promise<Message[]> =>
+      selectedGrant
+        ? Promise.all(
+            messages.map(async (message) => ({
+              ...message,
+              content: (await grantedContent(
+                this.#store.database,
+                selectedGrant,
+                message.content,
+              )) as ContentPart[],
+            })),
+          )
+        : [...messages];
+    const sentHistory = await scrub(context.history);
+    const sentInputs = await scrub(context.inputs);
+    const sentReports = await scrub(context.reports.messages);
+    const sentInitial = initialContext ? await scrub(initialContext.messages) : [];
+    const planAccessMode = authority.agentConnection ? authority.mode : context.thread.accessMode;
     const binding = await this.#store
       .acquireExecutionBinding({
         personalContext: context.personalContext,
@@ -658,7 +680,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         harnessInstanceId: context.run.harnessInstanceId,
         // Binding proves whether a native conversation exists. Unstarted
         // attempts remain in the UI, but are not a conversation to replay.
-        history: binding.providerSessionReference && !initialContext ? [...context.history] : [],
+        history: binding.providerSessionReference && !initialContext ? sentHistory : [],
         historyWindow:
           binding.providerSessionReference && !initialContext
             ? context.historyWindow
@@ -669,7 +691,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
               },
         initialContext: initialContext
           ? {
-              messages: [...initialContext.messages],
+              messages: sentInitial,
               omittedCount: initialContext.omittedCount,
               throughSequence:
                 initialContext.throughSequence === null
@@ -688,7 +710,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       },
       correlationId: CorrelationIdSchema.parse(command.id),
       environmentId: context.run.environmentId,
-      inputs: context.inputs.map((message) =>
+      inputs: sentInputs.map((message) =>
         HarnessInputSchema.parse({
           author: message.author,
           ...(message.ownerEdited ? { ownerEdited: true } : {}),
@@ -707,7 +729,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         }),
       ),
       reports: {
-        messages: context.reports.messages.map((message) =>
+        messages: sentReports.map((message) =>
           HarnessInputSchema.parse({
             author: message.author,
             ...(message.ownerEdited ? { ownerEdited: true } : {}),
@@ -762,8 +784,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     // Recheck it at the send itself, so a revocation that committed meanwhile,
     // a Stop included, cannot launch new work.
     const dispatch = {
-      beforeSend: () =>
-        this.#store.assertActiveGrant({
+      beforeSend: async () => {
+        await this.#store.assertActiveGrant({
           bindingGeneration: binding.bindingGeneration,
           grantId: binding.grantId,
           environmentId: context.run.environmentId,
@@ -772,7 +794,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           runnerBootId: identity.bootId,
           runnerId: identity.runnerId,
           threadId: context.thread.id,
-        }),
+        });
+        // The plan (mode, tools, packages) was built for one grant revision and mode; a change
+        // committed while planning means this command describes authority that no longer holds.
+        if (authority.agentConnection) await this.#assertPlannedAuthority(context.run, authority);
+      },
       connectionGeneration: identity.connectionGeneration,
     };
     if (command.authoritySource.kind === "channel-ingress") {
@@ -785,6 +811,23 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     } else {
       await this.#runners.dispatch(runnerCommand, signal, dispatch);
     }
+  }
+  async #assertPlannedAuthority(
+    run: { readonly id: RunId; readonly requestedBy: UserId },
+    planned: Awaited<ReturnType<OpensteerStore["admitExecution"]>>,
+  ): Promise<void> {
+    const current = await this.#store.admitExecution({
+      ownerUserId: run.requestedBy,
+      subject: { kind: "binding", bindingId: `run:${run.id}` },
+    });
+    if (
+      current.agentConnection?.grantRevision !== planned.agentConnection?.grantRevision ||
+      current.mode !== planned.mode
+    )
+      throw new CommandDispatchError(
+        "This connected agent's access changed while the Run was being prepared.",
+        "retry",
+      );
   }
   async #dispatchTrigger(command: CommandRow, signal: AbortSignal): Promise<void> {
     if (!command.environmentId) {

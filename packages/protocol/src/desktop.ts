@@ -46,6 +46,7 @@ import {
   CloudComputerViewSchema,
   HostAccountAdoptionAuthoritySchema,
   UpdateAccountProfileRequestSchema,
+  WorkHomeResponseSchema,
 } from "@opensteer/control-plane-protocol";
 import {
   CreateHostedTeamRequestSchema,
@@ -560,6 +561,8 @@ export type DesktopTailscaleShareResult = z.infer<typeof DesktopTailscaleShareRe
  */
 export const DesktopBadgeCountInputSchema = z.strictObject({
   count: z.number().int().min(0).max(9_999),
+  /** The Home the count is for; absent for a count that only clears the badge. */
+  deploymentId: z.string().min(1).max(255).optional(),
 });
 export type DesktopBadgeCountInput = z.infer<typeof DesktopBadgeCountInputSchema>;
 
@@ -905,8 +908,10 @@ export type DesktopAddDirectRouteInput = z.infer<typeof DesktopAddDirectRouteInp
 /**
  * Connects a fresh Desktop client through one explicitly selected trust path.
  * Personal pairing verifies the Host-signed remote route before spending its
- * one-use code. Self-hosted connection verifies ordinary signed discovery and
- * then delegates authentication to that Host's native OAuth surface. Electron
+ * one-use code. Adding by address (a team server, or a Home at its own
+ * address) verifies ordinary signed discovery and then delegates
+ * authentication to that Host's native OAuth surface. The renderer, the bridge
+ * and the service share this one discriminator. Electron
  * main derives every Deployment identity and catalog field from those signed
  * documents; the renderer cannot infer or assert a Deployment kind.
  */
@@ -917,7 +922,7 @@ export const DesktopConnectPrivateDeploymentInputSchema = z.discriminatedUnion("
     pairingCode: PersonalPairingCodeSchema,
   }),
   z.strictObject({
-    kind: z.literal("team"),
+    kind: z.literal("address"),
     origin: DesktopAccessOriginSchema,
   }),
 ]);
@@ -1840,8 +1845,22 @@ export const DesktopCloudComputerFailureSchema = z.strictObject({
   message: z.string().min(1).max(1000),
 });
 export type DesktopCloudComputerFailure = z.infer<typeof DesktopCloudComputerFailureSchema>;
+/**
+ * A work Home an organization assigned this person: the Account's view of the assignment
+ * and its policy, and the Cloud Computer behind it when the Account could show it.
+ */
+export const DesktopWorkHomeSchema = z.strictObject({
+  home: WorkHomeResponseSchema.unwrap(),
+  computer: CloudComputerViewSchema.nullable(),
+});
+export type DesktopWorkHome = z.infer<typeof DesktopWorkHomeSchema>;
 export const DesktopCloudComputerReadResultSchema = z.discriminatedUnion("ok", [
-  z.strictObject({ ok: z.literal(true), data: CloudComputerListResponseSchema }),
+  z.strictObject({
+    ok: z.literal(true),
+    data: CloudComputerListResponseSchema,
+    /** Absent when the organization reads failed or this Account has none. */
+    work: z.array(DesktopWorkHomeSchema).max(50).optional(),
+  }),
   z.strictObject({ ok: z.literal(false), failure: DesktopCloudComputerFailureSchema }),
 ]);
 export type DesktopCloudComputerReadResult = z.infer<typeof DesktopCloudComputerReadResultSchema>;

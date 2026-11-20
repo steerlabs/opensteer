@@ -64,6 +64,8 @@ import {
   type TriggerAccess,
 } from "@opensteer/triggers";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
+import { liveDelegatingConnection } from "./resource-access.js";
+import { admitLineageExecution } from "./execution-authority.js";
 import { PrincipalIdSchema } from "@opensteer/channel-core";
 import type {
   DatabaseSchema,
@@ -88,6 +90,8 @@ const triggerAuthorityLossPauseReason =
 interface CreateTriggerInput {
   readonly actorThreadId: ThreadId | null;
   readonly actorAccessMode?: ThreadAccessMode;
+  /** The external agent connection the actor works for, checked under this mutation's fence. */
+  readonly actorConnectionId?: string;
   readonly anchorThreadId: ThreadId;
   readonly createdBy: UserId;
   readonly idempotencyKey: string;
@@ -160,7 +164,7 @@ export async function assertActiveTriggerExecutionBinding(
   const row = await database
     .selectFrom("triggerOccurrences")
     .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-    .select(["triggers.anchorThreadId", "triggers.createdBy"])
+    .select(["triggers.anchorThreadId", "triggers.createdBy", "triggers.originConnectionId"])
     .where("triggerOccurrences.id", "=", input.occurrenceId)
     .where("triggerOccurrences.environmentId", "=", input.environmentId)
     .where("triggerOccurrences.executionGeneration", "=", input.executionGeneration)
@@ -191,6 +195,7 @@ export async function assertActiveWatchBinding(
       "triggerWatchActivations.anchorThreadId",
       "triggerWatchActivations.createdBy",
       "triggerWatchActivations.environmentId",
+      "triggers.originConnectionId",
     ])
     .where("triggerWatchActivations.id", "=", input.activationId)
     .where("triggerWatchActivations.triggerId", "=", input.triggerId)
@@ -203,7 +208,11 @@ export async function assertActiveWatchBinding(
     .where(executableProgram)
     .executeTakeFirst();
   const admission = row
-    ? await admitThreadExecution(database, row.anchorThreadId, row.createdBy)
+    ? await admitLineageExecution(database, {
+        threadId: row.anchorThreadId,
+        userId: row.createdBy,
+        agentConnectionId: row.originConnectionId,
+      })
     : null;
   if (
     !row ||
@@ -243,6 +252,7 @@ export async function createTriggerInTransaction(
   await sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["trigger-create", input.createdBy, input.idempotencyKey])}, 0))`.execute(
     transaction,
   );
+  await admitTriggerActor(transaction, input.createdBy, input.actorConnectionId);
   const existing = await transaction
     .selectFrom("triggers")
     .selectAll()
@@ -303,16 +313,8 @@ export async function createTriggerInTransaction(
   const now = new Date();
   const nextFireAt =
     !managed?.paused && source.kind === "schedule" ? firstTriggerFireAt(source.schedule) : null;
-  // An automation works for the lineage of whoever defined it, else of the task it is anchored on.
-  const lineage = await transaction
-    .selectFrom("threads")
-    .select(["id", "originConnectionId"])
-    .where("id", "in", input.actorThreadId ? [input.actorThreadId, anchor.id] : [anchor.id])
-    .execute();
-  const originConnectionId =
-    lineage.find(({ id }) => id === input.actorThreadId)?.originConnectionId ??
-    lineage.find(({ id }) => id === anchor.id)?.originConnectionId ??
-    null;
+  // An automation works for whoever defined it: the authenticated actor's connection, if any.
+  const originConnectionId = input.actorConnectionId ?? null;
   await transaction
     .insertInto("triggers")
     .values({
@@ -465,6 +467,8 @@ export class TriggerStore {
   async update(input: {
     readonly actorThreadId: ThreadId | null;
     readonly actorAccessMode?: ThreadAccessMode;
+    /** The external agent connection the actor works for, checked under this mutation's fence. */
+    readonly actorConnectionId?: string;
     readonly expectedRevisionId: TriggerRevisionId;
     readonly name?: string;
     readonly ownerId: UserId;
@@ -491,8 +495,20 @@ export class TriggerStore {
       });
     }
     return commitPersonalMutation(this.#database, async (transaction) => {
+      await admitTriggerActor(transaction, input.ownerId, input.actorConnectionId);
       await lockWatchCapacityForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(transaction, input, "define");
+      // Another lineage's program, or the person's, would run with authority this actor lacks.
+      if (
+        input.actorConnectionId &&
+        (input.program !== undefined || input.source !== undefined) &&
+        trigger.originConnectionId !== input.actorConnectionId
+      )
+        throw new OpensteerError({
+          code: "forbidden",
+          message:
+            "A connected agent cannot replace the program of an automation it did not create.",
+        });
       if (!systemProgram) await requireTriggerExecutionAuthority(transaction, trigger);
       if (systemProgram && !trigger.systemRole)
         throw conflict("Only system automations can regenerate programs");
@@ -611,11 +627,14 @@ export class TriggerStore {
   async setStatus(input: {
     readonly actorThreadId: ThreadId | null;
     readonly actorAccessMode?: ThreadAccessMode;
+    /** The external agent connection the actor works for, checked under this mutation's fence. */
+    readonly actorConnectionId?: string;
     readonly ownerId: UserId;
     readonly status: "active" | "paused" | "archived";
     readonly triggerId: TriggerId;
   }): Promise<Trigger> {
     return commitPersonalMutation(this.#database, async (transaction) => {
+      await admitTriggerActor(transaction, input.ownerId, input.actorConnectionId);
       await lockWatchCapacityForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(
         transaction,
@@ -694,6 +713,8 @@ export class TriggerStore {
   async setNextFire(input: {
     readonly actorThreadId: ThreadId | null;
     readonly actorAccessMode?: ThreadAccessMode;
+    /** The external agent connection the actor works for, checked under this mutation's fence. */
+    readonly actorConnectionId?: string;
     readonly nextFireAt: string;
     readonly ownerId: UserId;
     readonly triggerId: TriggerId;
@@ -707,6 +728,7 @@ export class TriggerStore {
     }
     const nextFireAt = new Date(parsed.data);
     return commitPersonalMutation(this.#database, async (transaction) => {
+      await admitTriggerActor(transaction, input.ownerId, input.actorConnectionId);
       const trigger = await lockTriggerForMutation(transaction, input, "control");
       await requireTriggerExecutionAuthority(transaction, trigger);
       if (nextFireAt.getTime() <= Date.now()) {
@@ -746,6 +768,8 @@ export class TriggerStore {
     readonly limit?: number;
     readonly ownerId: UserId;
     readonly systemRole?: TriggerSystemRole;
+    /** Only the automations in one connected agent's lineage. */
+    readonly originConnectionId?: string;
   }): Promise<readonly TriggerSummary[]> {
     await requirePersonalOwner(this.#database, input.ownerId);
     let query = this.#database
@@ -753,7 +777,10 @@ export class TriggerStore {
       .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
       .selectAll("triggers")
       .select("threads.title as anchorThreadTitle")
-      .where("triggers.createdBy", "=", input.ownerId);
+      .where("triggers.createdBy", "=", input.ownerId)
+      .$if(input.originConnectionId !== undefined, (q) =>
+        q.where("triggers.originConnectionId", "=", input.originConnectionId!),
+      );
     if (input.systemRole) query = query.where("triggers.systemRole", "=", input.systemRole);
     const familyOf = input.anchorThreadId;
     // A conversation's family: its own automations, and those of tasks linked
@@ -896,11 +923,11 @@ export class TriggerStore {
           .selectAll()
           .where("id", "=", row.triggerId)
           .executeTakeFirstOrThrow();
-        const admission = await admitThreadExecution(
-          transaction,
-          row.anchorThreadId,
-          row.createdBy,
-        );
+        const admission = await admitLineageExecution(transaction, {
+          threadId: row.anchorThreadId,
+          userId: row.createdBy,
+          agentConnectionId: trigger.originConnectionId,
+        });
         if (
           trigger.status !== "active" ||
           trigger.currentRevisionId !== row.revisionId ||
@@ -1311,12 +1338,15 @@ export class TriggerStore {
   enqueueManual(input: {
     readonly actorThreadId: ThreadId | null;
     readonly actorAccessMode?: ThreadAccessMode;
+    /** The external agent connection the actor works for, checked under this mutation's fence. */
+    readonly actorConnectionId?: string;
     readonly ownerId: UserId;
     readonly idempotencyKey?: string;
     readonly payload?: unknown;
     readonly triggerId: TriggerId;
   }): Promise<TriggerOccurrence> {
     return commitPersonalMutation(this.#database, async (transaction) => {
+      await admitTriggerActor(transaction, input.ownerId, input.actorConnectionId);
       const trigger = await lockTriggerForMutation(transaction, input, "define");
       if (trigger.status === "archived") throw conflict("Archived automation cannot run");
       if (trigger.kind === "watch") {
@@ -1352,6 +1382,8 @@ export class TriggerStore {
     input: {
       readonly actorThreadId: ThreadId | null;
       readonly actorAccessMode?: ThreadAccessMode;
+      /** The external agent connection the actor works for, checked under this mutation's fence. */
+      readonly actorConnectionId?: string;
       readonly occurrenceId?: TriggerOccurrenceId;
       readonly triggerId: TriggerId;
     },
@@ -1361,6 +1393,7 @@ export class TriggerStore {
     return commitPersonalMutation(
       this.#database,
       async (transaction) => {
+        await admitTriggerActor(transaction, ownerId, input.actorConnectionId);
         const observedPending = await transaction
           .selectFrom("triggerOccurrences")
           .select("id")
@@ -1593,7 +1626,7 @@ export class TriggerStore {
       .selectAll()
       .where("id", "=", occurrence.triggerId)
       .executeTakeFirstOrThrow();
-    await requireTriggerExecutionAuthority(this.#database, trigger);
+    await requireTriggerLaunchAuthority(this.#database, trigger);
     const [revision, anchorThread] = await Promise.all([
       this.#database
         .selectFrom("triggerRevisions")
@@ -1639,7 +1672,7 @@ export class TriggerStore {
         .selectAll()
         .where("id", "=", occurrence.triggerId)
         .executeTakeFirstOrThrow();
-      await requireTriggerExecutionAuthority(transaction, trigger);
+      await requireTriggerLaunchAuthority(transaction, trigger);
       let executionGeneration = occurrence.executionGeneration;
       if (occurrence.status === "pending") {
         executionGeneration += 1;
@@ -1946,7 +1979,7 @@ async function enqueueOccurrence(
   readonly occurrence: TriggerOccurrence;
   readonly wasDuplicate: boolean;
 }> {
-  await requireTriggerExecutionAuthority(transaction, trigger);
+  await requireTriggerLaunchAuthority(transaction, trigger);
   const revision = await transaction
     .selectFrom("triggerRevisions")
     .select(["id", executableProgram.as("executable")])
@@ -1978,7 +2011,7 @@ async function enqueueOccurrence(
       message: `Automation already has ${MAX_PENDING_TRIGGER_OCCURRENCES} pending occurrences, its durable limit`,
     });
   }
-  const admission = await requireTriggerExecutionAuthority(transaction, trigger);
+  const admission = await requireTriggerLaunchAuthority(transaction, trigger);
   const occurrenceId = createId("triggerOccurrence");
   const commandId = createId("command");
   const now = new Date();
@@ -2096,7 +2129,7 @@ async function loadDispatchContext(
     .selectAll()
     .where("id", "=", occurrence.triggerId)
     .executeTakeFirstOrThrow();
-  await requireTriggerExecutionAuthority(transaction, trigger);
+  await requireTriggerLaunchAuthority(transaction, trigger);
   const [revision, anchorThread] = await Promise.all([
     transaction
       .selectFrom("triggerRevisions")
@@ -2193,6 +2226,8 @@ async function lockTriggerForMutation(
   input: {
     readonly actorThreadId: ThreadId | null;
     readonly actorAccessMode?: ThreadAccessMode;
+    /** The external agent connection the actor works for, checked under this mutation's fence. */
+    readonly actorConnectionId?: string;
     readonly ownerId: UserId;
     readonly triggerId: TriggerId;
   },
@@ -2354,12 +2389,36 @@ async function stopActiveWatchActivation(
     .where("desired", "=", "active")
     .execute();
 }
+/**
+ * A new occurrence, dispatch or program call: its anchor's environment and, for an automation a
+ * connection made, that connection still live and still granted Tasks.
+ */
 async function triggerExecutionAuthorityAvailable(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
-  trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy">,
+  trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "originConnectionId">,
 ): Promise<boolean> {
-  const admission = await admitThreadExecution(database, trigger.anchorThreadId, trigger.createdBy);
+  const admission = await admitLineageExecution(database, {
+    threadId: trigger.anchorThreadId,
+    userId: trigger.createdBy,
+    agentConnectionId: trigger.originConnectionId,
+  });
   return admission !== null;
+}
+async function requireTriggerLaunchAuthority(
+  database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
+  trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "originConnectionId">,
+) {
+  const admission = await admitLineageExecution(database, {
+    threadId: trigger.anchorThreadId,
+    userId: trigger.createdBy,
+    agentConnectionId: trigger.originConnectionId,
+  });
+  if (!admission)
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Automation execution authority is no longer active",
+    });
+  return admission;
 }
 async function requireTriggerExecutionAuthority(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
@@ -2544,4 +2603,20 @@ export async function pauseTriggerInTransaction(
     .executeTakeFirstOrThrow();
   if (trigger.kind === "watch") await stopActiveWatchActivation(transaction, trigger.id, now);
   return updated;
+}
+
+/** A lineaged actor's connection, locked ahead of every trigger row and checked live. */
+async function admitTriggerActor(
+  transaction: Transaction<DatabaseSchema>,
+  ownerId: UserId,
+  actorConnectionId: string | undefined,
+): Promise<void> {
+  if (!actorConnectionId) return;
+  await transaction
+    .selectFrom("agentConnections")
+    .select("id")
+    .where("id", "=", actorConnectionId)
+    .forShare()
+    .executeTakeFirst();
+  await liveDelegatingConnection(transaction, ownerId, actorConnectionId);
 }

@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   OpensteerError,
   type BrowserProfileId,
+  type BrowserSourceId,
   type EnvironmentId,
   type UserId,
 } from "@opensteer/core";
@@ -31,6 +32,7 @@ export interface StandardCdpTicketClaims {
   readonly browserSessionId: BrowserSessionId;
   readonly mode: StandardCdpMode;
   readonly facts: StandardCdpFacts;
+  readonly sharedChromeTab?: { readonly sourceId: BrowserSourceId; readonly tabId: string };
 }
 
 const ticketPattern = /^[A-Za-z0-9_-]{43}$/u;
@@ -50,7 +52,7 @@ export class StandardCdpTickets {
   }
 
   issue(input: StandardCdpTicketClaims & { readonly ttl?: number }): string {
-    const { ttl = 60_000, authority, browserSessionId, mode, facts } = input;
+    const { ttl = 60_000, authority, browserSessionId, mode, facts, sharedChromeTab } = input;
     if (!Number.isSafeInteger(ttl) || ttl <= 0 || ttl > maxTtl)
       throw new OpensteerError({
         code: "bad_request",
@@ -73,6 +75,7 @@ export class StandardCdpTickets {
         browserSessionId,
         mode,
         facts: Object.freeze({ ...facts }),
+        ...(sharedChromeTab ? { sharedChromeTab: Object.freeze({ ...sharedChromeTab }) } : {}),
       }),
       expiresAt,
     });

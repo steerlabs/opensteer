@@ -1,12 +1,4 @@
-import { z } from "zod";
-import { gatherComputerAccess } from "../devices/computer-access.js";
-import { DeviceToolHandlers } from "./handlers/devices.js";
-import { IntegrationPlatformStore, type IntegrationRequester } from "@opensteer/database";
-import { AppStore, TriggerStore } from "@opensteer/database";
-import { TriggerService } from "../triggers/trigger-service.js";
-import { TriggerToolHandlers } from "./handlers/triggers.js";
-import { ThreadService } from "../threads/thread-service.js";
-import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
+import { TriggerStore } from "@opensteer/database";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -19,281 +11,36 @@ import {
   MessageIdSchema,
   type AgentGrant,
   type RunId,
-  type ThreadAccessMode,
   type UserId,
 } from "@opensteer/core";
-import { AgentConnectionStore, type OpensteerStore } from "@opensteer/database";
 import {
-  createStoreFixture,
+  AgentConnectionStore,
+  assertLineageCompatibleReuse,
+  type OpensteerStore,
+} from "@opensteer/database";
+import {
   describeStore,
   testModelSelection,
   testReadyHarnessCatalog,
   pendingEvent,
 } from "@opensteer/database/test-support/store";
-import { personalTestExecution } from "./personal-execution.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { randomBytes } from "node:crypto";
-import { createServer, type Server } from "node:http";
-import { afterEach, expect, vi } from "vitest";
-import { AgentCallerResolver } from "./agent-caller.js";
+import { expect, vi } from "vitest";
 import { writeAgentHomeSettings } from "@opensteer/database/test-support/personal";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
+import { connectionCredentialPrefix } from "./connections/connection-authenticator.js";
+import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
 import {
-  ConnectionAuthenticator,
-  connectionCredentialPrefix,
-  credentialHash,
-} from "./connections/connection-authenticator.js";
-import { mcpResourceMetadataPath, mcpResourcePath } from "./connections/connection-oauth.js";
-import { agentToolHandlers } from "./handlers/index.js";
-import { ProductToolHandlers } from "./handlers/product.js";
-import { OpensteerMcpService } from "./opensteer-mcp-service.js";
-
-const servers: Server[] = [];
-const clients: Client[] = [];
-afterEach(async () => {
-  await Promise.allSettled(clients.splice(0).map((client) => client.close()));
-  for (const server of servers.splice(0)) {
-    server.closeAllConnections();
-    await withTimeout(
-      new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      ),
-      2000,
-      { timeoutError: () => new Error("MCP test server did not close") },
-    );
-  }
-});
-
-/** The real Host spine for connected agents: the store, resolver and MCP service. */
-async function serveMcp(
-  fixture: Awaited<ReturnType<typeof createStoreFixture>>,
-  options: {
-    readonly connected?: () => boolean;
-    readonly runScope?: import("../agents/run-tool-tokens.js").RunToolScope;
-    readonly runScopes?: Readonly<
-      Record<string, import("../agents/run-tool-tokens.js").RunToolScope>
-    >;
-    readonly notify?: { current?: () => void };
-    readonly subscribed?: () => void;
-    readonly unsubscribed?: () => void;
-  } = {},
-) {
-  const unavailable = new Proxy(
-    {},
-    {
-      get: () => async () => {
-        throw new Error("Unexpected tool");
-      },
-    },
-  );
-  const { store } = fixture;
-  const realtime = new RealtimeHub();
-  const stopMutationHooks = fixture.observePersonalCommits((head, scopes) =>
-    realtime.wake(head, scopes),
-  );
-  if (options.notify) options.notify.current = () => realtime.wake("0", new Set(["deployment"]));
-  const observations = {
-    observe: realtime.observe.bind(realtime),
-    observeScopes: (...args: Parameters<RealtimeHub["observeScopes"]>) => {
-      options.subscribed?.();
-      const detach = realtime.observeScopes(...args);
-      return () => {
-        options.unsubscribed?.();
-        return detach();
-      };
-    },
-  };
-  const commands = new CommandService({
-    store,
-    admission: new KeyedAdmissionQueue({
-      maxInFlight: 8,
-      maxQueuedBytes: 1024 * 1024,
-      maxQueuedCommands: 100,
-    }),
-    onExecutionQueued: () => {},
-  });
-  const settings = await store.database
-    .selectFrom("personalSettings")
-    .selectAll()
-    .executeTakeFirstOrThrow();
-  const environment = await store.database
-    .selectFrom("executionEnvironments")
-    .select("id")
-    .where("runnerId", "=", settings.agentHomeComputerId)
-    .executeTakeFirstOrThrow();
-  const threads = new ThreadService({
-    store,
-    commands,
-    runners: {
-      canRunHarness: () => true,
-      isAvailable: () => true,
-      harnessAccessModes: () => undefined,
-      identityForEnvironment: () => undefined,
-      attachmentInputFailure: () => null,
-    },
-    placeContext: unavailable as never,
-    browser: unavailable as never,
-  });
-  const product = new ProductToolHandlers({
-    execution: personalTestExecution(store, {
-      userId: settings.ownerId,
-      environmentId: environment.id,
-      agentHome: { computerId: settings.agentHomeComputerId, path: settings.agentHomePath },
-    }),
-    deploymentId: (
-      await store.database.selectFrom("deployments").select("id").executeTakeFirstOrThrow()
-    ).id,
-    store,
-    threads,
-    realtime: { ...observations, sendToUsers: realtime.sendToUsers.bind(realtime) },
-    commands,
-    browser: {
-      readablePlaces: async (_owner: unknown, references: readonly unknown[]) => [...references],
-    },
-    isEnvironmentConnected: options.connected ?? (() => true),
-    canRunHarness: () => true,
-  } as unknown as ConstructorParameters<typeof ProductToolHandlers>[0]);
-  let service!: OpensteerMcpService;
-  const server = createServer((request, response) => {
-    void (async () => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of request)
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      const text = Buffer.concat(chunks).toString();
-      const token = request.headers.authorization?.slice(7) ?? "";
-      // As the Host route does once the connection routes accepted the credential.
-      await service.handle(
-        request,
-        response,
-        text ? JSON.parse(text) : undefined,
-        token,
-        token.startsWith(connectionCredentialPrefix) ? url.origin : undefined,
-      );
-    })().catch((error: unknown) =>
-      response.destroy(error instanceof Error ? error : new Error("MCP test failed")),
-    );
-  });
-  servers.push(server);
-  server.once("close", stopMutationHooks);
-  await withTimeout(
-    new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
-    }),
-    2000,
-    { timeoutError: () => new Error("MCP test server did not listen") },
-  );
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("MCP test did not listen");
-  const url = new URL(`http://127.0.0.1:${address.port}${mcpResourcePath}`);
-  const integrationStore = new IntegrationPlatformStore(store.database);
-  const platform = {
-    store: integrationStore,
-    listCallableTools: (input: IntegrationRequester) => integrationStore.listCallableTools(input),
-    computerToolEnabled: () => false,
-    computerUseVersion: async () => undefined,
-    computerAppApprovals: {
-      computerUseInventory: async () => ({ machines: [], phones: [] }),
-      computerAppHolders: () => new Map(),
-    },
-  } as unknown as Parameters<typeof gatherComputerAccess>[0];
-  const devices = new DeviceToolHandlers({
-    devices: {
-      ...platform,
-      computerAccess: gatherComputerAccess.bind(undefined, platform),
-    } as unknown as ConstructorParameters<typeof DeviceToolHandlers>[0]["devices"],
-    access: {} as never,
-  });
-  service = new OpensteerMcpService({
-    realtime,
-    callers: new AgentCallerResolver({
-      store,
-      runs: {
-        authenticate: async (token) => {
-          if (token === "test-run" && options.runScope) return options.runScope;
-          const scope = options.runScopes?.[token];
-          if (scope) return scope;
-          throw new Error("Not a Run");
-        },
-      },
-      connections: new ConnectionAuthenticator(new AgentConnectionStore(store.database)),
-    }),
-    handlers: agentToolHandlers({
-      tabs: {} as never,
-      administration: new Proxy(
-        {},
-        {
-          get: () => {
-            throw new Error("Unexpected administration tool");
-          },
-        },
-      ) as never,
-      product,
-      devices,
-      triggers: new TriggerToolHandlers(
-        new TriggerService({
-          store: new TriggerStore(store.database),
-          threads: store,
-        } as unknown as ConstructorParameters<typeof TriggerService>[0]),
-        store,
-      ),
-      apps: {
-        list: async (actor: { readonly caller: { readonly userId: UserId } }) =>
-          new AppStore(store.database).list(actor.caller.userId),
-      } as never,
-      teamRequestForRun: async () => null,
-      personalContextForRun: async () => true,
-    }),
-    store,
-    publicUrl: options.runScope || options.runScopes ? url : new URL("http://runtime.invalid"),
-  });
-  return url;
-}
-
-async function connection(
-  store: OpensteerStore,
-  url: URL,
-  input: {
-    readonly userId: Parameters<AgentConnectionStore["create"]>[0]["userId"];
-    readonly accessMode: ThreadAccessMode;
-    readonly grant?: AgentGrant;
-  },
-) {
-  const connections = new AgentConnectionStore(store.database);
-  const record = await connections.create({
-    ...input,
-    label: "Test agent",
-    clientName: "Test agent",
-    resource: url.href,
-    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000),
-  });
-  const token = `${connectionCredentialPrefix}${randomBytes(32).toString("base64url")}`;
-  expect(await connections.activate(record.id, credentialHash(token))).toBe(true);
-  const client = new Client({ name: "connected-agent", version: "1" });
-  clients.push(client);
-  await client.connect(
-    new StreamableHTTPClientTransport(url, {
-      requestInit: { headers: { Authorization: `Bearer ${token}` } },
-    }) as unknown as Transport,
-    { timeout: 5000 },
-  );
-  return {
-    client,
-    token,
-    id: record.id,
-    revoke: () => connections.revoke(input.userId, record.id),
-  };
-}
-
-function errorText(result: Awaited<ReturnType<Client["callTool"]>>): string {
-  expect(result.isError).toBe(true);
-  const [first] = result.content as { type: string; text: string }[];
-  return z
-    .object({
-      error: z.object({ code: z.string(), message: z.string(), next: z.string().nullable() }),
-    })
-    .parse(result.structuredContent ?? JSON.parse(first!.text)).error.message;
-}
+  clients,
+  commands,
+  connection,
+  createTask,
+  errorText,
+  ownerTask,
+  queuedRun,
+  send,
+  serveMcp,
+} from "./connection-caller.test-support.js";
 
 describeStore("connected agents on the Opensteer MCP", (it) => {
   it("lists only connection tools and refuses a revoked connection on its open session", async ({
@@ -1077,35 +824,6 @@ describeStore("connection grants and lineage", (it) => {
     source: "export default async () => null",
     toolContractVersion: 5,
   } as const;
-  async function createTask(
-    agent: Awaited<ReturnType<typeof connection>>,
-    f: Awaited<ReturnType<Awaited<ReturnType<typeof createStoreFixture>>["startRunFixture"]>>,
-    key: string,
-  ) {
-    const result = await agent.client.callTool({
-      name: "opensteer_task_create",
-      arguments: {
-        aiAccountId: f.harnessInstance.id,
-        model: { ...testModelSelection, options: {} },
-        title: `Lineage ${key}`,
-        message: "Work on it",
-        operationKey: key,
-      },
-    });
-    expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
-    return ThreadIdSchema.parse((result.structuredContent as { taskId: string }).taskId);
-  }
-  async function queuedRun(
-    storeFixture: Awaited<ReturnType<typeof createStoreFixture>>,
-    threadId: import("@opensteer/core").ThreadId,
-  ) {
-    return storeFixture.database
-      .selectFrom("runs")
-      .select(["id", "status", "connectionId", "accessMode"])
-      .where("threadId", "=", threadId)
-      .orderBy("createdAt", "desc")
-      .executeTakeFirstOrThrow();
-  }
   function scheduled(anchor: import("@opensteer/core").ThreadId, userId: UserId, key: string) {
     return {
       actorThreadId: null,
@@ -1135,7 +853,7 @@ describeStore("connection grants and lineage", (it) => {
     // With nothing granted the session serves no tool at all.
     await expect(
       agent.client.callTool({ name: "opensteer_task_list", arguments: {} }),
-    ).rejects.toThrow();
+    ).rejects.toThrow("Method not found");
     const plugins = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
@@ -1155,14 +873,13 @@ describeStore("connection grants and lineage", (it) => {
       "opensteer_task_read",
       "opensteer_ai_account_list",
     ]) {
-      const refused = await plugins.client
-        .callTool({
-          name,
-          arguments: name === "opensteer_task_read" ? { taskId: f.thread.id } : {},
-        })
-        .then((result) => (result.isError ? "refused" : "called"))
-        .catch(() => "refused");
-      expect(refused, name).toBe("refused");
+      const result = await plugins.client.callTool({
+        name,
+        arguments: name === "opensteer_task_read" ? { taskId: f.thread.id } : {},
+      });
+      // Not registered for this session: the SDK refuses the name before any handler runs.
+      expect(result.isError, name).toBe(true);
+      expect(JSON.stringify(result.content), name).toMatch(/not found/iu);
     }
     expect(
       await storeFixture.database.selectFrom("threadInputs").select("messageId").execute(),
@@ -1258,7 +975,10 @@ describeStore("connection grants and lineage", (it) => {
     ).toContain("Request is unavailable");
 
     const triggers = new TriggerStore(database);
-    const lineage = await triggers.create(scheduled(own, f.userId, "lineage-automation"));
+    const lineage = await triggers.create({
+      ...scheduled(own, f.userId, "lineage-automation"),
+      actorConnectionId: agent.id,
+    });
     const owner = await triggers.create(scheduled(f.thread.id, f.userId, "owner-automation"));
     expect(
       await database
@@ -1304,6 +1024,71 @@ describeStore("connection grants and lineage", (it) => {
     ).toEqual({ status: "active" });
   });
 
+  it("carries an everything connection's input on an owner task through dequeue and Disconnect", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("everything-dequeue");
+    const url = await serveMcp(storeFixture);
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    const task = await ownerTask(storeFixture, f, "dequeue");
+    const sent = await send(agent, task, "everything-send");
+    expect(sent.isError, JSON.stringify(sent.content)).not.toBe(true);
+    // The queued Run was created from the input read through `thread_work_inputs`.
+    const run = await queuedRun(storeFixture, task);
+    expect(run).toMatchObject({ connectionId: agent.id, status: "queued" });
+    expect(
+      await storeFixture.store.admitExecution({
+        ownerUserId: f.userId,
+        subject: { kind: "binding", bindingId: `run:${run.id}` },
+      }),
+    ).toMatchObject({ mode: "full-access", agentConnection: { agentConnectionId: agent.id } });
+
+    const host = commands(storeFixture, f.userId);
+    await host.revoke(agent.id);
+    expect(host.failures).toEqual([]);
+    // A Run that never left the Home ends there, so the cleanup settles and the agent is Stopped.
+    expect((await queuedRun(storeFixture, task)).status).toBe("interrupted");
+    expect((await host.list()).find(({ id }) => id === agent.id)).toMatchObject({
+      state: "stopped",
+      lastActionUncertain: false,
+    });
+    await host.remove(agent.id);
+    expect((await host.list()).map(({ id }) => id)).not.toContain(agent.id);
+  });
+
+  it("lets a connection send only into its own lineage, or the person's tasks with everything", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("send-lineage");
+    const url = await serveMcp(storeFixture);
+    const first = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: tasksOnly,
+    });
+    const everything = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    const firstTask = await createTask(first, f, "first-lineage");
+    const owners = await ownerTask(storeFixture, f, "send-lineage");
+    expect(errorText(await send(everything, firstTask, "into-first"))).toContain(
+      "Task is unavailable",
+    );
+    expect(errorText(await send(first, owners, "into-owner"))).toContain("Task is unavailable");
+    const allowed = await send(everything, owners, "into-owners");
+    expect(allowed.isError, JSON.stringify(allowed.content)).not.toBe(true);
+    // A task delegating stays inside its lineage: a different lineage is never reused.
+    await expect(
+      assertLineageCompatibleReuse(storeFixture.database, firstTask, owners),
+    ).rejects.toThrow("Start a new task for this work");
+  });
+
   it("runs lineage work at the minimum mode and only within its grant", async ({
     storeFixture,
   }) => {
@@ -1316,7 +1101,6 @@ describeStore("connection grants and lineage", (it) => {
     });
     const own = await createTask(agent, f, "min-mode");
     const { database, store } = storeFixture;
-    // The person raising the task's mode never widens what the connection's lineage may do.
     await database
       .updateTable("threads")
       .set({ accessMode: "full-access" })
@@ -1324,40 +1108,74 @@ describeStore("connection grants and lineage", (it) => {
       .execute();
     const run = await queuedRun(storeFixture, own);
     const binding = { kind: "binding", bindingId: `run:${run.id}` } as const;
-    expect(await store.resolveAuthority({ ownerUserId: f.userId, subject: binding })).toMatchObject(
-      { mode: "approval-required", lineage: { connectionId: agent.id } },
-    );
+    expect(await store.admitExecution({ ownerUserId: f.userId, subject: binding })).toMatchObject({
+      mode: "approval-required",
+      agentConnection: { agentConnectionId: agent.id },
+    });
     const access = (
-      grantTarget: Parameters<OpensteerStore["resolveResourceAccess"]>[0]["grantTarget"],
+      grantTarget?: Parameters<OpensteerStore["resolveResourceAccess"]>[0]["grantTarget"],
     ) =>
-      store.resolveResourceAccess({
-        ownerUserId: f.userId,
-        agentBindingId: `run:${run.id}`,
-        explicitAccess: "read-write",
-        ...(grantTarget ? { grantTarget } : {}),
-      });
-    expect((await access(undefined)).access).toBeNull();
-    expect((await access({ kind: "device" })).access).toBeNull();
+      store
+        .resolveResourceAccess({
+          ownerUserId: f.userId,
+          agentBindingId: `run:${run.id}`,
+          explicitAccess: "read-write",
+          ...(grantTarget ? { grantTarget } : {}),
+        })
+        .then(({ access }) => access);
+    expect(await access()).toBeNull();
+    expect(await access({ kind: "device" })).toBeNull();
     expect(
-      (await access({ kind: "browser-profile", profileId: createId("browserProfile") })).access,
+      await access({ kind: "browser-profile", profileId: createId("browserProfile") }),
     ).toBeNull();
     expect(
-      (await access({ kind: "plugin", target: { kind: "installed", pluginId: "gmail" } })).access,
+      await access({ kind: "plugin", target: { kind: "installed", pluginId: "gmail" } }),
     ).toBeNull();
-    expect((await access("actor")).access).not.toBeNull();
-    // An automation in the lineage resolves to the same lineage and ends with it.
-    const lineageTrigger = await new TriggerStore(database).create(
-      scheduled(own, f.userId, "min-mode-automation"),
-    );
-    expect(lineageTrigger.trigger.id).toBeTruthy();
+    // An automation it made, and a child of its task, carry the same lineage and the same refusals.
+    const made = await new TriggerStore(database).create({
+      ...scheduled(own, f.userId, "lineage-made"),
+      actorConnectionId: agent.id,
+    });
+    expect(made.trigger.id).toBeTruthy();
+    expect(
+      await database
+        .selectFrom("triggers")
+        .select("originConnectionId")
+        .where("id", "=", made.trigger.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ originConnectionId: agent.id });
+    const child = (
+      await store.createThread({
+        createdBy: f.userId,
+        environmentId: f.environmentId,
+        harnessInstanceId: f.harnessInstance.id,
+        modelSelection: testModelSelection,
+        idempotencyKey: "lineage-child",
+        title: "Child",
+        parentThreadId: own,
+      })
+    ).thread.id;
+    expect(
+      (await store.threadOrigins([child])).get(child),
+      "a child task inherits its parent's lineage",
+    ).toBe(agent.id);
+    expect(
+      (
+        await store.resolveResourceAccess({
+          ownerUserId: f.userId,
+          agentBindingId: `thread:${child}`,
+          explicitAccess: "read-write",
+          grantTarget: { kind: "device" },
+        })
+      ).access,
+    ).toBeNull();
 
-    // The person's own Run keeps exactly today's resolution: no lineage, its own snapshot.
-    const ownerRun = await store.resolveAuthority({
+    // The person's own Run resolves exactly as before: no connection, its own snapshot.
+    const ownerRun = await store.admitExecution({
       ownerUserId: f.userId,
       subject: { kind: "binding", bindingId: `run:${f.run.id}` },
     });
-    expect(ownerRun.lineage).toBeNull();
-    expect(ownerRun.mode).toBe(f.run.accessMode);
+    expect(ownerRun).toMatchObject({ agentConnection: null, mode: f.run.accessMode });
     expect(
       (
         await store.resolveResourceAccess({
@@ -1368,13 +1186,21 @@ describeStore("connection grants and lineage", (it) => {
       ).access,
     ).toBe("read-write");
 
-    await agent.revoke();
+    await commands(storeFixture, f.userId).revoke(agent.id);
+    await expect(store.admitExecution({ ownerUserId: f.userId, subject: binding })).rejects.toThrow(
+      "access ended",
+    );
+    // A new occurrence of its automation is refused; the person may still pause it.
     await expect(
-      store.resolveAuthority({ ownerUserId: f.userId, subject: binding }),
-    ).rejects.toThrow("access ended");
+      new TriggerStore(database).enqueueManual({
+        actorThreadId: null,
+        ownerId: f.userId,
+        triggerId: made.trigger.id,
+      }),
+    ).rejects.toThrow("Automation execution authority is no longer active");
   });
 
-  it("applies a narrowed grant on the next call and stops the lineage's live Run", async ({
+  it("applies a narrowed grant through the update command: the live Run stops and the session retires", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("grant-narrow");
@@ -1387,20 +1213,15 @@ describeStore("connection grants and lineage", (it) => {
     const own = await createTask(agent, f, "narrow");
     const run = await queuedRun(storeFixture, own);
     await startPersonalQueuedRunFixture(storeFixture.store, run.id);
-    const connections = new AgentConnectionStore(storeFixture.database);
-    const { narrowed, connection: updated } = await connections.update(f.userId, {
-      connectionId: agent.id,
-      expectedRevision: 1,
+    const host = commands(storeFixture, f.userId);
+    const updated = await host.update(agent.id, {
       grant: { scope: "selected", tasks: false, resources: [] },
     });
-    expect({ narrowed, grantRevision: updated.grantRevision }).toEqual({
-      narrowed: true,
-      grantRevision: 2,
+    expect(updated).toMatchObject({ type: "connection.update", connection: { grantRevision: 2 } });
+    await expect(host.update(agent.id, { label: "Stale" })).rejects.toMatchObject({
+      code: "conflict",
+      reason: "revision-changed",
     });
-    await expect(
-      connections.update(f.userId, { connectionId: agent.id, expectedRevision: 1, label: "x" }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    await storeFixture.store.stopConnectionLineage(f.userId, agent.id, "narrowed");
     expect(
       await storeFixture.database
         .selectFrom("commands")
@@ -1409,13 +1230,29 @@ describeStore("connection grants and lineage", (it) => {
         .where("type", "=", "run.interrupt")
         .execute(),
     ).toEqual([{ type: "run.interrupt" }]);
-    expect(
-      errorText(await agent.client.callTool({ name: "opensteer_task_list", arguments: {} })),
-    ).toContain("unavailable to this caller");
+    // The open session advertised the old grant: its next request is served under the new one.
+    expect((await agent.client.listTools()).tools).toEqual([]);
     await expect(
-      storeFixture.store.resolveAuthority({
+      storeFixture.store.admitExecution({
         ownerUserId: f.userId,
         subject: { kind: "binding", bindingId: `run:${run.id}` },
+      }),
+    ).rejects.toThrow("may no longer ask");
+    // A task mutation under the connection's own fence is refused for the same reason.
+    await expect(
+      storeFixture.store.createThread({
+        createdBy: f.userId,
+        environmentId: f.environmentId,
+        harnessInstanceId: f.harnessInstance.id,
+        modelSelection: testModelSelection,
+        idempotencyKey: "after-narrow",
+        title: "After",
+        authority: {
+          kind: "connection",
+          connectionId: agent.id,
+          userId: f.userId,
+          accessMode: "full-access",
+        },
       }),
     ).rejects.toThrow("may no longer ask");
   });
@@ -1439,19 +1276,11 @@ describeStore("connection grants and lineage", (it) => {
     const firstTask = await createTask(first, f, "first");
     const firstRun = await queuedRun(storeFixture, firstTask);
     await startPersonalQueuedRunFixture(store, firstRun.id);
-    const queued = await first.client.callTool({
-      name: "opensteer_task_send",
-      arguments: {
-        taskId: firstTask,
-        message: "Then this",
-        delivery: "queue",
-        operationKey: "queued",
-      },
-    });
+    const queued = await send(first, firstTask, "queued");
     expect(queued.isError, JSON.stringify(queued.content)).not.toBe(true);
     const pendingInput = await database
       .selectFrom("threadInputs")
-      .select(["messageId", "state", "connectionId"])
+      .select(["messageId", "connectionId"])
       .where("threadId", "=", firstTask)
       .where("state", "=", "pending")
       .executeTakeFirstOrThrow();
@@ -1471,18 +1300,17 @@ describeStore("connection grants and lineage", (it) => {
         subject: { kind: "thread", id: firstTask },
       },
     });
-    const automation = await new TriggerStore(database).create(
-      scheduled(firstTask, f.userId, "first-automation"),
-    );
+    const automation = await new TriggerStore(database).create({
+      ...scheduled(firstTask, f.userId, "first-automation"),
+      actorConnectionId: first.id,
+    });
     const secondTask = await createTask(second, f, "second");
     const secondRun = await queuedRun(storeFixture, secondTask);
     await startPersonalQueuedRunFixture(store, secondRun.id);
 
-    expect(await first.revoke()).toBe(true);
-    expect(await first.revoke()).toBe(false);
-    const { failures } = await store.stopConnectionLineage(f.userId, first.id, "disconnect");
-    expect(failures).toEqual([]);
-
+    const host = commands(storeFixture, f.userId);
+    await host.revoke(first.id);
+    expect(host.failures).toEqual([]);
     expect(
       await database
         .selectFrom("threadInputs")
@@ -1490,7 +1318,10 @@ describeStore("connection grants and lineage", (it) => {
         .where("messageId", "=", pendingInput.messageId)
         .executeTakeFirstOrThrow(),
     ).toEqual({ state: "cancelled" });
-    expect(await store.requests.get(asked.request.id)).toMatchObject({ status: "cancelled" });
+    expect(await store.requests.get(asked.request.id)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "authority-revoked",
+    });
     expect(
       await database
         .selectFrom("triggers")
@@ -1498,17 +1329,29 @@ describeStore("connection grants and lineage", (it) => {
         .where("id", "=", automation.trigger.id)
         .executeTakeFirstOrThrow(),
     ).toEqual({ status: "paused" });
-    const interrupts = await database
-      .selectFrom("commands")
-      .select("runId")
-      .where("type", "=", "run.interrupt")
-      .execute();
-    expect(interrupts).toEqual([{ runId: firstRun.id }]);
+    expect(
+      await database
+        .selectFrom("commands")
+        .select("runId")
+        .where("type", "=", "run.interrupt")
+        .execute(),
+    ).toEqual([{ runId: firstRun.id }]);
     await expect(
       first.client.callTool({ name: "opensteer_task_list", arguments: {} }),
     ).rejects.toThrow("Agent tools authorization is invalid or expired");
+    // Its Run was handed off and has not confirmed it ended: Stopping, and not removable yet.
+    expect((await host.list()).find(({ id }) => id === first.id)).toMatchObject({
+      state: "stopping",
+    });
+    await expect(host.remove(first.id)).rejects.toMatchObject({ reason: "cleanup-outstanding" });
+    expect(
+      await database
+        .selectFrom("agentConnections")
+        .select(["cleanupReason", "cleanupCompletedAt"])
+        .where("id", "=", first.id)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ cleanupReason: "revoked", cleanupCompletedAt: null });
 
-    // The person's Run and the second agent's work are untouched.
     for (const id of [f.run.id, secondRun.id])
       expect(
         await database.selectFrom("runs").select("status").where("id", "=", id).executeTakeFirst(),
@@ -1517,18 +1360,37 @@ describeStore("connection grants and lineage", (it) => {
     expect(
       (secondList.structuredContent as { tasks: { id: string }[] }).tasks.map(({ id }) => id),
     ).toEqual([secondTask]);
-
-    const listed = await new AgentConnectionStore(database).list(f.userId, {
-      includeRevoked: true,
+    expect((await host.list()).find(({ id }) => id === second.id)).toMatchObject({
+      state: "active",
     });
-    expect(listed.find(({ id }) => id === first.id)).toMatchObject({ state: "stopping" });
-    expect(listed.find(({ id }) => id === second.id)).toMatchObject({ state: "active" });
-    expect((await new AgentConnectionStore(database).list(f.userId)).map(({ id }) => id)).toEqual([
-      second.id,
-    ]);
   });
 
-  it("serializes Disconnect with an admitted call: it lands before and is stopped, or is refused", async ({
+  it("drives an expired connection through the same durable cleanup", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("expiry");
+    const url = await serveMcp(storeFixture);
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: tasksOnly,
+    });
+    const own = await createTask(agent, f, "expiry");
+    await storeFixture.database
+      .updateTable("agentConnections")
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .where("id", "=", agent.id)
+      .execute();
+    await commands(storeFixture, f.userId).effects.driveCleanups();
+    expect(
+      await storeFixture.database
+        .selectFrom("agentConnections")
+        .select(["cleanupReason", "cleanupCompletedAt"])
+        .where("id", "=", agent.id)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ cleanupReason: "expired", cleanupCompletedAt: expect.any(Date) });
+    expect((await queuedRun(storeFixture, own)).status).toBe("interrupted");
+  });
+
+  it("serializes Disconnect with an admitted send: it lands before and is stopped, or is refused", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("disconnect-race");
@@ -1542,26 +1404,24 @@ describeStore("connection grants and lineage", (it) => {
     const own = await createTask(agent, f, "race");
     const run = await queuedRun(storeFixture, own);
     await startPersonalQueuedRunFixture(store, run.id);
-    const [sent] = await Promise.allSettled([
-      agent.client.callTool({
-        name: "opensteer_task_send",
-        arguments: { taskId: own, message: "Racing", delivery: "queue", operationKey: "race" },
-      }),
-      (async () => {
-        await agent.revoke();
-        await store.stopConnectionLineage(f.userId, agent.id, "disconnect");
-      })(),
-    ]);
-    // Whatever was admitted is stopped; nothing in the lineage is left to execute.
-    await store.stopConnectionLineage(f.userId, agent.id, "disconnect");
-    expect(
-      await database
-        .selectFrom("threadInputs")
-        .select("state")
-        .where("threadId", "=", own)
-        .where("state", "in", ["pending", "awaiting-approval"])
-        .execute(),
-    ).toEqual([]);
+    const host = commands(storeFixture, f.userId);
+    const [sent] = await Promise.allSettled([send(agent, own, "race"), host.revoke(agent.id)]);
+    expect(host.failures).toEqual([]);
+    const refused =
+      sent.status === "rejected" ||
+      (sent.value.isError === true &&
+        /invalid or expired|access ended/iu.test(errorText(sent.value)));
+    const pending = await database
+      .selectFrom("threadInputs")
+      .select("state")
+      .where("threadId", "=", own)
+      .where("state", "in", ["pending", "awaiting-approval"])
+      .execute();
+    // Either the send was refused, or it landed first and the one revoke's cleanup cancelled it.
+    expect({ refusedOrLandedAndStopped: refused || pending.length === 0, pending }).toEqual({
+      refusedOrLandedAndStopped: true,
+      pending: [],
+    });
     expect(
       await database
         .selectFrom("commands")
@@ -1569,7 +1429,5 @@ describeStore("connection grants and lineage", (it) => {
         .where("type", "=", "run.interrupt")
         .execute(),
     ).toEqual([{ runId: run.id }]);
-    if (sent.status === "fulfilled" && sent.value.isError)
-      expect(errorText(sent.value)).toMatch(/invalid|expired|revoked|unavailable/iu);
   });
 });

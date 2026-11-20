@@ -7,8 +7,14 @@ import * as deviceInventoryStore from "./device-inventory-store.js";
 import * as deviceDriverStore from "./device-driver-store.js";
 import * as waitingInputs from "./waiting-inputs.js";
 import { setExecutionClock } from "./personal-transaction.js";
-import { pauseLineageTrigger } from "./trigger-store.js";
-import { connectionLineageWork, settleLineageRequests } from "./connection-disconnect.js";
+import { pauseLineageTrigger, TriggerStore } from "./trigger-store.js";
+import {
+  completeCleanupIfSettled,
+  connectionLineageWork,
+  openCleanups,
+  requestExpiredCleanups,
+  settleLineageRequests,
+} from "./connection-disconnect.js";
 import { bindDeviceSession, revokeDeviceSession, leaveDevice } from "./device-store.js";
 import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
@@ -21,7 +27,8 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import {
-  resolveAuthority,
+  admitExecution,
+  bindingAgentConnectionId,
   resolveResourceAccess,
   type ResourceAccessInput,
 } from "./resource-access.js";
@@ -798,6 +805,9 @@ export class OpensteerStore {
       agentBindingId,
     );
   }
+  listBrowserSessionAttachmentBindings(sessionId: BrowserSessionId): Promise<readonly string[]> {
+    return browserSessionStore.listBrowserSessionAttachmentBindings(this.#database, sessionId);
+  }
   async listAttachedRunIdsForBrowserSessions(
     sessionIds: readonly BrowserSessionId[],
   ): Promise<ReadonlyMap<BrowserSessionId, readonly RunId[]>> {
@@ -904,8 +914,14 @@ export class OpensteerStore {
     return resolveResourceAccess(this.#database, input);
   }
 
-  resolveAuthority(input: Parameters<typeof resolveAuthority>[1]) {
-    return resolveAuthority(this.#database, input);
+  /** A binding's immutable connection; null for the person's own work. */
+  bindingAgentConnectionId(bindingId: string) {
+    return bindingAgentConnectionId(this.#database, bindingId);
+  }
+
+  /** Is this execution still allowed at all? See `admitExecution`. */
+  admitExecution(input: Parameters<typeof admitExecution>[1]) {
+    return admitExecution(this.#database, input);
   }
 
   /**
@@ -943,6 +959,21 @@ export class OpensteerStore {
         );
       for (const triggerId of work.triggers)
         await attempt(() => pauseLineageTrigger(this.#database, triggerId));
+      for (const triggerId of work.pendingOccurrenceTriggers)
+        await attempt(() =>
+          new TriggerStore(this.#database).cancelPendingOccurrences(userId, {
+            actorThreadId: null,
+            triggerId,
+          }),
+        );
+      for (const commandId of work.steers)
+        await attempt(() =>
+          commandStore.refuseSteer(
+            this.#database,
+            commandId,
+            "The connected agent this message came through was disconnected.",
+          ),
+        );
     }
     for (const run of work.runs)
       await attempt(() =>
@@ -956,6 +987,27 @@ export class OpensteerStore {
         }),
       );
     return { failures };
+  }
+
+  /**
+   * Drives every open cleanup (Disconnect or expiry) toward completion: stop what the lineage
+   * still holds, then settle the record once nothing is outstanding. Idempotent; run by a worker
+   * and at Host startup, so a cleanup interrupted by a restart still finishes.
+   */
+  async driveConnectionCleanups(): Promise<{
+    readonly failures: readonly unknown[];
+    readonly settled: readonly string[];
+  }> {
+    await requestExpiredCleanups(this.#database);
+    const failures: unknown[] = [];
+    const settled: string[] = [];
+    for (const { userId, connectionId } of await openCleanups(this.#database)) {
+      failures.push(
+        ...(await this.stopConnectionLineage(userId, connectionId, "disconnect")).failures,
+      );
+      if (await completeCleanupIfSettled(this.#database, connectionId)) settled.push(connectionId);
+    }
+    return { failures, settled };
   }
 
   /** Each automation's origin connection, for lineage visibility. */

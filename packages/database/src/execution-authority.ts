@@ -1,6 +1,5 @@
 import {
   OpensteerError,
-  agentGrantAllowsTasks,
   type AssignmentId,
   type EnvironmentId,
   type GrantId,
@@ -11,7 +10,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
-import { bindingLineageConnectionId, lineageEndedMessage, liveLineage } from "./resource-access.js";
+import { liveDelegatingConnection } from "./resource-access.js";
 type Database = Kysely<DatabaseSchema>;
 export interface ActiveExecutionBindingInput {
   readonly lostExecution?: boolean;
@@ -133,9 +132,10 @@ export async function assertActiveGrant(
   executionNow: () => number = Date.now,
 ): Promise<void> {
   await assertActiveExecutionBinding(database, input, executionNow);
+  // The Run's own facts, its connection among them, in the one read this check already makes.
   const run = await database
     .selectFrom("runs")
-    .select("assignmentId")
+    .select(["assignmentId", "connectionId"])
     .where("id", "=", input.runId)
     .executeTakeFirstOrThrow();
   const grant = await database
@@ -156,19 +156,29 @@ export async function assertActiveGrant(
       code: "forbidden",
       message: "Run tool authority has ended",
     });
-  await assertRunLineageLive(database, input.runId, input.requestedBy);
+  if (run.connectionId)
+    await liveDelegatingConnection(database, input.requestedBy, run.connectionId);
 }
-/** A Run in a connection's lineage has authority only while that connection does. */
-export async function assertRunLineageLive(
+/**
+ * New work in a task: the task's environment, and the connection it would work for, if any,
+ * still live and still granted Tasks. Receipts and cleanup of work already admitted never ask this.
+ */
+export async function admitLineageExecution(
   database: Database,
-  runId: RunId,
-  requestedBy: UserId,
-): Promise<void> {
-  const lineageId = await bindingLineageConnectionId(database, `run:${runId}`);
-  if (!lineageId) return;
-  const lineage = await liveLineage(database, requestedBy, lineageId);
-  if (!agentGrantAllowsTasks(lineage.grant))
-    throw new OpensteerError({ code: "forbidden", message: lineageEndedMessage });
+  input: {
+    readonly threadId: ThreadId;
+    readonly userId: UserId;
+    readonly agentConnectionId: string | null;
+  },
+): Promise<{ readonly environmentId: EnvironmentId } | null> {
+  const admission = await admitThreadExecution(database, input.threadId, input.userId);
+  if (!admission || !input.agentConnectionId) return admission;
+  return (await liveDelegatingConnection(database, input.userId, input.agentConnectionId).then(
+    () => true,
+    () => false,
+  ))
+    ? admission
+    : null;
 }
 export async function executionEnvironmentIsAvailableToUser(
   database: Database,
@@ -202,17 +212,12 @@ export async function admitThreadExecution(
 } | null> {
   const row = await database
     .selectFrom("threads")
-    .select(["threads.environmentId", "threads.originConnectionId"])
+    .select("threads.environmentId")
     .where("threads.id", "=", threadId)
     .executeTakeFirst();
-  if (!row || !(await executionEnvironmentIsAvailableToUser(database, row.environmentId, userId)))
-    return null;
-  // A task in a connection's lineage executes only while that connection may delegate.
-  if (row.originConnectionId) {
-    const lineage = await liveLineage(database, userId, row.originConnectionId).catch(() => null);
-    if (!lineage || !agentGrantAllowsTasks(lineage.grant)) return null;
-  }
-  return { environmentId: row.environmentId };
+  return row && (await executionEnvironmentIsAvailableToUser(database, row.environmentId, userId))
+    ? row
+    : null;
 }
 export async function deploymentOwnedExecutionIsAvailableToUser(
   database: Database,

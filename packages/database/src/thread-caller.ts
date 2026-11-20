@@ -10,10 +10,11 @@ import {
 } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
 import {
-  bindingLineageConnectionId,
+  bindingAgentConnectionId,
   lineageEndedMessage,
-  liveLineage,
-  type AuthorityLineage,
+  liveAgentConnection,
+  tasksWithdrawnMessage,
+  type AgentConnectionAuthority,
 } from "./resource-access.js";
 import { lockCommandIdempotency } from "./store-primitives.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -56,11 +57,11 @@ export async function threadCallerLineageId(
     case "connection":
       return caller.connectionId;
     case "run":
-      return bindingLineageConnectionId(tx, `run:${caller.scope.runId}`);
+      return bindingAgentConnectionId(tx, `run:${caller.scope.runId}`);
     case "trigger":
-      return bindingLineageConnectionId(tx, `trigger:${caller.scope.occurrenceId}`);
+      return bindingAgentConnectionId(tx, `trigger:${caller.scope.occurrenceId}`);
     case "watch":
-      return bindingLineageConnectionId(tx, `watch:${caller.scope.activationId}`);
+      return bindingAgentConnectionId(tx, `watch:${caller.scope.activationId}`);
   }
 }
 /**
@@ -102,6 +103,12 @@ export async function lockThreadCaller(
     admitted,
   });
 }
+/**
+ * Task tools, rechecked under the caller's locks: the execution is live, and the target task is
+ * one this caller may touch at the mode the caller now has. Work for a connection may change only
+ * its own lineage's tasks, or, with an `everything` grant, the person's own; a `selected` grant
+ * also reads only its own.
+ */
 export async function assertThreadCaller(
   tx: Transaction<DatabaseSchema>,
   caller: ThreadCallerAuthority | undefined,
@@ -115,13 +122,12 @@ export async function assertThreadCaller(
 ): Promise<void> {
   if (!caller) return;
   await requirePersonalOwner(tx, caller.userId);
-  let accessMode = caller.accessMode;
   let sourceId: ThreadId | undefined;
   const lineageId = await threadCallerLineageId(tx, caller);
-  let lineage: AuthorityLineage | null = null;
+  let lineage: AgentConnectionAuthority | null = null;
   if (lineageId) {
     try {
-      lineage = await liveLineage(tx, caller.userId, lineageId);
+      lineage = await liveAgentConnection(tx, caller.userId, lineageId);
     } catch {
       throw forbidden(
         caller.kind === "connection"
@@ -129,20 +135,27 @@ export async function assertThreadCaller(
           : lineageEndedMessage,
       );
     }
-    if (caller.kind !== "connection" && !agentGrantAllowsTasks(lineage.grant))
-      throw forbidden(lineageEndedMessage);
+    if (!agentGrantAllowsTasks(lineage.grant)) throw forbidden(tasksWithdrawnMessage);
   }
-  if (caller.kind === "connection") {
-    accessMode = lineage!.accessMode;
-  } else if (caller.kind === "run") {
+  let runMode: ThreadAccessMode | null = null;
+  if (caller.kind === "run") {
     if (!target?.admitted) await assertActiveGrant(tx, caller.scope);
     else if (!(await admitThreadExecution(tx, caller.scope.threadId, caller.userId)))
       throw forbidden("Run tool authority has ended");
     sourceId = caller.scope.threadId;
+    if (lineage)
+      runMode =
+        (
+          await tx
+            .selectFrom("runs")
+            .select("accessMode")
+            .where("id", "=", caller.scope.runId)
+            .executeTakeFirst()
+        )?.accessMode ?? null;
   } else if (caller.kind === "trigger") {
     await assertActiveTriggerExecutionBinding(tx, caller.scope);
     sourceId = caller.scope.threadId;
-  } else {
+  } else if (caller.kind === "watch") {
     await assertActiveWatchBinding(tx, caller.scope);
     sourceId = caller.scope.anchorThreadId;
   }
@@ -153,9 +166,10 @@ export async function assertThreadCaller(
         .where("id", "=", sourceId)
         .executeTakeFirstOrThrow()
     : null;
-  accessMode = source?.accessMode ?? accessMode;
-  if (lineage && caller.kind !== "connection")
-    accessMode = minThreadAccessMode(accessMode, lineage.accessMode);
+  // The person's own work keeps its task's mode; lineaged work takes every mode in its lineage.
+  const accessMode = lineage
+    ? minThreadAccessMode(lineage.accessMode, source?.accessMode, runMode)
+    : (source?.accessMode ?? caller.accessMode);
   if (!threadAccessModeAtMost(caller.accessMode, accessMode))
     throw forbidden("Caller access mode was reduced");
   const thread = target?.threadId
@@ -165,20 +179,18 @@ export async function assertThreadCaller(
         .where("id", "=", target.threadId)
         .executeTakeFirstOrThrow()
     : null;
-  // A selected connection only ever touches tasks in its own lineage.
-  if (
-    thread &&
-    lineage?.grant.scope === "selected" &&
-    thread.originConnectionId !== lineage.connectionId
-  )
-    throw forbidden("Task is unavailable");
-  if (
-    !target?.readOnly &&
-    !threadAccessModeAtMost(
-      thread?.accessMode ?? target?.accessMode ?? caller.accessMode,
-      caller.accessMode,
-    )
-  )
+  if (thread && lineage) {
+    const own = thread.originConnectionId === lineage.agentConnectionId;
+    const persons = thread.originConnectionId === null && lineage.grant.scope === "everything";
+    if (lineage.grant.scope === "selected" ? !own : !target?.readOnly && !own && !persons)
+      throw forbidden("Task is unavailable");
+  }
+  // A task in this caller's lineage runs at most at the connection's mode, whatever its own says.
+  const targetMode =
+    thread && lineage && thread.originConnectionId === lineage.agentConnectionId
+      ? minThreadAccessMode(thread.accessMode, lineage.accessMode)
+      : (thread?.accessMode ?? target?.accessMode ?? accessMode);
+  if (!target?.readOnly && !threadAccessModeAtMost(targetMode, accessMode))
     throw forbidden("Target task has a stronger access mode than this caller");
 }
 function forbidden(message: string) {

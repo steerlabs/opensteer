@@ -53,10 +53,13 @@ import type { AgentToolHandlers, ToolCall } from "./handlers/types.js";
 const requestTools = new Set<string>(requestToolNames);
 const maximumSessions = 256;
 const sessionIdleLifetimeMs = 30 * 60 * 1_000;
+const maximumTimerMs = 2_147_483_647;
 interface McpSession {
   readonly responses: Set<ServerResponse>;
   /** The authority its tool list was built for; a change closes the session. */
   readonly authority: string;
+  /** When the connection's credential expires, in epoch milliseconds. */
+  readonly expiresAt: number | null;
   readonly token: string;
   readonly origin: string;
   readonly key: string;
@@ -106,7 +109,11 @@ export class OpensteerMcpService {
     this.#detachObserve = options.realtime?.observe((change) => {
       if (change.type.startsWith("host.")) void this.#revalidateConnections();
     });
+    // Idle sessions close on time, not only when the next request arrives.
+    this.#sweepTimer = setInterval(() => void this.#sweep(), sessionIdleLifetimeMs / 6);
+    this.#sweepTimer.unref();
   }
+  readonly #sweepTimer: ReturnType<typeof setInterval>;
   /**
    * `connectionOrigin` is the approved connection route this request arrived
    * on, which the connection routes validated; only connected agents use it,
@@ -166,7 +173,12 @@ export class OpensteerMcpService {
     let createdSession = false;
 
     if (sessionId) {
-      const existing = this.#sessions.get(sessionId);
+      let existing = this.#sessions.get(sessionId);
+      // A session's tools were listed for one authority; a changed grant or mode retires it.
+      if (existing && existing.authority !== sessionAuthority(authorization)) {
+        await this.#closeSession(existing);
+        existing = undefined;
+      }
       if (
         !existing ||
         existing.key !== authorization.key ||
@@ -195,6 +207,15 @@ export class OpensteerMcpService {
       try {
         session = await this.#createSession({ ...authorization, origin, token });
         createdSession = true;
+        // An update or revoke that committed while this session registered must not leave it
+        // advertising authority that already changed.
+        const current = await this.options.callers.authenticate(token).catch(() => null);
+        if (!current || sessionAuthority(current) !== session.authority) {
+          this.#release(authorization.key);
+          await this.#closeSession(session);
+          sendJsonRpcError(response, 401, "Agent tools authorization is invalid or expired");
+          return;
+        }
       } catch (error) {
         this.#release(authorization.key);
         sendJsonRpcError(response, 500, safeMessage(error, safeMessageOptions));
@@ -222,6 +243,7 @@ export class OpensteerMcpService {
 
   async close(): Promise<void> {
     this.#detachObserve?.();
+    clearInterval(this.#sweepTimer);
     const sessions = [...this.#activeSessions];
     this.#activeSessions.clear();
     this.#sessions.clear();
@@ -336,6 +358,7 @@ export class OpensteerMcpService {
     session = {
       responses: new Set(),
       authority: sessionAuthority(input),
+      expiresAt: input.kind === "connection" ? (input.expiresAt ?? null) : null,
       token: input.token,
       origin: input.origin.origin,
       key: input.key,
@@ -346,7 +369,19 @@ export class OpensteerMcpService {
       transport,
     };
     this.#activeSessions.add(session);
+    // A held stream never outlives the credential that opened it: a near expiry closes it on
+    // time, a distant one is caught by the periodic sweep.
+    const untilExpiry =
+      input.kind === "connection" && input.expiresAt !== undefined
+        ? Math.max(0, input.expiresAt - Date.now())
+        : undefined;
+    const expiry =
+      untilExpiry !== undefined && untilExpiry <= maximumTimerMs
+        ? setTimeout(() => void this.#closeSession(session), untilExpiry)
+        : undefined;
+    expiry?.unref();
     transport.onclose = () => {
+      clearTimeout(expiry);
       this.#activeSessions.delete(session);
       const id = transport.sessionId;
       if (id) this.#sessions.delete(id);
@@ -594,6 +629,16 @@ export class OpensteerMcpService {
     return invoke();
   }
 
+  /** Refuses a tool this caller's current authority does not offer. */
+  async assertToolOffered(caller: AgentCaller, name: string): Promise<void> {
+    if (!agentTools.some((spec) => spec.name === name))
+      throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
+    if (!(await this.#toolsFor(caller)).some((spec) => spec.name === name))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This tool is unavailable to this caller",
+      });
+  }
   async #toolsFor(caller: AgentCaller) {
     return toolsFor({
       ...caller,
@@ -629,7 +674,7 @@ export class OpensteerMcpService {
     const lineage = callerLineage(caller);
     if (lineage?.grant.scope === "selected" && threads.length) {
       const origins = await this.options.store.threadOrigins(threads.map(({ id }) => id));
-      if (threads.some(({ id }) => origins.get(id) !== lineage.connectionId))
+      if (threads.some(({ id }) => origins.get(id) !== lineage.agentConnectionId))
         throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
     }
     return threads;
@@ -685,8 +730,10 @@ export class OpensteerMcpService {
   async #sweep(now = Date.now()): Promise<void> {
     const expired = [...this.#sessions.entries()].filter(
       ([, session]) =>
-        session.responses.size === 0 && now - session.lastSeenAt > sessionIdleLifetimeMs,
+        (session.expiresAt !== null && session.expiresAt <= now) ||
+        (session.responses.size === 0 && now - session.lastSeenAt > sessionIdleLifetimeMs),
     );
+    for (const [, session] of expired) for (const response of session.responses) response.destroy();
     for (const [id, session] of expired) {
       this.#sessions.delete(id);
       this.#activeSessions.delete(session);
@@ -697,7 +744,7 @@ export class OpensteerMcpService {
 
 function sessionAuthority(caller: AgentCaller): string {
   const lineage = callerLineage(caller);
-  return lineage ? `${lineage.connectionId}:${lineage.revision}:${caller.accessMode}` : "";
+  return lineage ? `${lineage.agentConnectionId}:${lineage.revision}:${caller.accessMode}` : "";
 }
 
 function responseEnded(response: ServerResponse): Promise<void> {

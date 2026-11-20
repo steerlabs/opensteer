@@ -5,9 +5,9 @@ export const agentGrantsMigrationName = "0042_agent_grants";
 
 /**
  * Connections carry one grant; everything that can execute later carries its connection. Existing
- * connections keep exactly what they could already do (`everything` at consent version 1), and
- * only lineage the rows prove is backfilled: inputs a connection sent, Runs those inputs
- * activated, and tasks whose first input came from one.
+ * connections keep exactly what they could already do (`everything` at consent version 1). Lineage
+ * applies to work created from now on: existing tasks, Runs and automations stay the person's. The
+ * only backfill is a queued input whose own immutable source names a connection.
  */
 export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
   await sql`
@@ -18,13 +18,25 @@ export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
       add column client_fingerprint text,
       add column redirect_uri text,
       add column last_action_uncertain_at timestamptz,
-      add column removed_at timestamptz;
+      add column last_action_uncertain jsonb,
+      add column cleanup_reason text check (cleanup_reason in ('revoked', 'expired')),
+      add column cleanup_requested_at timestamptz,
+      add column cleanup_completed_at timestamptz,
+      add column removed_at timestamptz,
+      add constraint agent_connections_cleanup check (
+        (cleanup_reason is null) = (cleanup_requested_at is null)
+        and (cleanup_completed_at is null or cleanup_requested_at is not null)
+        and (removed_at is null or cleanup_completed_at is not null));
     create index agent_connections_token_hash on agent_connections(token_hash)
       where token_hash is not null;
+    create index agent_connections_cleanup_open on agent_connections(cleanup_requested_at)
+      where cleanup_requested_at is not null and cleanup_completed_at is null;
     alter table threads add column origin_connection_id text;
     alter table runs add column connection_id text;
     alter table thread_inputs add column connection_id text;
     alter table triggers add column origin_connection_id text;
+    create or replace view thread_work_inputs as
+      select * from thread_inputs where policy in ('queue','steer');
     create index threads_origin_connection on threads(origin_connection_id)
       where origin_connection_id is not null;
     create index runs_connection on runs(connection_id) where connection_id is not null;
@@ -33,19 +45,8 @@ export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
     create index triggers_origin_connection on triggers(origin_connection_id)
       where origin_connection_id is not null;
     update thread_inputs set connection_id = authority_source->>'connectionId'
-      where authority_source->>'kind' = 'connection'
+      where state in ('pending', 'awaiting-approval')
+        and authority_source->>'kind' = 'connection'
         and authority_source->>'connectionId' in (select id from agent_connections);
-    update threads set origin_connection_id = first_input.connection_id
-      from (
-        select distinct on (thread_id) thread_id, connection_id
-        from thread_inputs
-        order by thread_id, queue_rank asc, message_id asc
-      ) first_input
-      where first_input.thread_id = threads.id and first_input.connection_id is not null;
-    update runs set connection_id = coalesce(threads.origin_connection_id, thread_inputs.connection_id)
-      from threads, thread_inputs
-      where threads.id = runs.thread_id
-        and thread_inputs.message_id = runs.activation_input_id
-        and coalesce(threads.origin_connection_id, thread_inputs.connection_id) is not null;
   `.execute(database);
 }

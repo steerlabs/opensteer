@@ -44,6 +44,7 @@ import {
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type {
   AppTabPort,
+  BrowserBindingTabActor,
   NativeTabTargetsPort,
   DeviceNativeTabTargetsPort,
   DeviceNativeTargetAcquired,
@@ -69,6 +70,7 @@ export interface PageTabsPort {
     key: string,
   ): Promise<Extract<TabViewer, { kind: "page" }>>;
   bind(claims: RunToolScope, row: TabRecord): Promise<PageAgentBinding>;
+  bindBrowserScript?(actor: BrowserBindingTabActor, row: TabRecord): Promise<PageAgentBinding>;
   closeViewers(ownerId: UserId, row: TabRecord): Promise<void>;
 }
 export interface TabServiceOptions {
@@ -107,11 +109,16 @@ export interface TabServiceOptions {
   /** Rechecks the Run/connection and current grants. Called again inside membership commits. */
   authorize(actor: TabActor, target: TabTarget | TabWrite, database: TabDatabase): Promise<void>;
   authorizeMembership(actor: TabActor, database: TabDatabase): Promise<void>;
-  /** Each tab an edit affects, for work in a connection's lineage that may reach only some. */
-  authorizeRows?(actor: TabActor, rows: readonly TabRecord[], database: TabDatabase): Promise<void>;
+  /** The affected tabs work for a selected connection may not change; empty for everyone else. */
+  deniedRows?(
+    actor: TabActor,
+    rows: readonly TabRecord[],
+    database: TabDatabase,
+  ): Promise<ReadonlySet<TabId>>;
   onError(error: unknown): void;
 }
 function owner(actor: TabActor): UserId {
+  if (actor.kind === "browser-binding") return actor.authority.ownerId;
   return actor.kind === "person"
     ? actor.ownerId
     : actor.kind === "run"
@@ -136,7 +143,7 @@ function operationKey(actor: TabActor, key: string): string {
           ? [actor.claims.runId, actor.claims.bindingGeneration]
           : actor.kind === "connection"
             ? actor.caller.connectionId
-            : actor.ownerId,
+            : actor.kind === "browser-binding" ? actor.authority.agentBindingId : actor.ownerId,
         key,
       ]),
     )
@@ -557,7 +564,7 @@ export class TabService implements TabServicePort {
         if (!row || row.ownerId !== owner(actor)) notFound();
         affectedRows.push(row);
       }
-      await this.options.authorizeRows?.(actor, affectedRows, tx);
+      if ((await this.options.deniedRows?.(actor, affectedRows, tx))?.size) notFound();
     };
   }
   async open(
@@ -568,6 +575,7 @@ export class TabService implements TabServicePort {
     /** The person typed a page's address. */
     typed = false,
   ): Promise<{ tab: Tab }> {
+    if (actor.kind === "browser-binding") actor.signal?.throwIfAborted();
     const target = DeviceTabTargetSchema.parse(targetInput);
     const ownerId = owner(actor),
       database = this.options.store.database;
@@ -575,7 +583,7 @@ export class TabService implements TabServicePort {
     const initialRevision =
       membershipRevision ?? (await this.options.store.snapshot(ownerId)).layout.revision;
     const openedBy: TabOpenedBy =
-      actor.kind === "run" ? { taskId: actor.claims.threadId } : "person";
+      actor.kind === "run" ? { taskId: actor.claims.threadId } : actor.kind === "browser-binding" ? { taskId: actor.threadId } : "person";
     const hash = operationKey(actor, key);
     const id = TabIdSchema.parse(
       `tab_${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`,
@@ -698,12 +706,12 @@ export class TabService implements TabServicePort {
       tabIds,
       operationKey(actor, key),
       async (tx, rows) => {
+        const denied = (await this.options.deniedRows?.(actor, rows, tx)) ?? new Set<TabId>();
         for (const tabId of tabIds) {
           try {
             const row = rows.find((row) => row.id === tabId);
-            if (!row || row.ownerId !== owner(actor)) notFound();
+            if (!row || row.ownerId !== owner(actor) || denied.has(row.id)) notFound();
             await this.options.authorizeMembership(actor, tx);
-            await this.options.authorizeRows?.(actor, [row], tx);
             permitted.add(tabId);
             cleanup.push(row);
           } catch (error) {
@@ -915,16 +923,42 @@ export class TabService implements TabServicePort {
     await this.options.authorizeMembership({ kind: "person", ownerId }, database);
     return this.options.store.resourceLayout(database, ownerId, input);
   }
+  async *browserScriptPages(actor: BrowserBindingTabActor): AsyncGenerator<TabRecord> {
+    const db = this.options.store.database;
+    const canRead = this.options.readAuthority
+      ? await this.options.readAuthority(actor, db)
+      : (row: TabRecord) => this.options.canRead(actor, row, db);
+    let after: TabId | undefined;
+    for (;;) {
+      actor.signal?.throwIfAborted();
+      const rows = await this.options.store.resourceTabs(db, owner(actor), { limit: 32, ...(after ? { after } : {}) });
+      for (const row of rows) {
+        actor.signal?.throwIfAborted();
+        if (row.kind === "page" && await canRead(row)) yield row;
+      }
+      if (rows.length < 32) return;
+      after = rows.at(-1)!.id;
+    }
+  }
+
   async requireOpenPage(claims: RunToolScope, tabId: TabId): Promise<PageAgentBinding> {
-    const actor = { kind: "run", claims } as const,
-      row = await this.#row(actor, tabId);
+    return this.#bindPage({ kind: "run", claims }, tabId);
+  }
+  async bindBrowserScript(actor: BrowserBindingTabActor, tabId: TabId): Promise<PageAgentBinding> {
+    return this.#bindPage(actor, tabId);
+  }
+  async #bindPage(actor: Extract<TabActor, { kind: "run" | "browser-binding" }>, tabId: TabId) {
+    const row = await this.#row(actor, tabId);
     if (row.kind !== "page")
       throw new OpensteerError({
         code: "bad_request",
         message: "Use Browser Harness only with a page tab.",
       });
     await this.options.authorize(actor, row, this.options.store.database);
-    const binding = await this.options.pages.bind(claims, row);
+    if (actor.kind === "browser-binding") actor.signal?.throwIfAborted();
+    const binding = actor.kind === "run"
+      ? await this.options.pages.bind(actor.claims, row)
+      : await this.options.pages.bindBrowserScript!(actor, row);
     const current = await this.#row(actor, tabId);
     if (current.generation !== row.generation) conflict();
     return binding;

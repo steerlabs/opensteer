@@ -20,6 +20,8 @@ export interface AgentTriggerManager {
     context?: {
       readonly accessMode: import("@opensteer/core").ThreadAccessMode;
       readonly operationKey?: string;
+      readonly originConnectionId?: string;
+      readonly agentConnectionId?: string;
     },
   ): Promise<unknown>;
 }
@@ -51,9 +53,9 @@ export class TriggerToolHandlers {
     const lineage = callerLineage(caller);
     if (!lineage) return;
     const origin = (await this.lineage.triggerOrigins(caller.userId, [id])).get(id) ?? null;
-    if (lineage.grant.scope === "selected" && origin !== lineage.connectionId)
+    if (lineage.grant.scope === "selected" && origin !== lineage.agentConnectionId)
       throw new OpensteerError({ code: "not_found", message: "Automation not found" });
-    if (program && origin !== lineage.connectionId)
+    if (program && origin !== lineage.agentConnectionId)
       throw new OpensteerError({
         code: "forbidden",
         message: "A connected agent cannot replace the program of an automation it did not create.",
@@ -78,9 +80,15 @@ export class TriggerToolHandlers {
               ...(input.systemRole ? { systemRole: input.systemRole } : {}),
             },
         caller.kind === "connection" ? null : callerThread(caller).id,
-        { accessMode: caller.accessMode },
+        {
+          accessMode: caller.accessMode,
+          ...(lineage?.grant.scope === "selected"
+            ? { originConnectionId: lineage.agentConnectionId }
+            : {}),
+        },
       ),
     );
+    // The store already scoped the page; this keeps any other path honest.
     if (lineage?.grant.scope !== "selected" || !output.triggers) return output;
     const origins = await this.lineage.triggerOrigins(
       caller.userId,
@@ -88,7 +96,7 @@ export class TriggerToolHandlers {
     );
     return {
       ...output,
-      triggers: output.triggers.filter(({ id }) => origins.get(id) === lineage.connectionId),
+      triggers: output.triggers.filter(({ id }) => origins.get(id) === lineage.agentConnectionId),
     };
   }
   async write(
@@ -186,6 +194,10 @@ export class TriggerToolHandlers {
         {
           accessMode: caller.accessMode,
           operationKey: idempotencyKey(caller, requestId, "trigger.write"),
+          // Persisted on a new automation and rechecked under the store's own fence.
+          ...(callerLineage(caller)
+            ? { agentConnectionId: callerLineage(caller)!.agentConnectionId }
+            : {}),
         },
       ),
     );

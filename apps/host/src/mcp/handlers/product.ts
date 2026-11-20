@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { RunnerIdSchema, utf8Prefix } from "@opensteer/core";
 import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
@@ -126,9 +127,31 @@ const chooseExecutionNext = "See the current choices with opensteer_ai_account_l
 
 export class ProductToolHandlers {
   async #readableTabPlaces<T extends { tabId: import("@opensteer/core").TabId }>(
-    owner: UserId,
+    caller: AgentCaller,
     rows: readonly T[],
   ): Promise<T[]> {
+    const owner = caller.userId;
+    // A selected grant reads only places in tabs its own lineage's tasks opened.
+    const lineageId = selectedLineageId(caller);
+    if (lineageId && rows.length) {
+      const tabs = await this.#store.database
+        .selectFrom("personalTabs")
+        .leftJoin("threads", (join) =>
+          join.on(sql<boolean>`threads.id = personal_tabs.opened_by->>'taskId'`),
+        )
+        .select(["personalTabs.id", "threads.originConnectionId"])
+        .where("personalTabs.ownerId", "=", owner)
+        .where(
+          "personalTabs.id",
+          "in",
+          rows.map((row) => row.tabId),
+        )
+        .execute();
+      const own = new Set(
+        tabs.filter((tab) => tab.originConnectionId === lineageId).map((tab) => tab.id),
+      );
+      rows = rows.filter((row) => own.has(row.tabId));
+    }
     const visible = await Promise.all(
       rows.map(
         async (row) =>
@@ -437,7 +460,13 @@ export class ProductToolHandlers {
     const parentThreadId = input.parentTaskId;
     if (parentThreadId) {
       const parent = await this.#store.getThreadForOwner(parentThreadId, caller.userId);
-      if (!parent) throw forbidden("Parent task is unavailable");
+      const lineageId = selectedLineageId(caller);
+      // A foreign parent and an unknown one look the same to a selected grant.
+      if (
+        !parent ||
+        (lineageId && (await this.#store.threadOrigins([parent.id])).get(parent.id) !== lineageId)
+      )
+        throw forbidden("Parent task is unavailable");
     }
     const page = await this.#store.agentThreadPageForOwner({
       ...(parentThreadId ? { parentThreadId } : {}),
@@ -503,7 +532,7 @@ export class ProductToolHandlers {
       seen.add(key);
       return [{ threadId: thread.id, ...place }];
     });
-    const recentPlaces = (await this.#readableTabPlaces(caller.userId, references))
+    const recentPlaces = (await this.#readableTabPlaces(caller, references))
       .slice(0, 10)
       .map(({ runId, tabId, title, site }) => ({ runId, tabId, title, site }));
     const context = {
@@ -568,7 +597,12 @@ export class ProductToolHandlers {
     },
   ) {
     const missing = () => forbidden("Subagent is unavailable");
-    const node = await reachableNode(this.#store.database, input.subagentId!, caller.userId);
+    const node = await reachableNode(
+      this.#store.database,
+      input.subagentId!,
+      caller.userId,
+      selectedLineageId(caller),
+    );
     if (!node) throw missing();
     const thread = await this.#store.getThreadForOwner(node.threadId, caller.userId);
     if (!thread) throw missing();
@@ -608,7 +642,7 @@ export class ProductToolHandlers {
         : undefined;
     const [places, owners, messages] = await Promise.all([
       this.#readableTabPlaces(
-        caller.userId,
+        caller,
         page.items.flatMap((item) =>
           item.type === "place.entered" ? [{ id: item.id, tabId: item.place.tabId }] : [],
         ),
@@ -806,7 +840,12 @@ export class ProductToolHandlers {
     };
   }) {
     if (input.subagentId) {
-      const node = await reachableNode(this.#store.database, input.subagentId, caller.userId);
+      const node = await reachableNode(
+        this.#store.database,
+        input.subagentId,
+        caller.userId,
+        selectedLineageId(caller),
+      );
       if (!node) throw forbidden("Subagent is unavailable");
       return [node.threadId];
     }
@@ -814,7 +853,8 @@ export class ProductToolHandlers {
       assignmentId: input.delegationId!,
       ownerId: caller.userId,
     });
-    if (!assignment) throw forbidden("delegation is unavailable");
+    // The same refusal as a delegation whose task lies outside the caller's lineage.
+    if (!assignment) throw forbidden("Task is unavailable");
     return [assignment.workerThreadId];
   }
   async opensteer_delegation_cancel({
@@ -830,7 +870,12 @@ export class ProductToolHandlers {
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "opensteer_delegation_cancel");
     if (input.subagentId) {
-      const node = await reachableNode(this.#store.database, input.subagentId, caller.userId);
+      const node = await reachableNode(
+        this.#store.database,
+        input.subagentId,
+        caller.userId,
+        selectedLineageId(caller),
+      );
       if (!node) throw forbidden("Subagent is unavailable");
       if (node.runId !== claims.runId)
         throw forbidden("Only this Run's agent may stop its subagents");
@@ -961,7 +1006,7 @@ export class ProductToolHandlers {
       const page = await this.#store.requests.connectionPage({
         userId: caller.userId,
         ...(callerLineage(caller)?.grant.scope === "selected"
-          ? { lineageConnectionId: callerLineage(caller)!.connectionId }
+          ? { lineageConnectionId: callerLineage(caller)!.agentConnectionId }
           : {}),
         limit: input.limit,
         ...(input.cursor ? { before: input.cursor } : {}),
@@ -1892,4 +1937,10 @@ function agentRequest(request: Request) {
         )
       : request.settlementProvenance,
   };
+}
+
+/** The connection whose lineage alone a selected grant may reach; undefined otherwise. */
+function selectedLineageId(caller: AgentCaller): string | undefined {
+  const lineage = callerLineage(caller);
+  return lineage?.grant.scope === "selected" ? lineage.agentConnectionId : undefined;
 }

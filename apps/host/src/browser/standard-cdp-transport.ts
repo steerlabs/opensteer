@@ -1,4 +1,4 @@
-import type { BrowserRuntime } from "@opensteer/browser-runtime-core";
+import type { BrowserRuntime, StandardCdpAttachment } from "@opensteer/browser-runtime-core";
 import type { StandardCdpMode } from "@opensteer/protocol/standard-cdp";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import WebSocket from "ws";
@@ -66,14 +66,28 @@ export async function directStandardTransport(
 ): Promise<StandardCdpTransport> {
   const overload = new AbortController();
   const client = await runtime.attachStandardCdp(ticket, () => overload.abort(1013), signal, true);
+  return routerStandardTransport(
+    client,
+    client.mode ?? "session",
+    AbortSignal.any([client.signal, overload.signal]),
+    () => overload.abort(1013),
+  );
+}
+
+export function routerStandardTransport(
+  client: StandardCdpAttachment,
+  mode: StandardCdpMode,
+  signal: AbortSignal,
+  onOverflow: () => void = client.close,
+): StandardCdpTransport {
   let receive: ((frame: Buffer) => void) | undefined;
   const emit = (value: unknown) => receive?.(Buffer.from(JSON.stringify(value), "utf8"));
   client.onEvent(({ method, parameters, sessionId }) =>
     emit({ method, params: parameters, sessionId }),
   );
   return {
-    mode: client.mode ?? "session",
-    signal: AbortSignal.any([client.signal, overload.signal]),
+    mode,
+    signal,
     close: client.close,
     onFrame: (listener) => {
       receive = listener;
@@ -101,7 +115,7 @@ export async function directStandardTransport(
               },
             }),
         )
-        .catch(() => overload.abort(1013));
+        .catch(onOverflow);
     },
   };
 }

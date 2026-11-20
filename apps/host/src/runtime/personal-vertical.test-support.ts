@@ -161,6 +161,7 @@ export async function startPersonalVertical(options: VerticalStackOptions): Prom
       ...(current.network instanceof RunnerWire ? { wire: current.network } : {}),
       agentHomePreparations: current.agentHomePreparations,
       settledRunEvent: (runId) => current.runner?.settledRunEvent(runId),
+      stopRunLocally: (runId) => current.runner?.stopRunLocally(runId) ?? false,
       async crashRunner(beforeRestart) {
         await current.crashRunner(beforeRestart);
       },

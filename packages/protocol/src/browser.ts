@@ -177,6 +177,12 @@ export const BrowserAttachTicketClaimsSchema = z
     access: BrowserProfileAccessSchema,
     audience: z.literal("opensteer-browser-runtime"),
     creationOrigin: z.enum(["agent", "person"]),
+    /**
+     * Whom this attachment acts for, as the Home knows from the binding it
+     * issued the ticket for. Issued only to a runtime advertising
+     * `actorClaim`; a runtime given none falls back to `creationOrigin`.
+     */
+    actor: z.enum(["agent", "person"]).optional(),
     /** Authorizes an existing session on the runtime's raw CDP endpoint. */
     standardCdp: StandardCdpModeSchema.optional(),
     passkeys: z.literal(1).optional(),
@@ -298,6 +304,12 @@ export const BrowserCdpMethodSchema = z
   .max(160);
 export const BrowserCdpSessionIdSchema = z.string().min(1).max(512);
 export const BrowserCdpParametersSchema = z.record(z.string(), z.unknown());
+
+export const BrowserCdpReplyBudgetSchema = z.strictObject({
+  maxBytes: z.number().int().min(2).max(1024 * 1024 - 4096),
+  maxDepth: z.number().int().min(1).max(32),
+  maxEntries: z.number().int().min(1).max(16_384),
+});
 
 export const BrowserCdpCommandSchema = z.strictObject({
   method: BrowserCdpMethodSchema,
@@ -680,6 +692,7 @@ const BaselineBrowserClientMessageSchema = z
     z.strictObject({
       ...browserRequestBase,
       command: BrowserCdpCommandSchema,
+      replyBudget: BrowserCdpReplyBudgetSchema.optional(),
       actorToken: z.uuid().optional(),
       attachmentId: z.uuid().optional(),
       /** Host-only attribution for Page.navigate and Opensteer.openTab. */
@@ -826,7 +839,7 @@ const {
   ...runtimeSnapshotShape
 } = BrowserViewerSnapshotSchema.shape;
 export const BrowserRuntimeSnapshotSchema = z
-  .strictObject(runtimeSnapshotShape)
+  .strictObject({ ...runtimeSnapshotShape, cdpReplyBudget: z.literal(1).optional() })
   .superRefine((snapshot, context) => {
     if (
       snapshot.editingVersion === 2

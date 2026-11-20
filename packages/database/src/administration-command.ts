@@ -1,5 +1,10 @@
 import { withDatabaseTransaction } from "./connection.js";
-import { createId, type UserId } from "@opensteer/core";
+import { createId, OpensteerError, type UserId } from "@opensteer/core";
+import {
+  admitExecution,
+  bindingAgentConnectionId,
+  type AuthoritySubject,
+} from "./resource-access.js";
 import type { Kysely, Transaction } from "kysely";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
@@ -20,6 +25,8 @@ export interface AdministrationCommandIdentity {
   readonly type: string;
   readonly request: Readonly<Record<string, unknown>>;
   readonly authoritySource: Readonly<Record<string, unknown>>;
+  /** Rechecks the agent's live authority under this command's fence, before any write. */
+  readonly admit?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
 }
 
 const payloadSchema = z.object({
@@ -56,6 +63,7 @@ export async function administrationCommand<Result>(
 ): Promise<Result> {
   if (!identity) return mutate();
   await lockCommandIdempotency(transaction, identity.requestedBy, identity.idempotencyKey);
+  await identity.admit?.(transaction);
   const replay = await replayAdministrationCommand(transaction, identity);
   if (replay) return replay.result as Result;
   const result = await mutate();
@@ -88,8 +96,9 @@ export async function lockAdministrationCommand(
   transaction: Transaction<DatabaseSchema>,
   identity: AdministrationCommandIdentity | undefined,
 ): Promise<void> {
-  if (identity)
-    await lockCommandIdempotency(transaction, identity.requestedBy, identity.idempotencyKey);
+  if (!identity) return;
+  await lockCommandIdempotency(transaction, identity.requestedBy, identity.idempotencyKey);
+  await identity.admit?.(transaction);
 }
 
 export function withAdministrationTransaction<Result>(
@@ -100,4 +109,37 @@ export function withAdministrationTransaction<Result>(
   return withDatabaseTransaction(database, (transaction) =>
     administrationCommand(transaction, identity, () => mutate(transaction)),
   );
+}
+
+/**
+ * Settings are the person's: an agent changes them only while its execution is live at
+ * `full-access` and, for a connection, its grant is `everything`. Read under the caller's fence.
+ */
+export async function admitSettingsCaller(
+  transaction: Transaction<DatabaseSchema>,
+  input: { readonly ownerUserId: UserId; readonly callerKey: string },
+): Promise<void> {
+  const subject: AuthoritySubject = input.callerKey.startsWith("connection:")
+    ? { kind: "connection", agentConnectionId: input.callerKey.slice("connection:".length) }
+    : { kind: "binding", bindingId: input.callerKey };
+  const connectionId =
+    subject.kind === "connection"
+      ? subject.agentConnectionId
+      : await bindingAgentConnectionId(transaction, subject.bindingId);
+  if (connectionId)
+    await transaction
+      .selectFrom("agentConnections")
+      .select("id")
+      .where("id", "=", connectionId)
+      .forShare()
+      .executeTakeFirst();
+  const execution = await admitExecution(transaction, { ownerUserId: input.ownerUserId, subject });
+  if (
+    execution.mode !== "full-access" ||
+    (execution.agentConnection && execution.agentConnection.grant.scope !== "everything")
+  )
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Changing settings requires full-access",
+    });
 }
