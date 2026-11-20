@@ -1123,6 +1123,7 @@ export const AssignmentSummarySchema = z.object({
     environmentId: EnvironmentIdSchema,
     id: ThreadIdSchema,
     pendingRequests: z.number().int().nonnegative(),
+    /** No longer sent: `pendingRequests` counts every kind. Version-64 apps still parse it. */
     pendingDeviceAccessRequests: z.number().int().nonnegative().optional(),
     status: ThreadStatusSchema,
     title: z.string().trim().min(1).max(240),

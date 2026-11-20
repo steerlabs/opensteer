@@ -108,6 +108,7 @@ import {
   DisplaySourceSchema,
   HostToClientMessageSchema,
   browserUsageRunBatchSize,
+  includeDeviceAccessRequests,
   type BrowserSessionUsageProjection,
   type HostApiClient,
   type HostApiCommand,
@@ -2115,7 +2116,7 @@ export class HttpHostClient {
               pendingRequestsRevision: string;
             } = unwrapRpcResult(
               await this.rpc["requests.list"](
-                { ...(before ? { before } : {}), limit: 100, deviceAccessRequests: "include" },
+                { ...(before ? { before } : {}), limit: 100, ...includeDeviceAccessRequests },
                 { signal: read.signal },
               ),
             );
@@ -2485,6 +2486,7 @@ export class HttpHostClient {
         const response = unwrapRpcResult(
           await this.rpc["thread.assignments.list"](
             {
+              ...includeDeviceAccessRequests,
               threadId,
               limit: 100,
               ...(open ? { open } : {}),
@@ -3532,7 +3534,7 @@ export class HttpHostClient {
     const read = async (before?: string) =>
       unwrapRpcResult(
         await this.rpc["needsYou.get"](
-          { ...(before ? { before } : {}), limit: 50 },
+          { ...(before ? { before } : {}), limit: 50, ...includeDeviceAccessRequests },
           { signal: controller.signal },
         ),
       );
@@ -3585,6 +3587,7 @@ export class HttpHostClient {
     const generation = this.#viewerGeneration;
     const { requests, reviewedRevisions } = unwrapRpcResult(
       await this.rpc["thread.requests.list"]({
+        ...includeDeviceAccessRequests,
         requestId: RequestIdSchema.parse(requestId),
         threadId: ThreadIdSchema.parse(threadId),
       }),

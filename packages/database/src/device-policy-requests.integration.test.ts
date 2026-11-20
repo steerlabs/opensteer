@@ -6,7 +6,6 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createId, type RunnerId } from "@opensteer/core";
 import { RunnerBootIdSchema, machineAccessPolicyDefault } from "@opensteer/protocol";
 import { expect } from "vitest";
-import { devicesLegacyReaders } from "./device-request-legacy-readers.test-support.js";
 import { NotificationStore } from "./notification-store.js";
 import { needsYouPage } from "./needs-you-store.js";
 import {
@@ -113,14 +112,11 @@ function ask(
 }
 const decline = { kind: "external", value: { decision: "declined" } } as const;
 describeStore("device access Requests", (it) => {
-  it("keeps device Requests in the current snapshot and filters legacy attention reads", async ({
-    storeFixture: f,
-  }) => {
-    const old = await devicesLegacyReaders();
-    const run = await f.startRunFixture("device-legacy-reader");
+  it("lists a device Request on every read of pending Requests", async ({ storeFixture: f }) => {
+    const run = await f.startRunFixture("device-every-read");
     const target = await device(f, run);
     const ordinary = await f.store.requests.create({
-      callId: "legacy-browser",
+      callId: "every-read-browser",
       kind: "browser.access",
       mode: "durable",
       originatingRunId: run.run.id,
@@ -139,7 +135,7 @@ describeStore("device access Requests", (it) => {
       },
     });
     const opened = await ask(f, run, target);
-    expect(old.PendingRequestViewSchema.safeParse(opened.request).success).toBe(false);
+    const both = [ordinary.request.id, opened.request.id].toSorted();
     const notifications = new NotificationStore(f.database);
     const [notification] = await notifications.decide({
       type: "requestChanged",
@@ -150,7 +146,6 @@ describeStore("device access Requests", (it) => {
       runId: run.run.id,
       threadId: run.thread.id,
     });
-    expect(notification).toMatchObject({ deviceAccessRequests: "include" });
     expect(
       await notifications.publicationSkipReason({
         ...notification!.view,
@@ -162,72 +157,35 @@ describeStore("device access Requests", (it) => {
       }),
     ).toBeNull();
 
-    const legacy = await needsYouPage(f.database, { userId: run.userId, limit: 1 });
-    expect(old.NeedsYouPageSchema.safeParse(legacy).success).toBe(true);
-    expect(legacy).toMatchObject({
-      count: 1,
-      entries: [{ request: { id: ordinary.request.id } }],
-      window: { hasMore: false, itemCount: 1, totalItems: 1 },
-    });
-    const listed = await f.store.requests.waitingOnUserPage({ userId: run.userId, limit: 1 });
-    expect(listed.requests.map(({ request }) => request.id)).toEqual([ordinary.request.id]);
-    expect(listed.window).toMatchObject({ itemCount: 1, totalItems: 1, hasMore: false });
+    const needsYou = await needsYouPage(f.database, { userId: run.userId });
+    expect(needsYou.count).toBe(2);
+    expect(
+      needsYou.entries.flatMap((entry) => (entry.kind === "request" ? [entry.request.id] : [])),
+    ).toEqual(expect.arrayContaining(both));
+    expect(await f.store.notificationState.attention(run.userId)).toMatchObject({ needsYou: 2 });
+    const waiting = await f.store.requests.waitingOnUserPage({ userId: run.userId, limit: 100 });
+    expect(waiting.requests.map(({ request }) => request.id).toSorted()).toEqual(both);
+    expect(waiting.window.totalItems).toBe(2);
     const threadRequests = await f.store.requests.originatingPendingPage({
       threadId: run.thread.id,
-      limit: 1,
-    });
-    expect(threadRequests.requests.map(({ id }) => id)).toEqual([ordinary.request.id]);
-    expect(threadRequests.window).toMatchObject({ itemCount: 1, totalItems: 1, hasMore: false });
-    for (const { request } of listed.requests)
-      expect(old.PendingRequestViewSchema.safeParse(request).success).toBe(true);
-    const modernListed = await f.store.requests.waitingOnUserPage({
-      userId: run.userId,
       limit: 100,
-      deviceAccessRequests: "include",
     });
-    expect(modernListed.requests.map(({ request }) => request.id)).toContain(opened.request.id);
-    expect(modernListed.window.totalItems).toBe(2);
+    expect(threadRequests.requests.map(({ id }) => id).toSorted()).toEqual(both);
+    expect(threadRequests.window.totalItems).toBe(2);
     expect(
-      (
-        await f.store.requests.originatingPendingPage({
-          threadId: run.thread.id,
-          limit: 100,
-          deviceAccessRequests: "include",
-        })
-      ).requests.map(({ id }) => id),
-    ).toContain(opened.request.id);
-    expect(
-      await f.store.notificationState.attention(run.userId, { deviceAccessRequests: "include" }),
-    ).toMatchObject({ needsYou: 2 });
-    const state = await f.database
-      .selectFrom("clientSyncState")
-      .select(["pendingRequestCount", "pendingDeviceAccessRequestCount", "needsYouCount"])
-      .executeTakeFirstOrThrow();
-    expect(state).toEqual({
-      pendingRequestCount: 2,
-      pendingDeviceAccessRequestCount: 1,
-      needsYouCount: 2,
-    });
-    expect(await f.store.notificationState.attention(run.userId)).toMatchObject({ needsYou: 1 });
-    const supported = await needsYouPage(f.database, {
-      userId: run.userId,
-      deviceAccessRequests: "include",
-    });
-    expect(
-      supported.entries
-        .filter((entry) => entry.kind === "request")
-        .map(({ request }) => request.id),
-    ).toContain(opened.request.id);
-    const modern = await withPersonalSyncRead(f.database, async (tx) =>
+      await f.database
+        .selectFrom("clientSyncState")
+        .select(["pendingRequestCount", "needsYouCount"])
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ pendingRequestCount: 2, needsYouCount: 2 });
+    const detail = await withPersonalSyncRead(f.database, async (tx) =>
       buildPersonalDetailSnapshot(tx, await authorizedSyncState(tx, run.userId), run.userId, {
         kind: "thread",
         threadId: run.thread.id,
       }),
     );
-    expect(modern.thread.pendingRequestCount).toBe(2);
-    expect(modern.pendingRequests.map(({ id }) => id).sort()).toEqual(
-      [ordinary.request.id, opened.request.id].sort(),
-    );
+    expect(detail.thread.pendingRequestCount).toBe(2);
+    expect(detail.pendingRequests.map(({ id }) => id).toSorted()).toEqual(both);
     expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "pending" });
   });
 

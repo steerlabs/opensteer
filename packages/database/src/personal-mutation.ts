@@ -50,8 +50,7 @@ type TargetDb = Kysely<DatabaseSchema>;
 export type PersonalMutationTransaction = Transaction<DatabaseSchema>;
 type ScopeAuthority = PersonalScopeKey | "deployment";
 type State = Selectable<ClientSyncStateTable>;
-type Counter =
-  "pendingRequestCount" | "pendingDeviceAccessRequestCount" | "needsYouCount" | "unreadTaskCount";
+type Counter = "pendingRequestCount" | "needsYouCount" | "unreadTaskCount";
 
 interface ChangeIdentity {
   readonly scopeKey: PersonalScopeKey;
@@ -244,7 +243,6 @@ class Mutation {
   readonly #inputQueues = new Set<ThreadId>();
   readonly #counters = {
     pendingRequestCount: 0,
-    pendingDeviceAccessRequestCount: 0,
     needsYouCount: 0,
     unreadTaskCount: 0,
   };
@@ -548,8 +546,6 @@ class Mutation {
           lastCommitAt: this.hasVisibleChange ? at : state.lastCommitAt,
           resourceRevisions: revisions,
           pendingRequestCount: state.pendingRequestCount + this.#counters.pendingRequestCount,
-          pendingDeviceAccessRequestCount:
-            state.pendingDeviceAccessRequestCount + this.#counters.pendingDeviceAccessRequestCount,
           needsYouCount: state.needsYouCount + this.#counters.needsYouCount,
           unreadTaskCount: state.unreadTaskCount + this.#counters.unreadTaskCount,
           ...(this.#pendingRequestsChanged ? { pendingRequestsRevision: head } : {}),

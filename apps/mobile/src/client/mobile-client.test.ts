@@ -3286,7 +3286,7 @@ describe("MobileClient other computers' attention", () => {
     await client.catalog.upsert(otherComputer());
     await client.initialize();
     await client.readAttention(otherId);
-    expect(input).toHaveBeenCalledWith({});
+    expect(input).toHaveBeenCalledWith({ deviceAccessRequests: "include" });
     client.dispose();
   });
 

@@ -2,7 +2,6 @@ import { commitPersonalMutation } from "./personal-mutation.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { lockThreadProviderSession } from "./run-projection-locks.js";
 import { compactionReturnHint } from "./compaction-eligibility.js";
-import { projectDeviceAccessAssignment } from "@opensteer/protocol";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { type TaskPurpose, type TeamTaskOrigin } from "@opensteer/core";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -705,7 +704,6 @@ export async function listThreadAssignmentsForOwner(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly before?: string;
-    readonly deviceAccessRequests?: "include";
     readonly maxBytes?: number;
     readonly maxItems?: number;
     readonly open?: boolean;
@@ -763,14 +761,7 @@ export async function listThreadAssignmentsForOwner(
         base.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
       ]);
       const candidates = await Promise.all(
-        rows
-          .slice(0, maxItems)
-          .map(async (row) =>
-            projectDeviceAccessAssignment(
-              await assignmentSummaryInTransaction(transaction, row),
-              input.deviceAccessRequests === "include",
-            ),
-          ),
+        rows.slice(0, maxItems).map((row) => assignmentSummaryInTransaction(transaction, row)),
       );
       const window = boundedSerializedPrefix(candidates, maxItems, maxBytes);
       if (rows.length > 0 && window.items.length === 0) {

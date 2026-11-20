@@ -1,5 +1,6 @@
 import { DeploymentIdSchema } from "@opensteer/core";
 import { createHttpHostApiClient, unwrapRpcResult } from "@opensteer/client/host";
+import { includeDeviceAccessRequests } from "@opensteer/protocol";
 import type {
   DeploymentAccessDeployment,
   OpensteerDesktopBridge,
@@ -35,9 +36,7 @@ export async function readComputerFacts(
     onAuthenticationRequired: () => undefined,
   });
   const [attention, linked] = await Promise.all([
-    rpc["attention.get"](
-      computer.capabilities?.includes("devices-v1") ? { deviceAccessRequests: "include" } : {},
-    ).then(unwrapRpcResult),
+    rpc["attention.get"](includeDeviceAccessRequests).then(unwrapRpcResult),
     rpc["teams.links.list"]({}).then(unwrapRpcResult),
   ]);
   const teams = await Promise.all(

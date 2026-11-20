@@ -2,6 +2,7 @@ import { RequestIdSchema } from "@opensteer/core";
 import { expect, it, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { callMcpTool } from "../mcp/call-tool.test-support.js";
+import { testRpcData } from "../server/test-host-api-request.js";
 import {
   acceptCallerRun,
   connectCallerMachine,
@@ -84,6 +85,26 @@ it("holds device access through MCP and resumes with rebuilt routes after the po
     const requestId = await withTimeout(opened.promise, 5000, {
       timeoutError: () => new Error("MCP never created the device access Request"),
     });
+    // The person's app reads the task, then reviews the Requests it lists, as shipped apps do.
+    const owner = { headers: host.ownerHeaders };
+    const task = await testRpcData(
+      host.origin,
+      "thread.snapshot.get",
+      { threadId: run.threadId },
+      owner,
+    );
+    const review = task.pendingRequests.map(({ id, revision }) => ({ id, revision }));
+    expect(review.map(({ id }) => id)).toEqual([requestId]);
+    expect(
+      (
+        await testRpcData(
+          host.origin,
+          "thread.requests.list",
+          { threadId: run.threadId, review },
+          owner,
+        )
+      ).requests,
+    ).toMatchObject([{ id: requestId, kind: "device.access", status: "pending" }]);
     expect(
       await host.store.database
         .selectFrom("agentControlRequests")

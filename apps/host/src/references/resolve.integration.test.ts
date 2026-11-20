@@ -313,7 +313,7 @@ describeStore("personal reference handlers", (it) => {
     await expect(failing({ ids: [run.threadId] }, ctx)).rejects.toBe(failure);
   });
 
-  it("reads a settled Request by exact owner/thread and keeps the safe view and device opt-in", async ({
+  it("reads a settled Request by exact owner/thread and keeps the safe view", async ({
     storeFixture: f,
   }) => {
     const run = await f.startRunFixture("target-request");
@@ -391,15 +391,7 @@ describeStore("personal reference handlers", (it) => {
       .execute();
     expect(
       (await read({ ...input, requestId: deviceRequestId }, context(run.userId))).requests,
-    ).toEqual([]);
-    expect(
-      (
-        await read(
-          { ...input, requestId: deviceRequestId, deviceAccessRequests: "include" },
-          context(run.userId),
-        )
-      ).requests,
-    ).toHaveLength(1);
+    ).toMatchObject([{ id: deviceRequestId, kind: "device.access" }]);
     const other = await f.store.createUser("Foreign reader");
     await expect(read(input, context(other))).rejects.toMatchObject({ code: "forbidden" });
     await f.database

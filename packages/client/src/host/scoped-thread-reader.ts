@@ -1,5 +1,9 @@
 import { utf8ByteLength, type Request, MessageIdSchema } from "@opensteer/core";
-import type { HostApiClient, PersonalInputQueue } from "@opensteer/protocol";
+import {
+  includeDeviceAccessRequests,
+  type HostApiClient,
+  type PersonalInputQueue,
+} from "@opensteer/protocol";
 import type {
   TranscriptItem,
   TranscriptItemResult,
@@ -333,7 +337,10 @@ export class ScopedThreadReader implements ThreadViewSource {
       const review = missing.slice(i, i + 20).map(({ id, revision }) => ({ id, revision }));
       reads.push(
         this.#rpc
-          ["thread.requests.list"]({ threadId, review }, { signal: read.signal })
+          ["thread.requests.list"](
+            { threadId, review, ...includeDeviceAccessRequests },
+            { signal: read.signal },
+          )
           .then((result) => ({ review, result })),
       );
     }

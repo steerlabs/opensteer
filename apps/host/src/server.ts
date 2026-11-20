@@ -1499,7 +1499,6 @@ export async function createHostServer(
     },
     "thread.assignments.list": async (input, context) => {
       const page = await dependencies.store.listThreadAssignmentsForOwner({
-        ...(input.deviceAccessRequests ? { deviceAccessRequests: input.deviceAccessRequests } : {}),
         threadId: input.threadId,
         ownerId: requireRpcSession(context).user.id,
         maxItems: Math.min(input.limit ?? 25, 100),
@@ -1518,20 +1517,14 @@ export async function createHostServer(
           await dependencies.store.requests.waitingOnUserPage({
             ...(input.before ? { before: input.before } : {}),
             limit: Math.min(input.limit ?? 100, 100),
-            ...(input.deviceAccessRequests
-              ? { deviceAccessRequests: input.deviceAccessRequests }
-              : {}),
             userId: requireRpcSession(context).user.id,
           }),
         ),
       ),
     "thread.requests.list": createThreadRequestHandler(dependencies.store),
-    "attention.get": async (input, context) => {
+    "attention.get": async (_input, context) => {
       const [attention, homeName] = await Promise.all([
-        dependencies.store.notificationState.attention(
-          requireRpcSession(context).user.id,
-          input.deviceAccessRequests ? { deviceAccessRequests: input.deviceAccessRequests } : {},
-        ),
+        dependencies.store.notificationState.attention(requireRpcSession(context).user.id),
         dependencies.store.homeComputerName(),
       ]);
       return rpcSuccess({ ...attention, homeName });
@@ -1540,9 +1533,6 @@ export async function createHostServer(
       rpcSuccess(
         await needsYouPage(dependencies.store.database, {
           ...(input.before ? { before: input.before } : {}),
-          ...(input.deviceAccessRequests
-            ? { deviceAccessRequests: input.deviceAccessRequests }
-            : {}),
           limit: Math.min(input.limit ?? 50, 50),
           maxBytes: 64 * 1024,
           userId: requireRpcSession(context).user.id,

@@ -65,11 +65,7 @@ export function createThreadRequestHandler(
           .execute();
         if (
           rows.length !== review.size ||
-          rows.some(
-            ({ id, revision, kind }) =>
-              review.get(id) !== revision ||
-              (kind === "device.access" && input.deviceAccessRequests !== "include"),
-          )
+          rows.some(({ id, revision }) => review.get(id) !== revision)
         )
           throw new OpensteerError({ code: "conflict", message: "The reviewed Request changed." });
         const requests = rows.map(requestFromRow);
@@ -104,10 +100,7 @@ export function createThreadRequestHandler(
           requestId: input.requestId,
         })
       : null;
-    const requests =
-      request && (request.kind !== "device.access" || input.deviceAccessRequests === "include")
-        ? [request]
-        : [];
+    const requests = request ? [request] : [];
     const page = input.requestId
       ? {
           requests,
@@ -122,9 +115,6 @@ export function createThreadRequestHandler(
       : await store.requests.originatingPendingPage({
           ...(input.before ? { before: input.before } : {}),
           limit: Math.min(input.limit ?? threadPageMaxItems, threadPageMaxItems),
-          ...(input.deviceAccessRequests
-            ? { deviceAccessRequests: input.deviceAccessRequests }
-            : {}),
           threadId: input.threadId,
         });
     return rpcSuccess(

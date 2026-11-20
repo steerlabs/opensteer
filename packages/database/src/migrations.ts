@@ -20,7 +20,9 @@ import {
   answeredQuestionRecordsMigrationName,
   applyAnsweredQuestionRecords,
   applyPersonalStateSchema,
+  applyDropDeviceAccessCount,
   applyTaskApprovalReceipts,
+  dropDeviceAccessCountMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import {
@@ -597,6 +599,7 @@ export function migrationProvider(options?: {
               [personalCurrentStateMigrationName]: { up: applyPersonalStateSchema },
               [taskApprovalReceiptsMigrationName]: { up: applyTaskApprovalReceipts },
               [answeredQuestionRecordsMigrationName]: { up: applyAnsweredQuestionRecords },
+              [dropDeviceAccessCountMigrationName]: { up: applyDropDeviceAccessCount },
             }
           : {}),
       };

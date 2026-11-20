@@ -6,6 +6,7 @@ import {
   refreshLatestRunCompletion,
   refreshTeamAskAttention,
 } from "./personal-attention-store.js";
+import { NotificationStateStore } from "./notification-state.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { createPersonalStateFixture } from "./personal-state.test-support.js";
 import { buildPersonalShellSnapshot } from "./personal-snapshot-store.js";
@@ -46,6 +47,10 @@ test("parks ordinary asks by link while retaining failed asks and dropping expir
     const flip = (state: "active" | "revoked") => links.state(teamId, state);
     expect(await fetchCount()).toEqual({ pendingRequestCount: 0, needsYouCount: 2 });
     expect(await fetchKinds()).toEqual(["failed-ask", "team-ask"]);
+    // Another computer's row reads attention; it counts Needs you as the Needs you page does.
+    expect(await new NotificationStateStore(database).attention(fixture.run.userId)).toMatchObject({
+      needsYou: 2,
+    });
     const parked = await database
       .selectFrom("personalAttention")
       .selectAll()

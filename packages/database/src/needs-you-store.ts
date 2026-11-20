@@ -25,7 +25,6 @@ export function needsYouPage(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly userId: UserId;
-    readonly deviceAccessRequests?: "include";
     readonly before?: string;
     readonly limit?: number;
     readonly maxBytes?: number;
@@ -41,10 +40,8 @@ export function needsYouPage(
     : null;
   return withPersonalSyncRead(database, async (transaction) => {
     const state = await authorizedSyncState(transaction, input.userId);
-    const excludeDeviceAccess = input.deviceAccessRequests !== "include";
     const keys = await readAttentionKeys(transaction, {
       limit,
-      excludeDeviceAccess,
       ...(cursor && cursorAt ? { before: { at: cursorAt, id: cursor.id } } : {}),
     });
     const requestIds = keys.flatMap((key) => (key.requestId ? [key.requestId] : []));
@@ -153,8 +150,7 @@ export function needsYouPage(
       });
     const entries = [...bounded.items];
     const last = keys[entries.length - 1];
-    const count =
-      state.needsYouCount - (excludeDeviceAccess ? state.pendingDeviceAccessRequestCount : 0);
+    const count = state.needsYouCount;
     return NeedsYouPageSchema.parse({
       count,
       entries,
