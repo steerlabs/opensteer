@@ -319,6 +319,8 @@ export async function createControlPlaneServer(
       authorize ? url.searchParams.get("client_id") : undefined,
     ];
     const clientId = candidates.find((client) => client?.startsWith("occ_"));
+    if (clientId && candidates.some((candidate) => candidate && candidate !== clientId))
+      throw new ControlPlaneError("bad_request", "Conflicting OAuth client identities");
     const response =
       clientId && dependencies.organizations
         ? await dependencies.organizations.issueWorkSignIn(

@@ -185,7 +185,10 @@ export const BrowserAttachTicketClaimsSchema = z
     actor: z.enum(["agent", "person"]).optional(),
     /** Authorizes an existing session on the runtime's raw CDP endpoint. */
     standardCdp: StandardCdpModeSchema.optional(),
-    standardCdpLease: z.object({ generation: z.number().int().positive(), bindingId: z.string().min(1).max(512) }).strict().optional(),
+    standardCdpLease: z
+      .object({ generation: z.number().int().positive(), bindingId: z.string().min(1).max(512) })
+      .strict()
+      .optional(),
     passkeys: z.literal(1).optional(),
     navigationVersion: z.literal(1).optional(),
     wireVersion: z.literal(browserRuntimeWireVersion),

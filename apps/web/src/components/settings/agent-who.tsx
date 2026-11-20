@@ -4,10 +4,10 @@ import { Icon } from "../icon.js";
 /**
  * Who a connected agent is, as far as the Home could prove: a verified name with its
  * origin, or a name it gave itself, marked as such, with where it returns to. A verified
- * identity the Home stopped vouching for says since when.
+ * identity the Home stopped vouching for shows only its name here; its notice says since when.
  */
 export function AgentWhoLine({ who }: { readonly who: AgentWho }) {
-  const withdrawn = agentWithdrawnLine(who);
+  // A withdrawn verification is said once, where Disconnect is offered: here only its name.
   return (
     <p className={`agent-who${who.verified ? " agent-who--verified" : ""}`}>
       <Icon
@@ -18,10 +18,11 @@ export function AgentWhoLine({ who }: { readonly who: AgentWho }) {
         <span className="agent-who__name">
           {who.verified
             ? workWords("who.verifiedAs", { name: who.heading })
-            : workWords("who.saysItIs", { name: who.heading })}
+            : who.selfAsserted
+              ? workWords("who.saysItIs", { name: who.heading })
+              : who.heading}
         </span>
         <span className="agent-who__detail">{who.detail}</span>
-        {withdrawn ? <span className="agent-who__withdrawn">{withdrawn}</span> : null}
       </span>
     </p>
   );

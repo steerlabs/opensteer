@@ -155,6 +155,7 @@ vi.mock("@react-navigation/native", async () => {
   };
 });
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 88 }));
+vi.mock("./external-agent-mark.js", () => ({ ExternalAgentMark: () => null }));
 vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Heavy: "heavy" },
   impactAsync: vi.fn(async () => undefined),

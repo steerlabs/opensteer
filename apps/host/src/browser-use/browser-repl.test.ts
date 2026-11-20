@@ -488,6 +488,46 @@ describe("browser REPL", () => {
     }
   });
 
+  it("keeps a pending capture's image slot reserved against printImage", async () => {
+    const held = Promise.withResolvers<string>();
+    const entered = Promise.withResolvers<void>();
+    const { run } = setup({
+      command: () => held.promise,
+      listPages: async () => {
+        entered.resolve();
+        return [];
+      },
+    });
+    try {
+      const result = run(`
+        ${bind}
+        const screenshot = page.screenshot();
+        for (let i = 0; i < ${limits.images}; i++) {
+          try { await printImage(${JSON.stringify(png)}); }
+          catch (error) { print(error.code); }
+        }
+        await pages();
+        await screenshot;
+        return "done";
+      `);
+      await Promise.race([
+        entered.promise,
+        result.then((reply) => {
+          throw new Error(JSON.stringify(reply));
+        }),
+      ]);
+      held.resolve(JSON.stringify({ data: png }));
+      const reply = await result;
+      expect(reply.isError).toBeUndefined();
+      expect(reply.content.filter((block) => block.type === "image")).toHaveLength(limits.images);
+      expect(reply.content).toEqual(
+        expect.arrayContaining([{ type: "text", text: "output-limit" }, text("done")]),
+      );
+    } finally {
+      held.resolve(JSON.stringify({ data: png }));
+    }
+  });
+
   it("passes only the remaining aggregate reply bytes to the producer", async () => {
     const command = vi.fn<BrowserUsePort["command"]>(async (_target, _method, _args, _id, call) =>
       JSON.stringify("x".repeat(call.maxBytes - 2)),

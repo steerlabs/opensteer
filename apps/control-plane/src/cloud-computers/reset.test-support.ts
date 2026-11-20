@@ -11,4 +11,6 @@ export async function resetManagedCloudTables(database: Kysely<ControlPlaneDatab
       cloud_computer_backup_targets, cloud_computer_provisioner_lease,
       cloud_computers, cloud_computer_stripe_events, cloud_computer_checkouts
   `.execute(database);
+  await database.deleteFrom("deployments").where("oidcClientId", "like", "occ\\_%").execute();
+  await database.deleteFrom("oauthClients").where("clientId", "like", "occ\\_%").execute();
 }

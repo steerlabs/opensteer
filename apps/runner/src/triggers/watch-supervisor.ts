@@ -133,8 +133,12 @@ export class WatchSupervisor {
   async connectionLost(sink: RunnerMessageSink): Promise<void> {
     const stopped = this.#reconcileTail.then(async () => {
       const active = [...this.#watches.entries()].filter(([, watch]) => watch.sink === sink);
-      await Promise.allSettled(active.map(([, watch]) => this.#stop(watch, true)));
-      for (const [activationId] of active) this.#watches.delete(activationId);
+      await Promise.allSettled(
+        active.map(async ([activationId, watch]) => {
+          await this.#stop(watch, true);
+          this.#watches.delete(activationId);
+        }),
+      );
     });
     this.#reconcileTail = stopped.catch(() => undefined);
     await stopped;
@@ -161,6 +165,7 @@ export class WatchSupervisor {
         next.executionGeneration !== active.desired.executionGeneration ||
         next.revisionId !== active.desired.revisionId
       ) {
+        active.sink = sink;
         await this.#stop(active, true);
         this.#watches.delete(activationId);
       }

@@ -188,6 +188,7 @@ vi.mock("../ui/action-line.js", () => ({ RowSubtitle: () => null }));
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({ signIn: vi.fn() }),
   useSelectedHostClient: () => null,
+  useHostValue: (_client: unknown, _select: unknown, detached: unknown) => detached,
   useMobileState: () => ({ selection: { deploymentId: "test", hostClient: harness.client } }),
 }));
 import { setTaskDone, TaskRowState, TaskRowView } from "./task-row.js";

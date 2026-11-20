@@ -5223,11 +5223,14 @@ export class BrowserService {
         }
       };
     };
-    const admitProfile = () => this.#standardCdpProfiles.run(profile?.id ?? null, async () => {
-      if (profile && this.#standardCdpProfiles.held(profile.id))
-        throw new BrowserCdpConnectionEnded("An attachment holds exclusive access to this browser profile.");
-      return admit();
-    });
+    const admitProfile = () =>
+      this.#standardCdpProfiles.run(profile?.id ?? null, async () => {
+        if (profile && this.#standardCdpProfiles.held(profile.id))
+          throw new BrowserCdpConnectionEnded(
+            "An attachment holds exclusive access to this browser profile.",
+          );
+        return admit();
+      });
     return origin === "person" && !input.agentBindingId
       ? admitProfile()
       : this.withRunnerAdmission(placement.runnerId, async () => {

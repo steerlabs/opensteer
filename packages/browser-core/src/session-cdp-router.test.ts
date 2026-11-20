@@ -824,6 +824,44 @@ describe("SessionCdpRouter", () => {
     await router.close();
   });
 
+  it("keeps the physical parent channel until pending child work is acknowledged", async () => {
+    const backend = new FakeBackend();
+    backend.dedicatedContext = true;
+    backend.targetInfos = [{ targetId: "root", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root", async () => true, "/files/a");
+    const client = router.openStandardClient("a", { wholeContext: true });
+    const child = Promise.withResolvers<string>();
+    client.onEvent((event) => {
+      if (event.method === "Target.attachedToTarget" && event.sessionId)
+        child.resolve(String(event.parameters.sessionId));
+    });
+    await client.send({ method: "Target.attachToTarget", parameters: { targetId: "root" } });
+    const channel = backend.channels.get("root")!;
+    channel.emit("Target.attachedToTarget", {
+      targetInfo: { targetId: "worker", type: "worker" },
+      sessionId: "physical-worker",
+    });
+    const { promise: childSession } = child;
+    const command = expect(
+      client.send({ method: "Runtime.evaluate", sessionId: await childSession }),
+    ).rejects.toThrow("CDP connection closed");
+    const { id } = JSON.parse(String(channel.commands.at(-1)?.parameters?.message));
+    expect(id).toBe(1);
+    client.close();
+    await command;
+    expect(channel.closed).toBe(false);
+    expect(router.hasExclusiveContextClient).toBe(true);
+    channel.emit("Target.receivedMessageFromTarget", {
+      sessionId: "physical-worker",
+      message: JSON.stringify({ id, result: {} }),
+    });
+    await client.settled;
+    expect(channel.closed).toBe(true);
+    expect(router.hasExclusiveContextClient).toBe(false);
+    await router.close();
+  });
+
   it("keeps legacy byte-valid results and events and leaves logical detach silent", async () => {
     const backend = new FakeBackend();
     backend.targetInfos = [{ targetId: "root", type: "page" }];

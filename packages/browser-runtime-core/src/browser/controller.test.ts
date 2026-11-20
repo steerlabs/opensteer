@@ -2959,6 +2959,91 @@ describe("BrowserController", () => {
     }
   });
 
+  it("keeps a script detach pending while input cleanup is blocked by a dialog", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const press = Promise.withResolvers<void>();
+    const releasePress = Promise.withResolvers<void>();
+    let pressing: Promise<void> | undefined;
+    let detaching: Promise<void> | undefined;
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const send = (
+        requestId: string,
+        command: { method: string; parameters: Record<string, unknown>; sessionId?: string },
+      ) =>
+        controller.handle({
+          type: "cdp.command",
+          requestId,
+          scriptAttachmentId,
+          replyBudget,
+          command,
+        });
+      const attachId = randomUUID();
+      await send(attachId, { method: "Target.attachToTarget", parameters: { targetId } });
+      const attached = sink.messages.find(
+        (message) => message.type === "cdp.result" && message.requestId === attachId,
+      );
+      if (attached?.type !== "cdp.result" || typeof attached.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      const { sessionId } = attached.result;
+      page.cdpSession.responses.set(
+        "Input.dispatchMouseEvent",
+        async (parameters: Record<string, unknown> | undefined) => {
+          if (parameters?.type === "mousePressed") {
+            press.resolve();
+            await releasePress.promise;
+          }
+          return {};
+        },
+      );
+      pressing = send(randomUUID(), {
+        method: "Input.dispatchMouseEvent",
+        sessionId,
+        parameters: { type: "mousePressed", button: "left", buttons: 1, x: 30, y: 40 },
+      });
+      await press.promise;
+      page.cdpSession.emit("Page.javascriptDialogOpening", { message: "Held", type: "alert" });
+      const detachId = randomUUID();
+      detaching = send(detachId, { method: "Target.detachFromTarget", parameters: { sessionId } });
+      const cancelId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId: cancelId,
+        scriptAttachmentId,
+        command: {
+          method: browserHostMethods.cancelScriptCommand,
+          parameters: { requestId: detachId },
+        },
+      });
+      const replies = () =>
+        sink.messages.filter((message) => "requestId" in message && message.requestId === detachId);
+      expect(replies()).toEqual([]);
+      page.cdpSession.emit("Page.javascriptDialogClosed", { result: false });
+      releasePress.resolve();
+      await Promise.all([pressing, detaching]);
+      expect(replies()).toEqual([expect.objectContaining({ type: "cdp.result" })]);
+      expect(
+        cdpRouter.attachedTargetId(validClaims().sessionId, sessionId, scriptAttachmentId),
+      ).toBeNull();
+    } finally {
+      page.cdpSession.emit("Page.javascriptDialogClosed", { result: false });
+      releasePress.resolve();
+      await Promise.allSettled([pressing, detaching]);
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("clears only the producer's own hover and never interrupts a held drag", async () => {
     const controller = createController();
     await controller.start();

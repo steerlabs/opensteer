@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { CommandIdSchema } from "@opensteer/core";
-import { CorrelationIdSchema } from "@opensteer/protocol";
+import { CorrelationIdSchema, triggerStopGenerationCapability } from "@opensteer/protocol";
 import { closeLegacyCdpForConnection } from "../browser/trigger-cdp-bridge.js";
 import { ChromeSharedTabs } from "../browser/chrome-shared-tabs.js";
 import { ResourceRevisions } from "./personal-resource-revisions.js";
@@ -3367,6 +3367,11 @@ export async function createHostRuntime(
             !identity ||
             identity.runnerId !== attempt.runnerId ||
             identity.bootId !== attempt.runnerBootId
+          )
+            return;
+          if (
+            attempt.kind === "occurrence" &&
+            !identity.capabilities.includes(triggerStopGenerationCapability)
           )
             return;
           const hash = createHash("sha256")

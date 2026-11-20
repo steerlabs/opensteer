@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { z } from "zod";
 import {
   OpensteerError,
+  threadAccessModeAtMost,
   type RequestId,
   type RequestPresentation,
   type RequestResponse,
@@ -380,12 +381,27 @@ export class PluginExecutions {
     return this.#drive(id, async () => {
       let row = await this.#owned(caller, id);
       if (terminal.has(row.state)) {
+        // An earlier result is returned only under the authority it was produced under: the
+        // plugin it asked about is still reachable, and the effective mode has not dropped.
+        const request = row.requestId ? await this.options.store.requests.get(row.requestId) : null;
         await this.options.authority.scoped(caller, () =>
           this.options.authority.assert(
             { ...this.options.authority.admit(caller), mode: "ask" },
             "resume",
+            request?.presentation.plugin?.plugin.id,
+            row.id,
           ),
         );
+        if (
+          row.admittedAccessMode &&
+          !threadAccessModeAtMost(row.admittedAccessMode, caller.accessMode)
+        )
+          throw new OpensteerError({
+            code: "forbidden",
+            message:
+              "This agent's access changed after the plugin call ran, so its result is not returned.",
+            next: "Check the current state before continuing.",
+          });
         return this.result(row);
       }
       if (!(await this.#authorizeExecution(row, "resume")))

@@ -224,19 +224,34 @@ describeStore("a selected grant's listings show only what it names", (it) => {
         tokenSuffix: runnerId,
       });
     const [profile, hiddenProfile] = [createId("browserProfile"), createId("browserProfile")];
+    const [approval, staleApproval] = [
+      createIntegrationId("connection"),
+      createIntegrationId("connection"),
+    ];
     const grant: AgentGrant = {
       scope: "selected",
       tasks: false,
       resources: [
         {
           kind: "computer-app",
-          approvalId: createIntegrationId("connection"),
+          approvalId: approval,
           deviceId: DeviceIdSchema.parse(granted),
+          app: { kind: "mac-app", bundleId: "com.apple.Notes", teamId: null },
+        },
+        // Granted once, but the person has since revoked the app's approval on that Mac.
+        {
+          kind: "computer-app",
+          approvalId: staleApproval,
+          deviceId: DeviceIdSchema.parse(hidden),
           app: { kind: "mac-app", bundleId: "com.apple.Notes", teamId: null },
         },
         { kind: "browser-profile", profileId: profile },
       ],
     };
+    const approvals = [
+      { id: approval, status: "active", computer: { deviceId: granted, blockedAt: null } },
+      { id: staleApproval, status: "revoked", computer: { deviceId: hidden, blockedAt: null } },
+    ];
     // A shell on every computer: none of them is the selected agent's to see.
     const store = new Proxy(storeFixture.store, {
       get(target, property) {
@@ -257,12 +272,13 @@ describeStore("a selected grant's listings show only what it names", (it) => {
           store,
           runners: {
             asleepSince: () => null,
+            agentsStoppedSince: () => null,
             identityForRunner: () => undefined,
             isRunnerConnected: () => true,
             moduleReadiness: () => "ready",
           },
           computerApps: { status: () => [], attached: () => false, deviceStatus: () => null },
-          integrations: { devices: { deviceConnections: async () => [] } },
+          integrations: { devices: { deviceConnections: async () => approvals } },
           browser: {
             listAgentProfiles: async () => [
               profileRow(profile, "Granted profile"),
@@ -279,7 +295,15 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     const computers = await handler.computer_list({ caller, input: {}, operationKey: "list" });
     expect(computers.computers.map((computer) => computer.computerId)).toEqual([granted]);
     expect(computers.nextCursor).toBeNull();
-    expect(computers.computers[0]!.sessions).toEqual([]);
+    // Nothing about the granted Mac beyond that it exists: no drivers, switches or capabilities.
+    expect(computers.computers[0]).toMatchObject({
+      sessions: [],
+      drivers: [],
+      selfRunnerId: null,
+      capabilities: [],
+      hosting: false,
+    });
+    expect(computers.computers[0]).not.toHaveProperty("link");
     expect(
       names(computers, [hidden, "Hidden Mac", f.runnerId, "shell-session-secret", "/Users/secret"]),
     ).toEqual([]);

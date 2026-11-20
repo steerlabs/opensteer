@@ -321,7 +321,9 @@ export class BrowserModuleRelay {
       case "browser.close": {
         const channel = this.#assertChannel(message.channelId, message.capability);
         this.#removeChannel(message.channelId);
-        const settled = channel.raw ? await this.#bridge.settleStandardCdp(message.channelId) : false;
+        const settled = channel.raw
+          ? await this.#bridge.settleStandardCdp(message.channelId)
+          : false;
         if (!channel.raw) this.#bridge.close(message.channelId);
         if (this.#stream !== stream) return;
         await this.#send({

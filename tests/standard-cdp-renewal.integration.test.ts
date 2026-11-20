@@ -372,6 +372,85 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
   },
 );
 
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "admits a sibling during a stalled Runtime handshake and caps live attachments on its Runner",
+  async () => {
+    const { stack, runtime } = await startBrowserHome();
+    const { browser, store } = stack.host;
+    const owner = await store.firstUser();
+    if (!owner) throw new Error("The Home has no owner.");
+    const runnerId = stack.agentHome.computerId;
+    await store.database
+      .updateTable("devices")
+      .set({ accessPolicy: { ...machineAccessPolicyDefault, browser: true } })
+      .where("id", "=", await store.requireSelfDeviceId(runnerId))
+      .execute();
+    const guest = await browser.start({ ownerId: owner.id, origin: "person", fresh: true });
+    const bindings = [];
+    for (let index = 0; index < 5; index++) {
+      const authority = {
+        ownerId: owner.id,
+        agentBindingId: `thread:${await createTask(stack, `Attachment group ${index}`)}`,
+      };
+      await browser.openAgentSession({ ...authority, sessionId: guest.session.id });
+      bindings.push(authority);
+    }
+    const entered = Promise.withResolvers<void>();
+    const unblock = Promise.withResolvers<void>();
+    const attach = runtime.attachStandardCdp.bind(runtime);
+    const spy = vi.spyOn(runtime, "attachStandardCdp").mockImplementationOnce(async (...args) => {
+      entered.resolve();
+      await unblock.promise;
+      return attach(...args);
+    });
+    const sockets: WebSocket[] = [];
+    const probe = async (authority: (typeof bindings)[number]) => {
+      const ticket = await browser.issueStandardCdpTicket({
+        authority,
+        browserSessionId: guest.session.id,
+        mode: "session",
+      });
+      const socket = new WebSocket(
+        new URL(ticket.path, stack.hostOrigin).href.replace(/^http/u, "ws"),
+      );
+      sockets.push(socket);
+      await once(socket, "open");
+      const response = once(socket, "message");
+      socket.send(JSON.stringify({ id: 1, method: "Browser.getVersion" }));
+      return JSON.parse(String((await response)[0]));
+    };
+    try {
+      const slow = probe(bindings[0]!);
+      void slow.catch(() => undefined);
+      await milestone(entered.promise, "first Runtime attach");
+      expect(await probe(bindings[1]!)).toMatchObject({
+        id: 1,
+        result: { product: expect.any(String) },
+      });
+      unblock.resolve();
+      expect(await slow).toMatchObject({ id: 1, result: { product: expect.any(String) } });
+      for (const [index, authority] of bindings.slice(0, 4).entries())
+        for (let count = index < 2 ? 1 : 0; count < 4; count++)
+          expect(await probe(authority)).toMatchObject({
+            id: 1,
+            result: { product: expect.any(String) },
+          });
+      expect(await probe(bindings[4]!)).toMatchObject({
+        id: 1,
+        error: { message: "This computer has too many live CDP attachments." },
+      });
+      const refused = sockets.at(-1)!;
+      if (refused.readyState !== WebSocket.CLOSED) await once(refused, "close");
+      expect(sockets.filter((socket) => socket.readyState === WebSocket.OPEN)).toHaveLength(16);
+    } finally {
+      unblock.resolve();
+      spy.mockRestore();
+      for (const socket of sockets) socket.terminate();
+      await browser.stop(owner.id, guest.session.id);
+    }
+  },
+);
+
 async function createTask(stack: PersonalRuntime, title: string) {
   const catalog = stack.initialCatalog;
   if (catalog.status !== "ready" || !catalog.models[0]) throw new Error("No fixture model.");
@@ -396,6 +475,20 @@ async function startBrowserHome() {
     const runtimeId = "renewal-browser";
     const clients: Browser[] = [];
     let keys: readonly { keyId: string; publicKeyPem: string }[] = [];
+    const runtime = new BrowserRuntime({
+      launcher: new PlaywrightChromiumLauncher({
+        headless: true,
+        chromiumSandbox: false,
+        executablePath: chromium.executablePath(),
+      }),
+      localProfiles: { root: join(scratch, "profiles") },
+      runtimeId,
+      sessionFilesRoot: join(scratch, "files"),
+      ticketVerifier: await Ed25519AttachTicketVerifier.create({
+        replayLedgerPath: join(scratch, "private", "replay.json"),
+        resolvePublicKey: (id) => keys.find((key) => key.keyId === id)?.publicKeyPem ?? null,
+      }),
+    });
     const runtimeServer = new BrowserRuntimeServer({
       port: 0,
       relayBridge: {
@@ -404,20 +497,7 @@ async function startBrowserHome() {
           keys = next;
         },
       },
-      runtime: new BrowserRuntime({
-        launcher: new PlaywrightChromiumLauncher({
-          headless: true,
-          chromiumSandbox: false,
-          executablePath: chromium.executablePath(),
-        }),
-        localProfiles: { root: join(scratch, "profiles") },
-        runtimeId,
-        sessionFilesRoot: join(scratch, "files"),
-        ticketVerifier: await Ed25519AttachTicketVerifier.create({
-          replayLedgerPath: join(scratch, "private", "replay.json"),
-          resolvePublicKey: (id) => keys.find((key) => key.keyId === id)?.publicKeyPem ?? null,
-        }),
-      }),
+      runtime,
     });
     try {
       const address = await runtimeServer.start();
@@ -434,6 +514,7 @@ async function startBrowserHome() {
       return {
         stack,
         clients,
+        runtime,
         close: async () => {
           try {
             await Promise.all(clients.map(async (client) => client.close()));

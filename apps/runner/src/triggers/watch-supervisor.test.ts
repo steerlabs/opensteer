@@ -231,10 +231,9 @@ describe("WatchSupervisor", () => {
   });
 
   it("withholds the stop receipt when containment cannot be verified", async () => {
-    const fixture = await watchHarness(
-      "export default async () => {};",
-      undefined,
-      async () => "unverifiable",
+    let proved = false;
+    const fixture = await watchHarness("export default async () => {};", undefined, async () =>
+      proved ? "proven" : "unverifiable",
     );
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
@@ -248,6 +247,9 @@ describe("WatchSupervisor", () => {
         ),
       ).rejects.toThrow("Watch containment could not be verified");
       expect(fixture.messages).not.toContainEqual(expect.objectContaining({ observed: "stopped" }));
+      proved = true;
+      await fixture.supervisor.reconcile({ ...fixture.command(2), desired: [] }, fixture.sink);
+      expect(fixture.messages.at(-1)).toMatchObject({ observed: "stopped" });
     } finally {
       await fixture.close();
     }

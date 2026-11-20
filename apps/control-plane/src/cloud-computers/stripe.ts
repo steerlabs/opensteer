@@ -216,7 +216,19 @@ const billingInvoice = z.object({
 const stripeSubscription = z.object({
   cancel_at: stripeTimestamp.nullish(),
   cancel_at_period_end: z.boolean().optional(),
-  pending_update: z.object({ expires_at: z.number().int().positive() }).nullish(),
+  pending_update: z
+    .object({
+      expires_at: z.number().int().positive(),
+      subscription_items: z
+        .array(
+          z.object({
+            id: stripeToken("si").optional(),
+            quantity: z.number().int().optional(),
+          }),
+        )
+        .nullish(),
+    })
+    .nullish(),
   pause_collection: z.object({ behavior: z.string() }).nullish(),
   id: subscriptionId,
   customer: customerId,

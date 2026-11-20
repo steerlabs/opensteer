@@ -38,6 +38,7 @@ import {
   RunnerConnectionIdSchema,
   RunnerConnectionLeaseIdSchema,
   agentHomeFilesCapability,
+  triggerStopGenerationCapability,
   runnerEnvironmentIds,
   RunnerToHostMessageSchema,
   type RunnerCommand,
@@ -2424,6 +2425,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
     try {
       const hello = await Promise.race([host.firstAttach, host.rejected]);
       expect(hello).toContain(agentHomeFilesCapability);
+      expect(hello).toContain(triggerStopGenerationCapability);
       const sink = outgoing.mock.contexts.find(
         (context) => context instanceof CausallyOrderedRunnerSink,
       );

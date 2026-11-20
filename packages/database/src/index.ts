@@ -146,4 +146,7 @@ export { decorateQueueEntries, readQueueLeaseHolders } from "./personal-queue-vi
 export { republishThreads } from "./thread-status.js";
 export { returnHintResources } from "./personal-snapshot-store.js";
 
-export { acquireBrowserStandardCdpLease, releaseBrowserStandardCdpLease } from "./browser-standard-cdp-lease.js";
+export {
+  acquireBrowserStandardCdpLease,
+  releaseBrowserStandardCdpLease,
+} from "./browser-standard-cdp-lease.js";

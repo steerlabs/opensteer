@@ -152,6 +152,7 @@ export const RunnerCapabilitySchema = z.enum([
   "agent-home-files-v1",
   // Reports computer power transitions (such as going to sleep) on the primary connection.
   "runner-power-state-v1",
+  "trigger-stop-generation-v1",
   // Tells the Home when the person stopped agents on its computer, and when they resume.
   "runner-agent-stop-v1",
   "settings-plugin-policy-v1",

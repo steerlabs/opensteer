@@ -1413,67 +1413,70 @@ function ThreadView({
                       !sessionView ? (
                         <EmptyThread voice={voiceThread} />
                       ) : null}
-                      {sessionView ? <SessionActivity view={sessionView} /> : null}
-                      <AgentTranscript
-                        teamChannelName={teamSource?.channel.name ?? null}
-                        revealMessage={revealMessage}
-                        scroller={transcriptScroller}
-                        key={thread.id}
-                        attachmentReader={hostClient}
-                        activity={activity}
-                        browserSessions={tabSource}
-                        browserUses={snapshot.browserUses}
-                        // A conversation (Opensteer, a direct message) reads as messages, each
-                        // turn's steps behind its reply; work keeps its whole trace in view.
-                        conversation={conversational}
-                        live={live}
-                        computers={computers}
-                        entries={local.transcript}
-                        afterQueue={local.afterQueue}
-                        waitingRequests={snapshot.waitingRequests}
-                        assignments={snapshot.assignments}
-                        inputQueuePaused={thread.inputQueuePaused}
-                        renderPasswordsSuggestion={renderPasswordsSuggestion}
-                        queued={
-                          !conversational && (waiting || local.afterQueue.length) ? (
-                            <WaitingInputs
-                              client={hostClient}
-                              disabled={!canRespond}
-                              inputs={waiting ?? []}
-                              local={local.afterQueue}
-                              transcript={projected}
-                              onError={reportActionError}
-                              paused={inputQueue?.paused ?? false}
-                              resumable={thread.status !== "archived"}
-                              threadId={thread.id}
-                              viewerUserId={snapshot.user?.id ?? null}
-                            />
-                          ) : null
-                        }
-                        {...(conversational
-                          ? {
-                              activityOwner:
-                                activityView?.source === "reply" &&
-                                activityView.selection.kind === "turn"
-                                  ? {
-                                      onClose: () => setActivityView(null),
-                                      panelId: activityPanelId,
-                                      turnKey: activityView.selection.key,
-                                    }
-                                  : null,
-                              onActivityAnchor: setActivityOwnerAnchor,
-                              onOpenActivity: (key: string, opener: HTMLElement) =>
-                                openActivity({ key, kind: "turn" }, opener),
-                            }
-                          : {})}
-                        onReply={replyWith}
-                        renderTask={(entries) => <TaskRows entries={entries} />}
-                        requestShown={dockedRequests.length > 0}
-                        startHold={startHold}
-                        subagentReader={snapshot}
-                        threadId={thread.id}
-                        viewerUserId={snapshot.user?.id ?? null}
-                      />
+                      {sessionView ? (
+                        <SessionActivity view={sessionView} />
+                      ) : (
+                        <AgentTranscript
+                          teamChannelName={teamSource?.channel.name ?? null}
+                          revealMessage={revealMessage}
+                          scroller={transcriptScroller}
+                          key={thread.id}
+                          attachmentReader={hostClient}
+                          activity={activity}
+                          browserSessions={tabSource}
+                          browserUses={snapshot.browserUses}
+                          // A conversation (Opensteer, a direct message) reads as messages, each
+                          // turn's steps behind its reply; work keeps its whole trace in view.
+                          conversation={conversational}
+                          live={live}
+                          computers={computers}
+                          entries={local.transcript}
+                          afterQueue={local.afterQueue}
+                          waitingRequests={snapshot.waitingRequests}
+                          assignments={snapshot.assignments}
+                          inputQueuePaused={thread.inputQueuePaused}
+                          renderPasswordsSuggestion={renderPasswordsSuggestion}
+                          queued={
+                            !conversational && (waiting || local.afterQueue.length) ? (
+                              <WaitingInputs
+                                client={hostClient}
+                                disabled={!canRespond}
+                                inputs={waiting ?? []}
+                                local={local.afterQueue}
+                                transcript={projected}
+                                onError={reportActionError}
+                                paused={inputQueue?.paused ?? false}
+                                resumable={thread.status !== "archived"}
+                                threadId={thread.id}
+                                viewerUserId={snapshot.user?.id ?? null}
+                              />
+                            ) : null
+                          }
+                          {...(conversational
+                            ? {
+                                activityOwner:
+                                  activityView?.source === "reply" &&
+                                  activityView.selection.kind === "turn"
+                                    ? {
+                                        onClose: () => setActivityView(null),
+                                        panelId: activityPanelId,
+                                        turnKey: activityView.selection.key,
+                                      }
+                                    : null,
+                                onActivityAnchor: setActivityOwnerAnchor,
+                                onOpenActivity: (key: string, opener: HTMLElement) =>
+                                  openActivity({ key, kind: "turn" }, opener),
+                              }
+                            : {})}
+                          onReply={replyWith}
+                          renderTask={(entries) => <TaskRows entries={entries} />}
+                          requestShown={dockedRequests.length > 0}
+                          startHold={startHold}
+                          subagentReader={snapshot}
+                          threadId={thread.id}
+                          viewerUserId={snapshot.user?.id ?? null}
+                        />
+                      )}
                       {missingMessage ? (
                         <Unavailable
                           backLabel="Dismiss"
@@ -1649,7 +1652,7 @@ function ThreadView({
                     }
                   />
                 ) : null}
-                {voiceThread ? null : (
+                {voiceThread || sessionView ? null : (
                   <InputSurface
                     autoContext={false}
                     voice={false}
@@ -1723,7 +1726,7 @@ function ThreadView({
                     }
                   />
                 )}
-                {dock.composerHidden ? null : (
+                {dock.composerHidden || sessionView ? null : (
                   <UsageNotice
                     action={
                       usageAlternative ? (

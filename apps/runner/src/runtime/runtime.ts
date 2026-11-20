@@ -339,10 +339,10 @@ interface ActiveRun {
   task?: Promise<void>;
 }
 
-type AutomationEndReport = Extract<
+type ExecutionEndReport = Extract<
   RunnerOperationalReport,
   {
-    readonly type: "runner.trigger-result" | "runner.watch-status";
+    readonly type: "runner.event" | "runner.trigger-result" | "runner.watch-status";
   }
 >;
 
@@ -466,7 +466,14 @@ export class RunnerRuntime {
   readonly #sessions: LiveSessionDirectory;
   readonly #threads = new Map<ThreadId, RunId>();
   readonly #triggerPrograms = new Map<TriggerOccurrenceId, ActiveTriggerProgram>();
-  readonly #recentAutomationEnds = new Map<string, AutomationEndReport>();
+  readonly #recentEndReceipts = new Map<string, ExecutionEndReport>();
+  readonly #unverifiedRunEnds = new Map<
+    string,
+    {
+      readonly scope: string;
+      readonly report: Extract<ExecutionEndReport, { type: "runner.event" }>;
+    }
+  >();
   readonly #agentHome: AgentHomeAccess;
   readonly #nativeFsHelperBinary: string | undefined;
   #skillObserver:
@@ -646,7 +653,7 @@ export class RunnerRuntime {
         planLaunch: (executionId, launch) => this.#planProgramLaunch(executionId, launch),
         privateStateDirectory: this.#privateStateDirectory,
         terminate: (executionId) => this.#containment.terminate(executionId),
-        onStopped: (report) => this.#rememberAutomationEnd(report),
+        onStopped: (report) => this.#rememberEndReceipt(report),
         transport: { mode: this.#mode },
         agentHome: options.agentHome,
       });
@@ -1721,7 +1728,7 @@ export class RunnerRuntime {
         case "watch.reconcile": {
           await this.#watchSupervisor.reconcile(command, sink);
           const desired = new Set(command.desired.map(({ activationId }) => activationId));
-          for (const report of this.#recentAutomationEnds.values())
+          for (const report of this.#recentEndReceipts.values())
             if (report.type === "runner.watch-status" && !desired.has(report.activationId))
               void sink.send(report).catch(() => undefined);
           return { status: "accepted" };
@@ -1731,7 +1738,7 @@ export class RunnerRuntime {
         case "node.stop":
           return this.#stopNode(command);
         case "run.interrupt":
-          return this.#interrupt(command.runId, command.threadId, command.bindingGeneration);
+          return this.#interrupt(command.runId, command.threadId, sink, command.bindingGeneration);
         case "request.resolve":
           return this.#resolveRequest(command);
         case "run.steer":
@@ -2118,18 +2125,27 @@ export class RunnerRuntime {
       }
     }
     await this.#publishPendingHarnessCatalogInvalidations(sink);
-    for (const report of this.#recentAutomationEnds.values())
+    for (const report of this.#recentEndReceipts.values())
       void sink.send(report).catch(() => undefined);
   }
-  #rememberAutomationEnd(report: AutomationEndReport): void {
-    const id =
-      report.type === "runner.trigger-result" ? report.output.occurrenceId : report.activationId;
-    const key = `${id}:${report.executionGeneration}`;
-    this.#recentAutomationEnds.delete(key);
-    this.#recentAutomationEnds.set(key, report);
-    if (this.#recentAutomationEnds.size > 32) {
-      const oldest = this.#recentAutomationEnds.keys().next().value;
-      if (oldest) this.#recentAutomationEnds.delete(oldest);
+  #rememberEndReceipt(report: ExecutionEndReport): void {
+    let key: string;
+    switch (report.type) {
+      case "runner.event":
+        key = `${report.event.runId}:${report.event.bindingGeneration}`;
+        break;
+      case "runner.trigger-result":
+        key = `${report.output.occurrenceId}:${report.executionGeneration}`;
+        break;
+      case "runner.watch-status":
+        key = `${report.activationId}:${report.executionGeneration}`;
+        break;
+    }
+    this.#recentEndReceipts.delete(key);
+    this.#recentEndReceipts.set(key, report);
+    if (this.#recentEndReceipts.size > 32) {
+      const oldest = this.#recentEndReceipts.keys().next().value;
+      if (oldest) this.#recentEndReceipts.delete(oldest);
     }
   }
 
@@ -2571,7 +2587,7 @@ export class RunnerRuntime {
             output,
             type: "runner.trigger-result" as const,
           };
-          this.#rememberAutomationEnd(report);
+          this.#rememberEndReceipt(report);
           await (this.#connection ?? active.sink).send(report).catch(() => undefined);
         } else {
           this.#logger?.error("Trigger containment could not be verified", {
@@ -3226,11 +3242,33 @@ export class RunnerRuntime {
       await this.#settleLiveStreams(active).catch(() => undefined);
       if (active.interrupted)
         terminal = { data: { status: "interrupted" }, type: "run.interrupted" };
-      if (termination !== "proven")
+      if (termination !== "proven") {
         terminal = failureEvent(
           "The Runner could not verify that all Run processes stopped.",
           runTerminationUnprovenCode,
         );
+        const key = `${context.runId}:${context.bindingGeneration}`;
+        this.#unverifiedRunEnds.set(key, {
+          scope: warmEngine?.scope ?? active.containmentScope,
+          report: {
+            type: "runner.event",
+            event: PendingAgentEventV2Schema.parse({
+              type: "run.interrupted",
+              data: { status: "interrupted" },
+              runId: context.runId,
+              threadId: context.threadId,
+              environmentId: context.environmentId,
+              bindingGeneration: context.bindingGeneration,
+              ordinal: active.nextOrdinal + 1,
+              emittedAt: new Date().toISOString(),
+            }),
+          },
+        });
+        if (this.#unverifiedRunEnds.size > 32) {
+          const oldest = this.#unverifiedRunEnds.keys().next().value;
+          if (oldest) this.#unverifiedRunEnds.delete(oldest);
+        }
+      }
       if (terminal.type === "run.failed") {
         // The logger names the line `message`; the reason is `detail`.
         this.#logger?.error("run.failed", {
@@ -3602,8 +3640,28 @@ export class RunnerRuntime {
   async #interrupt(
     runId: RunId,
     threadId: ThreadId,
+    sink: RunnerMessageSink,
     bindingGeneration?: number,
   ): Promise<CommandDecision> {
+    if (bindingGeneration !== undefined) {
+      const key = `${runId}:${bindingGeneration}`;
+      const pending = this.#unverifiedRunEnds.get(key);
+      if (pending) {
+        if (pending.report.event.threadId !== threadId)
+          return reject("forbidden", "Interrupt targets a different thread", false);
+        const proof = await this.#containment.terminate(pending.scope).catch(() => "unknown");
+        if (proof !== "proven")
+          return reject("conflict", "Run containment could not be verified", true);
+        this.#unverifiedRunEnds.delete(key);
+        const report = {
+          ...pending.report,
+          event: { ...pending.report.event, emittedAt: new Date().toISOString() },
+        };
+        this.#rememberEndReceipt(report);
+        void sink.send(report).catch(() => undefined);
+        return { status: "accepted" };
+      }
+    }
     const active = this.#runs.get(runId);
     const existingThreadId = active?.command.context.threadId;
     if (existingThreadId && existingThreadId !== threadId) {

@@ -38,7 +38,10 @@ it("stores only a digest, binds the full claims and admits exactly one concurren
   const storage = new Map<string, { claims: StandardCdpTicketClaims; expiresAt: number }>();
   let now = 42_000;
   const tickets = new StandardCdpTickets(() => now, storage);
-  const ticket = tickets.issue(claims);
+  const ticket = tickets.issue({
+    ...claims,
+    authority: { ...claims.authority, environmentId: createId("environment") },
+  });
   expect(Buffer.from(ticket, "base64url")).toHaveLength(32);
   expect([...storage.entries()]).toEqual([
     [createHash("sha256").update(ticket).digest("hex"), { claims, expiresAt: 102_000 }],

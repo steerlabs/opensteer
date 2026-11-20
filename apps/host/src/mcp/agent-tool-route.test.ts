@@ -316,16 +316,24 @@ it.each(["Stop", "deadline"])(
   },
 );
 
-it.each(["an in-flight", "a completed"])(
-  "refuses %s replay once a narrowed grant no longer offers the tool, returning nothing it produced",
-  async (stage) => {
-    const app = {
-      kind: "computer-app",
-      approvalId: `con_${crypto.randomUUID()}`,
-      deviceId: createId("device"),
-      app: { kind: "mac-app", bundleId: "com.apple.mail", teamId: null },
-    } as const;
-    const f = fixture({ scope: "selected", tasks: true, resources: [app] });
+it.each([
+  ["an in-flight", "the last granted app"],
+  ["a completed", "the last granted app"],
+  ["an in-flight", "the app it ran on, while another stays granted"],
+  ["a completed", "the app it ran on, while another stays granted"],
+] as const)(
+  "refuses %s replay once the grant withdraws %s, returning nothing it produced",
+  async (stage, withdrawn) => {
+    const app = (bundleId: string) =>
+      ({
+        kind: "computer-app",
+        approvalId: `con_${crypto.randomUUID()}`,
+        deviceId: createId("device"),
+        app: { kind: "mac-app", bundleId, teamId: null },
+      }) as const;
+    const mail = app("com.apple.mail"),
+      notes = app("com.apple.notes");
+    const f = fixture({ scope: "selected", tasks: true, resources: [mail, notes] });
     const entered = Promise.withResolvers<void>(),
       held = Promise.withResolvers<void>();
     f.handler.mockImplementation(async () => {
@@ -342,11 +350,17 @@ it.each(["an in-flight", "a completed"])(
       held.resolve();
       expect((await first).json()).toMatchObject({ structuredContent: { total: 1 } });
     }
-    f.regrant({ scope: "selected", tasks: true, resources: [] });
+    // The tool family stays offered when another app remains: only the recorded authority can
+    // tell the earlier result apart.
+    f.regrant({
+      scope: "selected",
+      tasks: true,
+      resources: withdrawn === "the last granted app" ? [] : [notes],
+    });
     const replay = (await f.call(request)).json();
     expect(replay).toMatchObject({
       isError: true,
-      structuredContent: { error: { message: "This tool is unavailable to this caller" } },
+      structuredContent: { error: { code: "access_denied" } },
     });
     expect(JSON.stringify(replay)).not.toContain("from the earlier grant");
     held.resolve();

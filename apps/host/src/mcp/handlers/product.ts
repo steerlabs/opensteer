@@ -1,5 +1,5 @@
 import { sql } from "kysely";
-import { RunnerIdSchema, utf8Prefix } from "@opensteer/core";
+import { agentGrantAccess, RunnerIdSchema, utf8Prefix } from "@opensteer/core";
 import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import {
@@ -152,11 +152,21 @@ export class ProductToolHandlers {
       );
       rows = rows.filter((row) => own.has(row.tabId));
     }
+    // And only a place the grant reaches now: a page in a profile it still names.
+    const grant = callerLineage(caller)?.grant;
+    const selected = grant?.scope === "selected" ? grant : null;
     const visible = await Promise.all(
       rows.map(
         async (row) =>
           await this.#tabs?.get?.(owner, row.tabId).then(
-            () => true,
+            (tab) =>
+              !selected ||
+              (tab.kind === "page" &&
+                !!tab.profile &&
+                agentGrantAccess(selected, {
+                  kind: "browser-profile",
+                  profileId: tab.profile.profileId,
+                }) !== null),
             () => false,
           ),
       ),

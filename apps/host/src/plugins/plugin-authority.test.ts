@@ -115,12 +115,16 @@ test("a full-access Run is refused every operation that is not listed for agents
 test("a plugin execution resumes only under the lineage and grant revision that started it", async () => {
   const userId = createId("user");
   const thread = { id: createId("thread"), accessMode: "full-access" };
-  const lineaged = (agentConnectionId: string, grantRevision: number) =>
+  const lineaged = (
+    agentConnectionId: string,
+    grantRevision: number,
+    accessMode: "full-access" | "approval-required" = "full-access",
+  ) =>
     ({
       kind: "run",
       key: "run:plugin",
       userId,
-      accessMode: "full-access",
+      accessMode,
       thread,
       claims: { runId: createId("run"), threadId: thread.id },
       agentConnection: {
@@ -141,6 +145,7 @@ test("a plugin execution resumes only under the lineage and grant revision that 
     requestId: null,
     result: { secret: "read under revision 1" },
     reason: null,
+    admittedAccessMode: "full-access",
   };
   const executions = new PluginExecutions({
     records: { execution: async (id: string) => (id === row.id ? row : null) },
@@ -154,14 +159,19 @@ test("a plugin execution resumes only under the lineage and grant revision that 
     result: { secret: "read under revision 1" },
   });
   const { agentConnection: _, ...owner } = started as AgentCaller & { agentConnection: unknown };
-  for (const later of [lineaged("mcn_first", 2), lineaged("mcn_second", 1), owner as AgentCaller]) {
+  // A later revision, another connection, the person's own work, or the same lineage after its
+  // effective mode dropped: none gets the earlier result.
+  for (const later of [
+    lineaged("mcn_first", 2),
+    lineaged("mcn_second", 1),
+    owner as AgentCaller,
+    lineaged("mcn_first", 1, "approval-required"),
+  ]) {
     const refused = await executions.resume(later, row.id).then(
       (value) => ({ value }),
       (error: unknown) => ({ error }),
     );
-    expect(refused).toMatchObject({
-      error: { code: "forbidden", message: "Plugin execution is unavailable to this caller." },
-    });
+    expect(refused).toMatchObject({ error: { code: "forbidden" } });
     expect(JSON.stringify(refused)).not.toContain("read under revision 1");
   }
 });

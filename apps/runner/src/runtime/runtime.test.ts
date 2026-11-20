@@ -24,6 +24,7 @@ import {
   requestTextMaxLength,
   requestTitleMaxLength,
   runFailureMessageMaxLength,
+  runTerminationUnprovenCode,
   toolArgumentsMaxSerializedBytes,
   toolOutputTextMaxBytes,
   utf8ByteLength,
@@ -244,6 +245,63 @@ describe("RunnerRuntime", () => {
       }
     },
   );
+
+  it("retries a fenced Run stop until it can confirm containment", async () => {
+    const registry = new HarnessRegistry();
+    registry.registerDriver(new FakeHarnessDriver());
+    const environmentId = createId("environment");
+    const command = executeCommand(environmentId);
+    const containment = new ExecutionContainment({
+      bootId: "unverified-run-stop",
+      dataDirectory: testPrivateStateRoot,
+      listProcesses: async () => [],
+    });
+    const terminate = vi.spyOn(containment, "terminate").mockResolvedValue("unverifiable");
+    const runtime = configuredRuntime({ environmentId, registry, containment });
+    const unverified = Promise.withResolvers<void>();
+    const confirmed = Promise.withResolvers<void>();
+    const sink: RunnerMessageSink = {
+      async send(report) {
+        if (report.type !== "runner.event") return;
+        if (
+          report.event.type === "run.failed" &&
+          report.event.data.code === runTerminationUnprovenCode
+        )
+          unverified.resolve();
+        if (report.event.type === "run.interrupted") confirmed.resolve();
+      },
+    };
+    try {
+      await reconcile(registry, command);
+      await runtime.attach(
+        { ...testConnectionFence, type: "host.executions.attached", leaseMs: 60_000, results: [] },
+        sink,
+      );
+      await expect(runtime.handleCommand(command, sink)).resolves.toMatchObject({
+        status: "accepted",
+      });
+      await unverified.promise;
+      const commandId = createId("command");
+      const stop = {
+        type: "run.interrupt" as const,
+        commandId,
+        correlationId: CorrelationIdSchema.parse(commandId),
+        runId: command.context.runId,
+        threadId: command.context.threadId,
+        environmentId,
+        bindingGeneration: command.context.bindingGeneration,
+      };
+      await expect(runtime.handleCommand(stop, sink)).resolves.toMatchObject({
+        status: "rejected",
+        error: { retryable: true, message: "Run containment could not be verified" },
+      });
+      terminate.mockResolvedValue("proven");
+      await expect(runtime.handleCommand(stop, sink)).resolves.toEqual({ status: "accepted" });
+      await confirmed.promise;
+    } finally {
+      await runtime.close();
+    }
+  });
 
   it.each(["timeout", "shutdown"] as const)("reaps background processes on %s", async (mode) => {
     const registry = new HarnessRegistry();

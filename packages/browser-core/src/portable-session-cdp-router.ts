@@ -202,11 +202,18 @@ function readTargetFilter(value: unknown): ConnectionState["discoveryFilter"] {
   return value.map((entry: unknown) => {
     const filter = asRecord(entry);
     const { type, exclude } = filter;
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry) ||
-        (type !== undefined && typeof type !== "string") ||
-        (exclude !== undefined && typeof exclude !== "boolean"))
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      Array.isArray(entry) ||
+      (type !== undefined && typeof type !== "string") ||
+      (exclude !== undefined && typeof exclude !== "boolean")
+    )
       throw new SessionCdpRouterError("bad_command", "Invalid CDP target filter.");
-    return { ...(type === undefined ? {} : { type }), ...(exclude === undefined ? {} : { exclude }) };
+    return {
+      ...(type === undefined ? {} : { type }),
+      ...(exclude === undefined ? {} : { exclude }),
+    };
   });
 }
 
@@ -387,7 +394,9 @@ export class SessionCdpRouter {
     script?: ConnectionState["script"],
   ): ConnectionState {
     let resolve!: () => void;
-    const promise = new Promise<void>((done) => { resolve = done; });
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
     const state: ConnectionState = {
       session,
       ...(standard ? { standard } : {}),
@@ -437,10 +446,8 @@ export class SessionCdpRouter {
     else release();
   }
 
-  #trackPhysicalWork<T>(state: ConnectionState, operation: Promise<T>): Promise<T> {
-    if (!state.standard) return operation;
-    state.physicalWork.add(operation);
-    return operation.finally(() => { state.physicalWork.delete(operation); });
+  #trackPhysicalWork<T>(state: ConnectionState, start: () => Promise<T>): Promise<T> {
+    return state.standard ? trackPromise(state.physicalWork, start) : start();
   }
 
   async close(): Promise<void> {
@@ -682,7 +689,7 @@ export class SessionCdpRouter {
     state.pendingCount++;
     try {
       return await whileOpen(state.pending, () =>
-        this.#trackPhysicalWork(state, this.#dispatch(state, command, beforeActivity)),
+        this.#trackPhysicalWork(state, () => this.#dispatch(state, command, beforeActivity)),
       );
     } finally {
       state.pendingBytes -= bytes;
@@ -912,7 +919,9 @@ export class SessionCdpRouter {
               if (this.#ownerByTargetId.get(targetId) === claim) {
                 this.#releaseTarget(targetId);
                 if (state.standard.recoverUnadoptedTarget)
-                  await this.#trackTargetWork(targetId, state.standard.recoverUnadoptedTarget(targetId));
+                  await this.#trackTargetWork(targetId, () =>
+                    state.standard!.recoverUnadoptedTarget!(targetId),
+                  );
               }
             }
             throw error;
@@ -1046,8 +1055,7 @@ export class SessionCdpRouter {
   }
 
   async #closeTarget(targetId: string, claim: TargetClaim, parameters: CdpParameters) {
-    const result = await this.#trackTargetWork(
-      targetId,
+    const result = await this.#trackTargetWork(targetId, () =>
       this.#backend.send("Target.closeTarget", { ...parameters, targetId }),
     );
     if (this.#ownerByTargetId.get(targetId) === claim) {
@@ -1357,6 +1365,7 @@ export class SessionCdpRouter {
         );
       if (parameters.clip !== undefined) {
         const { x, y, width, height, scale } = asRecord(parameters.clip);
+        const maxEdge = browserFrameLimits.maxWidth * browserFrameLimits.maxDevicePixelRatio;
         if (
           typeof x !== "number" ||
           typeof y !== "number" ||
@@ -1372,6 +1381,7 @@ export class SessionCdpRouter {
           height <= 0 ||
           scale <= 0 ||
           scale > browserFrameLimits.maxDevicePixelRatio ||
+          Math.max(width, height) * Math.max(1, scale) > maxEdge ||
           width * height * scale ** 2 > browserFrameLimits.maxPhysicalPixels
         )
           throw new SessionCdpRouterError(
@@ -1484,7 +1494,7 @@ export class SessionCdpRouter {
       );
     };
     const tracked = () =>
-      this.#trackPhysicalWork(state, this.#trackTargetWork(attached.physicalTargetId, send()));
+      this.#trackPhysicalWork(state, () => this.#trackTargetWork(attached.physicalTargetId, send));
     return command.replyBudget ? tracked() : whileOpen(attached.pending, tracked);
   }
 
@@ -1616,16 +1626,14 @@ export class SessionCdpRouter {
       throw new SessionCdpRouterError("conflict", "Previous CDP work still holds this target.");
   }
 
-  #trackTargetWork<T>(targetId: string, operation: Promise<T>): Promise<T> {
+  #trackTargetWork<T>(targetId: string, start: () => Promise<T>): Promise<T> {
     let work = this.#workByTarget.get(targetId);
     if (!work) {
       work = new Set();
       this.#workByTarget.set(targetId, work);
     }
     const tracked = work;
-    tracked.add(operation);
-    return operation.finally(() => {
-      tracked.delete(operation);
+    return trackPromise(tracked, start).finally(() => {
       if (!tracked.size) this.#workByTarget.delete(targetId);
     });
   }
@@ -1693,7 +1701,7 @@ export class SessionCdpRouter {
    * its own: a backend can need the page to answer first, and a page under a
    * JavaScript dialog answers nothing until the dialog closes.
    */
-  #endChannel(state: ConnectionState, attached: AttachedChannel): void {
+  #endChannel(state: ConnectionState, attached: AttachedChannel): Promise<void> | undefined {
     if (state.channels.get(attached.virtualSessionId) !== attached) return;
     state.channels.delete(attached.virtualSessionId);
     if (attached.rootAttached || state.script) {
@@ -1703,9 +1711,12 @@ export class SessionCdpRouter {
         targetId: attached.physicalTargetId,
       });
     }
+    const descendants: Promise<void>[] = [];
     for (const child of state.channels.values()) {
-      if (child.channel instanceof ChildCdpChannel && child.channel.parent === attached.channel)
-        this.#endChannel(state, child);
+      if (child.channel instanceof ChildCdpChannel && child.channel.parent === attached.channel) {
+        const closing = this.#endChannel(state, child);
+        if (closing) descendants.push(closing);
+      }
     }
     attached.removeListener();
     const ended = new SessionCdpRouterError(
@@ -1716,14 +1727,20 @@ export class SessionCdpRouter {
     attached.ended.abort(ended);
     const close = () => attached.channel.close().catch(() => undefined);
     const work = this.#workByTarget.get(attached.physicalTargetId);
-    const closing = work && (state.standard || state.script)
-      ? Promise.allSettled(work).then(close)
-      : close();
-    void this.#trackPhysicalWork(state, closing);
+    const closure = this.#trackPhysicalWork(state, () =>
+      (state.standard || state.script) && (work?.size || descendants.length)
+        ? Promise.allSettled([...descendants, ...(work ?? [])]).then(close)
+        : close(),
+    );
     const claim = attached.childClaim;
-    if (claim && this.#ownerByTargetId.get(attached.physicalTargetId) === claim &&
-        claim.channelReferences !== undefined && --claim.channelReferences === 0)
+    if (
+      claim &&
+      this.#ownerByTargetId.get(attached.physicalTargetId) === claim &&
+      claim.channelReferences !== undefined &&
+      --claim.channelReferences === 0
+    )
       this.#releaseTarget(attached.physicalTargetId);
+    return closure;
   }
 
   #appendEvent(
@@ -1877,6 +1894,24 @@ export class SessionCdpRouter {
   }
 }
 
+function trackPromise<T>(work: Set<Promise<unknown>>, start: () => Promise<T>): Promise<T> {
+  let dispatch!: () => void;
+  const operation = new Promise<T>((resolve, reject) => {
+    dispatch = () => {
+      try {
+        resolve(start());
+      } catch (error) {
+        reject(error);
+      }
+    };
+  });
+  work.add(operation);
+  dispatch();
+  return operation.finally(() => {
+    work.delete(operation);
+  });
+}
+
 async function whileOpen<T>(
   pending: Set<(reason: unknown) => void>,
   operation: () => Promise<T>,
@@ -1931,7 +1966,11 @@ function requiredString(parameters: CdpParameters, key: string): string {
   return value;
 }
 
-function assertSafeNavigationUrl(value: unknown, allowOmitted: boolean, allowAboutBlank = allowOmitted): void {
+function assertSafeNavigationUrl(
+  value: unknown,
+  allowOmitted: boolean,
+  allowAboutBlank = allowOmitted,
+): void {
   if (value === undefined && allowOmitted) return;
   if (typeof value !== "string" || value.length < 1 || value.length > 16_384) {
     throw new SessionCdpRouterError("bad_command", "CDP navigation URL is invalid.");

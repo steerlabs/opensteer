@@ -362,42 +362,40 @@ export class BrowserRuntimeServer {
     };
     websocket.once("close", () => close(1000, "CDP disconnected"));
     websocket.on("error", () => close(1011, "CDP transport failed"));
-    const ready = this.runtime
-      .attachStandardCdp(ticket, overloaded, cancellation.signal)
-      .then(
-        (client) => {
-          attachment = client;
-          if (cancellation.signal.aborted) {
-            client.close();
-            return client;
-          }
-          client.signal.addEventListener(
-            "abort",
-            () => {
-              if (!detaching) close(1000, "Browser Session ended");
-            },
-            { once: true },
-          );
-          if (client.signal.aborted) {
-            close(1000, "Browser Session ended");
-            return undefined;
-          }
-          client.onEvent(({ method, parameters, sessionId }) => {
-            void send({ method, params: parameters, sessionId }).catch(() =>
-              close(1011, "CDP transport failed"),
-            );
-          });
-          if (bridge)
-            void send({ type: "browser.attached", standardCdpMode: client.mode }).catch(() =>
-              close(1011, "CDP transport failed"),
-            );
+    const ready = this.runtime.attachStandardCdp(ticket, overloaded, cancellation.signal).then(
+      (client) => {
+        attachment = client;
+        if (cancellation.signal.aborted) {
+          client.close();
           return client;
-        },
-        () => {
-          close(1008, "CDP attachment rejected");
+        }
+        client.signal.addEventListener(
+          "abort",
+          () => {
+            if (!detaching) close(1000, "Browser Session ended");
+          },
+          { once: true },
+        );
+        if (client.signal.aborted) {
+          close(1000, "Browser Session ended");
           return undefined;
-        },
-      );
+        }
+        client.onEvent(({ method, parameters, sessionId }) => {
+          void send({ method, params: parameters, sessionId }).catch(() =>
+            close(1011, "CDP transport failed"),
+          );
+        });
+        if (bridge)
+          void send({ type: "browser.attached", standardCdpMode: client.mode }).catch(() =>
+            close(1011, "CDP transport failed"),
+          );
+        return client;
+      },
+      () => {
+        close(1008, "CDP attachment rejected");
+        return undefined;
+      },
+    );
 
     websocket.on("message", (raw: RawData, binary: boolean) => {
       if (cancellation.signal.aborted || detaching) return;
@@ -406,8 +404,11 @@ export class BrowserRuntimeServer {
         return;
       }
       const frame = normalizeRawData(raw);
-      if (bridge && frame.length === standardCdpDetachFrame.length &&
-          frame.toString("utf8") === standardCdpDetachFrame) {
+      if (
+        bridge &&
+        frame.length === standardCdpDetachFrame.length &&
+        frame.toString("utf8") === standardCdpDetachFrame
+      ) {
         detaching = true;
         attachment?.close();
         void ready.then(async (client) => {

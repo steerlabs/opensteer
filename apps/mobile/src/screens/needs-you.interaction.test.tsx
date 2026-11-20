@@ -26,6 +26,7 @@ vi.mock("react-native", () => {
     View: ({ children }: Children) => <div>{children}</div>,
   };
 });
+vi.mock("./external-agent-mark.js", () => ({ ExternalAgentMark: () => null }));
 vi.mock("@react-navigation/native", () => ({
   useNavigation: () => ({ navigate: harness.navigate }),
 }));

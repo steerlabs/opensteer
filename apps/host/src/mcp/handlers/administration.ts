@@ -221,7 +221,7 @@ export class AdministrationToolHandlers {
         code: "bad_request",
         message: "cursor is not from computer_list. Start again without it.",
       });
-    const [page, drivers, computers] = await Promise.all([
+    const [page, drivers, computers, connections] = await Promise.all([
       store.listDevices({
         ...(after?.data ? { after: after.data } : {}),
         ownerId: caller.userId,
@@ -230,18 +230,33 @@ export class AdministrationToolHandlers {
       }),
       store.listDeviceDrivers({ includeDetached: true }),
       computerIds(store, caller.userId),
+      this.service.dependencies.integrations.devices.deviceConnections(caller.userId),
     ]);
-    // A selected grant sees only the Devices of the apps and phone screens it names, scoped
-    // before anything is projected, with nothing about shells or other Devices.
+    // A selected grant sees only the Devices where an app or phone screen it names is still
+    // approved, scoped before anything is projected; a stale approval names no Device.
     const grant = callerLineage(caller)?.grant;
-    const grantedDevices =
+    const live = (resource: { readonly approvalId: string; readonly deviceId: string }) =>
+      connections.some(
+        (entry) =>
+          entry.id === resource.approvalId &&
+          entry.status !== "revoked" &&
+          entry.computer?.deviceId === resource.deviceId &&
+          !entry.computer.blockedAt,
+      );
+    const grantedResources =
       grant?.scope === "selected"
-        ? new Set(
-            grant.resources.flatMap((resource) =>
-              resource.kind === "computer-app" ? [resource.deviceId] : [],
-            ),
+        ? grant.resources.flatMap((resource) =>
+            resource.kind === "computer-app" && live(resource) ? [resource] : [],
           )
         : null;
+    const grantedDevices = grantedResources
+      ? new Set(grantedResources.map((resource) => resource.deviceId))
+      : null;
+    const grantedPhones = new Set(
+      (grantedResources ?? []).flatMap((resource) =>
+        resource.app.kind === "phone-screen" ? [resource.deviceId] : [],
+      ),
+    );
     let scoped = page;
     if (grantedDevices) {
       const devices: (typeof page.devices)[number][] = [];
@@ -281,9 +296,6 @@ export class AdministrationToolHandlers {
     }
     const pageRunners = runnerPages.flatMap((page) => page.runners);
     const byRunner = new Map(pageRunners.map((runner) => [runner.id, runner]));
-    const connections = await this.service.dependencies.integrations.devices.deviceConnections(
-      caller.userId,
-    );
     const hub = this.service.dependencies.computerApps;
     const summaries = projectMachines({
       deploymentOwnsMainComputer: true,
@@ -384,6 +396,31 @@ export class AdministrationToolHandlers {
                 files: "unsupported" as const,
                 apps: device.accessPolicy.apps ? ("enabled" as const) : ("disabled" as const),
               };
+          // A selected grant learns only that a granted Device exists and whether it is
+          // reachable: nothing of its other apps, drivers, switches, shells or capabilities.
+          if (grantedDevices)
+            return {
+              computerId: device.id,
+              name: device.name,
+              kind: device.kind,
+              selfRunnerId: null,
+              drivers: [],
+              online: summary?.status === "online",
+              asleep: Boolean(summary?.asleepSince),
+              hosting: false,
+              canRunTasks: false,
+              capabilities: [],
+              ...(summary?.phoneDisplay && grantedPhones.has(device.id)
+                ? { phoneDisplay: summary.phoneDisplay }
+                : {}),
+              revoked: device.removedAt !== null,
+              access: {
+                browser: "unsupported" as const,
+                files: "unsupported" as const,
+                apps: "enabled" as const,
+              },
+              sessions: [],
+            };
           return {
             computerId: device.id,
             ...(self ? { link: formatReferenceLink(self.runnerId, device.name) } : {}),

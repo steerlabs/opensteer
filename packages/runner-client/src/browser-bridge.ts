@@ -372,7 +372,9 @@ export class LocalBrowserRuntimeBridge {
         clearTimeout(timer);
         resolve(code === 1000 && reason.toString("utf8") === standardCdpSettledReason);
       });
-      socket.send(standardCdpDetachFrame, (error) => { if (error) socket.terminate(); });
+      socket.send(standardCdpDetachFrame, (error) => {
+        if (error) socket.terminate();
+      });
     });
   }
 

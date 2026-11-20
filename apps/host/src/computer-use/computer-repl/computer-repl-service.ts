@@ -471,6 +471,16 @@ export class ReplService<Request extends AnyReplRequest> {
       request.args !== null &&
       "method" in request.args &&
       request.args.method === "Page.captureScreenshot";
+    if (request.operation === "browser.image" && "data" in request.args) {
+      const data = String(request.args.data);
+      if (
+        call.images + call.capturesInFlight >= limits.images ||
+        decodedBase64Bytes(data) + call.imageBytes + call.reservedImageBytes > limits.imageBytes
+      ) {
+        reject("output-limit", "Browser image output exceeds the remaining image budget.");
+        return;
+      }
+    }
     const remainingReply = browserReplLimits.replyBytes - call.replyBytes - call.reservedReplyBytes;
     const maxBytes = Math.min(
       remainingReply,

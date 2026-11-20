@@ -170,10 +170,12 @@ it("derives the shared ticket vectors, with every claim a phone browser can rece
     );
   else expect(tickets, "Regenerate with OPENSTEER_WRITE_PHONE_VECTORS=1").toEqual(generated);
   expect(BrowserAttachTicketClaimsSchema.parse(every)).toEqual(every);
-  // Person autofill and raw CDP tickets are only issued to supporting runtimes.
+  // Person autofill, raw CDP (with its lease) and the actor claim are only issued to a runtime
+  // that advertises them, which no phone browser does.
+  const advertisedOnly = new Set(["personFillVersion", "standardCdp", "standardCdpLease", "actor"]);
   expect(Object.keys(every).sort()).toEqual(
     Object.keys(BrowserAttachTicketClaimsSchema.shape)
-      .filter((claim) => claim !== "personFillVersion" && claim !== "standardCdp")
+      .filter((claim) => !advertisedOnly.has(claim))
       .sort(),
   );
 });

@@ -10,11 +10,11 @@ import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import type {
   AgentSessionService,
   DirectOperationContext,
-  DirectOperationResult,
 } from "../../agent-sessions/agent-session-service.js";
 import type { TabActor, TabServicePort } from "../../tabs/ports.js";
 import type { AgentCaller, ConnectionCaller } from "../agent-caller.js";
 import { operationId, requireRun } from "../operations.js";
+import { directResult as direct, requireDirectWork } from "./direct.js";
 import type { ToolCall } from "./types.js";
 
 function actor(caller: AgentCaller): TabActor {
@@ -33,18 +33,6 @@ function sessionActor(context: DirectOperationContext): TabActor {
 }
 function notFound(): never {
   throw new OpensteerError({ code: "not_found", message: "Tab not found." });
-}
-/** The tool's own result beside what the direct call reports. */
-function direct<Result extends object>(outcome: DirectOperationResult<Result>) {
-  const { status, taskId, operationId } = outcome;
-  return {
-    ...(outcome.status === "completed" && outcome.result ? outcome.result : {}),
-    status,
-    taskId,
-    operationId,
-    ...(outcome.status === "pending" ? { requestId: outcome.requestId } : {}),
-    ...(outcome.status === "completed" ? {} : { next: outcome.next }),
-  };
 }
 
 export class TabToolHandlers {
@@ -68,12 +56,7 @@ export class TabToolHandlers {
     this.#profileName = profileName;
   }
   #direct() {
-    if (!this.#sessions)
-      throw new OpensteerError({
-        code: "conflict",
-        message: "This Home does not run direct work for connected agents.",
-      });
-    return this.#sessions;
+    return requireDirectWork(this.#sessions);
   }
   async #profileTarget(
     caller: ConnectionCaller,

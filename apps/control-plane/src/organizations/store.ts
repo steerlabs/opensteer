@@ -111,7 +111,6 @@ export class OrganizationStore {
   readonly #now: () => Date;
   readonly #returnUrl: URL | undefined;
   #offerValid = false;
-  #workSignIns = Promise.resolve();
 
   constructor(
     db: DB,
@@ -440,7 +439,7 @@ export class OrganizationStore {
     await save.set({ status: "completed", sessionId: checkout.id }).executeTakeFirst();
     if (attempt.previousSubscriptionId && existing) {
       const next = await lockOrg(tx, id);
-      await this.#syncSubscription(tx, next, false);
+      await this.#syncSubscription(tx, next, false, false);
     }
     await settleSeatBackups(tx, id, attempt.requestId, true);
     return true;
@@ -600,7 +599,7 @@ export class OrganizationStore {
     });
   }
 
-  async #syncSubscription(tx: Tx, org: Organization, sendUpdate: boolean) {
+  async #syncSubscription(tx: Tx, org: Organization, sendUpdate: boolean, replenish = true) {
     let subscription = await this.#stripe.subscription(org.stripeSubscriptionId);
     function verified(value: StripeSubscription) {
       if (value.id !== org.stripeSubscriptionId || value.customer !== org.stripeCustomerId)
@@ -639,6 +638,7 @@ export class OrganizationStore {
       if (
         sendUpdate &&
         !change.abandonRequestedAt &&
+        !subscription.pending_update &&
         inWindow &&
         (!invoiceId || !change.increase) &&
         item?.id === change.itemId &&
@@ -658,9 +658,11 @@ export class OrganizationStore {
         subscription = await this.#stripe.subscription(org.stripeSubscriptionId);
         item = verified(subscription);
       }
+      const pendingItem = subscription.pending_update?.subscription_items?.find(
+        (pending) => pending.id === change.itemId && pending.quantity === change.quantity,
+      );
       const candidate =
-        updated?.latest_invoice ??
-        (subscription.pending_update ? subscription.latest_invoice : null);
+        updated?.latest_invoice ?? (pendingItem ? subscription.latest_invoice : null);
       if (
         change.increase &&
         !invoiceId &&
@@ -792,7 +794,7 @@ export class OrganizationStore {
       await settleSeatBackups(tx, org.id, change.requestId, outcome === "applied");
     if (closedAt || outcome === "applied")
       await trimSeatBackups(tx, org.id, closedAt ? 0 : paidSeats - count);
-    else if (effective === "active" && !org.closingAt)
+    else if (replenish && effective === "active" && !org.closingAt)
       await replenishSeatBackups(tx, org.id, organizationSeats(org, count).free);
   }
 
@@ -1385,34 +1387,34 @@ export class OrganizationStore {
     });
   }
 
-  async issueWorkSignIn<T>(
+  async issueWorkSignIn(
     clientId: string,
     sessionAccount: (() => Promise<string | undefined>) | undefined,
-    issue: () => Promise<T>,
-  ): Promise<T> {
-    if (!(await workSignInAuthority(this.#db, clientId))) return issue();
-    const previous = this.#workSignIns;
-    // Only one route per replica may hold an assignment lock while Better Auth uses its pool.
-    let release!: () => void;
-    this.#workSignIns = new Promise((resolve) => {
-      release = resolve;
-    });
-    await previous;
+    issue: () => Promise<Response>,
+  ): Promise<Response> {
+    const assignment = await workSignInAuthority(this.#db, clientId);
+    if (!assignment) return issue();
+    const account = await sessionAccount?.();
+    const allowed = (authority: typeof assignment | undefined) =>
+      authority?.state === "active" &&
+      authority.assigneeAccountId &&
+      (!account || account === authority.assigneeAccountId);
+    const denied = () =>
+      new ControlPlaneError("forbidden", "Sign-in to this work Home is not allowed");
+    if (!allowed(assignment)) throw denied();
+    const response = await issue();
     try {
-      const account = await sessionAccount?.();
-      return await this.#db.transaction().execute(async (tx) => {
-        const assignment = await workSignInAuthority(tx, clientId, true);
-        if (
-          !assignment ||
-          assignment.state !== "active" ||
-          !assignment.assigneeAccountId ||
-          (account && account !== assignment.assigneeAccountId)
-        )
-          throw new ControlPlaneError("forbidden", "Sign-in to this work Home is not allowed");
-        return issue();
+      // Serialize publishing the prepared response with the cut without holding a database
+      // connection while the identity provider prepares it using the same connection pool.
+      await this.#db.transaction().execute(async (tx) => {
+        const current = await workSignInAuthority(tx, clientId, true);
+        if (!allowed(current) || current?.assigneeAccountId !== assignment.assigneeAccountId)
+          throw denied();
       });
-    } finally {
-      release();
+      return response;
+    } catch (error) {
+      await response.body?.cancel().catch(() => {});
+      throw error;
     }
   }
 

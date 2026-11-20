@@ -637,6 +637,27 @@ export class OpensteerMcpService {
   }
 
   /** Refuses a tool this caller's current authority does not offer. */
+  /**
+   * Before an earlier result of this call is returned again: the same checks the call itself
+   * passed (tool offered, task targets, the tool's own target authorization), under the caller's
+   * authority now.
+   */
+  async authorizeReplay(caller: AgentCaller, name: string, value: unknown): Promise<void> {
+    const found = agentTools.find((spec) => spec.name === name);
+    if (!found) throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
+    const tool = found;
+    const input = tool.input.parse(value);
+    const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
+    toolAccess[access](caller, await this.#targets(caller, tool, input));
+    await this.assertToolOffered(caller, name);
+    const authorize = this.options.handlers[tool.name]?.authorize as
+      ((call: ToolCall<typeof tool.name>) => Promise<void>) | undefined;
+    await authorize?.({
+      caller,
+      input,
+      operationKey: toolOperationKey(caller, input, `replay:${name}`),
+    });
+  }
   async assertToolOffered(caller: AgentCaller, name: string): Promise<void> {
     if (!agentTools.some((spec) => spec.name === name))
       throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });

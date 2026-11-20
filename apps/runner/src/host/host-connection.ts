@@ -23,6 +23,7 @@ import {
   homeFilesOutputImageMaxBytes,
   runFileTransferProofPayload,
   runnerPowerStateCapability,
+  triggerStopGenerationCapability,
   runnerAgentStopCapability,
   sameRunnerConnectionFence,
   computerAppMaxTimeoutMs,
@@ -842,7 +843,7 @@ export class ReconnectingHostConnection {
           : []),
         ...(this.#supportsPowerState() ? [runnerPowerStateCapability] : []),
         ...(this.#agentWork ? [runnerAgentStopCapability] : []),
-        ...(agents ? ([runEventsCapability] as const) : []),
+        ...(agents ? ([runEventsCapability, triggerStopGenerationCapability] as const) : []),
         ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
           ? ["voice-run-v1" as const]
           : []),

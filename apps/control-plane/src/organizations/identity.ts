@@ -42,7 +42,7 @@ export async function requireOrganizationAccountDeletionAllowed(
     .where("accountId", "=", account);
   const orgs = await tx
     .selectFrom("organizations")
-    .select("id")
+    .select(["id", "closedAt"])
     .where("id", "in", memberships)
     .orderBy("id")
     .forNoKeyUpdate()
@@ -77,8 +77,8 @@ export async function requireOrganizationAccountDeletionAllowed(
   const adminIds = new Set(
     rows.filter(({ role }) => role === "admin").map(({ organizationId }) => organizationId),
   );
-  for (const { id } of orgs) {
-    if (adminIds.has(id) && !(await otherAdmin(tx, id, account, new Date()))) {
+  for (const { id, closedAt } of orgs) {
+    if (!closedAt && adminIds.has(id) && !(await otherAdmin(tx, id, account, new Date()))) {
       throw new ControlPlaneError(
         "conflict",
         "Appoint another organization admin before deleting your Account",

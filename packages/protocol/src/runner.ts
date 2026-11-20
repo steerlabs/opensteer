@@ -359,6 +359,8 @@ const InterruptExecutionSchema = runnerCommandBase.extend({
   threadId: ThreadIdSchema,
 });
 
+export const triggerStopGenerationCapability = "trigger-stop-generation-v1" as const;
+
 const InterruptTriggerExecutionSchema = runnerCommandBase.extend({
   executionGeneration: z.number().int().positive().optional(),
   occurrenceId: TriggerOccurrenceIdSchema,

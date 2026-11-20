@@ -413,13 +413,19 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
   });
   cleanup.push(async () => discovery.terminate());
   await once(discovery, "open");
-  const liveTargets: { targetId: string; type: string }[] = [];
+  type DiscoveredTarget = { readonly targetId: string; readonly type: string };
+  const liveTargets: DiscoveredTarget[] = [];
+  let nextLiveTarget: ((target: DiscoveredTarget) => void) | undefined;
   type RawReply = { readonly result?: unknown; readonly error?: { readonly message: string } };
   const replies = new Map<number, (response: RawReply) => void>();
   let nextId = 1;
   discovery.on("message", (frame) => {
     const message = JSON.parse(String(frame));
-    if (message.method === "Target.targetCreated") liveTargets.push(message.params.targetInfo);
+    if (message.method === "Target.targetCreated") {
+      const target = message.params.targetInfo as DiscoveredTarget;
+      liveTargets.push(target);
+      nextLiveTarget?.(target);
+    }
     if (typeof message.id === "number") replies.get(message.id)?.(message);
   });
   const raw = async (method: string, params?: object, sessionId?: string) => {
@@ -439,26 +445,26 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
   expect(liveTargets).toEqual([]);
   await raw("Target.setDiscoverTargets", { discover: true, filter: [{ type: "page" }] });
   const beforeLivePage = liveTargets.length;
+  const announcedPage = Promise.withResolvers<DiscoveredTarget>();
+  nextLiveTarget = announcedPage.resolve;
   const nextPage = await sharedContext.newPage();
-  await expect
-    .poll(() => liveTargets.slice(beforeLivePage))
-    .toEqual([expect.objectContaining({ type: "page" })]);
+  await nextPage.goto(`${origin}/included-page`);
+  const announced = await announcedPage.promise;
+  nextLiveTarget = undefined;
+  expect(liveTargets.slice(beforeLivePage)).toEqual([expect.objectContaining({ type: "page" })]);
   const { sessionId: nextTarget } = asRecord(
     await raw("Target.attachToTarget", {
-      targetId: liveTargets.at(-1)!.targetId,
+      targetId: announced.targetId,
       flatten: true,
     }),
   );
-  await expect(
-    raw(
-      "Page.captureScreenshot",
-      {
-        captureBeyondViewport: true,
-        clip: { x: 0, y: 0, width: 100_000, height: 100_000, scale: 1 },
-      },
-      String(nextTarget),
-    ),
-  ).rejects.toThrow("screenshot clip");
+  for (const clip of [
+    { x: 0, y: 0, width: 6_000, height: 6_000, scale: 1 },
+    { x: 0, y: 0, width: 100_000, height: 20, scale: 0.1 },
+  ])
+    await expect(
+      raw("Page.captureScreenshot", { captureBeyondViewport: true, clip }, String(nextTarget)),
+    ).rejects.toThrow("screenshot clip");
   await expect(
     raw(
       "Runtime.evaluate",

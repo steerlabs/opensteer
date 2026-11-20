@@ -1,7 +1,14 @@
 import { resetManagedCloudTables } from "./reset.test-support.js";
 import { testBackupVault } from "./backup-erasure.test-support.js";
 import { ControlPlaneError } from "../server/errors.js";
-import { createHash, createHmac, generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  generateKeyPairSync,
+  randomUUID,
+  sign,
+  type KeyObject,
+} from "node:crypto";
 import {
   accountCloudComputerBillingPortalPath,
   accountCloudComputerCheckoutPath,
@@ -60,7 +67,7 @@ import {
 } from "@opensteer/deployment-authority";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import { createLocalJWKSet, exportJWK, jwtVerify, SignJWT } from "jose";
-import { sql } from "kysely";
+import { sql, type KyselyPlugin } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectLifecycleService } from "../account/connect-lifecycle.js";
 import { ControlPlaneAuthenticator, createControlPlaneAuth } from "../auth/auth.js";
@@ -129,6 +136,41 @@ const identity = CloudComputerIdentitySchema.parse({
 
 integration("Cloud Computer Account service", () => {
   const database = createControlPlaneDatabase({ connectionString: url!, maxConnections: 4 });
+  let offboardLockBarrier: (() => Promise<void>) | undefined;
+  let reissueFenceReached: (() => void) | undefined;
+  function transitionBarrier(scope: "organization" | "computer"): KyselyPlugin {
+    const pauses = new Map<object, () => Promise<void>>();
+    return {
+      transformQuery({ node, queryId }) {
+        if (offboardLockBarrier || reissueFenceReached) {
+          const sqlTree = JSON.stringify(node);
+          const assignment =
+            sqlTree.includes("work_assignments") || sqlTree.includes("workAssignments");
+          if (
+            scope === "organization" &&
+            offboardLockBarrier &&
+            assignment &&
+            sqlTree.includes("ForNoKeyUpdate")
+          ) {
+            pauses.set(queryId, offboardLockBarrier);
+          }
+          if (
+            scope === "computer" &&
+            ((assignment && sqlTree.includes("ForShare")) || node.kind === "UpdateQueryNode")
+          ) {
+            reissueFenceReached?.();
+          }
+        }
+        return node;
+      },
+      async transformResult({ result, queryId }) {
+        const pause = pauses.get(queryId);
+        pauses.delete(queryId);
+        if (pause) await pause();
+        return result;
+      },
+    };
+  }
   const subscriptions = new Map<string, StripeSubscription>();
   const byRequest = new Map<string, string>();
   const checkout = vi.fn<StripeBilling["checkout"]>(async (input) => {
@@ -186,22 +228,25 @@ integration("Cloud Computer Account service", () => {
     googleClientSecret: "test-secret",
   });
   const cipher = new HostedTeamSetupTokenCipher(Buffer.alloc(32, 5).toString("base64url"));
-  const organizations = new OrganizationStore(database, {
-    stripe,
-    now: () => now,
-    offer: {
-      priceId: "price_seat",
-      portalConfigurationId: "bpc_org",
-      name: "Work seat",
-      currency: "usd",
-      amountMinor: 4900,
-      interval: "month",
+  const organizations = new OrganizationStore(
+    database.withPlugin(transitionBarrier("organization")),
+    {
+      stripe,
+      now: () => now,
+      offer: {
+        priceId: "price_seat",
+        portalConfigurationId: "bpc_org",
+        name: "Work seat",
+        currency: "usd",
+        amountMinor: 4900,
+        interval: "month",
+      },
     },
-  });
+  );
   const vault = testBackupVault();
   const eraseKey = vi.fn(vault.destroy);
   const purge = vi.fn<import("./backup-purge.js").BackupPurgeStep>(async () => true);
-  const cloud = new CloudComputerStore(database, {
+  const cloud = new CloudComputerStore(database.withPlugin(transitionBarrier("computer")), {
     backupKeyVault: { ...vault, destroy: eraseKey },
     purgeBackupStep: purge,
     organizations,
@@ -239,21 +284,24 @@ integration("Cloud Computer Account service", () => {
     readonly hostname: string;
     readonly boot: CloudComputerBootResponse;
     readonly deploymentId?: string;
+    readonly hostInstanceId?: string;
+    readonly privateKey?: KeyObject;
+    readonly spki?: string;
   }) {
+    const spki = input.spki ?? homeSpki;
+    const privateKey = input.privateKey ?? homeKeys.privateKey;
     const origin = `https://${input.hostname}`;
     const document = HostDiscoveryDocumentSchema.parse({
       canonicalOrigin: origin,
       deploymentId: input.deploymentId ?? identity.deploymentId,
-      hostInstanceId: "hst_00000000-0000-4000-8000-000000000020",
+      hostInstanceId: input.hostInstanceId ?? "hst_00000000-0000-4000-8000-000000000020",
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: { kind: "personal" },
     });
     const authority = {
       document,
-      publicKey: { algorithm: "Ed25519", spki: homeSpki },
-      signature: sign(null, hostDiscoverySigningBytes(document), homeKeys.privateKey).toString(
-        "base64url",
-      ),
+      publicKey: { algorithm: "Ed25519", spki },
+      signature: sign(null, hostDiscoverySigningBytes(document), privateKey).toString("base64url"),
     };
     const state: {
       claims: number;
@@ -294,7 +342,7 @@ integration("Cloud Computer Account service", () => {
       }
       if (
         claims.authority.deploymentId !== document.deploymentId ||
-        claims.authority.hostKeyFingerprint !== hostKeyFingerprint(homeSpki) ||
+        claims.authority.hostKeyFingerprint !== hostKeyFingerprint(spki) ||
         claims.authority.canonicalOrigin !== origin ||
         claims.link.hostCredentialSha256 !==
           createHash("sha256").update(request.hostCredential).digest("base64url") ||
@@ -316,7 +364,7 @@ integration("Cloud Computer Account service", () => {
           canonicalOrigin: origin,
           deploymentId: document.deploymentId,
           hostInstanceId: document.hostInstanceId,
-          hostKeyFingerprint: hostKeyFingerprint(homeSpki),
+          hostKeyFingerprint: hostKeyFingerprint(spki),
         },
         claim: claims.claim,
         ...(claims.work ? { work: claims.work } : {}),
@@ -326,11 +374,11 @@ integration("Cloud Computer Account service", () => {
       });
       state.receipt = ManagedHomeClaimReceiptSchema.parse({
         document: receiptDocument,
-        publicKey: { algorithm: "Ed25519", spki: homeSpki },
+        publicKey: { algorithm: "Ed25519", spki },
         signature: sign(
           null,
           managedHomeClaimReceiptSigningBytes(receiptDocument),
-          homeKeys.privateKey,
+          privateKey,
         ).toString("base64url"),
       });
       state.owner = claims.sub;
@@ -423,8 +471,6 @@ integration("Cloud Computer Account service", () => {
 
   beforeEach(async () => {
     await resetManagedCloudTables(database);
-    await database.deleteFrom("deployments").where("id", "=", identity.deploymentId).execute();
-    await database.deleteFrom("oauthClients").where("clientId", "like", "occ_%").execute();
     claimErrors.length = 0;
     checkout.mockClear();
     eraseKey.mockReset().mockImplementation(vault.destroy);
@@ -1164,38 +1210,23 @@ integration("Cloud Computer Account service", () => {
     });
     const tokenInFlight = Promise.withResolvers<void>();
     const issueToken = Promise.withResolvers<void>();
-    const offboardEntered = Promise.withResolvers<void>();
     const issue = auth.handler.bind(auth);
     const issueSpy = vi.spyOn(auth, "handler").mockImplementation(async (request) => {
+      const response = await issue(request);
       if (new URL(request.url).pathname === "/api/auth/oauth2/token") {
+        expect(response.status).toBe(200);
         tokenInFlight.resolve();
         await issueToken.promise;
       }
-      return issue(request);
-    });
-    const beginOffboard = organizations.beginOffboard.bind(organizations);
-    const cutSpy = vi.spyOn(organizations, "beginOffboard").mockImplementation(async (...args) => {
-      offboardEntered.resolve();
-      return beginOffboard(...args);
+      return response;
     });
     const issuing = redeemCode(await issueCode());
     await tokenInFlight.promise;
-    const cutting = requestAs(admin, "POST", `${assignmentPath}/offboard`, { retentionSeconds: 0 });
-    await offboardEntered.promise;
-    try {
-      const assignmentState = await database
-        .selectFrom("workAssignments")
-        .select("state")
-        .where("id", "=", assignment.assignmentId)
-        .executeTakeFirstOrThrow();
-      expect(assignmentState.state).toBe("active");
-    } finally {
-      issueToken.resolve();
-    }
-    expect((await issuing).statusCode).toBe(200);
-    const offboarded = await cutting;
+    const offboarded = await requestAs(admin, "POST", `${assignmentPath}/offboard`, {
+      retentionSeconds: 0,
+    }).finally(() => issueToken.resolve());
+    expect((await issuing).statusCode).toBe(403);
     issueSpy.mockRestore();
-    cutSpy.mockRestore();
     expect(offboarded.statusCode, offboarded.body).toBe(200);
     expect(offboarded.json()).toMatchObject({
       state: "offboarding",
@@ -1243,6 +1274,134 @@ integration("Cloud Computer Account service", () => {
     expect((await cloud.listBackupTargets()).filter((target) => target.needsRotation)).toHaveLength(
       1,
     );
+  });
+
+  it("fences an operator reissue behind the assignment cut even before the VM is ready", async () => {
+    const admin = await createAccount();
+    const org = await buyOrganization(admin, 1);
+    const assigned = await requestAs(admin, "POST", `${org.path}/assignments`, {
+      accountId: admin.id,
+      requestId: randomUUID(),
+    });
+    const assignment = WorkAssignmentViewSchema.parse(assigned.json());
+    const computerId = CloudComputerIdSchema.parse(assignment.computerId);
+    const before = (await getDesired(computerId))!;
+    const locked = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const read = Promise.withResolvers<void>();
+    offboardLockBarrier = async () => {
+      locked.resolve();
+      await resume.promise;
+    };
+    const cut = requestAs(
+      admin,
+      "POST",
+      `${org.path}/assignments/${assignment.assignmentId}/offboard`,
+      {
+        retentionSeconds: 0,
+      },
+    );
+    await locked.promise;
+    reissueFenceReached = () => read.resolve();
+    const reissuing = runCloudComputerOperator(cloud, ["reissue-bootstrap", computerId]).then(
+      () => ({ code: "accepted" }),
+      (error: unknown) => error,
+    );
+    try {
+      await read.promise;
+    } finally {
+      offboardLockBarrier = undefined;
+      reissueFenceReached = undefined;
+      resume.resolve();
+    }
+    expect((await cut).statusCode).toBe(200);
+    expect(await reissuing).toMatchObject({
+      code: "forbidden",
+      reason: "cloud-computer-work-managed",
+    });
+    expect(await getDesired(computerId)).toMatchObject({
+      state: "suspended",
+      generation: before.generation,
+    });
+  });
+
+  it("rejects policy and audit calls signed in with another claimed work Home's credential", async () => {
+    const admin = await createAccount();
+    const member = await createAccount();
+    const org = await buyOrganization(admin, 2);
+    await invite(org.path, admin, member);
+    async function claimWork(accountId: ControlPlaneAccountId, second: boolean) {
+      const deploymentId = second
+        ? "dep_00000000-0000-4000-8000-000000000021"
+        : identity.deploymentId;
+      const keys = second ? generateKeyPairSync("ed25519") : homeKeys;
+      const spki = keys.publicKey.export({ format: "der", type: "spki" }).toString("base64url");
+      const result = await requestAs(admin, "POST", `${org.path}/assignments`, {
+        accountId,
+        requestId: randomUUID(),
+      });
+      expect(result.statusCode, result.body).toBe(200);
+      const assignment = WorkAssignmentViewSchema.parse(result.json());
+      const id = CloudComputerIdSchema.parse(assignment.computerId);
+      const initial = (await getDesired(id))!;
+      const booted = await bootable(initial);
+      const observed = CloudComputerIdentitySchema.parse({
+        deploymentId,
+        hostKeyFingerprint: hostKeyFingerprint(spki),
+      });
+      expect((await complete(initial, observed)).statusCode).toBe(200);
+      expect(
+        (await report((await getDesired(id))!, { observedIdentity: observed })).json(),
+      ).toEqual({ recorded: true });
+      const home = fakeHome({
+        hostname: initial.hostname,
+        boot: booted,
+        deploymentId,
+        privateKey: keys.privateKey,
+        spki,
+        ...(second ? { hostInstanceId: "hst_00000000-0000-4000-8000-000000000021" } : {}),
+      });
+      expect(await claimer(home.fetch).runOnce()).toBe(1);
+      expect(home.state.owner).toBe(accountId);
+      return { assignment, credential: home.state.hostCredential! };
+    }
+    const first = await claimWork(admin.id, false);
+    const second = await claimWork(member.id, true);
+    expect(claimErrors).toEqual([]);
+    const assignmentId = first.assignment.assignmentId;
+    const base = `${organizationWorkPath}/${assignmentId}`;
+    const headers = { authorization: `Bearer ${second.credential}` };
+    const own = await http({
+      method: "GET",
+      url: `${organizationWorkPath}/${second.assignment.assignmentId}/policy`,
+      headers,
+    });
+    expect(own.statusCode, own.body).toBe(200);
+    expect((await http({ method: "GET", url: `${base}/policy`, headers })).statusCode).toBe(403);
+    expect(
+      (await http({ method: "POST", url: `${base}/applied`, headers, payload: { revision: 1 } }))
+        .statusCode,
+    ).toBe(403);
+    const record: WorkAuditRecord = {
+      sequence: 1,
+      at: now.toISOString(),
+      kind: "policy.applied",
+      revision: 1,
+    };
+    const headHash = createHash("sha256")
+      .update(Buffer.from(workAuditGenesisHash, "hex"))
+      .update(canonicalWorkAuditRecord(record))
+      .digest("hex");
+    const batch = { assignmentId, fromSequence: 1, headHash, records: [record] };
+    const signed = {
+      ...batch,
+      signature: sign(null, workAuditSigningBytes(batch), homeKeys.privateKey).toString(
+        "base64url",
+      ),
+    };
+    expect(
+      (await http({ method: "POST", url: `${base}/audit`, headers, payload: signed })).statusCode,
+    ).toBe(403);
   });
 
   it("reserves every organization seat before Stripe and refuses to sell unbacked seats", async () => {
@@ -1352,6 +1511,11 @@ integration("Cloud Computer Account service", () => {
     const pending = { requestId: randomUUID(), seats: 2 };
     const assign = (accountId: ControlPlaneAccountId) =>
       requestAs(admin, "POST", `${org.path}/assignments`, { accountId, requestId: randomUUID() });
+    now = new Date(now.getTime() + 5 * 60_000 + 1);
+    expect((await assign(admin.id)).statusCode).toBe(503);
+    expect(
+      (await webhook("customer.subscription.updated", { id: org.subscription.id })).statusCode,
+    ).toBe(200);
     const changed = await requestAs(admin, "POST", `${org.path}/seats`, pending);
     expect(changed.statusCode, changed.body).toBe(200);
     expect(changed.json().seats).toEqual({ paid: 1, pending: 2, assigned: 0, free: 1 });
@@ -1370,7 +1534,10 @@ integration("Cloud Computer Account service", () => {
     const id = CloudComputerIdSchema.parse(first.json().computerId);
     subscriptions.set(sub.id, {
       ...sub,
-      pending_update: { expires_at: Math.floor(now.getTime() / 1000) + 300 },
+      pending_update: {
+        expires_at: Math.floor(now.getTime() / 1000) + 300,
+        subscription_items: [{ id: "si_seat", quantity: 2 }],
+      },
       latest_invoice: {
         id: "in_seats",
         billing_reason: "subscription_update",
@@ -1460,6 +1627,56 @@ integration("Cloud Computer Account service", () => {
     expect((await webhook("customer.subscription.deleted", { id: sub.id })).statusCode).toBe(200);
     expect((await getDesired(id))?.state).toBe("suspended");
     expect((await getDesired(personal.id))?.state).toBe("active");
+  });
+
+  it("recovers a paid seat increase when the Stripe write committed but its reply was lost", async () => {
+    const admin = await createAccount();
+    const org = await buyOrganization(admin, 1);
+    const requestId = randomUUID();
+    const change = { requestId, seats: 2 };
+    const id = org.subscription.id;
+    const updated: StripeSubscription = {
+      ...org.subscription,
+      latest_invoice: {
+        id: "in_lost_reply",
+        status: "paid",
+        billing_reason: "subscription_update",
+        attempt_count: 1,
+      },
+      items: { has_more: false, data: [{ ...org.subscription.items.data[0]!, quantity: 2 }] },
+    };
+    stripe.updateSeatQuantity.mockImplementationOnce(async () => {
+      subscriptions.set(id, updated);
+      throw new ControlPlaneError("unavailable", "Lost the Stripe response");
+    });
+    expect((await requestAs(admin, "POST", `${org.path}/seats`, change)).statusCode).toBe(503);
+    expect((await org.read()).seats).toMatchObject({ paid: 1, pending: 2 });
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    stripe.updateSeatQuantity.mockImplementationOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      return updated;
+    });
+    const errors = vi.fn();
+    const reconcile = cloud.reconcileBilling(errors);
+    await entered.promise;
+    try {
+      expect(await cloud.reconcileBilling(errors)).toBe(false);
+    } finally {
+      resume.resolve();
+    }
+    expect(await reconcile).toBe(true);
+    expect(errors).not.toHaveBeenCalled();
+    expect((await org.read()).seats).toMatchObject({ paid: 2, pending: null });
+    expect((await requestAs(admin, "POST", `${org.path}/seats`, change)).statusCode).toBe(200);
+    expect(
+      (await requestAs(admin, "POST", `${org.path}/seats`, { ...change, seats: 1 })).statusCode,
+    ).toBe(409);
+    expect(stripe.updateSeatQuantity).toHaveBeenCalledTimes(2);
+    expect(stripe.updateSeatQuantity.mock.calls[0]).toEqual(
+      stripe.updateSeatQuantity.mock.calls[1],
+    );
   });
 
   it("reports only observed preparation, location, Home identity, egress and Stripe renewal facts", async () => {
