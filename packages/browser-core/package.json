@@ -5,6 +5,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./standard-cdp-limits": "./src/standard-cdp-limits.ts",
     ".": "./src/index.ts",
     "./frame-limits": "./src/browser-frame-limits.ts",
     "./bytes": "./src/bytes.ts",

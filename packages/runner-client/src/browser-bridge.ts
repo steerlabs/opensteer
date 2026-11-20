@@ -1,3 +1,8 @@
+import {
+  standardCdpBufferedMaxBytes,
+  standardCdpMessageMaxBytes,
+  standardCdpPath,
+} from "@opensteer/protocol/standard-cdp";
 import { isLoopbackHostname } from "@opensteer/core";
 import {
   BrowserAttachPublicKeysSchema,
@@ -26,6 +31,8 @@ import { z } from "zod";
 
 const LocalHealthSchema = z.object({
   wireVersion: z.number().int().optional(),
+  standardCdp: z.literal(1).optional(),
+  wholeContextCdp: z.literal(1).optional(),
   runtimeId: z.string().min(1).max(255),
   sessionId: z.string().max(255).nullable().optional(),
   state: z.enum(["closed", "closing", "idle", "ready", "starting"]),
@@ -37,6 +44,7 @@ const LocalHealthSchema = z.object({
 
 export interface BrowserChannelSink {
   onClosed(channelId: BrowserChannelId, code: number, reason: string): void;
+  onRawCdp?(channelId: BrowserChannelId, frame: Buffer): void;
   onFrame(channelId: BrowserChannelId, frame: Buffer): void;
   onServerMessage(channelId: BrowserChannelId, message: BrowserRuntimeServerMessage): void;
 }
@@ -181,6 +189,8 @@ export class LocalBrowserRuntimeBridge {
     const health = await this.#readHealth();
     return {
       wireVersion: health.wireVersion,
+      ...(health.standardCdp === 1 ? { standardCdp: 1 as const } : {}),
+      ...(health.wholeContextCdp === 1 ? { wholeContextCdp: 1 as const } : {}),
       ...(health.localProfileStorage
         ? {
             localProfileStorage: health.localProfileStorage,
@@ -215,6 +225,7 @@ export class LocalBrowserRuntimeBridge {
     channelId: BrowserChannelId,
     attachTicket: string,
     sink: BrowserChannelSink,
+    standardCdp = false,
   ): Promise<BrowserBridgeAttached> {
     if (this.#channels.has(channelId)) {
       throw new BrowserRelayError("The browser relay channel already exists.");
@@ -229,17 +240,18 @@ export class LocalBrowserRuntimeBridge {
     if (!attachKeysHeader) {
       throw new BrowserRelayError("The Host has not provided browser attach keys.");
     }
-    const url = new URL("/v1/browser", this.#url);
+    const url = new URL(standardCdp ? standardCdpPath : "/v1/browser", this.#url);
     url.protocol = "ws:";
     const socket = new WebSocket(url, {
       followRedirects: false,
       headers: {
         ...(this.#passkeys ? { "x-opensteer-browser-passkeys": "1" } : {}),
         authorization: `Bearer ${attachTicket}`,
+        ...(standardCdp ? { "x-opensteer-browser-cdp-bridge": "1" } : {}),
         "x-opensteer-browser-attach-keys": attachKeysHeader,
         "x-opensteer-browser-bridge-token": this.#bridgeToken,
       },
-      maxPayload: this.#maxBufferedBytes,
+      maxPayload: standardCdp ? standardCdpMessageMaxBytes : this.#maxBufferedBytes,
       perMessageDeflate: false,
     });
     this.#channels.set(channelId, { socket });
@@ -251,13 +263,19 @@ export class LocalBrowserRuntimeBridge {
     socket.on("message", (raw, isBinary) => {
       try {
         const frame = normalizeRawData(raw);
-        if (isBinary) {
+        if (standardCdp && attached) {
+          if (isBinary || !sink.onRawCdp) throw new Error("Unexpected raw CDP frame.");
+          sink.onRawCdp(channelId, frame);
+        } else if (isBinary) {
+          if (standardCdp) throw new Error("Unexpected raw CDP readiness.");
           validateBrowserRuntimeFrame(frame);
           sink.onFrame(channelId, frame);
         } else {
           const value: unknown = JSON.parse(frame.toString("utf8"));
           const ready = createBrowserBridgeAttachedSchema().safeParse(value);
-          if (ready?.success) {
+          if (ready.success) {
+            if (standardCdp && !ready.data.standardCdpMode)
+              throw new Error("Missing raw CDP readiness.");
             readiness.resolve(ready.data);
             return;
           }
@@ -311,13 +329,24 @@ export class LocalBrowserRuntimeBridge {
   }
 
   send(channelId: BrowserChannelId, message: BrowserClientMessage): Promise<void> {
+    return this.#send(
+      channelId,
+      serializeJsonFrame(BrowserClientMessageSchema.parse(message)),
+      this.#maxBufferedBytes,
+    );
+  }
+
+  sendRawCdp(channelId: BrowserChannelId, frame: Buffer): Promise<void> {
+    if (frame.length > standardCdpMessageMaxBytes)
+      return Promise.reject(new BrowserRelayError("Raw CDP frame is too large."));
+    return this.#send(channelId, frame, standardCdpBufferedMaxBytes);
+  }
+
+  #send(channelId: BrowserChannelId, frame: string | Buffer, limit: number): Promise<void> {
     const socket = this.#channels.get(channelId)?.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
+    if (!socket || socket.readyState !== WebSocket.OPEN)
       return Promise.reject(new BrowserRelayError("The browser relay channel is not open."));
-    }
-    const frame = serializeJsonFrame(BrowserClientMessageSchema.parse(message));
-    const bytes = Buffer.byteLength(frame, "utf8");
-    if (socket.bufferedAmount + bytes > this.#maxBufferedBytes) {
+    if (socket.bufferedAmount + Buffer.byteLength(frame) > limit) {
       socket.close(1013, "slow local browser consumer");
       return Promise.reject(
         new BrowserRelayError("The local browser runtime is not consuming commands.", {
@@ -326,7 +355,7 @@ export class LocalBrowserRuntimeBridge {
       );
     }
     return new Promise<void>((resolve, reject) => {
-      socket.send(frame, (error) => (error ? reject(error) : resolve()));
+      socket.send(frame, { binary: false }, (error) => (error ? reject(error) : resolve()));
     });
   }
 

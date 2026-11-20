@@ -11,6 +11,7 @@ const ticketType = "opensteer-browser-attach+jwt";
 
 interface IssueBrowserAttachTicketInput {
   readonly access: "read-write";
+  readonly standardCdp?: BrowserAttachTicketClaims["standardCdp"];
   readonly creationOrigin: "agent" | "person";
   readonly operationExpiresAt?: string;
   readonly remainingBudgetMs?: number;
@@ -76,6 +77,7 @@ export class BrowserAttachTicketSigner {
     const issuedAt = this.#clock();
     const claims: BrowserAttachTicketClaims = BrowserAttachTicketClaimsSchema.parse({
       access: input.access,
+      ...(input.standardCdp ? { standardCdp: input.standardCdp } : {}),
       creationOrigin: input.creationOrigin,
       ...(input.basicInput === 1 ? { basicInput: 1 } : {}),
       ...(input.surfaceState === 1 ? { surfaceState: 1 } : {}),

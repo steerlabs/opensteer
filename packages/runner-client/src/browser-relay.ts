@@ -1,3 +1,4 @@
+import { RawCdpChunks, RawCdpWriter } from "@opensteer/protocol/raw-cdp-relay";
 import {
   type BrowserBridgeAttached,
   type ProtocolError,
@@ -29,6 +30,7 @@ interface ActiveChannel {
    * cannot reorder another's.
    */
   sequence: number;
+  readonly raw?: { reader: RawCdpChunks; writer: RawCdpWriter };
 }
 
 /**
@@ -99,7 +101,7 @@ export class BrowserModuleRelay {
     this.#stream = undefined;
     this.#capability = undefined;
     this.#authority = Symbol();
-    for (const channel of this.#channels.values()) clearTimeout(channel.expiryTimer);
+    for (const channelId of this.#channels.keys()) this.#removeChannel(channelId);
     this.#channels.clear();
     this.#bridge.closeAll();
   }
@@ -221,6 +223,26 @@ export class BrowserModuleRelay {
           capability: message.capability,
           expiryTimer,
           sequence: 0,
+          ...(message.standardCdp
+            ? {
+                raw: {
+                  reader: new RawCdpChunks(),
+                  writer: new RawCdpWriter(async (chunk) => {
+                    const current = this.#channels.get(message.channelId);
+                    if (current !== channel || this.#stream !== stream)
+                      throw new BrowserRelayError("The raw CDP channel ended.");
+                    this.#assertCapability(current.capability);
+                    await this.#send({
+                      ...stream.fence,
+                      channelId: message.channelId,
+                      capability: current.capability,
+                      type: "browser.server-message",
+                      message: chunk,
+                    });
+                  }),
+                },
+              }
+            : {}),
         };
         this.#channels.set(message.channelId, channel);
         const authority = this.#authority;
@@ -230,6 +252,7 @@ export class BrowserModuleRelay {
             message.channelId,
             message.attachTicket,
             this.#sink(channel),
+            message.standardCdp === 1,
           );
           if (
             this.#stream !== stream ||
@@ -253,6 +276,7 @@ export class BrowserModuleRelay {
           requestId: message.requestId,
           type: "browser.attached",
           ...(attached.initialPage ? { initialPage: attached.initialPage } : {}),
+          ...(attached.standardCdpMode ? { standardCdpMode: attached.standardCdpMode } : {}),
         });
         return;
       }
@@ -262,7 +286,18 @@ export class BrowserModuleRelay {
         if (!this.#channels.has(message.channelId)) return;
         const channel = this.#assertChannel(message.channelId, message.capability);
         try {
-          await this.#bridge.send(message.channelId, message.message);
+          if (message.message.type === "cdp.raw") {
+            if (!channel.raw) throw new BrowserRelayError("Raw CDP was not negotiated.");
+            const frame = channel.raw.reader.read(message.message);
+            if (frame)
+              void this.#bridge
+                .sendRawCdp(message.channelId, frame)
+                .catch(() => this.#overloadRaw(message.channelId, channel))
+                .catch(() => undefined);
+          } else {
+            if (channel.raw) throw new BrowserRelayError("A raw CDP channel requires raw frames.");
+            await this.#bridge.send(message.channelId, message.message);
+          }
         } catch (error) {
           await this.#failChannel(message.channelId, channel, error);
         }
@@ -297,6 +332,13 @@ export class BrowserModuleRelay {
 
   #sink(owner: ActiveChannel): BrowserChannelSink {
     return {
+      onRawCdp: (channelId, frame) => {
+        if (this.#channels.get(channelId) !== owner || !owner.raw) return;
+        void owner.raw.writer
+          .send(frame)
+          .catch(() => this.#overloadRaw(channelId, owner))
+          .catch(() => undefined);
+      },
       onClosed: (channelId, code, reason) => {
         const channel = this.#channels.get(channelId);
         const stream = this.#stream;
@@ -352,6 +394,22 @@ export class BrowserModuleRelay {
     };
   }
 
+  async #overloadRaw(channelId: BrowserChannelId, channel: ActiveChannel): Promise<void> {
+    if (this.#channels.get(channelId) !== channel) return;
+    this.#removeChannel(channelId);
+    this.#bridge.close(channelId, 1013, "raw CDP relay overloaded");
+    const stream = this.#stream;
+    if (stream)
+      await this.#send({
+        ...stream.fence,
+        channelId,
+        capability: channel.capability,
+        type: "browser.closed",
+        code: 1013,
+        reason: "Raw CDP relay overloaded.",
+      });
+  }
+
   async #failChannel(
     channelId: BrowserChannelId,
     channel: ActiveChannel,
@@ -392,6 +450,7 @@ export class BrowserModuleRelay {
     for (const [channelId, channel] of this.#channels) {
       if (channel.capability.runtimeId !== lease.runtimeId) continue;
       clearTimeout(channel.expiryTimer);
+      channel.raw?.writer.close();
       channel.capability = capabilityReference(lease);
       channel.expiryTimer = setTimeout(
         () => this.#expireChannel(channelId),
@@ -437,6 +496,7 @@ export class BrowserModuleRelay {
     if (!channel) return;
     this.#channels.delete(channelId);
     clearTimeout(channel.expiryTimer);
+    channel.raw?.writer.close();
   }
 
   #requireStream(): RunnerModuleStream {

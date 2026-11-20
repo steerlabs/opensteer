@@ -1,3 +1,4 @@
+import { StandardCdpModeSchema } from "./standard-cdp.js";
 import {
   browserPersonalTabUrlMaxLength,
   BrowserFaviconSchema,
@@ -162,6 +163,7 @@ export type InitialPageReady = z.infer<typeof InitialPageReadySchema>;
 /** Private bridge readiness; never a viewer message. */
 const BrowserBridgeAttachedWireSchema = z.strictObject({
   type: z.literal("browser.attached"),
+  standardCdpMode: StandardCdpModeSchema.optional(),
   initialPage: InitialPageReadySchema.optional(),
 });
 export function createBrowserBridgeAttachedSchema() {
@@ -176,7 +178,7 @@ export const BrowserAttachTicketClaimsSchema = z
     audience: z.literal("opensteer-browser-runtime"),
     creationOrigin: z.enum(["agent", "person"]),
     /** Authorizes an existing session on the runtime's raw CDP endpoint. */
-    standardCdp: z.enum(["session", "whole-context"]).optional(),
+    standardCdp: StandardCdpModeSchema.optional(),
     passkeys: z.literal(1).optional(),
     navigationVersion: z.literal(1).optional(),
     wireVersion: z.literal(browserRuntimeWireVersion),

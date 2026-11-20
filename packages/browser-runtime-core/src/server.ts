@@ -1,3 +1,5 @@
+import { standardCdpPath } from "@opensteer/protocol/standard-cdp";
+export { standardCdpPath } from "@opensteer/protocol/standard-cdp";
 import {
   standardCdpBufferedMaxBytes,
   standardCdpMaxPending,
@@ -26,9 +28,6 @@ import type { BrowserControllerSink } from "./browser/controller.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import type { BrowserAttachment, BrowserRuntime } from "./runtime.js";
 import { encodeBrowserFrame, type BrowserFrame } from "./stream/frame.js";
-
-/** Raw text CDP over WebSocket. Authorization uses a single-use Bearer attach ticket. */
-export const standardCdpPath = "/v1/browser/cdp";
 
 const standardCdpRequest = z.strictObject({
   id: z.number().int().nonnegative(),
@@ -121,8 +120,13 @@ export class BrowserRuntimeServer {
       }
       const server = pathname === standardCdpPath ? this.cdpServer : this.websocketServer;
       server.handleUpgrade(request, socket, head, (websocket) => {
-        if (server === this.cdpServer) this.acceptStandardCdp(websocket, ticket);
-        else server.emit("connection", websocket, request);
+        if (server === this.cdpServer) {
+          const trustedBridge =
+            this.relayBridge !== undefined &&
+            request.headers["x-opensteer-browser-cdp-bridge"] === "1" &&
+            request.headers["x-opensteer-browser-bridge-token"] === this.relayBridge.token;
+          this.acceptStandardCdp(websocket, ticket, trustedBridge);
+        } else server.emit("connection", websocket, request);
       });
     });
     this.websocketServer.on("connection", (websocket: WebSocket, request: IncomingMessage) => {
@@ -309,7 +313,7 @@ export class BrowserRuntimeServer {
     );
   }
 
-  private acceptStandardCdp(websocket: WebSocket, ticket: string): void {
+  private acceptStandardCdp(websocket: WebSocket, ticket: string, bridge: boolean): void {
     const cancellation = new AbortController();
     let attachment: StandardCdpAttachment | undefined;
     let inFlightBytes = 0;
@@ -348,32 +352,38 @@ export class BrowserRuntimeServer {
     };
     websocket.once("close", () => close(1000, "CDP disconnected"));
     websocket.on("error", () => close(1011, "CDP transport failed"));
-    const ready = this.runtime.attachStandardCdp(ticket, overloaded, cancellation.signal).then(
-      (client) => {
-        attachment = client;
-        if (cancellation.signal.aborted) {
-          client.close();
+    const ready = this.runtime
+      .attachStandardCdp(ticket, overloaded, cancellation.signal, bridge)
+      .then(
+        (client) => {
+          attachment = client;
+          if (cancellation.signal.aborted) {
+            client.close();
+            return undefined;
+          }
+          client.signal.addEventListener("abort", () => close(1000, "Browser Session ended"), {
+            once: true,
+          });
+          if (client.signal.aborted) {
+            close(1000, "Browser Session ended");
+            return undefined;
+          }
+          client.onEvent(({ method, parameters, sessionId }) => {
+            void send({ method, params: parameters, sessionId }).catch(() =>
+              close(1011, "CDP transport failed"),
+            );
+          });
+          if (bridge)
+            void send({ type: "browser.attached", standardCdpMode: client.mode }).catch(() =>
+              close(1011, "CDP transport failed"),
+            );
+          return client;
+        },
+        () => {
+          close(1008, "CDP attachment rejected");
           return undefined;
-        }
-        client.signal.addEventListener("abort", () => close(1000, "Browser Session ended"), {
-          once: true,
-        });
-        if (client.signal.aborted) {
-          close(1000, "Browser Session ended");
-          return undefined;
-        }
-        client.onEvent(({ method, parameters, sessionId }) => {
-          void send({ method, params: parameters, sessionId }).catch(() =>
-            close(1011, "CDP transport failed"),
-          );
-        });
-        return client;
-      },
-      () => {
-        close(1008, "CDP attachment rejected");
-        return undefined;
-      },
-    );
+        },
+      );
 
     websocket.on("message", (raw: RawData, binary: boolean) => {
       if (cancellation.signal.aborted) return;

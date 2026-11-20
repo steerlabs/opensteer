@@ -1,3 +1,13 @@
+import {
+  standardCdpMessageMaxBytes,
+  standardCdpBufferedMaxBytes,
+  standardCdpMaxPending,
+} from "./standard-cdp-limits.js";
+export {
+  standardCdpMessageMaxBytes,
+  standardCdpBufferedMaxBytes,
+  standardCdpMaxPending,
+} from "./standard-cdp-limits.js";
 import { contextScopedCdpMethods } from "./cdp-context.js";
 import { CdpProductIsolation } from "./cdp-product-isolation.js";
 import { utf8Size } from "./bytes.js";
@@ -54,10 +64,6 @@ export interface SessionCdpRouterLimits {
   readonly maxEventBytes: number;
   readonly maxResultBytes: number;
 }
-
-export const standardCdpMessageMaxBytes = 8 * 1_024 * 1_024;
-export const standardCdpBufferedMaxBytes = 2 * standardCdpMessageMaxBytes;
-export const standardCdpMaxPending = 128;
 
 export interface StandardCdpAttachmentOptions {
   readonly wholeContext: boolean;

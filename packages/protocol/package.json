@@ -5,6 +5,8 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./raw-cdp-relay": "./src/raw-cdp-relay.ts",
+    "./standard-cdp": "./src/standard-cdp.ts",
     ".": "./src/index.ts",
     "./browser": "./src/browser.ts",
     "./browser-actions": "./src/browser-actions.ts",

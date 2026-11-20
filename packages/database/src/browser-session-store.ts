@@ -549,6 +549,18 @@ export async function listActiveBrowserSessionsForAgentBinding(
     .execute(databaseOperationOptions());
 }
 
+export async function listBrowserSessionAttachmentBindings(
+  database: Kysely<DatabaseSchema>,
+  sessionId: BrowserSessionId,
+): Promise<readonly string[]> {
+  const rows = await database
+    .selectFrom("browserSessionAttachments")
+    .select("agentBindingId")
+    .where("sessionId", "=", sessionId)
+    .execute(databaseOperationOptions());
+  return rows.map(({ agentBindingId }) => agentBindingId);
+}
+
 export async function listAttachedRunIdsForBrowserSessions(
   database: Kysely<DatabaseSchema>,
   sessionIds: readonly BrowserSessionId[],

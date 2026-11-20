@@ -59,11 +59,12 @@ export class BrowserLocalProfiles {
     profileId: BrowserProfileId,
     runnerId: RunnerId,
     target: BrowserRuntimeTarget,
+    bind = true,
   ): Promise<Extract<BrowserAttachTicketIdentity, { kind: "profile-local" }>> {
     this.options.beforeProfileOpen?.(runnerId);
     if (!target.localProfileStorage) refuse("Update this computer to open browser profiles.");
     let storage = await this.storage(profileId);
-    if (storage.kind === "unbound")
+    if (storage.kind === "unbound" && bind)
       storage = await this.options.repository.bindBrowserProfile({
         version: 1,
         deploymentId: this.options.deploymentId,

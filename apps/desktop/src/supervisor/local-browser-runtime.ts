@@ -55,6 +55,14 @@ class GatedBrowserRuntime extends BrowserRuntime {
       super.attach(ticket, sink, { ...options, signal }),
     );
   }
+
+  override attachStandardCdp(
+    ...[ticket, overload, signal, fallback]: Parameters<BrowserRuntime["attachStandardCdp"]>
+  ): ReturnType<BrowserRuntime["attachStandardCdp"]> {
+    return this.#gate.attachStandard(signal, (admitted) =>
+      super.attachStandardCdp(ticket, overload, admitted, fallback),
+    );
+  }
 }
 
 /**

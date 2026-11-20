@@ -1,7 +1,9 @@
+import type { StandardCdpMode } from "@opensteer/protocol/standard-cdp";
 import {
   browserFrameFits,
   defaultBrowserViewport,
   SessionCdpRouter,
+  SessionCdpRouterError,
   type StandardCdpAttachment,
 } from "@opensteer/browser-core";
 import {
@@ -99,6 +101,8 @@ export interface BrowserOpenTiming {
 
 export interface BrowserRuntimeHealth {
   wireVersion: 2;
+  standardCdp: 1;
+  wholeContextCdp?: 1;
   localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   profileHostCount: number;
   runtimeId: string;
@@ -340,6 +344,10 @@ export class BrowserRuntime implements NativePresentationSource {
   health(): BrowserRuntimeHealth {
     return {
       wireVersion: 2,
+      standardCdp: 1,
+      ...(this.launcher.hostCost === "process" && this.localProfileStorage?.engine === "chromium"
+        ? { wholeContextCdp: 1 as const }
+        : {}),
       ...(this.localProfileStorage
         ? {
             localProfileStorage: this.localProfileStorage,
@@ -582,7 +590,8 @@ export class BrowserRuntime implements NativePresentationSource {
     ticket: string,
     onOverflow: () => void,
     signal: AbortSignal,
-  ): Promise<StandardCdpAttachment> {
+    allowSessionFallback = false,
+  ): Promise<StandardCdpAttachment & { readonly mode?: StandardCdpMode }> {
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(acquisitionTimeoutMs)]);
     const claims = await waitForAcquisition(
       this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId }),
@@ -590,6 +599,7 @@ export class BrowserRuntime implements NativePresentationSource {
     );
     if (!claims.standardCdp || claims.access !== "read-write" || claims.initialNavigation)
       throw new BrowserRuntimeError("forbidden", "This ticket does not authorize standard CDP.");
+    const mode = claims.standardCdp;
     const hostKey = browserHostKey(claims);
     return this.lanes.run(hostKey, async () => {
       deadline.throwIfAborted();
@@ -615,7 +625,18 @@ export class BrowserRuntime implements NativePresentationSource {
           "forbidden",
           "Whole-context CDP requires an exclusive saved profile.",
         );
-      return active.controller.openStandardCdp(wholeContext, onOverflow);
+      try {
+        return { ...active.controller.openStandardCdp(wholeContext, onOverflow), mode };
+      } catch (error) {
+        if (
+          !wholeContext ||
+          !allowSessionFallback ||
+          !(error instanceof SessionCdpRouterError) ||
+          error.code !== "forbidden"
+        )
+          throw error;
+        return { ...active.controller.openStandardCdp(false, onOverflow), mode: "session" };
+      }
     });
   }
 

@@ -1,3 +1,5 @@
+import { RawCdpChunks, RawCdpWriter } from "@opensteer/protocol/raw-cdp-relay";
+import { StandardCdpChunkSchema, type StandardCdpMode } from "@opensteer/protocol/standard-cdp";
 import { OpensteerError, type RunnerId } from "@opensteer/core";
 import { sameProfileBinding } from "@opensteer/database";
 import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
@@ -283,6 +285,19 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       captureRegion: browser.captureRegion === 1,
       rasterDemand: browser.rasterDemand === 1,
       computer: { name: stream.identity.name, runnerId: placement.runnerId },
+      wholeContextCdp: browser.wholeContextCdp === 1,
+      ...(browser.standardCdp === 1
+        ? {
+            connectStandard: (ticket: string, signal: AbortSignal) =>
+              this.#connectStandard(
+                placement.runnerId,
+                browser.runtimeId,
+                expectedFence,
+                ticket,
+                signal,
+              ),
+          }
+        : {}),
       connect: (ticket) => {
         const connection = new RunnerBrowserConnection(this);
         queueMicrotask(() => {
@@ -291,6 +306,38 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         return connection;
       },
     };
+  }
+
+  async #connectStandard(
+    runnerId: RunnerId,
+    runtimeId: string,
+    fence: RunnerAuxiliaryFrameFence,
+    ticket: string,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    const connection = new RunnerBrowserConnection(this, true);
+    const abort = () => connection.terminate();
+    signal.addEventListener("abort", abort, { once: true });
+    const ready = Promise.withResolvers<void>();
+    const failure = () =>
+      ready.reject(relayError("The runtime refused the standard CDP attachment."));
+    connection.once("open", ready.resolve);
+    connection.on("error", failure);
+    connection.once("close", failure);
+    void this.#open(connection, runnerId, runtimeId, fence, ticket);
+    try {
+      await ready.promise;
+      signal.throwIfAborted();
+      if (!connection.standardCdpMode)
+        throw relayError("The runtime did not confirm standard CDP.");
+      return { connection, mode: connection.standardCdpMode };
+    } catch (error) {
+      connection.terminate();
+      throw error;
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
   }
 
   close(): void {
@@ -391,6 +438,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         message: {
           ...stream.fence,
           attachTicket: ticket,
+          ...(connection.raw ? { standardCdp: 1 } : {}),
           capability: activePlacementLease.capability,
           channelId,
           type: "browser.attach",
@@ -405,6 +453,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         throw relayError("The browser did not acknowledge attachment.");
       const initialPage = attached.initialPage;
       connection.initialPage = initialPage;
+      connection.standardCdpMode = attached.standardCdpMode;
       connection.acceptOpen();
       if (!activePlacementLease.renewalTimer && !activePlacementLease.renewal) {
         this.#scheduleRenewal(activePlacementLease, activePlacementLease.expiresAt);
@@ -720,6 +769,11 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     }
 
     if (message.type === "browser.server-message") {
+      if (
+        !this.#channels.has(message.channelId) &&
+        StandardCdpChunkSchema.safeParse(message.message).success
+      )
+        return;
       const channel = this.#requireChannel(stream, message.channelId, message.capability);
       channel.connection.acceptServerMessage(message.message);
       return;
@@ -1092,16 +1146,35 @@ class RunnerBrowserConnection extends EventEmitter implements BrowserRuntimeConn
   #pumpScheduled = false;
   readonly #router: RunnerBrowserRuntimeRouter;
   initialPage: InitialPageReady | undefined;
+  standardCdpMode: StandardCdpMode | undefined;
+  readonly raw: { reader: RawCdpChunks; writer: RawCdpWriter } | undefined;
   readyState: number = WebSocket.CONNECTING;
 
-  constructor(router: RunnerBrowserRuntimeRouter) {
+  constructor(router: RunnerBrowserRuntimeRouter, standard = false) {
     super();
     this.#router = router;
+    this.raw = standard
+      ? {
+          reader: new RawCdpChunks(),
+          writer: new RawCdpWriter((chunk) => router.send(this, chunk)),
+        }
+      : undefined;
   }
 
   send(data: string, options: { readonly binary: false }, callback: (error?: Error) => void): void {
     if (options.binary !== false) {
       callback(new Error("Binary browser commands are not supported."));
+      return;
+    }
+    if (this.raw) {
+      if (this.readyState !== WebSocket.OPEN) {
+        callback(new Error("The raw CDP relay is not open."));
+        return;
+      }
+      void this.raw.writer.send(Buffer.from(data, "utf8")).then(
+        () => callback(),
+        (error: unknown) => callback(normalizeError(error)),
+      );
       return;
     }
     let message: unknown;
@@ -1142,6 +1215,16 @@ class RunnerBrowserConnection extends EventEmitter implements BrowserRuntimeConn
 
   acceptServerMessage(message: unknown): void {
     if (this.#closed) return;
+    if (this.raw) {
+      try {
+        const frame = this.raw.reader.read(StandardCdpChunkSchema.parse(message));
+        if (frame) this.emit("message", frame, false);
+      } catch (error) {
+        this.acceptError(normalizeError(error));
+        this.terminate();
+      }
+      return;
+    }
     const data = Buffer.from(JSON.stringify(message), "utf8");
     if (
       this.#controls.length >= maxQueuedControlItems ||
@@ -1186,6 +1269,7 @@ class RunnerBrowserConnection extends EventEmitter implements BrowserRuntimeConn
   acceptClose(code: number, reason: string): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.raw?.writer.close();
     this.readyState = WebSocket.CLOSED;
     this.#controls.length = 0;
     this.#controlBytes = 0;
