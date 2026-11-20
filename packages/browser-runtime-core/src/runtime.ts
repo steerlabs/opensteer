@@ -267,6 +267,10 @@ export class BrowserRuntime implements NativePresentationSource {
       rendererUsage: this.launcher.rendererUsage?.bind(this.launcher),
       onPass: options.onSleepPass,
       pageCounts: () => this.pages.counts(),
+      untabbedPages: () => {
+        const { provisional, closing } = this.pages.counts().states;
+        return provisional + closing;
+      },
       hosts: () =>
         [...this.hosts.values()].map((host) => ({
           key: host.identity.key,
@@ -1293,6 +1297,8 @@ export class BrowserRuntime implements NativePresentationSource {
     } finally {
       closed();
       host.browser.offClose(onClose);
+      // The context is done; the registry lets it go once its last page is confirmed gone.
+      this.pages.release(host.browser.context);
     }
   }
 

@@ -10,6 +10,7 @@ import {
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   BrowserRuntimeError,
+  pageUnnameableReason,
   pageWithTarget,
   siteCookieReplacementBatch,
   type BrowserContext,
@@ -824,6 +825,13 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     this.contextHandle.closeTarget = async (targetId) => {
       await browserCdp.send("Target.closeTarget", { targetId });
     };
+    this.contextHandle.browserAlive = () =>
+      withTimeout(browserCdp.send("Browser.getVersion"), nameTargetMs, {
+        timeoutError: () => new Error("The browser did not answer."),
+      }).then(
+        () => true,
+        () => false,
+      );
     this.cdp = new PlaywrightBrowserCdpBackend(browserCdp, this.contextHandle, browserContextId);
   }
 
@@ -891,6 +899,8 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
 
 /** A raw target is looked up briefly; the router reports a miss rather than waiting on it. */
 const targetLookupMs = 5_000;
+/** One debugger round trip to a page or browser that may be dying. */
+const nameTargetMs = 2_000;
 
 class PlaywrightContextHandle implements BrowserContext {
   private closed = false;
@@ -904,6 +914,8 @@ class PlaywrightContextHandle implements BrowserContext {
   private readonly handOffs = new Set<(page: BrowserPage, opener: BrowserPage | null) => void>();
   /** Closes one page target through the browser's own debugger, around Playwright. */
   closeTarget: ((targetId: string) => Promise<void>) | undefined;
+  /** Whether the browser behind this context still answers its own debugger. */
+  browserAlive: (() => Promise<boolean>) | undefined;
 
   readonly authenticator: PasskeyAuthenticator | undefined;
   readonly providerConfig: BrowserPagePolicyConfig;
@@ -1079,7 +1091,7 @@ class PlaywrightPageHandle implements BrowserPage {
     page.on("requestfinished", (request) => this.uploads.delete(request));
     page.on("requestfailed", (request) => this.uploads.delete(request));
     page.once("close", () => this.uploads.clear());
-    page.once("close", () => this.confirmGone("page"));
+    page.once("close", () => void this.endedBy().then((cause) => this.confirmGone(cause)));
     page.on("popup", (popup) => {
       contextHandle.wrap(popup).openerHandle = this;
     });
@@ -1294,15 +1306,62 @@ class PlaywrightPageHandle implements BrowserPage {
         return;
       }
       await this.cdpChannel?.detach().catch(() => undefined);
+      if (this.page.isClosed()) return;
       const closeTarget = this.contextHandle.closeTarget;
-      if (this.knownTargetId && closeTarget) await closeTarget(this.knownTargetId);
-      else if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
+      if (!closeTarget) {
+        if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
+        return;
+      }
+      const targetId = this.knownTargetId ?? (await this.nameTarget());
+      if (!targetId)
+        throw new BrowserRuntimeError("conflict", "This page cannot be named to close it.", {
+          reason: pageUnnameableReason,
+        });
+      await closeTarget(targetId);
     })();
   }
 
-  /** Closing refuses new debugger sessions; only the confirmation makes the page closed. */
+  /** This exact page's target, read through a debugger opened for it alone; null if it cannot be named. */
+  private async nameTarget(): Promise<string | null> {
+    const opening = this.context.newCDPSession(this.page);
+    let session: PlaywrightCdpSession | undefined;
+    try {
+      session = await withTimeout(opening, nameTargetMs, {
+        timeoutError: () => new Error("The page's debugger did not attach."),
+      });
+    } catch {
+      void opening.then((late) => late?.detach()).catch(() => undefined);
+      return null;
+    }
+    if (!session) return null;
+    try {
+      const response = await withTimeout(session.send("Target.getTargetInfo"), nameTargetMs, {
+        timeoutError: () => new Error("The page did not name its target."),
+      });
+      const targetId = response.targetInfo?.targetId;
+      if (typeof targetId !== "string" || targetId.length < 1 || targetId.length > 512) return null;
+      this.knownTargetId = targetId;
+      return targetId;
+    } catch {
+      return null;
+    } finally {
+      void session.detach()?.catch(() => undefined);
+    }
+  }
+
+  /**
+   * Playwright reports each page's close before its context's when Chromium
+   * dies, so a page's own close event is the browser's end unless the browser
+   * still answers.
+   */
+  private async endedBy(): Promise<PageGoneCause> {
+    const alive = this.contextHandle.browserAlive;
+    return alive && !(await alive()) ? "context" : "page";
+  }
+
+  /** Closing refuses new debugger sessions; only the confirmation, with its cause, makes the page closed. */
   isClosed(): boolean {
-    return this.gone || this.page.isClosed();
+    return this.gone;
   }
 
   /** A close was asked for; the page may still exist until it is confirmed gone. */

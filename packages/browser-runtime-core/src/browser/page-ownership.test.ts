@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { BrowserRuntime } from "../runtime.js";
 import {
   FakeContext,
+  FakeIsolatingLauncher,
   FakeLaunchedBrowser,
   FakeLauncher,
   FakePage,
@@ -10,7 +11,12 @@ import {
   freshClaims,
   testSessionFilesRoot,
 } from "../test-support/fakes.js";
-import { PageOwnership, type BrowserPageDiagnostic } from "./page-ownership.js";
+import { BrowserRuntimeError } from "../errors.js";
+import {
+  PageOwnership,
+  pageUnnameableReason,
+  type BrowserPageDiagnostic,
+} from "./page-ownership.js";
 import { SurfaceLedger } from "./surface-ledger.js";
 import { TabSleeper } from "./tab-sleeper.js";
 
@@ -462,4 +468,194 @@ it("logs each sleep blocker and refusal once per transition, again after it clea
     sleeper.close();
     await f.ledger.close();
   }
+});
+
+it("keeps every tab not explicitly closed when its browser dies, Guest and mid-sleep tabs included", async () => {
+  vi.useFakeTimers();
+  const r = registry();
+  const root = new FakePage({ url: "https://profile.test/" });
+  const live = new FakePage({ url: "https://live.test/" });
+  const sleeping = new FakePage({ url: "https://sleeping.test/" });
+  const closing = new FakePage({ url: "https://closing.test/" });
+  const guestRoot = new FakePage({ url: "https://guest.test/" });
+  const profile = new FakeContext([root, live, sleeping, closing]);
+  const guest = new FakeContext([guestRoot]);
+  const named = new SurfaceLedger(profile, { pages: r.owner, sessionId: "profile" });
+  const guestLedger = new SurfaceLedger(guest, { pages: r.owner, sessionId: "guest" });
+  await named.start();
+  await guestLedger.start();
+  await vi.advanceTimersByTimeAsync(0);
+  const id = async (ledger: SurfaceLedger, page: FakePage) =>
+    ledger.surfaceIdForTarget(await page.targetId())!;
+  const [rootId, liveId, sleepingId, closingId, guestId] = [
+    await id(named, root),
+    await id(named, live),
+    await id(named, sleeping),
+    await id(named, closing),
+    await id(guestLedger, guestRoot),
+  ];
+  vi.spyOn(sleeping, "close").mockReturnValue(new Promise(() => {}));
+  vi.spyOn(closing, "close").mockReturnValue(new Promise(() => {}));
+  try {
+    expect(await named.sleep(sleepingId, () => null)).toBe(true);
+    void named.closeSurface(closingId, "person-closed").catch(() => undefined);
+    // Chromium dies: every page reports its own end before its context does.
+    profile.end();
+    guest.end();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(named.snapshot().map((tab) => [tab.id, tab.state])).toEqual([
+      [rootId, "suspended"],
+      [liveId, "suspended"],
+      [sleepingId, "suspended"],
+    ]);
+    expect(guestLedger.snapshot().map((tab) => [tab.id, tab.state])).toEqual([
+      [guestId, "suspended"],
+    ]);
+    expect(named.binding(liveId), "No tab is left pointing at a dead page").toBeNull();
+  } finally {
+    const closingLedgers = Promise.all([named.close(), guestLedger.close()]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await closingLedgers;
+  }
+});
+
+it("samples a held reclaim once, at its pages' confirmation or a cutoff, never in a loop", async () => {
+  const page = new FakePage({ url: "https://leftover.test/" });
+  const other = new FakePage({ url: "https://other.test/" });
+  const f = await harness([page, other]);
+  const gate = closeGate(page);
+  const otherId = await f.idOf(other);
+  for (const record of f.ledger.policyRecords()) {
+    record.origin = "agent";
+    record.personUsed = false;
+  }
+  let samples = 0;
+  const sleeper = new TabSleeper({
+    memoryBudgetBytes: 1,
+    rendererUsage: () => {
+      samples++;
+      return { processes: 2, bytes: 1024 ** 3 };
+    },
+  });
+  sleeper.add("session", { ledger: f.ledger, restoreVersion: 1, blocked: () => null });
+  try {
+    sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [otherId] });
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(f.ledger.untabbedPages(), "The slept page is still closing").toBe(1);
+    const held = samples;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(samples - held, "No sample loop while destruction is held").toBeLessThanOrEqual(1);
+    const confirmed = samples;
+    page.crash();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(samples, "Confirmation brings the reclaim sample at once").toBe(confirmed + 1);
+  } finally {
+    gate.answer.resolve();
+    sleeper.close();
+    await f.ledger.close();
+  }
+});
+
+it("lets go of each closed browser context once its pages are gone", async () => {
+  const launcher = new FakeIsolatingLauncher();
+  const verifier = new FakeTicketVerifier(freshClaims());
+  const runtime = new BrowserRuntime({
+    launcher,
+    runtimeId: "runtime_test",
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: verifier,
+  });
+  try {
+    const attachment = await runtime.attach("fresh-ticket", new FakeSink());
+    const context = [...launcher.browsersByPartition.values()][0]!.context as FakeContext;
+    expect(context.handOffListeners).toBeGreaterThan(0);
+    await attachment.close();
+    await vi.waitFor(() => expect(runtime.health().profileHostCount).toBe(0), { timeout: 1_000 });
+    expect(context.handOffListeners, "A closed context is no longer held").toBe(0);
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
+it("starts a woken tab's new page when the engine cannot name the failed one, which stays closing", async () => {
+  const page = new FakePage({ url: "https://wake.test/" });
+  const f = await harness([page]);
+  const id = await f.idOf(page);
+  expect(await f.ledger.sleep(id, () => null)).toBe(true);
+  const failed = refusingPage();
+  vi.spyOn(failed, "close").mockImplementation(async () => {
+    throw new BrowserRuntimeError("conflict", "This page cannot be named to close it.", {
+      reason: pageUnnameableReason,
+    });
+  });
+  vi.spyOn(f.context, "createPage").mockImplementationOnce(async () => failed);
+  try {
+    await expect(f.ledger.wake(id)).rejects.toMatchObject({ code: "conflict" });
+    const woken = f.ledger.wake(id);
+    await vi.advanceTimersByTimeAsync(0);
+    const binding = await woken;
+    expect(binding.page, "The tab has exactly one usable page, the new one").not.toBe(failed);
+    expect(f.owner.counts().states.closing, "The unnameable page stays owned and asked").toBe(1);
+    expect(f.events("browser.page.closing.unnameable")).toHaveLength(1);
+    const adopting = f.ledger.adoptTarget(await failed.targetId());
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(adopting, "The unnameable page is never reachable again").resolves.toBe(false);
+  } finally {
+    await f.ledger.close();
+  }
+});
+
+it("counts a closing page of an ended session toward memory pressure", async () => {
+  const page = new FakePage({ url: "https://kept.test/" });
+  const f = await harness([page]);
+  const id = await f.idOf(page);
+  const record = [...f.ledger.policyRecords()][0]!;
+  record.origin = "person";
+  record.personUsed = true;
+  const orphan = new FakePage();
+  vi.spyOn(orphan, "close").mockReturnValue(new Promise(() => {}));
+  await f.owner.create("ended", null, "open-failed", async (own) => {
+    own(orphan);
+    return orphan;
+  }).page;
+  void f.owner.endSession("ended", "session-ended");
+  const sleeper = new TabSleeper({
+    memoryBudgetBytes: 150 * 1024 ** 2,
+    untabbedPages: () => {
+      const { provisional, closing } = f.owner.counts().states;
+      return provisional + closing;
+    },
+  });
+  sleeper.add("session", { ledger: f.ledger, restoreVersion: 1, blocked: () => null });
+  try {
+    sleeper.setSessionState("session", { runs: 0, personUsed: [id], viewed: [], pinned: [] });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.ledger.stateOf(id), "A dying page of an ended session still uses memory").toBe(
+      "suspended",
+    );
+  } finally {
+    sleeper.close();
+    await f.ledger.close();
+  }
+});
+
+it("stops after a timed-out drain empties, and keeps asking a page handed off just before", async () => {
+  vi.useFakeTimers();
+  const r = registry();
+  const context = new FakeContext([]);
+  r.owner.adopt(context);
+  const stuck = new FakePage();
+  vi.spyOn(stuck, "close").mockReturnValue(new Promise(() => {}));
+  context.handOffPage(stuck);
+  const draining = r.owner.shutdown(1_000);
+  await vi.advanceTimersByTimeAsync(1_000);
+  await expect(draining).resolves.toBe(false);
+  const late = new FakePage();
+  const lateClose = vi.spyOn(late, "close").mockRejectedValue(new Error("refused"));
+  context.handOffPage(late);
+  stuck.crash();
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(lateClose.mock.calls.length, "A late page keeps its retries").toBeGreaterThan(1);
+  late.crash();
+  expect(context.handOffListeners, "An emptied registry lets go of its contexts").toBe(0);
 });

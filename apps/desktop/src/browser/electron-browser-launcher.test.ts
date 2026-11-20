@@ -531,6 +531,44 @@ it("ends a page only on its WebContents' destroyed event and reports what became
   }
 });
 
+it("reports a page its context ends as the context's end, and keeps a refused close requested", async () => {
+  const launcher = new ElectronBrowserLauncher({
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+  });
+  const browser = await launcher.launch({
+    partitionKey: "session:context-end",
+    initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    storage: { kind: "guest" },
+  });
+  const mock = electron.views.at(-1)!.webContents;
+  const page = browser.context.pages()[0]!;
+  const destroy = () => {
+    mock.isDestroyed.mockReturnValue(true);
+    for (const [event, listener] of [...mock.on.mock.calls, ...mock.once.mock.calls])
+      if (event === "destroyed") (listener as () => void)();
+  };
+  const gone = vi.fn();
+  page.onClose(gone);
+  mock.close.mockImplementation(() => undefined);
+  vi.useFakeTimers();
+  try {
+    const refused = expect(page.close()).rejects.toThrow("wasn't destroyed");
+    await vi.advanceTimersByTimeAsync(1_500);
+    await refused;
+    expect(
+      (page as unknown as { closeRequested: boolean }).closeRequested,
+      "A page asked to close never returns to lookups",
+    ).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+  mock.close.mockImplementation(destroy);
+  await browser.close();
+  launcher.close();
+  expect(gone).toHaveBeenCalledWith("context");
+});
+
 it("hands each page off at its handle and gives a create that fails while loading to its owner", async () => {
   const launcher = new ElectronBrowserLauncher({
     downloads: { accept: vi.fn() },

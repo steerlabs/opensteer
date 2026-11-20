@@ -8,7 +8,7 @@ import {
   type BrowserRuntimeServerMessage,
 } from "@opensteer/protocol";
 import { isRecord } from "@opensteer/shared/isRecord";
-import type { RendererGoneCause } from "../browser/backend.js";
+import type { PageGoneCause, RendererGoneCause } from "../browser/backend.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -123,7 +123,7 @@ export class FakePage implements BrowserPage {
   readonly cdpSession: FakeCdpSession;
   closeCount = 0;
   private closed = false;
-  private readonly closeListeners = new Set<() => void>();
+  private readonly closeListeners = new Set<(cause?: PageGoneCause) => void>();
   private readonly metadataListeners = new Set<() => void>();
   private openerPage: BrowserPage | null;
   private pageTitle: string;
@@ -261,10 +261,11 @@ export class FakePage implements BrowserPage {
     this.crash();
   }
 
-  crash(): void {
+  /** The native page ends; `context` when its context or browser took it, as when Chromium dies. */
+  crash(cause?: PageGoneCause): void {
     if (this.closed) return;
     this.closed = true;
-    for (const listener of this.closeListeners) listener();
+    for (const listener of this.closeListeners) listener(cause);
   }
 
   isClosed(): boolean {
@@ -287,11 +288,11 @@ export class FakePage implements BrowserPage {
     return () => this.rendererListeners.delete(listener);
   }
 
-  onClose(listener: () => void): void {
+  onClose(listener: (cause?: PageGoneCause) => void): void {
     this.closeListeners.add(listener);
   }
 
-  offClose(listener: () => void): void {
+  offClose(listener: (cause?: PageGoneCause) => void): void {
     this.closeListeners.delete(listener);
   }
 
@@ -355,6 +356,20 @@ export class FakeContext implements BrowserContext {
     options.own?.(page);
     this.addPage(page);
     return page;
+  }
+
+  /** Subscribers still listening for handoffs. */
+  get handOffListeners(): number {
+    return this.handOffs.size;
+  }
+
+  /**
+   * The context ends as Chromium dying ends it: each page reports its own end
+   * first, then the context is gone.
+   */
+  end(): void {
+    for (const page of this.pageList) if (page instanceof FakePage) page.crash("context");
+    this.connected = false;
   }
 
   handOff(listener: (page: BrowserPage, opener: BrowserPage | null) => void): () => void {

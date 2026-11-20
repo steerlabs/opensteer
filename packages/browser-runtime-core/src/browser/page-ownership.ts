@@ -29,6 +29,15 @@ export type PageEndReason =
   /** The engine ended the page unasked. */
   | "native-gone";
 
+/** How an owner learns its page ended: whether anyone asked, and what the engine reported. */
+export interface PageEnd {
+  readonly requested: boolean;
+  readonly confirmedBy: "page-event" | "context-end" | "closed-check";
+}
+
+/** A close attempt's rejection that says no later attempt can name this page either. */
+export const pageUnnameableReason = "page-unnameable";
+
 /** Why a page is not slept. A fixed set, so nothing from a page can reach a log. */
 export type SleepBlocker =
   | KeepAwakeReason
@@ -126,6 +135,13 @@ export type BrowserPageDiagnostic =
       readonly attributed: boolean;
       readonly ageMs: number;
     }
+  /** The engine cannot name this page to close it; it stays owned and asked, but no longer holds its tab. */
+  | {
+      readonly event: "browser.page.closing.unnameable";
+      readonly page: string;
+      readonly surface: BrowserSurfaceId | null;
+      readonly closeAttempts: number;
+    }
   /** Runtime shutdown finished with pages unconfirmed; they stay owned and asked. */
   | {
       readonly event: "browser.page.shutdown.incomplete";
@@ -166,7 +182,11 @@ interface NativePage {
   /** The tab this incarnation materializes, set once. */
   surfaceId: BrowserSurfaceId | null;
   /** The owner's one disposition for this incarnation's confirmation. */
-  onConfirmed: ((incarnation: string) => void) | null;
+  onConfirmed: ((incarnation: string, end: PageEnd) => void) | null;
+  /** The context that handed it off, until confirmed. */
+  context: BrowserContext | null;
+  /** False once the engine says no attempt can name it: the tab no longer waits for it. */
+  holdsTab: boolean;
   reason: PageEndReason | null;
   rendererGone: RendererGoneCause | null;
   closingSince: number;
@@ -197,7 +217,11 @@ export class PageOwnership {
   private readonly pages = new WeakMap<BrowserPage, NativePage>();
   private readonly held = new Set<NativePage>();
   private readonly creations = new Set<Creation>();
-  private readonly contexts = new WeakSet<BrowserContext>();
+  /** Adopted contexts: their handoff, pages still held, and whether the runtime let go of them. */
+  private readonly contexts = new Map<
+    BrowserContext,
+    { unsubscribe: () => void; pages: number; released: boolean }
+  >();
   private readonly ended = new Set<string>();
   private readonly lookups = new Set<() => void>();
   private readonly drains = new Set<() => void>();
@@ -205,7 +229,6 @@ export class PageOwnership {
   private readonly blockings: Partial<Record<SleepBlocker, number>> = {};
   private readonly refusals: Partial<Record<SleepBlocker, number>> = {};
   private readonly onDiagnostic: (diagnostic: BrowserPageDiagnostic) => void;
-  private readonly handOffs: (() => void)[] = [];
   private shuttingDown = false;
   private stopped = false;
 
@@ -225,14 +248,29 @@ export class PageOwnership {
   /** Takes every page `context` hands off, now and later; a popup belongs to its opener's session. */
   adopt(context: BrowserContext): void {
     if (this.contexts.has(context)) return;
-    this.contexts.add(context);
-    this.handOffs.push(
-      context.handOff((page, opener) => {
-        const entry = this.track(page);
-        const session = opener ? this.pages.get(opener)?.session : null;
-        if (entry.session === null && session) this.attribute(entry, session);
-      }),
-    );
+    const adopted: { unsubscribe: () => void; pages: number; released: boolean } = {
+      unsubscribe: () => undefined,
+      pages: 0,
+      released: false,
+    };
+    this.contexts.set(context, adopted);
+    adopted.unsubscribe = context.handOff((page, opener) => {
+      const entry = this.track(page);
+      if (!entry.context && entry.state !== "absent") {
+        entry.context = context;
+        adopted.pages++;
+      }
+      const session = opener ? this.pages.get(opener)?.session : null;
+      if (entry.session === null && session) this.attribute(entry, session);
+    });
+  }
+
+  /** The context has ended: its handoff is dropped once none of its pages remain held. */
+  release(context: BrowserContext): void {
+    const adopted = this.contexts.get(context);
+    if (!adopted) return;
+    adopted.released = true;
+    if (adopted.pages === 0) this.forget(context);
   }
 
   /** The session ended: every page it holds, admitted or not, is asked to end. */
@@ -288,6 +326,7 @@ export class PageOwnership {
         own(page);
         this.creations.delete(creation);
         this.notify(this.drains);
+        this.stopIfDrained();
         return page;
       },
       (error: unknown) => {
@@ -295,6 +334,7 @@ export class PageOwnership {
         if (creation.page) this.request(this.track(creation.page), reason);
         this.creations.delete(creation);
         this.notify(this.drains);
+        this.stopIfDrained();
         throw error;
       },
     );
@@ -316,7 +356,7 @@ export class PageOwnership {
     page: BrowserPage,
     session: string,
     surfaceId: BrowserSurfaceId,
-    onConfirmed: (incarnation: string) => void,
+    onConfirmed: (incarnation: string, end: PageEnd) => void,
   ): string | null {
     const entry = this.pages.get(page);
     if (
@@ -367,7 +407,9 @@ export class PageOwnership {
     withinMs: number,
   ): Promise<boolean> {
     const busy = () =>
-      this.tabPages(session, surfaceId).length > 0 ||
+      [...this.held].some(
+        (entry) => entry.session === session && entry.surfaceId === surfaceId && entry.holdsTab,
+      ) ||
       [...this.creations].some(
         (creation) => creation.session === session && creation.surfaceId === surfaceId,
       );
@@ -428,14 +470,14 @@ export class PageOwnership {
   }
 
   /** One sleep attempt's outcome: a refusal logs when its reason changes; null clears it. */
-  noteSleepRefusal(page: BrowserPage, reason: SleepBlocker | null): void {
-    const entry = this.pages.get(page);
+  noteSleepRefusal(page: BrowserPage | null, reason: SleepBlocker | null): void {
+    if (reason) this.refusals[reason] = (this.refusals[reason] ?? 0) + 1;
+    const entry = page ? this.pages.get(page) : undefined;
     if (!entry || entry.state === "absent") return;
     if (!reason) {
       entry.refused = null;
       return;
     }
-    this.refusals[reason] = (this.refusals[reason] ?? 0) + 1;
     if (entry.refused?.reason === reason) {
       entry.refused.attempts++;
       return;
@@ -480,19 +522,34 @@ export class PageOwnership {
     this.shuttingDown = true;
     for (const creation of this.creations) creation.abandoned = true;
     for (const entry of this.held) this.request(entry, "runtime-shutdown");
-    const drained = await this.until(() => this.held.size > 0 || this.creations.size > 0, withinMs);
-    if (drained) this.stop();
-    else
+    await this.until(() => !this.drained(), withinMs);
+    // Recovery stops only when nothing is held at this moment, a page handed off late included.
+    this.stopIfDrained();
+    if (!this.stopped)
       this.onDiagnostic({
         event: "browser.page.shutdown.incomplete",
         states: this.counts().states,
       });
-    return drained;
+    return this.stopped;
+  }
+
+  private drained(): boolean {
+    return this.held.size === 0 && this.creations.size === 0;
+  }
+
+  /** After shutdown began, the moment the registry empties is the moment it stops. */
+  private stopIfDrained(): void {
+    if (this.shuttingDown && !this.stopped && this.drained()) this.stop();
+  }
+
+  private forget(context: BrowserContext): void {
+    this.contexts.get(context)?.unsubscribe();
+    this.contexts.delete(context);
   }
 
   private stop(): void {
     this.stopped = true;
-    for (const unsubscribe of this.handOffs.splice(0)) unsubscribe();
+    for (const context of this.contexts.keys()) this.forget(context);
     for (const entry of this.held) {
       clearTimeout(entry.retryTimer);
       clearTimeout(entry.admitTimer);
@@ -513,6 +570,8 @@ export class PageOwnership {
       session: null,
       surfaceId: null,
       onConfirmed: null,
+      context: null,
+      holdsTab: true,
       reason: null,
       rendererGone: null,
       closingSince: 0,
@@ -614,7 +673,25 @@ export class PageOwnership {
     } catch (error) {
       closing = Promise.reject(error);
     }
-    void closing.then(next, next);
+    void closing.then(next, (error: unknown) => {
+      if (
+        entry.holdsTab &&
+        error instanceof Error &&
+        "reason" in error &&
+        error.reason === pageUnnameableReason
+      ) {
+        // Still owned and asked, but the tab may start a new page: this one is unreachable.
+        entry.holdsTab = false;
+        this.onDiagnostic({
+          event: "browser.page.closing.unnameable",
+          page: entry.incarnation,
+          surface: entry.surfaceId,
+          closeAttempts: entry.attempts,
+        });
+        this.notify(this.drains);
+      }
+      next();
+    });
   }
 
   /** The engine's confirmation is the only way out of the registry. */
@@ -640,6 +717,10 @@ export class PageOwnership {
     entry.page.offClose(entry.onGone);
     entry.stopRenderer?.();
     this.held.delete(entry);
+    const context = entry.context;
+    entry.context = null;
+    const adopted = context ? this.contexts.get(context) : undefined;
+    if (context && adopted && --adopted.pages === 0 && adopted.released) this.forget(context);
     this.endings[reason] = (this.endings[reason] ?? 0) + 1;
     this.onDiagnostic({
       event: "browser.page.ended",
@@ -653,12 +734,16 @@ export class PageOwnership {
       closeAttempts: entry.attempts,
     });
     try {
-      entry.onConfirmed?.(entry.incarnation);
+      entry.onConfirmed?.(entry.incarnation, {
+        requested: reason !== "native-gone",
+        confirmedBy,
+      });
     } catch {
       // An owner's disposition cannot keep a confirmed page in the registry.
     }
     entry.settled.resolve();
     this.notify(this.drains);
+    this.stopIfDrained();
     const sample = entry.page.rendererExit?.bind(entry.page);
     if (sample && !this.stopped) {
       const timer = setTimeout(() => {

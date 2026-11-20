@@ -21,7 +21,12 @@ import { BrowserRuntimeError } from "../errors.js";
 import type { BrowserContext, BrowserPage, CdpSession, PageGeometry, Viewport } from "./backend.js";
 import { TabLease } from "./tab-lease.js";
 import { PageFavicon } from "./favicon.js";
-import { PageOwnership, type PageEndReason, type SleepBlocker } from "./page-ownership.js";
+import {
+  PageOwnership,
+  type PageEnd,
+  type PageEndReason,
+  type SleepBlocker,
+} from "./page-ownership.js";
 import { PageTitleReader } from "./page-title.js";
 import { PageScriptTargets, type ScriptTarget } from "./script-targets.js";
 
@@ -482,7 +487,10 @@ export class SurfaceLedger {
     blocked: (record: TabRecord) => SleepBlocker | null,
   ): Promise<boolean> {
     const record = this.liveRecord(id);
-    if (!record) return false;
+    if (!record) {
+      this.pages.noteSleepRefusal(null, "closed");
+      return false;
+    }
     const live = record.live;
     const refused = (reason: SleepBlocker) => {
       this.pages.noteSleepRefusal(live.page, reason);
@@ -1302,8 +1310,7 @@ export class SurfaceLedger {
     if (!record) throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
     record.lease.close();
     const live = record.live;
-    // The row stays listed until confirmation; no route reaches the page meanwhile.
-    if (live) this.releaseTarget?.(live.targetId);
+    // The row stays listed until confirmation; no binding, lookup or attach reaches the page.
     for (const page of this.pages.tabPages(this.session, surfaceId))
       this.pages.destroy(page, reason);
     if (live && !(await this.pages.confirmed(live.page, pageCloseWaitMs)))
@@ -1467,8 +1474,8 @@ export class SurfaceLedger {
         if (waking && (this.records.get(id) !== waking || waking.lease.state === "closing"))
           throw new BrowserRuntimeError("not_found", "The browser tab closed.");
         // Admission commits here, after every await, or not at all.
-        const incarnation = this.pages.admit(page, this.session, id, (gone) =>
-          this.nativeGone(id, gone),
+        const incarnation = this.pages.admit(page, this.session, id, (gone, end) =>
+          this.nativeGone(id, gone, end),
         );
         if (!incarnation) throw new BrowserRuntimeError("not_found", "The browser page closed.");
         this.claimTarget?.(targetId);
@@ -1771,12 +1778,9 @@ export class SurfaceLedger {
       // its per-page lock until Chromium answers, without holding other pages.
       void initialized
         .catch(() => {
-          if (record.live?.page !== page) return;
-          if (waking) {
-            // A woken tab lets go first and sleeps again; only a new tab closes with its page.
-            this.detachLive(record);
-            this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
-          } else if (!record.announced) return;
+          if (record.live?.page !== page || (!waking && !record.announced)) return;
+          // A listed tab whose page failed lets go first and sleeps; nobody asked to close it.
+          this.keepAsleep(record);
           this.pages.destroy(page, ending);
         })
         .catch(() => undefined);
@@ -2076,12 +2080,32 @@ export class SurfaceLedger {
   }
 
   /** The engine confirmed an incarnation gone; only the tab's current one ends the tab. */
-  private nativeGone(id: BrowserSurfaceId, incarnation: string): void {
+  /**
+   * The one disposition of a confirmed end. A page its context or process took
+   * with it, or one gone with no event, leaves its tab open and asleep: that is
+   * observed loss, never a close. Only a requested end or the page closing
+   * itself, as a popup's `window.close()` does, ends the tab.
+   */
+  private nativeGone(id: BrowserSurfaceId, incarnation: string, end: PageEnd): void {
     // A released page can change what the sleeper may do with its browser.
     this.policyChanged();
     const record = this.records.get(id);
-    if (!record || record.live?.incarnation !== incarnation) return;
+    if (!record || !isLive(record) || record.live.incarnation !== incarnation) return;
+    if (!end.requested && end.confirmedBy !== "page-event") {
+      this.keepAsleep(record);
+      return;
+    }
     void this.remove(record).catch(() => undefined);
+  }
+
+  /** The tab keeps its place with no page; waking reloads its address. */
+  private keepAsleep(record: SurfaceRecord): void {
+    this.detachLive(record);
+    record.restore ??= { url: record.url, engine: null, bytes: 0 };
+    if (record.lease.state === "live" || record.lease.state === "sleeping")
+      record.lease.endSleep(true);
+    if (record.announced)
+      this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
   }
 
   private async disposeLive(live: LivePage): Promise<void> {

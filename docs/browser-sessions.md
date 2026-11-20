@@ -49,7 +49,9 @@ can attribute belongs to one session: its creator, its opener's, or the session 
 target. A session's teardown ends all of its pages, admitted or not; a creation its owner abandoned
 is ended too. A page of unknown origin, such as one a person opened in a visible browser, is reported
 but never ended for its age. Only the engine's confirmation ends ownership: Electron's WebContents
-`destroyed`, or Playwright's page `close` or its context ending. A destroy request is irreversible:
+`destroyed`, or Playwright's page `close` or its context ending. A page that ends because its
+browser, process or context did leaves its tab listed and asleep; only a requested close, or the page
+closing itself as a popup's `window.close()` does, ends the tab. A destroy request is irreversible:
 the page never returns to service, a sleep that asked for it has slept, and a tab gets no new page
 while an earlier one may live. A registered tab's close succeeds only on confirmation and otherwise
 answers retryably while the tab stays listed, reachable by no route. A page still closing keeps its

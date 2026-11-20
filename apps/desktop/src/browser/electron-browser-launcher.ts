@@ -24,6 +24,7 @@ import {
   type BrowserPartitionKey,
   type BrowserRendererUsage,
   type RendererExit,
+  type PageGoneCause,
   type RendererGoneCause,
   type CdpSession,
   type EngineClipboard,
@@ -920,6 +921,7 @@ class ElectronBrowserContext implements BrowserContext {
     for (const view of this.#storageViews) {
       if (!view.webContents.isDestroyed()) view.webContents.close({ waitForBeforeUnload: false });
     }
+    for (const page of this.#pages) page.endWithContext();
     const results = await Promise.allSettled([...this.#pages].map((page) => page.close()));
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
@@ -1131,7 +1133,15 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   }
   /** A close was asked for; the page may still exist until `destroyed`. */
   get closeRequested(): boolean {
-    return this.#closePromise !== undefined;
+    return this.#closeRequested;
+  }
+  /** Set by the first close and never cleared: a page asked to close never returns to service. */
+  #closeRequested = false;
+  /** Its context is ending, so its end is the context's, not the page's own. */
+  #contextEnding = false;
+  readonly #goneListeners = new Map<(cause?: PageGoneCause) => void, () => void>();
+  endWithContext(): void {
+    this.#contextEnding = true;
   }
   #passkeyBridge: PasskeyBridge | undefined;
   readonly #hub: ElectronDebuggerHub;
@@ -2141,6 +2151,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   }
 
   close(): Promise<void> {
+    this.#closeRequested = true;
     this.#closePromise ??= this.#close().catch((error: unknown) => {
       this.#closePromise = undefined;
       throw error;
@@ -2194,8 +2205,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     return this.#webContents.isDestroyed();
   }
 
-  onClose(listener: () => void): void {
-    this.#webContents.on("destroyed", listener);
+  onClose(listener: (cause?: PageGoneCause) => void): void {
+    if (this.#goneListeners.has(listener)) return;
+    const destroyed = () => listener(this.#contextEnding ? "context" : "page");
+    this.#goneListeners.set(listener, destroyed);
+    this.#webContents.on("destroyed", destroyed);
   }
 
   onRendererGone(listener: (cause: RendererGoneCause) => void): () => void {
@@ -2217,8 +2231,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     return "running";
   }
 
-  offClose(listener: () => void): void {
-    this.#webContents.off("destroyed", listener);
+  offClose(listener: (cause?: PageGoneCause) => void): void {
+    const destroyed = this.#goneListeners.get(listener);
+    if (!destroyed) return;
+    this.#goneListeners.delete(listener);
+    this.#webContents.off("destroyed", destroyed);
   }
 
   onMetadataChanged(listener: () => void): void {

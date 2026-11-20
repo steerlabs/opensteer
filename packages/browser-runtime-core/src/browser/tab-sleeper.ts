@@ -54,6 +54,8 @@ interface TabSleeperOptions {
   readonly rendererUsage?: (() => BrowserRendererUsage) | undefined;
   readonly onPass?: ((pass: TabSleepPass) => void) | undefined;
   readonly pageCounts?: (() => PageCounts) | undefined;
+  /** Native pages with no live tab across the runtime, those of ended sessions included. */
+  readonly untabbedPages?: (() => number) | undefined;
 }
 
 interface SleepSession {
@@ -77,7 +79,13 @@ export class TabSleeper {
   private rendererUsage: BrowserRendererUsage | null = null;
   private nextRendererSample = 0;
   private declined = new WeakSet<TabRecord>();
-  private reclaimFrom: { usage: BrowserRendererUsage; settledAt: number } | null = null;
+  private reclaimFrom: {
+    usage: BrowserRendererUsage;
+    settledAt: number;
+    /** Its sample waits once, for the slept pages' confirmation or a cutoff. */
+    waiting: boolean;
+  } | null = null;
+  private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private ineffectiveReclaims = 0;
   private pressureBackoffUntil = 0;
   private lastReportedPass: TabSleepPass | null = null;
@@ -104,6 +112,7 @@ export class TabSleeper {
   }
   /** Pages without a live tab still use the browser until their engine confirms them gone. */
   private untabbedPages(): number {
+    if (this.options.untabbedPages) return this.options.untabbedPages();
     let pages = 0;
     for (const session of this.sessions.values()) pages += session.ledger.untabbedPages();
     return pages;
@@ -298,6 +307,11 @@ export class TabSleeper {
     if (this.closed || this.running) return;
     this.trimRestore();
     const now = Date.now();
+    // The reclaim waiting on confirmation is sampled as soon as that arrives.
+    if (this.reclaimFrom?.waiting && this.untabbedPages() === 0) {
+      this.reclaimFrom.settledAt = Math.min(this.reclaimFrom.settledAt, now);
+      this.nextRendererSample = Math.min(this.nextRendererSample, now);
+    }
     const budget = !this.options.rendererUsage && this.overBudget();
     let earliest = Infinity;
     for (const [id, session] of this.sessions) {
@@ -358,8 +372,12 @@ export class TabSleeper {
     }
     const reclaim = this.reclaimFrom;
     if (!reclaim || now < reclaim.settledAt) return;
-    // A sleep is a request; its memory is judged once its pages are confirmed gone, or after a sample.
-    if (this.untabbedPages() > 0 && now < reclaim.settledAt + rendererSampleMs) return;
+    // A sleep is a request: its memory is judged once its pages are confirmed gone, or once at a cutoff.
+    if (!reclaim.waiting && this.untabbedPages() > 0) {
+      reclaim.waiting = true;
+      reclaim.settledAt = now + rendererSampleMs;
+      return;
+    }
     this.reclaimFrom = null;
     if (
       usage.processes < reclaim.usage.processes ||
@@ -376,7 +394,7 @@ export class TabSleeper {
 
   private reportPass(pass: TabSleepPass): void {
     const last = this.lastReportedPass;
-    if (
+    const unchanged =
       last &&
       !pass.slept &&
       last.livePages === pass.livePages &&
@@ -384,15 +402,24 @@ export class TabSleeper {
       !this.countChanged(last.rendererProcesses, pass.rendererProcesses) &&
       !this.countChanged(last.unassignedRendererProcesses, pass.unassignedRendererProcesses) &&
       sameStructure(last.pages, pass.pages) &&
-      (sameRefusals(last.pages, pass.pages) ||
-        Date.now() - this.lastReportedAt < reportRefusalsMs) &&
       (last.rendererResidentBytes === pass.rendererResidentBytes ||
         (last.rendererResidentBytes !== null &&
           pass.rendererResidentBytes !== null &&
           Math.abs(last.rendererResidentBytes - pass.rendererResidentBytes) <
-            Math.max(reportMemoryChangeBytes, last.rendererResidentBytes / 10)))
-    )
+            Math.max(reportMemoryChangeBytes, last.rendererResidentBytes / 10)));
+    if (unchanged && sameRefusals(last.pages, pass.pages)) return;
+    const wait = this.lastReportedAt + reportRefusalsMs - Date.now();
+    if (unchanged && wait > 0) {
+      // Refusals alone report at most once a minute, and the last of them is never dropped.
+      this.flushTimer ??= setTimeout(() => {
+        this.flushTimer = undefined;
+        if (!this.closed && this.options.onPass) this.reportPass(this.summary(0, 0));
+      }, wait);
+      this.flushTimer.unref?.();
       return;
+    }
+    clearTimeout(this.flushTimer);
+    this.flushTimer = undefined;
     this.lastReportedPass = pass;
     this.lastReportedAt = Date.now();
     this.options.onPass?.(pass);
@@ -492,8 +519,13 @@ export class TabSleeper {
       if (this.rendererUsage && this.releasing) {
         const now = Date.now();
         if (slept > 0) {
-          this.reclaimFrom ??= { usage: this.rendererUsage, settledAt: now + rendererSettleMs };
+          this.reclaimFrom ??= {
+            usage: this.rendererUsage,
+            settledAt: now + rendererSettleMs,
+            waiting: false,
+          };
           this.reclaimFrom.settledAt = now + rendererSettleMs;
+          this.reclaimFrom.waiting = false;
         }
         if (attempted >= sleepsPerPass)
           this.nextRendererSample = Math.min(this.nextRendererSample, now + pressureScanMs);
@@ -507,6 +539,7 @@ export class TabSleeper {
 
   close(): void {
     this.closed = true;
+    clearTimeout(this.flushTimer);
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;
     for (const session of this.sessions.values()) session.stop();
