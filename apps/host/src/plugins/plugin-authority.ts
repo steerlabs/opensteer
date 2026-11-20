@@ -4,7 +4,12 @@
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { pluginOwnerId } from "./engine-protocol.js";
-import { OpensteerError, type UserId } from "@opensteer/core";
+import {
+  OpensteerError,
+  agentGrantAccess,
+  type AgentGrantPluginTarget,
+  type UserId,
+} from "@opensteer/core";
 import {
   executionDate,
   OpensteerStore,
@@ -13,7 +18,7 @@ import {
   type DatabaseSchema,
 } from "@opensteer/database";
 import type { Transaction } from "kysely";
-import type { AgentCaller } from "../mcp/agent-caller.js";
+import { callerLineage, type AgentCaller } from "../mcp/agent-caller.js";
 import type { PluginAuthorization, PluginCaller } from "./engine-protocol.js";
 
 const discovery = new Set([
@@ -127,13 +132,65 @@ export class PluginAuthority {
   async currentMode(key: string): Promise<PluginCaller["mode"]> {
     const caller = this.caller(key);
     if (!caller || caller.kind === "connection") return "ask";
-    const thread = await this.options.store.getThreadForOwner(
+    const mode = await this.#mode(this.options.store, caller).catch(() => null);
+    return mode === "auto" || mode === "full-access" ? "automatic" : "ask";
+  }
+  /** The task's current mode, lowered to every mode in a connection lineage. */
+  async #mode(store: OpensteerStore, caller: Exclude<AgentCaller, { kind: "connection" }>) {
+    const thread = await store.getThreadForOwner(
       caller.kind === "run" ? caller.thread.id : caller.anchor.id,
       caller.userId,
     );
-    return thread && (thread.accessMode === "auto" || thread.accessMode === "full-access")
-      ? "automatic"
-      : "ask";
+    if (!thread) return null;
+    if (!caller.lineage) return thread.accessMode;
+    return (
+      await store.resolveAuthority({
+        ownerUserId: caller.userId,
+        subject: { kind: "binding", bindingId: caller.key },
+      })
+    ).mode;
+  }
+  /**
+   * A selected grant reaches only the plugins and accounts it names, at the access it names;
+   * anything else reads as Off. Rechecked from the live connection at every authorization.
+   */
+  async #grantCeiling(store: OpensteerStore, caller: AgentCaller) {
+    const lineage = callerLineage(caller);
+    if (!lineage) return null;
+    const live = await store
+      .resolveAuthority({
+        ownerUserId: caller.userId,
+        subject:
+          caller.kind === "connection"
+            ? { kind: "connection", connectionId: caller.connectionId }
+            : { kind: "binding", bindingId: caller.key },
+      })
+      .catch(() => undefined);
+    if (!live?.lineage) return undefined;
+    const grant = live.lineage.grant;
+    if (grant.scope === "everything") return null;
+    return {
+      access(plugin: string) {
+        return agentGrantAccess(grant, { kind: "plugin", target: pluginGrantTarget(plugin) });
+      },
+      async grants(settings: Readonly<Record<string, "all" | "read-only" | "off">>) {
+        const installed = await store.database.selectFrom("plugins").select("id").execute();
+        return Object.fromEntries(
+          [...new Set([...installed.map(({ id }) => id), ...Object.keys(settings)])].map((id) => {
+            const access = this.access(id);
+            const held = settings[id] ?? "all";
+            return [
+              id,
+              access === null || held === "off"
+                ? "off"
+                : access === "read" || held === "read-only"
+                  ? "read-only"
+                  : held,
+            ] as const;
+          }),
+        );
+      },
+    };
   }
   async authorize(
     input: PluginAuthorization,
@@ -161,7 +218,9 @@ export class PluginAuthority {
     if (input.execution && !handoff) await this.options.beforeAuthorize?.();
     signal?.throwIfAborted();
     const settings = await settingsStore.settings(owner);
-    const grants = Object.fromEntries(settings.map((s) => [s.pluginId, s.access]));
+    let grants: Record<string, "all" | "read-only" | "off"> = Object.fromEntries(
+      settings.map((s) => [s.pluginId, s.access]),
+    );
     if (input.plugin && input.write && (grants[input.plugin] ?? "all") !== "all")
       return { allowed: false, grants };
     if (input.caller === pluginOwnerId) {
@@ -187,6 +246,16 @@ export class PluginAuthority {
       !execution.has(input.operation)
     )
       return { allowed: false };
+    const ceiling = await this.#grantCeiling(store, caller);
+    if (ceiling === undefined) return { allowed: false };
+    if (ceiling) {
+      if (management.has(input.operation)) return { allowed: false };
+      if (input.plugin && input.operation !== "cancel") {
+        const access = ceiling.access(input.plugin);
+        if (access === null || (input.write && access !== "read-write")) return { allowed: false };
+      }
+      grants = await ceiling.grants(grants);
+    }
     if (caller.kind === "program" && input.operation !== "cancel") {
       const triggers = new TriggerStore(store.database);
       try {
@@ -199,16 +268,13 @@ export class PluginAuthority {
     }
     // Integration discovery/calls already use the personal owner's task authority, including team-bound tasks.
     if (caller.kind !== "connection") {
-      const thread = await store.getThreadForOwner(
-        caller.kind === "run" ? caller.thread.id : caller.anchor.id,
-        owner,
-      );
-      if (!thread) return { allowed: false };
+      const mode = await this.#mode(store, caller).catch(() => null);
+      if (!mode) return { allowed: false };
       if (
         input.mode === "automatic" &&
         !discovery.has(input.operation) &&
-        thread.accessMode !== "auto" &&
-        thread.accessMode !== "full-access"
+        mode !== "auto" &&
+        mode !== "full-access"
       )
         return { allowed: false };
       const execution = input.execution
@@ -233,10 +299,7 @@ export class PluginAuthority {
           }
         }
       }
-      if (
-        management.has(input.operation) &&
-        (caller.kind !== "run" || thread.accessMode !== "full-access")
-      )
+      if (management.has(input.operation) && (caller.kind !== "run" || mode !== "full-access"))
         return { allowed: false };
     } else {
       const live = await store.database
@@ -278,4 +341,13 @@ export class PluginAuthority {
         next: "Continue with the access currently available; the person controls plugin access.",
       });
   }
+}
+
+/** The grant identity of an engine app id: a local server, a device account, or a plugin. */
+export function pluginGrantTarget(plugin: string): AgentGrantPluginTarget {
+  if (plugin.startsWith("app_server_"))
+    return { kind: "local-server", serverId: plugin.slice("app_server_".length) };
+  if (plugin.startsWith("app_device_"))
+    return { kind: "device-account", integrationConnectionId: plugin.slice("app_device_".length) };
+  return { kind: "installed", pluginId: plugin };
 }

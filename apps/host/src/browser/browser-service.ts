@@ -50,6 +50,7 @@ import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   OpensteerError,
+  agentGrantAllows,
   RunnerIdSchema,
   RunIdSchema,
   type AuthSessionId,
@@ -4749,6 +4750,7 @@ export class BrowserService {
         ownerUserId: input.ownerId,
         agentBindingId: input.agentBindingId,
         explicitAccess: "read-write",
+        grantTarget: "actor",
       });
       if (!authority.access || (access === "read-write" && authority.access !== "read-write"))
         throw new OpensteerError({
@@ -4757,6 +4759,26 @@ export class BrowserService {
             access === "read-write"
               ? "This task has read-only browser access and cannot drive or change tabs."
               : "This task cannot read browser tabs.",
+        });
+      // A connection's selected grant reaches only the browser profiles it names.
+      const grant = authority.authority.lineage?.grant;
+      if (
+        grant?.scope === "selected" &&
+        (!grant.resources.some((resource) => resource.kind === "browser-profile") ||
+          records.some(
+            (record) =>
+              !record.profileId ||
+              !agentGrantAllows(
+                grant,
+                { kind: "browser-profile", profileId: record.profileId },
+                access,
+              ),
+          ))
+      )
+        throw new OpensteerError({
+          code: "forbidden",
+          message:
+            "This browser profile is not one this connected agent may use. The person can change what it may use under Connected agents.",
         });
     }
     if (records.length) {
@@ -4815,7 +4837,26 @@ export class BrowserService {
     > = this.#repository,
   ) {
     await this.admitAgentBrowser(input, access, [], repository);
-    const records = await repository.listBrowserSessions(input.ownerId);
+    const grant = repository.resolveResourceAccess
+      ? (
+          await repository.resolveResourceAccess({
+            ownerUserId: input.ownerId,
+            agentBindingId: input.agentBindingId,
+            grantTarget: "actor",
+          })
+        ).authority.lineage?.grant
+      : undefined;
+    // A selected grant reaches only the sessions of the profiles it names.
+    const records = (await repository.listBrowserSessions(input.ownerId)).filter(
+      (record) =>
+        grant?.scope !== "selected" ||
+        (record.profileId !== null &&
+          agentGrantAllows(
+            grant,
+            { kind: "browser-profile", profileId: record.profileId },
+            access,
+          )),
+    );
     const runners = [...new Set(records.map((record) => record.runnerId))];
     // An offline computer's tabs stay listed; using one says the computer is offline.
     const admissions = await Promise.allSettled(

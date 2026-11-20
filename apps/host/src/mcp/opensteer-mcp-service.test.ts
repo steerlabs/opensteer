@@ -76,6 +76,8 @@ function fixture() {
       "connection",
       {
         kind: "connection",
+        grant: { scope: "everything" },
+        grantRevision: 1,
         key: "connection:mcn_test",
         connectionId: "mcn_test",
         userId,
@@ -140,6 +142,7 @@ function fixture() {
         personSteerCount: vi.fn(async () => 0),
       },
       getThreadForOwner: async (id: Thread["id"]) => targets.get(id) ?? null,
+      threadOrigins: async () => new Map(),
 
       getAssignmentForOwner: async () => null,
     },

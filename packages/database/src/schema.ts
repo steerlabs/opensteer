@@ -1,4 +1,5 @@
 import type {
+  AgentGrant,
   DeviceId,
   DeviceKind,
   DevicePlatform,
@@ -754,6 +755,8 @@ export interface ThreadTable {
   nextRunOrdinal: Generated<number>;
   /** Admission of a teammate's ask created it; it is removed if only declined asks ever reached it. */
   teamAskOrigin: Generated<boolean>;
+  /** The connected agent whose lineage this task is in; immutable, inherited by child tasks. */
+  originConnectionId: Generated<string | null>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -837,6 +840,8 @@ export interface ThreadInputTable {
   editLeaseSessionId: Generated<AuthSessionId | null>;
   editLeaseDeviceLabel: Generated<string | null>;
   editLeaseExpiresAt: Generated<Date | null>;
+  /** The connected agent this input came from, directly or through its lineage. */
+  connectionId: Generated<string | null>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -910,6 +915,8 @@ export interface RunTable {
   seedInputId: MessageId;
   /** The live voice call this Run carries; null for every other Run. */
   voiceSessionId: Generated<string | null>;
+  /** The task's origin connection, otherwise its activating input's; null for owner work. */
+  connectionId: Generated<string | null>;
   nextRunnerOrdinal: Generated<number>;
   /** The binding generation this Run acquired; null until it has one. */
   bindingGeneration: Generated<number | null>;
@@ -1148,6 +1155,8 @@ interface TriggerTable {
   waitingReason: Generated<string | null>;
   webhookRouteKey: string | null;
   webhookSecretHash: string | null;
+  /** The connected agent whose lineage created it; occurrences and Watches derive from it. */
+  originConnectionId: Generated<string | null>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -1904,6 +1913,17 @@ export interface AgentConnectionTable {
   lastUsedAt: NullableTimestamp;
   expiresAt: Timestamp;
   revokedAt: NullableTimestamp;
+  grant: ColumnType<AgentGrant, AgentGrant | undefined, AgentGrant>;
+  grantRevision: Generated<number>;
+  consentVersion: Generated<number>;
+  /** SHA-256 of the signed client registration the person approved; null before 0042. */
+  clientFingerprint: Generated<string | null>;
+  /** The redirect destination the person consented to; null before 0042. */
+  redirectUri: Generated<string | null>;
+  /** Contact was lost with a handed-off execution in this lineage while it was being stopped. */
+  lastActionUncertainAt: Generated<Date | null>;
+  /** The person removed this revoked connection from their list. */
+  removedAt: Generated<Date | null>;
 }
 
 export interface DatabaseSchema {

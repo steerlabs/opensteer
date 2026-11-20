@@ -1,16 +1,50 @@
 import { z } from "zod";
-import { ThreadAccessModeSchema, UserIdSchema, DeploymentIdSchema } from "@opensteer/core";
+import {
+  AgentGrantSchema,
+  ThreadAccessModeSchema,
+  UserIdSchema,
+  DeploymentIdSchema,
+} from "@opensteer/core";
 
 /** The Host's one MCP resource; an agent adds the Host's origin plus this path. */
 export const agentConnectionMcpPath = "/internal/v1/mcp";
 export const AgentConnectionIdSchema = z.string().regex(/^mcn_[0-9a-f-]{36}$/);
 
+/**
+ * Where a connection stands. `revoked` holds from the moment authority ends;
+ * `stopping` while handed-off work in its lineage has not yet confirmed it
+ * ended; `stopped` once every one of them has.
+ */
+export const AgentConnectionStateSchema = z.enum([
+  "active",
+  "expired",
+  "revoked",
+  "stopping",
+  "stopped",
+]);
+export type AgentConnectionState = z.infer<typeof AgentConnectionStateSchema>;
+
 export const AgentConnectionSchema = z.object({
   id: AgentConnectionIdSchema,
   userId: UserIdSchema,
   label: z.string().min(1).max(120),
+  /** Self-asserted by the client; shown as what it says it is. */
   clientName: z.string().min(1).max(100),
   accessMode: ThreadAccessModeSchema,
+  grant: AgentGrantSchema.optional(),
+  grantRevision: z.number().int().min(1).optional(),
+  consentVersion: z.number().int().min(1).optional(),
+  /** What the Home can prove about the client: its registration and the consented redirect. */
+  client: z
+    .object({
+      fingerprint: z.string().max(128).nullable(),
+      redirectOrigin: z.string().max(2048).nullable(),
+    })
+    .optional(),
+  state: AgentConnectionStateSchema.optional(),
+  /** Contact was lost with work in its lineage mid-effect while it was being stopped. */
+  lastActionUncertain: z.boolean().optional(),
+  revokedAt: z.iso.datetime({ offset: true }).nullable().optional(),
 
   createdAt: z.iso.datetime({ offset: true }),
   lastUsedAt: z.iso.datetime({ offset: true }).nullable(),

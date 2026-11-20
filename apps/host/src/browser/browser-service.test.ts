@@ -5883,6 +5883,8 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
 
   async resolveResourceAccess() {
     return {
+      authority: { mode: "full-access" as const, lineage: null, threadId: null, runId: null },
+      grantAccess: "read-write" as const,
       access: "read-write" as const,
       runAccess: "read-write" as const,
     };

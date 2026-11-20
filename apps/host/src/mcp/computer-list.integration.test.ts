@@ -94,6 +94,8 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)("computer_list paginat
       );
       const caller = {
         kind: "connection",
+        grant: { scope: "everything" },
+        grantRevision: 1,
         key: "connection:pagination",
         connectionId: "pagination",
         userId: f.ownerId,

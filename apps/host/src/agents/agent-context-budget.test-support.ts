@@ -24,6 +24,7 @@ export async function measureMcpContext(kind: AgentCallerKind) {
     key: "context-budget",
     accessMode: "full-access",
     ...(kind === "run" ? { thread: { teamOrigin: null } } : {}),
+    ...(kind === "connection" ? { grant: { scope: "everything" }, grantRevision: 1 } : {}),
   } as unknown as AgentCaller);
   const client = new Client({ name: "context-budget", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair();

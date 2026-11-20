@@ -107,6 +107,8 @@ export interface TabServiceOptions {
   /** Rechecks the Run/connection and current grants. Called again inside membership commits. */
   authorize(actor: TabActor, target: TabTarget | TabWrite, database: TabDatabase): Promise<void>;
   authorizeMembership(actor: TabActor, database: TabDatabase): Promise<void>;
+  /** Each tab an edit affects, for work in a connection's lineage that may reach only some. */
+  authorizeRows?(actor: TabActor, rows: readonly TabRecord[], database: TabDatabase): Promise<void>;
   onError(error: unknown): void;
 }
 function owner(actor: TabActor): UserId {
@@ -549,10 +551,13 @@ export class TabService implements TabServicePort {
             item.group.tabIds.some((id) => affected.has(id)))
         )
           for (const id of item.group.tabIds) affected.add(id);
+      const affectedRows: TabRecord[] = [];
       for (const id of affected) {
         const row = rows.find((row) => row.id === id);
         if (!row || row.ownerId !== owner(actor)) notFound();
+        affectedRows.push(row);
       }
+      await this.options.authorizeRows?.(actor, affectedRows, tx);
     };
   }
   async open(
@@ -698,6 +703,7 @@ export class TabService implements TabServicePort {
             const row = rows.find((row) => row.id === tabId);
             if (!row || row.ownerId !== owner(actor)) notFound();
             await this.options.authorizeMembership(actor, tx);
+            await this.options.authorizeRows?.(actor, [row], tx);
             permitted.add(tabId);
             cleanup.push(row);
           } catch (error) {

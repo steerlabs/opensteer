@@ -54,7 +54,11 @@ function fixture() {
   const service = new OpensteerMcpService({
     callers,
     handlers: { computer_apps: handler },
-    store: { getThreadForOwner: async () => thread, requests: { get: async () => null } },
+    store: {
+      getThreadForOwner: async () => thread,
+      threadOrigins: async () => new Map(),
+      requests: { get: async () => null },
+    },
     publicUrl: new URL("http://host.test"),
   });
   const saved = new Map<string, ToolCallRow>();

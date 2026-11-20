@@ -295,6 +295,12 @@ function makeService(options: {
       name: "Opensteer",
     })),
     getThreadForOwner: vi.fn(async () => anchor),
+    resolveAuthority: vi.fn(async () => ({
+      mode: "full-access" as const,
+      lineage: null,
+      threadId: null,
+      runId: null,
+    })),
     listEnvironmentsForUser,
     listHarnessCatalogs: vi.fn(async () => []),
     listHarnessInstances: vi.fn(async () => [

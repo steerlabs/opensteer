@@ -3,12 +3,13 @@ import {
   formatReferenceLink,
   TriggerIdSchema,
   RunIdSchema,
+  type TriggerId,
   type UserId,
   type ThreadId,
 } from "@opensteer/core";
 import { triggerSourceFromInput, type TriggerControlInput } from "@opensteer/triggers";
 import { z } from "zod";
-import { callerThread } from "../agent-caller.js";
+import { callerLineage, callerThread } from "../agent-caller.js";
 import { idempotencyKey, operationId } from "../operations.js";
 import type { ToolCall } from "./types.js";
 export interface AgentTriggerManager {
@@ -23,14 +24,46 @@ export interface AgentTriggerManager {
   ): Promise<unknown>;
 }
 
+export interface TriggerLineage {
+  triggerOrigins(
+    ownerId: UserId,
+    ids: readonly TriggerId[],
+  ): Promise<ReadonlyMap<TriggerId, string | null>>;
+}
+
 export class TriggerToolHandlers {
   readonly triggers: AgentTriggerManager;
-  constructor(triggers: AgentTriggerManager) {
+  readonly lineage: TriggerLineage;
+  constructor(triggers: AgentTriggerManager, lineage: TriggerLineage) {
     this.triggers = triggers;
+    this.lineage = lineage;
+  }
+  /**
+   * A selected grant sees only automations in its own lineage, and no connected agent replaces
+   * the program of an automation outside its lineage: that program would run with authority the
+   * connection does not hold.
+   */
+  async #assertLineage(
+    caller: ToolCall<"opensteer_automation_read">["caller"],
+    id: TriggerId,
+    program: boolean,
+  ) {
+    const lineage = callerLineage(caller);
+    if (!lineage) return;
+    const origin = (await this.lineage.triggerOrigins(caller.userId, [id])).get(id) ?? null;
+    if (lineage.grant.scope === "selected" && origin !== lineage.connectionId)
+      throw new OpensteerError({ code: "not_found", message: "Automation not found" });
+    if (program && origin !== lineage.connectionId)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "A connected agent cannot replace the program of an automation it did not create.",
+      });
   }
   async read(call: ToolCall<"opensteer_automation_list"> | ToolCall<"opensteer_automation_read">) {
     const { caller, input } = call;
-    return automationOutput(
+    if ("automationId" in input) await this.#assertLineage(caller, input.automationId, false);
+    const lineage = callerLineage(caller);
+    const output = automationOutput(
       await this.triggers.manage(
         caller.userId,
         "automationId" in input
@@ -48,6 +81,15 @@ export class TriggerToolHandlers {
         { accessMode: caller.accessMode },
       ),
     );
+    if (lineage?.grant.scope !== "selected" || !output.triggers) return output;
+    const origins = await this.lineage.triggerOrigins(
+      caller.userId,
+      output.triggers.map(({ id }) => id),
+    );
+    return {
+      ...output,
+      triggers: output.triggers.filter(({ id }) => origins.get(id) === lineage.connectionId),
+    };
   }
   async write(
     call:
@@ -66,6 +108,17 @@ export class TriggerToolHandlers {
           : "opensteer_automation_update",
     );
     let operation: TriggerControlInput;
+    if ("automationId" in input)
+      await this.#assertLineage(
+        caller,
+        input.automationId,
+        !("action" in input) && (input.program !== undefined || input.source !== undefined),
+      );
+    else if (input.ownTask && callerLineage(caller)?.grant.scope === "selected")
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Name the taskId of one of your tasks for this automation.",
+      });
     if (!("automationId" in input)) {
       const anchor =
         input.taskId ?? (caller.kind === "connection" ? undefined : callerThread(caller).id);

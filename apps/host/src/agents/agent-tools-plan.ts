@@ -9,7 +9,7 @@ import {
   opensteerAgentSkillsFor,
   platformGuideForRun,
 } from "@opensteer/agent-tools";
-import type { ThreadAccessMode, TaskPurpose } from "@opensteer/core";
+import type { AgentGrant, ThreadAccessMode, TaskPurpose } from "@opensteer/core";
 import {
   agentHomeSettingsErrorText,
   type AgentHomeSettingsError,
@@ -30,9 +30,12 @@ export function agentToolsPlanForRun(input: {
   readonly knowledge?: boolean;
   /** Why settings.json in Agent home is invalid, for the agent that can fix it. */
   readonly settingsError?: AgentHomeSettingsError | undefined;
+  /** The grant of the connection whose lineage this Run is in. */
+  readonly grant?: AgentGrant;
 }): RunAgentToolsPlan {
   const runTools = toolsFor({
     kind: "run",
+    ...(input.grant ? { grant: input.grant } : {}),
     capabilities: input.capabilities,
     accessMode: input.accessMode,
     teamsAvailable: input.teamsAvailable === true,

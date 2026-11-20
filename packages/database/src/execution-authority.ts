@@ -1,5 +1,6 @@
 import {
   OpensteerError,
+  agentGrantAllowsTasks,
   type AssignmentId,
   type EnvironmentId,
   type GrantId,
@@ -10,6 +11,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
+import { bindingLineageConnectionId, lineageEndedMessage, liveLineage } from "./resource-access.js";
 type Database = Kysely<DatabaseSchema>;
 export interface ActiveExecutionBindingInput {
   readonly lostExecution?: boolean;
@@ -154,6 +156,19 @@ export async function assertActiveGrant(
       code: "forbidden",
       message: "Run tool authority has ended",
     });
+  await assertRunLineageLive(database, input.runId, input.requestedBy);
+}
+/** A Run in a connection's lineage has authority only while that connection does. */
+export async function assertRunLineageLive(
+  database: Database,
+  runId: RunId,
+  requestedBy: UserId,
+): Promise<void> {
+  const lineageId = await bindingLineageConnectionId(database, `run:${runId}`);
+  if (!lineageId) return;
+  const lineage = await liveLineage(database, requestedBy, lineageId);
+  if (!agentGrantAllowsTasks(lineage.grant))
+    throw new OpensteerError({ code: "forbidden", message: lineageEndedMessage });
 }
 export async function executionEnvironmentIsAvailableToUser(
   database: Database,
@@ -187,12 +202,17 @@ export async function admitThreadExecution(
 } | null> {
   const row = await database
     .selectFrom("threads")
-    .select("threads.environmentId")
+    .select(["threads.environmentId", "threads.originConnectionId"])
     .where("threads.id", "=", threadId)
     .executeTakeFirst();
-  return row && (await executionEnvironmentIsAvailableToUser(database, row.environmentId, userId))
-    ? row
-    : null;
+  if (!row || !(await executionEnvironmentIsAvailableToUser(database, row.environmentId, userId)))
+    return null;
+  // A task in a connection's lineage executes only while that connection may delegate.
+  if (row.originConnectionId) {
+    const lineage = await liveLineage(database, userId, row.originConnectionId).catch(() => null);
+    if (!lineage || !agentGrantAllowsTasks(lineage.grant)) return null;
+  }
+  return { environmentId: row.environmentId };
 }
 export async function deploymentOwnedExecutionIsAvailableToUser(
   database: Database,

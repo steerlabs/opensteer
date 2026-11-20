@@ -1,5 +1,6 @@
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { ConnectionCaller } from "../agent-caller.js";
+import type { UserId } from "@opensteer/core";
 import { OpensteerError } from "@opensteer/core";
 import {
   rpcSuccess,
@@ -242,23 +243,73 @@ export function createConnectionRpcHandlers(
   oauth: ConnectionOAuth,
 ): Pick<HostApiHandlers, "connections.list" | "connections.authorization.get"> {
   return {
-    "connections.list": async (_input, context) =>
-      rpcSuccess({ connections: await oauth.store.list(requireOwner(context).user.id) }),
+    "connections.list": async (input, context) =>
+      rpcSuccess({
+        connections: await oauth.store.list(requireOwner(context).user.id, {
+          includeRevoked: input.includeRevoked === true,
+        }),
+      }),
     "connections.authorization.get": async (input, context) =>
       rpcSuccess(await oauth.consent(input.requestId, requireOwner(context).user.id)),
   };
 }
+export type ConnectionCommand = Extract<
+  HostApiCommand,
+  {
+    type: "connection.revoke" | "connection.authorize" | "connection.update" | "connection.remove";
+  }
+>;
+export function isConnectionCommand(command: HostApiCommand): command is ConnectionCommand {
+  return (
+    command.type === "connection.revoke" ||
+    command.type === "connection.authorize" ||
+    command.type === "connection.update" ||
+    command.type === "connection.remove"
+  );
+}
+/** What a connection change leaves for the runtime once it committed. */
+export interface ConnectionCommandEffects {
+  /** Stops the lineage's durable work: Requests, queued inputs, Runs and automations. */
+  readonly stopLineage?: (
+    userId: UserId,
+    connectionId: string,
+    reason: "disconnect" | "narrowed",
+  ) => Promise<void>;
+  /** Ends what the connection's lineage holds open in this process, such as MCP sessions. */
+  readonly closeLineage?: (connectionId: string) => Promise<void>;
+}
 export async function handleConnectionCommand(
   oauth: ConnectionOAuth,
-  command: Extract<HostApiCommand, { type: "connection.revoke" | "connection.authorize" }>,
+  command: ConnectionCommand,
   context: HostApiServerContext,
+  effects: ConnectionCommandEffects = {},
 ) {
   const session = requireOwner(context);
-  if (command.type === "connection.revoke") {
-    await oauth.store.revoke(session.user.id, command.connectionId);
-    return { type: "connection.revoke" as const };
+  switch (command.type) {
+    case "connection.revoke":
+      // Authority ends when this commits; a retry still finishes stopping the lineage.
+      await oauth.store.revoke(session.user.id, command.connectionId);
+      await effects.closeLineage?.(command.connectionId);
+      await effects.stopLineage?.(session.user.id, command.connectionId, "disconnect");
+      return { type: "connection.revoke" as const };
+    case "connection.update": {
+      const { connection, narrowed } = await oauth.store.update(session.user.id, {
+        connectionId: command.connectionId,
+        expectedRevision: command.expectedRevision,
+        ...(command.label !== undefined ? { label: command.label } : {}),
+        ...(command.accessMode !== undefined ? { accessMode: command.accessMode } : {}),
+        ...(command.grant !== undefined ? { grant: command.grant } : {}),
+      });
+      await effects.closeLineage?.(command.connectionId);
+      if (narrowed) await effects.stopLineage?.(session.user.id, command.connectionId, "narrowed");
+      return { type: "connection.update" as const, connection };
+    }
+    case "connection.remove":
+      await oauth.store.remove(session.user.id, command.connectionId);
+      return { type: "connection.remove" as const };
+    case "connection.authorize":
+      return oauth.decide(command, session.user.id, session.id);
   }
-  return oauth.decide(command, session.user.id, session.id);
 }
 function requireOwner(context: HostApiServerContext) {
   if (!context.session || context.session.user.disabledAt !== null)

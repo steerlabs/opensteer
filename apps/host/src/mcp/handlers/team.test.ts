@@ -134,6 +134,8 @@ describe("standing owner team authority", () => {
       handlers.opensteer_team_read({
         caller: {
           kind: "connection",
+          grant: { scope: "everything" },
+          grantRevision: 1,
           key: "connection:1",
           connectionId: "1",
           userId: c.userId,
@@ -186,6 +188,8 @@ describe("team knowledge as the Run's owner", () => {
       handlers.opensteer_knowledge_topic_list({
         caller: {
           kind: "connection",
+          grant: { scope: "everything" },
+          grantRevision: 1,
           key: "connection:1",
           connectionId: "1",
           userId: teamRun.userId,

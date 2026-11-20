@@ -294,6 +294,7 @@ export async function recoverLostRunTransaction(
     const receipt = await transaction
       .insertInto("threadInputs")
       .values({
+        ...(run.connectionId ? { connectionId: run.connectionId } : {}),
         actorPrincipalId: systemPrincipalId,
         assignmentId: run.assignmentId,
         authoritySource: jsonValue({

@@ -7,7 +7,7 @@ import type {
   ThreadMutationAdmission,
   ThreadCallerAuthority,
 } from "@opensteer/database";
-import { callerThread, type AgentCaller, type RunCaller } from "./agent-caller.js";
+import { callerLineage, callerThread, type AgentCaller, type RunCaller } from "./agent-caller.js";
 import { mcpToolCallId } from "./call-id.js";
 import { write as assertThreadAccess } from "./tool-access.js";
 
@@ -34,8 +34,12 @@ export function callerContext(caller: AgentCaller) {
     environmentId: thread.environmentId,
   };
 }
-export function callerListScope(_caller: AgentCaller): AgentThreadListScope {
-  return { kind: "personal" };
+/** A selected grant sees only its own lineage; everyone else keeps the person's view. */
+export function callerListScope(caller: AgentCaller): AgentThreadListScope {
+  const lineage = callerLineage(caller);
+  return lineage?.grant.scope === "selected"
+    ? { kind: "connection", connectionId: lineage.connectionId }
+    : { kind: "personal" };
 }
 const actions = {
   computer_access_request: "device.access.request",

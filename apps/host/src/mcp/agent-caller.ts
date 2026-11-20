@@ -1,5 +1,11 @@
-import { OpensteerError, type Thread, type ThreadAccessMode, type UserId } from "@opensteer/core";
-import type { OpensteerStore } from "@opensteer/database";
+import {
+  OpensteerError,
+  type AgentGrant,
+  type Thread,
+  type ThreadAccessMode,
+  type UserId,
+} from "@opensteer/core";
+import type { AuthorityLineage, OpensteerStore } from "@opensteer/database";
 import type { RunToolScope, RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type {
   TriggerControlScope,
@@ -11,6 +17,11 @@ export interface AgentCallerBase {
   readonly key: string;
   readonly userId: UserId;
   readonly accessMode: ThreadAccessMode;
+  /**
+   * The connected agent this execution works for, as it stood when the call was authenticated;
+   * every effect re-resolves it. Absent for the person's own work.
+   */
+  readonly lineage?: AuthorityLineage;
 }
 export interface RunCaller extends AgentCallerBase {
   readonly kind: "run";
@@ -27,6 +38,8 @@ export interface ProgramCaller extends AgentCallerBase {
 export interface ConnectionCaller extends AgentCallerBase {
   readonly kind: "connection";
   readonly connectionId: string;
+  readonly grant: AgentGrant;
+  readonly grantRevision: number;
 }
 export type AgentCaller = RunCaller | ProgramCaller | ConnectionCaller;
 
@@ -36,19 +49,22 @@ export interface ConnectionAuthenticator {
     readonly connectionId: string;
     readonly userId: UserId;
     readonly accessMode: ThreadAccessMode;
+    readonly grant: AgentGrant;
+    readonly grantRevision: number;
+    readonly consentVersion: number;
   }>;
 }
 
 export class AgentCallerResolver {
   readonly options: {
-    readonly store: Pick<OpensteerStore, "getThreadForOwner">;
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "resolveAuthority">;
     readonly runs: Pick<RunToolTokenService, "authenticate">;
     readonly triggers?: Pick<TriggerControlTokenService, "authenticate">;
     readonly watches?: Pick<WatchControlTokenService, "authenticate">;
     readonly connections?: ConnectionAuthenticator;
   };
   constructor(options: {
-    readonly store: Pick<OpensteerStore, "getThreadForOwner">;
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "resolveAuthority">;
     readonly runs: Pick<RunToolTokenService, "authenticate">;
     readonly triggers?: Pick<TriggerControlTokenService, "authenticate">;
     readonly watches?: Pick<WatchControlTokenService, "authenticate">;
@@ -66,7 +82,7 @@ export class AgentCallerResolver {
         kind: "run",
         key: `run:${run.runId}`,
         userId: run.requestedBy,
-        accessMode: thread.accessMode,
+        ...(await this.#authority(run.requestedBy, `run:${run.runId}`, thread)),
         thread,
         claims: run,
       };
@@ -82,7 +98,7 @@ export class AgentCallerResolver {
         kind: "program",
         key: `trigger:${trigger.occurrenceId}`,
         userId: trigger.requestedBy,
-        accessMode: anchor.accessMode,
+        ...(await this.#authority(trigger.requestedBy, `trigger:${trigger.occurrenceId}`, anchor)),
         anchor,
         program: { ...trigger, kind: "trigger" },
       };
@@ -94,16 +110,49 @@ export class AgentCallerResolver {
         kind: "program",
         key: `watch:${watch.activationId}`,
         userId: watch.createdBy,
-        accessMode: anchor.accessMode,
+        ...(await this.#authority(watch.createdBy, `watch:${watch.activationId}`, anchor)),
         anchor,
         program: { ...watch, kind: "watch" },
       };
     }
     if (this.options.connections) {
       const connection = await this.options.connections.authenticate(bearer);
-      return { ...connection, key: `connection:${connection.connectionId}`, kind: "connection" };
+      return {
+        key: `connection:${connection.connectionId}`,
+        kind: "connection",
+        connectionId: connection.connectionId,
+        userId: connection.userId,
+        accessMode: connection.accessMode,
+        grant: connection.grant,
+        grantRevision: connection.grantRevision,
+        lineage: {
+          connectionId: connection.connectionId,
+          grant: connection.grant,
+          grantRevision: connection.grantRevision,
+          consentVersion: connection.consentVersion,
+          accessMode: connection.accessMode,
+        },
+      };
     }
     throw unavailable();
+  }
+  /**
+   * The person's own work keeps its task's current mode; work in a connection's lineage takes
+   * the minimum of every mode in it, and ends with the connection.
+   */
+  async #authority(
+    owner: UserId,
+    bindingId: string,
+    thread: Thread,
+  ): Promise<{ readonly accessMode: ThreadAccessMode; readonly lineage?: AuthorityLineage }> {
+    const authority = await this.options.store
+      .resolveAuthority({ ownerUserId: owner, subject: { kind: "binding", bindingId } })
+      .catch(() => {
+        throw unavailable();
+      });
+    return authority.lineage
+      ? { accessMode: authority.mode, lineage: authority.lineage }
+      : { accessMode: thread.accessMode };
   }
   async #anchor(
     id: Thread["id"],
@@ -114,6 +163,24 @@ export class AgentCallerResolver {
     if (!anchor || anchor.environmentId !== environmentId) throw unavailable();
     return anchor;
   }
+}
+/** The connected agent a caller works for: itself, or the connection its lineage names. */
+export function callerLineage(
+  caller: AgentCaller,
+): { readonly connectionId: string; readonly grant: AgentGrant; readonly revision: number } | null {
+  if (caller.kind === "connection")
+    return {
+      connectionId: caller.connectionId,
+      grant: caller.grant,
+      revision: caller.grantRevision,
+    };
+  return caller.lineage
+    ? {
+        connectionId: caller.lineage.connectionId,
+        grant: caller.lineage.grant,
+        revision: caller.lineage.grantRevision,
+      }
+    : null;
 }
 export function callerThread(caller: AgentCaller): Thread {
   if (caller.kind === "connection") throw unavailable();

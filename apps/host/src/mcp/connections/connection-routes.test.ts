@@ -24,6 +24,9 @@ describe("public MCP discovery boundaries", () => {
       connectionId: "mcn_test",
       userId: createId("user"),
       accessMode: "approval-required" as const,
+      grant: { scope: "everything" } as const,
+      grantRevision: 1,
+      consentVersion: 1,
     };
     const authenticate = vi
       .spyOn(oauth.authenticator, "authenticate")

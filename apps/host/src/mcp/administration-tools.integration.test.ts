@@ -51,6 +51,8 @@ function fixture() {
   };
   let caller: AgentCaller = {
     kind: "connection",
+    grant: { scope: "everything" },
+    grantRevision: 1,
     key: "connection:test",
     connectionId: "test",
     userId,

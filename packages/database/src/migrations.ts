@@ -25,6 +25,7 @@ import {
   dropDeviceAccessCountMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
+import { agentGrantsMigrationName, applyAgentGrants } from "./agent-grants-migration.js";
 import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
@@ -600,6 +601,7 @@ export function migrationProvider(options?: {
               [taskApprovalReceiptsMigrationName]: { up: applyTaskApprovalReceipts },
               [answeredQuestionRecordsMigrationName]: { up: applyAnsweredQuestionRecords },
               [dropDeviceAccessCountMigrationName]: { up: applyDropDeviceAccessCount },
+              [agentGrantsMigrationName]: { up: applyAgentGrants },
             }
           : {}),
       };

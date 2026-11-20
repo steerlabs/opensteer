@@ -303,9 +303,20 @@ export async function createTriggerInTransaction(
   const now = new Date();
   const nextFireAt =
     !managed?.paused && source.kind === "schedule" ? firstTriggerFireAt(source.schedule) : null;
+  // An automation works for the lineage of whoever defined it, else of the task it is anchored on.
+  const lineage = await transaction
+    .selectFrom("threads")
+    .select(["id", "originConnectionId"])
+    .where("id", "in", input.actorThreadId ? [input.actorThreadId, anchor.id] : [anchor.id])
+    .execute();
+  const originConnectionId =
+    lineage.find(({ id }) => id === input.actorThreadId)?.originConnectionId ??
+    lineage.find(({ id }) => id === anchor.id)?.originConnectionId ??
+    null;
   await transaction
     .insertInto("triggers")
     .values({
+      ...(originConnectionId ? { originConnectionId } : {}),
       systemRole: managed?.systemRole ?? null,
       anchorThreadId: anchor.id,
       consecutiveFailures: 0,
@@ -2489,6 +2500,31 @@ function idempotencyConflict(): OpensteerError {
 }
 
 /** The Trigger and watch activation rows are reserved before Request settlement. */
+/**
+ * Disconnect pauses an automation whose connection lost authority. Its own authority is already
+ * gone, so this needs none: it only stops the automation from running again.
+ */
+export function pauseLineageTrigger(
+  database: Kysely<DatabaseSchema>,
+  triggerId: TriggerId,
+): Promise<void> {
+  return commitPersonalMutation(database, async (transaction) => {
+    await lockWatchCapacityForTrigger(transaction, triggerId);
+    const trigger = await transaction
+      .selectFrom("triggers")
+      .selectAll()
+      .where("id", "=", triggerId)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    if (trigger?.status !== "active") return;
+    await pauseTriggerInTransaction(transaction, trigger);
+    await transaction
+      .updateTable("triggers")
+      .set({ pauseReason: "Paused because the connected agent that made it was disconnected." })
+      .where("id", "=", triggerId)
+      .execute();
+  });
+}
 export async function pauseTriggerInTransaction(
   transaction: Transaction<DatabaseSchema>,
   trigger: TriggerRow,

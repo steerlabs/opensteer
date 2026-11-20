@@ -28,6 +28,8 @@ import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 function mcp(dependencies: AdministrationDependencies, userId: UserId) {
   const caller: AgentCaller = {
     kind: "connection",
+    grant: { scope: "everything" },
+    grantRevision: 1,
     connectionId: "administration-test",
     key: "connection:administration-test",
     userId,

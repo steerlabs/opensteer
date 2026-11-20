@@ -15,7 +15,7 @@ import {
   agentTools,
   toolsFor,
   agentToolAnnotations,
-  connectionInstructions,
+  connectionInstructionsFor,
   agentToolFailureResult,
   agentToolRecordResult,
   requestToolNames,
@@ -39,7 +39,12 @@ import type { PluginExecutions } from "../plugins/plugin-executions.js";
 import { mcpToolCallId } from "./call-id.js";
 import { agentToolFailure, internalToolFailureCode } from "./agent-tool-failure.js";
 import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
-import { AgentCallerResolver, type AgentCaller, type RunCaller } from "./agent-caller.js";
+import {
+  AgentCallerResolver,
+  callerLineage,
+  type AgentCaller,
+  type RunCaller,
+} from "./agent-caller.js";
 import { toolAccess } from "./tool-access.js";
 import { toolOperationKey } from "./operations.js";
 import type { RealtimeHub } from "@opensteer/orchestration";
@@ -50,6 +55,8 @@ const maximumSessions = 256;
 const sessionIdleLifetimeMs = 30 * 60 * 1_000;
 interface McpSession {
   readonly responses: Set<ServerResponse>;
+  /** The authority its tool list was built for; a change closes the session. */
+  readonly authority: string;
   readonly token: string;
   readonly origin: string;
   readonly key: string;
@@ -72,7 +79,7 @@ export class OpensteerMcpService {
     readonly pluginExecutions?: Pick<PluginExecutions, "hold">;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<OpensteerStore, "getThreadForOwner"> & {
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "threadOrigins"> & {
       readonly requests: Pick<OpensteerStore["requests"], "get">;
     };
     readonly publicUrl: URL;
@@ -87,7 +94,7 @@ export class OpensteerMcpService {
     readonly pluginExecutions?: Pick<PluginExecutions, "hold">;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<OpensteerStore, "getThreadForOwner"> & {
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "threadOrigins"> & {
       readonly requests: Pick<OpensteerStore["requests"], "get">;
     };
     readonly publicUrl: URL;
@@ -328,6 +335,7 @@ export class OpensteerMcpService {
     }
     session = {
       responses: new Set(),
+      authority: sessionAuthority(input),
       token: input.token,
       origin: input.origin.origin,
       key: input.key,
@@ -355,7 +363,9 @@ export class OpensteerMcpService {
       { name: "opensteer", version: "1.0.0" },
       {
         maxToolInputElements: 10_000,
-        ...(caller.kind === "connection" ? { instructions: connectionInstructions } : {}),
+        ...(caller.kind === "connection"
+          ? { instructions: connectionInstructionsFor(caller.grant) }
+          : {}),
       },
     );
     const advertisedTools: Tool[] = [];
@@ -395,6 +405,8 @@ export class OpensteerMcpService {
         });
       });
     }
+    // A grant may imply no tools at all; the list is still served, empty.
+    if (!advertisedTools.length) server.server.registerCapabilities({ tools: {} });
     server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: advertisedTools,
     }));
@@ -585,6 +597,8 @@ export class OpensteerMcpService {
   async #toolsFor(caller: AgentCaller) {
     return toolsFor({
       ...caller,
+      // The same grant-derived set a lineage Run's dispatch plan carries.
+      ...(callerLineage(caller) ? { grant: callerLineage(caller)!.grant } : {}),
       teamsAvailable: caller.kind === "run" && (await this.options.teamsAvailable?.()) === true,
       // Its handlers recheck personal context and a live team link on every call.
       knowledge: caller.kind === "run",
@@ -603,7 +617,7 @@ export class OpensteerMcpService {
     if (targets)
       for (const value of await targets({ caller, input } as ToolCall<typeof tool.name>))
         await add(value);
-    return Promise.all(
+    const threads = await Promise.all(
       [...new Set(ids)].map(async (id) => {
         const thread = await this.options.store.getThreadForOwner(id, caller.userId);
         if (!thread)
@@ -611,6 +625,14 @@ export class OpensteerMcpService {
         return thread;
       }),
     );
+    // A selected grant reaches only the tasks in its own lineage, whatever it names.
+    const lineage = callerLineage(caller);
+    if (lineage?.grant.scope === "selected" && threads.length) {
+      const origins = await this.options.store.threadOrigins(threads.map(({ id }) => id));
+      if (threads.some(({ id }) => origins.get(id) !== lineage.connectionId))
+        throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
+    }
+    return threads;
   }
   #reserve(caller: AgentCaller): boolean {
     const reserved = [...this.#reservations.values()].reduce((sum, count) => sum + count, 0);
@@ -631,22 +653,34 @@ export class OpensteerMcpService {
     if (reservation === 1) this.#reservations.delete(key);
     else if (reservation) this.#reservations.set(key, reservation - 1);
   }
+  /**
+   * A connected agent's sessions, and those of work in its lineage, end when its authority ends or
+   * changes; a new session lists the tools its grant now implies.
+   */
   async #revalidateConnections() {
     await Promise.allSettled(
       [...this.#activeSessions]
-        .filter((s) => s.kind === "connection")
+        .filter((s) => s.kind === "connection" || s.authority !== "")
         .map(async (session) => {
-          try {
-            await this.options.callers.authenticate(session.token);
-          } catch {
-            this.#activeSessions.delete(session);
-            for (const [id, held] of this.#sessions)
-              if (held === session) this.#sessions.delete(id);
-            for (const response of session.responses) response.destroy();
-            await session.server.close();
-          }
+          const current = await this.options.callers.authenticate(session.token).catch(() => null);
+          if (current && sessionAuthority(current) === session.authority) return;
+          await this.#closeSession(session);
         }),
     );
+  }
+  /** Closes every session held by a connection or by work in its lineage. */
+  async closeLineage(connectionId: string): Promise<void> {
+    await Promise.allSettled(
+      [...this.#activeSessions]
+        .filter((session) => session.authority.startsWith(`${connectionId}:`))
+        .map((session) => this.#closeSession(session)),
+    );
+  }
+  async #closeSession(session: McpSession) {
+    this.#activeSessions.delete(session);
+    for (const [id, held] of this.#sessions) if (held === session) this.#sessions.delete(id);
+    for (const response of session.responses) response.destroy();
+    await session.server.close();
   }
   async #sweep(now = Date.now()): Promise<void> {
     const expired = [...this.#sessions.entries()].filter(
@@ -659,6 +693,11 @@ export class OpensteerMcpService {
     }
     await Promise.allSettled(expired.map(([, session]) => session.server.close()));
   }
+}
+
+function sessionAuthority(caller: AgentCaller): string {
+  const lineage = callerLineage(caller);
+  return lineage ? `${lineage.connectionId}:${lineage.revision}:${caller.accessMode}` : "";
 }
 
 function responseEnded(response: ServerResponse): Promise<void> {

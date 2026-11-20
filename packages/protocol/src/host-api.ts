@@ -23,7 +23,7 @@ import {
   PluginOAuthStatusSchema,
 } from "./plugin-oauth.js";
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
-import { DeviceIdSchema, DeviceDriverGenerationSchema } from "@opensteer/core";
+import { AgentGrantSchema, DeviceIdSchema, DeviceDriverGenerationSchema } from "@opensteer/core";
 import { MachineListSummarySchema } from "./machines.js";
 import { OwnerWindowInfoSchema } from "./computer-use.js";
 import {
@@ -846,9 +846,27 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
         kind: z.literal("approve"),
         label: z.string().trim().min(1).max(120),
         accessMode: ThreadAccessModeSchema,
+        /** Sent by a client with the grant screen; without it the connection may do everything. */
+        grant: AgentGrantSchema.optional(),
       }),
     ]),
     type: z.literal("connection.authorize"),
+  }),
+  /** Changes take effect on the agent's next call; a narrowing stops its live work. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    connectionId: AgentConnectionIdSchema,
+    expectedRevision: z.number().int().min(1),
+    label: z.string().trim().min(1).max(120).optional(),
+    accessMode: ThreadAccessModeSchema.optional(),
+    grant: AgentGrantSchema.optional(),
+    type: z.literal("connection.update"),
+  }),
+  /** Takes a revoked or expired connection off the list. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    connectionId: AgentConnectionIdSchema,
+    type: z.literal("connection.remove"),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1299,6 +1317,8 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     access: PersonalRemoteAccessStatusSchema,
   }),
   z.object({ type: z.literal("connection.revoke") }),
+  z.object({ type: z.literal("connection.update"), connection: AgentConnectionSchema }),
+  z.object({ type: z.literal("connection.remove") }),
   z.object({
     type: z.literal("connection.authorize"),
     completionPath: z.string().startsWith("/oauth/mcp/complete?"),
@@ -1788,7 +1808,8 @@ const hostApiGroup3 = defineRpc({
   "channels.get": declaration("GET", emptyInputSchema, ChannelDashboardViewSchema),
   "connections.list": declaration(
     "GET",
-    emptyInputSchema,
+    /** Revoked connections stay listed with their outcome only for clients that ask. */
+    z.strictObject({ includeRevoked: z.boolean().optional() }),
     z.object({ connections: z.array(AgentConnectionSchema) }),
   ),
   "connections.authorization.get": declaration(

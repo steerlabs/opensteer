@@ -7,6 +7,8 @@ import * as deviceInventoryStore from "./device-inventory-store.js";
 import * as deviceDriverStore from "./device-driver-store.js";
 import * as waitingInputs from "./waiting-inputs.js";
 import { setExecutionClock } from "./personal-transaction.js";
+import { pauseLineageTrigger } from "./trigger-store.js";
+import { connectionLineageWork, settleLineageRequests } from "./connection-disconnect.js";
 import { bindDeviceSession, revokeDeviceSession, leaveDevice } from "./device-store.js";
 import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
@@ -18,7 +20,11 @@ import {
   replayAdministrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
-import { resolveResourceAccess, type ResourceAccessInput } from "./resource-access.js";
+import {
+  resolveAuthority,
+  resolveResourceAccess,
+  type ResourceAccessInput,
+} from "./resource-access.js";
 import { type ChannelTransportKind, type IntegrationConnectionId } from "@opensteer/channel-core";
 import {
   createId,
@@ -52,6 +58,7 @@ import {
   type ThreadAccessMode,
   type ThreadExecutionBinding,
   type ThreadId,
+  type TriggerId,
   type UserId,
 } from "@opensteer/core";
 import {
@@ -895,6 +902,86 @@ export class OpensteerStore {
 
   resolveResourceAccess(input: ResourceAccessInput) {
     return resolveResourceAccess(this.#database, input);
+  }
+
+  resolveAuthority(input: Parameters<typeof resolveAuthority>[1]) {
+    return resolveAuthority(this.#database, input);
+  }
+
+  /**
+   * Stops what a connection's lineage still holds, after its decision committed: on Disconnect
+   * its pending Requests settle, its queued inputs are cancelled, its Runs are interrupted (an
+   * owner task the connection sent to keeps its queue running) and its automations pause; when
+   * a grant only narrowed, its live Runs are interrupted and continue under the new authority on
+   * their next input. Each step is its own idempotent mutation in declared lock order, and every
+   * admission re-reads the connection, so work this sweep misses is refused where it would start.
+   */
+  async stopConnectionLineage(
+    userId: UserId,
+    connectionId: string,
+    reason: "disconnect" | "narrowed",
+  ): Promise<{ readonly failures: readonly unknown[] }> {
+    const work = await connectionLineageWork(this.#database, userId, connectionId);
+    const failures: unknown[] = [];
+    const attempt = async (step: () => Promise<unknown>) => {
+      try {
+        await step();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+    if (reason === "disconnect") {
+      await attempt(() => settleLineageRequests(this.#database, work.requests));
+      for (const input of work.inputs)
+        await attempt(() =>
+          this.cancelThreadInput({
+            threadId: input.threadId,
+            messageId: input.messageId,
+            idempotencyKey: `disconnect:${connectionId}:${input.messageId}`,
+            requestedBy: userId,
+          }),
+        );
+      for (const triggerId of work.triggers)
+        await attempt(() => pauseLineageTrigger(this.#database, triggerId));
+    }
+    for (const run of work.runs)
+      await attempt(() =>
+        this.enqueueRunnerControl({
+          type: "run.interrupt",
+          idempotencyKey: `${reason}:${connectionId}:${run.id}`,
+          requestedBy: userId,
+          runId: run.id,
+          threadId: run.threadId,
+          ...(reason === "narrowed" || !run.lineageTask ? { keepQueueRunning: true } : {}),
+        }),
+      );
+    return { failures };
+  }
+
+  /** Each automation's origin connection, for lineage visibility. */
+  async triggerOrigins(
+    ownerId: UserId,
+    ids: readonly TriggerId[],
+  ): Promise<ReadonlyMap<TriggerId, string | null>> {
+    if (!ids.length) return new Map();
+    const rows = await this.#database
+      .selectFrom("triggers")
+      .select(["id", "originConnectionId"])
+      .where("createdBy", "=", ownerId)
+      .where("id", "in", [...ids])
+      .execute();
+    return new Map(rows.map((row) => [row.id, row.originConnectionId]));
+  }
+
+  /** Each task's origin connection, for lineage visibility. */
+  async threadOrigins(ids: readonly ThreadId[]): Promise<ReadonlyMap<ThreadId, string | null>> {
+    if (!ids.length) return new Map();
+    const rows = await this.#database
+      .selectFrom("threads")
+      .select(["id", "originConnectionId"])
+      .where("id", "in", [...ids])
+      .execute();
+    return new Map(rows.map((row) => [row.id, row.originConnectionId]));
   }
 
   async recordChannelCredentialAccess(input: {

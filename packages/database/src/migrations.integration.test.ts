@@ -36,6 +36,7 @@ import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { TriggerStore } from "./trigger-store.js";
+import { agentGrantsMigrationName } from "./agent-grants-migration.js";
 import { teamRequestView } from "./team-chat-store.js";
 import {
   PersonalTeamRequestsStore,
@@ -773,6 +774,98 @@ describe("fresh personal/team lineage", () => {
       ).rows,
     ).toEqual([]);
     expect(await database.selectFrom("agentHomeSettings").selectAll().execute()).toEqual([]);
+  });
+  it("gives existing connections exactly their old authority and backfills only proven lineage", async () => {
+    await migrateToLatest(database, migrationsBefore(agentGrantsMigrationName));
+    const owner = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    const connectionId = `mcn_${crypto.randomUUID()}`;
+    await sql`insert into agent_connections (id,user_id,label,client_name,access_mode,resource,token_hash,expires_at)
+      values (${connectionId},${owner.userId},'Agent','Agent','auto','https://h.example/internal/v1/mcp','hash',now() + interval '1 day')`.execute(
+      database,
+    );
+    const delegated = await legacyTask(owner, "Delegated");
+    const own = { id: createId("thread") };
+    await sql`insert into threads (id,lineage_root_thread_id,purpose,listed,title,icon_source,color,environment_id,
+        harness_instance_id,model_selection,created_by,created_by_principal_id)
+      select ${own.id},${own.id},purpose,listed,'Own',icon_source,color,environment_id,harness_instance_id,
+        model_selection,created_by,created_by_principal_id
+      from threads where id = ${delegated.id}`.execute(database);
+    // Rows as a Host before 0042 wrote them: the connection is named only in the input's source.
+    const queued = async (threadId: string, key: string, source: object) => {
+      const messageId = createId("message");
+      const chainId = createId("causalChain");
+      const runId = createId("run");
+      await sql`insert into causal_chains(id,max_delegations,max_autonomous_runs,used_delegations,used_autonomous_runs) values(${chainId},100,100,0,0)`.execute(
+        database,
+      );
+      await sql`insert into messages(id,thread_id,sequence,kind,actor_principal_id,author,content)
+        select ${messageId},id,next_message_sequence,'input',created_by_principal_id,'{"kind":"human","displayName":"A"}'::jsonb,'[]'::jsonb
+        from threads where id=${threadId}`.execute(database);
+      await sql`insert into thread_inputs(message_id,thread_id,actor_principal_id,authority_source,causal_chain_id,idempotency_key,policy,queue_rank,request_fingerprint,requested_by,state)
+        select ${messageId},id,created_by_principal_id,${JSON.stringify(source)}::jsonb,${chainId},${key},'queue',next_message_sequence,'fixture',created_by,'pending'
+        from threads where id=${threadId}`.execute(database);
+      await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,model_selection,access_mode,activation_input_id,seed_input_id,causal_chain_id,requested_by,actor_principal_id,authority_source,run_ordinal,status)
+        select ${runId},id,environment_id,harness_instance_id,model_selection,access_mode,${messageId},${messageId},${chainId},created_by,created_by_principal_id,'{}',0,'queued'
+        from threads where id=${threadId}`.execute(database);
+      return { message: { id: messageId }, run: { id: runId } };
+    };
+    const sent = await queued(delegated.id, "connection-sent", {
+      kind: "connection",
+      connectionId,
+      userId: owner.userId,
+    });
+    const typed = await queued(own.id, "person-typed", {
+      kind: "user-session",
+      userId: owner.userId,
+    });
+    await migrateToLatest(database);
+    expect(
+      await database
+        .selectFrom("agentConnections")
+        .select(["grant", "grantRevision", "consentVersion", "clientFingerprint", "removedAt"])
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      grant: { scope: "everything" },
+      grantRevision: 1,
+      consentVersion: 1,
+      clientFingerprint: null,
+      removedAt: null,
+    });
+    expect(
+      await database
+        .selectFrom("threads")
+        .select(["id", "originConnectionId"])
+        .where("id", "in", [delegated.id, own.id] as never)
+        .orderBy("title")
+        .execute(),
+    ).toEqual([
+      { id: delegated.id, originConnectionId: connectionId },
+      { id: own.id, originConnectionId: null },
+    ]);
+    expect(
+      await database
+        .selectFrom("threadInputs")
+        .select(["messageId", "connectionId"])
+        .where("threadId", "in", [delegated.id, own.id] as never)
+        .orderBy("idempotencyKey")
+        .execute(),
+    ).toEqual([
+      { messageId: sent.message.id, connectionId },
+      { messageId: typed.message.id, connectionId: null },
+    ]);
+    expect(
+      await database
+        .selectFrom("runs")
+        .select(["id", "connectionId"])
+        .orderBy("connectionId")
+        .execute(),
+    ).toEqual([
+      { id: sent.run.id, connectionId },
+      { id: typed.run.id, connectionId: null },
+    ]);
+    expect(await database.selectFrom("triggers").select("originConnectionId").execute()).toEqual(
+      [],
+    );
   });
   it("keeps every plugin a person registered under one name, each later one under a free name", async () => {
     await migrateToLatest(database, migrationsBefore(onePluginPerOwnerNameMigrationName));

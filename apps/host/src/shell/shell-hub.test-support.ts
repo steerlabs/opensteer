@@ -234,6 +234,12 @@ export function fakeShellStore(
       return { ended: true };
     },
     requireSelfDeviceId: async (id: RunnerId) => DeviceIdSchema.parse(id),
+    resolveAuthority: async () => ({
+      mode: "full-access",
+      lineage: null,
+      threadId: null,
+      runId: null,
+    }),
     getMachineAccessTarget: async () => {
       await state.gateTarget?.();
       return state.present

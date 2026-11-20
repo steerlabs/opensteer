@@ -33,7 +33,12 @@ import {
   memoryPassWakeContext,
   startMemoryPassInTransaction,
 } from "./memory-pass-store.js";
-import { assertLineageCompatibleReuse } from "./resource-access.js";
+import {
+  assertLineageCompatibleReuse,
+  bindingLineageConnectionId,
+  lineageEndedMessage,
+  liveLineage,
+} from "./resource-access.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import {
   taskQuestionCause,
@@ -68,6 +73,7 @@ import {
   nonTerminalRunStatuses,
   ModelSelectionSchema,
   OpensteerError,
+  agentGrantAllowsTasks,
   ReplyTargetSchema,
   ThreadAccessModeSchema,
   ThreadInputPolicySchema,
@@ -2682,6 +2688,10 @@ export async function enqueueThreadInputInTransaction(
     source: request.source,
     targetThread: thread,
   });
+  const inputConnectionId = await threadInputLineageId(transaction, request.source);
+  await assertInputLineage(transaction, request.requestedBy, thread, inputConnectionId);
+  // The connection a Run started from this input works for: the task's own, else the input's.
+  const executionConnectionId = thread.originConnectionId ?? inputConnectionId;
 
   if (request.source.kind === "human" && policy !== "report" && prelockedActiveRunId) {
     const prior = await transaction
@@ -2898,6 +2908,8 @@ export async function enqueueThreadInputInTransaction(
     activeRun !== undefined &&
     activeRun.id === prelockedActiveRunId &&
     activeRun.requestedBy === request.requestedBy &&
+    // Never steered into an execution that works under different authority.
+    activeRun.connectionId === executionConnectionId &&
     (policy === "steer"
       ? compatibleSteeringTarget(activeRun.replyTarget, facts)
       : isDeepStrictEqual(activeRun.replyTarget, facts.replyTarget))
@@ -3027,6 +3039,7 @@ export async function enqueueThreadInputInTransaction(
   const inputRow = await transaction
     .insertInto("threadInputs")
     .values({
+      ...(inputConnectionId ? { connectionId: inputConnectionId } : {}),
       teamRequestId: request.teamRequest?.id ?? null,
       teamSource: request.teamRequest?.source ?? null,
       assignmentId,
@@ -3206,6 +3219,43 @@ export async function enqueueThreadInputInTransaction(
 /** The platform cause an automation that stopped working is told to its Thread with. */
 export const automationStoppedCause = "automation-stopped";
 export const teamReturnUndeliverableReason = "team-return-undeliverable";
+/** The connection whose lineage an input comes from, read from the source the Home verified. */
+async function threadInputLineageId(
+  transaction: Transaction<DatabaseSchema>,
+  source: ThreadInputSource,
+): Promise<string | null> {
+  switch (source.kind) {
+    case "connection":
+      return source.connectionId;
+    case "agent":
+      return bindingLineageConnectionId(transaction, `run:${source.runId}`);
+    case "trigger":
+      return bindingLineageConnectionId(transaction, `trigger:${source.occurrenceId}`);
+    case "watch":
+      return bindingLineageConnectionId(transaction, `watch:${source.activationId}`);
+    case "platform":
+      return source.sourceRunId
+        ? bindingLineageConnectionId(transaction, `run:${source.sourceRunId}`)
+        : null;
+    default:
+      return null;
+  }
+}
+/**
+ * A selected connection only ever touches tasks in its own lineage, and nothing else enters
+ * one's tasks except the person; an `everything` connection may send wherever the person can.
+ */
+async function assertInputLineage(
+  transaction: Transaction<DatabaseSchema>,
+  owner: UserId,
+  thread: { readonly originConnectionId: string | null },
+  inputConnectionId: string | null,
+): Promise<void> {
+  if (!inputConnectionId || inputConnectionId === thread.originConnectionId) return;
+  const lineage = await liveLineage(transaction, owner, inputConnectionId);
+  if (lineage.grant.scope === "selected")
+    throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
+}
 async function resolveThreadInputFacts(
   transaction: Transaction<DatabaseSchema>,
   input: {
@@ -4067,9 +4117,11 @@ export async function ensureQueuedRun(
         ),
       });
   const runId = createId("run");
+  const connectionId = thread.originConnectionId ?? seed.connectionId;
   const runRow = await transaction
     .insertInto("runs")
     .values({
+      ...(connectionId ? { connectionId } : {}),
       accessMode: thread.accessMode,
       ...(options.maintenance ? { maintenance: options.maintenance } : {}),
       activationInputId: seed.messageId,
@@ -4752,9 +4804,14 @@ async function deliverAssignmentReturnTransaction(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
+  const returnRunId = assignment.resultRunId ?? assignment.childRunId;
+  const returnConnectionId = returnRunId
+    ? await bindingLineageConnectionId(transaction, `run:${returnRunId}`)
+    : null;
   await transaction
     .insertInto("threadInputs")
     .values({
+      ...(returnConnectionId ? { connectionId: returnConnectionId } : {}),
       actorPrincipalId: systemPrincipalId,
       // The parent's open work receives the result, as any input into its Thread would.
       assignmentId: parentOpenAssignment?.id ?? null,
@@ -5642,6 +5699,21 @@ export async function delegateThreadInTransaction(
     );
   }
   await assertDelegationDepth(transaction, parent.id);
+  // A child inherits its delegator's lineage; read after the delegator's row is locked, so it
+  // either precedes a Disconnect that then reaches it, or sees that Disconnect and stops.
+  const childConnectionId = await bindingLineageConnectionId(
+    transaction,
+    input.origin.kind === "run"
+      ? `run:${input.origin.parentRunId}`
+      : input.origin.kind === "trigger"
+        ? `trigger:${input.origin.occurrenceId}`
+        : `watch:${input.origin.activationId}`,
+  );
+  if (childConnectionId) {
+    const lineage = await liveLineage(transaction, input.createdBy, childConnectionId);
+    if (!agentGrantAllowsTasks(lineage.grant))
+      throw new OpensteerError({ code: "forbidden", message: lineageEndedMessage });
+  }
   if (!parentCausalChainId) {
     throw new OpensteerError({
       code: "internal",
@@ -5760,6 +5832,7 @@ export async function delegateThreadInTransaction(
           .executeTakeFirstOrThrow()
       : reusedRow
     : await insertThread({
+        ...(childConnectionId ? { originConnectionId: childConnectionId } : {}),
         accessMode: ThreadAccessModeSchema.parse(input.accessMode),
         purpose: "task",
         teamId: null,

@@ -31,6 +31,7 @@ import {
 import {
   createConnectionRpcHandlers,
   handleConnectionCommand,
+  isConnectionCommand,
   registerConnectionRoutes,
 } from "./connection-routes.js";
 import { credentialHash } from "./connection-authenticator.js";
@@ -113,8 +114,7 @@ async function fixture() {
   registerHostApi(app, authenticator, {
     ...createConnectionRpcHandlers(oauth),
     "commands.dispatch": async (command, context) => {
-      if (command.type !== "connection.authorize" && command.type !== "connection.revoke")
-        throw new Error("Unexpected command");
+      if (!isConnectionCommand(command)) throw new Error("Unexpected command");
       return rpcSuccess(await handleConnectionCommand(oauth, command, context));
     },
   } as HostApiHandlers);
@@ -318,8 +318,39 @@ integration("external MCP OAuth over HTTP", () => {
     const listed = await injectRpcRequest(f.app, "connections.list", {}, f.headers);
     expect(listed.statusCode).toBe(200);
     expect(listed.json().data.connections).toMatchObject([
-      { id: row.id, label: "My agent", clientName: "Test agent", lastUsedAt: expect.any(String) },
+      {
+        id: row.id,
+        label: "My agent",
+        clientName: "Test agent",
+        lastUsedAt: expect.any(String),
+        // An old client's consent keeps today's authority; the Home records what it can prove.
+        grant: { scope: "everything" },
+        grantRevision: 1,
+        consentVersion: 1,
+        state: "active",
+        client: {
+          fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
+          redirectOrigin: expect.any(String),
+        },
+      },
     ]);
+    const renamed = await injectRpcRequest(
+      f.app,
+      "commands.dispatch",
+      {
+        type: "connection.update",
+        connectionId: row.id,
+        expectedRevision: 1,
+        label: "Renamed agent",
+        idempotencyKey: "rename",
+      },
+      f.headers,
+    );
+    expect(renamed.statusCode, renamed.body).toBe(200);
+    expect(renamed.json().data.connection).toMatchObject({
+      label: "Renamed agent",
+      grantRevision: 2,
+    });
     expect(listed.body).not.toMatch(/tokenHash|token_hash|ost_mcp_|code_verifier/);
     const deniedHost = await injectRpcRequest(
       f.app,
@@ -344,6 +375,23 @@ integration("external MCP OAuth over HTTP", () => {
     expect(next.statusCode).toBe(401);
     expect(
       (await injectRpcRequest(f.app, "connections.list", {}, f.headers)).json().data.connections,
+    ).toEqual([]);
+    expect(
+      (
+        await injectRpcRequest(f.app, "connections.list", { includeRevoked: true }, f.headers)
+      ).json().data.connections,
+    ).toMatchObject([{ id: row.id, state: "stopped", revokedAt: expect.any(String) }]);
+    const removed = await injectRpcRequest(
+      f.app,
+      "commands.dispatch",
+      { type: "connection.remove", connectionId: row.id, idempotencyKey: "remove" },
+      f.headers,
+    );
+    expect(removed.statusCode, removed.body).toBe(200);
+    expect(
+      (
+        await injectRpcRequest(f.app, "connections.list", { includeRevoked: true }, f.headers)
+      ).json().data.connections,
     ).toEqual([]);
   });
 

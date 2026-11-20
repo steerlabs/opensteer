@@ -1132,6 +1132,12 @@ function makeService(options: {
         sourceId: native ? "native" : "openai",
       };
     },
+    resolveAuthority: async () => ({
+      mode: "full-access" as const,
+      lineage: null,
+      threadId: null,
+      runId: null,
+    }),
     getThreadForOwner: async (id: Thread["id"], requestedBy: typeof ownerId) => {
       const value = options.threads.find((candidate) => candidate.id === id);
       return value?.createdBy === requestedBy ? value : null;

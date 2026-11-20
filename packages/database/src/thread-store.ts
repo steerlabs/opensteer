@@ -11,6 +11,7 @@ import { environmentIsAvailableToUser } from "./environment-store.js";
 import {
   assertThreadCaller,
   lockThreadCaller,
+  threadCallerLineageId,
   withThreadCallerTransaction,
   type ThreadCallerAuthority,
 } from "./thread-caller.js";
@@ -414,6 +415,11 @@ export type AgentThreadListScope =
     }
   | {
       readonly kind: "personal";
+    }
+  /** Only the tasks in one connected agent's lineage. */
+  | {
+      readonly kind: "connection";
+      readonly connectionId: string;
     };
 async function findExistingThreadCreation(
   transaction: Transaction<DatabaseSchema>,
@@ -851,6 +857,9 @@ export async function agentThreadPageForOwner(
       if (scope.kind === "lineage") {
         base = base.where("threads.lineageRootThreadId", "=", lineageRootThreadId!);
       }
+      if (scope.kind === "connection") {
+        base = base.where("threads.originConnectionId", "=", scope.connectionId);
+      }
       if (pattern) {
         base = base.where(sql<boolean>`threads.title ilike ${pattern} escape '\\'`);
       }
@@ -1131,7 +1140,13 @@ export async function createThreadInTransaction(
     : null;
   const actorPrincipalId = await principalIdForUser(transaction, input.createdBy);
   const purpose = input.purpose ?? "task";
+  // Lineage is fixed at creation: the creator's connection, otherwise the parent task's.
+  const originConnectionId =
+    (input.authority ? await threadCallerLineageId(transaction, input.authority) : null) ??
+    parent?.originConnectionId ??
+    null;
   const thread = await insertThread({
+    ...(originConnectionId ? { originConnectionId } : {}),
     accessMode: resolvedInput.accessMode,
     createdByPrincipalId: actorPrincipalId,
     id,

@@ -15,6 +15,7 @@ import {
 import { replaceSecrets, type LocalMcpSecretsUpdate } from "./local-mcp-server-store.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { resolveResourceAccess } from "./resource-access.js";
+import { integrationConnectionGrantAccess, localServerGrantAccess } from "./agent-grant-targets.js";
 import { requestSettlementActor } from "./request-settlement.js";
 
 import { assertPersonalOwner } from "./private-resource-owner.js";
@@ -1292,7 +1293,16 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     const activeGrants = grants.filter(({ status }) => status === "active");
     const { connections } = authority;
     const requesterAccess = await resolveResourceAccess(this.database, input);
-    return Promise.all(
+    const lineageGrant = requesterAccess.authority.lineage?.grant;
+    const grantedConnections =
+      lineageGrant?.scope === "selected"
+        ? await integrationConnectionGrantAccess(
+            this.database,
+            lineageGrant,
+            connections.map(({ id }) => id),
+          )
+        : null;
+    const entries = await Promise.all(
       installations.map(async (row) => {
         const installation = installationFromRow(row);
         const [servers, tools] = await Promise.all([
@@ -1405,6 +1415,41 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
         };
       }),
     );
+    if (!lineageGrant || !grantedConnections) return entries;
+    // A selected grant sees only its granted local servers and device accounts.
+    return entries.flatMap((entry) => {
+      const accounts = entry.accounts.filter(
+        ({ connectionId }) => (grantedConnections.get(connectionId) ?? null) !== null,
+      );
+      const servers = entry.servers.filter((server) =>
+        server.transport.type === "runner"
+          ? localServerGrantAccess(lineageGrant, server.id) !== null
+          : accounts.length > 0,
+      );
+      if (!servers.length) return [];
+      const serverIds = new Set(servers.map(({ id }) => id));
+      const tools = entry.tools.filter(
+        (tool) =>
+          serverIds.has(tool.serverId) &&
+          (tool.connectionId === null ||
+            (grantedConnections.get(tool.connectionId) ?? null) !== null),
+      );
+      return [
+        {
+          ...entry,
+          accounts,
+          servers,
+          tools,
+          readiness: {
+            ...entry.readiness,
+            servers: entry.readiness.servers.filter(({ serverId }) => serverIds.has(serverId)),
+            tools: entry.readiness.tools.filter(({ toolId }) =>
+              tools.some((tool) => tool.id === toolId),
+            ),
+          },
+        },
+      ];
+    });
   }
 
   async listServers(
@@ -1619,12 +1664,30 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     input: IntegrationRequester,
   ): Promise<readonly CallableIntegrationTool[]> {
     const authority = await resolveResourceAccess(this.database, input);
-    const permitted = (tools: readonly CallableIntegrationTool[]) =>
-      tools.filter(
-        (tool) =>
-          authority.runAccess === "read-write" ||
-          integrationToolEffect(tool.tool.annotations) === "read",
-      );
+    const grant = authority.authority.lineage?.grant;
+    const permitted = async (tools: readonly CallableIntegrationTool[]) => {
+      const granted =
+        grant?.scope === "selected"
+          ? await integrationConnectionGrantAccess(
+              this.database,
+              grant,
+              tools.flatMap((tool) => (tool.grant.connectionId ? [tool.grant.connectionId] : [])),
+            )
+          : null;
+      return tools.filter((tool) => {
+        const write = integrationToolEffect(tool.tool.annotations) !== "read";
+        if (authority.runAccess !== "read-write" && write) return false;
+        if (!grant || !granted) return true;
+        // Each tool's own effect is intersected with what the grant allows of its target.
+        const access =
+          tool.server.transport.type === "runner"
+            ? localServerGrantAccess(grant, tool.server.id)
+            : tool.grant.connectionId
+              ? (granted.get(tool.grant.connectionId) ?? null)
+              : null;
+        return access !== null && (!write || access === "read-write");
+      });
+    };
     const scope = { ownerUserId: input.ownerUserId };
     for (;;) {
       const generation = await this.authorityGeneration(input.ownerUserId);

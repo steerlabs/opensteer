@@ -1,5 +1,7 @@
 import {
   OpensteerError,
+  agentGrantAllowsTasks,
+  minThreadAccessMode,
   threadAccessModeAtMost,
   type ThreadAccessMode,
   type UserId,
@@ -7,6 +9,12 @@ import {
   type RunId,
 } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
+import {
+  bindingLineageConnectionId,
+  lineageEndedMessage,
+  liveLineage,
+  type AuthorityLineage,
+} from "./resource-access.js";
 import { lockCommandIdempotency } from "./store-primitives.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
@@ -39,6 +47,38 @@ export type ThreadCallerAuthority = {
       readonly connectionId: string;
     }
 );
+/** The connection a caller works for, read from its immutable binding; null for owner work. */
+export async function threadCallerLineageId(
+  tx: Kysely<DatabaseSchema>,
+  caller: ThreadCallerAuthority,
+): Promise<string | null> {
+  switch (caller.kind) {
+    case "connection":
+      return caller.connectionId;
+    case "run":
+      return bindingLineageConnectionId(tx, `run:${caller.scope.runId}`);
+    case "trigger":
+      return bindingLineageConnectionId(tx, `trigger:${caller.scope.occurrenceId}`);
+    case "watch":
+      return bindingLineageConnectionId(tx, `watch:${caller.scope.activationId}`);
+  }
+}
+/**
+ * Every admission in a connection's lineage holds that connection's row `FOR SHARE` before any
+ * Run, so Disconnect (`FOR NO KEY UPDATE`) serializes against all of them.
+ */
+export async function lockLineageConnection(
+  tx: Transaction<DatabaseSchema>,
+  connectionId: string | null,
+): Promise<void> {
+  if (connectionId)
+    await tx
+      .selectFrom("agentConnections")
+      .select("id")
+      .where("id", "=", connectionId)
+      .forShare()
+      .executeTakeFirst();
+}
 export async function lockThreadCaller(
   tx: Transaction<DatabaseSchema>,
   caller: ThreadCallerAuthority | undefined,
@@ -46,13 +86,7 @@ export async function lockThreadCaller(
   admitted = false,
 ): Promise<void> {
   if (!caller) return;
-  if (caller.kind === "connection")
-    await tx
-      .selectFrom("agentConnections")
-      .select("id")
-      .where("id", "=", caller.connectionId)
-      .forShare()
-      .executeTakeFirst();
+  await lockLineageConnection(tx, await threadCallerLineageId(tx, caller));
   const ids = [
     ...new Set([...targetRunIds, ...(caller.kind === "run" ? [caller.scope.runId] : [])]),
   ].sort();
@@ -83,18 +117,23 @@ export async function assertThreadCaller(
   await requirePersonalOwner(tx, caller.userId);
   let accessMode = caller.accessMode;
   let sourceId: ThreadId | undefined;
+  const lineageId = await threadCallerLineageId(tx, caller);
+  let lineage: AuthorityLineage | null = null;
+  if (lineageId) {
+    try {
+      lineage = await liveLineage(tx, caller.userId, lineageId);
+    } catch {
+      throw forbidden(
+        caller.kind === "connection"
+          ? "The connected agent credential is invalid or expired."
+          : lineageEndedMessage,
+      );
+    }
+    if (caller.kind !== "connection" && !agentGrantAllowsTasks(lineage.grant))
+      throw forbidden(lineageEndedMessage);
+  }
   if (caller.kind === "connection") {
-    const connection = await tx
-      .selectFrom("agentConnections")
-      .selectAll()
-      .where("id", "=", caller.connectionId)
-      .where("userId", "=", caller.userId)
-      .where("revokedAt", "is", null)
-      .where("expiresAt", ">", new Date())
-      .executeTakeFirst();
-    if (!connection?.tokenHash)
-      throw forbidden("The connected agent credential is invalid or expired.");
-    accessMode = connection.accessMode;
+    accessMode = lineage!.accessMode;
   } else if (caller.kind === "run") {
     if (!target?.admitted) await assertActiveGrant(tx, caller.scope);
     else if (!(await admitThreadExecution(tx, caller.scope.threadId, caller.userId)))
@@ -115,6 +154,8 @@ export async function assertThreadCaller(
         .executeTakeFirstOrThrow()
     : null;
   accessMode = source?.accessMode ?? accessMode;
+  if (lineage && caller.kind !== "connection")
+    accessMode = minThreadAccessMode(accessMode, lineage.accessMode);
   if (!threadAccessModeAtMost(caller.accessMode, accessMode))
     throw forbidden("Caller access mode was reduced");
   const thread = target?.threadId
@@ -124,6 +165,13 @@ export async function assertThreadCaller(
         .where("id", "=", target.threadId)
         .executeTakeFirstOrThrow()
     : null;
+  // A selected connection only ever touches tasks in its own lineage.
+  if (
+    thread &&
+    lineage?.grant.scope === "selected" &&
+    thread.originConnectionId !== lineage.connectionId
+  )
+    throw forbidden("Task is unavailable");
   if (
     !target?.readOnly &&
     !threadAccessModeAtMost(

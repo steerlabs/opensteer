@@ -37,6 +37,7 @@ export {
 } from "./operation-budget.js";
 
 export * from "./resource-access.js";
+export * from "./agent-grant-targets.js";
 
 export { readIntegrationAccountBinding } from "./integration-account-binding.js";
 

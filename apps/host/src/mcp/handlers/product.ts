@@ -87,7 +87,7 @@ import { aiAccountDiscovery } from "../ai-accounts.js";
 
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { MemoryPassService } from "../../agents/memory-pass-service.js";
-import { callerThread, type AgentCaller } from "../agent-caller.js";
+import { callerLineage, callerThread, type AgentCaller } from "../agent-caller.js";
 import type { ToolCall } from "./types.js";
 import {
   sealRequestResponse,
@@ -960,6 +960,9 @@ export class ProductToolHandlers {
     if (caller.kind === "connection") {
       const page = await this.#store.requests.connectionPage({
         userId: caller.userId,
+        ...(callerLineage(caller)?.grant.scope === "selected"
+          ? { lineageConnectionId: callerLineage(caller)!.connectionId }
+          : {}),
         limit: input.limit,
         ...(input.cursor ? { before: input.cursor } : {}),
       });

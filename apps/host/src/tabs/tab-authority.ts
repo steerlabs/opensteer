@@ -4,12 +4,15 @@ import {
   type ResourceAccessLevel,
   type DeviceId,
   DeviceTabTargetSchema,
+  ThreadIdSchema,
   type TabTarget,
   type UserId,
 } from "@opensteer/core";
 import {
   OpensteerStore,
+  integrationConnectionGrantTarget,
   resolveResourceAccess,
+  type AuthorityLineage,
   requirePersonalOwner,
   runAllowsPersonalContext,
   type TabDatabase,
@@ -84,9 +87,17 @@ export async function authorizeTabActor(
   database: TabDatabase,
   required: ResourceAccessLevel = "read-write",
 ): Promise<void> {
+  await admitTabActor(actor, database, required);
+}
+/** The actor's live authority, and the connection lineage it works for, if any. */
+async function admitTabActor(
+  actor: TabActor,
+  database: TabDatabase,
+  required: ResourceAccessLevel,
+): Promise<AuthorityLineage | null> {
   if (actor.kind === "person") {
     await requirePersonalOwner(database, actor.ownerId);
-    return;
+    return null;
   }
   if (actor.kind === "run") {
     await new OpensteerStore(database).assertActiveGrant(actor.claims);
@@ -95,14 +106,32 @@ export async function authorizeTabActor(
   const access = await resolveResourceAccess(database, {
     ownerUserId: tabOwner(actor),
     explicitAccess: "read-write",
+    grantTarget: "actor",
     ...scope(actor),
   });
   requireAccess(access.access, required);
+  return access.authority.lineage;
 }
 
 /** One authority view for a projection; mutations build it again under the personal commit fence. */
 export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
-  await authorizeTabActor(actor, database, "read");
+  const lineage = await admitTabActor(actor, database, "read");
+  const selected = lineage?.grant.scope === "selected" ? lineage : null;
+  const lineageTasks = new Map<string, Promise<boolean>>();
+  // A selected grant sees only tabs its own lineage's tasks opened.
+  const inLineage = (taskId: string) => {
+    let held = lineageTasks.get(taskId);
+    if (!held) {
+      held = database
+        .selectFrom("threads")
+        .select("originConnectionId")
+        .where("id", "=", ThreadIdSchema.parse(taskId))
+        .executeTakeFirst()
+        .then((row) => row?.originConnectionId === selected?.connectionId);
+      lineageTasks.set(taskId, held);
+    }
+    return held;
+  };
   const ownerId = tabOwner(actor);
   const computers = new Map<DeviceId, Promise<boolean>>();
   const resources = new Map<string, Promise<boolean>>();
@@ -164,6 +193,11 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
       if (!(await allowed)) return false;
     }
     if (actor.kind === "person") return true;
+    if (selected) {
+      if (!("openedBy" in target) || target.openedBy === "person") {
+        if ("id" in target) return false;
+      } else if (target.openedBy && !(await inLineage(target.openedBy.taskId))) return false;
+    }
     if (!computerId && !(target.kind === "page" && "guest" in target)) return false;
     if (computerId) {
       const capability = target.kind === "page" ? "browser" : "apps";
@@ -196,6 +230,7 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
           ...scope(actor),
           explicitAccess: "read-write",
           connectionCeiling: connection.computerAccess,
+          grantTarget: integrationConnectionGrantTarget(connection),
         });
         if (access.access && (required === "read" || access.access === "read-write")) return true;
       }
@@ -208,6 +243,8 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
         ownerUserId: ownerId,
         ...scope(actor),
         explicitAccess: "read-write",
+        // Mini-apps and guest pages have no selected resource kind.
+        grantTarget: profileId ? { kind: "browser-profile", profileId } : { kind: "device" },
       }).then(({ access }) => Boolean(access && (required === "read" || access === "read-write")));
       resources.set(key, allowed);
     }
@@ -251,4 +288,20 @@ export async function canReadTab(
       return false;
     throw error;
   }
+}
+
+/**
+ * Work in a selected connection's lineage may change only tabs it may change; the person's own
+ * work keeps membership authority over the whole strip.
+ */
+export async function authorizeTabRows(
+  actor: TabActor,
+  rows: readonly TabRecord[],
+  database: TabDatabase,
+): Promise<void> {
+  if (actor.kind === "person" || !rows.length) return;
+  const lineage = await admitTabActor(actor, database, "read-write");
+  if (lineage?.grant.scope !== "selected") return;
+  const check = await tabReadAuthority(actor, database);
+  for (const row of rows) if (!(await check(row, "read-write"))) deny();
 }

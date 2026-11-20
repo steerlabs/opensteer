@@ -30,7 +30,7 @@ describe("TriggerService", () => {
         id: createId("thread"),
       },
     } as RunCaller;
-    const handlers = new TriggerToolHandlers(service);
+    const handlers = new TriggerToolHandlers(service, { triggerOrigins: async () => new Map() });
     const input = opensteer_automation_control.input.parse({
       action: "run_now",
       automationId: createId("trigger"),

@@ -1563,6 +1563,8 @@ describeStore("shaped agent task tools", (it) => {
       (
         await s.status({
           kind: "connection",
+          grant: { scope: "everything" },
+          grantRevision: 1,
           key: `connection:${connection.id}`,
           connectionId: connection.id,
           userId: s.f.userId,
@@ -2140,6 +2142,8 @@ describeStore("shaped agent task tools", (it) => {
     });
     const connection: AgentCaller = {
       kind: "connection",
+      grant: { scope: "everything" },
+      grantRevision: 1,
       key: "connection:test",
       connectionId: "test",
       userId: f.userId,
@@ -2363,6 +2367,8 @@ describeStore("shaped agent task tools", (it) => {
     await connections.activate(record.id, "2".repeat(64));
     const connection: AgentCaller = {
       kind: "connection",
+      grant: { scope: "everything" },
+      grantRevision: 1,
       key: `connection:${record.id}`,
       connectionId: record.id,
       userId: f.userId,

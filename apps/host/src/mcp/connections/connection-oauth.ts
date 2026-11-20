@@ -283,6 +283,9 @@ export class ConnectionOAuth {
                 accessMode: command.decision.accessMode,
                 resource: pending.authorization.resource,
                 expiresAt: new Date(this.#now() + connectionTtl),
+                clientFingerprint: credentialHash(pending.authorization.client_id),
+                redirectUri: pending.authorization.redirect_uri,
+                ...(command.decision.grant ? { grant: command.decision.grant } : {}),
               });
         pending.decision = { userId, sessionId, fingerprint, connectionId: connection?.id ?? null };
       } finally {

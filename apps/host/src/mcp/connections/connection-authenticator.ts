@@ -1,4 +1,10 @@
-import { OpensteerError, type ThreadAccessMode, type UserId } from "@opensteer/core";
+import {
+  OpensteerError,
+  everythingAgentGrant,
+  type AgentGrant,
+  type ThreadAccessMode,
+  type UserId,
+} from "@opensteer/core";
 import type { AgentConnectionStore } from "@opensteer/database";
 import { createHash } from "node:crypto";
 
@@ -10,6 +16,9 @@ export interface AuthenticatedConnection {
   readonly connectionId: string;
   readonly userId: UserId;
   readonly accessMode: ThreadAccessMode;
+  readonly grant: AgentGrant;
+  readonly grantRevision: number;
+  readonly consentVersion: number;
 }
 
 /** No session cache: an MCP session ID never substitutes for a live bearer check. */
@@ -27,6 +36,9 @@ export class ConnectionAuthenticator {
       connectionId: connection.id,
       userId: connection.userId,
       accessMode: connection.accessMode,
+      grant: connection.grant ?? everythingAgentGrant,
+      grantRevision: connection.grantRevision ?? 1,
+      consentVersion: connection.consentVersion ?? 1,
     };
   }
 }

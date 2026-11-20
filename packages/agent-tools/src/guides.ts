@@ -1,3 +1,4 @@
+import { agentGrantToolFamilies, type AgentGrant } from "@opensteer/core";
 import type { RunToolCapabilities } from "./registry.js";
 import type { TaskPurpose } from "@opensteer/core";
 
@@ -124,3 +125,24 @@ export const connectionInstructions = `Opensteer runs the person's one agent and
 - Tasks: opensteer_task_create, opensteer_task_read and bounded opensteer_task_wait. AI accounts and limits: opensteer_ai_account_list; computers: computer_list. Tasks work in Agent home on the hosting computer.
 - You have no task of your own: always name taskId for task operations. Connections get no delegation or automatic return; wait on taskId.
 - A connection gets no team request authority. Act directly within authorization, including reducing access. Never grant access, raise power, handle credentials, sign in, pair or enroll. Ask the person in your conversation, or delegate a task that can open a Request. Pending is not permission.`;
+
+/** What a connected agent is told about its own grant: brief, and only what is true. */
+export function connectionInstructionsFor(grant: AgentGrant): string {
+  if (grant.scope === "everything") return connectionInstructions;
+  const families = agentGrantToolFamilies(grant);
+  const lines = [
+    "Opensteer runs the person's agents and tools on their computers. The person chose what this connection may use; it has an access-mode ceiling, expiry and revoke, and you see only tasks you started.",
+    families.has("tasks")
+      ? "- Tasks: opensteer_task_create, opensteer_task_read and bounded opensteer_task_wait. A task runs the person's engine in Agent home with that computer's files, commands and network, under the task's mode. Always name taskId."
+      : "- You may not ask the person's agents to work on tasks.",
+    ...(families.has("browser") ? ["- Browser: only the browser profiles the person chose."] : []),
+    ...(families.has("computer")
+      ? ["- Apps: only the apps and phone screens the person chose."]
+      : []),
+    ...(families.has("plugins")
+      ? ["- Plugins: only the plugins and accounts the person chose, at the access they chose."]
+      : []),
+    "- To use anything else, ask the person to change what this agent may use under Connected agents. Never handle credentials, sign in, pair or enroll. Pending is not permission.",
+  ];
+  return lines.join("\n");
+}

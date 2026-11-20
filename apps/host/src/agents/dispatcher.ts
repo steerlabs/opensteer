@@ -5,6 +5,8 @@ import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import {
   ModelSelectionSchema,
   OpensteerError,
+  agentGrantAccess,
+  agentGrantToolFamilies,
   placeInputFailure,
   runnerAgentToolsFailure,
   RequestIdSchema,
@@ -455,6 +457,23 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
+    // The live connection check precedes every credential this Run is issued.
+    const authority = await this.#store
+      .resolveAuthority({
+        ownerUserId: command.requestedBy,
+        subject: { kind: "binding", bindingId: `run:${context.run.id}` },
+      })
+      .catch((error: unknown) => {
+        throw new CommandDispatchError(
+          error instanceof OpensteerError ? error.message : "This Run's authority ended.",
+          "failed",
+        );
+      });
+    const lineageGrant = authority.lineage?.grant;
+    const selectedGrant = lineageGrant?.scope === "selected" ? lineageGrant : undefined;
+    const grantFamilies = selectedGrant ? agentGrantToolFamilies(selectedGrant) : null;
+    const runAccessMode = authority.lineage ? authority.mode : context.run.accessMode;
+    const planAccessMode = authority.lineage ? authority.mode : context.thread.accessMode;
     const binding = await this.#store
       .acquireExecutionBinding({
         personalContext: context.personalContext,
@@ -474,7 +493,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         return undefined;
       });
     if (!binding) return;
-    const teamsAvailable = await this.#teamsAvailable();
+    const teamsAvailable = !selectedGrant && (await this.#teamsAvailable());
     const knowledge = context.personalContext && teamsAvailable;
     const toolsToken = this.#runToolTokens.issue({
       bindingGeneration: binding.bindingGeneration,
@@ -490,7 +509,14 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     if (skillPolicy && !identity.capabilities.includes("settings-plugin-policy-v1")) {
       throw new CommandDispatchError("Update this Runner to enforce skill settings.", "failed");
     }
-    const pinnedPlugins = await this.#pluginVersions(command.requestedBy);
+    const pinnedPlugins = (await this.#pluginVersions(command.requestedBy)).filter(
+      (plugin) =>
+        !selectedGrant ||
+        agentGrantAccess(selectedGrant, {
+          kind: "plugin",
+          target: { kind: "installed", pluginId: plugin.pluginId },
+        }) !== null,
+    );
     const pluginsToken = this.#pluginsTokens.issue({
       pluginDigests: pinnedPlugins.map((plugin) => plugin.digest),
       bindingGeneration: binding.bindingGeneration,
@@ -524,14 +550,21 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const settingsFile = context.personalContext
       ? (await this.#store.getAgentHomeSettings(context.run.requestedBy)).file
       : null;
+    const browserGranted = !grantFamilies || grantFamilies.has("browser");
     const toolsPlan = agentToolsPlanForRun({
       capabilities: {
-        tabs: context.personalContext,
+        tabs: context.personalContext && (browserGranted || grantFamilies!.has("tasks")),
         pages:
-          context.personalContext && runHasBrowserPages(harness.driverKind, context.run.accessMode),
-        computerUse: context.personalContext && identity.modules.agents?.computerTool === 1,
-        apps: context.personalContext,
+          context.personalContext &&
+          browserGranted &&
+          runHasBrowserPages(harness.driverKind, runAccessMode),
+        computerUse:
+          context.personalContext &&
+          identity.modules.agents?.computerTool === 1 &&
+          (!grantFamilies || grantFamilies.has("computer")),
+        apps: context.personalContext && !selectedGrant,
       },
+      ...(lineageGrant ? { grant: lineageGrant } : {}),
       settingsError: settingsFile?.error,
       voiceCall: Boolean(context.voiceCall),
       token: toolsToken,
@@ -540,7 +573,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       teamsAvailable,
       personalContext: context.personalContext,
       knowledge,
-      accessMode: context.thread.accessMode,
+      accessMode: planAccessMode,
     });
     const maintenanceSnapshot = context.run.maintenance
       ? await this.#store.database
@@ -566,7 +599,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
               voiceCall: context.voiceCall,
             }
           : {}),
-        accessMode: context.run.accessMode,
+        accessMode: runAccessMode,
         taskPurpose: context.thread.purpose,
         teamTurnContext,
         personalContext: context.personalContext,
@@ -704,7 +737,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         runners: this.#runners,
         serializedCommandBytes: (access) =>
           new TextEncoder().encode(JSON.stringify(runnerCommandFor(access))).byteLength,
-        store: this.#store,
+        // Remote Devices have no selected resource kind, so a selected lineage reaches none.
+        store: selectedGrant ? { listReachableMachines: async () => [] } : this.#store,
       }),
     );
     // The Runner measures the Run's first lease from when it receives the Run,

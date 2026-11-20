@@ -68,6 +68,7 @@ export type ShellHubStore = Pick<
   | "getMachineAccessTarget"
   | "getThreadForOwner"
   | "reserveShellSession"
+  | "resolveAuthority"
 >;
 
 interface ShellControlEntry {
@@ -394,6 +395,11 @@ export class ShellHub implements ShellControlStreamHandler {
     } catch {
       throw rejection("run_invalid", "This Run has ended.");
     }
+    if (!(await this.#lineageAdmits(scope)))
+      throw rejection(
+        "reach_denied",
+        "This connected agent may not reach other computers. The person can change what it may use under Connected agents.",
+      );
     const target = await this.#options.store.getMachineAccessTarget(input.target);
     if (!target) {
       throw rejection(
@@ -1117,6 +1123,22 @@ export class ShellHub implements ShellControlStreamHandler {
     return null;
   }
 
+  /**
+   * Remote Device files, commands and forwarding have no selected resource kind, so work in a
+   * selected connection's lineage reaches none; any lineage ends with its connection.
+   */
+  async #lineageAdmits(scope: RunToolScope): Promise<boolean> {
+    try {
+      const authority = await this.#options.store.resolveAuthority({
+        ownerUserId: scope.requestedBy,
+        subject: { kind: "binding", bindingId: `run:${scope.runId}` },
+      });
+      return authority.lineage?.grant.scope !== "selected";
+    } catch {
+      return false;
+    }
+  }
+
   /** The caller went, or the open ran out of time — neither may be waited on. */
   #openWindowClosed(session: ShellSession): ShellCloseReason | null {
     if (session.signal.aborted) return "open-failed";
@@ -1136,6 +1158,7 @@ export class ShellHub implements ShellControlStreamHandler {
       return "run-ended";
     }
     if (scope.runId !== session.runId) return "run-ended";
+    if (!(await this.#lineageAdmits(scope))) return "run-ended";
     const target = await this.#options.store.getMachineAccessTarget(session.runnerId);
     if (!target?.shell) return "machine-revoked";
     if (!isDeepStrictEqual(shellPolicy(target.policy), session.shellPolicy))
