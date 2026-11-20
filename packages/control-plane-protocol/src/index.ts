@@ -33,6 +33,7 @@ import { ControlPlaneAccountIdSchema, prefixedIdSchema } from "./account-id.js";
 import { HostedTeamIdSchema } from "./hosted-teams.js";
 export * from "./account-id.js";
 export * from "./connect.js";
+export * from "./cloud-computers.js";
 export * from "./notifications.js";
 export * from "./oauth-broker.js";
 
