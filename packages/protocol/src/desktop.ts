@@ -41,6 +41,9 @@ import {
 import type { DeploymentId } from "@opensteer/core";
 import { z } from "zod";
 import {
+  CloudComputerIdSchema,
+  CloudComputerListResponseSchema,
+  CloudComputerViewSchema,
   HostAccountAdoptionAuthoritySchema,
   UpdateAccountProfileRequestSchema,
 } from "@opensteer/control-plane-protocol";
@@ -1826,6 +1829,38 @@ export interface DesktopBrowserPresentationBridge {
   focusPage(input: DesktopBrowserPresentationTarget): Promise<void>;
 }
 
+/**
+ * The person's Opensteer Cloud Computers, read and changed by main with the Account
+ * session it holds. A failure crosses the bridge as words and a kind, never as a
+ * thrown error whose class and reason Electron would drop.
+ */
+export const DesktopCloudComputerFailureSchema = z.strictObject({
+  /** `refused`: the Account answered no, and `message` is its own sentence. */
+  kind: z.enum(["signed-out", "unreachable", "refused", "unavailable"]),
+  message: z.string().min(1).max(1000),
+});
+export type DesktopCloudComputerFailure = z.infer<typeof DesktopCloudComputerFailureSchema>;
+export const DesktopCloudComputerReadResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), data: CloudComputerListResponseSchema }),
+  z.strictObject({ ok: z.literal(false), failure: DesktopCloudComputerFailureSchema }),
+]);
+export type DesktopCloudComputerReadResult = z.infer<typeof DesktopCloudComputerReadResultSchema>;
+export const DesktopCloudComputerActInputSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("suspend"), id: CloudComputerIdSchema }),
+  z.strictObject({ action: z.literal("resume"), id: CloudComputerIdSchema }),
+  z.strictObject({
+    action: z.literal("delete"),
+    id: CloudComputerIdSchema,
+    confirmation: z.string().min(1).max(200),
+  }),
+]);
+export type DesktopCloudComputerActInput = z.infer<typeof DesktopCloudComputerActInputSchema>;
+export const DesktopCloudComputerActResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), data: CloudComputerViewSchema }),
+  z.strictObject({ ok: z.literal(false), failure: DesktopCloudComputerFailureSchema }),
+]);
+export type DesktopCloudComputerActResult = z.infer<typeof DesktopCloudComputerActResultSchema>;
+
 export interface OpensteerDesktopBridge {
   readonly passkeys?: {
     available(): Promise<boolean>;
@@ -1852,6 +1887,10 @@ export interface OpensteerDesktopBridge {
   webLinkDelivery?(input: DesktopWebLinkDelivery): Promise<DesktopWebLink | null>;
   dismissMcpAuthorization?(requestId: string): Promise<void>;
   onMcpAuthorization?(listener: (target: AgentConnectionAuthorizationTarget) => void): () => void;
+  /** The person's Cloud Computers, from the Account this app is signed in to. */
+  cloudComputerRead?(): Promise<DesktopCloudComputerReadResult>;
+  /** Suspends, resumes or deletes one; the Account decides what is allowed. */
+  cloudComputerAct?(input: DesktopCloudComputerActInput): Promise<DesktopCloudComputerActResult>;
   onPersonalTabCommand(listener: (command: DesktopPersonalTabCommand) => void): () => void;
   reportDisplayDiagnostic?(record: DisplayClientDiagnostic): Promise<void>;
   reportRealtimeDiagnostic?(record: RealtimeFrameDiagnostic): Promise<void>;

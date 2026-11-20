@@ -18,3 +18,4 @@ export * from "./desktop-updates.js";
 export * from "./connection-controller.js";
 export * from "./connection-notice.js";
 export * from "../host/lifecycle.js";
+export * from "./account-cloud-computers.js";

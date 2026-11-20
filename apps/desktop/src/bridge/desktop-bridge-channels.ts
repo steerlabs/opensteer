@@ -7,6 +7,8 @@ export const desktopBridgeChannels = {
   teamLink: "opensteer.desktop.team-link",
   teamLinkDelivery: "opensteer.desktop.team-link.delivery",
   accountTeams: "opensteer.desktop.account-teams",
+  cloudComputerRead: "opensteer.desktop.cloud-computers.read",
+  cloudComputerAct: "opensteer.desktop.cloud-computers.act",
   teamSessions: "opensteer.desktop.team-sessions",
   webLinkDelivery: "opensteer.desktop.webLinkDelivery",
   dictationAvailability: "opensteer.desktop.dictation.availability",

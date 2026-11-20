@@ -132,6 +132,9 @@ import {
   DesktopTeamLinkDeliverySchema,
   DesktopAccountTeamsCallSchema,
   DesktopAccountTeamsResultSchema,
+  DesktopCloudComputerActInputSchema,
+  DesktopCloudComputerActResultSchema,
+  DesktopCloudComputerReadResultSchema,
   DesktopTeamSessionsCallSchema,
   DesktopTeamSessionsResultSchema,
   DesktopChooseUsbDeviceInputSchema,
@@ -342,6 +345,19 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     invoke<void>(
       desktopBridgeChannels.teamLinkDelivery,
       DesktopTeamLinkDeliverySchema.parse(input),
+    ),
+  cloudComputerRead: async () =>
+    DesktopCloudComputerReadResultSchema.parse(
+      await invoke(desktopBridgeChannels.cloudComputerRead),
+    ),
+  cloudComputerAct: async (
+    input: import("@opensteer/protocol/desktop").DesktopCloudComputerActInput,
+  ) =>
+    DesktopCloudComputerActResultSchema.parse(
+      await invoke(
+        desktopBridgeChannels.cloudComputerAct,
+        DesktopCloudComputerActInputSchema.parse(input),
+      ),
     ),
   accountTeams: async (input: import("@opensteer/protocol/desktop").DesktopAccountTeamsCall) =>
     DesktopAccountTeamsResultSchema.parse(

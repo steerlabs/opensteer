@@ -13,6 +13,10 @@ import {
   type ClientScope,
 } from "@opensteer/client/connections";
 import {
+  AccountCloudComputerClient,
+  type CloudComputerAccount,
+} from "@opensteer/client/connections";
+import {
   includeDeviceAccessRequests,
   type HostApiCommandInput,
   type HostApiCommandOutput,
@@ -198,6 +202,8 @@ export interface MobileClientOptions {
   readonly savedViewStore?: SavedViewStore;
   readonly accountOrigin: string | null;
   readonly portalOrigin?: string | null;
+  /** The person's Cloud Computers; mock mode passes its own Account, a build its real one. */
+  readonly cloudComputers?: CloudComputerAccount;
   readonly catalogFilePath: string;
   readonly quietSeenFilePath: string;
   readonly draftsFilePath: string;
@@ -259,6 +265,7 @@ export class MobileClient {
   readonly savedViews: SavedViewPresentation;
   readonly #lifecycle: ClientLifecycle | undefined;
   readonly accountDirectory: AccountDeploymentDirectoryService;
+  readonly cloudComputers: CloudComputerAccount;
   readonly catalog: DeploymentCatalogStore;
   readonly directoryRefresh: AccountDirectoryRefreshService<void>;
   /** The quiet moves to Done this phone has shown, behind the sidebar's "+N". */
@@ -542,6 +549,11 @@ export class MobileClient {
       catalog: this.catalog,
       fetch: (input, init) => options.fetch(input, init),
     });
+    this.cloudComputers =
+      options.cloudComputers ??
+      new AccountCloudComputerClient({
+        transport: options.accountOrigin ? this.accountDirectory : null,
+      });
     this.sessionExchange = new HostSessionExchange({
       account: this.accountDirectory,
       application: options.oauthIdentity.application,

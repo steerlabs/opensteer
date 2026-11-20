@@ -3,6 +3,7 @@ import { useClientRead, usePersonalRemoteAccess, useRemoteAccess } from "@openst
 import { createClientRead } from "@opensteer/client/reads";
 import { sessionActivityLine, settingsSessionRows } from "@opensteer/client/settings";
 import type { AuthSessionSummary } from "@opensteer/core";
+import { cloudWords } from "@opensteer/client/computers";
 import { useNavigation } from "@react-navigation/native";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { Alert, Linking } from "react-native";
@@ -314,6 +315,21 @@ function AccountSettingsContent(props: {
         act,
       ),
     );
+  sections.push({
+    key: "cloud-computer",
+    title: "",
+    rows: [
+      {
+        key: "cloud-computer",
+        kind: "button",
+        label: cloudWords("cloud.entry.title"),
+        detail: cloudWords("cloud.entry.detail"),
+        symbol: "cloud",
+        opens: true,
+        onPress: () => navigation.navigate("CloudComputer"),
+      },
+    ],
+  });
   if (host && (sessions === null || sessions.length > 0))
     sections.push({
       key: "sessions",

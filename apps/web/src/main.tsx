@@ -142,6 +142,8 @@ async function renderOpensteer(): Promise<void> {
             {
               MockHostClient,
               createMockIphoneSetupPort,
+              MockCloudComputerAccount,
+              mockCloudComputerScenes,
               mockConnectedAgentScenes,
               mockConnectedAgents,
               mockIphoneSetupScenes,
@@ -232,7 +234,12 @@ async function renderOpensteer(): Promise<void> {
                 ? (mockConnectedAgentScenes.find((scene) => scene === search.get("mock-agents")) ??
                   "seeded")
                 : null;
+              // `?mock-cloud=<scene>` puts an Opensteer Account with a Cloud Computer in
+              // that state behind the mock desktop (`?mock-desktop=home`).
+              const cloudScene =
+                mockCloudComputerScenes.find((scene) => scene === search.get("mock-cloud")) ?? null;
               const client = new MockHostClient({
+                ...(cloudScene ? { portalOrigin: "https://app.opensteer.example" } : {}),
                 ...(agents ? mockConnectedAgents(agents) : {}),
                 // `?mock-sessions=browser`: this window is a web browser's session.
                 ...(desktopScenario === "new-mac" || desktopScenario === "blocked"
@@ -265,7 +272,12 @@ async function renderOpensteer(): Promise<void> {
               initializeBrowserMessageOutbox(client);
               // The preview's own client, for journeys that count what the page sends.
               Object.assign(window, { opensteerMock: client });
-              if (desktopScenario) return attachMockDesktop(client, desktopScenario);
+              if (desktopScenario)
+                return attachMockDesktop(
+                  client,
+                  desktopScenario,
+                  cloudScene ? new MockCloudComputerAccount(cloudScene) : null,
+                );
               const downloadsScript = new URLSearchParams(window.location.search).get(
                 "mock-downloads",
               );
@@ -301,6 +313,7 @@ async function renderOpensteer(): Promise<void> {
             async function attachMockDesktop(
               client: InstanceType<typeof MockHostClient>,
               scenario: string,
+              cloud: InstanceType<typeof MockCloudComputerAccount> | null,
             ) {
               const [
                 { desktopPreviewBridge, installDesktopPreviewHostRoute },
@@ -334,6 +347,11 @@ async function renderOpensteer(): Promise<void> {
                 host: client.rpc,
               });
               if (!bridge) return client;
+              if (cloud)
+                Object.assign(bridge, {
+                  cloudComputerRead: () => cloud.read(),
+                  cloudComputerAct: (input: Parameters<typeof cloud.act>[0]) => cloud.act(input),
+                });
               installDesktopPreviewHostRoute(bridge);
               const access = await bridge.getDeploymentAccessSnapshot();
               const selected = access.deployments.find(

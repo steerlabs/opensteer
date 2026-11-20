@@ -385,6 +385,17 @@ export class AccountDeploymentDirectoryService {
     }
   }
 
+  /**
+   * One Account API call with this service's credential, timeout and error reading,
+   * for other Account features (Cloud Computers) so the app keeps one Account client.
+   */
+  accountRequest(
+    path: string,
+    input: { readonly method: "DELETE" | "GET" | "POST" | "PUT"; readonly body?: string },
+  ): Promise<unknown> {
+    return this.#accountJson(path, input);
+  }
+
   async #accountJson(
     path: string,
     input: { readonly method: "DELETE" | "GET" | "POST" | "PUT"; readonly body?: string },

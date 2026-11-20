@@ -72,7 +72,10 @@ describe("Device settings placement", () => {
     expect(landing).toContain("Use from anywhere");
     expect(landing).not.toContain("Signed-in devices");
     expect(renderSettings(context, "/settings/devices")).toContain("Loading devices");
-    expect(landing).not.toContain('href="/settings/account/');
+    // The Cloud Computer is the Account's one page of its own.
+    expect(landing.match(/href="\/settings\/account\/[^"]*"/gu) ?? []).toEqual([
+      'href="/settings/account/cloud-computer"',
+    ]);
     // External agents have their own page and load only when it opens.
     expect(landing).not.toContain("external agents");
     expect(renderSettings(context, "/settings/external-agents")).toContain(

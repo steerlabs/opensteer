@@ -126,6 +126,45 @@ describe("AccountDeploymentDirectoryService", () => {
     });
   });
 
+  it("lists a ready Cloud Computer as a personal Home reached at its own address", async () => {
+    const home: HostDiscoveryDocument = {
+      ...discovery,
+      deploymentShape: { kind: "personal" },
+    };
+    const entry = AccountDeploymentDirectoryEntrySchema.parse({
+      ...directoryDeployment(),
+      authorityEnvelope: signDiscovery(home),
+      name: "Cloud Computer",
+    });
+    const reconcileAccountDeployments = vi.fn();
+    const service = new AccountDeploymentDirectoryService({
+      accountOrigin: "https://accounts.opensteer.test",
+      authorization: accountAuthorization(),
+      catalog: { reconcileAccountDeployments },
+      fetch: vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        return url === "https://accounts.opensteer.test/v1/account/deployments"
+          ? json({ deployments: [entry] }, url)
+          : json(testHostDescriptor(signDiscovery(home), ["oidc"]), url);
+      }),
+    });
+
+    await expect(service.sync()).resolves.toMatchObject({ syncedDeploymentIds: [deploymentId] });
+    expect(reconcileAccountDeployments).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connections: [
+          expect.objectContaining({
+            bootstrapMethods: ["oidc"],
+            endpoints: [expect.objectContaining({ kind: "canonical", origin: canonicalOrigin })],
+            kind: "personal",
+            name: "Cloud Computer",
+            reachability: "canonical",
+          }),
+        ],
+      }),
+    );
+  });
+
   it("never commits a directory result after its Account authorization is invalidated", async () => {
     const authorization = new AbortController();
     const response = deferred<Response>();

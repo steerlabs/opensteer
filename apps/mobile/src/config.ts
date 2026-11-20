@@ -1,7 +1,9 @@
 import {
+  mockCloudComputerScenes,
   mockConnectedAgentScenes,
   mockPluginScenarios,
   mockSubagentScenes,
+  type MockCloudComputerScene,
   type MockConnectedAgentScene,
   type MockPluginScenario,
   type MockSubagentScene,
@@ -36,6 +38,7 @@ const MobileEnvironmentSchema = z.object({
   EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS: z.enum(mockSubagentScenes).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS: z.enum(mockPluginScenarios).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS: z.enum(mockConnectedAgentScenes).optional(),
+  EXPO_PUBLIC_OPENSTEER_MOCK_CLOUD: z.enum(mockCloudComputerScenes).optional(),
 });
 
 export interface MobileConfiguration {
@@ -61,6 +64,8 @@ export interface MobileConfiguration {
   readonly mockPlugins: MockPluginScenario | null;
   /** Connected agents in each state and a waiting consent, as the web's `?mock-agents`. */
   readonly mockAgents: MockConnectedAgentScene | null;
+  /** The mock Account's Cloud Computer, as the web's `?mock-cloud=`; none by default. */
+  readonly mockCloud: MockCloudComputerScene | null;
   /**
    * Why this build must not start, or null. It is a state rather than a throw
    * because the answer belongs on screen in a sentence: a build that was asked
@@ -125,6 +130,7 @@ export function readMobileConfiguration(
     mockSubagents: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS ?? null) : null,
     mockPlugins: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS ?? null) : null,
     mockAgents: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS ?? null) : null,
+    mockCloud: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_CLOUD ?? null) : null,
     refusal:
       mockRequested && !mockAllowed
         ? "This build was made with Opensteer's mock mode turned on, which only development and preview builds may run. Install a build made without it."

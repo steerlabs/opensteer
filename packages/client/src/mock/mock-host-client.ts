@@ -1866,6 +1866,8 @@ export interface MockHostClientOptions {
   connectionConsent?: import("@opensteer/protocol").AgentConnectionConsent;
   /** Whether this Host advertises `agent-grants-v1`; true by default. */
   agentGrantsAvailable?: boolean;
+  /** The Opensteer website this Home names, where Account billing happens; none by default. */
+  portalOrigin?: string;
 }
 
 const mockWebhookOrigin = "https://mock.opensteer.invalid";
@@ -3375,6 +3377,10 @@ async function executeMockCommand(
     }
     case "connection.remove":
       client.removeConnection(command.connectionId);
+      for (const listener of client.connectionsListeners) listener();
+      return rpcSuccess({ type: command.type });
+    case "connection.uncertain.acknowledge":
+      client.acknowledgeUncertainConnection(command.connectionId);
       for (const listener of client.connectionsListeners) listener();
       return rpcSuccess({ type: command.type });
     case "session.revoke":
@@ -5900,6 +5906,13 @@ class MockHostState {
     this.connections = this.connections.map((row) => (row.id === current.id ? next : row));
     return next;
   }
+  acknowledgeUncertainConnection(id: string) {
+    this.connections = this.connections.map((row) =>
+      row.id === id && row.userId === this.snapshot.user?.id
+        ? { ...row, lastActionUncertain: false, lastActionUncertainDetail: null }
+        : row,
+    );
+  }
   removeConnection(id: string) {
     this.connections = this.connections.filter(
       (row) =>
@@ -6774,6 +6787,8 @@ class MockHostState {
       agentImagesAvailable: options.agentImagesAvailable ?? true,
       agentGrantsAvailable: options.agentGrantsAvailable ?? true,
     };
+    if (options.portalOrigin && initial.identityConfig)
+      initial.identityConfig = { ...initial.identityConfig, portalOrigin: options.portalOrigin };
     const firstRun = options.world === "first-run";
     this.snapshot = firstRun ? firstRunWorld(initial) : initial;
     this.applyAutomaticEligibility();

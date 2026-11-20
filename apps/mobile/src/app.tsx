@@ -43,7 +43,11 @@ import { NavigationContainerRefContext, type InitialState } from "@react-navigat
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
-import { mockIphoneRunnerId, type MockHostClient } from "@opensteer/client/mock";
+import {
+  MockCloudComputerAccount,
+  mockIphoneRunnerId,
+  type MockHostClient,
+} from "@opensteer/client/mock";
 import { AccountProfileRelay, type MockTeamHost } from "@opensteer/client/team";
 import { verifyAccessEndpoint } from "@opensteer/client/connections";
 import { MobileTeams } from "./team/mobile-teams.js";
@@ -151,6 +155,7 @@ const configuration = readMobileConfiguration(
     EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS,
     EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS,
     EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS,
+    EXPO_PUBLIC_OPENSTEER_MOCK_CLOUD: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_CLOUD,
     EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE,
   },
   { development: __DEV__ },
@@ -347,6 +352,9 @@ function mobileClient(): MobileRoot {
     ...(!configuration.mock ? { savedViewStore: createExpoSavedViews(storeName) } : {}),
     portalOrigin: configuration.portalOrigin,
     accountOrigin: configuration.accountOrigin,
+    ...(configuration.mock
+      ? { cloudComputers: new MockCloudComputerAccount(configuration.mockCloud ?? "none") }
+      : {}),
     catalogFilePath: `${root}${storeName}/deployments.json`,
     quietSeenFilePath: `${root}${storeName}/quiet-seen.json`,
     draftsFilePath: `${root}${storeName}/drafts-v3.json`,
