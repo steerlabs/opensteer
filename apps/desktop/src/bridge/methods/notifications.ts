@@ -150,4 +150,5 @@ export const handleSetBadgeCount =
     assertAuthorizedRenderer(context, event, envelope);
     const { count } = DesktopBadgeCountInputSchema.parse(envelope.input);
     app.setBadgeCount(count);
+    context.options.notifications.badgeCount?.(count);
   };

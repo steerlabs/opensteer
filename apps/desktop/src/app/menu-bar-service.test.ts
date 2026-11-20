@@ -2,6 +2,7 @@ import { createId } from "@opensteer/core";
 import { MachineSummarySchema, type MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { activityIdle, DesktopActivity, type HomeHost } from "./desktop-activity.js";
+import type { MenuBarInput } from "@opensteer/client/computers";
 import {
   DesktopMenuBarService,
   switchConflictSentence,
@@ -58,7 +59,12 @@ function machine(id: string, revision: number): MachineSummary {
   });
 }
 
-const hostedHome: MenuBarHostedHome = { deploymentId: "dep_home", state: "ready", runnerId };
+const hostedHome: MenuBarHostedHome = {
+  deploymentId: "dep_home",
+  name: "MacBook Pro",
+  state: "ready",
+  runnerId,
+};
 const office = (runner: MenuBarDeviceHome["runner"] = "running"): MenuBarDeviceHome => ({
   deploymentId: "dep_office",
   name: "Office",
@@ -67,12 +73,35 @@ const office = (runner: MenuBarDeviceHome["runner"] = "running"): MenuBarDeviceH
   runnerId,
 });
 
-function fakeHost(input: { revision?: number; conflict?: boolean; fail?: boolean } = {}) {
+function fakeHost(
+  input: {
+    revision?: number;
+    conflict?: boolean;
+    fail?: boolean;
+    needsYou?: Readonly<Record<string, number | "unreachable">>;
+    holdAttention?: boolean;
+  } = {},
+) {
   const state = { revision: input.revision ?? 4, fail: input.fail ?? false };
   const dispatched: unknown[] = [];
   const reads: { resolve: () => void }[] = [];
   let holdReads = false;
-  const host: HomeHost = {
+  const attention = (deploymentId: string) =>
+    vi.fn(async () => {
+      if (input.holdAttention) await new Promise<void>(() => undefined);
+      const count = input.needsYou?.[deploymentId] ?? 0;
+      if (count === "unreachable") throw new Error("Host unreachable");
+      return { ok: true as const, data: { needsYou: count, unread: false } };
+    }) as unknown as HomeHost["attention.get"];
+  const hosts = new Map<string, HomeHost["attention.get"]>();
+  const attentionFor = (deploymentId: string) => {
+    const existing = hosts.get(deploymentId);
+    if (existing) return existing;
+    const created = attention(deploymentId);
+    hosts.set(deploymentId, created);
+    return created;
+  };
+  const host: Omit<HomeHost, "attention.get"> = {
     "machines.list": vi.fn(async () => {
       // A read answers with what the Host held when it began.
       const revision = state.revision;
@@ -107,7 +136,11 @@ function fakeHost(input: { revision?: number; conflict?: boolean; fail?: boolean
     }) as unknown as HomeHost["commands.dispatch"],
   };
   return {
-    host,
+    host: host as HomeHost,
+    hostFor: (deploymentId: string): HomeHost => ({
+      ...host,
+      "attention.get": attentionFor(deploymentId),
+    }),
     dispatched,
     state,
     hold: () => {
@@ -120,25 +153,100 @@ function fakeHost(input: { revision?: number; conflict?: boolean; fail?: boolean
   };
 }
 
+interface Local {
+  apps: MenuBarInput["local"]["apps"];
+  tabs: MenuBarInput["local"]["tabs"];
+}
+
 function service(
-  host: HomeHost,
+  host: HomeHost | ((deploymentId: string) => HomeHost),
   input: {
     hosted?: MenuBarHostedHome | null;
     devices?: MenuBarDeviceHome[];
     selected?: string;
+    local?: Local;
+    stopRow?: (id: string) => boolean;
   } = {},
 ) {
+  const local: Local = input.local ?? { apps: [], tabs: [] };
   return new DesktopMenuBarService({
     hostedHome: async () => (input.hosted === undefined ? hostedHome : input.hosted),
     deviceHomes: async () => input.devices ?? [],
     selected: () => ({ deploymentId: input.selected ?? "dep_home", devicesAvailable: true }),
-    host: () => host,
-    local: () => ({ appSessions: 0, browserTabs: 0 }),
-    stop: () => ({ stopped: false, problem: null }),
+    host: typeof host === "function" ? host : () => host,
+    local: () => local,
+    stop: () => ({ stopped: false, stoppedAt: null, problem: null }),
+    stopRow: input.stopRow ?? (() => false),
     openAtLogin: async () => ({ on: true, available: true }),
     log: vi.fn(),
   });
 }
+
+describe("menu bar state from this Mac alone", () => {
+  it("draws the header, Right now and Stop with no Home read, and never waits for one", async () => {
+    const fake = fakeHost({ holdAttention: true });
+    fake.hold();
+    const menu = service(fake.hostFor, {
+      devices: [office("failed")],
+      local: {
+        apps: [{ sessionId: "cus_1", threadTitle: "Book flights", app: "Notes" }],
+        tabs: [{ sessionId: "bsn_1", profile: true }],
+      },
+    });
+    const reading = menu.refresh();
+    const status = await menu.status();
+    expect(status.homes.map((home) => home.status)).toEqual([
+      "This Mac is your Home · Running",
+      "Can’t reach Office",
+    ]);
+    expect(status.rightNow.map((row) => [row.actor.label, row.using, row.stoppable])).toEqual([
+      ["Book flights", "Notes", true],
+      ["An agent", "A browser profile", false],
+    ]);
+    expect(status.stop.offline).toBe("Works even while Office is unreachable.");
+    expect(status.needsYou).toBeNull();
+    fake.release();
+    void reading;
+  });
+
+  it("adds Needs you across the Homes that answer, and says nothing for one that does not", async () => {
+    const both = fakeHost({ needsYou: { dep_home: 2, dep_office: 1 } });
+    const menu = service(both.hostFor, { devices: [office()] });
+    await menu.refresh();
+    expect((await menu.status()).needsYou).toEqual({
+      line: "3 need you",
+      deploymentId: "dep_home",
+    });
+    const unreachable = fakeHost({ needsYou: { dep_home: 0, dep_office: "unreachable" } });
+    const quiet = service(unreachable.hostFor, { devices: [office()] });
+    await quiet.refresh();
+    const status = await quiet.status();
+    expect(status.needsYou).toBeNull();
+    expect(status.icon.attention).toBe(false);
+  });
+
+  it("takes the window's live count for the Home it shows, and redraws", async () => {
+    const menu = service(fakeHost().hostFor);
+    const changed = vi.fn();
+    menu.subscribe(changed);
+    menu.noteNeedsYou("dep_home", 1);
+    menu.noteNeedsYou("dep_home", 1);
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect((await menu.status()).needsYou?.line).toBe("1 needs you");
+    expect((await menu.status()).icon.attention).toBe(true);
+  });
+
+  it("stops one row the way its kind is stopped, and refuses one that already ended", () => {
+    const stopRow = vi.fn((id: string) => id === "apps:cus_1");
+    const menu = service(fakeHost().hostFor, { stopRow });
+    const changed = vi.fn();
+    menu.subscribe(changed);
+    menu.stopRow("apps:cus_1");
+    expect(stopRow).toHaveBeenCalledWith("apps:cus_1");
+    expect(changed).toHaveBeenCalledOnce();
+    expect(() => menu.stopRow("apps:cus_gone")).toThrow(/already ended/);
+  });
+});
 
 describe("menu bar service", () => {
   it("shows the hosted Home's switches with the revision they were read at", async () => {
@@ -146,8 +254,8 @@ describe("menu bar service", () => {
     const menu = service(host);
     await menu.refresh();
     const status = await menu.status();
-    expect(status.homes[0]).toMatchObject({
-      role: "home",
+    expect(status.thisMac).toMatchObject({
+      deploymentId: "dep_home",
       editable: true,
       revision: 4,
       switches: [
@@ -156,7 +264,7 @@ describe("menu bar service", () => {
         { capability: "files", on: true },
       ],
     });
-    expect(status.activity).toEqual(["Running: Book flights"]);
+    expect(status.rightNow.map((row) => row.actor.label)).toEqual(["Book flights"]);
   });
 
   it("writes a switch against the revision the person saw", async () => {
@@ -172,7 +280,7 @@ describe("menu bar service", () => {
         policy: expect.objectContaining({ apps: true, reach: "owner" }),
       }),
     ]);
-    expect((await menu.status()).homes[0]?.revision).toBe(5);
+    expect((await menu.status()).thisMac?.revision).toBe(5);
   });
 
   it("refuses a click on switches older than what main has since read", async () => {
@@ -204,7 +312,7 @@ describe("menu bar service", () => {
     fake.release();
     await stale;
     await writing;
-    expect((await menu.status()).homes[0]?.revision).toBe(5);
+    expect((await menu.status()).thisMac?.revision).toBe(5);
   });
 
   it("says when another device changed the switch first", async () => {
@@ -340,14 +448,31 @@ describe("menu bar popover", () => {
 });
 
 describe("menu bar item", () => {
+  const plain = { attention: false, unreachable: false, stopped: false };
+  const alpha = (bitmap: Buffer, x: number, y: number) => bitmap[(y * 32 + x) * 4 + 3];
+
   it("draws a disc, and a ring once stopped", () => {
-    const alpha = (bitmap: Buffer, x: number, y: number) => bitmap[(y * 32 + x) * 4 + 3];
-    const running = menuBarGlyph(32, false);
-    const stopped = menuBarGlyph(32, true);
+    const running = menuBarGlyph(32, plain);
+    const stopped = menuBarGlyph(32, { ...plain, stopped: true });
     expect(alpha(running, 16, 16)).toBe(255);
     expect(alpha(stopped, 16, 16)).toBe(0);
     expect(alpha(stopped, 16, 5)).toBe(255);
     expect(alpha(running, 0, 0)).toBe(0);
+  });
+
+  it("adds a slash, set apart from the disc, when no Home can be reached", () => {
+    const slashed = menuBarGlyph(32, { ...plain, unreachable: true });
+    expect(alpha(slashed, 16, 15)).toBe(255);
+    expect(alpha(menuBarGlyph(32, plain), 18, 16)).toBe(255);
+    expect(alpha(slashed, 18, 16)).toBe(0);
+  });
+
+  it("adds a small dot, set apart from the disc, when something needs the person", () => {
+    const dotted = menuBarGlyph(32, { ...plain, attention: true });
+    expect(alpha(menuBarGlyph(32, plain), 25, 25)).toBe(0);
+    expect(alpha(dotted, 25, 25)).toBe(255);
+    expect(alpha(menuBarGlyph(32, plain), 21, 21)).toBe(255);
+    expect(alpha(dotted, 21, 21)).toBe(0);
   });
 
   it("anchors the popover under the item and keeps it on the display", () => {

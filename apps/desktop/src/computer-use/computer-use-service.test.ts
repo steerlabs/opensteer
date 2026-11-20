@@ -687,6 +687,30 @@ describe.skipIf(!onMac)("the person's Stop from the menu bar", () => {
     ).resolves.toEqual({ sessionId: harness.sessionId });
   });
 
+  it("stops one agent session from the menu bar as the helper's own Stop ends it", async () => {
+    const harness = await lifetimeHarness({});
+    await harness.observe();
+    expect(harness.computerUse.agentSessionDetails()).toEqual([
+      { sessionId: harness.sessionId, threadTitle: null, app: "Notes" },
+    ]);
+    const changed = vi.fn();
+    harness.computerUse.onAgentSessionsChanged(changed);
+    expect(harness.computerUse.stopAgentSession(harness.sessionId)).toBe(true);
+    expect(changed).toHaveBeenCalled();
+    expect(harness.computerUse.agentSessionDetails()).toEqual([]);
+    await vi.waitFor(() =>
+      expect(harness.events).toContainEqual(
+        expect.objectContaining({
+          event: "session.stopped",
+          params: expect.objectContaining({ reason: "user", sessionId: harness.sessionId }),
+        }),
+      ),
+    );
+    await vi.waitFor(() => expect(harness.helper.methods).toContain("session.close"));
+    expect(harness.helper.connections()).toBe(1);
+    expect(harness.computerUse.stopAgentSession(harness.sessionId)).toBe(false);
+  });
+
   it("never sends an open that waited on installation through a Stop, even after Resume", async () => {
     const admission = openAgentAdmission();
     const harness = await lifetimeHarness({ admission, running: false });

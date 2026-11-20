@@ -1,0 +1,10 @@
+/** Where the menu bar opens the app: the Home's start, with Needs you at its side, or Settings. */
+export const appRoutes = { needsYou: "/", settings: "/settings" } as const;
+
+/**
+ * Moves the app window's page to one of its own routes without reloading it,
+ * as its router does on Back: the window keeps its connection and its tabs.
+ */
+export function appRouteScript(route: (typeof appRoutes)[keyof typeof appRoutes]): string {
+  return `history.pushState(null, "", ${JSON.stringify(route)}); dispatchEvent(new PopStateEvent("popstate"));`;
+}

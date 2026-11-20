@@ -1,4 +1,4 @@
-/* The menu bar item's popover: one narrow column, sized by desktop main. */
+/* The menu bar item's popover (design §7): one 300 pt column, sized by desktop main. */
 body:has(.menu-bar) {
   background: var(--surface);
   background-image: none;
@@ -7,19 +7,90 @@ body:has(.menu-bar) {
 }
 
 .menu-bar {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 14px 14px 12px;
+  gap: 10px;
+  padding: 12px 12px 10px;
   font-size: var(--text-lg);
   color: var(--text);
+}
+
+.menu-bar__header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.menu-bar__title {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: 600;
+}
+
+.menu-bar__home {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.menu-bar__home-name {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-soft);
+}
+
+.menu-bar__home-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.menu-bar__home-status::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+}
+
+.menu-bar__home-status--ok::before {
+  background: var(--green);
+}
+
+.menu-bar__home-status--busy::before {
+  background: var(--amber);
+}
+
+.menu-bar__home-status--attention::before {
+  background: var(--red);
+}
+
+.menu-bar__needs-you {
+  appearance: none;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-sm);
+  background: var(--amber-wash);
+  color: var(--amber-text);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
 }
 
 .menu-bar__section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-bottom: 12px;
+  gap: 6px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -30,37 +101,7 @@ body:has(.menu-bar) {
   color: var(--muted);
 }
 
-.menu-bar__home {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-weight: 600;
-}
-
-.menu-bar__home::before {
-  content: "";
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-full);
-  background: var(--muted);
-}
-
-.menu-bar__home--ok::before {
-  background: var(--green);
-}
-
-.menu-bar__home--busy::before {
-  background: var(--amber);
-}
-
-.menu-bar__home--attention::before {
-  background: var(--red);
-}
-
-.menu-bar__switches,
-.menu-bar__activity {
+.menu-bar__rows {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -69,21 +110,37 @@ body:has(.menu-bar) {
   list-style: none;
 }
 
-.menu-bar__activity li {
-  color: var(--text-soft);
-}
-
 .menu-bar__row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
-.menu-bar__switch-text {
+.menu-bar__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+}
+
+.menu-bar__row-text {
   display: flex;
+  flex: 1;
   flex-direction: column;
   min-width: 0;
+}
+
+.menu-bar__row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .menu-bar__detail,
@@ -93,17 +150,33 @@ body:has(.menu-bar) {
   color: var(--muted);
 }
 
-.menu-bar__stop {
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.menu-bar__row-stop {
+  flex: none;
+  padding: 2px 8px;
+  font-size: var(--text-sm);
+}
+
+.menu-bar__stop-all {
+  appearance: none;
+  align-self: flex-start;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--red-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .menu-bar__stopped {
   margin: 0;
   font-size: var(--text-sm);
   color: var(--amber-text);
+}
+
+.menu-bar__resume {
+  align-self: flex-start;
 }
 
 .menu-bar__failure {
@@ -114,7 +187,24 @@ body:has(.menu-bar) {
 
 .menu-bar__footer {
   display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.menu-bar__more {
+  margin-left: auto;
+}
+
+.menu-bar__menu {
+  display: flex;
   flex-direction: column;
-  align-items: stretch;
   gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+}
+
+.menu-bar__quit {
+  align-self: flex-start;
 }

@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import {
+  MenuBarRowStopInputSchema,
   MenuBarStatusSchema,
   MenuBarSwitchInputSchema,
   type OpensteerMenuBarBridge,
@@ -21,8 +22,17 @@ const bridge: OpensteerMenuBarBridge = Object.freeze<OpensteerMenuBarBridge>({
   setSwitch: async (input) => {
     await ipcRenderer.invoke(menuBarChannels.setSwitch, MenuBarSwitchInputSchema.parse(input));
   },
+  stopRow: async (input) => {
+    await ipcRenderer.invoke(menuBarChannels.stopRow, MenuBarRowStopInputSchema.parse(input));
+  },
   stop: async () => {
     await ipcRenderer.invoke(menuBarChannels.stop);
+  },
+  openNeedsYou: async (deploymentId) => {
+    await ipcRenderer.invoke(menuBarChannels.openNeedsYou, z.string().min(1).parse(deploymentId));
+  },
+  openSettings: async () => {
+    await ipcRenderer.invoke(menuBarChannels.openSettings);
   },
   resume: async () => {
     await ipcRenderer.invoke(menuBarChannels.resume);

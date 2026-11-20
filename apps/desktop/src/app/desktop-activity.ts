@@ -7,7 +7,7 @@ export const homeReadTimeoutMs = 5_000;
 
 export type HomeHost = Pick<
   HostApiClient,
-  "commands.dispatch" | "machines.list" | "personal.shell.get"
+  "attention.get" | "commands.dispatch" | "machines.list" | "personal.shell.get"
 >;
 
 export interface HomeRead {

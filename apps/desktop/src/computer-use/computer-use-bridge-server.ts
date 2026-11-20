@@ -123,8 +123,22 @@ export interface ComputerUseBridgeHelperPort {
  * Runner's session must be refused here rather than answered by the helper,
  * which only knows that this one desktop opened it.
  */
+/** What this Mac itself knows about one agent session on its apps. */
+export interface ComputerUseAgentSession {
+  readonly sessionId: ComputerUseSessionId;
+  /** The task the session was opened for, as the Run named it. */
+  readonly threadTitle: string | null;
+  /** The app it last observed or acted on. */
+  readonly app: string | null;
+}
+
 export class ComputerUseSessionOwnership {
   readonly #owners = new Map<ComputerUseSessionId, object>();
+  readonly #details = new Map<
+    ComputerUseSessionId,
+    { threadTitle: string | null; app: string | null }
+  >();
+  readonly #listeners = new Set<() => void>();
   readonly #viewOwners = new Map<string, object>();
   readonly #videoOwners = new Map<string, object>();
   readonly #passwordOwners = new Map<string, object>();
@@ -175,6 +189,42 @@ export class ComputerUseSessionOwnership {
 
   claim(sessionId: ComputerUseSessionId, owner: object): void {
     this.#owners.set(sessionId, owner);
+    this.#changed();
+  }
+
+  /** Remembers what a session is for, once the helper accepted it. */
+  describe(
+    sessionId: ComputerUseSessionId,
+    detail: { readonly threadTitle?: string | null; readonly app?: string },
+  ): void {
+    if (!this.#owners.has(sessionId)) return;
+    const current = this.#details.get(sessionId) ?? { threadTitle: null, app: null };
+    const next = {
+      threadTitle: detail.threadTitle === undefined ? current.threadTitle : detail.threadTitle,
+      app: detail.app ?? current.app,
+    };
+    if (next.threadTitle === current.threadTitle && next.app === current.app) return;
+    this.#details.set(sessionId, next);
+    this.#changed();
+  }
+
+  agentSessions(): readonly ComputerUseAgentSession[] {
+    return [...this.#owners.keys()].map((sessionId) => ({
+      sessionId,
+      threadTitle: this.#details.get(sessionId)?.threadTitle ?? null,
+      app: this.#details.get(sessionId)?.app ?? null,
+    }));
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  #changed(): void {
+    for (const sessionId of this.#details.keys())
+      if (!this.#owners.has(sessionId)) this.#details.delete(sessionId);
+    for (const listener of this.#listeners) listener();
   }
 
   /** True when nobody holds it, or this owner does. */
@@ -185,12 +235,14 @@ export class ComputerUseSessionOwnership {
 
   /** Gives the session back, but only on behalf of the owner that holds it. */
   release(sessionId: ComputerUseSessionId, owner: object): void {
-    if (this.#owners.get(sessionId) === owner) this.#owners.delete(sessionId);
+    if (this.#owners.get(sessionId) !== owner) return;
+    this.#owners.delete(sessionId);
+    this.#changed();
   }
 
   /** Gives the session back whoever holds it: the helper said it ended. */
   ended(sessionId: ComputerUseSessionId): void {
-    this.#owners.delete(sessionId);
+    if (this.#owners.delete(sessionId)) this.#changed();
   }
 
   releaseAll(owner: object): readonly ComputerUseSessionId[] {
@@ -200,6 +252,7 @@ export class ComputerUseSessionOwnership {
       released.push(sessionId);
       this.#owners.delete(sessionId);
     }
+    if (released.length) this.#changed();
     return released;
   }
 
@@ -1181,6 +1234,7 @@ export class ComputerUseBridgeServer {
 
     if (outcome.kind === "answer") {
       if (method === "session.close" && sessionId) this.#ownership.release(sessionId, owner);
+      else if (sessionId) this.#ownership.describe(sessionId, sessionDetail(request.data));
       // The Runner that asked is gone, so this session has no owner that can
       // ever use it. Give it back to the Mac rather than leaving the helper
       // busy for a Run nobody can reach.
@@ -1292,18 +1346,34 @@ export class ComputerUseBridgeServer {
    * The Runner hears it as the person's stop; owner views and video stay.
    */
   endAgentSessions(): void {
+    for (const connection of this.#connections)
+      for (const sessionId of this.#ownership.releaseAll(connection.owner))
+        this.#stopForPerson(connection, sessionId);
+  }
+
+  /**
+   * The person's Stop for one session, the way the helper's own Stop ends one:
+   * the Runner hears `session.stopped` for the person and reports it to its
+   * Home, and the helper closes it. False when no Runner here holds it.
+   */
+  endAgentSession(sessionId: ComputerUseSessionId): boolean {
     for (const connection of this.#connections) {
-      const owner = connection.owner;
-      for (const sessionId of this.#ownership.releaseAll(owner)) {
-        if (owner.alive)
-          send(connection.socket, {
-            event: "session.stopped",
-            kind: "event",
-            params: { reason: "user", sessionId },
-          });
-        if (!owner.opening.has(sessionId)) this.#endSession(sessionId, "stopped");
-      }
+      if (!this.#ownership.owns(sessionId, connection.owner)) continue;
+      this.#ownership.release(sessionId, connection.owner);
+      this.#stopForPerson(connection, sessionId);
+      return true;
     }
+    return false;
+  }
+
+  #stopForPerson(connection: BridgeConnection, sessionId: ComputerUseSessionId): void {
+    if (connection.owner.alive)
+      send(connection.socket, {
+        event: "session.stopped",
+        kind: "event",
+        params: { reason: "user", sessionId },
+      });
+    if (!connection.owner.opening.has(sessionId)) this.#endSession(sessionId, "stopped");
   }
 
   #endSession(sessionId: ComputerUseSessionId, reason: CloseReason, attempt = 0): void {
@@ -1354,6 +1424,23 @@ export function agentComputerWork(method: string): boolean {
       "iphone.targets",
     ] as const
   ).some((name) => name === method);
+}
+
+function sessionDetail(request: { readonly method: string; readonly params: unknown }): {
+  readonly threadTitle?: string | null;
+  readonly app?: string;
+} {
+  const params = request.params as {
+    readonly threadTitle?: unknown;
+    readonly app?: { readonly identity?: { readonly displayName?: unknown } };
+  };
+  const app = params.app?.identity?.displayName;
+  return {
+    ...(request.method === "session.open" && typeof params.threadTitle === "string"
+      ? { threadTitle: params.threadTitle.trim() || null }
+      : {}),
+    ...(typeof app === "string" ? { app } : {}),
+  };
 }
 
 function sessionIdOf(params: unknown): ComputerUseSessionId | null {

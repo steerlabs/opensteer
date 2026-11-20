@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
+import { menuBarWords } from "@opensteer/client/computers";
 import type { ActivitySnapshot } from "./desktop-activity.js";
 import type { ShutdownLog } from "./desktop-shutdown.js";
 
@@ -14,33 +15,20 @@ export interface QuitConfirmation {
   readonly detail: string;
 }
 
-/** The plain sentence a full quit needs first, or null when nothing would stop that matters. */
+/**
+ * Quit Opensteer's question, or null when this Mac works for no Home and
+ * nothing could be using it: then there is nothing a quit would stop.
+ */
 export function quitCompletelyConfirmation(work: ActivitySnapshot): QuitConfirmation | null {
-  const using = work.lines.length
-    ? ` Using this Mac now: ${work.lines.slice(0, 3).join("; ")}.`
-    : "";
-  const unknown = work.known
-    ? ""
-    : " Opensteer can’t tell right now whether agents are using this Mac.";
-  if (work.hostsHome)
-    return {
-      message: "Quit Opensteer completely?",
-      detail: `This Mac is your Home. Quitting stops it: your phone and other devices can’t reach it, and agents stop until you open Opensteer again.${using}${unknown}`,
-    };
-  if (work.known && !work.lines.length) return null;
-  if (!work.lines.length && !work.deviceHomes.length) return null;
-  const homes = work.deviceHomes.length
-    ? ` and disconnects this Mac from ${listed(work.deviceHomes)}`
-    : "";
+  if (!work.hostsHome && !work.deviceHomes.length && work.known && !work.lines.length) return null;
   return {
-    message: "Quit Opensteer completely?",
-    detail: `${work.lines.length ? "Agents are using this Mac." : "Agents may be using this Mac."} Quitting stops them${homes}.${using}${unknown}`,
+    message: menuBarWords("menubar.quit.title"),
+    detail: [
+      menuBarWords("menubar.quit.body"),
+      ...(work.hostsHome ? [menuBarWords("menubar.quit.bodyHome")] : []),
+      ...(work.known ? [] : [menuBarWords("menubar.quit.bodyUnknown")]),
+    ].join(" "),
   };
-}
-
-function listed(names: readonly string[]): string {
-  if (names.length <= 1) return names[0] ?? "";
-  return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
 
 export interface DesktopBackgroundModeOptions {

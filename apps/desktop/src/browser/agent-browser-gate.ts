@@ -7,6 +7,13 @@ import { browserHostMethods } from "@opensteer/protocol";
 import { z } from "zod";
 import type { AgentAdmission } from "../app/agent-admission.js";
 
+/** What this Mac knows about a tab an agent opened here. */
+export interface AgentBrowserTab {
+  readonly sessionId: string;
+  /** A saved browser profile, rather than a fresh throwaway session. */
+  readonly profile: boolean;
+}
+
 export interface GatedAttachment {
   handle(frame: string | Buffer): Promise<void>;
   close(): Promise<void>;
@@ -17,6 +24,11 @@ const stoppedSentence =
 
 function stopped(): BrowserRuntimeError {
   return new BrowserRuntimeError("forbidden", stoppedSentence, { reason: "device-stopped" });
+}
+
+interface PendingOpen {
+  generation: number | null;
+  tab: AgentBrowserTab | null;
 }
 
 const hostMethods: ReadonlySet<string> = new Set(Object.values(browserHostMethods));
@@ -57,8 +69,8 @@ export function agentFrame(frame: string | Buffer): { readonly requestId: string
  */
 export class AgentBrowserGate {
   readonly #admission: AgentAdmission;
-  readonly #pending = new Map<string, { generation: number | null }>();
-  readonly #agentTabs = new Set<GatedAttachment>();
+  readonly #pending = new Map<string, PendingOpen>();
+  readonly #agentTabs = new Map<GatedAttachment, AgentBrowserTab>();
   readonly #listeners = new Set<() => void>();
 
   constructor(admission: AgentAdmission) {
@@ -70,6 +82,10 @@ export class AgentBrowserGate {
     return this.#agentTabs.size;
   }
 
+  agentTabDetails(): readonly AgentBrowserTab[] {
+    return [...this.#agentTabs.values()];
+  }
+
   /** The runtime verifies every attach ticket and every agent tab open through this. */
   verifier(inner: AttachTicketVerifier): AttachTicketVerifier {
     return {
@@ -78,7 +94,13 @@ export class AgentBrowserGate {
         if (claims.creationOrigin !== "agent") return claims;
         if (!this.#admission.open) throw stopped();
         const pending = this.#pending.get(token);
-        if (pending) pending.generation = this.#admission.generation;
+        if (pending) {
+          pending.generation = this.#admission.generation;
+          pending.tab = {
+            sessionId: claims.sessionId,
+            profile: claims.identity.kind === "profile-local",
+          };
+        }
         return claims;
       },
     };
@@ -91,7 +113,7 @@ export class AgentBrowserGate {
     signal: AbortSignal | undefined,
     run: (signal: AbortSignal) => Promise<Attachment>,
   ): Promise<Attachment> {
-    const entry: { generation: number | null } = { generation: null };
+    const entry: PendingOpen = { generation: null, tab: null };
     this.#pending.set(ticket, entry);
     const cancel = new AbortController();
     const unsubscribe = this.#admission.subscribe(() => {
@@ -110,7 +132,40 @@ export class AgentBrowserGate {
       await attachment.close().catch(() => undefined);
       throw stopped();
     }
-    return this.#guard(attachment, sink, agentOpened);
+    return this.#guard(attachment, sink, agentOpened ? entry.tab : null);
+  }
+
+  async attachStandard<Attachment extends { signal: AbortSignal; close(): void }>(
+    signal: AbortSignal,
+    open: (signal: AbortSignal) => Promise<Attachment>,
+  ): Promise<Attachment> {
+    if (!this.#admission.open) throw stopped();
+    const generation = this.#admission.generation;
+    const cancellation = new AbortController();
+    const life = AbortSignal.any([signal, cancellation.signal]);
+    const unsubscribe = this.#admission.subscribe(() => {
+      if (!this.#admission.current(generation)) cancellation.abort(stopped());
+    });
+    try {
+      const attachment = await open(life);
+      const close = () => { unsubscribe(); attachment.close(); };
+      if (life.aborted) {
+        close();
+        life.throwIfAborted();
+      }
+      if (attachment.signal.aborted) unsubscribe();
+      else {
+        life.addEventListener("abort", close, { once: true });
+        attachment.signal.addEventListener("abort", () => {
+          unsubscribe();
+          life.removeEventListener("abort", close);
+        }, { once: true });
+      }
+      return attachment;
+    } catch (error) {
+      unsubscribe();
+      throw error;
+    }
   }
 
   subscribe(listener: () => void): () => void {
@@ -121,7 +176,7 @@ export class AgentBrowserGate {
   #guard<Attachment extends GatedAttachment>(
     attachment: Attachment,
     sink: Pick<BrowserControllerSink, "sendServer">,
-    agentOpened: boolean,
+    agentTab: AgentBrowserTab | null,
   ): Attachment {
     const handle = attachment.handle.bind(attachment);
     attachment.handle = (frame) => {
@@ -135,13 +190,13 @@ export class AgentBrowserGate {
         error: stopped().toProtocolError(),
       });
     };
-    if (!agentOpened) return attachment;
+    if (!agentTab) return attachment;
     const close = attachment.close.bind(attachment);
     attachment.close = () => {
       if (this.#agentTabs.delete(attachment)) this.#emit();
       return close();
     };
-    this.#agentTabs.add(attachment);
+    this.#agentTabs.set(attachment, agentTab);
     this.#emit();
     return attachment;
   }

@@ -171,8 +171,8 @@ describe("quit routing through the production app menu", () => {
     await expect(declined.mode.quitCompletely()).resolves.toBe(false);
     expect(declined.confirm).toHaveBeenCalledWith(
       {
-        message: "Quit Opensteer completely?",
-        detail: expect.stringContaining("This Mac is your Home."),
+        message: "Quit Opensteer?",
+        detail: expect.stringContaining("This Mac is your Home"),
       },
       declined.shutdown.signal,
     );
@@ -239,34 +239,23 @@ describe("Dock", () => {
 });
 
 describe("quit confirmation", () => {
-  it("needs none when everything was read and nothing would stop that matters", () => {
+  it("needs none when this Mac works for no Home and nothing could be using it", () => {
     expect(quitCompletelyConfirmation(nothing)).toBeNull();
-    expect(quitCompletelyConfirmation({ ...nothing, deviceHomes: ["Office"] })).toBeNull();
   });
 
-  it("asks when it cannot tell what is using this Mac", () => {
-    expect(
-      quitCompletelyConfirmation({ ...nothing, known: false, deviceHomes: ["Office"] })?.detail,
-    ).toBe(
-      "Agents may be using this Mac. Quitting stops them and disconnects this Mac from Office. Opensteer can’t tell right now whether agents are using this Mac.",
+  it("asks in the design's words whenever a quit would stop something", () => {
+    expect(quitCompletelyConfirmation({ ...nothing, deviceHomes: ["Office"] })).toEqual({
+      message: "Quit Opensteer?",
+      detail: "Agents can’t use this Mac until you open it again.",
+    });
+    expect(quitCompletelyConfirmation({ ...nothing, lines: ["Running: Book flights"] })).not.toBe(
+      null,
     );
   });
 
-  it("names the Home and what is using this Mac", () => {
-    expect(
-      quitCompletelyConfirmation({ ...nothing, hostsHome: true, lines: ["Running: Book flights"] })
-        ?.detail,
-    ).toBe(
-      "This Mac is your Home. Quitting stops it: your phone and other devices can’t reach it, and agents stop until you open Opensteer again. Using this Mac now: Running: Book flights.",
-    );
-    expect(
-      quitCompletelyConfirmation({
-        ...nothing,
-        deviceHomes: ["Office", "Lab", "Studio"],
-        lines: ["An agent is using apps on this Mac"],
-      })?.detail,
-    ).toBe(
-      "Agents are using this Mac. Quitting stops them and disconnects this Mac from Office, Lab and Studio. Using this Mac now: An agent is using apps on this Mac.",
+  it("adds that this Mac is the Home, and when it cannot tell what is using it", () => {
+    expect(quitCompletelyConfirmation({ ...nothing, hostsHome: true, known: false })?.detail).toBe(
+      "Agents can’t use this Mac until you open it again. This Mac is your Home, so your phone and other devices can’t reach it until then either. Opensteer can’t tell right now whether agents are using this Mac.",
     );
   });
 });

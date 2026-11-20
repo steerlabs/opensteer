@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import type {
-  MenuBarHome,
-  MenuBarStatus,
-  OpensteerMenuBarBridge,
+import {
+  menuBarWords,
+  type MenuBarRow,
+  type MenuBarStatus,
+  type OpensteerMenuBarBridge,
 } from "@opensteer/client/computers";
 
 /** Electron prefixes a main-process refusal with its own words; the person needs only ours. */
@@ -12,33 +13,47 @@ export function menuBarFailure(error: unknown): string {
   return own.trim() || "That didn’t work. Try again.";
 }
 
-type Pending = (name: string, run: () => Promise<void>) => Promise<void>;
+/** The local time a Stop happened, as the popover says it. */
+export function menuBarStoppedLine(stoppedAt: string | null, locale?: string): string | null {
+  if (!stoppedAt) return null;
+  const time = new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(
+    new Date(stoppedAt),
+  );
+  return menuBarWords("menubar.stopped", { time });
+}
 
-function usePending(onFailure: (message: string | null) => void): [string | null, Pending] {
-  const [pending, setPending] = useState<string | null>(null);
-  const run: Pending = async (name, action) => {
-    setPending(name);
+type Run = (name: string, action: () => Promise<void>) => Promise<void>;
+
+function usePending(onFailure: (message: string | null) => void): [ReadonlySet<string>, Run] {
+  const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
+  const run: Run = async (name, action) => {
+    setPending((current) => new Set(current).add(name));
     onFailure(null);
     try {
       await action();
     } catch (error) {
       onFailure(menuBarFailure(error));
     } finally {
-      setPending(null);
+      setPending((current) => {
+        const next = new Set(current);
+        next.delete(name);
+        return next;
+      });
     }
   };
   return [pending, run];
 }
 
 /**
- * The menu bar item's popover: this Mac's Homes, its switches, what is running,
- * and Stop. Stop and Resume keep their own pending state, so Stop can be
- * pressed at any moment: before status loads and while anything else waits.
+ * The menu bar item's popover (design §7). Its header, Right now and Stop come
+ * from what this Mac holds, so they draw at once; Stop has its own pending
+ * state and shows before anything else has loaded.
  */
 export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBridge }) {
   const [status, setStatus] = useState<MenuBarStatus | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [stopFailure, setStopFailure] = useState<string | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [busy, act] = usePending(setFailure);
   const [stopping, stopAct] = usePending(setStopFailure);
   useEffect(() => {
@@ -57,30 +72,36 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
       detach();
     };
   }, [bridge]);
-  const stopped = status?.stopped === true;
-  const stopProblem = status?.stopProblem ?? stopFailure;
+  const stopped = status?.stop.stopped === true;
+  const stopProblem = status?.stop.problem ?? stopFailure;
   const stopSection = (
-    <section className="menu-bar__section menu-bar__stop">
-      <p className={stopped ? "menu-bar__stopped" : "menu-bar__quiet"}>
-        {status?.stopLine ?? "Stop cuts agents off this Mac."}
-      </p>
+    <section className="menu-bar__section menu-bar__stop" aria-live="polite">
       {stopped ? (
-        <button
-          className="btn btn--primary"
-          disabled={stopping === "resume"}
-          onClick={() => void stopAct("resume", () => bridge.resume())}
-          type="button"
-        >
-          Resume
-        </button>
+        <>
+          {status?.stop.stoppedAt ? (
+            <p className="menu-bar__stopped">{menuBarStoppedLine(status.stop.stoppedAt)}</p>
+          ) : null}
+          <p className="menu-bar__quiet">{menuBarWords("menubar.stopped.detail")}</p>
+          <button
+            className="btn btn--primary menu-bar__resume"
+            disabled={stopping.has("resume")}
+            onClick={() => void stopAct("resume", () => bridge.resume())}
+            type="button"
+          >
+            {menuBarWords("menubar.resume")}
+          </button>
+        </>
       ) : (
-        <button
-          className="btn btn--danger"
-          onClick={() => void stopAct("stop", () => bridge.stop())}
-          type="button"
-        >
-          Stop
-        </button>
+        <>
+          <button
+            className="menu-bar__stop-all"
+            onClick={() => void stopAct("stop", () => bridge.stop())}
+            type="button"
+          >
+            {menuBarWords("menubar.stopAll")}
+          </button>
+          {status?.stop.offline ? <p className="menu-bar__quiet">{status.stop.offline}</p> : null}
+        </>
       )}
       {stopProblem ? (
         <p className="menu-bar__failure" role="alert">
@@ -89,45 +110,76 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
       ) : null}
     </section>
   );
-  if (!status)
-    return (
-      <main className="menu-bar" aria-busy="true">
-        <p className="menu-bar__quiet">{failure ?? "Opensteer"}</p>
-        {stopSection}
-      </main>
-    );
   return (
-    <main className="menu-bar">
-      {status.homes.length === 0 ? (
-        <p className="menu-bar__quiet">This Mac isn’t connected to a Home yet.</p>
-      ) : (
-        status.homes.map((home) => (
-          <MenuBarHomeSection
-            busy={busy}
-            home={home}
-            key={`${home.role}:${home.deploymentId}`}
-            onSet={(capability, on, revision) =>
-              void act(`switch:${home.deploymentId}:${capability}`, () =>
-                bridge.setSwitch({ deploymentId: home.deploymentId, capability, on, revision }),
-              )
-            }
-          />
-        ))
-      )}
-      <section aria-labelledby="menu-bar-now" className="menu-bar__section">
-        <h2 className="menu-bar__heading" id="menu-bar-now">
-          Now on this Mac
-        </h2>
-        {status.activity.length ? (
-          <ul className="menu-bar__activity">
-            {status.activity.map((line) => (
-              <li key={line}>{line}</li>
+    <main className="menu-bar" aria-busy={status ? undefined : true}>
+      <header className="menu-bar__header" aria-live="polite">
+        <h1 className="menu-bar__title">{status?.title ?? menuBarWords("menubar.title")}</h1>
+        {status?.homes.map((home) => (
+          <div className="menu-bar__home" key={home.deploymentId}>
+            <p className="menu-bar__home-name">{home.line}</p>
+            <p className={`menu-bar__home-status menu-bar__home-status--${home.tone}`}>
+              {home.status}
+            </p>
+          </div>
+        ))}
+        {status?.moreHomes ? <p className="menu-bar__quiet">{status.moreHomes}</p> : null}
+        {status?.noHome ? <p className="menu-bar__quiet">{status.noHome}</p> : null}
+      </header>
+      {status?.needsYou ? (
+        <button
+          className="menu-bar__needs-you"
+          onClick={() => {
+            const target = status.needsYou;
+            if (target) void act("needs-you", () => bridge.openNeedsYou(target.deploymentId));
+          }}
+          type="button"
+        >
+          {status.needsYou.line}
+        </button>
+      ) : null}
+      {status?.rightNow.length ? (
+        <section aria-labelledby="menu-bar-right-now" className="menu-bar__section">
+          <h2 className="menu-bar__heading" id="menu-bar-right-now">
+            {menuBarWords("menubar.rightNow")}
+          </h2>
+          <ul className="menu-bar__rows">
+            {status.rightNow.map((row) => (
+              <RightNowRow
+                key={row.id}
+                pending={busy.has(`row:${row.id}`)}
+                row={row}
+                onStop={() => void act(`row:${row.id}`, () => bridge.stopRow({ id: row.id }))}
+              />
             ))}
           </ul>
-        ) : (
-          <p className="menu-bar__quiet">Nothing is using this Mac.</p>
-        )}
-      </section>
+        </section>
+      ) : null}
+      {status && status.homes.length ? (
+        <section aria-labelledby="menu-bar-this-mac" className="menu-bar__section">
+          <h2 className="menu-bar__heading" id="menu-bar-this-mac">
+            {menuBarWords("menubar.thisMac")}
+          </h2>
+          {status.thisMac ? (
+            <ThisMacSwitches
+              busy={busy.size > 0}
+              thisMac={status.thisMac}
+              onSet={(capability, on, revision) => {
+                const thisMac = status.thisMac;
+                if (thisMac)
+                  void act(`switch:${capability}`, () =>
+                    bridge.setSwitch({
+                      deploymentId: thisMac.deploymentId,
+                      capability,
+                      on,
+                      revision,
+                    }),
+                  );
+              }}
+            />
+          ) : null}
+          {status.thisMacNote ? <p className="menu-bar__quiet">{status.thisMacNote}</p> : null}
+        </section>
+      ) : null}
       {stopSection}
       {failure ? (
         <p className="menu-bar__failure" role="alert">
@@ -135,90 +187,146 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
         </p>
       ) : null}
       <footer className="menu-bar__footer">
-        {status.openAtLogin.available ? (
-          <label className="menu-bar__row">
-            <span>Open at login</span>
-            <input
-              checked={status.openAtLogin.on}
-              className="switch"
-              disabled={busy !== null}
-              onChange={(event) => {
-                const on = event.currentTarget.checked;
-                void act("open-at-login", () => bridge.setOpenAtLogin(on));
-              }}
-              type="checkbox"
-            />
-          </label>
-        ) : null}
         <button
           className="btn btn--ghost"
           onClick={() => void act("open", () => bridge.openApp())}
           type="button"
         >
-          Open Opensteer
+          {menuBarWords("menubar.open")}
         </button>
         <button
           className="btn btn--ghost"
-          onClick={() => void act("quit", () => bridge.quitCompletely())}
+          onClick={() => void act("settings", () => bridge.openSettings())}
           type="button"
         >
-          Quit Opensteer Completely
+          {menuBarWords("menubar.settings")}
+        </button>
+        <button
+          aria-expanded={moreOpen}
+          aria-label={menuBarWords("menubar.more")}
+          className="btn btn--ghost menu-bar__more"
+          onClick={() => setMoreOpen((open) => !open)}
+          type="button"
+        >
+          •••
         </button>
       </footer>
+      {moreOpen ? (
+        <div className="menu-bar__menu" role="menu">
+          {status?.openAtLogin.available ? (
+            <label
+              className="menu-bar__row"
+              role="menuitemcheckbox"
+              aria-checked={status.openAtLogin.on}
+            >
+              <span>{menuBarWords("menubar.openAtLogin")}</span>
+              <input
+                checked={status.openAtLogin.on}
+                className="switch"
+                disabled={busy.has("open-at-login")}
+                onChange={(event) => {
+                  const on = event.currentTarget.checked;
+                  void act("open-at-login", () => bridge.setOpenAtLogin(on));
+                }}
+                type="checkbox"
+              />
+            </label>
+          ) : null}
+          <button
+            className="btn btn--ghost menu-bar__quit"
+            onClick={() => void act("quit", () => bridge.quitCompletely())}
+            role="menuitem"
+            type="button"
+          >
+            {menuBarWords("menubar.quit")}
+          </button>
+        </div>
+      ) : null}
     </main>
   );
 }
 
-function MenuBarHomeSection({
+function RightNowRow({
+  row,
+  pending,
+  onStop,
+}: {
+  readonly row: MenuBarRow;
+  readonly pending: boolean;
+  readonly onStop: () => void;
+}) {
+  const name = row.actor.name ?? row.actor.label;
+  return (
+    <li className="menu-bar__row menu-bar__activity-row">
+      <span
+        aria-hidden="true"
+        className="menu-bar__mark"
+        data-kind={row.kind}
+        data-origin={row.actor.markOrigin ?? undefined}
+      >
+        {name.slice(0, 1).toUpperCase()}
+      </span>
+      <span className="menu-bar__row-text">
+        <span className="menu-bar__row-title">{name}</span>
+        <span className="menu-bar__detail">{row.using}</span>
+      </span>
+      {row.stoppable ? (
+        <button
+          aria-label={`${menuBarWords("menubar.stop")} ${name}`}
+          className="btn btn--ghost menu-bar__row-stop"
+          disabled={pending}
+          onClick={onStop}
+          type="button"
+        >
+          {menuBarWords("menubar.stop")}
+        </button>
+      ) : null}
+    </li>
+  );
+}
+
+function ThisMacSwitches({
+  thisMac,
   busy,
-  home,
   onSet,
 }: {
-  readonly busy: string | null;
-  readonly home: MenuBarHome;
+  readonly thisMac: NonNullable<MenuBarStatus["thisMac"]>;
+  readonly busy: boolean;
   readonly onSet: (
-    capability: MenuBarHome["switches"][number]["capability"],
+    capability: NonNullable<MenuBarStatus["thisMac"]>["switches"][number]["capability"],
     on: boolean,
     revision: number,
   ) => void;
 }) {
-  const titleId = `menu-bar-home-${home.role}-${home.deploymentId}`;
-  const revision = home.revision;
+  const revision = thisMac.revision;
   return (
-    <section aria-labelledby={titleId} className="menu-bar__section">
-      <p className={`menu-bar__home menu-bar__home--${home.tone}`} id={titleId}>
-        {home.line}
-      </p>
-      {home.switches.length ? (
-        <ul className="menu-bar__switches">
-          {home.switches.map((item) => {
-            const labelId = `${titleId}-${item.capability}`;
-            return (
-              <li className="menu-bar__row" key={item.capability}>
-                <span className="menu-bar__switch-text">
-                  <span id={labelId}>{item.label}</span>
-                  <span className="menu-bar__detail">{item.detail}</span>
-                </span>
-                {item.fixed ? (
-                  <span className="chip chip--ok">On</span>
-                ) : (
-                  <input
-                    aria-labelledby={labelId}
-                    checked={item.on}
-                    className="switch"
-                    disabled={busy !== null || !home.editable || revision === null}
-                    onChange={(event) => {
-                      if (revision !== null)
-                        onSet(item.capability, event.currentTarget.checked, revision);
-                    }}
-                    type="checkbox"
-                  />
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-    </section>
+    <ul className="menu-bar__rows">
+      {thisMac.switches.map((item) => {
+        const labelId = `menu-bar-switch-${item.capability}`;
+        return (
+          <li className="menu-bar__row" key={item.capability}>
+            <span className="menu-bar__row-text">
+              <span id={labelId}>{item.label}</span>
+              <span className="menu-bar__detail">{item.detail}</span>
+            </span>
+            {item.fixed ? (
+              <span className="chip chip--ok">{menuBarWords("menubar.switch.on")}</span>
+            ) : (
+              <input
+                aria-labelledby={labelId}
+                checked={item.on}
+                className="switch"
+                disabled={busy || !thisMac.editable || revision === null}
+                onChange={(event) => {
+                  if (revision !== null)
+                    onSet(item.capability, event.currentTarget.checked, revision);
+                }}
+                type="checkbox"
+              />
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }

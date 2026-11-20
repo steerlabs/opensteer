@@ -173,7 +173,7 @@ import { DesktopPersonalRemoteAccessService } from "./connections/personal-remot
 import { TailscaleShare, tailscaleCommand } from "./connections/tailscale.js";
 import { DesktopConnectCredentialStore } from "./secrets/connect-credential-store.js";
 import { VerifiedDesktopSecretCryptography } from "./secrets/verified-secret-cryptography.js";
-import { AccountConnectClient } from "@opensteer/client/connections";
+import { AccountCloudComputerClient, AccountConnectClient } from "@opensteer/client/connections";
 import { CloudflaredConnectorSupervisor } from "./supervisor/cloudflared-connector-supervisor.js";
 import {
   PersonalHostConnectOrchestrator,
@@ -205,6 +205,8 @@ import { DesktopLocalStop, localStopFileStore } from "./app/local-stop.js";
 import { AgentAdmission } from "./app/agent-admission.js";
 import { activityIdle, DesktopActivity } from "./app/desktop-activity.js";
 import { DesktopQuitRouting } from "./app/quit-routing.js";
+import { appRoutes, appRouteScript } from "./app/app-route.js";
+import { menuBarWords } from "@opensteer/client/computers";
 import {
   backgroundNoticeBody,
   backgroundNoticeFileStore,
@@ -1336,6 +1338,7 @@ async function runDesktop(
   const loginSession = new DesktopLoginSession(powerMonitor, process.platform);
   const detachLoginSession = integrationAuthorizations.useLoginSession(loginSession);
   let workspaceContents: Electron.WebContents | null = null;
+  let noteBadgeCount: (count: number) => void = () => undefined;
   const unregisterBridge = registerDesktopBridge({
     updates: {
       state: () => updater.state(),
@@ -1353,6 +1356,9 @@ async function runDesktop(
           fetch: serviceNetwork.fetch.bind(serviceNetwork),
         })
       : null,
+    cloudComputers: new AccountCloudComputerClient({
+      transport: loaded.config.accountUrl ? accountDirectory : null,
+    }),
     teamSessions: loaded.config.accountUrl
       ? new DesktopTeamSessions({
           entry: new NativeTeamEntry({
@@ -1464,6 +1470,7 @@ async function runDesktop(
           { activate: true },
         );
       },
+      badgeCount: (count) => noteBadgeCount(count),
     },
     tailscale: {
       share: () => personalRemote.shareOverTailscale(),
@@ -1597,6 +1604,7 @@ async function runDesktop(
     return manifest
       ? {
           deploymentId: manifest.deploymentId,
+          name: personal.status.name ?? (await computerName()),
           state: personal.status.state,
           runnerId: manifest.runnerId,
         }
@@ -1645,11 +1653,25 @@ async function runDesktop(
         : null;
     },
     host: ownerHost,
-    local: localActivity,
-    stop: () => ({ stopped: localStop.stopped, problem: localStop.problem }),
+    local: () => ({
+      apps: computerUse.agentSessionDetails(),
+      tabs: agentBrowserGate.agentTabDetails(),
+    }),
+    stop: () => ({
+      stopped: localStop.stopped,
+      stoppedAt: localStop.stoppedAt,
+      problem: localStop.problem,
+    }),
+    // An agent's app session stops as the helper's own Stop ends one. A tab or
+    // shell work is stopped through its Home, so only that Home's Stop ends it.
+    stopRow: (id) => id.startsWith("apps:") && computerUse.stopAgentSession(id.slice(5)),
     openAtLogin: async () => openAtLogin.effective(await openAtLoginEligibility()),
     log: reportEvent,
   });
+  noteBadgeCount = (count) => {
+    const selected = access.snapshot().selectedDeploymentId;
+    if (selected) menuBarService.noteNeedsYou(selected, count);
+  };
   // Quitting and updating read what is using this Mac fresh, from one place.
   const activity = new DesktopActivity({
     hostedHome,
@@ -1690,7 +1712,7 @@ async function runDesktop(
       app.focus({ steal: true });
       const { response } = await dialog.showMessageBox({
         type: "warning",
-        buttons: ["Quit Completely", "Cancel"],
+        buttons: [menuBarWords("menubar.quit"), menuBarWords("common.cancel")],
         defaultId: 1,
         cancelId: 1,
         message,
@@ -1774,6 +1796,18 @@ async function runDesktop(
     log: reportEvent,
   });
   backgroundUpdate.start(shutdown.signal);
+  const openAppAt = async (
+    route: (typeof appRoutes)[keyof typeof appRoutes],
+    deploymentId?: string,
+  ) => {
+    if (deploymentId && access.snapshot().selectedDeploymentId !== deploymentId)
+      await access.select(deploymentId);
+    app.focus({ steal: true });
+    await mainProcess.activate();
+    const contents = workspaceContents;
+    if (contents && !contents.isDestroyed())
+      await contents.executeJavaScript(appRouteScript(route)).catch(() => undefined);
+  };
   const menuBarChanged = () => menuBarService.changed();
   const detachMenuBarSources = [
     agentBrowserGate.subscribe(() => {
@@ -1782,6 +1816,7 @@ async function runDesktop(
     }),
     localStop.subscribe(menuBarChanged),
     admission.subscribe(menuBarChanged),
+    computerUse.onAgentSessionsChanged(menuBarChanged),
     localRunner.subscribe(menuBarChanged),
     personal.subscribe(menuBarChanged),
     access.subscribe(menuBarChanged),
@@ -1796,11 +1831,12 @@ async function runDesktop(
         app.focus({ steal: true });
         await mainProcess.activate();
       },
+      openNeedsYou: (deploymentId) => openAppAt(appRoutes.needsYou, deploymentId),
+      openSettings: () => openAppAt(appRoutes.settings),
       quitCompletely: async () => {
         await background?.quitCompletely();
       },
     },
-    stopped: () => localStop.stopped,
     ipcMain,
     screen,
     createTray: (image) => new Tray(image),
@@ -1835,6 +1871,7 @@ async function runDesktop(
   // Returning is also when a grant switched on in System Settings should show.
   const refreshOnSystemResume = () => {
     if (shutdown.requested) return;
+    localRunner.notifyAwake();
     access.wake();
     const iphoneResumeRevision = ++iphonePowerRevision;
     void iphoneSuspension

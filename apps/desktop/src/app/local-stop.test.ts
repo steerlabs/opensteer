@@ -22,24 +22,35 @@ function fixture(input: { saved?: boolean; store?: Partial<LocalStopStore> } = {
     }),
   });
   let stored = input.saved ?? false;
+  let storedAt: string | null = input.saved ? "2026-11-20T09:15:00.000Z" : null;
   const store: LocalStopStore = {
-    load: async () => stored,
+    load: async () => ({ stopped: stored, at: storedAt }),
     save: async (value) => {
-      calls.push(`save:${value}:${admission.open ? "open" : "closed"}`);
-      stored = value;
+      calls.push(`save:${value.stopped}:${admission.open ? "open" : "closed"}`);
+      stored = value.stopped;
+      storedAt = value.at;
     },
     ...input.store,
   };
   const log = vi.fn();
   const computerUse = part("computer-use");
   const stop = new DesktopLocalStop({
+    now: () => new Date("2026-11-20T10:42:00.000Z"),
     admission,
     computerUse,
     runners: part("runners"),
     store,
     log,
   });
-  return { admission, calls, computerUse, log, stop, stored: () => stored };
+  return {
+    admission,
+    calls,
+    computerUse,
+    log,
+    stop,
+    stored: () => stored,
+    storedAt: () => storedAt,
+  };
 }
 
 it("keeps admission closed until the saved choice is read, then opens it", async () => {
@@ -82,14 +93,14 @@ it("reports a Stop it could not save, stays stopped, and saves on the retry", as
     store: {
       save: async (value) => {
         if (fail) throw new Error("disk full");
-        saves.push(value);
+        saves.push(value.stopped);
       },
     },
   });
   await stop.restore();
   await expect(stop.stop()).rejects.toThrow(/couldn’t save/);
   expect(admission.open).toBe(false);
-  expect(stop.problem).toMatch(/Press Stop to try again/);
+  expect(stop.problem).toMatch(/Press Stop everything to try again/);
   fail = false;
   await stop.stop();
   expect(saves).toEqual([true]);
@@ -137,7 +148,7 @@ it("lets a Stop pressed while Resume saves win", async () => {
           first = false;
           await held;
         }
-        writes.push(value);
+        writes.push(value.stopped);
       },
     },
   });
@@ -155,9 +166,25 @@ it("keeps the person's Stop in a file and treats an unreadable one as unknown", 
   directories.push(directory);
   const file = path.join(directory, "local-stop.json");
   const store = localStopFileStore(file);
-  await expect(store.load()).resolves.toBe(false);
-  await store.save(true);
-  await expect(store.load()).resolves.toBe(true);
+  await expect(store.load()).resolves.toEqual({ stopped: false, at: null });
+  await store.save({ stopped: true, at: "2026-11-20T10:42:00.000Z" });
+  await expect(store.load()).resolves.toEqual({ stopped: true, at: "2026-11-20T10:42:00.000Z" });
+  await writeFile(file, JSON.stringify({ stopped: true }));
+  await expect(store.load()).resolves.toEqual({ stopped: true, at: null });
   await writeFile(file, "{");
   await expect(store.load()).rejects.toThrow();
+});
+
+it("says when everything was stopped, across a relaunch, and forgets it on Resume", async () => {
+  const { stop, storedAt } = fixture();
+  await stop.restore();
+  expect(stop.stoppedAt).toBeNull();
+  await stop.stop();
+  expect(stop.stoppedAt).toBe("2026-11-20T10:42:00.000Z");
+  expect(storedAt()).toBe("2026-11-20T10:42:00.000Z");
+  const relaunched = fixture({ saved: true });
+  await relaunched.stop.restore();
+  expect(relaunched.stop.stoppedAt).toBe("2026-11-20T09:15:00.000Z");
+  await relaunched.stop.resume();
+  expect(relaunched.stop.stoppedAt).toBeNull();
 });

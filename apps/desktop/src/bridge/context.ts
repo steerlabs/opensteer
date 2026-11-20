@@ -164,6 +164,8 @@ export interface DesktopBridgeOptions {
   readonly teamLinks?: import("../app/team-links.js").DesktopTeamLinks;
   /** Account's hosted-team calls; absent without an Account service. */
   readonly accountTeams?: import("@opensteer/client/team").AccountTeamsClient | null;
+  /** The person's Cloud Computers through main's Account client; absent without an Account service. */
+  readonly cloudComputers?: import("@opensteer/client/connections").CloudComputerAccount | null;
   /** Entering teams with the Account's identity; absent without an Account service. */
   readonly teamSessions?: import("../app/team-sessions.js").DesktopTeamSessions | null;
   readonly personalDataReset?: {
@@ -192,6 +194,8 @@ export interface DesktopBridgeOptions {
   readonly notifications: {
     /** This app's page in the system's notification settings, where the system has one. */
     readonly openSettings: () => Promise<void>;
+    /** The window's live Needs you count for the Home it shows, as it badges the app. */
+    readonly badgeCount?: (count: number) => void;
   };
   readonly tailscale: {
     readonly share: () => Promise<DesktopTailscaleShareResult>;

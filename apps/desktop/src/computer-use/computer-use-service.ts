@@ -7,6 +7,7 @@ import { DeploymentIdSchema } from "@opensteer/core";
 import {
   ComputerViewHelperRequestSchema,
   ComputerUseHelperRequestSchema,
+  ComputerUseSessionIdSchema,
   computerUseMaxInstalledApps,
   computerUseMaxTimeoutMs,
   computerUseOutOfTimeSentence,
@@ -23,6 +24,7 @@ import { openAgentAdmission, type AgentAdmission } from "../app/agent-admission.
 import {
   ComputerUseBridgeServer,
   ComputerUseSessionOwnership,
+  type ComputerUseAgentSession,
   computerUseStoppedSentence,
   type ComputerUseBridgeHelperPort,
   type ComputerUseBridgeServerOptions,
@@ -376,6 +378,24 @@ export class ComputerUseService {
   /** Agent sessions open on this Mac's apps, across every slot. */
   get agentSessions(): number {
     return this.#ownership.sessions;
+  }
+
+  /** Each agent session on this Mac's apps, as far as this Mac knows it. */
+  agentSessionDetails(): readonly ComputerUseAgentSession[] {
+    return this.#ownership.agentSessions();
+  }
+
+  /** The person's Stop for one session, from the menu bar; false when it already ended. */
+  stopAgentSession(sessionId: string): boolean {
+    const parsed = ComputerUseSessionIdSchema.safeParse(sessionId);
+    if (!parsed.success) return false;
+    for (const bridge of this.#bridges.values())
+      if (bridge.endAgentSession(parsed.data)) return true;
+    return false;
+  }
+
+  onAgentSessionsChanged(listener: () => void): () => void {
+    return this.#ownership.subscribe(listener);
   }
 
   async stop(): Promise<void> {

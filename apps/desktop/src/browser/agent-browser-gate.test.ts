@@ -12,9 +12,11 @@ const origins = new Map<string, "agent" | "person">([
 ]);
 const inner: AttachTicketVerifier = {
   verify: async (token) =>
-    ({ creationOrigin: origins.get(token) ?? "person" }) as Awaited<
-      ReturnType<AttachTicketVerifier["verify"]>
-    >,
+    ({
+      creationOrigin: origins.get(token) ?? "person",
+      sessionId: `bsn_${token}`,
+      identity: token === "agent-ticket" ? { kind: "fresh" } : { kind: "profile-local" },
+    }) as Awaited<ReturnType<AttachTicketVerifier["verify"]>>,
 };
 
 function fixture() {
@@ -126,6 +128,7 @@ describe("the person's Stop for this Mac's browsers", () => {
     const agent = await open("agent-ticket");
     await open("person-ticket");
     expect(gate.agentTabs).toBe(1);
+    expect(gate.agentTabDetails()).toEqual([{ sessionId: "bsn_agent-ticket", profile: false }]);
     await agent.close();
     await agent.close();
     expect(gate.agentTabs).toBe(0);
