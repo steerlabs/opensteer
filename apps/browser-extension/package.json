@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "tsx scripts/build.mjs",
+    "build:live-tabs": "tsx scripts/build.mjs --live-tabs",
     "test:integration": "tsx scripts/integration.mjs",
     "typecheck": "tsc --noEmit"
   },

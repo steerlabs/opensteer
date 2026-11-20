@@ -7,6 +7,7 @@ import {
   type Status,
   type UiRequest,
 } from "./messages.js";
+import { liveTabsOnly } from "./variant.js";
 import { h, hostOf, icon, relativeTime, requireElement } from "./ui.js";
 
 const root = requireElement<HTMLElement>("#popup");
@@ -124,7 +125,10 @@ function fix(connection: ConnectionView): HTMLElement | null {
             h(
               "a.btn.btn--small.btn--primary",
               {
-                href: new URL("/browser-extension.zip", connection.origin).href,
+                href: new URL(
+                  liveTabsOnly ? "/browser-live-tabs-extension.zip" : "/browser-extension.zip",
+                  connection.origin,
+                ).href,
                 target: "_blank",
                 "data-key": `download:${key}`,
               },
@@ -293,9 +297,11 @@ function actions(connection: ConnectionView): HTMLElement {
         "p",
         {},
         h("strong", {}, `Disconnect Chrome from ${connection.deploymentName}?`),
-        connection.state === "connected"
-          ? ` ${connection.deploymentName} removes this Chrome too. Agents there can't use your Chrome sign-ins until you connect again.`
-          : " Agents there can't use your Chrome sign-ins until you connect again. Opensteer will show this Chrome as offline until you remove it there.",
+        liveTabsOnly
+          ? " This stops sharing any live tabs with that Home."
+          : connection.state === "connected"
+            ? ` ${connection.deploymentName} removes this Chrome too. Agents there can't use your Chrome sign-ins until you connect again.`
+            : " Agents there can't use your Chrome sign-ins until you connect again. Opensteer will show this Chrome as offline until you remove it there.",
       ),
       h(
         "div.confirm__actions",
@@ -348,6 +354,61 @@ function actions(connection: ConnectionView): HTMLElement {
   );
 }
 
+async function shareCurrentTab(connection: ConnectionView): Promise<void> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id !== undefined) {
+    await act({ sourceId: connection.sourceId, type: "ui.tab.share", tabId: tab.id });
+  } else {
+    problem = "Chrome couldn't find the tab to share.";
+    render(true);
+  }
+}
+
+function sharedTabs(connection: ConnectionView): HTMLElement | null {
+  if (!connection.canShareTab) return null;
+  return h(
+    "section.sites",
+    { "aria-label": "Shared Chrome tabs" },
+    h("h3.sites__title", {}, "Shared tabs"),
+    h(
+      "p",
+      {},
+      "The agent can act as you, in this tab, on any site this Chrome is signed in to, until you stop. It can read cookies from this Chrome profile.",
+    ),
+    button(
+      "btn.btn--small",
+      "Share this tab with Opensteer",
+      () => void shareCurrentTab(connection),
+      { "data-key": `tab-share:${connection.sourceId}` },
+    ),
+    h(
+      "ul.sites__list",
+      {},
+      ...connection.sharedTabs.map((tab) =>
+        h(
+          "li.site",
+          {},
+          h("span", { title: tab.url }, tab.title || tab.url),
+          button(
+            "site__action",
+            "Stop sharing",
+            () =>
+              void act({
+                sourceId: connection.sourceId,
+                shareId: tab.shareId,
+                type: "ui.tab.stop",
+              }),
+            {
+              "aria-label": `Stop sharing ${tab.title || tab.url}`,
+              "data-key": `tab-stop:${tab.shareId}`,
+            },
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 function deployment(connection: ConnectionView): HTMLElement {
   const sharing = connection.sites.filter((site) => !site.stopped).length;
   return h(
@@ -361,36 +422,56 @@ function deployment(connection: ConnectionView): HTMLElement {
       statusLabel(connection.state),
     ),
     fix(connection),
-    budgetNotice(connection),
-    h(
-      "div.sites",
-      {},
-      h(
-        "div.sites__head",
-        {},
-        h("h3.sites__title", {}, "Shared sites"),
-        connection.sites.length ? h("span", {}, `${sharing} sharing`) : null,
-      ),
-      connection.sites.length
-        ? h(
-            "ul.sites__list",
-            {
-              tabindex: connection.sites.length > 6 ? "0" : undefined,
-              "aria-label": "Shared sites",
-            },
-            ...connection.sites.map((site) => siteRow(connection, site)),
-          )
-        : h(
-            "p.sites__empty",
+    liveTabsOnly ? null : budgetNotice(connection),
+    liveTabsOnly
+      ? null
+      : h(
+          "div.sites",
+          {},
+          h(
+            "div.sites__head",
             {},
-            `None yet. A site appears here the first time ${connection.deploymentName} uses your sign-in for it.`,
+            h("h3.sites__title", {}, "Shared sites"),
+            connection.sites.length ? h("span", {}, `${sharing} sharing`) : null,
           ),
-    ),
+          connection.sites.length
+            ? h(
+                "ul.sites__list",
+                {
+                  tabindex: connection.sites.length > 6 ? "0" : undefined,
+                  "aria-label": "Shared sites",
+                },
+                ...connection.sites.map((site) => siteRow(connection, site)),
+              )
+            : h(
+                "p.sites__empty",
+                {},
+                `None yet. A site appears here the first time ${connection.deploymentName} uses your sign-in for it.`,
+              ),
+        ),
+    sharedTabs(connection),
     actions(connection),
   );
 }
 
 function empty(): HTMLElement {
+  if (liveTabsOnly) {
+    return h(
+      "section.empty",
+      {},
+      h("p.empty__lead", {}, "Pair Opensteer Live Tabs with your Home"),
+      h(
+        "p.empty__text",
+        {},
+        "Open a Chrome pairing link from your Home and choose Pair Opensteer Live Tabs.",
+      ),
+      h(
+        "p.empty__text",
+        {},
+        "The agent can act as you, in a tab you share, on any site this Chrome is signed in to, until you stop. Chrome shows its debugging bar while a tab is in use.",
+      ),
+    );
+  }
   return h(
     "section.empty",
     {},

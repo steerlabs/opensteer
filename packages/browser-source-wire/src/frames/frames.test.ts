@@ -34,7 +34,7 @@ describe("wire negotiation", () => {
   it("speaks wire 4 to a peer that states none and caps a newer peer at current", () => {
     expect(negotiateWire(null)).toEqual({ kind: "negotiated", wire: 4 });
     expect(negotiateWire(5)).toEqual({ kind: "negotiated", wire: 5 });
-    expect(negotiateWire(99)).toEqual({ kind: "negotiated", wire: 5 });
+    expect(negotiateWire(99)).toEqual({ kind: "negotiated", wire: 6 });
     expect(negotiateWire(3)).toEqual({ kind: "below-floor", supportedVersion: 4 });
   });
 });

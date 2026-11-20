@@ -168,8 +168,18 @@ it("bridges nested flat child events through the router without exposing the phy
   });
   await client.send({ sessionId, method: "Network.getAllCookies" });
   expect(peer.commands.at(-1)).toMatchObject({ method: "Network.getAllCookies" });
-  await expect(client.send({ method: "Storage.getCookies" })).rejects.toThrow(
-    "whole browser context",
+  for (const method of [
+    "Storage.getCookies",
+    "Browser.grantPermissions",
+    "Browser.setDownloadBehavior",
+  ]) {
+    await expect(client.send({ method })).rejects.toThrow("whole browser context");
+  }
+  for (const method of ["Target.createTarget", "Target.closeTarget"]) {
+    await expect(client.send({ method })).rejects.toThrow("unavailable");
+  }
+  await expect(client.send({ sessionId, method: "Page.startScreencast" })).rejects.toThrow(
+    "unavailable",
   );
   await expect(
     client.send({ sessionId, method: "Emulation.setDeviceMetricsOverride" }),

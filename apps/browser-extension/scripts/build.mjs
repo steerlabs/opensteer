@@ -7,10 +7,15 @@ import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 import { zipSync } from "fflate";
 import lockfile from "proper-lockfile";
-import { opensteerChromeExtensionId } from "../../../packages/protocol/src/browser-sources.ts";
+import {
+  opensteerChromeExtensionId,
+  opensteerChromeLiveTabsExtensionId,
+} from "../../../packages/protocol/src/browser-sources.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const output = path.join(root, "dist");
+const liveTabs = process.argv.includes("--live-tabs");
+const output = path.join(root, liveTabs ? "dist-live-tabs" : "dist");
+const expectedId = liveTabs ? opensteerChromeLiveTabsExtensionId : opensteerChromeExtensionId;
 const require = createRequire(import.meta.url);
 
 /** Chrome derives an unpacked extension's ID from the SHA-256 of its public key. */
@@ -156,11 +161,16 @@ try {
   }
   staging = await mkdtemp(path.join(root, ".browser-extension-stage-"));
 
-  const manifest = JSON.parse(await readFile(path.join(root, "src/manifest.json"), "utf8"));
+  const manifest = JSON.parse(
+    await readFile(
+      path.join(root, liveTabs ? "src/manifest.live-tabs.json" : "src/manifest.json"),
+      "utf8",
+    ),
+  );
   const derivedId = extensionIdFromKey(manifest.key);
-  if (derivedId !== opensteerChromeExtensionId) {
+  if (derivedId !== expectedId) {
     throw new Error(
-      `The manifest key derives extension ID ${derivedId}, but Opensteer expects ${opensteerChromeExtensionId}. Web pages find the extension by that ID.`,
+      `The manifest key derives extension ID ${derivedId}, but Opensteer expects ${expectedId}. Web pages find the extension by that ID.`,
     );
   }
   const releasePackage = JSON.parse(
@@ -174,14 +184,16 @@ try {
   }
   manifest.version = releasePackage.version;
 
+  const entryDirectory = liveTabs ? "src/live-tabs" : "src";
   await build({
     absWorkingDir: root,
     bundle: true,
     entryPoints: {
-      connect: "src/connect.ts",
-      popup: "src/popup.ts",
-      worker: "src/worker.ts",
+      connect: `${entryDirectory}/connect.ts`,
+      popup: `${entryDirectory}/popup.ts`,
+      worker: `${entryDirectory}/worker.ts`,
     },
+    define: { OPENSTEER_LIVE_TABS: JSON.stringify(liveTabs) },
     format: "esm",
     legalComments: "none",
     minify: true,
@@ -193,7 +205,20 @@ try {
     await cp(path.join(root, "src", filename), path.join(staging, filename));
   }
 
-  await writeFile(path.join(staging, "INSTALL.txt"), installText);
+  await writeFile(
+    path.join(staging, "INSTALL.txt"),
+    liveTabs
+      ? `Opensteer Live Tabs for Chrome
+
+Load this folder from chrome://extensions using Developer mode and Load unpacked.
+Open an Opensteer Chrome pairing link in this Chrome and choose Pair Live Tabs.
+
+An agent can act as you, in a tab you share, on any site this Chrome is signed in
+to, until you stop. Chrome shows a debugging bar while a tab is in use.
+`
+      : installText,
+  );
+
   await mkdir(path.join(staging, "icons"));
   for (const [file, size, coverage] of icons) {
     await writeFile(path.join(staging, file), markPng(size, coverage));
@@ -254,7 +279,10 @@ try {
   }
   const webPublic = path.resolve(root, "../web/public");
   await mkdir(webPublic, { recursive: true });
-  const zipPath = path.join(webPublic, "browser-extension.zip");
+  const zipPath = path.join(
+    webPublic,
+    liveTabs ? "browser-live-tabs-extension.zip" : "browser-extension.zip",
+  );
   const stagedZip = `${zipPath}.${process.pid}.tmp`;
   try {
     await writeFile(stagedZip, zipSync(archive, { level: 6 }));

@@ -6,6 +6,7 @@ import {
   type InvitationCheck,
   type UiProblem,
 } from "./messages.js";
+import { liveTabsOnly } from "./variant.js";
 import { h, hostOf, icon, requireElement } from "./ui.js";
 
 type PageState = "verifying" | "idle" | "connecting" | "success" | "error";
@@ -122,7 +123,11 @@ function problemCopy(problem: Pick<UiProblem, "code" | "deploymentName" | "origi
       title: "This isn't the Opensteer that sent you",
     },
     missing: {
-      body: ["In Opensteer, open Settings → Chrome and choose Connect Chrome."],
+      body: [
+        liveTabsOnly
+          ? "Open a Chrome pairing link from Opensteer and choose Pair Opensteer Live Tabs. The agent can act as you, in a tab you share, on any site this Chrome is signed in to, until you stop. Chrome shows its debugging bar while a tab is in use."
+          : "In Opensteer, open Settings → Chrome and choose Connect Chrome.",
+      ],
       title: "Open this from Opensteer",
     },
     "not-from-opensteer": {
@@ -180,7 +185,13 @@ function showProblem(
     buttons.push(
       h(
         "a.btn.btn--primary",
-        { href: new URL("/browser-extension.zip", full.origin).href, download: "" },
+        {
+          href: new URL(
+            liveTabsOnly ? "/browser-live-tabs-extension.zip" : "/browser-extension.zip",
+            full.origin,
+          ).href,
+          download: "",
+        },
         icon("download"),
         "Download update",
       ),
@@ -212,19 +223,28 @@ function showFinished(heading: string, text: string, close: boolean): void {
 function showReady(check: InvitationCheck, name: string, invitation: string): void {
   const host = hostOf(check.origin);
   setState("idle");
-  title.replaceChildren(...addressTitle("Connect Chrome to Opensteer at ", check.origin));
+  title.replaceChildren(
+    ...addressTitle(
+      liveTabsOnly ? "Pair Live Tabs with Opensteer at " : "Connect Chrome to Opensteer at ",
+      check.origin,
+    ),
+  );
   showDeployment(check.deploymentName, check.origin);
-  body.textContent = `This Opensteer can use your sign-in for a website only after you allow that site there. Chrome notifies you each time a new site is shared.`;
+  body.textContent = liveTabsOnly
+    ? "The agent can act as you, in a tab you share, on any site this Chrome is signed in to, until you stop. Chrome shows its debugging bar while a tab is in use. Opensteer uses Chrome’s navigation permission to follow sign-in popups opened by a tab you’re sharing. The agent can read cookies from this Chrome profile."
+    : "This Opensteer can use your sign-in for a website only after you allow that site there. Chrome notifies you each time a new site is shared.";
   nameInput.value = check.name ?? name;
   note.hidden = check.existing !== "reconnect";
   note.textContent =
     check.existing === "reconnect"
-      ? `This replaces this Chrome's earlier connection to ${host}. Sites you stopped sharing stay stopped.`
+      ? liveTabsOnly
+        ? `This replaces the earlier Live Tabs pairing with ${host}.`
+        : `This replaces this Chrome's earlier connection to ${host}. Sites you stopped sharing stay stopped.`
       : "";
   actions.hidden = true;
   form.hidden = false;
   submit.removeAttribute("aria-disabled");
-  submit.textContent = "Connect";
+  submit.textContent = liveTabsOnly ? "Pair Live Tabs" : "Connect";
   announce(title.textContent);
   nameInput.focus();
   nameInput.setSelectionRange(nameInput.value.length, nameInput.value.length);

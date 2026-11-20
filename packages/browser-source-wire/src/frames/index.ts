@@ -39,3 +39,4 @@ export {
   type WireNegotiation,
   type WireQuery,
 } from "./versions.js";
+export * from "./tab.js";

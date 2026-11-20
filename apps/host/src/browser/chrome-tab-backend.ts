@@ -71,6 +71,7 @@ export class ChromeTabBackend implements BrowserCdpBackend {
     if (
       geometry.test(method) ||
       method === "DOM.setFileInputFiles" ||
+      method === "Page.startScreencast" ||
       method === "Target.createTarget" ||
       method === "Target.closeTarget" ||
       method === "Page.close"
@@ -331,11 +332,15 @@ export class ChromeTabBackend implements BrowserCdpBackend {
         autoAttach: params.autoAttach === true,
         flatten: true,
         waitForDebuggerOnStart: false,
-        filter: [
-          { type: "iframe", exclude: false },
-          { type: "worker", exclude: false },
-          { exclude: true },
-        ],
+        ...(params.autoAttach === true
+          ? {
+              filter: [
+                { type: "iframe", exclude: false },
+                { type: "worker", exclude: false },
+                { exclude: true },
+              ],
+            }
+          : {}),
       };
     }
     return this.#sendCdp(tab, session, method, params);

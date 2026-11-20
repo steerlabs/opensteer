@@ -14,6 +14,8 @@ export const UiRequestSchema = z.discriminatedUnion("type", [
   z.object({ site: BrowserSiteSchema, sourceId, type: z.literal("ui.site.stop") }),
   z.object({ site: BrowserSiteSchema, sourceId, type: z.literal("ui.site.share") }),
   z.object({ sourceId, type: z.literal("ui.budget.reset") }),
+  z.object({ sourceId, tabId: z.number().int().nonnegative(), type: z.literal("ui.tab.share") }),
+  z.object({ sourceId, shareId: z.uuid(), type: z.literal("ui.tab.stop") }),
   z.object({ sourceId, type: z.literal("ui.retry") }),
   z.object({ sourceId, type: z.literal("ui.disconnect") }),
 ]);
@@ -43,6 +45,10 @@ export const ConnectionViewSchema = z.object({
   deploymentName: z.string(),
   name: z.string(),
   origin: z.string(),
+  canShareTab: z.boolean().default(false),
+  sharedTabs: z
+    .array(z.object({ shareId: z.uuid(), title: z.string(), url: z.string() }))
+    .default([]),
   sites: z.array(
     z.object({
       lastSharedAt: z.number(),

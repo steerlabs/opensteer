@@ -7,13 +7,17 @@ import {
 } from "@opensteer/browser-source-wire/frozen";
 import {
   browserSourceWireFloor,
+  browserSourceTabWire,
+  browserSourceTabFrameBytes,
+  browserSourceTabBufferedBytes,
   readHostMessage,
-  browserSourceWireCurrent,
   maxBrowserSourceFrameBytes,
   type BrowserSourceClientFrame as BrowserSourceClientMessage,
   type BrowserSourceHostFrame as BrowserSourceHostMessage,
   type BrowserSourceStatus,
 } from "@opensteer/browser-source-wire/frames";
+import { extensionWire, liveTabsOnly } from "./variant.js";
+import { ChromeTabDebugger, type ChromeTabLink } from "./tab-debugger.js";
 import { readSiteCookies } from "./cookies.js";
 import {
   ConnectProblem,
@@ -55,18 +59,24 @@ interface Link {
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   socket: WebSocket | null;
   state: ConnectionState;
+  tabLink?: ChromeTabLink;
 }
 
 interface Handshake {
   /** The nonce this socket's challenge sent; the Host signs it before or instead of its proof. */
   nonce: string | null;
   proofAccepted: boolean;
+  wire: number;
 }
 
 type HeldState =
   "ended" | "route-changed" | "update-required" | "host-outdated" | "different-opensteer";
 
 const links = new Map<string, Link>();
+const liveTabs =
+  liveTabsOnly && chrome.debugger
+    ? new ChromeTabDebugger(chrome.debugger, chrome.tabs, chrome.webNavigation)
+    : undefined;
 let pairingInProgress = false;
 
 function link(sourceId: string): Link {
@@ -119,6 +129,8 @@ function scheduleReconnect(current: Link): void {
 
 /** Fences the current socket off; late frames from it are ignored by generation. */
 function dropSocket(current: Link, state: ConnectionState, reason?: string): void {
+  liveTabs?.disconnect(current.sourceId);
+  delete current.tabLink;
   current.generation += 1;
   current.ready = false;
   current.state = state;
@@ -145,7 +157,7 @@ const retryingStates = new Set<ConnectionState>([
 function persistedState(connection: Connection): HeldState | null {
   const held = connection.held;
   if (!held || !persistedStates.has(held.state)) return null;
-  if (held.state === "update-required" && held.version !== browserSourceWireCurrent) return null;
+  if (held.state === "update-required" && held.version !== extensionWire) return null;
   return held.state;
 }
 
@@ -199,7 +211,7 @@ async function connectLink(current: Link): Promise<void> {
     return;
   }
   current.socket = socket;
-  const handshake: Handshake = { nonce: null, proofAccepted: false };
+  const handshake: Handshake = { nonce: null, proofAccepted: false, wire: 4 };
   const readyTimer = setTimeout(
     () => reject(current, generation, "Opensteer did not finish"),
     15_000,
@@ -230,6 +242,8 @@ async function connectLink(current: Link): Promise<void> {
   const onClosed = (): void => {
     clearTimeout(readyTimer);
     if (generation !== current.generation) return;
+    liveTabs?.disconnect(current.sourceId);
+    delete current.tabLink;
     current.generation += 1;
     current.socket = null;
     current.ready = false;
@@ -250,9 +264,13 @@ function send(current: Link, generation: number, frame: BrowserSourceClientMessa
     return false;
   }
   const payload = JSON.stringify(frame);
-  if (new TextEncoder().encode(payload).byteLength > maxBrowserSourceFrameBytes) {
+  const bytes = new TextEncoder().encode(payload).byteLength;
+  const tabFrame = frame.type.startsWith("tab.");
+  if (bytes > (tabFrame ? browserSourceTabFrameBytes : maxBrowserSourceFrameBytes)) {
     throw new RangeError("Frame too large");
   }
+  if (tabFrame && current.socket.bufferedAmount + bytes > browserSourceTabBufferedBytes)
+    return false;
   current.socket.send(payload);
   return true;
 }
@@ -274,7 +292,7 @@ async function hold(
   clearReconnect(current);
   dropSocket(current, state, "Stopped by Opensteer");
   const marker: Partial<Connection> = {
-    held: { state, ...(state === "update-required" ? { version: browserSourceWireCurrent } : {}) },
+    held: { state, ...(state === "update-required" ? { version: extensionWire } : {}) },
   };
   await updateConnection(
     connection.sourceId,
@@ -287,7 +305,7 @@ async function hold(
 function refusal(error: Extract<BrowserSourceHostMessage, { type: "source.error" }>): HeldState {
   if (error.code === "source-unauthorized") return "ended";
   if (error.code === "route-changed") return "route-changed";
-  return error.supportedVersion < browserSourceWireCurrent ? "host-outdated" : "update-required";
+  return error.supportedVersion < extensionWire ? "host-outdated" : "update-required";
 }
 
 async function receive(
@@ -304,7 +322,7 @@ async function receive(
     reject(current, generation, "Invalid frame");
     return;
   }
-  const message = readHostMessage(raw);
+  const message = readHostMessage(raw, handshake.wire);
   if (!message) {
     reject(current, generation, "Invalid frame");
     return;
@@ -357,19 +375,21 @@ async function receive(
     handshake.nonce = null;
     handshake.proofAccepted = true;
     const negotiated = message.wire ?? 4;
-    if (negotiated < browserSourceWireFloor) {
+    if (negotiated < (liveTabsOnly ? browserSourceTabWire : browserSourceWireFloor)) {
       pause(current, generation, "host-outdated");
       return;
     }
-    if (negotiated > browserSourceWireCurrent) {
+    if (negotiated > extensionWire) {
       await hold(connection, current, generation, "update-required");
       return;
     }
+    handshake.wire = negotiated;
     send(current, generation, {
       sourceId: connection.sourceId,
       token: connection.token,
       type: "source.hello",
       version: negotiated,
+      ...(liveTabsOnly ? { capability: "live-tabs" } : {}),
     });
     return;
   }
@@ -382,37 +402,56 @@ async function receive(
     return;
   }
   if (message.type === "source.ready") {
-    if (message.sourceId !== connection.sourceId) {
+    if (
+      message.sourceId !== connection.sourceId ||
+      (liveTabsOnly && message.capability !== "live-tabs")
+    ) {
       reject(current, generation, "Wrong connection");
       return;
     }
     current.ready = true;
     current.state = "connected";
     current.backoffAttempt = 0;
+    if (liveTabs && handshake.wire >= browserSourceTabWire)
+      current.tabLink = liveTabs.connect(
+        current.sourceId,
+        (frame) => send(current, generation, frame),
+        () => reject(current, generation, "Chrome tab transport overloaded"),
+      );
     return;
   }
   if (!current.ready) {
     reject(current, generation, "Not ready");
     return;
   }
-  if (message.type === "source.inspect") {
-    const status = await inspectSite(connection.sourceId, message.site);
-    send(current, generation, {
-      operationId: message.operationId,
-      status,
-      type: "source.inspect.result",
-    });
+  if (message.type === "tab.command") {
+    if (new TextEncoder().encode(raw).byteLength > browserSourceTabFrameBytes) {
+      reject(current, generation, "Chrome tab frame too large");
+      return;
+    }
+    current.tabLink?.read(message);
     return;
   }
-  if (message.type !== "source.export") return;
-  try {
-    await exportSite(connection, current, generation, message.site, message.operationId);
-  } catch {
-    send(current, generation, {
-      operationId: message.operationId,
-      result: { status: "unsupported" },
-      type: "source.export.result",
-    });
+  if (!OPENSTEER_LIVE_TABS) {
+    if (message.type === "source.inspect") {
+      const status = await inspectSite(connection.sourceId, message.site);
+      send(current, generation, {
+        operationId: message.operationId,
+        status,
+        type: "source.inspect.result",
+      });
+      return;
+    }
+    if (message.type !== "source.export") return;
+    try {
+      await exportSite(connection, current, generation, message.site, message.operationId);
+    } catch {
+      send(current, generation, {
+        operationId: message.operationId,
+        result: { status: "unsupported" },
+        type: "source.export.result",
+      });
+    }
   }
 }
 
@@ -585,22 +624,23 @@ function parseShareNotification(id: string): { site: string; sourceId: string } 
   return sourceId && site ? { site, sourceId } : null;
 }
 
-chrome.notifications.onButtonClicked.addListener((id, buttonIndex) => {
-  const target = parseShareNotification(id);
-  if (!target || buttonIndex !== 0) return;
-  void (async () => {
-    const connection = await setSiteStopped(target.sourceId, target.site, true);
-    await chrome.notifications.clear(id);
-    if (!connection) return;
-    await chrome.notifications.create(`stopped\n${target.sourceId}\n${target.site}`, {
-      iconUrl: new URL("icons/icon-128.png", import.meta.url).href,
-      message: `Share it again from the Opensteer button in Chrome's toolbar.`,
-      priority: 0,
-      title: `Stopped sharing ${siteHost(target.site)} with ${connection.deploymentName}`,
-      type: "basic",
-    });
-  })().catch(() => undefined);
-});
+if (!OPENSTEER_LIVE_TABS)
+  chrome.notifications.onButtonClicked.addListener((id, buttonIndex) => {
+    const target = parseShareNotification(id);
+    if (!target || buttonIndex !== 0) return;
+    void (async () => {
+      const connection = await setSiteStopped(target.sourceId, target.site, true);
+      await chrome.notifications.clear(id);
+      if (!connection) return;
+      await chrome.notifications.create(`stopped\n${target.sourceId}\n${target.site}`, {
+        iconUrl: new URL("icons/icon-128.png", import.meta.url).href,
+        message: `Share it again from the Opensteer button in Chrome's toolbar.`,
+        priority: 0,
+        title: `Stopped sharing ${siteHost(target.site)} with ${connection.deploymentName}`,
+        type: "basic",
+      });
+    })().catch(() => undefined);
+  });
 
 // ---- UI requests ----
 
@@ -639,6 +679,8 @@ function view(connection: Connection): ConnectionView {
       }))
       .sort((left, right) => right.lastSharedAt - left.lastSharedAt),
     sourceId: connection.sourceId,
+    canShareTab: liveTabs?.canShare(connection.sourceId) ?? false,
+    sharedTabs: [...(liveTabs?.list(connection.sourceId) ?? [])],
     state: held ?? links.get(connection.sourceId)?.state ?? "connecting",
   };
 }
@@ -811,6 +853,12 @@ async function handle(request: UiRequest, tab: ChromeTab | undefined): Promise<u
       return await checkInvitation(request.invitation, tab);
     case "ui.connect":
       return await connect(request.invitation, request.name, tab);
+    case "ui.tab.share":
+      await liveTabs?.share(request.sourceId, await chrome.tabs.get(request.tabId));
+      return await status();
+    case "ui.tab.stop":
+      liveTabs?.stop(request.sourceId, request.shareId);
+      return await status();
     case "ui.site.stop":
     case "ui.site.share":
       await setSiteStopped(request.sourceId, request.site, request.type === "ui.site.stop");
