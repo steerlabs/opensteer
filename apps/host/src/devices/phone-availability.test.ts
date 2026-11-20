@@ -111,6 +111,21 @@ describe("phone display availability", () => {
       expect(phoneDiscovery({ ...facts, blockedByOwner: true }).blocked?.code).toBe(
         "blocked_by_owner",
       );
+      const free = { ...facts, heldByAnotherRun: false };
+      if (kind === "locked" || kind === "protected") {
+        expect(phoneDiscovery(free)).toEqual({ access: "read-write" });
+        expect(phoneDiscovery({ ...free, canAct: false })).toEqual({ access: "read" });
+        expect(phoneDiscovery({ ...free, callable: false })).toEqual(result);
+        expect(
+          phoneDiscovery({ ...free, phone: { ...free.phone, state: "offline" } }).blocked?.code,
+        ).toBe("computer_offline");
+        expect(
+          phoneDiscovery({ ...free, phone: { ...free.phone, computerToolEnabled: false } }).blocked
+            ?.code,
+        ).toBe("update_required");
+      } else {
+        expect(phoneDiscovery(free)).toEqual(result);
+      }
     },
   );
   it("turns device approval readiness into the exact task access request", () => {

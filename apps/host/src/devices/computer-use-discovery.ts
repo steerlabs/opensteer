@@ -183,11 +183,16 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): ComputerAccess {
     );
   // An iPhone's last lock/display reading describes hardware, not this task's grant.
   // The driver checks live state when the authorized task observes it.
-  const iphone = facts.phone.definitionId === "iphone-screen";
-  const problem =
-    !iphone || facts.phone.availability?.reason?.kind === "access-off"
-      ? phoneProblem(facts.phone)
-      : computerToolVersionProblem(facts.phone);
+  const reason = facts.phone.availability?.reason?.kind;
+  const refreshScreenState =
+    facts.phone.definitionId === "iphone-screen" &&
+    facts.phone.state !== "offline" &&
+    (reason === "locked" || reason === "protected") &&
+    facts.callable &&
+    !facts.heldByAnotherRun;
+  const problem = refreshScreenState
+    ? computerToolVersionProblem(facts.phone)
+    : phoneProblem(facts.phone);
   if (problem) return problem;
   if (facts.callable && !facts.heldByAnotherRun)
     return { access: facts.canAct ? "read-write" : "read" };
