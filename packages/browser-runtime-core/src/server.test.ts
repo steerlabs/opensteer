@@ -1,3 +1,8 @@
+import {
+  standardCdpMaxPending,
+  standardCdpMessageMaxBytes,
+  type CdpEvent,
+} from "@opensteer/browser-core";
 import { committedBrowserTabs } from "./test-support/fakes.js";
 import {
   BrowserRuntimeServerMessageSchema,
@@ -27,7 +32,7 @@ import { pageViewport, type EngineClipboardItem, type PageGeometry } from "./bro
 import { gate } from "@opensteer/shared/test-support/observation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { BrowserRuntime } from "./runtime.js";
-import { BrowserRuntimeServer } from "./server.js";
+import { BrowserRuntimeServer, standardCdpPath } from "./server.js";
 import {
   FakeContext,
   FakeLaunchedBrowser,
@@ -40,6 +45,76 @@ import {
 } from "./test-support/fakes.js";
 
 describe("BrowserRuntimeServer", () => {
+  it.each([
+    { count: standardCdpMaxPending + 1, bytes: 0, code: 1013, admitted: standardCdpMaxPending },
+    { count: 3, bytes: 6 * 1024 * 1024, code: 1013, admitted: 2 },
+    { count: 1, bytes: standardCdpMessageMaxBytes, code: 1009, admitted: 0 },
+    { count: 3, bytes: 6 * 1024 * 1024, code: 1013, admitted: 0, outbound: true },
+  ])(
+    "bounds raw CDP traffic ($count frames, $bytes payload bytes, outbound=$outbound)",
+    async ({ count, bytes, code, admitted, outbound }) => {
+      const runtime = new BrowserRuntime({
+        launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([new FakePage()]))),
+        runtimeId: "runtime_test",
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: new FakeTicketVerifier(),
+      });
+      const controller = new AbortController();
+      const pending = Promise.withResolvers<unknown>();
+      const send = vi.fn(async ({ method }: { method: string }) =>
+        method === "Browser.getVersion" ? { product: "test" } : pending.promise,
+      );
+      const close = vi.fn(() => {
+        controller.abort();
+        pending.resolve({});
+      });
+      let emit: ((event: CdpEvent) => void) | undefined;
+      vi.spyOn(runtime, "attachStandardCdp").mockResolvedValue({
+        signal: controller.signal,
+        send,
+        close,
+        attachedTargetId: () => null,
+        onEvent: (listener) => {
+          emit = listener;
+          return () => {
+            emit = undefined;
+          };
+        },
+      });
+      const server = new BrowserRuntimeServer({ port: 0, runtime });
+      let socket: WebSocket | undefined;
+      try {
+        const { host, port } = await server.start();
+        socket = new WebSocket(`ws://${host}:${port}${standardCdpPath}`, {
+          headers: { authorization: "Bearer test" },
+        });
+        await once(socket, "open");
+        const response = once(socket, "message");
+        socket.send(JSON.stringify({ id: 0, method: "Browser.getVersion" }));
+        expect(JSON.parse(String((await response)[0]))).toEqual({
+          id: 0,
+          result: { product: "test" },
+        });
+        const closed = once(socket, "close");
+        const expression = "x".repeat(bytes);
+        if (outbound) {
+          expect(emit).toBeDefined();
+          for (let sequence = 1; sequence <= count; sequence++)
+            emit?.({ sequence, method: "Runtime.consoleAPICalled", parameters: { expression } });
+        } else {
+          for (let id = 1; id <= count; id++)
+            socket.send(JSON.stringify({ id, method: "Runtime.evaluate", params: { expression } }));
+        }
+        expect((await closed)[0]).toBe(code);
+        expect(send).toHaveBeenCalledTimes(admitted + 1);
+        expect(close).toHaveBeenCalledOnce();
+      } finally {
+        socket?.terminate();
+        await server.close();
+      }
+    },
+  );
+
   it("delivers paste parts queued during attachment before waiting for the paste", async () => {
     const ready = gate({ label: "browser attachment handoff", deadlineMs: 2_000 });
     const page = new FakePage();

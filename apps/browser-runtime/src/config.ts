@@ -1,4 +1,4 @@
-import { RuntimeModeSchema, type RuntimeMode } from "@opensteer/core";
+import { isLoopbackHostname, RuntimeModeSchema, type RuntimeMode } from "@opensteer/core";
 import { browserMemoryBudgetBytes } from "@opensteer/browser-runtime-core";
 import { validateRunnerTransport } from "@opensteer/runner-client";
 import { requiredEnvironmentValue as required } from "@opensteer/shared/envParsing";
@@ -106,8 +106,13 @@ export function readBrowserRuntimeConfig(
   if (hosted && deploymentMode === "production" && !proxyUrl) {
     throw new Error("Production hosted Browser Runtime requires the public-network egress proxy.");
   }
-  if (!hosted && bridgeToken && proxyUrl) {
-    throw new Error("A bridge-only Browser Runtime cannot use the hosted egress proxy.");
+  if (!hosted && bridgeToken) {
+    if (deploymentMode === "production" && !chromiumSandbox) {
+      throw new Error("Production bridge-only Browser Runtime requires the Chromium sandbox.");
+    }
+    if (proxyUrl && !isLoopbackHostname(new URL(proxyUrl).hostname)) {
+      throw new Error("A bridge-only Browser Runtime requires a loopback egress proxy origin.");
+    }
   }
   if (relay) {
     validateRunnerTransport({

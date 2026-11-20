@@ -1,3 +1,4 @@
+import { contextScopedCdpMethods } from "./cdp-context.js";
 import { CdpProductIsolation } from "./cdp-product-isolation.js";
 import { utf8Size } from "./bytes.js";
 
@@ -40,7 +41,8 @@ export interface BrowserCdpBackend {
    * `Runtime.enable` reports every live execution context before it resolves,
    * whatever other channels on the target have enabled.
    */
-  attach(targetId: string, waitForPage?: boolean): Promise<CdpChannel>;
+  readonly dedicatedContext?: boolean;
+  attach(targetId: string, waitForPage?: boolean, signal?: AbortSignal): Promise<CdpChannel>;
   assertScope?(method: string, parameters: CdpParameters): void;
   scopeParameters?(method: string, parameters: CdpParameters): Promise<CdpParameters>;
   onEvent(listener: (method: string, parameters: CdpParameters) => void): () => void;
@@ -51,6 +53,30 @@ export interface SessionCdpRouterLimits {
   readonly maxCommandBytes: number;
   readonly maxEventBytes: number;
   readonly maxResultBytes: number;
+}
+
+export const standardCdpMessageMaxBytes = 8 * 1_024 * 1_024;
+export const standardCdpBufferedMaxBytes = 2 * standardCdpMessageMaxBytes;
+export const standardCdpMaxPending = 128;
+
+export interface StandardCdpAttachmentOptions {
+  readonly wholeContext: boolean;
+  readonly adoptTarget?: (targetId: string) => Promise<boolean>;
+  readonly onOverflow?: () => void;
+  readonly captureScreenshot?: (
+    targetId: string,
+    parameters: CdpParameters,
+    signal: AbortSignal,
+  ) => Promise<unknown>;
+  readonly answerDialog?: (targetId: string, parameters: CdpParameters) => Promise<unknown>;
+}
+
+export interface StandardCdpAttachment {
+  readonly signal: AbortSignal;
+  send(command: CdpCommand, beforeActivity?: (targetId: string) => void): Promise<unknown>;
+  onEvent(listener: (event: CdpEvent) => void): () => void;
+  attachedTargetId(cdpSessionId: string): string | null;
+  close(): void;
 }
 
 export class SessionCdpRouterError extends Error {
@@ -66,7 +92,7 @@ export class SessionCdpRouterError extends Error {
 interface AttachedChannel {
   readonly channel: CdpChannel;
   /** Rejects once the router ends the session, answering every command still waiting on it. */
-  readonly ending: PromiseWithResolvers<never>;
+  readonly pending: Set<(reason: unknown) => void>;
   readonly ended: AbortController;
   readonly physicalTargetId: string;
   removeListener: () => void;
@@ -75,21 +101,45 @@ interface AttachedChannel {
   readonly virtualSessionId: string;
 }
 
-interface SessionState {
+interface TargetClaim {
+  readonly sessionId: string;
+  parentId?: string;
+}
+
+interface DiscoveryReplay {
+  readonly events: { method: string; parameters: CdpParameters }[];
+  bytes: number;
+}
+
+interface BrowserSessionState {
+  readonly connections: Set<ConnectionState>;
+  readonly adopting: Set<string>;
+  readonly exclusiveWorkers: Set<string>;
   readonly resolveTarget: (targetId: string) => Promise<boolean>;
-  readonly channels: Map<string, AttachedChannel>;
-  /** Released channels retain identity for the caller's tab lifecycle check, never page access. */
-  readonly retiredTargets: Map<string, string>;
-  autoAttached: Map<string, Promise<{ sessionId: string } | undefined>> | undefined;
-  discoverTargets: boolean | undefined;
-  discoveryReplay: Set<string> | undefined;
-  ledgerDialogEvents: boolean;
-  readonly eventListeners: Set<(event: CdpEvent) => void>;
   readonly filesRoot: string;
-  nextSequence: number;
   readonly ownedTargetIds: Set<string>;
   readonly rootTargetId: string;
   readonly sessionId: string;
+  ledgerDialogEvents: boolean;
+}
+
+interface ConnectionState {
+  readonly session: BrowserSessionState;
+  readonly standard?: StandardCdpAttachmentOptions;
+  readonly contextOperations: Set<Promise<unknown>>;
+  readonly closed: AbortController;
+  readonly pending: Set<(reason: unknown) => void>;
+  pendingBytes: number;
+  pendingCount: number;
+  autoReady: Promise<void> | undefined;
+  readonly channels: Map<string, AttachedChannel>;
+  readonly retiredTargets: Map<string, string>;
+  autoAttached: Map<string, Promise<{ sessionId: string } | undefined>> | undefined;
+  discoverTargets: boolean;
+  discoveryReplay: DiscoveryReplay | undefined;
+  readonly discoveredTargets: Set<string>;
+  readonly eventListeners: Set<(event: CdpEvent) => void>;
+  nextSequence: number;
 }
 
 const defaultLimits: SessionCdpRouterLimits = {
@@ -98,7 +148,83 @@ const defaultLimits: SessionCdpRouterLimits = {
   maxResultBytes: 432 * 1_024,
 };
 
-const browserRootLimit = 8 * 1_024 * 1_024;
+const browserRootLimit = standardCdpMessageMaxBytes - 4_096;
+const maxRetiredTargets = 256;
+
+const standardRootTargets = new Set([
+  "Target.getTargets",
+  "Target.getTargetInfo",
+  "Target.getBrowserContexts",
+  "Target.createTarget",
+  "Target.closeTarget",
+  "Target.activateTarget",
+  "Target.attachToTarget",
+  "Target.detachFromTarget",
+  "Target.setAutoAttach",
+  "Target.setDiscoverTargets",
+  "Target.sendMessageToTarget",
+]);
+
+const standardPageDomains = new Set([
+  "Accessibility",
+  "Animation",
+  "Audits",
+  "CSS",
+  "Console",
+  "Debugger",
+  "DOM",
+  "DOMDebugger",
+  "DOMSnapshot",
+  "Emulation",
+  "Fetch",
+  "Input",
+  "Inspector",
+  "LayerTree",
+  "Log",
+  "Media",
+  "Network",
+  "Overlay",
+  "Page",
+  "Performance",
+  "Runtime",
+  "WebAudio",
+  "WebAuthn",
+]);
+
+const standardPageTargetMethods = new Set([
+  "Target.setAutoAttach",
+  "Target.sendMessageToTarget",
+  "Target.detachFromTarget",
+]);
+
+const browserWidePageMethods = new Set([
+  "Network.getCookies",
+  "Network.getAllCookies",
+  "Network.getCertificate",
+  "Network.setCookie",
+  "Network.setCookies",
+  "Network.deleteCookies",
+  "Network.clearBrowserCookies",
+  "Network.clearBrowserCache",
+  "Network.setAcceptedEncodings",
+  "Network.clearAcceptedEncodingsOverride",
+  "Page.setDownloadBehavior",
+  "Page.deleteCookie",
+  "Page.setRPHRegistrationMode",
+  "Page.setSPCTransactionMode",
+  "Page.crash",
+  "Emulation.setLocaleOverride",
+  "Emulation.setTimezoneOverride",
+  "Emulation.addScreen",
+  "Emulation.removeScreen",
+  "Emulation.updateScreen",
+  "Emulation.setPrimaryScreen",
+  "Emulation.getScreenInfos",
+]);
+
+function isWorkerShared(type: unknown): boolean {
+  return type === "shared_worker" || type === "service_worker";
+}
 
 const maximumSessionFilesPerCommand = 64;
 const maximumUnclaimedPages = 256;
@@ -141,9 +267,10 @@ export class SessionCdpRouter {
   readonly #backend: BrowserCdpBackend;
   readonly #limits: SessionCdpRouterLimits;
   readonly #browserRootLimits: SessionCdpRouterLimits;
-  readonly #ownerByTargetId = new Map<string, string>();
+  readonly #ownerByTargetId = new Map<string, TargetClaim>();
+  #exclusive: ConnectionState | undefined;
   readonly #removeBackendListener: () => void;
-  readonly #sessions = new Map<string, SessionState>();
+  readonly #sessions = new Map<string, ConnectionState>();
   /**
    * The latest target information of pages no session owns yet. A tab the
    * person opens is claimed only after the browser announced it, so its owner
@@ -189,29 +316,30 @@ export class SessionCdpRouter {
     if (!this.#ports.isNormalizedAbsolutePath(filesRoot)) {
       throw new TypeError("Browser Session files root must be an absolute normalized path.");
     }
+    if (this.#exclusive)
+      throw new SessionCdpRouterError(
+        "conflict",
+        "This browser profile has a whole-context CDP attachment.",
+      );
     if (this.#sessions.has(sessionId)) {
       throw new SessionCdpRouterError("conflict", "Browser Session is already registered.");
     }
     if (this.#ownerByTargetId.has(rootTargetId)) {
       throw new SessionCdpRouterError("conflict", "Root target already belongs to a session.");
     }
-    const state: SessionState = {
+    const session: BrowserSessionState = {
       resolveTarget,
-      channels: new Map(),
-      retiredTargets: new Map(),
-      autoAttached: undefined,
-      discoverTargets: undefined,
-      discoveryReplay: undefined,
+      connections: new Set(),
+      adopting: new Set(),
+      exclusiveWorkers: new Set(),
       ledgerDialogEvents: false,
-      eventListeners: new Set(),
       filesRoot,
-      nextSequence: 1,
       ownedTargetIds: new Set([rootTargetId]),
       rootTargetId,
       sessionId,
     };
-    this.#sessions.set(sessionId, state);
-    this.#ownerByTargetId.set(rootTargetId, sessionId);
+    this.#sessions.set(sessionId, this.#openConnection(session));
+    this.#ownerByTargetId.set(rootTargetId, { sessionId });
     this.#unclaimedPages.delete(rootTargetId);
   }
 
@@ -219,9 +347,87 @@ export class SessionCdpRouter {
     const state = this.#sessions.get(sessionId);
     if (!state) return;
     this.#sessions.delete(sessionId);
-    for (const targetId of state.ownedTargetIds) this.#ownerByTargetId.delete(targetId);
-    for (const attached of state.channels.values()) this.#endChannel(state, attached);
+    for (const connection of state.session.connections) this.#closeConnection(connection);
+    for (const targetId of state.session.ownedTargetIds) this.#ownerByTargetId.delete(targetId);
+  }
+
+  get hasExclusiveContextClient(): boolean {
+    return this.#exclusive !== undefined;
+  }
+
+  openStandardClient(
+    sessionId: string,
+    options: StandardCdpAttachmentOptions,
+  ): StandardCdpAttachment {
+    this.#assertOpen();
+    const session = this.#requireSession(sessionId);
+    if (
+      options.wholeContext &&
+      (!this.#backend.dedicatedContext || this.#sessions.size !== 1 || this.#exclusive)
+    )
+      throw new SessionCdpRouterError(
+        "forbidden",
+        "Whole-context CDP requires an exclusive saved profile.",
+      );
+    const state = this.#openConnection(session.session, options);
+    if (options.wholeContext) this.#exclusive = state;
+    return {
+      signal: state.closed.signal,
+      send: (command, beforeActivity) => this.#send(state, command, beforeActivity),
+      onEvent: (listener) => this.#observe(state, listener),
+      attachedTargetId: (id) => this.#attachedTargetId(state, id),
+      close: () => this.#closeConnection(state),
+    };
+  }
+
+  #openConnection(
+    session: BrowserSessionState,
+    standard?: StandardCdpAttachmentOptions,
+  ): ConnectionState {
+    const state: ConnectionState = {
+      session,
+      ...(standard ? { standard } : {}),
+      contextOperations: new Set(),
+      closed: new AbortController(),
+      pending: new Set(),
+      pendingBytes: 0,
+      pendingCount: 0,
+      channels: new Map(),
+      retiredTargets: new Map(),
+      autoAttached: undefined,
+      autoReady: undefined,
+      discoverTargets: standard === undefined,
+      discoveryReplay: undefined,
+      discoveredTargets: new Set(),
+      eventListeners: new Set(),
+      nextSequence: 1,
+    };
+    session.connections.add(state);
+    return state;
+  }
+
+  #closeConnection(state: ConnectionState): void {
+    if (state.closed.signal.aborted) return;
+    const error = new SessionCdpRouterError("not_found", "CDP connection closed.");
+    state.closed.abort(error);
+    rejectPending(state.pending, error);
+    state.session.connections.delete(state);
+    state.autoAttached = undefined;
+    state.autoReady = undefined;
+    state.discoveryReplay = undefined;
+    state.discoveredTargets.clear();
     state.eventListeners.clear();
+    state.retiredTargets.clear();
+    for (const attached of state.channels.values()) this.#endChannel(state, attached);
+    if (this.#exclusive === state) {
+      for (const targetId of state.session.exclusiveWorkers) this.#releaseTarget(targetId);
+      const release = () => {
+        if (this.#exclusive === state) this.#exclusive = undefined;
+      };
+      if (state.contextOperations.size)
+        void Promise.allSettled(state.contextOperations).then(release);
+      else release();
+    }
   }
 
   async close(): Promise<void> {
@@ -235,7 +441,7 @@ export class SessionCdpRouter {
   }
 
   listOwnedTargets(sessionId: string): readonly string[] {
-    return [...this.#requireSession(sessionId).ownedTargetIds];
+    return [...this.#requireSession(sessionId).session.ownedTargetIds];
   }
 
   /**
@@ -243,7 +449,7 @@ export class SessionCdpRouter {
    * person opened, reachable by that session's agents, and its popups with it.
    */
   releaseTarget(sessionId: string, targetId: string): void {
-    if (this.#ownerByTargetId.get(targetId) === sessionId) this.#releaseTarget(targetId);
+    if (this.#ownerByTargetId.get(targetId)?.sessionId === sessionId) this.#releaseTarget(targetId);
   }
 
   claimTarget(sessionId: string, targetId: string): void {
@@ -266,11 +472,13 @@ export class SessionCdpRouter {
     parameters: CdpParameters,
   ) => void {
     const state = this.#requireSession(sessionId);
-    state.ledgerDialogEvents = true;
+    state.session.ledgerDialogEvents = true;
     return (targetId, method, parameters) => {
-      for (const attached of state.channels.values()) {
-        if (attached.physicalTargetId === targetId && attached.pageEnabled) {
-          this.#appendEvent(state, method, parameters, attached.virtualSessionId);
+      for (const connection of state.session.connections) {
+        for (const attached of connection.channels.values()) {
+          if (attached.physicalTargetId === targetId && attached.pageEnabled) {
+            this.#appendEvent(connection, method, parameters, attached.virtualSessionId);
+          }
         }
       }
     };
@@ -278,7 +486,10 @@ export class SessionCdpRouter {
 
   /** The page an agent's attached CDP session drives, or null when it is not attached here. */
   attachedTargetId(sessionId: string, cdpSessionId: string): string | null {
-    const state = this.#sessions.get(sessionId);
+    return this.#attachedTargetId(this.#sessions.get(sessionId), cdpSessionId);
+  }
+
+  #attachedTargetId(state: ConnectionState | undefined, cdpSessionId: string): string | null {
     let attached = state?.channels.get(cdpSessionId);
     while (attached?.channel instanceof ChildCdpChannel) {
       const parent: CdpChannel = attached.channel.parent;
@@ -337,7 +548,11 @@ export class SessionCdpRouter {
   }
 
   onEvent(sessionId: string, listener: (event: CdpEvent) => void): () => void {
-    const state = this.#requireSession(sessionId);
+    return this.#observe(this.#requireSession(sessionId), listener);
+  }
+
+  #observe(state: ConnectionState, listener: (event: CdpEvent) => void): () => void {
+    state.closed.signal.throwIfAborted();
     state.eventListeners.add(listener);
     return () => state.eventListeners.delete(listener);
   }
@@ -347,11 +562,51 @@ export class SessionCdpRouter {
     command: CdpCommand,
     beforeActivity?: (targetId: string) => void,
   ): Promise<unknown> {
+    return this.#send(this.#requireSession(sessionId), command, beforeActivity);
+  }
+
+  async #send(
+    state: ConnectionState,
+    command: CdpCommand,
+    beforeActivity?: (targetId: string) => void,
+  ): Promise<unknown> {
     this.#assertOpen();
-    const state = this.#requireSession(sessionId);
-    const limits = this.#sessionLimits(state);
-    validateCommand(command, limits.maxCommandBytes);
+    state.closed.signal.throwIfAborted();
+    const bytes = validateCommand(command, this.#sessionLimits(state).maxCommandBytes);
+    if (!state.standard) return this.#dispatch(state, command, beforeActivity);
+    if (
+      state.pendingBytes + bytes > standardCdpBufferedMaxBytes ||
+      state.pendingCount >= standardCdpMaxPending
+    )
+      throw new SessionCdpRouterError(
+        "too_large",
+        "CDP connection has too many commands in flight.",
+      );
+    state.pendingBytes += bytes;
+    state.pendingCount++;
+    try {
+      return await whileOpen(state.pending, () => this.#dispatch(state, command, beforeActivity));
+    } finally {
+      state.pendingBytes -= bytes;
+      state.pendingCount--;
+    }
+  }
+
+  async #dispatch(
+    state: ConnectionState,
+    command: CdpCommand,
+    beforeActivity?: (targetId: string) => void,
+  ): Promise<unknown> {
     this.#assertScope(state, command.parameters ?? {});
+    if (state.standard && command.parameters?.browserContextId !== undefined) {
+      const { browserContextId, ...parameters } = command.parameters;
+      if (browserContextId !== state.session.sessionId)
+        throw new SessionCdpRouterError(
+          "forbidden",
+          "CDP command requested another browser context.",
+        );
+      command = { ...command, parameters };
+    }
     this.#backend.assertScope?.(command.method, command.parameters ?? {});
     if (
       [
@@ -371,23 +626,61 @@ export class SessionCdpRouter {
         "forbidden",
         `${command.method} would reach the shared browser engine or runtime control channel.`,
       );
+    if (state.standard) {
+      if (command.sessionId && !state.channels.has(command.sessionId))
+        throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
+      if (contextScopedCdpMethods.has(command.method)) {
+        if (!state.standard.wholeContext)
+          throw new SessionCdpRouterError(
+            "forbidden",
+            `${command.method} requires a whole browser context grant.`,
+          );
+        if (command.method === "Browser.setDownloadBehavior") {
+          if (
+            !command.sessionId &&
+            command.parameters?.behavior === "allowAndName" &&
+            command.parameters.eventsEnabled === true
+          )
+            return {};
+          throw new SessionCdpRouterError(
+            "forbidden",
+            "Remote CDP cannot configure browser download destinations.",
+          );
+        }
+        if (command.method === "Browser.cancelDownload")
+          throw new SessionCdpRouterError(
+            "forbidden",
+            "Remote CDP does not manage browser downloads.",
+          );
+        const pending = this.#backend.send(command.method, command.parameters);
+        state.contextOperations.add(pending);
+        try {
+          const result = await pending;
+          this.#assertResultSize(result, this.#sessionLimits(state).maxResultBytes);
+          return result;
+        } finally {
+          state.contextOperations.delete(pending);
+        }
+      }
+      const domain = command.method.split(".", 1)[0] ?? "";
+      if (
+        command.sessionId
+          ? !standardPageTargetMethods.has(command.method) &&
+            (!standardPageDomains.has(domain) || browserWidePageMethods.has(command.method))
+          : !standardRootTargets.has(command.method) && command.method !== "Browser.getVersion"
+      )
+        throw new SessionCdpRouterError(
+          "forbidden",
+          `${command.method} cannot be scoped to this CDP attachment.`,
+        );
+    }
     if (this.#backend.scopeParameters && command.sessionId) {
       command = {
         ...command,
         parameters: await this.#backend.scopeParameters(command.method, command.parameters ?? {}),
       };
-      if (this.#requireSession(sessionId) !== state)
-        throw new SessionCdpRouterError("not_found", "Browser Session ended during routing.");
+      state.closed.signal.throwIfAborted();
     }
-    // Chromium download settings apply to the whole profile. The virtual root
-    // acknowledges Playwright's initialization without changing the profile.
-    if (
-      state.autoAttached &&
-      !command.sessionId &&
-      command.method === "Browser.setDownloadBehavior"
-    )
-      return {};
-
     const targetRouting = [
       "Target.attachToTarget",
       "Target.getTargets",
@@ -405,18 +698,23 @@ export class SessionCdpRouter {
         : command.method.startsWith("Target.")
           ? await this.#sendTargetCommand(state, command)
           : await this.#backend.send(command.method, command.parameters);
-    this.#assertResultSize(result, limits.maxResultBytes);
+    this.#assertResultSize(result, this.#sessionLimits(state).maxResultBytes);
     return result;
   }
 
-  async #sendTargetCommand(state: SessionState, command: CdpCommand): Promise<unknown> {
+  async #sendTargetCommand(state: ConnectionState, command: CdpCommand): Promise<unknown> {
     const parameters = command.parameters ?? {};
     switch (command.method) {
       case "Target.getTargets": {
-        return {
-          rootTargetId: state.rootTargetId,
-          targetInfos: await this.#ownedTargetInfos(state, parameters),
-        };
+        const response = await this.#ownedTargetInfos(state, parameters);
+        if (state.standard) return { targetInfos: response.targetInfos };
+        const root = state.session.rootTargetId;
+        const current = this.#ownerByTargetId.get(root);
+        const rootTargetId =
+          current && current.sessionId !== state.session.sessionId
+            ? state.session.ownedTargetIds.values().next().value
+            : root;
+        return { ...response, rootTargetId };
       }
       case "Target.sendMessageToTarget": {
         const virtualSessionId = requiredString(parameters, "sessionId");
@@ -429,7 +727,7 @@ export class SessionCdpRouter {
         } catch {
           throw new SessionCdpRouterError("bad_command", "Invalid nested CDP message.");
         }
-        const result = await this.send(state.sessionId, {
+        const result = await this.#send(state, {
           method: requiredString(nested, "method"),
           parameters: asRecord(nested.params),
           sessionId: virtualSessionId,
@@ -441,12 +739,13 @@ export class SessionCdpRouter {
         return {};
       }
       case "Target.getBrowserContexts":
+        if (state.standard) return { browserContextIds: [] };
         return this.#backend.send(command.method, parameters);
       case "Target.getTargetInfo": {
-        if (!command.sessionId && parameters.targetId === undefined) {
+        if (state.standard && !command.sessionId && parameters.targetId === undefined) {
           return {
             targetInfo: {
-              targetId: `browser_${state.sessionId}`,
+              targetId: `browser_${state.session.sessionId}`,
               type: "browser",
               title: "",
               url: "",
@@ -456,8 +755,8 @@ export class SessionCdpRouter {
           };
         }
         const targetId = requiredTargetId(parameters);
-        this.#assertOwnedTarget(state, targetId);
-        return this.#backend.send(command.method, { ...parameters, targetId });
+        const claim = this.#assertOwnedTarget(state, targetId);
+        return this.#readTargetInfo(state, targetId, claim, parameters);
       }
       case "Target.createTarget": {
         assertSafeNavigationUrl(parameters.url, true);
@@ -468,17 +767,50 @@ export class SessionCdpRouter {
         }
         // A session that ended while the tab opened has already closed its
         // pages; this one would outlive it in a profile other sessions share.
-        if (this.#sessions.get(state.sessionId) !== state) {
-          await this.#backend.send("Target.closeTarget", { targetId }).catch(() => undefined);
+        if (!this.#sessions.has(state.session.sessionId) || state.closed.signal.aborted) {
+          if (!this.#ownerByTargetId.has(targetId))
+            await this.#backend.send("Target.closeTarget", { targetId }).catch(() => undefined);
           throw new SessionCdpRouterError("not_found", "Browser Session is not registered.");
         }
-        this.#claimTarget(state, targetId);
-        const attaching = state.autoAttached?.get(targetId);
-        if (attaching && !(await attaching))
-          throw new SessionCdpRouterError(
-            "not_found",
-            "The new browser page is no longer attachable.",
-          );
+        const claim = this.#claimTarget(state, targetId, undefined, !state.standard);
+        if (state.standard) {
+          state.session.adopting.add(targetId);
+          let adopted = false;
+          try {
+            try {
+              adopted = !state.standard.adoptTarget || (await state.standard.adoptTarget(targetId));
+            } finally {
+              state.session.adopting.delete(targetId);
+            }
+            if (!adopted)
+              throw new SessionCdpRouterError(
+                "not_found",
+                "The new browser page could not be adopted.",
+              );
+            this.#assertCurrentClaim(state, targetId, claim);
+            for (const connection of state.session.connections)
+              if (connection !== state)
+                void this.#autoAttachTarget(connection, targetId)?.catch(() => undefined);
+            const attaching = this.#autoAttachTarget(state, targetId);
+            if (attaching && !(await attaching))
+              throw new SessionCdpRouterError(
+                "not_found",
+                "The new browser page could not be attached.",
+              );
+          } catch (error) {
+            if (this.#ownerByTargetId.get(targetId) === claim) {
+              await this.#closeTarget(targetId, claim, {}).catch(() => undefined);
+              // If Chromium refuses rollback, an adopted page remains discoverable.
+              if (
+                adopted &&
+                this.#ownerByTargetId.get(targetId) === claim &&
+                !state.closed.signal.aborted
+              )
+                return response;
+            }
+            throw error;
+          }
+        }
         return response;
       }
       case "Target.attachToTarget": {
@@ -488,10 +820,21 @@ export class SessionCdpRouter {
             channel.physicalTargetId === targetId && channel.channel instanceof ChildCdpChannel,
         );
         if (existing) return { sessionId: existing.virtualSessionId };
-        if (!command.sessionId && state.autoAttached) {
+        if (state.standard && state.autoAttached) {
           const attached = await this.#autoAttachTarget(state, targetId);
           if (attached) return attached;
           throw new SessionCdpRouterError("not_found", "The browser page is no longer attachable.");
+        }
+        if (state.standard) {
+          const claim = this.#assertOwnedTarget(state, targetId);
+          const { targetInfo } = await this.#readTargetInfo(state, targetId, claim);
+          this.#assertCurrentClaim(state, targetId, claim);
+          if (targetInfo.type !== "page")
+            throw new SessionCdpRouterError(
+              "forbidden",
+              "Use its parent page to attach a child target.",
+            );
+          return this.#attachTarget(state, targetId, targetInfo);
         }
         return this.#attachTarget(state, targetId);
       }
@@ -506,6 +849,7 @@ export class SessionCdpRouter {
         return {};
       }
       case "Target.setAutoAttach": {
+        if (!state.standard) break;
         if (
           typeof parameters.autoAttach !== "boolean" ||
           (parameters.autoAttach && parameters.flatten !== true)
@@ -513,15 +857,19 @@ export class SessionCdpRouter {
           throw new SessionCdpRouterError("bad_command", "Browser auto-attach requires flat mode.");
         }
         if (parameters.autoAttach) {
-          state.autoAttached ??= new Map();
-          const autoAttached = state.autoAttached;
-          // Announce existing openers before their popups.
-          for (const targetId of state.ownedTargetIds) {
-            if (state.autoAttached !== autoAttached) break;
-            await this.#autoAttachTarget(state, targetId);
+          if (!state.autoAttached) {
+            state.autoAttached = new Map();
+            let ready = Promise.resolve();
+            for (const targetId of state.session.ownedTargetIds) {
+              ready =
+                this.#autoAttachTarget(state, targetId, ready)?.then(() => undefined) ?? ready;
+            }
+            state.autoReady = ready;
           }
+          await state.autoReady;
         } else {
           state.autoAttached = undefined;
+          state.autoReady = undefined;
           for (const attached of state.channels.values()) {
             if (attached.rootAttached) this.#endChannel(state, attached);
           }
@@ -535,15 +883,21 @@ export class SessionCdpRouter {
         }
         if (state.discoverTargets === discover) return {};
         state.discoverTargets = discover;
-        const replay = discover ? new Set<string>() : undefined;
+        state.discoveredTargets.clear();
+        if (!state.standard) return {};
+        const replay: DiscoveryReplay | undefined = discover ? { events: [], bytes: 0 } : undefined;
         state.discoveryReplay = replay;
         if (!replay) return {};
         try {
-          for (const targetInfo of await this.#ownedTargetInfos(state)) {
-            if (state.discoveryReplay !== replay) break;
-            const targetId = requiredTargetId(targetInfo);
-            if (!replay.has(targetId) && this.#ownerByTargetId.get(targetId) === state.sessionId)
-              this.#appendEvent(state, "Target.targetCreated", { targetInfo });
+          const { targetInfos } = await this.#ownedTargetInfos(state, {
+            filter: parameters.filter,
+          });
+          if (state.discoveryReplay !== replay) return {};
+          for (const targetInfo of targetInfos) {
+            this.#publishDiscovery(state, "Target.targetCreated", { targetInfo });
+          }
+          for (const event of replay.events) {
+            this.#publishDiscovery(state, event.method, event.parameters);
           }
         } finally {
           if (state.discoveryReplay === replay) state.discoveryReplay = undefined;
@@ -554,66 +908,133 @@ export class SessionCdpRouter {
         return this.#activateTarget(state, requiredTargetId(parameters));
       case "Target.closeTarget": {
         const targetId = requiredTargetId(parameters);
-        this.#assertOwnedTarget(state, targetId);
-        const response = await this.#backend.send(command.method, { ...parameters, targetId });
-        this.#releaseTarget(targetId);
-        return response;
+        const claim = this.#assertOwnedTarget(state, targetId);
+        return this.#closeTarget(targetId, claim, parameters);
       }
       default:
-        if (typeof parameters.targetId === "string")
+        if (!state.standard && typeof parameters.targetId === "string")
           return this.#backend.send(command.method, parameters);
-        throw new SessionCdpRouterError(
-          "forbidden",
-          `${command.method} cannot be safely scoped to one Browser Session.`,
-        );
     }
+    throw new SessionCdpRouterError(
+      "forbidden",
+      `${command.method} cannot be safely scoped to one Browser Session.`,
+    );
   }
 
-  async #ownedTargetInfos(
-    state: SessionState,
-    parameters?: CdpParameters,
-  ): Promise<Record<string, unknown>[]> {
+  async #closeTarget(targetId: string, claim: TargetClaim, parameters: CdpParameters) {
+    const result = await this.#backend.send("Target.closeTarget", { ...parameters, targetId });
+    if (this.#ownerByTargetId.get(targetId) === claim) {
+      if (asRecord(result).success !== false) this.#releaseTarget(targetId);
+    } else if (this.#ownerByTargetId.has(targetId))
+      throw new SessionCdpRouterError("not_found", "The target claim changed while closing.");
+    return result;
+  }
+
+  async #ownedTargetInfos(state: ConnectionState, parameters?: CdpParameters) {
+    const claims = new Map(
+      [...state.session.ownedTargetIds].map((id) => [id, this.#ownerByTargetId.get(id)]),
+    );
     const response = asRecord(await this.#backend.send("Target.getTargets", parameters));
-    const targetInfos: unknown[] = Array.isArray(response.targetInfos) ? response.targetInfos : [];
-    return targetInfos.map(asRecord).filter((info) => {
-      const targetId = readString(info, "targetId");
-      return targetId !== null && this.#ownerByTargetId.get(targetId) === state.sessionId;
+    state.closed.signal.throwIfAborted();
+    const entries: unknown[] = Array.isArray(response.targetInfos) ? response.targetInfos : [];
+    const targetInfos = entries.flatMap((entry) => {
+      const target = asRecord(entry);
+      const id = readString(target, "targetId");
+      if (!id || !claims.has(id) || claims.get(id) !== this.#ownerByTargetId.get(id)) return [];
+      const info = this.#projectTargetInfo(state, target);
+      return info ? [info] : [];
     });
+    return { ...response, targetInfos };
+  }
+
+  async #readTargetInfo(
+    state: ConnectionState,
+    targetId: string,
+    claim: TargetClaim,
+    parameters?: CdpParameters,
+  ) {
+    const response = asRecord(
+      await this.#backend.send("Target.getTargetInfo", { ...parameters, targetId }),
+    );
+    this.#assertCurrentClaim(state, targetId, claim);
+    if (response.targetInfo === undefined && !state.standard)
+      return { ...response, targetInfo: asRecord(response.targetInfo) };
+    const targetInfo =
+      readString(asRecord(response.targetInfo), "targetId") === targetId
+        ? this.#projectTargetInfo(state, asRecord(response.targetInfo))
+        : undefined;
+    if (!targetInfo)
+      throw new SessionCdpRouterError("not_found", "The target is no longer available.");
+    return { ...response, targetInfo };
+  }
+
+  #projectTargetInfo(state: ConnectionState, info: CdpParameters): CdpParameters | undefined {
+    const targetId = readString(info, "targetId");
+    if (!targetId || this.#ownerByTargetId.get(targetId)?.sessionId !== state.session.sessionId)
+      return;
+    const projected: Record<string, unknown> = {
+      ...info,
+      ...(state.standard ? { browserContextId: state.session.sessionId } : {}),
+    };
+    for (const key of ["openerId", "parentId"]) {
+      const relatedId = readString(info, key);
+      if (
+        relatedId &&
+        this.#ownerByTargetId.get(relatedId)?.sessionId !== state.session.sessionId
+      ) {
+        delete projected[key];
+        if (key === "openerId") {
+          delete projected.openerFrameId;
+          projected.canAccessOpener = false;
+        } else {
+          delete projected.parentFrameId;
+        }
+      }
+    }
+    if (projected.openerId === undefined) delete projected.openerFrameId;
+    const parentFrameId = readString(projected, "parentFrameId");
+    if (parentFrameId) {
+      const frameClaim = this.#ownerByTargetId.get(parentFrameId);
+      if (frameClaim && frameClaim.sessionId !== state.session.sessionId)
+        delete projected.parentFrameId;
+    }
+    return projected;
   }
 
   #autoAttachTarget(
-    state: SessionState,
+    state: ConnectionState,
     targetId: string,
+    initialAfter?: Promise<void>,
   ): Promise<{ sessionId: string } | undefined> | undefined {
     const pending = state.autoAttached;
-    if (!pending) return;
+    if (!pending || state.session.adopting.has(targetId)) return;
+    const claim = this.#ownerByTargetId.get(targetId);
+    if (!claim || claim.sessionId !== state.session.sessionId) return;
     const existing = pending.get(targetId);
     if (existing) return existing;
+    const explicit = [...state.channels.values()].find(
+      (channel) => channel.rootAttached && channel.physicalTargetId === targetId,
+    );
+    if (explicit) {
+      const reply = Promise.resolve({ sessionId: explicit.virtualSessionId });
+      pending.set(targetId, reply);
+      return reply;
+    }
+    const ready = initialAfter ?? state.autoReady;
     const current = () =>
       state.autoAttached === pending &&
       pending.get(targetId) === attaching &&
-      this.#sessions.get(state.sessionId) === state &&
-      this.#ownerByTargetId.get(targetId) === state.sessionId;
+      !state.closed.signal.aborted &&
+      this.#ownerByTargetId.get(targetId) === claim;
     const attaching: Promise<{ sessionId: string } | undefined> = Promise.resolve().then(
       async () => {
         if (!current()) return;
         try {
-          const response = asRecord(await this.#backend.send("Target.getTargetInfo", { targetId }));
-          const info = asRecord(response.targetInfo);
-          if (!current() || info.type !== "page") return;
-          const targetInfo: Record<string, unknown> = {
-            ...info,
-            targetId,
-            attached: true,
-            browserContextId: readString(info, "browserContextId") ?? state.sessionId,
-          };
-          const openerId = readString(info, "openerId");
-          if (openerId && this.#ownerByTargetId.get(openerId) !== state.sessionId) {
-            delete targetInfo.openerId;
-            delete targetInfo.openerFrameId;
-            targetInfo.canAccessOpener = false;
-          }
-          return await this.#attachTarget(state, targetId, { targetInfo, current });
+          await ready;
+          if (!current()) return;
+          const { targetInfo } = await this.#readTargetInfo(state, targetId, claim);
+          if (!current() || targetInfo.type !== "page") return;
+          return await this.#attachTarget(state, targetId, targetInfo, current);
         } catch (error) {
           if (!current()) return;
           pending.delete(targetId);
@@ -627,39 +1048,48 @@ export class SessionCdpRouter {
 
   /** Each attachment owns its page channel and all child channels opened through it. */
   async #attachTarget(
-    state: SessionState,
+    state: ConnectionState,
     targetId: string,
-    root?: { targetInfo: CdpParameters; current: () => boolean },
+    rootInfo?: CdpParameters,
+    current?: () => boolean,
   ): Promise<{ sessionId: string }> {
-    this.#assertOwnedTarget(state, targetId);
-    const channel = await this.#backend.attach(targetId, root !== undefined);
-    if (
-      this.#sessions.get(state.sessionId) !== state ||
-      this.#ownerByTargetId.get(targetId) !== state.sessionId ||
-      (root && !root.current())
-    ) {
+    const claim = this.#assertOwnedTarget(state, targetId);
+    const channel = await this.#backend.attach(
+      targetId,
+      Boolean(state.standard),
+      state.standard ? state.closed.signal : undefined,
+    );
+    try {
+      this.#assertCurrentClaim(state, targetId, claim);
+      if (current && !current())
+        throw new SessionCdpRouterError("not_found", "Browser auto-attach ended.");
+    } catch (error) {
       void channel.close().catch(() => undefined);
-      throw new SessionCdpRouterError("not_found", "The browser surface does not exist.");
+      throw error;
     }
     const attached: AttachedChannel = {
       channel,
-      ending: Promise.withResolvers<never>(),
+      pending: new Set(),
       ended: new AbortController(),
       physicalTargetId: targetId,
-      rootAttached: root !== undefined,
+      rootAttached: rootInfo !== undefined,
       removeListener: () => undefined,
       pageEnabled: false,
       virtualSessionId: `cdp_${this.#ports.uuid()}`,
     };
-    attached.ending.promise.catch(() => undefined);
     attached.removeListener = channel.onEvent((method, parameters) => {
       this.#handlePageEvent(state, attached, method, parameters);
     });
     state.channels.set(attached.virtualSessionId, attached);
-    if (root) {
+    if (rootInfo) {
       this.#appendEvent(state, "Target.attachedToTarget", {
         sessionId: attached.virtualSessionId,
-        targetInfo: root.targetInfo,
+        targetInfo: {
+          ...rootInfo,
+          targetId,
+          attached: true,
+          browserContextId: readString(rootInfo, "browserContextId") ?? state.session.sessionId,
+        },
         waitingForDebugger: false,
       });
     }
@@ -667,13 +1097,13 @@ export class SessionCdpRouter {
   }
 
   #handlePageEvent(
-    state: SessionState,
+    state: ConnectionState,
     attached: AttachedChannel,
     method: string,
     parameters: CdpParameters,
   ): void {
     if (
-      state.ledgerDialogEvents &&
+      state.session.ledgerDialogEvents &&
       (method === "Page.javascriptDialogOpening" || method === "Page.javascriptDialogClosed")
     )
       return;
@@ -689,8 +1119,18 @@ export class SessionCdpRouter {
       )
         return;
       const owner = this.#ownerByTargetId.get(targetId);
-      if (owner && owner !== state.sessionId) return;
-      this.#claimTarget(state, targetId, false);
+      if (
+        (owner && owner.sessionId !== state.session.sessionId) ||
+        (isWorkerShared(info.type) &&
+          this.#exclusive?.session.sessionId !== state.session.sessionId)
+      ) {
+        void attached.channel
+          .send("Target.detachFromTarget", { sessionId: physicalSessionId })
+          .catch(() => undefined);
+        return;
+      }
+      if (isWorkerShared(info.type)) state.session.exclusiveWorkers.add(targetId);
+      this.#claimTarget(state, targetId, attached.physicalTargetId, false);
       const channel = new ChildCdpChannel(
         attached.channel,
         physicalSessionId,
@@ -698,14 +1138,13 @@ export class SessionCdpRouter {
       );
       const child: AttachedChannel = {
         channel,
-        ending: Promise.withResolvers<never>(),
+        pending: new Set(),
         ended: new AbortController(),
         physicalTargetId: targetId,
         virtualSessionId: `cdp_${this.#ports.uuid()}`,
         pageEnabled: false,
         removeListener: () => undefined,
       };
-      child.ending.promise.catch(() => undefined);
       child.removeListener = channel.onEvent((method, params) =>
         this.#handlePageEvent(state, child, method, params),
       );
@@ -739,7 +1178,7 @@ export class SessionCdpRouter {
     this.#appendEvent(state, method, parameters, attached.virtualSessionId);
   }
 
-  #admitAttachedCommand(state: SessionState, command: CdpCommand): AttachedChannel {
+  #admitAttachedCommand(state: ConnectionState, command: CdpCommand): AttachedChannel {
     const attached = state.channels.get(command.sessionId ?? "");
     if (!attached) {
       throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
@@ -749,25 +1188,61 @@ export class SessionCdpRouter {
       assertSafeNavigationUrl(parameters.url, false);
     }
     if (command.method === "DOM.setFileInputFiles") {
-      assertSessionFiles(parameters.files, state.filesRoot, command.method, this.#ports);
+      assertSessionFiles(parameters.files, state.session.filesRoot, command.method, this.#ports);
     }
     if (command.method === "Input.dispatchDragEvent") {
       const data = parameters.data;
       if (data !== undefined) {
         assertSessionFiles(
           asRecord(data).files ?? [],
-          state.filesRoot,
+          state.session.filesRoot,
           command.method,
           this.#ports,
         );
       }
     }
     assertBoundedRenderingCommand(command.method, parameters);
+    if (state.standard && command.method === "Page.captureScreenshot") {
+      if (parameters.fromSurface !== undefined && parameters.fromSurface !== true)
+        throw new SessionCdpRouterError(
+          "bad_command",
+          "A screenshot must come from the page surface.",
+        );
+      if (parameters.captureBeyondViewport === true && parameters.clip === undefined)
+        throw new SessionCdpRouterError(
+          "bad_command",
+          "Full-page capture requires a bounded screenshot clip.",
+        );
+      if (parameters.clip !== undefined) {
+        const { x, y, width, height, scale } = asRecord(parameters.clip);
+        if (
+          typeof x !== "number" ||
+          typeof y !== "number" ||
+          !Number.isFinite(x) ||
+          !Number.isFinite(y) ||
+          typeof width !== "number" ||
+          typeof height !== "number" ||
+          typeof scale !== "number" ||
+          !Number.isFinite(width) ||
+          !Number.isFinite(height) ||
+          !Number.isFinite(scale) ||
+          width <= 0 ||
+          height <= 0 ||
+          scale <= 0 ||
+          scale > browserFrameLimits.maxDevicePixelRatio ||
+          width * height * scale ** 2 > browserFrameLimits.maxPhysicalPixels
+        )
+          throw new SessionCdpRouterError(
+            "bad_command",
+            "CDP screenshot clip exceeds the raster limit.",
+          );
+      }
+    }
     return attached;
   }
 
   async #sendAttachedCommand(
-    state: SessionState,
+    state: ConnectionState,
     command: CdpCommand,
     beforeActivity?: (targetId: string) => void,
   ): Promise<unknown> {
@@ -794,8 +1269,8 @@ export class SessionCdpRouter {
           throw new SessionCdpRouterError("bad_command", "Invalid nested CDP message.");
         }
         const message = asRecord(nested);
-        const result = await this.send(
-          state.sessionId,
+        const result = await this.#send(
+          state,
           {
             method: requiredString(message, "method"),
             parameters: asRecord(message.params),
@@ -852,23 +1327,32 @@ export class SessionCdpRouter {
     // attribute a later passkey ceremony to this agent. Script, navigation and
     // DOM changes can start one as surely as input can.
     if (!agentObservationMethods.has(command.method)) beforeActivity?.(attached.physicalTargetId);
-    const result = await Promise.race([
-      attached.channel.send(
+    const captureScreenshot = state.standard?.captureScreenshot;
+    const answerDialog = state.standard?.answerDialog;
+    return whileOpen(attached.pending, () => {
+      if (captureScreenshot && command.method === "Page.captureScreenshot")
+        return captureScreenshot(
+          attached.physicalTargetId,
+          parameters ?? {},
+          attached.ended.signal,
+        );
+      if (answerDialog && command.method === "Page.handleJavaScriptDialog")
+        return answerDialog(attached.physicalTargetId, parameters ?? {});
+      return attached.channel.send(
         command.method,
         agentObjectGroups(parameters, attached.virtualSessionId),
-      ),
-      attached.ending.promise,
-    ]);
-    return result;
+      );
+    });
   }
 
   // An agent's target selection cannot change a viewer's tab or native focus.
   // CDP activation only verifies that its explicitly named surface still exists.
-  async #activateTarget(state: SessionState, targetId: string): Promise<Record<string, never>> {
-    this.#assertOwnedTarget(state, targetId);
-    if (!(await state.resolveTarget(targetId))) {
+  async #activateTarget(state: ConnectionState, targetId: string): Promise<Record<string, never>> {
+    const claim = this.#assertOwnedTarget(state, targetId);
+    if (!(await state.session.resolveTarget(targetId))) {
       throw new SessionCdpRouterError("not_found", "The browser surface does not exist.");
     }
+    this.#assertCurrentClaim(state, targetId, claim);
     return {};
   }
 
@@ -876,39 +1360,88 @@ export class SessionCdpRouter {
     if (this.#closed) return;
     if (!method.startsWith("Target.")) {
       const targetId = readString(parameters, "targetId") ?? readString(parameters, "frameId");
-      const ownerId = targetId ? this.#ownerByTargetId.get(targetId) : undefined;
-      const owner = ownerId ? this.#sessions.get(ownerId) : undefined;
-      if (owner) this.#appendEvent(owner, method, parameters);
+      const owner = targetId
+        ? this.#sessions.get(this.#ownerByTargetId.get(targetId)?.sessionId ?? "")
+        : undefined;
+      if (owner)
+        for (const state of owner.session.connections) this.#appendEvent(state, method, parameters);
       return;
     }
-    if (method === "Target.attachedToTarget" || method === "Target.detachedFromTarget") return;
-    const targetInfo = asRecord(parameters.targetInfo);
-    const targetId = readString(targetInfo, "targetId") ?? readString(parameters, "targetId");
+    if (
+      method !== "Target.targetCreated" &&
+      method !== "Target.targetInfoChanged" &&
+      method !== "Target.targetDestroyed" &&
+      method !== "Target.targetCrashed"
+    )
+      return;
+    const info = asRecord(parameters.targetInfo);
+    const targetId = readString(info, "targetId") ?? readString(parameters, "targetId");
     if (!targetId) return;
 
     if (method === "Target.targetCreated") {
-      const parentTargetId =
-        readString(targetInfo, "openerId") ?? readString(targetInfo, "parentId");
-      const ownerId = parentTargetId ? this.#ownerByTargetId.get(parentTargetId) : undefined;
-      const owner = ownerId ? this.#sessions.get(ownerId) : undefined;
+      const parentId = readString(info, "openerId") ?? readString(info, "parentId");
+      const owner = parentId
+        ? this.#sessions.get(this.#ownerByTargetId.get(parentId)?.sessionId ?? "")
+        : undefined;
       if (
         owner &&
-        ["page", "iframe", "worker", "shared_worker", "service_worker"].includes(
-          String(targetInfo.type),
-        )
+        parentId &&
+        !this.#ownerByTargetId.has(targetId) &&
+        (["page", "iframe", "worker"].includes(String(info.type)) ||
+          (this.#exclusive?.session.sessionId === owner.session.sessionId &&
+            isWorkerShared(info.type)))
       ) {
-        this.#claimTarget(owner, targetId, targetInfo.type === "page");
+        if (isWorkerShared(info.type)) owner.session.exclusiveWorkers.add(targetId);
+        this.#claimTarget(owner, targetId, parentId, info.type === "page");
       }
     }
 
-    const ownerId = this.#ownerByTargetId.get(targetId);
-    const owner = ownerId ? this.#sessions.get(ownerId) : undefined;
-    if (owner && owner.discoverTargets !== false) {
-      if (method === "Target.targetCreated") owner.discoveryReplay?.add(targetId);
-      this.#appendEvent(owner, method, parameters);
-    }
-    if (!owner) this.#trackUnclaimedPage(method, targetId, parameters);
+    const owner = this.#sessions.get(this.#ownerByTargetId.get(targetId)?.sessionId ?? "");
+    if (owner)
+      for (const state of owner.session.connections) this.#discover(state, method, parameters);
+    else this.#trackUnclaimedPage(method, targetId, parameters);
     if (method === "Target.targetDestroyed") this.#releaseTarget(targetId);
+  }
+
+  #discover(state: ConnectionState, method: string, parameters: CdpParameters): void {
+    if (!state.discoverTargets) return;
+    const replay = state.discoveryReplay;
+    if (replay) {
+      replay.bytes += serializedBytes({ method, parameters });
+      if (
+        replay.bytes > standardCdpBufferedMaxBytes ||
+        replay.events.length >= standardCdpMaxPending
+      ) {
+        state.standard?.onOverflow?.();
+        this.#closeConnection(state);
+      } else {
+        replay.events.push({ method, parameters });
+      }
+    } else {
+      this.#publishDiscovery(state, method, parameters);
+    }
+  }
+
+  #publishDiscovery(state: ConnectionState, method: string, parameters: CdpParameters): void {
+    if (state.standard) {
+      const targetId =
+        readString(asRecord(parameters.targetInfo), "targetId") ??
+        readString(parameters, "targetId");
+      if (!targetId) return;
+      const seen = state.discoveredTargets;
+      if (method === "Target.targetCreated") {
+        if (
+          seen.has(targetId) ||
+          this.#ownerByTargetId.get(targetId)?.sessionId !== state.session.sessionId
+        )
+          return;
+        seen.add(targetId);
+      } else {
+        if (!seen.has(targetId)) return;
+        if (method === "Target.targetDestroyed") seen.delete(targetId);
+      }
+    }
+    this.#appendEvent(state, method, parameters);
   }
 
   #trackUnclaimedPage(method: string, targetId: string, parameters: CdpParameters): void {
@@ -925,38 +1458,57 @@ export class SessionCdpRouter {
     }
   }
 
-  #claimTarget(state: SessionState, targetId: string, attachPage = true): void {
-    const existingOwner = this.#ownerByTargetId.get(targetId);
-    if (existingOwner && existingOwner !== state.sessionId) {
+  #claimTarget(
+    state: ConnectionState,
+    targetId: string,
+    parentId?: string,
+    attachPage = true,
+  ): TargetClaim {
+    const existing = this.#ownerByTargetId.get(targetId);
+    if (existing && existing.sessionId !== state.session.sessionId)
       throw new SessionCdpRouterError("conflict", "CDP target belongs to another session.");
-    }
-    state.ownedTargetIds.add(targetId);
-    this.#ownerByTargetId.set(targetId, state.sessionId);
+    const claim = existing ?? {
+      sessionId: state.session.sessionId,
+      ...(parentId ? { parentId } : {}),
+    };
+    if (!parentId) delete claim.parentId;
+    this.#ownerByTargetId.set(targetId, claim);
+    state.session.ownedTargetIds.add(targetId);
     const announced = this.#unclaimedPages.get(targetId);
-    if (announced) {
-      this.#unclaimedPages.delete(targetId);
-      if (state.discoverTargets !== false) {
-        state.discoveryReplay?.add(targetId);
-        this.#appendEvent(state, "Target.targetCreated", { targetInfo: announced });
-      }
+    this.#unclaimedPages.delete(targetId);
+    for (const connection of state.session.connections) {
+      if (announced) this.#discover(connection, "Target.targetCreated", { targetInfo: announced });
+      if (attachPage) void this.#autoAttachTarget(connection, targetId)?.catch(() => undefined);
     }
-    if (attachPage) void this.#autoAttachTarget(state, targetId)?.catch(() => undefined);
+    return claim;
   }
 
   #releaseTarget(targetId: string): void {
-    const ownerId = this.#ownerByTargetId.get(targetId);
-    if (!ownerId) return;
+    const claim = this.#ownerByTargetId.get(targetId);
+    if (!claim) return;
     this.#ownerByTargetId.delete(targetId);
-    const state = this.#sessions.get(ownerId);
-    state?.ownedTargetIds.delete(targetId);
+    const state = this.#sessions.get(claim.sessionId);
+    state?.session.ownedTargetIds.delete(targetId);
     if (!state) return;
-    state.autoAttached?.delete(targetId);
-    for (const attached of state.channels.values()) {
-      if (attached.physicalTargetId === targetId) {
-        state.retiredTargets.set(attached.virtualSessionId, targetId);
-        this.#endChannel(state, attached);
+    state.session.exclusiveWorkers.delete(targetId);
+    for (const connection of state.session.connections) {
+      if (connection.standard && connection.discoveredTargets.has(targetId))
+        this.#discover(connection, "Target.targetDestroyed", { targetId });
+      connection.autoAttached?.delete(targetId);
+      for (const attached of connection.channels.values()) {
+        if (attached.physicalTargetId === targetId) {
+          const retired = connection.retiredTargets;
+          retired.set(attached.virtualSessionId, targetId);
+          if (retired.size > maxRetiredTargets) {
+            const oldest = retired.keys().next().value;
+            if (oldest !== undefined) retired.delete(oldest);
+          }
+          this.#endChannel(connection, attached);
+        }
       }
     }
+    for (const childId of state.session.ownedTargetIds)
+      if (this.#ownerByTargetId.get(childId)?.parentId === targetId) this.#releaseTarget(childId);
   }
 
   /**
@@ -964,7 +1516,7 @@ export class SessionCdpRouter {
    * its own: a backend can need the page to answer first, and a page under a
    * JavaScript dialog answers nothing until the dialog closes.
    */
-  #endChannel(state: SessionState, attached: AttachedChannel): void {
+  #endChannel(state: ConnectionState, attached: AttachedChannel): void {
     if (state.channels.get(attached.virtualSessionId) !== attached) return;
     state.channels.delete(attached.virtualSessionId);
     if (attached.rootAttached) {
@@ -983,24 +1535,35 @@ export class SessionCdpRouter {
       "not_found",
       "The CDP session ended before the page answered.",
     );
-    attached.ending.reject(ended);
+    rejectPending(attached.pending, ended);
     attached.ended.abort(ended);
     void attached.channel.close().catch(() => undefined);
   }
 
   #appendEvent(
-    state: SessionState,
+    state: ConnectionState,
     method: string,
     parameters: CdpParameters,
     sessionId?: string,
   ): void {
+    if (method.startsWith("Target.") && parameters.targetInfo !== undefined) {
+      const info = this.#projectTargetInfo(state, asRecord(parameters.targetInfo));
+      if (!info) return;
+      parameters = { ...parameters, targetInfo: info };
+    }
     const event: CdpEvent = {
       method,
       parameters,
       sequence: state.nextSequence++,
       ...(sessionId ? { sessionId } : {}),
     };
-    if (serializedBytes(event) > this.#sessionLimits(state).maxEventBytes) return;
+    if (serializedBytes(event) > this.#sessionLimits(state).maxEventBytes) {
+      if (state.standard) {
+        state.standard.onOverflow?.();
+        this.#closeConnection(state);
+      }
+      return;
+    }
     for (const listener of state.eventListeners) {
       try {
         listener(event);
@@ -1011,7 +1574,7 @@ export class SessionCdpRouter {
     }
   }
 
-  #assertScope(state: SessionState, parameters: CdpParameters): void {
+  #assertScope(state: ConnectionState, parameters: CdpParameters): void {
     for (const key of ["targetId", "openerId"]) {
       const target = parameters[key];
       if (typeof target === "string") this.#assertOwnedTarget(state, target);
@@ -1028,17 +1591,24 @@ export class SessionCdpRouter {
       );
   }
 
-  #assertOwnedTarget(state: SessionState, targetId: string): void {
-    if (this.#ownerByTargetId.get(targetId) !== state.sessionId) {
+  #assertOwnedTarget(state: ConnectionState, targetId: string): TargetClaim {
+    const claim = this.#ownerByTargetId.get(targetId);
+    if (claim?.sessionId !== state.session.sessionId)
       throw new SessionCdpRouterError("forbidden", "CDP target is outside this Browser Session.");
-    }
+    return claim;
   }
 
-  #sessionLimits(state: SessionState): SessionCdpRouterLimits {
-    return state.autoAttached ? this.#browserRootLimits : this.#limits;
+  #assertCurrentClaim(state: ConnectionState, targetId: string, claim: TargetClaim): void {
+    state.closed.signal.throwIfAborted();
+    if (this.#ownerByTargetId.get(targetId) !== claim)
+      throw new SessionCdpRouterError("not_found", "The target claim changed during the command.");
   }
 
-  #requireSession(sessionId: string): SessionState {
+  #sessionLimits(state: ConnectionState): SessionCdpRouterLimits {
+    return state.standard ? this.#browserRootLimits : this.#limits;
+  }
+
+  #requireSession(sessionId: string): ConnectionState {
     const state = this.#sessions.get(sessionId);
     if (!state) throw new SessionCdpRouterError("not_found", "Browser Session is not registered.");
     return state;
@@ -1049,7 +1619,25 @@ export class SessionCdpRouter {
   }
 }
 
-function validateCommand(command: CdpCommand, maxBytes: number): void {
+async function whileOpen<T>(
+  pending: Set<(reason: unknown) => void>,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const ended = Promise.withResolvers<never>();
+  pending.add(ended.reject);
+  try {
+    return await Promise.race([ended.promise, operation()]);
+  } finally {
+    pending.delete(ended.reject);
+  }
+}
+
+function rejectPending(pending: Set<(reason: unknown) => void>, error: Error): void {
+  for (const reject of pending) reject(error);
+  pending.clear();
+}
+
+function validateCommand(command: CdpCommand, maxBytes: number): number {
   if (!/^[A-Za-z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*$/.test(command.method)) {
     throw new SessionCdpRouterError("bad_command", "CDP method is invalid.");
   }
@@ -1057,9 +1645,11 @@ function validateCommand(command: CdpCommand, maxBytes: number): void {
   if (command.parameters !== undefined && !isPlainObject(command.parameters)) {
     throw new SessionCdpRouterError("bad_command", "CDP parameters must be an object.");
   }
-  if (serializedBytes(command) > maxBytes) {
+  const bytes = serializedBytes(command);
+  if (bytes > maxBytes) {
     throw new SessionCdpRouterError("too_large", "CDP command exceeds its byte limit.");
   }
+  return bytes;
 }
 
 function validateLimits(limits: SessionCdpRouterLimits): SessionCdpRouterLimits {
@@ -1286,7 +1876,9 @@ class ChildCdpChannel implements CdpChannel {
         sessionId: this.id,
         message: JSON.stringify({ id, method, params: parameters }),
       })
-      .catch(pending.reject);
+      .catch((error: unknown) => {
+        if (this.#pending.delete(id)) pending.reject(error);
+      });
     return pending.promise;
   }
   async close(): Promise<void> {

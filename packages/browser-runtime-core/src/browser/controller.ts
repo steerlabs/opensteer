@@ -15,6 +15,7 @@ import {
   SessionCdpRouter,
   SessionCdpRouterError,
   type CdpCommand,
+  type StandardCdpAttachment,
   type CdpChannel,
 } from "@opensteer/browser-core";
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
@@ -575,6 +576,59 @@ export class BrowserController {
     await this.screencast.start();
     this.initialSnapshotQueued = true;
     await this.publishSnapshot();
+  }
+
+  openStandardCdp(wholeContext: boolean, onOverflow: () => void): StandardCdpAttachment {
+    const client = this.cdpRouter.openStandardClient(this.claims.sessionId, {
+      wholeContext,
+      adoptTarget: (id) => this.ledger.adoptTarget(id),
+      captureScreenshot: (id, parameters, signal) => {
+        const surfaceId = this.ledger.surfaceIdForTarget(id);
+        if (!surfaceId) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+        if (this.ledger.dialogOpen(surfaceId))
+          throw new BrowserRuntimeError(
+            "conflict",
+            "Answer the page's JavaScript dialog before taking a screenshot.",
+          );
+        const deadline = AbortSignal.any([signal, AbortSignal.timeout(screenshotTimeoutMs)]);
+        // Chromium restores emulation through the debugger session that owns it.
+        return this.ledger.withGeometry(surfaceId, (cdp) => {
+          deadline.throwIfAborted();
+          return withTimeout(
+            cdp.send("Page.captureScreenshot", { ...parameters }),
+            screenshotTimeoutMs,
+            {
+              signal: deadline,
+              timeoutError: () =>
+                new BrowserRuntimeError(
+                  "conflict",
+                  "The page did not answer a screenshot in time.",
+                ),
+            },
+          );
+        });
+      },
+      answerDialog: async (targetId, parameters) => {
+        const surfaceId = this.ledger.surfaceIdForTarget(targetId);
+        const dialog = surfaceId ? this.ledger.dialogOf(surfaceId) : undefined;
+        if (!dialog) throw new BrowserRuntimeError("conflict", "No dialog is showing.");
+        await this.ledger.answerDialog(
+          dialog.id,
+          parameters.accept === true,
+          typeof parameters.promptText === "string" ? parameters.promptText : undefined,
+        );
+        return {};
+      },
+      onOverflow,
+    });
+    return {
+      ...client,
+      send: async (command) => {
+        const targetId = command.sessionId ? client.attachedTargetId(command.sessionId) : null;
+        if (targetId) this.ledger.recordAgentCommand(targetId);
+        return client.send(command, (id) => this.#passkeys?.record(id, "agent"));
+      },
+    };
   }
 
   async reattach(sink: BrowserControllerSink): Promise<void> {

@@ -37,6 +37,52 @@ describe("readBrowserRuntimeConfig", () => {
     });
   });
 
+  describe("bridge-only Browser Runtime", () => {
+    const base = {
+      OPENSTEER_BROWSER_BRIDGE_TOKEN: "browser-bridge-token-with-enough-entropy",
+      OPENSTEER_BROWSER_PROFILE_ROOT: "/profiles",
+      OPENSTEER_BROWSER_RUNTIME_ID: "runtime_main",
+      OPENSTEER_CHROMIUM_EXECUTABLE: "/usr/bin/chromium",
+    };
+
+    it.each(["http://127.23.4.5:4313", "http://[::1]:4313", "http://localhost:4313"])(
+      "admits the loopback origin %s",
+      (proxyUrl) => {
+        expect(
+          readBrowserRuntimeConfig({
+            ...base,
+            OPENSTEER_MODE: "production",
+            OPENSTEER_CHROMIUM_SANDBOX: "true",
+            OPENSTEER_BROWSER_PROXY_URL: proxyUrl,
+          }),
+        ).toMatchObject({ relay: undefined, chromiumSandbox: true, proxyUrl });
+      },
+    );
+
+    it.each([
+      "http://browser-egress:4313",
+      "http://0.0.0.0:4313",
+      "http://localhost.example.com:4313",
+      "http://127.0.0.1:4313/path",
+      "http://user:pass@127.0.0.1:4313",
+      "https://127.0.0.1:4313",
+    ])("refuses a non-loopback or malformed HTTP origin %s", (proxyUrl) => {
+      expect(() =>
+        readBrowserRuntimeConfig({ ...base, OPENSTEER_BROWSER_PROXY_URL: proxyUrl }),
+      ).toThrow(/origin/i);
+    });
+
+    it("requires sandboxing in production even without a proxy", () => {
+      expect(() => readBrowserRuntimeConfig({ ...base, OPENSTEER_MODE: "production" })).toThrow(
+        /sandbox/i,
+      );
+      expect(readBrowserRuntimeConfig(base)).toMatchObject({
+        chromiumSandbox: false,
+        proxyUrl: undefined,
+      });
+    });
+  });
+
   it("allows dynamic Host key bootstrap only when a device bridge token is configured", () => {
     const config = readBrowserRuntimeConfig({
       OPENSTEER_BROWSER_BRIDGE_TOKEN: "local-browser-bridge-token-with-entropy",

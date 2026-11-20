@@ -113,6 +113,68 @@ it.each(["ready", "acquiring"] as const)(
   },
 );
 
+describe("Chromium proxy launch", () => {
+  it("keeps implicit loopback bypass for a native profile", async () => {
+    const f = await nativeCloseFixture({
+      preserveLoopbackBypass: true,
+      proxyUrl: "http://127.0.0.1:4313",
+    });
+    const launch = vi.mocked(chromium.launchPersistentContext);
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const options = launch.mock.lastCall?.[1];
+      expect(options?.args?.slice(-3)).toEqual([
+        "--proxy-server=http://127.0.0.1:4313",
+        "--disable-quic",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+      ]);
+      expect(options?.args).not.toContain("--proxy-bypass-list=<-loopback>");
+      expect(options?.chromiumSandbox).toBe(true);
+    } finally {
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])("handles guest loopback bypass (preserve=%s)", async (preserve) => {
+    const launch = vi
+      .spyOn(chromium, "launchServer")
+      .mockRejectedValue(new Error("launch fixture"));
+    try {
+      const launcher = new PlaywrightChromiumLauncher({
+        chromiumSandbox: true,
+        executablePath: process.execPath,
+        headless: true,
+        preserveLoopbackBypass: preserve,
+        proxyUrl: "http://127.0.0.1:4313",
+      });
+      await expect(
+        launcher.launch({
+          initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
+          partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000001",
+          sessionId: validClaims().sessionId,
+          storage: { kind: "guest" },
+        }),
+      ).rejects.toThrow("launch fixture");
+      expect(launch).toHaveBeenCalledOnce();
+      const options = launch.mock.calls[0]![0]!;
+      expect(options.chromiumSandbox).toBe(true);
+      expect(options.proxy).toEqual(preserve ? undefined : { server: "http://127.0.0.1:4313" });
+      expect(options.args?.slice(-4)).toEqual([
+        "--disable-background-networking",
+        ...(preserve ? ["--proxy-server=http://127.0.0.1:4313"] : []),
+        "--disable-quic",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        ...(preserve ? [] : ["--proxy-bypass-list=<-loopback>"]),
+      ]);
+    } finally {
+      launch.mockRestore();
+    }
+  });
+});
+
 describe("Chromium child environment", () => {
   it("keeps only required headless Linux variables", () => {
     const environment = createChromiumChildEnvironment(
@@ -1111,7 +1173,12 @@ describe("native Chromium profiles", () => {
   });
 });
 
-async function nativeCloseFixture() {
+async function nativeCloseFixture(
+  options: Pick<
+    ConstructorParameters<typeof PlaywrightChromiumLauncher>[0],
+    "preserveLoopbackBypass" | "proxyUrl"
+  > = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), "native-close-"));
   const child = new ChildProcess();
   Object.defineProperty(child, "pid", { value: 12345 });
@@ -1148,6 +1215,7 @@ async function nativeCloseFixture() {
     executablePath: process.execPath,
     headless: true,
     chromiumSandbox: true,
+    ...options,
   });
   return { directory, launcher, context, browser, cdp, exit };
 }

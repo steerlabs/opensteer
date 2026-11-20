@@ -175,6 +175,8 @@ export const BrowserAttachTicketClaimsSchema = z
     access: BrowserProfileAccessSchema,
     audience: z.literal("opensteer-browser-runtime"),
     creationOrigin: z.enum(["agent", "person"]),
+    /** Authorizes an existing session on the runtime's raw CDP endpoint. */
+    standardCdp: z.enum(["session", "whole-context"]).optional(),
     passkeys: z.literal(1).optional(),
     navigationVersion: z.literal(1).optional(),
     wireVersion: z.literal(browserRuntimeWireVersion),

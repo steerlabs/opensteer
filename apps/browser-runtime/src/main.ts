@@ -52,6 +52,7 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
     executablePath: config.executablePath,
     headless: config.headless,
     ...(config.proxyUrl ? { proxyUrl: config.proxyUrl } : {}),
+    preserveLoopbackBypass: config.bridgeToken !== undefined && config.relay === undefined,
   });
   await launcher.prepare();
   const runtimeOptions: BrowserRuntimeOptions = {

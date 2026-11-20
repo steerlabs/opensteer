@@ -57,6 +57,7 @@ class FakeChannel implements CdpChannel {
 
 class FakeBackend implements BrowserCdpBackend {
   protectProductWorlds = false;
+  dedicatedContext = false;
   /** The newest channel opened on each target. */
   readonly channels = new Map<string, FakeChannel>();
   readonly commands: { method: string; parameters?: CdpParameters }[] = [];
@@ -106,20 +107,21 @@ describe("SessionCdpRouter", () => {
     const router = new SessionCdpRouter(backend);
     router.registerSession("a", "root-a", async () => true, "/files/a");
     router.registerSession("b", "root-b", async () => true, "/files/b");
+    const client = router.openStandardClient("a", { wholeContext: false });
     const events: CdpEvent[] = [];
-    router.onEvent("a", (event) => events.push(event));
+    client.onEvent((event) => events.push(event));
     const enable = {
       method: "Target.setAutoAttach",
       parameters: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
     };
 
-    const enabled = router.send("a", enable);
+    const enabled = client.send(enable);
     await expect(
-      router.send("a", {
+      client.send({
         method: "Browser.setDownloadBehavior",
-        parameters: { behavior: "allowAndName", downloadPath: "/agent" },
+        parameters: { behavior: "allowAndName", downloadPath: "/agent", eventsEnabled: true },
       }),
-    ).resolves.toEqual({});
+    ).rejects.toThrow("requires a whole browser context grant");
     await expect(enabled).resolves.toEqual({});
     const attached = events.filter((event) => event.method === "Target.attachedToTarget");
     expect(attached).toEqual([
@@ -127,18 +129,18 @@ describe("SessionCdpRouter", () => {
         method: "Target.attachedToTarget",
         parameters: {
           sessionId: expect.any(String),
-          targetInfo: { ...root, attached: true },
+          targetInfo: { ...root, browserContextId: "a", attached: true },
           waitingForDebugger: false,
         },
         sequence: expect.any(Number),
       },
     ]);
     const sessionId = attached[0]?.parameters.sessionId;
-    await expect(router.send("a", { method: "Target.getTargetInfo" })).resolves.toMatchObject({
+    await expect(client.send({ method: "Target.getTargetInfo" })).resolves.toMatchObject({
       targetInfo: { type: "browser", targetId: "browser_a" },
     });
     await expect(
-      router.send("a", {
+      client.send({
         method: "Target.attachToTarget",
         parameters: { targetId: "root-a", flatten: true },
       }),
@@ -149,12 +151,12 @@ describe("SessionCdpRouter", () => {
     ]);
     expect(events).toEqual(attached);
 
-    await router.send("a", { method: "Target.detachFromTarget", parameters: { sessionId } });
+    await client.send({ method: "Target.detachFromTarget", parameters: { sessionId } });
     expect(events.at(-1)).toMatchObject({
       method: "Target.detachedFromTarget",
       parameters: { sessionId, targetId: "root-a" },
     });
-    const explicit = await router.send("a", {
+    const explicit = await client.send({
       method: "Target.attachToTarget",
       parameters: { targetId: "root-a", flatten: true },
     });
@@ -171,10 +173,11 @@ describe("SessionCdpRouter", () => {
     backend.targetInfos = [{ targetId: "root-a", type: "page" }];
     const router = new SessionCdpRouter(backend);
     router.registerSession("a", "root-a", async () => true, "/files/a");
+    const client = router.openStandardClient("a", { wholeContext: false });
     const attached = new Map<string, CdpParameters>();
     const seen = new Map(["popup", "claimed"].map((id) => [id, Promise.withResolvers<void>()]));
     const detached: CdpParameters[] = [];
-    router.onEvent("a", (event) => {
+    client.onEvent((event) => {
       if (event.method === "Target.attachedToTarget") {
         const { targetId } = event.parameters.targetInfo as { targetId: string };
         attached.set(targetId, event.parameters);
@@ -186,9 +189,9 @@ describe("SessionCdpRouter", () => {
       method: "Target.setAutoAttach",
       parameters: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
     };
-    await router.send("a", enable);
+    await client.send(enable);
     await expect(
-      router.send("a", {
+      client.send({
         method: "Target.createTarget",
         parameters: { url: "about:blank" },
       }),
@@ -216,12 +219,12 @@ describe("SessionCdpRouter", () => {
     );
     expect(backend.channels.get("popup")?.closed).toBe(true);
     const oldId = attached.get("root-a")?.sessionId;
-    await router.send("a", {
+    await client.send({
       method: "Target.setAutoAttach",
       parameters: { autoAttach: false, flatten: true },
     });
     expect(router.listOwnedTargets("a")).toEqual(["root-a", "created-1"]);
-    await router.send("a", enable);
+    await client.send(enable);
     expect(attached.get("root-a")?.sessionId).not.toBe(oldId);
     await router.close();
   });
@@ -235,25 +238,404 @@ describe("SessionCdpRouter", () => {
     const router = new SessionCdpRouter(backend);
     router.registerSession("a", "root-a", async () => true, "/files/a");
     router.registerSession("b", "root-b", async () => true, "/files/b");
+    const client = router.openStandardClient("a", { wholeContext: false });
     const events: CdpEvent[] = [];
-    router.onEvent("a", (event) => events.push(event));
-    await router.send("a", {
+    client.onEvent((event) => events.push(event));
+    await client.send({
       method: "Target.setDiscoverTargets",
       parameters: { discover: false },
     });
-    const replay = router.send("a", {
+    const replay = client.send({
       method: "Target.setDiscoverTargets",
       parameters: { discover: true },
     });
     backend.emit("Target.targetCreated", { targetInfo: popup });
+    backend.emit("Target.targetInfoChanged", { targetInfo: { ...popup, title: "changed" } });
     directory.resolve({ targetInfos: [root, popup, { targetId: "root-b", type: "page" }] });
     await replay;
-    expect(events.map(({ method, parameters }) => ({ method, parameters }))).toEqual(
-      [popup, root].map((targetInfo) => ({
+    expect(events.map(({ method, parameters }) => ({ method, parameters }))).toEqual([
+      ...[root, popup].map((targetInfo) => ({
         method: "Target.targetCreated",
-        parameters: { targetInfo },
+        parameters: { targetInfo: { ...targetInfo, browserContextId: "a" } },
       })),
+      {
+        method: "Target.targetInfoChanged",
+        parameters: { targetInfo: { ...popup, title: "changed", browserContextId: "a" } },
+      },
+    ]);
+    await router.close();
+  });
+
+  it("keeps legacy discovery, target info, result shape and byte limits separate from standard clients", async () => {
+    const backend = new FakeBackend();
+    backend.targetInfos = [{ targetId: "root-a", type: "page" }];
+    vi.spyOn(backend, "send").mockResolvedValueOnce({
+      targetInfos: backend.targetInfos,
+      rootSurfaceId: "legacy-surface",
+    });
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    const legacyEvents: CdpEvent[] = [];
+    router.onEvent("a", (event) => legacyEvents.push(event));
+    await router.send("a", { method: "Target.setDiscoverTargets", parameters: { discover: true } });
+    expect(legacyEvents).toEqual([]);
+    await expect(router.send("a", { method: "Target.getTargets" })).resolves.toMatchObject({
+      rootSurfaceId: "legacy-surface",
+      rootTargetId: "root-a",
+    });
+    await expect(router.send("a", { method: "Target.getTargetInfo" })).rejects.toMatchObject({
+      code: "bad_command",
+    });
+
+    const attached = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<CdpChannel>();
+    const firstChannel = new FakeChannel();
+    const firstClosed = Promise.withResolvers<void>();
+    vi.spyOn(firstChannel, "close").mockImplementation(async () => firstClosed.resolve());
+    vi.spyOn(backend, "attach").mockImplementationOnce(() => {
+      attached.resolve();
+      return gate.promise;
+    });
+    const first = router.openStandardClient("a", { wholeContext: false });
+    const enable = {
+      method: "Target.setAutoAttach",
+      parameters: { autoAttach: true, flatten: true, waitForDebuggerOnStart: true },
+    };
+    const starting = expect(first.send(enable)).rejects.toThrow("CDP connection closed");
+    await attached.promise;
+    first.close();
+    await starting;
+    gate.resolve(firstChannel);
+    await firstClosed.promise;
+
+    const second = router.openStandardClient("a", { wholeContext: false });
+    const events: CdpEvent[] = [];
+    second.onEvent((event) => events.push(event));
+    await second.send(enable);
+    const secondId = String(events[0]?.parameters.sessionId);
+    const secondChannel = backend.channels.get("root-a")!;
+    expect(legacyEvents).toEqual([]);
+    expect(events.map(({ method }) => method)).toEqual(["Target.attachedToTarget"]);
+    const large = { method: "Runtime.evaluate", parameters: { expression: "x".repeat(450_000) } };
+    await expect(second.send({ ...large, sessionId: secondId })).resolves.toBeDefined();
+    second.close();
+    expect(secondChannel.closed).toBe(true);
+    expect(second.attachedTargetId(secondId)).toBeNull();
+    await expect(router.send("a", large)).rejects.toMatchObject({ code: "too_large" });
+    expect(legacyEvents).toEqual([]);
+    await router.close();
+  });
+
+  it("announces initial pages before a claim that races root auto-attach", async () => {
+    const backend = new FakeBackend();
+    backend.targetInfos = [
+      { targetId: "root-a", type: "page" },
+      { targetId: "initial", type: "page" },
+      { targetId: "live", type: "page" },
+    ];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    router.claimTarget("a", "initial");
+    const firstAttach = Promise.withResolvers<CdpChannel>();
+    const began = Promise.withResolvers<void>();
+    vi.spyOn(backend, "attach").mockImplementationOnce(() => {
+      began.resolve();
+      return firstAttach.promise;
+    });
+    const client = router.openStandardClient("a", { wholeContext: false });
+    const announced: unknown[] = [];
+    const live = Promise.withResolvers<void>();
+    client.onEvent((event) => {
+      if (event.method !== "Target.attachedToTarget") return;
+      const { targetId } = event.parameters.targetInfo as CdpParameters;
+      announced.push(targetId);
+      if (targetId === "live") live.resolve();
+    });
+    const enabling = client.send({
+      method: "Target.setAutoAttach",
+      parameters: { autoAttach: true, flatten: true },
+    });
+    await began.promise;
+    router.claimTarget("a", "live");
+    firstAttach.resolve(new FakeChannel());
+    await enabling;
+    await live.promise;
+    expect(announced).toEqual(["root-a", "initial", "live"]);
+    await router.close();
+  });
+
+  it("refuses context-wide and unrecognized commands at the root, on a page and inside nested messages", async () => {
+    const backend = new FakeBackend();
+    backend.targetInfos = [{ targetId: "root-a", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    router.registerSession("b", "root-b", async () => true, "/files/b");
+    backend.dedicatedContext = true;
+    expect(() => router.openStandardClient("a", { wholeContext: true })).toThrow(
+      "exclusive saved profile",
     );
+    const client = router.openStandardClient("a", { wholeContext: false });
+    const attach = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "root-a", flatten: true },
+    })) as { sessionId: string };
+    const { sessionId } = attach;
+    const channel = backend.channels.get("root-a")!;
+    for (const method of [
+      "Storage.clearCookies",
+      "Browser.resetPermissions",
+      "Browser.setDownloadBehavior",
+    ]) {
+      await expect(client.send({ method })).rejects.toThrow(
+        "requires a whole browser context grant",
+      );
+      await expect(client.send({ method, sessionId })).rejects.toThrow(
+        "requires a whole browser context grant",
+      );
+    }
+    await expect(client.send({ method: "Network.clearBrowserCookies", sessionId })).rejects.toThrow(
+      "cannot be scoped",
+    );
+    await expect(client.send({ method: "Storage.clearDataForOrigin", sessionId })).rejects.toThrow(
+      "cannot be scoped",
+    );
+    await expect(client.send({ method: "Browser.getHistograms" })).rejects.toThrow(
+      "cannot be scoped",
+    );
+    await expect(
+      client.send({ method: "Target.autoAttachRelated", parameters: { targetId: "root-a" } }),
+    ).rejects.toThrow("cannot be scoped");
+    await expect(
+      client.send({
+        method: "Target.sendMessageToTarget",
+        parameters: {
+          sessionId,
+          message: JSON.stringify({ id: 1, method: "Storage.clearCookies" }),
+        },
+      }),
+    ).rejects.toThrow("requires a whole browser context grant");
+    expect(channel.commands).toEqual([]);
+    expect(backend.commands.map(({ method }) => method)).toEqual(["Target.getTargetInfo"]);
+
+    await router.unregisterSession("b");
+    const granted = router.openStandardClient("a", { wholeContext: true });
+    await expect(
+      granted.send({
+        method: "Browser.setDownloadBehavior",
+        parameters: { behavior: "allowAndName", eventsEnabled: true, downloadPath: "/client/path" },
+      }),
+    ).resolves.toEqual({});
+    expect(backend.commands.map(({ method }) => method)).toEqual(["Target.getTargetInfo"]);
+    const flushed = Promise.withResolvers<unknown>();
+    vi.spyOn(backend, "send").mockReturnValueOnce(flushed.promise);
+    const clearing = expect(granted.send({ method: "Storage.clearCookies" })).rejects.toThrow(
+      "CDP connection closed",
+    );
+    granted.close();
+    await clearing;
+    expect(router.hasExclusiveContextClient).toBe(true);
+    flushed.resolve({});
+    await flushed.promise;
+    await Promise.resolve();
+    expect(router.hasExclusiveContextClient).toBe(false);
+    await router.close();
+  });
+
+  it("projects target metadata through current ownership and revokes descendants when the parent is released", async () => {
+    const backend = new FakeBackend();
+    const targetInfo = {
+      targetId: "popup",
+      type: "page",
+      openerId: "root-a",
+      openerFrameId: "root-a",
+      parentId: "root-a",
+      canAccessOpener: true,
+    };
+    backend.targetInfos = [
+      { targetId: "root-a", type: "page" },
+      targetInfo,
+      { targetId: "worker", type: "worker" },
+    ];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    router.registerSession("b", "root-b", async () => true, "/files/b");
+    backend.emit("Target.targetCreated", { targetInfo });
+    router.claimTarget("a", "popup");
+    const { sessionId } = (await router.send("a", {
+      method: "Target.attachToTarget",
+      parameters: { targetId: "root-a" },
+    })) as { sessionId: string };
+    const events: CdpEvent[] = [];
+    router.onEvent("a", (event) => events.push(event));
+    const channel = backend.channels.get("root-a")!;
+    const child = {
+      sessionId: "physical-worker",
+      targetInfo: { type: "worker", targetId: "worker" },
+    };
+    channel.emit("Target.attachedToTarget", {
+      sessionId: "shared",
+      targetInfo: { type: "shared_worker", targetId: "shared" },
+    });
+    expect(router.listOwnedTargets("a")).not.toContain("shared");
+    expect(channel.commands.at(-1)).toMatchObject({ method: "Target.detachFromTarget" });
+    channel.emit("Target.attachedToTarget", child);
+    const childId = String(events.at(-1)?.parameters.sessionId);
+    expect(router.listOwnedTargets("a")).toContain("worker");
+    router.releaseTarget("a", "root-a");
+    router.claimTarget("b", "root-a");
+    expect(router.listOwnedTargets("a")).toEqual(["popup"]);
+    await expect(
+      router.send("a", { method: "Runtime.evaluate", sessionId: childId }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(router.send("a", { method: "Runtime.evaluate", sessionId })).rejects.toMatchObject(
+      { code: "not_found" },
+    );
+    expect(backend.targetInfos.some((info) => info.targetId === "worker")).toBe(true);
+    const acquired = (await router.send("b", {
+      method: "Target.attachToTarget",
+      parameters: { targetId: "root-a" },
+    })) as { sessionId: string };
+    backend.channels.get("root-a")!.emit("Target.attachedToTarget", child);
+    expect(router.listOwnedTargets("b")).toContain("worker");
+    expect(router.attachedTargetId("b", acquired.sessionId)).toBe("root-a");
+
+    const clean = { targetId: "popup", type: "page", canAccessOpener: false };
+    await expect(
+      router.send("a", { method: "Target.getTargetInfo", parameters: { targetId: "popup" } }),
+    ).resolves.toEqual({ targetInfo: clean });
+    await expect(router.send("a", { method: "Target.getTargets" })).resolves.toMatchObject({
+      targetInfos: [clean],
+    });
+    backend.emit("Target.targetInfoChanged", { targetInfo });
+    expect(events.at(-1)?.parameters.targetInfo).toEqual(clean);
+    const client = router.openStandardClient("a", { wholeContext: false });
+    const replay: CdpEvent[] = [];
+    client.onEvent((event) => replay.push(event));
+    await client.send({ method: "Target.setDiscoverTargets", parameters: { discover: true } });
+    expect(replay[0]?.parameters.targetInfo).toEqual({ ...clean, browserContextId: "a" });
+    await router.close();
+  });
+
+  it("rejects delayed attach, target info and close under an earlier claim of the same target", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    const opening = Promise.withResolvers<CdpChannel>();
+    vi.spyOn(backend, "attach").mockReturnValueOnce(opening.promise);
+    const info = Promise.withResolvers<unknown>();
+    const closing = Promise.withResolvers<unknown>();
+    vi.spyOn(backend, "send")
+      .mockReturnValueOnce(info.promise)
+      .mockReturnValueOnce(closing.promise);
+    const attach = expect(
+      router.send("a", { method: "Target.attachToTarget", parameters: { targetId: "root-a" } }),
+    ).rejects.toThrow("target claim changed");
+    const reading = expect(
+      router.send("a", { method: "Target.getTargetInfo", parameters: { targetId: "root-a" } }),
+    ).rejects.toThrow("target claim changed");
+    const close = expect(
+      router.send("a", { method: "Target.closeTarget", parameters: { targetId: "root-a" } }),
+    ).rejects.toThrow("target claim changed");
+    router.releaseTarget("a", "root-a");
+    router.claimTarget("a", "root-a");
+    const stale = new FakeChannel();
+    opening.resolve(stale);
+    info.resolve({ targetInfo: { targetId: "root-a", type: "page" } });
+    closing.resolve({ success: true });
+    await Promise.all([attach, reading, close]);
+    expect(stale.closed).toBe(true);
+    expect(router.listOwnedTargets("a")).toEqual(["root-a"]);
+    await router.close();
+  });
+
+  it("adopts a created page before attaching and closes it if automatic attachment fails", async () => {
+    const backend = new FakeBackend();
+    backend.targetInfos = [{ targetId: "root-a", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    const adopted = Promise.withResolvers<void>();
+    const adoption = Promise.withResolvers<boolean>();
+    const client = router.openStandardClient("a", {
+      wholeContext: false,
+      adoptTarget: async (id) => {
+        router.claimTarget("a", id);
+        adopted.resolve();
+        return adoption.promise;
+      },
+    });
+    await client.send({
+      method: "Target.setAutoAttach",
+      parameters: { autoAttach: true, flatten: true },
+    });
+    const attach = vi.spyOn(backend, "attach").mockRejectedValueOnce(new Error("attach failed"));
+    const created = expect(
+      client.send({ method: "Target.createTarget", parameters: { url: "about:blank" } }),
+    ).rejects.toThrow("attach failed");
+    await adopted.promise;
+    expect(attach).not.toHaveBeenCalled();
+    adoption.resolve(true);
+    await created;
+    expect(backend.commands.at(-1)).toEqual({
+      method: "Target.closeTarget",
+      parameters: { targetId: "created-1" },
+    });
+    expect(router.listOwnedTargets("a")).toEqual(["root-a"]);
+    await router.close();
+  });
+
+  it("bounds legacy retired target records across repeated release and adoption", async () => {
+    const router = new SessionCdpRouter(new FakeBackend());
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    let first: string | undefined;
+    let last: string | undefined;
+    for (let index = 0; index <= 256; index++) {
+      const { sessionId } = (await router.send("a", {
+        method: "Target.attachToTarget",
+        parameters: { targetId: "root-a" },
+      })) as { sessionId: string };
+      router.releaseTarget("a", "root-a");
+      router.claimTarget("a", "root-a");
+      first ??= sessionId;
+      last = sessionId;
+    }
+    expect(router.attachedTargetId("a", first!)).toBeNull();
+    expect(router.attachedTargetId("a", last!)).toBe("root-a");
+    await router.close();
+  });
+
+  it("discards nested responses after the parent refuses their send", async () => {
+    const backend = new FakeBackend();
+    backend.protectProductWorlds = true;
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    await router.send("a", { method: "Target.attachToTarget", parameters: { targetId: "root-a" } });
+    const childSession = Promise.withResolvers<string>();
+    router.onEvent("a", (event) => {
+      if (event.method === "Target.attachedToTarget")
+        childSession.resolve(String(event.parameters.sessionId));
+    });
+    const channel = backend.channels.get("root-a")!;
+    channel.emit("Target.attachedToTarget", {
+      sessionId: "worker",
+      targetInfo: { targetId: "worker", type: "worker" },
+    });
+    const sessionId = await childSession.promise;
+    const send = vi.spyOn(channel, "send").mockRejectedValueOnce(new Error("parent refused"));
+    await expect(router.send("a", { method: "Runtime.compileScript", sessionId })).rejects.toThrow(
+      "parent refused",
+    );
+    const nested = JSON.parse(String(send.mock.calls[0]?.[1]?.message)) as { id: number };
+    channel.emit("Target.receivedMessageFromTarget", {
+      sessionId: "worker",
+      message: JSON.stringify({ id: nested.id, result: { scriptId: "late" } }),
+    });
+    await expect(
+      router.send("a", {
+        method: "Runtime.runScript",
+        sessionId,
+        parameters: { scriptId: "late" },
+      }),
+    ).rejects.toThrow("cannot reach Opensteer's preload");
     await router.close();
   });
 

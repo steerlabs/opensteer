@@ -1,3 +1,12 @@
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import {
+  BrowserRuntime,
+  BrowserRuntimeServer,
+  Ed25519AttachTicketVerifier,
+  standardCdpPath,
+} from "@opensteer/browser-runtime-core";
+import { FakeSink, validClaims } from "@opensteer/browser-runtime-core/test-support";
+import { createBrowserSessionId, type BrowserAttachTicketClaims } from "@opensteer/protocol";
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type RequestListener } from "node:http";
@@ -6,17 +15,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { expect, it } from "vitest";
-import { WebSocket, WebSocketServer } from "ws";
-import { z } from "zod";
-import { asRecord, rootCdpNavigate, startFollowSession } from "./chromium.test-support.js";
-import { cleanup } from "./browser-test-lifecycle.js";
-
-const cdpRequest = z.object({
-  id: z.number(),
-  method: z.string(),
-  params: z.record(z.string(), z.unknown()).optional(),
-  sessionId: z.string().optional(),
-});
+import {
+  asRecord,
+  executablePath,
+  runHarness,
+  sendAsAgent,
+  startHarnessBridge,
+} from "./chromium.test-support.js";
+import { cleanup, TestChromiumLauncher } from "./browser-test-lifecycle.js";
+import { nativeRuntimeProfile } from "./native-profile.test-support.js";
 
 async function fixtureServer(handler: RequestListener, hostname = "127.0.0.1") {
   const server = createServer(handler);
@@ -61,74 +68,96 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
         response.end("<title>Initial page</title>");
     }
   });
-  const session = await startFollowSession({ args: ["--site-per-process"] });
-  cleanup.push(() => session.files.dispose());
-  const {
-    browser: managed,
-    cdpRouter: router,
-    claims: { sessionId },
-  } = session;
-  await rootCdpNavigate(session.ledger, session.rootSurfaceId, `${origin}/existing`);
-  const foreign = await managed.context.createPage();
-  const foreignId = await foreign.targetId();
-  router.registerSession(
-    "foreign",
-    foreignId,
-    async () => !foreign.isClosed(),
-    `${session.files.root}-foreign`,
+  const profile = await nativeRuntimeProfile();
+  cleanup.push(profile.close);
+  const scratch = await mkdtemp(join(tmpdir(), "opensteer-standard-cdp-"));
+  cleanup.push(() => rm(scratch, { recursive: true, force: true }));
+  const signing = generateKeyPairSync("ed25519");
+  const verifier = await Ed25519AttachTicketVerifier.create({
+    replayLedgerPath: join(scratch, "private", "replay.json"),
+    resolvePublicKey: (id) => (id === "test" ? signing.publicKey : null),
+  });
+  const claims = validClaims({ identity: profile.identity });
+  const ticket = (overrides: Partial<BrowserAttachTicketClaims> = {}) => {
+    const header = Buffer.from(
+      JSON.stringify({
+        alg: "EdDSA",
+        kid: "test",
+        typ: "opensteer-browser-attach+jwt",
+      }),
+    ).toString("base64url");
+    const now = Date.now();
+    const payload = Buffer.from(
+      JSON.stringify({
+        ...claims,
+        ...overrides,
+        nonce: randomUUID(),
+        issuedAt: new Date(now).toISOString(),
+        expiresAt: new Date(now + 60_000).toISOString(),
+        operationExpiresAt: new Date(now + 18_000).toISOString(),
+      }),
+    ).toString("base64url");
+    const content = `${header}.${payload}`;
+    return `${content}.${sign(null, Buffer.from(content), signing.privateKey).toString("base64url")}`;
+  };
+  const runtime = new BrowserRuntime({
+    launcher: new TestChromiumLauncher({
+      executablePath,
+      headless: true,
+      chromiumSandbox: false,
+      args: ["--site-per-process"],
+    }),
+    localProfiles: profile.localProfiles,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: join(scratch, "files"),
+    ticketVerifier: verifier,
+  });
+  const server = new BrowserRuntimeServer({ port: 0, runtime });
+  cleanup.push(() => server.close());
+  const { host, port } = await server.start();
+  const sessionSink = new FakeSink();
+  const legacy = await runtime.attach(ticket(), sessionSink);
+  const agent = (method: string, parameters?: Record<string, unknown>, sessionId?: string) =>
+    sendAsAgent(
+      (message) => legacy.handle(JSON.stringify(message)),
+      sessionSink.messages,
+      method,
+      parameters,
+      sessionId,
+    );
+  const directory = asRecord(await agent("Target.getTargets"));
+  const rootTargetId = String(directory.rootTargetId);
+  const pageSessionId = String(
+    asRecord(
+      await agent("Target.attachToTarget", {
+        targetId: rootTargetId,
+        flatten: true,
+      }),
+    ).sessionId,
   );
+  await agent("Page.enable", {}, pageSessionId);
+  const loaded = Promise.withResolvers<void>();
+  sessionSink.sendServerImplementation = async (message) => {
+    if (
+      message.type === "cdp.event" &&
+      message.event.sessionId === pageSessionId &&
+      message.event.method === "Page.loadEventFired"
+    )
+      loaded.resolve();
+  };
+  await agent("Page.navigate", { url: `${origin}/existing` }, pageSessionId);
+  await loaded.promise;
+  sessionSink.sendServerImplementation = null;
 
-  const frames = new Set<string>();
-  const receivedMethods = new Set<string>();
-  const sockets = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  cleanup.push(async () => {
-    for (const socket of sockets.clients) socket.terminate();
-    await new Promise<void>((resolve) => sockets.close(() => resolve()));
-  });
-  await once(sockets, "listening");
-  let disconnected = Promise.withResolvers<void>();
-  sockets.on("connection", (socket) => {
-    const send = (message: unknown) => {
-      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
-    };
-    const remove = router.onEvent(sessionId, (event) => {
-      const { method, parameters: params, sessionId } = event;
-      if (method === "Target.attachedToTarget" && sessionId)
-        frames.add(String(asRecord(params.targetInfo).type));
-      send({ method, params, sessionId });
+  const wsUrl = `ws://${host}:${port}${standardCdpPath}`;
+  const connect = (token: string, noDefaults = false) =>
+    chromium.connectOverCDP(wsUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+      noDefaults,
     });
-    socket.once("close", () => {
-      remove();
-      void router
-        .send(sessionId, {
-          method: "Target.setAutoAttach",
-          parameters: { autoAttach: false, waitForDebuggerOnStart: false, flatten: true },
-        })
-        .then(() => disconnected.resolve(), disconnected.reject);
-    });
-    socket.on("message", (frame) => {
-      const {
-        id,
-        method,
-        params,
-        sessionId: attached,
-      } = cdpRequest.parse(JSON.parse(String(frame)));
-      receivedMethods.add(method);
-      void router
-        .send(sessionId, {
-          method,
-          ...(params ? { parameters: params } : {}),
-          ...(attached ? { sessionId: attached } : {}),
-        })
-        .then(
-          (result) => send({ id, sessionId: attached, result }),
-          (error: Error) =>
-            send({ id, sessionId: attached, error: { code: -32000, message: error.message } }),
-        );
-    });
-  });
-  const wsUrl = `ws://127.0.0.1:${(sockets.address() as AddressInfo).port}`;
-  const browser = await chromium.connectOverCDP(wsUrl);
+  await expect(connect(ticket())).rejects.toThrow();
+  const rawTicket = ticket({ standardCdp: "whole-context" });
+  const browser = await connect(rawTicket);
   cleanup.push(() => browser.close());
   const context = browser.contexts()[0]!;
   expect(context.pages().map((page) => page.url())).toEqual([`${origin}/existing`]);
@@ -149,7 +178,9 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
   const frame = page.frameLocator("iframe");
   await frame.getByText("Frame button").click();
   expect(await frame.locator("button").textContent()).toBe("Clicked in frame");
-  expect(frames).toContain("iframe");
+  expect(asRecord(await agent("Target.getTargets")).targetInfos).toEqual(
+    expect.arrayContaining([expect.objectContaining({ type: "iframe" })]),
+  );
 
   await context.addCookies([{ name: "profile-cookie", value: "present", url: origin }]);
   expect(await context.cookies(origin)).toEqual([
@@ -165,6 +196,9 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
   expect(await context.storageState()).toMatchObject({
     origins: [{ origin, localStorage: [{ name: "fixture", value: "saved" }] }],
   });
+
+  const largeInput = "input".repeat(260_000);
+  expect(await page.evaluate((input) => input.length, largeInput)).toBe(largeInput.length);
 
   const consoleEvent = page.waitForEvent("console");
   await page.evaluate((body) => console.log(body), responseBody);
@@ -198,14 +232,13 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
   expect(popup.context()).toBe(context);
   expect(await popup.title()).toBe("Initial page");
 
-  const personTab = await managed.context.createPage();
-  const personPageEvent = context.waitForEvent("page");
-  expect(await session.ledger.adoptTarget(await personTab.targetId())).toBe(true);
-  const personPage = await personPageEvent;
-  expect(personPage.url()).toBe("about:blank");
-  const personPageClosed = personPage.waitForEvent("close");
-  await personTab.close();
-  await personPageClosed;
+  const harnessPageEvent = context.waitForEvent("page");
+  const harnessPageInfo = asRecord(await agent("Target.createTarget", { url: "about:blank" }));
+  const harnessPage = await harnessPageEvent;
+  expect(harnessPage.url()).toBe("about:blank");
+  const harnessPageClosed = harnessPage.waitForEvent("close");
+  await agent("Target.closeTarget", { targetId: harnessPageInfo.targetId });
+  await harnessPageClosed;
 
   const newPage = await context.newPage();
   await newPage.goto(`${origin}/new`);
@@ -232,19 +265,24 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
     drawing.putImageData(image, 0, 0);
     document.body.append(canvas);
   });
+  const viewport = () => page.evaluate(() => [innerWidth, innerHeight, scrollX, scrollY]);
+  const beforeCapture = await viewport();
   const png = await page.screenshot({ fullPage: true });
+  expect(await viewport()).toEqual(beforeCapture);
   expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
   expect(png.length).toBeGreaterThan(432 * 1024);
 
-  const staged = await session.files.stage({
-    name: "staged.txt",
-    fileId: "playwright-upload",
-    offset: 0,
-    size: 6,
-    data: "c3RhZ2Vk",
-  });
+  const staged = asRecord(
+    await agent("Opensteer.stageFile", {
+      name: "staged.txt",
+      fileId: "playwright-upload",
+      offset: 0,
+      size: 6,
+      data: "c3RhZ2Vk",
+    }),
+  );
   expect(staged.path).toBeDefined();
-  await page.setInputFiles("#file", staged.path!);
+  await page.setInputFiles("#file", String(staged.path));
   expect(
     await page.locator("#file").evaluate((input: HTMLInputElement) => input.files?.[0]?.text()),
   ).toBe("staged");
@@ -263,10 +301,7 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
   await writeFile(outsideFile, "outside");
   // Stock remote Playwright reads a client-local file and sends its bytes
   // through the page. Chromium never receives the client filesystem path.
-  receivedMethods.clear();
   await page.setInputFiles("#file", outsideFile);
-  expect(receivedMethods.has("Runtime.callFunctionOn")).toBe(true);
-  expect(receivedMethods.has("DOM.setFileInputFiles")).toBe(false);
   expect(
     await page.locator("#file").evaluate((input: HTMLInputElement) => input.files?.[0]?.text()),
   ).toBe("outside");
@@ -278,23 +313,87 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
   await expect(page.goto(`${origin}/file`)).rejects.toThrow("Download is starting");
   expect(page.url()).toBe(`${origin}/app`);
 
-  await browser.close();
-  await disconnected.promise;
-  expect(downloads).toEqual([]);
-  expect(managed.context.pages().map((page) => page.url())).toEqual(
-    expect.arrayContaining([`${origin}/app`, `${origin}/popup`]),
-  );
-  expect(foreign.isClosed()).toBe(false);
-  disconnected = Promise.withResolvers<void>();
-  const reconnected = await chromium.connectOverCDP(wsUrl);
-  cleanup.push(() => reconnected.close());
+  await context.grantPermissions(["geolocation"], { origin });
   expect(
-    reconnected
-      .contexts()[0]!
+    await page.evaluate(
+      async () => (await navigator.permissions.query({ name: "geolocation" })).state,
+    ),
+  ).toBe("granted");
+  await context.clearPermissions();
+  await context.clearCookies();
+  expect(await context.cookies(origin)).toEqual([]);
+  await context.addCookies([{ name: "profile-cookie", value: "survives", url: origin }]);
+
+  await browser.close();
+  expect(downloads).toEqual([]);
+  await expect(connect(rawTicket)).rejects.toThrow();
+  const reconnected = await connect(ticket({ standardCdp: "whole-context" }));
+  cleanup.push(() => reconnected.close());
+  const reconnectedPages = reconnected.contexts()[0]!.pages();
+  expect(reconnectedPages.map((page) => page.url()).sort()).toEqual([
+    `${origin}/app`,
+    `${origin}/popup`,
+  ]);
+  const reconnectedPopup = reconnectedPages.find((page) => page.url().endsWith("/popup"));
+  expect((await reconnectedPopup?.opener())?.url()).toBe(`${origin}/app`);
+  await reconnected.close();
+
+  const bridge = await startHarnessBridge(agent, sessionSink);
+  cleanup.push(() => bridge.close());
+  const tabs = asRecord(await agent("Opensteer.listTabs")).tabs as {
+    surfaceId: string;
+    url: string;
+  }[];
+  const rootTabId = tabs.find((tab) => tab.url === `${origin}/app`)?.surfaceId;
+  expect(rootTabId).toBeDefined();
+  const harness = await runHarness(
+    bridge.url,
+    claims.sessionId,
+    rootTabId!,
+    'console.log(await js("document.title"));',
+  );
+  expect(harness.stdout.trim()).toBe("Fixture");
+
+  const foreignSessionId = createBrowserSessionId();
+  const foreignSink = new FakeSink();
+  await runtime.attach(ticket({ sessionId: foreignSessionId }), foreignSink);
+  await expect(connect(ticket({ standardCdp: "whole-context" }))).rejects.toThrow();
+  await expect(connect(ticket({ standardCdp: "session" }))).rejects.toThrow(
+    "requires a whole browser context grant",
+  );
+  const shared = await connect(ticket({ standardCdp: "session" }), true);
+  cleanup.push(() => shared.close());
+  const foreign = await connect(
+    ticket({ sessionId: foreignSessionId, standardCdp: "session" }),
+    true,
+  );
+  cleanup.push(() => foreign.close());
+  const sharedContext = shared.contexts()[0]!;
+  const foreignContext = foreign.contexts()[0]!;
+  expect(
+    sharedContext
       .pages()
       .map((page) => page.url())
       .sort(),
   ).toEqual([`${origin}/app`, `${origin}/popup`]);
-  await reconnected.close();
-  await disconnected.promise;
+  expect(foreignContext.pages().map((page) => page.url())).toEqual(["about:blank"]);
+
+  for (const refused of [
+    () => sharedContext.cookies(),
+    () => sharedContext.addCookies([{ name: "foreign", value: "denied", url: origin }]),
+    () => sharedContext.clearCookies(),
+    () => sharedContext.grantPermissions(["geolocation"], { origin }),
+    () => sharedContext.clearPermissions(),
+    () => sharedContext.storageState(),
+  ])
+    await expect(refused()).rejects.toThrow("requires a whole browser context grant");
+  await foreignContext.pages()[0]!.goto(`${origin}/other-session`);
+  expect(await foreignContext.pages()[0]!.evaluate(() => document.cookie)).toBe(
+    "profile-cookie=survives",
+  );
+  const ended = Promise.withResolvers<void>();
+  shared.once("disconnected", () => ended.resolve());
+  await legacy.close();
+  await ended.promise;
+  expect(foreign.isConnected()).toBe(true);
 });

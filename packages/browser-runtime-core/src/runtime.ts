@@ -2,6 +2,7 @@ import {
   browserFrameFits,
   defaultBrowserViewport,
   SessionCdpRouter,
+  type StandardCdpAttachment,
 } from "@opensteer/browser-core";
 import {
   type BrowserAttachTicketClaims,
@@ -576,6 +577,48 @@ export class BrowserRuntime implements NativePresentationSource {
     return result;
   }
 
+  /** A signed raw CDP ticket attaches to a live Browser Session without taking its lifecycle lease. */
+  async attachStandardCdp(
+    ticket: string,
+    onOverflow: () => void,
+    signal: AbortSignal,
+  ): Promise<StandardCdpAttachment> {
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(acquisitionTimeoutMs)]);
+    const claims = await waitForAcquisition(
+      this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId }),
+      deadline,
+    );
+    if (!claims.standardCdp || claims.access !== "read-write" || claims.initialNavigation)
+      throw new BrowserRuntimeError("forbidden", "This ticket does not authorize standard CDP.");
+    const hostKey = browserHostKey(claims);
+    return this.lanes.run(hostKey, async () => {
+      deadline.throwIfAborted();
+      const active = this.sessions.get(claims.sessionId);
+      if (
+        this.shuttingDown ||
+        !active ||
+        !active.host.acceptingSessions ||
+        active.host.identity.key !== hostKey ||
+        active.claims.subject !== claims.subject ||
+        Date.parse(claims.operationExpiresAt) <= Date.now() ||
+        (claims.identity.kind === "profile-local" &&
+          (active.host.identity.kind !== "local" ||
+            !sameLocalBinding(active.host.identity.binding, claims.identity.binding)))
+      )
+        throw new BrowserRuntimeError(
+          "forbidden",
+          "This ticket does not authorize a live Browser Session.",
+        );
+      const wholeContext = claims.standardCdp === "whole-context";
+      if (wholeContext && claims.identity.kind !== "profile-local")
+        throw new BrowserRuntimeError(
+          "forbidden",
+          "Whole-context CDP requires an exclusive saved profile.",
+        );
+      return active.controller.openStandardCdp(wholeContext, onOverflow);
+    });
+  }
+
   async attach(
     ticket: string,
     sink: BrowserControllerSink,
@@ -641,6 +684,8 @@ export class BrowserRuntime implements NativePresentationSource {
       }
     };
     const verified = await wait(this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId }));
+    if (verified.standardCdp)
+      throw new BrowserRuntimeError("forbidden", "This ticket is for the standard CDP endpoint.");
     const claims = options.passkeys ? verified : { ...verified, passkeys: undefined };
     if (claims.wireVersion !== 2)
       throw new BrowserRuntimeError(
@@ -748,6 +793,11 @@ export class BrowserRuntime implements NativePresentationSource {
             throw new BrowserRuntimeError(
               "conflict",
               "This browser profile has been deleted or stopped.",
+            );
+          if (host.router.hasExclusiveContextClient)
+            throw new BrowserRuntimeError(
+              "conflict",
+              "This browser profile has a whole-context CDP attachment.",
             );
           stage = "page-create";
           // A new host's launch page is this session's root unless another already owns it.

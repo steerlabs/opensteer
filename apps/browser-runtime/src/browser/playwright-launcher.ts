@@ -89,6 +89,7 @@ interface PlaywrightChromiumLauncherOptions {
   executablePath: string;
   headless: boolean;
   proxyUrl?: string;
+  preserveLoopbackBypass?: boolean;
 }
 
 /** Reduced Chrome UA at the shipped engine major; stock headless announces itself. */
@@ -231,6 +232,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
   private readonly executablePath: string;
   private readonly headless: boolean;
   private readonly proxyUrl: string | undefined;
+  private readonly preserveLoopbackBypass: boolean;
 
   constructor(options: PlaywrightChromiumLauncherOptions) {
     if (!path.isAbsolute(options.executablePath)) {
@@ -249,6 +251,15 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     this.executablePath = options.executablePath;
     this.headless = options.headless;
     this.proxyUrl = options.proxyUrl;
+    this.preserveLoopbackBypass = options.preserveLoopbackBypass === true;
+  }
+
+  private proxyTrafficArgs(): readonly string[] {
+    return [
+      "--disable-quic",
+      "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+      ...(this.preserveLoopbackBypass ? [] : ["--proxy-bypass-list=<-loopback>"]),
+    ];
   }
 
   private startServer(timeout?: number): Promise<PlaywrightBrowserServer> {
@@ -261,9 +272,9 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         ...(this.proxyUrl
           ? [
               "--disable-background-networking",
-              "--disable-quic",
-              "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-              "--proxy-bypass-list=<-loopback>",
+              // Playwright's proxy option injects <-loopback> even without a bypass list.
+              ...(this.preserveLoopbackBypass ? [`--proxy-server=${this.proxyUrl}`] : []),
+              ...this.proxyTrafficArgs(),
             ]
           : []),
       ],
@@ -275,7 +286,9 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       handleSIGTERM: false,
       headless: this.headless,
       host: "127.0.0.1",
-      ...(this.proxyUrl ? { proxy: { server: this.proxyUrl } } : {}),
+      ...(this.proxyUrl && !this.preserveLoopbackBypass
+        ? { proxy: { server: this.proxyUrl } }
+        : {}),
     });
   }
 
@@ -600,14 +613,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         `--disable-blink-features=${browserPageDisabledBlinkFeatures},AutomationControlled`,
         ...(this.headless ? ["--headless=new"] : []),
         ...(this.chromiumSandbox ? [] : ["--no-sandbox"]),
-        ...(this.proxyUrl
-          ? [
-              `--proxy-server=${this.proxyUrl}`,
-              "--disable-quic",
-              "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-              "--proxy-bypass-list=<-loopback>",
-            ]
-          : []),
+        ...(this.proxyUrl ? [`--proxy-server=${this.proxyUrl}`, ...this.proxyTrafficArgs()] : []),
       ],
       chromiumSandbox: this.chromiumSandbox,
       headless: this.headless,
@@ -757,6 +763,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         authenticator,
         providerConfig,
         helper,
+        true,
       );
       if (this.headless) launched.clipboard = ChromiumClipboard.lazy(browser);
       timing("clipboard");
@@ -795,6 +802,7 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     authenticator?: PasskeyAuthenticator,
     providerConfig?: BrowserPagePolicyConfig,
     privatePage?: Page,
+    dedicatedContext = false,
   ) {
     this.persistencePage = privatePage;
     this.owner = owner;
@@ -832,7 +840,12 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
         () => true,
         () => false,
       );
-    this.cdp = new PlaywrightBrowserCdpBackend(browserCdp, this.contextHandle, browserContextId);
+    this.cdp = new PlaywrightBrowserCdpBackend(
+      browserCdp,
+      this.contextHandle,
+      browserContextId,
+      dedicatedContext,
+    );
   }
 
   onClose(listener: () => void): void {
@@ -1606,6 +1619,7 @@ class PlaywrightPageCdpHandle extends PlaywrightCdpHandle {
 }
 
 class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
+  readonly dedicatedContext: boolean;
   private readonly browserContextId: string | undefined;
   private closed = false;
   private readonly context: PlaywrightContextHandle;
@@ -1615,14 +1629,16 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
     session: PlaywrightCdpSession,
     context: PlaywrightContextHandle,
     browserContextId: string | undefined,
+    dedicatedContext: boolean,
   ) {
+    this.dedicatedContext = dedicatedContext;
     this.browserContextId = browserContextId;
     this.context = context;
     this.handle = new PlaywrightCdpHandle(session);
     this.handle.eventRelay.observeDomain("Target.getTargets");
   }
 
-  async attach(targetId: string, waitForPage = false): Promise<CdpChannel> {
+  async attach(targetId: string, waitForPage = false, signal?: AbortSignal): Promise<CdpChannel> {
     if (this.closed) throw new Error("Browser CDP backend is closed.");
     const missingPage = () =>
       new Error("CDP target is not an attachable page in this Profile Host.");
@@ -1648,7 +1664,7 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
       const page = await withTimeout(
         this.context.pageByTargetId(targetId).then((page) => page ?? found.promise),
         targetLookupMs,
-        { timeoutError: missingPage },
+        { timeoutError: missingPage, ...(signal ? { signal } : {}) },
       );
       return page.agentCdp();
     } finally {

@@ -1,4 +1,10 @@
 import {
+  standardCdpBufferedMaxBytes,
+  standardCdpMaxPending,
+  standardCdpMessageMaxBytes,
+  type StandardCdpAttachment,
+} from "@opensteer/browser-core";
+import {
   BrowserAttachPublicKeysSchema,
   BrowserRuntimeServerMessageSchema,
   LocalProfileBindingSchema,
@@ -20,6 +26,16 @@ import type { BrowserControllerSink } from "./browser/controller.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import type { BrowserAttachment, BrowserRuntime } from "./runtime.js";
 import { encodeBrowserFrame, type BrowserFrame } from "./stream/frame.js";
+
+/** Raw text CDP over WebSocket. Authorization uses a single-use Bearer attach ticket. */
+export const standardCdpPath = "/v1/browser/cdp";
+
+const standardCdpRequest = z.strictObject({
+  id: z.number().int().nonnegative(),
+  method: z.string().max(256),
+  params: z.record(z.string(), z.unknown()).optional(),
+  sessionId: z.string().max(512).optional(),
+});
 
 export interface BrowserRuntimeServerOptions {
   relayBridge?: {
@@ -47,6 +63,7 @@ export class BrowserRuntimeServer {
   private readonly port: number;
   private readonly runtime: BrowserRuntime;
   private readonly websocketServer: WebSocketServer;
+  private readonly cdpServer: WebSocketServer;
   private closePromise: Promise<void> | null = null;
   private listening: Promise<unknown> | null = null;
   private startPromise: Promise<ListeningAddress> | undefined;
@@ -80,9 +97,14 @@ export class BrowserRuntimeServer {
       noServer: true,
       perMessageDeflate: false,
     });
+    this.cdpServer = new WebSocketServer({
+      maxPayload: standardCdpMessageMaxBytes,
+      noServer: true,
+      perMessageDeflate: false,
+    });
     this.httpServer.on("upgrade", (request, socket, head) => {
       const pathname = safePathname(request);
-      if (pathname !== "/v1/browser") {
+      if (pathname !== "/v1/browser" && pathname !== standardCdpPath) {
         refuseConnection(socket, 404, "Not Found");
         return;
       }
@@ -97,8 +119,10 @@ export class BrowserRuntimeServer {
         refuseConnection(socket, 401, "Unauthorized");
         return;
       }
-      this.websocketServer.handleUpgrade(request, socket, head, (websocket) => {
-        this.websocketServer.emit("connection", websocket, request);
+      const server = pathname === standardCdpPath ? this.cdpServer : this.websocketServer;
+      server.handleUpgrade(request, socket, head, (websocket) => {
+        if (server === this.cdpServer) this.acceptStandardCdp(websocket, ticket);
+        else server.emit("connection", websocket, request);
       });
     });
     this.websocketServer.on("connection", (websocket: WebSocket, request: IncomingMessage) => {
@@ -285,14 +309,123 @@ export class BrowserRuntimeServer {
     );
   }
 
+  private acceptStandardCdp(websocket: WebSocket, ticket: string): void {
+    const cancellation = new AbortController();
+    let attachment: StandardCdpAttachment | undefined;
+    let inFlightBytes = 0;
+    let inFlightCount = 0;
+    let outboundBytes = 0;
+    let outboundCount = 0;
+    const close = (code: number, reason: string) => {
+      if (cancellation.signal.aborted) return;
+      cancellation.abort();
+      attachment?.close();
+      if (websocket.readyState === WebSocket.OPEN) websocket.close(code, reason);
+    };
+    const overloaded = () => close(1013, "CDP connection exceeded its buffer limit");
+    const send = async (value: unknown): Promise<void> => {
+      if (cancellation.signal.aborted || websocket.readyState !== WebSocket.OPEN) return;
+      const data = JSON.stringify(value);
+      const size = Buffer.byteLength(data);
+      if (
+        size > standardCdpMessageMaxBytes ||
+        inFlightBytes + outboundBytes + size > standardCdpBufferedMaxBytes ||
+        outboundCount >= standardCdpMaxPending
+      ) {
+        overloaded();
+        return;
+      }
+      outboundBytes += size;
+      outboundCount++;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          websocket.send(data, (error) => (error ? reject(error) : resolve()));
+        });
+      } finally {
+        outboundBytes -= size;
+        outboundCount--;
+      }
+    };
+    websocket.once("close", () => close(1000, "CDP disconnected"));
+    websocket.on("error", () => close(1011, "CDP transport failed"));
+    const ready = this.runtime.attachStandardCdp(ticket, overloaded, cancellation.signal).then(
+      (client) => {
+        attachment = client;
+        if (cancellation.signal.aborted) {
+          client.close();
+          return undefined;
+        }
+        client.signal.addEventListener("abort", () => close(1000, "Browser Session ended"), {
+          once: true,
+        });
+        if (client.signal.aborted) {
+          close(1000, "Browser Session ended");
+          return undefined;
+        }
+        client.onEvent(({ method, parameters, sessionId }) => {
+          void send({ method, params: parameters, sessionId }).catch(() =>
+            close(1011, "CDP transport failed"),
+          );
+        });
+        return client;
+      },
+      () => {
+        close(1008, "CDP attachment rejected");
+        return undefined;
+      },
+    );
+
+    websocket.on("message", (raw: RawData, binary: boolean) => {
+      if (cancellation.signal.aborted) return;
+      if (binary) {
+        close(1003, "CDP requires JSON text");
+        return;
+      }
+      const frame = normalizeRawData(raw);
+      if (
+        inFlightBytes + outboundBytes + frame.byteLength > standardCdpBufferedMaxBytes ||
+        inFlightCount >= standardCdpMaxPending
+      ) {
+        overloaded();
+        return;
+      }
+      inFlightBytes += frame.byteLength;
+      inFlightCount++;
+      const dispatch = async (client: StandardCdpAttachment | undefined) => {
+        if (!client || cancellation.signal.aborted) return;
+        const request = standardCdpRequest.parse(JSON.parse(frame.toString("utf8")));
+        const { id, method, params, sessionId } = request;
+        try {
+          const result = await client.send({
+            method,
+            ...(params === undefined ? {} : { parameters: params }),
+            ...(sessionId === undefined ? {} : { sessionId }),
+          });
+          await send({ id, sessionId, result: result ?? {} });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "CDP command failed.";
+          await send({ id, sessionId, error: { code: -32000, message } });
+        }
+      };
+      void (attachment ? dispatch(attachment) : ready.then(dispatch))
+        .catch(() => close(1007, "Invalid CDP command"))
+        .finally(() => {
+          inFlightBytes -= frame.byteLength;
+          inFlightCount--;
+        });
+    });
+  }
+
   private async closeOnce(): Promise<void> {
     // Admission/attempt abort is synchronous; sockets never wait for persistence.
     const persistence = this.runtime.shutdown();
     void persistence.catch(() => undefined);
     await this.listening?.catch(() => undefined);
-    const closed = [new Promise<void>((resolve) => this.websocketServer.close(() => resolve()))];
+    const closed = [this.websocketServer, this.cdpServer].map(
+      (server) => new Promise<void>((resolve) => server.close(() => resolve())),
+    );
     if (this.httpServer.listening) closed.push(closeHttpServerNow(this.httpServer));
-    for (const websocket of this.websocketServer.clients) {
+    for (const websocket of [...this.websocketServer.clients, ...this.cdpServer.clients]) {
       // The reason goes first as best effort; nobody's answer is waited for.
       if (websocket.readyState === WebSocket.OPEN) {
         websocket.close(1001, "runtime shutting down");
