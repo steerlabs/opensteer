@@ -1,5 +1,6 @@
 import { createId } from "@opensteer/core";
 import {
+  scopedPersonalApiVersion,
   type PersonalResumeCursor,
   type PersonalScope,
   type ScopedHostMessage,
@@ -201,7 +202,7 @@ test("holds selected detail until the initial shell is dispatched", async () => 
   try {
     socket.attach({
       type: "client.attach",
-      apiVersion: 64,
+      apiVersion: scopedPersonalApiVersion,
       generation: 1,
       interests: [],
       installed: {},
@@ -296,7 +297,7 @@ test("a thread authority change fences a held node-only dispatch", async () => {
 test("a commit too large for one frame is repaired inline by a snapshot on the same generation", async () => {
   const frames: ScopedHostMessage[] = [];
   const repaired = Promise.withResolvers<void>();
-  const changes = Array.from({ length: 12 }, (_, ordinal) => {
+  const changes = Array.from({ length: 100 }, (_, ordinal) => {
     const id = createId("thread");
     return {
       sequence: "2",
@@ -383,7 +384,7 @@ test("a synchronized socket does no state or resource work during five idle minu
   try {
     socket.attach({
       type: "client.attach",
-      apiVersion: 64,
+      apiVersion: scopedPersonalApiVersion,
       generation: 1,
       interests: ["settings"],
       installed: {},
@@ -433,7 +434,7 @@ test("answers an attach and a watch once, marked, even when nothing moved, and p
     // A resume whose installed revisions are all current is answered with nothing moved.
     socket.attach({
       type: "client.attach",
-      apiVersion: 64,
+      apiVersion: scopedPersonalApiVersion,
       generation: 1,
       interests: ["settings", "machine"],
       installed: { settings: "4", machine: "9.0123456789abcdef.2" },
@@ -481,7 +482,7 @@ test("a socket whose shell read is refused hears no resource revision", async ()
   });
   socket.attach({
     type: "client.attach",
-    apiVersion: 64,
+    apiVersion: scopedPersonalApiVersion,
     generation: 1,
     interests: ["settings"],
     installed: {},
@@ -751,13 +752,13 @@ test("live text out of credit pauses its scope until the client acknowledges", a
       generation: 1,
     });
     await vi.advanceTimersByTimeAsync(0);
-    for (let index = 0; index < 40; index++) {
+    for (let index = 0; index < 200; index++) {
       offer(index);
       await vi.advanceTimersByTimeAsync(100);
     }
     const paused = live();
-    expect(paused).toBeGreaterThan(10);
-    expect(paused).toBeLessThan(40);
+    expect(paused).toBeGreaterThan(100);
+    expect(paused).toBeLessThan(200);
     await vi.advanceTimersByTimeAsync(5 * 60_000);
     expect(live()).toBe(paused);
     expect(closed).not.toHaveBeenCalled();
@@ -1242,7 +1243,7 @@ test("answers an attach and a watch that arrives before the attach's answer each
   try {
     socket.attach({
       type: "client.attach",
-      apiVersion: 64,
+      apiVersion: scopedPersonalApiVersion,
       generation: 1,
       interests: ["settings"],
       installed: {},

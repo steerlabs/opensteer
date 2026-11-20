@@ -2,6 +2,8 @@ import {
   personalAuthorityChangedReason,
   personalHostFrameMaxBytes,
   personalLiveResetMaxStreams,
+  personalScopeBudget,
+  personalSocketBudget,
   type PersonalResumeCursor,
   type PersonalScope,
   type ScopedClientMessage,
@@ -127,8 +129,8 @@ interface Subscription {
   };
 }
 
-const scopeBudget = 256 * 1024;
-const socketBudget = 512 * 1024;
+const scopeBudget = personalScopeBudget;
+const socketBudget = personalSocketBudget;
 const liveQueueBytes = 64 * 1024;
 /** Identity, item card and framing a queued live update may add to its text. */
 const liveEntryOverhead = 640;

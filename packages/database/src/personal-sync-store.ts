@@ -13,7 +13,14 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { executionNodeFromRow, messageViewFromRow } from "./thread-row-mappers.js";
-import { clientSendKeyWireReserve, TranscriptItemSchema } from "@opensteer/protocol/transcript";
+import {
+  clientSendKeyWireReserve,
+  fitsInlineTranscriptText,
+  transcriptInlineTextMaxBytes,
+  TranscriptItemSchema,
+  type TranscriptItem,
+} from "@opensteer/protocol/transcript";
+import type { MessageTextFacts } from "./transcript-store.js";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type {
   ClientChangesTable,
@@ -139,7 +146,7 @@ export async function authorizedDetail(tx: Read, viewerId: UserId, scope: Detail
 }
 
 const replayMaxRows = 128;
-const replayMaxBytes = 256 * 1024;
+const replayMaxBytes = 1024 * 1024;
 
 export type ReplayChange = Pick<
   Selectable<ClientChangesTable>,
@@ -193,9 +200,10 @@ export async function readPersonalScopeCut<Snapshot>(
     if (after > BigInt(state.sequence) || after < BigInt(state.prunedThroughSequence))
       return snapshot();
     if (after === BigInt(state.sequence)) return { kind: "replay" as const, state, commits: [] };
-    const changes = await tx
+    // Check row count, resets and stored `byte_count` before transferring JSONB payloads.
+    const headers = await tx
       .selectFrom("clientChanges")
-      .select(["sequence", "ordinal", "entityKind", "entityId", "operation", "payload"])
+      .select(["sequence", "ordinal", "operation", "byteCount"])
       .where("deploymentId", "=", state.deploymentId)
       .where("scopeKey", "=", scopeKey)
       .where("sequence", ">", cursor.afterSequence)
@@ -204,8 +212,26 @@ export async function readPersonalScopeCut<Snapshot>(
       .orderBy("ordinal")
       .limit(replayMaxRows + 1)
       .execute();
-    if (changes.length > replayMaxRows || changes.some((row) => row.operation === "reset"))
+    if (headers.length > replayMaxRows || headers.some((row) => row.operation === "reset"))
       return snapshot();
+    let headerBytes = 0;
+    for (const row of headers) {
+      headerBytes += row.byteCount;
+      if (headerBytes > replayMaxBytes) return snapshot();
+    }
+    const changes = headers.length
+      ? await tx
+          .selectFrom("clientChanges")
+          .select(["sequence", "ordinal", "entityKind", "entityId", "operation", "payload"])
+          .where("deploymentId", "=", state.deploymentId)
+          .where("scopeKey", "=", scopeKey)
+          .where("sequence", ">", cursor.afterSequence)
+          .where("sequence", "<=", state.sequence)
+          .orderBy("sequence")
+          .orderBy("ordinal")
+          .limit(replayMaxRows)
+          .execute()
+      : [];
     let previous = cursor.afterSequence;
     let batch: ReplayChange[] = [];
     let bytes = 0;
@@ -283,6 +309,8 @@ type Item = Pick<Selectable<TranscriptItemTable>, (typeof itemColumns)[number]> 
   readonly body?: Selectable<TranscriptItemTable>["body"];
   readonly node?: NodeFacts | null;
   readonly question?: QuestionFacts | null;
+  readonly messageText?: MessageTextFacts | null;
+  readonly nodeMessageText?: string | null;
 };
 
 /**
@@ -341,7 +369,37 @@ const questionFacts = sql<QuestionFacts | null>`case when kind = 'request' then 
   from requests r where r.id = transcript_items.request_id
     and r.kind = 'person.question' and r.status in ('fulfilled','declined')) end`;
 
-export function itemView(row: Item) {
+/**
+ * Full unstripped conversation prose read beside a message card when it fits within
+ * `transcriptInlineTextMaxBytes`, plus the count of rich parts so the wire item knows whether
+ * every reference rode on the card. Oversized bodies stay null and load via `transcript.item.get`.
+ */
+const messageTextFacts = sql<MessageTextFacts | null>`case when kind = 'message' then (
+  select (
+    select jsonb_build_object(
+      'text', case when octet_length(to_jsonb(t.text)::text) <= ${sql.lit(transcriptInlineTextMaxBytes)} then t.text else null end,
+      'richPartCount', t.rich_part_count
+    )
+    from (
+      select
+        coalesce(
+          string_agg(p.part->>'text', E'\n' order by p.at) filter (where p.part->>'type' = 'text'),
+          ''
+        ) as text,
+        count(*) filter (where p.part->>'type' <> 'text') as rich_part_count
+      from jsonb_array_elements(m.content) with ordinality p(part, at)
+    ) t
+  )
+  from messages m
+  where m.id = transcript_items.message_id and m.thread_id = transcript_items.thread_id
+) end`;
+
+const nodeMessageTextFacts = sql<string | null>`case
+  when kind = 'node-message' and octet_length(body::text) <= ${sql.lit(transcriptInlineTextMaxBytes)}
+  then body #>> '{}'
+end`;
+
+export function itemView(row: Item): TranscriptItem {
   const {
     version,
     completedAt,
@@ -374,9 +432,26 @@ export function itemView(row: Item) {
     view,
   };
   switch (row.kind) {
-    case "message":
+    case "message": {
+      const facts = row.messageText;
+      const carried =
+        (row.refs?.attachments?.length ?? 0) +
+        (row.refs?.pages?.length ?? 0) +
+        (row.refs?.places?.length ?? 0);
+      const inlineText =
+        facts && facts.text !== null && fitsInlineTranscriptText(facts.text)
+          ? facts.text
+          : undefined;
+      const { truncated: _truncated, ...cleanView } = view;
+      const messageView =
+        facts === undefined || facts === null
+          ? view
+          : inlineText === undefined || carried < facts.richPartCount
+            ? { ...cleanView, truncated: true }
+            : cleanView;
       return TranscriptItemSchema.parse({
         ...base,
+        view: messageView,
         ...row.refs,
         messageId: row.messageId,
         messageKind,
@@ -384,7 +459,19 @@ export function itemView(row: Item) {
         edit,
         delivery,
         teamSource,
+        ...(inlineText !== undefined ? { text: inlineText } : {}),
       });
+    }
+    case "node-message": {
+      const raw = row.nodeMessageText ?? (typeof row.body === "string" ? row.body : undefined);
+      const inlineText = raw !== undefined && fitsInlineTranscriptText(raw) ? raw : undefined;
+      const { truncated: _truncated, ...cleanView } = view;
+      return TranscriptItemSchema.parse({
+        ...base,
+        view: inlineText === undefined ? view : cleanView,
+        ...(inlineText !== undefined ? { text: inlineText } : {}),
+      });
+    }
     case "run":
       return TranscriptItemSchema.parse({
         ...base,
@@ -450,13 +537,17 @@ export interface TranscriptCursor {
   readonly beforeId: string;
 }
 
-export function drawableItems(tx: Read, scope: DetailScope) {
+export function drawableItems(tx: Read, scope: DetailScope, includeProse = true) {
   const query = tx
     .selectFrom("transcriptItems")
     .select(itemColumns)
     .select(sql<PlaceView | null>`case when kind = 'place' then body end`.as("place"))
     .select(nodeFacts.as("node"))
     .select(questionFacts.as("question"))
+    .select(
+      (includeProse ? messageTextFacts : sql<MessageTextFacts | null>`null`).as("messageText"),
+    )
+    .select((includeProse ? nodeMessageTextFacts : sql<string | null>`null`).as("nodeMessageText"))
     .where("visible", "=", true)
     .where("threadId", "=", scope.threadId);
   return scope.kind === "node"
@@ -469,28 +560,140 @@ export function itemScopeNodeId(row: Pick<Item, "kind" | "nodeId" | "view">) {
   return row.kind === "request" && row.view.requestKind === "harness.approval" ? null : row.nodeId;
 }
 
-function itemBytes(row: Item) {
-  const item = itemView(row);
+const transcriptHydrationBatchSize = 25;
+
+/**
+ * Exact JSON-encoded inline prose byte length computed in SQL without transferring prose text.
+ * Matches `fitsInlineTranscriptText` for valid UTF-8 strings and acts as a strict lower bound on
+ * `encodedItemBytes(item)` so `selectHydratedWindow` never hydrates items that cannot fit.
+ */
+const inlineTextMinBytes = sql<number>`(
+  case
+    when kind = 'message' then coalesce((
+      select case
+        when octet_length(to_jsonb(t.text)::text) <= ${sql.lit(transcriptInlineTextMaxBytes)}
+        then octet_length(to_jsonb(t.text)::text)
+        else 0
+      end
+      from messages m,
+      lateral (
+        select coalesce(
+          string_agg(p.part->>'text', E'\n' order by p.at) filter (where p.part->>'type' = 'text'),
+          ''
+        ) as text
+        from jsonb_array_elements(m.content) with ordinality p(part, at)
+      ) t
+      where m.id = transcript_items.message_id and m.thread_id = transcript_items.thread_id
+    ), 0)
+    when kind = 'node-message' and octet_length(body::text) <= ${sql.lit(transcriptInlineTextMaxBytes)}
+      then octet_length(body::text)
+    else 0
+  end
+)::int`;
+
+const estimatedItemBytes = sql<number>`(
+  octet_length(view::text) + coalesce(octet_length(refs::text), 0) + 256 + ${inlineTextMinBytes}
+)::int`;
+
+function drawableItemKeys(tx: Read, scope: DetailScope) {
+  const query = tx
+    .selectFrom("transcriptItems")
+    .select(["id", "position", "isTurnStart"])
+    .select(inlineTextMinBytes.as("minBytes"))
+    .select(estimatedItemBytes.as("estimatedBytes"))
+    .where("visible", "=", true)
+    .where("threadId", "=", scope.threadId);
+  return scope.kind === "node"
+    ? query.where("nodeId", "=", scope.nodeId).where(sql.raw<boolean>(nodeItemsPredicate))
+    : query.where(sql.raw<boolean>(taskItemsPredicate));
+}
+
+function encodedItemBytes(item: TranscriptItem) {
   const privateBytes =
     item.kind === "message" && item.author?.kind === "human" ? clientSendKeyWireReserve : 0;
   return Buffer.byteLength(JSON.stringify(item)) + privateBytes + 1;
 }
 
-function itemWindow(items: readonly Item[], limit: number, maxBytes: number, maxTurns: number) {
-  const selected: Item[] = [];
+/** Strips inline prose down to a bounded card if a single item would exceed a hard frame ceiling. */
+function cardWithinCeiling(row: Item, item: TranscriptItem, hardMaxBytes: number): TranscriptItem {
+  if (encodedItemBytes(item) <= hardMaxBytes) return item;
+  return itemView({
+    ...row,
+    body: null,
+    messageText: null,
+    nodeMessageText: null,
+    view:
+      row.kind === "message" || row.kind === "node-message"
+        ? { ...row.view, truncated: true }
+        : row.view,
+  });
+}
+
+/**
+ * Hydrates candidate items in budget-sized batches (never more than `transcriptHydrationBatchSize`
+ * rows at a time), stopping before hydration whenever the next candidate's exact inline prose lower
+ * bound already exceeds the remaining byte budget. When `allowFirstOverBudget` is true, the first
+ * item still enters whole up to `hardMaxBytes`.
+ */
+async function selectHydratedWindow(
+  tx: Read,
+  scope: DetailScope,
+  candidates: readonly {
+    readonly id: string;
+    readonly minBytes: number;
+    readonly estimatedBytes: number;
+  }[],
+  limit: number,
+  maxBytes: number,
+  hardMaxBytes: number,
+  maxTurns: number,
+  allowFirstOverBudget = true,
+) {
+  const selected: { readonly row: Item; readonly item: TranscriptItem }[] = [];
   let bytes = 0;
   let turns = 0;
-  for (const row of items) {
-    const size = itemBytes(row);
-    if (
-      selected.length >= limit ||
-      bytes + size > maxBytes ||
-      (row.isTurnStart && turns >= maxTurns)
-    )
-      break;
-    bytes += size;
-    if (row.isTurnStart) turns++;
-    selected.push(row);
+  let offset = 0;
+  while (offset < candidates.length && selected.length < limit) {
+    const remaining = Math.max(0, maxBytes - bytes);
+    const enforceBounds = selected.length > 0 || !allowFirstOverBudget;
+    const first = candidates[offset]!;
+    if (enforceBounds && (remaining === 0 || (Number(first.minBytes) || 0) > remaining)) break;
+    const batchIds: string[] = [];
+    let batchEstimated = 0;
+    while (
+      offset < candidates.length &&
+      batchIds.length < transcriptHydrationBatchSize &&
+      selected.length + batchIds.length < limit
+    ) {
+      const candidate = candidates[offset]!;
+      const nextMin = Number(candidate.minBytes) || 0;
+      const nextEstimate = Math.max(256, Number(candidate.estimatedBytes) || 256);
+      if (batchIds.length > 0 && (batchEstimated + nextEstimate > remaining || nextMin > remaining))
+        break;
+      batchIds.push(candidate.id);
+      batchEstimated += nextEstimate;
+      offset += 1;
+    }
+    const hydrated = await drawableItems(tx, scope).where("id", "in", batchIds).execute();
+    const byId = new Map(hydrated.map((row) => [row.id, row]));
+    for (const id of batchIds) {
+      if (selected.length >= limit) break;
+      const row = byId.get(id);
+      if (!row) continue;
+      const rawItem = itemView(row);
+      const item =
+        selected.length === 0 && allowFirstOverBudget
+          ? cardWithinCeiling(row, rawItem, hardMaxBytes)
+          : rawItem;
+      const size = encodedItemBytes(item);
+      const enforceBounds = selected.length > 0 || !allowFirstOverBudget;
+      if (enforceBounds && (bytes + size > maxBytes || (row.isTurnStart && turns >= maxTurns))) {
+        return { selected, bytes, turns };
+      }
+      bytes += size;
+      if (row.isTurnStart) turns++;
+      selected.push({ row, item });
+    }
   }
   return { selected, bytes, turns };
 }
@@ -544,18 +747,20 @@ export function readTranscriptPage(
     // Keyset cursors stay valid while cards move or hide; only a new epoch resets history.
     if (cursor && cursor.epoch !== state.epoch) return { kind: "history-reset" as const };
     const limit = Math.max(1, Math.min(input.limit ?? 100, 100));
-    const maxBytes = Math.max(8192, Math.min(input.maxBytes ?? 128 * 1024, 128 * 1024));
+    const maxBytes = Math.max(8192, Math.min(input.maxBytes ?? 1024 * 1024, 1024 * 1024));
     const from = drawableItems(tx, scope);
+    const keys = drawableItemKeys(tx, scope);
     const anchor = input.anchorItemId
       ? ((await from.where("id", "=", input.anchorItemId).executeTakeFirst()) ??
         (await from.where(sql<boolean>`message_id = ${input.anchorItemId}`).executeTakeFirst()))
       : undefined;
     const budget = maxBytes - 1024;
+    const hardCeiling = Math.max(budget, 768 * 1024);
     const maxTurns = Math.max(1, input.maxTurns ?? Number.MAX_SAFE_INTEGER);
-    const query = from.orderBy("position", "desc").orderBy("id", "desc");
-    let olderQuery = query;
+    const keyQuery = keys.orderBy("position", "desc").orderBy("id", "desc");
+    let olderKeyQuery = keyQuery;
     if (cursor)
-      olderQuery = query.where(
+      olderKeyQuery = keyQuery.where(
         sql<boolean>`(position,id) < (${cursor.beforePosition}::bigint,${cursor.beforeId})`,
       );
     const makeCursor = (boundary: Item | undefined): TranscriptCursor | null =>
@@ -571,7 +776,7 @@ export function readTranscriptPage(
           }
         : null;
     if (input.after) {
-      const candidates = await from
+      const candidates = await keys
         .where(
           sql<boolean>`(position,id) > (${input.after.beforePosition}::bigint,${input.after.beforeId})`,
         )
@@ -579,57 +784,74 @@ export function readTranscriptPage(
         .orderBy("id")
         .limit(limit + 1)
         .execute();
-      const { selected } = itemWindow(candidates, limit, budget, maxTurns);
+      const { selected } = await selectHydratedWindow(
+        tx,
+        scope,
+        candidates,
+        limit,
+        budget,
+        hardCeiling,
+        maxTurns,
+      );
       const hasMore = candidates.length > selected.length;
       return {
         kind: "page" as const,
         revision: state.sequence,
-        items: selected.map(itemView),
+        items: selected.map(({ item }) => item),
         hasMore,
         nextBefore: null,
-        nextAfter: hasMore ? makeCursor(selected.at(-1)) : null,
+        nextAfter: hasMore ? makeCursor(selected.at(-1)?.row) : null,
       };
     }
-    let rows: Item[];
-    let newer: Item[] = [];
+    let rows: { readonly row: Item; readonly item: TranscriptItem }[];
+    let newer: { readonly row: Item; readonly item: TranscriptItem }[] = [];
     let hasMore: boolean;
     let nextAfter: TranscriptCursor | null = null;
     if (anchor?.position) {
       const newerLimit = Math.floor((limit - 1) / 2);
       const olderLimit = limit - 1 - newerLimit;
-      const anchorBytes = itemBytes(anchor);
+      const anchorItem = cardWithinCeiling(anchor, itemView(anchor), hardCeiling);
+      const anchorBytes = encodedItemBytes(anchorItem);
       const anchorTurns = Number(anchor.isTurnStart);
       const newerCandidates = newerLimit
-        ? await from
+        ? await keys
             .where(sql<boolean>`(position,id) > (${anchor.position}::bigint,${anchor.id})`)
             .orderBy("position")
             .orderBy("id")
             .limit(newerLimit)
             .execute()
         : [];
-      const selectedNewer = itemWindow(
+      const selectedNewer = await selectHydratedWindow(
+        tx,
+        scope,
         newerCandidates,
         newerLimit,
-        Math.floor((budget - anchorBytes) / 2),
+        Math.max(0, Math.floor((budget - anchorBytes) / 2)),
+        hardCeiling,
         maxTurns - anchorTurns,
+        false,
       );
-      const olderCandidates = await query
+      const olderCandidates = await keyQuery
         .where(sql<boolean>`(position,id) < (${anchor.position}::bigint,${anchor.id})`)
         .limit(olderLimit + 1)
         .execute();
-      const selectedOlder = itemWindow(
+      const selectedOlder = await selectHydratedWindow(
+        tx,
+        scope,
         olderCandidates,
         olderLimit,
-        budget - anchorBytes - selectedNewer.bytes,
+        Math.max(0, budget - anchorBytes - selectedNewer.bytes),
+        hardCeiling,
         maxTurns - anchorTurns - selectedNewer.turns,
+        false,
       );
-      rows = [anchor, ...selectedOlder.selected];
+      rows = [{ row: anchor, item: anchorItem }, ...selectedOlder.selected];
       newer = selectedNewer.selected;
-      const newest = newer.at(-1) ?? anchor;
+      const newest = newer.at(-1)?.row ?? anchor;
       const remainingNewer =
         newer.length < newerCandidates.length ||
         Boolean(
-          await from
+          await keys
             .clearSelect()
             .select("id")
             .where(sql<boolean>`(position,id) > (${newest.position}::bigint,${newest.id})`)
@@ -641,16 +863,18 @@ export function readTranscriptPage(
       if (remainingNewer) nextAfter = makeCursor(newest);
       hasMore = olderCandidates.length > selectedOlder.selected.length;
     } else {
-      const candidates = await olderQuery.limit(limit + 1).execute();
-      rows = itemWindow(candidates, limit, budget, maxTurns).selected;
+      const candidates = await olderKeyQuery.limit(limit + 1).execute();
+      rows = (
+        await selectHydratedWindow(tx, scope, candidates, limit, budget, hardCeiling, maxTurns)
+      ).selected;
       hasMore = candidates.length > rows.length;
     }
-    const oldest = rows.at(-1);
+    const oldest = rows.at(-1)?.row;
     const nextBefore = hasMore ? makeCursor(oldest) : null;
     return {
       kind: "page" as const,
       revision: state.sequence,
-      items: [...rows.reverse(), ...newer].map(itemView),
+      items: [...rows.reverse(), ...newer].map(({ item }) => item),
       hasMore,
       nextBefore,
       nextAfter,
@@ -672,16 +896,19 @@ export function readTranscriptItem(
     await authorizedSyncState(tx, input.viewerId);
     if (!(await authorizedDetail(tx, input.viewerId, input.scope)))
       return { kind: "unavailable" as const };
-    const item = await drawableItems(tx, input.scope)
+    const item = await drawableItems(tx, input.scope, false)
       .where("id", "=", input.itemId)
       .executeTakeFirst();
     if (!item) return { kind: "unavailable" as const };
     if (input.expectedRevision !== undefined && item.revision !== input.expectedRevision)
       return { kind: "revision-conflict" as const, revision: item.revision };
     let body: unknown = null;
+    // The response carries the full body in `body`; omit duplicate inline prose from `item`.
+    const headerItem = () =>
+      itemView({ ...item, body: null, messageText: null, nodeMessageText: null });
     const tooLarge = () => ({
       kind: "item" as const,
-      item: itemView(item),
+      item: headerItem(),
       body: null,
       truncated: true,
     });
@@ -704,7 +931,11 @@ export function readTranscriptItem(
         .where("id", "=", item.messageId)
         .where("threadId", "=", item.threadId)
         .executeTakeFirstOrThrow();
-      body = { kind: "message", message: messageViewFromRow(message) };
+      try {
+        body = { kind: "message", message: messageViewFromRow(message) };
+      } catch {
+        return tooLarge();
+      }
     } else if (item.toolCallId) {
       const toolScope = tx
         .selectFrom("toolCalls")
@@ -765,7 +996,7 @@ export function readTranscriptItem(
           ? { kind: "text", text: owned.body }
           : { kind: "place", place: owned.body };
     }
-    const response = { kind: "item" as const, item: itemView(item), body, truncated: false };
+    const response = { kind: "item" as const, item: headerItem(), body, truncated: false };
     return Buffer.byteLength(JSON.stringify(response)) <= 1024 * 1024 - 1024
       ? response
       : tooLarge();

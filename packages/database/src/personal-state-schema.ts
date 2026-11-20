@@ -675,6 +675,34 @@ export async function applyBrowserSessionTabsIndex(database: Kysely<DatabaseSche
   `.execute(database);
 }
 
+export const inlineTranscriptMessagesMigrationName = "0043_inline_transcript_messages";
+/**
+ * Transcript message and subagent-message items now carry full prose inline (up to 480 KiB), so
+ * `client_changes` allows up to 512 KiB per row and every client's sync starts over to pick up
+ * full message bodies on its next snapshot.
+ */
+export async function applyInlineTranscriptMessages(database: Kysely<DatabaseSchema>) {
+  await sql`
+    update client_sync_state set epoch = gen_random_uuid();
+    do $$
+    declare
+      constraint_name text;
+    begin
+      for constraint_name in
+        select conname
+        from pg_constraint
+        where conrelid = 'client_changes'::regclass
+          and contype = 'c'
+          and pg_get_constraintdef(oid) like '%byte_count%'
+      loop
+        execute format('alter table client_changes drop constraint %I', constraint_name);
+      end loop;
+    end $$;
+    alter table client_changes add constraint client_changes_byte_count_check
+      check (byte_count <= 524288);
+  `.execute(database);
+}
+
 export async function applyPersonalStateSchema(transaction: Kysely<DatabaseSchema>) {
   await sql.raw(retainedStateDdl).execute(transaction);
   await sql.raw(currentStateIndexes).execute(transaction);

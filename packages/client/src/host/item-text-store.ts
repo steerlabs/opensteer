@@ -1,4 +1,5 @@
 import type { ScopedHostMessage } from "@opensteer/protocol/personal-sync";
+import { transcriptInlineTextMaxBytes } from "@opensteer/protocol/transcript";
 import { utf8Tail } from "@opensteer/core";
 
 /** A live stream's frame; the socket handle that named it does not matter here. */
@@ -23,7 +24,13 @@ export interface ItemText {
   readonly incomplete: boolean;
 }
 
-const maxTailBytes = 16 * 1024;
+const maxToolTailBytes = 16 * 1024;
+
+function streamTailLimit(itemId: string): number {
+  return itemId.startsWith("tool:") || itemId.startsWith("node:")
+    ? maxToolTailBytes
+    : transcriptInlineTextMaxBytes;
+}
 
 export class ItemTextStore {
   readonly #items = new Map<string, ItemText>();
@@ -128,7 +135,7 @@ export class ItemTextStore {
     }
     if (update.offset + update.text.length !== update.totalLength) return "ignored";
     const piece = update.operation === "append" && matches ? prior.text + update.text : update.text;
-    const text = utf8Tail(piece, maxTailBytes);
+    const text = utf8Tail(piece, streamTailLimit(frame.itemId));
     this.#gaps.delete(key);
     if (identity && identity.key !== key) this.#close(identity.key, identity.barrier.toString());
     rememberBounded(

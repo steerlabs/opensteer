@@ -1291,4 +1291,32 @@ describe("a long transcript's bodies", () => {
     await vi.waitFor(() => expect(body(3).querySelector("strong")?.textContent).toBe("3"));
     vi.unstubAllGlobals();
   });
+
+  it("renders full assistant replies without an expand button in Task and Chat modes", async () => {
+    const longBody = `${"Full assistant answer line. ".repeat(80)}FINAL_WORD`;
+    const fullReply: MessageEntry = {
+      ...note,
+      runId: null,
+      id: "assistant-long",
+      body: longBody,
+      previewTruncated: false,
+    };
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    for (const conversation of [false, true]) {
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/tasks/thread-1"]}>
+            <AgentTranscript conversation={conversation} entries={[fullReply]} />
+          </MemoryRouter>,
+        );
+        await import("./markdown.js");
+      });
+      await vi.waitFor(() => expect(container.textContent).toContain("FINAL_WORD"));
+      expect(container.textContent).not.toContain("Read full reply");
+      expect(container.textContent).not.toContain("Show full message");
+    }
+  });
 });

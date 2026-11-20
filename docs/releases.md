@@ -15,8 +15,9 @@ Self-hosted team servers update through the [deploy/team recipe](../deploy/team/
 scheduler-driven pull-before-replace updates. A failed pull leaves the running stack in place;
 there is no desktop team supervisor. Stable and Beta select the corresponding published tags,
 and each tag's version names the images it runs. The Personal Host and apps update together at
-Personal API version 64. Version 64 introduces scoped sync and requires an update for clients
-on version 63 or older. Agent-enabled Runners update alongside the Host and negotiate
+Personal API version 65. Version 65 carries full inline transcript messages with 1 MiB detail
+snapshots and requires an update for clients on version 64 or older. Agent-enabled Runners update
+alongside the Host and negotiate
 `run-events-v2` separately. Team keeps its own API compatibility window.
 Hosted teams use the hosted release policy instead.
 

@@ -2408,7 +2408,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     if (messageSnapshot.kind !== "snapshot") throw new Error("Expected thread detail");
     expect(Buffer.byteLength(JSON.stringify(messageSnapshot.snapshot))).toBeLessThanOrEqual(
-      128 * 1024,
+      1024 * 1024,
     );
     expect(
       messageSnapshot.snapshot.items.filter(({ kind }) => kind === "message").map(({ id }) => id),

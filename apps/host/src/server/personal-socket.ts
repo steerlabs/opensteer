@@ -4,6 +4,7 @@ import { OpensteerError } from "@opensteer/core";
 import { PersonalSyncSocket, type RealtimeHub } from "@opensteer/orchestration";
 import {
   personalClientFrameMaxBytes,
+  personalSocketBudget,
   ScopedClientMessageSchema,
   scopedPersonalApiVersion,
 } from "@opensteer/protocol/personal-sync";
@@ -15,7 +16,7 @@ import type { PersonalResources } from "./personal-resources.js";
 import { installWebSocketLiveness, scheduleWebSocketExpiration } from "./websocket-liveness.js";
 
 const authorityCloseCode = 4003;
-const socketBudget = 512 * 1024;
+const socketBudget = personalSocketBudget;
 const attachVersion = z.object({
   type: z.literal("client.attach"),
   apiVersion: z.int().positive(),

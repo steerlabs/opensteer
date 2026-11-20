@@ -5,7 +5,7 @@ import type {
 } from "@opensteer/protocol/personal-sync";
 import type { TranscriptState } from "./thread-transcript-store.js";
 
-export const personalCacheFormat = 67;
+export const personalCacheFormat = 68;
 
 export interface PersonalCacheScope {
   readonly deploymentId: string;
@@ -120,9 +120,9 @@ export interface CheckpointStorage {
   clear(matches: (key: string) => boolean, scope: Partial<Viewer>): Promise<void>;
 }
 
-export const personalCheckpointMaxBytes = 512 * 1024;
+export const personalCheckpointMaxBytes = 1024 * 1024;
 const maxEntries = 16;
-const maxTotalBytes = 4 * 1024 * 1024;
+const maxTotalBytes = 8 * 1024 * 1024;
 
 type Key = {
   readonly key: string;

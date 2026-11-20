@@ -2,15 +2,21 @@ import {
   BrowserPageContentPartSchema,
   createId,
   DeviceIdSchema,
+  ExecutionNodeIdSchema,
   MessageViewSchema,
   RequestSchema,
 } from "@opensteer/core";
-import { TranscriptItemSchema, type TranscriptItem } from "@opensteer/protocol/transcript";
+import {
+  fitsInlineTranscriptText,
+  TranscriptItemSchema,
+  type TranscriptItem,
+} from "@opensteer/protocol/transcript";
 import { expect, it } from "vitest";
 import { conversationTurn, groupTranscriptEntries, workSummary } from "./agent-activity-model.js";
 import type { TranscriptEntry } from "./client.js";
+import { ItemTextStore } from "./item-text-store.js";
 import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
-import { requestReceipt, visibleTranscript } from "./transcript.js";
+import { messageBody, requestReceipt, visibleTranscript } from "./transcript.js";
 
 const time = "2026-11-17T18:00:00.000Z";
 const endedAt = "2026-11-17T19:00:02.000Z";
@@ -480,4 +486,109 @@ it("draws a message's attachments, pages and places from its card, with no body 
     view: { preview: "", truncated: true },
   });
   expect(cut).toMatchObject({ previewTruncated: true, attachments: [attachment] });
+});
+
+it("prefers full inline text on message and node-message items and keeps long live prose intact", () => {
+  const fullReply = `${"Detailed answer with [file](file:///tmp/a.ts). ".repeat(80)}END`;
+  const msg = itemCard({
+    ...message("Detailed answer with file."),
+    text: fullReply,
+  });
+  expect(msg).toMatchObject({
+    kind: "message",
+    body: fullReply,
+    previewTruncated: false,
+  });
+
+  const nodeId = ExecutionNodeIdSchema.parse(createId("executionNode"));
+  const subagentText = `${"Subagent explanation. ".repeat(100)}DONE`;
+  const subagent = nodeTranscriptCard(
+    TranscriptItemSchema.parse({
+      id: "node-message:1",
+      kind: "node-message",
+      revision: "1",
+      position: "1",
+      runId: createId("run"),
+      attemptId: null,
+      nodeId,
+      isTurnStart: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      view: { preview: subagentText.slice(0, 200) },
+      text: subagentText,
+    }),
+  );
+  expect(subagent).toMatchObject({
+    kind: "node-message",
+    text: subagentText,
+    previewTruncated: false,
+  });
+
+  // Live prose streams keep > 16 KiB intact while tool stdout remains tail-capped at 16 KiB.
+  const store = new ItemTextStore();
+  store.generation(1);
+  const baseFrame = {
+    type: "host.live" as const,
+    subscriptionId: "detail:0" as const,
+    generation: 1,
+    scope: { kind: "thread" as const, threadId: createId("thread") },
+    liveBootId: crypto.randomUUID(),
+    runId: createId("run"),
+    attemptId: createId("runAttempt"),
+    bindingGeneration: 1,
+    afterSequence: "1",
+  };
+  const replyId = createId("message");
+  const chunk = "a".repeat(10 * 1024);
+  for (let i = 0; i < 3; i++) {
+    store.apply(
+      {
+        ...baseFrame,
+        itemId: replyId,
+        streamId: replyId,
+        update: {
+          operation: "append",
+          offset: i * chunk.length,
+          totalLength: (i + 1) * chunk.length,
+          text: chunk,
+        },
+      },
+      "1",
+    );
+  }
+  expect(store.get(replyId)?.text.length).toBe(30 * 1024);
+  expect(store.get(replyId)?.incomplete).toBe(false);
+
+  const toolId = "tool:call-1";
+  for (let i = 0; i < 3; i++) {
+    store.apply(
+      {
+        ...baseFrame,
+        itemId: toolId,
+        streamId: toolId,
+        update: {
+          operation: "append",
+          offset: i * chunk.length,
+          totalLength: (i + 1) * chunk.length,
+          text: chunk,
+        },
+      },
+      "1",
+    );
+  }
+  expect(store.get(toolId)?.text.length).toBe(16 * 1024);
+  expect(store.get(toolId)?.incomplete).toBe(true);
+
+  // Inline admission enforces JSON-encoded bytes (e.g. 6-byte control escapes), not only raw UTF-8.
+  expect(fitsInlineTranscriptText("\u0001".repeat(90 * 1024))).toBe(false);
+  expect(fitsInlineTranscriptText("a".repeat(200 * 1024))).toBe(true);
+
+  // `messageBody` joins only text parts, matching server SQL/projection when an attachment sits
+  // between two text parts.
+  expect(
+    messageBody([
+      { type: "text", text: "Line one" },
+      { type: "artifact", artifactId: "a-1", mediaType: "image/png", name: "shot.png" },
+      { type: "text", text: "Line two" },
+    ]),
+  ).toBe("Line one\nLine two");
 });

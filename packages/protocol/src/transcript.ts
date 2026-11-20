@@ -91,6 +91,24 @@ export const clientSendKeyWireReserve = 6 * 255 + 20;
 export const transcriptMessageRefLimits = { attachments: 6, pages: 4, places: 4 } as const;
 /** The references' combined JSON size; references past it are left to the body. */
 export const transcriptMessageRefsMaxBytes = 4 * 1024;
+/**
+ * Maximum JSON-encoded UTF-8 bytes of conversation prose carried inline on a `message` or
+ * `node-message` item. Keeps ordinary assistant replies, user prompts and subagent messages whole
+ * on the wire while bounding JSON-escaped payloads (including control chars and quotes) safely
+ * inside `personalChangesFrameMaxBytes` (512 KiB) and `personalDetailFrameMaxBytes` (1 MiB).
+ */
+export const transcriptInlineTextMaxBytes = 480 * 1024;
+
+/**
+ * Shared inline-text admission rule for both DB projections and mocks: checks both UTF-16 schema
+ * length and exact JSON-encoded UTF-8 byte length against `transcriptInlineTextMaxBytes`.
+ */
+export function fitsInlineTranscriptText(text: string): boolean {
+  if (text.length > transcriptInlineTextMaxBytes) return false;
+  // Fast path: even worst-case 6-byte `\uXXXX` escaping per code unit fits inside the budget.
+  if (text.length * 6 + 2 <= transcriptInlineTextMaxBytes) return true;
+  return utf8ByteLength(JSON.stringify(text)) <= transcriptInlineTextMaxBytes;
+}
 export const TranscriptMessageRefsSchema = z.object({
   attachments: z
     .array(z.object(ArtifactContentPartSchema.shape))
@@ -129,6 +147,8 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
         reason: z.string().max(500),
       })
       .optional(),
+    /** Full unstripped message text when it fits within `transcriptInlineTextMaxBytes`. */
+    text: z.string().max(transcriptInlineTextMaxBytes).optional(),
   }),
   z.object({
     ...card,
@@ -181,7 +201,13 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
     blockId: z.string().min(1).max(255),
     bindingGeneration: z.int().nonnegative().nullable(),
   }),
-  z.object({ ...card, kind: z.literal("node-message"), nodeId: ExecutionNodeIdSchema }),
+  z.object({
+    ...card,
+    kind: z.literal("node-message"),
+    nodeId: ExecutionNodeIdSchema,
+    /** Full subagent message text when it fits within `transcriptInlineTextMaxBytes`. */
+    text: z.string().max(transcriptInlineTextMaxBytes).optional(),
+  }),
   z.object({ ...card, kind: z.literal("place"), place: TranscriptPlaceViewSchema.optional() }),
 ]);
 
@@ -220,7 +246,7 @@ export const TranscriptItemBodySchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("run"), run: RunViewSchema }),
   z.object({ kind: z.literal("assignment"), assignment: AssignmentSummarySchema }),
   z.object({ kind: z.literal("place"), place: TranscriptPlaceViewSchema }),
-  z.object({ kind: z.literal("text"), text: z.string().max(480 * 1024) }),
+  z.object({ kind: z.literal("text"), text: z.string().max(transcriptInlineTextMaxBytes) }),
 ]);
 
 export const TranscriptItemResultSchema = z

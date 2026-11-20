@@ -1,6 +1,9 @@
 import { createId, type UserId } from "@opensteer/core";
 import { BrowserSurfaceIdSchema, type HostToClientMessage } from "@opensteer/protocol";
-import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
+import {
+  scopedPersonalApiVersion,
+  ScopedHostMessageSchema,
+} from "@opensteer/protocol/personal-sync";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it, vi } from "vitest";
 import { PersonalSyncSocket } from "./personal-sync.js";
@@ -69,7 +72,7 @@ function connect(
     async attach(withSelected = false) {
       sync.attach({
         type: "client.attach",
-        apiVersion: 64,
+        apiVersion: scopedPersonalApiVersion,
         generation: 1,
         interests: [],
         installed: {},

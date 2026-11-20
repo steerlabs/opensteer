@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { HostClient, MessageEntry } from "../host/client.js";
 import { hydrateTranscriptMessage } from "../host/transcript.js";
 import { useTranscriptBody } from "./use-transcript-body.js";
@@ -14,22 +15,39 @@ export function useTranscriptMessage(
     itemId && threadId ? client?.getThreadItemText(threadId) : undefined,
     itemId,
   );
-  const transcript = useThreadTranscript(client, expanded && itemId ? threadId : null, false);
+  const needsBody = expanded && message.previewTruncated === true;
+  const transcript = useThreadTranscript(client, needsBody && itemId ? threadId : null, false);
   const body = useTranscriptBody({
     client,
     threadId,
     itemId,
     revision: message.itemRevision,
     generation: transcript.generation,
-    enabled: expanded && message.previewTruncated === true && transcript.synchronized,
+    enabled: needsBody && transcript.synchronized,
   }).data?.body;
+  const revisionKey = `${itemId ?? message.id}:${message.itemRevision ?? ""}`;
+  const [retained, setRetained] = useState<{
+    readonly key: string;
+    readonly value: MessageEntry;
+  } | null>(null);
+  const hydrated =
+    body?.kind === "message"
+      ? hydrateTranscriptMessage(message, body.message)
+      : body?.kind === "text"
+        ? { ...message, body: body.text }
+        : null;
+  useEffect(() => {
+    if (!hydrated) return;
+    setRetained((current) =>
+      current?.key === revisionKey && current.value.body === hydrated.body
+        ? current
+        : { key: revisionKey, value: hydrated },
+    );
+  }, [hydrated, revisionKey]);
   if (text)
     return { ...message, body: text.incomplete ? `…${text.text}` : text.text, streaming: true };
-  if (body?.kind === "message") {
-    const full = hydrateTranscriptMessage(message, body.message);
-    if (full) return full;
-  }
-  if (body?.kind === "text") return { ...message, body: body.text };
+  if (hydrated) return hydrated;
+  if (retained && retained.key === revisionKey) return retained.value;
   return message;
 }
 
@@ -48,23 +66,45 @@ export function useTranscriptText(input: {
     threadId && itemId ? client?.getThreadItemText(threadId, nodeId) : undefined,
     itemId,
   );
+  const transcript = useThreadTranscript(
+    client ?? null,
+    input.expanded && !nodeId && itemId ? threadId : null,
+    false,
+  );
+  const ready = nodeId !== undefined ? true : transcript.synchronized;
   const body = useTranscriptBody({
     client,
     threadId,
     nodeId,
     itemId,
     revision: input.revision,
-    generation: input.generation,
-    enabled: input.expanded,
+    generation: input.generation ?? transcript.generation,
+    enabled: input.expanded && ready,
   }).data?.body;
+  const revisionKey = `${itemId ?? ""}:${input.revision ?? ""}`;
+  const [retained, setRetained] = useState<{
+    readonly key: string;
+    readonly text: string;
+  } | null>(null);
+  const hydratedText = body?.kind === "text" ? body.text : null;
+  useEffect(() => {
+    if (hydratedText === null) return;
+    setRetained((current) =>
+      current?.key === revisionKey && current.text === hydratedText
+        ? current
+        : { key: revisionKey, text: hydratedText },
+    );
+  }, [hydratedText, revisionKey]);
   return {
     streaming: live !== undefined,
     text: live
       ? live.incomplete
         ? `…${live.text}`
         : live.text
-      : body?.kind === "text"
-        ? body.text
-        : input.preview,
+      : hydratedText !== null
+        ? hydratedText
+        : retained && retained.key === revisionKey
+          ? retained.text
+          : input.preview,
   };
 }

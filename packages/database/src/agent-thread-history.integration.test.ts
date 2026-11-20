@@ -61,7 +61,9 @@ describeStore("agent Thread history", (it) => {
           messageKind: "continuation",
           isTurnStart: false,
         });
-        expect(body).toMatchObject({ kind: "item", item, body: { kind: "message" } });
+        const { text: _inlineText, ...header } =
+          item && item.kind === "message" ? item : { text: undefined };
+        expect(body).toMatchObject({ kind: "item", item: header, body: { kind: "message" } });
       } else {
         expect(item).toBeUndefined();
         expect(body).toEqual({ kind: "unavailable" });
