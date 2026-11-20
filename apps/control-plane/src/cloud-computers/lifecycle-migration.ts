@@ -16,6 +16,10 @@ export const cloudComputerLifecycleMigration: Migration = {
         add column restore_snapshot text,
         add column ipv6_enabled boolean not null default false,
         add column deletion_requested_at timestamptz,
+        add column vm_destroyed_at timestamptz,
+        add column backups_unreadable_at timestamptz,
+        add column backup_objects_removed_at timestamptz,
+        add column backup_cleanup_attempted_at timestamptz,
         add column owner_access_at timestamptz,
         add column pending_provider_writes jsonb not null default '[]'::jsonb
     `.execute(database);
@@ -64,13 +68,20 @@ export const cloudComputerLifecycleMigration: Migration = {
         endpoint text not null,
         bucket text not null,
         prefix text not null,
+        region text not null default 'us-east-1',
         sealed_credentials text not null,
         principal_fingerprint text not null unique,
         computer_id text unique references public.cloud_computers(id),
         checkout_key text unique,
+        purge_computer_id text references public.cloud_computers(id),
+        reserved_organization_id text,
+        organization_reservation_request_id uuid,
         needs_rotation boolean not null default false,
         unique (endpoint, bucket, prefix),
-        check (computer_id is null or checkout_key is null)
+        check (computer_id is null or checkout_key is null),
+        check (reserved_organization_id is null or (computer_id is null and checkout_key is null and not needs_rotation)),
+        check (organization_reservation_request_id is null or reserved_organization_id is not null),
+        check (purge_computer_id is null or (computer_id is null and checkout_key is null and needs_rotation))
       )
     `.execute(database);
     await sql`

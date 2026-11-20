@@ -8,6 +8,8 @@ export interface AgentToolFailure {
   readonly next?: string | null | undefined;
   readonly reason?: string | undefined;
   readonly retryable?: boolean;
+  /** The Device an asleep or stopped refusal is about, when the caller may know it. */
+  readonly device?: { readonly id: string; readonly name: string } | undefined;
 }
 
 export {
@@ -68,6 +70,9 @@ export function normalizeToolError(failure: AgentToolFailure): ToolError {
     code: code.slice(0, 100) || "internal_error",
     message: failure.message.slice(0, 2000) || "Tool call failed.",
     next: next?.slice(0, 2000) ?? null,
+    ...(failure.device && (code === "computer_asleep" || code === "computer_stopped")
+      ? { device: { id: failure.device.id, name: failure.device.name.slice(0, 200) } }
+      : {}),
   };
 }
 /** Both MCP result channels carry exactly the same failure. */

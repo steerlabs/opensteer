@@ -103,7 +103,7 @@ describe("WatchSupervisor", () => {
       nodeExecutable: process.execPath,
       planLaunch: async () => (launch) => launch,
       privateStateDirectory: join(root, "private"),
-      terminate: async () => undefined,
+      terminate: async () => "proven",
       transport: { mode: "development" },
       agentHome,
     });
@@ -230,6 +230,29 @@ describe("WatchSupervisor", () => {
     }
   });
 
+  it("withholds the stop receipt when containment cannot be verified", async () => {
+    const fixture = await watchHarness(
+      "export default async () => {};",
+      undefined,
+      async () => "unverifiable",
+    );
+    try {
+      await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
+      await expect(
+        fixture.supervisor.reconcile(
+          {
+            ...fixture.command(2),
+            desired: [],
+          },
+          fixture.sink,
+        ),
+      ).rejects.toThrow("Watch containment could not be verified");
+      expect(fixture.messages).not.toContainEqual(expect.objectContaining({ observed: "stopped" }));
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("stops and drains a running watch when its Host connection is lost, then reconnects", async () => {
     const fixture = await watchHarness(
       'export default async () => { await new Promise(() => setInterval(() => console.log("tick"), 20)); }',
@@ -346,6 +369,8 @@ describe("WatchSupervisor", () => {
 async function watchHarness(
   source: string,
   prepare?: AgentHomeAccess["prepare"],
+  terminate: import("./watch-supervisor.js").WatchSupervisorOptions["terminate"] = async () =>
+    "proven",
 ): Promise<{
   readonly activationId: ReturnType<typeof createId<"triggerWatchActivation">>;
   readonly close: () => Promise<void>;
@@ -391,7 +416,7 @@ async function watchHarness(
     nodeExecutable: process.execPath,
     planLaunch: async () => (launch) => launch,
     privateStateDirectory: join(root, "private"),
-    terminate: async () => undefined,
+    terminate,
     transport: { mode: "development" },
     agentHome,
   });

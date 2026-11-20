@@ -406,10 +406,14 @@ export class BrowserController {
   >();
   private readonly keyOwners = new Map<BrowserSurfaceId, string>();
   private readonly lanes = new Map<BrowserSurfaceId, BrowserInputLane>();
-  private readonly scriptCommands = new Map<string, {
-    message: Extract<BrowserClientMessage, { type: "cdp.command" }>;
-    started: boolean;
-  }>();
+  private readonly scriptCommands = new Map<
+    string,
+    {
+      message: Extract<BrowserClientMessage, { type: "cdp.command" }>;
+      started: boolean;
+      closing?: boolean;
+    }
+  >();
   private readonly cancelledScriptCommands = new WeakSet<BrowserClientMessage>();
   private readonly canceledGenerations = new Map<string, number>();
   private readonly hoverOwners = new Map<BrowserSurfaceId, { owner: string; cdp: CdpChannel }>();
@@ -588,6 +592,7 @@ export class BrowserController {
     const client = this.cdpRouter.openStandardClient(this.claims.sessionId, {
       wholeContext,
       adoptTarget: (id) => this.ledger.adoptTarget(id),
+      recoverUnadoptedTarget: (id) => this.ledger.retireUnadoptedTarget(id),
       captureScreenshot: (id, parameters, signal) => {
         const surfaceId = this.ledger.surfaceIdForTarget(id);
         if (!surfaceId) throw new BrowserRuntimeError("not_found", "The browser page closed.");
@@ -849,21 +854,40 @@ export class BrowserController {
     if (!isCdpRequest(message)) return this.enqueueCommand(message);
     if (message.command.method === browserHostMethods.cancelScriptCommand)
       return this.cancelScriptCommand(message);
-    if (!message.replyBudget || (!message.scriptAttachmentId && message.command.method !== browserHostMethods.openTab))
+    if (
+      !message.replyBudget ||
+      (!message.scriptAttachmentId && message.command.method !== browserHostMethods.openTab)
+    )
       return this.enqueueCommand(message);
-    if (this.scriptCommands.has(message.requestId) || this.scriptCommands.size >= this.maxPendingCommands)
+    if (
+      this.scriptCommands.has(message.requestId) ||
+      this.scriptCommands.size >= this.maxPendingCommands
+    )
       return this.send({
-        type: "cdp.error", requestId: message.requestId,
-        error: new BrowserRuntimeError("conflict", "The browser command queue is full or the request ID is already active.").toProtocolError(),
+        type: "cdp.error",
+        requestId: message.requestId,
+        error: new BrowserRuntimeError(
+          "conflict",
+          "The browser command queue is full or the request ID is already active.",
+        ).toProtocolError(),
       });
     this.scriptCommands.set(message.requestId, { message, started: false });
-    return this.enqueueCommand(message).finally(() => this.scriptCommands.delete(message.requestId));
+    return this.enqueueCommand(message).finally(() =>
+      this.scriptCommands.delete(message.requestId),
+    );
   }
 
-  private async cancelScriptCommand(message: Extract<BrowserClientMessage, { type: "cdp.command" }>): Promise<void> {
+  private async cancelScriptCommand(
+    message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
+  ): Promise<void> {
     const requestId = message.command.parameters?.requestId;
     const command = typeof requestId === "string" ? this.scriptCommands.get(requestId) : undefined;
-    if (!command || command.message.scriptAttachmentId !== message.scriptAttachmentId || command.started)
+    if (
+      !command ||
+      command.message.scriptAttachmentId !== message.scriptAttachmentId ||
+      command.started ||
+      this.cancelledScriptCommands.has(command.message)
+    )
       return;
     // A physical release is cleanup for an earlier command and has its own reservation.
     if (isInputRelease(command.message)) return;
@@ -871,10 +895,15 @@ export class BrowserController {
     for (const lane of this.lanes.values()) lane.cancel((entry) => entry === command.message);
     // Input-lane refusals and general queue cancellation use the same terminal acknowledgement.
     await this.send({
-      type: "cdp.error", requestId: command.message.requestId,
-      error: new BrowserRuntimeError("conflict", "The browser command was cancelled before dispatch.", {
-        reason: "browser-command-cancelled",
-      }).toProtocolError(),
+      type: "cdp.error",
+      requestId: command.message.requestId,
+      error: new BrowserRuntimeError(
+        "conflict",
+        "The browser command was cancelled before dispatch.",
+        {
+          reason: "browser-command-cancelled",
+        },
+      ).toProtocolError(),
     });
   }
 
@@ -1322,6 +1351,8 @@ export class BrowserController {
     } catch (error) {
       await this.refuseClipboard(message);
       const normalized = normalizeControllerError(error);
+      if (isCdpRequest(message) && message.replyBudget && normalized.code === "internal")
+        console.error("browser.script.runtime.failed", error);
       const reservation = surfaceId ? this.reservation(message, surfaceId) : null;
       if (
         reservation &&
@@ -3575,6 +3606,14 @@ export class BrowserController {
           return late;
         },
       });
+    if (command.replyBudget)
+      return this.ledger
+        .withGeometry(surfaceId, (cdp, geometry) => {
+          ended.throwIfAborted();
+          this.cdpRouter.admitPageCommand(this.claims.sessionId, admitted);
+          return this.lookAt(page, cdp, geometry, request, command.replyBudget);
+        })
+        .finally(() => page.offClose(closed));
     return bounded(
       this.ledger.withGeometry(surfaceId, (cdp, geometry) => {
         ended.throwIfAborted();
@@ -3605,6 +3644,7 @@ export class BrowserController {
       format,
       layout: pageViewport(geometry),
       pageScale,
+      ...(budget?.maxImageBytes === undefined ? {} : { maxImageBytes: budget.maxImageBytes }),
       ...(quality === undefined ? {} : { quality }),
       // CDP's clip is in document coordinates.
       ...(clip ? { clip: { ...clip, x: clip.x - pageX, y: clip.y - pageY } } : {}),
@@ -3625,6 +3665,19 @@ export class BrowserController {
     if (message.command.method === browserHostMethods.closeScriptAttachment) {
       if (!message.scriptAttachmentId)
         throw new BrowserRuntimeError("bad_message", "Missing browser script attachment.");
+      for (const state of this.scriptCommands.values()) {
+        const pending = state.message;
+        if (pending.scriptAttachmentId !== message.scriptAttachmentId) continue;
+        state.closing = true;
+        if (!state.started)
+          await this.cancelScriptCommand({
+            ...message,
+            command: {
+              method: browserHostMethods.cancelScriptCommand,
+              parameters: { requestId: pending.requestId },
+            },
+          });
+      }
       const cleanups = this.cancelProducerOperations({
         type: "input.cancel",
         producerId: message.scriptAttachmentId,
@@ -3702,7 +3755,10 @@ export class BrowserController {
           "Browser result exceeds its byte or nesting limit.",
           { reason: "browser-reply-limit" },
         );
-      if (message.scriptAttachmentId && message.scriptEventBudget)
+      if (message.scriptAttachmentId && message.scriptEventBudget) {
+        const scriptRequest = this.scriptCommands.get(message.requestId);
+        if (scriptRequest?.closing)
+          throw new BrowserRuntimeError("conflict", "Browser script attachment ended.");
         this.cdpRouter.openScriptAttachment(
           this.claims.sessionId,
           message.scriptAttachmentId,
@@ -3712,6 +3768,7 @@ export class BrowserController {
             void this.send({ event, type: "cdp.event" }).catch(() => undefined);
           },
         );
+      }
       await this.send({ type: "cdp.result", requestId: message.requestId, result });
       return;
     }

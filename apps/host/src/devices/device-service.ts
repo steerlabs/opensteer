@@ -32,7 +32,6 @@ import {
   type RunId,
   type RunnerId,
   type UserId,
-  type ThreadId,
 } from "@opensteer/core";
 import type {
   AdministrationCommandIdentity,
@@ -1903,12 +1902,10 @@ function computerUseScope(
   return { definitionId: definition.id, kind: "display" };
 }
 
-/** A tool caller's exact execution: its Run's binding when it has one, otherwise its task. */
+/** A tool caller's exact execution, by the binding it was admitted under; never its task. */
 function callerRequester(
   ownerUserId: UserId,
-  caller: { readonly run: { readonly runId: string } | null; readonly threadId: ThreadId },
+  caller: { readonly agentBindingId: string },
 ): IntegrationRequester {
-  return caller.run
-    ? { ownerUserId, agentBindingId: `run:${caller.run.runId}` }
-    : { ownerUserId, threadId: caller.threadId };
+  return { ownerUserId, agentBindingId: caller.agentBindingId };
 }

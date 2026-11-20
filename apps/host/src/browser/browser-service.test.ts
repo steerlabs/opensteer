@@ -8630,7 +8630,7 @@ describe("a connected agent's selected grant admits the exact profile before any
     },
   );
 
-  it("never pools two lineages' Guest pages in one browser, and refuses Guest to a selected grant", async () => {
+  it("refuses Guest opens before either connected lineage starts a browser", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
     const ownerId = createId("user");
@@ -8638,17 +8638,19 @@ describe("a connected agent's selected grant admits the exact profile before any
     repository.scope = "everything";
     const create = vi.spyOn(repository, "createBrowserSession");
     const service = freshService({ keys, runtime, repository });
-    for (const lineage of ["first", "second"])
-      await service.openTab(
-        ownerId,
-        {
-          type: "browser.tab.open",
-          idempotencyKey: `guest-${lineage}`,
-          identity: { kind: "guest" },
-        },
-        { ownerId, agentBindingId: `run:guest-${lineage}`, threadId: createId("thread") },
-      );
-    expect(new Set(create.mock.calls.map(([input]) => input.id)).size).toBe(2);
+    for (const lineage of ["first", "second"]) {
+      await expect(
+        service.openTab(
+          ownerId,
+          {
+            type: "browser.tab.open",
+            idempotencyKey: `guest-${lineage}`,
+            identity: { kind: "guest" },
+          },
+          { ownerId, agentBindingId: `run:guest-${lineage}`, threadId: createId("thread") },
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+    }
     repository.scope = "selected";
     await expect(
       service.openTab(
@@ -8657,6 +8659,6 @@ describe("a connected agent's selected grant admits the exact profile before any
         { ownerId, agentBindingId: "run:guest-selected", threadId: createId("thread") },
       ),
     ).rejects.toMatchObject({ code: "forbidden" });
-    expect(create).toHaveBeenCalledTimes(2);
+    expect(create).not.toHaveBeenCalled();
   });
 });

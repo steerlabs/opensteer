@@ -53,11 +53,11 @@ Cloud Computer turns on in Account as soon as any `OPENSTEER_CLOUD_COMPUTER_*` v
 
 In the Kubernetes manifest, put non-secret settings in the `account-env` ConfigMap and Stripe secrets in the existing `opensteer-account-runtime` JSON secret. Use the base names as JSON keys, such as `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY`. The init container stages present `OPENSTEER_CLOUD_COMPUTER_*` and `OPENSTEER_ORGANIZATION_*` keys as mode `0600` files. Account uses the file when there is no explicit environment or `_FILE` setting for that key. Publish a new version of the runtime secret and point the manifest's SecretProviderClass to it when the values change.
 
-To enable organization seats, set `OPENSTEER_ORGANIZATION_STRIPE_PRICE_ID` to a recurring price distinct from the personal price, plus `OPENSTEER_ORGANIZATION_CURRENCY` and `OPENSTEER_ORGANIZATION_PRICE_MINOR`. `OPENSTEER_ORGANIZATION_PRICE_INTERVAL` defaults to `month`. Organization billing uses the same Stripe credentials and webhook as personal Cloud Computers.
+To enable organization seats, set `OPENSTEER_ORGANIZATION_STRIPE_PRICE_ID` to a recurring price distinct from the personal price, plus `OPENSTEER_ORGANIZATION_CURRENCY` and `OPENSTEER_ORGANIZATION_PRICE_MINOR`. `OPENSTEER_ORGANIZATION_PRICE_INTERVAL` defaults to `month`. Organization billing uses the same Stripe credentials and webhook as personal Cloud Computers. Set `OPENSTEER_ORGANIZATION_STRIPE_PORTAL_CONFIGURATION_ID` to a separate, non-default portal configuration that enables only payment method updates and invoice history.
 
 When an organization admin creates an invitation, the website shows a link for the admin to share with the invitee. Sending the link is manual. The invitee accepts while signed in with the invited, verified email address.
 
-Account also requires its core variables to be valid for Cloud Computer: `OPENSTEER_CONTROL_PLANE_DATABASE_URL`, `OPENSTEER_CONTROL_PLANE_PUBLIC_URL` (must be `https://`), `OPENSTEER_PORTAL_ORIGIN` (must be `https://` and differ from the Account origin), and `OPENSTEER_ADOPTION_OPERATION_KEY` (seals pool credentials, bootstrap tokens, setup codes, and backup passwords at rest). `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL` must differ from `OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL`.
+Account also requires its core variables to be valid for Cloud Computer: `OPENSTEER_CONTROL_PLANE_DATABASE_URL`, `OPENSTEER_CONTROL_PLANE_PUBLIC_URL` (must be `https://`), `OPENSTEER_PORTAL_ORIGIN` (must be `https://` and differ from the Account origin), and `OPENSTEER_ADOPTION_OPERATION_KEY` (seals pool credentials, bootstrap tokens, setup codes, at rest). `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL` must differ from `OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL`.
 
 | Env var                                                   | Meaning                                                                                         | Required | Default | Secret source          |
 | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------- | ------- | ---------------------- |
@@ -76,6 +76,8 @@ Account also requires its core variables to be valid for Cloud Computer: `OPENST
 | `OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR`                    | Positive integer price in minor currency units (for example `2000` for `$20.00`)                | Yes      | None    | ConfigMap / non-secret |
 | `OPENSTEER_CLOUD_COMPUTER_PRICE_INTERVAL`                 | Billing interval (`day`, `week`, `month`, or `year`)                                            | No       | `month` | ConfigMap / non-secret |
 | `OPENSTEER_CLOUD_COMPUTER_IPV6`                           | Publish IPv6 `AAAA` records and enable IPv6 Compose ports (`off` or `on`)                       | No       | `off`   | ConfigMap / non-secret |
+
+Set `OPENSTEER_CLOUD_COMPUTER_BACKUP_KEY_PROJECT` to a dedicated Google Cloud project before enabling sales. Enable Secret Manager and grant the Account workload identity permission to create secrets, add/access versions, and delete secrets there. PostgreSQL records the key version. The repository passwords live in Secret Manager and on the owning VM. Per-Home secrets use the `opensteer-backup-cc_…` prefix and are destroyed with all versions on final deletion. Keep historical repository passwords out of operational exports and database backups.
 
 ### Home reconciler environment
 
@@ -192,13 +194,13 @@ Claim error codes are `timeout`, `setup-failed`, and `claim-failed`. The operato
 
 ### Reuse rule for released entries
 
-When a Cloud Computer is deleted, Account releases its egress endpoint and backup target with `computerId: null` and `needsRotation: true`.
+After the provider confirms the VM and disk are gone, Account quarantines its egress endpoint and records every backup target to purge. A backup target shows `purgeComputerId` until Account confirms that prefix empty. During purge, rotation and removal are refused.
 
 - A row with `needsRotation: true` is **never assigned** to another Cloud Computer.
 - An unassigned, unreserved row can be removed even when `needsRotation: true`. Revoke its credentials upstream before removal. Removal retires the old backup prefix and prevents re-registering a removed proxy with its former password.
 - Before rotating a released entry back into service:
   - For an **egress endpoint**, change the proxy password at the provider first, then run `egress-rotate` with the new password.
-  - For a **backup target**, revoke the previous S3 principal, keep the previous prefix retired, and remove its objects after retention. Create a new principal scoped to a fresh, non-overlapping prefix. Run `backup-rotate` with the new `prefix`, `accessKeyId`, and `secretAccessKey`.
+  - For a **backup target**, wait for Account to confirm object removal then revoke the previous S3 principal. Create a new principal scoped to a fresh, non-overlapping prefix. Run `backup-rotate` with the new `prefix`, `accessKeyId`, and `secretAccessKey`.
 
 ### Egress endpoints
 
@@ -246,7 +248,7 @@ Put the proxy password in a root-only file (`chmod 0600`) so it stays out of she
 
 ### Backup targets
 
-Each backup target must have a unique S3 `accessKeyId` and a prefix that does not equal or nest inside any other target's prefix on the same `endpoint` and `bucket`. Both JSON schemas are strict: extra keys are rejected.
+Each backup target must have a unique S3 `accessKeyId` and a prefix that does not equal or nest inside any registered or retired target's prefix on the same `endpoint` and `bucket`. The existing credential must be able to list object versions and remove versions and delete markers under that exact prefix. Use S3-compatible storage that supports these operations, including on unused targets, and avoid retention locks that deny deletion. The optional `region` is the SigV4 signing region and defaults to `us-east-1`.
 
 - **List**:
 
@@ -256,7 +258,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
   Shows the location, assignment, and rotation status. `reserved: true` marks a Checkout reservation. `reservation` shows its Account, request and Stripe session IDs, expiry and paid time when available.
 
-- **Add**: write a mode `0600` JSON file containing these five fields and no others (`endpoint` is a bare `https://` origin, `bucket` is 3–63 lowercase characters, `prefix` matches `^[a-z0-9_-]+(?:/[a-z0-9_-]+)*$`, credentials max 255 chars):
+- **Add**: write a mode `0600` JSON file containing these required fields and the optional signing region (`endpoint` is a bare `https://` origin, `bucket` is 3–63 lowercase characters, `prefix` matches `^[a-z0-9_-]+(?:/[a-z0-9_-]+)*$`, credentials max 255 chars):
 
   ```json
   {
@@ -304,7 +306,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
 1. **Checkout**:
    - The customer starts checkout through `POST /v1/account/cloud-computers/checkout` with a UUID `requestId`.
-   - Account validates that the Stripe offer is active, reserves one free backup target (`checkout_key`), creates a Stripe Checkout Session, and returns its URL.
+   - Account validates the Stripe offer and reserves capacity before creating a Checkout Session. Personal Checkout reserves one backup target. Organization Checkout reserves a target per unassigned seat, and a seat increase reserves the additional targets before it can charge.
    - Customer sees the checkout page in their browser; the app polls `GET /v1/account/cloud-computers` every 5 seconds.
 2. **Desired state**:
    - Stripe sends `checkout.session.completed` (or `checkout.session.async_payment_succeeded`) to `POST /v1/cloud-computers/stripe-webhook`.
@@ -361,8 +363,9 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
   - Owner calls `DELETE /v1/account/cloud-computers/:id` with `{"confirmation":"DELETE:<id>"}`, or operator runs `node dist/cloud-computer-operator-main.js delete <id>`.
   - Account marks `deletionRequestedAt`, cancels the Stripe subscription first, and once Stripe confirms cancellation transitions `state: "deleted"`, `phase: "deleting"`, removes the Home from `deployments` and deletes its OIDC client.
   - Reconciler removes the Cloudflare DNS record, deletes the Hetzner server, waits until it is absent, and reports `phase: "deleted"`.
-  - Account tombstones the record (`tombstonedAt`), clears secrets, and releases the egress endpoint and backup target with `needsRotation: true`.
-  - Customer sees `status: "deleted"` (and in the app, the offer screen with a deleted notice).
+  - Account records the provider confirmation, then destroys the Home's Secret Manager secret. It records the tombstone and reports `status: "deleted"` only when both facts are confirmed.
+  - Account purges stored object versions and delete markers using the corresponding Home's own S3 credential, including retired targets. It confirms removal with a fresh empty listing before releasing the target for rotation. A durable purge reservation holds each target through failures. The provisioner never receives storage credentials.
+  - The personal or organization page shows **Computer and disk destroyed**, **Backups made unreadable**, and **Stored backup data removed** with separate dates. An offboarded seat stops counting as assigned after the first two facts are confirmed. A free seat requires an independently reserved usable backup target.
 
 ## When something goes wrong
 
@@ -453,6 +456,13 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
   1. Check Stripe's status page and Account's outbound network connectivity and `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY`.
   2. Once Stripe is reachable again, wait up to 60 seconds for the billing reconciler to finish the cancellation, or re-run `node dist/cloud-computer-operator-main.js delete <id>` to trigger the cancellation immediately.
   3. Confirm `show <id>` reaches `phase: "deleted"` and has a `tombstonedAt` timestamp.
+
+### Organization billing and offboarding
+
+- A new work assignment requires a Stripe refresh within five minutes. Finalization failure, past-due or unpaid billing, and paused collection suspend work Homes without deleting them. A seat increase remains pending until Stripe confirms its invoice is paid and the matching quantity is applied. Use the invoice link to complete payment or the Abandon seat change action to void the pending invoice.
+- The organization billing portal provides payment-method updates and invoice history. Organization closure is an explicit website action after all work Homes are offboarded. If a subscription ends separately, use **Pay for this organization again** to restore billing to the same organization.
+- The offboarding worker runs separately from billing. Retention starts when suspension is confirmed. The final audit flush can fail, in which case the page shows **Final records not confirmed**.
+- For an interrupted provider mutation, Account records the write before it can be sent. An unsent write can be recovered after three minutes. A dispatched write can be recovered after fifteen minutes if a fresh deterministic provider lookup confirms the outcome. Suspend and delete reports remain fenced until pending writes are resolved.
 
 ### Missed webhook
 

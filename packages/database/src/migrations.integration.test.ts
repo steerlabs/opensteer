@@ -862,7 +862,8 @@ describe("fresh personal/team lineage", () => {
         .orderBy("connectionId")
         .execute(),
     ).toEqual([
-      { id: sent.run.id, connectionId: null },
+      // A Run still queued from a connection's input works for that connection, not the person.
+      { id: sent.run.id, connectionId },
       { id: typed.run.id, connectionId: null },
     ]);
     // Dequeue reads inputs through `thread_work_inputs`, so the view must carry the new column.

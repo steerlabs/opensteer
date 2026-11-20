@@ -1,7 +1,9 @@
+import { whoLines } from "../thread/agent-session-model.js";
 import {
   agentBrowserOptions,
   agentHomeName,
   agentWords,
+  workWords,
   connectedAgentDetail,
   createDedicatedProfile,
   draftFromGrant,
@@ -73,6 +75,7 @@ export function ConnectedAgentController(props: {
       : connectedAgentDetail(connection, names, {
           revoked: agents.revoked,
           grantsAvailable: agents.grantsAvailable,
+          withdrawnAt: snapshot.agentWork?.withdrawn?.[connection.id] ?? null,
         });
   const agent = detail?.row.identity.label ?? null;
   useEffect(() => {
@@ -252,7 +255,51 @@ export function connectedAgentSections(props: {
 }): readonly NativeSettingsSection[] {
   const { detail } = props;
   const agent = detail.row.identity.label;
+  const who = whoLines(detail.row.identity.who, { consent: false });
+  const active = detail.row.phase === "active";
+  const disconnectRow = (): NativeSettingsRow => ({
+    key: "disconnect",
+    kind: "button",
+    label:
+      props.pending === "revoke"
+        ? agentWords("agent.disconnecting")
+        : agentWords("agent.disconnect", { agent }),
+    destructive: true,
+    disabled: props.busy,
+    onPress: props.onDisconnect,
+  });
   const sections: NativeSettingsSection[] = [
+    {
+      key: "who",
+      title: "",
+      rows: [
+        {
+          key: "who",
+          kind: "text",
+          label: who.verified ? workWords("who.verifiedAs", { name: who.heading }) : who.heading,
+          detail: who.detail,
+        },
+      ],
+    },
+    // Opensteer stopped vouching for it: said once, with the one way to act on it.
+    ...(who.withdrawn !== null && active
+      ? [
+          {
+            key: "withdrawn",
+            title: "",
+            rows: [
+              {
+                key: "withdrawn",
+                kind: "status" as const,
+                tone: "attention" as const,
+                label: who.withdrawn.line,
+              },
+              disconnectRow(),
+            ],
+            footer: { text: who.withdrawn.detail },
+          },
+        ]
+      : []),
     {
       key: "status",
       title: "",
@@ -342,24 +389,8 @@ export function connectedAgentSections(props: {
       detail: row.value,
     })),
   });
-  if (detail.row.phase === "active")
-    sections.push({
-      key: "end",
-      title: "",
-      rows: [
-        {
-          key: "disconnect",
-          kind: "button",
-          label:
-            props.pending === "revoke"
-              ? agentWords("agent.disconnecting")
-              : agentWords("agent.disconnect", { agent }),
-          destructive: true,
-          disabled: props.busy,
-          onPress: props.onDisconnect,
-        },
-      ],
-    });
+  if (active && who.withdrawn === null)
+    sections.push({ key: "end", title: "", rows: [disconnectRow()] });
   else if (detail.row.removable)
     sections.push({
       key: "end",

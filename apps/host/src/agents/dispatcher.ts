@@ -468,11 +468,17 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       );
     }
     // The live connection check precedes every credential this Run is issued.
-    const authority = await this.#store
-      .admitExecution({
-        ownerUserId: command.requestedBy,
-        subject: { kind: "binding", bindingId: `run:${context.run.id}` },
-      })
+    // A native Run of the person is known from the rows just read and needs no other query; a
+    // Run whose lineage and task disagree is never treated as the person's.
+    const { runConnectionId, taskOriginConnectionId } = context.lineage;
+    if (taskOriginConnectionId !== null && runConnectionId !== taskOriginConnectionId)
+      throw new CommandDispatchError("This Run does not belong to its task's lineage.", "failed");
+    const authority = await (runConnectionId === null
+      ? Promise.resolve({ agentConnection: null, mode: context.run.accessMode } as const)
+      : this.#store.admitExecution({
+          ownerUserId: command.requestedBy,
+          subject: { kind: "binding", bindingId: `run:${context.run.id}` },
+        }))
       .catch((error: unknown) => {
         throw new CommandDispatchError(
           error instanceof OpensteerError ? error.message : "This Run's authority ended.",
@@ -816,6 +822,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           });
         }
       },
+      ...(authority.agentConnection
+        ? {
+            onNotAdmitted: () =>
+              this.#store.recordRunNotAdmitted(context.run.id, binding.bindingGeneration),
+          }
+        : {}),
       connectionGeneration: identity.connectionGeneration,
     };
     if (command.authoritySource.kind === "channel-ingress") {
@@ -867,7 +879,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
-    const { context, executionGeneration } = await this.#triggers.startExecution({
+    const { context, executionGeneration, connectionId } = await this.#triggers.startExecution({
       commandId: command.id,
       runnerBootId: identity.bootId,
       runnerId: identity.runnerId,
@@ -917,15 +929,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     // Trigger setup can cross a stop transaction. Make the
     // running occurrence generation and its execution authority current at the
     // same boundary where the command leaves the Host.
-    await this.#triggers.assertActiveExecutionBinding({
-      environmentId: context.anchorThread.environmentId,
-      executionGeneration,
-      occurrenceId: context.occurrence.id,
-      requestedBy: context.trigger.createdBy,
-      runnerBootId: identity.bootId,
-      runnerId: identity.runnerId,
-      threadId: context.anchorThread.id,
-    });
     if (signal.aborted) {
       throw (
         signal.reason ??
@@ -935,7 +938,28 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         })
       );
     }
-    await this.#runners.dispatch(runnerCommand, signal);
+    await this.#runners.dispatch(runnerCommand, signal, {
+      connectionGeneration: identity.connectionGeneration,
+      beforeSend: () =>
+        this.#triggers.assertActiveExecutionBinding({
+          environmentId: context.anchorThread.environmentId,
+          executionGeneration,
+          occurrenceId: context.occurrence.id,
+          requestedBy: context.trigger.createdBy,
+          runnerBootId: identity.bootId,
+          runnerId: identity.runnerId,
+          threadId: context.anchorThread.id,
+        }),
+      ...(connectionId
+        ? {
+            onNotAdmitted: () =>
+              this.#triggers.recordOccurrenceNotAdmitted(
+                context.occurrence.id,
+                executionGeneration,
+              ),
+          }
+        : {}),
+    });
   }
   async #dispatchControl(command: CommandRow, signal: AbortSignal): Promise<void> {
     if (!command.environmentId)

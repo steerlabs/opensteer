@@ -51,7 +51,12 @@ async function render(
   host = new MockHostClient({ latencyMs: 0 });
   const base = host.getSnapshot();
   const identityConfig = base.identityConfig
-    ? { ...base.identityConfig, exposure: options.exposure ?? "loopback" }
+    ? {
+        ...base.identityConfig,
+        exposure: options.exposure ?? "loopback",
+        // A Home now says what it is; it matches its exposure here.
+        homeKind: options.exposure === "networked" ? ("server" as const) : ("mac" as const),
+      }
     : null;
   const snapshot: Snapshot = {
     ...base,

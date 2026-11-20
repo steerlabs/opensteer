@@ -30,7 +30,7 @@ export type HomeKind = "this-mac" | "mac" | "server" | "cloud" | "work";
 export interface HomeKindFact {
   readonly kind: HomeKind;
   /** Which fact decided it, for tests and the report; never shown. */
-  readonly from: "account" | "exposure" | "this-device";
+  readonly from: "account" | "home" | "exposure" | "this-device";
   /** The organization of a work Home. */
   readonly organization: string | null;
 }
@@ -43,6 +43,8 @@ export interface HomeAccountFacts {
 
 export function homeKind(input: {
   readonly exposure: "loopback" | "networked" | undefined;
+  /** What the Home's own configuration says it is; absent from older Homes. */
+  readonly homeKind?: "mac" | "server" | "cloud-computer" | undefined;
   readonly deploymentId: string | null;
   /** The Device this app runs on hosts the Home. */
   readonly hostedHere: boolean;
@@ -63,6 +65,20 @@ export function homeKind(input: {
       return { kind: "work", from: "account", organization: computer.work.organizationName };
     if (computer) return { kind: "cloud", from: "account", organization: null };
   }
+  // The Home's own word, when it gave one; a work Home is still the Account's to say.
+  if (input.homeKind)
+    return {
+      kind:
+        input.homeKind === "cloud-computer"
+          ? "cloud"
+          : input.homeKind === "server"
+            ? "server"
+            : input.hostedHere
+              ? "this-mac"
+              : "mac",
+      from: "home",
+      organization: null,
+    };
   if (input.exposure === "networked")
     return { kind: "server", from: "exposure", organization: null };
   return input.hostedHere
@@ -359,8 +375,8 @@ export function asleepGateLine(input: {
 
 /**
  * A tool call the Home refused because the Device it needed is asleep: the Home's own
- * `computer_asleep` code, never a guess from words. Names the Device when the call said
- * which, by its `computerId`.
+ * `computer_asleep` code, never a guess from words. Names the Device the Home's refusal
+ * named, or else the one the call said, by its `computerId`.
  */
 export function asleepToolFailure(
   tool: {
@@ -372,12 +388,15 @@ export function asleepToolFailure(
 ): { readonly line: string; readonly device: string | null } | null {
   if (tool.state !== "failed" || !tool.output) return null;
   let code: unknown;
+  let named: unknown;
   try {
     const parsed: unknown = JSON.parse(tool.output.text);
-    code =
+    const error =
       typeof parsed === "object" && parsed !== null && "error" in parsed
-        ? (parsed as { error?: { code?: unknown } }).error?.code
+        ? (parsed as { error?: { code?: unknown; device?: { name?: unknown } } }).error
         : undefined;
+    code = error?.code;
+    named = error?.device?.name;
   } catch {
     return null;
   }
@@ -387,10 +406,13 @@ export function asleepToolFailure(
     typeof args === "object" && args !== null && "computerId" in args
       ? (args as { computerId?: unknown }).computerId
       : undefined;
+  // The Device the Home named when it refused, else the one the call itself named.
   const device =
-    typeof computerId === "string"
-      ? (machines.find((machine) => machine.id === computerId)?.name ?? null)
-      : null;
+    typeof named === "string" && named
+      ? named
+      : typeof computerId === "string"
+        ? (machines.find((machine) => machine.id === computerId)?.name ?? null)
+        : null;
   return {
     device,
     line: deviceWords("asleep.activity", { device: device ?? deviceWords("asleep.someDevice") }),
@@ -403,6 +425,8 @@ export function serverHomeFacts(input: {
   readonly homeMachine: Pick<MachineSummary, "runtimeVersion"> | null;
   /** A personal Home has one person, its owner. */
   readonly personal: boolean;
+  /** The signed-in person's relation to the Home, when the Home said it. */
+  readonly role?: "owner" | "member" | undefined;
 }): {
   readonly address: { readonly label: string; readonly value: string } | null;
   readonly version: { readonly label: string; readonly value: string } | null;
@@ -415,6 +439,9 @@ export function serverHomeFacts(input: {
     version: input.homeMachine?.runtimeVersion
       ? { label: deviceWords("home.version"), value: input.homeMachine.runtimeVersion }
       : null,
-    owner: input.personal ? deviceWords("home.owner") : null,
+    owner:
+      (input.role ?? (input.personal ? "owner" : null)) === "owner"
+        ? deviceWords("home.owner")
+        : null,
   };
 }

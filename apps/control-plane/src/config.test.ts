@@ -58,6 +58,7 @@ it("loads optional managed Home settings from the Account runtime directory", ()
       OPENSTEER_CLOUD_COMPUTER_CURRENCY: "usd",
       OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR: "2900",
       OPENSTEER_ORGANIZATION_STRIPE_PRICE_ID: "price_seat",
+      OPENSTEER_ORGANIZATION_STRIPE_PORTAL_CONFIGURATION_ID: "bpc_org",
       OPENSTEER_ORGANIZATION_CURRENCY: "usd",
       OPENSTEER_ORGANIZATION_PRICE_MINOR: "4900",
     };

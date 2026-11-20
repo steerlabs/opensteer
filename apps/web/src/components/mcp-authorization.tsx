@@ -1,3 +1,4 @@
+import { AgentWhoLine } from "./settings/agent-who.js";
 import {
   AgentConnectionAuthorizationTargetSchema,
   agentConnectionDeepLink,
@@ -331,8 +332,14 @@ function ConsentForm({
   readonly onLabel: (label: string) => void;
   readonly onMode: (mode: ThreadAccessMode) => void;
 }) {
+  // Who asked, in the Home's words where it said; never a provider guessed from a domain.
   const identity = connectedAgentIdentity(
-    { label: agent, clientName: consent.clientName },
+    {
+      label: agent,
+      clientName: consent.clientName,
+      ...(consent.identity ? { identity: consent.identity } : {}),
+      ...(consent.identityAtConsent ? { identityAtConsent: consent.identityAtConsent } : {}),
+    },
     consent.redirectUri,
   );
   const disabled = busy !== null;
@@ -348,15 +355,17 @@ function ConsentForm({
           }
         />
       </div>
+      <AgentWhoLine who={identity.who} />
       <p className="agent-consent__where">
-        {grants && !identity.local ? (
-          <Icon className="agent-consent__verified" name="check-circle" />
-        ) : (
-          <Icon name={identity.local ? "laptop" : "globe"} />
-        )}
+        <Icon name={identity.local ? "laptop" : "globe"} />
         <span>{connectionDestination(consent.redirectUri)}</span>
       </p>
-      <p className="settings-section__lead">{agentWords("consent.unverified")}</p>
+      {identity.who.selfAsserted ? (
+        <p className="settings-section__lead">{agentWords("consent.unverified")}</p>
+      ) : null}
+      <p className="agent-consent__warning" role="note">
+        {identity.who.warning}
+      </p>
       {grants ? (
         <>
           <AgentGrantEditor

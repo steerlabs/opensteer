@@ -160,6 +160,7 @@ export class LocalProviders {
     const toolCaller: ToolCaller = {
       run: caller.kind === "run" ? caller.claims : null,
       threadId: caller.kind === "run" ? caller.thread.id : caller.anchor.id,
+      agentBindingId: caller.key,
       elicit,
       authorize: async () => {
         signal.throwIfAborted();

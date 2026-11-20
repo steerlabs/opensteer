@@ -241,17 +241,22 @@ describe("browser REPL", () => {
         throw new OpensteerError({
           code: "conflict",
           reason: "outcome-unknown",
-          message: "The browser disconnected before confirming the action.",
+          message: "Private backend failure text.",
         });
       },
     });
     expect(
       await run(`${bind}
       try { await page.cdp("Runtime.evaluate"); }
-      catch (error) { print(error.code); }
+      catch (error) { print(error.code, error.message); }
       return "done";`),
     ).toMatchObject({
-      content: expect.arrayContaining([{ type: "text", text: "outcome-unknown" }]),
+      content: expect.arrayContaining([
+        {
+          type: "text",
+          text: "outcome-unknown A browser action did not confirm its outcome. Observe the page before trying again.",
+        },
+      ]),
       isError: true,
       structuredContent: { error: { code: "outcome-unknown" } },
     });
@@ -357,6 +362,42 @@ describe("browser REPL", () => {
     expect(await run('return await page.cdp("Runtime.evaluate")')).toEqual({ content: [text({})] });
   });
 
+  it("reserves part of the unsettled operation budget for other browser bindings", async () => {
+    const hold = Promise.withResolvers<readonly []>();
+    const listPages = vi.fn<BrowserUsePort["listPages"]>((call) =>
+      call.contextKey === "independent" ? Promise.resolve([]) : hold.promise,
+    );
+    const { service } = setup({ listPages });
+    try {
+      const abandon = "for (let i = 0; i < 32; i++) void pages().catch(() => {});";
+      for (let n = 0; n < 4; n++)
+        await service.execute(`context-${n}`, abandon, undefined, "first-binding");
+      expect(listPages).toHaveBeenCalledTimes(browserReplLimits.bindingPending);
+      expect(
+        await service.execute("independent", "return await pages()", undefined, "second-binding"),
+      ).toEqual({ content: [text([])] });
+    } finally {
+      hold.resolve([]);
+    }
+  });
+
+  it("does not turn a caught lost browser reply into success", async () => {
+    const { run } = setup({
+      command: async () => {
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "outcome-unknown",
+          message: "Browser reply was lost.",
+        });
+      },
+    });
+    expect(
+      await run(
+        `${bind} try { await page.cdp("Runtime.evaluate"); } catch (error) { print(error.code); } return "caught";`,
+      ),
+    ).toMatchObject({ isError: true, structuredContent: { error: { code: "outcome-unknown" } } });
+  });
+
   it("lets a port acknowledge cancellation without accumulating old reservations", async () => {
     const released = vi.fn();
     const { run } = setup({
@@ -417,6 +458,55 @@ describe("browser REPL", () => {
       },
     });
     expect(port.command).toHaveBeenCalledTimes(8);
+  });
+
+  it("reserves capture slots and producer credit before dispatch", async () => {
+    const held = Promise.withResolvers<string>();
+    const captures = vi.fn<BrowserUsePort["command"]>(() => held.promise);
+    const { run } = setup({ command: captures });
+    try {
+      const result = await run(`
+        ${bind}
+        const first = page.screenshot().catch(() => {});
+        const second = page.screenshot().catch(() => {});
+        try { await page.screenshot(); } catch (error) { print(error.code); }
+      `);
+      expect(result).toMatchObject({
+        content: expect.arrayContaining([{ type: "text", text: "output-limit" }]),
+        structuredContent: { error: { code: "outcome-unknown" } },
+      });
+      expect(captures).toHaveBeenCalledTimes(2);
+      for (const [, method, , , call] of captures.mock.calls) {
+        expect(method).toBe("Page.captureScreenshot");
+        expect(call).toMatchObject({
+          maxBytes: browserReplLimits.screenshotReplyBytes,
+          maxImageBytes: browserReplLimits.screenshotBytes,
+        });
+      }
+    } finally {
+      held.resolve(JSON.stringify({ data: png }));
+    }
+  });
+
+  it("passes only the remaining aggregate reply bytes to the producer", async () => {
+    const command = vi.fn<BrowserUsePort["command"]>(async (_target, _method, _args, _id, call) =>
+      JSON.stringify("x".repeat(call.maxBytes - 2)),
+    );
+    const { run } = setup({ command });
+    const fullReplies = browserReplLimits.replyBytes / limits.bridgeBytes;
+    expect(
+      await run(`
+      ${bind}
+      for (let i = 0; i <= ${fullReplies}; i++) await page.cdp("Runtime.evaluate");
+    `),
+    ).toMatchObject({ structuredContent: { error: { code: "bridge-limit" } } });
+    expect(command).toHaveBeenCalledTimes(fullReplies);
+    const budgets = command.mock.calls.map(([, , , , call]) => call.maxBytes);
+    expect(budgets.slice(0, -1)).toEqual(Array<number>(fullReplies - 1).fill(limits.bridgeBytes));
+    expect(budgets.at(-1)).toBeLessThan(limits.bridgeBytes);
+    expect(budgets.reduce((total, bytes) => total + bytes, 0)).toBeLessThan(
+      browserReplLimits.replyBytes,
+    );
   });
 
   it("preflights port frame budgets and keeps oversized output isolated to its context", async () => {

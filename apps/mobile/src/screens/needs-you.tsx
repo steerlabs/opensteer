@@ -2,7 +2,7 @@ import { presentClientIssue } from "@opensteer/client/feedback";
 import { teamAskerLabel } from "@opensteer/client/team";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { useHostSelector } from "@opensteer/client/react";
-import { needsYouEntryKey, type HostClient } from "@opensteer/client/host";
+import { needsYouEntryKey, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import type { NeedsYouEntry, NeedsYouTeamAskEntry } from "@opensteer/protocol";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useEffect, useState, type ReactNode } from "react";
@@ -14,6 +14,10 @@ import { AppText } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import { space, touchTarget } from "../theme.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
+import { ExternalAgentMark } from "./external-agent-mark.js";
+import { needsYouOperation } from "../thread/agent-session-model.js";
+
+const selectAgentWork = (snapshot: HostSnapshot) => snapshot.agentWork;
 
 export function NeedsYouScreen(props: StaticScreenProps<{ readonly deploymentId: string }>) {
   const { deploymentId } = props.route.params;
@@ -110,6 +114,15 @@ function NeedsYouRow(props: {
   const key = needsYouEntryKey(entry);
   const destination = entryDestination(entry);
   const ask = entry.kind === "team-ask" ? entry : null;
+  // A connected agent's direct operation: named by its agent and the Home's question.
+  const agentWork = useHostSelector(client, selectAgentWork);
+  const operation =
+    entry.kind === "request"
+      ? needsYouOperation(
+          { agentWork },
+          { request: entry.request, threadId: entry.navigationThreadId },
+        )
+      : null;
   const dismissal = useScreenAction<NeedsYouTeamAskEntry, void>(client, `needs-you:${key}`, {
     ...dismissSpec,
     execute: async (target) => {
@@ -132,9 +145,20 @@ function NeedsYouRow(props: {
   });
   const label = (
     <>
-      <AppText>
-        {entry.kind === "team-ask" ? teamAskerLabel(entry.presentation.asker) : entry.title}
-      </AppText>
+      {operation === null ? (
+        <AppText>
+          {entry.kind === "team-ask" ? teamAskerLabel(entry.presentation.asker) : entry.title}
+        </AppText>
+      ) : (
+        <View style={{ alignItems: "center", flexDirection: "row", gap: space[8] }}>
+          <ExternalAgentMark
+            initial={operation.agent.initial}
+            providerId={operation.agent.providerId}
+            size={20}
+          />
+          <AppText style={{ flex: 1 }}>{operation.listTitle}</AppText>
+        </View>
+      )}
       {ask ? (
         <AppText numberOfLines={3} tone="muted">
           {plainTextExcerpt(ask.presentation.bodyMarkdown, 280) ?? ""}

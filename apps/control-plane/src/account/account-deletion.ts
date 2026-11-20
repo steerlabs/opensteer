@@ -23,6 +23,7 @@ export class AccountDeletionService {
   readonly #connectLifecycle: ConnectLifecycleService;
   readonly #fetch: typeof fetch;
   readonly #store: ControlPlaneStore;
+  readonly #resolveOrganizationCheckouts?: (account: ControlPlaneAccountId) => Promise<void>;
 
   constructor(dependencies: {
     readonly appleSignIn?: AppleSignInConfig;
@@ -30,12 +31,15 @@ export class AccountDeletionService {
     readonly connectLifecycle: ConnectLifecycleService;
     readonly fetch?: typeof fetch;
     readonly store: ControlPlaneStore;
+    readonly resolveOrganizationCheckouts?: (account: ControlPlaneAccountId) => Promise<void>;
   }) {
     this.#apple = dependencies.appleSignIn;
     this.#auth = dependencies.auth;
     this.#connectLifecycle = dependencies.connectLifecycle;
     this.#fetch = dependencies.fetch ?? fetch;
     this.#store = dependencies.store;
+    if (dependencies.resolveOrganizationCheckouts)
+      this.#resolveOrganizationCheckouts = dependencies.resolveOrganizationCheckouts;
   }
 
   async delete(accountId: ControlPlaneAccountId): Promise<void> {
@@ -50,6 +54,7 @@ export class AccountDeletionService {
     }
     let appleRefreshToken: string | null;
     try {
+      await this.#resolveOrganizationCheckouts?.(accountId);
       for (const deployment of await this.#store.ownedDeployments(accountId)) {
         if (deployment.connectState === null || deployment.connectState === "revoked") continue;
         // Each step renews the fence, so a slow deletion keeps it and only a dead one lets go.

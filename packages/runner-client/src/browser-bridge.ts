@@ -1,5 +1,7 @@
 import {
   standardCdpBufferedMaxBytes,
+  standardCdpDetachFrame,
+  standardCdpSettledReason,
   standardCdpMessageMaxBytes,
   standardCdpPath,
 } from "@opensteer/protocol/standard-cdp";
@@ -356,6 +358,21 @@ export class LocalBrowserRuntimeBridge {
     }
     return new Promise<void>((resolve, reject) => {
       socket.send(frame, { binary: false }, (error) => (error ? reject(error) : resolve()));
+    });
+  }
+
+  async settleStandardCdp(channelId: BrowserChannelId): Promise<boolean> {
+    const socket = this.#channels.get(channelId)?.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    this.#channels.delete(channelId);
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => socket.terminate(), 4_000);
+      timer.unref();
+      socket.once("close", (code, reason) => {
+        clearTimeout(timer);
+        resolve(code === 1000 && reason.toString("utf8") === standardCdpSettledReason);
+      });
+      socket.send(standardCdpDetachFrame, (error) => { if (error) socket.terminate(); });
     });
   }
 

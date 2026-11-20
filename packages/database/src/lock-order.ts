@@ -287,6 +287,7 @@ export const databaseLockOrder = [
   "control-plane:organization_members",
   "control-plane:organization_invitations",
   "control-plane:organization_checkouts",
+  "control-plane:organization_seat_changes",
   "control-plane:work_assignments",
   "control-plane:work_audit_records",
   "control-plane:work_audit_batches",

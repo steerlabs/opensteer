@@ -192,6 +192,12 @@ export async function createControlPlaneServer(
     ...(dependencies.appleSignIn ? { appleSignIn: dependencies.appleSignIn } : {}),
     auth: dependencies.auth,
     connectLifecycle: dependencies.connectLifecycle,
+    ...(dependencies.organizations
+      ? {
+          resolveOrganizationCheckouts: (account) =>
+            dependencies.organizations!.resolveAccountCheckouts(account),
+        }
+      : {}),
     store: dependencies.store,
   });
   const portal = dependencies.portalSessions
@@ -293,21 +299,41 @@ export async function createControlPlaneServer(
     requireAccountHost(request);
     assertAuthorizeRequestSecurity(request, dependencies.publicOrigin);
     const url = new URL(request.url, dependencies.publicOrigin);
-    if (url.pathname === `${controlPlaneAuthPath}/oauth2/authorize` && dependencies.organizations) {
-      const clientId =
-        (request.method === "POST" ? parseForm(request.body).client_id : undefined) ??
-        url.searchParams.get("client_id");
-      if (clientId)
-        await dependencies.organizations.requireSignIn(clientId, async () => {
-          const session = await dependencies.auth.api.getSession({
-            headers: toWebHeaders(request.headers),
-          });
-          return session?.user.id;
-        });
-    }
-    const response = await dependencies.auth.handler(
-      toFetchRequest(request, dependencies.publicOrigin),
-    );
+    const authorize = url.pathname === `${controlPlaneAuthPath}/oauth2/authorize`;
+    const token = url.pathname === `${controlPlaneAuthPath}/oauth2/token`;
+    const issue = () =>
+      dependencies.auth.handler(toFetchRequest(request, dependencies.publicOrigin));
+    const formClient =
+      (authorize || token) && request.method === "POST"
+        ? parseForm(request.body).client_id
+        : undefined;
+    const basic = token
+      ? /^Basic ([A-Za-z0-9+/=]+)$/iu.exec(request.headers.authorization ?? "")
+      : null;
+    const basicClient = basic
+      ? Buffer.from(basic[1]!, "base64").toString("utf8").split(":")[0]
+      : undefined;
+    const candidates = [
+      basicClient,
+      formClient,
+      authorize ? url.searchParams.get("client_id") : undefined,
+    ];
+    const clientId = candidates.find((client) => client?.startsWith("occ_"));
+    const response =
+      clientId && dependencies.organizations
+        ? await dependencies.organizations.issueWorkSignIn(
+            clientId,
+            authorize
+              ? async () => {
+                  const session = await dependencies.auth.api.getSession({
+                    headers: toWebHeaders(request.headers),
+                  });
+                  return session?.user.id;
+                }
+              : undefined,
+            issue,
+          )
+        : await issue();
     void reply.header("cache-control", "no-store");
     return sendWebResponse(reply, response);
   };

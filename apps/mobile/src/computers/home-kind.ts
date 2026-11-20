@@ -7,6 +7,7 @@ import { useMobileClient } from "../ui/mobile-client-context.js";
 /** What the Home kind needs from the Host, for callers to read through their own subscription. */
 export const selectHomeExposure = (snapshot: HostSnapshot) => snapshot.identityConfig?.exposure;
 export const selectHomeDeploymentId = (snapshot: HostSnapshot) => snapshot.deploymentId;
+export const selectHomeKind = (snapshot: HostSnapshot) => snapshot.identityConfig?.homeKind;
 
 /**
  * What kind of Home the open Opensteer lives on, as the phone can tell: its exposure from the
@@ -16,12 +17,14 @@ export const selectHomeDeploymentId = (snapshot: HostSnapshot) => snapshot.deplo
  */
 export function usePhoneHome(input: {
   readonly exposure: "loopback" | "networked" | undefined;
+  readonly homeKind?: "mac" | "server" | "cloud-computer" | undefined;
   readonly deploymentId: string | null;
 }): { readonly kind: HomeKindFact; readonly computer: CloudComputerView | null } {
   const views = useCloudComputer(useMobileClient().cloudComputers ?? null).views;
   const { deploymentId } = input;
   const kind = homeKind({
     exposure: input.exposure,
+    homeKind: input.homeKind,
     deploymentId,
     hostedHere: false,
     account: views,

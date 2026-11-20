@@ -1,3 +1,5 @@
+import { resetManagedCloudTables } from "./reset.test-support.js";
+import { testBackupVault } from "./backup-erasure.test-support.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import {
@@ -7,7 +9,6 @@ import {
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
 import { escapeHtml } from "@opensteer/shared/browserPage";
-import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectLifecycleService } from "../account/connect-lifecycle.js";
 import { ControlPlaneAuthenticator, createControlPlaneAuth } from "../auth/auth.js";
@@ -87,6 +88,8 @@ integration("Cloud Computer website pages", () => {
     googleClientSecret: "test-secret",
   });
   const cloud = new CloudComputerStore(database, {
+    backupKeyVault: testBackupVault(),
+    purgeBackupStep: async () => true,
     config,
     accountOrigin: publicOrigin,
     cipher: new HostedTeamSetupTokenCipher(Buffer.alloc(32, 5).toString("base64url")),
@@ -127,9 +130,7 @@ integration("Cloud Computer website pages", () => {
   });
 
   beforeEach(async () => {
-    await sql`truncate table cloud_computer_egress_endpoints, cloud_computers, cloud_computer_stripe_events, cloud_computer_checkouts, cloud_computer_backup_namespaces, cloud_computer_backup_targets cascade`.execute(
-      database,
-    );
+    await resetManagedCloudTables(database);
     for (const mock of Object.values(stripe)) mock.mockClear();
     await cloud.checkOffer();
     await cloud.addBackupTarget({

@@ -131,6 +131,31 @@ describe("what kind of Home this is", () => {
     });
   });
 
+  it("takes the Home's own word for its kind, before guessing from its exposure", () => {
+    expect(kindOf({ exposure: "networked", homeKind: "cloud-computer" })).toEqual({
+      kind: "cloud",
+      from: "home",
+      organization: null,
+    });
+    expect(kindOf({ exposure: "networked", homeKind: "server" })).toMatchObject({
+      kind: "server",
+      from: "home",
+    });
+    expect(kindOf({ homeKind: "mac" })).toMatchObject({ kind: "mac", from: "home" });
+    expect(kindOf({ homeKind: "mac", hostedHere: true })).toMatchObject({
+      kind: "this-mac",
+      from: "home",
+    });
+    // A work Home is still the Account's to say.
+    expect(
+      kindOf({
+        exposure: "networked",
+        homeKind: "cloud-computer",
+        account: { computers: [], work: [{ ...workHome("Acme"), computer: cloudView() }] },
+      }),
+    ).toMatchObject({ kind: "work", from: "account", organization: "Acme" });
+  });
+
   it("is a work Home from the organization's assignment or the view's work marker", () => {
     expect(
       kindOf({
@@ -391,6 +416,25 @@ describe("the asleep moment", () => {
     expect(asleepToolFailure(failed("computer_asleep", {}), machines)?.line).toBe(
       "Couldn’t reach a Device: asleep",
     );
+    // The Home named the Device in its refusal: that name, even when the call named none.
+    const named = {
+      state: "failed",
+      arguments: {},
+      output: {
+        text: JSON.stringify({
+          error: {
+            code: "computer_asleep",
+            message: "Device is asleep.",
+            next: null,
+            device: { id: "rnr_mini", name: "Studio Mac mini" },
+          },
+        }),
+      },
+    };
+    expect(asleepToolFailure(named, machines)).toEqual({
+      device: "Studio Mac mini",
+      line: "Couldn’t reach Studio Mac mini: asleep",
+    });
     expect(asleepToolFailure(failed("computer_offline"), machines)).toBeNull();
     expect(asleepToolFailure({ ...failed("computer_asleep"), state: "done" }, machines)).toBeNull();
     expect(
@@ -423,5 +467,14 @@ describe("a server Home's page", () => {
       version: null,
       owner: null,
     });
+  });
+
+  it("says who is signed in from the Home's session role, not from the deployment kind", () => {
+    const facts = (role: "owner" | "member" | undefined, personal: boolean) =>
+      serverHomeFacts({ publicOrigin: null, homeMachine: null, personal, role }).owner;
+    expect(facts("owner", false)).toBe("Signed in as owner");
+    expect(facts("member", true)).toBeNull();
+    // An older Home says nothing: a personal Home has only an owner.
+    expect(facts(undefined, true)).toBe("Signed in as owner");
   });
 });

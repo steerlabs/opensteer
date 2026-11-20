@@ -1964,7 +1964,7 @@ integration.sequential("Trigger failure auto-pause", () => {
     const report = (
       restartCount: number,
       healthySince: Date | null,
-      observed: "backoff" | "running",
+      observed: "backoff" | "running" | "stopped",
     ) =>
       triggers.applyWatchStatus({
         activationId: activation.id,
@@ -1990,12 +1990,13 @@ integration.sequential("Trigger failure auto-pause", () => {
       pauseReason: WATCH_AUTO_PAUSE_REASON,
       status: "paused",
     });
-    const stopped = await report(6, null, "backoff");
-    expect(stopped.activation).toMatchObject({
+    const stopping = await report(6, null, "backoff");
+    expect(stopping.activation).toMatchObject({
       consecutiveFailures: 3,
       desired: "stopped",
-      observed: "stopped",
+      observed: "backoff",
     });
+    expect((await report(6, null, "stopped")).activation.observed).toBe("stopped");
   });
   it("deduplicates observations and enforces an activation-local rolling limit", async ({
     storeFixture,

@@ -13,6 +13,9 @@ import {
   DirectoryProjectionResponseSchema,
   HostAccountAdoptionProofIdSchema,
   ListAccountDeploymentsResponseSchema,
+  accountDirectoryUnderstandsParameter,
+  canonicalPersonalHomeUnderstanding,
+  isCanonicalPersonalHome,
   RevokeAccountSessionsResponseSchema,
   RemoveAccountDeploymentResponseSchema,
   ProvisionConnectRequestSchema,
@@ -113,8 +116,14 @@ export function registerControlPlaneRoutes(
       scope: "deployments:read",
     });
     void reply.header("cache-control", "no-store");
+    const understood = new URL(request.url, "http://account.invalid").searchParams.getAll(
+      accountDirectoryUnderstandsParameter,
+    );
+    const deployments = await dependencies.store.listDeployments(principal.accountId);
     return ListAccountDeploymentsResponseSchema.parse({
-      deployments: await dependencies.store.listDeployments(principal.accountId),
+      deployments: understood.includes(canonicalPersonalHomeUnderstanding)
+        ? deployments
+        : deployments.filter((deployment) => !isCanonicalPersonalHome(deployment)),
     });
   });
 

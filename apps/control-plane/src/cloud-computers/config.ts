@@ -81,6 +81,15 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
     env[`${prefix}RELEASE_MANIFEST_URL_FILE`] !== undefined
       ? { releaseManifestUrl: read("RELEASE_MANIFEST_URL", CloudComputerReleaseManifestUrlSchema) }
       : {}),
+    ...(env[`${prefix}BACKUP_KEY_PROJECT`] !== undefined ||
+    env[`${prefix}BACKUP_KEY_PROJECT_FILE`] !== undefined
+      ? {
+          backupKeyProject: read(
+            "BACKUP_KEY_PROJECT",
+            z.string().regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/u),
+          ),
+        }
+      : {}),
     stripeKey: read(
       "STRIPE_SECRET_KEY",
       z.string().regex(/^(?:sk|rk)_(?:test|live)_[A-Za-z0-9]{8,}$/u),

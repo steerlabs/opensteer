@@ -35,7 +35,8 @@ export const cloudComputersMigration: Migration = {
         bootstrap_digest text,
         sealed_bootstrap_token text,
         bootstrap_expires_at timestamptz,
-        sealed_backup_password text,
+        backup_key_project text,
+        backup_key_version integer,
         bootstrap_receipt jsonb,
         bootstrap_receipt_at timestamptz,
         readiness_started_at timestamptz not null,
@@ -97,7 +98,6 @@ export const cloudComputersMigration: Migration = {
         new.sealed_bootstrap_token := null;
         new.bootstrap_digest := null;
         new.bootstrap_expires_at := null;
-        new.sealed_backup_password := null;
         new.deleted_at := now();
         return new;
       end
@@ -144,7 +144,6 @@ export const cloudComputerClaimMigration: Migration = {
         new.sealed_bootstrap_token := null;
         new.bootstrap_digest := null;
         new.bootstrap_expires_at := null;
-        new.sealed_backup_password := null;
         new.sealed_oidc_client_secret := null;
         new.sealed_host_credential := null;
         new.deleted_at := now();

@@ -23,7 +23,11 @@ import {
   transcriptPreview,
 } from "./transcript-store.js";
 import { completeRunReplacement, recoverLostRunTransaction } from "./run-recovery.js";
-import { contentSaysSomething, isPlaceContentPart } from "@opensteer/core";
+import {
+  contentSaysSomething,
+  isPlaceContentPart,
+  runTerminationUnprovenCode,
+} from "@opensteer/core";
 import { storableJson } from "./storable-json.js";
 export { storableText } from "./storable-json.js";
 import { isConstraintViolation } from "./connection.js";
@@ -909,12 +913,15 @@ export async function commitRunnerEvent(
     throw new Error("Only tool.started reports can have an integration subject");
   const integration = input.integration && IntegrationCallSubjectSchema.parse(input.integration);
   const terminalReceipt =
-    event.type === "run.completed" || event.type === "run.failed" ||
+    event.type === "run.completed" ||
+    (event.type === "run.failed" && event.data.code !== runTerminationUnprovenCode) ||
     event.type === "run.interrupted";
   let connectionId: string | null = null;
   const recordTerminalEvidence = async () => {
     if (!terminalReceipt || !connectionId) return;
-    await database.updateTable("runAttempts").set({ terminalEvidenceAt: new Date() })
+    await database
+      .updateTable("runAttempts")
+      .set({ terminalEvidenceAt: new Date() })
       .where("runId", "=", event.runId)
       .where("bindingGeneration", "=", event.bindingGeneration)
       .where("runnerId", "=", input.runnerId)
@@ -1113,7 +1120,9 @@ export async function commitRunnerEvent(
         },
         {
           now: executionNow(),
-          onRunLoaded: (run) => { connectionId = run.connectionId; },
+          onRunLoaded: (run) => {
+            connectionId = run.connectionId;
+          },
           allowExpiredLease: event.type === "run.interrupted" && event.data.cause === "lease-lost",
         },
       ),

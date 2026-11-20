@@ -101,6 +101,20 @@ export async function startPersonalQueuedRunFixture(store: OpensteerStore, runId
     runnerId: environment.runnerId,
     threadId: thread.id,
   });
+  if (queued.connectionId) {
+    const authority = await store.admitExecution({
+      ownerUserId: queued.requestedBy,
+      subject: { kind: "binding", bindingId: `run:${runId}` },
+    });
+    if (!authority.agentConnection) throw new Error("Fixture Run has no connection authority");
+    await store.recordConnectionRunHandoff({
+      runId,
+      bindingGeneration: binding.bindingGeneration,
+      connectionId: queued.connectionId,
+      grantRevision: authority.agentConnection.grantRevision,
+      mode: authority.mode,
+    });
+  }
   await store.commitRunnerEvent({
     environmentId: thread.environmentId,
     runnerId: environment.runnerId,

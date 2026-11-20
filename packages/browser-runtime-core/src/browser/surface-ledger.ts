@@ -1160,6 +1160,12 @@ export class SurfaceLedger {
     return this.pageIds.has(page);
   }
 
+  async retireUnadoptedTarget(targetId: string): Promise<void> {
+    this.adoptedTargetIds.delete(targetId);
+    const page = await this.pages.findTarget(targetId, this.session, pageAppearanceTimeoutMs);
+    if (page) this.pages.destroy(page, "open-failed");
+  }
+
   /** The full address of the document a page has committed, before any display bound. */
   committedUrl(surfaceId: BrowserSurfaceId): string | null {
     return (

@@ -114,11 +114,11 @@ export const organizationCopy = {
   "org.offboard.step.off":
     "The computer is powered off, so every agent, Device and session on it stops working.",
   "org.offboard.step.delete":
-    "It is deleted after the time you choose, or now. Its signed-in sites, browser profiles, files and backups are destroyed with it and never pass to the next person.",
+    "After the time you choose, Opensteer destroys the computer and disk and makes its backups unreadable. Opensteer then removes the stored backup data. The next person gets a different work Home.",
   "org.offboard.step.recall": "What an agent already did or copied elsewhere can’t be recalled.",
   "org.offboard.step.audit":
     "The audit record stays with your organization. Opensteer asks the Home to send its last records first.",
-  "org.offboard.retention": "Delete it",
+  "org.offboard.retention": "Keep the powered-off Home for",
   "org.offboard.confirm": "Offboard",
   "org.offboard.progress": "Offboarding",
   "org.offboard.cut": "Sign-in cut",
@@ -126,7 +126,19 @@ export const organizationCopy = {
   "org.offboard.off": "Powered off",
   "org.offboard.offPending": "Powering off",
   "org.offboard.deleted": "Deleted",
-  "org.offboard.deletesAt": "Deletes after {at}",
+  "org.offboard.deletesAt": "Retention after power-off ends {at}",
+  "org.offboard.retainPending": "Retention starts when power-off is confirmed",
+  "org.offboard.deletionRequested": "Deletion requested",
+  "org.offboard.deletionInProgress": "Deletion in progress",
+  "org.audit.finalUnconfirmed": "Final records not confirmed",
+  "org.billing.payInvoice": "Complete payment",
+  "org.billing.abandonSeats": "Abandon seat change",
+  "org.billing.close": "Close organization",
+  "org.billing.closeDetail":
+    "Offboard every work Home before closing the organization and ending billing.",
+  "org.billing.closing": "Waiting for billing to end",
+  "org.billing.closed": "Organization closed",
+  "org.billing.restore": "Pay for this organization again",
   "org.offboard.deletesNow": "Deleting now",
   "org.offboard.ended": "Ended",
 

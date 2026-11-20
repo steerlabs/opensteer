@@ -309,14 +309,11 @@ export interface ConnectionCommandEffects {
   ) => Promise<void>;
 }
 export function connectionCommandEffects(options: {
-  readonly store: Pick<
-    import("@opensteer/database").OpensteerStore,
-    "driveConnectionCleanups"
-  >;
+  readonly store: Pick<import("@opensteer/database").OpensteerStore, "driveConnectionCleanups">;
   readonly closeLineage: (connectionId: string, revision?: number) => Promise<void>;
-  readonly stopper?: NonNullable<Parameters<
-    import("@opensteer/database").OpensteerStore["driveConnectionCleanups"]
-  >[0]>["stopper"];
+  readonly stopper?: NonNullable<
+    Parameters<import("@opensteer/database").OpensteerStore["driveConnectionCleanups"]>[0]
+  >["stopper"];
   readonly onFailure: (error: unknown, connectionId?: string) => void;
   /** After a lineage was stopped: abort this process's work for sessions that ended. */
   readonly afterStop?: (connectionId: string, reason: "disconnect" | "narrowed") => Promise<void>;

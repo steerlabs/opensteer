@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   ThreadAccessModeSchema,
   type AgentSessionId,
+  type BrowserSessionId,
   type CommandId,
   type EnvironmentId,
   type MessageId,
@@ -51,10 +52,15 @@ export type LineageAttempt =
   | ConnectionAttempt<"steer", CommandId>
   | ConnectionAttempt<"trigger", TriggerId>
   | ConnectionAttempt<"session", AgentSessionId>
-  | ConnectionAttempt<"plugin" | "operation" | "standard-cdp">;
+  | ConnectionAttempt<"operation">
+  | ConnectionAttempt<"plugin" | "standard-cdp">;
 
 export interface ConnectionAttemptStopper {
   stop(attempt: LineageAttempt, cleanup: ConnectionCleanup): Promise<void>;
+  stopDirectOperation?(
+    attempt: ConnectionAttempt<"operation">,
+    cleanup: ConnectionCleanup,
+  ): Promise<void>;
 }
 
 /** The same set drives the worker, the connection's state and Remove. */
@@ -74,9 +80,7 @@ export async function connectionAttempts(
       from agent_connections where id = ${connectionId}
     ),
     lineage_runs as (
-      select r.*, t.origin_connection_id as task_connection_id
-      from runs r join threads t on t.id = r.thread_id
-      join floor f on f.id = coalesce(r.connection_id, t.origin_connection_id)
+      select r.* from runs r join floor f on f.id = r.connection_id
     ),
     lineage_occurrences as (
       select o.*, t.anchor_thread_id
@@ -135,8 +139,8 @@ export async function connectionAttempts(
           or w.anchor_thread_id not in (select id from eligible_threads))
       union all
       select 'input', i.message_id, null, i.thread_id, null, null, null, false, null, null, null
-      from thread_inputs i join threads t on t.id = i.thread_id
-      join floor f on f.id = coalesce(i.connection_id, t.origin_connection_id)
+      from thread_inputs i
+      join floor f on f.id = i.connection_id
       where i.state in ('pending','awaiting-approval') and i.run_id is null
         and not exists (select 1 from runs r where r.seed_input_id = i.message_id and r.status = 'queued')
         and (f.disconnected or i.thread_id not in (select id from eligible_threads))
@@ -144,7 +148,10 @@ export async function connectionAttempts(
       select 'steer', c.id, r.binding_generation, r.thread_id, r.environment_id,
         null, null, c.status <> 'pending', null, null, null
       from commands c join lineage_runs r on r.id = c.run_id cross join floor f
-      where c.type = 'run.steer' and c.status = 'pending'
+      where c.type = 'run.steer'
+        and (c.status = 'pending' or (c.status in ('dispatched','unknown')
+          and exists (select 1 from held_attempts a where a.run_id = r.id
+            and a.terminal_evidence_at is null)))
         and ${belowFloor("r.admitted_grant_revision", "r.admitted_access_mode")}
       union all
       select 'request', q.id, null, q.originating_thread_id, null, null, null, false, null, null, null
@@ -184,13 +191,21 @@ export async function connectionAttempts(
             coalesce(r.admitted_grant_revision, o.admitted_grant_revision, w.admitted_grant_revision)
               < f.cleanup_minimum_grant_revision))
       union all
+      select 'standard-cdp', c.id, null, (c.witness->>'threadId'), null, b.runner_id,
+        null, true, (c.witness->>'terminalEvidenceAt')::timestamptz,
+        (c.witness->>'contactLostAt')::timestamptz, null
+      from browser_sessions b
+      cross join lateral jsonb_each(b.standard_cdp_attempts) c(id, witness)
+      join floor f on f.id = c.witness->>'connectionId'
+      where b.standard_cdp_attempts <> '{}'
+        and (f.disconnected or (c.witness->>'grantRevision')::integer < f.cleanup_minimum_grant_revision)
+      union all
       select 'session', s.id, null, s.thread_id, null, null, null, false, null, null, null
       from agent_sessions s join floor f on f.id = s.connection_id
       where s.status = 'active' and f.disconnected
       union all
       select 'operation', o.id, null, s.thread_id, null, null, null,
-        o.handed_off_at is not null, null,
-        case when o.outcome = 'unknown' then o.completed_at end, null
+        o.handed_off_at is not null, null, null, null
       from agent_operations o join floor f on f.id = o.connection_id
       join agent_sessions s on s.id = o.session_id
       where (o.outcome is null or (o.outcome = 'unknown' and o.handed_off_at is not null))
@@ -239,45 +254,70 @@ export async function requestExpiredCleanups(
     });
 }
 
-export async function openCleanups(database: Kysely<DatabaseSchema>): Promise<ConnectionCleanup[]> {
+export async function openCleanups(database: Kysely<DatabaseSchema>): Promise<string[]> {
   const rows = await database
     .selectFrom("agentConnections")
-    .select(["userId", "id as connectionId", "cleanupReason as reason", "cleanupMinimumGrantRevision"])
-    .select(sql<boolean>`cleanup_completed_at is null`.as("pending"))
+    .select("id")
     .where("cleanupRequestedAt", "is not", null)
-    .where("cleanupReason", "is not", null)
-    .$narrowType<{ reason: NonNullable<ConnectionCleanup["reason"]> }>()
+    .where("removedAt", "is", null)
     .orderBy("cleanupRequestedAt")
     .orderBy("id")
     .execute();
-  return rows.map(({ cleanupMinimumGrantRevision, ...row }) => ({
-    ...row, minimumGrantRevision: cleanupMinimumGrantRevision ?? undefined,
-  }));
+  return rows.map(({ id }) => id);
+}
+
+interface ConnectionCleanupClaim extends ConnectionCleanup {
+  readonly token: string;
+  readonly grantRevision: number;
 }
 
 const cleanupClaimDurationMs = 30_000;
 
 export async function claimConnectionCleanup(
-  database: Kysely<DatabaseSchema>, connectionId: string,
-): Promise<string | null> {
+  database: Kysely<DatabaseSchema>,
+  connectionId: string,
+): Promise<ConnectionCleanupClaim | null> {
   const token = randomUUID();
   const now = new Date();
-  const result = await database.updateTable("agentConnections")
-    .set({ cleanupClaimToken: token, cleanupClaimExpiresAt: new Date(now.getTime() + cleanupClaimDurationMs) })
+  const result = await database
+    .updateTable("agentConnections")
+    .set({
+      cleanupClaimToken: token,
+      cleanupClaimExpiresAt: new Date(now.getTime() + cleanupClaimDurationMs),
+    })
     .where("id", "=", connectionId)
     .where("removedAt", "is", null)
-    .where((eb) => eb.or([
-      eb("cleanupClaimExpiresAt", "is", null),
-      eb("cleanupClaimExpiresAt", "<=", now),
-    ]))
+    .where((eb) =>
+      eb.or([eb("cleanupClaimExpiresAt", "is", null), eb("cleanupClaimExpiresAt", "<=", now)]),
+    )
+    .returning([
+      "userId",
+      "grantRevision",
+      "cleanupReason",
+      "cleanupMinimumGrantRevision",
+      "cleanupCompletedAt",
+    ])
     .executeTakeFirst();
-  return result.numUpdatedRows === 1n ? token : null;
+  return result?.cleanupReason
+    ? {
+        token,
+        connectionId,
+        userId: result.userId,
+        reason: result.cleanupReason,
+        minimumGrantRevision: result.cleanupMinimumGrantRevision ?? undefined,
+        pending: result.cleanupCompletedAt === null,
+        grantRevision: result.grantRevision,
+      }
+    : null;
 }
 
 export async function renewConnectionCleanupClaim(
-  database: Kysely<DatabaseSchema>, connectionId: string, token: string,
+  database: Kysely<DatabaseSchema>,
+  connectionId: string,
+  token: string,
 ): Promise<boolean> {
-  const result = await database.updateTable("agentConnections")
+  const result = await database
+    .updateTable("agentConnections")
     .set({ cleanupClaimExpiresAt: new Date(Date.now() + cleanupClaimDurationMs) })
     .where("id", "=", connectionId)
     .where("cleanupClaimToken", "=", token)
@@ -286,9 +326,12 @@ export async function renewConnectionCleanupClaim(
 }
 
 export async function releaseConnectionCleanupClaim(
-  database: Kysely<DatabaseSchema>, connectionId: string, token: string,
+  database: Kysely<DatabaseSchema>,
+  connectionId: string,
+  token: string,
 ): Promise<void> {
-  await database.updateTable("agentConnections")
+  await database
+    .updateTable("agentConnections")
     .set({ cleanupClaimToken: null, cleanupClaimExpiresAt: null })
     .where("id", "=", connectionId)
     .where("cleanupClaimToken", "=", token)
@@ -297,34 +340,52 @@ export async function releaseConnectionCleanupClaim(
 
 export async function completeCleanupIfSettled(
   database: Kysely<DatabaseSchema>,
-  connectionId: string,
-  token: string,
+  claim: ConnectionCleanupClaim,
 ): Promise<boolean> {
+  const { connectionId, token } = claim;
   return commitPersonalMutation(database, async (tx) => {
     const connection = await tx
       .selectFrom("agentConnections")
-      .select(["cleanupRequestedAt", "cleanupCompletedAt", "lastActionUncertainAt", "acknowledgedUncertaintyAt"])
+      .select([
+        "cleanupRequestedAt",
+        "cleanupCompletedAt",
+        "lastActionUncertainAt",
+        "acknowledgedUncertaintyAt",
+      ])
       .where("id", "=", connectionId)
       .where("cleanupClaimToken", "=", token)
+      .where("cleanupReason", "=", claim.reason)
+      .where("grantRevision", "=", claim.grantRevision)
       .forNoKeyUpdate()
       .executeTakeFirst();
     if (!connection?.cleanupRequestedAt) return false;
     const attempts = await connectionAttempts(tx, connectionId);
-    const latest = attempts.reduce<LineageAttempt | undefined>((previous, attempt) =>
-      attempt.contactLostAt && (!previous || attempt.contactLostAt > previous.contactLostAt!)
-        ? attempt : previous, undefined);
-    if (latest?.contactLostAt &&
-      (!connection.acknowledgedUncertaintyAt || latest.contactLostAt > connection.acknowledgedUncertaintyAt) &&
-      (!connection.lastActionUncertainAt || latest.contactLostAt > connection.lastActionUncertainAt)) {
-      await tx.updateTable("agentConnections").set({
-        lastActionUncertainAt: latest.contactLostAt,
-        lastActionUncertain: {
-          attemptId: latest.id,
-          generation: latest.generation,
-          taskId: latest.threadId,
-          reason: "The computer disconnected before confirming that this attempt ended.",
-        },
-      }).where("id", "=", connectionId).execute();
+    const latest = attempts.reduce<LineageAttempt | undefined>(
+      (previous, attempt) =>
+        attempt.contactLostAt && (!previous || attempt.contactLostAt > previous.contactLostAt!)
+          ? attempt
+          : previous,
+      undefined,
+    );
+    if (
+      latest?.contactLostAt &&
+      (!connection.acknowledgedUncertaintyAt ||
+        latest.contactLostAt > connection.acknowledgedUncertaintyAt) &&
+      (!connection.lastActionUncertainAt || latest.contactLostAt > connection.lastActionUncertainAt)
+    ) {
+      await tx
+        .updateTable("agentConnections")
+        .set({
+          lastActionUncertainAt: latest.contactLostAt,
+          lastActionUncertain: {
+            attemptId: latest.id,
+            generation: latest.generation,
+            taskId: latest.threadId,
+            reason: "Contact was lost before this attempt confirmed it ended.",
+          },
+        })
+        .where("id", "=", connectionId)
+        .execute();
     }
     const outstanding = outstandingAttempts(attempts);
     if (outstanding.length) {
@@ -373,17 +434,26 @@ export async function recordConnectionRunHandoff(
   },
 ): Promise<void> {
   await commitPersonalMutation(database, async (tx) => {
-    const connection = await tx.selectFrom("agentConnections")
+    const connection = await tx
+      .selectFrom("agentConnections")
       .select(["grantRevision", "revokedAt", "expiresAt"])
-      .where("id", "=", input.connectionId).forShare().executeTakeFirst();
-    if (!connection || connection.revokedAt || connection.expiresAt <= new Date() ||
-      connection.grantRevision !== input.grantRevision)
+      .where("id", "=", input.connectionId)
+      .forShare()
+      .executeTakeFirst();
+    if (
+      !connection ||
+      connection.revokedAt ||
+      connection.expiresAt <= new Date() ||
+      connection.grantRevision !== input.grantRevision
+    )
       throw new Error("The agent connection changed before this Run could be sent");
     const witness = {
       admittedGrantRevision: input.grantRevision,
       admittedAccessMode: input.mode,
     };
-    const updated = await tx.updateTable("runs").set(witness)
+    const updated = await tx
+      .updateTable("runs")
+      .set(witness)
       .where("id", "=", input.runId)
       .where("connectionId", "=", input.connectionId)
       .where("bindingGeneration", "=", input.bindingGeneration)
@@ -391,7 +461,8 @@ export async function recordConnectionRunHandoff(
       .executeTakeFirst();
     if (updated.numUpdatedRows !== 1n)
       throw new Error("The Run binding changed before it could be sent");
-    const attempt = await tx.updateTable("runAttempts")
+    const attempt = await tx
+      .updateTable("runAttempts")
       .set({ ...witness, connectionId: input.connectionId })
       .where("runId", "=", input.runId)
       .where("bindingGeneration", "=", input.bindingGeneration)
@@ -401,6 +472,24 @@ export async function recordConnectionRunHandoff(
   });
 }
 
+export async function recordRunNotAdmitted(
+  database: Kysely<DatabaseSchema>,
+  runId: RunId,
+  bindingGeneration: number,
+): Promise<void> {
+  await database
+    .updateTable("runAttempts")
+    .set({
+      terminalEvidenceAt: new Date(),
+      contactLostAt: null,
+    })
+    .where("runId", "=", runId)
+    .where("bindingGeneration", "=", bindingGeneration)
+    .where("connectionId", "is not", null)
+    .where("terminalEvidenceAt", "is", null)
+    .execute();
+}
+
 export async function markConnectionAttemptsContactLost(
   database: Kysely<DatabaseSchema>,
   input: { readonly runnerId: RunnerId; readonly runnerBootId: string },
@@ -408,7 +497,8 @@ export async function markConnectionAttemptsContactLost(
   await commitPersonalMutation(database, async (tx) => {
     const now = new Date();
     for (const table of ["triggerOccurrences", "triggerWatchActivations", "runAttempts"] as const) {
-      await tx.updateTable(table)
+      await tx
+        .updateTable(table)
         .set({ contactLostAt: now })
         .where("connectionId", "is not", null)
         .where("runnerId", "=", input.runnerId)
@@ -418,4 +508,81 @@ export async function markConnectionAttemptsContactLost(
         .execute();
     }
   });
+}
+
+export function connectionCdpAttempts(database: Kysely<DatabaseSchema>) {
+  type Witness = {
+    readonly connectionId: string;
+    readonly grantRevision: number;
+    readonly mode: ThreadAccessMode;
+    readonly threadId: ThreadId | null;
+  };
+  return {
+    async open(sessionId: BrowserSessionId, id: string, witness: Witness): Promise<void> {
+      await commitPersonalMutation(database, async (tx) => {
+        const connection = await tx
+          .selectFrom("agentConnections")
+          .select(["grantRevision", "revokedAt", "expiresAt"])
+          .where("id", "=", witness.connectionId)
+          .forShare()
+          .executeTakeFirst();
+        if (
+          !connection ||
+          connection.revokedAt ||
+          connection.expiresAt <= new Date() ||
+          connection.grantRevision !== witness.grantRevision
+        )
+          throw new Error("This browser authority has ended");
+        const changed = await tx
+          .updateTable("browserSessions")
+          .set({
+            standardCdpAttempts: sql`standard_cdp_attempts ||
+            jsonb_build_object(${id}::text, ${JSON.stringify(witness)}::jsonb)`,
+          })
+          .where("id", "=", sessionId)
+          .where("state", "=", "ready")
+          .executeTakeFirst();
+        if (changed.numUpdatedRows !== 1n) throw new Error("The Browser Session ended");
+      });
+    },
+    async settled(sessionId: BrowserSessionId, id: string): Promise<void> {
+      await database
+        .updateTable("browserSessions")
+        .set({
+          standardCdpAttempts: sql`case when standard_cdp_attempts -> ${id}::text ? 'contactLostAt'
+          then jsonb_set(standard_cdp_attempts, array[${id}, 'terminalEvidenceAt'], to_jsonb(now()))
+          else standard_cdp_attempts - ${id}::text end`,
+        })
+        .where("id", "=", sessionId)
+        .where(
+          sql<boolean>`standard_cdp_attempts ? ${id} and
+          not (standard_cdp_attempts -> ${id}::text ? 'terminalEvidenceAt')`,
+        )
+        .execute();
+    },
+    async lost(sessionId: BrowserSessionId, id: string): Promise<void> {
+      await database
+        .updateTable("browserSessions")
+        .set({
+          standardCdpAttempts: sql`jsonb_set(standard_cdp_attempts, array[${id}, 'contactLostAt'], to_jsonb(now()))`,
+        })
+        .where("id", "=", sessionId)
+        .where(
+          sql<boolean>`standard_cdp_attempts ? ${id} and
+          not (standard_cdp_attempts -> ${id}::text ?| array['terminalEvidenceAt', 'contactLostAt'])`,
+        )
+        .execute();
+    },
+  };
+}
+
+export async function recoverConnectionCdpAttempts(
+  database: Kysely<DatabaseSchema>,
+): Promise<void> {
+  await sql`update browser_sessions b
+    set standard_cdp_attempts = (
+      select jsonb_object_agg(id, case when witness ?| array['terminalEvidenceAt', 'contactLostAt']
+        then witness else witness || jsonb_build_object('contactLostAt', now()) end)
+      from jsonb_each(b.standard_cdp_attempts) a(id, witness)
+    ) where b.standard_cdp_attempts <> '{}'`.execute(database);
 }

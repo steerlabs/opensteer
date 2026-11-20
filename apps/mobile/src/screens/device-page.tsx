@@ -30,6 +30,7 @@ import { Alert, Linking, Platform } from "react-native";
 import {
   selectHomeDeploymentId,
   selectHomeExposure,
+  selectHomeKind,
   usePhoneHome,
 } from "../computers/home-kind.js";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
@@ -93,6 +94,7 @@ function DevicePage(props: {
   const workHomes = useWorkHomes();
   const home = usePhoneHome({
     exposure: useHostSelector(props.hostClient, selectHomeExposure),
+    homeKind: useHostSelector(props.hostClient, selectHomeKind),
     deploymentId: useHostSelector(props.hostClient, selectHomeDeploymentId),
   });
   const homeKind = home.kind.kind;
@@ -572,6 +574,7 @@ function DevicePage(props: {
         publicOrigin: props.hostClient.getSnapshot().identityConfig?.publicOrigin ?? null,
         homeMachine: machine,
         personal: props.hostClient.getSnapshot().deploymentShape?.kind === "personal",
+        role: props.hostClient.getSnapshot().role,
       });
       const rows: NativeSettingsRow[] = [
         ...(facts.address

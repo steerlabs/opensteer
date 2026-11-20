@@ -84,16 +84,27 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
             {props.title}
           </Text>
           <HStack alignment="firstTextBaseline" spacing={6}>
-            {props.mark !== null && props.verified ? (
+            {props.who.verified ? (
               <Image color={color.green} size={13} systemName="checkmark.seal.fill" />
             ) : null}
-            <Text modifiers={[font({ textStyle: "subheadline" }), foregroundStyle(color.textSoft)]}>
-              {props.destination}
+            <Text modifiers={[font({ textStyle: "subheadline" }), foregroundStyle(color.text)]}>
+              {props.who.heading}
             </Text>
           </HStack>
-          <Text modifiers={[secondary, font({ textStyle: "footnote" })]}>
-            {agentAuthorizationUnverified}
+          <Text modifiers={[font({ textStyle: "subheadline" }), foregroundStyle(color.textSoft)]}>
+            {props.who.detail}
           </Text>
+          <Text modifiers={[secondary, font({ textStyle: "footnote" })]}>{props.destination}</Text>
+          {props.who.warning === null ? null : (
+            <Text modifiers={[font({ textStyle: "footnote", weight: "semibold" })]}>
+              {props.who.warning}
+            </Text>
+          )}
+          {props.who.verified ? null : (
+            <Text modifiers={[secondary, font({ textStyle: "footnote" })]}>
+              {agentAuthorizationUnverified}
+            </Text>
+          )}
         </VStack>
       </Section>
       {props.sections === null ? (

@@ -111,10 +111,13 @@ export function decodeStripeEvent(raw: Buffer): StripeEvent {
           ? { ...base, operation: "expired", checkout: result.data }
           : { ...base, operation: "ignore" };
       }
+      case "customer.subscription.pending_update_applied":
+      case "customer.subscription.pending_update_expired":
       case "customer.subscription.updated":
       case "customer.subscription.deleted":
         return { ...base, operation: "billing", subscriptionId: objectId.parse(data.object).id };
       case "invoice.paid":
+      case "invoice.finalization_failed":
       case "invoice.payment_failed": {
         const invoice = invoiceSubscription.parse(data.object);
         const subscription =
@@ -202,6 +205,14 @@ const price = z.object({
     .nullable(),
 });
 const stripeTimestamp = z.number().int().positive().max(253_402_300_799);
+const billingInvoice = z.object({
+  id: stripeToken("in").optional(),
+  status: z.enum(["draft", "open", "paid", "uncollectible", "void"]),
+  attempt_count: z.number().int().nonnegative(),
+  billing_reason: z.string().nullish(),
+  last_finalization_error: z.object({}).nullish(),
+  hosted_invoice_url: z.url({ protocol: /^https$/u }).nullish(),
+});
 const stripeSubscription = z.object({
   cancel_at: stripeTimestamp.nullish(),
   cancel_at_period_end: z.boolean().optional(),
@@ -219,12 +230,7 @@ const stripeSubscription = z.object({
     "trialing",
     "unpaid",
   ]),
-  latest_invoice: z
-    .object({
-      status: z.enum(["draft", "open", "paid", "uncollectible", "void"]),
-      attempt_count: z.number().int().nonnegative(),
-    })
-    .nullable(),
+  latest_invoice: billingInvoice.nullable(),
   metadata: z.record(z.string(), z.string()),
   items: z.object({
     has_more: z.boolean(),
@@ -265,10 +271,7 @@ export class CloudComputerStripe {
   checkout(input: CheckoutInput) {
     const returnUrl = input.returnUrl ?? this.#options.returnUrl;
     const success = new URL(returnUrl);
-    success.searchParams.set(
-      input.organization ? "organization" : "cloud-computer",
-      "checkout-completed",
-    );
+    success.searchParams.set("checkout", input.requestId);
     return this.#request(
       "checkout/sessions",
       createdSession,
@@ -400,7 +403,7 @@ export class CloudComputerStripe {
     }
   }
 
-  async validatePortal(id: string): Promise<void> {
+  async validatePortal(id: string, kind: "personal" | "organization" = "personal"): Promise<void> {
     const enabled = z.object({ enabled: z.boolean() });
     const config = await this.#request(
       `billing_portal/configurations/${stripeToken("bpc").parse(id)}`,
@@ -422,14 +425,16 @@ export class CloudComputerStripe {
       !config.active ||
       config.is_default ||
       !config.features.payment_method_update.enabled ||
-      !config.features.subscription_cancel.enabled ||
+      config.features.subscription_cancel.enabled !== (kind === "personal") ||
       config.features.customer_update.enabled ||
-      config.features.invoice_history.enabled ||
+      config.features.invoice_history.enabled !== (kind === "organization") ||
       config.features.subscription_update.enabled
     ) {
       throw new ControlPlaneError(
         "unavailable",
-        "Cloud Computer billing portal allows unsupported changes",
+        kind === "organization"
+          ? "Organization billing portal allows unsupported changes"
+          : "Cloud Computer billing portal allows unsupported changes",
         {
           reason: "cloud-computer-billing-problem",
         },
@@ -512,28 +517,47 @@ export class CloudComputerStripe {
 
   async updateSeatQuantity(input: {
     item: string;
+    subscription: string;
     organization: OrganizationId;
     requestId: string;
     quantity: number;
     increase: boolean;
-  }) {
-    const item = stripeToken("si").parse(input.item);
-    const changed = await this.#request(
-      `subscription_items/${item}`,
-      z.object({ id: stripeToken("si") }),
+  }): Promise<StripeSubscription> {
+    const subscription = subscriptionId.parse(input.subscription);
+    const result = await this.#request(
+      `subscriptions/${subscription}`,
+      stripeSubscription,
       {
-        quantity: String(input.quantity),
+        "items[0][id]": stripeToken("si").parse(input.item),
+        "items[0][quantity]": String(input.quantity),
+        "expand[0]": "latest_invoice",
         ...(input.increase
-          ? {
-              proration_behavior: "always_invoice",
-              payment_behavior: "pending_if_incomplete",
-            }
+          ? { proration_behavior: "always_invoice", payment_behavior: "pending_if_incomplete" }
           : { proration_behavior: "none" }),
       },
       `organization-seats:${input.organization}:${input.requestId}`,
     );
-    if (changed.id !== item)
-      throw new ControlPlaneError("unavailable", "Stripe returned another subscription item");
+    if (result.id !== subscription)
+      throw new ControlPlaneError("unavailable", "Stripe returned another subscription");
+    return result;
+  }
+
+  async invoice(id: string) {
+    const result = await this.#request(`invoices/${stripeToken("in").parse(id)}`, billingInvoice);
+    if (result.id !== id)
+      throw new ControlPlaneError("unavailable", "Stripe returned another invoice");
+    return result;
+  }
+
+  async voidInvoice(id: string) {
+    await this.#request(
+      `invoices/${stripeToken("in").parse(id)}/void`,
+      z.object({
+        id: z.literal(id),
+        status: z.literal("void"),
+      }),
+      {},
+    );
   }
 
   async cancel(id: string): Promise<void> {

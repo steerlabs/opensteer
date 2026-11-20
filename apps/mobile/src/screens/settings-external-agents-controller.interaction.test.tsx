@@ -88,6 +88,9 @@ describe("Connected agents on the phone", () => {
       ["Grok", "Shopping profile · Supervised"],
       ["Claude", "Everything · Full access"],
       ["Trip planner", "Tasks · Auto"],
+      ["Errand", "Nothing chosen · Supervised"],
+      ["Claude Code", "Tasks · Auto"],
+      ["ChatGPT", "Nothing chosen · Supervised"],
     ]);
     expect(lines("disconnected")).toEqual([
       ["Shop helper", "Check its last action"],
@@ -111,7 +114,7 @@ describe("Connected agents on the phone", () => {
         connections: mockConnectedAgents("seeded").connections,
       }),
     );
-    await vi.waitFor(() => expect(section("connected")?.rows).toHaveLength(3));
+    await vi.waitFor(() => expect(section("connected")?.rows).toHaveLength(6));
     // Without includeRevoked an older Home leaves a stopped connection off the list.
     expect(section("disconnected")?.rows.map((row) => row.label)).toEqual(["Shop helper"]);
   });

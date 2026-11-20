@@ -1,3 +1,4 @@
+import { requireNoBrowserStandardCdpLease } from "./browser-standard-cdp-lease.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { itemView } from "./personal-sync-store.js";
@@ -409,7 +410,10 @@ export async function createBrowserSession(
   const profileId = input.profileId;
   return commitPersonalMutation(database, async (transaction, mutation) => {
     await assertPersonalOwner(transaction, input.ownerId);
-    if (profileId !== null) await lockBrowserProfile(transaction, profileId);
+    if (profileId !== null) {
+      await lockBrowserProfile(transaction, profileId);
+      await requireNoBrowserStandardCdpLease(transaction, profileId);
+    }
     const runner = await transaction
       .selectFrom("runners")
       .select(["revokedAt", "ownerKind", "ownerUserId", "kind"])
@@ -707,6 +711,12 @@ export async function attachBrowserSession(
   },
 ): Promise<boolean> {
   return commitPersonalMutation(database, async (transaction, mutation) => {
+    const session = await getBrowserSessionForOwner(transaction, input.sessionId, input.ownerId);
+    if (!session) return false;
+    if (session?.profileId) {
+      await lockBrowserProfile(transaction, session.profileId);
+      await requireNoBrowserStandardCdpLease(transaction, session.profileId, input.agentBindingId);
+    }
     if (input.agentBindingId.startsWith("run:")) {
       const runId = bindingRunId(input.agentBindingId);
       const run = runId

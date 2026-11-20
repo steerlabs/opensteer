@@ -131,6 +131,7 @@ describe("one connected agent on the phone", () => {
     expect(status()).toMatchObject({ tone: "neutral", label: "Not doing anything" });
     expect(section("status")?.footer?.text).toBe("Not used yet.");
     expect(state.page?.sections.map(({ key }) => key)).toEqual([
+      "who",
       "status",
       "scope",
       "resources",

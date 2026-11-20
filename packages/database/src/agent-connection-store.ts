@@ -156,7 +156,11 @@ export class AgentConnectionStore {
     await requirePersonalOwner(this.database, userId);
     await this.database
       .updateTable("agentConnections")
-      .set({ lastActionUncertainAt: null, lastActionUncertain: null, acknowledgedUncertaintyAt: this.now() })
+      .set({
+        lastActionUncertainAt: null,
+        lastActionUncertain: null,
+        acknowledgedUncertaintyAt: this.now(),
+      })
       .where("id", "=", id)
       .where("userId", "=", userId)
       .execute();
@@ -205,13 +209,15 @@ export class AgentConnectionStore {
           accessMode,
           grant: jsonValue(grant),
           grantRevision: current.grantRevision + 1,
-          ...(narrowed ? {
-            cleanupReason: "narrowed" as const,
-            cleanupRequestedAt: this.now(),
-            cleanupMinimumGrantRevision: current.grantRevision + 1,
-            cleanupMaximumMode: accessMode,
-            cleanupCompletedAt: null,
-          } : {}),
+          ...(narrowed
+            ? {
+                cleanupReason: "narrowed" as const,
+                cleanupRequestedAt: this.now(),
+                cleanupMinimumGrantRevision: current.grantRevision + 1,
+                cleanupMaximumMode: accessMode,
+                cleanupCompletedAt: null,
+              }
+            : {}),
         })
         .where("id", "=", current.id)
         .returningAll()

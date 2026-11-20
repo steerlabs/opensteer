@@ -33,6 +33,7 @@ import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskBadge } from "./workspace/task-mark.js";
 import { sendMessageCommand, storageUnavailable } from "../host/message-outbox.js";
 import { ActionLine } from "./action-line.js";
+import { OperationRequestPanel, useOperationRequest } from "./agent-work.js";
 import { requestAnswer, useAction } from "./use-action.js";
 import { VoiceButton, VoiceDock } from "./voice.js";
 import { ThreadBrowserRequestAction } from "./thread-browser-access-action.js";
@@ -465,7 +466,7 @@ export function RequestStack({
           <div className="request-card__by">{pager}</div>
         ) : null}
         <DeviceGrantDock value={threadId}>
-          <RequestPanel
+          <DockedRequestPanel
             composer={composer}
             disabled={disabled}
             surface={open.surface}
@@ -617,6 +618,20 @@ function requestTitle(request: Request): string {
 }
 
 /* ---- The focused Request ---- */
+
+/** A connected agent's direct operation gets its own card; every other request, the panel. */
+function DockedRequestPanel(props: Parameters<typeof RequestPanel>[0]) {
+  const operation = useOperationRequest(props.surface.request);
+  return operation ? (
+    <OperationRequestPanel
+      disabled={props.disabled}
+      request={props.surface.request}
+      view={operation}
+    />
+  ) : (
+    <RequestPanel {...props} />
+  );
+}
 
 function RequestPanel({
   composer,

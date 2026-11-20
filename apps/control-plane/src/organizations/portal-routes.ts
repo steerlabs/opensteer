@@ -1,3 +1,4 @@
+import { createLocalJWKSet, jwtVerify } from "jose";
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { createPublicHttpsFetch } from "@opensteer/access/host";
@@ -21,7 +22,14 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { ControlPlaneAuth } from "../auth/auth.js";
 import type { CloudComputerStore } from "../cloud-computers/store.js";
-import { parseForm, requireExactOrigin } from "../portal/browser-http.js";
+import {
+  appendSetCookie,
+  expiredCookie,
+  parseForm,
+  readCookie,
+  requireExactOrigin,
+  serializeCookie,
+} from "../portal/browser-http.js";
 import { sendBrowserPage } from "../portal/pages.js";
 import type { PortalSession } from "../portal/portal-sessions.js";
 import { ControlPlaneError } from "../server/errors.js";
@@ -78,12 +86,11 @@ const PolicyFormSchema = z.object({
   allowEverything: z.literal("on").optional(),
   devices: WorkPolicySchema.shape.devices,
 });
-const NoticeQuerySchema = z
-  .object({
-    organization: z.literal("checkout-completed").optional(),
-    joined: z.literal("1").optional(),
-  })
-  .loose();
+const CheckoutQuerySchema = z.object({ checkout: z.uuid().optional() }).loose();
+const RequestFormSchema = z.strictObject({ requestId: z.uuid() });
+const flashCookie = "__Host-opensteer.organization-flash";
+const flashPurpose = "opensteer-organization-flash";
+
 const formRefusal: OrganizationRefusal = {
   sentence: orgWords("org.refused.form"),
   next: orgWords("org.refused.formNext"),
@@ -132,14 +139,76 @@ export function registerOrganizationPortal(
     return { organizations, session, account: accountOf(session) } as const;
   }
 
+  async function issueFlash(
+    reply: FastifyReply,
+    session: PortalSession,
+    path: string,
+    notice: string,
+  ) {
+    const now = Math.floor(Date.now() / 1000);
+    const { token } = await options.auth.api.signJWT({
+      body: {
+        payload: {
+          iss: options.publicOrigin.origin,
+          aud: portalOrigin.origin,
+          iat: now,
+          exp: now + 60,
+          use: flashPurpose,
+          account: session.accountId,
+          session: session.accountSessionId,
+          path,
+          notice,
+        },
+      },
+    });
+    appendSetCookie(reply, serializeCookie(flashCookie, token, { maxAgeSeconds: 60 }));
+  }
+
+  async function consumeFlash(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    session: PortalSession,
+    path: string,
+  ) {
+    try {
+      const token = readCookie(request, flashCookie);
+      if (!token) return null;
+      appendSetCookie(reply, expiredCookie(flashCookie));
+      const { payload } = await jwtVerify(
+        token,
+        createLocalJWKSet(await options.auth.api.getJwks()),
+        {
+          issuer: options.publicOrigin.origin,
+          audience: portalOrigin.origin,
+          algorithms: ["EdDSA"],
+        },
+      );
+      return payload?.aud === portalOrigin.origin &&
+        payload.use === flashPurpose &&
+        payload.account === session.accountId &&
+        payload.session === session.accountSessionId &&
+        payload.path === path &&
+        typeof payload.notice === "string"
+        ? payload.notice
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   app.get(organizationsPortalPath, async (request, reply) => {
     const entered = await enter(request, reply, organizationsPortalPath);
     if ("reply" in entered) return entered.reply;
-    const { organization, joined } = NoticeQuerySchema.parse(request.query ?? {});
+    const query = CheckoutQuerySchema.safeParse(request.query ?? {});
+    const paid =
+      query.success &&
+      query.data.checkout &&
+      (await entered.organizations.checkoutCompleted(entered.account, query.data.checkout));
+    const flash = await consumeFlash(request, reply, entered.session, organizationsPortalPath);
     return renderList(reply, entered.organizations, entered.account, {
-      notice: organization
+      notice: paid
         ? orgWords("org.checkout.completed")
-        : joined
+        : flash === "joined"
           ? orgWords("org.done.joined")
           : null,
       refusal: null,
@@ -204,7 +273,8 @@ export function registerOrganizationPortal(
     if ("reply" in entered) return entered.reply;
     try {
       await entered.organizations.accept(invitationId, entered.account);
-      return reply.redirect(`${organizationsPortalPath}?joined=1`, 303);
+      await issueFlash(reply, entered.session, organizationsPortalPath, "joined");
+      return reply.redirect(organizationsPortalPath, 303);
     } catch (error) {
       const refusal = refused(error);
       if (!refusal) throw error;
@@ -231,9 +301,9 @@ export function registerOrganizationPortal(
     return adminPage(request, reply, parsed.data.section);
   });
 
-  app.get("/organizations/:organizationId/billing", async (request, reply) => {
+  app.post("/organizations/:organizationId/billing", async (request, reply) => {
     const { organizationId } = OrgParamsSchema.parse(request.params);
-    const entered = await enter(request, reply, organizationPortalPath(organizationId));
+    const entered = await enter(request, reply, organizationPortalPath(organizationId), true);
     if ("reply" in entered) return entered.reply;
     try {
       const { url } = await entered.organizations.billingPortal(organizationId, entered.account);
@@ -242,6 +312,32 @@ export function registerOrganizationPortal(
       const refusal = refused(error);
       if (!refusal) throw error;
       return refusedPage(reply.code(refusal.status), refusal.refusal);
+    }
+  });
+
+  app.post("/organizations/:organizationId/billing/restore", async (request, reply) => {
+    const { organizationId } = OrgParamsSchema.parse(request.params);
+    const entered = await enter(request, reply, organizationPortalPath(organizationId), true);
+    if ("reply" in entered) return entered.reply;
+    try {
+      const { requestId } = RequestFormSchema.parse(parseForm(request.body));
+      const { url } = await entered.organizations.restoreBilling(
+        organizationId,
+        entered.account,
+        requestId,
+      );
+      return reply.redirect(url, 303);
+    } catch (error) {
+      const refusal = refused(error);
+      if (!refusal) throw error;
+      return renderAdmin(
+        reply.code(refusal.status),
+        entered,
+        organizationId,
+        "overview",
+        refusal.refusal,
+        null,
+      );
     }
   });
 
@@ -325,10 +421,28 @@ export function registerOrganizationPortal(
         );
       }
       const target = organizationPortalPath(organizationId, section);
-      return reply.redirect(notice ? `${target}?done=${encodeURIComponent(notice)}` : target, 303);
+      if (notice) await issueFlash(reply, entered.session, target, notice);
+      return reply.redirect(target, 303);
     });
   }
 
+  action("/organizations/:organizationId/close", "overview", z.strictObject({}), async (input) => {
+    await input.organizations.close(input.organizationId, input.account);
+    return null;
+  });
+  action(
+    "/organizations/:organizationId/seats/abandon",
+    "overview",
+    RequestFormSchema,
+    async (input) => {
+      await input.organizations.abandonSeatChange(
+        input.organizationId,
+        input.account,
+        input.form.requestId,
+      );
+      return null;
+    },
+  );
   action("/organizations/:organizationId/seats", "overview", SeatsFormSchema, async (input) => {
     await input.organizations.changeSeats(input.organizationId, input.account, input.form);
     return "seats";
@@ -413,11 +527,20 @@ export function registerOrganizationPortal(
     const { organizationId } = OrgParamsSchema.parse(request.params);
     const entered = await enter(request, reply, organizationPortalPath(organizationId, section));
     if ("reply" in entered) return entered.reply;
-    const done = z
-      .object({ done: z.string().max(32).optional() })
-      .loose()
-      .parse(request.query ?? {});
-    return renderAdmin(reply, entered, organizationId, section, null, doneNotice(done.done));
+    const flash = await consumeFlash(
+      request,
+      reply,
+      entered.session,
+      organizationPortalPath(organizationId, section),
+    );
+    return renderAdmin(
+      reply,
+      entered,
+      organizationId,
+      section,
+      null,
+      doneNotice(flash ?? undefined),
+    );
   }
 
   async function renderAdmin(

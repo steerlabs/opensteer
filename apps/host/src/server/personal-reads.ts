@@ -4,6 +4,7 @@ import { OpensteerError, SequenceSchema, ThreadIdSchema, type ThreadId } from "@
 import {
   decorateQueueEntries,
   findPersonalSettings,
+  personalDeploymentOwner,
   isEligibleBrowserRunner,
   readPersonalDetailSnapshot,
   readPersonalShellSnapshot,
@@ -146,7 +147,15 @@ export function createPersonalReads(
       });
       if (cut.kind !== "snapshot") return cut;
       const opened = (await findPersonalSettings(tx)) !== null;
-      return { ...cut, snapshot: withSession(cut.snapshot, session, surface, opened), opened };
+      // A personal Home has one owner: anyone else signed in here is not them.
+      const role: "owner" | "member" =
+        (await personalDeploymentOwner(tx)) === session.user.id ? "owner" : "member";
+      return {
+        ...cut,
+        snapshot: withSession(cut.snapshot, session, surface, opened, role),
+        opened,
+        role,
+      };
     });
   const detail = (
     session: Session,
@@ -296,7 +305,7 @@ export function createPersonalReads(
             throughSequence,
             snapshot:
               "opened" in cut
-                ? withSession(cut.snapshot, session, surface, cut.opened)
+                ? withSession(cut.snapshot, session, surface, cut.opened, cut.role)
                 : cut.snapshot,
           });
         break;
@@ -608,6 +617,7 @@ function withSession<Snapshot extends object>(
   session: Session,
   surface: AuthenticatedHostSession["surface"],
   opened: boolean,
+  role: "owner" | "member",
 ) {
   return {
     ...snapshot,
@@ -615,6 +625,7 @@ function withSession<Snapshot extends object>(
       sessionId: session.id,
       sessionSurface: surface,
       user: session.user,
+      role,
       can: {
         createTasks: opened,
         useVoice: opened,

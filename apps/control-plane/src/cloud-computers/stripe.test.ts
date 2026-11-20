@@ -157,7 +157,7 @@ it("sends form-encoded Checkout and Billing Portal requests and redacts Stripe f
         "metadata[request_id]": requestId,
         "subscription_data[metadata][account_id]": accountId,
         "subscription_data[metadata][request_id]": requestId,
-        success_url: "https://account.example.test/?cloud-computer=checkout-completed",
+        success_url: "https://account.example.test/?checkout=00000000-0000-4000-8000-000000000001",
         cancel_url: "https://account.example.test/",
       },
     });
@@ -208,7 +208,7 @@ it("returns a Checkout and Billing Portal to the address the call names", async 
     await stripe.portal("cus_1", pages);
     expect(fields[0]).toMatchObject({
       success_url:
-        "https://opensteer.example.test/cloud-computer?cloud-computer=checkout-completed",
+        "https://opensteer.example.test/cloud-computer?checkout=00000000-0000-4000-8000-000000000001",
       cancel_url: "https://opensteer.example.test/cloud-computer",
     });
     expect(fields[1]).toMatchObject({
@@ -267,8 +267,16 @@ it("submits organization Checkout and uses pending updates only for increases", 
   const id = OrganizationIdSchema.parse("org_00000000-0000-4000-8000-000000000001");
   const requestId = "00000000-0000-4000-8000-000000000001";
   const calls: { path: string; headers: Headers; fields: Record<string, string> }[] = [];
+  const idempotency = new Map<string, string>();
   const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
     const path = new URL(String(input)).pathname;
+    const headers = new Headers(options?.headers);
+    const stableKey = headers.get("idempotency-key")!;
+    const body = String(options?.body);
+    const previous = idempotency.get(stableKey);
+    if (previous !== undefined && previous !== body)
+      return Response.json({ error: { type: "idempotency_error" } }, { status: 400 });
+    idempotency.set(stableKey, body);
     calls.push({
       path,
       headers: new Headers(options?.headers),
@@ -276,7 +284,14 @@ it("submits organization Checkout and uses pending updates only for increases", 
     });
     return path === "/v1/checkout/sessions"
       ? Response.json({ id: "cs_seats", url: "https://checkout.example.test/seats" })
-      : Response.json({ id: "si_seats" });
+      : Response.json({
+          id: "sub_seats",
+          customer: "cus_seats",
+          status: "active",
+          latest_invoice: null,
+          metadata: {},
+          items: { has_more: false, data: [] },
+        });
   });
   try {
     const stripe = new CloudComputerStripe({
@@ -289,17 +304,22 @@ it("submits organization Checkout and uses pending updates only for increases", 
       priceId: "price_seats",
       organization: { id, quantity: 4 },
     });
-    await stripe.updateSeatQuantity({
+    const increase = {
       item: "si_seats",
+      subscription: "sub_seats",
       organization: id,
       requestId,
       quantity: 6,
       increase: true,
-    });
+    };
+    await stripe.updateSeatQuantity(increase);
+    await stripe.updateSeatQuantity(increase);
+    await expect(stripe.updateSeatQuantity({ ...increase, quantity: 3 })).rejects.toThrow(
+      "Stripe billing is temporarily unavailable",
+    );
     await stripe.updateSeatQuantity({
-      item: "si_seats",
-      organization: id,
-      requestId,
+      ...increase,
+      requestId: "00000000-0000-4000-8000-000000000002",
       quantity: 3,
       increase: false,
     });
@@ -314,14 +334,22 @@ it("submits organization Checkout and uses pending updates only for increases", 
     });
     expect(calls[0]?.headers.get("idempotency-key")).toBe(`organization:${id}:${requestId}`);
     expect(calls[1]).toMatchObject({
-      path: "/v1/subscription_items/si_seats",
+      path: "/v1/subscriptions/sub_seats",
       fields: {
-        quantity: "6",
+        "items[0][id]": "si_seats",
+        "items[0][quantity]": "6",
+        "expand[0]": "latest_invoice",
         payment_behavior: "pending_if_incomplete",
         proration_behavior: "always_invoice",
       },
     });
-    expect(calls[2]?.fields).toEqual({ quantity: "3", proration_behavior: "none" });
+    expect(calls[2]?.fields).toEqual(calls[1]?.fields);
+    expect(calls[3]?.fields).toEqual({
+      "items[0][id]": "si_seats",
+      "items[0][quantity]": "3",
+      "expand[0]": "latest_invoice",
+      proration_behavior: "none",
+    });
   } finally {
     provider.mockRestore();
   }
@@ -541,6 +569,19 @@ it("opens only the validated dedicated portal configuration with the call's retu
       configuration: "bpc_cloud",
       return_url: "https://pages.example.test/cloud-computer",
     });
+    await expect(stripe.validatePortal("bpc_cloud", "organization")).rejects.toThrow(
+      "unsupported changes",
+    );
+    features.invoice_history.enabled = true;
+    features.subscription_cancel.enabled = false;
+    await expect(stripe.validatePortal("bpc_cloud", "organization")).resolves.toBeUndefined();
+    features.subscription_update.enabled = true;
+    await expect(stripe.validatePortal("bpc_cloud", "organization")).rejects.toThrow(
+      "unsupported changes",
+    );
+    features.invoice_history.enabled = false;
+    features.subscription_cancel.enabled = true;
+    features.subscription_update.enabled = false;
     configuration.is_default = true;
     await expect(stripe.validatePortal("bpc_cloud")).rejects.toThrow("unsupported changes");
     configuration.is_default = false;

@@ -23,8 +23,17 @@ export type AgentAuthorizationFormProps =
       /** Its provider's mark when the Home proved its origin, its initial otherwise; null on an older Home. */
       readonly mark: { readonly providerId: string | null; readonly initial: string } | null;
       readonly destination: string;
-      /** The destination is a site the Home verified, not an app on this device. */
-      readonly verified: boolean;
+      /**
+       * Who is asking, in the Home's words: a verified pair or platform, or the name it gave
+       * itself ("Says it is …") with its origin or "an app on this computer". The warning is
+       * the Home's own line.
+       */
+      readonly who: {
+        readonly heading: string;
+        readonly detail: string;
+        readonly verified: boolean;
+        readonly warning: string | null;
+      };
       /**
        * What it can use and its safety mode, as Settings rows. Null on an older Home,
        * which shows the four modes alone.

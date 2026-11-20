@@ -130,13 +130,15 @@ export async function assertActiveGrant(
     readonly grantId?: GrantId | undefined;
   },
   executionNow: () => number = Date.now,
-): Promise<void> {
+): Promise<RunLineage> {
   await assertActiveExecutionBinding(database, input, executionNow);
-  // The Run's own facts, its connection among them, in the one read this check already makes.
+  // The Run's own facts, its connection and its task's origin among them, in the one read this
+  // check already makes.
   const run = await database
     .selectFrom("runs")
-    .select(["assignmentId", "connectionId"])
-    .where("id", "=", input.runId)
+    .innerJoin("threads", "threads.id", "runs.threadId")
+    .select(["runs.assignmentId", "runs.connectionId", "threads.originConnectionId"])
+    .where("runs.id", "=", input.runId)
     .executeTakeFirstOrThrow();
   const grant = await database
     .selectFrom("grants")
@@ -158,6 +160,12 @@ export async function assertActiveGrant(
     });
   if (run.connectionId)
     await liveDelegatingConnection(database, input.requestedBy, run.connectionId);
+  return { agentConnectionId: run.connectionId, taskOriginConnectionId: run.originConnectionId };
+}
+/** Whom an authenticated Run works for, from the row that authenticated it. */
+export interface RunLineage {
+  readonly agentConnectionId: string | null;
+  readonly taskOriginConnectionId: string | null;
 }
 /**
  * New work in a task: the task's environment, and the connection it would work for, if any,

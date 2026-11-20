@@ -24,6 +24,10 @@ export function loadOrganizationOffer(env: NodeJS.ProcessEnv) {
     return result.data;
   }
   return {
+    portalConfigurationId: read(
+      "STRIPE_PORTAL_CONFIGURATION_ID",
+      z.string().regex(/^bpc_[A-Za-z0-9_]{1,128}$/u),
+    ),
     priceId: read("STRIPE_PRICE_ID", z.string().regex(/^price_[A-Za-z0-9]{1,128}$/u)),
     name: "Opensteer work seat",
     currency: read("CURRENCY", z.string().regex(/^[a-z]{3}$/u)),

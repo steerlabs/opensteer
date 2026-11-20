@@ -1191,6 +1191,7 @@ class PlaywrightPageHandle implements BrowserPage {
     layout,
     pageScale,
     quality,
+    maxImageBytes,
   }: ViewportCaptureRequest): Promise<ViewportCapture> {
     // This session must never enable emulation: an unclipped capture would then resize the page too.
     const session = await (this.captureSession ??= this.context
@@ -1205,6 +1206,12 @@ class PlaywrightPageHandle implements BrowserPage {
       "Page.captureScreenshot",
       direct === format ? encoding : { format: direct },
     );
+    const decodedBytes =
+      (data.length / 4) * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+    if (maxImageBytes !== undefined && decodedBytes > maxImageBytes && !clip && direct === format)
+      throw new BrowserRuntimeError("bad_message", "Screenshot exceeds its image budget.", {
+        reason: "browser-reply-limit",
+      });
     const bitmap = readImageDimensions(Buffer.from(data, "base64"), direct);
     if (!bitmap) throw new Error("Chromium returned an unreadable screenshot.");
     const visible = {
@@ -1219,11 +1226,25 @@ class PlaywrightPageHandle implements BrowserPage {
     )
       return { data };
     const plan = viewportCapturePlan(bitmap, visible, clip);
-    return { data: await this.inCaptureWorld(session, viewportImageScript(data, plan, encoding)) };
+    const encoded = await this.inCaptureWorld(
+      session,
+      viewportImageScript(data, plan, {
+        ...encoding,
+        ...(maxImageBytes === undefined ? {} : { maxImageBytes }),
+      }),
+    );
+    if (encoded === null)
+      throw new BrowserRuntimeError("bad_message", "Screenshot exceeds its image budget.", {
+        reason: "browser-reply-limit",
+      });
+    return { data: encoded };
   }
 
   /** A world page scripts and agents never reach, lending the page's own image codecs. */
-  private async inCaptureWorld(session: PlaywrightCdpSession, expression: string): Promise<string> {
+  private async inCaptureWorld(
+    session: PlaywrightCdpSession,
+    expression: string,
+  ): Promise<string | null> {
     for (let attempt = 0; ; attempt++) {
       try {
         const { frameTree } = await session.send("Page.getFrameTree");
@@ -1240,7 +1261,7 @@ class PlaywrightPageHandle implements BrowserPage {
           returnByValue: true,
         });
         if (exceptionDetails) throw new Error("The page could not encode the screenshot.");
-        return z.string().parse(result.value);
+        return z.string().nullable().parse(result.value);
       } catch (error) {
         // A navigation takes the world with it.
         this.captureWorld = undefined;

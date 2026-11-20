@@ -9,6 +9,7 @@ import type { HostClient } from "@opensteer/client/host";
 import {
   selectHomeDeploymentId,
   selectHomeExposure,
+  selectHomeKind,
   usePhoneHome,
 } from "../computers/home-kind.js";
 import { space } from "../theme.js";
@@ -55,6 +56,7 @@ function WithHome(props: {
   const navigation = useNavigation();
   const home = usePhoneHome({
     exposure: useHostSelector(props.hostClient, selectHomeExposure),
+    homeKind: useHostSelector(props.hostClient, selectHomeKind),
     deploymentId: useHostSelector(props.hostClient, selectHomeDeploymentId),
   }).kind;
   return (

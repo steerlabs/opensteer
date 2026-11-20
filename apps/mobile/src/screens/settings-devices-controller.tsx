@@ -11,6 +11,7 @@ import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import {
   selectHomeDeploymentId,
   selectHomeExposure,
+  selectHomeKind,
   usePhoneHome,
 } from "../computers/home-kind.js";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
@@ -91,6 +92,7 @@ export function DevicesSettingsController(): ReactNode {
   const devicesAvailable = useHostValue(host, selectDevicesAvailable, false);
   const homeKind = usePhoneHome({
     exposure: useHostValue(host, selectHomeExposure, undefined),
+    homeKind: useHostValue(host, selectHomeKind, undefined),
     deploymentId: useHostValue(host, selectHomeDeploymentId, null),
   }).kind;
   const deploymentName = rows.find((row) => row.deploymentId === deploymentId)?.name ?? "";

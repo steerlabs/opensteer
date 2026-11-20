@@ -185,7 +185,13 @@ describe("agent consent on the phone", () => {
     const form = ready();
     expect(form.title).toBe("Grok wants to use your Opensteer");
     expect(form.mark).toEqual({ providerId: null, initial: "G" });
-    expect(form.verified).toBe(true);
+    // Grok named itself: the Home verified nothing, so no check and no logo.
+    expect(form.who).toEqual({
+      heading: "Says it is Grok",
+      detail: "https://grok.com",
+      verified: false,
+      warning: "Only approve if you started this yourself.",
+    });
     expect(form.destination).toBe("Access goes to grok.com. Anyone who runs that service gets it.");
     expect(form.sections?.map(({ key }) => key)).toEqual(["scope", "resources", "tasks", "mode"]);
     expect(row("scope", "selected")).toMatchObject({ kind: "choice", selected: true });

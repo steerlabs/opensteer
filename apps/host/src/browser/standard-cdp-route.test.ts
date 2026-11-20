@@ -74,20 +74,27 @@ async function fixture() {
   const send = vi.fn(async (frame: Buffer) => received.resolve(frame));
   const reauthorize = vi.fn(async () => {});
   let read: ((frame: Buffer) => void) | undefined;
-  const attach = vi.fn(async (_claims: StandardCdpTicketClaims, signal: AbortSignal) => {
-    admitted.resolve();
-    signal.addEventListener("abort", () => runtime.abort(), { once: true });
-    return {
-      signal: runtime.signal,
-      mode: "session" as const,
-      reauthorize,
-      send,
-      onFrame: (listener: (frame: Buffer) => void) => {
-        read = listener;
-      },
-      close: () => runtime.abort(),
-    };
-  });
+  const attach = vi.fn(
+    async (_claims: StandardCdpTicketClaims, signal: AbortSignal, _admission?: AbortSignal) => {
+      admitted.resolve();
+      signal.addEventListener("abort", () => runtime.abort(), { once: true });
+      return {
+        signal: runtime.signal,
+        mode: "session" as const,
+        settled: runtime.signal.aborted
+          ? Promise.resolve()
+          : new Promise<void>((resolve) =>
+              runtime.signal.addEventListener("abort", () => resolve(), { once: true }),
+            ),
+        reauthorize,
+        send,
+        onFrame: (listener: (frame: Buffer) => void) => {
+          read = listener;
+        },
+        close: () => runtime.abort(),
+      };
+    },
+  );
   const app = Fastify();
   installPersonalVersionGate(app);
   installHostHttpBoundary(app);
@@ -280,4 +287,52 @@ it("ends within one authority window even if the store stops responding", async 
   await vi.advanceTimersByTimeAsync(1);
   expect((await closed)[0]).toBe(1008);
   expect(f.runtime.signal.aborted).toBe(true);
+});
+
+it("aborts stalled admission while another websocket can attach", async () => {
+  const f = await fixture();
+  const initial = Promise.withResolvers<AbortSignal>();
+  f.attach.mockImplementationOnce(async (_claims, _signal, admission) => {
+    if (!admission) throw new Error("Missing admission deadline.");
+    initial.resolve(admission);
+    return new Promise<never>(() => {});
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const stalled = await f.connect();
+  const admission = await initial.promise;
+  const refusal = once(stalled, "message");
+  const closed = once(stalled, "close");
+  stalled.send(JSON.stringify({ id: 1, method: "Browser.getVersion" }));
+  const other = await f.connect();
+  other.send(JSON.stringify({ id: 2, method: "Browser.getVersion" }));
+  await f.received.promise;
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(admission.aborted).toBe(true);
+  expect(JSON.parse(String((await refusal)[0]))).toEqual({
+    id: 1,
+    error: { code: -32000, message: "Browser attachment admission timed out." },
+  });
+  expect((await closed)[0]).toBe(1008);
+  expect(other.readyState).toBe(WebSocket.OPEN);
+});
+
+it("caps live websocket attachments per binding and bounds a peer that ignores close", async () => {
+  const f = await fixture();
+  const sockets = await Promise.all([f.connect(), f.connect(), f.connect(), f.connect()]);
+  const extra = await f.connect();
+  expect((await once(extra, "close"))[0]).toBe(1013);
+  expect(f.attach).toHaveBeenCalledTimes(4);
+  const blocked = sockets[0]!;
+  const closed = once(blocked, "close");
+  const serverClosed = Promise.all(
+    [...f.app.websocketServer.clients].map((socket) => once(socket, "close")),
+  );
+  blocked.pause();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  f.runtime.abort();
+  await vi.advanceTimersByTimeAsync(1_000);
+  await serverClosed;
+  blocked.resume();
+  expect((await closed)[0]).toBe(1000);
+  await expect(f.connect()).resolves.toBeInstanceOf(WebSocket);
 });

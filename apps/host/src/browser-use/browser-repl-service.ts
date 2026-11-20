@@ -35,6 +35,7 @@ export interface BrowserUseBudget {
   readonly maxBytes: number;
   readonly maxDepth: number;
   readonly maxEntries: number;
+  readonly maxImageBytes?: number;
 }
 export interface BrowserUseCall extends BrowserUseBudget {
   readonly contextKey: string;
@@ -114,12 +115,11 @@ const eventBudget = {
   maxDepth: depth - 4,
   maxEntries: browserReplLimits.jsonEntries,
 };
-const screenshotBytes = Math.ceil(limits.imageBytes / 3) * 4 + 2048;
 const screenshotResult = z.object({ data: z.string(), cropped: z.json().optional() });
 const screenshotTooLarge = () =>
   new BrowserBridgeError(
     "output-limit",
-    "Screenshot exceeds 4 MiB. Capture a smaller region with CDP.",
+    "Screenshot exceeds its image budget (up to 323 KiB per capture). Use a smaller viewport clip or JPEG via CDP.",
   );
 const replyTooLarge = () =>
   new BrowserBridgeError(
@@ -132,7 +132,12 @@ function publicFailure(error: unknown): ReplFailure {
     error instanceof OpensteerError &&
     (error.reason === "outcome-unknown" || error.reason === "browser-tab-open-outcome-unknown")
   )
-    return { code: "outcome-unknown", message: error.message, performed: [] };
+    return {
+      code: "outcome-unknown",
+      message:
+        "A browser action did not confirm its outcome. Observe the page before trying again.",
+      performed: [],
+    };
   if (
     error instanceof BrowserBridgeError ||
     (error instanceof OpensteerError && error.code !== "internal")
@@ -208,8 +213,19 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     });
   }
 
-  execute(contextKey: string, code: string, signal?: AbortSignal, bindingKey?: string): Promise<ReplResult> {
-    return this.#repl.execute({ runId: contextKey, generation: 0 }, code, signal, undefined, bindingKey);
+  execute(
+    contextKey: string,
+    code: string,
+    signal?: AbortSignal,
+    bindingKey?: string,
+  ): Promise<ReplResult> {
+    return this.#repl.execute(
+      { runId: contextKey, generation: 0 },
+      code,
+      signal,
+      undefined,
+      bindingKey,
+    );
   }
 
   disposeContext(contextKey: string): void {
@@ -444,7 +460,8 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
       deadline,
       maxDepth: depth - 1,
       maxEntries: browserReplLimits.jsonEntries,
-      maxBytes: screenshot ? screenshotBytes : limits.bridgeBytes,
+      maxBytes: limits.bridgeBytes,
+      ...request.replyBudget,
     };
     switch (request.operation) {
       case "browser.pages": {
@@ -471,7 +488,7 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
         const { method, params, sessionId } = request.args;
         const encoded = await this.#port.command(binding.target, method, params, sessionId, call);
         signal.throwIfAborted();
-        if (screenshot && typeof encoded === "string" && encoded.length > screenshotBytes)
+        if (screenshot && typeof encoded === "string" && encoded.length > call.maxBytes)
           throw screenshotTooLarge();
         const bytes = boundedBytes(encoded, call.maxBytes);
         if (bytes === undefined || !browserJsonShapeFits(encoded, call.maxDepth))
@@ -479,7 +496,8 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
         const result: unknown = JSON.parse(encoded);
         if (screenshot) {
           const { data, cropped } = screenshotResult.parse(result);
-          if (decodedBase64Bytes(data) > limits.imageBytes) throw screenshotTooLarge();
+          if (decodedBase64Bytes(data) > (call.maxImageBytes ?? browserReplLimits.screenshotBytes))
+            throw screenshotTooLarge();
           if (cropped !== undefined && bytes - data.length > limits.bridgeBytes)
             throw replyTooLarge();
           const image = browserImageSchema.parse({ data, mimeType: "image/png" });

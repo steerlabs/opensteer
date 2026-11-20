@@ -10054,6 +10054,14 @@
             "networked"
           ]
         },
+        "homeKind": {
+          "type": "string",
+          "enum": [
+            "mac",
+            "server",
+            "cloud-computer"
+          ]
+        },
         "portalOrigin": {
           "anyOf": [
             {

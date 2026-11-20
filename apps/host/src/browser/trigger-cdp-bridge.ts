@@ -249,7 +249,7 @@ export async function closeLegacyCdpForConnection(
 ): Promise<void> {
   await Promise.all(
     [...(lineageSockets.get(browser) ?? [])].map(async ([socket, bindingId]) => {
-      if (await resolveLineage(bindingId) === connectionId) socket.terminate();
+      if ((await resolveLineage(bindingId)) === connectionId) socket.terminate();
     }),
   );
 }

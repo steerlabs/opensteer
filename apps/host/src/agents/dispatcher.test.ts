@@ -764,7 +764,15 @@ describe("HostCommandDispatcher model selection", () => {
     const requestedBy = createId("user");
     const runId = createId("run");
     const threadId = createId("thread");
-    const dispatch = vi.fn(async (_command: RunnerCommand, _signal: AbortSignal) => undefined);
+    const dispatch = vi.fn(
+      async (
+        _command: RunnerCommand,
+        _signal: AbortSignal,
+        options?: { readonly beforeSend?: () => Promise<void> },
+      ) => {
+        await options?.beforeSend?.();
+      },
+    );
     const dispatcher = new HostCommandDispatcher({
       teamRequestContext: async () => {
         throw new Error("Unexpected team request");
@@ -818,7 +826,12 @@ describe("HostCommandDispatcher model selection", () => {
         ],
       } as never,
       store: {
-        admitExecution: async () => ({ agentConnection: null, mode: "full-access" }),
+        admitExecution: async () => {
+          throw new Error("Native Runs skip the connection resolver");
+        },
+        recordConnectionRunHandoff: async () => {
+          throw new Error("Native Runs skip the connection witness");
+        },
         acquireExecutionBinding: async () => ({
           bindingGeneration: 1,
           continuationEvent: null,
@@ -845,6 +858,7 @@ describe("HostCommandDispatcher model selection", () => {
         }),
         getAgentHomeSettings: async () => ({ settings: {}, file: { status: "missing" } }),
         loadRunDispatchContext: async () => ({
+          lineage: { runConnectionId: null, taskOriginConnectionId: null },
           providerSessionStateLayout: "session",
           personalContext: true,
           agentHome: { computerId, path: "/tmp/dispatcher" },
@@ -1017,6 +1031,7 @@ describe("HostCommandDispatcher run planning", () => {
           }),
           getAgentHomeSettings: async () => ({ settings: {}, file: { status: "missing" } }),
           loadRunDispatchContext: async () => ({
+            lineage: { runConnectionId: null, taskOriginConnectionId: null },
             providerSessionStateLayout: "session",
             personalContext: true,
             agentHome,

@@ -76,7 +76,9 @@ function tabAccess(
       const { actor, execution } = await actorFor(signal);
       await browser.flushPendingTabDescriptors();
       return {
-        binding: await tabs.bindBrowserScript(actor, TabIdSchema.parse(tabId), { savedProfileOnly: execution.agentConnection !== null }),
+        binding: await tabs.bindBrowserScript(actor, TabIdSchema.parse(tabId), {
+          savedProfileOnly: execution.agentConnection !== null,
+        }),
         threadId: actor.threadId,
       };
     },

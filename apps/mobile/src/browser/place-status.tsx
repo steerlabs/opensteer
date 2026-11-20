@@ -4,6 +4,7 @@ import {
   samePlaceAgents,
   threadMark,
   threadWatch,
+  workWords,
   type HostClient,
   type HostSnapshot,
   type PlaceAgent,
@@ -20,6 +21,9 @@ import { taskHeading } from "../thread/task-status.js";
 import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
 import { AgentMarks } from "./agent-marks.js";
+import { ExternalAgentMark } from "../screens/external-agent-mark.js";
+import { useAgentSessionStop } from "../thread/agent-session.js";
+import { placeSessionLine } from "../thread/agent-session-model.js";
 
 /**
  * What a place says of the conversation it was opened from, under the page:
@@ -150,8 +154,27 @@ export function usePlaceStatusRow(props: {
   readonly onAnswer: (threadId: string) => void;
   /** The conversation the route carries, unless it is already on screen. */
   readonly threadId: string | null;
+  /** The tab shown, so a connected agent using it can be named with its task. */
+  readonly tabId?: string | null;
 }): ReactNode {
   const { agents, hostClient, onAnswer, threadId } = props;
+  const tabId = props.tabId ?? null;
+  const agentWork = useHostSelector(hostClient, selectAgentWork);
+  const session = useMemo(
+    () =>
+      placeSessionLine(
+        { threads: [], agentWork },
+        {
+          tabId,
+          occupants: agents.agents.map((agent) => ({
+            threadId: agent.threadId,
+            title: agent.title,
+          })),
+        },
+      ),
+    [agentWork, agents, tabId],
+  );
+  const sessionStop = useAgentSessionStop(hostClient, session?.threadId ?? "");
   const transcript = useThreadTranscript(hostClient, threadId);
   const selectWatch = useCallback(
     (snapshot: HostSnapshot): ThreadWatch | null => {
@@ -204,7 +227,24 @@ export function usePlaceStatusRow(props: {
   const answer = useCallback(() => {
     if (threadId !== null) onAnswer(threadId);
   }, [onAnswer, threadId]);
-  return useMemo(
+  const sessionRow = useMemo(
+    () =>
+      session === null ? null : (
+        <SessionStatusRow
+          busy={sessionStop.running}
+          onStop={
+            session.stop === null
+              ? null
+              : () => {
+                  if (session.stop) void sessionStop.run(session.stop.sessionId);
+                }
+          }
+          session={session}
+        />
+      ),
+    [session, sessionStop],
+  );
+  const runRow = useMemo(
     () =>
       watch === null ? null : (
         <PlaceStatusRow
@@ -217,6 +257,48 @@ export function usePlaceStatusRow(props: {
         />
       ),
     [agent, answer, canRespond, stop, stops, watch],
+  );
+  // A connected agent's own work has no Run to stop: its row ends its session instead.
+  return sessionRow ?? runRow;
+}
+
+const selectAgentWork = (snapshot: HostSnapshot) => snapshot.agentWork;
+
+/** A connected agent using this tab, for which task, and the Stop that ends its session. */
+function SessionStatusRow(props: {
+  readonly busy: boolean;
+  readonly onStop: (() => void) | null;
+  readonly session: NonNullable<ReturnType<typeof placeSessionLine>>;
+}): ReactNode {
+  const { session } = props;
+  return (
+    <View style={styles.row} testID="place-status">
+      <View accessibilityLiveRegion="polite" accessible style={styles.said}>
+        <ExternalAgentMark
+          initial={session.agent.initial}
+          providerId={session.agent.providerId}
+          size={16}
+        />
+        <AppText
+          maxFontSizeMultiplier={controlFontScaleLimit}
+          numberOfLines={1}
+          role="secondary"
+          style={styles.words}
+          tone={props.onStop === null ? "muted" : "soft"}
+        >
+          {session.line}
+        </AppText>
+      </View>
+      {props.onStop === null ? null : (
+        <ComposerAction
+          busy={props.busy}
+          disabled={false}
+          kind="stop"
+          label={workWords("work.stop", { agent: session.agent.name })}
+          onPress={props.onStop}
+        />
+      )}
+    </View>
   );
 }
 

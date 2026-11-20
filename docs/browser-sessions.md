@@ -338,3 +338,40 @@ Host can satisfy both. Their stored pairings carry over after one update.
 Page uploads name only files staged in the session's private folder. Desktop downloads appear only
 when complete, under a non-replacing name, with macOS quarantine applied first because Electron does
 not. They never open themselves; renderer actions take IDs, and Cloud Chromium refuses them.
+
+## Managed browser CDP connections
+
+The Home's `/v1/browser/connect/<ticket>` WebSocket accepts a single-use attachment ticket.
+The reply that issues the ticket gives the mode. Use stock
+`chromium.connectOverCDP(endpoint)` for `whole-context` and
+`chromium.connectOverCDP(endpoint, { noDefaults: true })` for `session`. A lost exclusive grant
+requires a new ticket. Closing the client disconnects it. The Browser Session and adopted pages
+have their own lifetime.
+
+The browser profile is the isolation boundary. Every Guest Browser Session gets a fresh
+Chromium context. A connected agent needs a saved profile. Granting the same saved profile to
+a person and an agent, or to two agents, shares signed-in state. CDP lists and drives only the
+pages owned by the attached Browser Session, including its popups and child frames.
+
+The virtual root supports `Browser.getVersion`, `Target.getTargets`, `Target.getTargetInfo`,
+`Target.getBrowserContexts`, `Target.createTarget`, `Target.closeTarget`,
+`Target.activateTarget`, `Target.attachToTarget`, `Target.detachFromTarget`,
+`Target.setAutoAttach`, `Target.setDiscoverTargets`, and scoped nested sends through
+`Target.sendMessageToTarget`. Root auto-attach announces owned pages in flat mode and reports
+them unpaused. Root target discovery supports an ordered CDP type filter for the initial snapshot
+and live events. Context creation and disposal, browser shutdown, and browser-wide commands outside
+the supported context operations are refused. Playwright's `newBrowserCDPSession()` and
+`newCDPSession()` helpers use the forbidden browser-target attach method. A raw client can use
+the virtual root directly and request `Target.attachToTarget` for an owned page.
+
+Page and child commands use the [reviewed method list](../packages/browser-core/src/standard-cdp-page-methods.ts).
+Whole-context leases add cookie reads, writes and clears, context permissions, and shared and
+service worker channels. Playwright's default download setup is acknowledged without changing
+the profile's download path. Remote download cancellation and arbitrary download settings are
+refused. Uploads naming paths require files staged on the Runtime.
+
+Screenshots capture the page surface. Full-page capture requires a bounded clip. The Runtime uses
+the page's geometry channel so the viewing viewport keeps its size. The limit is 8 MiB per JSON
+message including base64 and framing, with 16 MiB and 128 in-flight items at each endpoint.
+The relay uses 192 KiB raw chunks, with up to four live attachments per binding and 16 per Runner.
+A busy client can compete for the same Runner stream, browser process, and machine resources.

@@ -29,6 +29,7 @@ const adminId = ControlPlaneAccountIdSchema.parse("acct_00000000-0000-4000-8000-
 const memberId = ControlPlaneAccountIdSchema.parse("acct_00000000-0000-4000-8000-00000000000b");
 const offer = {
   priceId: "price_seat",
+  portalConfigurationId: "bpc_org",
   name: "Work seat",
   currency: "usd",
   amountMinor: 4900,
@@ -195,7 +196,7 @@ describe("organization website pages", () => {
     const body = admin("overview");
     expect(body).toMatch(/org__stat-value">2<\/span><span class="org__stat-label">Free/u);
     expect(body).toContain(`action="/organizations/${orgId}/seats"`);
-    expect(body).toContain(`href="/organizations/${orgId}/billing"`);
+    expect(body).toContain(`method="post" action="/organizations/${orgId}/billing"`);
     expect(body).toContain(words(orgWords("org.seats.changeDetail")));
     expect(body).toContain(words(orgWords("org.split.lead")));
     const pending = admin("overview", { seats: { paid: 3, assigned: 1, free: 2, pending: 5 } });
@@ -270,7 +271,7 @@ describe("organization website pages", () => {
     ).toEqual([
       orgWords("org.offboard.cut"),
       orgWords("org.offboard.offPending"),
-      expect.stringMatching(/^Deletes after /u),
+      expect.stringMatching(/^Retention after power-off ends /u),
     ]);
     expect(
       offboardSteps(
@@ -279,7 +280,7 @@ describe("organization website pages", () => {
     ).toEqual([
       orgWords("org.offboard.cut"),
       orgWords("org.offboard.off"),
-      orgWords("org.offboard.deletesNow"),
+      orgWords("org.offboard.retainPending"),
     ]);
     expect(offboardSteps(assignment({ state: "ended", signInCut: true, deleted: true }))).toEqual([
       orgWords("org.offboard.cut"),

@@ -1,3 +1,4 @@
+import { whoLines } from "../thread/agent-session-model.js";
 import { classifyClientFailure } from "@opensteer/client/connections";
 import {
   accessModeOptions,
@@ -225,9 +226,15 @@ function AgentAuthorization(props: {
   const { consent } = load;
   const agent = label.trim() || consent.clientName;
   const identity = connectedAgentIdentity(
-    { label: agent, clientName: consent.clientName },
+    {
+      label: agent,
+      clientName: consent.clientName,
+      ...(consent.identity ? { identity: consent.identity } : {}),
+      ...(consent.identityAtConsent ? { identityAtConsent: consent.identityAtConsent } : {}),
+    },
     consent.redirectUri,
   );
+  const who = whoLines(identity.who, { consent: true });
   const disabled = busy !== null;
   const context = { agent, home, browser, apps, plugins, disabled };
   const openDevices = () => {
@@ -274,7 +281,12 @@ function AgentAuthorization(props: {
             ? agentWords("consent.title", { agent })
             : agentWords("consent.legacyTitle", { agent: consent.clientName })
         }
-        verified={!identity.local}
+        who={{
+          heading: who.heading,
+          detail: who.detail,
+          verified: who.verified,
+          warning: who.warning,
+        }}
       />
       {sheet === null || !grantsAvailable ? null : (
         <AgentGrantSheetPage

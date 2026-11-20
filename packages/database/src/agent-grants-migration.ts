@@ -7,7 +7,8 @@ export const agentGrantsMigrationName = "0042_agent_grants";
  * Connections carry one grant; everything that can execute later carries its connection. Existing
  * connections keep exactly what they could already do (`everything` at consent version 1). Lineage
  * applies to work created from now on: existing tasks, Runs and automations stay the person's. The
- * only backfill is a queued input whose own immutable source names a connection.
+ * only backfill is a queued input whose own immutable source names a connection, and a Run still
+ * queued from such an input, which takes its seed's connection.
  */
 export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
   await sql`
@@ -68,6 +69,9 @@ export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
       add column contact_lost_at timestamptz;
     create index plugin_executions_connection on plugin_executions(connection_id)
       where connection_id is not null;
+    alter table browser_sessions add column standard_cdp_attempts jsonb not null default '{}';
+    create index browser_sessions_standard_cdp_attempts on browser_sessions(id)
+      where standard_cdp_attempts <> '{}';
     alter table thread_inputs add column connection_id text;
     alter table triggers add column origin_connection_id text;
     create or replace view thread_work_inputs as
@@ -89,5 +93,10 @@ export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
       where state in ('pending', 'awaiting-approval')
         and authority_source->>'kind' = 'connection'
         and authority_source->>'connectionId' in (select id from agent_connections);
+    update runs set connection_id = thread_inputs.connection_id
+      from thread_inputs
+      where runs.status = 'queued' and runs.connection_id is null
+        and thread_inputs.message_id = runs.seed_input_id
+        and thread_inputs.connection_id is not null;
   `.execute(database);
 }

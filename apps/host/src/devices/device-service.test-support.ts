@@ -34,8 +34,13 @@ import type { ComputerUseGateway } from "../devices/device-service.js";
 import type { RunToolContext, ToolCaller } from "../agents/tool-caller.js";
 
 /** A call with no Run behind it, as a Trigger occurrence makes. */
-export const caller: ToolCaller = { run: null, threadId: createId("thread") };
+export const caller: ToolCaller = {
+  run: null,
+  threadId: createId("thread"),
+  agentBindingId: `trigger:${createId("triggerOccurrence")}`,
+};
 export const runCaller = (run: RunToolContext): ToolCaller => ({
+  agentBindingId: `run:${run.runId}`,
   run: {
     ...run,
     aud: "opensteer-run-tools",

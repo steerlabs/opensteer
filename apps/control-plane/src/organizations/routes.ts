@@ -290,6 +290,7 @@ export async function offboardWorkAssignment(
   if (!offboard.started)
     return organizations.offboardingStatus(organizationId, account, assignmentId);
   const { home } = offboard;
+  let confirmed = false;
   if (home) {
     try {
       const iat = Math.floor(Date.now() / 1000);
@@ -312,10 +313,11 @@ export async function offboardWorkAssignment(
         headers: { "content-type": "application/json" },
         body: JSON.stringify(WorkAuditFlushRequestSchema.parse({ assertion: token })),
       });
+      confirmed = response.ok;
       await response.body?.cancel();
     } catch {
       // Offboarding cannot wait for an unreachable Home or its audit outbox.
     }
   }
-  return organizations.finishOffboard(organizationId, account, assignmentId);
+  return organizations.finishOffboard(organizationId, account, assignmentId, confirmed);
 }

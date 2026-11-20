@@ -10,6 +10,7 @@ import {
   workHomeStatusLabel,
   workPolicyLines,
   type CloudComputerCopyId,
+  type CloudComputerDeletion,
   type CloudComputerListResponse,
   type CloudComputerReasonCode,
   type CloudComputerView,
@@ -59,6 +60,7 @@ export type CloudComputerLanding =
       readonly kind: "offer";
       readonly plan: Plan;
       readonly deleted: boolean;
+      readonly deletion?: CloudComputerDeletion;
       readonly work: readonly WorkHomeCard[];
     }
   | {
@@ -163,7 +165,7 @@ export function cloudComputerLandingBody(input: {
   if (state.kind === "offer")
     return card(
       head(),
-      `${alert(input.refusal)}${note(input.notice)}${workCards(state.work)}${state.work.length ? `<h2 class="section-title">${escapeHtml(cloudWords("cloud.web.personal"))}</h2>` : ""}${state.deleted ? note(cloudWords("cloud.web.deleted.detail")) : ""}${whatItIs()}${price(state.plan)}${changes()}<a class="btn btn--primary btn--block" href="${cloudComputerCheckoutPortalPath}">${escapeHtml(cloudWords("cloud.checkout"))}</a>`,
+      `${alert(input.refusal)}${note(input.notice)}${workCards(state.work)}${state.work.length ? `<h2 class="section-title">${escapeHtml(cloudWords("cloud.web.personal"))}</h2>` : ""}${state.deleted ? note(cloudWords("cloud.web.deleted.detail")) : ""}${deletionNotes(state.deletion)}${whatItIs()}${price(state.plan)}${changes()}<a class="btn btn--primary btn--block" href="${cloudComputerCheckoutPortalPath}">${escapeHtml(cloudWords("cloud.checkout"))}</a>`,
     );
   const { computer } = state;
   if (computer.status === "preparing")
@@ -251,6 +253,7 @@ export function cloudComputerLandingBody(input: {
   return card(
     head(),
     `${alert(input.refusal)}${note(input.notice)}${ready}${state.openHref ? `<a class="btn btn--primary btn--block" href="${escapeHtml(state.openHref)}">${escapeHtml(cloudWords("cloud.ready.open"))}</a>` : ""}<ul class="places">${status}${address}${egress}${details(computer)}</ul>
+    ${deletionNotes(computer.deletion)}
     <h2 class="section-title">${escapeHtml(cloudWords("cloud.plan.title"))}</h2>
     <p class="lead">${escapeHtml(cloudComputerPriceLine(state.plan, "en-US").line)}${computer.renewsAt ? `<br>${escapeHtml(cloudWords("cloud.renews", { date: day(computer.renewsAt) }))}` : ""}</p>
     ${managed ? "" : `<a class="btn btn--block" href="${cloudComputerBillingPortalPath}">${escapeHtml(cloudWords("cloud.plan.manage"))}</a>`}
@@ -261,6 +264,26 @@ export function cloudComputerLandingBody(input: {
 const dayFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "long", timeZone: "UTC" });
 function day(iso: string): string {
   return dayFormat.format(new Date(iso));
+}
+
+export function cloudComputerDeletionLines(deletion?: CloudComputerDeletion): string[] {
+  if (!deletion) return [];
+  return (
+    [
+      ["cloud.deletion.computer", deletion.computerDestroyedAt],
+      ["cloud.deletion.backups", deletion.backupsUnreadableAt],
+      ["cloud.deletion.storage", deletion.storedBackupDataRemovedAt],
+    ] as const
+  ).map(([id, done]) =>
+    cloudWords(done ? "cloud.deletion.done" : "cloud.deletion.pending", {
+      fact: cloudWords(id),
+      date: day(done ?? deletion.requestedAt),
+    }),
+  );
+}
+
+function deletionNotes(deletion?: CloudComputerDeletion): string {
+  return cloudComputerDeletionLines(deletion).map(note).join("");
 }
 
 /** Region and the browser's public address, when the Account knows them; nothing otherwise. */

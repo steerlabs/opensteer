@@ -56,6 +56,7 @@ export const CloudComputerProviderWriteSchema = z.strictObject({
   generation: CloudComputerGenerationSchema,
   serverId: z.number().int().positive().optional(),
   recoverAfter: z.iso.datetime().optional(),
+  dispatched: z.boolean().optional(),
 });
 export type CloudComputerProviderWrite = z.infer<typeof CloudComputerProviderWriteSchema>;
 
@@ -182,7 +183,7 @@ export const CloudComputerCheckSchema = z.discriminatedUnion("operation", [
   }),
   z.strictObject({ operation: z.literal("finish-provider-write"), token: z.uuid() }),
   z.strictObject({
-    operation: z.literal("recover-provider-write"),
+    operation: z.enum(["recover-provider-write", "send-provider-write"]),
     revision: CloudComputerDesiredRevisionSchema,
     token: z.uuid(),
   }),

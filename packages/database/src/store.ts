@@ -13,9 +13,12 @@ import {
   claimConnectionCleanup,
   completeCleanupIfSettled,
   connectionAttempts,
+  connectionCdpAttempts,
+  recoverConnectionCdpAttempts,
   markConnectionAttemptsContactLost,
   outstandingAttempts,
   recordConnectionRunHandoff,
+  recordRunNotAdmitted,
   type ConnectionAttemptStopper,
   type ConnectionCleanup,
   openCleanups,
@@ -934,26 +937,40 @@ export class OpensteerStore {
     return admitExecution(this.#database, input);
   }
 
+  connectionCdpAttempts() {
+    return connectionCdpAttempts(this.#database);
+  }
+
+  recoverConnectionCdpAttempts() {
+    return recoverConnectionCdpAttempts(this.#database);
+  }
+
   recordConnectionRunHandoff(input: Parameters<typeof recordConnectionRunHandoff>[1]) {
     return recordConnectionRunHandoff(this.#database, input);
   }
 
-  markConnectionAttemptsContactLost(input: Parameters<typeof markConnectionAttemptsContactLost>[1]) {
+  recordRunNotAdmitted(runId: RunId, bindingGeneration: number) {
+    return recordRunNotAdmitted(this.#database, runId, bindingGeneration);
+  }
+
+  markConnectionAttemptsContactLost(
+    input: Parameters<typeof markConnectionAttemptsContactLost>[1],
+  ) {
     return markConnectionAttemptsContactLost(this.#database, input);
   }
 
-  async driveConnectionCleanups(options: {
-    readonly stopper?: ConnectionAttemptStopper;
-    readonly onCleanup?: (cleanup: ConnectionCleanup) => Promise<void>;
-  } = {}): Promise<{
+  async driveConnectionCleanups(
+    options: {
+      readonly stopper?: ConnectionAttemptStopper;
+      readonly onCleanup?: (cleanup: ConnectionCleanup) => Promise<void>;
+    } = {},
+  ): Promise<{
     readonly failures: readonly unknown[];
     readonly settled: readonly string[];
-    readonly processed: readonly string[];
   }> {
     await requestExpiredCleanups(this.#database);
     const failures: unknown[] = [];
     const settled: string[] = [];
-    const processed: string[] = [];
     const step = async (work: () => Promise<unknown>) => {
       try {
         await work();
@@ -961,14 +978,15 @@ export class OpensteerStore {
         failures.push(error);
       }
     };
-    for (const cleanup of await openCleanups(this.#database)) {
-      const { userId, connectionId, reason } = cleanup;
-      const token = await claimConnectionCleanup(this.#database, connectionId);
-      if (!token) continue;
+    for (const connectionId of await openCleanups(this.#database)) {
+      const cleanup = await claimConnectionCleanup(this.#database, connectionId);
+      if (!cleanup) continue;
+      const { userId, token, reason } = cleanup;
       try {
-        const attempts = outstandingAttempts(await connectionAttempts(this.#database, connectionId));
+        const attempts = outstandingAttempts(
+          await connectionAttempts(this.#database, connectionId),
+        );
         if (attempts.length || cleanup.pending) {
-          processed.push(connectionId);
           if (options.onCleanup) await step(() => options.onCleanup!(cleanup));
         }
         for (const attempt of attempts) {
@@ -992,11 +1010,16 @@ export class OpensteerStore {
               await step(() => pauseLineageTrigger(this.#database, attempt.id));
               break;
             case "steer":
-              await step(() => commandStore.refuseSteer(
-                this.#database,
-                attempt.id,
-                "The connected agent's access ended before this message could be delivered.",
-              ));
+              if (!attempt.handedOff)
+                await step(() =>
+                  commandStore.refuseSteer(
+                    this.#database,
+                    attempt.id,
+                    "The connected agent's access ended before this message could be delivered.",
+                    undefined,
+                    true,
+                  ),
+                );
               break;
             case "run":
             case "run-attempt": {
@@ -1008,7 +1031,8 @@ export class OpensteerStore {
                 .where("runs.id", "=", runId)
                 .executeTakeFirst();
               const canEnqueue =
-                row && row.bindingGeneration === attempt.generation &&
+                row &&
+                row.bindingGeneration === attempt.generation &&
                 ["queued", "starting", "running", "waiting"].includes(row.status);
               if (canEnqueue)
                 await step(() =>
@@ -1033,44 +1057,55 @@ export class OpensteerStore {
                 if (options.stopper) await step(() => options.stopper!.stop(attempt, cleanup));
               } else {
                 const row = await this.#database
-                  .selectFrom("triggerOccurrences").select("triggerId").where("id", "=", attempt.id)
+                  .selectFrom("triggerOccurrences")
+                  .select("triggerId")
+                  .where("id", "=", attempt.id)
                   .executeTakeFirst();
-                if (row) await step(() =>
-                  new TriggerStore(this.#database).cancelPendingOccurrences(userId, {
-                    actorThreadId: null,
-                    triggerId: row.triggerId,
-                    occurrenceId: attempt.id,
-                  }),
-                );
+                if (row)
+                  await step(() =>
+                    new TriggerStore(this.#database).cancelPendingOccurrences(userId, {
+                      actorThreadId: null,
+                      triggerId: row.triggerId,
+                      occurrenceId: attempt.id,
+                    }),
+                  );
               }
               break;
             case "watch":
-              await step(() => new TriggerStore(this.#database).stopConnectionWatch(
-                attempt.id, attempt.generation!,
-              ));
+              await step(() =>
+                new TriggerStore(this.#database).stopConnectionWatch(
+                  attempt.id,
+                  attempt.generation!,
+                ),
+              );
               if (attempt.handedOff && options.stopper)
                 await step(() => options.stopper!.stop(attempt, cleanup));
               break;
             case "session":
-              await step(() => endAgentSessions(this.#database, {
-                userId, sessionIds: [attempt.id], reason,
-              }));
+              await step(() =>
+                endAgentSessions(this.#database, {
+                  userId,
+                  sessionIds: [attempt.id],
+                  reason,
+                }),
+              );
               break;
             case "operation":
-              // The direct-operation transport owns the correlated stop and receipt.
-              if (options.stopper) await step(() => options.stopper!.stop(attempt, cleanup));
+              // Until the direct-operation transport is wired, this row remains outstanding.
+              if (options.stopper?.stopDirectOperation)
+                await step(() => options.stopper!.stopDirectOperation!(attempt, cleanup));
               break;
             default:
               if (options.stopper) await step(() => options.stopper!.stop(attempt, cleanup));
               break;
           }
         }
-        if (await completeCleanupIfSettled(this.#database, connectionId, token)) settled.push(connectionId);
+        if (await completeCleanupIfSettled(this.#database, cleanup)) settled.push(connectionId);
       } finally {
         await releaseConnectionCleanupClaim(this.#database, connectionId, token);
       }
     }
-    return { failures, settled, processed };
+    return { failures, settled };
   }
 
   /** Each automation's origin connection, for lineage visibility. */
@@ -1726,7 +1761,7 @@ export class OpensteerStore {
     input: Parameters<OpensteerStore["assertActiveExecutionBinding"]>[0] & {
       readonly grantId?: GrantId | undefined;
     },
-  ): Promise<void> {
+  ): Promise<import("./execution-authority.js").RunLineage> {
     return executionStore.assertActiveGrant(this.#database, input, this.#executionNow);
   }
   async failActiveRunsForRunnerDisconnect(input: {

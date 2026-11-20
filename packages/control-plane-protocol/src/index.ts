@@ -303,6 +303,26 @@ export type AccountDeploymentDirectoryEntry = z.infer<typeof AccountDeploymentDi
 /** Maximum active owned and shared Deployments visible to one Account. */
 export const maximumAccountDeployments = 100;
 
+/**
+ * What an app declares on `GET /v1/account/deployments` that it understands.
+ * A Home listed at its own HTTPS address (`canonical-personal`) is left out
+ * for an app that does not say so: an older one would take it for a team.
+ */
+export const accountDirectoryUnderstandsParameter = "understands";
+export const canonicalPersonalHomeUnderstanding = "canonical-personal";
+
+/** Whether a directory entry is a personal Home listed at its own address. */
+export function isCanonicalPersonalHome(entry: {
+  readonly reachability: string;
+  readonly authorityEnvelope?: unknown;
+}): boolean {
+  if (entry.reachability !== "canonical") return false;
+  const document = (
+    entry.authorityEnvelope as { document?: { deploymentShape?: { kind?: unknown } } }
+  )?.document;
+  return document?.deploymentShape?.kind === "personal";
+}
+
 export const ListAccountDeploymentsResponseSchema = z.object({
   deployments: z.array(AccountDeploymentDirectoryEntrySchema).max(maximumAccountDeployments),
 });

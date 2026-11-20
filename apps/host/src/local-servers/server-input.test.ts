@@ -14,7 +14,7 @@ describe("computer MCP call deadline", () => {
   it("keeps ordinary calls at one minute and extends input to three minutes total", async () => {
     vi.useFakeTimers();
     const callable = {} as CallableIntegrationTool;
-    const caller = { run: null, threadId: createId("thread") };
+    const caller = { run: null, threadId: createId("thread"), agentBindingId: "trigger:test" };
     const ordinary = new InputCall(callable, caller);
     const input = new InputCall(callable, caller);
     try {
@@ -54,7 +54,12 @@ it("keeps an accepted answer out of later questions on the same MCP session", as
     .fn<PluginElicit>()
     .mockResolvedValueOnce({ action: "accept", content: { code: secret } })
     .mockResolvedValueOnce({ action: "decline" });
-  const caller = { run: null, threadId: createId("thread"), elicit };
+  const caller = {
+    run: null,
+    threadId: createId("thread"),
+    agentBindingId: "trigger:test",
+    elicit,
+  };
   input.register(client);
   try {
     await withTimeout(

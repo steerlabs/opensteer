@@ -1,3 +1,4 @@
+import { StandardCdpProfileLeases } from "./standard-cdp-profile-leases.js";
 import type { BrowserRuntime } from "@opensteer/browser-runtime-core";
 import type { StandardCdpMode } from "@opensteer/protocol/standard-cdp";
 import {
@@ -7,7 +8,13 @@ import {
   type StandardCdpFacts,
   type StandardCdpTicketClaims,
 } from "./standard-cdp-tickets.js";
-import { directStandardTransport, relayStandardTransport } from "./standard-cdp-transport.js";
+import {
+  directStandardTransport,
+  relayStandardTransport,
+  standardCdpAdmissionMs,
+  standardCdpMaxLivePerBinding,
+  standardCdpMaxLivePerRunner,
+} from "./standard-cdp-transport.js";
 import type { DeviceId } from "@opensteer/core";
 import { authorizeTabTarget } from "../tabs/tab-authority.js";
 import type { PageTabsPort } from "../tabs/tab-service.js";
@@ -15,6 +22,8 @@ import type { TabActor } from "../tabs/ports.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import {
   TabStore,
+  acquireBrowserStandardCdpLease,
+  releaseBrowserStandardCdpLease,
   executionAccess,
   selectedGrantOf,
   type TabRecord,
@@ -615,6 +624,7 @@ export interface StartBrowserSessionResult {
 
 interface ConfirmedCdpDispatch {
   readonly maxBytes: number;
+  readonly maxImageBytes?: number;
   readonly maxDepth: number;
   readonly maxEntries: number;
   readonly signal?: AbortSignal;
@@ -722,8 +732,13 @@ interface BrowserActor {
   seq: number;
 }
 
+type StandardCdpAuthority = Pick<StandardCdpFacts, "grantRevision" | "agentConnectionId"> & {
+  readonly mode: import("@opensteer/core").ThreadAccessMode;
+  readonly threadId: ThreadId | null;
+};
 interface StandardCdpEntry {
   readonly claims: StandardCdpTicketClaims;
+  runnerId?: RunnerId;
   mode?: StandardCdpMode;
   since?: string;
   close(reason: string): void;
@@ -838,6 +853,7 @@ export class BrowserService {
   readonly #detachRunnerAgents: BrowserServiceOptions["detachRunnerAgents"];
   readonly standardCdpTickets = new StandardCdpTickets();
   readonly #standardCdpAttachments = new Map<string, StandardCdpEntry>();
+  readonly #standardCdpProfiles = new StandardCdpProfileLeases();
   readonly #deviceAttachments = new Map<string, { runnerId: RunnerId; close: () => void; binding?: string }>();
   withRunnerAdmission<T>(runnerId: RunnerId, action: () => Promise<T>): Promise<T> {
     return this.#agentAdmissions.run(runnerId, action);
@@ -1908,7 +1924,7 @@ export class BrowserService {
               "browser-session-unavailable",
               "This browser is not ready to open a page. Try again shortly.",
             );
-          if (budget.confirmed && !broker.supportsCdpReplyBudget)
+          if (budget.confirmed && (!broker.supportsCdpReplyBudget || !broker.supportsScriptCancellation))
             throw new OpensteerError({ code: "conflict", message: "Update the browser computer to run browser scripts." });
           const navigationId =
             command.url && !agent
@@ -3447,7 +3463,7 @@ export class BrowserService {
     requested?: "cdp" | "actions",
     hold = false,
     captureAuthority?: (
-      facts: Pick<StandardCdpFacts, "grantRevision" | "agentConnectionId">,
+      facts: StandardCdpAuthority,
     ) => void,
   ) {
     const record = input.sessionId
@@ -3614,104 +3630,209 @@ export class BrowserService {
     return { ticket, path: `${standardCdpConnectPrefix}${ticket}`, mode };
   }
 
-  async attachStandardCdpForAgent(claims: StandardCdpTicketClaims, signal: AbortSignal) {
+  async attachStandardCdpForAgent(
+    claims: StandardCdpTicketClaims,
+    signal: AbortSignal,
+    admission?: AbortSignal,
+  ) {
     const id = randomUUID();
     const ending = new AbortController();
     const entry: StandardCdpEntry = {
       claims,
       close: (reason) => ending.abort(new BrowserCdpConnectionEnded(reason)),
     };
+    if (
+      [...this.#standardCdpAttachments.values()].filter(
+        (other) => other.claims.authority.agentBindingId === claims.authority.agentBindingId,
+      ).length >= standardCdpMaxLivePerBinding
+    )
+      throw new BrowserCdpConnectionEnded("This binding has too many live CDP attachments.");
     this.#standardCdpAttachments.set(id, entry);
     const life = AbortSignal.any([signal, ending.signal, this.#closing.signal]);
-    life.addEventListener("abort", () => this.#standardCdpAttachments.delete(id), { once: true });
-    const verify = async () => {
-      life.throwIfAborted();
-      const admitted = await this.#standardCdpAdmission(claims);
+    life.addEventListener(
+      "abort",
+      () => {
+        delete entry.since;
+      },
+      { once: true },
+    );
+    let profileLease: { profileId: BrowserProfileId; generation: number } | undefined;
+    const database =
+      this.#repository instanceof OpensteerStore ? this.#repository.database : undefined;
+    const releaseProfile = (held: NonNullable<typeof profileLease>) =>
+      this.#standardCdpProfiles.release(held.profileId, held.generation, async () => {
+        if (database)
+          await releaseBrowserStandardCdpLease(database, {
+            ...held,
+            sessionId: claims.browserSessionId,
+          });
+      });
+    const attempts =
+      this.#repository instanceof OpensteerStore && claims.facts.agentConnectionId
+        ? this.#repository.connectionCdpAttempts()
+        : undefined;
+    let attemptRecorded = false;
+    let handedOff = false;
+    const verify = async (check: AbortSignal, expiresAt: number) => {
+      const checked = AbortSignal.any([life, check]);
+      checked.throwIfAborted();
+      const admitted = await withDatabaseOperationSignal(checked, expiresAt, () =>
+        this.#standardCdpAdmission(claims),
+      );
       if (
         JSON.stringify(admitted.facts) !== JSON.stringify(claims.facts) ||
-        (entry.mode === "whole-context" && admitted.mode !== entry.mode)
+        admitted.mode !== claims.mode
       )
         throw new BrowserCdpConnectionEnded(
           "This browser authority changed. Request a new attachment.",
         );
-      life.throwIfAborted();
+      checked.throwIfAborted();
       return admitted;
     };
     try {
-      life.throwIfAborted();
-      const record = await this.#usableAgentSession(
-        claims.authority,
-        claims.browserSessionId,
-        false,
+      const deadline = AbortSignal.any([
+        life,
+        admission ?? AbortSignal.timeout(standardCdpAdmissionMs),
+      ]);
+      const expiresAt = Date.now() + standardCdpAdmissionMs;
+      const admitted = await this.#standardCdpProfiles.run(claims.facts.profileId, async () => {
+        const verified = await verify(deadline, expiresAt);
+        const { profileId } = verified.facts;
+        const current = profileId ? this.#standardCdpProfiles.held(profileId) : undefined;
+        if (current)
+          throw new BrowserCdpConnectionEnded("This browser profile is already exclusively held.");
+        const lease =
+          claims.mode === "whole-context" && profileId
+            ? this.#standardCdpProfiles.acquire(profileId, claims.authority.agentBindingId)
+            : undefined;
+        if (lease && profileId) {
+          profileLease = { profileId, generation: lease.generation };
+          if (database)
+            await withDatabaseOperationSignal(deadline, expiresAt, () =>
+              acquireBrowserStandardCdpLease(database, {
+                profileId,
+                sessionId: claims.browserSessionId,
+                ownerId: claims.authority.ownerId,
+                ...lease,
+              }),
+            );
+        }
+        return { ...verified, lease };
+      });
+      const { record, broker, target, mode, identity, lease } = admitted;
+      const unsubscribe = broker.subscribeCdp(
+        () => undefined,
+        () => entry.close("Browser Session ended."),
       );
-      return await this.withRunnerAdmission(record.runnerId, async () => {
-        const admitted = await verify();
-        const { target, broker, mode, identity } = admitted;
-        entry.mode = mode;
-        const unsubscribe = broker.subscribeCdp(
-          () => undefined,
-          () => entry.close("Browser Session ended."),
+      this.#deviceAttachments.set(id, {
+        runnerId: record.runnerId,
+        close: () => entry.close("Browser access on this computer ended."),
+      });
+      const removeSubscriptions = () => {
+        unsubscribe();
+        this.#deviceAttachments.delete(id);
+      };
+      if (life.aborted) removeSubscriptions();
+      else life.addEventListener("abort", removeSubscriptions, { once: true });
+      const authority = admitted.authorityDetails;
+      if (attempts) {
+        if (!authority?.agentConnectionId || authority.grantRevision === null)
+          throw new BrowserCdpConnectionEnded("This browser authority has ended.");
+        const { agentConnectionId, grantRevision, mode, threadId } = authority;
+        attemptRecorded = true;
+        await withDatabaseOperationSignal(deadline, expiresAt, () =>
+          attempts.open(record.id, id, {
+            connectionId: agentConnectionId,
+            grantRevision,
+            mode,
+            threadId,
+          }),
         );
-        this.#deviceAttachments.set(id, {
-          runnerId: record.runnerId,
-          close: () => entry.close("Browser access on this computer ended."),
-        });
-        life.addEventListener(
-          "abort",
-          () => {
-            unsubscribe();
-            this.#deviceAttachments.delete(id);
-          },
-          { once: true },
-        );
-        life.throwIfAborted();
+        deadline.throwIfAborted();
+      }
+      const { opening } = await this.withRunnerAdmission(record.runnerId, async () => {
+        deadline.throwIfAborted();
+        if (
+          [...this.#standardCdpAttachments.values()].filter(
+            (other) => other.runnerId === record.runnerId,
+          ).length >= standardCdpMaxLivePerRunner
+        )
+          throw new BrowserCdpConnectionEnded("This computer has too many live CDP attachments.");
+        entry.runnerId = record.runnerId;
         const ticket = this.#signer.issue({
           access: "read-write",
           creationOrigin: "agent",
           ...(target.actorClaim ? { actor: "agent" } : {}),
           standardCdp: mode,
+          ...(lease ? { standardCdpLease: lease } : {}),
           identity: identity ?? { kind: "fresh" },
           runtimeId: target.runtimeId,
-          sessionId: admitted.record.id,
+          sessionId: record.id,
           subject: claims.authority.ownerId,
+          operationExpiresAt: new Date(expiresAt).toISOString(),
         });
-        const transport = target.standardRuntime
-          ? await directStandardTransport(target.standardRuntime, ticket, life)
-          : await target.connectStandard!(ticket, life).then(({ connection, mode: effective }) =>
-              relayStandardTransport(connection, effective),
-            );
-        const close = () => transport.close();
-        if (life.aborted) close();
-        else life.addEventListener("abort", close, { once: true });
-        life.throwIfAborted();
-        transport.signal.addEventListener("abort", () => ending.abort(transport.signal.reason), {
-          once: true,
-        });
-        if (transport.signal.aborted) {
-          entry.close("Browser Runtime ended.");
-          life.throwIfAborted();
-        }
-        entry.mode = transport.mode;
-        entry.since = new Date().toISOString();
+        handedOff = true;
         return {
-          ...transport,
-          signal: life,
-          close: () => entry.close("CDP client disconnected."),
-          reauthorize: async () => {
-            await verify();
-          },
-          send: async (frame: Buffer) => {
-            const { work } = await this.withRunnerAdmission(record.runnerId, async () => {
-              await verify();
-              return { work: transport.send(frame) };
-            });
-            await work;
-          },
+          opening: target.standardRuntime
+            ? directStandardTransport(target.standardRuntime, ticket, deadline)
+            : target.connectStandard!(ticket, deadline).then(({ connection, mode: effective }) =>
+                relayStandardTransport(connection, effective),
+              ),
         };
       });
+      const transport = await opening;
+      const terminal = transport.contactLost
+        ? Promise.race([transport.settled, transport.contactLost])
+        : transport.settled;
+      void terminal.then(() => this.#standardCdpAttachments.delete(id));
+      if (attempts) {
+        void transport.settled.then(() => attempts.settled(record.id, id)).catch(this.#onError);
+        if (transport.contactLost)
+          void transport.contactLost.then(() => attempts.lost(record.id, id)).catch(this.#onError);
+      }
+      const held = profileLease;
+      if (held) void transport.settled.then(() => releaseProfile(held)).catch(this.#onError);
+      const close = () => transport.close();
+      if (life.aborted) close();
+      else life.addEventListener("abort", close, { once: true });
+      deadline.throwIfAborted();
+      if (transport.mode !== claims.mode)
+        throw new BrowserCdpConnectionEnded(
+          "This browser authority changed. Request a new attachment.",
+        );
+      transport.signal.addEventListener("abort", () => ending.abort(transport.signal.reason), {
+        once: true,
+      });
+      if (transport.signal.aborted) {
+        entry.close("Browser Runtime ended.");
+        life.throwIfAborted();
+      }
+      entry.mode = transport.mode;
+      entry.since = new Date().toISOString();
+      return {
+        ...transport,
+        signal: life,
+        close: () => entry.close("CDP client disconnected."),
+        reauthorize: async (signal = AbortSignal.timeout(1_000)) => {
+          await verify(signal, Date.now() + 1_000);
+        },
+        send: async (frame: Buffer) => {
+          await verify(AbortSignal.timeout(1_000), Date.now() + 1_000);
+          const { work } = await this.withRunnerAdmission(record.runnerId, async () => {
+            life.throwIfAborted();
+            return { work: transport.send(frame) };
+          });
+          await work;
+        },
+      };
     } catch (error) {
       this.#standardCdpAttachments.delete(id);
       entry.close("CDP attachment refused.");
+      if (attempts && attemptRecorded) {
+        if (handedOff) await attempts.lost(claims.browserSessionId, id);
+        else await attempts.settled(claims.browserSessionId, id);
+      }
+      if (profileLease && !handedOff) await releaseProfile(profileLease).catch(this.#onError);
       throw error;
     }
   }
@@ -3720,6 +3841,10 @@ export class BrowserService {
     this.standardCdpTickets.revoke(agentBindingId);
     for (const { claims, close } of this.#standardCdpAttachments.values())
       if (claims.authority.agentBindingId === agentBindingId) close(reason);
+  }
+
+  stopStandardCdpAttempt(id: string): void {
+    this.#standardCdpAttachments.get(id)?.close("Agent connection authority ended.");
   }
 
   closeStandardCdpForConnection(connectionId: string, reason: string): void {
@@ -3755,16 +3880,13 @@ export class BrowserService {
       (authority.expiresAt !== undefined && authority.expiresAt <= Date.now())
     )
       throw new BrowserCdpConnectionEnded("This browser authority has ended.");
-    let grant: Pick<StandardCdpFacts, "grantRevision" | "agentConnectionId"> = {
-      grantRevision: null,
-      agentConnectionId: null,
-    };
+    let authorityDetails: StandardCdpAuthority | undefined;
     const { record, broker } = await this.#admitAgentBackend(
       { ...authority, sessionId: browserSessionId },
       "cdp",
       false,
       (facts) => {
-        grant = facts;
+        authorityDetails = facts;
       },
     );
     const held = await this.#repository.listActiveBrowserSessionsForAgentBinding(
@@ -3792,7 +3914,8 @@ export class BrowserService {
       profileBindingId: identity?.binding.bindingId ?? null,
       runtimeId: target.runtimeId,
       placementKey: target.placementKey,
-      ...grant,
+      agentConnectionId: authorityDetails?.agentConnectionId ?? null,
+      grantRevision: authorityDetails?.grantRevision ?? null,
     };
     let mode: StandardCdpMode = "session";
     if (input.mode === "whole-context" && record.profileId && target.wholeContextCdp) {
@@ -3817,7 +3940,7 @@ export class BrowserService {
     }
     if (this.#closed || this.#endedBindings.has(authority.agentBindingId))
       throw new BrowserCdpConnectionEnded("This browser authority has ended.");
-    return { facts, mode, record, target, broker, identity };
+    return { facts, mode, record, target, broker, identity, authorityDetails };
   }
 
   async attachCdpForAgent(
@@ -3902,10 +4025,10 @@ export class BrowserService {
       this.#deviceAttachments.delete(deviceAttachmentId);
       unsubscribe();
       if (scriptAttachmentId && scriptOpening) {
-        void scriptOpening.then(() => broker.sendScriptCleanup({
+        void broker.sendScriptCleanup({
           type: "cdp.command", scriptAttachmentId, requestId: randomUUID(),
           command: { method: browserHostMethods.closeScriptAttachment },
-        })).catch(this.#onError);
+        }).catch(this.#onError);
       }
       if (nativeAttachment) {
         this.#actionAttachments.delete(nativeAttachment.attachmentId);
@@ -4057,6 +4180,7 @@ export class BrowserService {
           maxBytes: Math.min(confirmed.maxBytes, maxBrowserTextBytes - 4096),
           maxDepth: confirmed.maxDepth,
           maxEntries: confirmed.maxEntries,
+          ...(confirmed.maxImageBytes === undefined ? {} : { maxImageBytes: confirmed.maxImageBytes }),
         };
         const answered = broker.requestCdp({
           ...(replyBudget ? { replyBudget } : {}),
@@ -4814,10 +4938,14 @@ export class BrowserService {
       if (input.initialSurfaceId && !target.tabRestoreVersion)
         throw unavailable("Update this browser computer to reopen tabs.");
       if (input.agentBindingId) {
-        await this.admitAgentBrowser({
-          ownerId: input.ownerId,
-          agentBindingId: input.agentBindingId,
-        });
+        await this.admitAgentBrowser(
+          { ownerId: input.ownerId, agentBindingId: input.agentBindingId },
+          "read-write",
+          [],
+          this.#repository,
+          false,
+          { profileId: profile?.id ?? null },
+        );
         await this.#requireAgentAccess(placement.runnerId);
       }
       const record = await this.#repository.createBrowserSession({
@@ -5095,11 +5223,16 @@ export class BrowserService {
         }
       };
     };
+    const admitProfile = () => this.#standardCdpProfiles.run(profile?.id ?? null, async () => {
+      if (profile && this.#standardCdpProfiles.held(profile.id))
+        throw new BrowserCdpConnectionEnded("An attachment holds exclusive access to this browser profile.");
+      return admit();
+    });
     return origin === "person" && !input.agentBindingId
-      ? admit()
+      ? admitProfile()
       : this.withRunnerAdmission(placement.runnerId, async () => {
           await this.#requireAgentAccess(placement.runnerId);
-          return admit();
+          return admitProfile();
         });
   }
 
@@ -5168,7 +5301,7 @@ export class BrowserService {
     /** A browser about to start or restore: its exact profile, or null for Guest. */
     opening?: { readonly profileId: BrowserProfileId | null },
     captureAuthority?: (
-      facts: Pick<StandardCdpFacts, "grantRevision" | "agentConnectionId">,
+      facts: StandardCdpAuthority,
     ) => void,
   ) {
     if (!input.agentBindingId)
@@ -5203,6 +5336,8 @@ export class BrowserService {
       });
       const grant = selectedGrantOf(authority.execution);
       captureAuthority?.({
+        mode: authority.execution.mode,
+        threadId: authority.execution.threadId,
         grantRevision: authority.execution.agentConnection?.grantRevision ?? null,
         agentConnectionId: authority.execution.agentConnection?.agentConnectionId ?? null,
       });
@@ -5236,6 +5371,11 @@ export class BrowserService {
           code: "forbidden",
           message:
             "This browser profile is not one this connected agent may use. The person can change what it may use under Connected agents.",
+        });
+      if (authority.execution.agentConnection && profiles.includes(null))
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This connected agent needs a saved browser profile. Guest is unavailable.",
         });
     }
     if (records.length) {
@@ -5353,34 +5493,29 @@ export class BrowserService {
     },
     record: BrowserSessionRecord,
   ): Promise<void> {
-    if (
-      record.profileId &&
-      [...this.#standardCdpAttachments.values()].some(
-        ({ claims, mode }) =>
-          mode === "whole-context" &&
-          claims.facts.profileId === record.profileId &&
-          claims.authority.agentBindingId !== input.agentBindingId,
-      )
-    )
-      throw new BrowserCdpConnectionEnded(
-        "Another task holds exclusive access to this browser profile.",
-      );
-    const [attached, credits] = await Promise.all([
-      this.#repository.attachBrowserSession({
-        agentBindingId: input.agentBindingId,
-        ownerId: input.ownerId,
-        sessionId: record.id,
-      }),
-      this.#repository.recordAgentBrowserUse({
-        agentBindingId: input.agentBindingId,
-        ownerId: input.ownerId,
-        page: null,
-        sessionId: record.id,
-        tabId: null,
-      }),
-    ]);
-    if (attached) this.#onSessionsChanged([record.id]);
-    this.announceUsage(credits);
+    return this.#standardCdpProfiles.run(record.profileId, async () => {
+      const held = record.profileId ? this.#standardCdpProfiles.held(record.profileId) : undefined;
+      if (held && held.bindingId !== input.agentBindingId)
+        throw new BrowserCdpConnectionEnded(
+          "Another task holds exclusive access to this browser profile.",
+        );
+      const [attached, credits] = await Promise.all([
+        this.#repository.attachBrowserSession({
+          agentBindingId: input.agentBindingId,
+          ownerId: input.ownerId,
+          sessionId: record.id,
+        }),
+        this.#repository.recordAgentBrowserUse({
+          agentBindingId: input.agentBindingId,
+          ownerId: input.ownerId,
+          page: null,
+          sessionId: record.id,
+          tabId: null,
+        }),
+      ]);
+      if (attached) this.#onSessionsChanged([record.id]);
+      this.announceUsage(credits);
+    });
   }
 
   /**
@@ -6539,7 +6674,11 @@ export class HostedBrowserBroker {
     if (this.#scriptCleanup >= 256) throw new Error("Browser script cleanup queue is full.");
     this.#scriptCleanup++;
     try {
-      await this.#sendCommand(message, AbortSignal.timeout(5_000));
+      const signal = AbortSignal.timeout(5_000);
+      await withTimeout(this.#sendCommand(message, signal), 5_000, {
+        signal,
+        timeoutError: () => new Error("Browser script cleanup deadline exceeded."),
+      });
     } finally {
       this.#scriptCleanup--;
     }
@@ -7254,7 +7393,9 @@ export class HostedBrowserBroker {
       if (pending.bounded) {
         const words = {
           bad_message: "The browser rejected the CDP command or its parameters.",
-          conflict: "The browser could not complete the command in its current state.",
+          conflict: cause.reason === "browser-command-cancelled"
+            ? "The browser command was cancelled before dispatch."
+            : "The browser could not complete the command in its current state.",
           forbidden: "This CDP operation is outside the browser attachment's authority.",
           internal: "The browser command failed.",
           not_found: "The browser target or CDP session no longer exists.",

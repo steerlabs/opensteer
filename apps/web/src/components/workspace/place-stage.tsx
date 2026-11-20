@@ -1,3 +1,4 @@
+import { TabAgentStatus } from "../agent-work.js";
 import { actingOccupants, threadMark } from "@opensteer/client/host";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router";
@@ -295,12 +296,26 @@ function SelectedPlace({
   if (place?.kind === "app") return null;
   // The address is the person's to type; a tab id it names is checked before use.
   const tabId = BrowserSurfaceIdSchema.safeParse(destination.tabId).data ?? null;
+  // A connected agent's own task in this tab: who, for which task, and its Stop.
+  const sessionOccupant =
+    live?.occupants.find(
+      ({ threadId }) => directory.snapshot.agentWork?.sessions?.[threadId] !== undefined,
+    ) ?? null;
   return (
     <section
       aria-label={place?.title ?? "Tab"}
       className={`place place--${place?.kind ?? "tab"}`}
       data-place-key={placeKey ?? ""}
     >
+      {tabId && sessionOccupant ? (
+        <TabAgentStatus
+          occupant={{
+            threadId: sessionOccupant.threadId,
+            title: directory.rows.get(sessionOccupant.threadId)?.title ?? "",
+          }}
+          tabId={tabId}
+        />
+      ) : null}
       {place?.kind === "window" || place?.kind === "phone" ? (
         <OwnerView
           hostClient={hostClient}

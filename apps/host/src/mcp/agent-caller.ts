@@ -64,7 +64,8 @@ export class AgentCallerResolver {
       OpensteerStore,
       "getThreadForOwner" | "admitExecution" | "bindingAgentConnectionId"
     >;
-    readonly runs: Pick<RunToolTokenService, "authenticate">;
+    readonly runs: Pick<RunToolTokenService, "authenticate"> &
+      Partial<Pick<RunToolTokenService, "authenticateExecution">>;
     readonly triggers?: Pick<TriggerControlTokenService, "authenticate">;
     readonly watches?: Pick<WatchControlTokenService, "authenticate">;
     readonly connections?: ConnectionAuthenticator;
@@ -74,7 +75,8 @@ export class AgentCallerResolver {
       OpensteerStore,
       "getThreadForOwner" | "admitExecution" | "bindingAgentConnectionId"
     >;
-    readonly runs: Pick<RunToolTokenService, "authenticate">;
+    readonly runs: Pick<RunToolTokenService, "authenticate"> &
+      Partial<Pick<RunToolTokenService, "authenticateExecution">>;
     readonly triggers?: Pick<TriggerControlTokenService, "authenticate">;
     readonly watches?: Pick<WatchControlTokenService, "authenticate">;
     readonly connections?: ConnectionAuthenticator;
@@ -84,14 +86,24 @@ export class AgentCallerResolver {
   async authenticate(bearer: string): Promise<AgentCaller> {
     // Only token validation selects a credential family. A valid token whose live
     // anchor fails must never fall through to another family's authenticator.
-    const run = await this.options.runs.authenticate(bearer).catch(() => null);
+    const authenticated = await (
+      this.options.runs.authenticateExecution
+        ? this.options.runs.authenticateExecution(bearer)
+        : this.options.runs.authenticate(bearer).then((claims) => ({ claims, lineage: null }))
+    ).catch(() => null);
+    const run = authenticated?.claims;
     if (run) {
       const thread = await this.#anchor(run.threadId, run.requestedBy, run.environmentId);
       return {
         kind: "run",
         key: `run:${run.runId}`,
         userId: run.requestedBy,
-        ...(await this.#authority(run.requestedBy, `run:${run.runId}`, thread)),
+        ...(await this.#authority(
+          run.requestedBy,
+          `run:${run.runId}`,
+          thread,
+          authenticated.lineage,
+        )),
         thread,
         claims: run,
       };
@@ -154,12 +166,29 @@ export class AgentCallerResolver {
     owner: UserId,
     bindingId: string,
     thread: Thread,
+    /** Proven by the read that authenticated the Run, when there was one. */
+    lineage: {
+      readonly agentConnectionId: string | null;
+      readonly taskOriginConnectionId: string | null;
+    } | null = null,
   ): Promise<{
     readonly accessMode: ThreadAccessMode;
     readonly agentConnection?: AgentConnectionAuthority;
   }> {
-    // The person's own work pays one indexed read; only lineaged work resolves the full record.
-    if (!(await this.options.store.bindingAgentConnectionId(bindingId)))
+    // A known native execution of the person adds no query; anything else resolves the record,
+    // and an execution whose lineage and task disagree is refused rather than read as the person's.
+    if (lineage) {
+      if (
+        lineage.taskOriginConnectionId !== null &&
+        lineage.agentConnectionId !== lineage.taskOriginConnectionId
+      )
+        throw unavailable();
+      if (lineage.agentConnectionId === null) return { accessMode: thread.accessMode };
+    } else if (
+      !(await this.options.store.bindingAgentConnectionId(bindingId).catch(() => {
+        throw unavailable();
+      }))
+    )
       return { accessMode: thread.accessMode };
     const authority = await this.options.store
       .admitExecution({ ownerUserId: owner, subject: { kind: "binding", bindingId } })

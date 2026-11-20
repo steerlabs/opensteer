@@ -5,13 +5,13 @@ import { ControlPlaneError } from "../server/errors.js";
 
 type DB = Kysely<ControlPlaneDatabaseSchema>;
 
-export function workSignInAuthority(db: DB, clientId: string) {
-  return db
+export function workSignInAuthority(db: DB, clientId: string, lock = false) {
+  const authority = db
     .selectFrom("cloudComputers")
     .innerJoin("workAssignments", "workAssignments.id", "cloudComputers.workAssignmentId")
     .select(["workAssignments.assigneeAccountId", "workAssignments.state"])
-    .where("cloudComputers.oidcClientId", "=", clientId)
-    .executeTakeFirst();
+    .where("cloudComputers.oidcClientId", "=", clientId);
+  return (lock ? authority.forShare("workAssignments") : authority).executeTakeFirst();
 }
 
 export function otherAdmin(db: DB, org: OrganizationId, account: ControlPlaneAccountId, now: Date) {
@@ -36,23 +36,10 @@ export async function requireOrganizationAccountDeletionAllowed(
   tx: Transaction<ControlPlaneDatabaseSchema>,
   account: ControlPlaneAccountId,
 ) {
-  const assignment = await tx
-    .selectFrom("workAssignments")
-    .select("id")
-    .where("assigneeAccountId", "=", account)
-    .where("state", "!=", "ended")
-    .executeTakeFirst();
-  if (assignment) {
-    throw new ControlPlaneError(
-      "conflict",
-      "Ask your organization admin to offboard your work Cloud Computer before deleting your Account",
-    );
-  }
   const memberships = tx
     .selectFrom("organizationMembers")
     .select("organizationId")
-    .where("accountId", "=", account)
-    .where("role", "=", "admin");
+    .where("accountId", "=", account);
   const orgs = await tx
     .selectFrom("organizations")
     .select("id")
@@ -60,8 +47,38 @@ export async function requireOrganizationAccountDeletionAllowed(
     .orderBy("id")
     .forNoKeyUpdate()
     .execute();
+  const rows = await tx
+    .selectFrom("organizationMembers")
+    .select(["organizationId", "role"])
+    .where("accountId", "=", account)
+    .orderBy("organizationId")
+    .forUpdate()
+    .execute();
+  await tx
+    .selectFrom("organizationCheckouts")
+    .select("organizationId")
+    .where("founderAccountId", "=", account)
+    .orderBy("organizationId")
+    .orderBy("requestId")
+    .forUpdate()
+    .execute();
+  const assignments = await tx
+    .selectFrom("workAssignments")
+    .select(["id", "state"])
+    .where("assigneeAccountId", "=", account)
+    .orderBy("id")
+    .forUpdate()
+    .execute();
+  if (assignments.some(({ state }) => state !== "ended"))
+    throw new ControlPlaneError(
+      "conflict",
+      "Ask your organization admin to offboard your work Cloud Computer before deleting your Account",
+    );
+  const adminIds = new Set(
+    rows.filter(({ role }) => role === "admin").map(({ organizationId }) => organizationId),
+  );
   for (const { id } of orgs) {
-    if (!(await otherAdmin(tx, id, account, new Date()))) {
+    if (adminIds.has(id) && !(await otherAdmin(tx, id, account, new Date()))) {
       throw new ControlPlaneError(
         "conflict",
         "Appoint another organization admin before deleting your Account",

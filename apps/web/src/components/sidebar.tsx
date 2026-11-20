@@ -1,3 +1,5 @@
+import { useSessionTaskRow } from "./agent-work.js";
+import { AgentMark } from "./settings/agent-mark.js";
 import { runAction, toastOutcome } from "./use-action.js";
 import { NeedsYouList } from "./needs-you-list.js";
 import { placeByKey } from "@opensteer/client/host";
@@ -1195,6 +1197,8 @@ const TaskRowItem = memo(function TaskRowItem({
   ];
   const words = taskStateWords(row.tone);
   const mainRef = useRef<HTMLAnchorElement | null>(null);
+  // A connected agent's own task wears the agent's mark and says what it is using.
+  const session = useSessionTaskRow(hostClient, threadId);
   // The conversation beside the list is never out of sight in it.
   useEffect(() => {
     if (open && mainRef.current) revealInList(mainRef.current.closest("li") ?? mainRef.current);
@@ -1256,10 +1260,18 @@ const TaskRowItem = memo(function TaskRowItem({
           title={needsYou ? `${row.title}\n${ask}` : row.title}
           to={nav.conversationHref(nav.threadPath(threadId))}
         >
-          <TaskMark size={20} mark={taskMark(row)} quiet={taskMarkQuiet(row, row.done)} />
+          {session ? (
+            <AgentMark identity={session.agent} />
+          ) : (
+            <TaskMark size={20} mark={taskMark(row)} quiet={taskMarkQuiet(row, row.done)} />
+          )}
           <span className="side-task__text">
             <span className="side-task__title">{row.title}</span>
-            {needsYou ? <span className="side-task__ask">{ask}</span> : null}
+            {needsYou ? (
+              <span className="side-task__ask">{ask}</span>
+            ) : session ? (
+              <span className="side-task__ask side-task__ask--quiet">{session.line}</span>
+            ) : null}
           </span>
           {unsent ? <UnsentMark /> : null}
           <TaskState state={row.tone} unread={row.unread} />

@@ -27,6 +27,7 @@ import {
 } from "@opensteer/protocol";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { closed, connectPrimary } from "./private-machine-host.test-support.js";
+import { requireDeviceAccess } from "../administration/device-access.js";
 import { createHostRuntime, type PersonalHostRuntime } from "./runtime.js";
 
 const home = "https://home.example.test";
@@ -287,7 +288,8 @@ it("boots unclaimed, is claimed once through its setup link, and enrolls its com
       url: "/v1/rpc/auth.config?input=%7B%7D",
       headers: throughProxy,
     });
-    expect(claimed.json()).toMatchObject({ data: { setupState: "complete" } });
+    // The Home says what it is: on its own server, not a Mac and not a Cloud Computer.
+    expect(claimed.json()).toMatchObject({ data: { homeKind: "server", setupState: "complete" } });
 
     // The sign-in library keys its limits on the address the proxy vetted:
     // never on what the client wrote into forwarding or internal headers.
@@ -338,6 +340,21 @@ it("boots unclaimed, is claimed once through its setup link, and enrolls its com
       .where("kind", "=", "main")
       .execute();
     expect(mains).toEqual([{ id: main.fence.runnerId }]);
+    // An asleep refusal names the Device, in its detail, by its display name.
+    const mainDevice = await host.store.requireSelfDeviceId(main.fence.runnerId);
+    const mainName = (
+      await host.store.database
+        .selectFrom("devices")
+        .select("name")
+        .where("id", "=", mainDevice)
+        .executeTakeFirstOrThrow()
+    ).name;
+    await expect(
+      requireDeviceAccess(host.store.database, mainDevice, "browser", false, { asleep: true }),
+    ).rejects.toMatchObject({
+      reason: "device-asleep",
+      details: { machineId: mainDevice, capability: "browser", machineName: mainName },
+    });
 
     // Another computer joins through the ordinary add-a-computer flow at the canonical origin.
     const issued = await rpc(
@@ -439,6 +456,8 @@ it("boots unclaimed, is claimed once through its setup link, and enrolls its com
       headers: { ...viaProxy, authorization: bearer, ...apiVersionHeaders("personal") },
     });
     expect(shell.statusCode, shell.body).toBe(200);
+    // Who is signed in, as the Home's session says it: its owner.
+    expect(shell.json()).toMatchObject({ data: { session: { role: "owner" } } });
     const bearerSessions = await host.app.inject({
       method: "GET",
       url: "/v1/rpc/sessions.list?input=%7B%7D",

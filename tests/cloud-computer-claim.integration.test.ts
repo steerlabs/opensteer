@@ -283,7 +283,9 @@ const stripe = {
   cancel: async () => {
     if (stripeUnavailable) throw new Error("Stripe is unavailable");
   },
-  updateSeatQuantity: async () => { throw new Error("Not used"); },
+  updateSeatQuantity: async () => {
+    throw new Error("Not used");
+  },
 } satisfies StripeBilling & Pick<CloudComputerStripe, "updateSeatQuantity">;
 const config = loadCloudComputerConfig({
   OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL: provisionerEmail,
@@ -317,7 +319,15 @@ const auth = createControlPlaneAuth(database, {
   googleClientSecret: "test-secret",
 });
 const organizations = new OrganizationStore(database, {
-  stripe: { ...stripe, invoice: async () => { throw new Error("Not used"); }, voidInvoice: async () => { throw new Error("Not used"); } },
+  stripe: {
+    ...stripe,
+    invoice: async () => {
+      throw new Error("Not used");
+    },
+    voidInvoice: async () => {
+      throw new Error("Not used");
+    },
+  },
   offer: {
     priceId: "price_seat",
     portalConfigurationId: "bpc_org",

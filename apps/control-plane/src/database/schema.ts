@@ -7,6 +7,7 @@ import type {
   OrganizationMemberTable,
   OrganizationInvitationTable,
   OrganizationCheckoutTable,
+  OrganizationSeatChangeTable,
   WorkAssignmentTable,
   WorkAuditRecordTable,
   WorkAuditBatchTable,
@@ -578,6 +579,7 @@ export interface ControlPlaneDatabaseSchema {
   organizationMembers: OrganizationMemberTable;
   organizationInvitations: OrganizationInvitationTable;
   organizationCheckouts: OrganizationCheckoutTable;
+  organizationSeatChanges: OrganizationSeatChangeTable;
   workAssignments: WorkAssignmentTable;
   workAuditRecords: WorkAuditRecordTable;
   workAuditBatches: WorkAuditBatchTable;

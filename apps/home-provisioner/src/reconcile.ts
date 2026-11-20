@@ -170,12 +170,25 @@ export class Reconciler {
       await this.#check(id, { operation: "finish-provider-write", token }, signal);
       pending.delete(token);
     };
+    const recover = async (write: CloudComputerProviderWrite) => {
+      if (!write.recoverAfter || Date.parse(write.recoverAfter) > this.#now()) return;
+      await this.#check(
+        id,
+        {
+          operation: "recover-provider-write",
+          revision,
+          token: write.token,
+        },
+        signal,
+      );
+      pending.delete(write.token);
+    };
     const observe = async (token: string) => {
       if (pending.has(token)) await finish(token);
     };
     const journal = async <T>(
       kind: CloudComputerProviderWrite["kind"],
-      action: (token: string) => Promise<T>,
+      action: (token: string, send: (job: AbortSignal) => Promise<void>) => Promise<T>,
       serverId?: number,
     ): Promise<T> => {
       const token = randomUUID();
@@ -184,7 +197,9 @@ export class Reconciler {
       pending.set(token, write);
       let result: T;
       try {
-        result = await action(token);
+        result = await action(token, (job) =>
+          this.#check(id, { operation: "send-provider-write", revision, token }, job),
+        );
       } catch (error) {
         if (error instanceof ProviderWriteRejected) {
           await finish(token);
@@ -258,10 +273,8 @@ export class Reconciler {
           failure = "The Cloud Computer DNS operation failed.";
           throw dnsResult.reason;
         }
-        if (state === "deleted" && vmResult.value) {
-          for (const write of pending.values()) {
-            if (write.kind === "power-on") await finish(write.token);
-          }
+        if (vmResult.value) {
+          for (const write of pending.values()) await recover(write);
         }
         const settled = vmResult.value && !pending.size;
         if (state === "deleted") return report(settled ? "deleted" : "deleting");
@@ -270,9 +283,16 @@ export class Reconciler {
 
       if ([...pending.values()].some(({ kind }) => kind === "dns-a" || kind === "dns-aaaa")) {
         failure = "The Cloud Computer DNS operation failed.";
-        for (const token of (await dns.observeWrites?.(hostname, signal)) ?? [])
-          await observe(token);
+        if (dns.observeWrites) {
+          for (const token of await dns.observeWrites(hostname, signal)) await observe(token);
+          for (const write of pending.values()) {
+            if (write.kind === "dns-a" || write.kind === "dns-aaaa") await recover(write);
+          }
+        }
         failure = "The Cloud Computer provider operation failed.";
+      }
+      for (const write of pending.values()) {
+        if (write.kind === "create" || write.kind === "power-on") await recover(write);
       }
       if ([...pending.values()].some(({ kind }) => kind === "create"))
         return unready("provisioning");
@@ -305,8 +325,8 @@ export class Reconciler {
           bootstrapToken: computer.bootstrapToken,
         });
         current = await act(
-          (job, check) =>
-            journal("create", () =>
+          (job) =>
+            journal("create", (_token, send) =>
               provider.create(
                 {
                   id,
@@ -318,7 +338,7 @@ export class Reconciler {
                   userData,
                 },
                 job,
-                check,
+                () => send(job),
               ),
             ),
           true,
@@ -340,8 +360,12 @@ export class Reconciler {
       if (current.status === "off") {
         if ([...pending.values()].some(({ kind }) => kind === "power-on"))
           return unready("provisioning");
-        await act((job, check) =>
-          journal("power-on", () => provider.powerOn(server.id, job, check), server.id),
+        await act((job) =>
+          journal(
+            "power-on",
+            (_token, send) => provider.powerOn(server.id, job, () => send(job)),
+            server.id,
+          ),
         );
         current = await provider.describe(server.id, signal, server.generation);
       }
@@ -384,7 +408,10 @@ export class Reconciler {
       failure = "The Cloud Computer DNS operation failed.";
       await act((job, check) =>
         dns.ensureRecords(hostname, addresses, job, check, (type, publish) =>
-          journal(type === "A" ? "dns-a" : "dns-aaaa", publish),
+          journal(type === "A" ? "dns-a" : "dns-aaaa", async (token, send) => {
+            await send(job);
+            return publish(token);
+          }),
         ),
       );
       if (!replies.length || replies.some((identity) => !identity)) return unready("booting");

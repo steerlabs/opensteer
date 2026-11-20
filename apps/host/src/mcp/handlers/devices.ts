@@ -57,7 +57,7 @@ export class DeviceToolHandlers {
         "computer_use is not available on this computer yet. Update Opensteer on it to use it.",
       );
     return this.#devices.runComputerCode(
-      { run, threadId: run.threadId },
+      { run, threadId: run.threadId, agentBindingId: `run:${run.runId}` },
       call.input.code,
       call.signal ?? AbortSignal.timeout(100_000),
     );

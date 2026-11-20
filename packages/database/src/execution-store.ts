@@ -105,6 +105,11 @@ export interface RunDispatchContext {
   readonly run: Run;
   readonly thread: Thread;
   readonly agentHome: import("@opensteer/core").ComputerFolder;
+  /** The Run's own connection and its task's origin, from the rows read above. */
+  readonly lineage: {
+    readonly runConnectionId: string | null;
+    readonly taskOriginConnectionId: string | null;
+  };
 }
 function executionBindingFromRow(row: {
   readonly bindingGeneration: ProviderSessionTable["bindingGeneration"];
@@ -547,6 +552,10 @@ export async function loadRunDispatchContext(
         },
     firstOrdinal: runRow.nextRunnerOrdinal,
     run: runFromRow(runRow),
+    lineage: {
+      runConnectionId: runRow.connectionId,
+      taskOriginConnectionId: threadRow.originConnectionId,
+    },
     ...(runRow.voiceSessionId
       ? {
           voiceCall: {
@@ -917,8 +926,8 @@ export async function assertActiveGrant(
     readonly grantId?: GrantId | undefined;
   },
   executionNow: () => number = Date.now,
-): Promise<void> {
-  await withPersonalReadTransaction(database, (transaction) =>
+): Promise<import("./execution-authority.js").RunLineage> {
+  return withPersonalReadTransaction(database, (transaction) =>
     assertActiveGrantInStore(transaction, input, executionNow),
   );
 }

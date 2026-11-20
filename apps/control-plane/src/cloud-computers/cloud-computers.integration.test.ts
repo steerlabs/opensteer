@@ -1,3 +1,5 @@
+import { resetManagedCloudTables } from "./reset.test-support.js";
+import { testBackupVault } from "./backup-erasure.test-support.js";
 import { ControlPlaneError } from "../server/errors.js";
 import { createHash, createHmac, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import {
@@ -23,6 +25,7 @@ import {
   type WorkAuditRecord,
   type WorkPolicy,
   CloudComputerBootResponseSchema,
+  type CloudComputerCheck,
   CloudComputerDesiredResponseSchema,
   CloudComputerIdSchema,
   CloudComputerIdentitySchema,
@@ -150,8 +153,28 @@ integration("Cloud Computer Account service", () => {
     cancel: vi.fn<StripeBilling["cancel"]>(async (id) => {
       subscriptions.set(id, { ...subscriptions.get(id)!, status: "canceled" });
     }),
-    updateSeatQuantity: vi.fn<CloudComputerStripe["updateSeatQuantity"]>(async () => {}),
-  } satisfies StripeBilling & Pick<CloudComputerStripe, "updateSeatQuantity">;
+    updateSeatQuantity: vi.fn<CloudComputerStripe["updateSeatQuantity"]>(async ({ subscription }) =>
+      subscriptions.get(subscription)!,
+    ),
+    invoice: vi.fn<CloudComputerStripe["invoice"]>(async (id) => {
+      const invoice = [...subscriptions.values()].find(
+        (value) => value.latest_invoice?.id === id,
+      )?.latest_invoice;
+      if (!invoice) throw new Error("No mock invoice");
+      return invoice;
+    }),
+    voidInvoice: vi.fn<CloudComputerStripe["voidInvoice"]>(async (id) => {
+      for (const [subscription, value] of subscriptions) {
+        if (value.latest_invoice?.id === id)
+          subscriptions.set(subscription, {
+            ...value,
+            pending_update: null,
+            latest_invoice: { ...value.latest_invoice, status: "void" },
+          });
+      }
+    }),
+  } satisfies StripeBilling &
+    Pick<CloudComputerStripe, "updateSeatQuantity" | "invoice" | "voidInvoice">;
   const logs: string[] = [];
   const billingAttention = vi.fn<(message: string) => void>();
   let now = new Date();
@@ -168,13 +191,19 @@ integration("Cloud Computer Account service", () => {
     now: () => now,
     offer: {
       priceId: "price_seat",
+      portalConfigurationId: "bpc_org",
       name: "Work seat",
       currency: "usd",
       amountMinor: 4900,
       interval: "month",
     },
   });
+  const vault = testBackupVault();
+  const eraseKey = vi.fn(vault.destroy);
+  const purge = vi.fn<import("./backup-purge.js").BackupPurgeStep>(async () => true);
   const cloud = new CloudComputerStore(database, {
+    backupKeyVault: { ...vault, destroy: eraseKey },
+    purgeBackupStep: purge,
     organizations,
     onBillingAttention: billingAttention,
     config,
@@ -393,13 +422,13 @@ integration("Cloud Computer Account service", () => {
   });
 
   beforeEach(async () => {
-    await sql`truncate table work_audit_batches, work_audit_records, work_assignments, organization_invitations, organization_members, organization_checkouts, organizations, cloud_computer_egress_endpoints, cloud_computer_backup_namespaces, cloud_computer_backup_targets, cloud_computer_provisioner_lease, cloud_computers, cloud_computer_stripe_events, cloud_computer_checkouts`.execute(
-      database,
-    );
+    await resetManagedCloudTables(database);
     await database.deleteFrom("deployments").where("id", "=", identity.deploymentId).execute();
     await database.deleteFrom("oauthClients").where("clientId", "like", "occ_%").execute();
     claimErrors.length = 0;
     checkout.mockClear();
+    eraseKey.mockReset().mockImplementation(vault.destroy);
+    purge.mockReset().mockResolvedValue(true);
     stripe.subscription.mockClear();
     stripe.portal.mockClear();
     stripe.cancel.mockClear();
@@ -412,7 +441,9 @@ integration("Cloud Computer Account service", () => {
     kickBootstrap.mockClear();
     logs.length = 0;
     now = new Date();
-    stripe.updateSeatQuantity.mockReset().mockResolvedValue(undefined);
+    stripe.updateSeatQuantity
+      .mockReset()
+      .mockImplementation(async ({ subscription }) => subscriptions.get(subscription)!);
     workHomeFetch.mockReset();
     await cloud.checkOffer();
     await organizations.checkOffer();
@@ -817,7 +848,7 @@ integration("Cloud Computer Account service", () => {
       ).statusCode,
     ).toBe(403);
     await expect(
-      cloud.mutate(CloudComputerIdSchema.parse(assignment.computerId), "replace"),
+      runCloudComputerOperator(cloud, ["replace", computerId, "abcdef123456"]),
     ).rejects.toMatchObject({ code: "forbidden" });
 
     const desired = (await getDesired(CloudComputerIdSchema.parse(assignment.computerId)))!;
@@ -1060,6 +1091,24 @@ integration("Cloud Computer Account service", () => {
     ).toBe(400);
     expect((await hostCall("POST", "audit", batch)).json()).toEqual({ lastSequence: 1 });
     expect((await hostCall("POST", "audit", batch)).json()).toEqual({ lastSequence: 1 });
+    const conflictingRecord = {
+      ...batch.records[0]!,
+      at: new Date(now.getTime() + 1).toISOString(),
+    };
+    const conflictHead = createHash("sha256")
+      .update(Buffer.from(workAuditGenesisHash, "hex"))
+      .update(canonicalWorkAuditRecord(conflictingRecord))
+      .digest("hex");
+    const conflicting = { ...batch, records: [conflictingRecord], headHash: conflictHead };
+    const signedConflict = {
+      ...conflicting,
+      signature: sign(null, workAuditSigningBytes(conflicting), homeKeys.privateKey).toString(
+        "base64url",
+      ),
+    };
+    expect((await hostCall("POST", "audit", signedConflict)).statusCode).toBe(409);
+    const wrongChain = buildAudit(2, workAuditGenesisHash);
+    expect((await hostCall("POST", "audit", wrongChain)).statusCode).toBe(400);
     const next = buildAudit(2, batch.headHash);
     const third = buildAudit(3, next.headHash);
     const fourth = buildAudit(4, third.headHash);
@@ -1078,13 +1127,13 @@ integration("Cloud Computer Account service", () => {
     expect(exported.headers).toMatchObject({
       "x-opensteer-audit-last-sequence": "1",
       "x-opensteer-audit-gap-expected": "2",
-      "x-opensteer-audit-gap-received": "4",
+      "x-opensteer-audit-gap-received": "3",
     });
     expect(exported.headers["x-opensteer-audit-last-received-at"]).toBe(now.toISOString());
     expect(exported.body).toBe(canonicalWorkAuditRecord(batch.records[0]!) + "\n");
     expect((await hostCall("POST", "audit", next)).statusCode).toBe(200);
     expect((await hostCall("POST", "audit", third)).json()).toEqual({ lastSequence: 3 });
-    expect((await exportAudit()).headers["x-opensteer-audit-gap-expected"]).toBe("4");
+    expect((await exportAudit()).headers["x-opensteer-audit-gap-expected"]).toBe("2");
     expect((await hostCall("POST", "audit", fourth)).json()).toEqual({ lastSequence: 4 });
     expect((await exportAudit()).headers["x-opensteer-audit-gap-expected"]).toBeUndefined();
     expect((await requestAs(admin, "GET", `${assignmentPath}/audit?after=2`)).body).toBe(
@@ -1113,9 +1162,40 @@ integration("Cloud Computer Account service", () => {
       flushVerified = true;
       return new Response(null, { status: 204 });
     });
-    const offboarded = await requestAs(admin, "POST", `${assignmentPath}/offboard`, {
-      retentionSeconds: 0,
+    const tokenInFlight = Promise.withResolvers<void>();
+    const issueToken = Promise.withResolvers<void>();
+    const offboardEntered = Promise.withResolvers<void>();
+    const issue = auth.handler.bind(auth);
+    const issueSpy = vi.spyOn(auth, "handler").mockImplementation(async (request) => {
+      if (new URL(request.url).pathname === "/api/auth/oauth2/token") {
+        tokenInFlight.resolve();
+        await issueToken.promise;
+      }
+      return issue(request);
     });
+    const beginOffboard = organizations.beginOffboard.bind(organizations);
+    const cutSpy = vi.spyOn(organizations, "beginOffboard").mockImplementation(async (...args) => {
+      offboardEntered.resolve();
+      return beginOffboard(...args);
+    });
+    const issuing = redeemCode(await issueCode());
+    await tokenInFlight.promise;
+    const cutting = requestAs(admin, "POST", `${assignmentPath}/offboard`, { retentionSeconds: 0 });
+    await offboardEntered.promise;
+    try {
+      const assignmentState = await database
+        .selectFrom("workAssignments")
+        .select("state")
+        .where("id", "=", assignment.assignmentId)
+        .executeTakeFirstOrThrow();
+      expect(assignmentState.state).toBe("active");
+    } finally {
+      issueToken.resolve();
+    }
+    expect((await issuing).statusCode).toBe(200);
+    const offboarded = await cutting;
+    issueSpy.mockRestore();
+    cutSpy.mockRestore();
     expect(offboarded.statusCode, offboarded.body).toBe(200);
     expect(offboarded.json()).toMatchObject({
       state: "offboarding",
@@ -1126,14 +1206,13 @@ integration("Cloud Computer Account service", () => {
     expect(workHomeFetch).toHaveBeenCalledOnce();
     expect(flushVerified).toBe(true);
     const token = await redeemCode(unusedCode);
-    expect(token.statusCode).toBe(401);
-    expect(token.json()).toMatchObject({ error: "invalid_client" });
+    expect(token.statusCode).toBe(403);
     expect((await org.read()).seats.free).toBe(0);
     await pass();
     expect(dns).toBe(false);
     expect(server?.status).toBe("off");
     const onBillingError = vi.fn();
-    await cloud.reconcileBilling(onBillingError);
+    await organizations.reconcileOffboarding(onBillingError);
     expect(onBillingError).not.toHaveBeenCalled();
     const suspended = await org.read();
     expect(suspended.assignments[0]).toMatchObject({
@@ -1145,7 +1224,7 @@ integration("Cloud Computer Account service", () => {
     await pass();
     expect(server).toBeUndefined();
     expect((await org.read()).seats.free).toBe(0);
-    await cloud.reconcileBilling(onBillingError);
+    await organizations.reconcileOffboarding(onBillingError);
     expect(onBillingError).not.toHaveBeenCalled();
     const ended = await org.read();
     expect(ended.assignments[0]).toMatchObject({
@@ -1166,6 +1245,105 @@ integration("Cloud Computer Account service", () => {
     );
   });
 
+  it("reserves every organization seat before Stripe and refuses to sell unbacked seats", async () => {
+    const admin = await createAccount();
+    const order = purchase(admin.id);
+    const start = (seats: number) =>
+      requestAs(admin, "POST", `${accountOrganizationsPath}/checkout`, {
+        requestId: order.requestId,
+        name: "Workspace",
+        seats,
+      });
+    expect((await start(3)).statusCode).toBe(503);
+    expect(checkout).not.toHaveBeenCalled();
+    expect((await start(2)).statusCode).toBe(200);
+    const orgId = checkout.mock.calls[0]![0].organization!.id;
+    expect(
+      (await cloud.listBackupTargets()).filter(
+        ({ reservedOrganizationId }) => reservedOrganizationId === orgId,
+      ),
+    ).toHaveLength(2);
+    const personal = purchase(admin.id);
+    expect(
+      (
+        await requestAs(admin, "POST", accountCloudComputerCheckoutPath, {
+          requestId: personal.requestId,
+        })
+      ).statusCode,
+    ).toBe(503);
+  });
+
+  it("refunds an organization Checkout that pays while Account deletion is expiring it", async () => {
+    const founder = await createAccount();
+    const paid = purchase(founder.id);
+    expect(
+      (
+        await requestAs(founder, "POST", `${accountOrganizationsPath}/checkout`, {
+          requestId: paid.requestId,
+          name: "Workspace",
+          seats: 2,
+        })
+      ).statusCode,
+    ).toBe(200);
+    const organization = checkout.mock.calls.at(-1)![0].organization!;
+    const metadata = { ...paid.session.metadata, organization_id: organization.id };
+    const payment = {
+      ...paid.session,
+      metadata,
+      payment_status: "paid" as const,
+      mode: "subscription" as const,
+    };
+    subscriptions.set(paid.subscription, {
+      ...paid.details,
+      metadata,
+      items: {
+        has_more: false,
+        data: [{ id: "si_seat", quantity: 2, price: { id: "price_seat", currency: "usd" } }],
+      },
+    });
+    const entered = Promise.withResolvers<void>();
+    const deliver = Promise.withResolvers<void>();
+    stripe.findCheckout.mockResolvedValueOnce({
+      id: payment.id,
+      status: "open",
+      url: checkoutUrl,
+      payment: undefined,
+    });
+    stripe.expireCheckout.mockImplementationOnce(async () => {
+      entered.resolve();
+      await deliver.promise;
+      return { id: payment.id, status: "complete", url: null, payment };
+    });
+    const deleting = requestAs(founder, "DELETE", "/v1/account");
+    await entered.promise;
+    const event = webhook("checkout.session.completed", payment);
+    deliver.resolve();
+    const output = await deleting;
+    expect(output.statusCode, output.body).toBe(200);
+    expect((await event).statusCode).toBe(200);
+    expect(stripe.cancel).toHaveBeenCalledWith(paid.subscription);
+    expect(stripe.refundCheckout).toHaveBeenCalledOnce();
+    expect(
+      await database
+        .selectFrom("organizations")
+        .select("id")
+        .where("id", "=", organization.id)
+        .execute(),
+    ).toEqual([]);
+    expect(
+      await database
+        .selectFrom("organizationCheckouts")
+        .select("status")
+        .where("organizationId", "=", organization.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "refunded" });
+    expect(
+      (await cloud.listBackupTargets()).every(
+        ({ reservedOrganizationId }) => reservedOrganizationId === null,
+      ),
+    ).toBe(true);
+  });
+
   it("confirms changes with Stripe, refuses reductions below occupancy, and reconciles billing suspension", async () => {
     const admin = await createAccount();
     const member = await createAccount();
@@ -1180,6 +1358,7 @@ integration("Cloud Computer Account service", () => {
     expect(stripe.updateSeatQuantity).toHaveBeenCalledWith({
       item: "si_seat",
       organization: org.id,
+      subscription: org.subscription.id,
       requestId: pending.requestId,
       quantity: 2,
       increase: true,
@@ -1192,7 +1371,13 @@ integration("Cloud Computer Account service", () => {
     subscriptions.set(sub.id, {
       ...sub,
       pending_update: { expires_at: Math.floor(now.getTime() / 1000) + 300 },
-      latest_invoice: { status: "open", attempt_count: 1 },
+      latest_invoice: {
+        id: "in_seats",
+        billing_reason: "subscription_update",
+        status: "open",
+        attempt_count: 1,
+        hosted_invoice_url: "https://invoice.stripe.example.test/seat-change",
+      },
     });
     expect((await webhook("invoice.payment_failed", { subscription: sub.id })).statusCode).toBe(
       200,
@@ -1201,6 +1386,25 @@ integration("Cloud Computer Account service", () => {
     expect((await org.read()).seats).toMatchObject({ paid: 1, assigned: 1, free: 0, pending: 2 });
     subscriptions.set(sub.id, {
       ...sub,
+      latest_invoice: {
+        id: "in_seats",
+        billing_reason: "subscription_update",
+        status: "open",
+        attempt_count: 1,
+      },
+      items: { has_more: false, data: [{ ...sub.items.data[0]!, quantity: 2 }] },
+    });
+    expect((await webhook("customer.subscription.updated", { id: sub.id })).statusCode).toBe(200);
+    expect((await org.read()).seats.paid).toBe(1);
+    expect((await org.read()).pendingSeatChange).toMatchObject({ requestId: pending.requestId });
+    subscriptions.set(sub.id, {
+      ...sub,
+      latest_invoice: {
+        id: "in_seats",
+        billing_reason: "subscription_update",
+        status: "paid",
+        attempt_count: 1,
+      },
       items: { has_more: false, data: [{ ...sub.items.data[0]!, quantity: 2 }] },
     });
     expect((await webhook("customer.subscription.updated", { id: sub.id })).statusCode).toBe(200);
@@ -1210,13 +1414,30 @@ integration("Cloud Computer Account service", () => {
       (await requestAs(admin, "POST", `${org.path}/seats`, { requestId: randomUUID(), seats: 1 }))
         .statusCode,
     ).toBe(409);
+    subscriptions.set(sub.id, {
+      ...subscriptions.get(sub.id)!,
+      latest_invoice: {
+        id: "in_renewal",
+        status: "draft",
+        attempt_count: 0,
+        last_finalization_error: {},
+      },
+    });
+    expect(
+      (await webhook("invoice.finalization_failed", { subscription: sub.id })).statusCode,
+    ).toBe(200);
+    expect((await getDesired(id))?.state).toBe("suspended");
     subscriptions.set(sub.id, { ...subscriptions.get(sub.id)!, status: "past_due" });
     expect((await webhook("invoice.payment_failed", { subscription: sub.id })).statusCode).toBe(
       200,
     );
     expect((await getDesired(id))?.state).toBe("suspended");
     expect((await org.read()).seats.free).toBe(0);
-    subscriptions.set(sub.id, { ...subscriptions.get(sub.id)!, status: "active" });
+    subscriptions.set(sub.id, {
+      ...subscriptions.get(sub.id)!,
+      status: "active",
+      latest_invoice: { id: "in_renewal", status: "paid", attempt_count: 1 },
+    });
     const errors = vi.fn();
     await cloud.reconcileBilling(errors);
     expect(errors).not.toHaveBeenCalled();
@@ -1958,6 +2179,10 @@ integration("Cloud Computer Account service", () => {
         reserved: false,
       }),
     );
+    await expect(run("backup-remove", reserved.id)).rejects.toThrow("reserved");
+    await cloud.reconcileBackupErasure(() => {
+      throw new Error("Purge failed");
+    });
     expect(await run("backup-remove", reserved.id)).toEqual({ removed: true });
     expect(await run("backup-list")).not.toContainEqual(
       expect.objectContaining({ id: reserved.id }),
@@ -2103,6 +2328,75 @@ integration("Cloud Computer Account service", () => {
     });
   });
 
+  it("keeps deletion pending without key erasure and a backup target reserved until an empty listing", async () => {
+    const { id, account } = await buy();
+    const original = await getDesired(id);
+    const booted = await bootable(original!);
+    const target = (await cloud.listBackupTargets()).find(({ computerId }) => computerId === id)!;
+    expect(await vault.read(id, 1)).toBe(booted.backup.password);
+    const url = accountCloudComputerPath(id);
+    expect(
+      (
+        await requestAs(account, "DELETE", url, {
+          confirmation: cloudComputerDeleteConfirmation(id),
+        })
+      ).statusCode,
+    ).toBe(200);
+    eraseKey.mockRejectedValueOnce(new Error("Vault timeout"));
+    const deleting = (await getDesired(id))!;
+    expect(
+      (
+        await report(deleting, {
+          phase: "deleted",
+          providerServerId: null,
+          ipv4: null,
+          observedIdentity: null,
+        })
+      ).json(),
+    ).toEqual({ recorded: true });
+    expect((await requestAs(account, "GET", url)).json()).toMatchObject({
+      status: "needs_attention",
+      deletion: {
+        computerDestroyedAt: expect.any(String),
+        backupsUnreadableAt: null,
+        storedBackupDataRemovedAt: null,
+      },
+    });
+    expect((await cloud.listBackupTargets()).find(({ id }) => id === target.id)).toMatchObject({
+      purgeComputerId: id,
+    });
+    await expect(cloud.removeBackupTarget(target.id)).rejects.toThrow("reserved");
+
+    const errors = vi.fn();
+    purge.mockRejectedValueOnce(new Error("Storage unavailable")).mockResolvedValueOnce(false);
+    await cloud.reconcileBackupErasure(errors);
+    expect(errors).toHaveBeenCalledOnce();
+    await expect(vault.read(id, 1)).rejects.toThrow("No test backup key");
+    expect((await requestAs(account, "GET", url)).json()).toMatchObject({
+      status: "deleted",
+      deletion: {
+        computerDestroyedAt: expect.any(String),
+        backupsUnreadableAt: expect.any(String),
+        storedBackupDataRemovedAt: null,
+      },
+    });
+    await cloud.reconcileBackupErasure(errors);
+    await expect(cloud.removeBackupTarget(target.id)).rejects.toThrow("reserved");
+    expect(purge).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        prefix: booted.backup.prefix,
+        accessKeyId: booted.backup.accessKeyId,
+        secretAccessKey: booted.backup.secretAccessKey,
+      }),
+    );
+    await cloud.reconcileBackupErasure(errors);
+    expect((await requestAs(account, "GET", url)).json()).toMatchObject({
+      status: "deleted",
+      deletion: { storedBackupDataRemovedAt: expect.any(String) },
+    });
+    await expect(cloud.removeBackupTarget(target.id)).resolves.toBeUndefined();
+  });
+
   it("assigns egress exclusively and releases it only upon a confirmed tombstone", async () => {
     const endpoint = {
       url: "https://proxy.example.test",
@@ -2149,6 +2443,9 @@ integration("Cloud Computer Account service", () => {
     await expect(cloud.checkout(customer.id, order.requestId)).rejects.toThrow(
       "not available right now",
     );
+    await cloud.reconcileBackupErasure(() => {
+      throw new Error("Purge failed");
+    });
     await expect(
       cloud.rotateBackupTarget(retired.id, {
         prefix: retired.prefix,
@@ -2446,7 +2743,8 @@ integration("Cloud Computer Account service", () => {
     });
     expect((await getDesired(id))?.state).toBe("deleted");
     expect((await requestAs(account, "GET", accountCloudComputerPath(id))).json()).toMatchObject({
-      status: "deleted",
+      status: "needs_attention",
+      deletion: { startedAt: expect.any(String), computerDestroyedAt: null },
     });
   });
 
@@ -2475,7 +2773,10 @@ integration("Cloud Computer Account service", () => {
     });
     expect(stripe.expireCheckout).toHaveBeenCalledWith(next.session.id);
     expect(stripe.refundCheckout).not.toHaveBeenCalled();
-    expect(deleted.json()).toMatchObject({ status: "deleted" });
+    expect(deleted.json()).toMatchObject({
+      status: "needs_attention",
+      deletion: { startedAt: expect.any(String), computerDestroyedAt: null },
+    });
   });
 
   it("refunds a paid attempt after its fulfillment bound and logs the reason", async () => {
@@ -2551,6 +2852,7 @@ integration("Cloud Computer Account service", () => {
     server?: FakeVm;
     invalidDiscovery?: boolean;
     unreachableDiscovery?: boolean;
+    interceptCheck?: (check: CloudComputerCheck, reply: Promise<boolean>) => Promise<boolean>;
   }) {
     const { accountClient } = await vi.importActual<{
       accountClient(
@@ -2558,7 +2860,7 @@ integration("Cloud Computer Account service", () => {
         token: () => Promise<string>,
         http: { timeoutMs: number },
         holder: string,
-      ): object;
+      ): { check(id: string, check: CloudComputerCheck, signal: AbortSignal): Promise<boolean> };
     }>("../../../home-provisioner/src/account.js");
     const { discoverHome } = await vi.importActual<{
       discoverHome(http: { timeoutMs: number; fetch: typeof fetch }): () => Promise<unknown>;
@@ -2582,9 +2884,9 @@ integration("Cloud Computer Account service", () => {
       ),
       describe: async (id: number) =>
         [machine.server, machine.previous].find((server) => server?.id === id),
-      powerOn: async () => {
+      powerOn: vi.fn(async () => {
         machine.server = { ...machine.server!, status: "running" };
-      },
+      }),
       powerOff: vi.fn(async (id: number) => {
         if (machine.server && machine.server.id === id)
           machine.server = { ...machine.server, status: "off" };
@@ -2652,6 +2954,7 @@ integration("Cloud Computer Account service", () => {
       defaultServerType: "cpx22",
       concurrency: 1,
       readinessTimeoutMs: 20 * 60_000,
+      now: () => now.getTime(),
     };
     const { Reconciler } = await vi.importActual<{
       Reconciler: new (input: typeof options) => { pass(signal: AbortSignal): Promise<void> };
@@ -2663,7 +2966,14 @@ integration("Cloud Computer Account service", () => {
         { timeoutMs: 5000 },
         holder,
       );
-      return new Reconciler({ ...options, account: client }).pass(AbortSignal.timeout(8000));
+      const account = input.interceptCheck
+        ? {
+            ...client,
+            check: (id: string, check: CloudComputerCheck, signal: AbortSignal) =>
+              input.interceptCheck!(check, client.check(id, check, signal)),
+          }
+        : client;
+      return new Reconciler({ ...options, account }).pass(AbortSignal.timeout(8000));
     }
     return { pass, machine, provider, dns, dnsState };
   }
@@ -2672,6 +2982,77 @@ integration("Cloud Computer Account service", () => {
   function vm(generation: number, status: "off" | "running") {
     return { id: 6 + generation, generation, status, ipv4: "192.0.2.7", ipv6: null, firewalls: [] };
   }
+
+  it.each(["create", "power-on"] as const)(
+    "offboards after an interrupted %s that Account journaled but the provider never received",
+    async (kind) => {
+      const admin = await createAccount();
+      const org = await buyOrganization(admin, 1);
+      const result = await requestAs(admin, "POST", `${org.path}/assignments`, {
+        requestId: randomUUID(),
+        accountId: admin.id,
+      });
+      expect(result.statusCode, result.body).toBe(200);
+      const { assignmentId, computerId } = WorkAssignmentViewSchema.parse(result.json());
+      const id = CloudComputerIdSchema.parse(computerId);
+      const journaled = Promise.withResolvers<void>();
+      const stopped = Promise.withResolvers<void>();
+      const harness = await liveReconciler({
+        id,
+        ...(kind === "power-on" ? { server: vm(1, "off") } : {}),
+        interceptCheck: async (check, response) => {
+          const allowed = await response;
+          if (check.operation === "begin-provider-write" && check.write.kind === kind) {
+            expect(allowed).toBe(true);
+            journaled.resolve();
+            await stopped.promise;
+            throw new Error("The dispatcher stopped before sending");
+          }
+          return allowed;
+        },
+      });
+      const pass = harness.pass();
+      await journaled.promise;
+      try {
+        expect((await getDesired(id))?.pendingProviderWrites).toMatchObject([
+          { kind, dispatched: false },
+        ]);
+        expect(
+          (
+            await requestAs(admin, "POST", `${org.path}/assignments/${assignmentId}/offboard`, {
+              retentionSeconds: 0,
+            })
+          ).statusCode,
+        ).toBe(200);
+        expect((await requestAs(admin, "DELETE", "/v1/account")).statusCode).toBe(409);
+      } finally {
+        stopped.resolve();
+        await pass;
+      }
+      expect(harness.provider.create).not.toHaveBeenCalled();
+      expect(harness.provider.powerOn).not.toHaveBeenCalled();
+      await harness.pass();
+      expect((await org.read()).assignments[0]).toMatchObject({ suspended: false, deleted: false });
+      now = new Date(now.getTime() + 3 * 60_000 + 1);
+      await harness.pass();
+      expect((await getDesired(id))?.pendingProviderWrites).toBeUndefined();
+      const errors = vi.fn();
+      await organizations.reconcileOffboarding(errors);
+      expect((await org.read()).assignments[0]).toMatchObject({ suspended: true, deleted: false });
+      await harness.pass();
+      expect(harness.machine.server).toBeUndefined();
+      await organizations.reconcileOffboarding(errors);
+      expect(errors).not.toHaveBeenCalled();
+      expect((await org.read()).assignments[0]).toMatchObject({
+        state: "ended",
+        deleted: true,
+        deletion: {
+          computerDestroyedAt: expect.any(String),
+          backupsUnreadableAt: expect.any(String),
+        },
+      });
+    },
+  );
 
   it.each(["create", "dns-a"] as const)(
     "keeps pools reserved when a journaled %s lands after the lease changes",

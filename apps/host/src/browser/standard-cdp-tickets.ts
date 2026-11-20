@@ -28,7 +28,7 @@ export interface StandardCdpFacts {
 }
 
 export interface StandardCdpTicketClaims {
-  readonly authority: CdpAuthority;
+  readonly authority: Omit<CdpAuthority, "environmentId">;
   readonly browserSessionId: BrowserSessionId;
   readonly mode: StandardCdpMode;
   readonly facts: StandardCdpFacts;
@@ -51,7 +51,12 @@ export class StandardCdpTickets {
     this.#claims = claims;
   }
 
-  issue(input: StandardCdpTicketClaims & { readonly ttl?: number }): string {
+  issue(
+    input: Omit<StandardCdpTicketClaims, "authority"> & {
+      readonly authority: CdpAuthority;
+      readonly ttl?: number;
+    },
+  ): string {
     const { ttl = 60_000, authority, browserSessionId, mode, facts, sharedChromeTab } = input;
     if (!Number.isSafeInteger(ttl) || ttl <= 0 || ttl > maxTtl)
       throw new OpensteerError({
@@ -71,7 +76,11 @@ export class StandardCdpTickets {
     const ticket = randomBytes(32).toString("base64url");
     this.#claims.set(digest(ticket), {
       claims: Object.freeze({
-        authority: Object.freeze({ ...authority }),
+        authority: Object.freeze({
+          agentBindingId: authority.agentBindingId,
+          ownerId: authority.ownerId,
+          ...(authority.expiresAt !== undefined ? { expiresAt: authority.expiresAt } : {}),
+        }),
         browserSessionId,
         mode,
         facts: Object.freeze({ ...facts }),

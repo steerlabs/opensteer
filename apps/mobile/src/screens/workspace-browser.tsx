@@ -665,6 +665,7 @@ function Focused(
     agents,
     hostClient,
     onAnswer: openThread,
+    tabId: tab.tabId,
     threadId: watchedId,
   });
   const hereId = useHereDeviceId(deploymentId);

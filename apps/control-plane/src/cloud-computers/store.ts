@@ -1,3 +1,8 @@
+import { cancelAndRefundCheckout } from "./checkout-compensation.js";
+import { freeBackupTargets } from "./backup-capacity.js";
+import { deletionView } from "./deletion-view.js";
+import { SecretManagerBackupKeyVault, type BackupKeyVault } from "./backup-vault.js";
+import { purgeBackupObjects, type BackupPurgeStep } from "./backup-purge.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   hostOidcCallbackPath,
@@ -80,6 +85,8 @@ const checkoutCreationWindowMs = 31 * 60_000;
 const paidFulfillmentDeadlineMs = 15 * 60_000;
 const emptyDigest = "0".repeat(64);
 const claimLeaseMs = 2 * 60_000;
+const providerWriteGraceMs = 3 * 60_000;
+const dispatchedWriteGraceMs = 15 * 60_000;
 
 /** One ready Home the Account is about to claim, as it was when the attempt began. */
 export interface CloudComputerClaimJob {
@@ -104,6 +111,8 @@ interface StoreOptions {
   readonly cipher: HostedTeamSetupTokenCipher;
   readonly stripe: StripeBilling;
   readonly now?: () => Date;
+  readonly backupKeyVault?: BackupKeyVault;
+  readonly purgeBackupStep?: BackupPurgeStep;
   readonly onBillingAttention?: (message: string) => void;
   readonly organizations?: OrganizationBilling;
   /** Where Stripe's checkout and billing pages send the person back. */
@@ -126,7 +135,18 @@ export class CloudComputerStore {
     return { ...this.#options.config.plan, interval: this.#options.config.interval };
   }
 
+  #vault(project = this.#options.config.backupKeyProject): BackupKeyVault {
+    if (this.#options.backupKeyVault) return this.#options.backupKeyVault;
+    if (!project)
+      throw new ControlPlaneError(
+        "unavailable",
+        "Cloud Computer backup key storage is unavailable",
+      );
+    return new SecretManagerBackupKeyVault(project);
+  }
+
   async checkOffer(): Promise<void> {
+    this.#vault();
     try {
       await this.#options.stripe.validateOffer(this.#options.config.stripePriceId, this.plan);
       await this.#options.stripe.validatePortal(this.#options.config.stripePortalConfigurationId);
@@ -135,6 +155,17 @@ export class CloudComputerStore {
       this.#offerValid = false;
       throw error;
     }
+  }
+
+  async checkoutCompleted(accountId: ControlPlaneAccountId, requestId: string): Promise<boolean> {
+    const completed = await this.#db
+      .selectFrom("cloudComputerCheckouts")
+      .select("requestId")
+      .where("accountId", "=", accountId)
+      .where("requestId", "=", requestId)
+      .where("status", "=", "completed")
+      .executeTakeFirst();
+    return Boolean(completed);
   }
 
   async checkout(accountId: ControlPlaneAccountId, requestId: string) {
@@ -203,6 +234,7 @@ export class CloudComputerStore {
             .select("id")
             .where("computerId", "is", null)
             .where("checkoutKey", "is", null)
+            .where("reservedOrganizationId", "is", null)
             .where("needsRotation", "=", false)
             .orderBy("id")
             .forUpdate()
@@ -603,6 +635,7 @@ export class CloudComputerStore {
           .select("id")
           .where("computerId", "is", null)
           .where("checkoutKey", "is", null)
+          .where("reservedOrganizationId", "is", null)
           .where("needsRotation", "=", false)
           .orderBy("id")
           .executeTakeFirst());
@@ -629,7 +662,7 @@ export class CloudComputerStore {
         .where("needsRotation", "=", false)
         .where((eb) =>
           eb.or([
-            eb("checkoutKey", "is", null),
+            eb.and([eb("checkoutKey", "is", null), eb("reservedOrganizationId", "is", null)]),
             eb("checkoutKey", "=", checkoutKey(accountId, requestId)),
           ]),
         )
@@ -651,18 +684,7 @@ export class CloudComputerStore {
       "Paid Cloud Computer Checkout could not be fulfilled. Cancelling and refunding it.",
     );
     try {
-      const subscription = await this.#options.stripe.subscription(payment.subscription);
-      if (
-        subscription.id !== payment.subscription ||
-        subscription.customer !== payment.customer ||
-        subscription.metadata["account_id"] !== payment.metadata.account_id ||
-        subscription.metadata["request_id"] !== payment.metadata.request_id ||
-        subscription.metadata["organization_id"] !== undefined
-      )
-        throw new ControlPlaneError("unavailable", "Stripe returned another subscription");
-      if (billingStatus(subscription) !== "canceled")
-        await this.#options.stripe.cancel(subscription.id);
-      if (await this.#options.stripe.refundCheckout(payment)) return true;
+      if (await cancelAndRefundCheckout(this.#options.stripe, payment)) return true;
     } catch {
       this.#billingAttention("Cloud Computer Checkout cancellation or refund is pending.");
     }
@@ -671,6 +693,7 @@ export class CloudComputerStore {
   }
 
   async createWorkComputer(tx: TransactionDb, id: CloudComputerId, assignmentId: WorkAssignmentId) {
+    this.#vault();
     // Legacy personal billing columns stay populated for additive rollout. Work billing never reads them.
     const reference = `work:${assignmentId}`;
     await this.#createComputer(tx, {
@@ -684,13 +707,17 @@ export class CloudComputerStore {
       stripePriceId: reference,
       billingCurrency: "",
     });
-    const free = await tx
-      .selectFrom("cloudComputerBackupTargets")
+    const assignment = await tx
+      .selectFrom("workAssignments")
+      .select("organizationId")
+      .where("id", "=", assignmentId)
+      .executeTakeFirstOrThrow();
+    const free = await freeBackupTargets(tx)
+      .where("organizationReservationRequestId", "is", null)
+      .where("reservedOrganizationId", "=", assignment.organizationId)
       .select("id")
-      .where("computerId", "is", null)
-      .where("checkoutKey", "is", null)
-      .where("needsRotation", "=", false)
       .orderBy("id")
+      .limit(1)
       .forUpdate()
       .skipLocked()
       .executeTakeFirst();
@@ -699,7 +726,7 @@ export class CloudComputerStore {
     await tx
       .updateTable("cloudComputerBackupTargets")
       .where("id", "=", free.id)
-      .set({ computerId: id })
+      .set({ computerId: id, reservedOrganizationId: null })
       .executeTakeFirst();
   }
 
@@ -732,6 +759,7 @@ export class CloudComputerStore {
         stripePriceId: paid.stripePriceId,
         billingCurrency: paid.billingCurrency,
         workAssignmentId: paid.workAssignmentId ?? null,
+        backupKeyProject: config.backupKeyProject ?? null,
         generation: 1,
         state: paid.billing === "active" ? "active" : "suspended",
         hostname: `${paid.id.replace("_", "-")}.${config.domain}`,
@@ -740,7 +768,6 @@ export class CloudComputerStore {
         release: JSON.stringify(config.release),
         setupCodeDigest: digestSecret(setupCode),
         sealedSetupCode: cipher.seal(paid.id, 1, setupCode),
-        sealedBackupPassword: cipher.seal(`backup:${paid.id}`, 1, newSecret()),
         bootstrapDigest: null,
         sealedBootstrapToken: null,
         bootstrapExpiresAt: null,
@@ -812,7 +839,6 @@ export class CloudComputerStore {
           deletedAt: now,
           sealedSetupCode: null,
           setupCodeDigest: null,
-          sealedBackupPassword: null,
           updatedAt: now,
         })
         .executeTakeFirst();
@@ -1003,6 +1029,51 @@ export class CloudComputerStore {
         (row.deletionRequestedAt && row.state === "active")
       )
         return false;
+      if (
+        check.operation === "recover-provider-write" ||
+        check.operation === "send-provider-write"
+      ) {
+        const write = row.pendingProviderWrites.find(({ token }) => token === check.token);
+        if (!write) return check.operation === "recover-provider-write";
+        const expired =
+          !!write.recoverAfter && Date.parse(write.recoverAfter) <= this.#now().getTime();
+        if (check.operation === "send-provider-write") {
+          if (row.state !== "active" || expired) return false;
+          if (!write.dispatched) {
+            await tx
+              .updateTable("cloudComputers")
+              .where("id", "=", id)
+              .set({
+                pendingProviderWrites: JSON.stringify(
+                  row.pendingProviderWrites.map((entry) =>
+                    entry.token === write.token
+                      ? {
+                          ...entry,
+                          dispatched: true,
+                          recoverAfter: new Date(
+                            this.#now().getTime() + dispatchedWriteGraceMs,
+                          ).toISOString(),
+                        }
+                      : entry,
+                  ),
+                ),
+              })
+              .executeTakeFirstOrThrow();
+          }
+          return true;
+        }
+        if (!expired) return false;
+        await tx
+          .updateTable("cloudComputers")
+          .where("id", "=", id)
+          .set({
+            pendingProviderWrites: JSON.stringify(
+              row.pendingProviderWrites.filter(({ token }) => token !== check.token),
+            ),
+          })
+          .executeTakeFirstOrThrow();
+        return true;
+      }
       if (check.operation === "create") return needsVm(row) && Boolean(row.bootstrapDigest);
       if (check.operation === "begin-provider-write") {
         const { write } = check;
@@ -1018,7 +1089,14 @@ export class CloudComputerStore {
           .updateTable("cloudComputers")
           .where("id", "=", id)
           .set({
-            pendingProviderWrites: JSON.stringify([...row.pendingProviderWrites, write]),
+            pendingProviderWrites: JSON.stringify([
+              ...row.pendingProviderWrites,
+              {
+                ...write,
+                dispatched: false,
+                recoverAfter: new Date(this.#now().getTime() + providerWriteGraceMs).toISOString(),
+              },
+            ]),
             ...(write.kind === "create" ? { createAttempted: true } : {}),
           })
           .executeTakeFirst();
@@ -1029,6 +1107,8 @@ export class CloudComputerStore {
 
   async bootComplete(id: CloudComputerId, input: CloudComputerBootCompleteRequest): Promise<void> {
     await this.#db.transaction().execute(async (tx) => {
+      const assignment = await lockWorkComputerAssignment(tx, id);
+      if (assignment && assignment.state !== "active") throw invalidBoot();
       const row = await tx
         .selectFrom("cloudComputers")
         .selectAll()
@@ -1143,7 +1223,9 @@ export class CloudComputerStore {
   }
 
   async report(report: CloudComputerReport) {
-    return this.#db.transaction().execute(async (tx) => {
+    const result = await this.#db.transaction().execute(async (tx) => {
+      const forgotten =
+        report.phase === "deleted" ? await lockHomeReferences(tx, report.id) : undefined;
       const row = await tx
         .selectFrom("cloudComputers")
         .selectAll()
@@ -1152,6 +1234,7 @@ export class CloudComputerStore {
         .executeTakeFirst();
       if (
         !row ||
+        (forgotten && !sameHomeReferences(forgotten, row)) ||
         row.revision !== report.revision ||
         row.generation !== report.generation ||
         row.tombstonedAt !== null ||
@@ -1178,7 +1261,7 @@ export class CloudComputerStore {
         .updateTable("cloudComputers")
         .where("id", "=", row.id)
         .set({
-          phase: report.phase,
+          phase: deleted ? "deleting" : report.phase,
           ipv4: report.ipv4,
           ipv6: report.ipv6,
           // Retain the last server observation through transient provider failures.
@@ -1203,7 +1286,13 @@ export class CloudComputerStore {
           ...((report.phase === "booting" || report.phase === "failed") && row.phase === "ready"
             ? { readinessStartedAt: now }
             : {}),
-          ...(deleted ? { tombstonedAt: now, deploymentId: null, hostKeyFingerprint: null } : {}),
+          ...(deleted
+            ? {
+                vmDestroyedAt: row.vmDestroyedAt ?? now,
+                deploymentId: null,
+                hostKeyFingerprint: null,
+              }
+            : {}),
         })
         .executeTakeFirst();
       if (deleted) {
@@ -1215,11 +1304,124 @@ export class CloudComputerStore {
           .executeTakeFirst();
         await tx
           .updateTable("cloudComputerBackupTargets")
-          .set({ computerId: null, needsRotation: true })
+          .set({ computerId: null, purgeComputerId: row.id, needsRotation: true })
           .where("computerId", "=", row.id)
           .executeTakeFirst();
       }
       return { recorded: true, kick: ready && row.bootstrapReceiptAt === null };
+    });
+    if (result.recorded && report.phase === "deleted") {
+      await this.#eraseBackupKey(report.id).catch(() =>
+        this.#billingAttention("Cloud Computer backup key destruction is pending."),
+      );
+    }
+    return result;
+  }
+
+  async #eraseBackupKey(id: CloudComputerId) {
+    await this.#db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom("cloudComputers")
+        .select(["vmDestroyedAt", "backupsUnreadableAt", "backupKeyProject"])
+        .where("id", "=", id)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row?.vmDestroyedAt || row.backupsUnreadableAt) return;
+      await this.#vault(row.backupKeyProject ?? undefined).destroy(id);
+      const now = this.#now();
+      await tx
+        .updateTable("cloudComputers")
+        .where("id", "=", id)
+        .set({
+          phase: "deleted",
+          backupKeyVersion: null,
+          backupsUnreadableAt: now,
+          tombstonedAt: now,
+          updatedAt: now,
+        })
+        .executeTakeFirstOrThrow();
+    });
+  }
+
+  async reconcileBackupErasure(onError: () => void) {
+    const due = await this.#db
+      .selectFrom("cloudComputers")
+      .select("id")
+      .where("vmDestroyedAt", "is not", null)
+      .where("backupObjectsRemovedAt", "is", null)
+      .orderBy(sql`backup_cleanup_attempted_at asc nulls first`)
+      .orderBy("id")
+      .limit(8)
+      .execute();
+    for (const { id } of due) {
+      await this.#db
+        .updateTable("cloudComputers")
+        .where("id", "=", id)
+        .set({ backupCleanupAttemptedAt: this.#now() })
+        .executeTakeFirst();
+      try {
+        await this.#eraseBackupKey(id);
+        await this.#purgeOneBackupPage(id);
+      } catch {
+        onError();
+      }
+    }
+  }
+
+  async #purgeOneBackupPage(id: CloudComputerId) {
+    await this.#db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom("cloudComputers")
+        .select("id")
+        .where("id", "=", id)
+        .where("backupsUnreadableAt", "is not", null)
+        .where("backupObjectsRemovedAt", "is", null)
+        .forNoKeyUpdate()
+        .skipLocked()
+        .executeTakeFirst();
+      if (!row) return;
+
+      const target = await tx
+        .selectFrom("cloudComputerBackupTargets")
+        .selectAll()
+        .where("purgeComputerId", "=", id)
+        .orderBy("id")
+        .forUpdate()
+        .executeTakeFirst();
+      if (target) {
+        const { endpoint, bucket, prefix, region } = target;
+        const { cipher } = this.#options;
+        const [accessKey, secret] = target.sealedCredentials.split(":");
+        const purge = this.#options.purgeBackupStep ?? purgeBackupObjects;
+        if (
+          !(await purge({
+            endpoint,
+            bucket,
+            prefix,
+            region,
+            accessKeyId: cipher.open(`backup-access:${target.id}`, 1, accessKey!),
+            secretAccessKey: cipher.open(`backup-secret:${target.id}`, 1, secret!),
+          }))
+        )
+          return;
+        await tx
+          .updateTable("cloudComputerBackupTargets")
+          .where("id", "=", target.id)
+          .set({ purgeComputerId: null, sealedCredentials: "" })
+          .executeTakeFirstOrThrow();
+      }
+      const remaining = await tx
+        .selectFrom("cloudComputerBackupTargets")
+        .select("id")
+        .where("purgeComputerId", "=", id)
+        .executeTakeFirst();
+      if (!remaining) {
+        await tx
+          .updateTable("cloudComputers")
+          .where("id", "=", id)
+          .set({ backupObjectsRemovedAt: this.#now() })
+          .executeTakeFirstOrThrow();
+      }
     });
   }
 
@@ -1228,19 +1430,45 @@ export class CloudComputerStore {
     input: CloudComputerBootRequest,
   ): Promise<CloudComputerBootResponse> {
     return this.#db.transaction().execute(async (tx) => {
-      const work = await tx
+      await sql`select pg_advisory_xact_lock(hashtextextended(${`cloud-computer-boot:${id}`},0))`.execute(
+        tx,
+      );
+      // Locks in the declared order (owner, then OAuth client, then the Cloud
+      // Computer), as Account deletion takes them: the client written below is
+      // the owner's, and taking the computer first would wait on them reversed.
+      const owners = await tx
         .selectFrom("cloudComputers")
-        .innerJoin("workAssignments", "workAssignments.id", "cloudComputers.workAssignmentId")
-        .select("workAssignments.assigneeAccountId")
+        .leftJoin("workAssignments", "workAssignments.id", "cloudComputers.workAssignmentId")
+        .select(["cloudComputers.accountId", "workAssignments.assigneeAccountId"])
         .where("cloudComputers.id", "=", id)
         .executeTakeFirst();
-      if (work?.assigneeAccountId)
+      const locked = [owners?.accountId, owners?.assigneeAccountId]
+        .filter((owner): owner is NonNullable<typeof owner> => !!owner)
+        .sort();
+      for (const owner of new Set(locked))
         await tx
           .selectFrom("users")
           .select("id")
-          .where("id", "=", work.assigneeAccountId)
+          .where("id", "=", owner)
           .forKeyShare()
           .executeTakeFirst();
+      await lockWorkComputerAssignment(tx, id);
+      await tx
+        .selectFrom("oauthClients")
+        .select("id")
+        .where("clientId", "=", `occ_${id.slice("cc_".length)}`)
+        .forUpdate()
+        .executeTakeFirst();
+      const snapshot = await tx
+        .selectFrom("cloudComputers")
+        .selectAll()
+        .where("id", "=", id)
+        .executeTakeFirst();
+      if (!validBoot(snapshot, id, input, this.#now()) || !snapshot.setupCodeDigest)
+        throw invalidBoot();
+      const owner = await computerOwner(tx, snapshot, true);
+      if (!owner || !locked.includes(owner)) throw invalidBoot();
+      const { managedHome, credentials } = await this.#prepareManagedHome(tx, snapshot, owner);
       const row = await tx
         .selectFrom("cloudComputers")
         .selectAll()
@@ -1250,12 +1478,18 @@ export class CloudComputerStore {
       if (
         !validBoot(row, id, input, this.#now()) ||
         !row.setupCodeDigest ||
-        !row.sealedBackupPassword
+        row.revision !== snapshot.revision ||
+        row.oidcClientId !== snapshot.oidcClientId
       )
         throw invalidBoot();
-
+      if (credentials) {
+        await tx
+          .updateTable("cloudComputers")
+          .where("id", "=", id)
+          .set(credentials)
+          .executeTakeFirstOrThrow();
+      }
       const endpoint = await this.#assignEgress(tx, id);
-      const managedHome = await this.#managedHome(tx, row);
       const marker = await workMarker(tx, row.workAssignmentId);
       const { cipher } = this.#options;
       const backup = await tx
@@ -1275,6 +1509,18 @@ export class CloudComputerStore {
         1,
         backup.sealedCredentials.split(":")[1]!,
       );
+      const vault = this.#vault(row.backupKeyProject ?? undefined);
+      const password = row.backupKeyVersion
+        ? await vault.read(id, row.backupKeyVersion)
+        : newSecret();
+      if (!row.backupKeyVersion) {
+        const backupKeyVersion = await vault.issue(id, password);
+        await tx
+          .updateTable("cloudComputers")
+          .where("id", "=", id)
+          .set({ backupKeyVersion })
+          .executeTakeFirstOrThrow();
+      }
       const { endpoint: backupEndpoint, bucket, prefix } = backup;
       return {
         managedHome,
@@ -1299,7 +1545,7 @@ export class CloudComputerStore {
           accessKeyId,
           secretAccessKey,
           repository: `s3:${backupEndpoint}/${bucket}/${prefix}`,
-          password: cipher.open(`backup:${id}`, 1, row.sealedBackupPassword),
+          password,
         },
       };
     });
@@ -1428,14 +1674,11 @@ export class CloudComputerStore {
    * The managed Home's OIDC client and link credential, minted once per
    * generation inside the boot exchange so every retry hands out the same ones.
    */
-  async #managedHome(tx: TransactionDb, row: Computer) {
+  async #prepareManagedHome(tx: TransactionDb, row: Computer, owner: ControlPlaneAccountId) {
     const { cipher } = this.#options;
-    const owner = await computerOwner(tx, row, true);
-    if (!owner)
-      throw new ControlPlaneError(
-        "unauthorized",
-        "Invalid or expired Cloud Computer bootstrap token",
-      );
+    let credentials:
+      | Pick<Computer, "oidcClientId" | "sealedOidcClientSecret" | "sealedHostCredential">
+      | undefined;
     const clientId = row.oidcClientId ?? `occ_${row.id.slice("cc_".length)}`;
     let secret = row.sealedOidcClientSecret
       ? cipher.open(`oidc:${row.id}`, row.generation, row.sealedOidcClientSecret)
@@ -1488,24 +1731,23 @@ export class CloudComputerStore {
             metadata: { managedBy: "opensteer-control-plane", cloudComputerId: row.id },
           })
           .executeTakeFirstOrThrow();
-      await tx
-        .updateTable("cloudComputers")
-        .set({
-          oidcClientId: clientId,
-          sealedOidcClientSecret: cipher.seal(`oidc:${row.id}`, row.generation, secret),
-          sealedHostCredential: cipher.seal(
-            `host-credential:${row.id}`,
-            row.generation,
-            createHostCredential(),
-          ),
-        })
-        .where("id", "=", row.id)
-        .executeTakeFirstOrThrow();
+      credentials = {
+        oidcClientId: clientId,
+        sealedOidcClientSecret: cipher.seal(`oidc:${row.id}`, row.generation, secret),
+        sealedHostCredential: cipher.seal(
+          `host-credential:${row.id}`,
+          row.generation,
+          createHostCredential(),
+        ),
+      };
     }
     return {
-      cloudComputerId: row.id,
-      generation: row.generation,
-      oidc: { clientId, clientSecret: secret },
+      credentials,
+      managedHome: {
+        cloudComputerId: row.id,
+        generation: row.generation,
+        oidc: { clientId, clientSecret: secret },
+      },
     };
   }
 
@@ -1634,8 +1876,14 @@ export class CloudComputerStore {
         .where("id", "=", job.accountId)
         .forKeyShare()
         .executeTakeFirst();
-      const row = await lockedComputer(tx, job.id);
+      await lockWorkComputerAssignment(tx, job.id);
+      const row = await tx
+        .selectFrom("cloudComputers")
+        .selectAll()
+        .where("id", "=", job.id)
+        .executeTakeFirst();
       if (
+        !row ||
         row.generation !== job.generation ||
         row.claimAttempt !== job.attempt ||
         row.revision !== job.revision ||
@@ -1743,6 +1991,20 @@ export class CloudComputerStore {
           })
           .executeTakeFirstOrThrow();
       }
+      const pinned = await lockedComputer(tx, job.id);
+      if (
+        pinned.generation !== job.generation ||
+        pinned.claimAttempt !== job.attempt ||
+        pinned.revision !== job.revision ||
+        pinned.state !== "active" ||
+        pinned.deletionRequestedAt ||
+        pinned.tombstonedAt ||
+        pinned.deploymentId !== job.deploymentId ||
+        pinned.hostKeyFingerprint !== job.hostKeyFingerprint ||
+        pinned.sealedHostCredential !== row.sealedHostCredential
+      )
+        throw new CloudComputerClaimSupersededError();
+      if (pinned.bootstrapReceiptAt) return;
       await tx
         .updateTable("cloudComputers")
         .set({
@@ -1847,6 +2109,7 @@ export class CloudComputerStore {
       generationReady: row.generationReady,
       everReady: row.everReady,
       deletionRequestedAt: row.deletionRequestedAt,
+      deletion: deletionView(row),
       tombstonedAt: row.tombstonedAt,
       billingStatus: row.billingStatus,
       egressUnavailable: row.egressUnavailable,
@@ -1941,10 +2204,21 @@ export class CloudComputerStore {
             .forNoKeyUpdate()
             .executeTakeFirst();
       }
+      const assignment = await lockWorkComputerAssignment(tx, id);
+      const forgotten =
+        action === "reissue" || action === "replace" ? await lockHomeReferences(tx, id) : undefined;
       const row = await lockedComputer(tx, id);
+      if (forgotten && !sameHomeReferences(forgotten, row))
+        throw new ControlPlaneError("conflict", "This Cloud Computer changed; try again");
       if (
         row.workAssignmentId &&
-        !(action === "reissue" && !accountId && (await computerOwner(tx, row, true)))
+        !(
+          action === "reissue" &&
+          !accountId &&
+          reason === undefined &&
+          assignment?.state === "active" &&
+          assignment.assigneeAccountId
+        )
       ) {
         if (accountId && (await computerOwner(tx, row, false)) !== accountId) throw missing();
         throw new ControlPlaneError(
@@ -2017,8 +2291,8 @@ export class CloudComputerStore {
             );
           staged = parsed.data;
           const previousPassword =
-            row.sealedBackupPassword &&
-            this.#options.cipher.open(`backup:${id}`, 1, row.sealedBackupPassword);
+            row.backupKeyVersion &&
+            (await this.#vault(row.backupKeyProject ?? undefined).read(id, row.backupKeyVersion));
           if (staged.password === previousPassword)
             throw new ControlPlaneError(
               "conflict",
@@ -2038,15 +2312,6 @@ export class CloudComputerStore {
           previousProviderServerId: row.providerServerId ?? row.previousProviderServerId,
           restoreSnapshot: snapshot?.success ? snapshot.data : row.restoreSnapshot,
           ownerAccessAt: null,
-          ...(action === "reissue" && credentialsIssued
-            ? {
-                sealedBackupPassword: this.#options.cipher.seal(
-                  `backup:${id}`,
-                  1,
-                  staged?.password ?? newSecret(),
-                ),
-              }
-            : {}),
           phase: "provisioning",
           readinessStartedAt: now,
           reportedAt: null,
@@ -2080,6 +2345,7 @@ export class CloudComputerStore {
             .select("id")
             .where("computerId", "is", null)
             .where("checkoutKey", "is", null)
+            .where("reservedOrganizationId", "is", null)
             .where("needsRotation", "=", false);
           if (staged) available = available.where("id", "=", staged.targetId);
           const replacement = await available
@@ -2095,13 +2361,16 @@ export class CloudComputerStore {
           await tx
             .updateTable("cloudComputerBackupTargets")
             .where("computerId", "=", id)
-            .set({ computerId: null, needsRotation: true })
+            .set({ computerId: null, purgeComputerId: id, needsRotation: true })
             .executeTakeFirst();
           await tx
             .updateTable("cloudComputerBackupTargets")
             .where("id", "=", replacement.id)
             .set({ computerId: id })
             .executeTakeFirst();
+          changes.backupKeyVersion = staged
+            ? await this.#vault(row.backupKeyProject ?? undefined).issue(id, staged.password)
+            : null;
         }
       } else {
         const ownerSuspended = action === "suspend" || (action !== "resume" && row.ownerSuspended);
@@ -2338,6 +2607,8 @@ export class CloudComputerStore {
         .where("id", "=", id)
         .where("computerId", "is", null)
         .where("checkoutKey", "is", null)
+        .where("reservedOrganizationId", "is", null)
+        .where("purgeComputerId", "is", null)
         .where("needsRotation", "=", true)
         .where("principalFingerprint", "!=", fingerprint)
         .forNoKeyUpdate()
@@ -2390,6 +2661,9 @@ export class CloudComputerStore {
         "target.computerId",
         "target.needsRotation",
         "target.checkoutKey",
+        "target.purgeComputerId",
+        "target.reservedOrganizationId",
+        "target.organizationReservationRequestId",
         "attempt.accountId",
         "attempt.requestId",
         "attempt.stripeSessionId",
@@ -2415,6 +2689,8 @@ export class CloudComputerStore {
       .where("id", "=", id)
       .where("computerId", "is", null)
       .where("checkoutKey", "is", null)
+      .where("reservedOrganizationId", "is", null)
+      .where("purgeComputerId", "is", null)
       .executeTakeFirst();
     if (result.numDeletedRows !== 1n)
       throw new ControlPlaneError(
@@ -2466,6 +2742,10 @@ const backupTargetSchema = z.strictObject({
     accessKeyId: true,
     secretAccessKey: true,
   }).shape,
+  region: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]{0,62}$/u)
+    .optional(),
   accessKeyId: CloudComputerBootResponseSchema.shape.backup.shape.accessKeyId.max(255),
   secretAccessKey: CloudComputerBootResponseSchema.shape.backup.shape.secretAccessKey.max(255),
 });
@@ -2534,6 +2814,47 @@ export function managedHomeLinkGeneration(job: Pick<CloudComputerClaimJob, "id" 
 }
 
 /** The Account's listing and OIDC client for a Home that no longer exists. */
+async function lockWorkComputerAssignment(tx: TransactionDb, id: CloudComputerId) {
+  return tx
+    .selectFrom("workAssignments")
+    .select(["state", "assigneeAccountId"])
+    .where("cloudComputerId", "=", id)
+    .forShare()
+    .executeTakeFirst();
+}
+
+async function lockHomeReferences(tx: TransactionDb, id: CloudComputerId) {
+  const row = await tx
+    .selectFrom("cloudComputers")
+    .select(["deploymentId", "oidcClientId"])
+    .where("id", "=", id)
+    .executeTakeFirst();
+  if (row?.deploymentId) {
+    await tx
+      .selectFrom("deployments")
+      .select("id")
+      .where("id", "=", DeploymentIdSchema.parse(row.deploymentId))
+      .forUpdate()
+      .executeTakeFirst();
+  }
+  if (row?.oidcClientId) {
+    await tx
+      .selectFrom("oauthClients")
+      .select("id")
+      .where("clientId", "=", row.oidcClientId)
+      .forUpdate()
+      .executeTakeFirst();
+  }
+  return row;
+}
+
+function sameHomeReferences(
+  before: Pick<Computer, "deploymentId" | "oidcClientId">,
+  after: Pick<Computer, "deploymentId" | "oidcClientId">,
+) {
+  return before.deploymentId === after.deploymentId && before.oidcClientId === after.oidcClientId;
+}
+
 async function forgetHome(tx: TransactionDb, row: Computer, client: boolean) {
   const owner = await computerOwner(tx, row, false);
   if (row.deploymentId && owner)
@@ -2712,8 +3033,10 @@ function view(
 ): CloudComputerView {
   const egress = assigned ? "assigned" : row.egressUnavailable ? "unavailable" : "pending";
   const region = cloudComputerRegion(row.region, config);
+  const deletion = deletionView(row);
   const base = {
     id: row.id,
+    ...(deletion ? { deletion } : {}),
     egress,
     ...(row.deploymentId && row.hostKeyFingerprint
       ? { deploymentId: DeploymentIdSchema.parse(row.deploymentId) }
@@ -2724,12 +3047,15 @@ function view(
       ? { renewsAt: row.renewsAt.toISOString() }
       : {}),
   } as const;
-  if (row.state === "deleted") return { ...base, status: "deleted" };
-  if (row.deletionRequestedAt)
+  if (row.tombstonedAt) return { ...base, status: "deleted" };
+  if (row.state === "deleted" || row.deletionRequestedAt)
     return {
       ...base,
       status: "needs_attention",
-      reason: "Deletion is waiting for Stripe cancellation.",
+      reason:
+        row.state === "deleted"
+          ? "Cloud Computer deletion is in progress."
+          : "Deletion is waiting for Stripe cancellation.",
       reasonCode: "cloud-computer-deletion-pending",
     };
   if (row.state === "suspended") {

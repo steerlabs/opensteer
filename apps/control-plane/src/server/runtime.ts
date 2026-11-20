@@ -93,7 +93,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     const organizations = stripe
       ? new OrganizationStore(database, {
           stripe,
-          offer: config.organizationOffer,
+          offer: cloud?.backupKeyProject ? config.organizationOffer : undefined,
           returnUrl: new URL(organizationsPortalPath, config.portalOrigin),
         })
       : undefined;
@@ -289,6 +289,38 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     billingTimer?.unref();
     runBilling();
 
+    let backupPass: Promise<void> | undefined;
+    const backupError = () => server.log.error("Cloud Computer backup erasure is pending");
+    const runBackupErasure = () => {
+      if (!backupPass && cloudComputers) {
+        backupPass = cloudComputers
+          .reconcileBackupErasure(backupError)
+          .catch(backupError)
+          .finally(() => {
+            backupPass = undefined;
+          });
+      }
+    };
+    const backupTimer = cloudComputers ? setInterval(runBackupErasure, 15_000) : undefined;
+    backupTimer?.unref();
+    runBackupErasure();
+
+    let offboardingPass: Promise<void> | undefined;
+    const offboardingError = () => server.log.error("Work Home offboarding is pending");
+    const runOffboarding = () => {
+      if (!offboardingPass && organizations) {
+        offboardingPass = organizations
+          .reconcileOffboarding(offboardingError)
+          .catch(offboardingError)
+          .finally(() => {
+            offboardingPass = undefined;
+          });
+      }
+    };
+    const offboardingTimer = organizations ? setInterval(runOffboarding, 5_000) : undefined;
+    offboardingTimer?.unref();
+    runOffboarding();
+
     const cleanup = setInterval(() => {
       void Promise.all([
         store.purgeExpiredAdoptionResults(),
@@ -305,7 +337,11 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         closePromise ??= (async () => {
           clearInterval(cleanup);
           clearInterval(billingTimer);
+          clearInterval(backupTimer);
+          clearInterval(offboardingTimer);
           await billingPass;
+          await offboardingPass;
+          await backupPass;
           await hostedTeamBootstrap?.close();
           await cloudComputerClaimer?.close();
           await notificationDelivery?.close();

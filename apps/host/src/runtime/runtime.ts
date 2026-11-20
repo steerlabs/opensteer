@@ -98,6 +98,7 @@ import { ConnectionOAuth, connectionCommandEffects } from "../mcp/connections/in
 import { AgentDirectoryCache } from "../mcp/connections/agent-directory.js";
 import { AgentConnectionStore, recoverAssignmentResultWaits } from "@opensteer/database";
 import { createHmac } from "node:crypto";
+import { personalHomeKindOption } from "./home-kind.js";
 import { withFolderPluginPackage } from "../local-servers/folder-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
 import {
@@ -839,6 +840,7 @@ export async function createHostRuntime(
         ? { managedOwner: { providerId: managedAccountProvider.providerId } }
         : {}),
       exposure: config.exposure,
+      ...personalHomeKindOption(config),
       ...(config.portalOrigin ? { portalOrigin: config.portalOrigin } : {}),
       publicOrigin: config.canonicalOrigin,
       secret: config.authSecret,
@@ -1215,6 +1217,7 @@ export async function createHostRuntime(
       console.warn("Browser usage recording failed", error);
     };
     let logMissingBrowserActor: (sessionId: string, bindingId: string) => void = () => undefined;
+    await store.recoverConnectionCdpAttempts();
     const browser = new BrowserService({
       requireAgentAccess: async (runnerId) =>
         requireDeviceAccess(
@@ -3337,8 +3340,9 @@ export async function createHostRuntime(
       closeLineage: async (connectionId, minimumGrantRevision) => {
         if (minimumGrantRevision === undefined) {
           browser.closeStandardCdpForConnection(connectionId, "Agent connection authority ended.");
-          await closeLegacyCdpForConnection(browser, connectionId,
-            (bindingId) => store.bindingAgentConnectionId(bindingId));
+          await closeLegacyCdpForConnection(browser, connectionId, (bindingId) =>
+            store.bindingAgentConnectionId(bindingId),
+          );
         }
         await agentTools.closeLineage(connectionId, minimumGrantRevision);
       },
@@ -3348,6 +3352,10 @@ export async function createHostRuntime(
             if (attempt.environmentId) watchService?.changed(attempt.environmentId);
             return;
           }
+          if (attempt.kind === "standard-cdp") {
+            browser.stopStandardCdpAttempt(attempt.id);
+            return;
+          }
           if (attempt.kind === "plugin") {
             await pluginExecutions?.stopConnectionExecution(attempt.id, cleanup.connectionId);
             return;
@@ -3355,10 +3363,16 @@ export async function createHostRuntime(
           if (attempt.kind !== "occurrence" && attempt.kind !== "run-attempt") return;
           if (!attempt.environmentId || attempt.generation === null) return;
           const identity = runners.identityForEnvironment(attempt.environmentId);
-          if (!identity || identity.runnerId !== attempt.runnerId ||
-            identity.bootId !== attempt.runnerBootId) return;
+          if (
+            !identity ||
+            identity.runnerId !== attempt.runnerId ||
+            identity.bootId !== attempt.runnerBootId
+          )
+            return;
           const hash = createHash("sha256")
-            .update(JSON.stringify([cleanup.connectionId, attempt.kind, attempt.id, attempt.generation]))
+            .update(
+              JSON.stringify([cleanup.connectionId, attempt.kind, attempt.id, attempt.generation]),
+            )
             .digest("hex");
           const stopId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
           const base = {
@@ -3368,14 +3382,24 @@ export async function createHostRuntime(
           };
           if (attempt.kind === "occurrence")
             await runners.dispatch(
-              { ...base, type: "trigger.interrupt", occurrenceId: attempt.id },
+              {
+                ...base,
+                type: "trigger.interrupt",
+                occurrenceId: attempt.id,
+                executionGeneration: attempt.generation,
+              },
               AbortSignal.timeout(3_000),
               { connectionGeneration: identity.connectionGeneration },
             );
           else if (attempt.threadId)
             await runners.dispatch(
-              { ...base, type: "run.interrupt", runId: attempt.runId,
-                threadId: attempt.threadId, bindingGeneration: attempt.generation },
+              {
+                ...base,
+                type: "run.interrupt",
+                runId: attempt.runId,
+                threadId: attempt.threadId,
+                bindingGeneration: attempt.generation,
+              },
               AbortSignal.timeout(3_000),
               { connectionGeneration: identity.connectionGeneration },
             );

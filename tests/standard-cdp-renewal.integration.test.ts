@@ -1,4 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +9,10 @@ import { chromium, type Browser } from "playwright-core";
 import { expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
-import { startPersonalRuntime } from "../apps/host/src/runtime/personal-startup.test-support.js";
+import {
+  startPersonalRuntime,
+  type PersonalRuntime,
+} from "../apps/host/src/runtime/personal-startup.test-support.js";
 import {
   BrowserRuntime,
   BrowserRuntimeServer,
@@ -101,7 +107,20 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       return send.call(this, data, options, callback);
     });
 
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const scheduled = Promise.withResolvers<() => void>();
+    const setTimer = globalThis.setTimeout;
+    const timers = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation((callback, delay, ...args) => {
+        const timer = setTimer(callback, delay, ...args);
+        if (new Error().stack?.includes("RunnerBrowserRuntimeRouter.#scheduleRenewal")) {
+          scheduled.resolve(() => {
+            clearTimeout(timer);
+            callback(...args);
+          });
+        }
+        return timer;
+      });
     try {
       const session = (await stack.host.browser.openAgentSession({ ...authority, fresh: true }))
         .session;
@@ -128,8 +147,9 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       await milestone(firstChunk.promise, "first response chunk", outcome);
       expect(rawGenerations).toEqual([accepted[0]]);
 
-      // The auxiliary socket has a two-minute lease. Move the scheduling timers only.
-      await vi.advanceTimersByTimeAsync(60_000);
+      // Trigger the production renewal timer while the first chunk is held.
+      const renew = await scheduled.promise;
+      renew();
       await milestone(renewed.promise, "renewal acknowledgement");
       resume.resolve();
       const [largeResult] = await outcome;
@@ -144,7 +164,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       expect(rawGenerations).toEqual(expect.arrayContaining([accepted[0], accepted[1]]));
     } finally {
       resume.resolve();
-      vi.useRealTimers();
+      timers.mockRestore();
       spy.mockRestore();
     }
   },
@@ -186,7 +206,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           scope === "selected"
             ? {
                 scope,
-                tasks: false,
+                tasks: true,
                 resources: [{ kind: "browser-profile", profileId: profile.id }],
               }
             : { scope },
@@ -227,6 +247,146 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     await browser.stop(owner.id, guest.session.id);
   },
 );
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "refuses a stale whole-context ticket and fences a profile until a disconnected writer settles",
+  async () => {
+    const { stack, clients } = await startBrowserHome();
+    const { browser, store } = stack.host;
+    const owner = await store.firstUser();
+    if (!owner) throw new Error("The Home has no owner.");
+    const runnerId = stack.agentHome.computerId;
+    await store.database
+      .updateTable("devices")
+      .set({ accessPolicy: { ...machineAccessPolicyDefault, browser: true } })
+      .where("id", "=", await store.requireSelfDeviceId(runnerId))
+      .execute();
+    const left = { ownerId: owner.id, agentBindingId: `thread:${await createTask(stack, "Left")}` };
+    const right = {
+      ownerId: owner.id,
+      agentBindingId: `thread:${await createTask(stack, "Right")}`,
+    };
+    const profile = await browser.createProfile({
+      homeRunnerId: runnerId,
+      ownerId: owner.id,
+      name: "Whole-context fence",
+      idempotencyKey: randomUUID(),
+    });
+    const { session } = await browser.openAgentSession({ ...left, profileId: profile.id });
+    const issue = () =>
+      browser.issueStandardCdpTicket({
+        authority: left,
+        browserSessionId: session.id,
+        mode: "whole-context",
+      });
+    const url = (path: string) => new URL(path, stack.hostOrigin).href.replace(/^http/u, "ws");
+    const stale = await issue();
+    expect(stale.mode).toBe("whole-context");
+    const competitor = await browser.start({
+      ownerId: owner.id,
+      origin: "person",
+      profileId: profile.id,
+      reuseExisting: false,
+    });
+    await expect(chromium.connectOverCDP(url(stale.path), { noDefaults: true })).rejects.toThrow(
+      "Request a new attachment",
+    );
+    await browser.stop(owner.id, competitor.session.id);
+
+    const ticket = await issue();
+    expect(ticket.mode).toBe("whole-context");
+    const settled = Promise.withResolvers<void>();
+    const attach = browser.attachStandardCdpForAgent.bind(browser);
+    const spy = vi
+      .spyOn(browser, "attachStandardCdpForAgent")
+      .mockImplementation(async (...args) => {
+        const attached = await attach(...args);
+        void attached.settled.then(settled.resolve);
+        return attached;
+      });
+    const arriving = Promise.withResolvers<void>();
+    const respond = Promise.withResolvers<void>();
+    const site = createServer((request, response) => {
+      if (request.url === "/hold") {
+        arriving.resolve();
+        void respond.promise.then(() => response.end("done"));
+      } else response.end("<title>Lease fixture</title>");
+    });
+    try {
+      const attempts = await Promise.allSettled([
+        chromium.connectOverCDP(url(ticket.path)),
+        chromium.connectOverCDP(url(ticket.path)),
+      ]);
+      const connected = attempts.flatMap((result) =>
+        result.status === "fulfilled" ? [result.value] : [],
+      );
+      clients.push(...connected);
+      expect(connected).toHaveLength(1);
+      expect(attempts.filter((attempt) => attempt.status === "rejected")).toEqual([
+        expect.objectContaining({
+          reason: expect.objectContaining({ message: expect.stringContaining("401") }),
+        }),
+      ]);
+      const client = connected[0]!;
+      const page = client.contexts()[0]!.pages()[0]!;
+      site.listen(0, "127.0.0.1");
+      await once(site, "listening");
+      await page.goto(`http://127.0.0.1:${(site.address() as AddressInfo).port}`);
+      const pending = page
+        .evaluate(() => fetch("/hold").then((res) => res.text()))
+        .catch(() => undefined);
+      await milestone(arriving.promise, "page's pending fetch");
+      await client.close();
+      await expect(browser.openAgentSession({ ...right, sessionId: session.id })).rejects.toThrow(
+        "exclusive access",
+      );
+      await expect(
+        store.attachBrowserSession({ ...right, sessionId: session.id }),
+      ).rejects.toMatchObject({ reason: "browser-profile-exclusively-held" });
+      await expect(
+        browser.start({
+          ownerId: owner.id,
+          origin: "person",
+          profileId: profile.id,
+          reuseExisting: false,
+        }),
+      ).rejects.toThrow("exclusive access");
+      respond.resolve();
+      await milestone(settled.promise, "Runtime settlement");
+      await pending;
+      const reused = await browser.openAgentSession({ ...right, sessionId: session.id });
+      expect(reused.session.id).toBe(session.id);
+      expect(reused.session.state).toBe("ready");
+      const persisted = await store.database
+        .selectFrom("browserSessions")
+        .select("standardCdpAttempts")
+        .where("id", "=", session.id)
+        .executeTakeFirstOrThrow();
+      expect(persisted.standardCdpAttempts).toEqual({});
+      await browser.stop(owner.id, session.id);
+    } finally {
+      respond.resolve();
+      spy.mockRestore();
+      if (site.listening) await new Promise<void>((resolve) => site.close(() => resolve()));
+    }
+  },
+);
+
+async function createTask(stack: PersonalRuntime, title: string) {
+  const catalog = stack.initialCatalog;
+  if (catalog.status !== "ready" || !catalog.models[0]) throw new Error("No fixture model.");
+  const { modelId, providerId } = catalog.models[0];
+  const task = await stack.api["commands.dispatch"]({
+    type: "thread.create",
+    environmentId: stack.environmentId,
+    harnessInstanceId: stack.harnessInstanceId,
+    modelSelection: { modelId, providerId, options: {} },
+    idempotencyKey: randomUUID(),
+    title,
+  });
+  if (!task.ok || task.data.type !== "thread.create") throw new Error(JSON.stringify(task));
+  return task.data.thread.id;
+}
 
 async function startBrowserHome() {
   const database = await cloneTestDatabase("host");

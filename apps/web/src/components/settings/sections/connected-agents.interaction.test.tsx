@@ -97,14 +97,17 @@ describe("Connected agents list", () => {
       ["Grok", "Shopping profile · Supervised"],
       ["Claude", "Everything · Full access"],
       ["Trip planner", "Tasks · Auto"],
+      ["Errand", "Nothing chosen · Supervised"],
+      ["Claude Code", "Tasks · Auto"],
+      ["ChatGPT", "Nothing chosen · Supervised"],
     ]);
     expect(rows(page, "Disconnected")).toEqual([
       ["Shop helper", "Check its last action"],
       ["Old notes agent", "Disconnected"],
     ]);
     expect(page.querySelector(`a[href="${base}/${grok}"]`)).not.toBeNull();
-    // Claude's mark is its provider's, from the proven origin.
-    expect(page.querySelectorAll(".agent-mark .provider-logo")).toHaveLength(1);
+    // A logo only for a platform the Home verified: Claude and ChatGPT, never Grok's domain.
+    expect(page.querySelectorAll(".agent-mark .provider-logo")).toHaveLength(2);
   });
 
   it("asks for nothing more than the list on open", async () => {

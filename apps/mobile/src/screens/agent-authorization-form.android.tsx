@@ -73,16 +73,27 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
       >
         {props.title}
       </Text>
-      <NoteRow
-        text={props.mark !== null && props.verified ? `✓ ${props.destination}` : props.destination}
-      />
-      <Text
-        color={color.muted}
-        modifiers={[padding(16, 0, 16, 8)]}
-        style={{ typography: "bodySmall" }}
-      >
-        {agentAuthorizationUnverified}
-      </Text>
+      <NoteRow text={props.who.verified ? `✓ ${props.who.heading}` : props.who.heading} />
+      <NoteRow text={props.who.detail} />
+      <NoteRow text={props.destination} />
+      {props.who.warning === null ? null : (
+        <Text
+          color={color.text}
+          modifiers={[padding(16, 0, 16, 8)]}
+          style={{ typography: "bodySmall" }}
+        >
+          {props.who.warning}
+        </Text>
+      )}
+      {props.who.verified ? null : (
+        <Text
+          color={color.muted}
+          modifiers={[padding(16, 0, 16, 8)]}
+          style={{ typography: "bodySmall" }}
+        >
+          {agentAuthorizationUnverified}
+        </Text>
+      )}
       {props.sections === null ? (
         <>
           <Section title="What it can do without asking">

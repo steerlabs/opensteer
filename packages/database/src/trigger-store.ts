@@ -949,16 +949,17 @@ export class TriggerStore {
         }
         const witness = await automationHandoffWitness(transaction, trigger);
         if (
-          row.connectionId && row.runnerBootId !== input.runnerBootId &&
+          row.connectionId &&
+          row.runnerBootId !== input.runnerBootId &&
           !row.terminalEvidenceAt
         ) {
           // A new process must not replace the only record of the old generation.
           continue;
         }
-        const nextExecutionGeneration =
-          row.runnerBootId === input.runnerBootId
-            ? Number(row.executionGeneration)
-            : Number(row.executionGeneration) + 1;
+        const sameExecution = row.runnerBootId === input.runnerBootId && !row.terminalEvidenceAt;
+        const nextExecutionGeneration = sameExecution
+          ? Number(row.executionGeneration)
+          : Number(row.executionGeneration) + 1;
         if (!Number.isSafeInteger(nextExecutionGeneration)) {
           throw new OpensteerError({
             code: "internal",
@@ -968,10 +969,10 @@ export class TriggerStore {
         const updated = await transaction
           .updateTable("triggerWatchActivations")
           .set({
-            ...(row.runnerId ? {} : witness),
+            ...(sameExecution ? {} : { ...witness, terminalEvidenceAt: null, contactLostAt: null }),
             executionGeneration: nextExecutionGeneration,
             leaseExpiresAt: input.leaseExpiresAt,
-            ...(row.runnerBootId === input.runnerBootId
+            ...(sameExecution
               ? {}
               : {
                   healthySince: null,
@@ -1074,10 +1075,17 @@ export class TriggerStore {
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!activation) throw notFound("Watch activation not found");
+      const terminal = input.observed === "stopped" || input.observed === "expired";
+      const admittedConnectionGeneration = Number(activation.runnerConnectionGeneration);
       if (
         activation.runnerId !== input.runnerId ||
         activation.runnerBootId !== input.runnerBootId ||
-        Number(activation.runnerConnectionGeneration) !== input.runnerConnectionGeneration ||
+        (admittedConnectionGeneration !== input.runnerConnectionGeneration &&
+          !(
+            terminal &&
+            activation.desired === "stopped" &&
+            input.runnerConnectionGeneration > admittedConnectionGeneration
+          )) ||
         Number(activation.executionGeneration) !== input.executionGeneration
       ) {
         throw new OpensteerError({
@@ -1133,8 +1141,7 @@ export class TriggerStore {
           lastError: input.lastError,
           lastExitCode: input.lastExitCode,
           observed: input.observed,
-          ...((input.observed === "stopped" || input.observed === "expired") &&
-          activation.connectionId
+          ...(terminal && activation.connectionId
             ? { terminalEvidenceAt: activation.terminalEvidenceAt ?? now }
             : {}),
           restartCount: input.restartCount,
@@ -1469,9 +1476,17 @@ export class TriggerStore {
         };
         const canceledOccurrenceIds: TriggerOccurrenceId[] = [];
         if (pending.length) {
-          await transaction.selectFrom("commands").select("id")
-            .where("id", "in", pending.map(({ commandId }) => commandId))
-            .orderBy("id", "asc").forNoKeyUpdate().execute();
+          await transaction
+            .selectFrom("commands")
+            .select("id")
+            .where(
+              "id",
+              "in",
+              pending.map(({ commandId }) => commandId),
+            )
+            .orderBy("id", "asc")
+            .forNoKeyUpdate()
+            .execute();
         }
         for (const row of pending) {
           const command = await transaction
@@ -1686,6 +1701,7 @@ export class TriggerStore {
   }): Promise<{
     readonly context: TriggerDispatchContext;
     readonly executionGeneration: number;
+    readonly connectionId: string | null;
   }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const occurrence = await transaction
@@ -1713,6 +1729,8 @@ export class TriggerStore {
           .updateTable("triggerOccurrences")
           .set({
             ...witness,
+            terminalEvidenceAt: null,
+            contactLostAt: null,
             executionGeneration,
             runnerBootId: input.runnerBootId,
             runnerId: input.runnerId,
@@ -1732,8 +1750,22 @@ export class TriggerStore {
       return {
         context: await loadDispatchContext(transaction, occurrence.id),
         executionGeneration,
+        connectionId: trigger.originConnectionId,
       };
     });
+  }
+  async recordOccurrenceNotAdmitted(id: TriggerOccurrenceId, generation: number): Promise<void> {
+    await this.#database
+      .updateTable("triggerOccurrences")
+      .set({
+        terminalEvidenceAt: new Date(),
+        contactLostAt: null,
+      })
+      .where("id", "=", id)
+      .where("executionGeneration", "=", generation)
+      .where("connectionId", "is not", null)
+      .where("terminalEvidenceAt", "is", null)
+      .execute();
   }
   async assertActiveExecutionBinding(input: ActiveTriggerExecutionBindingInput): Promise<void> {
     await assertActiveTriggerExecutionBinding(this.#database, input);
@@ -2432,15 +2464,21 @@ async function automationHandoffWitness(
 ) {
   if (!trigger.originConnectionId) return {};
   const connection = await liveDelegatingConnection(
-    transaction, trigger.createdBy, trigger.originConnectionId,
+    transaction,
+    trigger.createdBy,
+    trigger.originConnectionId,
   );
-  const thread = await transaction.selectFrom("threads").select("accessMode")
-    .where("id", "=", trigger.anchorThreadId).executeTakeFirstOrThrow();
+  const thread = await transaction
+    .selectFrom("threads")
+    .select("accessMode")
+    .where("id", "=", trigger.anchorThreadId)
+    .executeTakeFirstOrThrow();
   return {
     connectionId: connection.agentConnectionId,
     admittedGrantRevision: connection.grantRevision,
     admittedAccessMode: threadAccessModeAtMost(thread.accessMode, connection.accessMode)
-      ? thread.accessMode : connection.accessMode,
+      ? thread.accessMode
+      : connection.accessMode,
   };
 }
 /**
@@ -2577,8 +2615,16 @@ function occurrenceFromRow(row: TriggerOccurrenceRow): TriggerOccurrence {
   });
 }
 function watchActivationFromRow(row: TriggerWatchActivationRow): TriggerWatchActivation {
+  const {
+    connectionId: _connectionId,
+    admittedGrantRevision: _admittedGrantRevision,
+    admittedAccessMode: _admittedAccessMode,
+    terminalEvidenceAt: _terminalEvidenceAt,
+    contactLostAt: _contactLostAt,
+    ...activation
+  } = row;
   return TriggerWatchActivationSchema.parse({
-    ...row,
+    ...activation,
     createdAt: row.createdAt.toISOString(),
     executionGeneration: Number(row.executionGeneration),
     healthySince: row.healthySince?.toISOString() ?? null,

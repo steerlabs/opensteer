@@ -83,6 +83,7 @@ import { UsageNotice } from "./usage-notice.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { Icon } from "./icon.js";
 import type { ComposerQuote } from "./composer.js";
+import { SessionActivity, SessionTaskBar, useSessionTask } from "./agent-work.js";
 import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
 import { useVoiceOn } from "@opensteer/client/react";
@@ -335,6 +336,8 @@ function ThreadView({
   // composer: its draft, files and unsent message never follow the reader to
   // another one, and nothing that finishes late lands in the wrong one.
   const composerKey = `${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`;
+  // A connected agent's own task: its activity in place of a transcript, no composer.
+  const sessionView = useSessionTask(thread.id);
   useEffect(() => {
     setHistorical(false);
     setActivityView(null);
@@ -1404,9 +1407,13 @@ function ThreadView({
                       ) : null}
                       {/* Gone with the first message, this device's waiting ones too, so
                           their bubbles never jump when the Host takes them. */}
-                      {withOutbox.length === 0 && historyState === undefined && !waiting?.length ? (
+                      {withOutbox.length === 0 &&
+                      historyState === undefined &&
+                      !waiting?.length &&
+                      !sessionView ? (
                         <EmptyThread voice={voiceThread} />
                       ) : null}
+                      {sessionView ? <SessionActivity view={sessionView} /> : null}
                       <AgentTranscript
                         teamChannelName={teamSource?.channel.name ?? null}
                         revealMessage={revealMessage}
@@ -1622,7 +1629,9 @@ function ThreadView({
               ) : null}
 
               <div className="composer-dock">
-                {voiceThread ? (
+                {sessionView ? (
+                  <SessionTaskBar threadId={thread.id} view={sessionView} />
+                ) : voiceThread ? (
                   <VoiceStart
                     dockHidden={phoneStage && !sheetOpen}
                     controls={

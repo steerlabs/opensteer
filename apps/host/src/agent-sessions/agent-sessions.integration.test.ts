@@ -316,7 +316,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
     expect(s.opened).toEqual([]);
   });
 
-  it("on Disconnect ends the session, settles its Request, records an unknown outcome, and leaves a second agent working", async ({
+  it("on Disconnect ends the session, records an unknown outcome on the lost operation, and leaves a second agent working", async ({
     storeFixture,
   }) => {
     const { database, store } = storeFixture;
@@ -352,20 +352,8 @@ describeStore("an external agent's direct work through sessions", (it) => {
       .where("operationKey", "=", "in-flight")
       .executeTakeFirstOrThrow();
     expect(operation).toEqual({ state: "unknown", outcome: "unknown" });
-    await disconnect.effects.driveCleanups();
-    const [revoked] = await new AgentConnectionStore(database)
-      .list(s.f.userId, {
-        includeRevoked: true,
-      })
-      .then((rows) => rows.filter(({ id }) => id === s.agent.id));
-    expect(revoked).toMatchObject({ state: "stopped" });
-    expect(
-      await database
-        .selectFrom("agentConnections")
-        .select("lastActionUncertain")
-        .where("id", "=", s.agent.id)
-        .executeTakeFirstOrThrow(),
-    ).toMatchObject({ lastActionUncertain: { kind: "operation", tool: "tab_open" } });
+    // Whether the connection reads Stopped, and what it records as uncertain, is the one
+    // cleanup worker's decision over every attempt; the session's part ends here.
     expect(
       await database
         .selectFrom("agentSessions")

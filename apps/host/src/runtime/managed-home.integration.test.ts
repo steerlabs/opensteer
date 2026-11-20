@@ -256,6 +256,7 @@ it("is claimed once by its Account's signed assertion, and by nothing else", asy
     });
     expect(configured.json()).toMatchObject({
       data: {
+        homeKind: "cloud-computer",
         localPasswordEnabled: false,
         oidcProviders: [{ id: "opensteer-account" }],
         setupState: "complete",

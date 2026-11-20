@@ -130,7 +130,10 @@ describe("agent consent with grants", () => {
     expect(container.textContent).toContain(
       "Access goes to grok.com. Anyone who runs that service gets it.",
     );
-    expect(container.querySelector(".agent-consent__verified")).not.toBeNull();
+    // Grok's name is only the one it gave itself: no verified mark, and it says so.
+    expect(container.querySelector(".agent-who--verified")).toBeNull();
+    expect(container.textContent).toContain("Says it is Grok");
+    expect(container.textContent).toContain("Only approve if you started this yourself.");
     expect(container.textContent).toContain("App names aren’t verified.");
     const checked = [
       ...container.querySelectorAll<HTMLInputElement>('input[type="radio"]:checked'),

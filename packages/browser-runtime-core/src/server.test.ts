@@ -46,13 +46,14 @@ import {
 
 describe("BrowserRuntimeServer", () => {
   it.each([
+    { count: 2, bytes: 0, code: 1007, admitted: 1, duplicate: true },
     { count: standardCdpMaxPending + 1, bytes: 0, code: 1013, admitted: standardCdpMaxPending },
     { count: 3, bytes: 6 * 1024 * 1024, code: 1013, admitted: 2 },
     { count: 1, bytes: standardCdpMessageMaxBytes, code: 1009, admitted: 0 },
     { count: 3, bytes: 6 * 1024 * 1024, code: 1013, admitted: 0, outbound: true },
   ])(
     "bounds raw CDP traffic ($count frames, $bytes payload bytes, outbound=$outbound)",
-    async ({ count, bytes, code, admitted, outbound }) => {
+    async ({ count, bytes, code, admitted, outbound, duplicate }) => {
       const runtime = new BrowserRuntime({
         launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([new FakePage()]))),
         runtimeId: "runtime_test",
@@ -71,6 +72,7 @@ describe("BrowserRuntimeServer", () => {
       let emit: ((event: CdpEvent) => void) | undefined;
       vi.spyOn(runtime, "attachStandardCdp").mockResolvedValue({
         signal: controller.signal,
+        settled: pending.promise.then(() => undefined),
         send,
         close,
         attachedTargetId: () => null,
@@ -103,7 +105,13 @@ describe("BrowserRuntimeServer", () => {
             emit?.({ sequence, method: "Runtime.consoleAPICalled", parameters: { expression } });
         } else {
           for (let id = 1; id <= count; id++)
-            socket.send(JSON.stringify({ id, method: "Runtime.evaluate", params: { expression } }));
+            socket.send(
+              JSON.stringify({
+                id: duplicate ? 1 : id,
+                method: "Runtime.evaluate",
+                params: { expression },
+              }),
+            );
         }
         expect((await closed)[0]).toBe(code);
         expect(send).toHaveBeenCalledTimes(admitted + 1);

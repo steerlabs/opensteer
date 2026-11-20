@@ -13,6 +13,7 @@ export class DeviceAccessRefusal extends OpensteerError {
     reason: "device-access-off" | "device-asleep" | "device-offline" | "device-stopped",
     machineId: DeviceId,
     capability: DeviceCapability,
+    machineName?: string,
   ) {
     super({
       code:
@@ -28,7 +29,7 @@ export class DeviceAccessRefusal extends OpensteerError {
             : reason === "device-offline"
               ? "Device is offline. Do not request access."
               : `${capability} is off. Use computer_access_request if needed.`,
-      details: { machineId, capability },
+      details: { machineId, capability, ...(machineName ? { machineName } : {}) },
     });
     this.reason = reason;
     this.machineId = machineId;
@@ -44,18 +45,20 @@ export async function requireDeviceAccess(
 ): Promise<void> {
   const runner = await database
     .selectFrom("devices")
-    .select(["accessPolicy", "removedAt"])
+    .select(["accessPolicy", "name", "removedAt"])
     .where("id", "=", machineId)
     .executeTakeFirst();
   if (!runner || runner.removedAt)
     throw new OpensteerError({ code: "not_found", message: "Active computer not found" });
   // The person's Stop on the computer itself holds whether or not it is connected.
-  if (options.stopped) throw new DeviceAccessRefusal("device-stopped", machineId, capability);
+  if (options.stopped)
+    throw new DeviceAccessRefusal("device-stopped", machineId, capability, runner.name);
   if (!online)
     throw new DeviceAccessRefusal(
       options.asleep ? "device-asleep" : "device-offline",
       machineId,
       capability,
+      runner.name,
     );
   if (!deviceAccess(runner.accessPolicy)[capability])
     throw new DeviceAccessRefusal("device-access-off", machineId, capability);

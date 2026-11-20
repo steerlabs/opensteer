@@ -15,7 +15,12 @@ export const internalToolFailureCode = "internal";
  * query, a path or a provider's response, so it is logged instead. Whether a
  * retry is safe follows the tool: the Host never repeats an uncertain effect.
  */
-export function agentToolFailure(error: unknown, access: AgentToolAccess): AgentToolFailure {
+export function agentToolFailure(
+  error: unknown,
+  access: AgentToolAccess,
+  /** Which Devices this caller may learn of; a caller nobody vouched for learns none. */
+  mayKnowDevice: (deviceId: string) => boolean = () => false,
+): AgentToolFailure {
   if (error instanceof ToolBlockedError) return error.blocked;
   if (error instanceof PluginServiceError)
     return {
@@ -60,8 +65,16 @@ export function agentToolFailure(error: unknown, access: AgentToolAccess): Agent
       error.reason === "device-stopped"
         ? DeviceRefusalContextSchema.safeParse(error.details).data
         : undefined;
+    // An asleep or stopped Device is named, in detail only, to a caller that may know it.
+    const named =
+      device?.machineName &&
+      (error.reason === "device-asleep" || error.reason === "device-stopped") &&
+      mayKnowDevice(device.machineId)
+        ? { device: { id: device.machineId, name: device.machineName } }
+        : {};
     return {
       ...(device ? { computerId: device.machineId, capability: device.capability } : {}),
+      ...named,
       code: error.code,
       message: error.message,
       next: error.next,

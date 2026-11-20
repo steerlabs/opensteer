@@ -59,8 +59,18 @@ export interface WatchSupervisorOptions {
     launch: Parameters<ProgramLaunchPlanner>[0],
   ) => ReturnType<ProgramLaunchPlanner>;
   readonly privateStateDirectory: string;
+  readonly onStopped?: (
+    report: Extract<
+      RunnerOperationalReport,
+      {
+        readonly type: "runner.watch-status";
+      }
+    >,
+  ) => void;
   /** Ends whatever an execution's program left running. */
-  readonly terminate: (executionId: string) => Promise<unknown>;
+  readonly terminate: (
+    executionId: string,
+  ) => Promise<import("../runtime/execution-containment.js").TerminationProof>;
   readonly transport: Pick<RunnerConfig, "mode">;
   readonly agentHome: AgentHomeAccess;
 }
@@ -73,6 +83,7 @@ export class WatchSupervisor {
   readonly #environmentId: EnvironmentId;
   readonly #nodeExecutable: string;
   readonly #planLaunch: WatchSupervisorOptions["planLaunch"];
+  readonly #onStopped: WatchSupervisorOptions["onStopped"];
   readonly #terminate: WatchSupervisorOptions["terminate"];
   readonly #transport: WatchSupervisorOptions["transport"];
   readonly #executionRoot: string;
@@ -90,6 +101,7 @@ export class WatchSupervisor {
     this.#nodeExecutable = options.nodeExecutable;
     this.#planLaunch = options.planLaunch;
     this.#terminate = options.terminate;
+    this.#onStopped = options.onStopped;
     this.#transport = options.transport;
     this.#privateRoot = resolve(options.privateStateDirectory, "watches");
     this.#executionRoot = join(this.#privateRoot, "executions", randomUUID());
@@ -448,7 +460,8 @@ export class WatchSupervisor {
     await active.process?.terminate(5_000).catch(() => undefined);
     await active.task?.catch(() => undefined);
     await endpoints?.close();
-    await this.#terminate(active.desired.activationId).catch(() => undefined);
+    if ((await this.#terminate(active.desired.activationId)) !== "proven")
+      throw new Error("Watch containment could not be verified");
   }
 
   #armLease(active: ActiveWatch): void {
@@ -460,7 +473,7 @@ export class WatchSupervisor {
     const expiresAt = Math.min(...expirations.map((value) => new Date(value).getTime()));
     active.leaseTimer = setTimeout(
       () => {
-        void this.#expire(active);
+        void this.#expire(active).catch(() => undefined);
       },
       Math.max(0, expiresAt - Date.now()),
     );
@@ -469,9 +482,9 @@ export class WatchSupervisor {
 
   async #expire(active: ActiveWatch): Promise<void> {
     if (this.#watches.get(active.desired.activationId) !== active) return;
-    active.observed = "expired";
     active.abort.abort(new Error("Watch capability lease expired"));
     await this.#endExecution(active);
+    active.observed = "expired";
     await this.#report(active);
   }
 
@@ -513,6 +526,7 @@ export class WatchSupervisor {
       stdoutTail: watchTailText(active.stdoutTail),
       type: "runner.watch-status",
     };
+    if (message.observed === "stopped") this.#onStopped?.(message);
     await active.sink.send(message).catch(() => undefined);
   }
 }

@@ -1,3 +1,5 @@
+import { resetManagedCloudTables } from "../cloud-computers/reset.test-support.js";
+import { testBackupVault } from "../cloud-computers/backup-erasure.test-support.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import {
@@ -9,7 +11,6 @@ import {
   type OrganizationId,
 } from "@opensteer/control-plane-protocol";
 import { escapeHtml } from "@opensteer/shared/browserPage";
-import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectLifecycleService } from "../account/connect-lifecycle.js";
 import { ControlPlaneAuthenticator, createControlPlaneAuth } from "../auth/auth.js";
@@ -40,7 +41,6 @@ const webhookSecret = "whsec_abcdefghijklmno";
 const checkoutUrl = "https://checkout.stripe.example.test/pay";
 const billingUrl = "https://billing.stripe.example.test/session";
 const digest = "a".repeat(64);
-const day = 86_400_000;
 const config = loadCloudComputerConfig({
   OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL: "home@example.iam.gserviceaccount.com",
   OPENSTEER_CLOUD_COMPUTER_DOMAIN: "home.example.test",
@@ -91,9 +91,32 @@ integration("Organization website pages", () => {
     })),
     refundCheckout: vi.fn<StripeBilling["refundCheckout"]>(async () => true),
     findCheckout: vi.fn<StripeBilling["findCheckout"]>(async () => undefined),
-    cancel: vi.fn<StripeBilling["cancel"]>(async () => {}),
-    updateSeatQuantity: vi.fn<CloudComputerStripe["updateSeatQuantity"]>(async () => {}),
-  } satisfies StripeBilling & Pick<CloudComputerStripe, "updateSeatQuantity">;
+    cancel: vi.fn<StripeBilling["cancel"]>(async (id) => {
+      const row = subscriptions.get(id);
+      if (row) subscriptions.set(id, { ...row, status: "canceled" });
+    }),
+    updateSeatQuantity: vi.fn<CloudComputerStripe["updateSeatQuantity"]>(async ({ subscription }) =>
+      subscriptions.get(subscription)!,
+    ),
+    invoice: vi.fn<CloudComputerStripe["invoice"]>(async (id) => {
+      const invoice = [...subscriptions.values()].find(
+        (value) => value.latest_invoice?.id === id,
+      )?.latest_invoice;
+      if (!invoice) throw new Error("No mock invoice");
+      return invoice;
+    }),
+    voidInvoice: vi.fn<CloudComputerStripe["voidInvoice"]>(async (id) => {
+      for (const [subscription, value] of subscriptions) {
+        if (value.latest_invoice?.id === id)
+          subscriptions.set(subscription, {
+            ...value,
+            pending_update: null,
+            latest_invoice: { ...value.latest_invoice, status: "void" },
+          });
+      }
+    }),
+  } satisfies StripeBilling &
+    Pick<CloudComputerStripe, "updateSeatQuantity" | "invoice" | "voidInvoice">;
   const auth = createControlPlaneAuth(database, {
     publicOrigin,
     authSecret,
@@ -105,6 +128,7 @@ integration("Organization website pages", () => {
     stripe,
     offer: {
       priceId: "price_seat",
+      portalConfigurationId: "bpc_org",
       name: "Work seat",
       currency: "usd",
       amountMinor: 4900,
@@ -113,6 +137,8 @@ integration("Organization website pages", () => {
     returnUrl: organizationsUrl,
   });
   const cloud = new CloudComputerStore(database, {
+    backupKeyVault: testBackupVault(),
+    purgeBackupStep: async () => true,
     organizations,
     config,
     accountOrigin: publicOrigin,
@@ -159,9 +185,7 @@ integration("Organization website pages", () => {
   });
 
   beforeEach(async () => {
-    await sql`truncate table work_audit_batches, work_audit_records, work_assignments, organization_invitations, organization_members, organization_checkouts, organizations, cloud_computer_egress_endpoints, cloud_computers, cloud_computer_stripe_events, cloud_computer_checkouts cascade`.execute(
-      database,
-    );
+    await resetManagedCloudTables(database);
     for (const mock of Object.values(stripe)) mock.mockClear();
     workHomeFetch.mockClear();
     await cloud.checkOffer();
@@ -216,17 +240,28 @@ integration("Organization website pages", () => {
     );
     const id = await completeOrganization(admin, requestId, 3);
 
-    const returned = await page("/organizations?organization=checkout-completed", admin);
+    const forged = await page("/organizations?organization=checkout-completed&joined=1", admin);
+    expect(forged.body).not.toContain(escapeHtml(orgWords("org.checkout.completed")));
+    expect(forged.body).not.toContain(escapeHtml(orgWords("org.done.joined")));
+    const returned = await page(`/organizations?checkout=${requestId}`, admin);
     expect(returned.body).toContain(escapeHtml(orgWords("org.checkout.completed")));
     expect(returned.body).toContain(`href="/organizations/${id}"`);
     const overview = await page(`/organizations/${id}`, admin);
     expect(overview.status).toBe(200);
     expect(overview.body).toMatch(/org__stat-value">3<\/span><span class="org__stat-label">Paid/u);
     expect(overview.body).toContain(escapeHtml(orgWords("org.billing.active")));
-    const billing = await page(`/organizations/${id}/billing`, admin);
+    const billingPath = `/organizations/${id}/billing`;
+    expect((await post(billingPath, admin, {}, publicOrigin.origin)).status).toBe(403);
+    expect((await post(billingPath, admin, {}, null)).status).toBe(403);
+    expect(stripe.portal).not.toHaveBeenCalled();
+    const billing = await post(billingPath, admin, {});
     expect(billing.status).toBe(303);
     expect(billing.headers.get("location")).toBe(billingUrl);
-    expect(stripe.portal).toHaveBeenCalledWith(expect.stringMatching(/^cus_/u), organizationsUrl);
+    expect(stripe.portal).toHaveBeenCalledWith(
+      expect.stringMatching(/^cus_/u),
+      organizationsUrl,
+      "bpc_org",
+    );
   });
 
   it("changes seats: an increase waits for the provider, a decrease below assigned is refused", async () => {
@@ -257,6 +292,63 @@ integration("Organization website pages", () => {
     expect(another.body).toContain("A seat change is already pending");
   });
 
+  it("links the pending invoice, abandons it after Stripe confirms, and remembers the request", async () => {
+    const { admin, id } = await organization(1);
+    const requestId = randomUUID();
+    const url = `/organizations/${id}`;
+    const invoiceUrl = "https://invoices.stripe.example.test/pending";
+    stripe.updateSeatQuantity.mockImplementationOnce(async ({ subscription }) => {
+      const updated: StripeSubscription = {
+        ...subscriptions.get(subscription)!,
+        pending_update: { expires_at: Math.floor(Date.now() / 1000) + 300 },
+        latest_invoice: {
+          id: "in_seat_change",
+          status: "open",
+          attempt_count: 1,
+          hosted_invoice_url: invoiceUrl,
+          billing_reason: "subscription_update",
+        },
+      };
+      subscriptions.set(subscription, updated);
+      return updated;
+    });
+    expect((await post(`${url}/seats`, admin, { requestId, seats: "2" })).status).toBe(303);
+    expect((await page(url, admin)).body).toContain(`href="${invoiceUrl}"`);
+    expect((await post(`${url}/seats/abandon`, admin, { requestId })).status).toBe(303);
+    expect(stripe.voidInvoice).toHaveBeenCalledWith("in_seat_change");
+    expect((await organizations.admin(id, admin.id)).pendingSeatChange).toBeNull();
+    expect((await post(`${url}/seats`, admin, { requestId, seats: "2" })).status).toBe(303);
+    expect((await post(`${url}/seats`, admin, { requestId, seats: "3" })).status).toBe(409);
+    expect(stripe.updateSeatQuantity).toHaveBeenCalledOnce();
+  });
+
+  it("restores a canceled subscription on the same organization and confirms explicit closure", async () => {
+    const { admin, id } = await organization(1);
+    const old = await database
+      .selectFrom("organizations")
+      .select("stripeSubscriptionId")
+      .where("id", "=", id)
+      .executeTakeFirstOrThrow();
+    await stripe.cancel(old.stripeSubscriptionId);
+    const onError = vi.fn();
+    await cloud.reconcileBilling(onError);
+    expect(onError).not.toHaveBeenCalled();
+    const url = `/organizations/${id}`;
+    expect((await page(url, admin)).body).toContain(escapeHtml(orgWords("org.billing.restore")));
+    const requestId = randomUUID();
+    expect((await post(`${url}/billing/restore`, admin, { requestId })).status).toBe(303);
+    expect(await completeOrganization(admin, requestId, 1)).toBe(id);
+    expect((await organizations.mine(admin.id)).organizations.map((row) => row.id)).toEqual([id]);
+    expect((await organizations.admin(id, admin.id)).billingStatus).toBe("active");
+    expect((await post(`${url}/close`, admin, {})).status).toBe(303);
+    const closed = await organizations.admin(id, admin.id);
+    expect(closed.closedAt).toEqual(expect.any(String));
+    expect(closed.seats.free).toBe(0);
+    expect((await post(`${url}/billing/restore`, admin, { requestId: randomUUID() })).status).toBe(
+      409,
+    );
+  });
+
   it("refuses to go below the seats already assigned", async () => {
     const { admin, id } = await organization(2);
     await assign(admin, id, await join(admin, id, "Mia Member"));
@@ -278,8 +370,15 @@ integration("Organization website pages", () => {
       role: "member",
     });
     expect(invited.status).toBe(303);
-    expect(invited.headers.get("location")).toBe(`/organizations/${id}/people?done=invited`);
-    const people = await page(`/organizations/${id}/people?done=invited`, admin);
+    const target = `/organizations/${id}/people`;
+    expect(invited.headers.get("location")).toBe(target);
+    const forged = await page(`${target}?done=invited`, admin);
+    expect(forged.body).not.toContain(escapeHtml(orgWords("org.done.invited")));
+    const flash = invited.headers
+      .get("set-cookie")
+      ?.match(/__Host-opensteer\.organization-flash=[^;,]+/u)?.[0];
+    expect(flash).toBeDefined();
+    const people = await page(target, { cookie: `${admin.cookie}; ${flash}` });
     const link = new RegExp(
       `${portalOrigin.origin}(/organizations/invitations/oi_[0-9a-f-]+)`,
       "u",
@@ -294,12 +393,23 @@ integration("Organization website pages", () => {
     expect(wrong.status).toBe(403);
     expect(wrong.body).toContain(escapeHtml(orgWords("org.invite.wrongEmail")));
 
+    await database
+      .updateTable("users")
+      .where("id", "=", invitee.id)
+      .set({ emailVerified: false })
+      .executeTakeFirstOrThrow();
+    expect((await post(`${link}/accept`, invitee, {})).status).toBe(403);
+    await database
+      .updateTable("users")
+      .where("id", "=", invitee.id)
+      .set({ emailVerified: true })
+      .executeTakeFirstOrThrow();
     const own = await page(link!, invitee);
     expect(own.status).toBe(200);
     expect(own.body).toContain(escapeHtml(orgWords("org.invite.lead")));
     const accepted = await post(`${link}/accept`, invitee, {});
     expect(accepted.status).toBe(303);
-    expect(accepted.headers.get("location")).toBe("/organizations?joined=1");
+    expect(accepted.headers.get("location")).toBe("/organizations");
     const mine = await page("/organizations", invitee);
     expect(mine.body).toContain("Acme");
     expect(mine.body).toContain(escapeHtml(orgWords("org.role.member")));
@@ -336,20 +446,26 @@ integration("Organization website pages", () => {
     const { admin, id } = await organization(1);
     const member = await join(admin, id, "Mia Member");
     const assignment = await assign(admin, id, member);
+    const stranger = await signIn("Stranger");
     for (const path of [
       `/organizations/${id}`,
       `/organizations/${id}/people`,
       `/organizations/${id}/work-homes`,
       `/organizations/${id}/policy`,
       `/organizations/${id}/audit`,
-      `/organizations/${id}/billing`,
       `/organizations/${id}/audit/${assignment}/export.jsonl`,
     ]) {
-      const response = await page(path, member);
-      expect(response.status, path).toBe(403);
-      expect(response.body, path).toContain("Organization access is not allowed");
+      for (const caller of [member, stranger]) {
+        const response = await page(path, caller);
+        expect(response.status, path).toBe(403);
+        expect(response.body, path).toContain("Organization access is not allowed");
+      }
     }
     for (const [path, fields] of [
+      [`/organizations/${id}/billing`, {}],
+      [`/organizations/${id}/billing/restore`, { requestId: randomUUID() }],
+      [`/organizations/${id}/seats/abandon`, { requestId: randomUUID() }],
+      [`/organizations/${id}/close`, {}],
       [`/organizations/${id}/seats`, { requestId: randomUUID(), seats: "4" }],
       [`/organizations/${id}/invitations`, { email: "x@example.test", role: "admin" }],
       [`/organizations/${id}/members`, { accountId: admin.id, action: "remove" }],
@@ -366,9 +482,11 @@ integration("Organization website pages", () => {
         },
       ],
     ] as const) {
-      const response = await post(path, member, fields);
-      expect(response.status, path).toBe(403);
-      expect(response.body, path).toContain("Organization access is not allowed");
+      for (const caller of [member, stranger]) {
+        const response = await post(path, caller, fields);
+        expect(response.status, path).toBe(403);
+        expect(response.body, path).toContain("Organization access is not allowed");
+      }
     }
     const after = await organizations.admin(id, admin.id);
     expect(after.policyRevision).toBe(1);
@@ -418,7 +536,6 @@ integration("Organization website pages", () => {
     const assignments: string[] = [];
     for (const [index] of choices.entries())
       assignments.push(await assign(admin, id, await join(admin, id, `Person ${index}`)));
-    const before = Date.now();
     for (const [index, days] of choices.entries()) {
       const done = await post(
         `/organizations/${id}/work-homes/${assignments[index]}/offboard`,
@@ -446,14 +563,14 @@ integration("Organization website pages", () => {
       const row = rows.find(({ id: assignment }) => assignment === assignments[index])!;
       expect(row.state).toBe("offboarding");
       expect(row.signInCutAt).not.toBeNull();
-      const retained = row.retainUntil!.getTime() - before;
-      expect(retained).toBeGreaterThanOrEqual(days * day);
-      expect(retained).toBeLessThan(days * day + 60_000);
+      expect(row.retainUntil).toBeNull();
+      expect(row.retentionSeconds).toBe(days * 86_400);
     }
     const shown = await page(`/organizations/${id}/work-homes`, admin);
     expect(shown.body).toContain(escapeHtml(orgWords("org.offboard.cut")));
-    expect(shown.body).toContain(escapeHtml(orgWords("org.offboard.deletesNow")));
-    expect(shown.body.match(/Deletes after/gu)?.length).toBe(3);
+    expect(shown.body).toContain(escapeHtml(orgWords("org.offboard.retainPending")));
+    expect(shown.body).toContain(escapeHtml(orgWords("org.audit.finalUnconfirmed")));
+    expect(shown.body).not.toContain(escapeHtml(orgWords("org.offboard.deletesNow")));
     expect(shown.body).not.toContain(`/work-homes/${assignments[0]}/offboard`);
     const first = rows.find(({ id: assignment }) => assignment === assignments[0])!;
     const employee = await page("/cloud-computer", (await personOf(first.assigneeAccountId!))!);
@@ -479,7 +596,13 @@ integration("Organization website pages", () => {
     await database
       .updateTable("workAssignments")
       .where("id", "=", assignment)
-      .set({ auditSequence: 2, auditReceivedAt: receivedAt, auditGapReceived: 5 })
+      .set({
+        auditSequence: 2,
+        auditReceivedAt: receivedAt,
+        auditGapExpected: 3,
+        auditGapReceived: 5,
+        auditGapThrough: 7,
+      })
       .execute();
     const shown = await page(`/organizations/${id}/audit`, admin);
     expect(shown.body).toContain(
@@ -698,14 +821,14 @@ integration("Organization website pages", () => {
     path: string,
     as: { readonly cookie: string },
     fields: Record<string, string>,
-    origin = portalOrigin.origin,
+    origin: string | null = portalOrigin.origin,
   ) {
     return send(
       "POST",
       path,
       {
         host: portalOrigin.host,
-        origin,
+        ...(origin === null ? {} : { origin }),
         cookie: as.cookie,
         "content-type": "application/x-www-form-urlencoded",
       },

@@ -20,6 +20,7 @@ export function useHomeKind(): HomeKindFact {
   const cloud = useCloudComputer(useCloudComputerAccount());
   return homeKind({
     exposure: snapshot.identityConfig?.exposure,
+    homeKind: snapshot.identityConfig?.homeKind,
     deploymentId: snapshot.deploymentId,
     hostedHere: desktopDeployment?.onThisComputer === true,
     account: cloud.views,
@@ -41,6 +42,7 @@ export function HomeFacts({ machine }: { readonly machine: MachineSummary }) {
     publicOrigin: snapshot.identityConfig?.publicOrigin ?? null,
     homeMachine: machine,
     personal: snapshot.deploymentShape?.kind === "personal",
+    role: snapshot.role,
   });
   if (!facts.address && !facts.version && !facts.owner) return null;
   return (

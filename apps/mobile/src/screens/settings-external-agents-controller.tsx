@@ -39,7 +39,13 @@ export function ExternalAgentsSettingsController(): ReactNode {
   const connections = agents.connections;
   const arrived = guide === null ? null : arrivedConnection(connections, baseline);
   const names = { profiles: host?.getSnapshot().browserProfiles ?? [] };
-  const view = connectedAgentsView(connections ?? [], names, agents.revoked);
+  const view = connectedAgentsView(
+    connections ?? [],
+    names,
+    agents.revoked,
+    new Date(),
+    host?.getSnapshot().agentWork?.withdrawn ?? {},
+  );
   const addDisabled = connections === null || reach.kind !== "ready";
   const openRemoteAccess = () => {
     setGuide(null);

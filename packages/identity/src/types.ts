@@ -141,6 +141,8 @@ export interface IdentityServiceOptions {
    * single-use admission an internet-facing claim requires.
    */
   readonly exposure: HostExposure;
+  /** What kind of Home this is, when it is one. */
+  readonly homeKind?: import("@opensteer/core").HostHomeKind;
   /**
    * Apex portal this Deployment belongs to. It is navigation metadata the
    * Deployment's own clients render as a way back, never a trust root, so a

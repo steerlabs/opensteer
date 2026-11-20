@@ -3,6 +3,7 @@ import { boundedJsonSize } from "@opensteer/browser-runtime-core";
 import { OpensteerError, refused, TabIdSchema, type ThreadId } from "@opensteer/core";
 import {
   BrowserCdpCommandSchema,
+  browserScriptScreenshotMaxBytes,
   browserHostMethods,
   type PageAgentBinding,
 } from "@opensteer/protocol";
@@ -99,6 +100,12 @@ export function createBrowserUsePort({
       notify?.();
     };
     let relay: Relay | undefined;
+    let closing = false;
+    const close = () => {
+      if (!relay || closing) return;
+      closing = true;
+      relay.close();
+    };
     try {
       relay = await browser.attachCdpForAgent(
         {
@@ -110,10 +117,11 @@ export function createBrowserUsePort({
         (event) => {
           if (closed) return;
           const destroyed = event.method === "Target.targetDestroyed" && event.parameters.targetId;
-          const endedSession = event.method === "Target.detachedFromTarget" && event.parameters.sessionId;
+          const endedSession =
+            event.method === "Target.detachedFromTarget" && event.parameters.sessionId;
           if ((root && destroyed === root) || (target && endedSession === target.sessionId)) {
             stop();
-            relay?.close();
+            close();
             return;
           }
           if (!target) {
@@ -156,7 +164,7 @@ export function createBrowserUsePort({
       call.signal.throwIfAborted();
       return target;
     } catch (error) {
-      relay?.close();
+      close();
       translate(error);
     }
   }
@@ -217,11 +225,31 @@ export function createBrowserUsePort({
       if (method === "Page.captureScreenshot" && sessionId === undefined)
         throw refused("bad_request", "Capture a screenshot on an attached page.");
       try {
-        const { result } = await target.relay.dispatch(parsed.data, call);
+        const budget =
+          method === "Page.captureScreenshot"
+            ? {
+                ...call,
+                maxImageBytes: Math.min(
+                  call.maxImageBytes ?? browserScriptScreenshotMaxBytes,
+                  Math.floor((call.maxBytes - 1024) / 4) * 3,
+                ),
+              }
+            : call;
+        if (budget.maxImageBytes !== undefined && budget.maxImageBytes < 1) throw tooLarge();
+        const { result } = await target.relay.dispatch(parsed.data, budget);
         const value = await result;
         checkReply(value, call);
         return JSON.stringify(value);
       } catch (error) {
+        if (
+          method === "Page.captureScreenshot" &&
+          error instanceof OpensteerError &&
+          error.reason === "browser-reply-limit"
+        )
+          throw refused(
+            "resource_exhausted",
+            "Screenshot exceeds its image budget (up to 323 KiB per capture). Use a smaller viewport clip or JPEG via CDP.",
+          );
         translate(error);
       }
     },

@@ -27,11 +27,15 @@ describe("organization seats", () => {
 it("enables a separate recurring offer only when fully configured", () => {
   expect(loadOrganizationOffer({})).toBeUndefined();
   expect(() =>
-    loadOrganizationOffer({ OPENSTEER_ORGANIZATION_STRIPE_PRICE_ID: "price_seats" }),
+    loadOrganizationOffer({
+      OPENSTEER_ORGANIZATION_STRIPE_PRICE_ID: "price_seats",
+      OPENSTEER_ORGANIZATION_STRIPE_PORTAL_CONFIGURATION_ID: "bpc_org",
+    }),
   ).toThrow("OPENSTEER_ORGANIZATION_CURRENCY");
   expect(
     loadOrganizationOffer({
       OPENSTEER_ORGANIZATION_STRIPE_PRICE_ID: "price_seats",
+      OPENSTEER_ORGANIZATION_STRIPE_PORTAL_CONFIGURATION_ID: "bpc_org",
       OPENSTEER_ORGANIZATION_CURRENCY: "usd",
       OPENSTEER_ORGANIZATION_PRICE_MINOR: "3200",
     }),

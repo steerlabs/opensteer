@@ -1,9 +1,13 @@
 import type { BrowserRuntime, StandardCdpAttachment } from "@opensteer/browser-runtime-core";
-import type { StandardCdpMode } from "@opensteer/protocol/standard-cdp";
+import { standardCdpSettledReason, type StandardCdpMode } from "@opensteer/protocol/standard-cdp";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import WebSocket from "ws";
 import { z } from "zod";
 import type { BrowserRuntimeConnection } from "./browser-service.js";
+
+export const standardCdpAdmissionMs = 5_000;
+export const standardCdpMaxLivePerBinding = 4;
+export const standardCdpMaxLivePerRunner = 16;
 
 export const RawCdpRequestSchema = z
   .object({
@@ -17,6 +21,8 @@ export const RawCdpRequestSchema = z
 export interface StandardCdpTransport {
   readonly mode: StandardCdpMode;
   readonly signal: AbortSignal;
+  readonly settled: Promise<void>;
+  readonly contactLost?: Promise<void>;
   close(): void;
   onFrame(listener: (frame: Buffer) => void): void;
   send(frame: Buffer): Promise<void>;
@@ -27,13 +33,17 @@ export function relayStandardTransport(
   mode: StandardCdpMode,
 ): StandardCdpTransport {
   const ending = new AbortController();
+  const settlement = Promise.withResolvers<void>();
+  const contact = Promise.withResolvers<void>();
   let receive: ((frame: Buffer) => void) | undefined;
   const close = () => {
     if (!ending.signal.aborted) ending.abort();
     receive = undefined;
-    connection.terminate();
+    connection.close();
   };
-  connection.once("close", (code) => {
+  connection.once("close", (code, reason) => {
+    if (code === 1000 && reason.toString("utf8") === standardCdpSettledReason) settlement.resolve();
+    else contact.resolve();
     ending.abort(code);
     receive = undefined;
   });
@@ -46,6 +56,8 @@ export function relayStandardTransport(
   return {
     mode,
     signal: ending.signal,
+    settled: settlement.promise,
+    contactLost: contact.promise,
     close,
     onFrame: (listener) => {
       receive = listener;
@@ -65,7 +77,7 @@ export async function directStandardTransport(
   signal: AbortSignal,
 ): Promise<StandardCdpTransport> {
   const overload = new AbortController();
-  const client = await runtime.attachStandardCdp(ticket, () => overload.abort(1013), signal, true);
+  const client = await runtime.attachStandardCdp(ticket, () => overload.abort(1013), signal);
   return routerStandardTransport(
     client,
     client.mode ?? "session",
@@ -88,6 +100,7 @@ export function routerStandardTransport(
   return {
     mode,
     signal,
+    settled: client.settled,
     close: client.close,
     onFrame: (listener) => {
       receive = listener;

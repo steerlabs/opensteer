@@ -109,6 +109,34 @@ export async function liveDelegatingConnection(
 }
 
 /**
+ * The one send rule, applied at send, at dequeue, at every follow-up claim and before a provider
+ * session is chosen: work for a connection enters, and keeps running in, only its own lineage's
+ * tasks, or the person's own tasks when its grant is `everything`. Native work and the person may
+ * use any of the person's tasks.
+ */
+export function sendEligible(
+  connection: Pick<AgentConnectionAuthority, "agentConnectionId" | "grant"> | null,
+  taskOriginConnectionId: string | null,
+): boolean {
+  if (!connection) return true;
+  if (taskOriginConnectionId === connection.agentConnectionId) return true;
+  return taskOriginConnectionId === null && connection.grant.scope === "everything";
+}
+
+/** The send rule against the connection as it stands now; refuses as an unknown task would. */
+export async function assertSendEligible(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  taskOriginConnectionId: string | null,
+  agentConnectionId: string | null,
+): Promise<AgentConnectionAuthority | null> {
+  if (!agentConnectionId) return null;
+  const connection = await liveAgentConnection(database, ownerUserId, agentConnectionId);
+  if (!sendEligible(connection, taskOriginConnectionId)) throw forbidden("Task is unavailable");
+  return connection;
+}
+
+/**
  * A binding's immutable connection, read before any lock is taken: a Run's own, a task's origin,
  * an automation's origin or a session's. Null only for a native execution of the person; a binding
  * that names nothing, or whose Run and task disagree, is refused rather than read as the person's.

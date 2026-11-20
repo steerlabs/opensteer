@@ -1,3 +1,4 @@
+import { standardCdpSettledReason } from "@opensteer/protocol/standard-cdp";
 import { RawCdpChunks, RawCdpWriter } from "@opensteer/protocol/raw-cdp-relay";
 import {
   type BrowserBridgeAttached,
@@ -146,7 +147,11 @@ export class BrowserModuleRelay {
     };
     // Process start/import never occupies the auxiliary stream's ordered input
     // dispatcher. Channel registration happens synchronously before the await.
-    if (message.type === "browser.attach" || message.type === "browser.profile.delete") {
+    if (
+      message.type === "browser.attach" ||
+      message.type === "browser.profile.delete" ||
+      (message.type === "browser.close" && this.#channels.get(message.channelId)?.raw)
+    ) {
       void handle().catch(() => undefined);
       return;
     }
@@ -313,20 +318,23 @@ export class BrowserModuleRelay {
         await this.#send({ ...message, type: "browser.profile.delete.result", state });
         return;
       }
-      case "browser.close":
-        this.#assertChannel(message.channelId, message.capability);
+      case "browser.close": {
+        const channel = this.#assertChannel(message.channelId, message.capability);
         this.#removeChannel(message.channelId);
-        this.#bridge.close(message.channelId);
+        const settled = channel.raw ? await this.#bridge.settleStandardCdp(message.channelId) : false;
+        if (!channel.raw) this.#bridge.close(message.channelId);
+        if (this.#stream !== stream) return;
         await this.#send({
           ...stream.fence,
           capability: message.capability,
           channelId: message.channelId,
           code: 1000,
-          reason: "Host closed the browser relay.",
+          reason: settled ? standardCdpSettledReason : "Host closed the browser relay.",
           requestId: message.requestId,
           type: "browser.closed",
         });
         return;
+      }
     }
   }
 
@@ -450,7 +458,7 @@ export class BrowserModuleRelay {
     for (const [channelId, channel] of this.#channels) {
       if (channel.capability.runtimeId !== lease.runtimeId) continue;
       clearTimeout(channel.expiryTimer);
-      channel.raw?.writer.close();
+      // Keep the ordered writer and partial reader. Each chunk uses the fence at send time.
       channel.capability = capabilityReference(lease);
       channel.expiryTimer = setTimeout(
         () => this.#expireChannel(channelId),

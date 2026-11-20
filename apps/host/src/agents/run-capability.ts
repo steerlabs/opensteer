@@ -43,7 +43,12 @@ export interface RunCapabilityBindingAuthorizer {
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
     readonly threadId: ThreadId;
-  }): Promise<void>;
+  }): Promise<void | RunCapabilityLineage>;
+}
+/** Whom the Run works for, from the read that authenticated it. */
+export interface RunCapabilityLineage {
+  readonly agentConnectionId: string | null;
+  readonly taskOriginConnectionId: string | null;
 }
 export type RunCapabilityClaims<Audience extends string> = RunCapabilityScope & {
   readonly aud: Audience;
@@ -90,9 +95,16 @@ export class RunCapabilityTokenService<Audience extends string> {
     return this.#lifetimeSeconds;
   }
   async authenticate(token: string): Promise<RunCapabilityClaims<Audience>> {
+    return (await this.authenticateExecution(token)).claims;
+  }
+  /** The claims, and the lineage the same authorization read proved. */
+  async authenticateExecution(token: string): Promise<{
+    readonly claims: RunCapabilityClaims<Audience>;
+    readonly lineage: RunCapabilityLineage | null;
+  }> {
     const claims = this.#tokens.verify(token, this.#schema);
-    await this.#authorizer.assertActiveGrant(claims);
-    return claims;
+    const lineage = await this.#authorizer.assertActiveGrant(claims);
+    return { claims, lineage: lineage ?? null };
   }
 
   /**

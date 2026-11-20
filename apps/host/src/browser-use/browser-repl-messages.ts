@@ -1,3 +1,4 @@
+import { browserScriptScreenshotMaxBytes } from "@opensteer/protocol/browser";
 import { z } from "zod";
 
 export const browserReplLimits = {
@@ -7,6 +8,10 @@ export const browserReplLimits = {
   bindingPending: 64,
   requests: 1_024,
   requestBytes: 4 * 1024 * 1024,
+  replyBytes: 32 * 1024 * 1024,
+  screenshotBytes: browserScriptScreenshotMaxBytes,
+  screenshotReplyBytes: 432 * 1024,
+  pendingCaptures: 2,
   depth: 32,
   jsonEntries: 16_384,
   timers: 128,

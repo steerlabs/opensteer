@@ -333,6 +333,7 @@ export interface RunnerRegistryHooks {
   >;
 }
 interface PendingAck {
+  rejectedBeforeAdmission?: true;
   readonly beforeAck?: () => Promise<void>;
   readonly commandType: RunnerCommand["type"];
   readonly runBinding?: { readonly runId: RunId; readonly bindingGeneration: number };
@@ -2107,11 +2108,13 @@ export class RunnerRegistry {
        * command is written straight after it with nothing in between.
        */
       readonly beforeSend?: () => Promise<void>;
+      readonly onNotAdmitted?: () => Promise<void>;
       readonly fenceRequestSend?: RequestResponseSendFence;
       readonly connectionGeneration?: number;
     } = {},
   ): Promise<RunnerCommandReceipt> {
-    const { beforeAck, beforeSend, connectionGeneration, fenceRequestSend } = options;
+    const { beforeAck, beforeSend, connectionGeneration, fenceRequestSend, onNotAdmitted } =
+      options;
     RunnerCommandSchema.parse(command);
     if (
       command.type === "request.resolve" &&
@@ -2175,6 +2178,7 @@ export class RunnerRegistry {
       command.type === "trigger.execute" &&
       this.#canceledTriggerOccurrences.delete(command.context.occurrenceId)
     ) {
+      await onNotAdmitted?.();
       throw new CommandDispatchError("Trigger execution authority was revoked", "failed");
     }
     if (!connection) {
@@ -2195,6 +2199,7 @@ export class RunnerRegistry {
         throw new CommandDispatchError("Runner is offline", "failed");
       }
       this.#releaseCancellation(command, runCancellation, triggerCancellation);
+      await onNotAdmitted?.();
       throw new CommandDispatchError("Runner is offline", "retry");
     }
     if (
@@ -2269,6 +2274,9 @@ export class RunnerRegistry {
       if (runId && (!ownsBinding() || this.#canceledRuns.delete(runId))) {
         throw new CommandDispatchError("Run execution authority was revoked", "retry");
       }
+      if (occurrenceId && this.#canceledTriggerOccurrences.delete(occurrenceId)) {
+        throw new CommandDispatchError("Trigger execution authority was revoked", "failed");
+      }
       const frame = { ...connection.identity.fence, command, type: "host.command" as const };
       const prepared = fenceRequestSend && connection.peer.prepareSend?.(frame);
       const enqueue = () => {
@@ -2319,6 +2327,8 @@ export class RunnerRegistry {
       // A Run never sent was never this Runner's; a Run that may have arrived
       // stays held until the next attach says whether the Runner has it.
       if (runBinding && !sent) this.#forgetUnadmittedRun(connection, runBinding);
+      if (!sent || connection.pendingAcks.get(command.commandId)?.rejectedBeforeAdmission)
+        await onNotAdmitted?.();
       if (error instanceof CommandDispatchError) throw error;
       // The caller's own refusal: nothing was sent, so the command is retried,
       // and settles as unsent work under whatever authority stands by then.
@@ -2620,6 +2630,7 @@ export class RunnerRegistry {
       case "runner.command-rejected":
         {
           const pending = connection.pendingAcks.get(message.commandId);
+          if (pending) pending.rejectedBeforeAdmission = true;
           if (pending?.runBinding) this.#forgetUnadmittedRun(connection, pending.runBinding);
           if (pending?.triggerOccurrenceId) {
             connection.ownedTriggerOccurrenceIds.delete(pending.triggerOccurrenceId);
@@ -2663,7 +2674,11 @@ export class RunnerRegistry {
           });
         }
         const { event } = message;
-        if (connection.revokedRunIds.has(event.runId)) break;
+        const terminal =
+          event.type === "run.completed" ||
+          event.type === "run.failed" ||
+          event.type === "run.interrupted";
+        if (!terminal && connection.revokedRunIds.has(event.runId)) break;
         let throughOrdinal: number;
         try {
           throughOrdinal = await this.#runHook(() =>
@@ -2677,10 +2692,7 @@ export class RunnerRegistry {
           await this.#refuseEvent(connection, event, error);
           break;
         }
-        const terminal =
-          event.type === "run.completed" ||
-          event.type === "run.failed" ||
-          event.type === "run.interrupted";
+
         this.#acknowledge(
           connection,
           event.runId,
@@ -2728,7 +2740,16 @@ export class RunnerRegistry {
           });
         }
         if (this.#hooks.onTriggerResult) {
-          await this.#runHook(() => this.#hooks.onTriggerResult?.(connection.identity, message));
+          try {
+            await this.#runHook(() => this.#hooks.onTriggerResult?.(connection.identity, message));
+          } catch (error) {
+            if (
+              !(error instanceof OpensteerError) ||
+              (error.code !== "forbidden" && error.code !== "not_found")
+            )
+              throw error;
+            break;
+          }
         }
         connection.pendingTriggerPrograms.get(message.output.occurrenceId)?.resolve();
         connection.pendingTriggerPrograms.delete(message.output.occurrenceId);
@@ -2738,7 +2759,16 @@ export class RunnerRegistry {
         break;
       case "runner.watch-status":
         if (this.#hooks.onWatchStatus) {
-          await this.#runHook(() => this.#hooks.onWatchStatus?.(connection.identity, message));
+          try {
+            await this.#runHook(() => this.#hooks.onWatchStatus?.(connection.identity, message));
+          } catch (error) {
+            if (
+              message.observed !== "stopped" ||
+              !(error instanceof OpensteerError) ||
+              (error.code !== "forbidden" && error.code !== "not_found")
+            )
+              throw error;
+          }
         }
         break;
       case "runner.session-bound":

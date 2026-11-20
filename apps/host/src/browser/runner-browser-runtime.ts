@@ -794,7 +794,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         throw relayError("The browser close is not correlated.");
       }
       if (!channel) return;
-      this.#requireChannel(stream, message.channelId, message.capability);
+      if (!pending) this.#requireChannel(stream, message.channelId, message.capability);
       this.#dropChannel(channel, message.code, message.reason);
       void this.#releasePlacementLease(channel.placementLease).catch(() => undefined);
       return;

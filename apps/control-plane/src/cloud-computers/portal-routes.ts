@@ -36,8 +36,7 @@ const titles = cloudWords("cloud.web.title");
 const CheckoutFormSchema = z.strictObject({ requestId: z.string().max(64) });
 const ActionFormSchema = z.strictObject({ id: z.string().max(64) });
 const DeleteFormSchema = z.strictObject({ id: z.string().max(64), confirm: z.string().max(64) });
-const notices = { "no-billing": "cloud.web.noBilling" } as const;
-const NoticeQuerySchema = z.object({ notice: z.enum(["no-billing"]).optional() }).loose();
+const CheckoutQuerySchema = z.object({ checkout: z.uuid().optional() }).loose();
 
 /**
  * The Opensteer website's Cloud Computer pages, over the same store as the Account API.
@@ -73,10 +72,15 @@ export function registerCloudComputerPortal(
     void reply.header("cache-control", "no-store");
     if (!cloudComputers) return unavailable(reply);
     const session = await readSession(request, reply);
-    const { notice } = NoticeQuerySchema.parse(request.query ?? {});
+    const checkout = CheckoutQuerySchema.safeParse(request.query ?? {});
+    const completed =
+      session &&
+      checkout.success &&
+      checkout.data.checkout &&
+      (await cloudComputers.checkoutCompleted(accountOf(session), checkout.data.checkout));
     return renderLanding(reply, cloudComputers, session, {
       refusal: null,
-      notice: notice ? cloudWords(notices[notice]) : null,
+      notice: completed ? cloudWords("cloud.web.checkout.paid") : null,
     });
   });
 
@@ -127,7 +131,10 @@ export function registerCloudComputerPortal(
       return reply.redirect(url, 303);
     } catch (error) {
       if (!(error instanceof ControlPlaneError) || error.code !== "not_found") throw error;
-      return reply.redirect(`${cloudComputerPortalPath}?notice=no-billing`, 303);
+      return renderLanding(reply, cloudComputers, session, {
+        refusal: null,
+        notice: cloudWords("cloud.web.noBilling"),
+      });
     }
   });
 
@@ -200,12 +207,15 @@ export function registerCloudComputerPortal(
             kind: "offer",
             plan: store.plan,
             deleted: computers[0]?.status === "deleted",
+            ...(computers[0]?.deletion ? { deletion: computers[0].deletion } : {}),
             work,
           };
     }
     // A plain timed reload follows setup without a script.
     if (
-      (state.kind === "computer" && state.computer.status === "preparing") ||
+      (state.kind === "computer" &&
+        (state.computer.status === "preparing" || state.computer.deletion)) ||
+      (state.kind === "offer" && state.deletion && !state.deletion.storedBackupDataRemovedAt) ||
       (state.kind !== "signed-out" &&
         state.work.some(({ assignment }) => assignment.homeStatus === "preparing"))
     )

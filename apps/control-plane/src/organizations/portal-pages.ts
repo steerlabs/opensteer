@@ -1,3 +1,4 @@
+import { cloudComputerDeletionLines } from "../cloud-computers/portal-pages.js";
 import {
   cloudComputerPriceLine,
   offboardRetentionChoices,
@@ -308,12 +309,35 @@ function overview(view: OrganizationAdminResponse, requestId: string): string {
     .join("");
   const billingOk = view.billingStatus === "active";
   const change =
-    seats.pending === null
-      ? `<form class="org__inline" method="post" action="${organizationPortalPath(view.id)}/seats">${hidden("requestId", requestId)}
+    view.closedAt || view.closingAt || !billingOk
+      ? ""
+      : seats.pending === null
+        ? `<form class="org__inline" method="post" action="${organizationPortalPath(view.id)}/seats">${hidden("requestId", requestId)}
         <label class="org__label" for="org-seats">${w("org.seats.change")}</label>
         <div class="org__inline-row"><span class="field"><input id="org-seats" name="seats" type="number" inputmode="numeric" min="1" max="1000" required value="${seats.paid}"></span><button class="btn" type="submit">${w("org.seats.save")}</button></div>
         <p class="fine org__left">${w("org.seats.changeDetail")}</p></form>`
-      : `<p class="lead" role="status">${w("org.seats.pendingDetail", { seats: seats.pending })}</p>`;
+        : `<p class="lead" role="status">${w("org.seats.pendingDetail", { seats: seats.pending })}</p>${
+            view.pendingSeatChange?.invoiceUrl
+              ? `<a class="btn btn--block" href="${escapeHtml(view.pendingSeatChange.invoiceUrl)}">${w("org.billing.payInvoice")}</a>`
+              : ""
+          }${
+            view.pendingSeatChange
+              ? `<form method="post" action="${organizationPortalPath(view.id)}/seats/abandon">${hidden("requestId", view.pendingSeatChange.requestId)}<button class="btn btn--block" type="submit">${w("org.billing.abandonSeats")}</button></form>`
+              : ""
+          }`;
+  const closure = view.closedAt
+    ? `<p class="lead">${w("org.billing.closed")}</p>`
+    : view.closingAt
+      ? `<p class="lead">${w("org.billing.closing")}</p>`
+      : `${
+          view.billingStatus === "canceled"
+            ? `<form method="post" action="${organizationPortalPath(view.id)}/billing/restore">${hidden("requestId", requestId)}<button class="btn btn--primary btn--block" type="submit">${w("org.billing.restore")}</button></form>`
+            : ""
+        }${
+          seats.assigned === 0
+            ? `<details><summary class="btn btn--block">${w("org.billing.close")}</summary><p class="lead">${w("org.billing.closeDetail")}</p><form method="post" action="${organizationPortalPath(view.id)}/close"><button class="btn btn--danger btn--block" type="submit">${w("org.billing.close")}</button></form></details>`
+            : `<p class="fine">${w("org.billing.closeDetail")}</p>`
+        }`;
   return `${section(orgWords("org.seats.title"), `<div class="org__stats">${cells}</div>${change}`)}
   ${section(
     orgWords("org.billing.title"),
@@ -322,7 +346,7 @@ function overview(view: OrganizationAdminResponse, requestId: string): string {
       title: orgWords(`org.billing.${view.billingStatus}`),
       detail: billingOk ? null : orgWords("org.billing.attention"),
       tone: billingOk ? "ok" : "warn",
-    })}</ul><a class="btn btn--block" href="${organizationPortalPath(view.id)}/billing">${w("org.billing.manage")}</a>`,
+    })}</ul><form method="post" action="${organizationPortalPath(view.id)}/billing"><button type="submit" class="btn btn--block">${w("org.billing.manage")}</button></form>${closure}`,
   )}
   ${section(orgWords("org.split.title"), `<p class="lead">${w("org.split.lead")}</p>${organizationSplit()}`)}`;
 }
@@ -400,9 +424,14 @@ export function offboardSteps(assignment: WorkAssignmentView): readonly string[]
     ),
     assignment.deleted
       ? orgWords("org.offboard.deleted")
-      : assignment.retainUntil && Date.parse(assignment.retainUntil) > Date.now()
-        ? orgWords("org.offboard.deletesAt", { at: organizationTime(assignment.retainUntil) })
-        : orgWords("org.offboard.deletesNow"),
+      : assignment.deletion?.startedAt
+        ? orgWords("org.offboard.deletionInProgress")
+        : assignment.deletion
+          ? orgWords("org.offboard.deletionRequested")
+          : assignment.retainUntil
+            ? orgWords("org.offboard.deletesAt", { at: organizationTime(assignment.retainUntil) })
+            : orgWords("org.offboard.retainPending"),
+    ...cloudComputerDeletionLines(assignment.deletion),
   ];
 }
 
@@ -418,6 +447,7 @@ function policyLine(view: OrganizationAdminResponse, assignment: WorkAssignmentV
 function auditLines(assignment: WorkAssignmentView): readonly string[] {
   const { audit } = assignment;
   return [
+    ...(audit.finalFlush === "unconfirmed" ? [orgWords("org.audit.finalUnconfirmed")] : []),
     audit.lastReceivedAt
       ? orgWords("org.audit.last", {
           sequence: audit.lastSequence,

@@ -844,6 +844,7 @@ export class IdentityService {
       })),
       passkeysEnabled: false,
       exposure: this.#options.exposure,
+      ...(this.#options.homeKind ? { homeKind: this.#options.homeKind } : {}),
       portalOrigin: this.#options.portalOrigin?.origin ?? null,
       publicOrigin: this.#options.publicOrigin.origin,
       setupState: administrator ? "complete" : "required",

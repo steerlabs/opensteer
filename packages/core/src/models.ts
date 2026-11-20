@@ -844,6 +844,7 @@ export const ActiveRunStatusSchema = z.enum(nonTerminalRunStatuses);
  * switch to a compatible account on it, so the code is shared rather than
  * spelled out at each end.
  */
+export const runTerminationUnprovenCode = "execution_termination_unproven";
 export const harnessUsageLimitFailureCode = "harness_usage_limit";
 
 /** The longest a Run's failure message may be, in UTF-16 units. */

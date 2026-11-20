@@ -2,6 +2,8 @@ import { teamAskerLabel } from "@opensteer/client/team";
 import { needsYouEntryKey } from "@opensteer/client/host";
 import type { NeedsYouEntry } from "@opensteer/protocol";
 import { TaskMark, TaskState } from "./workspace/task-mark.js";
+import { useNeedsYouOperation } from "./agent-work.js";
+import { AgentMark } from "./settings/agent-mark.js";
 
 /**
  * One thing waiting on the person. It opens where it is answered. A failed
@@ -19,15 +21,21 @@ export function NeedsYouRow({
   readonly onDismiss: () => void;
   readonly onOpen: () => void;
 }) {
+  // A connected agent's direct operation names the agent and the Home's question.
+  const operation = useNeedsYouOperation(entry);
   const title =
     entry.kind === "team-ask"
       ? `${teamAskerLabel(entry.presentation.asker)} · #${entry.presentation.audience.channelName}`
-      : entry.title;
+      : (operation?.listTitle ?? entry.title);
   const opens = entry.kind === "request" || entry.task !== undefined;
   const dismissible = entry.kind === "team-ask" && (entry.failureReason !== undefined || !opens);
   const text = (
     <>
-      <TaskMark size={20} mark={{ icon: null, color: null }} />
+      {operation ? (
+        <AgentMark identity={operation.agent} />
+      ) : (
+        <TaskMark size={20} mark={{ icon: null, color: null }} />
+      )}
       <span className="side-task__text">
         <span className="side-task__title">{title}</span>
         {entry.kind === "team-ask" && entry.failureReason ? (

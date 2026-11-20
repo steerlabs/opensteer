@@ -36,7 +36,7 @@ import {
 import {
   assertLineageCompatibleReuse,
   bindingAgentConnectionId,
-  liveAgentConnection,
+  assertSendEligible,
   liveDelegatingConnection,
 } from "./resource-access.js";
 import { recordPersonWaited } from "./run-visibility.js";
@@ -536,7 +536,10 @@ async function conversationalReply(
 
 function exchangeInputs(
   transaction: Transaction<DatabaseSchema>,
-  run: Pick<RunRow, "assignmentId" | "replyTarget" | "requestedBy" | "voiceSessionId">,
+  run: Pick<
+    RunRow,
+    "assignmentId" | "connectionId" | "replyTarget" | "requestedBy" | "voiceSessionId"
+  >,
   threadId: ThreadId,
   state: "claimed" | "pending",
 ) {
@@ -545,7 +548,14 @@ function exchangeInputs(
     .where("threadInputs.threadId", "=", threadId)
     .where("threadInputs.policy", "=", "queue")
     .where("threadInputs.state", "=", state)
-    .where("threadInputs.requestedBy", "=", run.requestedBy);
+    .where("threadInputs.requestedBy", "=", run.requestedBy)
+    // A Run takes only work of its own lineage: the task's, else the input's own connection.
+    .where(
+      sql<boolean>`coalesce(
+        (select threads.origin_connection_id from threads where threads.id = thread_inputs.thread_id),
+        thread_inputs.connection_id
+      ) is not distinct from ${run.connectionId}`,
+    );
   // A call stays open across turns, so anything sent to its Thread arrives now.
   if (run.voiceSessionId) return addressed;
   return addressed
@@ -561,7 +571,10 @@ function exchangeInputs(
 /** The exchange's waiting messages a Run can take: those not already the seed of a Run. */
 function conversationFollowUps(
   transaction: Transaction<DatabaseSchema>,
-  run: Pick<RunRow, "assignmentId" | "replyTarget" | "requestedBy" | "voiceSessionId">,
+  run: Pick<
+    RunRow,
+    "assignmentId" | "connectionId" | "replyTarget" | "requestedBy" | "voiceSessionId"
+  >,
   threadId: ThreadId,
 ) {
   return exchangeInputs(transaction, run, threadId, "pending").where(
@@ -1461,6 +1474,14 @@ export async function claimRunInputBatch(
       code: "conflict",
       message: "A Run must start with its queued work item",
     });
+  // A Run works for its task's lineage, else its seed's connection; a Run that disagrees with
+  // its own seed is refused here, never started as the person's work.
+  if ((thread.originConnectionId ?? seed.connectionId) !== run.connectionId)
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "run-lineage-mismatch",
+      message: "This Run does not match the work it was queued for, so it was not started.",
+    });
 
   if (run.maintenance) {
     if (run.providerSessionId !== run.maintenance.providerSessionId || seed.freshContext)
@@ -1800,6 +1821,7 @@ export async function settleSteer(
   outcome: "failed" | "unknown",
   reason: string,
   reasonCode?: string,
+  pendingOnly = false,
 ): Promise<void> {
   const observed = await transaction
     .selectFrom("commands")
@@ -1847,7 +1869,11 @@ export async function settleSteer(
     .where("id", "=", commandId)
     .forNoKeyUpdate()
     .executeTakeFirst();
-  if (!command || !["pending", "dispatched"].includes(command.status)) return;
+  if (
+    !command ||
+    (command.status !== "pending" && (pendingOnly || command.status !== "dispatched"))
+  )
+    return;
   const now = new Date();
   // A refusal proves the message never reached a reply the person stopped.
   const stopped =
@@ -3047,7 +3073,8 @@ export async function enqueueThreadInputInTransaction(
   const inputRow = await transaction
     .insertInto("threadInputs")
     .values({
-      ...(inputConnectionId ? { connectionId: inputConnectionId } : {}),
+      // Its effective lineage, so reports and follow-ups batch with the work they belong to.
+      ...(executionConnectionId ? { connectionId: executionConnectionId } : {}),
       teamRequestId: request.teamRequest?.id ?? null,
       teamSource: request.teamRequest?.source ?? null,
       assignmentId,
@@ -3259,10 +3286,7 @@ async function assertInputLineage(
   thread: { readonly originConnectionId: string | null },
   inputConnectionId: string | null,
 ): Promise<void> {
-  if (!inputConnectionId || inputConnectionId === thread.originConnectionId) return;
-  const connection = await liveAgentConnection(transaction, owner, inputConnectionId);
-  if (thread.originConnectionId !== null || connection.grant.scope !== "everything")
-    throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
+  await assertSendEligible(transaction, owner, thread.originConnectionId, inputConnectionId);
 }
 async function resolveThreadInputFacts(
   transaction: Transaction<DatabaseSchema>,
@@ -4080,18 +4104,26 @@ export async function ensureQueuedRun(
       }
       continue;
     }
-    // The Run would work for the task's connection, else this input's: both must still allow it.
+    // The Run would work for the task's connection, else this input's: the input must still be
+    // one that connection may send here (a narrowing can take that away), and the connection it
+    // works for must still delegate. Work that no longer qualifies is cancelled, never run.
     const candidateConnectionId = thread.originConnectionId ?? candidate.connectionId;
     if (
-      candidateConnectionId &&
-      !(await liveDelegatingConnection(
+      !(await assertSendEligible(
         transaction,
         candidate.requestedBy,
-        candidateConnectionId,
-      ).then(
-        () => true,
-        () => false,
-      ))
+        thread.originConnectionId,
+        candidate.connectionId,
+      )
+        .then(() =>
+          candidateConnectionId
+            ? liveDelegatingConnection(transaction, candidate.requestedBy, candidateConnectionId)
+            : null,
+        )
+        .then(
+          () => true,
+          () => false,
+        ))
     ) {
       const cancelled = await transaction
         .updateTable("threadInputs")

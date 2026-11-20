@@ -10,6 +10,11 @@ import {
 import { TabStore } from "../packages/database/src/tab-store.js";
 import { ownTestDatabaseProducer } from "../packages/database/src/test-database.test-support.js";
 import type { RunnerAuxiliaryStream } from "../packages/orchestration/src/runner-registry.js";
+import {
+  browserHostMethods,
+  BrowserClientMessageSchema,
+  BrowserServerMessageSchema,
+} from "../packages/protocol/src/browser.js";
 import { machineAccessPolicyDefault } from "../packages/protocol/src/shell.js";
 import { RunnerAuxiliaryFrameFenceSchema } from "../packages/protocol/src/runner-auxiliary.js";
 import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
@@ -32,6 +37,7 @@ import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-tick
 import { RunnerBrowserHub } from "../apps/host/src/browser/runner-browser-hub.js";
 import {
   BrowserRuntimeRelayToHostMessageSchema,
+  HostToBrowserRuntimeRelayMessageSchema,
   RunnerBrowserRuntimeRouter,
 } from "../apps/host/src/browser/runner-browser-runtime.js";
 import { HarnessAuthenticationCoordinator } from "../apps/host/src/identity/harness-authentication-coordinator.js";
@@ -156,10 +162,35 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         },
       },
     };
+    const queuedExpression = "document.title = 'cancelled command ran'";
+    const queuedCommand = Promise.withResolvers<string>();
+    const cancelledRequests = new Set<string>();
+    const cancellationAcknowledged = Promise.withResolvers<string>();
     const peer = {
       id: "browser-device",
       close: () => runner.detach(),
-      send: (message: unknown) => runner.handleFrame(Buffer.from(JSON.stringify(message)), false),
+      send: async (message: unknown) => {
+        const relay = HostToBrowserRuntimeRelayMessageSchema.parse(message);
+        const command =
+          relay.type === "browser.client-message"
+            ? BrowserClientMessageSchema.safeParse(relay.message).data
+            : undefined;
+        if (
+          command?.type === "cdp.command" &&
+          command.command.method === browserHostMethods.cancelScriptCommand &&
+          typeof command.command.parameters?.requestId === "string"
+        ) {
+          cancelledRequests.add(command.command.parameters.requestId);
+        }
+        await runner.handleFrame(Buffer.from(JSON.stringify(message)), false);
+        if (
+          command?.type === "cdp.command" &&
+          command.command.method === "Runtime.evaluate" &&
+          command.command.parameters?.expression === queuedExpression
+        ) {
+          queuedCommand.resolve(command.requestId);
+        }
+      },
     };
     hub.attach(peer, stream);
     const tabStore = new TabStore(database);
@@ -303,6 +334,14 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         if (binary) await hub.handleBinary(peer, Buffer.from(frame));
         else {
           const message = BrowserRuntimeRelayToHostMessageSchema.parse(JSON.parse(String(frame)));
+          if (message.type === "browser.server-message") {
+            const response = BrowserServerMessageSchema.safeParse(message.message).data;
+            if (
+              response?.type === "cdp.error" &&
+              response.error.reason === "browser-command-cancelled"
+            )
+              cancellationAcknowledged.resolve(response.requestId);
+          }
           if (
             message.type === "browser.server-message" &&
             dropBrowserReply &&
@@ -342,6 +381,12 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       name: "Browser scripts",
       idempotencyKey: "browser-use-profile",
     });
+    await browser.createProfile({
+      homeRunnerId: first.runnerId,
+      ownerId: first.userId,
+      name: "Second saved profile",
+      idempotencyKey: "browser-use-second-profile",
+    });
     const contextKey = "journey";
     const run = (code: string, authority = a) =>
       scripts.runBrowserScript({ authority, contextKey, code });
@@ -351,6 +396,15 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       if (block?.type !== "text") throw new Error("Missing browser script text.");
       return block.text;
     };
+    expect(await run('await newPage("about:blank")')).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "bad_request",
+          message: "More than one granted browser profile is available.",
+        },
+      },
+    });
     const journey = await run(`
       globalThis.page = await newPage("about:blank", { profileId: ${JSON.stringify(profile.id)} });
       await page.goto(${JSON.stringify(origin)});
@@ -468,9 +522,13 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       abandoned.release.resolve();
     }
     const stop = hold("/stop");
-    const inFlight = run(`await page.js("fetch('/stop').then(r => r.text())");`);
-    await Promise.race([
-      stop.started.promise,
+    const inFlight = run(`
+      const running = page.js("fetch('/stop').then(r => r.text())");
+      const queued = page.js(${JSON.stringify(queuedExpression)});
+      await Promise.all([running, queued]);
+    `);
+    const [, queuedRequestId] = await Promise.race([
+      Promise.all([stop.started.promise, queuedCommand.promise]),
       inFlight.then((result) => {
         throw new Error(JSON.stringify(result));
       }),
@@ -480,7 +538,12 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       isError: true,
       structuredContent: { error: { code: "outcome-unknown" } },
     });
-    stop.release.resolve();
+    try {
+      expect(await cancellationAcknowledged.promise).toBe(queuedRequestId);
+      expect(cancelledRequests).toContain(queuedRequestId);
+    } finally {
+      stop.release.resolve();
+    }
     const tab = await tabStore.get(a.ownerId, tabId);
     expect(tab?.pageBinding).toBeTruthy();
     expect(

@@ -34,6 +34,7 @@ export type ReplInvocation<Request> = Request & {
   readonly context: ComputerReplContext;
   readonly signal: AbortSignal;
   readonly deadline: number;
+  readonly replyBudget?: { maxBytes: number; maxImageBytes?: number };
 };
 export type ComputerReplResult = ReplResult;
 export type ReplResult = {
@@ -59,6 +60,10 @@ interface Call<Request> {
   abandoned: "outcome-unknown" | "operation-pending" | undefined;
   requests: number;
   requestBytes: number;
+  replyBytes: number;
+  reservedReplyBytes: number;
+  capturesInFlight: number;
+  reservedImageBytes: number;
   ready: boolean;
   eventsPending: boolean;
   textBytes: number;
@@ -240,6 +245,10 @@ export class ReplService<Request extends AnyReplRequest> {
         abandoned: undefined,
         requests: 0,
         requestBytes: 0,
+        replyBytes: 0,
+        reservedReplyBytes: 0,
+        capturesInFlight: 0,
+        reservedImageBytes: 0,
         ready: false,
         eventsPending: false,
         textBytes: 0,
@@ -456,6 +465,38 @@ export class ReplService<Request extends AnyReplRequest> {
       request.operation === "browser.new" ||
       request.operation === "browser.command";
     const portOperation = mutation || request.operation === "browser.pages";
+    const capture =
+      request.operation === "browser.command" &&
+      typeof request.args === "object" &&
+      request.args !== null &&
+      "method" in request.args &&
+      request.args.method === "Page.captureScreenshot";
+    const remainingReply = browserReplLimits.replyBytes - call.replyBytes - call.reservedReplyBytes;
+    const maxBytes = Math.min(
+      remainingReply,
+      capture ? browserReplLimits.screenshotReplyBytes : limits.bridgeBytes,
+    );
+    const maxImageBytes = Math.min(
+      browserReplLimits.screenshotBytes,
+      limits.imageBytes - call.imageBytes - call.reservedImageBytes,
+      Math.floor((maxBytes - 1024) / 4) * 3,
+    );
+    if (maxBytes < 2) {
+      reject("bridge-limit", "Browser response budget exceeded.");
+      return;
+    }
+    if (
+      capture &&
+      (maxImageBytes < 1 ||
+        call.images + call.capturesInFlight >= limits.images ||
+        call.capturesInFlight >= browserReplLimits.pendingCaptures)
+    ) {
+      reject(
+        "output-limit",
+        "Browser screenshot budget exceeded. Await each capture before starting another.",
+      );
+      return;
+    }
     const pending = this.#browserPendingByContext.get(call.key) ?? 0;
     const bindingPending = this.#browserPendingByBinding.get(call.bindingKey) ?? 0;
     if (
@@ -474,6 +515,11 @@ export class ReplService<Request extends AnyReplRequest> {
       call.operationsInFlight++;
       if (mutation) call.mutationsInFlight++;
     }
+    call.reservedReplyBytes += maxBytes;
+    if (capture) {
+      call.capturesInFlight++;
+      call.reservedImageBytes += maxImageBytes;
+    }
     let result: ReplReply;
     try {
       try {
@@ -482,8 +528,14 @@ export class ReplService<Request extends AnyReplRequest> {
           context: call.context,
           signal: call.cancellation.signal,
           deadline: call.deadline,
+          replyBudget: { maxBytes, ...(capture ? { maxImageBytes } : {}) },
         });
       } finally {
+        call.reservedReplyBytes -= maxBytes;
+        if (capture) {
+          call.capturesInFlight--;
+          call.reservedImageBytes -= maxImageBytes;
+        }
         // The port promise is the completion acknowledgement, including after abort.
         if (portOperation) {
           const count = this.#browserPendingByContext.get(call.key)!;
@@ -498,7 +550,11 @@ export class ReplService<Request extends AnyReplRequest> {
         }
       }
       if (this.#contexts.get(call.key)?.call !== call || call.cancellation.signal.aborted) return;
-      for (const block of result.content ?? []) if (!this.#emit(call, block)) return;
+      call.replyBytes += Buffer.byteLength(JSON.stringify(result.value));
+      for (const block of result.content ?? []) {
+        if (block.type === "image" && capture) call.replyBytes += block.data.length;
+        if (!this.#emit(call, block)) return;
+      }
       this.#post({ type: "reply", ...address, value: result.value });
     } catch (error) {
       if (call.cancellation.signal.aborted && error === call.cancellation.signal.reason) return;

@@ -3402,6 +3402,11 @@ async function executeMockCommand(
       for (const listener of client.connectionsListeners) listener();
       return rpcSuccess({ type: command.type, connection });
     }
+    case "agent.session.stop":
+      return rpcSuccess({
+        type: command.type,
+        ended: client.stopAgentSession(command.threadId, command.agentSessionId),
+      });
     case "connection.remove":
       client.removeConnection(command.connectionId);
       for (const listener of client.connectionsListeners) listener();
@@ -4957,6 +4962,11 @@ export class MockHostClient implements HostClient {
   /** Connected agents working tasks themselves, in each state, with a tab each uses. */
   mockAgentWork(): void {
     this.#state.mockAgentWork();
+  }
+
+  /** The person's Stop on a connected agent's task, bound to the session they saw. */
+  stopAgentSession(threadId: string, sessionId: string): boolean {
+    return this.#state.stopAgentSession(threadId, sessionId);
   }
 
   /** Rewrites one message's words in place, as a durable update or a streamed token would. */
@@ -6836,6 +6846,7 @@ class MockHostState {
       initial.identityConfig = {
         ...initial.identityConfig,
         exposure: options.exposure,
+        homeKind: options.exposure === "networked" ? "server" : "mac",
         ...(options.exposure === "networked"
           ? { publicOrigin: "https://opensteer.example.com" }
           : {}),
@@ -7341,6 +7352,39 @@ class MockHostState {
     const entry = this.snapshot.transcripts[threadId]?.find(({ id }) => id === messageId);
     if (entry?.kind !== "message") throw new Error("No such message.");
     this.replaceEntryById(threadId, messageId, { ...entry, body });
+  }
+
+  stopAgentSession(threadId: string, sessionId: string): boolean {
+    const slot = this.snapshot.agentWork?.sessions?.[threadId];
+    if (!slot || slot.sessionId !== sessionId || slot.status === "ended") return false;
+    this.update({
+      ...this.snapshot,
+      threads: this.snapshot.threads.map((thread) =>
+        thread.id === threadId
+          ? { ...thread, status: "idle", agentSessionId: null, pendingRequests: 0 }
+          : thread,
+      ),
+      requests: {
+        ...this.snapshot.requests,
+        [threadId]: (this.snapshot.requests[threadId] ?? []).map((request) =>
+          request.status === "pending"
+            ? ({
+                ...request,
+                status: "withdrawn",
+                resolvedAt: this.now().toISOString(),
+              } as unknown as typeof request)
+            : request,
+        ),
+      },
+      agentWork: {
+        ...this.snapshot.agentWork,
+        sessions: {
+          ...this.snapshot.agentWork?.sessions,
+          [threadId]: { ...slot, status: "ended", endReason: "stopped" },
+        },
+      },
+    });
+    return true;
   }
 
   mockAgentWork(): void {
@@ -14428,6 +14472,7 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
       deployment: { kind: "personal", name: "Mac mini" },
       emailDeliveryAvailable: false,
       exposure: "loopback",
+      homeKind: "mac",
       localPasswordEnabled: false,
       machineOwner: true,
       oidcProviders: [],
@@ -14439,6 +14484,7 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
     },
     machines: mockMachines.map((machine) => ({ ...machine })),
     ownerProfile: { name: "Alex", accountBacked: false, version: null },
+    role: "owner",
     session: "authenticated",
     sessionSurface: "canonical",
     machineRevision: 0,

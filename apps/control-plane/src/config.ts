@@ -340,6 +340,11 @@ export function loadControlPlaneConfig(
     );
   }
   if (
+    organizationOffer &&
+    organizationOffer.portalConfigurationId === cloudComputers?.stripePortalConfigurationId
+  )
+    throw new Error("Organization billing requires a dedicated Stripe portal configuration");
+  if (
     cloudComputers &&
     cloudComputers.provisionerEmail === parsed.OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL
   ) {

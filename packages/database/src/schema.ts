@@ -1467,6 +1467,7 @@ interface BrowserHistoryIconTable {
 }
 
 interface BrowserSessionTable {
+  standardCdpAttempts: Generated<Readonly<Record<string, unknown>>>;
   tabGroupId: BrowserSessionId;
   tabRevision: Generated<number>;
   opener: JsonColumn<BrowserSessionOpenerRecord | null>;

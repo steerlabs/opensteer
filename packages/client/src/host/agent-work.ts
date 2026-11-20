@@ -75,7 +75,7 @@ const unknownAgent: SessionAgent = {
 
 export function sessionAgent(
   connection: SessionConnection | null | undefined,
-  withdrawnAt?: string | null,
+  withdrawnAt?: string | null | undefined,
 ): SessionAgent {
   if (!connection) return unknownAgent;
   const who = agentWho({
@@ -212,7 +212,7 @@ export function sessionTaskView(input: {
     readonly agentSessionId?: string | null | undefined;
   };
   readonly slot: AgentSessionSlot | null | undefined;
-  readonly withdrawnAt?: string | null;
+  readonly withdrawnAt?: string | null | undefined;
 }): SessionTaskView | null {
   const { thread, slot } = input;
   const sessionId = slot?.sessionId ?? thread.agentSessionId ?? null;
@@ -298,7 +298,7 @@ export function tabAgentLine(input: {
   readonly occupant: { readonly threadId: string; readonly title: string } | null;
   readonly slot: AgentSessionSlot | null | undefined;
   readonly sharedTabs?: readonly string[] | undefined;
-  readonly withdrawnAt?: string | null;
+  readonly withdrawnAt?: string | null | undefined;
 }): { readonly line: string; readonly stop: { readonly sessionId: string } | null } | null {
   const { occupant, slot } = input;
   if (!occupant || !slot) return null;
@@ -324,10 +324,28 @@ export function tabAgentLine(input: {
 /** The Home's two answers for a direct operation, by the values it offers. */
 export const operationAnswerValues = { allow: "allow", deny: "deny" } as const;
 
-type RequestLike = Pick<
-  Request,
-  "id" | "status" | "presentation" | "originatingAgentSessionId" | "response"
->;
+/** What this reads of a Request: a whole Request or a pending view of one both fit. */
+type RequestLike = {
+  readonly id: string;
+  readonly status: Request["status"];
+  readonly originatingAgentSessionId?: string | null | undefined;
+  readonly presentation:
+    | {
+        readonly kind: "form";
+        readonly title: string;
+        readonly detail?: string | undefined;
+        readonly fields: readonly {
+          readonly id: string;
+          readonly choices?: readonly { readonly value: string }[] | undefined;
+        }[];
+      }
+    | { readonly kind: "choice" | "external"; readonly title: string };
+  readonly response?:
+    | { readonly kind: "form"; readonly answers: Readonly<Record<string, readonly string[]>> }
+    | { readonly kind: "choice" | "external" }
+    | null
+    | undefined;
+};
 
 /** The field a direct operation's Request asks on, or null for any other Request. */
 export function operationDecisionField(request: RequestLike): string | null {
@@ -372,7 +390,7 @@ export function operationRequestView(input: {
   readonly slot: AgentOperationRequestSlot | null | undefined;
   /** The task's session slot, to name the agent when the Request's own slot doesn't. */
   readonly session?: AgentSessionSlot | null | undefined;
-  readonly withdrawnAt?: string | null;
+  readonly withdrawnAt?: string | null | undefined;
 }): OperationRequestView | null {
   const { request, slot } = input;
   const fieldId = operationDecisionField(request);

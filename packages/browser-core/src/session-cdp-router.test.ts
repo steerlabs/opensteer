@@ -165,6 +165,27 @@ describe("SessionCdpRouter", () => {
     await router.close();
   });
 
+  it("keeps the legacy byte limit without applying script structural limits", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("session", "root", async () => true, "/files/a");
+    const { sessionId } = (await router.send("session", {
+      method: "Target.attachToTarget",
+      parameters: { targetId: "root" },
+    })) as { sessionId: string };
+    const page = backend.channels.get("root")!;
+    const value = { entries: Array<number>(70_000).fill(0) };
+    const event = vi.fn();
+    router.onEvent("session", event);
+    page.results.set("Runtime.evaluate", value);
+    await expect(
+      router.send("session", { method: "Runtime.evaluate", sessionId }),
+    ).resolves.toEqual(value);
+    page.emit("Log.entryAdded", value);
+    expect(event).toHaveBeenCalledOnce();
+    await router.close();
+  });
+
   it("rejects oversized script replies and drops events before delivering them", async () => {
     const backend = new FakeBackend();
     const router = new SessionCdpRouter(backend);
@@ -462,6 +483,28 @@ describe("SessionCdpRouter", () => {
     await router.close();
   });
 
+  it("retries root auto-attach after a failed page channel", async () => {
+    const backend = new FakeBackend();
+    backend.targetInfos = [{ targetId: "root", type: "page" }];
+    const attach = vi.spyOn(backend, "attach").mockRejectedValueOnce(new Error("attach refused"));
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root", async () => true, "/files/a");
+    const client = router.openStandardClient("a", { wholeContext: false });
+    const events: CdpEvent[] = [];
+    client.onEvent((event) => events.push(event));
+    const command = {
+      method: "Target.setAutoAttach",
+      parameters: { autoAttach: true, flatten: true },
+    };
+    await expect(client.send(command)).rejects.toThrow("attach refused");
+    expect(events).toEqual([]);
+    await expect(client.send(command)).resolves.toEqual({});
+    await expect(client.send(command)).resolves.toEqual({});
+    expect(attach).toHaveBeenCalledTimes(2);
+    expect(events.map((event) => event.method)).toEqual(["Target.attachedToTarget"]);
+    await router.close();
+  });
+
   it("refuses context-wide and unrecognized commands at the root, on a page and inside nested messages", async () => {
     const backend = new FakeBackend();
     backend.targetInfos = [{ targetId: "root-a", type: "page" }];
@@ -533,8 +576,7 @@ describe("SessionCdpRouter", () => {
     await clearing;
     expect(router.hasExclusiveContextClient).toBe(true);
     flushed.resolve({});
-    await flushed.promise;
-    await Promise.resolve();
+    await granted.settled;
     expect(router.hasExclusiveContextClient).toBe(false);
     await router.close();
   });
@@ -631,22 +673,25 @@ describe("SessionCdpRouter", () => {
     const reading = expect(
       router.send("a", { method: "Target.getTargetInfo", parameters: { targetId: "root-a" } }),
     ).rejects.toThrow("target claim changed");
-    const close = expect(
-      router.send("a", { method: "Target.closeTarget", parameters: { targetId: "root-a" } }),
-    ).rejects.toThrow("target claim changed");
+    const close = router.send("a", {
+      method: "Target.closeTarget",
+      parameters: { targetId: "root-a" },
+    });
     router.releaseTarget("a", "root-a");
-    router.claimTarget("a", "root-a");
+    router.registerSession("b", "root-b", async () => true, "/files/b");
+    expect(() => router.claimTarget("b", "root-a")).toThrow("Previous CDP work still holds");
+    expect(router.listOwnedTargets("b")).toEqual(["root-b"]);
     const stale = new FakeChannel();
     opening.resolve(stale);
     info.resolve({ targetInfo: { targetId: "root-a", type: "page" } });
     closing.resolve({ success: true });
-    await Promise.all([attach, reading, close]);
+    await Promise.all([attach, reading, expect(close).resolves.toEqual({ success: true })]);
     expect(stale.closed).toBe(true);
-    expect(router.listOwnedTargets("a")).toEqual(["root-a"]);
+    expect(router.listOwnedTargets("a")).toEqual([]);
     await router.close();
   });
 
-  it("adopts a created page before attaching and closes it if automatic attachment fails", async () => {
+  it("keeps an adopted page if its automatic attachment fails", async () => {
     const backend = new FakeBackend();
     backend.targetInfos = [{ targetId: "root-a", type: "page" }];
     const router = new SessionCdpRouter(backend);
@@ -668,16 +713,146 @@ describe("SessionCdpRouter", () => {
     const attach = vi.spyOn(backend, "attach").mockRejectedValueOnce(new Error("attach failed"));
     const created = expect(
       client.send({ method: "Target.createTarget", parameters: { url: "about:blank" } }),
-    ).rejects.toThrow("attach failed");
+    ).resolves.toEqual({ targetId: "created-1" });
     await adopted.promise;
     expect(attach).not.toHaveBeenCalled();
     adoption.resolve(true);
     await created;
-    expect(backend.commands.at(-1)).toEqual({
-      method: "Target.closeTarget",
-      parameters: { targetId: "created-1" },
+    expect(backend.commands.some(({ method }) => method === "Target.closeTarget")).toBe(false);
+    expect(router.listOwnedTargets("a")).toEqual(["root-a", "created-1"]);
+    await router.close();
+  });
+
+  it("recovers a page when both adoption and Chromium rollback fail", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    const send = backend.send.bind(backend);
+    vi.spyOn(backend, "send").mockImplementation((method, params) =>
+      method === "Target.closeTarget"
+        ? Promise.reject(new Error("Chromium close failed"))
+        : send(method, params),
+    );
+    const recover = vi.fn(async () => {});
+    const client = router.openStandardClient("a", {
+      wholeContext: false,
+      adoptTarget: async () => false,
+      recoverUnadoptedTarget: recover,
     });
+    await expect(client.send({ method: "Target.createTarget" })).rejects.toThrow(
+      "could not be adopted",
+    );
+    expect(recover).toHaveBeenCalledWith("created-1");
     expect(router.listOwnedTargets("a")).toEqual(["root-a"]);
+    await router.close();
+  });
+
+  it("rejects unreviewed page methods and frame identifiers that name another Browser Session", async () => {
+    const backend = new FakeBackend();
+    backend.targetInfos = [
+      { targetId: "root-a", type: "page" },
+      { targetId: "root-b", type: "page" },
+    ];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    router.registerSession("b", "root-b", async () => true, "/files/b");
+    const client = router.openStandardClient("a", { wholeContext: false });
+    const { sessionId } = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "root-a", flatten: true },
+    })) as { sessionId: string };
+    await expect(
+      client.send({
+        method: "Page.navigate",
+        sessionId,
+        parameters: { url: "https://example.test", frameId: "root-b" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      client.send({
+        method: "Network.loadNetworkResource",
+        sessionId,
+        parameters: { frameId: "root-b" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(backend.channels.get("root-a")?.commands).toEqual([]);
+    await router.close();
+  });
+
+  it("limits shared workers to the exclusive client and removes a claim on the last detach", async () => {
+    const backend = new FakeBackend();
+    backend.dedicatedContext = true;
+    backend.targetInfos = [
+      { targetId: "root", type: "page" },
+      { targetId: "worker", type: "shared_worker" },
+    ];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root", async () => true, "/files/a");
+    const owner = router.openStandardClient("a", { wholeContext: true });
+    const observer = router.openStandardClient("a", { wholeContext: false });
+    const ownerEvents: CdpEvent[] = [];
+    const observerEvents: CdpEvent[] = [];
+    const legacyEvents: CdpEvent[] = [];
+    owner.onEvent((e) => ownerEvents.push(e));
+    observer.onEvent((e) => observerEvents.push(e));
+    router.onEvent("a", (e) => legacyEvents.push(e));
+    const page = {
+      method: "Target.attachToTarget",
+      parameters: { targetId: "root", flatten: true },
+    };
+    await owner.send(page);
+    const ownerPage = backend.channels.get("root")!;
+    await observer.send(page);
+    const observerPage = backend.channels.get("root")!;
+    await router.send("a", page);
+    const legacyPage = backend.channels.get("root")!;
+    const targetInfo = { targetId: "worker", type: "shared_worker" };
+    ownerPage.emit("Target.attachedToTarget", { targetInfo, sessionId: "one" });
+    observerPage.emit("Target.attachedToTarget", { targetInfo, sessionId: "two" });
+    legacyPage.emit("Target.attachedToTarget", { targetInfo, sessionId: "three" });
+    expect(ownerEvents.filter((event) => event.sessionId)).toHaveLength(1);
+    expect(observerEvents.filter((event) => event.sessionId)).toEqual([]);
+    expect(legacyEvents).toEqual([]);
+    await expect(
+      observer.send({ method: "Target.getTargetInfo", parameters: { targetId: "worker" } }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    ownerPage.emit("Target.detachedFromTarget", { sessionId: "one", targetId: "worker" });
+    expect(router.listOwnedTargets("a")).toEqual(["root"]);
+    await expect(
+      owner.send({ method: "Target.getTargetInfo", parameters: { targetId: "worker" } }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await router.close();
+  });
+
+  it("keeps legacy byte-valid results and events and leaves logical detach silent", async () => {
+    const backend = new FakeBackend();
+    backend.targetInfos = [{ targetId: "root", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root", async () => true, "/files/a");
+    const { sessionId } = (await router.send("a", {
+      method: "Target.attachToTarget",
+      parameters: { targetId: "root" },
+    })) as { sessionId: string };
+    const events: CdpEvent[] = [];
+    router.onEvent("a", (e) => events.push(e));
+    const channel = backend.channels.get("root")!;
+    const deep = Array.from({ length: 64 }).reduce<unknown>((child) => ({ child }), 1);
+    channel.results.set("Runtime.evaluate", { deep });
+    channel.emit("Runtime.bindingCalled", { deep });
+    await expect(router.send("a", { method: "Runtime.evaluate", sessionId })).resolves.toEqual({
+      deep,
+    });
+    await expect(
+      router.send("a", {
+        method: "Page.navigate",
+        sessionId,
+        parameters: { url: "about:blank" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await router.send("a", { method: "Target.detachFromTarget", parameters: { sessionId } });
+    expect(events).toEqual([
+      { method: "Runtime.bindingCalled", parameters: { deep }, sequence: 1, sessionId },
+    ]);
     await router.close();
   });
 

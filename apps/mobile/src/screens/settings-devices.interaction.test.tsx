@@ -35,6 +35,7 @@ vi.mock("../ui/mobile-client-context.js", () => ({
 }));
 vi.mock("../computers/home-kind.js", () => ({
   selectHomeExposure: () => undefined,
+  selectHomeKind: () => undefined,
   selectHomeDeploymentId: () => null,
   usePhoneHome: () => ({ kind: state.home, computer: null }),
 }));

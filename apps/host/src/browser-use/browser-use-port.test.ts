@@ -209,6 +209,28 @@ describe("Browser Use port", () => {
     expect(dispatch).toHaveBeenCalledTimes(3);
   });
 
+  it.each(["Target.targetDestroyed", "Target.detachedFromTarget"])(
+    "rejects %s during bind",
+    async (method) => {
+      const { binding, port, call, emit, dispatch, close } = setup();
+      const attach = dispatch.getMockImplementation()!;
+      dispatch.mockImplementation(async (...args) => {
+        const answer = await attach(...args);
+        if (args[0].method === "Target.attachToTarget")
+          emit({
+            sequence: 1,
+            method,
+            parameters: { targetId: "target", sessionId: "cdp-session" },
+          });
+        return answer;
+      });
+      await expect(port.openPage(binding.tabId, call)).rejects.toMatchObject({ code: "conflict" });
+      expect(close).toHaveBeenCalledOnce();
+      dispatch.mockImplementation(attach);
+      await expect(port.openPage(binding.tabId, call)).resolves.toMatchObject({ closed: false });
+    },
+  );
+
   it("retires a detached target and ends its subscription exactly once", async () => {
     const { binding, port, call, emit, close } = setup();
     const target = await port.openPage(binding.tabId, call);

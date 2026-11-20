@@ -1509,3 +1509,63 @@ a.connected-agents__row:focus-visible {
   margin: var(--space-4) 0 0;
   padding-left: 1.1em;
 }
+
+/* ---- Who a connected agent is: verified, or the name it gave itself ---- */
+
+.agent-who {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  margin: 0;
+}
+
+.agent-who__icon {
+  flex: none;
+  margin-top: var(--space-2);
+  color: var(--muted);
+}
+
+.agent-who--verified .agent-who__icon {
+  color: var(--green);
+}
+
+.agent-who__text {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.agent-who__name {
+  color: var(--text);
+}
+
+.agent-who__detail {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.agent-who__withdrawn {
+  color: var(--amber-text);
+  font-size: var(--text-sm);
+}
+
+.agent-who__notice {
+  display: grid;
+  gap: var(--space-6);
+  justify-items: start;
+}
+
+.agent-who__notice p {
+  margin: 0;
+}
+
+.agent-who__notice-title {
+  font-weight: 600;
+}
+
+.agent-consent__warning {
+  margin: 0;
+  color: var(--text);
+  font-weight: 600;
+}

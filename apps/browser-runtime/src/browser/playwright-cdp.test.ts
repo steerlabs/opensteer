@@ -1,3 +1,4 @@
+import { WebSocket } from "ws";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import {
   BrowserRuntime,
@@ -14,7 +15,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   asRecord,
   executablePath,
@@ -78,6 +79,7 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
     resolvePublicKey: (id) => (id === "test" ? signing.publicKey : null),
   });
   const claims = validClaims({ identity: profile.identity });
+  let standardLeaseGeneration = 0;
   const ticket = (overrides: Partial<BrowserAttachTicketClaims> = {}) => {
     const header = Buffer.from(
       JSON.stringify({
@@ -90,6 +92,11 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
     const payload = Buffer.from(
       JSON.stringify({
         ...claims,
+        ...(overrides.standardCdp === "whole-context"
+          ? {
+              standardCdpLease: { bindingId: "run:fixture", generation: ++standardLeaseGeneration },
+            }
+          : {}),
         ...overrides,
         nonce: randomUUID(),
         issuedAt: new Date(now).toISOString(),
@@ -111,6 +118,18 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
     runtimeId: claims.runtimeId,
     sessionFilesRoot: join(scratch, "files"),
     ticketVerifier: verifier,
+  });
+  const leases: Promise<void>[] = [];
+  const attachStandard = runtime.attachStandardCdp.bind(runtime);
+  const observeSettlement = vi
+    .spyOn(runtime, "attachStandardCdp")
+    .mockImplementation(async (...args) => {
+      const attachment = await attachStandard(...args);
+      if (attachment.mode === "whole-context") leases.push(attachment.settled);
+      return attachment;
+    });
+  cleanup.push(async () => {
+    observeSettlement.mockRestore();
   });
   const server = new BrowserRuntimeServer({ port: 0, runtime });
   cleanup.push(() => server.close());
@@ -325,6 +344,7 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
   await context.addCookies([{ name: "profile-cookie", value: "survives", url: origin }]);
 
   await browser.close();
+  await leases[0];
   expect(downloads).toEqual([]);
   await expect(connect(rawTicket)).rejects.toThrow();
   const reconnected = await connect(ticket({ standardCdp: "whole-context" }));
@@ -337,6 +357,16 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
   const reconnectedPopup = reconnectedPages.find((page) => page.url().endsWith("/popup"));
   expect((await reconnectedPopup?.opener())?.url()).toBe(`${origin}/app`);
   await reconnected.close();
+  await leases[1];
+  await expect(
+    connect(
+      ticket({
+        standardCdp: "whole-context",
+        standardCdpLease: { bindingId: "run:fixture", generation: 1 },
+      }),
+      true,
+    ),
+  ).rejects.toThrow();
 
   const bridge = await startHarnessBridge(agent, sessionSink);
   cleanup.push(() => bridge.close());
@@ -377,6 +407,72 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
       .sort(),
   ).toEqual([`${origin}/app`, `${origin}/popup`]);
   expect(foreignContext.pages().map((page) => page.url())).toEqual(["about:blank"]);
+
+  const discovery = new WebSocket(wsUrl, {
+    headers: { Authorization: `Bearer ${ticket({ standardCdp: "session" })}` },
+  });
+  cleanup.push(async () => discovery.terminate());
+  await once(discovery, "open");
+  const liveTargets: { targetId: string; type: string }[] = [];
+  type RawReply = { readonly result?: unknown; readonly error?: { readonly message: string } };
+  const replies = new Map<number, (response: RawReply) => void>();
+  let nextId = 1;
+  discovery.on("message", (frame) => {
+    const message = JSON.parse(String(frame));
+    if (message.method === "Target.targetCreated") liveTargets.push(message.params.targetInfo);
+    if (typeof message.id === "number") replies.get(message.id)?.(message);
+  });
+  const raw = async (method: string, params?: object, sessionId?: string) => {
+    const id = nextId++;
+    const reply = Promise.withResolvers<RawReply>();
+    replies.set(id, reply.resolve);
+    discovery.send(JSON.stringify({ id, method, params, sessionId }));
+    const { result, error } = await reply.promise;
+    replies.delete(id);
+    if (error) throw new Error(error.message);
+    return result;
+  };
+  await raw("Target.setDiscoverTargets", { discover: true, filter: [{ type: "worker" }] });
+  const filtered = await sharedContext.newPage();
+  await filtered.goto(`${origin}/excluded-page`);
+  await raw("Browser.getVersion");
+  expect(liveTargets).toEqual([]);
+  await raw("Target.setDiscoverTargets", { discover: true, filter: [{ type: "page" }] });
+  const beforeLivePage = liveTargets.length;
+  const nextPage = await sharedContext.newPage();
+  await expect
+    .poll(() => liveTargets.slice(beforeLivePage))
+    .toEqual([expect.objectContaining({ type: "page" })]);
+  const { sessionId: nextTarget } = asRecord(
+    await raw("Target.attachToTarget", {
+      targetId: liveTargets.at(-1)!.targetId,
+      flatten: true,
+    }),
+  );
+  await expect(
+    raw(
+      "Page.captureScreenshot",
+      {
+        captureBeyondViewport: true,
+        clip: { x: 0, y: 0, width: 100_000, height: 100_000, scale: 1 },
+      },
+      String(nextTarget),
+    ),
+  ).rejects.toThrow("screenshot clip");
+  await expect(
+    raw(
+      "Runtime.evaluate",
+      {
+        expression: '"a".repeat(8 * 1024 * 1024)',
+        returnByValue: true,
+      },
+      String(nextTarget),
+    ),
+  ).rejects.toThrow("exceeds the bounded agent transport");
+  await raw("Target.detachFromTarget", { sessionId: nextTarget });
+  expect(await nextPage.evaluate(() => 42)).toBe(42);
+  await nextPage.close();
+  await filtered.close();
 
   for (const refused of [
     () => sharedContext.cookies(),

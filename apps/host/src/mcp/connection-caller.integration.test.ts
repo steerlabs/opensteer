@@ -3,9 +3,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { agentTools } from "@opensteer/agent-tools";
-import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
+import { createBrowserSessionId, HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import {
   createId,
+  runTerminationUnprovenCode,
   ModelSelectionSchema,
   ThreadIdSchema,
   MessageIdSchema,
@@ -1187,9 +1188,11 @@ describeStore("connection grants and lineage", (it) => {
     ).toBe("read-write");
 
     await commands(storeFixture, f.userId).revoke(agent.id);
-    await expect(store.admitExecution({ ownerUserId: f.userId, subject: binding })).rejects.toThrow(
-      "access ended",
-    );
+    await expect(
+      store.admitExecution({ ownerUserId: f.userId, subject: binding }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
     // A new occurrence of its automation is refused; the person may still pause it.
     await expect(
       new TriggerStore(database).enqueueManual({
@@ -1266,7 +1269,7 @@ describeStore("connection grants and lineage", (it) => {
     const first = await connection(store, url, {
       userId: f.userId,
       accessMode: "full-access",
-      grant: tasksOnly,
+      grant: { scope: "everything" },
     });
     const second = await connection(store, url, {
       userId: f.userId,
@@ -1275,7 +1278,7 @@ describeStore("connection grants and lineage", (it) => {
     });
     const firstTask = await createTask(first, f, "first");
     const firstRun = await queuedRun(storeFixture, firstTask);
-    await startPersonalQueuedRunFixture(store, firstRun.id);
+    const execution = await startPersonalQueuedRunFixture(store, firstRun.id);
     const queued = await send(first, firstTask, "queued");
     expect(queued.isError, JSON.stringify(queued.content)).not.toBe(true);
     const pendingInput = await database
@@ -1301,15 +1304,105 @@ describeStore("connection grants and lineage", (it) => {
       },
     });
     const automation = await new TriggerStore(database).create({
-      ...scheduled(firstTask, f.userId, "first-automation"),
+      ...scheduled(f.thread.id, f.userId, "first-automation"),
       actorConnectionId: first.id,
     });
+    const triggers = new TriggerStore(database);
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: f.userId,
+      triggerId: automation.trigger.id,
+    });
+    await store.claimCommand(occurrence.commandId, "cleanup-occurrence");
+    const runner = { runnerId: f.runnerId, runnerBootId: execution.runnerBootId };
+    const dispatched = await triggers.startExecution({
+      ...runner,
+      commandId: occurrence.commandId,
+    });
+    const programRequest = await store.requests.create({
+      callId: "occurrence-ask",
+      kind: "browser.access",
+      mode: "durable",
+      originatingOccurrenceId: occurrence.id,
+      originatingThreadId: f.thread.id,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "browser.access", reason: "Choose", suggestion: { kind: "user_choice" } },
+      presentation: {
+        kind: "external",
+        title: "Program browser access",
+        subject: { kind: "thread", id: f.thread.id },
+      },
+    });
+    const watch = await triggers.create({
+      ...scheduled(firstTask, f.userId, "first-watch"),
+      actorConnectionId: first.id,
+      source: { kind: "watch" },
+    });
+    const snapshot = await triggers.reconcileWatchesForRunner({
+      ...runner,
+      environmentId: f.environmentId,
+      runnerConnectionGeneration: 1,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+    });
+    const activation = snapshot.activations.find(
+      ({ activation }) => activation.triggerId === watch.trigger.id,
+    )!.activation;
+    expect(activation.observed).toBe("starting");
     const secondTask = await createTask(second, f, "second");
     const secondRun = await queuedRun(storeFixture, secondTask);
     await startPersonalQueuedRunFixture(store, secondRun.id);
 
-    const host = commands(storeFixture, f.userId);
-    await host.revoke(first.id);
+    const browserSessionId = createBrowserSessionId();
+    await store.createBrowserSession({
+      id: browserSessionId,
+      runnerId: runner.runnerId,
+      profileId: null,
+      origin: "agent",
+      ownerId: f.userId,
+      runtimeId: "browser",
+      placementKey: `runner:${runner.runnerId}`,
+    });
+    await store.transitionBrowserSession({ sessionId: browserSessionId, state: "ready" });
+    const cdp = store.connectionCdpAttempts();
+    const attachmentId = "disconnect-standard-cdp";
+    await cdp.open(browserSessionId, attachmentId, {
+      connectionId: first.id,
+      grantRevision: 1,
+      mode: "full-access",
+      threadId: firstTask,
+    });
+    const stopEntered = Promise.withResolvers<void>();
+    const releaseStop = Promise.withResolvers<void>();
+    const stopped: string[] = [];
+    const host = commands(storeFixture, f.userId, {
+      stopper: {
+        async stop(attempt) {
+          stopped.push(attempt.id);
+          if (attempt.id === attachmentId) await cdp.lost(browserSessionId, attachmentId);
+          if (attempt.id === occurrence.id) {
+            stopEntered.resolve();
+            await releaseStop.promise;
+          }
+        },
+      },
+    });
+    const revoked = host.revoke(first.id);
+    await Promise.race([
+      stopEntered.promise,
+      revoked.then(() => {
+        throw new Error("The cleanup pass returned before asking the occurrence to stop");
+      }),
+    ]);
+    try {
+      await host.effects.driveCleanups();
+      expect(stopped).toEqual([occurrence.id]);
+      await expect(host.remove(first.id)).rejects.toMatchObject({ reason: "cleanup-outstanding" });
+    } finally {
+      releaseStop.resolve();
+      await revoked;
+    }
+    expect(stopped).toEqual([occurrence.id, attachmentId, activation.id]);
     expect(host.failures).toEqual([]);
     expect(
       await database
@@ -1318,6 +1411,10 @@ describeStore("connection grants and lineage", (it) => {
         .where("messageId", "=", pendingInput.messageId)
         .executeTakeFirstOrThrow(),
     ).toEqual({ state: "cancelled" });
+    expect(await store.requests.get(programRequest.request.id)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "authority-revoked",
+    });
     expect(await store.requests.get(asked.request.id)).toMatchObject({
       status: "cancelled",
       cancellationReason: "authority-revoked",
@@ -1363,17 +1460,300 @@ describeStore("connection grants and lineage", (it) => {
     expect((await host.list()).find(({ id }) => id === second.id)).toMatchObject({
       state: "active",
     });
+    const status = () =>
+      database
+        .selectFrom("triggerWatchActivations")
+        .select(["desired", "observed", "terminalEvidenceAt"])
+        .where("id", "=", activation.id)
+        .executeTakeFirstOrThrow();
+    expect(await status()).toMatchObject({
+      desired: "stopped",
+      observed: "starting",
+      terminalEvidenceAt: null,
+    });
+    await store.commitRunnerEvent({
+      ...runner,
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        type: "run.failed",
+        runId: firstRun.id,
+        threadId: firstTask,
+        ordinal: 1,
+        bindingGeneration: execution.bindingGeneration,
+        environmentId: f.environmentId,
+        data: {
+          status: "failed",
+          code: runTerminationUnprovenCode,
+          message: "Containment unverified",
+          retryable: false,
+        },
+      }),
+    });
+    expect(
+      await database
+        .selectFrom("runAttempts")
+        .select("terminalEvidenceAt")
+        .where("runId", "=", firstRun.id)
+        .where("bindingGeneration", "=", execution.bindingGeneration)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ terminalEvidenceAt: null });
+    await store.commitRunnerEvent({
+      ...runner,
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        type: "run.interrupted",
+        runId: firstRun.id,
+        threadId: firstTask,
+        ordinal: 2,
+        bindingGeneration: execution.bindingGeneration,
+        environmentId: f.environmentId,
+        data: { status: "interrupted" },
+      }),
+    });
+    const occurrenceReceipt = {
+      ...runner,
+      executionGeneration: dispatched.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: null,
+        occurrenceId: occurrence.id,
+        result: null,
+        status: "canceled" as const,
+        stderr: "",
+        stdout: "",
+      },
+    };
+    await expect(
+      triggers.completeExecution({
+        ...occurrenceReceipt,
+        executionGeneration: dispatched.executionGeneration + 1,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await triggers.completeExecution(occurrenceReceipt);
+    const restarted = commands(storeFixture, f.userId);
+    await restarted.effects.driveCleanups();
+    expect((await restarted.list()).find(({ id }) => id === first.id)).toMatchObject({
+      state: "stopping",
+    });
+    await store.markConnectionAttemptsContactLost(runner);
+    await restarted.effects.driveCleanups();
+    expect((await restarted.list()).find(({ id }) => id === first.id)).toMatchObject({
+      state: "stopping",
+      lastActionUncertain: true,
+    });
+    const watchReceipt = {
+      ...runner,
+      activationId: activation.id,
+      executionGeneration: activation.executionGeneration,
+      runnerConnectionGeneration: 1,
+      observed: "stopped" as const,
+      restartCount: 0,
+      healthySince: null,
+      lastError: null,
+      lastExitCode: null,
+      stderrTail: "",
+      stdoutTail: "",
+    };
+    await expect(
+      triggers.applyWatchStatus({
+        ...watchReceipt,
+        executionGeneration: activation.executionGeneration + 1,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await triggers.applyWatchStatus(watchReceipt);
+    await restarted.effects.driveCleanups();
+    // The transport close leaves the attachment outstanding until the browser reports it drained.
+    await expect(restarted.remove(first.id)).rejects.toMatchObject({
+      reason: "cleanup-outstanding",
+    });
+    await cdp.settled(browserSessionId, attachmentId);
+    await restarted.effects.driveCleanups();
+    expect((await restarted.list()).find(({ id }) => id === first.id)).toMatchObject({
+      state: "stopped",
+      lastActionUncertain: true,
+    });
+    await restarted.remove(first.id);
+    expect((await restarted.list()).map(({ id }) => id)).not.toContain(first.id);
+  });
+
+  it("retries an older floor without interrupting a Run admitted under the new grant", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("narrow-retry");
+    const url = await serveMcp(storeFixture);
+    const { database, store } = storeFixture;
+    const agent = await connection(store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: tasksOnly,
+    });
+    const oldTask = await createTask(agent, f, "before-floor");
+    const oldRun = await queuedRun(storeFixture, oldTask);
+    await startPersonalQueuedRunFixture(store, oldRun.id);
+    const enumerated = Promise.withResolvers<void>();
+    const proceed = Promise.withResolvers<void>();
+    const host = commands(storeFixture, f.userId, {
+      async afterStop() {
+        enumerated.resolve();
+        await proceed.promise;
+      },
+    });
+    const change = host.update(agent.id, { accessMode: "auto" });
+    await Promise.race([
+      enumerated.promise,
+      change.then(() => {
+        throw new Error("Narrowing returned before reaching the cleanup worker");
+      }),
+    ]);
+    let newRunId: RunId;
+    try {
+      const thread = await createTask(agent, f, "after-floor");
+      const run = await queuedRun(storeFixture, thread);
+      newRunId = run.id;
+      await startPersonalQueuedRunFixture(store, run.id);
+    } finally {
+      proceed.resolve();
+      await change;
+    }
+    await commands(storeFixture, f.userId).effects.driveCleanups();
+    expect(
+      await database
+        .selectFrom("runs")
+        .select(["id", "admittedGrantRevision", "admittedAccessMode"])
+        .where("id", "=", newRunId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      id: newRunId,
+      admittedGrantRevision: 2,
+      admittedAccessMode: "auto",
+    });
+    expect(
+      await database
+        .selectFrom("commands")
+        .select("runId")
+        .where("type", "=", "run.interrupt")
+        .execute(),
+    ).toEqual([{ runId: oldRun.id }]);
+  });
+
+  it("recovers a legacy revoke and keeps a plugin handed off after enumeration outstanding", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("late-plugin");
+    const url = await serveMcp(storeFixture);
+    const { database, store } = storeFixture;
+    const agent = await connection(store, url, { userId: f.userId, accessMode: "full-access" });
+    const pluginId = "late-plugin-execution";
+    const writeStarted = Promise.withResolvers<void>();
+    const commitWrite = Promise.withResolvers<void>();
+    const late = database.transaction().execute(async (tx) => {
+      await tx
+        .insertInto("pluginExecutions")
+        .values({
+          id: pluginId,
+          caller: "plugin-test",
+          ownerUserId: f.userId,
+          threadId: f.thread.id,
+          occurrenceId: null,
+          watchActivationId: null,
+          runId: f.run.id,
+          mode: "automatic",
+          state: "running",
+          requestId: null,
+          interactionId: null,
+          handoff: true,
+          result: null,
+          reason: null,
+          connectionId: agent.id,
+          admittedGrantRevision: 1,
+          admittedAccessMode: "full-access",
+        })
+        .execute();
+      writeStarted.resolve();
+      await commitWrite.promise;
+    });
+    await Promise.race([writeStarted.promise, late]);
+    await database
+      .updateTable("agentConnections")
+      .set({ revokedAt: new Date(), tokenHash: null })
+      .where("id", "=", agent.id)
+      .execute();
+    // The writer already holds its attempt but is invisible to this pass's first SELECT.
+    const stopped: string[] = [];
+    const recovery = commands(storeFixture, f.userId, {
+      async afterStop() {
+        commitWrite.resolve();
+        await late;
+      },
+      stopper: {
+        async stop(attempt) {
+          stopped.push(attempt.id);
+        },
+      },
+    });
+    try {
+      await recovery.effects.driveCleanups();
+    } finally {
+      commitWrite.resolve();
+      await late;
+    }
+    expect(stopped).toEqual([]);
+    expect((await recovery.list()).find(({ id }) => id === agent.id)).toMatchObject({
+      state: "stopping",
+    });
+    await recovery.effects.driveCleanups();
+    expect(stopped).toEqual([pluginId]);
+    // A local 'cancelled' label and receipt of the stop command don't prove it ended.
+    await database
+      .updateTable("pluginExecutions")
+      .set({ state: "cancelled" })
+      .where("id", "=", pluginId)
+      .execute();
+    await recovery.effects.driveCleanups();
+    await expect(recovery.remove(agent.id)).rejects.toMatchObject({
+      reason: "cleanup-outstanding",
+    });
+    await database
+      .updateTable("pluginExecutions")
+      .set({ terminalEvidenceAt: new Date() })
+      .where("id", "=", pluginId)
+      .execute();
+    await recovery.effects.driveCleanups();
+    expect((await recovery.list()).find(({ id }) => id === agent.id)).toMatchObject({
+      state: "stopped",
+    });
   });
 
   it("drives an expired connection through the same durable cleanup", async ({ storeFixture }) => {
     const f = await storeFixture.startRunFixture("expiry");
-    const url = await serveMcp(storeFixture);
+    const subscribed = Promise.withResolvers<void>();
+    const detached = Promise.withResolvers<void>();
+    const url = await serveMcp(storeFixture, {
+      subscribed: subscribed.resolve,
+      unsubscribed: detached.resolve,
+    });
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
       grant: tasksOnly,
     });
     const own = await createTask(agent, f, "expiry");
+    const held = agent.client
+      .callTool({
+        name: "opensteer_task_wait",
+        arguments: { taskId: own },
+      })
+      .then(
+        (response) => expect(response.isError).toBe(true),
+        (error: unknown) => expect(error).toBeInstanceOf(Error),
+      );
+    await Promise.race([
+      subscribed.promise,
+      held.then(() => {
+        throw new Error("Wait returned before it held a subscription");
+      }),
+    ]);
     await storeFixture.database
       .updateTable("agentConnections")
       .set({ expiresAt: new Date(Date.now() - 1_000) })
@@ -1388,6 +1768,7 @@ describeStore("connection grants and lineage", (it) => {
         .executeTakeFirstOrThrow(),
     ).toMatchObject({ cleanupReason: "expired", cleanupCompletedAt: expect.any(Date) });
     expect((await queuedRun(storeFixture, own)).status).toBe("interrupted");
+    await Promise.all([held, detached.promise]);
   });
 
   it("serializes Disconnect with an admitted send: it lands before and is stopped, or is refused", async ({

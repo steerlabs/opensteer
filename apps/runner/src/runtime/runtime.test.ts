@@ -3546,6 +3546,20 @@ describe("RunnerRuntime", () => {
         expect(observedSignals[index]?.aborted).toBe(true);
         await waitUntil(() => runtime.activeTriggerOccurrenceIds().length === 0);
       }
+      const replayed: RunnerOperationalReport[] = [];
+      await runtime.attach(
+        { ...testConnectionFence, leaseMs: 60_000, results: [], type: "host.executions.attached" },
+        { send: async (report) => void replayed.push(report) },
+      );
+      expect(replayed.filter((message) => message.type === "runner.trigger-result")).toEqual([
+        expect.objectContaining({
+          executionGeneration: seedCommand.context.executionGeneration,
+          output: expect.objectContaining({
+            occurrenceId: seedCommand.context.occurrenceId,
+            status: "canceled",
+          }),
+        }),
+      ]);
       expect(messages.filter((message) => message.type === "runner.trigger-result")).toHaveLength(
         3,
       );

@@ -202,7 +202,14 @@ export function workAuditSigningBytes(
 export const WorkAuditStatusSchema = z.strictObject({
   lastSequence: sequence,
   lastReceivedAt: instant.nullable(),
-  gap: z.strictObject({ expected: sequence.min(1), received: sequence.min(1) }).nullable(),
+  finalFlush: z.enum(["confirmed", "unconfirmed"]).nullable().optional(),
+  gap: z
+    .strictObject({
+      expected: sequence.min(1),
+      received: sequence.min(1),
+      through: sequence.min(1).optional(),
+    })
+    .nullable(),
 });
 
 export type WorkAuditStatus = z.infer<typeof WorkAuditStatusSchema>;
@@ -233,6 +240,7 @@ export const WorkAssignmentViewSchema = z.strictObject({
   computerId: prefixedIdSchema("cc")
     .refine((id) => id === id.toLowerCase())
     .brand<"CloudComputerId">(),
+  // The Home refuses sign-in and new work when the assignment is no longer active.
   state: WorkAssignmentStateSchema,
   homeStatus,
   reason: z.string().min(1).max(1000).nullable(),
@@ -259,6 +267,16 @@ export const WorkHomeResponseSchema = z
 export type WorkHomeResponse = z.infer<typeof WorkHomeResponseSchema>;
 export const OrganizationAdminResponseSchema = z.strictObject({
   ...organization,
+  closingAt: instant.nullable().optional(),
+  closedAt: instant.nullable().optional(),
+  pendingSeatChange: z
+    .strictObject({
+      requestId: z.uuid(),
+      invoiceUrl: z.url({ protocol: /^https$/u }).nullable(),
+      expiresAt: instant.nullable(),
+    })
+    .nullable()
+    .optional(),
   seats: z.strictObject({
     paid: sequence,
     assigned: sequence,

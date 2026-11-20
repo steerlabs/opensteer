@@ -8,7 +8,7 @@ import {
 } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
 import { accessModeOptions } from "./access-modes.js";
-import { agentWho, type AgentWho } from "./agent-identity.js";
+import { agentWho, agentWithdrawnLine, type AgentWho } from "./agent-identity.js";
 import { agentWords } from "./connected-agents-copy.js";
 import { formatRelativeTime } from "./thread-list-model.js";
 
@@ -226,12 +226,18 @@ export function connectedAgentRow(
   names: GrantNames,
   revoked: ReadonlySet<string> = new Set(),
   now = new Date(),
+  /** When the Home withdrew this connection's verified identity, if it did. */
+  withdrawnAt?: string | null,
 ): ConnectedAgentRow {
   const phase = connectedAgentPhase(connection, revoked, now);
-  const { line, tone } = rowLine(connection, phase, names);
+  const identity = connectedAgentIdentity(connection, undefined, withdrawnAt);
+  const withdrawn = phase === "active" ? agentWithdrawnLine(identity.who) : null;
+  const { line, tone } = withdrawn
+    ? { line: withdrawn, tone: "attention" as const }
+    : rowLine(connection, phase, names);
   return {
     id: connection.id,
-    identity: connectedAgentIdentity(connection),
+    identity,
     phase,
     uncertain: connection.lastActionUncertain === true,
     line,
@@ -247,8 +253,12 @@ export function connectedAgentsView(
   names: GrantNames,
   revoked: ReadonlySet<string> = new Set(),
   now = new Date(),
+  /** By connection id: when the Home withdrew a verified identity. */
+  withdrawn: Readonly<Record<string, string>> = {},
 ): ConnectedAgentsView {
-  const rows = connections.map((connection) => connectedAgentRow(connection, names, revoked, now));
+  const rows = connections.map((connection) =>
+    connectedAgentRow(connection, names, revoked, now, withdrawn[connection.id]),
+  );
   return {
     connected: rows.filter((row) => row.phase === "active"),
     disconnected: rows.filter((row) => row.phase !== "active"),
@@ -342,10 +352,12 @@ export function connectedAgentDetail(
     readonly live?: ConnectedAgentLive | null;
     readonly activity?: ConnectedAgentActivity;
     readonly now?: Date;
+    /** When the Home withdrew this connection's verified identity, if it did. */
+    readonly withdrawnAt?: string | null | undefined;
   },
 ): ConnectedAgentDetail {
   const now = options.now ?? new Date();
-  const row = connectedAgentRow(connection, names, options.revoked, now);
+  const row = connectedAgentRow(connection, names, options.revoked, now, options.withdrawnAt);
   const legacy = !options.grantsAvailable || connection.grant === undefined;
   const identity = row.identity;
   return {

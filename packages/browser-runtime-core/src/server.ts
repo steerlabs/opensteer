@@ -1,4 +1,8 @@
-import { standardCdpPath } from "@opensteer/protocol/standard-cdp";
+import {
+  standardCdpDetachFrame,
+  standardCdpPath,
+  standardCdpSettledReason,
+} from "@opensteer/protocol/standard-cdp";
 export { standardCdpPath } from "@opensteer/protocol/standard-cdp";
 import {
   standardCdpBufferedMaxBytes,
@@ -316,8 +320,9 @@ export class BrowserRuntimeServer {
   private acceptStandardCdp(websocket: WebSocket, ticket: string, bridge: boolean): void {
     const cancellation = new AbortController();
     let attachment: StandardCdpAttachment | undefined;
+    let detaching = false;
     let inFlightBytes = 0;
-    let inFlightCount = 0;
+    const pending = new Set<string>();
     let outboundBytes = 0;
     let outboundCount = 0;
     const close = (code: number, reason: string) => {
@@ -325,6 +330,11 @@ export class BrowserRuntimeServer {
       cancellation.abort();
       attachment?.close();
       if (websocket.readyState === WebSocket.OPEN) websocket.close(code, reason);
+      if (websocket.readyState !== WebSocket.CLOSED) {
+        const hardClose = setTimeout(() => websocket.terminate(), 1_000);
+        hardClose.unref();
+        websocket.once("close", () => clearTimeout(hardClose));
+      }
     };
     const overloaded = () => close(1013, "CDP connection exceeded its buffer limit");
     const send = async (value: unknown): Promise<void> => {
@@ -353,17 +363,21 @@ export class BrowserRuntimeServer {
     websocket.once("close", () => close(1000, "CDP disconnected"));
     websocket.on("error", () => close(1011, "CDP transport failed"));
     const ready = this.runtime
-      .attachStandardCdp(ticket, overloaded, cancellation.signal, bridge)
+      .attachStandardCdp(ticket, overloaded, cancellation.signal)
       .then(
         (client) => {
           attachment = client;
           if (cancellation.signal.aborted) {
             client.close();
-            return undefined;
+            return client;
           }
-          client.signal.addEventListener("abort", () => close(1000, "Browser Session ended"), {
-            once: true,
-          });
+          client.signal.addEventListener(
+            "abort",
+            () => {
+              if (!detaching) close(1000, "Browser Session ended");
+            },
+            { once: true },
+          );
           if (client.signal.aborted) {
             close(1000, "Browser Session ended");
             return undefined;
@@ -386,25 +400,48 @@ export class BrowserRuntimeServer {
       );
 
     websocket.on("message", (raw: RawData, binary: boolean) => {
-      if (cancellation.signal.aborted) return;
+      if (cancellation.signal.aborted || detaching) return;
       if (binary) {
         close(1003, "CDP requires JSON text");
         return;
       }
       const frame = normalizeRawData(raw);
+      if (bridge && frame.length === standardCdpDetachFrame.length &&
+          frame.toString("utf8") === standardCdpDetachFrame) {
+        detaching = true;
+        attachment?.close();
+        void ready.then(async (client) => {
+          if (!client) return;
+          client.close();
+          await client.settled;
+          close(1000, standardCdpSettledReason);
+        });
+        return;
+      }
       if (
         inFlightBytes + outboundBytes + frame.byteLength > standardCdpBufferedMaxBytes ||
-        inFlightCount >= standardCdpMaxPending
+        pending.size >= standardCdpMaxPending
       ) {
         overloaded();
         return;
       }
+      let request: z.infer<typeof standardCdpRequest>;
+      try {
+        request = standardCdpRequest.parse(JSON.parse(frame.toString("utf8")));
+      } catch {
+        close(1007, "Invalid CDP command");
+        return;
+      }
+      const { id, method, params, sessionId } = request;
+      const key = JSON.stringify([id, sessionId]);
+      if (pending.has(key)) {
+        close(1007, "Duplicate pending CDP command");
+        return;
+      }
+      pending.add(key);
       inFlightBytes += frame.byteLength;
-      inFlightCount++;
       const dispatch = async (client: StandardCdpAttachment | undefined) => {
-        if (!client || cancellation.signal.aborted) return;
-        const request = standardCdpRequest.parse(JSON.parse(frame.toString("utf8")));
-        const { id, method, params, sessionId } = request;
+        if (!client || cancellation.signal.aborted || detaching) return;
         try {
           const result = await client.send({
             method,
@@ -421,7 +458,7 @@ export class BrowserRuntimeServer {
         .catch(() => close(1007, "Invalid CDP command"))
         .finally(() => {
           inFlightBytes -= frame.byteLength;
-          inFlightCount--;
+          pending.delete(key);
         });
     });
   }

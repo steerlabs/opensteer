@@ -3,6 +3,13 @@ export const ToolErrorSchema = z.strictObject({
   code: z.string().min(1).max(100),
   message: z.string().min(1).max(2000),
   next: z.string().max(2000).nullable(),
+  /**
+   * The Device an asleep or stopped refusal is about, for a caller allowed to
+   * know it. Structured only: the sentence an agent reads does not change.
+   */
+  device: z
+    .strictObject({ id: z.string().min(1).max(100), name: z.string().min(1).max(200) })
+    .optional(),
 });
 export type ToolError = z.infer<typeof ToolErrorSchema>;
 export const ToolFailureSchema = z.strictObject({ error: ToolErrorSchema });

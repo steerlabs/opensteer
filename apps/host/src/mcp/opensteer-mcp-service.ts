@@ -38,6 +38,7 @@ import type { RequestHold } from "./request-hold.js";
 import type { PluginExecutions } from "../plugins/plugin-executions.js";
 import { mcpToolCallId } from "./call-id.js";
 import { agentToolFailure, internalToolFailureCode } from "./agent-tool-failure.js";
+import { deviceVisibleTo } from "../devices/device-visibility.js";
 import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
 import {
   AgentCallerResolver,
@@ -471,10 +472,12 @@ export class OpensteerMcpService {
         : agentToolRecordResult;
     const admittedAt = Date.now();
     const signal = identity.signal ?? new AbortController().signal;
+    let failureCaller: AgentCaller | undefined;
     try {
       const token = bearer;
       if (!token) throw new Error("MCP authorization is missing");
       const currentCaller = identity.caller ?? (await this.options.callers.authenticate(token));
+      failureCaller = currentCaller;
       const pluginHold =
         currentCaller.kind === "run" &&
         ["plugin_call", "plugin_execute", "plugin_resume"].includes(name) &&
@@ -543,7 +546,11 @@ export class OpensteerMcpService {
         parsed?.success && tool && "readsOnly" in tool && tool.readsOnly?.(parsed.data as never)
           ? "read"
           : (tool?.access ?? "write");
-      const failure = agentToolFailure(error, access);
+      const failure = agentToolFailure(
+        error,
+        access,
+        failureCaller ? deviceVisibleTo(callerLineage(failureCaller)?.grant) : () => false,
+      );
       if (failure.code === internalToolFailureCode && !signal.aborted)
         this.options.onToolError?.(error, name);
       return agentToolFailureResult(failure);
@@ -719,8 +726,10 @@ export class OpensteerMcpService {
       [...this.#activeSessions]
         .filter(({ authority }) => {
           const [id, revision] = authority.split(":");
-          return id === connectionId &&
-            (minimumGrantRevision === undefined || Number(revision) < minimumGrantRevision);
+          return (
+            id === connectionId &&
+            (minimumGrantRevision === undefined || Number(revision) < minimumGrantRevision)
+          );
         })
         .map((session) => this.#closeSession(session)),
     );

@@ -36,10 +36,7 @@ import type { AssetService } from "./assets/asset-service.js";
 import type { DeviceAccessService } from "./administration/device-access-service.js";
 import type { DeviceDriverManagementPort } from "./administration/device-driver-service.js";
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
-import {
-  installClientAddress,
-  installTrustedProxy,
-} from "./identity/anonymous-client-address.js";
+import { installClientAddress, installTrustedProxy } from "./identity/anonymous-client-address.js";
 import { registerManagedHomeClaimRoute } from "./identity/managed-home-claim.js";
 import { deviceAccess } from "@opensteer/protocol";
 import {

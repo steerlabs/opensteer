@@ -336,13 +336,15 @@ export function commands(
   userId: UserId,
   options: {
     readonly afterStop?: Parameters<typeof connectionCommandEffects>[0]["afterStop"];
+    readonly stopper?: Parameters<typeof connectionCommandEffects>[0]["stopper"];
   } = {},
 ) {
   const store = new AgentConnectionStore(storeFixture.database);
   const failures: unknown[] = [];
   const effects = connectionCommandEffects({
     store: storeFixture.store,
-    closeLineage: (connectionId) => lastService!.closeLineage(connectionId),
+    closeLineage: (connectionId, revision) => lastService!.closeLineage(connectionId, revision),
+    ...(options.stopper ? { stopper: options.stopper } : {}),
     onFailure: (error) => failures.push(error),
     ...(options.afterStop ? { afterStop: options.afterStop } : {}),
   });

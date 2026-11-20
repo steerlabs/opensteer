@@ -21,6 +21,7 @@ import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
 import { AgentGrantEditor, ConnectionModeChoices } from "../agent-grant-editor.js";
 import { AgentMark } from "../agent-mark.js";
+import { AgentWhoLine, AgentWithdrawnNotice } from "../agent-who.js";
 import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 
 interface Edit {
@@ -76,7 +77,11 @@ export function ConnectedAgentPage({
   const detail = connectedAgentDetail(connection, names, {
     revoked: agents.revoked,
     grantsAvailable: agents.grantsAvailable,
+    withdrawnAt: snapshot.agentWork?.withdrawn?.[connection.id],
   });
+  const who = detail.row.identity.who;
+  // A withdrawn verification offers Disconnect once, in its own notice.
+  const withdrawn = detail.row.phase === "active" && who.withdrawnSince !== null;
   const agent = detail.row.identity.label;
   // An edit belongs to the revision it was made against; a newer one shows what is set now.
   const current = edit && edit.revision === detail.revision ? edit : null;
@@ -142,6 +147,12 @@ export function ConnectedAgentPage({
           </span>
         ) : null}
       </div>
+      <AgentWhoLine who={who} />
+      <AgentWithdrawnNotice
+        agent={agent}
+        onDisconnect={busy ? null : () => setConfirming("disconnect")}
+        who={who}
+      />
       <StatusNotice status={detail.status} />
       {detail.uncertain ? (
         <p className="notice connected-agent__uncertain" role="alert">
@@ -221,7 +232,7 @@ export function ConnectedAgentPage({
       </SettingsGroup>
       <SettingsError message={agents.error} />
       <div className="connected-agent__end">
-        {detail.row.phase === "active" ? (
+        {detail.row.phase === "active" && withdrawn ? null : detail.row.phase === "active" ? (
           <button
             className="btn btn--danger"
             disabled={busy}

@@ -1,3 +1,13 @@
+import type { z } from "zod";
+import { cancelAndRefundCheckout } from "../cloud-computers/checkout-compensation.js";
+import {
+  freeBackupTargets,
+  replenishSeatBackups,
+  reserveSeatBackups,
+  settleSeatBackups,
+  trimSeatBackups,
+} from "../cloud-computers/backup-capacity.js";
+import { deletionView } from "../cloud-computers/deletion-view.js";
 import { otherAdmin, workSignInAuthority } from "./identity.js";
 import { createHash, createPublicKey, randomUUID, verify } from "node:crypto";
 import {
@@ -23,22 +33,28 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { DeploymentIdSchema, normalizeIdentityEmail, type DeploymentId } from "@opensteer/core";
 import { hostKeyFingerprint } from "@opensteer/deployment-authority";
-import type { Kysely, Selectable, Transaction } from "kysely";
+import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
 import { ControlPlaneError } from "../server/errors.js";
 import {
   billingStatus,
   type CloudComputerStripe,
+  type StripePaidCheckoutSchema,
   type StripeEvent,
   type StripeSubscription,
 } from "../cloud-computers/stripe.js";
 import type { CloudComputerStore } from "../cloud-computers/store.js";
 import type { OrganizationOffer } from "./config.js";
-import type { OrganizationTable, WorkAssignmentTable } from "./tables.js";
+import type {
+  OrganizationCheckoutTable,
+  OrganizationTable,
+  WorkAssignmentTable,
+} from "./tables.js";
 
 type DB = Kysely<ControlPlaneDatabaseSchema>;
 type Tx = Transaction<ControlPlaneDatabaseSchema>;
 type Organization = Selectable<OrganizationTable>;
+type Checkout = Selectable<OrganizationCheckoutTable>;
 type Assignment = Selectable<WorkAssignmentTable>;
 type Billing = Pick<
   CloudComputerStripe,
@@ -49,10 +65,16 @@ type Billing = Pick<
   | "validateOffer"
   | "updateSeatQuantity"
   | "portal"
+  | "expireCheckout"
+  | "refundCheckout"
+  | "validatePortal"
+  | "invoice"
+  | "voidInvoice"
 >;
 type CreateComputer = CloudComputerStore["createWorkComputer"];
 const flushWindowMs = 3_000;
-const checkoutLifetimeMs = 24 * 60 * 60_000;
+const seatDispatchWindowMs = 23 * 60 * 60_000;
+const billingFreshnessMs = 5 * 60_000;
 
 export function organizationSeats(
   org: Pick<Organization, "paidSeats" | "pendingSeats" | "billingStatus">,
@@ -68,6 +90,16 @@ export function organizationSeats(
   };
 }
 
+async function otherAdminMember(db: DB, id: OrganizationId, account: ControlPlaneAccountId) {
+  return db
+    .selectFrom("organizationMembers")
+    .select("role")
+    .where("organizationId", "=", id)
+    .where("accountId", "=", account)
+    .where("role", "=", "admin")
+    .executeTakeFirst();
+}
+
 function deny() {
   return new ControlPlaneError("forbidden", "Organization access is not allowed");
 }
@@ -79,6 +111,7 @@ export class OrganizationStore {
   readonly #now: () => Date;
   readonly #returnUrl: URL | undefined;
   #offerValid = false;
+  #workSignIns = Promise.resolve();
 
   constructor(
     db: DB,
@@ -104,21 +137,46 @@ export class OrganizationStore {
 
   async billingPortal(id: OrganizationId, account: ControlPlaneAccountId) {
     const org = await this.#db.transaction().execute((tx) => this.#admin(tx, id, account));
-    return this.#returnUrl
-      ? this.#stripe.portal(org.stripeCustomerId, this.#returnUrl)
-      : this.#stripe.portal(org.stripeCustomerId);
+    const offer = this.#offer;
+    if (!offer) throw new ControlPlaneError("unavailable", "Organization billing is unavailable");
+    await this.#stripe.validatePortal(offer.portalConfigurationId, "organization");
+    return this.#stripe.portal(org.stripeCustomerId, this.#returnUrl, offer.portalConfigurationId);
   }
 
   async checkOffer() {
     if (!this.#offer) return;
     this.#offerValid = false;
     await this.#stripe.validateOffer(this.#offer.priceId, this.#offer);
+    await this.#stripe.validatePortal(this.#offer.portalConfigurationId, "organization");
     this.#offerValid = true;
+  }
+
+  async checkoutCompleted(account: ControlPlaneAccountId, requestId: string): Promise<boolean> {
+    const completed = await this.#db
+      .selectFrom("organizationCheckouts")
+      .select("requestId")
+      .where("founderAccountId", "=", account)
+      .where("requestId", "=", requestId)
+      .where("status", "=", "completed")
+      .executeTakeFirst();
+    return Boolean(completed);
+  }
+
+  async restoreBilling(id: OrganizationId, account: ControlPlaneAccountId, requestId: string) {
+    const { name, paidSeats } = await this.#db
+      .transaction()
+      .execute((tx) => this.#admin(tx, id, account));
+    return this.checkout(account, {
+      organizationId: id,
+      requestId,
+      name,
+      seats: Math.max(1, paidSeats),
+    });
   }
 
   async checkout(
     account: ControlPlaneAccountId,
-    input: { requestId: string; name: string; seats: number },
+    input: { requestId: string; name: string; seats: number; organizationId?: OrganizationId },
   ) {
     const offer = this.#offer;
     if (!offer || !this.#offerValid)
@@ -130,7 +188,8 @@ export class OrganizationStore {
         .where("id", "=", account)
         .forNoKeyUpdate()
         .executeTakeFirst();
-      if (!founder || (founder.deletionFencedUntil && founder.deletionFencedUntil > this.#now()))
+      const now = this.#now();
+      if (!founder || (founder.deletionFencedUntil && founder.deletionFencedUntil > now))
         throw deny();
       const existing = await tx
         .selectFrom("organizationCheckouts")
@@ -139,18 +198,53 @@ export class OrganizationStore {
         .where("requestId", "=", input.requestId)
         .executeTakeFirst();
       if (existing) {
-        if (existing.name !== input.name || existing.seats !== input.seats) {
+        if (input.organizationId) await this.#admin(tx, input.organizationId, account);
+        if (
+          existing.name !== input.name ||
+          existing.seats !== input.seats ||
+          (existing.previousSubscriptionId ? existing.organizationId : undefined) !==
+            input.organizationId
+        ) {
           throw new ControlPlaneError(
             "conflict",
-            "This checkout request already has a different name or seat count",
+            "This checkout request already has a different organization or seat count",
           );
         }
         return existing;
       }
-      return tx
+      const renewal = input.organizationId
+        ? await this.#admin(tx, input.organizationId, account)
+        : undefined;
+      if (
+        renewal &&
+        (renewal.name !== input.name || renewal.closingAt || renewal.billingStatus !== "canceled")
+      )
+        throw new ControlPlaneError(
+          "conflict",
+          "This organization cannot start a new subscription",
+        );
+      const assigned = renewal ? await this.#count(tx, renewal.id) : 0;
+      if (input.seats < assigned)
+        throw new ControlPlaneError("conflict", "Offboard assignments before reducing seats");
+      const organizationId = renewal?.id ?? OrganizationIdSchema.parse(`org_${randomUUID()}`);
+      const open = await tx
+        .selectFrom("organizationCheckouts")
+        .select("requestId")
+        .where("organizationId", "=", organizationId)
+        .where("status", "=", "open")
+        .executeTakeFirst();
+      if (open) throw new ControlPlaneError("conflict", "An organization checkout is already open");
+      const reserved = await freeBackupTargets(tx)
+        .select((eb) => eb.fn.countAll<string>().as("count"))
+        .where("reservedOrganizationId", "=", organizationId)
+        .where("organizationReservationRequestId", "is", null)
+        .executeTakeFirstOrThrow();
+      const attempt = await tx
         .insertInto("organizationCheckouts")
         .values({
-          organizationId: OrganizationIdSchema.parse(`org_${randomUUID()}`),
+          organizationId,
+          previousSubscriptionId: renewal?.stripeSubscriptionId ?? null,
+          returnUrl: this.#returnUrl?.toString() ?? null,
           founderAccountId: account,
           requestId: input.requestId,
           name: input.name,
@@ -160,14 +254,24 @@ export class OrganizationStore {
           status: "open",
           sessionId: null,
           url: null,
-          createdAt: this.#now(),
+          createdAt: now,
+          expiresAt: new Date(now.getTime() + 2 * 60 * 60_000),
+          sentAt: now,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+      await reserveSeatBackups(
+        tx,
+        organizationId,
+        input.requestId,
+        input.seats - assigned - Number(reserved.count),
+      );
+      return attempt;
     });
     if (
-      attempt.status === "expired" ||
-      (!attempt.url && this.#now().getTime() - attempt.createdAt.getTime() >= checkoutLifetimeMs)
+      attempt.closeRequestedAt ||
+      attempt.status !== "open" ||
+      (!attempt.url && attempt.expiresAt.getTime() - this.#now().getTime() < 31 * 60_000)
     ) {
       throw new ControlPlaneError("conflict", "This organization checkout expired");
     }
@@ -176,13 +280,16 @@ export class OrganizationStore {
       accountId: account,
       requestId: attempt.requestId,
       priceId: attempt.stripePriceId,
+      expiresAt: attempt.expiresAt,
       organization: { id: attempt.organizationId, quantity: attempt.seats },
-      ...(this.#returnUrl ? { returnUrl: this.#returnUrl } : {}),
+      ...(attempt.returnUrl ? { returnUrl: new URL(attempt.returnUrl) } : {}),
     });
     const saved = await this.#db
       .updateTable("organizationCheckouts")
       .where("organizationId", "=", attempt.organizationId)
-      .where("status", "!=", "expired")
+      .where("requestId", "=", attempt.requestId)
+      .where("closeRequestedAt", "is", null)
+      .where("status", "=", "open")
       .where((eb) => eb.or([eb("sessionId", "is", null), eb("sessionId", "=", session.id)]))
       .set({ sessionId: session.id, url: session.url })
       .executeTakeFirst();
@@ -213,10 +320,18 @@ export class OrganizationStore {
       .where("id", "=", checkout.metadata.account_id)
       .forNoKeyUpdate()
       .executeTakeFirst();
+    const existing = await tx
+      .selectFrom("organizations")
+      .selectAll()
+      .where("id", "=", id)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
     const attempt = await tx
       .selectFrom("organizationCheckouts")
       .selectAll()
       .where("organizationId", "=", id)
+      .where("requestId", "=", checkout.metadata.request_id)
+      .forNoKeyUpdate()
       .executeTakeFirst();
     if (
       !attempt ||
@@ -231,19 +346,35 @@ export class OrganizationStore {
         "Stripe Checkout does not match the organization purchase",
       );
     }
-    if (attempt.status === "completed") return true;
-    const save = tx.updateTable("organizationCheckouts").where("organizationId", "=", id);
+    if (attempt.status === "completed" || attempt.status === "refunded") return true;
+    const save = tx
+      .updateTable("organizationCheckouts")
+      .where("organizationId", "=", id)
+      .where("requestId", "=", attempt.requestId);
     if (event.operation === "expired") {
+      if (attempt.paidAt) return true;
       await save.set({ status: "expired", sessionId: checkout.id }).executeTakeFirst();
+      await settleSeatBackups(tx, id, attempt.requestId, false);
       return true;
     }
-    if (admin?.deletionFencedUntil && admin.deletionFencedUntil > this.#now()) {
-      throw new ControlPlaneError(
-        "unavailable",
-        "Organization creation is waiting for Account deletion",
-      );
-    }
     const payment = event.checkout;
+    if (payment.payment_status !== "paid") return true;
+    if (
+      !admin ||
+      !attempt.founderAccountId ||
+      (admin.deletionFencedUntil && admin.deletionFencedUntil > this.#now()) ||
+      attempt.status === "expired" ||
+      attempt.closeRequestedAt ||
+      (attempt.previousSubscriptionId !== null &&
+        (!existing ||
+          existing.closingAt ||
+          existing.stripeSubscriptionId !== attempt.previousSubscriptionId ||
+          existing.billingStatus !== "canceled" ||
+          !(await otherAdminMember(tx, id, admin.id))))
+    ) {
+      await this.#compensateCheckout(tx, attempt, payment);
+      return true;
+    }
     const subscription = await this.#stripe.subscription(payment.subscription);
     const item = seatItem(subscription, attempt.stripePriceId, attempt.currency);
     if (
@@ -261,133 +392,408 @@ export class OrganizationStore {
         "Stripe subscription does not match the organization purchase",
       );
     }
-    if (!admin || !attempt.founderAccountId) {
-      if (billingStatus(subscription) !== "canceled") await this.#stripe.cancel(subscription.id);
-      await save.set({ status: "expired", sessionId: checkout.id }).executeTakeFirst();
-      return true;
-    }
     const billing = billingStatus(subscription);
-    await tx
-      .insertInto("organizations")
-      .values({
-        id,
-        name: attempt.name,
-        stripeCustomerId: subscription.customer,
-        stripeSubscriptionId: subscription.id,
-        stripePriceId: attempt.stripePriceId,
-        billingCurrency: attempt.currency,
-        billingStatus: billing,
-        paidSeats: billing === "active" ? item.quantity : 0,
-        pendingSeats: null,
-        pendingSeatRequestId: null,
-        pendingSeatSince: null,
-        policy: JSON.stringify(defaultWorkPolicy),
-        createdAt: this.#now(),
-      })
-      .executeTakeFirst();
-    await tx
-      .insertInto("organizationMembers")
-      .values({
-        organizationId: id,
-        accountId: admin.id,
-        role: "admin",
-        createdAt: this.#now(),
-      })
-      .executeTakeFirst();
+    if (attempt.previousSubscriptionId && existing) {
+      await tx
+        .updateTable("organizations")
+        .where("id", "=", id)
+        .set({
+          stripeCustomerId: subscription.customer,
+          stripeSubscriptionId: subscription.id,
+          stripePriceId: attempt.stripePriceId,
+          billingCurrency: attempt.currency,
+          billingStatus: billing,
+          billingRefreshedAt: this.#now(),
+          paidSeats: item.quantity,
+        })
+        .executeTakeFirstOrThrow();
+    } else {
+      await tx
+        .insertInto("organizations")
+        .values({
+          id,
+          name: attempt.name,
+          stripeCustomerId: subscription.customer,
+          stripeSubscriptionId: subscription.id,
+          stripePriceId: attempt.stripePriceId,
+          billingCurrency: attempt.currency,
+          billingStatus: billing,
+          paidSeats: item.quantity,
+          billingRefreshedAt: this.#now(),
+          pendingSeats: null,
+          pendingSeatRequestId: null,
+          pendingSeatSince: null,
+          policy: JSON.stringify(defaultWorkPolicy),
+          createdAt: this.#now(),
+        })
+        .executeTakeFirst();
+      await tx
+        .insertInto("organizationMembers")
+        .values({
+          organizationId: id,
+          accountId: admin.id,
+          role: "admin",
+          createdAt: this.#now(),
+        })
+        .executeTakeFirst();
+    }
     await save.set({ status: "completed", sessionId: checkout.id }).executeTakeFirst();
+    if (attempt.previousSubscriptionId && existing) {
+      const next = await lockOrg(tx, id);
+      await this.#syncSubscription(tx, next, false);
+    }
+    await settleSeatBackups(tx, id, attempt.requestId, true);
     return true;
+  }
+
+  async #compensateCheckout(
+    tx: Tx,
+    attempt: Checkout,
+    payment: z.infer<typeof StripePaidCheckoutSchema>,
+  ) {
+    const save = tx
+      .updateTable("organizationCheckouts")
+      .where("organizationId", "=", attempt.organizationId)
+      .where("requestId", "=", attempt.requestId);
+    await save
+      .set({
+        sessionId: payment.id,
+        paidAt: attempt.paidAt ?? this.#now(),
+        closeRequestedAt: attempt.closeRequestedAt ?? this.#now(),
+        url: null,
+        status: "open",
+      })
+      .executeTakeFirstOrThrow();
+    let settled = false;
+    try {
+      settled = await cancelAndRefundCheckout(this.#stripe, payment);
+    } catch {
+      console.error("Organization Checkout cancellation or refund is pending");
+    }
+    if (settled) {
+      await save.set({ status: "refunded" }).executeTakeFirstOrThrow();
+      await settleSeatBackups(tx, attempt.organizationId, attempt.requestId, false);
+    }
+    return settled;
+  }
+
+  async resolveAccountCheckouts(account: ControlPlaneAccountId) {
+    await this.#db.transaction().execute(async (tx) => {
+      await tx
+        .selectFrom("users")
+        .select("id")
+        .where("id", "=", account)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      const open = await tx
+        .selectFrom("organizationCheckouts")
+        .select(["organizationId", "requestId"])
+        .where("founderAccountId", "=", account)
+        .where("status", "=", "open")
+        .where("closeRequestedAt", "is", null)
+        .orderBy("organizationId")
+        .orderBy("requestId")
+        .forNoKeyUpdate()
+        .execute();
+      for (const row of open) {
+        await tx
+          .updateTable("organizationCheckouts")
+          .where("organizationId", "=", row.organizationId)
+          .where("requestId", "=", row.requestId)
+          .set({ closeRequestedAt: this.#now(), url: null })
+          .executeTakeFirstOrThrow();
+      }
+    });
+    const rows = await this.#db
+      .selectFrom("organizationCheckouts")
+      .selectAll()
+      .where("founderAccountId", "=", account)
+      .where("status", "=", "open")
+      .orderBy("organizationId")
+      .execute();
+    for (const row of rows) await this.#recoverCheckout(row, true);
+    const pending = await this.#db
+      .selectFrom("organizationCheckouts")
+      .select("organizationId")
+      .where("founderAccountId", "=", account)
+      .where("status", "=", "open")
+      .executeTakeFirst();
+    if (pending)
+      throw new ControlPlaneError("unavailable", "Organization Checkout is still being resolved");
+  }
+
+  async #recoverCheckout(attempt: Checkout, close: boolean) {
+    await this.#db.transaction().execute(async (tx) => {
+      const owner = attempt.founderAccountId
+        ? await tx
+            .selectFrom("users")
+            .select("deletionFencedUntil")
+            .where("id", "=", attempt.founderAccountId)
+            .forNoKeyUpdate()
+            .executeTakeFirst()
+        : undefined;
+      await tx
+        .selectFrom("organizations")
+        .select("id")
+        .where("id", "=", attempt.organizationId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      const row = await tx
+        .selectFrom("organizationCheckouts")
+        .selectAll()
+        .where("organizationId", "=", attempt.organizationId)
+        .where("requestId", "=", attempt.requestId)
+        .where("status", "=", "open")
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row) return;
+      const closing =
+        close ||
+        Boolean(row.closeRequestedAt) ||
+        !owner ||
+        Boolean(owner.deletionFencedUntil && owner.deletionFencedUntil > this.#now());
+      let session = await this.#stripe.findCheckout({
+        accountId: row.founderAccountId,
+        requestId: row.requestId,
+        createdAt: row.createdAt,
+        sessionId: row.sessionId,
+        organizationId: row.organizationId,
+        expiresAt: row.expiresAt,
+      });
+      if (closing && session?.status === "open")
+        session = await this.#stripe.expireCheckout(session.id);
+      if (session?.payment) {
+        if (closing) await this.#compensateCheckout(tx, row, session.payment);
+        else
+          await this.applyEvent(tx, {
+            id: `reconcile_${session.id}`,
+            type: "checkout.session.completed",
+            operation: "completed",
+            checkout: session.payment,
+          });
+        return;
+      }
+      if (session?.status === "complete" && session.subscription && !row.paidAt) {
+        await this.#stripe.cancel(session.subscription);
+      }
+      if (
+        !row.paidAt &&
+        (session?.status === "expired" ||
+          session?.status === "complete" ||
+          (!session && (!row.sentAt || row.expiresAt <= this.#now())))
+      ) {
+        await tx
+          .updateTable("organizationCheckouts")
+          .where("organizationId", "=", row.organizationId)
+          .where("requestId", "=", row.requestId)
+          .set({ status: "expired", url: null })
+          .executeTakeFirstOrThrow();
+        await settleSeatBackups(tx, row.organizationId, row.requestId, false);
+      } else if (session?.status === "open") {
+        await tx
+          .updateTable("organizationCheckouts")
+          .where("organizationId", "=", row.organizationId)
+          .where("requestId", "=", row.requestId)
+          .set({ sessionId: session.id, url: closing ? null : session.url })
+          .executeTakeFirstOrThrow();
+      }
+    });
   }
 
   async #syncSubscription(tx: Tx, org: Organization, sendUpdate: boolean) {
     let subscription = await this.#stripe.subscription(org.stripeSubscriptionId);
-    const verifiedItem = (value: StripeSubscription) => {
-      if (value.id !== org.stripeSubscriptionId || value.customer !== org.stripeCustomerId) {
+    function verified(value: StripeSubscription) {
+      if (value.id !== org.stripeSubscriptionId || value.customer !== org.stripeCustomerId)
         throw new ControlPlaneError(
           "unavailable",
           "Stripe returned another organization subscription",
         );
-      }
       return seatItem(value, org.stripePriceId, org.billingCurrency);
-    };
-    let item = verifiedItem(subscription);
-    if (
-      sendUpdate &&
-      item?.id &&
-      org.pendingSeatRequestId &&
-      org.pendingSeats &&
-      org.pendingSeatSince &&
-      this.#now().getTime() - org.pendingSeatSince.getTime() < checkoutLifetimeMs &&
-      item.quantity !== org.pendingSeats &&
-      !subscription.pending_update &&
-      billingStatus(subscription) === "active"
-    ) {
-      await this.#stripe.updateSeatQuantity({
-        item: item.id,
-        organization: org.id,
-        requestId: org.pendingSeatRequestId,
-        quantity: org.pendingSeats,
-        increase: org.pendingSeats > item.quantity,
-      });
-      subscription = await this.#stripe.subscription(org.stripeSubscriptionId);
-      item = verifiedItem(subscription);
     }
-    const stripeStatus = billingStatus(subscription);
+    let item = verified(subscription);
+    const now = this.#now();
+    if (org.closingAt && !org.closedAt && billingStatus(subscription) !== "canceled") {
+      await this.#stripe.cancel(subscription.id);
+      subscription = await this.#stripe.subscription(subscription.id);
+      item = verified(subscription);
+    }
+
+    const change = org.pendingSeatRequestId
+      ? await tx
+          .selectFrom("organizationSeatChanges")
+          .selectAll()
+          .where("organizationId", "=", org.id)
+          .where("requestId", "=", org.pendingSeatRequestId)
+          .forNoKeyUpdate()
+          .executeTakeFirst()
+      : undefined;
+    let outcome: "applied" | "expired" | "abandoned" | undefined;
+    let invoiceId = change?.invoiceId ?? null;
+    let invoiceUrl = change?.invoiceUrl ?? null;
+    let expiresAt = change?.expiresAt ?? null;
+    let invoice: StripeSubscription["latest_invoice"] = null;
+    if (change) {
+      const inWindow = now.getTime() - change.createdAt.getTime() < seatDispatchWindowMs;
+      let updated: StripeSubscription | undefined;
+      // Replaying an accepted request returns its own expanded invoice, even if the first reply was lost.
+      if (
+        sendUpdate &&
+        !change.abandonRequestedAt &&
+        inWindow &&
+        (!invoiceId || !change.increase) &&
+        item?.id === change.itemId &&
+        subscription.id === change.subscriptionId &&
+        billingStatus(subscription) === "active" &&
+        (change.increase || item.quantity !== change.quantity)
+      ) {
+        updated = await this.#stripe.updateSeatQuantity({
+          item: change.itemId,
+          subscription: change.subscriptionId,
+          organization: org.id,
+          requestId: change.requestId,
+          quantity: change.quantity,
+          increase: change.increase,
+        });
+        verified(updated);
+        subscription = await this.#stripe.subscription(org.stripeSubscriptionId);
+        item = verified(subscription);
+      }
+      const candidate =
+        updated?.latest_invoice ??
+        (subscription.pending_update ? subscription.latest_invoice : null);
+      if (
+        change.increase &&
+        !invoiceId &&
+        candidate?.id &&
+        candidate.id !== change.previousInvoiceId &&
+        candidate.billing_reason === "subscription_update"
+      ) {
+        invoiceId = candidate.id;
+        expiresAt =
+          (updated?.pending_update ?? subscription.pending_update)
+            ? new Date((updated?.pending_update ?? subscription.pending_update)!.expires_at * 1000)
+            : null;
+      }
+      if (invoiceId) {
+        invoice =
+          subscription.latest_invoice?.id === invoiceId
+            ? subscription.latest_invoice
+            : await this.#stripe.invoice(invoiceId);
+        invoiceUrl = invoice.status === "open" ? (invoice.hosted_invoice_url ?? null) : null;
+      }
+      if (change.abandonRequestedAt && invoice?.status === "open" && invoiceId) {
+        await this.#stripe.voidInvoice(invoiceId);
+        subscription = await this.#stripe.subscription(org.stripeSubscriptionId);
+        item = verified(subscription);
+        invoice = await this.#stripe.invoice(invoiceId);
+        invoiceUrl = null;
+      }
+      if (
+        item?.id === change.itemId &&
+        item.quantity === change.quantity &&
+        !subscription.pending_update &&
+        (!change.increase || invoice?.status === "paid")
+      )
+        outcome = "applied";
+      else if (!subscription.pending_update && invoice?.status === "void")
+        outcome = change.abandonRequestedAt ? "abandoned" : "expired";
+      else if (
+        !subscription.pending_update &&
+        !invoiceId &&
+        item?.quantity !== change.quantity &&
+        (!inWindow || billingStatus(subscription) === "canceled")
+      )
+        outcome = change.abandonRequestedAt ? "abandoned" : "expired";
+
+      await tx
+        .updateTable("organizationSeatChanges")
+        .where("organizationId", "=", org.id)
+        .where("requestId", "=", change.requestId)
+        .set({ invoiceId, invoiceUrl, expiresAt, ...(outcome ? { status: outcome } : {}) })
+        .executeTakeFirstOrThrow();
+    }
     const count = await this.#count(tx, org.id);
-    // An unpaid pending increase does not take away already paid seats on an otherwise active subscription.
-    const pendingIncrease =
-      subscription.status === "active" &&
-      !subscription.pause_collection &&
-      Boolean(
-        subscription.pending_update && org.pendingSeats && org.pendingSeats > org.paidSeats,
-      ) &&
-      org.billingStatus === "active" &&
-      item?.quantity === org.paidSeats;
+    const paidSeats =
+      outcome === "applied" && item
+        ? item.quantity
+        : Math.min(org.paidSeats, item?.quantity ?? org.paidSeats);
+    const stripeStatus = billingStatus(subscription);
     const effective =
-      !item || item.quantity < count ? "inactive" : pendingIncrease ? "active" : stripeStatus;
-    const seats = effective === "active" && item ? item.quantity : 0;
-    const settled =
-      (effective === "active" && item?.quantity === org.pendingSeats) ||
-      stripeStatus === "canceled" ||
-      (org.pendingSeatSince !== null &&
-        this.#now().getTime() - org.pendingSeatSince.getTime() >= checkoutLifetimeMs &&
-        !subscription.pending_update);
+      stripeStatus !== "active"
+        ? stripeStatus
+        : !item ||
+            paidSeats < count ||
+            (subscription.latest_invoice?.status === "draft" &&
+              subscription.latest_invoice.last_finalization_error &&
+              subscription.latest_invoice.id !== invoiceId)
+          ? "inactive"
+          : "active";
+    const closedAt =
+      org.closingAt && effective === "canceled" ? (org.closedAt ?? now) : org.closedAt;
     await tx
       .updateTable("organizations")
       .where("id", "=", org.id)
       .set({
         billingStatus: effective,
-        paidSeats: seats,
-        ...(settled
+        billingRefreshedAt: now,
+        paidSeats,
+        closedAt,
+        ...(outcome
           ? { pendingSeats: null, pendingSeatRequestId: null, pendingSeatSince: null }
           : {}),
       })
-      .executeTakeFirst();
-    const work = tx
+      .executeTakeFirstOrThrow();
+
+    const work = await tx
       .selectFrom("workAssignments")
       .select("cloudComputerId")
       .where("organizationId", "=", org.id)
-      .where("state", "=", "active");
+      .where("state", "=", "active")
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
     const state = effective === "active" ? "active" : "suspended";
-    await tx
-      .updateTable("cloudComputers")
-      .where("id", "in", work)
-      .where("state", "!=", state)
-      .where("state", "!=", "deleted")
-      .set({
-        state,
-        phase: "provisioning",
-        billingStatus: effective,
-        lastError: null,
-        readinessStartedAt: this.#now(),
-        updatedAt: this.#now(),
-      })
-      .executeTakeFirst();
-    await tx
-      .updateTable("cloudComputers")
-      .where("id", "in", work)
-      .where("billingStatus", "!=", effective)
-      .set({ billingStatus: effective, updatedAt: this.#now() })
-      .executeTakeFirst();
+    if (work.length) {
+      const computers = await tx
+        .selectFrom("cloudComputers")
+        .select("id")
+        .where(
+          "id",
+          "in",
+          work.map(({ cloudComputerId }) => cloudComputerId),
+        )
+        .where("state", "!=", "deleted")
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      for (const { id } of computers) {
+        await tx
+          .updateTable("cloudComputers")
+          .where("id", "=", id)
+          .where("state", "!=", state)
+          .set({
+            state,
+            phase: "provisioning",
+            billingStatus: effective,
+            lastError: null,
+            readinessStartedAt: now,
+            updatedAt: now,
+          })
+          .executeTakeFirst();
+        await tx
+          .updateTable("cloudComputers")
+          .where("id", "=", id)
+          .where("billingStatus", "!=", effective)
+          .set({ billingStatus: effective, updatedAt: now })
+          .executeTakeFirst();
+      }
+    }
+    if (outcome && change)
+      await settleSeatBackups(tx, org.id, change.requestId, outcome === "applied");
+    if (closedAt || outcome === "applied")
+      await trimSeatBackups(tx, org.id, closedAt ? 0 : paidSeats - count);
+    else if (effective === "active" && !org.closingAt)
+      await replenishSeatBackups(tx, org.id, organizationSeats(org, count).free);
   }
 
   async reconcile(onError: (error: unknown) => void) {
@@ -399,54 +805,13 @@ export class OrganizationStore {
       }
     };
     const orgs = await this.#db.selectFrom("organizations").select("id").execute();
-    for (const { id } of orgs) {
-      await attempt(() =>
-        this.#db.transaction().execute(async (tx) => this.#advance(tx, await lockOrg(tx, id))),
-      );
-    }
     await attempt(() => this.checkOffer());
     const pending = await this.#db
       .selectFrom("organizationCheckouts")
       .selectAll()
       .where("status", "=", "open")
       .execute();
-    for (const row of pending)
-      await attempt(async () => {
-        if (
-          !row.founderAccountId &&
-          !row.sessionId &&
-          this.#now().getTime() - row.createdAt.getTime() < checkoutLifetimeMs
-        )
-          return;
-        const session = await this.#stripe.findCheckout({
-          accountId: row.founderAccountId,
-          requestId: row.requestId,
-          createdAt: row.createdAt,
-          sessionId: row.sessionId,
-          organizationId: row.organizationId,
-        });
-        if (session?.payment) {
-          const checkout = session.payment;
-          await this.#db.transaction().execute((tx) =>
-            this.applyEvent(tx, {
-              id: `reconcile_${session.id}`,
-              type: "checkout.session.completed",
-              operation: "completed",
-              checkout,
-            }),
-          );
-        } else if (
-          session?.status === "expired" ||
-          (!session && this.#now().getTime() - row.createdAt.getTime() >= checkoutLifetimeMs)
-        ) {
-          await this.#db
-            .updateTable("organizationCheckouts")
-            .where("organizationId", "=", row.organizationId)
-            .where("status", "=", "open")
-            .set({ status: "expired" })
-            .executeTakeFirst();
-        }
-      });
+    for (const row of pending) await attempt(() => this.#recoverCheckout(row, false));
     for (const { id } of orgs) {
       await attempt(() =>
         this.#db
@@ -461,33 +826,123 @@ export class OrganizationStore {
     account: ControlPlaneAccountId,
     input: { requestId: string; seats: number },
   ) {
-    await this.#db.transaction().execute(async (tx) => {
+    const sync = await this.#db.transaction().execute(async (tx) => {
       const org = await this.#admin(tx, id, account);
+      const old = await tx
+        .selectFrom("organizationSeatChanges")
+        .select(["quantity", "status"])
+        .where("organizationId", "=", id)
+        .where("requestId", "=", input.requestId)
+        .executeTakeFirst();
+      if (old) {
+        if (old.quantity !== input.seats)
+          throw new ControlPlaneError(
+            "conflict",
+            "This seat request already has a different quantity",
+          );
+        return old.status === "pending";
+      }
+      if (org.closingAt || org.closedAt || org.billingStatus !== "active")
+        throw new ControlPlaneError("conflict", "Organization billing needs attention");
       if (input.seats < (await this.#count(tx, id)))
         throw new ControlPlaneError("conflict", "Offboard assignments before reducing seats");
-      if (
-        org.pendingSeats !== null &&
-        (org.pendingSeatRequestId !== input.requestId || org.pendingSeats !== input.seats)
-      ) {
+      if (org.pendingSeats !== null)
         throw new ControlPlaneError("conflict", "A seat change is already pending");
-      }
-      if (org.pendingSeats !== null || org.paidSeats === input.seats) return;
-      if (org.billingStatus !== "active")
+      const subscription = await this.#stripe.subscription(org.stripeSubscriptionId);
+      const item = seatItem(subscription, org.stripePriceId, org.billingCurrency);
+      if (
+        !item?.id ||
+        item.quantity !== org.paidSeats ||
+        subscription.pending_update ||
+        subscription.id !== org.stripeSubscriptionId ||
+        subscription.customer !== org.stripeCustomerId ||
+        billingStatus(subscription) !== "active"
+      )
         throw new ControlPlaneError("conflict", "Organization billing needs attention");
+      const now = this.#now();
+      await tx
+        .insertInto("organizationSeatChanges")
+        .values({
+          organizationId: id,
+          requestId: input.requestId,
+          subscriptionId: subscription.id,
+          previousInvoiceId: subscription.latest_invoice?.id ?? null,
+          itemId: item.id,
+          quantity: input.seats,
+          increase: input.seats > org.paidSeats,
+          createdAt: now,
+          status: org.paidSeats === input.seats ? "applied" : "pending",
+        })
+        .executeTakeFirstOrThrow();
+      if (org.paidSeats === input.seats) return false;
       await tx
         .updateTable("organizations")
         .where("id", "=", id)
         .set({
           pendingSeats: input.seats,
           pendingSeatRequestId: input.requestId,
-          pendingSeatSince: this.#now(),
+          pendingSeatSince: now,
         })
-        .executeTakeFirst();
+        .executeTakeFirstOrThrow();
+      await reserveSeatBackups(tx, id, input.requestId, input.seats - org.paidSeats);
+      return true;
+    });
+    if (sync)
+      await this.#db
+        .transaction()
+        .execute(async (tx) =>
+          this.#syncSubscription(tx, await this.#admin(tx, id, account), true),
+        );
+    return this.admin(id, account);
+  }
+
+  async abandonSeatChange(id: OrganizationId, account: ControlPlaneAccountId, requestId: string) {
+    await this.#db.transaction().execute(async (tx) => {
+      const org = await this.#admin(tx, id, account);
+      if (org.pendingSeatRequestId !== requestId)
+        throw new ControlPlaneError("conflict", "This seat change is no longer pending");
+      await tx
+        .updateTable("organizationSeatChanges")
+        .where("organizationId", "=", id)
+        .where("requestId", "=", requestId)
+        .where("status", "=", "pending")
+        .set({ abandonRequestedAt: this.#now() })
+        .executeTakeFirstOrThrow();
     });
     await this.#db
       .transaction()
-      .execute(async (tx) => this.#syncSubscription(tx, await this.#admin(tx, id, account), true));
-    return this.admin(id, account);
+      .execute(async (tx) => this.#syncSubscription(tx, await this.#admin(tx, id, account), false));
+  }
+
+  async close(id: OrganizationId, account: ControlPlaneAccountId) {
+    await this.#db.transaction().execute(async (tx) => {
+      const org = await this.#admin(tx, id, account);
+      if (await this.#count(tx, id))
+        throw new ControlPlaneError(
+          "conflict",
+          "Offboard every work Home before closing the organization",
+        );
+      const open = await tx
+        .selectFrom("organizationCheckouts")
+        .select("requestId")
+        .where("organizationId", "=", id)
+        .where("status", "=", "open")
+        .executeTakeFirst();
+      if (org.pendingSeats !== null || open)
+        throw new ControlPlaneError(
+          "conflict",
+          "Resolve the pending billing change before closing the organization",
+        );
+      if (!org.closingAt)
+        await tx
+          .updateTable("organizations")
+          .where("id", "=", id)
+          .set({ closingAt: this.#now() })
+          .executeTakeFirstOrThrow();
+    });
+    await this.#db
+      .transaction()
+      .execute(async (tx) => this.#syncSubscription(tx, await this.#admin(tx, id, account), false));
   }
 
   async invite(
@@ -679,6 +1134,16 @@ export class OrganizationStore {
         .executeTakeFirst();
       if (existing)
         throw new ControlPlaneError("conflict", "This member already has a work assignment");
+      if (
+        org.closingAt ||
+        org.closedAt ||
+        !org.billingRefreshedAt ||
+        this.#now().getTime() - org.billingRefreshedAt.getTime() > billingFreshnessMs
+      )
+        throw new ControlPlaneError(
+          "unavailable",
+          "Organization billing needs a fresh confirmation",
+        );
       if (!organizationSeats(org, await this.#count(tx, id)).free)
         throw new ControlPlaneError("conflict", "No paid organization seat is available");
       const assignment = await tx
@@ -725,7 +1190,7 @@ export class OrganizationStore {
           state: "offboarding",
           signInCutAt: now,
           flushUntil: new Date(now.getTime() + flushWindowMs),
-          retainUntil: new Date(now.getTime() + retentionSeconds * 1000),
+          retentionSeconds,
         })
         .executeTakeFirst();
       const home = await tx
@@ -776,6 +1241,7 @@ export class OrganizationStore {
     id: OrganizationId,
     account: ControlPlaneAccountId,
     assignmentId: WorkAssignmentId,
+    confirmed = false,
   ) {
     await this.#db.transaction().execute(async (tx) => {
       const org = await this.#admin(tx, id, account);
@@ -784,86 +1250,119 @@ export class OrganizationStore {
         .where("organizationId", "=", id)
         .where("id", "=", assignmentId)
         .where("state", "=", "offboarding")
-        .set({ flushUntil: null })
+        .set({ flushUntil: null, finalAudit: confirmed ? "confirmed" : "unconfirmed" })
         .executeTakeFirst();
-      await this.#advance(tx, org, assignmentId);
+      await this.#advance(tx, org.id, assignmentId);
     });
     return (await this.#view(this.#db, id, assignmentId)).view;
   }
 
-  async #advance(tx: Tx, org: Organization, only?: WorkAssignmentId) {
-    let rows = tx
+  async reconcileOffboarding(onError: (error: unknown) => void) {
+    const due = await this.#db
       .selectFrom("workAssignments")
-      .selectAll()
-      .where("organizationId", "=", org.id)
+      .select(["organizationId", "id"])
       .where("state", "!=", "ended")
-      .where((eb) => eb.or([eb("state", "=", "offboarding"), eb("assigneeAccountId", "is", null)]));
-    if (only) rows = rows.where("id", "=", only);
-    for (const assignment of await rows.orderBy("id").forNoKeyUpdate().execute()) {
-      const home = await tx
-        .selectFrom("cloudComputers")
-        .select(["state", "phase", "tombstonedAt"])
-        .where("id", "=", assignment.cloudComputerId)
+      .where((eb) => eb.or([eb("state", "=", "offboarding"), eb("assigneeAccountId", "is", null)]))
+      .orderBy(sql`offboarding_checked_at asc nulls first`)
+      .orderBy("id")
+      .limit(16)
+      .execute();
+    for (const { organizationId, id } of due) {
+      try {
+        await this.#db.transaction().execute(async (tx) => {
+          await lockOrg(tx, organizationId);
+          await this.#advance(tx, organizationId, id);
+        });
+      } catch (error) {
+        onError(error);
+      }
+    }
+  }
+
+  async #advance(tx: Tx, organizationId: OrganizationId, id: WorkAssignmentId) {
+    const org = await tx
+      .selectFrom("organizations")
+      .selectAll()
+      .where("id", "=", organizationId)
+      .executeTakeFirstOrThrow();
+    const assignment = await lockAssignment(tx, organizationId, id);
+    if (
+      assignment.state === "ended" ||
+      (assignment.state === "active" && assignment.assigneeAccountId)
+    )
+      return;
+    const home = await tx
+      .selectFrom("cloudComputers")
+      .select(["state", "phase", "tombstonedAt", "reportedAt"])
+      .where("id", "=", assignment.cloudComputerId)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow();
+    const now = this.#now();
+    const update = tx.updateTable("workAssignments").where("id", "=", id);
+    if (home.tombstonedAt) {
+      await update
+        .set({
+          state: "ended",
+          endedAt: home.tombstonedAt,
+          offboardingCheckedAt: now,
+        })
         .executeTakeFirstOrThrow();
-      const now = this.#now();
-      if (assignment.state === "active" && !assignment.assigneeAccountId) {
-        await tx
-          .updateTable("workAssignments")
-          .where("id", "=", assignment.id)
-          .set({
-            state: "offboarding",
-            signInCutAt: now,
-            retainUntil: now,
-          })
-          .executeTakeFirst();
-      }
-      if (home.state === "suspended" && home.phase === "suspended" && !assignment.suspendedAt) {
-        await tx
-          .updateTable("workAssignments")
-          .where("id", "=", assignment.id)
-          .set({ suspendedAt: now })
-          .executeTakeFirst();
-      }
-      if (home.tombstonedAt) {
-        await tx
-          .updateTable("workAssignments")
-          .where("id", "=", assignment.id)
-          .set({ state: "ended", endedAt: home.tombstonedAt })
-          .executeTakeFirst();
-      } else if (!assignment.flushUntil || assignment.flushUntil <= now) {
-        if (home.state === "active") {
-          await tx
-            .updateTable("cloudComputers")
-            .where("id", "=", assignment.cloudComputerId)
-            .where("state", "=", "active")
-            .set({ state: "suspended", phase: "provisioning", updatedAt: now })
-            .executeTakeFirst();
-        } else if (
-          home.state === "suspended" &&
-          home.phase === "suspended" &&
-          (!assignment.retainUntil || assignment.retainUntil <= now)
-        ) {
-          await tx
-            .updateTable("cloudComputers")
-            .where("id", "=", assignment.cloudComputerId)
-            .where("state", "=", "suspended")
-            .set({
-              state: "deleted",
-              phase: "deleting",
-              deletedAt: now,
-              updatedAt: now,
-              bootstrapDigest: null,
-              sealedBootstrapToken: null,
-              bootstrapExpiresAt: null,
-              setupCodeDigest: null,
-              sealedSetupCode: null,
-              sealedBackupPassword: null,
-              sealedOidcClientSecret: null,
-              sealedHostCredential: null,
-            })
-            .executeTakeFirst();
-        }
-      }
+      if (org.billingStatus === "active" && !org.closingAt)
+        await replenishSeatBackups(
+          tx,
+          org.id,
+          organizationSeats(org, await this.#count(tx, org.id)).free,
+        );
+      return;
+    }
+
+    const suspended = home.state === "suspended" && home.phase === "suspended";
+    const suspendedAt =
+      assignment.suspendedAt ??
+      new Date(
+        Math.max(
+          home.reportedAt?.getTime() ?? now.getTime(),
+          assignment.signInCutAt?.getTime() ?? now.getTime(),
+        ),
+      );
+    const retainUntil = suspended
+      ? (assignment.retainUntil ??
+        new Date(suspendedAt.getTime() + 1000 * assignment.retentionSeconds))
+      : null;
+    await update
+      .set({
+        offboardingCheckedAt: now,
+        ...(assignment.state === "active" ? { state: "offboarding", signInCutAt: now } : {}),
+        ...(!assignment.finalAudit && (!assignment.flushUntil || assignment.flushUntil <= now)
+          ? { finalAudit: "unconfirmed" }
+          : {}),
+        ...(suspended ? { suspendedAt, retainUntil } : {}),
+      })
+      .executeTakeFirstOrThrow();
+    if (assignment.flushUntil && assignment.flushUntil > now) return;
+
+    const edit = tx.updateTable("cloudComputers").where("id", "=", assignment.cloudComputerId);
+    if (home.state === "active") {
+      await edit
+        .set({ state: "suspended", phase: "provisioning", updatedAt: now })
+        .executeTakeFirstOrThrow();
+    } else if (retainUntil && retainUntil <= now) {
+      await edit
+        .set({
+          state: "deleted",
+          phase: "deleting",
+          deletionRequestedAt: now,
+          deletedAt: now,
+          updatedAt: now,
+          bootstrapDigest: null,
+          sealedBootstrapToken: null,
+          bootstrapExpiresAt: null,
+          setupCodeDigest: null,
+          sealedSetupCode: null,
+          sealedOidcClientSecret: null,
+          sealedHostCredential: null,
+        })
+        .executeTakeFirstOrThrow();
     }
   }
 
@@ -886,16 +1385,34 @@ export class OrganizationStore {
     });
   }
 
-  async requireSignIn(clientId: string, sessionAccount: () => Promise<string | undefined>) {
-    const assignment = await workSignInAuthority(this.#db, clientId);
-    if (!assignment) return;
-    const account = await sessionAccount();
-    if (
-      assignment.state !== "active" ||
-      !assignment.assigneeAccountId ||
-      (account && account !== assignment.assigneeAccountId)
-    ) {
-      throw new ControlPlaneError("forbidden", "Sign-in to this work Home is not allowed");
+  async issueWorkSignIn<T>(
+    clientId: string,
+    sessionAccount: (() => Promise<string | undefined>) | undefined,
+    issue: () => Promise<T>,
+  ): Promise<T> {
+    if (!(await workSignInAuthority(this.#db, clientId))) return issue();
+    const previous = this.#workSignIns;
+    // Only one route per replica may hold an assignment lock while Better Auth uses its pool.
+    let release!: () => void;
+    this.#workSignIns = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      const account = await sessionAccount?.();
+      return await this.#db.transaction().execute(async (tx) => {
+        const assignment = await workSignInAuthority(tx, clientId, true);
+        if (
+          !assignment ||
+          assignment.state !== "active" ||
+          !assignment.assigneeAccountId ||
+          (account && account !== assignment.assigneeAccountId)
+        )
+          throw new ControlPlaneError("forbidden", "Sign-in to this work Home is not allowed");
+        return issue();
+      });
+    } finally {
+      release();
     }
   }
 
@@ -952,7 +1469,11 @@ export class OrganizationStore {
         await tx
           .updateTable("workAssignments")
           .where("id", "=", id)
-          .set({ auditGapReceived: Math.max(assignment.auditGapReceived ?? 0, last) })
+          .set({
+            auditGapExpected: assignment.auditGapExpected ?? expected,
+            auditGapReceived: assignment.auditGapReceived ?? batch.fromSequence,
+            auditGapThrough: Math.max(assignment.auditGapThrough ?? 0, last),
+          })
           .executeTakeFirst();
         return { accepted: false, lastSequence: assignment.auditSequence };
       }
@@ -1023,10 +1544,9 @@ export class OrganizationStore {
           auditSequence: last,
           auditHeadHash: hash,
           auditReceivedAt: now,
-          auditGapReceived:
-            assignment.auditGapReceived && assignment.auditGapReceived > last
-              ? assignment.auditGapReceived
-              : null,
+          ...((assignment.auditGapThrough ?? 0) <= last
+            ? { auditGapReceived: null, auditGapExpected: null, auditGapThrough: null }
+            : {}),
         })
         .executeTakeFirst();
       return { accepted: true, lastSequence: last };
@@ -1157,11 +1677,34 @@ export class OrganizationStore {
           .orderBy("createdAt", "desc")
           .execute(),
       ]);
+      const change = org.pendingSeatRequestId
+        ? await tx
+            .selectFrom("organizationSeatChanges")
+            .select(["requestId", "invoiceUrl", "expiresAt"])
+            .where("organizationId", "=", id)
+            .where("requestId", "=", org.pendingSeatRequestId)
+            .executeTakeFirst()
+        : undefined;
+      const seats = organizationSeats(org, await this.#count(tx, id));
+      const available = await freeBackupTargets(tx)
+        .where("organizationReservationRequestId", "is", null)
+        .where("reservedOrganizationId", "=", id)
+        .select((eb) => eb.fn.countAll<string>().as("count"))
+        .executeTakeFirstOrThrow();
       return {
         id,
         name: org.name,
         billingStatus: org.billingStatus,
-        seats: organizationSeats(org, await this.#count(tx, id)),
+        closingAt: org.closingAt?.toISOString() ?? null,
+        closedAt: org.closedAt?.toISOString() ?? null,
+        pendingSeatChange: change
+          ? {
+              requestId: change.requestId,
+              invoiceUrl: change.invoiceUrl,
+              expiresAt: change.expiresAt?.toISOString() ?? null,
+            }
+          : null,
+        seats: { ...seats, free: Math.min(seats.free, Number(available.count)) },
         members,
         invitations: invites.map(invitationView),
         assignments: await Promise.all(
@@ -1202,6 +1745,11 @@ export class OrganizationStore {
         "hostKeyFingerprint",
         "bootstrapReceiptAt",
         "tombstonedAt",
+        "deletionRequestedAt",
+        "deletedAt",
+        "vmDestroyedAt",
+        "backupsUnreadableAt",
+        "backupObjectsRemovedAt",
         "claimError",
         "lastError",
         "bootstrapExpiresAt",
@@ -1230,7 +1778,9 @@ export class OrganizationStore {
       home.state === "active" &&
       home.phase === "ready" &&
       Boolean(home.bootstrapReceiptAt);
+    const deletion = deletionView(home);
     const view: WorkAssignmentView = {
+      ...(deletion ? { deletion } : {}),
       organizationId: id,
       organizationName: org.name,
       assignmentId,
@@ -1365,9 +1915,14 @@ function auditStatus(row: Assignment) {
   return {
     lastSequence: row.auditSequence,
     lastReceivedAt: row.auditReceivedAt?.toISOString() ?? null,
+    finalFlush: row.finalAudit,
     gap:
-      row.auditGapReceived === null
+      row.auditGapReceived === null || row.auditGapExpected === null || row.auditGapThrough === null
         ? null
-        : { expected: row.auditSequence + 1, received: row.auditGapReceived },
+        : {
+            expected: row.auditGapExpected,
+            received: row.auditGapReceived,
+            through: row.auditGapThrough,
+          },
   };
 }

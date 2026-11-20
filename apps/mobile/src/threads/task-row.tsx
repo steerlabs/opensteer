@@ -43,6 +43,8 @@ import { useShowsLive } from "../ui/connection-live.js";
 import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { RowSubtitle, type ActionLineValue } from "../ui/action-line.js";
 import { screenAction, useScreenAction } from "../ui/client-feedback.js";
+import { ExternalAgentMark } from "../screens/external-agent-mark.js";
+import { useSessionRow } from "../thread/agent-session.js";
 
 /**
  * One of the reader's tasks, as the sidebar, search and Done
@@ -89,7 +91,11 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
   const inMenu = move !== null && width !== null;
   // Done or Reopen from a menu or a swipe answers here, in the second line's place.
   const line = useTaskDoneLine(row.threadId);
-  const subtitle = line === null ? (props.ask ?? null) : line;
+  // A connected agent's own task wears the agent's mark and says what it is using.
+  const session = useSessionRow(useSelectedHostClient(), row.threadId);
+  const ask = props.ask ?? null;
+  const said = ask ?? session?.line ?? null;
+  const subtitle = line === null ? said : line;
 
   const content = (
     <Pressable
@@ -125,7 +131,15 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
               : styles.pressed),
       ]}
     >
-      <TaskMark mark={taskMark(row)} quiet={taskMarkQuiet(row, props.shelf === "done")} />
+      {session === null ? (
+        <TaskMark mark={taskMark(row)} quiet={taskMarkQuiet(row, props.shelf === "done")} />
+      ) : (
+        <ExternalAgentMark
+          initial={session.agent.initial}
+          providerId={session.agent.providerId}
+          size={markColumn}
+        />
+      )}
       {subtitle === null ? (
         <AppText
           maxFontSizeMultiplier={controlFontScaleLimit}
@@ -150,9 +164,10 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
               maxFontSizeMultiplier={controlFontScaleLimit}
               numberOfLines={1}
               role="caption"
-              style={styles.ask}
+              style={ask === null ? undefined : styles.ask}
+              tone={ask === null ? "muted" : "default"}
             >
-              {props.ask}
+              {said}
             </AppText>
           ) : (
             <RowSubtitle line={line} subtitle={null} />

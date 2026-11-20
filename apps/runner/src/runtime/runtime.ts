@@ -1,3 +1,4 @@
+import { runTerminationUnprovenCode } from "@opensteer/core";
 import {
   createToolImageStore,
   withGeneratedImageReplies,
@@ -338,6 +339,13 @@ interface ActiveRun {
   task?: Promise<void>;
 }
 
+type AutomationEndReport = Extract<
+  RunnerOperationalReport,
+  {
+    readonly type: "runner.trigger-result" | "runner.watch-status";
+  }
+>;
+
 interface ActiveTriggerProgram {
   readonly abort: AbortController;
   readonly command: Extract<RunnerCommand, { readonly type: "trigger.execute" }>;
@@ -458,6 +466,7 @@ export class RunnerRuntime {
   readonly #sessions: LiveSessionDirectory;
   readonly #threads = new Map<ThreadId, RunId>();
   readonly #triggerPrograms = new Map<TriggerOccurrenceId, ActiveTriggerProgram>();
+  readonly #recentAutomationEnds = new Map<string, AutomationEndReport>();
   readonly #agentHome: AgentHomeAccess;
   readonly #nativeFsHelperBinary: string | undefined;
   #skillObserver:
@@ -637,6 +646,7 @@ export class RunnerRuntime {
         planLaunch: (executionId, launch) => this.#planProgramLaunch(executionId, launch),
         privateStateDirectory: this.#privateStateDirectory,
         terminate: (executionId) => this.#containment.terminate(executionId),
+        onStopped: (report) => this.#rememberAutomationEnd(report),
         transport: { mode: this.#mode },
         agentHome: options.agentHome,
       });
@@ -650,7 +660,11 @@ export class RunnerRuntime {
       planLaunch: (id, launch) => this.#planProgramLaunch(id, launch),
       terminate: (id, stopEngine) => this.#containment.terminate(id, stopEngine),
     });
-    this.#warm = new WarmEnginePool({ retire: (engine) => this.#retireWarmEngine(engine) });
+    this.#warm = new WarmEnginePool({
+      retire: async (engine) => {
+        await this.#retireWarmEngine(engine);
+      },
+    });
   }
 
   voice(userId: UserId, command: RunnerVoiceCommand): Promise<RunnerVoiceResult> {
@@ -1704,9 +1718,14 @@ export class RunnerRuntime {
           return this.#admitExecution(command, sink);
         case "trigger.execute":
           return this.#admitTriggerProgram(command, sink);
-        case "watch.reconcile":
+        case "watch.reconcile": {
           await this.#watchSupervisor.reconcile(command, sink);
+          const desired = new Set(command.desired.map(({ activationId }) => activationId));
+          for (const report of this.#recentAutomationEnds.values())
+            if (report.type === "runner.watch-status" && !desired.has(report.activationId))
+              void sink.send(report).catch(() => undefined);
           return { status: "accepted" };
+        }
         case "trigger.interrupt":
           return this.#interruptTrigger(command.occurrenceId, command.executionGeneration);
         case "node.stop":
@@ -2099,6 +2118,19 @@ export class RunnerRuntime {
       }
     }
     await this.#publishPendingHarnessCatalogInvalidations(sink);
+    for (const report of this.#recentAutomationEnds.values())
+      void sink.send(report).catch(() => undefined);
+  }
+  #rememberAutomationEnd(report: AutomationEndReport): void {
+    const id =
+      report.type === "runner.trigger-result" ? report.output.occurrenceId : report.activationId;
+    const key = `${id}:${report.executionGeneration}`;
+    this.#recentAutomationEnds.delete(key);
+    this.#recentAutomationEnds.set(key, report);
+    if (this.#recentAutomationEnds.size > 32) {
+      const oldest = this.#recentAutomationEnds.keys().next().value;
+      if (oldest) this.#recentAutomationEnds.delete(oldest);
+    }
   }
 
   resynchronizeLive(runId: RunId): void {
@@ -2530,17 +2562,31 @@ export class RunnerRuntime {
       };
       active.abort.signal.removeEventListener("abort", endAccess);
       await endpoints?.close();
-      // Whatever the program left running ends with its occurrence.
-      await this.#containment.terminate(context.occurrenceId).catch(() => undefined);
-      await active.sink
-        .send({
-          environmentId: active.command.environmentId,
-          executionGeneration: context.executionGeneration,
-          output,
-          type: "runner.trigger-result",
-        })
-        .catch(() => undefined);
-      this.#triggerPrograms.delete(context.occurrenceId);
+      try {
+        const proof = await this.#containment.terminate(context.occurrenceId);
+        if (proof === "proven") {
+          const report = {
+            environmentId: active.command.environmentId,
+            executionGeneration: context.executionGeneration,
+            output,
+            type: "runner.trigger-result" as const,
+          };
+          this.#rememberAutomationEnd(report);
+          await (this.#connection ?? active.sink).send(report).catch(() => undefined);
+        } else {
+          this.#logger?.error("Trigger containment could not be verified", {
+            occurrenceId: context.occurrenceId,
+            proof,
+          });
+        }
+      } catch (error) {
+        this.#logger?.error("An automation left processes the Runner could not end", {
+          occurrenceId: context.occurrenceId,
+          error: safeMessage(error, safeMessageOptions),
+        });
+      } finally {
+        this.#triggerPrograms.delete(context.occurrenceId);
+      }
     }
   }
 
@@ -3152,7 +3198,7 @@ export class RunnerRuntime {
       let termination: TerminationProof = "proven";
       if (warmEngine && !kept) {
         // Everything the engine held ends with it; an unproven end holds the Thread.
-        await this.#retireWarmEngine(warmEngine);
+        termination = await this.#retireWarmEngine(warmEngine);
       } else if (!kept) {
         // Whatever the engine left running ends with its Run, including what
         // it orphans as it stops. The Thread takes no new execution until all
@@ -3180,6 +3226,11 @@ export class RunnerRuntime {
       await this.#settleLiveStreams(active).catch(() => undefined);
       if (active.interrupted)
         terminal = { data: { status: "interrupted" }, type: "run.interrupted" };
+      if (termination !== "proven")
+        terminal = failureEvent(
+          "The Runner could not verify that all Run processes stopped.",
+          runTerminationUnprovenCode,
+        );
       if (terminal.type === "run.failed") {
         // The logger names the line `message`; the reason is `detail`.
         this.#logger?.error("run.failed", {
@@ -3201,7 +3252,7 @@ export class RunnerRuntime {
         });
       this.#runs.delete(context.runId);
       this.#activityChanged();
-      if (termination === "unknown") {
+      if (termination === "unknown" && !warmEngine) {
         this.#holdUncontainedThread(context.threadId, context.runId, active.containmentScope);
       }
       if (this.#threads.get(context.threadId) === context.runId) {
@@ -3260,7 +3311,7 @@ export class RunnerRuntime {
   }
 
   /** Ends a warm engine and everything it held, proving its processes gone. */
-  async #retireWarmEngine(engine: WarmEngine): Promise<void> {
+  async #retireWarmEngine(engine: WarmEngine): Promise<TerminationProof> {
     const termination = await this.#containment
       .terminate(engine.scope, () => {
         engine.lifetime.abort(new Error("Warm engine retired"));
@@ -3274,6 +3325,7 @@ export class RunnerRuntime {
     if (termination === "unknown") {
       this.#holdUncontainedThread(engine.threadId, null, engine.scope);
     }
+    return termination;
   }
 
   async #consumeHarnessEvents(
@@ -3468,7 +3520,9 @@ export class RunnerRuntime {
     if (active.revoked || active.journal.terminal) return;
     if (active.shutdown && terminalEventTypes.has(original.type)) return;
     const outcome: HarnessDurableEvent =
-      active.interruptionCause && terminalEventTypes.has(original.type)
+      active.interruptionCause &&
+      terminalEventTypes.has(original.type) &&
+      !(original.type === "run.failed" && original.data.code === runTerminationUnprovenCode)
         ? {
             type: "run.interrupted",
             data: { status: "interrupted", cause: active.interruptionCause },

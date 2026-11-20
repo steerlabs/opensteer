@@ -52,6 +52,7 @@ export const agentWorkCopy = {
   "tab.shared": "You and {agent} are using this page, for “{task}”",
   "tab.sharedNoTask": "You and {agent} are using this page",
   "tab.stopped": "Stopped by you",
+  "tab.stop": "Stop",
 
   "ask.title": "{agent}: {question}",
   "ask.says": "{agent} says (its own words, not checked):",
@@ -69,6 +70,8 @@ export const agentWorkCopy = {
   "ask.withdrawn.narrowed": "No longer needed: {agent} can no longer use {target}.",
 
   "who.selfAsserted": "says it is",
+  "who.saysItIs": "Says it is {name}",
+  "who.verifiedAs": "Verified: {name}",
   "who.local": "an app on this computer",
   "who.consentWarning": "Only approve if you started this yourself.",
   "who.withdrawn": "No longer verified since {date}",

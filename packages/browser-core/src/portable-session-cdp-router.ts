@@ -1,3 +1,4 @@
+import { standardCdpPageMethods } from "./standard-cdp-page-methods.js";
 import {
   standardCdpMessageMaxBytes,
   standardCdpBufferedMaxBytes,
@@ -26,7 +27,7 @@ export type CdpParameters = Readonly<Record<string, unknown>>;
 
 export interface CdpCommand {
   readonly method: string;
-  readonly replyBudget?: JsonSizeBudget;
+  readonly replyBudget?: JsonSizeBudget & { readonly maxImageBytes?: number | undefined };
   readonly scriptAttachmentId?: string;
   readonly parameters?: CdpParameters;
   readonly sessionId?: string;
@@ -73,6 +74,7 @@ export interface SessionCdpRouterLimits {
 export interface StandardCdpAttachmentOptions {
   readonly wholeContext: boolean;
   readonly adoptTarget?: (targetId: string) => Promise<boolean>;
+  readonly recoverUnadoptedTarget?: (targetId: string) => Promise<void>;
   readonly onOverflow?: () => void;
   readonly captureScreenshot?: (
     targetId: string,
@@ -84,6 +86,7 @@ export interface StandardCdpAttachmentOptions {
 
 export interface StandardCdpAttachment {
   readonly signal: AbortSignal;
+  readonly settled: Promise<void>;
   send(command: CdpCommand, beforeActivity?: (targetId: string) => void): Promise<unknown>;
   onEvent(listener: (event: CdpEvent) => void): () => void;
   attachedTargetId(cdpSessionId: string): string | null;
@@ -109,6 +112,7 @@ interface AttachedChannel {
   removeListener: () => void;
   pageEnabled: boolean;
   readonly rootAttached?: boolean;
+  readonly childClaim?: TargetClaim;
   readonly virtualSessionId: string;
 }
 
@@ -116,6 +120,8 @@ interface TargetClaim {
   readonly sessionId: string;
   parentId?: string;
   scriptParentId?: string;
+  exclusiveOwner?: ConnectionState;
+  channelReferences?: number;
 }
 
 interface DiscoveryReplay {
@@ -146,7 +152,8 @@ interface ConnectionState {
     closing: boolean;
     active: Set<Promise<unknown>>;
   };
-  readonly contextOperations: Set<Promise<unknown>>;
+  readonly physicalWork: Set<Promise<unknown>>;
+  readonly settlement: { readonly promise: Promise<void>; readonly resolve: () => void };
   readonly closed: AbortController;
   readonly pending: Set<(reason: unknown) => void>;
   pendingBytes: number;
@@ -156,6 +163,7 @@ interface ConnectionState {
   readonly retiredTargets: Map<string, string>;
   autoAttached: Map<string, Promise<{ sessionId: string } | undefined>> | undefined;
   discoverTargets: boolean;
+  discoveryFilter?: readonly { readonly type?: string; readonly exclude?: boolean }[];
   discoveryReplay: DiscoveryReplay | undefined;
   readonly discoveredTargets: Set<string>;
   readonly eventListeners: Set<(event: CdpEvent) => void>;
@@ -187,62 +195,29 @@ const standardRootTargets = new Set([
   "Target.sendMessageToTarget",
 ]);
 
-const standardPageDomains = new Set([
-  "Accessibility",
-  "Animation",
-  "Audits",
-  "CSS",
-  "Console",
-  "Debugger",
-  "DOM",
-  "DOMDebugger",
-  "DOMSnapshot",
-  "Emulation",
-  "Fetch",
-  "Input",
-  "Inspector",
-  "LayerTree",
-  "Log",
-  "Media",
-  "Network",
-  "Overlay",
-  "Page",
-  "Performance",
-  "Runtime",
-  "WebAudio",
-  "WebAuthn",
-]);
+function readTargetFilter(value: unknown): ConnectionState["discoveryFilter"] {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 64)
+    throw new SessionCdpRouterError("bad_command", "Invalid CDP target filter.");
+  return value.map((entry: unknown) => {
+    const filter = asRecord(entry);
+    const { type, exclude } = filter;
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry) ||
+        (type !== undefined && typeof type !== "string") ||
+        (exclude !== undefined && typeof exclude !== "boolean"))
+      throw new SessionCdpRouterError("bad_command", "Invalid CDP target filter.");
+    return { ...(type === undefined ? {} : { type }), ...(exclude === undefined ? {} : { exclude }) };
+  });
+}
 
-const standardPageTargetMethods = new Set([
-  "Target.setAutoAttach",
-  "Target.sendMessageToTarget",
-  "Target.detachFromTarget",
-]);
-
-const browserWidePageMethods = new Set([
-  "Network.getCookies",
-  "Network.getAllCookies",
-  "Network.getCertificate",
-  "Network.setCookie",
-  "Network.setCookies",
-  "Network.deleteCookies",
-  "Network.clearBrowserCookies",
-  "Network.clearBrowserCache",
-  "Network.setAcceptedEncodings",
-  "Network.clearAcceptedEncodingsOverride",
-  "Page.setDownloadBehavior",
-  "Page.deleteCookie",
-  "Page.setRPHRegistrationMode",
-  "Page.setSPCTransactionMode",
-  "Page.crash",
-  "Emulation.setLocaleOverride",
-  "Emulation.setTimezoneOverride",
-  "Emulation.addScreen",
-  "Emulation.removeScreen",
-  "Emulation.updateScreen",
-  "Emulation.setPrimaryScreen",
-  "Emulation.getScreenInfos",
-]);
+function targetMatchesFilter(
+  info: CdpParameters,
+  filter: ConnectionState["discoveryFilter"],
+): boolean {
+  if (!filter) return info.type !== "browser" && info.type !== "tab";
+  const match = filter.find((entry) => entry.type === undefined || entry.type === info.type);
+  return match !== undefined && !match.exclude;
+}
 
 function isWorkerShared(type: unknown): boolean {
   return type === "shared_worker" || type === "service_worker";
@@ -290,6 +265,7 @@ export class SessionCdpRouter {
   readonly #limits: SessionCdpRouterLimits;
   readonly #browserRootLimits: SessionCdpRouterLimits;
   readonly #ownerByTargetId = new Map<string, TargetClaim>();
+  readonly #workByTarget = new Map<string, Set<Promise<unknown>>>();
   #exclusive: ConnectionState | undefined;
   readonly #removeBackendListener: () => void;
   readonly #sessions = new Map<string, ConnectionState>();
@@ -346,6 +322,7 @@ export class SessionCdpRouter {
     if (this.#sessions.has(sessionId)) {
       throw new SessionCdpRouterError("conflict", "Browser Session is already registered.");
     }
+    this.#assertTargetAvailable(rootTargetId);
     if (this.#ownerByTargetId.has(rootTargetId)) {
       throw new SessionCdpRouterError("conflict", "Root target already belongs to a session.");
     }
@@ -396,6 +373,7 @@ export class SessionCdpRouter {
     if (options.wholeContext) this.#exclusive = state;
     return {
       signal: state.closed.signal,
+      settled: state.settlement.promise,
       send: (command, beforeActivity) => this.#send(state, command, beforeActivity),
       onEvent: (listener) => this.#observe(state, listener),
       attachedTargetId: (id) => this.#attachedTargetId(state, id),
@@ -408,11 +386,14 @@ export class SessionCdpRouter {
     standard?: StandardCdpAttachmentOptions,
     script?: ConnectionState["script"],
   ): ConnectionState {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => { resolve = done; });
     const state: ConnectionState = {
       session,
       ...(standard ? { standard } : {}),
       ...(script ? { script } : {}),
-      contextOperations: new Set(),
+      physicalWork: new Set(),
+      settlement: { promise, resolve },
       closed: new AbortController(),
       pending: new Set(),
       pendingBytes: 0,
@@ -447,13 +428,19 @@ export class SessionCdpRouter {
     for (const attached of state.channels.values()) this.#endChannel(state, attached);
     if (this.#exclusive === state) {
       for (const targetId of state.session.exclusiveWorkers) this.#releaseTarget(targetId);
-      const release = () => {
-        if (this.#exclusive === state) this.#exclusive = undefined;
-      };
-      if (state.contextOperations.size)
-        void Promise.allSettled(state.contextOperations).then(release);
-      else release();
     }
+    const release = () => {
+      if (this.#exclusive === state) this.#exclusive = undefined;
+      state.settlement.resolve();
+    };
+    if (state.physicalWork.size) void Promise.allSettled(state.physicalWork).then(release);
+    else release();
+  }
+
+  #trackPhysicalWork<T>(state: ConnectionState, operation: Promise<T>): Promise<T> {
+    if (!state.standard) return operation;
+    state.physicalWork.add(operation);
+    return operation.finally(() => { state.physicalWork.delete(operation); });
   }
 
   async close(): Promise<void> {
@@ -542,8 +529,18 @@ export class SessionCdpRouter {
     const state = this.#sessions.get(sessionId)?.session.scripts.get(id);
     if (!state?.script || state.script.closing) return;
     state.script.closing = true;
-    await Promise.allSettled([cleanup, ...state.script.active]);
-    this.#closeConnection(state);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled([cleanup, ...state.script.active]),
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, 5_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeout);
+      this.#closeConnection(state);
+    }
   }
 
   assertScriptTarget(sessionId: string, attachmentId: string, targetId?: string): void {
@@ -608,7 +605,10 @@ export class SessionCdpRouter {
 
   #assertResultSize(result: unknown, maxResultBytes: number, budget?: JsonSizeBudget): void {
     const tooLarge = budget
-      ? boundedJsonSize(result, { ...budget, maxBytes: Math.min(maxResultBytes, budget.maxBytes) }) === undefined
+      ? boundedJsonSize(result, {
+          ...budget,
+          maxBytes: Math.min(maxResultBytes, budget.maxBytes),
+        }) === undefined
       : serializedBytes(result) > maxResultBytes;
     if (tooLarge) {
       throw new SessionCdpRouterError(
@@ -681,7 +681,9 @@ export class SessionCdpRouter {
     state.pendingBytes += bytes;
     state.pendingCount++;
     try {
-      return await whileOpen(state.pending, () => this.#dispatch(state, command, beforeActivity));
+      return await whileOpen(state.pending, () =>
+        this.#trackPhysicalWork(state, this.#dispatch(state, command, beforeActivity)),
+      );
     } finally {
       state.pendingBytes -= bytes;
       state.pendingCount--;
@@ -765,26 +767,17 @@ export class SessionCdpRouter {
             "forbidden",
             "Remote CDP does not manage browser downloads.",
           );
-        const pending = this.#backend.send(command.method, command.parameters);
-        state.contextOperations.add(pending);
-        try {
-          const result = await pending;
-          this.#assertResultSize(
-            result,
-            this.#sessionLimits(state).maxResultBytes,
-            command.replyBudget,
-          );
-          return result;
-        } finally {
-          state.contextOperations.delete(pending);
-        }
+        const result = await this.#backend.send(command.method, command.parameters);
+        this.#assertResultSize(
+          result,
+          this.#sessionLimits(state).maxResultBytes,
+          command.replyBudget ?? standardJsonBudget,
+        );
+        return result;
       }
-      const domain = command.method.split(".", 1)[0] ?? "";
       if (
         command.sessionId
-          ? !pageCookieRead &&
-            !standardPageTargetMethods.has(command.method) &&
-            (!standardPageDomains.has(domain) || browserWidePageMethods.has(command.method))
+          ? !pageCookieRead && !standardCdpPageMethods.has(command.method)
           : !standardRootTargets.has(command.method) && command.method !== "Browser.getVersion"
       )
         throw new SessionCdpRouterError(
@@ -816,7 +809,11 @@ export class SessionCdpRouter {
         : command.method.startsWith("Target.")
           ? await this.#sendTargetCommand(state, command)
           : await this.#backend.send(command.method, command.parameters);
-    this.#assertResultSize(result, this.#sessionLimits(state).maxResultBytes, command.replyBudget ?? (state.standard ? standardJsonBudget : undefined));
+    this.#assertResultSize(
+      result,
+      this.#sessionLimits(state).maxResultBytes,
+      command.replyBudget ?? (state.standard ? standardJsonBudget : undefined),
+    );
     return result;
   }
 
@@ -907,22 +904,16 @@ export class SessionCdpRouter {
             for (const connection of state.session.connections)
               if (connection !== state)
                 void this.#autoAttachTarget(connection, targetId)?.catch(() => undefined);
-            const attaching = this.#autoAttachTarget(state, targetId);
-            if (attaching && !(await attaching))
-              throw new SessionCdpRouterError(
-                "not_found",
-                "The new browser page could not be attached.",
-              );
+            // Adoption is a session outcome. A lost client or failed auto-attach must not close it.
+            await this.#autoAttachTarget(state, targetId)?.catch(() => undefined);
           } catch (error) {
-            if (this.#ownerByTargetId.get(targetId) === claim) {
+            if (!adopted && this.#ownerByTargetId.get(targetId) === claim) {
               await this.#closeTarget(targetId, claim, {}).catch(() => undefined);
-              // If Chromium refuses rollback, an adopted page remains discoverable.
-              if (
-                adopted &&
-                this.#ownerByTargetId.get(targetId) === claim &&
-                !state.closed.signal.aborted
-              )
-                return response;
+              if (this.#ownerByTargetId.get(targetId) === claim) {
+                this.#releaseTarget(targetId);
+                if (state.standard.recoverUnadoptedTarget)
+                  await this.#trackTargetWork(targetId, state.standard.recoverUnadoptedTarget(targetId));
+              }
             }
             throw error;
           }
@@ -968,13 +959,17 @@ export class SessionCdpRouter {
         if (!state.standard) break;
         if (
           typeof parameters.autoAttach !== "boolean" ||
-          (parameters.autoAttach && parameters.flatten !== true)
+          (parameters.autoAttach && parameters.flatten !== true) ||
+          parameters.filter !== undefined
         ) {
-          throw new SessionCdpRouterError("bad_command", "Browser auto-attach requires flat mode.");
+          throw new SessionCdpRouterError(
+            "bad_command",
+            "Browser auto-attach supports flat page attachments without a filter.",
+          );
         }
         if (parameters.autoAttach) {
-          if (!state.autoAttached) {
-            state.autoAttached = new Map();
+          state.autoAttached ??= new Map();
+          if (!state.autoReady) {
             let ready = Promise.resolve();
             for (const targetId of state.session.ownedTargetIds) {
               ready =
@@ -982,7 +977,13 @@ export class SessionCdpRouter {
             }
             state.autoReady = ready;
           }
-          await state.autoReady;
+          const ready = state.autoReady;
+          try {
+            await ready;
+          } catch (error) {
+            if (state.autoReady === ready) state.autoReady = undefined;
+            throw error;
+          }
         } else {
           state.autoAttached = undefined;
           state.autoReady = undefined;
@@ -997,7 +998,14 @@ export class SessionCdpRouter {
         if (typeof discover !== "boolean") {
           throw new SessionCdpRouterError("bad_command", "Target discovery requires a boolean.");
         }
-        if (state.discoverTargets === discover) return {};
+        const filter = state.standard && discover ? readTargetFilter(parameters.filter) : undefined;
+        if (
+          state.discoverTargets === discover &&
+          JSON.stringify(state.discoveryFilter) === JSON.stringify(filter)
+        )
+          return {};
+        if (filter) state.discoveryFilter = filter;
+        else delete state.discoveryFilter;
         state.discoverTargets = discover;
         state.discoveredTargets.clear();
         if (!state.standard) return {};
@@ -1038,7 +1046,10 @@ export class SessionCdpRouter {
   }
 
   async #closeTarget(targetId: string, claim: TargetClaim, parameters: CdpParameters) {
-    const result = await this.#backend.send("Target.closeTarget", { ...parameters, targetId });
+    const result = await this.#trackTargetWork(
+      targetId,
+      this.#backend.send("Target.closeTarget", { ...parameters, targetId }),
+    );
     if (this.#ownerByTargetId.get(targetId) === claim) {
       if (asRecord(result).success !== false) this.#releaseTarget(targetId);
     } else if (this.#ownerByTargetId.has(targetId))
@@ -1177,6 +1188,8 @@ export class SessionCdpRouter {
       this.#assertCurrentClaim(state, targetId, claim);
       if (current && !current())
         throw new SessionCdpRouterError("not_found", "Browser auto-attach ended.");
+      if (state.standard && state.channels.size >= standardCdpMaxPending)
+        throw new SessionCdpRouterError("too_large", "Too many attached CDP targets.");
     } catch (error) {
       void channel.close().catch(() => undefined);
       throw error;
@@ -1234,17 +1247,22 @@ export class SessionCdpRouter {
         return;
       const owner = this.#ownerByTargetId.get(targetId);
       if (
-        (owner && owner.sessionId !== state.session.sessionId) ||
-        (isWorkerShared(info.type) &&
-          this.#exclusive?.session.sessionId !== state.session.sessionId)
+        (owner && !this.#canReach(state, targetId)) ||
+        (!owner && this.#workByTarget.has(targetId)) ||
+        (state.standard && state.channels.size >= standardCdpMaxPending) ||
+        (isWorkerShared(info.type) && this.#exclusive !== state)
       ) {
         void attached.channel
           .send("Target.detachFromTarget", { sessionId: physicalSessionId })
           .catch(() => undefined);
         return;
       }
-      if (isWorkerShared(info.type)) state.session.exclusiveWorkers.add(targetId);
-      this.#claimTarget(state, targetId, attached.physicalTargetId, false);
+      const childClaim = this.#claimTarget(state, targetId, attached.physicalTargetId, false);
+      childClaim.channelReferences = (childClaim.channelReferences ?? 0) + 1;
+      if (isWorkerShared(info.type)) {
+        childClaim.exclusiveOwner = state;
+        state.session.exclusiveWorkers.add(targetId);
+      }
       const channel = new ChildCdpChannel(
         attached.channel,
         physicalSessionId,
@@ -1255,6 +1273,7 @@ export class SessionCdpRouter {
         pending: new Set(),
         ended: new AbortController(),
         physicalTargetId: targetId,
+        childClaim,
         virtualSessionId: `cdp_${this.#ports.uuid()}`,
         pageEnabled: false,
         removeListener: () => undefined,
@@ -1301,8 +1320,15 @@ export class SessionCdpRouter {
     this.#assertOwnedTarget(state, attached.physicalTargetId);
     this.#assertScope(state, parameters);
     if (command.method === "Page.navigate") {
-      assertSafeNavigationUrl(parameters.url, false);
+      assertSafeNavigationUrl(parameters.url, false, Boolean(state.standard || state.script));
     }
+    if (
+      state.standard &&
+      ["Page.navigate", "Page.createIsolatedWorld", "DOM.getFrameOwner"].includes(command.method) &&
+      typeof parameters.frameId === "string" &&
+      this.#ownerByTargetId.has(parameters.frameId)
+    )
+      this.#assertOwnedTarget(state, parameters.frameId);
     if (command.method === "DOM.setFileInputFiles") {
       assertSessionFiles(parameters.files, state.session.filesRoot, command.method, this.#ports);
     }
@@ -1457,7 +1483,9 @@ export class SessionCdpRouter {
         agentObjectGroups(parameters, attached.virtualSessionId),
       );
     };
-    return command.replyBudget ? send() : whileOpen(attached.pending, send);
+    const tracked = () =>
+      this.#trackPhysicalWork(state, this.#trackTargetWork(attached.physicalTargetId, send()));
+    return command.replyBudget ? tracked() : whileOpen(attached.pending, tracked);
   }
 
   // An agent's target selection cannot change a viewer's tab or native focus.
@@ -1502,16 +1530,12 @@ export class SessionCdpRouter {
         owner &&
         parentId &&
         targetId !== parentId &&
-        (["page", "iframe", "worker"].includes(String(info.type)) ||
-          (this.#exclusive?.session.sessionId === owner.session.sessionId &&
-            isWorkerShared(info.type)))
+        ["page", "iframe", "worker"].includes(String(info.type))
       ) {
         const existing = this.#ownerByTargetId.get(targetId);
         if (existing?.sessionId === owner.session.sessionId) existing.scriptParentId ??= parentId;
-        if (!existing) {
-          if (isWorkerShared(info.type)) owner.session.exclusiveWorkers.add(targetId);
+        if (!existing && !this.#workByTarget.has(targetId))
           this.#claimTarget(owner, targetId, parentId, info.type === "page");
-        }
       }
     }
 
@@ -1560,7 +1584,8 @@ export class SessionCdpRouter {
       if (method === "Target.targetCreated") {
         if (
           seen.has(targetId) ||
-          this.#ownerByTargetId.get(targetId)?.sessionId !== state.session.sessionId
+          !this.#canReach(state, targetId) ||
+          !targetMatchesFilter(asRecord(parameters.targetInfo), state.discoveryFilter)
         )
           return;
         seen.add(targetId);
@@ -1586,6 +1611,25 @@ export class SessionCdpRouter {
     }
   }
 
+  #assertTargetAvailable(targetId: string): void {
+    if (this.#workByTarget.has(targetId))
+      throw new SessionCdpRouterError("conflict", "Previous CDP work still holds this target.");
+  }
+
+  #trackTargetWork<T>(targetId: string, operation: Promise<T>): Promise<T> {
+    let work = this.#workByTarget.get(targetId);
+    if (!work) {
+      work = new Set();
+      this.#workByTarget.set(targetId, work);
+    }
+    const tracked = work;
+    tracked.add(operation);
+    return operation.finally(() => {
+      tracked.delete(operation);
+      if (!tracked.size) this.#workByTarget.delete(targetId);
+    });
+  }
+
   #claimTarget(
     state: ConnectionState,
     targetId: string,
@@ -1593,6 +1637,7 @@ export class SessionCdpRouter {
     attachPage = true,
   ): TargetClaim {
     const existing = this.#ownerByTargetId.get(targetId);
+    if (!existing) this.#assertTargetAvailable(targetId);
     if (existing && existing.sessionId !== state.session.sessionId)
       throw new SessionCdpRouterError("conflict", "CDP target belongs to another session.");
     const claim = existing ?? {
@@ -1621,6 +1666,8 @@ export class SessionCdpRouter {
     if (!state) return;
     state.session.exclusiveWorkers.delete(targetId);
     for (const connection of state.session.connections) {
+      if (connection.script?.root === targetId)
+        this.#discover(connection, "Target.targetDestroyed", { targetId });
       if (connection.standard && connection.discoveredTargets.has(targetId))
         this.#discover(connection, "Target.targetDestroyed", { targetId });
       connection.autoAttached?.delete(targetId);
@@ -1649,7 +1696,7 @@ export class SessionCdpRouter {
   #endChannel(state: ConnectionState, attached: AttachedChannel): void {
     if (state.channels.get(attached.virtualSessionId) !== attached) return;
     state.channels.delete(attached.virtualSessionId);
-    if (attached.rootAttached || !state.standard) {
+    if (attached.rootAttached || state.script) {
       state.autoAttached?.delete(attached.physicalTargetId);
       this.#appendEvent(state, "Target.detachedFromTarget", {
         sessionId: attached.virtualSessionId,
@@ -1667,7 +1714,16 @@ export class SessionCdpRouter {
     );
     rejectPending(attached.pending, ended);
     attached.ended.abort(ended);
-    void attached.channel.close().catch(() => undefined);
+    const close = () => attached.channel.close().catch(() => undefined);
+    const work = this.#workByTarget.get(attached.physicalTargetId);
+    const closing = work && (state.standard || state.script)
+      ? Promise.allSettled(work).then(close)
+      : close();
+    void this.#trackPhysicalWork(state, closing);
+    const claim = attached.childClaim;
+    if (claim && this.#ownerByTargetId.get(attached.physicalTargetId) === claim &&
+        claim.channelReferences !== undefined && --claim.channelReferences === 0)
+      this.#releaseTarget(attached.physicalTargetId);
   }
 
   #appendEvent(
@@ -1708,7 +1764,8 @@ export class SessionCdpRouter {
     const maxBytes = this.#sessionLimits(state).maxEventBytes;
     const budget = state.script?.eventBudget ?? (state.standard ? standardJsonBudget : undefined);
     const tooLarge = budget
-      ? boundedJsonSize(event, { ...budget, maxBytes: Math.min(maxBytes, budget.maxBytes) }) === undefined
+      ? boundedJsonSize(event, { ...budget, maxBytes: Math.min(maxBytes, budget.maxBytes) }) ===
+        undefined
       : serializedBytes(event) > maxBytes;
     if (tooLarge) {
       if (state.standard) {
@@ -1781,7 +1838,11 @@ export class SessionCdpRouter {
   #canReach(state: ConnectionState, targetId: string): boolean {
     for (let id: string | undefined = targetId, hops = 0; id && hops < 128; hops++) {
       const claim = this.#ownerByTargetId.get(id);
-      if (claim?.sessionId !== state.session.sessionId) return false;
+      if (
+        claim?.sessionId !== state.session.sessionId ||
+        (claim.exclusiveOwner && claim.exclusiveOwner !== state)
+      )
+        return false;
       if (!state.script || id === state.script.root) return true;
       id = claim.scriptParentId;
     }
@@ -1870,12 +1931,12 @@ function requiredString(parameters: CdpParameters, key: string): string {
   return value;
 }
 
-function assertSafeNavigationUrl(value: unknown, allowOmitted: boolean): void {
+function assertSafeNavigationUrl(value: unknown, allowOmitted: boolean, allowAboutBlank = allowOmitted): void {
   if (value === undefined && allowOmitted) return;
   if (typeof value !== "string" || value.length < 1 || value.length > 16_384) {
     throw new SessionCdpRouterError("bad_command", "CDP navigation URL is invalid.");
   }
-  if (value === "about:blank") return;
+  if (allowAboutBlank && value === "about:blank") return;
   let url: URL;
   try {
     url = new URL(value);

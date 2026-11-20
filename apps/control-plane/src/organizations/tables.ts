@@ -20,6 +20,9 @@ export interface OrganizationTable {
   billingCurrency: string;
   billingStatus: BillingStatus;
   paidSeats: number;
+  billingRefreshedAt: Generated<Date | null>;
+  closingAt: Generated<Date | null>;
+  closedAt: Generated<Date | null>;
   pendingSeats: number | null;
   pendingSeatRequestId: string | null;
   pendingSeatSince: NullableTimestamp;
@@ -46,6 +49,9 @@ export interface OrganizationInvitationTable {
 
 export interface OrganizationCheckoutTable {
   organizationId: OrganizationId;
+  previousSubscriptionId: Generated<string | null>;
+  closeRequestedAt: Generated<Date | null>;
+  returnUrl: Generated<string | null>;
   founderAccountId: ControlPlaneAccountId | null;
   requestId: string;
   name: string;
@@ -55,7 +61,26 @@ export interface OrganizationCheckoutTable {
   createdAt: Timestamp;
   sessionId: string | null;
   url: string | null;
-  status: "open" | "completed" | "expired";
+  sentAt: Generated<Date | null>;
+  expiresAt: Timestamp;
+  paidAt: Generated<Date | null>;
+  status: "open" | "completed" | "expired" | "refunded";
+}
+
+export interface OrganizationSeatChangeTable {
+  organizationId: OrganizationId;
+  requestId: string;
+  subscriptionId: string;
+  itemId: string;
+  previousInvoiceId: string | null;
+  quantity: number;
+  increase: boolean;
+  createdAt: Timestamp;
+  invoiceId: Generated<string | null>;
+  invoiceUrl: Generated<string | null>;
+  expiresAt: Generated<Date | null>;
+  abandonRequestedAt: Generated<Date | null>;
+  status: "pending" | "applied" | "abandoned" | "expired";
 }
 
 export interface WorkAssignmentTable {
@@ -68,7 +93,10 @@ export interface WorkAssignmentTable {
   createdAt: Timestamp;
   signInCutAt: NullableTimestamp;
   flushUntil: NullableTimestamp;
+  finalAudit: Generated<"confirmed" | "unconfirmed" | null>;
   retainUntil: NullableTimestamp;
+  retentionSeconds: Generated<number>;
+  offboardingCheckedAt: Generated<Date | null>;
   suspendedAt: NullableTimestamp;
   endedAt: NullableTimestamp;
   appliedRevision: Generated<number>;
@@ -76,6 +104,8 @@ export interface WorkAssignmentTable {
   auditHeadHash: Generated<string>;
   auditReceivedAt: NullableTimestamp;
   auditGapReceived: number | null;
+  auditGapExpected: Generated<number | null>;
+  auditGapThrough: Generated<number | null>;
 }
 
 export interface WorkAuditRecordTable {

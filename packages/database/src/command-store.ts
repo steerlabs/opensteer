@@ -1739,9 +1739,10 @@ export async function refuseSteer(
   commandId: CommandRow["id"],
   reason: string,
   reasonCode?: string,
+  pendingOnly = false,
 ): Promise<void> {
   return commitPersonalMutation(database, (transaction) =>
-    settleSteer(transaction, commandId, "failed", reason, reasonCode),
+    settleSteer(transaction, commandId, "failed", reason, reasonCode, pendingOnly),
   );
 }
 export async function markSteerUnknown(

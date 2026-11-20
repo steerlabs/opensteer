@@ -65,6 +65,91 @@ describe("BrowserController", () => {
     await ledger.start();
   });
 
+  it("acknowledges cancellation only for the matching queued script command", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const send = (
+      requestId: string,
+      method: string,
+      parameters: Record<string, unknown>,
+      sessionId?: string,
+    ) =>
+      controller.handle({
+        type: "cdp.command",
+        requestId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method, parameters, ...(sessionId ? { sessionId } : {}) },
+      });
+    const started = Promise.withResolvers<void>();
+    const hold = Promise.withResolvers<object>();
+    let running: Promise<void> | undefined;
+    let queued: Promise<void> | undefined;
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const attachId = randomUUID();
+      await send(attachId, "Target.attachToTarget", { targetId });
+      const response = sink.messages.find(
+        (message) => message.type === "cdp.result" && message.requestId === attachId,
+      );
+      if (response?.type !== "cdp.result" || typeof response.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      const sessionId = response.result.sessionId;
+      const expressions: unknown[] = [];
+      const evaluate = (parameters: Record<string, unknown> | undefined) => {
+        expressions.push(parameters?.expression);
+        if (parameters?.expression !== "active") return {};
+        started.resolve();
+        return hold.promise;
+      };
+      page.cdpSession.responses.set("Runtime.evaluate", evaluate);
+      const activeId = randomUUID();
+      const queuedId = randomUUID();
+      running = send(activeId, "Runtime.evaluate", { expression: "active" }, sessionId);
+      await started.promise;
+      queued = send(queuedId, "Runtime.evaluate", { expression: "queued" }, sessionId);
+      const cancel = (requestId: string, attachment = scriptAttachmentId) =>
+        controller.handle({
+          type: "cdp.command",
+          requestId: randomUUID(),
+          scriptAttachmentId: attachment,
+          command: { method: browserHostMethods.cancelScriptCommand, parameters: { requestId } },
+        });
+      await cancel(queuedId, randomUUID());
+      await cancel(activeId);
+      const errors = () => sink.messages.filter((message) => message.type === "cdp.error");
+      expect(errors()).toEqual([]);
+      await cancel(queuedId);
+      expect(errors()).toEqual([
+        expect.objectContaining({
+          requestId: queuedId,
+          error: expect.objectContaining({ reason: "browser-command-cancelled" }),
+        }),
+      ]);
+      hold.resolve({});
+      await Promise.all([running, queued]);
+      expect(expressions).toContain("active");
+      expect(expressions).not.toContain("queued");
+      expect(sink.messages).toContainEqual(
+        expect.objectContaining({ type: "cdp.result", requestId: activeId }),
+      );
+    } finally {
+      hold.resolve({});
+      await Promise.allSettled([running, queued]);
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("admits input on surface 129 and releases idle lanes", async () => {
     const controller = createController();
     await controller.start();

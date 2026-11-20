@@ -120,6 +120,7 @@ import {
   type TranscriptSurfaces,
 } from "./surface-chips.js";
 import { TranscriptHostClientContext } from "./attachment-views.js";
+import { AgentSessionPane, useSessionTask } from "./agent-session.js";
 import { Composer } from "./composer.js";
 import { ConversationLinksProvider } from "./conversation-links.js";
 import { PersonalReferenceProvider } from "../markdown/reference-navigation.js";
@@ -329,6 +330,18 @@ export function ThreadPane(props: ThreadPaneProps): ReactNode {
   );
   const state = useHostSnapshot(props.hostClient, isEqual);
   const selection = useMemo(() => select(state.snapshot), [select, state.snapshot]);
+  // A connected agent's own task: its activity and the agent's state, with no composer.
+  const session = useSessionTask(props.hostClient, threadId);
+  if (session !== null)
+    return (
+      <AgentSessionPane
+        hostClient={props.hostClient}
+        onHeader={props.onHeader}
+        threadId={threadId}
+        title={selection.thread?.title.trim() || session.agent.name}
+        view={session}
+      />
+    );
   return (
     <ThreadPaneForUser
       {...props}

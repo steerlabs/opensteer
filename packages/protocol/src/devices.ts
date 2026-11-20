@@ -38,6 +38,8 @@ export type RunnerLeaveResponse = z.infer<typeof RunnerLeaveResponseSchema>;
 export const DeviceRefusalContextSchema = z.object({
   machineId: DeviceIdSchema,
   capability: z.enum(["browser", "apps", "files"]),
+  /** The Device's display name, for a caller allowed to know the Device. */
+  machineName: z.string().min(1).max(200).optional(),
 });
 export type DeviceRefusalContext = z.infer<typeof DeviceRefusalContextSchema>;
 

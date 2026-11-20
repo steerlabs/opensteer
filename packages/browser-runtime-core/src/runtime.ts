@@ -3,7 +3,6 @@ import {
   browserFrameFits,
   defaultBrowserViewport,
   SessionCdpRouter,
-  SessionCdpRouterError,
   type StandardCdpAttachment,
 } from "@opensteer/browser-core";
 import {
@@ -143,6 +142,7 @@ export interface BrowserHost {
   cleanup: { readonly result: Promise<void> } | null;
   disposal: Promise<void> | null;
   generation: number;
+  standardLeaseGeneration: number;
   identity: BrowserHostIdentity;
   onBrowserClose: () => void;
   quiesced: boolean;
@@ -590,7 +590,6 @@ export class BrowserRuntime implements NativePresentationSource {
     ticket: string,
     onOverflow: () => void,
     signal: AbortSignal,
-    allowSessionFallback = false,
   ): Promise<StandardCdpAttachment & { readonly mode?: StandardCdpMode }> {
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(acquisitionTimeoutMs)]);
     const claims = await waitForAcquisition(
@@ -620,23 +619,20 @@ export class BrowserRuntime implements NativePresentationSource {
           "This ticket does not authorize a live Browser Session.",
         );
       const wholeContext = claims.standardCdp === "whole-context";
-      if (wholeContext && claims.identity.kind !== "profile-local")
+      if (
+        wholeContext &&
+        (claims.identity.kind !== "profile-local" ||
+          !claims.standardCdpLease ||
+          claims.standardCdpLease.generation <= active.host.standardLeaseGeneration)
+      )
         throw new BrowserRuntimeError(
           "forbidden",
           "Whole-context CDP requires an exclusive saved profile.",
         );
-      try {
-        return { ...active.controller.openStandardCdp(wholeContext, onOverflow), mode };
-      } catch (error) {
-        if (
-          !wholeContext ||
-          !allowSessionFallback ||
-          !(error instanceof SessionCdpRouterError) ||
-          error.code !== "forbidden"
-        )
-          throw error;
-        return { ...active.controller.openStandardCdp(false, onOverflow), mode: "session" };
-      }
+      const client = active.controller.openStandardCdp(wholeContext, onOverflow);
+      if (wholeContext && claims.standardCdpLease)
+        active.host.standardLeaseGeneration = claims.standardCdpLease.generation;
+      return { ...client, mode };
     });
   }
 
@@ -1138,6 +1134,7 @@ export class BrowserRuntime implements NativePresentationSource {
           cleanup: null,
           disposal: null,
           generation,
+          standardLeaseGeneration: 0,
           identity:
             claims.identity.kind === "profile-local"
               ? { key: hostKey, kind: "local", binding: claims.identity.binding }

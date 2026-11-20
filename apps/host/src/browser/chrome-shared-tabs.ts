@@ -6,7 +6,11 @@ import {
   type BrowserSourceTabShared,
   type BrowserSourceTabUnshared,
 } from "@opensteer/browser-source-wire/frames";
-import { SessionCdpRouter, type StandardCdpAttachment } from "@opensteer/browser-runtime-core";
+import {
+  boundedJsonSize,
+  SessionCdpRouter,
+  type StandardCdpAttachment,
+} from "@opensteer/browser-runtime-core";
 import {
   BrowserUseCdpError,
   type BrowserUseBudget,
@@ -14,7 +18,6 @@ import {
   type BrowserUsePort,
   type BrowserUseTarget,
 } from "../browser-use/browser-repl-service.js";
-import { browserJsonShapeFits } from "../browser-use/browser-repl-messages.js";
 import { ChromeTabBackend } from "./chrome-tab-backend.js";
 import {
   StandardCdpTickets,
@@ -266,13 +269,11 @@ export class ChromeSharedTabs {
           return this.#serialize(result ?? null, call);
         } catch (error) {
           if (call.signal.aborted) throw call.signal.reason;
-          if (error instanceof OpensteerError) throw error;
-          throw new BrowserUseCdpError(
-            -32000,
-            error instanceof Error ? error.message : "Chrome CDP failed.",
-          );
+          if (error instanceof BrowserUseCdpError) throw error;
+          throw new Error("Shared Chrome command failed.", { cause: error });
         }
       },
+      release: (target) => target.client.close(),
       subscribe: (target, onEvent, onEnd, budget) => {
         const remove = target.client.onEvent((event) => {
           try {
@@ -400,9 +401,8 @@ export class ChromeSharedTabs {
   }
 
   #serialize(value: unknown, budget: BrowserUseBudget): string {
-    const json = JSON.stringify(value);
-    if (Buffer.byteLength(json) > budget.maxBytes || !browserJsonShapeFits(json, budget.maxDepth))
+    if (boundedJsonSize(value, budget) === undefined)
       throw new BrowserUseCdpError(-32000, "Chrome CDP exceeded the REPL message budget.");
-    return json;
+    return JSON.stringify(value);
   }
 }

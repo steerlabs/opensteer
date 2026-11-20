@@ -13,7 +13,11 @@ import { OpensteerError } from "@opensteer/core";
 import { BrowserCdpConnectionEnded, type BrowserService } from "./browser-service.js";
 import type { ChromeSharedTabs } from "./chrome-shared-tabs.js";
 import { standardCdpConnectPrefix, type StandardCdpTicketClaims } from "./standard-cdp-tickets.js";
-import { RawCdpRequestSchema } from "./standard-cdp-transport.js";
+import {
+  RawCdpRequestSchema,
+  standardCdpAdmissionMs,
+  standardCdpMaxLivePerBinding,
+} from "./standard-cdp-transport.js";
 
 export const standardCdpRecheckMs = 2_000;
 const authorityCheckMs = standardCdpRecheckMs / 2;
@@ -32,6 +36,7 @@ export function registerStandardCdpRoute(
   chromeTabs?: ChromeSharedTabs,
 ): void {
   const upgrades = new WeakMap<object, StandardCdpTicketClaims>();
+  const liveByBinding = new Map<string, number>();
   app.get(
     `${standardCdpConnectPrefix}:ticket`,
     {
@@ -58,13 +63,23 @@ export function registerStandardCdpRoute(
     (socket, request) => {
       const claims = upgrades.get(request);
       upgrades.delete(request);
-      if (!claims) socket.close(1008, "Browser attachment refused");
-      else
-        relayStandardCdp(
-          socket,
-          claims,
-          claims.sharedChromeTab && chromeTabs ? chromeTabs : browser,
-        );
+      if (!claims) {
+        closeStandardSocket(socket, 1008, "Browser attachment refused");
+        return;
+      }
+      const binding = claims.authority.agentBindingId;
+      const live = liveByBinding.get(binding) ?? 0;
+      if (live >= standardCdpMaxLivePerBinding) {
+        closeStandardSocket(socket, 1013, "Too many live CDP attachments for this binding");
+        return;
+      }
+      liveByBinding.set(binding, live + 1);
+      socket.once("close", () => {
+        const remaining = (liveByBinding.get(binding) ?? 1) - 1;
+        if (remaining) liveByBinding.set(binding, remaining);
+        else liveByBinding.delete(binding);
+      });
+      relayStandardCdp(socket, claims, claims.sharedChromeTab && chromeTabs ? chromeTabs : browser);
     },
   );
 }
@@ -81,6 +96,7 @@ function relayStandardCdp(
   let outCount = 0;
   let sending = Promise.resolve();
   let checking: Promise<void> | undefined;
+  let recheck: NodeJS.Timeout | undefined;
   let refusalTimer: NodeJS.Timeout | undefined;
   let expiryTimer: NodeJS.Timeout | undefined;
 
@@ -91,7 +107,7 @@ function relayStandardCdp(
     clearTimeout(refusalTimer);
     clearTimeout(expiryTimer);
     pending.clear();
-    if (socket.readyState === WebSocket.OPEN) socket.close(code, reason);
+    closeStandardSocket(socket, code, reason);
   };
   const overload = () => end(1013, "CDP relay overloaded");
   const send = (data: Buffer): Promise<void> =>
@@ -102,8 +118,9 @@ function relayStandardCdp(
       }
       socket.send(data, { binary: false }, (error) => (error ? reject(error) : resolve()));
     });
-  const authorize = (verify: () => Promise<void>) => {
-    checking ??= withTimeout(verify(), authorityCheckMs, {
+  const authorize = (verify: (signal?: AbortSignal) => Promise<void>) => {
+    const check = AbortSignal.timeout(authorityCheckMs);
+    checking ??= withTimeout(verify(AbortSignal.any([check, stopping.signal])), authorityCheckMs, {
       signal: stopping.signal,
       timeoutError: () => new Error("Browser authority could not be rechecked."),
     }).finally(() => {
@@ -111,7 +128,22 @@ function relayStandardCdp(
     });
     return checking;
   };
-  const ready = browser.attachStandardCdpForAgent(claims, stopping.signal).then(
+  const initial = new AbortController();
+  const opening = browser.attachStandardCdpForAgent(claims, stopping.signal, initial.signal);
+  void opening.then(
+    (attached) => {
+      if (initial.signal.aborted || stopping.signal.aborted) attached.close();
+    },
+    () => undefined,
+  );
+  const ready = withTimeout(opening, standardCdpAdmissionMs, {
+    signal: stopping.signal,
+    timeoutError: () => {
+      const error = new BrowserCdpConnectionEnded("Browser attachment admission timed out.");
+      initial.abort(error);
+      return error;
+    },
+  }).then(
     (attached) => {
       if (stopping.signal.aborted) {
         attached.close();
@@ -155,6 +187,11 @@ function relayStandardCdp(
             outCount--;
           });
       });
+      recheck = setInterval(() => {
+        if (!stopping.signal.aborted)
+          void authorize(attached.reauthorize).catch(() => end(1008, "Browser authority ended"));
+      }, authorityCheckMs);
+      recheck.unref();
       return attached;
     },
     (error: unknown) => {
@@ -168,16 +205,6 @@ function relayStandardCdp(
     },
   );
 
-  const recheck = setInterval(() => {
-    void ready
-      .then((attached) => {
-        if (attached && typeof attached !== "string" && !stopping.signal.aborted)
-          return authorize(attached.reauthorize);
-        return undefined;
-      })
-      .catch(() => end(1008, "Browser authority ended"));
-  }, authorityCheckMs);
-  recheck.unref();
   if (claims.authority.expiresAt !== undefined) {
     expiryTimer = setTimeout(
       () => end(1008, "Browser authority expired"),
@@ -240,4 +267,13 @@ function relayStandardCdp(
       })
       .catch(() => end(1008, "Browser authority or runtime ended"));
   });
+}
+
+function closeStandardSocket(socket: WebSocket, code: number, reason: string): void {
+  if (socket.readyState === WebSocket.OPEN) socket.close(code, reason);
+  if (socket.readyState !== WebSocket.CLOSED) {
+    const hardClose = setTimeout(() => socket.terminate(), 1_000);
+    hardClose.unref();
+    socket.once("close", () => clearTimeout(hardClose));
+  }
 }

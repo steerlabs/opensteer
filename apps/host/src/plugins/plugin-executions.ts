@@ -83,11 +83,13 @@ export class PluginExecutions {
           caller.kind === "program" && caller.program.kind === "watch"
             ? caller.program.activationId
             : null,
-        ...(lineage ? {
-          connectionId: lineage.agentConnectionId,
-          admittedGrantRevision: lineage.revision,
-          admittedAccessMode: caller.accessMode,
-        } : {}),
+        ...(lineage
+          ? {
+              connectionId: lineage.agentConnectionId,
+              admittedGrantRevision: lineage.revision,
+              admittedAccessMode: caller.accessMode,
+            }
+          : {}),
         caller: execution.caller,
         mode: context.mode,
         state: "running",
@@ -101,9 +103,12 @@ export class PluginExecutions {
     }
     if (!row) return;
     if (row.connectionId && terminal.has(execution.state) && !row.terminalEvidenceAt) {
-      await this.options.store.database.updateTable("pluginExecutions")
+      await this.options.store.database
+        .updateTable("pluginExecutions")
         .set({ terminalEvidenceAt: new Date() })
-        .where("id", "=", row.id).where("terminalEvidenceAt", "is", null).execute();
+        .where("id", "=", row.id)
+        .where("terminalEvidenceAt", "is", null)
+        .execute();
     }
     if (terminal.has(row.state)) return;
     const result =
@@ -131,13 +136,15 @@ export class PluginExecutions {
   }
   async recover() {
     await this.#reports;
+    await this.options.store.database
+      .updateTable("pluginExecutions")
+      .set({ contactLostAt: new Date() })
+      .where("connectionId", "is not", null)
+      .where("terminalEvidenceAt", "is", null)
+      .where("contactLostAt", "is", null)
+      .execute();
     for (const row of await this.options.records.unfinished()) {
-      if (row.connectionId && !row.terminalEvidenceAt) {
-        await this.options.store.database.updateTable("pluginExecutions")
-          .set({ contactLostAt: new Date() })
-          .where("id", "=", row.id).where("contactLostAt", "is", null).execute();
-        continue;
-      }
+      if (row.connectionId && !row.terminalEvidenceAt) continue;
       const updated = await this.options.records.updateLive(row.id, {
         state: "interrupted",
         reason: pluginInterruptedReason,
@@ -664,10 +671,18 @@ export class PluginExecutions {
   }
   async stopConnectionExecution(id: string, connectionId: string): Promise<void> {
     const row = await this.options.records.execution(id);
-    if (!row || (row.connectionId !== null && row.connectionId !== connectionId) ||
-      row.terminalEvidenceAt || row.contactLostAt) return;
-    const result = await this.options.service.cancel({ execution: id }, this.#context(row),
-      AbortSignal.timeout(3_000));
+    if (
+      !row ||
+      (row.connectionId !== null && row.connectionId !== connectionId) ||
+      row.terminalEvidenceAt ||
+      row.contactLostAt
+    )
+      return;
+    const result = await this.options.service.cancel(
+      { execution: id },
+      this.#context(row),
+      AbortSignal.timeout(3_000),
+    );
     await this.#record(result);
   }
   async #cancel(row: PluginExecutionRecord) {

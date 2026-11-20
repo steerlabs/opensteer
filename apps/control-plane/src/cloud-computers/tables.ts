@@ -5,6 +5,7 @@ import type {
   CloudComputerProviderWrite,
   CloudComputerReport,
   WorkAssignmentId,
+  OrganizationId,
   ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
 import type { NullableTimestamp, Timestamp } from "../database/schema.js";
@@ -28,7 +29,8 @@ export interface CloudComputerTable {
   bootstrapDigest: string | null;
   sealedBootstrapToken: string | null;
   bootstrapExpiresAt: NullableTimestamp;
-  sealedBackupPassword: string | null;
+  backupKeyProject: Generated<string | null>;
+  backupKeyVersion: Generated<number | null>;
   bootstrapReceipt: ColumnType<unknown, string | null, string | null>;
   bootstrapReceiptAt: NullableTimestamp;
   oidcClientId: string | null;
@@ -66,6 +68,10 @@ export interface CloudComputerTable {
   restoreSnapshot: string | null;
   ipv6Enabled: Generated<boolean>;
   deletionRequestedAt: NullableTimestamp;
+  vmDestroyedAt: Generated<Date | null>;
+  backupsUnreadableAt: Generated<Date | null>;
+  backupObjectsRemovedAt: Generated<Date | null>;
+  backupCleanupAttemptedAt: Generated<Date | null>;
   ownerAccessAt: Generated<Date | null>;
   pendingProviderWrites: ColumnType<CloudComputerProviderWrite[], string | undefined, string>;
   createdAt: Timestamp;
@@ -115,9 +121,13 @@ export interface CloudComputerBackupTargetTable {
   bucket: string;
   prefix: string;
   principalFingerprint: string;
+  region: Generated<string>;
   sealedCredentials: string;
   computerId: CloudComputerId | null;
   checkoutKey: string | null;
+  purgeComputerId: Generated<CloudComputerId | null>;
+  reservedOrganizationId: Generated<OrganizationId | null>;
+  organizationReservationRequestId: Generated<string | null>;
   needsRotation: Generated<boolean>;
 }
 
