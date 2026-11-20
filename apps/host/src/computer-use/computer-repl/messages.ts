@@ -1,6 +1,7 @@
 import { ComputerUseTabRequestSchema, DeviceRefusalContextSchema } from "@opensteer/protocol";
 import { utf8Prefix } from "@opensteer/core";
 import { z } from "zod";
+import { BrowserReplRequestSchema } from "../../browser-use/browser-repl-messages.js";
 
 export const computerReplLimits = {
   sliceMs: 100,
@@ -19,6 +20,8 @@ export const computerReplLimits = {
   textBytes: 512 * 1024,
 } as const;
 export const ReplContentSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("ready"), context: z.string(), callId: z.string() }),
+  z.object({ type: z.literal("events-read"), context: z.string(), callId: z.string() }),
   z.object({ type: z.literal("text"), text: z.string() }),
   z.object({
     type: z.literal("image"),
@@ -87,6 +90,13 @@ export const ToWorkerSchema = z.discriminatedUnion("type", [
     context: z.string(),
     callId: z.string(),
     code: z.string(),
+    events: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("events"),
+    context: z.string(),
+    callId: z.string(),
+    events: z.string(),
   }),
   z.object({ type: z.literal("cancel"), context: z.string(), callId: z.string() }),
   z.object({ type: z.literal("dispose"), context: z.string() }),
@@ -106,14 +116,19 @@ export const FromWorkerSchema = z.discriminatedUnion("type", [
     context: z.string(),
     callId: z.string(),
     id: z.number(),
-    request: ReplRequestSchema,
+    request: z.union([ReplRequestSchema, BrowserReplRequestSchema]),
   }),
+  z.object({ type: z.literal("ready"), context: z.string(), callId: z.string() }),
+  z.object({ type: z.literal("events-read"), context: z.string(), callId: z.string() }),
   z.object({ type: z.literal("text"), context: z.string(), callId: z.string(), text: z.string() }),
   z.object({
     type: z.literal("done"),
     context: z.string(),
     callId: z.string(),
     error: ReplFailureSchema.optional(),
+    reset: z.boolean().optional(),
   }),
 ]);
 export type FromWorker = z.infer<typeof FromWorkerSchema>;
+
+export type AnyReplRequest = Extract<FromWorker, { type: "request" }>["request"];

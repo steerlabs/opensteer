@@ -11,6 +11,7 @@ export const integrationTestInclude = [
 ];
 export const realBrowserTests = [
   "apps/browser-runtime/src/browser/agent-cursor.test.ts",
+  "apps/browser-runtime/src/browser/browser-repl.test.mjs",
   "apps/browser-runtime/src/browser/browser-test-lifecycle.test.ts",
   "apps/browser-runtime/src/browser/chromium-clipboard.test.ts",
   "apps/browser-runtime/src/browser/chromium-follow-view.test.ts",

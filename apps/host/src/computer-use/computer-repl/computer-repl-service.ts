@@ -2,6 +2,7 @@ import { DeviceAccessRefusal } from "../../administration/device-access.js";
 import { utf8Prefix, OpensteerError } from "@opensteer/core";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { delay } from "@opensteer/shared/delay";
+import type { z } from "zod";
 import { Worker } from "node:worker_threads";
 import { randomUUID } from "node:crypto";
 import { hostWorkerUrl } from "../../process-entries.js";
@@ -9,6 +10,8 @@ import {
   computerReplLimits as limits,
   boundedReplFailure,
   FromWorkerSchema,
+  ReplRequestSchema,
+  type AnyReplRequest,
   ReplReplySchema,
   type ToWorker,
   type ReplContent,
@@ -21,65 +24,85 @@ export interface ComputerReplContext {
   readonly runId: string;
   readonly generation: number;
 }
-export interface ComputerReplInvocation extends ReplRequest {
+export type ComputerReplInvocation = ReplInvocation<ReplRequest>;
+export type ReplInvocation<Request> = Request & {
   readonly context: ComputerReplContext;
   readonly signal: AbortSignal;
   readonly deadline: number;
-}
-export type ComputerReplResult = {
+};
+export type ComputerReplResult = ReplResult;
+export type ReplResult = {
   content: ReplContent[];
   isError?: true;
   structuredContent?: { error: ReplFailure };
 };
-interface Call {
+interface Call<Request> {
   readonly id: string;
   readonly context: ComputerReplContext;
   readonly key: string;
   readonly code: string;
-  readonly invoke: (request: ComputerReplInvocation) => Promise<ReplReply>;
+  readonly invoke: (request: ReplInvocation<Request>) => Promise<ReplReply>;
   readonly deadline: number;
   readonly cancellation: AbortController;
   readonly content: ReplContent[];
-  readonly resolve: (result: ComputerReplResult) => void;
+  readonly resolve: (result: ReplResult) => void;
   readonly cleanup: () => void;
   started: boolean;
-  mutationInFlight: boolean;
+  mutationsInFlight: number;
+  ready: boolean;
+  eventsPending: boolean;
   textBytes: number;
   imageBytes: number;
   images: number;
 }
-interface Resident {
+interface Resident<Request> {
   context: ComputerReplContext;
   usedAt: number;
-  call: Call | undefined;
+  call: Call<Request> | undefined;
 }
-const failure = (message: string): ComputerReplResult => ({
+const failure = (message: string): ReplResult => ({
   isError: true,
   content: [{ type: "text", text: message }],
 });
 
-/** One isolated worker for the Host; each Run attempt has its own bounded VM. */
-export class ComputerReplService {
-  readonly #invoke: (request: ComputerReplInvocation) => Promise<ReplReply>;
+type ReplOptions<Request> = {
+  readonly invoke: (request: ReplInvocation<Request>) => Promise<ReplReply>;
+  readonly clock?: Clock;
+  readonly wait?: typeof delay;
+};
+type ReplEvents = {
+  batch: (context: ComputerReplContext) => string | undefined;
+  acknowledge: (context: ComputerReplContext) => void;
+  dispose: (context: ComputerReplContext) => void;
+};
+
+export class ReplService<Request extends AnyReplRequest> {
+  readonly #request: z.ZodType<Request>;
+  readonly #events: ReplEvents | undefined;
+  readonly #label: "Browser" | "Computer";
+  readonly #invoke: (request: ReplInvocation<Request>) => Promise<ReplReply>;
   readonly #clock: Clock;
   readonly #wait: typeof delay;
-  readonly #contexts = new Map<string, Resident>();
+  readonly #contexts = new Map<string, Resident<Request>>();
   readonly #ended = new Set<string>();
   readonly #revoked = new Set<string>();
   readonly #generations = new Map<string, number>();
-  readonly #queue: Call[] = [];
+  readonly #queue: Call<Request>[] = [];
   #expiry: NodeJS.Timeout | undefined;
   #expiryAt = Infinity;
   #worker: Worker | undefined;
   #executing = 0;
   #closed = false;
-  constructor(options: {
-    readonly invoke: (request: ComputerReplInvocation) => Promise<ReplReply>;
-    /** Domain time for the wall deadline and script `sleep`; invocation deadlines stay real. */
-    readonly clock?: Clock;
-    readonly wait?: typeof delay;
-  }) {
+  constructor(
+    options: ReplOptions<Request> & {
+      readonly request: z.ZodType<Request>;
+      readonly browser?: ReplEvents;
+    },
+  ) {
     this.#invoke = options.invoke;
+    this.#request = options.request;
+    this.#events = options.browser;
+    this.#label = options.browser ? "Browser" : "Computer";
     this.#clock = options.clock ?? systemClock;
     this.#wait = options.wait ?? delay;
   }
@@ -113,26 +136,36 @@ export class ComputerReplService {
     context: ComputerReplContext,
     code: string,
     signal?: AbortSignal,
-    invoke: (request: ComputerReplInvocation) => Promise<ReplReply> = this.#invoke,
-  ): Promise<ComputerReplResult> {
+    invoke: (request: ReplInvocation<Request>) => Promise<ReplReply> = this.#invoke,
+  ): Promise<ReplResult> {
     if (this.#closed || this.#ended.has(context.runId))
-      return Promise.resolve(failure("This Run's computer context has ended."));
+      return Promise.resolve(
+        failure(
+          this.#events
+            ? "This browser context has ended."
+            : "This Run's computer context has ended.",
+        ),
+      );
     if (!code.length || Buffer.byteLength(code) > limits.codeBytes)
-      return Promise.resolve(failure("Computer code must contain 1 to 65536 bytes."));
-    if (signal?.aborted) return Promise.resolve(failure("Computer code was cancelled."));
+      return Promise.resolve(failure(`${this.#label} code must contain 1 to 65536 bytes.`));
+    if (signal?.aborted) return Promise.resolve(failure(`${this.#label} code was cancelled.`));
     const key = `${context.runId}:${context.generation}`;
     if (
       this.#revoked.has(key) ||
       (this.#generations.get(context.runId) ?? context.generation) > context.generation
     )
       return Promise.resolve(failure("This computer attempt has ended."));
-    this.#generations.set(context.runId, context.generation);
+    if (!this.#events) this.#generations.set(context.runId, context.generation);
     for (const [other, resident] of this.#contexts)
       if (resident.context.runId === context.runId && other !== key) this.#dispose(other);
     let resident = this.#contexts.get(key);
     if (resident?.call)
       return Promise.resolve(
-        failure("Computer code is already running for this Run. Wait for that call to finish."),
+        failure(
+          this.#events
+            ? "Browser code is already running for this context. Wait for that call to finish."
+            : "Computer code is already running for this Run. Wait for that call to finish.",
+        ),
       );
     if (!resident) {
       if (this.#contexts.size >= limits.contexts) {
@@ -141,7 +174,9 @@ export class ComputerReplService {
           .sort((a, b) => a[1].usedAt - b[1].usedAt)[0];
         if (!oldest)
           return Promise.resolve(
-            failure("All 16 computer contexts are in use. Try after one finishes."),
+            failure(
+              `All 16 ${this.#label.toLowerCase()} contexts are in use. Try after one finishes.`,
+            ),
           );
         this.#dispose(oldest[0]);
       }
@@ -152,22 +187,20 @@ export class ComputerReplService {
     return new Promise((resolve) => {
       const cancel = () =>
         this.#finish(call, {
-          code: call.mutationInFlight ? "outcome-unknown" : "cancelled",
-          message:
-            "Computer code was cancelled. A dispatched action may already have happened; observe before deciding what to do next.",
+          code: call.mutationsInFlight ? "outcome-unknown" : "cancelled",
+          message: `${this.#label} code was cancelled. A dispatched action may already have happened; observe before deciding what to do next.`,
           performed: [],
         });
       const cancelDeadline = this.#clock.schedule(
         () =>
           this.#finish(call, {
-            code: call.mutationInFlight ? "outcome-unknown" : "deadline",
-            message:
-              "Computer code reached its 100 second deadline. A dispatched action may already have happened; observe before deciding what to do next.",
+            code: call.mutationsInFlight ? "outcome-unknown" : "deadline",
+            message: `${this.#label} code reached its 100 second deadline. A dispatched action may already have happened; observe before deciding what to do next.`,
             performed: [],
           }),
         limits.wallMs,
       );
-      const call: Call = {
+      const call: Call<Request> = {
         id: randomUUID(),
         key,
         context,
@@ -182,7 +215,9 @@ export class ComputerReplService {
           signal?.removeEventListener("abort", cancel);
         },
         started: false,
-        mutationInFlight: false,
+        mutationsInFlight: 0,
+        ready: false,
+        eventsPending: false,
         textBytes: 0,
         imageBytes: 0,
         images: 0,
@@ -201,6 +236,7 @@ export class ComputerReplService {
     if (this.#worker) return;
     const source = import.meta.url.endsWith(".ts");
     const worker = new Worker(hostWorkerUrl("computer-repl-worker", import.meta.url), {
+      ...(this.#events ? { workerData: "browser" } : {}),
       resourceLimits: { maxOldGenerationSizeMb: 512 },
       ...(source ? { execArgv: ["--import", "tsx"] } : {}),
     });
@@ -212,7 +248,7 @@ export class ComputerReplService {
     worker.on("exit", (code) => {
       if (this.#worker === worker) {
         this.#worker = undefined;
-        if (!this.#closed) this.#failWorker(new Error(`Computer worker exited (${code})`));
+        if (!this.#closed) this.#failWorker(new Error(`${this.#label} worker exited (${code})`));
       }
     });
   }
@@ -225,31 +261,64 @@ export class ComputerReplService {
       this.#ensureWorker();
       call.started = true;
       this.#executing++;
-      this.#post({ type: "execute", context: call.key, callId: call.id, code: call.code });
+      const events = this.#events?.batch(call.context);
+      this.#post({
+        type: "execute",
+        context: call.key,
+        callId: call.id,
+        code: call.code,
+        ...(events === undefined ? {} : { events }),
+      });
     }
   }
+  eventsAvailable(context: ComputerReplContext): void {
+    const call = this.#contexts.get(`${context.runId}:${context.generation}`)?.call;
+    if (!call?.ready || call.eventsPending) return;
+    const events = this.#events?.batch(context);
+    if (events === undefined) return;
+    call.eventsPending = true;
+    this.#post({ type: "events", context: call.key, callId: call.id, events });
+  }
+
   async #message(input: unknown): Promise<void> {
     const message = FromWorkerSchema.parse(input);
     const call = this.#contexts.get(message.context)?.call;
     if (!call || call.id !== message.callId) return;
     if (message.type === "done") {
-      this.#finish(call, message.error);
+      this.#finish(call, message.error, message.reset ?? false);
       return;
     }
     if (message.type === "text") {
       this.#emit(call, { type: "text", text: message.text });
       return;
     }
-    call.mutationInFlight = ["click", "type", "key", "setValue", "scroll", "act"].includes(
-      message.request.operation,
-    );
+    if (message.type === "ready" || message.type === "events-read") {
+      this.#events?.acknowledge(call.context);
+      call.ready = true;
+      call.eventsPending = false;
+      this.eventsAvailable(call.context);
+      return;
+    }
+    const request = this.#request.parse(message.request);
+    const mutation = [
+      "click",
+      "type",
+      "key",
+      "setValue",
+      "scroll",
+      "act",
+      "browser.open",
+      "browser.new",
+      "browser.command",
+    ].includes(request.operation);
+    if (mutation) call.mutationsInFlight++;
     try {
       const result =
-        message.request.operation === "sleep"
-          ? await this.#sleep(message.request.args.ms, call)
+        request.operation === "sleep"
+          ? await this.#sleep("ms" in request.args ? request.args.ms : undefined, call)
           : ReplReplySchema.parse(
               await call.invoke({
-                ...message.request,
+                ...request,
                 context: call.context,
                 signal: call.cancellation.signal,
                 deadline: call.deadline,
@@ -258,7 +327,9 @@ export class ComputerReplService {
       if (this.#contexts.get(call.key)?.call !== call) return;
       const json = JSON.stringify(result.value);
       if (Buffer.byteLength(json) > limits.bridgeBytes)
-        throw new Error("Computer result exceeds 1 MiB.");
+        throw Object.assign(new Error(`${this.#label} result exceeds 1 MiB.`), {
+          code: this.#events ? "bridge-limit" : "failed",
+        });
       for (const block of result.content ?? []) if (!this.#emit(call, block)) return;
       this.#post({
         type: "reply",
@@ -274,11 +345,13 @@ export class ComputerReplService {
         code:
           error instanceof DeviceAccessRefusal
             ? error.reason
-            : error instanceof OpensteerError && error.reason
+            : !this.#events && error instanceof OpensteerError && error.reason
               ? error.reason
               : "code" in record && typeof record.code === "string"
                 ? record.code
-                : "failed",
+                : this.#events && "code" in record && typeof record.code === "number"
+                  ? "cdp-error"
+                  : "failed",
         ...(error instanceof DeviceAccessRefusal
           ? { machineId: error.machineId, capability: error.capability }
           : {}),
@@ -287,7 +360,9 @@ export class ComputerReplService {
             ? `${error.message} ${error.next ?? ""}`
             : error instanceof Error
               ? error.message
-              : "Computer operation failed.",
+              : this.#events && "message" in record && typeof record.message === "string"
+                ? record.message
+                : `${this.#label} operation failed.`,
         ...("next" in record && typeof record.next === "string" ? { next: record.next } : {}),
         performed:
           "performed" in record && Array.isArray(record.performed)
@@ -304,7 +379,7 @@ export class ComputerReplService {
         "value" in record ? ReplReplySchema.shape.value.safeParse(record.value) : undefined;
       if (value?.success && Buffer.byteLength(JSON.stringify(value.data)) > limits.bridgeBytes) {
         value = undefined;
-        failure.message = "Computer result exceeds 1 MiB.";
+        failure.message = `${this.#label} result exceeds 1 MiB.`;
       }
       this.#post({
         type: "reply",
@@ -315,16 +390,16 @@ export class ComputerReplService {
         ...(value?.success ? { value: value.data } : {}),
       });
     } finally {
-      call.mutationInFlight = false;
+      if (mutation) call.mutationsInFlight--;
     }
   }
-  async #sleep(ms: unknown, call: Call): Promise<ReplReply> {
+  async #sleep(ms: unknown, call: Call<Request>): Promise<ReplReply> {
     if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0 || ms > limits.wallMs)
       throw new Error("sleep requires a duration from 0 to 100000 ms.");
     await this.#wait(ms, call.cancellation.signal);
     return { value: null };
   }
-  #emit(call: Call, block: ReplContent): boolean {
+  #emit(call: Call<Request>, block: ReplContent): boolean {
     const textBytes = call.textBytes + (block.type === "text" ? Buffer.byteLength(block.text) : 0);
     const images = call.images + (block.type === "image" ? 1 : 0);
     const imageBytes =
@@ -332,7 +407,7 @@ export class ComputerReplService {
     if (textBytes > limits.textBytes || images > limits.images || imageBytes > limits.imageBytes) {
       this.#finish(call, {
         code: "output-limit",
-        message: "Computer output exceeded its limit (512 KiB text, 8 images, 4 MiB image bytes).",
+        message: `${this.#label} output exceeded its limit (512 KiB text, 8 images, 4 MiB image bytes).`,
         performed: [],
       });
       return false;
@@ -345,13 +420,15 @@ export class ComputerReplService {
     );
     return true;
   }
-  #finish(call: Call, error?: ReplFailure): void {
+  #finish(call: Call<Request>, error?: ReplFailure, reset = true): void {
     const resident = this.#contexts.get(call.key);
     if (resident?.call !== call) return;
     resident.call = undefined;
     resident.usedAt = Date.now();
     this.#scheduleExpiry();
     call.cleanup();
+    if (reset && call.started) this.#events?.dispose(call.context);
+    if (this.#events) call.cancellation.abort();
     if (error) {
       this.#post({ type: "cancel", context: call.key, callId: call.id });
       call.cancellation.abort();
@@ -387,10 +464,11 @@ export class ComputerReplService {
     if (resident.call)
       this.#finish(resident.call, {
         code: "cancelled",
-        message: "This computer context has ended.",
+        message: `This ${this.#label.toLowerCase()} context has ended.`,
         performed: [],
       });
     this.#post({ type: "dispose", context: key });
+    this.#events?.dispose(resident.context);
     this.#contexts.delete(key);
     this.#scheduleExpiry();
   }
@@ -407,9 +485,10 @@ export class ComputerReplService {
     for (const call of calls)
       this.#finish(call, {
         code: "worker-failed",
-        message: error instanceof Error ? error.message : "Computer worker failed.",
+        message: error instanceof Error ? error.message : `${this.#label} worker failed.`,
         performed: [],
       });
+    for (const resident of this.#contexts.values()) this.#events?.dispose(resident.context);
     this.#contexts.clear();
     this.#queue.length = 0;
     this.#closed = closed;
@@ -435,5 +514,12 @@ export class ComputerReplService {
     const worker = this.#worker;
     this.#worker = undefined;
     if (worker) await worker.terminate();
+  }
+}
+
+/** One isolated worker for the Host; each Run attempt has its own bounded VM. */
+export class ComputerReplService extends ReplService<ReplRequest> {
+  constructor(options: ReplOptions<ReplRequest>) {
+    super({ ...options, request: ReplRequestSchema });
   }
 }

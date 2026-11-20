@@ -417,6 +417,8 @@ class Operation {
         `${this.label}: ${error instanceof DeadlineError ? `Timeout ${this.timeout}ms: ` : ""}${reason}${this.dispatched ? "; outcome unknown after input was dispatched; action was not replayed" : ""}`,
         { cause: error },
       );
+      if (typeof error.code === "string") failed.code = error.code;
+      if (typeof error.next === "string") failed.next = error.next;
       failed.evidence = this.evidence;
       throw failed;
     } finally {
@@ -1039,7 +1041,11 @@ export function createPage(environment) {
           const value = await evaluate(operation, await operation.document(), () => location.href);
           if (
             typeof expected === "function"
-              ? await operation.race(Promise.resolve(expected(new URL(value))))
+              ? await operation.race(
+                  environment.parseUrl
+                    ? environment.parseUrl(value).then(expected)
+                    : Promise.resolve(expected(new URL(value))),
+                )
               : match(value, expected, true)
           )
             return;

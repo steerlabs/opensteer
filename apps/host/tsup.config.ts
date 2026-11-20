@@ -1,6 +1,7 @@
 import { defineConfig } from "tsup";
 import { nodeApp } from "../../scripts/tsup-node-app.js";
 import { pluginEngineBuildPlugin } from "../../scripts/plugin-engine/node-build.js";
+import { readBrowserGuestModules } from "./src/browser-use/browser-guest-source.js";
 import { hostProcessEntries } from "./src/process-entries.js";
 
 export default defineConfig(
@@ -24,6 +25,7 @@ export default defineConfig(
       // One schema registry per process: bundled copies fail instanceof checks.
       "zod",
     ],
+    define: { __OPENSTEER_BROWSER_GUEST_MODULES__: JSON.stringify(readBrowserGuestModules()) },
     esbuildPlugins: [pluginEngineBuildPlugin],
     optional: [
       // The runtime uses NodeServices here; its Bun peer is never loaded.
