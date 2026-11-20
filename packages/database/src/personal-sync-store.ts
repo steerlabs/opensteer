@@ -865,15 +865,7 @@ export function readTranscriptPage(
     } else {
       const candidates = await olderKeyQuery.limit(limit + 1).execute();
       rows = (
-        await selectHydratedWindow(
-          tx,
-          scope,
-          candidates,
-          limit,
-          budget,
-          hardCeiling,
-          maxTurns,
-        )
+        await selectHydratedWindow(tx, scope, candidates, limit, budget, hardCeiling, maxTurns)
       ).selected;
       hasMore = candidates.length > rows.length;
     }

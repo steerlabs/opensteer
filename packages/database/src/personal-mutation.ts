@@ -541,10 +541,7 @@ class Mutation {
       // inline message commits cannot grow `client_changes` unboundedly. Trigger on any commit
       // over 16 KiB or whenever the retained row count crosses a 64-row boundary regardless of
       // commit batch size parity.
-      if (
-        this.#scopeBytes > 16 * 1024 ||
-        Math.floor(count / 64) > Math.floor(previousCount / 64)
-      ) {
+      if (this.#scopeBytes > 16 * 1024 || Math.floor(count / 64) > Math.floor(previousCount / 64)) {
         const cutoff = await sql<{ cutSequence: string | null }>`
           select max(sequence)::text as "cutSequence"
           from (

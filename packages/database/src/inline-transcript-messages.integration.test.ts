@@ -3,7 +3,11 @@ import { sql } from "kysely";
 import { expect, test } from "vitest";
 import { createPersonalStateFixture } from "./personal-state.test-support.js";
 import { jsonValue } from "./store-primitives.js";
-import { readPersonalScopeCut, readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
+import {
+  readPersonalScopeCut,
+  readTranscriptItem,
+  readTranscriptPage,
+} from "./personal-sync-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { writeExecutionItem } from "./execution-changes.js";
 import { describeTranscriptMessage, transcriptPreview } from "./transcript-store.js";
@@ -182,13 +186,11 @@ test("inline message and subagent text ships whole on pages and live changes, de
     if (replay.kind !== "replay") throw new Error("Expected live replay");
     const pushed = replay.commits.flatMap((commit) => commit.changes);
     const pushedLong = pushed.find((change) => change.entityId === longId)?.value as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(pushedLong?.text).toBe(longReply);
     expect((pushedLong?.view as Record<string, unknown> | undefined)?.truncated).toBeUndefined();
     const pushedLinked = pushed.find((change) => change.entityId === linkedId)?.value as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(pushedLinked?.text).toBe(linkedReply);
     expect((pushedLinked?.view as Record<string, unknown> | undefined)?.truncated).toBeUndefined();
 
@@ -363,6 +365,136 @@ test("migration 0043 upgrades an 0042 8 KiB client_changes constraint, preserves
         createdAt: new Date(),
       })
       .execute();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("byte-based client_changes pruning removes whole commits past 32 MiB and sends older cursors to a fresh snapshot", async () => {
+  const fixture = await createPersonalStateFixture("byte-prune-32mib");
+  const { database, run } = fixture;
+  try {
+    const scope = { kind: "thread" as const, threadId: run.threadId };
+    const scopeKey = `thread:${run.threadId}` as const;
+    const before = await database
+      .selectFrom("clientSyncState")
+      .select(["deploymentId", "epoch", "sequence"])
+      .executeTakeFirstOrThrow();
+
+    // Commit a multi-row commit right at the start of the 32 MiB retention window so byte pruning
+    // crosses it and must drop both ordinals together as one atomic commit.
+    const makeItemPayload = (id: string, sequence: string, text: string) => ({
+      id,
+      kind: "message" as const,
+      revision: sequence,
+      position: sequence,
+      runId: run.runId,
+      attemptId: null,
+      nodeId: null,
+      isTurnStart: false,
+      createdAt: new Date().toISOString(),
+      messageId: id,
+      messageKind: "assistant" as const,
+      author: {
+        kind: "agent" as const,
+        displayName: "Opensteer",
+        threadId: run.threadId,
+        runId: run.runId,
+      },
+      view: { preview: text.slice(0, 64) },
+      text,
+    });
+    const halfText = "m".repeat(200 * 1024);
+    const fullText = "p".repeat(400 * 1024);
+    let multiRowSequence = "0";
+    const multiIdA = createId("message");
+    const multiIdB = createId("message");
+    await commitPersonalMutation(database, async (_tx, mutation) => {
+      multiRowSequence = mutation.sequence;
+      mutation.change(
+        { scopeKey, entityKind: "item", entityId: multiIdA, operation: "upsert" },
+        () => makeItemPayload(multiIdA, mutation.sequence, halfText),
+      );
+      mutation.change(
+        { scopeKey, entityKind: "item", entityId: multiIdB, operation: "upsert" },
+        () => makeItemPayload(multiIdB, mutation.sequence, halfText),
+      );
+    });
+
+    // Verify both rows of the multi-row commit were stored before pruning.
+    const multiRowBefore = await database
+      .selectFrom("clientChanges")
+      .select(sql<number>`count(*)::int`.as("rows"))
+      .where("deploymentId", "=", before.deploymentId)
+      .where("sequence", "=", multiRowSequence)
+      .executeTakeFirstOrThrow();
+    expect(multiRowBefore.rows).toBe(2);
+
+    // Push 81 × ~400 KiB commits (~31.7 MiB) past the 2 × 200 KiB multi-row commit so the 32 MiB
+    // cutoff lands between its two ordinals and must drop both rows together as one atomic commit.
+    for (let index = 0; index < 81; index += 1) {
+      const bulkId = createId("message");
+      await commitPersonalMutation(database, async (_tx, mutation) => {
+        mutation.change(
+          { scopeKey, entityKind: "item", entityId: bulkId, operation: "upsert" },
+          () => makeItemPayload(bulkId, mutation.sequence, fullText),
+        );
+      });
+    }
+
+    const state = await database
+      .selectFrom("clientSyncState")
+      .select(["deploymentId", "epoch", "sequence", "retainedChangeCount", "prunedThroughSequence"])
+      .executeTakeFirstOrThrow();
+    const stats = await database
+      .selectFrom("clientChanges")
+      .select([
+        sql<number>`count(*)::int`.as("rows"),
+        sql<number>`coalesce(sum(byte_count), 0)::int`.as("bytes"),
+      ])
+      .where("deploymentId", "=", state.deploymentId)
+      .executeTakeFirstOrThrow();
+    const multiRowRemaining = await database
+      .selectFrom("clientChanges")
+      .select(sql<number>`count(*)::int`.as("rows"))
+      .where("deploymentId", "=", state.deploymentId)
+      .where("sequence", "=", multiRowSequence)
+      .executeTakeFirstOrThrow();
+
+    expect(stats.rows).toBe(state.retainedChangeCount);
+    expect(stats.bytes).toBeLessThanOrEqual(32 * 1024 * 1024);
+    expect(multiRowRemaining.rows).toBe(0);
+    expect(BigInt(state.prunedThroughSequence)).toBeGreaterThanOrEqual(BigInt(multiRowSequence));
+
+    // A cursor before the pruned boundary falls back to a fresh snapshot instead of replaying a gap.
+    const staleCut = await readPersonalScopeCut(database, {
+      viewerId: run.userId,
+      scope,
+      cursor: {
+        deploymentId: before.deploymentId,
+        epoch: before.epoch,
+        viewerId: run.userId,
+        scopeKey,
+        afterSequence: before.sequence,
+      },
+      snapshot: async () => ({ fresh: true }),
+    });
+    expect(staleCut).toMatchObject({ kind: "snapshot", snapshot: { fresh: true } });
+
+    // A cursor at the newest retained sequence still replays cleanly.
+    const recentCut = await readPersonalScopeCut(database, {
+      viewerId: run.userId,
+      scope,
+      cursor: {
+        deploymentId: state.deploymentId,
+        epoch: state.epoch,
+        viewerId: run.userId,
+        scopeKey,
+        afterSequence: state.sequence,
+      },
+      snapshot: async () => ({ fresh: true }),
+    });
+    expect(recentCut.kind).toBe("replay");
   } finally {
     await fixture.close();
   }
