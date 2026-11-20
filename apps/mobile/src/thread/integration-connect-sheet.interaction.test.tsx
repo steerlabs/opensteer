@@ -1,4 +1,5 @@
 import { controlledClientSession } from "@opensteer/client/test-support";
+import { PendingRequestSchema } from "@opensteer/core";
 vi.mock("../ui/placeholder.js", () => ({
   PlaceholderRows: () => <div aria-label="Not loaded yet" />,
 }));
@@ -200,7 +201,7 @@ describe("IntegrationConnectCard", () => {
     expect(cardRenders.mock.calls.length).toBe(before);
   });
 
-  it("installs from the access sheet without resolving the request", async () => {
+  it("installs without resolving the request and uses the new review when the person allows it", async () => {
     const client = fakeClient({ isAdministrator: true });
     await render(client, preinstallRequest());
 
@@ -211,12 +212,22 @@ describe("IntegrationConnectCard", () => {
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
+        expectedRevision: initialRevision,
         response: { kind: "choice", optionId: "installed" },
         type: "request.respond",
       }),
     );
     expect(client.dispatch).not.toHaveBeenCalledWith(
       expect.objectContaining({ response: expect.objectContaining({ kind: "external" }) }),
+    );
+    expect(client.readRequest).toHaveBeenCalledExactlyOnceWith(threadId, requestId);
+    await press("Allow");
+    expect(client.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedRevision: installedRevision,
+        response: expect.objectContaining({ kind: "external" }),
+        type: "request.respond",
+      }),
     );
   });
 
@@ -231,6 +242,7 @@ describe("IntegrationConnectCard", () => {
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
+        expectedRevision: initialRevision,
         response: {
           kind: "choice",
           optionId: "server:isv_00000000-0000-4000-8000-000000000001",
@@ -554,6 +566,7 @@ describe("IntegrationConnectCard", () => {
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
+        expectedRevision: initialRevision,
         response: {
           kind: "external",
           value: expect.objectContaining({ connectionId: null, decision: "fulfilled" }),
@@ -691,34 +704,53 @@ async function click(label: string): Promise<void> {
 
 const threadId = "thr_00000000-0000-4000-8000-000000000001";
 const requestId = "req_00000000-0000-4000-8000-000000000001";
+const initialRevision = "12";
+const installedRevision = "13";
 
 function request(
   access: "read" | "read-write" = "read",
   requestedConnectionId: string | null = null,
 ) {
   return {
-    createdAt: "2026-09-17T00:00:00.000Z",
-    id: requestId,
-    kind: "integration.access",
-    mode: "live",
-    originatingThreadId: threadId,
-    payload: {
-      access,
-      installationId: "iin_00000000-0000-4000-8000-000000000001",
+    ...PendingRequestSchema.parse({
+      callId: "connect-calendar",
+      cancellationReason: null,
+      createdAt: "2026-09-17T00:00:00.000Z",
+      id: requestId,
       kind: "integration.access",
-      reason: "Read the calendar.",
-      requestedConnectionId,
-      requestedServerId: "isv_00000000-0000-4000-8000-000000000001",
-    },
-    presentation: { kind: "external", title: "Allow Calendar" },
-    status: "pending",
-  } as never;
+      mode: "durable",
+      originatingOccurrenceId: null,
+      originatingRunId: "run_00000000-0000-4000-8000-000000000001",
+      originatingThreadId: threadId,
+      payload: {
+        access,
+        installationId: "iin_00000000-0000-4000-8000-000000000001",
+        kind: "integration.access",
+        manifest: null,
+        reason: "Read the calendar.",
+        requestedConnectionId,
+        requestedServerId: "isv_00000000-0000-4000-8000-000000000001",
+      },
+      presentation: {
+        kind: "external",
+        subject: { kind: "integration.access", id: "calendar" },
+        title: "Allow Calendar",
+      },
+      requestedBy: "usr_00000000-0000-4000-8000-000000000001",
+      requiredActor: "requester",
+      resolvedAt: null,
+      resolvedBy: null,
+      response: null,
+      status: "pending",
+    }),
+    reviewedRevision: initialRevision,
+  };
 }
 
 /** A request for an installation with more than one server, naming none. */
 function unpinnedRequest() {
   return {
-    ...(request() as unknown as object),
+    ...request(),
     payload: {
       access: "read",
       installationId: "iin_00000000-0000-4000-8000-000000000001",
@@ -733,7 +765,7 @@ function unpinnedRequest() {
 
 function preinstallRequest() {
   return {
-    ...(request() as unknown as object),
+    ...request(),
     payload: {
       access: "read",
       installationId: null,
@@ -796,6 +828,9 @@ function fakeClient(input: {
   return {
     connection: controlledClientSession().connection,
     dispatch,
+    readRequest: vi.fn(async () =>
+      requestPending ? { ...request(), reviewedRevision: installedRevision } : null,
+    ),
     streamUnrelatedThread() {
       snapshot = {
         ...snapshot,

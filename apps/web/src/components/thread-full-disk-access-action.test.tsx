@@ -1,7 +1,7 @@
 import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
-import { RunnerIdSchema, createId, emptyExecutionPreferences, type Request } from "@opensteer/core";
+import { RunnerIdSchema, createId, emptyExecutionPreferences } from "@opensteer/core";
 import {
   DesktopDeploymentSummarySchema,
   type OpensteerDesktopBridge,
@@ -11,7 +11,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { fullAccessRequestBody } from "@opensteer/client/host";
+import { fullAccessRequestBody, type RequestView } from "@opensteer/client/host";
 import { ShellContext } from "./app-shell.js";
 import { ThreadFullDiskAccessAction } from "./thread-full-disk-access-action.js";
 
@@ -75,10 +75,18 @@ describe("ThreadFullDiskAccessAction", () => {
 
   it("keeps the card usable when the decline fails", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
-    vi.spyOn(client, "dispatch").mockRejectedValue(new Error("The deployment refused that."));
+    const dispatch = vi
+      .spyOn(client, "dispatch")
+      .mockRejectedValue(new Error("The deployment refused that."));
     const page = await mount({ client });
 
     await click(button(page.container, "Not now"));
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        type: "request.respond",
+        expectedRevision: "12",
+      }),
+    );
 
     // An answer that never came is said honestly, never as the exception's own text.
     expect(page.container.textContent).toContain("Couldn't confirm your answer was sent.");
@@ -87,7 +95,7 @@ describe("ThreadFullDiskAccessAction", () => {
   });
 });
 
-function fullDiskAccessRequest(machineId: ReturnType<typeof RunnerIdSchema.parse>): Request {
+function fullDiskAccessRequest(machineId: ReturnType<typeof RunnerIdSchema.parse>): RequestView {
   return {
     callId: crypto.randomUUID(),
     cancellationReason: null,
@@ -115,6 +123,7 @@ function fullDiskAccessRequest(machineId: ReturnType<typeof RunnerIdSchema.parse
     resolvedAt: null,
     resolvedBy: null,
     response: null,
+    reviewedRevision: "12",
     status: "pending",
   };
 }

@@ -13,8 +13,10 @@ it("allows the offered card with Return and settles through the shared Host comm
   document.body.append(container);
   const root = createRoot(container);
   try {
+    const reviewed = await client.readRequest(request.originatingThreadId, request.id);
+    if (!reviewed) throw new Error("The offered card request never appeared");
     await act(async () =>
-      root.render(<CardUseRequestBody client={client} disabled={false} request={request} />),
+      root.render(<CardUseRequestBody client={client} disabled={false} request={reviewed} />),
     );
     const radio = container.querySelector("input");
     if (!radio) throw new Error("The offered card never appeared");
