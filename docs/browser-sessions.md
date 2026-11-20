@@ -202,8 +202,8 @@ Looking at a page never changes it. An agent screenshot may demand rendering and
 returned pixels, but leaves native bounds, layout, emulation, scroll, focus and selection alone.
 Chromium's `Page.captureScreenshot` cannot promise that: with a clip, or on a session holding
 emulation, it resizes the view for the capture and a person watches the page shrink. So each engine
-copies its surface through `captureViewport` instead, and full-page capture, which only that resize
-can make, does not exist.
+copies its surface through `captureViewport` for native harness screenshots. See
+[managed browser CDP connections](#managed-browser-cdp-connections) for full-page capture.
 
 Watch is passive: it may manage picture subscriptions and raster demand, but never navigate, select,
 resize, input, touch the clipboard or CDP, or move state. Profile owners can always view their
@@ -357,21 +357,32 @@ The virtual root supports `Browser.getVersion`, `Target.getTargets`, `Target.get
 `Target.getBrowserContexts`, `Target.createTarget`, `Target.closeTarget`,
 `Target.activateTarget`, `Target.attachToTarget`, `Target.detachFromTarget`,
 `Target.setAutoAttach`, `Target.setDiscoverTargets`, and scoped nested sends through
-`Target.sendMessageToTarget`. Root auto-attach announces owned pages in flat mode and reports
-them unpaused. Root target discovery supports an ordered CDP type filter for the initial snapshot
-and live events. Context creation and disposal, browser shutdown, and browser-wide commands outside
-the supported context operations are refused. Playwright's `newBrowserCDPSession()` and
+`Target.sendMessageToTarget`. Root auto-attach requires `flatten: true` when enabled, refuses
+a filter, and announces owned pages unpaused even if `waitForDebuggerOnStart` is set.
+Root target discovery accepts up to 64 ordered type filter entries for both the initial
+snapshot and live events. Context creation and disposal, browser shutdown, and browser-wide
+commands outside the supported context operations are refused. Playwright's `newBrowserCDPSession()` and
 `newCDPSession()` helpers use the forbidden browser-target attach method. A raw client can use
 the virtual root directly and request `Target.attachToTarget` for an owned page.
 
 Page and child commands use the [reviewed method list](../packages/browser-core/src/standard-cdp-page-methods.ts).
-Whole-context leases add cookie reads, writes and clears, context permissions, and shared and
-service worker channels. Playwright's default download setup is acknowledged without changing
-the profile's download path. Remote download cancellation and arbitrary download settings are
-refused. Uploads naming paths require files staged on the Runtime.
+Whole-context leases add `Storage.getCookies`, `Storage.setCookies`, `Storage.clearCookies`,
+`Browser.setPermission`, `Browser.grantPermissions`, `Browser.resetPermissions`, and shared and
+service worker channels. Omit `browserContextId` or use the virtual context ID from the owned
+page's target info. The Runtime supplies the real profile context. At the root,
+`Browser.setDownloadBehavior` accepts Playwright's `behavior: "allowAndName"` with
+`eventsEnabled: true` and leaves the profile's download settings and path alone.
+Other download settings and `Browser.cancelDownload` are refused. Uploads naming paths
+require files staged on the Runtime.
 
-Screenshots capture the page surface. Full-page capture requires a bounded clip. The Runtime uses
-the page's geometry channel so the viewing viewport keeps its size. The limit is 8 MiB per JSON
-message including base64 and framing, with 16 MiB and 128 in-flight items at each endpoint.
-The relay uses 192 KiB raw chunks, with up to four live attachments per binding and 16 per Runner.
-A busy client can compete for the same Runner stream, browser process, and machine resources.
+Screenshots capture the page surface. Full-page capture requires a clip. Each edge is capped at
+30,720 pixels before and after scaling, scale is capped at 4, and scaled area is capped at
+16,777,216 pixels. The Runtime uses the page's geometry channel so the viewing viewport keeps
+its size. An image that exceeds the message limit after encoding is refused.
+
+The limit is 8 MiB per JSON message including base64 and framing, with 16 MiB and 128 in-flight
+items at each endpoint. Each attachment can hold up to 128 live logical channels. Standard
+result and event JSON is limited to 32 levels and 16,384 entries. The relay uses
+192 KiB raw chunks, with up to four live attachments per binding and 16 per Runner. The Home
+and Runtime allow one second for the public close handshake. A busy client can compete for
+the same Runner stream, browser process, and machine resources.
