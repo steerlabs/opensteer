@@ -173,6 +173,7 @@ button {
 }
 .nav__links a {
   color: var(--muted);
+  white-space: nowrap;
   text-decoration: none;
   font-size: 14px;
   transition: color 130ms;
@@ -197,7 +198,7 @@ button {
 .nav__talk:hover {
   color: var(--text);
 }
-@media (max-width: 860px) {
+@media (max-width: 1080px) {
   .nav__gh {
     display: none;
   }

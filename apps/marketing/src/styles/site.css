@@ -117,102 +117,8 @@
   font-size: 15px;
 }
 
-.rail {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 10px 14px;
-  margin-top: 32px;
-  padding-inline: 16px;
-  color: var(--muted);
-  font-size: 13px;
-}
-.rail__set {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 4px;
-  border-radius: 999px;
-  background: var(--sheen), var(--fill-quiet);
-  border: 1px solid var(--rim-plate);
-  box-shadow: var(--edge-plate);
-}
-/* The picked engine opens its label to its own width (a 0fr to 1fr track) while its fill fades in. */
-.eng {
-  position: relative;
-  isolation: isolate;
-  display: inline-grid;
-  grid-template-columns: 16px 0fr;
-  align-items: center;
-  height: 32px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  transition:
-    grid-template-columns 380ms var(--ease-out),
-    color 280ms var(--ease-out);
-}
-.eng::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  background: var(--sheen-accent), var(--ember);
-  box-shadow: var(--edge-accent);
-  opacity: 0;
-  transition: opacity 280ms var(--ease-out);
-}
-.eng svg {
-  width: 16px;
-  height: 16px;
-}
-.eng__label {
-  min-width: 0;
-  overflow: hidden;
-  opacity: 0;
-  transition: opacity 160ms;
-}
-.eng__label span {
-  display: block;
-  padding-left: 7px;
-  font-size: 13px;
-  font-weight: 550;
-  white-space: nowrap;
-}
-.eng:hover {
-  color: var(--text);
-}
-.eng[aria-pressed="true"] {
-  grid-template-columns: 16px 1fr;
-  color: var(--ink-on-ember);
-}
-.eng[aria-pressed="true"]::before {
-  opacity: 1;
-}
-.eng[aria-pressed="true"] .eng__label {
-  opacity: 1;
-  transition: opacity 280ms 80ms;
-}
-
 .show {
   padding-block: clamp(40px, 7vh, 72px) 24px;
-}
-/* Under the demo the engine rail is a footnote to the agent row above it. */
-.show .rail {
-  margin-top: 10px;
-  color: color-mix(in srgb, var(--muted) 78%, transparent);
-}
-.show .eng[aria-pressed="true"] {
-  color: var(--text);
-}
-.show .eng::before {
-  background: var(--fill-plate-hover);
-  box-shadow: none;
 }
 .sr-only {
   position: absolute;
@@ -283,9 +189,9 @@
   text-wrap: balance;
 }
 
-/* On a phone the break would leave "need" alone on its line, so this headline balances itself. */
+/* On a phone a forced break strands a word, so headlines balance themselves. */
 @media (max-width: 560px) {
-  #why h2 br {
+  .row h2 br {
     display: none;
   }
 }
@@ -366,188 +272,6 @@
   }
 }
 
-/* The four things already on the Mac, as chips under the headline. */
-.haves {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-  margin: 22px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.haves li {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 36px;
-  padding: 0 14px 0 7px;
-  border-radius: 999px;
-  border: 1px solid var(--rim-plate);
-  background: var(--sheen), var(--fill-quiet);
-  box-shadow: var(--edge-plate);
-  font-size: 14.5px;
-  font-weight: 500;
-}
-.haves svg {
-  width: 24px;
-  height: 24px;
-}
-
-/* A cropped screenshot of Chrome's top: its tabs, the address bar and the start of each signed-in page. */
-.shot {
-  position: relative;
-  max-width: 1040px;
-  margin-inline: auto;
-  overflow: hidden;
-  border-radius: 12px 12px 0 0;
-  text-align: left;
-  --mac-font:
-    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Helvetica Neue", sans-serif;
-  -webkit-mask-image: linear-gradient(#000 72%, transparent);
-  mask-image: linear-gradient(#000 72%, transparent);
-}
-.shot--chrome {
-  aspect-ratio: 1200 / 470;
-}
-.shot__in {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 1200px;
-  height: 708px;
-  transform-origin: 0 0;
-  font: 13px/1.3 var(--mac-font);
-}
-.shot .br-tab {
-  width: 190px;
-}
-.shot .win {
-  box-shadow: none;
-}
-@media (max-width: 720px) {
-  .shot--chrome {
-    aspect-ratio: 660 / 420;
-  }
-  .shot .br-tab {
-    width: 118px;
-  }
-}
-
-/* One request wherever you are: asked in Slack, approved on the phone, answered in Slack. */
-.steer {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: clamp(28px, 5vw, 72px);
-  text-align: left;
-  --mac-font:
-    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Helvetica Neue", sans-serif;
-}
-.steer__phone {
-  position: relative;
-  width: 290px;
-  height: 612px;
-  flex: none;
-}
-.steer .iphone {
-  left: 0;
-  top: 0;
-  transition: none;
-}
-.steer .ip-live {
-  display: none;
-}
-.slack {
-  width: min(100%, 460px);
-  border-radius: 10px;
-  overflow: hidden;
-  background: #1a1d21;
-  border: 1px solid rgb(255 255 255 / 9%);
-  color: #d1d2d3;
-  font: 15px/22px var(--mac-font);
-}
-.slack__bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 49px;
-  padding: 0 16px;
-  border-bottom: 1px solid rgb(255 255 255 / 9%);
-  color: #fff;
-  font-weight: 700;
-}
-.slack__bar em,
-.slack__msg em {
-  padding: 0 4px;
-  border-radius: 3px;
-  background: rgb(255 255 255 / 10%);
-  color: #ababad;
-  font: 600 10px/15px var(--mac-font);
-}
-.slack__feed {
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  height: 250px;
-  padding: 8px 0 12px;
-}
-.slack__msg {
-  display: flex;
-  gap: 8px;
-  padding: 8px 16px;
-}
-.slack__msg[hidden] {
-  display: none;
-}
-.slack__msg.is-new {
-  animation: fadein 320ms var(--ease-out) both;
-}
-.slack__msg > i {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 6px;
-  background: #8a6d5e;
-  color: #fff;
-  font: 700 13px/1 var(--mac-font);
-  flex: none;
-}
-.slack__msg > i.slack__app {
-  background: #0a0a0a;
-}
-.slack__app .orb {
-  width: 20px;
-  height: 20px;
-}
-.slack__msg b {
-  margin-right: 6px;
-  color: #fff;
-  font-weight: 900;
-}
-.slack__msg time {
-  margin-left: 4px;
-  color: #ababad;
-  font-size: 12px;
-}
-.slack__msg p {
-  margin: 0;
-}
-.slack__box {
-  margin: 0 16px 16px;
-  padding: 10px 12px;
-  border: 1px solid rgb(255 255 255 / 22%);
-  border-radius: 8px;
-  color: #ababad;
-}
-@media (max-width: 760px) {
-  .slack {
-    display: none;
-  }
-}
-
-/* Three devices, each with a small picture of what the agent does there. */
 .devs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -597,363 +321,10 @@
   font-family: var(--mac-font);
 }
 
-/* A Messages thread the agent answers from your account. */
-.msgs {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 100%;
-  max-width: 330px;
-  padding: 0 18px;
-}
-.msgs__who {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 11.5px;
-}
-.msgs__av {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  flex-shrink: 0;
-  border-radius: 50%;
-  background: linear-gradient(#a5a5ab, #6f6f75);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 600;
-}
-.bub {
-  max-width: 88%;
-  margin: 0;
-  padding: 9px 12px;
-  border-radius: 17px;
-  background: #2c2c2e;
-  color: #fff;
-  font-size: 13.5px;
-  line-height: 1.4;
-  border-bottom-left-radius: 5px;
-  text-align: left;
-  align-self: flex-start;
-}
-.bub--me {
-  background: linear-gradient(#1688fa, #0877ed);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 12%);
-  border-bottom-left-radius: 17px;
-  border-bottom-right-radius: 5px;
-  align-self: flex-end;
-}
-.msgs__sent {
-  align-self: flex-end;
-  margin-top: -2px;
-  color: var(--muted);
-  font-size: 10.5px;
-}
-
-/* An Android phone mid-call, cropped at the card's bottom edge. */
-.dev__pic--droid {
-  align-items: flex-end;
-}
-.droid {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  width: 174px;
-  height: 220px;
-  padding-top: 27px;
-  flex-shrink: 0;
-  box-shadow:
-    0 0 0 1px rgb(255 255 255 / 13%),
-    0 12px 32px rgb(0 0 0 / 45%);
-  border: 3px solid #2c2c2e;
-  border-bottom: 0;
-  border-radius: 28px 28px 0 0;
-  background:
-    radial-gradient(circle at 50% 11px, #000 0 3.5px, transparent 4.5px),
-    radial-gradient(120% 70% at 50% 0%, #1f3a2e, transparent 70%), linear-gradient(#141a17, #0d0f0e);
-  color: #fff;
-}
-.droid__state {
-  color: rgb(255 255 255 / 60%);
-  font-size: 10.5px;
-}
-.droid__av {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 48px;
-  height: 48px;
-  flex-shrink: 0;
-  margin: 14px 0 12px;
-  border-radius: 50%;
-  background: linear-gradient(#4f7f6b, #2f5546);
-  font-size: 14px;
-  font-weight: 600;
-}
-.droid__av::after {
-  content: "";
-  position: absolute;
-  inset: -5px;
-  border-radius: 50%;
-  border: 1px solid rgb(113 198 165 / 70%);
-  animation: ring 2.4s var(--ease-out) infinite;
-}
-@keyframes ring {
-  to {
-    opacity: 0;
-    transform: scale(1.35);
-  }
-}
-.droid__name {
-  font-size: 12.5px;
-  font-weight: 600;
-}
-.droid__time {
-  margin-top: 2px;
-  color: rgb(255 255 255 / 60%);
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
-}
-.droid__keys {
-  display: flex;
-  gap: 16px;
-  margin-top: 17px;
-}
-.droid__keys i {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
-  border-radius: 50%;
-  background: rgb(255 255 255 / 12%);
-}
-.droid__keys svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.droid__keys .droid__end {
-  background: #e5484d;
-}
-
-/* Your other computers and your home, as a Home-style tile grid. */
-.dev__pic--home {
-  padding: 0 14px;
-}
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
-  width: 100%;
-  max-width: 306px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.tiles li {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  padding: 12px 9px 10px;
-  border: 1px solid rgb(255 255 255 / 3%);
-  border-radius: 11px;
-  background: linear-gradient(145deg, #242323, #1c1c1c);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
-  text-align: left;
-}
-.tiles svg {
-  width: 22px;
-  height: 22px;
-  margin-bottom: 12px;
-  flex-shrink: 0;
-  fill: none;
-  stroke: rgb(255 255 255 / 70%);
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.tiles b,
-.tiles span {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 11px;
-  line-height: 1.3;
-}
-.tiles b {
-  font-weight: 600;
-}
-.tiles span {
-  color: var(--muted);
-}
-.tiles .tiles__on {
-  background: linear-gradient(145deg, #f4e9d8, #dfcdb0);
-  color: #1b1712;
-}
-.tiles__on svg {
-  stroke: #a66c15;
-}
-.tiles__on span {
-  color: rgb(27 23 18 / 60%);
-}
-
 @media (max-width: 860px) {
   .devs {
     grid-template-columns: 1fr;
     max-width: 440px;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .droid__av::after {
-    animation: none;
-  }
-}
-
-/* Every engine the app drives, plus models on your own hardware. */
-.ais {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 22px 14px;
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 0;
-  list-style: none;
-}
-.ais li {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  width: 92px;
-  color: var(--text-soft);
-  font-size: 13px;
-  line-height: 1.3;
-  text-align: center;
-  white-space: nowrap;
-}
-.ais svg {
-  box-sizing: content-box;
-  width: 30px;
-  height: 30px;
-  padding: 18px;
-  border-radius: 18px;
-  border: 1px solid var(--rim-plate);
-  background: var(--sheen), var(--fill-plate);
-  box-shadow: var(--edge-plate);
-  color: var(--text);
-}
-.ais__local svg {
-  border-color: var(--ember-line);
-  color: var(--ember);
-}
-.ais__local b {
-  position: absolute;
-  top: -8px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--ember);
-  color: var(--ink-on-ember);
-  font-size: 10.5px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-@media (max-width: 480px) {
-  .ais {
-    gap: 20px 6px;
-  }
-  .ais li {
-    width: 80px;
-  }
-}
-
-/* A receipt of where each thing is kept, one line per item. The last line is the point. */
-.lives {
-  max-width: 660px;
-  margin-inline: auto;
-  border-top: 1px solid var(--line-strong);
-  text-align: left;
-}
-.lives > div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  height: 46px;
-  padding: 0 4px;
-  border-bottom: 1px solid var(--line);
-  font-size: 16px;
-  white-space: nowrap;
-  transition: opacity 420ms var(--ease-out) calc(var(--i) * 60ms);
-}
-.js .lives:not(.is-in) > div {
-  opacity: 0;
-}
-.lives > div > span {
-  color: var(--muted);
-}
-.lives b {
-  color: var(--text);
-  font-weight: 500;
-}
-.lives b::before {
-  content: "";
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-right: 10px;
-  border-radius: 50%;
-  background: var(--green);
-  vertical-align: 2px;
-}
-.lives__team b::before {
-  background: var(--ember);
-}
-.lives__ai b::before {
-  background: var(--amber);
-}
-.lives > .lives__none {
-  border-bottom-color: var(--line-strong);
-}
-.lives__none > span {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: var(--text-soft);
-}
-.lives__none .orb {
-  width: 14px;
-  height: 14px;
-}
-.lives__none b::before {
-  display: none;
-}
-.lives__short {
-  display: none;
-}
-@media (max-width: 480px) {
-  .lives > div {
-    font-size: 15px;
-  }
-  .lives__long {
-    display: none;
-  }
-  .lives__short {
-    display: inline;
   }
 }
 
@@ -970,45 +341,6 @@
 }
 .row__facts a:hover {
   color: var(--text);
-}
-.switch {
-  position: relative;
-  width: 34px;
-  height: 20px;
-  border-radius: 999px;
-  border: 1px solid rgb(255 255 255 / 20%);
-  background: var(--fill-plate);
-  cursor: pointer;
-  transition:
-    background-color 220ms,
-    border-color 220ms;
-  vertical-align: middle;
-}
-.switch::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--muted);
-  transition:
-    transform 300ms var(--ease-bubble),
-    background-color 220ms;
-}
-.switch[aria-checked="true"] {
-  background: var(--ember);
-  border-color: var(--rim-accent);
-}
-.switch[aria-checked="true"]::after {
-  transform: translateX(14px);
-  background: var(--ink-on-ember);
-}
-@keyframes flash {
-  0% {
-    background: var(--ember-wash);
-  }
 }
 
 .reveal {
@@ -1120,5 +452,659 @@
   .js .reveal:not(.is-in) {
     opacity: 1;
     transform: none;
+  }
+}
+
+/* ---------- The hero picture ---------- */
+/* The phone in the middle; the agents you connected on one side and your Home on the other. */
+.rig {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 290px minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(24px, 4vw, 56px);
+  max-width: 1040px;
+  margin-inline: auto;
+}
+.rig__phone {
+  position: relative;
+  width: 290px;
+  height: 612px;
+}
+.rig__side {
+  display: grid;
+  gap: 8px;
+  max-width: 300px;
+  text-align: left;
+}
+.rig__side--left {
+  justify-self: end;
+}
+.rig__label {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 550;
+  letter-spacing: 0.02em;
+}
+.rig__note {
+  margin: 6px 2px 0;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+@media (max-width: 900px) {
+  .rig {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+  .rig__phone {
+    order: -1;
+  }
+  /* On a phone the Home list repeats what the agent rows already say. */
+  .rig__side--right {
+    display: none;
+  }
+  .rig__side,
+  .rig__side--left {
+    justify-self: center;
+    width: 100%;
+    max-width: 360px;
+  }
+}
+.show__hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 22px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+.show__pause {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--rim-plate);
+  background: var(--fill-quiet);
+  color: var(--text-soft);
+  cursor: pointer;
+}
+.show__pause svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* An agent's mark: the first letter of its name on the app's quiet tile. */
+.amark {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: 9px;
+  border: 1px solid var(--rim-sheet);
+  background: var(--sheen), var(--surface-raised);
+  box-shadow: var(--edge-plate);
+  color: var(--text-soft);
+  font: 500 14px/1 var(--font-sans);
+  font-style: normal;
+}
+.amark--sm {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  font-size: 10.5px;
+}
+.amark--lg {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  font-size: 18px;
+}
+.arow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px 11px 11px;
+  border-radius: var(--radius-md);
+}
+.arow__text {
+  display: grid;
+  min-width: 0;
+}
+.arow__text b {
+  font-size: 14.5px;
+  font-weight: 550;
+}
+.arow__state {
+  color: var(--muted);
+  font-size: 13px;
+  transition: color 200ms;
+}
+.arow__state[data-tone="good"] {
+  color: var(--green);
+}
+.arow__state[data-tone="attention"] {
+  color: var(--amber-text);
+}
+.homelist {
+  display: grid;
+  margin: 0;
+  padding: 4px 0;
+  border-radius: var(--radius-md);
+  list-style: none;
+}
+.homelist li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+}
+.homelist li + li {
+  border-top: 1px solid var(--line);
+}
+.homelist svg {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  flex: none;
+}
+.homelist span {
+  display: grid;
+  flex: 1;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.homelist b {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* ---------- Locked out ---------- */
+.stories {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+.story {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 22px 24px 24px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+  background: var(--sheen), var(--fill-sheet);
+  box-shadow: var(--edge-plate);
+}
+.story--wide {
+  grid-column: 1 / -1;
+}
+.story h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.story > p {
+  margin: 6px 0 0;
+  color: var(--text-soft);
+  font-size: 15.5px;
+  line-height: 1.5;
+}
+.story__stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--red) 28%, transparent);
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+  color: var(--red-text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.story__stop svg {
+  width: 12px;
+  height: 12px;
+}
+.story > .story__fix {
+  margin-top: auto;
+  padding-top: 16px;
+  color: var(--text);
+  font-size: 15px;
+}
+.story__fix::before {
+  content: "With Opensteer";
+  display: block;
+  margin-bottom: 4px;
+  color: var(--ember);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+@media (max-width: 640px) {
+  .stories {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- How it works ---------- */
+.steps3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+.steps3 li {
+  padding: 22px 24px 26px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+  background: var(--sheen), var(--fill-sheet);
+  box-shadow: var(--edge-plate);
+}
+.steps3__n {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--rim-accent);
+  background: var(--sheen-accent), var(--ember);
+  box-shadow: var(--edge-accent);
+  color: var(--ink-on-ember);
+  font-size: 14px;
+  font-weight: 650;
+}
+.steps3 h3 {
+  margin: 16px 0 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.steps3 p {
+  margin: 6px 0 0;
+  color: var(--text-soft);
+  font-size: 15px;
+  line-height: 1.55;
+}
+@media (max-width: 860px) {
+  .steps3 {
+    grid-template-columns: 1fr;
+    max-width: 520px;
+  }
+}
+
+/* ---------- You choose ---------- */
+.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 440px) minmax(0, 1fr);
+  align-items: start;
+  gap: clamp(32px, 6vw, 72px);
+  max-width: 1000px;
+  margin-inline: auto;
+  text-align: left;
+}
+.points {
+  position: sticky;
+  top: 96px;
+  display: grid;
+  gap: 28px;
+  margin: 0;
+  padding: 24px 0 0;
+  list-style: none;
+}
+.points li {
+  display: flex;
+  gap: 16px;
+}
+.points li > svg {
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  flex: none;
+  color: var(--ember);
+}
+.points h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.points p {
+  margin: 4px 0 0;
+  color: var(--text-soft);
+  font-size: 15.5px;
+  line-height: 1.55;
+}
+@media (max-width: 860px) {
+  .pair {
+    grid-template-columns: 1fr;
+    max-width: 480px;
+  }
+  .points {
+    position: static;
+    padding-top: 0;
+  }
+}
+
+/* ---------- Watch and stop: small pictures of the app's own status rows ---------- */
+.dev__pic {
+  height: 200px;
+  padding: 18px;
+}
+.mini {
+  width: 100%;
+  max-width: 300px;
+  font: 14px/1.4 var(--font-sans);
+}
+.mini__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px 10px 10px;
+  border-radius: 14px;
+  border: 1px solid var(--rim-sheet);
+  background: var(--sheen), var(--surface-elevated);
+}
+.mini__bar > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.mini__bar b {
+  font-weight: 550;
+  font-size: 13.5px;
+}
+.mini__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid var(--rim-sheet);
+  background: var(--fill-plate);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.mini__btn svg {
+  width: 12px;
+  height: 12px;
+}
+.mini__title {
+  margin: 0;
+  font-weight: 550;
+}
+.mini__title--warn {
+  color: var(--amber-text);
+}
+.mini__body {
+  margin: 6px 0 0;
+  color: var(--text-soft);
+  font-size: 13.5px;
+}
+.mini__chip {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--amber-line);
+  background: var(--amber-wash);
+  color: var(--amber-text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.mini__steps {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-soft);
+  font-size: 13.5px;
+}
+.mini__steps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mini__steps i {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-strong);
+}
+.mini__steps [data-state="done"] i {
+  border-color: var(--green);
+  background: radial-gradient(circle, var(--green) 38%, transparent 42%);
+}
+.mini__steps [data-state="now"] i {
+  border-color: var(--text-soft);
+  border-top-color: transparent;
+  animation: spin 1s linear infinite;
+}
+.mini__steps [data-state="next"] {
+  color: var(--muted);
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.mini__menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgb(255 255 255 / 3%);
+  font-size: 13px;
+}
+.mini__menu span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.mini__menu b {
+  color: var(--red-text);
+  font-weight: 500;
+}
+
+/* ---------- Agents ---------- */
+.agents {
+  max-width: 760px;
+  margin-inline: auto;
+}
+.agents__label {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+.agents__label:not(:first-child) {
+  margin-top: 32px;
+}
+.names {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.names li {
+  display: inline-flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--rim-plate);
+  background: var(--sheen), var(--fill-quiet);
+  box-shadow: var(--edge-plate);
+  font-size: 15px;
+  font-weight: 500;
+}
+.names .names__any {
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+}
+.names--quiet li {
+  height: 34px;
+  padding: 0 13px;
+  color: var(--text-soft);
+  font-size: 14px;
+  font-weight: 450;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* ---------- Where your Home runs ---------- */
+.homes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  max-width: 880px;
+  margin-inline: auto;
+  text-align: left;
+}
+.homecard {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 24px 26px 26px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+  background: var(--sheen), var(--fill-sheet);
+  box-shadow: var(--edge-plate);
+}
+.homecard--cloud {
+  border-color: var(--ember-line);
+  background:
+    radial-gradient(120% 90% at 50% 0%, var(--ember-wash), transparent 70%), var(--fill-sheet);
+}
+.homecard__who {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+.homecard__who svg {
+  width: 20px;
+  height: 20px;
+  color: var(--ember);
+}
+.homecard__price {
+  margin: 6px 0 18px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.homecard ul {
+  display: grid;
+  gap: 11px;
+  margin: 0 0 22px;
+  padding: 0;
+  list-style: none;
+}
+.homecard li {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  font-size: 15px;
+  line-height: 1.45;
+}
+.homecard li svg {
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  flex: none;
+  color: var(--green);
+}
+.homecard .homecard__con {
+  color: var(--muted);
+}
+.homecard .homecard__con svg {
+  color: var(--muted);
+}
+.homecard__note {
+  margin: auto 0 0;
+  color: var(--text-soft);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.homecard .btn {
+  margin-top: auto;
+}
+@media (max-width: 720px) {
+  .homes {
+    grid-template-columns: 1fr;
+    max-width: 480px;
+  }
+}
+
+/* ---------- Teams ---------- */
+.row__cta {
+  margin: 28px 0 0;
+}
+
+/* ---------- Honest limits ---------- */
+.limits {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+.limits li {
+  display: flex;
+  gap: 14px;
+  padding: 20px 22px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+}
+.limits svg {
+  width: 18px;
+  height: 18px;
+  margin-top: 3px;
+  flex: none;
+  color: var(--muted);
+}
+.limits p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 15px;
+  line-height: 1.55;
+}
+.limits b {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text);
+  font-weight: 600;
+}
+@media (max-width: 720px) {
+  .limits {
+    grid-template-columns: 1fr;
+    max-width: 480px;
   }
 }

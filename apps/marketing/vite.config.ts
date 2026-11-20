@@ -68,7 +68,7 @@ function siteShell(): Plugin {
           meta("property", "og:image", `${origin}/og.png`),
           meta("property", "og:image:width", "1200"),
           meta("property", "og:image:height", "630"),
-          meta("property", "og:image:alt", "Opensteer: turn your computer into AI coworkers"),
+          meta("property", "og:image:alt", "Opensteer: your Personal Cloud Computer for AI"),
           meta("name", "twitter:card", "summary_large_image"),
         );
         return { html, tags };

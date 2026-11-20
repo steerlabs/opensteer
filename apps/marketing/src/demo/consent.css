@@ -1,0 +1,202 @@
+/* The consent screen, in the web app's materials: grouped rows on a sheet, radio rows, one switch. */
+.consent {
+  padding: 22px 20px 20px;
+  border-radius: 20px;
+  border: 1px solid var(--rim-sheet);
+  background: var(--sheen), var(--fill-sheet);
+  box-shadow: var(--lift-float), var(--edge-plate);
+  text-align: left;
+  font-size: 14px;
+  line-height: 1.4;
+}
+.cs-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.cs-head h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 420;
+  font-size: 24px;
+  line-height: 1.12;
+  letter-spacing: -0.01em;
+  font-variation-settings: "opsz" 72;
+}
+.cs-where {
+  display: flex;
+  gap: 9px;
+  margin: 14px 0 0;
+  font-size: 14px;
+}
+.cs-where svg {
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  flex: none;
+  color: var(--green);
+}
+.cs-label {
+  margin: 20px 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.cs-group {
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+}
+[data-part="resources"] {
+  margin-top: 12px;
+}
+[data-part="resources"][hidden] {
+  display: none;
+}
+.cs-choice,
+.cs-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 11px 14px;
+}
+.cs-choice + .cs-choice,
+.cs-row + .cs-row {
+  border-top: 1px solid var(--line);
+}
+.cs-choice {
+  cursor: pointer;
+}
+.cs-choice input {
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  margin: 2px 0 0;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--muted);
+  cursor: pointer;
+}
+.cs-choice input:checked {
+  border-color: var(--ember);
+  background: radial-gradient(circle, var(--ember) 42%, transparent 46%);
+}
+.cs-choice input:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
+}
+.cs-choice span,
+.cs-row > span:not(.cs-pick) {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+.cs-choice b,
+.cs-row b {
+  font-weight: 500;
+}
+.cs-choice small,
+.cs-row small {
+  color: var(--muted);
+  font-size: 13px;
+}
+/* Safety mode shows the line of the chosen mode only, so the card stays short. */
+.cs-group--modes .cs-choice:not(:has(input:checked)) small {
+  display: none;
+}
+.cs-row > svg {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  flex: none;
+  color: var(--muted);
+}
+.cs-pick {
+  align-self: center;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.cs-switch {
+  position: relative;
+  align-self: center;
+  width: 36px;
+  height: 22px;
+  flex: none;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgb(255 255 255 / 20%);
+  background: var(--fill-plate);
+  cursor: pointer;
+  transition: background-color 200ms;
+}
+.cs-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition:
+    transform 280ms var(--ease-bubble),
+    background-color 200ms;
+}
+.cs-switch[aria-checked="true"] {
+  border-color: var(--rim-accent);
+  background: var(--ember);
+}
+.cs-switch[aria-checked="true"]::after {
+  transform: translateX(14px);
+  background: var(--ink-on-ember);
+}
+.cs-foot {
+  margin: 8px 2px 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.cs-foot[hidden] {
+  display: none;
+}
+.cs-foot--warn {
+  color: var(--red-text);
+}
+.cs-fine {
+  margin: 18px 2px 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.cs-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+.cs-body[hidden],
+.cs-done[hidden] {
+  display: none;
+}
+.cs-done {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 20px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--green-line);
+  background: var(--green-wash);
+}
+.cs-done p {
+  display: grid;
+  margin: 0;
+}
+.cs-done span {
+  color: var(--text-soft);
+}

@@ -6,7 +6,7 @@
     <title>Support · Opensteer</title>
     <meta
       name="description"
-      content="Get help with Opensteer on your Mac and phone, delete your Account, or report a bug."
+      content="Get help with Opensteer on your Mac, your phone and an Opensteer Cloud Computer: connect an agent, delete your account, or report a bug."
     />
   </head>
   <body>
@@ -14,7 +14,9 @@
     <main class="page">
       <div class="wrap">
         <h1>Support</h1>
-        <p class="page__lede">Help with Opensteer on your computer and your phone.</p>
+        <p class="page__lede">
+          Help with Opensteer on your Mac, your phone and an Opensteer Cloud Computer.
+        </p>
 
         <div class="contact plate">
           <p>
@@ -28,34 +30,57 @@
         </div>
 
         <article class="prose">
-          <h2 id="setup">Set up your computer first</h2>
+          <h2 id="setup">Set up your Home first</h2>
           <p>
-            Opensteer runs on your own computer. The iPhone app connects to it; it requires a
-            running Opensteer computer. Start Opensteer on that computer, then follow the connection
-            setup shown in the app. Your agents use the accounts and tools configured on your
-            computer. <a href="/download">Download Opensteer for Mac</a>.
+            Opensteer keeps your browser profiles, apps, plugins, tasks and rules in one Home. Your
+            Home runs on your own Mac or on an Opensteer Cloud Computer, and the phone app connects
+            to it. Start Opensteer on your Mac, then follow the connection setup shown in the app.
+            <a href="/download">Download Opensteer for Mac</a>.
           </p>
 
           <h2 id="phone">If your phone cannot connect</h2>
           <p>
-            Check that your computer is awake, online and running Opensteer. For a local connection,
-            put both devices on the same network and check the connection address. For remote
-            access, check that your computer is linked to your Opensteer Account and Connect is
-            enabled. Confirm that your phone is using the intended Account and computer, then try
-            connecting again.
+            Check that your Mac is awake, online and running Opensteer. For a local connection, put
+            both devices on the same network and check the connection address. For remote access,
+            check that your Mac is linked to your Opensteer account and Remote access is on. Confirm
+            that your phone is using the intended account and Home, then try connecting again.
           </p>
 
-          <h2 id="account">Privacy and Account deletion</h2>
+          <h2 id="agents">Connect or disconnect an agent</h2>
+          <p>
+            In Opensteer, open Settings, then Connected agents, choose Add next to your agent and
+            follow its steps. You choose what it may use when it asks to connect. Agents such as
+            ChatGPT and Claude run in the cloud, so on a Mac Home turn on Remote access first; they
+            can reach your Mac only while it is on and awake.
+          </p>
+          <p>
+            To stop an agent's work, press Stop in its task. To take away everything you gave it,
+            open it in Connected agents and choose Disconnect. Opensteer can stop what happens next,
+            but it can't undo what an agent already did. If it says Uncertain, check the page or app
+            the agent was using.
+          </p>
+
+          <h2 id="cloud-computer">Opensteer Cloud Computer</h2>
+          <p>
+            Set up, suspend or delete your Cloud Computer in Opensteer under Settings, then Account.
+            It starts as a new Home, so connected agents connect again to its new address. Opensteer
+            bills you through Stripe each month, and you can cancel any time. For billing questions,
+            email <a href="mailto:tim@opensteer.com">tim@opensteer.com</a>.
+          </p>
+
+          <h2 id="account">Privacy and account deletion</h2>
           <p>
             Read our <a href="/privacy">Privacy Policy</a> for information about phone permissions,
             AI providers and data storage. You can revoke optional access in iPhone Settings and
             turn phone sharing off in Opensteer.
           </p>
           <p>
-            To delete your Opensteer Account, open Settings, then Account, then Delete Account. Sign
-            in again if asked and confirm deletion on the Account page. This disables Connect for
-            your owned computers and deletes central Account records; it does not erase work stored
-            on your computer or by AI providers. Signing out alone does not delete your Account.
+            To delete your Opensteer account, open Settings, then Account, then Delete Account. Sign
+            in again if asked and confirm deletion on the Account page. This turns off Remote access
+            for the computers you own and deletes central account records; it does not erase work
+            stored on your computer or by AI providers. Signing out alone does not delete your
+            account.
+            <!-- TODO(owner): say what deleting an account does to a paid Opensteer Cloud Computer. -->
             Email <a href="mailto:tim@opensteer.com">tim@opensteer.com</a> for privacy requests or
             if you cannot access the deletion flow.
           </p>
@@ -65,7 +90,7 @@
             Report public bugs at
             <a href="https://github.com/steerlabs/opensteer/issues" target="_blank" rel="noopener"
               >github.com/steerlabs/opensteer/issues</a
-            >. Issues are public, so send private Account and privacy requests by email.
+            >. Issues are public, so send private account and privacy requests by email.
           </p>
 
           <h2 id="security">Report a security issue</h2>
@@ -89,8 +114,8 @@
           <h2 id="old-opensteer">The old Opensteer</h2>
           <p>
             We shut down the old Opensteer command-line tool, agent templates and web console, and
-            rebuilt Opensteer as an app for your Mac and phone. If you have questions about the old
-            version or need help moving off it, email
+            rebuilt Opensteer for your Mac, your phone and the AI agents you already use. If you
+            have questions about the old version or need help moving off it, email
             <a href="mailto:tim@opensteer.com">tim@opensteer.com</a>.
           </p>
         </article>
