@@ -924,9 +924,7 @@ export class TabService implements TabServicePort {
     return binding;
   }
   async authorizeBind(claims: RunToolScope, tabId: TabId): Promise<void> {
-    const actor = { kind: "run", claims } as const;
-    const row = await this.#row(actor, tabId);
-    await this.options.authorize(actor, row, this.options.store.database);
+    await this.#row({ kind: "run", claims }, tabId);
   }
 
   async authorizeShow(claims: RunToolScope, tabId: TabId): Promise<void> {

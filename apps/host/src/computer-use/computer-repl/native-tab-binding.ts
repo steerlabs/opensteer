@@ -10,6 +10,11 @@ import type { NativeReplTabTarget } from "../native-tab-targets.js";
 import { ComputerUseError } from "../computer-use-service.js";
 import type { ReplReply } from "./messages.js";
 
+export interface ExistingNativeTab {
+  readonly tabId: TabId;
+  authorize(): Promise<void>;
+}
+
 export interface NativeTabBindingOptions {
   selfDeviceId(runnerId: RunnerId): Promise<DeviceId>;
   tabs: Pick<TabServicePort, "get" | "authorizeBind">;
@@ -19,7 +24,7 @@ export interface NativeTabBindingOptions {
   bind(
     connection: DeviceComputerConnection,
     target: NativeReplTabTarget,
-    beforeAcquired: () => Promise<void>,
+    existingTab: ExistingNativeTab,
   ): Promise<ReplReply>;
 }
 export async function bindNativeTab(
@@ -76,7 +81,7 @@ export async function bindNativeTab(
     });
   if (!connection) throw refused("not_found", "This tab is unavailable.");
   await authorize();
-  const reply = await options.bind(connection, target, authorize);
+  const reply = await options.bind(connection, target, { tabId, authorize });
   await authorize();
   const value = reply.value;
   if (!value || typeof value !== "object" || Array.isArray(value) || value.tabId !== tabId)

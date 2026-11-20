@@ -108,7 +108,10 @@ import {
   type ComputerReplInvocation,
 } from "../computer-use/computer-repl/computer-repl-service.js";
 import type { ReplContent, ReplReply } from "../computer-use/computer-repl/messages.js";
-import { bindNativeTab } from "../computer-use/computer-repl/native-tab-binding.js";
+import {
+  bindNativeTab,
+  type ExistingNativeTab,
+} from "../computer-use/computer-repl/native-tab-binding.js";
 import type { NativeReplTabTarget, NativeTabTargets } from "../computer-use/native-tab-targets.js";
 import {
   ComputerUseError,
@@ -984,7 +987,7 @@ export class DeviceService {
     args: Readonly<Record<string, unknown>>,
     signal?: AbortSignal,
     deadline?: number,
-    beforeAcquired?: () => Promise<void>,
+    existingTab?: ExistingNativeTab,
     facts?: Awaited<ReturnType<DeviceService["computerAccess"]>>,
   ): Promise<ReplReply> {
     const run = caller.run;
@@ -998,7 +1001,7 @@ export class DeviceService {
         args,
         signal,
         deadline,
-        beforeAcquired,
+        existingTab,
         facts,
       );
     } catch (error) {
@@ -1073,7 +1076,7 @@ export class DeviceService {
     args: Readonly<Record<string, unknown>>,
     signal?: AbortSignal,
     deadline?: number,
-    beforeAcquired?: () => Promise<void>,
+    existingTab?: ExistingNativeTab,
     facts?: Awaited<ReturnType<DeviceService["computerAccess"]>>,
   ): Promise<ReplReply> {
     const run = caller.run;
@@ -1244,7 +1247,9 @@ export class DeviceService {
       };
     };
     const membershipRevision =
-      operation === "bind" ? await this.#nativeTabs?.captureMembership(ownerUserId) : undefined;
+      operation === "bind" && !existingTab
+        ? await this.#nativeTabs?.captureMembership(ownerUserId)
+        : undefined;
     try {
       if (operation !== "release")
         lease = await computerUse.prepare(
@@ -1365,31 +1370,38 @@ export class DeviceService {
                 ? { performed }
                 : toolResult;
       if (operation === "bind") {
-        if (!this.#nativeTabs || run.aud !== "opensteer-run-tools")
+        if (run.aud !== "opensteer-run-tools")
           throw refused("conflict", "The tab service is unavailable.");
         signal?.throwIfAborted();
-        await beforeAcquired?.();
         const runClaims: RunToolScope = { ...run, aud: "opensteer-run-tools" };
-        const common = {
-          ownerId: ownerUserId,
-          runClaims,
-          computerId: placement.deviceId,
-          key: randomUUID(),
-          membershipRevision: membershipRevision!,
-        };
-        const targetAcquired = mac
-          ? {
-              ...common,
-              kind: "window" as const,
-              windowId: WindowIdSchema.parse(result?.window?.windowId),
-            }
-          : { ...common, kind: "phone" as const };
-        const tabId = this.#onDeviceTargetAcquired
-          ? await this.#onDeviceTargetAcquired(targetAcquired)
-          : await this.#nativeTabs.acquired({
-              ...targetAcquired,
-              computerId: await this.#store.requireDeviceSelfRunnerId(placement.deviceId),
-            });
+        let tabId: TabId;
+        if (existingTab) {
+          await existingTab.authorize();
+          tabId = existingTab.tabId;
+        } else {
+          if (!this.#nativeTabs || membershipRevision === undefined)
+            throw refused("conflict", "The tab service is unavailable.");
+          const common = {
+            ownerId: ownerUserId,
+            runClaims,
+            computerId: placement.deviceId,
+            key: randomUUID(),
+            membershipRevision,
+          };
+          const targetAcquired = mac
+            ? {
+                ...common,
+                kind: "window" as const,
+                windowId: WindowIdSchema.parse(result?.window?.windowId),
+              }
+            : { ...common, kind: "phone" as const };
+          tabId = this.#onDeviceTargetAcquired
+            ? await this.#onDeviceTargetAcquired(targetAcquired)
+            : await this.#nativeTabs.acquired({
+                ...targetAcquired,
+                computerId: await this.#store.requireDeviceSelfRunnerId(placement.deviceId),
+              });
+        }
         this.#onTabUsed?.(runClaims, tabId, result?.window?.title ?? placement.runnerName);
         return {
           value: z.json().parse(
@@ -1490,7 +1502,7 @@ export class DeviceService {
               ? access.app(machine, target.app).blocked
               : undefined;
           },
-          bind: async (connection, target, beforeAcquired) =>
+          bind: async (connection, target, existingTab) =>
             this.callComputerOperation(
               caller,
               connection.id,
@@ -1498,7 +1510,7 @@ export class DeviceService {
               target.kind === "window" ? { windowId: target.windowId } : {},
               request.signal,
               request.deadline,
-              beforeAcquired,
+              existingTab,
               await computerAccess(),
             ),
         },

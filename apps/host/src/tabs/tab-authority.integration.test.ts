@@ -334,6 +334,7 @@ integration("production tab authority", () => {
     const t = await fixture();
     try {
       const deviceId = createId("device");
+      const connectionId = createIntegrationId("connection");
       const home = await t.f.store.getDevice(await t.f.store.requireSelfDeviceId(t.run.runnerId));
       if (!home) throw new Error("Fixture Device missing");
       await t.f.database
@@ -353,7 +354,7 @@ integration("production tab authority", () => {
       await t.f.database
         .insertInto("integrationConnections")
         .values({
-          id: createIntegrationId("connection"),
+          id: connectionId,
           ownerUserId: t.run.userId,
           deviceId,
           runnerId: null,
@@ -401,6 +402,15 @@ integration("production tab authority", () => {
       expect((await t.service.list(t.actor, {})).tabs).toMatchObject([
         { tabId: first.tab.tabId, computer: { computerId: deviceId, name: "Travel iPhone" } },
       ]);
+      await t.f.database
+        .updateTable("integrationConnections")
+        .set({ computerAccess: "read" })
+        .where("id", "=", connectionId)
+        .execute();
+      await expect(t.service.authorizeBind(t.claims, first.tab.tabId)).resolves.toBeUndefined();
+      await expect(
+        t.service.acquired({ ...acquisition, key: "read-only-acquisition" }),
+      ).rejects.toMatchObject({ code: "not_found" });
       await t.f.store.removeDevice(deviceId, t.run.userId);
       await expect(
         t.service.activate(t.run.userId, first.tab.tabId, "removed-view"),
@@ -408,6 +418,9 @@ integration("production tab authority", () => {
       await expect(
         t.service.acquired({ ...acquisition, key: "removed-acquisition" }),
       ).rejects.toMatchObject({ code: "not_found" });
+      await expect(t.service.authorizeBind(t.claims, first.tab.tabId)).rejects.toMatchObject({
+        code: "not_found",
+      });
       expect((await t.store.snapshot(t.run.userId)).rows).toHaveLength(1);
     } finally {
       t.service.dispose();
