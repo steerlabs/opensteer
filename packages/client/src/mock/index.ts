@@ -15,3 +15,4 @@ export * from "./mock-screen-devices.js";
 export * from "./mock-iphone-setup.js";
 
 export { mockInputQueue } from "./mock-scoped-personal.js";
+export * from "./mock-connected-agents.js";

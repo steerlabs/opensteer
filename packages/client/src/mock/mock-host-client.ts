@@ -1864,6 +1864,8 @@ export interface MockHostClientOptions {
   sessions?: readonly AuthSessionSummary[];
   connections?: readonly import("@opensteer/protocol").AgentConnection[];
   connectionConsent?: import("@opensteer/protocol").AgentConnectionConsent;
+  /** Whether this Host advertises `agent-grants-v1`; true by default. */
+  agentGrantsAvailable?: boolean;
 }
 
 const mockWebhookOrigin = "https://mock.opensteer.invalid";
@@ -2142,9 +2144,15 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
               )?.id ?? null,
         }),
       ),
-    "connections.list": async () => rpcSuccess({ connections: client.listConnections() }),
-    "connections.authorization.get": async ({ requestId }) =>
-      rpcSuccess(client.connectionConsent(requestId)),
+    "connections.list": async (input) =>
+      rpcSuccess({ connections: client.listConnections(input.includeRevoked === true) }),
+    "connections.authorization.get": async ({ requestId }) => {
+      try {
+        return rpcSuccess(client.connectionConsent(requestId));
+      } catch (error) {
+        return mockRefusal(error);
+      }
+    },
     "personal.remoteAccess.get": async () => rpcSuccess(client.remoteAdministration),
     "apps.view": unsupportedMockRpc,
     "attachment.get": async ({ attachmentId }) => rpcSuccess(client.getAttachment(attachmentId)),
@@ -3360,6 +3368,15 @@ async function executeMockCommand(
       for (const listener of client.connectionsListeners) listener();
       return rpcSuccess(result);
     }
+    case "connection.update": {
+      const connection = client.updateConnection(command);
+      for (const listener of client.connectionsListeners) listener();
+      return rpcSuccess({ type: command.type, connection });
+    }
+    case "connection.remove":
+      client.removeConnection(command.connectionId);
+      for (const listener of client.connectionsListeners) listener();
+      return rpcSuccess({ type: command.type });
     case "session.revoke":
       await client.revokeSession(command.sessionId);
       return rpcSuccess({ type: command.type });
@@ -5816,7 +5833,7 @@ class MockHostState {
       consent.requestId !== requestId ||
       Date.parse(consent.expiresAt) <= this.now().getTime()
     )
-      throw mockConflict("This agent connection request expired.");
+      throw mockNotFound("This agent connection request expired. Start again from the agent.");
     return consent;
   }
   authorizeConnection(command: Extract<HostApiCommand, { type: "connection.authorize" }>) {
@@ -5833,7 +5850,13 @@ class MockHostState {
           label: command.decision.label,
           clientName: consent.clientName,
           accessMode: command.decision.accessMode,
-
+          grant: command.decision.grant ?? { scope: "everything" },
+          grantRevision: 1,
+          consentVersion: command.decision.grant ? 2 : 1,
+          client: { fingerprint: null, redirectOrigin: new URL(consent.redirectUri).origin },
+          state: "active",
+          lastActionUncertain: false,
+          revokedAt: null,
           createdAt: this.now().toISOString(),
           lastUsedAt: null,
           expiresAt: new Date(this.now().getTime() + 30 * 24 * 60 * 60_000).toISOString(),
@@ -5846,15 +5869,43 @@ class MockHostState {
       completionPath: `/oauth/mcp/complete?request=${command.requestId}`,
     };
   }
-  listConnections() {
+  listConnections(includeRevoked = false) {
     return this.connections.filter(
       (row) =>
-        row.userId === this.snapshot.user?.id && Date.parse(row.expiresAt) > this.now().getTime(),
+        row.userId === this.snapshot.user?.id &&
+        (includeRevoked ||
+          (row.state !== "stopped" && Date.parse(row.expiresAt) > this.now().getTime())),
     );
   }
   revokeConnection(id: string) {
+    const revokedAt = this.now().toISOString();
+    this.connections = this.connections.map((row) =>
+      row.id === id && row.userId === this.snapshot.user?.id && row.state !== "stopped"
+        ? { ...row, state: "stopped", revokedAt }
+        : row,
+    );
+  }
+  updateConnection(command: Extract<HostApiCommand, { type: "connection.update" }>) {
+    const current = this.listConnections().find((row) => row.id === command.connectionId);
+    if (!current) throw mockConflict("This connected agent is no longer connected.");
+    if ((current.grantRevision ?? 1) !== command.expectedRevision)
+      throw mockConflict("This connected agent changed since you opened it.");
+    const next = {
+      ...current,
+      ...(command.label !== undefined ? { label: command.label } : {}),
+      ...(command.accessMode !== undefined ? { accessMode: command.accessMode } : {}),
+      ...(command.grant !== undefined ? { grant: command.grant } : {}),
+      grantRevision: (current.grantRevision ?? 1) + 1,
+    };
+    this.connections = this.connections.map((row) => (row.id === current.id ? next : row));
+    return next;
+  }
+  removeConnection(id: string) {
     this.connections = this.connections.filter(
-      (row) => row.id !== id || row.userId !== this.snapshot.user?.id,
+      (row) =>
+        row.id !== id ||
+        row.userId !== this.snapshot.user?.id ||
+        (row.state !== "stopped" && row.state !== "expired"),
     );
   }
   readonly settings = new MockSettingsFixtures(
@@ -6721,6 +6772,7 @@ class MockHostState {
 
       quietTasksAvailable: options.quietTasksAvailable ?? true,
       agentImagesAvailable: options.agentImagesAvailable ?? true,
+      agentGrantsAvailable: options.agentGrantsAvailable ?? true,
     };
     const firstRun = options.world === "first-run";
     this.snapshot = firstRun ? firstRunWorld(initial) : initial;

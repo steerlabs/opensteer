@@ -1,6 +1,7 @@
 import {
   AgentConnectionAuthorizationTargetSchema,
   agentConnectionDeepLink,
+  type AgentConnectionConsent,
 } from "@opensteer/protocol";
 import {
   opensteerDesktopClient,
@@ -8,18 +9,53 @@ import {
   type ThreadAccessMode,
 } from "@opensteer/core";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
+import { classifyClientFailure } from "@opensteer/client/connections";
 import { useEffect, useRef, useState } from "react";
-import type { AgentConnectionConsent } from "@opensteer/protocol";
 import { Icon } from "./icon.js";
-import { SectionHeader } from "./settings/primitives.js";
+import { SectionHeader, SettingsRow } from "./settings/primitives.js";
 import {
   accessModeOptions,
+  agentBrowserOptions,
+  agentHomeName,
+  agentWords,
   answerAgentConnection,
+  connectedAgentIdentity,
   connectionDestination,
+  createDedicatedProfile,
+  grantFromDraft,
   unwrapRpcResult,
+  type AgentGrantDraft,
   type HostClient,
+  type HostSnapshot,
 } from "@opensteer/client/host";
+import { useHostSelector } from "@opensteer/client/react";
+import { AgentGrantEditor, ConnectionModeChoices } from "./settings/agent-grant-editor.js";
+import { AgentMark } from "./settings/agent-mark.js";
+import { QrCode } from "./first-run/qr-code.js";
 
+type Load =
+  | { readonly kind: "loading" }
+  | { readonly kind: "ready"; readonly consent: AgentConnectionConsent }
+  | { readonly kind: "expired"; readonly agent: string | null }
+  | { readonly kind: "answered" }
+  | { readonly kind: "failed" }
+  | { readonly kind: "missing" };
+
+const selectGrantsAvailable = (snapshot: HostSnapshot) => snapshot.agentGrantsAvailable === true;
+const selectProfiles = (snapshot: HostSnapshot) => snapshot.browserProfiles;
+const selectProfileHomes = (snapshot: HostSnapshot) => snapshot.browserProfileHomes;
+const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
+const selectIdentity = (snapshot: HostSnapshot) => snapshot.identityConfig;
+
+function failureCode(error: unknown): string {
+  return classifyClientFailure(error).code;
+}
+
+/**
+ * An agent asking to use this Opensteer, approved here and never in the agent.
+ * With a Home that stores grants the person chooses what it can use, defaulting to
+ * a new dedicated profile; an older Home keeps the simple consent it understands.
+ */
 export function McpAuthorization({
   client,
   requestId,
@@ -31,136 +67,207 @@ export function McpAuthorization({
   readonly desktopBridge?: Pick<OpensteerDesktopBridge, "openExternalUrl"> | null;
   readonly onClose?: (() => void) | undefined;
 }) {
-  const [consent, setConsent] = useState<AgentConnectionConsent | null>(null);
+  const grantsAvailable = useHostSelector(client, selectGrantsAvailable);
+  const profiles = useHostSelector(client, selectProfiles);
+  const profileHomes = useHostSelector(client, selectProfileHomes);
+  const machines = useHostSelector(client, selectMachines);
+  const identityConfig = useHostSelector(client, selectIdentity);
+  const browser = agentBrowserOptions({
+    browserProfiles: profiles,
+    ...(profileHomes === undefined ? {} : { browserProfileHomes: profileHomes }),
+    machines,
+  });
+  const home = agentHomeName({ machines, identityConfig });
+  const [load, setLoad] = useState<Load>({ kind: "loading" });
+  const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"allow" | "deny" | null>(null);
+  const [allowed, setAllowed] = useState(false);
   const [label, setLabel] = useState("");
   const [mode, setMode] = useState<ThreadAccessMode>("approval-required");
+  const [draft, setDraft] = useState<AgentGrantDraft | null>(null);
+  // A retried approval reuses the profile the first attempt created.
+  const createdProfile = useRef<string | null>(null);
   const revision = useRef(0);
+  const defaultHome = browser.defaultHome;
+  const canCreate = browser.homes === null || browser.homes.length > 0;
   useEffect(() => {
     const controller = new AbortController();
     ++revision.current;
-    setConsent(null);
+    setLoad({ kind: "loading" });
     setError(null);
-    setBusy(false);
+    setBusy(null);
+    setAllowed(false);
     setLabel("");
     setMode("approval-required");
+    setDraft(null);
+    createdProfile.current = null;
     if (!requestId) {
-      setError("This connection request is missing. Start again from the agent.");
+      setLoad({ kind: "missing" });
       return;
     }
     void client.rpc["connections.authorization.get"]({ requestId }, { signal: controller.signal })
       .then(unwrapRpcResult)
       .then((result) => {
         if (controller.signal.aborted) return;
-        setConsent(result);
+        setLoad({ kind: "ready", consent: result });
         setLabel(result.clientName);
       })
-      .catch(() => {
-        if (!controller.signal.aborted)
-          setError("This connection request could not be loaded. Start again from the agent.");
+      .catch((reason: unknown) => {
+        if (controller.signal.aborted) return;
+        setLoad(
+          failureCode(reason) === "not_found"
+            ? { kind: "expired", agent: null }
+            : { kind: "failed" },
+        );
       });
     return () => {
       controller.abort();
       ++revision.current;
     };
-  }, [client, requestId]);
+  }, [attempt, client, requestId]);
+  // The default waits for the Devices list, so a new profile lands where the Home keeps them.
+  const chosen: AgentGrantDraft = draft ?? {
+    scope: "selected",
+    tasks: false,
+    resources: [],
+    newProfile: canCreate ? { homeRunnerId: defaultHome } : null,
+  };
+
   async function decide(approve: boolean) {
-    if (!consent || busy) return;
-    const currentRevision = revision.current;
-    setBusy(true);
+    if (load.kind !== "ready" || busy) return;
+    const { consent } = load;
+    const current = revision.current;
+    setBusy(approve ? "allow" : "deny");
     setError(null);
+    const stale = () => current !== revision.current;
     try {
+      let grant;
+      if (approve && grantsAvailable) {
+        if (chosen.scope === "selected" && chosen.newProfile && !createdProfile.current) {
+          try {
+            createdProfile.current = await createDedicatedProfile(client, {
+              name: label,
+              homeRunnerId: chosen.newProfile.homeRunnerId,
+            });
+          } catch {
+            if (stale()) return;
+            setError(agentWords("consent.error.newProfile"));
+            setBusy(null);
+            return;
+          }
+          if (stale()) return;
+        }
+        grant = grantFromDraft(
+          chosen,
+          chosen.scope === "selected" && chosen.newProfile
+            ? (createdProfile.current ?? undefined)
+            : undefined,
+        );
+      }
       const completion = await answerAgentConnection(
         client,
         consent,
-        approve ? { kind: "approve", label, accessMode: mode } : { kind: "deny" },
+        approve
+          ? { kind: "approve", label, accessMode: mode, ...(grant ? { grant } : {}) }
+          : { kind: "deny" },
       );
-      if (currentRevision !== revision.current) return;
+      if (stale()) return;
+      if (approve) setAllowed(true);
       if (desktopBridge) {
         await desktopBridge.openExternalUrl({ url: completion });
-        if (currentRevision === revision.current) onClose?.();
+        if (!stale()) onClose?.();
       } else window.location.assign(completion);
-    } catch {
-      if (currentRevision !== revision.current) return;
-      setError("The connection could not be approved. Refresh and try again.");
-      setBusy(false);
+    } catch (reason) {
+      if (stale()) return;
+      const code = failureCode(reason);
+      if (code === "conflict") setLoad({ kind: "answered" });
+      else if (code === "not_found") setLoad({ kind: "expired", agent: consent.clientName });
+      else
+        setError(
+          agentWords(
+            classifyClientFailure(reason).kind === "rejection"
+              ? approve
+                ? "consent.error.approve"
+                : "consent.error.deny"
+              : approve
+                ? "consent.error.approveUnknown"
+                : "consent.error.denyUnknown",
+          ),
+        );
+      setBusy(null);
     }
   }
+
   return (
     <main className="page settings settings-layout">
       <div className="settings-content">
         <div className="settings-content__inner agent-consent">
-          {consent ? (
-            <>
-              <SectionHeader
-                title={`Allow ${consent.clientName} to use Opensteer?`}
-                lead="App names come from the app and are not verified. Only allow an agent you just added."
-              />
-              <p className="agent-consent__where">
-                <Icon name="globe" />
-                <span>{connectionDestination(consent.redirectUri)}</span>
-              </p>
-              <fieldset className="settings-group" disabled={busy}>
-                <legend className="settings-group__title">What it can change</legend>
-                <div className="card">
-                  {accessModeOptions.map((option) => (
-                    <label className="card__row agent-consent__mode" key={option.mode}>
-                      <input
-                        checked={mode === option.mode}
-                        name="agent-consent-mode"
-                        onChange={() => setMode(option.mode)}
-                        type="radio"
-                        value={option.mode}
-                      />
-                      <span className="card__row-body">
-                        <span className="card__row-title">{option.label}</span>
-                        <span className="card__row-detail">{option.description}</span>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
-              <label className="field">
-                <span className="field__label">Name</span>
-                <input
-                  className="text-input"
-                  value={label}
-                  maxLength={120}
-                  disabled={busy}
-                  onChange={(event) => setLabel(event.target.value)}
-                />
-              </label>
-              <p className="settings-footnote">
-                It can't approve requests, see passwords or give anyone access. This lasts 30 days,
-                and you can remove it any time in Settings → External agents.
-              </p>
-              <div className="form-actions">
-                <button
-                  className="btn"
-                  disabled={busy}
-                  type="button"
-                  onClick={() => void decide(false)}
-                >
-                  Deny
-                </button>
-                <button
-                  className="btn btn--primary"
-                  disabled={busy || !label.trim()}
-                  type="button"
-                  onClick={() => void decide(true)}
-                >
-                  Allow
-                </button>
-              </div>
-            </>
-          ) : !error ? (
-            <p role="status">Loading connection request…</p>
-          ) : null}
-          {error ? (
+          {load.kind === "loading" ? <p role="status">{agentWords("consent.loading")}</p> : null}
+          {load.kind === "missing" ? (
             <p className="notice notice--error" role="alert">
-              {error}
+              {agentWords("consent.missing")}
             </p>
+          ) : null}
+          {load.kind === "expired" ? (
+            <ConsentEnded
+              detail={
+                load.agent
+                  ? agentWords("consent.edge.expired.detail", { agent: load.agent })
+                  : agentWords("consent.edge.expired.detailUnnamed")
+              }
+              title={agentWords("consent.edge.expired.title")}
+            />
+          ) : null}
+          {load.kind === "answered" ? (
+            <ConsentEnded
+              detail={agentWords("consent.edge.answered.detail")}
+              title={agentWords("consent.edge.answered.title")}
+            />
+          ) : null}
+          {load.kind === "failed" ? (
+            <ConsentEnded
+              detail={agentWords("consent.edge.failed.detail")}
+              onRetry={() => setAttempt((n) => n + 1)}
+              title={agentWords("consent.edge.failed.title")}
+            />
+          ) : null}
+          {load.kind === "ready" && allowed ? (
+            <div className="card" role="status">
+              <SettingsRow
+                detail={agentWords("consent.allowed.detail", { agent: label.trim() })}
+                title={
+                  <>
+                    <Icon name="check-circle" />
+                    {agentWords("consent.allowed.title", { agent: label.trim() })}
+                  </>
+                }
+              />
+            </div>
+          ) : null}
+          {load.kind === "ready" && !allowed ? (
+            <ConsentForm
+              agent={label.trim() || load.consent.clientName}
+              busy={busy}
+              consent={load.consent}
+              error={error}
+              grants={
+                grantsAvailable
+                  ? {
+                      browser,
+                      client,
+                      draft: chosen,
+                      home,
+                      onDraft: setDraft,
+                    }
+                  : null
+              }
+              label={label}
+              mode={mode}
+              onDecide={(approve) => void decide(approve)}
+              onLabel={setLabel}
+              onMode={setMode}
+            />
           ) : null}
           {onClose ? (
             <button className="btn" type="button" onClick={onClose}>
@@ -173,6 +280,162 @@ export function McpAuthorization({
   );
 }
 
+function ConsentEnded({
+  detail,
+  onRetry,
+  title,
+}: {
+  readonly detail: string;
+  readonly onRetry?: () => void;
+  readonly title: string;
+}) {
+  return (
+    <>
+      <SectionHeader title={title} lead={detail} />
+      {onRetry ? (
+        <div>
+          <button className="btn" onClick={onRetry} type="button">
+            {agentWords("common.tryAgain")}
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function ConsentForm({
+  agent,
+  busy,
+  consent,
+  error,
+  grants,
+  label,
+  mode,
+  onDecide,
+  onLabel,
+  onMode,
+}: {
+  readonly agent: string;
+  readonly busy: "allow" | "deny" | null;
+  readonly consent: AgentConnectionConsent;
+  readonly error: string | null;
+  readonly grants: {
+    readonly browser: ReturnType<typeof agentBrowserOptions>;
+    readonly client: HostClient;
+    readonly draft: AgentGrantDraft;
+    readonly home: string;
+    readonly onDraft: (draft: AgentGrantDraft) => void;
+  } | null;
+  readonly label: string;
+  readonly mode: ThreadAccessMode;
+  readonly onDecide: (approve: boolean) => void;
+  readonly onLabel: (label: string) => void;
+  readonly onMode: (mode: ThreadAccessMode) => void;
+}) {
+  const identity = connectedAgentIdentity(
+    { label: agent, clientName: consent.clientName },
+    consent.redirectUri,
+  );
+  const disabled = busy !== null;
+  return (
+    <>
+      <div className="agent-consent__identity">
+        {grants ? <AgentMark identity={identity} large /> : null}
+        <SectionHeader
+          title={
+            grants
+              ? agentWords("consent.title", { agent })
+              : agentWords("consent.legacyTitle", { agent: consent.clientName })
+          }
+        />
+      </div>
+      <p className="agent-consent__where">
+        {grants && !identity.local ? (
+          <Icon className="agent-consent__verified" name="check-circle" />
+        ) : (
+          <Icon name={identity.local ? "laptop" : "globe"} />
+        )}
+        <span>{connectionDestination(consent.redirectUri)}</span>
+      </p>
+      <p className="settings-section__lead">{agentWords("consent.unverified")}</p>
+      {grants ? (
+        <>
+          <AgentGrantEditor
+            agent={agent}
+            browser={grants.browser}
+            client={grants.client}
+            disabled={disabled}
+            draft={grants.draft}
+            home={grants.home}
+            onChange={grants.onDraft}
+          />
+          <ConnectionModeChoices
+            disabled={disabled}
+            mode={mode}
+            onChange={onMode}
+            showSettingsNote={grants.draft.scope === "everything"}
+          />
+        </>
+      ) : (
+        <fieldset className="settings-group" disabled={disabled}>
+          <legend className="settings-group__title">What it can change</legend>
+          <div className="card">
+            {accessModeOptions.map((option) => (
+              <label className="card__row agent-consent__mode" key={option.mode}>
+                <input
+                  checked={mode === option.mode}
+                  name="agent-consent-mode"
+                  onChange={() => onMode(option.mode)}
+                  type="radio"
+                  value={option.mode}
+                />
+                <span className="card__row-body">
+                  <span className="card__row-title">{option.label}</span>
+                  <span className="card__row-detail">{option.description}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      )}
+      <label className="field">
+        <span className="field__label">{agentWords("consent.name.title")}</span>
+        <input
+          className="text-input"
+          disabled={disabled}
+          maxLength={120}
+          onChange={(event) => onLabel(event.target.value)}
+          placeholder={agentWords("consent.name.placeholder")}
+          value={label}
+        />
+      </label>
+      <p className="settings-footnote">
+        {grants
+          ? agentWords("consent.finePrint", { agent })
+          : agentWords("consent.legacyFinePrint")}
+      </p>
+      {error ? (
+        <p className="notice notice--error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="form-actions">
+        <button className="btn" disabled={disabled} onClick={() => onDecide(false)} type="button">
+          {busy === "deny" ? agentWords("consent.denying") : agentWords("consent.deny")}
+        </button>
+        <button
+          className="btn btn--primary"
+          disabled={disabled || !label.trim()}
+          onClick={() => onDecide(true)}
+          type="button"
+        >
+          {busy === "allow" ? agentWords("consent.allowing") : agentWords("consent.allow")}
+        </button>
+      </div>
+    </>
+  );
+}
+
 /**
  * A phone or tablet hands the request to the mobile app; anything else to the
  * desktop app. iPad Safari presents itself as a Mac, so touch tells them apart.
@@ -181,10 +444,14 @@ function installedClient() {
   const agent = navigator.userAgent;
   return /Android|iPhone|iPad|iPod/u.test(agent) ||
     (/Macintosh/u.test(agent) && navigator.maxTouchPoints > 1)
-    ? { client: opensteerMobileClient, device: "phone" }
-    : { client: opensteerDesktopClient, device: "computer" };
+    ? { client: opensteerMobileClient, device: "phone" as const }
+    : { client: opensteerDesktopClient, device: "computer" as const };
 }
 
+/**
+ * The page an agent's sign-in lands on where nobody is signed in. It approves nothing;
+ * on a computer it also offers the same request to the phone, as a code to scan.
+ */
 export function McpAuthorizationLaunch({
   requestId,
   deploymentId,
@@ -199,19 +466,37 @@ export function McpAuthorizationLaunch({
       <div className="settings-content">
         <div className="settings-content__inner">
           <SectionHeader
-            title="Review the agent in Opensteer"
-            lead={`Open the Opensteer app on this ${device} to choose what the agent can do. This link carries no sign-in and approves nothing.`}
+            title={agentWords("consent.launch.title")}
+            lead={agentWords("consent.launch.lead", { device })}
           />
           {target.success ? (
-            <a
-              className="btn btn--primary"
-              href={agentConnectionDeepLink(client.applicationId, target.data)}
-            >
-              Open Opensteer
-            </a>
+            <>
+              <div>
+                <a
+                  className="btn btn--primary"
+                  href={agentConnectionDeepLink(client.applicationId, target.data)}
+                >
+                  {agentWords("consent.launch.open")}
+                </a>
+              </div>
+              {device === "computer" ? (
+                <div className="agent-consent__handoff">
+                  <span className="agent-consent__qr">
+                    <QrCode
+                      label={agentWords("consent.launch.qrLabel")}
+                      value={agentConnectionDeepLink(
+                        opensteerMobileClient.applicationId,
+                        target.data,
+                      )}
+                    />
+                  </span>
+                  <p className="settings-footnote">{agentWords("consent.launch.qr")}</p>
+                </div>
+              ) : null}
+            </>
           ) : (
             <p className="notice notice--error" role="alert">
-              This connection request is invalid. Start again from the agent.
+              {agentWords("consent.launch.invalid")}
             </p>
           )}
         </div>

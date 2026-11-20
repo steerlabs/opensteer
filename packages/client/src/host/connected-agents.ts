@@ -1,7 +1,13 @@
 import { createClientRead, type ClientRead } from "../reads/client-read.js";
 import { createClientActionFamily, type ClientAction } from "../actions/client-action.js";
 import { presentClientIssue, type ClientIssue } from "../feedback/client-issue.js";
-import type { IdentityConfig, ThreadAccessMode } from "@opensteer/core";
+import {
+  RunnerIdSchema,
+  type AgentGrant,
+  type IdentityConfig,
+  type ThreadAccessMode,
+} from "@opensteer/core";
+import { classifyClientFailure } from "../connections/operation-error.js";
 import {
   agentConnectionMcpPath,
   type AgentConnection,
@@ -18,8 +24,32 @@ export interface ConnectedAgentsSnapshot {
   readonly connections: readonly AgentConnection[] | null;
   readonly error: string | null;
   readonly issue: ClientIssue | null;
+  /** The connection an action is running for. */
   readonly pending: string | null;
+  readonly pendingAction: ConnectedAgentAction | null;
+  /** Disconnects the Home confirmed that the list has not reported on yet. */
+  readonly revoked: ReadonlySet<string>;
+  /** The connection whose edit lost to a newer change; the list was read again. */
+  readonly conflict: string | null;
+  /** The Home stores grants (`agent-grants-v1`); without it consent stays the simple one. */
+  readonly grantsAvailable: boolean;
 }
+export type ConnectedAgentAction = "revoke" | "update" | "remove";
+
+/** What an edit sends: the revision it was made against, and only what changed. */
+export interface ConnectedAgentUpdate {
+  readonly expectedRevision: number;
+  readonly label?: string;
+  readonly accessMode?: ThreadAccessMode;
+  readonly grant?: AgentGrant;
+}
+export type ConnectedAgentUpdateResult =
+  | { readonly kind: "saved"; readonly connection: AgentConnection }
+  | { readonly kind: "conflict" }
+  | { readonly kind: "gone" }
+  | { readonly kind: "failed" };
+
+const noRevokes: ReadonlySet<string> = new Set();
 const resources = new WeakMap<HostClient, ConnectedAgentsClient>();
 export function connectedAgentsClient(client: HostClient): ConnectedAgentsClient {
   let resource = resources.get(client);
@@ -29,36 +59,58 @@ export function connectedAgentsClient(client: HostClient): ConnectedAgentsClient
   }
   return resource;
 }
+type ConnectedAgentsHost = Pick<
+  HostClient,
+  "connection" | "rpc" | "dispatch" | "subscribe" | "getSnapshot" | "subscribeConnectionsChanged"
+>;
 export class ConnectedAgentsClient {
   readonly read: ClientRead<readonly AgentConnection[]>;
+  readonly #client: ConnectedAgentsHost;
   readonly #listeners = new Set<() => void>();
   readonly #revokes: ReturnType<typeof createClientActionFamily<string, void>>;
-  #state: ConnectedAgentsSnapshot = { connections: null, error: null, issue: null, pending: null };
+  readonly #updates: ReturnType<
+    typeof createClientActionFamily<
+      { readonly connectionId: string; readonly update: ConnectedAgentUpdate },
+      ConnectedAgentUpdateResult
+    >
+  >;
+  readonly #removes: ReturnType<typeof createClientActionFamily<string, void>>;
+  #state: ConnectedAgentsSnapshot;
   #release: (() => void) | null = null;
   #starts = 0;
-  #action: ClientAction<string, void> | null = null;
-  constructor(
-    client: Pick<
-      HostClient,
-      | "connection"
-      | "rpc"
-      | "dispatch"
-      | "subscribe"
-      | "getSnapshot"
-      | "subscribeConnectionsChanged"
-    >,
-  ) {
+  #action: ClientAction<never, unknown> | null = null;
+  #revoked = new Set<string>();
+  #grantsAvailable: boolean;
+  constructor(client: ConnectedAgentsHost) {
+    this.#client = client;
+    this.#grantsAvailable = client.getSnapshot().agentGrantsAvailable === true;
+    this.#state = {
+      connections: null,
+      error: null,
+      issue: null,
+      pending: null,
+      pendingAction: null,
+      revoked: noRevokes,
+      conflict: null,
+      grantsAvailable: this.#grantsAvailable,
+    };
     this.read = createClientRead(client, {
       key: "connected-agents",
       label: "connected agents",
       read: async (signal) =>
-        unwrapRpcResult(await client.rpc["connections.list"]({}, { signal })).connections,
+        unwrapRpcResult(
+          await client.rpc["connections.list"](
+            // Ended connections stay listed with their outcome until the person removes them.
+            client.getSnapshot().agentGrantsAvailable === true ? { includeRevoked: true } : {},
+            { signal },
+          ),
+        ).connections,
       subscribeInvalidation: (listener) => client.subscribeConnectionsChanged(listener),
     });
     this.#revokes = createClientActionFamily(client, {
-      label: "revoke this agent",
-      done: "revoked",
-      happened: "this agent was revoked",
+      label: "disconnect this agent",
+      done: "disconnected",
+      happened: "this agent was disconnected",
       execute: async (connectionId) => {
         await client.dispatch({
           type: "connection.revoke",
@@ -67,10 +119,47 @@ export class ConnectedAgentsClient {
         });
       },
       reconcile: async (connectionId) => {
-        const { connections } = unwrapRpcResult(await client.rpc["connections.list"]({}));
-        return connections.some((row) => row.id === connectionId)
-          ? null
-          : { kind: "confirmed", value: undefined };
+        const { connections } = unwrapRpcResult(
+          await client.rpc["connections.list"]({ includeRevoked: true }),
+        );
+        const row = connections.find((candidate) => candidate.id === connectionId);
+        return !row || row.revokedAt || (row.state !== undefined && row.state !== "active")
+          ? { kind: "confirmed", value: undefined }
+          : null;
+      },
+    });
+    this.#updates = createClientActionFamily(client, {
+      label: "save this change",
+      done: "saved",
+      happened: "this change was saved",
+      execute: async ({ connectionId, update }): Promise<ConnectedAgentUpdateResult> => {
+        try {
+          const result = await client.dispatch({
+            type: "connection.update",
+            connectionId,
+            idempotencyKey: mutationIdempotencyKey("connection-update"),
+            ...update,
+          });
+          if (result.type !== "connection.update") return { kind: "failed" };
+          return { kind: "saved", connection: result.connection };
+        } catch (error) {
+          const code = classifyClientFailure(error).code;
+          if (code === "conflict") return { kind: "conflict" };
+          if (code === "not_found") return { kind: "gone" };
+          throw error;
+        }
+      },
+    });
+    this.#removes = createClientActionFamily(client, {
+      label: "remove this agent from the list",
+      done: "removed",
+      happened: "this agent was removed from the list",
+      execute: async (connectionId) => {
+        await client.dispatch({
+          type: "connection.remove",
+          connectionId,
+          idempotencyKey: mutationIdempotencyKey("connection-remove"),
+        });
       },
     });
   }
@@ -81,21 +170,49 @@ export class ConnectedAgentsClient {
       this.#listeners.delete(listener);
     };
   };
+  #publish(patch: Partial<ConnectedAgentsSnapshot>): void {
+    this.#state = { ...this.#state, ...patch };
+    this.#listeners.forEach((listener) => listener());
+  }
   #changed = (): void => {
     const read = this.read.getSnapshot(),
       action = this.#action?.getSnapshot();
     const issue = action?.issue ?? read.issue;
-    this.#state = {
-      connections: read.status === "ready" ? read.data : null,
+    const connections = read.status === "ready" ? read.data : null;
+    // A revoke stays this client's own fact only until the Home lists its outcome.
+    if (connections && this.#revoked.size) {
+      for (const id of this.#revoked) {
+        const row = connections.find((candidate) => candidate.id === id);
+        if (!row || (row.state !== undefined && row.state !== "active") || row.revokedAt)
+          this.#revoked.delete(id);
+      }
+    }
+    this.#publish({
+      connections,
       issue,
       error: issue ? presentClientIssue(issue).title : null,
       pending: action?.running ? this.#state.pending : null,
-    };
-    this.#listeners.forEach((listener) => listener());
+      pendingAction: action?.running ? this.#state.pendingAction : null,
+      revoked: this.#revoked.size ? new Set(this.#revoked) : noRevokes,
+      grantsAvailable: this.#grantsAvailable,
+    });
+  };
+  #capabilityChanged = (): void => {
+    const available = this.#client.getSnapshot().agentGrantsAvailable === true;
+    if (available === this.#grantsAvailable) return;
+    this.#grantsAvailable = available;
+    this.read.invalidate();
+    this.#changed();
   };
   start(): () => void {
     if (this.#starts++ === 0) {
-      this.#release = this.read.subscribe(this.#changed);
+      const releaseRead = this.read.subscribe(this.#changed);
+      const releaseHost = this.#client.subscribe(this.#capabilityChanged);
+      this.#release = () => {
+        releaseRead();
+        releaseHost();
+      };
+      this.#capabilityChanged();
       this.#changed();
     }
     let released = false;
@@ -109,18 +226,70 @@ export class ConnectedAgentsClient {
     };
   }
   refresh = (): Promise<void> => (this.#release ? this.read.refresh() : Promise.resolve());
-  revoke = async (connectionId: string): Promise<void> => {
-    const action = this.#revokes.for(connectionId);
-    this.#action = action;
-    this.#state = { ...this.#state, pending: connectionId };
+  async #run<I, O>(
+    action: ClientAction<I, O>,
+    kind: ConnectedAgentAction,
+    connectionId: string,
+    input: I,
+  ) {
+    this.#action = action as unknown as ClientAction<never, unknown>;
+    this.#publish({ pending: connectionId, pendingAction: kind, conflict: null });
     const release = action.subscribe(this.#changed);
     try {
-      const outcome = await action.run(connectionId);
-      if (outcome.kind === "confirmed") this.read.invalidate();
+      return await action.run(input);
     } finally {
       release();
       this.#changed();
     }
+  }
+  /** Disconnect: authority ends when the Home confirms; the list then says how its work stopped. */
+  revoke = async (connectionId: string): Promise<void> => {
+    const outcome = await this.#run(
+      this.#revokes.for(connectionId),
+      "revoke",
+      connectionId,
+      connectionId,
+    );
+    if (outcome.kind === "confirmed") {
+      this.#revoked.add(connectionId);
+      this.#changed();
+      this.read.invalidate();
+    }
+  };
+  /** Saves an edit made against `expectedRevision`; a stale one reads the list again. */
+  update = async (
+    connectionId: string,
+    update: ConnectedAgentUpdate,
+  ): Promise<ConnectedAgentUpdateResult> => {
+    const outcome = await this.#run(this.#updates.for(connectionId), "update", connectionId, {
+      connectionId,
+      update,
+    });
+    if (outcome.kind !== "confirmed") return { kind: "failed" };
+    const result = outcome.value;
+    if (result.kind === "saved") {
+      const connections = this.#state.connections?.map((row) =>
+        row.id === connectionId ? result.connection : row,
+      );
+      if (connections) this.#publish({ connections });
+    } else if (result.kind === "conflict") this.#publish({ conflict: connectionId });
+    if (result.kind !== "failed") this.read.invalidate();
+    return result;
+  };
+  /** Takes an ended connection off the list. */
+  remove = async (connectionId: string): Promise<void> => {
+    const outcome = await this.#run(
+      this.#removes.for(connectionId),
+      "remove",
+      connectionId,
+      connectionId,
+    );
+    if (outcome.kind === "confirmed") this.read.invalidate();
+  };
+  dismiss = (): void => {
+    this.#action?.dismiss();
+    this.#publish({ conflict: null });
+    this.#changed();
   };
 }
 /**
@@ -253,7 +422,7 @@ export function guideAddress(
   if (reach.reach === "private-network" && guide.providerId !== null)
     return {
       kind: "blocked",
-      detail: `${guide.name} can’t reach a private network address. Switch Use from anywhere to your Opensteer Account, under Advanced.`,
+      detail: `${guide.name} can’t reach a private network address. Switch Remote access to your Opensteer Account, under Advanced.`,
     };
   return { kind: "address", url: reach.url };
 }
@@ -311,6 +480,8 @@ export async function answerAgentConnection(
         readonly kind: "approve";
         readonly label: string;
         readonly accessMode: ThreadAccessMode;
+        /** Sent only to a Home with `agent-grants-v1`; without it the agent may do everything. */
+        readonly grant?: AgentGrant;
       },
 ): Promise<string> {
   const result = await client.dispatch({
@@ -324,6 +495,7 @@ export async function answerAgentConnection(
             kind: "approve",
             label: decision.label.trim(),
             accessMode: decision.accessMode,
+            ...(decision.grant ? { grant: decision.grant } : {}),
           },
   });
   if (result.type !== "connection.authorize") throw new Error("Unexpected consent result.");
@@ -333,4 +505,25 @@ export async function answerAgentConnection(
 /** The same words every Thread uses for these modes. */
 export function connectionAccessLabel(mode: AgentConnection["accessMode"]): string {
   return accessModeOptions.find((option) => option.mode === mode)?.label ?? mode;
+}
+
+/**
+ * Creates the dedicated profile a consent chose, through the same command Browser
+ * profiles uses, and returns its id. The caller keeps the id so a retried approval
+ * reuses it rather than creating a second profile.
+ */
+export async function createDedicatedProfile(
+  client: Pick<HostClient, "dispatch">,
+  input: { readonly name: string; readonly homeRunnerId: string | null },
+): Promise<string> {
+  const result = await client.dispatch({
+    type: "browser.profile.create",
+    idempotencyKey: mutationIdempotencyKey("agent-profile"),
+    input: {
+      name: input.name.trim().slice(0, 120),
+      ...(input.homeRunnerId ? { homeRunnerId: RunnerIdSchema.parse(input.homeRunnerId) } : {}),
+    },
+  });
+  if (result.type !== "browser.profile.create") throw new Error("Unexpected profile result.");
+  return result.profile.id;
 }

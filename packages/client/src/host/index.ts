@@ -85,6 +85,9 @@ export * from "./personal-remote-access.js";
 export * from "./remote-access.js";
 export * from "./browser-cursor.js";
 export * from "./connected-agents.js";
+export * from "./connected-agents-copy.js";
+export * from "./connected-agent-view.js";
+export * from "./connected-agent-options.js";
 
 export * from "./automatic-models.js";
 

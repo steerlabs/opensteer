@@ -1208,13 +1208,15 @@ button.card__row > .card__row-body {
 }
 
 /* Agent consent: where access goes, then the four access modes as one card of choices. */
-.agent-consent fieldset {
+.agent-consent fieldset,
+.settings-content__inner fieldset.settings-group {
   min-width: 0;
   margin: 0;
   padding: 0;
   border: 0;
 }
-.agent-consent legend {
+.agent-consent legend,
+.settings-content__inner fieldset.settings-group > legend {
   padding: 0;
   margin-bottom: var(--space-8);
 }
@@ -1240,6 +1242,222 @@ button.card__row > .card__row-body {
   flex: none;
   margin: 0;
   accent-color: var(--ember);
+}
+
+/* A connected agent's mark: its provider's logo when its origin is proven, its initial otherwise. */
+.settings-layout .card__row-glyph.agent-mark {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-sm);
+  background: var(--sheen) var(--surface-raised);
+  box-shadow: var(--edge-plate);
+  color: var(--text);
+  font-weight: var(--weight-bold);
+}
+.agent-mark .provider-logo {
+  width: 18px;
+  height: 18px;
+}
+.settings-layout .card__row-glyph.agent-mark--large {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  font-size: var(--display-sm);
+}
+.agent-mark--large .provider-logo {
+  width: 24px;
+  height: 24px;
+}
+.agent-consent__identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-14);
+}
+.agent-consent__identity .settings-section__header {
+  margin: 0;
+}
+.agent-consent__where .agent-consent__verified {
+  color: var(--green);
+}
+.agent-consent__handoff {
+  display: flex;
+  align-items: center;
+  gap: var(--space-14);
+  margin-top: var(--space-12);
+}
+.agent-consent__qr {
+  flex: none;
+  width: 120px;
+  height: 120px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+}
+
+/* What an agent can use: each list opens in place under its row. */
+.agent-grant__list {
+  gap: var(--space-12);
+}
+.agent-grant__option {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+.agent-grant__option .settings-segmented,
+.agent-grant__keep {
+  align-self: flex-start;
+  margin-left: var(--space-28);
+}
+.agent-grant__keep .select-input {
+  min-width: 220px;
+}
+.agent-grant__check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  min-width: 0;
+}
+label.agent-grant__check {
+  cursor: pointer;
+}
+.agent-grant__check > input[type="checkbox"]:not(.switch) {
+  flex: none;
+  margin: 0;
+  accent-color: var(--ember);
+}
+.agent-grant__check .card__row-title .chip {
+  font-weight: var(--weight-strong);
+}
+.agent-grant__plugin {
+  flex-wrap: wrap;
+}
+.agent-grant__plugin .card__row-body {
+  flex: 1 1 160px;
+}
+.agent-grant__plugin .settings-segmented {
+  flex: none;
+}
+.agent-grant__plugin .settings-segmented > button {
+  white-space: nowrap;
+}
+.agent-grant__empty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+}
+.agent-grant__empty .card__row-body {
+  flex: 1;
+}
+.agent-grant__list .settings-footnote {
+  margin: 0;
+}
+.agent-grant__warning {
+  color: var(--red-text);
+}
+.agent-grant__caution {
+  color: var(--amber-text);
+}
+
+/* Connected agents: one row per agent, opening its page. */
+.connected-agents__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.connected-agents__list > li + li {
+  border-top: 1px solid var(--line);
+}
+.connected-agents__row {
+  color: inherit;
+  text-decoration: none;
+}
+a.connected-agents__row:hover {
+  background: var(--fill-quiet);
+  text-decoration: none;
+}
+a.connected-agents__row:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: -2px;
+}
+.connected-agents__row .connected-agents__line--attention {
+  color: var(--amber-text);
+}
+.connected-agents__chevron {
+  color: var(--muted);
+}
+.connected-agent__back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  align-self: flex-start;
+}
+.connected-agent__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-14);
+}
+.connected-agent__header .settings-section__title {
+  flex: 1;
+  min-width: 0;
+}
+.connected-agent__status {
+  align-items: flex-start;
+}
+.connected-agent__status > .status-dot {
+  margin-top: var(--space-6);
+}
+.connected-agent__status-label {
+  display: block;
+  color: var(--text);
+  font-weight: var(--weight-strong);
+}
+.connected-agent__status-detail {
+  display: block;
+}
+.connected-agent__steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  margin: var(--space-10) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.connected-agent__steps li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--muted);
+}
+.connected-agent__steps li > span {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--rim-control);
+  border-radius: var(--radius-full);
+}
+.connected-agent__steps li[data-state="done"] {
+  color: var(--text-soft);
+}
+.connected-agent__steps li[data-state="done"] svg {
+  width: 14px;
+  height: 14px;
+  color: var(--green);
+}
+.connected-agent__steps li[data-state="current"] {
+  color: var(--text);
+}
+.connected-agent__steps li[data-state="current"] > span {
+  border-color: var(--ember);
+}
+.connected-agent__uncertain {
+  border-color: var(--amber-line);
+  background-color: var(--amber-wash);
+  color: var(--amber-text);
+}
+.connected-agent__uncertain strong {
+  color: var(--amber);
+}
+.connected-agent__end {
+  margin-top: var(--space-10);
 }
 
 /* External agent setup: the address under its step, and the one live line under the steps. */

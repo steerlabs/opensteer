@@ -16,7 +16,7 @@ afterEach(() => {
 
 describe("signed-in MCP connection consent", () => {
   it("discards an old approval response after the window receives another request", async () => {
-    host = new MockHostClient({ latencyMs: 0 });
+    host = new MockHostClient({ latencyMs: 0, agentGrantsAvailable: false });
     Object.defineProperty(host.rpc, "connections.authorization.get", {
       value: vi.fn(async ({ requestId }: { requestId: string }) => ({
         ok: true,
@@ -173,8 +173,8 @@ describe("signed-in MCP connection consent", () => {
     });
     expect(onClose).toHaveBeenCalledOnce();
   });
-  it("requires a deliberate approval and defaults to an approval ceiling", async () => {
-    host = new MockHostClient({ latencyMs: 0 });
+  it("keeps the simple consent on a Home without grants, and defaults to an approval ceiling", async () => {
+    host = new MockHostClient({ latencyMs: 0, agentGrantsAvailable: false });
     Object.defineProperty(host.rpc, "connections.authorization.get", {
       value: vi.fn(async () => ({
         ok: true,
@@ -196,8 +196,10 @@ describe("signed-in MCP connection consent", () => {
       root!.render(<McpAuthorization client={host!} requestId={"r".repeat(43)} />),
     );
     expect(dispatch).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("not verified");
+    expect(container.textContent).toContain("Allow Example agent to use Opensteer?");
+    expect(container.textContent).toContain("aren’t verified");
     expect(container.textContent).toContain("Access goes to example.agent.");
+    expect(container.textContent).not.toContain("What it can use");
     expect(container.querySelector<HTMLInputElement>('input[type="radio"]:checked')!.value).toBe(
       "approval-required",
     );
@@ -215,9 +217,8 @@ describe("signed-in MCP connection consent", () => {
         },
       }),
     );
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "could not be approved",
-    );
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("approved");
   });
   it("never approves an expired or unreadable request", async () => {
     host = new MockHostClient({ latencyMs: 0 });

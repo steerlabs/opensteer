@@ -76,7 +76,7 @@ describe("Device settings placement", () => {
     // External agents have their own page and load only when it opens.
     expect(landing).not.toContain("external agents");
     expect(renderSettings(context, "/settings/external-agents")).toContain(
-      "Loading external agents…",
+      "Loading connected agents…",
     );
   });
 

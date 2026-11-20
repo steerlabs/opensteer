@@ -251,7 +251,7 @@ export function SettingsSectionRoute({
       break;
     case "external-agents":
       content = (
-        <Suspense fallback={<p role="status">Loading external agents…</p>}>
+        <Suspense fallback={<p role="status">Loading connected agents…</p>}>
           <ExternalAgentsSection client={hostClient} view={view} />
         </Suspense>
       );

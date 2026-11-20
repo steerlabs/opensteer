@@ -142,6 +142,8 @@ async function renderOpensteer(): Promise<void> {
             {
               MockHostClient,
               createMockIphoneSetupPort,
+              mockConnectedAgentScenes,
+              mockConnectedAgents,
               mockIphoneSetupScenes,
               mockSubagentScenes,
             },
@@ -224,7 +226,14 @@ async function renderOpensteer(): Promise<void> {
               // desktop app would on a Mac that is new to it, can't finish setting
               // up, is one of its devices, or hosts it.
               const desktopScenario = search.get("mock-desktop");
+              // `?mock-agents` seeds connected agents in each state and a consent from Grok
+              // at `/mcp-authorization?request=` its id; `=expired` leaves that consent expired.
+              const agents = search.has("mock-agents")
+                ? (mockConnectedAgentScenes.find((scene) => scene === search.get("mock-agents")) ??
+                  "seeded")
+                : null;
               const client = new MockHostClient({
+                ...(agents ? mockConnectedAgents(agents) : {}),
                 // `?mock-sessions=browser`: this window is a web browser's session.
                 ...(desktopScenario === "new-mac" || desktopScenario === "blocked"
                   ? { sessions: mockUnboundSessions("Opensteer for Mac") }
