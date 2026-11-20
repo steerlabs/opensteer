@@ -93,13 +93,24 @@ export async function createStoreFixture() {
     const { OpensteerStore } = await import("./store.js");
     const reactions: import("./personal-mutation.js").PersonalCommitReaction[] = [];
     const commitListeners = new Set<(head: string, scopes: ReadonlySet<string>) => void>();
+    const noticeListeners = new Set<
+      (notice: {
+        readonly resourceKinds: ReadonlySet<string>;
+        readonly changedTabs: ReadonlySet<string>;
+      }) => void
+    >();
+    const reactionListeners = new Set<
+      (reaction: import("./personal-mutation.js").PersonalCommitReaction) => void
+    >();
     const { installPersonalMutationHooks } = await import("./personal-mutation.js");
     installPersonalMutationHooks(database, {
       wake(notice) {
         for (const listener of commitListeners) listener(notice.head, notice.changedScopes);
+        for (const listener of noticeListeners) listener(notice);
       },
       react(reaction) {
         reactions.push(reaction);
+        for (const listener of reactionListeners) listener(reaction);
       },
       onFailure(error) {
         throw error;
@@ -742,6 +753,23 @@ export async function createStoreFixture() {
       startRunFixture,
       close: clone.drop,
       reactions,
+      /** Each commit's resource kinds and reactions, as the Host's own hooks receive them. */
+      observePersonalReactions(listeners: {
+        readonly notice: (notice: {
+          readonly resourceKinds: ReadonlySet<string>;
+          readonly changedTabs: ReadonlySet<string>;
+        }) => void;
+        readonly reaction: (
+          reaction: import("./personal-mutation.js").PersonalCommitReaction,
+        ) => void;
+      }) {
+        noticeListeners.add(listeners.notice);
+        reactionListeners.add(listeners.reaction);
+        return () => {
+          noticeListeners.delete(listeners.notice);
+          reactionListeners.delete(listeners.reaction);
+        };
+      },
       observePersonalCommits(listener: (head: string, scopes: ReadonlySet<string>) => void) {
         commitListeners.add(listener);
         return () => {

@@ -9,6 +9,7 @@ import {
 } from "./migrations.js";
 import {
   answeredQuestionRecordsMigrationName,
+  browserSessionTabsIndexMigrationName,
   dropDeviceAccessCountMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
@@ -55,6 +56,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     taskApprovalReceiptsMigrationName,
     answeredQuestionRecordsMigrationName,
     dropDeviceAccessCountMigrationName,
+    browserSessionTabsIndexMigrationName,
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());
