@@ -1,3 +1,4 @@
+import { requestDecision } from "../host/client.js";
 import { describe, expect, it, vi } from "vitest";
 import { RequestSchema } from "@opensteer/core";
 import { MockPlugins, mockPluginRequests } from "../mock/mock-plugins.js";
@@ -392,7 +393,7 @@ describe("mock Host plugin Requests", () => {
       client.dispatch({
         type: "request.respond",
         idempotencyKey: "k1",
-        requestId: account.id,
+        ...requestDecision((await client.readRequest(account.originatingThreadId, account.id))!),
         response: { kind: "external", value: { decision: "fulfilled" } },
       }),
     ).rejects.toThrow(/Link an account/u);

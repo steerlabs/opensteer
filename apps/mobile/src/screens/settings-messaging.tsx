@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { StaticScreenProps } from "@react-navigation/native";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
-import type { HostApiCommandInput } from "@opensteer/protocol";
+import type { ClientCommandInput } from "@opensteer/client/host";
 import { Alert } from "react-native";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { Sheet } from "../ui/sheet.js";
@@ -59,7 +59,7 @@ function Messaging({ host }: { readonly host: HostClient }) {
     label: "save the change",
     done: "saved",
     happened: "the change was saved",
-    execute: async (command: HostApiCommandInput) => {
+    execute: async (command: ClientCommandInput) => {
       await host.dispatch(command);
     },
     // Read the messaging settings again; where they show the change's effect, that settles it.
@@ -87,7 +87,7 @@ function Messaging({ host }: { readonly host: HostClient }) {
     }),
   });
   const pending = change.running || check.running;
-  const dispatch = (command: HostApiCommandInput, section: string) => {
+  const dispatch = (command: ClientCommandInput, section: string) => {
     if (pending) return;
     setActedOn(section);
     setNote(null);
@@ -522,7 +522,7 @@ function Messaging({ host }: { readonly host: HostClient }) {
 }
 
 /** Whether the messaging settings show a change took: null where they can't tell. */
-function changeSettled(data: Dashboard, command: HostApiCommandInput): boolean | null {
+function changeSettled(data: Dashboard, command: ClientCommandInput): boolean | null {
   switch (command.type) {
     case "channel.connection.status.set": {
       const account = data.accounts.find((row) => row.connectionId === command.connectionId);

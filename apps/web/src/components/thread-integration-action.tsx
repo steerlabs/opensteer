@@ -1,8 +1,7 @@
-import { requestDecisionRevision } from "@opensteer/client/host";
+import { requestDecision, type RequestView } from "@opensteer/client/host";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { IntegrationAccess } from "@opensteer/integration-core";
 import type { Request } from "@opensteer/core";
-import { includeDeviceAccessRequests } from "@opensteer/protocol";
 import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
 import {
   accessPlan,
@@ -12,11 +11,12 @@ import {
   connectCard,
   effectiveIntegrationAccess,
   integrationRequestStillPending,
+  loadAccessRequest,
+  type ReviewedAccessRequest,
   resolveIntegrationAccess,
   setPhoneUseAccess,
   type AccessRequestAccount,
   type ConnectCard,
-  type LoadedAccessRequest,
 } from "@opensteer/client/integrations";
 import { isPhoneDisplayDefinitionId, RunnerIdSchema } from "@opensteer/core";
 import { createClientRead } from "@opensteer/client/reads";
@@ -40,11 +40,11 @@ export function ThreadIntegrationAction({
   request,
 }: {
   readonly disabled?: boolean;
-  readonly request: Request;
+  readonly request: RequestView;
   readonly threadId: string;
 }) {
   const { hostClient, snapshot } = useShell();
-  const [updatedAccess, setLoaded] = useState<LoadedAccessRequest | null>(null);
+  const [updatedAccess, setLoaded] = useState<ReviewedAccessRequest | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [selectedAccess, setSelectedAccess] = useState<IntegrationAccess | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -72,7 +72,8 @@ export function ThreadIntegrationAction({
   );
   const access = useClientRead(requestPayload ? resource : null);
   const refresh = access.refresh;
-  const loaded = access.data === null ? null : updatedAccess;
+  const loaded = access.data && updatedAccess?.id === request.id ? updatedAccess : null;
+  const decision = (view = loaded) => requestDecision(view ?? request);
   const answering = useAction(
     hostClient,
     {
@@ -113,16 +114,8 @@ export function ThreadIntegrationAction({
       return;
     }
     const data = access.data;
-    setLoaded((current) => ({
-      ...data,
-      request:
-        current &&
-        ((requestPayload.installationId === null && current.request.installationId !== null) ||
-          (requestPayload.requestedServerId === null && current.request.requestedServerId !== null))
-          ? current.request
-          : requestPayload,
-    }));
-  }, [access.data, requestPayload]);
+    setLoaded((current) => loadAccessRequest(data, request, current));
+  }, [access.data, request]);
   const plan = useMemo(
     () => (loaded ? accessPlan(loaded, selectedAccountId) : null),
     [loaded, selectedAccountId],
@@ -139,8 +132,7 @@ export function ThreadIntegrationAction({
       hostClient
         .dispatch({
           idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
-          ...requestDecisionRevision(request),
-          requestId: request.id,
+          ...decision(),
           response: { kind: "external", value: { decision: "declined" } },
           type: "request.respond",
         })
@@ -191,45 +183,25 @@ export function ThreadIntegrationAction({
     void run(async () => {
       await hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${request.id}:install`),
-        ...requestDecisionRevision(request),
-        requestId: request.id,
+        ...decision(),
         response: { kind: "choice", optionId: "installed" },
         type: "request.respond",
       });
-      let before: string | undefined;
-      let updated: Request | undefined;
-      let reviewedRevision: string | undefined;
-      do {
-        const page = unwrapRpcResult(
-          await hostClient.rpc["thread.requests.list"]({
-            ...includeDeviceAccessRequests,
-            threadId: request.originatingThreadId,
-            limit: 100,
-            ...(before ? { before } : {}),
-          }),
-        );
-        updated = page.requests.find((candidate) => candidate.id === request.id);
-        if (updated) reviewedRevision = page.reviewedRevisions?.[updated.id];
-        if (updated || !page.window.hasMore) break;
-        if (!page.window.nextBefore)
-          throw new Error("Thread Request page is missing its continuation cursor.");
-        before = page.window.nextBefore;
-      } while (before);
-      if (updated?.payload.kind !== "integration.access")
+      const updated = await hostClient.readRequest(request.originatingThreadId, request.id);
+      if (updated?.status !== "pending" || updated.payload.kind !== "integration.access")
         throw new Error("This request is no longer available.");
       const [dashboard, platform] = await Promise.all([
         hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
         hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
       ]);
-      setLoaded({ dashboard, platform, request: updated.payload, reviewedRevision });
+      setLoaded(loadAccessRequest({ dashboard, platform }, updated));
     });
   };
   const chooseServer = (serverId: string) =>
     void run(async () => {
       await hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${request.id}:server:${serverId}`),
-        ...requestDecisionRevision(request),
-        requestId: request.id,
+        ...decision(),
         response: { kind: "choice", optionId: `server:${serverId}` },
         type: "request.respond",
       });
@@ -368,9 +340,7 @@ export function ThreadIntegrationAction({
         access: effectiveAccess,
         accountsCount: plan.accounts.length,
         installationTitle: plan.installationTitle,
-        requestId: request.id,
-        expectedRevision:
-          loaded?.reviewedRevision ?? requestDecisionRevision(request).expectedRevision,
+        ...decision(),
         selectedAccount: plan.selectedAccount,
       });
       if (await integrationRequestStillPending(hostClient, request.originatingThreadId, request.id))

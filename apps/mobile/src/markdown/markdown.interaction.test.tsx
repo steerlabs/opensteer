@@ -1,3 +1,4 @@
+import { requestDecision } from "@opensteer/client/host";
 // @vitest-environment happy-dom
 
 import { act, useState, type ReactNode } from "react";
@@ -317,7 +318,7 @@ describe("References on a phone", () => {
     // Settled, the Request is no longer held: only the Host knows where it lives.
     await client.dispatch({
       idempotencyKey: "settle-launch",
-      requestId: launch,
+      ...requestDecision((await client.readRequest(launchThread, launch))!),
       response: { kind: "choice", optionId: "approve" },
       type: "request.respond",
     });

@@ -1,4 +1,5 @@
-import { requestTitleText, type AuthenticatedUser, type Request } from "@opensteer/core";
+import { requestTitleText, type AuthenticatedUser } from "@opensteer/core";
+import type { RequestView } from "./client.js";
 import { isQuestionRequest } from "./question-answers.js";
 
 /**
@@ -17,7 +18,7 @@ import { isQuestionRequest } from "./question-answers.js";
 export type SurfaceTextRole = "answer" | "hidden" | "message";
 
 export interface SurfaceModel {
-  request: Request;
+  request: RequestView;
   denied: "administrator" | "requester" | null;
   /** Pending Requests waiting behind the focused one. */
   queued: number;
@@ -27,7 +28,7 @@ export interface SurfaceModel {
 }
 
 export function deriveSurface(
-  requests: readonly Request[],
+  requests: readonly RequestView[],
   user: Pick<AuthenticatedUser, "id"> | null,
   /** The Request a person asked to see, when it is still waiting. */
   focusRequestId: string | null = null,

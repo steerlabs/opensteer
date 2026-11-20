@@ -1,9 +1,9 @@
 import type { HeldAssignment, WaitingRequest } from "@opensteer/core";
 
-export function requestsWaitingOn(
-  waiting: readonly WaitingRequest[],
+export function requestsWaitingOn<Entry extends WaitingRequest>(
+  waiting: readonly Entry[],
   threadId: string,
-): WaitingRequest[] {
+): Entry[] {
   return waiting.filter(
     ({ assignments, presentation, request }) =>
       presentation?.threadId === threadId ||

@@ -1,4 +1,4 @@
-import { requestDecisionRevision } from "@opensteer/client/host";
+import { requestDecision } from "@opensteer/client/host";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { Request } from "@opensteer/core";
 import {
@@ -73,8 +73,7 @@ export function CardUseRequestBody({
       execute: () =>
         client.dispatch({
           type: "browser.password-sign-in.respond",
-          requestId: request.id,
-          ...requestDecisionRevision(request),
+          ...requestDecision(request),
           idempotencyKey,
           decision:
             allow && chosen

@@ -1,6 +1,6 @@
 import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
 import { assignmentWasCancelled } from "./execution-authority.js";
-import { refreshRequestState } from "./request-persistence.js";
+import { assertRequestRevision, refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { runDeliverySelection } from "./thread-row-mappers.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -958,7 +958,6 @@ export async function enqueueRunnerControlInTransaction(
       !pending ||
       pending.status !== "pending" ||
       pending.responseCommandId !== null ||
-      pending.revision !== input.expectedRevision ||
       pending.mode !== "live" ||
       pending.originatingRunId !== input.runId ||
       pending.originatingThreadId !== input.threadId
@@ -968,6 +967,7 @@ export async function enqueueRunnerControlInTransaction(
         message: "Response does not match the Run's pending Request",
       });
     }
+    assertRequestRevision(pending, input.expectedRevision);
     const request = requestFromRow(pending);
     await requirePersonalOwner(transaction, input.requestedBy);
     if (input.agentResponder)

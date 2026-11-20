@@ -331,7 +331,13 @@ import type {
   TeamAskDecision,
   WaitingMessageEditor,
 } from "../host/client.js";
-import { HostClientRequestError, mainDoneTasks } from "../host/client.js";
+import {
+  HostClientRequestError,
+  mainDoneTasks,
+  requestReviewRequired,
+  type RequestView,
+  type WaitingRequestView,
+} from "../host/client.js";
 import { computerViewMethods } from "../host/computer-views.js";
 import type { ExecutionChoice, ExecutionSelection } from "../host/execution-preferences.js";
 import { createInMemoryHostApiClient } from "../host/host-api-client.js";
@@ -2675,6 +2681,13 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         hostApi["requests.list"].success.parse({
           requests: waitingRequests,
           window: mockWindow(waitingRequests.length),
+          reviewedRevisions: Object.fromEntries(
+            waitingRequests.flatMap(({ request }) =>
+              request.reviewedRevision === undefined
+                ? []
+                : [[request.id, request.reviewedRevision]],
+            ),
+          ),
           pendingRequestsRevision: mockPendingRequestsRevision(waitingRequests),
         }),
       );
@@ -2892,13 +2905,11 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           requests,
           threadId: input.threadId,
           window: mockWindow(requests.length),
-          ...(input.review || input.requestId
-            ? {
-                reviewedRevisions: Object.fromEntries(
-                  requests.map((request) => [request.id, mockRequestRevision(request, revision)]),
-                ),
-              }
-            : {}),
+          reviewedRevisions: Object.fromEntries(
+            requests
+              .filter(({ status }) => status === "pending")
+              .map((request) => [request.id, mockRequestRevision(request, revision)]),
+          ),
         }),
       );
     },
@@ -2957,6 +2968,25 @@ async function executeMockCommand(
   client: MockHostState,
   command: HostApiCommand,
 ): Promise<Awaited<ReturnType<HostApiClient["commands.dispatch"]>>> {
+  if (
+    command.type === "request.respond" ||
+    command.type === "browser.sign-in.respond" ||
+    command.type === "browser.password-sign-in.respond"
+  ) {
+    if (command.expectedRevision === undefined) throw requestReviewRequired();
+    const request = client.referenceRequest(command.requestId);
+    if (
+      request?.status === "pending" &&
+      mockRequestRevision(request, String(client.getSnapshot().revision)) !==
+        command.expectedRevision
+    )
+      throw new HostClientRequestError({
+        code: "conflict",
+        reason: "request-changed",
+        status: 409,
+        message: "Request changed; read it again before answering",
+      });
+  }
   if (isMockPluginCommand(command)) return rpcSuccess(await client.enginePlugins.command(command));
   if (isMockSignInCommand(command))
     return rpcSuccess(await client.enginePlugins.signInCommand(command));
@@ -4694,7 +4724,13 @@ export class MockHostClient implements HostClient {
         previous = value;
         const whole = value.transcripts[threadId] ?? empty;
         const entries = window ? whole.filter(({ id }) => window.ids.has(id)) : whole;
-        const requests = value.requests[threadId] ?? empty;
+        const requests = (value.requests[threadId] ?? empty).map((request) => ({
+          ...request,
+          reviewedRevision:
+            request.status === "pending"
+              ? mockRequestRevision(request, String(value.revision))
+              : undefined,
+        }));
         const runQueue = value.runQueue.filter((run) => run.threadId === threadId);
         const queue = value.inputQueues[threadId];
         if (queue !== priorQueue) {
@@ -5114,7 +5150,7 @@ export class MockHostClient implements HostClient {
   async loadEarlierNeedsYou(): Promise<void> {
     this.#state.loadEarlierNeedsYou();
   }
-  async readRequest(threadId: string, requestId: string): Promise<Request | null> {
+  async readRequest(threadId: string, requestId: string): Promise<RequestView | null> {
     const { requests, reviewedRevisions } = unwrapRpcResult(
       await this.rpc["thread.requests.list"]({
         requestId: RequestIdSchema.parse(requestId),
@@ -13149,7 +13185,7 @@ class MockHostState {
    * to answer, with the handed-out work it holds up. A Thread here does one
    * task at a time, so the Run that asked belongs to its open task.
    */
-  private waitingRequests(): WaitingRequest[] {
+  private waitingRequests(): WaitingRequestView[] {
     const user = this.snapshot.user;
     if (!user) return [];
     const byWorker = new Map(
@@ -13194,7 +13230,10 @@ class MockHostState {
         return {
           assignments: held,
           presentation: null,
-          request: PendingRequestSchema.parse(request),
+          request: {
+            ...PendingRequestSchema.parse(request),
+            reviewedRevision: mockRequestRevision(request, String(this.snapshot.revision)),
+          },
           subagent: asker
             ? {
                 id: ExecutionNodeIdSchema.parse(asker.nodeId),

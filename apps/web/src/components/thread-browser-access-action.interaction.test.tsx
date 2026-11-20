@@ -49,6 +49,7 @@ it("keeps a failed approval beside the selected profile and retries without an e
   root = createRoot(container);
   const request = {
     id: "request",
+    reviewedRevision: "17",
     payload: { kind: "browser.access", suggestion: { kind: "existing", profileId: "personal" } },
   } as unknown as Request;
   await act(async () => root?.render(<ThreadBrowserRequestAction request={request} />));

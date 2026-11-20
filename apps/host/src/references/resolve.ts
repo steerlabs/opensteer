@@ -67,7 +67,11 @@ export function createThreadRequestHandler(
           rows.length !== review.size ||
           rows.some(({ id, revision }) => review.get(id) !== revision)
         )
-          throw new OpensteerError({ code: "conflict", message: "The reviewed Request changed." });
+          throw new OpensteerError({
+            code: "conflict",
+            reason: "request-changed",
+            message: "The reviewed Request changed.",
+          });
         const requests = rows.map(requestFromRow);
         const byteCount = Buffer.byteLength(JSON.stringify(requests));
         return rpcSuccess(
@@ -93,17 +97,21 @@ export function createThreadRequestHandler(
       });
     const thread = await store.getThreadForOwner(input.threadId, ownerId);
     if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-    const request = input.requestId
+    const reference = input.requestId
       ? await store.requests.referenceForOwner({
           ownerId,
           threadId: input.threadId,
           requestId: input.requestId,
         })
       : null;
-    const requests = request ? [request] : [];
+    const requests = reference ? [reference.request] : [];
     const page = input.requestId
       ? {
           requests,
+          reviewedRevisions:
+            reference?.request.status === "pending"
+              ? { [reference.request.id]: reference.revision }
+              : {},
           window: {
             byteCount: Buffer.byteLength(JSON.stringify(requests)),
             hasMore: false,

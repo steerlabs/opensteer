@@ -1,4 +1,4 @@
-import { utf8ByteLength, type Request, MessageIdSchema } from "@opensteer/core";
+import { utf8ByteLength, MessageIdSchema } from "@opensteer/core";
 import {
   includeDeviceAccessRequests,
   type HostApiClient,
@@ -10,7 +10,12 @@ import type {
   TranscriptOrderCursor,
 } from "@opensteer/protocol/transcript";
 import { classifyClientFailure } from "../connections/operation-error.js";
-import { HostClientRequestError, type RunQueueEntry, type TranscriptEntry } from "./client.js";
+import {
+  HostClientRequestError,
+  type RequestView,
+  type RunQueueEntry,
+  type TranscriptEntry,
+} from "./client.js";
 import { FencedReads, type FencedRead } from "./fenced-reads.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 import type { ObservedDetail } from "./scoped-personal-stream.js";
@@ -24,7 +29,7 @@ import {
 
 export interface ThreadViewState {
   readonly entries: readonly TranscriptEntry[];
-  readonly requests: readonly Request[];
+  readonly requests: readonly RequestView[];
   readonly runQueue: readonly RunQueueEntry[];
   readonly inputQueue: PersonalInputQueue | null;
   readonly synchronized: boolean;
@@ -346,7 +351,7 @@ export class ScopedThreadReader implements ThreadViewSource {
     }
     const results = await Promise.all(reads);
     if (!read.current()) return;
-    const requests = new Map<string, Request & { reviewedRevision?: string | undefined }>(
+    const requests = new Map<string, RequestView>(
       this.#view.requests.map((request) => [request.id, request]),
     );
     for (const { review, result } of results) {
