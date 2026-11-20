@@ -821,6 +821,9 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
       });
     }
     this.context = this.contextHandle;
+    this.contextHandle.closeTarget = async (targetId) => {
+      await browserCdp.send("Target.closeTarget", { targetId });
+    };
     this.cdp = new PlaywrightBrowserCdpBackend(browserCdp, this.contextHandle, browserContextId);
   }
 
@@ -899,6 +902,8 @@ class PlaywrightContextHandle implements BrowserContext {
   private readonly pagesByPlaywrightPage = new Map<Page, PlaywrightPageHandle>();
   private readonly pageListeners = new Map<(page: BrowserPage) => void, (page: Page) => void>();
   private readonly handOffs = new Set<(page: BrowserPage, opener: BrowserPage | null) => void>();
+  /** Closes one page target through the browser's own debugger, around Playwright. */
+  closeTarget: ((targetId: string) => Promise<void>) | undefined;
 
   readonly authenticator: PasskeyAuthenticator | undefined;
   readonly providerConfig: BrowserPagePolicyConfig;
@@ -992,10 +997,10 @@ class PlaywrightContextHandle implements BrowserContext {
       this.context
         .pages()
         .filter((page) => page !== this.privatePage)
-        .map((page) => this.wrap(page))
-        .filter((handle) => !handle.isClosed() && !handle.closeRequested),
+        .map((page) => this.wrap(page)),
       targetId,
       targetLookupMs,
+      (handle) => !handle.isClosed() && !handle.closeRequested,
     );
   }
 }
@@ -1034,7 +1039,9 @@ class PlaywrightPageHandle implements BrowserPage {
   private cdpPromise: Promise<CdpSession> | null = null;
   private cdpChannel: CdpSession | null = null;
   private closing = false;
-  private closePromise: Promise<void> | null = null;
+  private closeAttempts = 0;
+  /** This page's target once known, for a close that goes around Playwright. */
+  private knownTargetId: string | undefined;
   /** The confirmation: Playwright's page close event, or its context ending. */
   private gone = false;
   private readonly goneListeners = new Set<(cause?: PageGoneCause) => void>();
@@ -1268,23 +1275,29 @@ class PlaywrightPageHandle implements BrowserPage {
     return this.cdpPromise;
   }
 
+  /**
+   * Each call is a new attempt; a page asked to close never returns to service.
+   * The first closes through Playwright, which waits on its own first request
+   * forever once that hangs, so later attempts go around it: they retire this
+   * page's debugger again and close the one target from the browser itself.
+   * Nothing wider than this page is ever closed.
+   */
   close(): Promise<void> {
+    if (this.isClosed()) return Promise.resolve();
     this.closing = true;
-    if (this.closePromise) return this.closePromise;
-    const closing = (async () => {
-      // Native close can wait on a navigation still held by this private debugger.
-      await this.cdpChannel?.detach();
-      if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
+    const first = this.closeAttempts++ === 0;
+    return (async () => {
+      if (first) {
+        // Native close can wait on a navigation still held by this private debugger.
+        await this.cdpChannel?.detach();
+        if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
+        return;
+      }
+      await this.cdpChannel?.detach().catch(() => undefined);
+      const closeTarget = this.contextHandle.closeTarget;
+      if (this.knownTargetId && closeTarget) await closeTarget(this.knownTargetId);
+      else if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
     })();
-    this.closePromise = closing;
-    // A close that settles with the page still open can be asked again.
-    const settled = () => {
-      if (this.isClosed() || this.closePromise !== closing) return;
-      this.closePromise = null;
-      this.closing = false;
-    };
-    void closing.then(settled, settled);
-    return closing;
   }
 
   /** Closing refuses new debugger sessions; only the confirmation makes the page closed. */
@@ -1356,6 +1369,7 @@ class PlaywrightPageHandle implements BrowserPage {
       if (typeof targetId !== "string" || targetId.length < 1 || targetId.length > 512) {
         throw new Error("Chromium page did not expose a valid target ID.");
       }
+      this.knownTargetId = targetId;
       return targetId;
     });
     return this.targetIdPromise;

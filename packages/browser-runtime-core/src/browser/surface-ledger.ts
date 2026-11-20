@@ -462,6 +462,10 @@ export class SurfaceLedger {
     record.typed ||= typed;
     this.touch(id);
   }
+  /** Native pages of this session with no live tab, closing ones included: they still use the browser. */
+  untabbedPages(): number {
+    return this.pages.untabbed(this.session);
+  }
   /** The sleeper's reason for skipping a due page, or null when nothing blocks it. */
   noteSleepBlocker(id: BrowserSurfaceId, reason: SleepBlocker | null): void {
     const page = this.records.get(id)?.live?.page;
@@ -1143,9 +1147,10 @@ export class SurfaceLedger {
     );
   }
 
+  /** The live page a tab may be used through; none once its close has started. */
   binding(surfaceId: BrowserSurfaceId): SurfaceBinding | null {
     const record = this.liveRecord(surfaceId);
-    if (!record) return null;
+    if (!record || record.lease.state === "closing") return null;
     return {
       cdp: record.live.cdp,
       incarnation: record.live.incarnation,
@@ -1296,9 +1301,11 @@ export class SurfaceLedger {
     const record = this.records.get(surfaceId);
     if (!record) throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
     record.lease.close();
+    const live = record.live;
+    // The row stays listed until confirmation; no route reaches the page meanwhile.
+    if (live) this.releaseTarget?.(live.targetId);
     for (const page of this.pages.tabPages(this.session, surfaceId))
       this.pages.destroy(page, reason);
-    const live = record.live;
     if (live && !(await this.pages.confirmed(live.page, pageCloseWaitMs)))
       throw stillClosing("This tab is still closing.");
     await this.remove(record);
@@ -1508,7 +1515,6 @@ export class SurfaceLedger {
             usedAt: Date.now(),
             unrestorable: false,
             restore: null,
-            retiring: null,
           },
           {
             documentId: randomUUID(),
@@ -2071,6 +2077,8 @@ export class SurfaceLedger {
 
   /** The engine confirmed an incarnation gone; only the tab's current one ends the tab. */
   private nativeGone(id: BrowserSurfaceId, incarnation: string): void {
+    // A released page can change what the sleeper may do with its browser.
+    this.policyChanged();
     const record = this.records.get(id);
     if (!record || record.live?.incarnation !== incarnation) return;
     void this.remove(record).catch(() => undefined);

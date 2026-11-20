@@ -26,8 +26,6 @@ export type PageEndReason =
   | "runtime-shutdown"
   | "open-failed"
   | "wake-failed"
-  /** No session admitted the page in time, such as a raw target nobody adopted. */
-  | "never-admitted"
   /** The engine ended the page unasked. */
   | "native-gone";
 
@@ -116,18 +114,39 @@ export type BrowserPageDiagnostic =
       readonly reason: SleepBlocker;
       readonly previous: SleepBlocker | null;
       readonly previousAttempts: number;
+    }
+  /**
+   * A page no session has admitted after a while: a slow admission, a raw
+   * target nobody adopted, or a page a person opened in the browser itself.
+   * It is never ended for its age.
+   */
+  | {
+      readonly event: "browser.page.unadopted";
+      readonly page: string;
+      readonly attributed: boolean;
+      readonly ageMs: number;
+    }
+  /** Runtime shutdown finished with pages unconfirmed; they stay owned and asked. */
+  | {
+      readonly event: "browser.page.shutdown.incomplete";
+      readonly states: PageCounts["states"];
     };
 
+/**
+ * What the registry has seen, not a complete account: renderer causes are the
+ * engine's last report, and pages a session never sees are not here.
+ */
 export interface PageCounts {
   readonly states: Readonly<Record<Exclude<NativePageState, "absent">, number>>;
   readonly ended: Readonly<Partial<Record<PageEndReason, number>>>;
-  /** Transitions into each reason, so repeats of one reason do not inflate it. */
+  /** Transitions into each blocker, counted when the sleeper looks. */
   readonly sleepBlocked: Readonly<Partial<Record<SleepBlocker, number>>>;
+  /** Every refused sleep attempt, by reason. */
   readonly sleepRefused: Readonly<Partial<Record<SleepBlocker, number>>>;
 }
 
-/** Above the 18-second creation and registration budgets, so only an abandoned page reaches it. */
-const admitWithinMs = 30_000;
+/** Above the 18-second creation and registration budgets: past it, an unadmitted page is reported once. */
+const unadoptedAfterMs = 30_000;
 const hungCloseMs = 10_000;
 const retryBaseMs = 1_000;
 const retryCeilingMs = 30_000;
@@ -186,6 +205,8 @@ export class PageOwnership {
   private readonly blockings: Partial<Record<SleepBlocker, number>> = {};
   private readonly refusals: Partial<Record<SleepBlocker, number>> = {};
   private readonly onDiagnostic: (diagnostic: BrowserPageDiagnostic) => void;
+  private readonly handOffs: (() => void)[] = [];
+  private shuttingDown = false;
   private stopped = false;
 
   constructor(
@@ -205,11 +226,13 @@ export class PageOwnership {
   adopt(context: BrowserContext): void {
     if (this.contexts.has(context)) return;
     this.contexts.add(context);
-    context.handOff((page, opener) => {
-      const entry = this.track(page);
-      const session = opener ? this.pages.get(opener)?.session : null;
-      if (entry.session === null && session) this.attribute(entry, session);
-    });
+    this.handOffs.push(
+      context.handOff((page, opener) => {
+        const entry = this.track(page);
+        const session = opener ? this.pages.get(opener)?.session : null;
+        if (entry.session === null && session) this.attribute(entry, session);
+      }),
+    );
   }
 
   /** The session ended: every page it holds, admitted or not, is asked to end. */
@@ -412,11 +435,11 @@ export class PageOwnership {
       entry.refused = null;
       return;
     }
+    this.refusals[reason] = (this.refusals[reason] ?? 0) + 1;
     if (entry.refused?.reason === reason) {
       entry.refused.attempts++;
       return;
     }
-    this.refusals[reason] = (this.refusals[reason] ?? 0) + 1;
     this.onDiagnostic({
       event: "browser.page.sleep.refused",
       page: entry.incarnation,
@@ -439,20 +462,37 @@ export class PageOwnership {
     };
   }
 
+  /** Pages of this session that exist natively without a live tab: still being admitted, or closing. */
+  untabbed(session: string): number {
+    let count = 0;
+    for (const entry of this.held)
+      if (entry.session === session && entry.state !== "live" && entry.state !== "absent") count++;
+    return count;
+  }
+
   /**
-   * Runtime shutdown: asks every page that remains to end, then waits, bounded,
-   * for every one to be confirmed. False leaves recovery running.
+   * Runtime shutdown: asks every page that remains, and any handed off from
+   * now on, to end, then waits, bounded, for every one to be confirmed. An
+   * incomplete drain is reported and leaves recovery running; it never fails
+   * the shutdown, so the engine's own last-resort teardown still runs.
    */
   async shutdown(withinMs: number): Promise<boolean> {
+    this.shuttingDown = true;
     for (const creation of this.creations) creation.abandoned = true;
     for (const entry of this.held) this.request(entry, "runtime-shutdown");
     const drained = await this.until(() => this.held.size > 0 || this.creations.size > 0, withinMs);
     if (drained) this.stop();
+    else
+      this.onDiagnostic({
+        event: "browser.page.shutdown.incomplete",
+        states: this.counts().states,
+      });
     return drained;
   }
 
   private stop(): void {
     this.stopped = true;
+    for (const unsubscribe of this.handOffs.splice(0)) unsubscribe();
     for (const entry of this.held) {
       clearTimeout(entry.retryTimer);
       clearTimeout(entry.admitTimer);
@@ -502,9 +542,20 @@ export class PageOwnership {
       this.confirm(entry, "closed-check");
       return entry;
     }
+    if (this.shuttingDown) {
+      this.request(entry, "runtime-shutdown");
+      return entry;
+    }
+    // Only a creation known to be abandoned ends; an unknown origin is reported, never ended by age.
     entry.admitTimer = setTimeout(() => {
-      if (entry.state === "provisional") this.request(entry, "never-admitted");
-    }, admitWithinMs);
+      if (entry.state !== "provisional") return;
+      this.onDiagnostic({
+        event: "browser.page.unadopted",
+        page: entry.incarnation,
+        attributed: entry.session !== null,
+        ageMs: Date.now() - entry.createdAt,
+      });
+    }, unadoptedAfterMs);
     entry.admitTimer.unref?.();
     this.notify(this.lookups);
     return entry;

@@ -1164,14 +1164,10 @@ export class BrowserRuntime implements NativePresentationSource {
       const failures = results.flatMap((result) =>
         result.status === "rejected" ? [result.reason] : [],
       );
-      // Every page still held is asked again; recovery stays on until each is confirmed gone.
-      if (!(await this.pages.shutdown(pageShutdownMs)))
-        failures.push(
-          new BrowserRuntimeError("conflict", "Browser pages are still closing.", {
-            retryable: true,
-            reason: "runtime-shutdown.pages-closing",
-          }),
-        );
+      // Every page still held is asked again. Pages still unconfirmed are reported
+      // and stay owned, but never fail the shutdown: the engine's own teardown and a
+      // supervisor restart must still run after it.
+      await this.pages.shutdown(pageShutdownMs);
       if (failures.length)
         throw new AggregateError(failures, "Browser resources could not be closed.");
       this.hosts.clear();

@@ -521,6 +521,59 @@ it("hands a popup off with its opener, and finds a target past a page asked to c
   }
 });
 
+it("makes every close a new attempt, and goes around a hung first close to the browser", async () => {
+  const f = await nativeCloseFixture();
+  const events = new EventEmitter();
+  let physicallyClosed = false;
+  const page = Object.assign(events, {
+    isClosed: () => physicallyClosed,
+    close: vi.fn(() => new Promise<void>(() => {})),
+  });
+  f.context.newCDPSession.mockResolvedValue(
+    Object.assign(new EventEmitter(), {
+      detach: vi.fn(async () => undefined),
+      send: vi.fn(async (method: string) =>
+        method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-1" } } : {},
+      ),
+    }),
+  );
+  try {
+    const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+    vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
+    const handle = launched.context.pages()[0]!;
+    await handle.targetId();
+    void handle.close();
+    await vi.waitFor(
+      () => expect(page.close, "First close never reached Playwright").toHaveBeenCalledOnce(),
+      {
+        timeout: 1_000,
+      },
+    );
+    const closeTarget = () =>
+      f.cdp.send.mock.calls.filter(([method]) => method === "Target.closeTarget");
+    await expect(handle.close(), "A hung first close never stalls the next").resolves.toBe(
+      undefined,
+    );
+    await handle.close();
+    expect(closeTarget()).toEqual([
+      ["Target.closeTarget", { targetId: "target-1" }],
+      ["Target.closeTarget", { targetId: "target-1" }],
+    ]);
+    expect(handle.isClosed(), "Only the native end closes it").toBe(false);
+    await expect(
+      handle.agentCdp(),
+      "A page asked to close never returns to service",
+    ).rejects.toThrow(/clos/i);
+    physicallyClosed = true;
+    events.emit("close");
+    expect(handle.isClosed()).toBe(true);
+    await launched.close();
+  } finally {
+    f.exit();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 describe("native Chromium profiles", () => {
   it.each(["iframe media", "iframe Web Audio", "top Web Audio"])(
     "protects %s using native media state, including existing playback",

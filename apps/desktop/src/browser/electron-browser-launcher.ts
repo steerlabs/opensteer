@@ -932,9 +932,10 @@ class ElectronBrowserContext implements BrowserContext {
   /** A page asked to close is never found, and no page's target lookup delays another's. */
   pageByTargetId(targetId: string): Promise<ElectronBrowserPage | null> {
     return pageWithTarget(
-      [...this.#pages].filter((page) => !page.isClosed() && !page.closeRequested),
+      this.#pages,
       targetId,
       targetLookupMs,
+      (page) => !page.isClosed() && !page.closeRequested,
     );
   }
 

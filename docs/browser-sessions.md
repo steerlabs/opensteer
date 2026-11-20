@@ -44,16 +44,19 @@ in-page state than other engines; phones and Playwright promise only a descripto
 Passwords, files and arbitrary app state are never promised. Ending a runtime loses that state,
 while the durable descriptor still permits reopening.
 
-Each engine hands every native page to the runtime as soon as it has a handle, and the page belongs
-to one session from then on: its creator, its opener's, or the session that adopts a raw target. A
-session's teardown ends all of its pages, admitted or not, and a page no session admits within 30
-seconds is ended. Only the engine's confirmation ends ownership: Electron's WebContents `destroyed`,
-or Playwright's page `close` or its context ending; a settled close call proves nothing. A destroy
-request is irreversible: a sleep that has asked for it has slept, even if the engine is slow, so
-nothing typed into a dying page looks safe. A tab close succeeds only on confirmation and otherwise
-answers retryably while the tab stays listed; a tab gets no new page while an earlier one may live.
-Runtime shutdown reports pages still closing and keeps asking. Page diagnostics carry ids, states,
-fixed reasons, counts and durations, never a URL, title or page content.
+Each engine hands every native page to the runtime as soon as it has a handle. A page the runtime
+can attribute belongs to one session: its creator, its opener's, or the session that adopts a raw
+target. A session's teardown ends all of its pages, admitted or not; a creation its owner abandoned
+is ended too. A page of unknown origin, such as one a person opened in a visible browser, is reported
+but never ended for its age. Only the engine's confirmation ends ownership: Electron's WebContents
+`destroyed`, or Playwright's page `close` or its context ending. A destroy request is irreversible:
+the page never returns to service, a sleep that asked for it has slept, and a tab gets no new page
+while an earlier one may live. A registered tab's close succeeds only on confirmation and otherwise
+answers retryably while the tab stays listed, reachable by no route. A page still closing keeps its
+browser process. Runtime shutdown reports pages it could not confirm and keeps asking, without
+failing, so the engine's own teardown and a supervisor restart still run. Page diagnostics carry
+ids, states, fixed reasons, counts and durations, never a URL, title or page content; they cover
+what the runtime observed, not every cause.
 
 ## Agents address tabs
 

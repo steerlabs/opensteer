@@ -3491,7 +3491,7 @@ export class BrowserController {
           const dialog = ledger.dialogOf(record.id);
           const tab: AgentTab = {
             surfaceId: record.id,
-            targetId: record.live?.targetId ?? null,
+            targetId: record.lease.state === "closing" ? null : (record.live?.targetId ?? null),
             state: row.state,
             title: row.title,
             url: row.url,

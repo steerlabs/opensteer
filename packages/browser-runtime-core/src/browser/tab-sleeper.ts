@@ -23,6 +23,8 @@ const rendererSettleMs = 3_000;
 const ineffectiveReclaimsBeforeBackoff = 3;
 const minimumReclaimBytes = 16 * 1024 ** 2;
 const reportMemoryChangeBytes = 64 * 1024 ** 2;
+/** Refused attempts alone change the summary at most this often. */
+const reportRefusalsMs = 60_000;
 
 export interface TabSleepPass {
   readonly livePages: number;
@@ -79,6 +81,7 @@ export class TabSleeper {
   private ineffectiveReclaims = 0;
   private pressureBackoffUntil = 0;
   private lastReportedPass: TabSleepPass | null = null;
+  private lastReportedAt = 0;
 
   private releasing = false;
   private readonly options: TabSleeperOptions;
@@ -99,8 +102,14 @@ export class TabSleeper {
       Math.max(budgetFloorBytes, Math.min(budgetCeilingBytes, this.memory().total * budgetShare))
     );
   }
-  private estimate(): number {
+  /** Pages without a live tab still use the browser until their engine confirms them gone. */
+  private untabbedPages(): number {
     let pages = 0;
+    for (const session of this.sessions.values()) pages += session.ledger.untabbedPages();
+    return pages;
+  }
+  private estimate(): number {
+    let pages = this.untabbedPages();
     for (const session of this.sessions.values())
       for (const record of session.ledger.policyRecords()) if (record.live) pages++;
     return (
@@ -144,6 +153,8 @@ export class TabSleeper {
           state.runs === 0 &&
           state.viewed.length === 0 &&
           state.pinned.length === 0 &&
+          // A page still closing keeps its process: retirement waits for confirmed release.
+          session.ledger.untabbedPages() === 0 &&
           [...session.ledger.policyRecords()].every(
             (record) => !record.live && !session.blocked(record.id),
           )
@@ -318,7 +329,11 @@ export class TabSleeper {
       }
     }
     if (this.retirementCandidates().length) earliest = Math.min(earliest, now);
-    if (!Number.isFinite(earliest)) return;
+    if (!Number.isFinite(earliest)) {
+      // Nothing will run: every page is blocked or not due. Summarize that state anyway.
+      if (this.options.onPass && this.sessions.size) this.reportPass(this.summary(0, 0));
+      return;
+    }
     this.timer = setTimeout(
       () => {
         this.timer = undefined;
@@ -343,6 +358,8 @@ export class TabSleeper {
     }
     const reclaim = this.reclaimFrom;
     if (!reclaim || now < reclaim.settledAt) return;
+    // A sleep is a request; its memory is judged once its pages are confirmed gone, or after a sample.
+    if (this.untabbedPages() > 0 && now < reclaim.settledAt + rendererSampleMs) return;
     this.reclaimFrom = null;
     if (
       usage.processes < reclaim.usage.processes ||
@@ -366,7 +383,9 @@ export class TabSleeper {
       last.underPressure === pass.underPressure &&
       !this.countChanged(last.rendererProcesses, pass.rendererProcesses) &&
       !this.countChanged(last.unassignedRendererProcesses, pass.unassignedRendererProcesses) &&
-      JSON.stringify(last.pages) === JSON.stringify(pass.pages) &&
+      sameStructure(last.pages, pass.pages) &&
+      (sameRefusals(last.pages, pass.pages) ||
+        Date.now() - this.lastReportedAt < reportRefusalsMs) &&
       (last.rendererResidentBytes === pass.rendererResidentBytes ||
         (last.rendererResidentBytes !== null &&
           pass.rendererResidentBytes !== null &&
@@ -375,7 +394,24 @@ export class TabSleeper {
     )
       return;
     this.lastReportedPass = pass;
+    this.lastReportedAt = Date.now();
     this.options.onPass?.(pass);
+  }
+
+  private summary(attempted: number, slept: number): TabSleepPass {
+    let livePages = 0;
+    for (const session of this.sessions.values())
+      for (const record of session.ledger.policyRecords()) if (record.live) livePages++;
+    return {
+      livePages,
+      rendererProcesses: this.rendererUsage?.processes ?? 0,
+      rendererResidentBytes: this.rendererUsage?.bytes ?? null,
+      unassignedRendererProcesses: this.rendererUsage?.unassignedProcesses ?? 0,
+      underPressure: this.releasing ? 1 : 0,
+      attempted,
+      slept,
+      ...(this.options.pageCounts ? { pages: this.options.pageCounts() } : {}),
+    };
   }
 
   private countChanged(previous: number, next: number): boolean {
@@ -465,17 +501,7 @@ export class TabSleeper {
           this.nextRendererSample = Math.min(this.nextRendererSample, this.reclaimFrom.settledAt);
       }
       this.poke(attempted >= sleepsPerPass ? pressureScanMs : 0);
-      if (this.options.onPass)
-        this.reportPass({
-          livePages,
-          rendererProcesses: this.rendererUsage?.processes ?? 0,
-          rendererResidentBytes: this.rendererUsage?.bytes ?? null,
-          unassignedRendererProcesses: this.rendererUsage?.unassignedProcesses ?? 0,
-          underPressure: this.releasing ? 1 : 0,
-          attempted,
-          slept,
-          ...(this.options.pageCounts ? { pages: this.options.pageCounts() } : {}),
-        });
+      if (this.options.onPass) this.reportPass({ ...this.summary(attempted, slept), livePages });
     }
   }
 
@@ -486,4 +512,14 @@ export class TabSleeper {
     for (const session of this.sessions.values()) session.stop();
     this.sessions.clear();
   }
+}
+
+function sameStructure(left: PageCounts | undefined, right: PageCounts | undefined): boolean {
+  const { sleepRefused: _left, ...a } = left ?? ({} as Partial<PageCounts>);
+  const { sleepRefused: _right, ...b } = right ?? ({} as Partial<PageCounts>);
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function sameRefusals(left: PageCounts | undefined, right: PageCounts | undefined): boolean {
+  return JSON.stringify(left?.sleepRefused) === JSON.stringify(right?.sleepRefused);
 }
