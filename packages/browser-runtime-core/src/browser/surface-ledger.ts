@@ -280,6 +280,13 @@ type BeforePageResize = () => Promise<void>;
 const pageAppearanceTimeoutMs = 5_000;
 /** How long a close or teardown waits on the engine before its page owner carries on alone. */
 const pageCloseWaitMs = 2_000;
+/**
+ * How long an explicit tab close waits for the engine's confirmation before answering "still
+ * closing". A heavy page can take seconds to unload. The Host gives an agent's browser request
+ * 15 s (`agentRequestTimeoutMs` in apps/host/src/browser/browser-service.ts); this leaves room
+ * for the close's own queueing and the tab's bounded cleanup after confirmation.
+ */
+const tabCloseWaitMs = 10_000;
 
 /**
  * The pages of one Browser Session. Each page has the person's size, which
@@ -502,6 +509,7 @@ export class SurfaceLedger {
     if (!record.lease.beginSleep()) return refused("operation");
     const documentId = record.documentId;
     let stage: "protection" | "capture" = "protection";
+    let slept = false;
     try {
       const protection = await this.engineProtection(record);
       if (protection) return refused(protection);
@@ -544,7 +552,7 @@ export class SurfaceLedger {
       record.lease.endSleep(true);
       this.pages.destroy(live.page, "slept");
       this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
-      return true;
+      slept = true;
     } catch {
       if (record.live === live && record.documentId === documentId) {
         record.unrestorable = true;
@@ -554,6 +562,10 @@ export class SurfaceLedger {
     } finally {
       if (record.lease.state === "sleeping") record.lease.endSleep(false);
     }
+    // The tab already sleeps and nothing is held: the caller learns the page is gone, or, past
+    // the bound, that it is still closing, and only then counts what the sleep freed.
+    if (slept) await this.pages.confirmed(live.page, pageCloseWaitMs);
+    return slept;
   }
   private async engineProtection(record: TabRecord): Promise<SleepBlocker | null> {
     return withTimeout(this.readEngineProtection(record), 2_000, {
@@ -1313,7 +1325,7 @@ export class SurfaceLedger {
     // The row stays listed until confirmation; no binding, lookup or attach reaches the page.
     for (const page of this.pages.tabPages(this.session, surfaceId))
       this.pages.destroy(page, reason);
-    if (live && !(await this.pages.confirmed(live.page, pageCloseWaitMs)))
+    if (live && !(await this.pages.confirmed(live.page, tabCloseWaitMs)))
       throw stillClosing("This tab is still closing.");
     await this.remove(record);
   }

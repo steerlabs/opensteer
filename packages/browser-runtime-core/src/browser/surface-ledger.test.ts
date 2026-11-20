@@ -50,7 +50,8 @@ describe("SurfaceLedger", () => {
       const close = vi.spyOn(page, "close").mockImplementation(() => closing.promise);
       const create = vi.spyOn(context, "createPage");
       try {
-        expect(await ledger.sleep(record.id, () => null)).toBe(true);
+        const sleeping = ledger.sleep(record.id, () => null);
+        await vi.advanceTimersByTimeAsync(0);
         expect(close).toHaveBeenCalledOnce();
         // The destroy request is irreversible: the tab sleeps now, whatever the engine answers.
         expect(record.live).toBeNull();
@@ -58,6 +59,8 @@ describe("SurfaceLedger", () => {
         expect(release).toHaveBeenCalledExactlyOnceWith(live.targetId);
         if (failure === "rejects") closing.reject(new Error("Close refused"));
         await vi.advanceTimersByTimeAsync(2_000);
+        // Past its bound the sleep answers, its page still closing.
+        expect(await sleeping).toBe(true);
         // Anything that still reaches the old page dies with it, so no tab shows it.
         page.navigate("https://after-close.test/", "Lost with the page");
         expect(ledger.stateOf(record.id)).toBe("suspended");

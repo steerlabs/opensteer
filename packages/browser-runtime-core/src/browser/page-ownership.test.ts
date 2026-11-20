@@ -87,7 +87,9 @@ it.each(["resolves with no event", "hangs until the event", "rejects after the e
       await expect(f.ledger.use(siblingId, async () => "acted")).resolves.toBe("acted");
       if (close === "resolves with no event") {
         gate.answer.resolve();
-        await vi.advanceTimersByTimeAsync(2_000);
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(outcome, "A slow close waits for as long as its caller can").toBeUndefined();
+        await vi.advanceTimersByTimeAsync(1);
         expect(outcome, "A settled call proves nothing").toBe("tab-still-closing");
         expect(f.ledger.stateOf(id), "The tab stays listed until its page is gone").toBe("live");
         expect(f.ledger.binding(id), "No route reaches a page whose close started").toBeNull();
@@ -120,15 +122,43 @@ it.each(["resolves with no event", "hangs until the event", "rejects after the e
   },
 );
 
+it("answers a sleep once its page is confirmed gone, with the tab asleep from the request", async () => {
+  const page = new FakePage({ url: "https://sleep.test/" });
+  const f = await harness([page, new FakePage()]);
+  const id = await f.idOf(page);
+  const gate = closeGate(page);
+  try {
+    let answered = false;
+    const sleeping = f.ledger
+      .sleep(id, () => null)
+      .then((slept) => {
+        answered = true;
+        return slept;
+      });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.ledger.stateOf(id), "The tab sleeps at the destroy request").toBe("suspended");
+    expect(answered, "The caller waits for the page itself").toBe(false);
+    page.crash();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await sleeping).toBe(true);
+    expect(f.owner.counts().states.closing, "The page was gone when the sleep answered").toBe(0);
+  } finally {
+    gate.answer.resolve();
+    await f.ledger.close();
+  }
+});
+
 it("closes a tab whose sleep request is still closing, and its late end lists no dead tab", async () => {
   const page = new FakePage({ url: "https://sleep.test/" });
   const f = await harness([page, new FakePage()]);
   const id = await f.idOf(page);
   const gate = closeGate(page);
   try {
-    expect(await f.ledger.sleep(id, () => null)).toBe(true);
+    const sleeping = f.ledger.sleep(id, () => null);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await sleeping, "Past its bound a sleep answers with the page still closing").toBe(true);
     expect(f.ledger.stateOf(id)).toBe("suspended");
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(8_000);
     expect(f.events("browser.page.closing.hung", { surface: id })).toHaveLength(1);
     await f.ledger.closeSurface(id, "person-closed");
     expect(f.ledger.stateOf(id)).toBeUndefined();
@@ -497,7 +527,9 @@ it("keeps every tab not explicitly closed when its browser dies, Guest and mid-s
   vi.spyOn(sleeping, "close").mockReturnValue(new Promise(() => {}));
   vi.spyOn(closing, "close").mockReturnValue(new Promise(() => {}));
   try {
-    expect(await named.sleep(sleepingId, () => null)).toBe(true);
+    const sleeping = named.sleep(sleepingId, () => null);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await sleeping).toBe(true);
     void named.closeSurface(closingId, "person-closed").catch(() => undefined);
     // Chromium dies: every page reports its own end before its context does.
     profile.end();
