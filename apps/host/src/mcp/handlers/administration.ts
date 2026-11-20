@@ -296,6 +296,9 @@ export class AdministrationToolHandlers {
         asleepSince: runner.revokedAt
           ? null
           : runners.asleepSince(runner.id, runner.connectionGeneration),
+        agentsStoppedSince: runner.revokedAt
+          ? null
+          : runners.agentsStoppedSince(runner.id, runner.connectionGeneration),
         modules: runner.moduleDescriptors,
         ownerName: null,
         connected: runners.isRunnerConnected(runner.id),
@@ -336,6 +339,10 @@ export class AdministrationToolHandlers {
             !!screenRunner &&
             !screenRunner.revokedAt &&
             runners.asleepSince(screenRunner.id, screenRunner.connectionGeneration) !== null,
+          screenStopped:
+            !!screenRunner &&
+            !screenRunner.revokedAt &&
+            runners.agentsStoppedSince(screenRunner.id) !== null,
           screenConnected:
             !!screenRunner &&
             !screenRunner.revokedAt &&

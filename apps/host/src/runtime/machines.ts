@@ -35,6 +35,8 @@ export interface MachineRunnerInput {
   readonly allowedModules: readonly RunnerModuleName[];
   /** When this disconnected Runner reported going to sleep, if still within the Home's sleep window. */
   readonly asleepSince?: Date | null;
+  /** When the person stopped agents on this computer from the computer itself, while that holds. */
+  readonly agentsStoppedSince?: Date | null;
   readonly connected: boolean;
   /** What the computer said it is in its last signed hello. */
   readonly device: RunnerDevice | null;
@@ -315,11 +317,13 @@ export function projectMachines(input: MachineProjectionInput): readonly Machine
       !runner.connected && !runner.phoneUpdate && !runner.updateRequired
         ? isoOrNull(runner.asleepSince ?? null)
         : null;
+    const agentsStoppedSince = isoOrNull(runner.agentsStoppedSince ?? null);
     machines.push({
       access: input.access.get(runner.id) ?? null,
       allowedModules: [...runner.allowedModules],
       apps: apps?.map((app) => ({ ...app })) ?? null,
       ...(asleepSince ? { asleepSince } : {}),
+      ...(agentsStoppedSince ? { agentsStoppedSince } : {}),
       // Policy remains visible to the owner while the Mac is offline and has
       // no live app report. Neither map contains another owner's records.
       computerUse: (() => {
@@ -440,6 +444,8 @@ export interface MachineDeviceInput {
   readonly screenStatus: import("@opensteer/protocol").RunnerIntegrationsDeviceStatus | null;
   readonly screenConnected: boolean;
   readonly screenAsleep?: boolean;
+  /** The Mac driving this phone's screen had agents stopped by its person. */
+  readonly screenStopped?: boolean;
   readonly phoneAccess: "read" | "read-write" | null;
 }
 
@@ -453,11 +459,15 @@ function projectDeviceMachines(input: MachineProjectionInput): readonly MachineL
     screenStatus,
     screenConnected,
     screenAsleep,
+    screenStopped,
     phoneAccess,
   } of input.devices ?? []) {
     if (device.removedAt) continue;
     const self = legacy.find((machine) => machine.id === selfRunnerId);
     const selfAsleep = Boolean(self?.asleepSince);
+    // The person stopped agents on this computer itself: nothing it offers is
+    // available to an agent until they resume, connected or not.
+    const selfStopped = Boolean(self?.agentsStoppedSince);
     const screen = drivers.find((driver) => driver.role === "screen") ?? null;
     const android =
       device.kind === "agent-phone" ||
@@ -485,11 +495,13 @@ function projectDeviceMachines(input: MachineProjectionInput): readonly MachineL
     const physical = screen
       ? !screen.attached
         ? available(false, "not-connected")
-        : screenAsleep
-          ? available(false, "driver-asleep")
-          : !screenConnected
-            ? available(false, "driver-offline")
-            : (screenStatus?.availability ?? available(false, "unreported"))
+        : screenStopped
+          ? available(false, "driver-stopped")
+          : screenAsleep
+            ? available(false, "driver-asleep")
+            : !screenConnected
+              ? available(false, "driver-offline")
+              : (screenStatus?.availability ?? available(false, "unreported"))
       : self?.status !== "online"
         ? available(false, offlineReason)
         : !android || phoneComputerUse.state === "ready"
@@ -520,7 +532,9 @@ function projectDeviceMachines(input: MachineProjectionInput): readonly MachineL
         ? { state: "unsupported" as const, reason: { kind: "unsupported" as const } }
         : !enabled
           ? { state: "disabled" as const, reason: { kind: "access-off" as const } }
-          : available(ready, offlineReason)),
+          : selfStopped
+            ? available(false, "driver-stopped")
+            : available(ready, offlineReason)),
     });
     const phoneDisplay: import("@opensteer/protocol").PhoneDisplayView | null = !phone
       ? null

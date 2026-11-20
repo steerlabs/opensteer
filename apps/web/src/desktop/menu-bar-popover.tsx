@@ -107,6 +107,9 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
             <p className="menu-bar__stopped">{menuBarStoppedLine(status.stop.stoppedAt)}</p>
           ) : null}
           <p className="menu-bar__quiet">{menuBarWords("menubar.stopped.detail")}</p>
+          {status?.stop.confirmed ? (
+            <p className="menu-bar__quiet">{status.stop.confirmed}</p>
+          ) : null}
           <button
             className="btn btn--primary menu-bar__resume"
             disabled={stopping.has("resume")}

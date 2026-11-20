@@ -198,6 +198,12 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
     phone.setup?.location === "driver-mac"
       ? ` in Opensteer on ${phone.setup.driverRunnerName}`
       : " in Opensteer on its driving Mac";
+  if (reason === "driver-stopped")
+    return blocked(
+      "computer_stopped",
+      `${phone.name}'s screen driver has agents stopped by the person, on that computer itself.`,
+      `It will work again when they resume agents${phone.setup?.location === "driver-mac" ? ` on ${phone.setup.driverRunnerName}` : ""}; other work can continue.`,
+    );
   if (reason === "driver-asleep")
     return blocked(
       "computer_asleep",

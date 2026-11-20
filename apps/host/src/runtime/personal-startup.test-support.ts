@@ -300,6 +300,9 @@ export async function startPersonalRuntime(input: {
         : {}),
       ...(vertical?.machineAccess ? { machineAccess: vertical.machineAccess } : {}),
       ...(vertical?.runnerLogger ? { logger: vertical.runnerLogger } : {}),
+      ...(vertical?.agentWork
+        ? { agentWorkStopped: () => vertical.agentWork?.stopped() ?? false }
+        : {}),
       bootId,
       dataDirectory: config.dataDirectory,
       environmentId,
@@ -407,6 +410,7 @@ export async function startPersonalRuntime(input: {
       return;
     }
     connection = new ReconnectingHostConnection({
+      ...(vertical?.agentWork ? { agentWork: vertical.agentWork } : {}),
       ...(vertical?.executionClock ? { executionClock: vertical.executionClock } : {}),
       ...(runnerIntegrations ? { integrationsModule: runnerIntegrations } : {}),
       browserBridge: config.browserBridge,

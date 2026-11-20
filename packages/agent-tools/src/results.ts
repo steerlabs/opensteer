@@ -28,6 +28,8 @@ const legacyErrorCodes = new Map<string, string>([
   ["computer-offline", "computer_offline"],
   ["device-asleep", "computer_asleep"],
   ["computer-asleep", "computer_asleep"],
+  ["device-stopped", "computer_stopped"],
+  ["computer-stopped", "computer_stopped"],
   ["outcome-unknown", "outcome_unknown"],
 ]);
 const classifiedErrorCodes = new Map<string, string>([
@@ -35,6 +37,8 @@ const classifiedErrorCodes = new Map<string, string>([
   ["computer-offline", "computer_offline"],
   ["device-asleep", "computer_asleep"],
   ["computer-asleep", "computer_asleep"],
+  ["device-stopped", "computer_stopped"],
+  ["computer-stopped", "computer_stopped"],
   ["outcome-unknown", "outcome_unknown"],
   ["outcome_unknown", "outcome_unknown"],
   ["port_in_use", "port_in_use"],
@@ -51,7 +55,9 @@ export function normalizeToolError(failure: AgentToolFailure): ToolError {
     const target = `computerId=${failure.computerId}, access=${failure.capability}.`;
     next = `${target} ${
       next ??
-      (failure.reason === "device-asleep"
+      (failure.reason === "device-stopped"
+        ? "Check computer_list; wait until the person resumes agents there and do not request access."
+        : failure.reason === "device-asleep"
         ? "Check computer_list; wait until it wakes and do not request access."
         : failure.reason === "device-offline"
           ? "Check computer_list; do not request access while it is offline."

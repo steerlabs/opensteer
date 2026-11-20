@@ -2057,7 +2057,10 @@ export class LocalRunnerService {
     this.#emit();
     slot.stopPromise = (async () => {
       if (!keep) await stopSlotBrowser(slot, this.#log);
-      child.postMessage({ type: "runner.worker.stop" });
+      // A stop for the person's Stop lets the worker tell its Home first.
+      child.postMessage(
+        keep ? { type: "runner.worker.stop", agentsStopped: true } : { type: "runner.worker.stop" },
+      );
       let gone = await exitedWithin(exited, this.#stopTimeouts.gracefulMs);
       if (!gone) {
         child.kill();

@@ -923,9 +923,10 @@ export class ProductToolHandlers {
       assignmentId: input.delegationId,
       ownerId: caller.userId,
     });
-    if (!assignment) throw forbidden("delegation is unavailable");
+    // One refusal for a missing delegation and one outside the caller's lineage.
+    if (!assignment) throw forbidden("Task is unavailable");
     const worker = await this.#store.getThreadForOwner(assignment.workerThreadId, caller.userId);
-    if (!worker) throw forbidden("task is unavailable");
+    if (!worker) throw forbidden("Task is unavailable");
 
     const read = await readAssignmentResult(this.#store.database, {
       assignmentId: input.delegationId,

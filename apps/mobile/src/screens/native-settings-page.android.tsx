@@ -216,6 +216,7 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
         <LinkRow
           destructive={row.destructive}
           detail={row.detail}
+          detailTone={row.tone}
           disabled={row.disabled}
           lead={lead}
           onPress={row.onPress}

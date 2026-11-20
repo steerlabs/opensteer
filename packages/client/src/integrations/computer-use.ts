@@ -646,7 +646,9 @@ export function phoneUseState(machine: MachineSummary): PhoneUseState {
   }
   if (display.control.state === "ready") return { kind: "ready" };
   if (
-    (reason?.kind === "driver-offline" || reason?.kind === "driver-asleep") &&
+    (reason?.kind === "driver-offline" ||
+      reason?.kind === "driver-asleep" ||
+      reason?.kind === "driver-stopped") &&
     display.driver?.role !== "screen"
   )
     return { kind: "offline" };

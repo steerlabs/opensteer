@@ -191,4 +191,39 @@ describe("Devices on the phone", () => {
       "Work iPhone — Alex’s MacBook Pro is asleep",
     ]);
   });
+
+  it("shows a Mac whose person stopped agents on it as stopped, Home or not, and its iPhone too", () => {
+    const now = new Date("2026-11-20T11:00:00");
+    const agentsStoppedSince = new Date("2026-11-20T10:42:00").toISOString();
+    const time = new Date(agentsStoppedSince).toLocaleTimeString(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    const stoppedHome = {
+      ...machines.find(({ name }) => name === "Studio Mac")!,
+      kind: "home" as const,
+      agentsStoppedSince,
+    };
+    const iphone = mockIphoneScreenDevice();
+    const stoppedPhone = {
+      ...iphone,
+      phoneDisplay: {
+        ...iphone.phoneDisplay!,
+        control: { reason: { kind: "driver-stopped" as const }, state: "unavailable" as const },
+      },
+    };
+    const sections = deviceListSections({
+      here: { state: "none" },
+      machines: [stoppedHome, stoppedPhone],
+      noun: "iPhone",
+      now,
+      sessions: [],
+    });
+    expect(
+      sections.flatMap(({ rows }) => rows.map(({ title, detail }) => `${title} — ${detail}`)),
+    ).toEqual([
+      `Studio Mac — Stopped on Studio Mac · since ${time}`,
+      "Work iPhone — Agents are stopped on Alex’s MacBook Pro",
+    ]);
+  });
 });

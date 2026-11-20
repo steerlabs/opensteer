@@ -357,6 +357,11 @@ export interface CloudComputerSnapshot {
   readonly actionFailure: string | null;
   /** Each work Home, beside the personal screen; none until a read succeeds. */
   readonly work: readonly WorkHomeCard[];
+  /** The Account's views, for saying which kind of Home a Deployment is; null until read. */
+  readonly views: {
+    readonly computers: readonly CloudComputerView[];
+    readonly work: readonly DesktopWorkHome[];
+  } | null;
 }
 
 export type CloudComputerSchedule = (run: () => void, ms: number) => () => void;
@@ -502,6 +507,10 @@ export class CloudComputerClient {
         this.#read.kind === "ready"
           ? this.#read.work.map((work) => workHomeCard(work, this.#locale))
           : [],
+      views:
+        this.#read.kind === "ready"
+          ? { computers: this.#read.data.computers, work: this.#read.work }
+          : null,
     };
   }
 

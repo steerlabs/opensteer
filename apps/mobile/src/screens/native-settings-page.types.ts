@@ -81,6 +81,8 @@ export type NativeSettingsRow =
       readonly lead?: ReactElement;
       readonly disabled?: boolean;
       readonly destructive?: boolean;
+      /** Amber detail for a thing that needs the person, such as a Device that is asleep. */
+      readonly tone?: "attention";
       readonly onPress: () => void;
       readonly actions?: readonly NativeSettingsAction[];
     }

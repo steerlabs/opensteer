@@ -1599,6 +1599,11 @@ describe("LocalRunnerService", () => {
     admission.close();
     const pausing = running.service.pause();
     await eventually(() => hasStopMessage(childAt(running.children, 0)));
+    // The worker is told why, so its Runner tells its Home before it goes.
+    expect(childAt(running.children, 0).messages).toContainEqual({
+      type: "runner.worker.stop",
+      agentsStopped: true,
+    });
     childAt(running.children, 0).emit("exit", 0);
     await pausing;
     expect(stopBrowser).not.toHaveBeenCalled();

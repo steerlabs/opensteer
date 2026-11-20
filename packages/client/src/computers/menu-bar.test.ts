@@ -339,9 +339,32 @@ describe("This Mac and Stop everything", () => {
       stoppedAt: "2026-11-20T10:42:00.000Z",
       offline: null,
       problem: null,
+      confirmed: null,
     });
     expect(status.homes[0]?.status).toBe("Stopped on this Mac");
     expect(status.icon).toEqual({ attention: false, unreachable: false, stopped: true });
+  });
+
+  it("says the Home shows this Mac as stopped too, once its row for this Mac does", () => {
+    const stop = { phase: "stopped" as const, stoppedAt: "2026-11-20T10:42:00.000Z", problem: null };
+    const reported = MachineSummarySchema.parse({
+      ...thisMac(),
+      agentsStoppedSince: "2026-11-20T10:42:00.000Z",
+    });
+    const confirmed = menuBarStatus({
+      ...base,
+      deviceHomes: [office()],
+      stop,
+      thisMac: { deploymentId: "dep_office", machine: reported, devicesAvailable: true },
+    });
+    expect(confirmed.stop.confirmed).toBe("Office Mini shows this Mac as stopped too.");
+    const unconfirmed = menuBarStatus({
+      ...base,
+      deviceHomes: [office()],
+      stop,
+      thisMac: { deploymentId: "dep_office", machine: thisMac(), devicesAvailable: true },
+    });
+    expect(unconfirmed.stop.confirmed).toBeNull();
   });
 
   it("keeps a Home that cannot be reached unreachable when the person stops this Mac", () => {

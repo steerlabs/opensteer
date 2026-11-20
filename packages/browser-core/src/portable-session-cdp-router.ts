@@ -27,6 +27,7 @@ export type CdpParameters = Readonly<Record<string, unknown>>;
 export interface CdpCommand {
   readonly method: string;
   readonly replyBudget?: JsonSizeBudget;
+  readonly scriptAttachmentId?: string;
   readonly parameters?: CdpParameters;
   readonly sessionId?: string;
 }
@@ -35,6 +36,7 @@ export interface CdpEvent {
   readonly method: string;
   readonly parameters: CdpParameters;
   readonly sequence: number;
+  readonly scriptAttachmentId?: string;
   readonly sessionId?: string;
 }
 
@@ -113,6 +115,7 @@ interface AttachedChannel {
 interface TargetClaim {
   readonly sessionId: string;
   parentId?: string;
+  scriptParentId?: string;
 }
 
 interface DiscoveryReplay {
@@ -122,6 +125,7 @@ interface DiscoveryReplay {
 
 interface BrowserSessionState {
   readonly connections: Set<ConnectionState>;
+  readonly scripts: Map<string, ConnectionState>;
   readonly adopting: Set<string>;
   readonly exclusiveWorkers: Set<string>;
   readonly resolveTarget: (targetId: string) => Promise<boolean>;
@@ -135,6 +139,13 @@ interface BrowserSessionState {
 interface ConnectionState {
   readonly session: BrowserSessionState;
   readonly standard?: StandardCdpAttachmentOptions;
+  readonly script?: {
+    id: string;
+    root: string;
+    eventBudget: JsonSizeBudget;
+    closing: boolean;
+    active: Set<Promise<unknown>>;
+  };
   readonly contextOperations: Set<Promise<unknown>>;
   readonly closed: AbortController;
   readonly pending: Set<(reason: unknown) => void>;
@@ -339,6 +350,7 @@ export class SessionCdpRouter {
     const session: BrowserSessionState = {
       resolveTarget,
       connections: new Set(),
+      scripts: new Map(),
       adopting: new Set(),
       exclusiveWorkers: new Set(),
       ledgerDialogEvents: false,
@@ -392,10 +404,12 @@ export class SessionCdpRouter {
   #openConnection(
     session: BrowserSessionState,
     standard?: StandardCdpAttachmentOptions,
+    script?: ConnectionState["script"],
   ): ConnectionState {
     const state: ConnectionState = {
       session,
       ...(standard ? { standard } : {}),
+      ...(script ? { script } : {}),
       contextOperations: new Set(),
       closed: new AbortController(),
       pending: new Set(),
@@ -421,6 +435,7 @@ export class SessionCdpRouter {
     state.closed.abort(error);
     rejectPending(state.pending, error);
     state.session.connections.delete(state);
+    if (state.script) state.session.scripts.delete(state.script.id);
     state.autoAttached = undefined;
     state.autoReady = undefined;
     state.discoveryReplay = undefined;
@@ -493,9 +508,55 @@ export class SessionCdpRouter {
     };
   }
 
+  openScriptAttachment(
+    sessionId: string,
+    id: string,
+    root: string,
+    eventBudget: JsonSizeBudget,
+    onEvent: (event: CdpEvent) => void,
+  ): void {
+    const session = this.#requireSession(sessionId);
+    this.#assertOwnedTarget(session, root);
+    if (session.session.scripts.has(id))
+      throw new SessionCdpRouterError("conflict", "Browser script attachment already exists.");
+    if (session.session.scripts.size >= 128)
+      throw new SessionCdpRouterError("too_large", "Too many browser script attachments.");
+    const state = this.#openConnection(session.session, undefined, {
+      id, root, eventBudget, closing: false, active: new Set(),
+    });
+    session.session.scripts.set(id, state);
+    this.#observe(state, onEvent);
+  }
+
+  async closeScriptAttachment(sessionId: string, id: string, cleanup: Promise<unknown>): Promise<void> {
+    const state = this.#sessions.get(sessionId)?.session.scripts.get(id);
+    if (!state?.script || state.script.closing) return;
+    state.script.closing = true;
+    await Promise.allSettled([cleanup, ...state.script.active]);
+    this.#closeConnection(state);
+  }
+
+  assertScriptTarget(sessionId: string, attachmentId: string, targetId?: string): void {
+    const state = this.#commandState(sessionId, attachmentId);
+    if (targetId !== undefined) this.#assertOwnedTarget(state, targetId);
+  }
+
+  #commandState(sessionId: string, attachmentId?: string): ConnectionState {
+    const state = this.#requireSession(sessionId);
+    if (!attachmentId) return state;
+    const script = state.session.scripts.get(attachmentId);
+    if (!script || script.script?.closing)
+      throw new SessionCdpRouterError("not_found", "Browser script attachment ended.");
+    return script;
+  }
+
   /** The page an agent's attached CDP session drives, or null when it is not attached here. */
-  attachedTargetId(sessionId: string, cdpSessionId: string): string | null {
-    return this.#attachedTargetId(this.#sessions.get(sessionId), cdpSessionId);
+  attachedTargetId(sessionId: string, cdpSessionId: string, attachmentId?: string): string | null {
+    const state = this.#sessions.get(sessionId);
+    return this.#attachedTargetId(
+      attachmentId ? state?.session.scripts.get(attachmentId) : state,
+      cdpSessionId,
+    );
   }
 
   #attachedTargetId(state: ConnectionState | undefined, cdpSessionId: string): string | null {
@@ -512,7 +573,7 @@ export class SessionCdpRouter {
   /** Retains the actual Input handler for cleanup after an admitted agent press. */
   inputChannel(sessionId: string, command: CdpCommand): CdpChannel {
     this.#assertOpen();
-    const state = this.#requireSession(sessionId);
+    const state = this.#commandState(sessionId, command.scriptAttachmentId);
     validateCommand(command, this.#sessionLimits(state).maxCommandBytes);
     return this.#admitAttachedCommand(state, command).channel;
   }
@@ -525,7 +586,7 @@ export class SessionCdpRouter {
    */
   admitPageCommand(sessionId: string, command: CdpCommand): AbortSignal {
     this.#assertOpen();
-    const state = this.#requireSession(sessionId);
+    const state = this.#commandState(sessionId, command.scriptAttachmentId);
     validateCommand(command, this.#sessionLimits(state).maxCommandBytes);
     return this.#admitAttachedCommand(state, command).ended.signal;
   }
@@ -536,11 +597,13 @@ export class SessionCdpRouter {
   }
 
   #assertResultSize(result: unknown, maxResultBytes: number, budget?: JsonSizeBudget): void {
-    if (boundedJsonSize(result, {
-      maxBytes: Math.min(maxResultBytes, budget?.maxBytes ?? maxResultBytes),
-      maxDepth: budget?.maxDepth ?? 32,
-      maxEntries: budget?.maxEntries ?? 65_536,
-    }) === undefined) {
+    if (
+      boundedJsonSize(result, {
+        maxBytes: Math.min(maxResultBytes, budget?.maxBytes ?? maxResultBytes),
+        maxDepth: budget?.maxDepth ?? 32,
+        maxEntries: budget?.maxEntries ?? 65_536,
+      }) === undefined
+    ) {
       throw new SessionCdpRouterError(
         "too_large",
         "CDP result exceeds the bounded agent transport. Query a narrower result in the page.",
@@ -555,7 +618,7 @@ export class SessionCdpRouter {
    */
   admitCreateTarget(sessionId: string, command: CdpCommand): void {
     this.#assertOpen();
-    const state = this.#requireSession(sessionId);
+    const state = this.#commandState(sessionId, command.scriptAttachmentId);
     validateCommand(command, this.#sessionLimits(state).maxCommandBytes);
     assertSafeNavigationUrl(command.parameters?.url, true);
   }
@@ -575,7 +638,11 @@ export class SessionCdpRouter {
     command: CdpCommand,
     beforeActivity?: (targetId: string) => void,
   ): Promise<unknown> {
-    return this.#send(this.#requireSession(sessionId), command, beforeActivity);
+    return this.#send(
+      this.#commandState(sessionId, command.scriptAttachmentId),
+      command,
+      beforeActivity,
+    );
   }
 
   async #send(
@@ -586,6 +653,15 @@ export class SessionCdpRouter {
     this.#assertOpen();
     state.closed.signal.throwIfAborted();
     const bytes = validateCommand(command, this.#sessionLimits(state).maxCommandBytes);
+    if (state.script) {
+      const operation = this.#dispatch(state, command, beforeActivity);
+      state.script.active.add(operation);
+      try {
+        return await operation;
+      } finally {
+        state.script.active.delete(operation);
+      }
+    }
     if (!state.standard) return this.#dispatch(state, command, beforeActivity);
     if (
       state.pendingBytes + bytes > standardCdpBufferedMaxBytes ||
@@ -621,6 +697,17 @@ export class SessionCdpRouter {
       command = { ...command, parameters };
     }
     this.#backend.assertScope?.(command.method, command.parameters ?? {});
+    if (
+      state.script &&
+      !command.sessionId &&
+      !command.method.startsWith("Target.") &&
+      command.method !== "Browser.getVersion" &&
+      !(this.#backend.dedicatedContext && contextScopedCdpMethods.has(command.method))
+    )
+      throw new SessionCdpRouterError(
+        "forbidden",
+        "CDP command is outside this browser attachment.",
+      );
     if (
       [
         "Browser.close",
@@ -675,7 +762,11 @@ export class SessionCdpRouter {
         state.contextOperations.add(pending);
         try {
           const result = await pending;
-          this.#assertResultSize(result, this.#sessionLimits(state).maxResultBytes, command.replyBudget);
+          this.#assertResultSize(
+            result,
+            this.#sessionLimits(state).maxResultBytes,
+            command.replyBudget,
+          );
           return result;
         } finally {
           state.contextOperations.delete(pending);
@@ -728,7 +819,7 @@ export class SessionCdpRouter {
       case "Target.getTargets": {
         const response = await this.#ownedTargetInfos(state, parameters);
         if (state.standard) return { targetInfos: response.targetInfos };
-        const root = state.session.rootTargetId;
+        const root = state.script?.root ?? state.session.rootTargetId;
         const current = this.#ownerByTargetId.get(root);
         const rootTargetId =
           current && current.sessionId !== state.session.sessionId
@@ -748,14 +839,12 @@ export class SessionCdpRouter {
           throw new SessionCdpRouterError("bad_command", "Invalid nested CDP message.");
         }
         const result = await this.#send(state, {
-          method: requiredString(nested, "method"),
+          method: this.#nestedMethod(state, nested),
           parameters: asRecord(nested.params),
+          ...(command.replyBudget ? { replyBudget: command.replyBudget } : {}),
           sessionId: virtualSessionId,
         });
-        this.#appendEvent(state, "Target.receivedMessageFromTarget", {
-          sessionId: virtualSessionId,
-          message: JSON.stringify({ id: nested.id, result }),
-        });
+        this.#nestedReply(state, virtualSessionId, { id: nested.id, result });
         return {};
       }
       case "Target.getBrowserContexts":
@@ -792,7 +881,7 @@ export class SessionCdpRouter {
             await this.#backend.send("Target.closeTarget", { targetId }).catch(() => undefined);
           throw new SessionCdpRouterError("not_found", "Browser Session is not registered.");
         }
-        const claim = this.#claimTarget(state, targetId, undefined, !state.standard);
+        const claim = this.#claimTarget(state, targetId, state.script?.root, !state.standard);
         if (state.standard) {
           state.session.adopting.add(targetId);
           let adopted = false;
@@ -952,7 +1041,9 @@ export class SessionCdpRouter {
 
   async #ownedTargetInfos(state: ConnectionState, parameters?: CdpParameters) {
     const claims = new Map(
-      [...state.session.ownedTargetIds].map((id) => [id, this.#ownerByTargetId.get(id)]),
+      [...state.session.ownedTargetIds]
+        .filter((id) => this.#canReach(state, id))
+        .map((id) => [id, this.#ownerByTargetId.get(id)]),
     );
     const response = asRecord(await this.#backend.send("Target.getTargets", parameters));
     state.closed.signal.throwIfAborted();
@@ -990,18 +1081,14 @@ export class SessionCdpRouter {
 
   #projectTargetInfo(state: ConnectionState, info: CdpParameters): CdpParameters | undefined {
     const targetId = readString(info, "targetId");
-    if (!targetId || this.#ownerByTargetId.get(targetId)?.sessionId !== state.session.sessionId)
-      return;
+    if (!targetId || !this.#canReach(state, targetId)) return;
     const projected: Record<string, unknown> = {
       ...info,
       ...(state.standard ? { browserContextId: state.session.sessionId } : {}),
     };
     for (const key of ["openerId", "parentId"]) {
       const relatedId = readString(info, key);
-      if (
-        relatedId &&
-        this.#ownerByTargetId.get(relatedId)?.sessionId !== state.session.sessionId
-      ) {
+      if (relatedId && !this.#canReach(state, relatedId)) {
         delete projected[key];
         if (key === "openerId") {
           delete projected.openerFrameId;
@@ -1204,6 +1291,8 @@ export class SessionCdpRouter {
       throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
     }
     const parameters = command.parameters ?? {};
+    this.#assertOwnedTarget(state, attached.physicalTargetId);
+    this.#assertScope(state, parameters);
     if (command.method === "Page.navigate") {
       assertSafeNavigationUrl(parameters.url, false);
     }
@@ -1292,19 +1381,17 @@ export class SessionCdpRouter {
         const result = await this.#send(
           state,
           {
-            method: requiredString(message, "method"),
+            method: this.#nestedMethod(state, message),
             parameters: asRecord(message.params),
+            ...(command.replyBudget ? { replyBudget: command.replyBudget } : {}),
             sessionId: child.virtualSessionId,
           },
           beforeActivity,
         );
-        this.#appendEvent(
+        this.#nestedReply(
           state,
-          "Target.receivedMessageFromTarget",
-          {
-            sessionId: child.virtualSessionId,
-            message: JSON.stringify({ id: message.id, result }),
-          },
+          child.virtualSessionId,
+          { id: message.id, result },
           attached.virtualSessionId,
         );
         return {};
@@ -1407,13 +1494,17 @@ export class SessionCdpRouter {
       if (
         owner &&
         parentId &&
-        !this.#ownerByTargetId.has(targetId) &&
+        targetId !== parentId &&
         (["page", "iframe", "worker"].includes(String(info.type)) ||
           (this.#exclusive?.session.sessionId === owner.session.sessionId &&
             isWorkerShared(info.type)))
       ) {
-        if (isWorkerShared(info.type)) owner.session.exclusiveWorkers.add(targetId);
-        this.#claimTarget(owner, targetId, parentId, info.type === "page");
+        const existing = this.#ownerByTargetId.get(targetId);
+        if (existing?.sessionId === owner.session.sessionId) existing.scriptParentId ??= parentId;
+        if (!existing) {
+          if (isWorkerShared(info.type)) owner.session.exclusiveWorkers.add(targetId);
+          this.#claimTarget(owner, targetId, parentId, info.type === "page");
+        }
       }
     }
 
@@ -1425,6 +1516,15 @@ export class SessionCdpRouter {
   }
 
   #discover(state: ConnectionState, method: string, parameters: CdpParameters): void {
+    if (
+      state.script &&
+      method === "Target.targetDestroyed" &&
+      parameters.targetId === state.script.root
+    ) {
+      this.#appendEvent(state, method, parameters);
+      this.#closeConnection(state);
+      return;
+    }
     if (!state.discoverTargets) return;
     const replay = state.discoveryReplay;
     if (replay) {
@@ -1490,9 +1590,10 @@ export class SessionCdpRouter {
       throw new SessionCdpRouterError("conflict", "CDP target belongs to another session.");
     const claim = existing ?? {
       sessionId: state.session.sessionId,
-      ...(parentId ? { parentId } : {}),
+      ...(parentId ? { parentId, scriptParentId: parentId } : {}),
     };
     if (!parentId) delete claim.parentId;
+    else claim.scriptParentId ??= parentId;
     this.#ownerByTargetId.set(targetId, claim);
     state.session.ownedTargetIds.add(targetId);
     const announced = this.#unclaimedPages.get(targetId);
@@ -1527,6 +1628,7 @@ export class SessionCdpRouter {
           this.#endChannel(connection, attached);
         }
       }
+      if (connection.script?.root === targetId) this.#closeConnection(connection);
     }
     for (const childId of state.session.ownedTargetIds)
       if (this.#ownerByTargetId.get(childId)?.parentId === targetId) this.#releaseTarget(childId);
@@ -1567,6 +1669,23 @@ export class SessionCdpRouter {
     parameters: CdpParameters,
     sessionId?: string,
   ): void {
+    if (state.script?.closing) return;
+    if (
+      state.script &&
+      !sessionId &&
+      method !== "Target.detachedFromTarget" &&
+      method !== "Target.receivedMessageFromTarget"
+    ) {
+      const id =
+        readString(asRecord(parameters.targetInfo), "targetId") ??
+        readString(parameters, "targetId");
+      if (!id || !this.#canReach(state, id)) return;
+    }
+    if (
+      state.script &&
+      boundedJsonSize({ method, parameters, sessionId }, state.script.eventBudget) === undefined
+    )
+      return;
     if (method.startsWith("Target.") && parameters.targetInfo !== undefined) {
       const info = this.#projectTargetInfo(state, asRecord(parameters.targetInfo));
       if (!info) return;
@@ -1576,13 +1695,19 @@ export class SessionCdpRouter {
       method,
       parameters,
       sequence: state.nextSequence++,
+      ...(state.script ? { scriptAttachmentId: state.script.id } : {}),
       ...(sessionId ? { sessionId } : {}),
     };
-    if (boundedJsonSize(event, {
-      maxBytes: this.#sessionLimits(state).maxEventBytes,
-      maxDepth: 28,
-      maxEntries: 16_384,
-    }) === undefined) {
+    if (
+      boundedJsonSize(event, {
+        maxBytes: Math.min(
+          this.#sessionLimits(state).maxEventBytes,
+          state.script?.eventBudget.maxBytes ?? Infinity,
+        ),
+        maxDepth: state.script?.eventBudget.maxDepth ?? 28,
+        maxEntries: state.script?.eventBudget.maxEntries ?? 16_384,
+      }) === undefined
+    ) {
       if (state.standard) {
         state.standard.onOverflow?.();
         this.#closeConnection(state);
@@ -1597,6 +1722,40 @@ export class SessionCdpRouter {
         // target ownership or the browser backend's event pump.
       }
     }
+  }
+
+  #nestedMethod(state: ConnectionState, message: CdpParameters): string {
+    const method = requiredString(message, "method");
+    if (state.script && method === "Page.captureScreenshot")
+      throw new SessionCdpRouterError("bad_command", "Capture a screenshot on an attached page.");
+    return method;
+  }
+
+  #nestedReply(
+    state: ConnectionState,
+    childId: string,
+    reply: CdpParameters,
+    sessionId?: string,
+  ): void {
+    const envelope = {
+      method: "Target.receivedMessageFromTarget",
+      parameters: { sessionId: childId, message: "" },
+      sequence: state.nextSequence,
+      scriptAttachmentId: state.script?.id,
+      sessionId,
+    };
+    if (state.script) {
+      const budget = state.script.eventBudget;
+      const limit = Math.min(budget.maxBytes, this.#sessionLimits(state).maxEventBytes);
+      const overhead = boundedJsonSize(envelope, { ...budget, maxBytes: limit });
+      this.#assertResultSize(reply, Math.floor((limit - (overhead ?? limit)) / 2), budget);
+    }
+    this.#appendEvent(
+      state,
+      envelope.method,
+      { ...envelope.parameters, message: JSON.stringify(reply) },
+      sessionId,
+    );
   }
 
   #assertScope(state: ConnectionState, parameters: CdpParameters): void {
@@ -1616,9 +1775,19 @@ export class SessionCdpRouter {
       );
   }
 
+  #canReach(state: ConnectionState, targetId: string): boolean {
+    for (let id: string | undefined = targetId, hops = 0; id && hops < 128; hops++) {
+      const claim = this.#ownerByTargetId.get(id);
+      if (claim?.sessionId !== state.session.sessionId) return false;
+      if (!state.script || id === state.script.root) return true;
+      id = claim.scriptParentId;
+    }
+    return false;
+  }
+
   #assertOwnedTarget(state: ConnectionState, targetId: string): TargetClaim {
     const claim = this.#ownerByTargetId.get(targetId);
-    if (claim?.sessionId !== state.session.sessionId)
+    if (!claim || !this.#canReach(state, targetId))
       throw new SessionCdpRouterError("forbidden", "CDP target is outside this Browser Session.");
     return claim;
   }

@@ -95,6 +95,8 @@ export class ManagedHomeClaimService {
       account: { issuer: this.#verifier.issuer, subject: claims.sub },
       authority,
       claim: claims.claim,
+      // A work Cloud Computer's organization and assignment, as the Account signed them.
+      ...(claims.work ? { work: claims.work } : {}),
       linkGeneration: claims.link.generation,
       hostCredentialSha256: credentialDigest,
       claimedAt: this.#now().toISOString(),

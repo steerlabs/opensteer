@@ -155,6 +155,8 @@ export interface EnvironmentSummary {
   status: EnvironmentStatus;
 
   can: { readonly executeTasks: boolean };
+  /** When the person stopped agents on this location's computer, while that holds. */
+  agentsStoppedSince?: string | null | undefined;
 }
 
 export type HarnessDriverSummary =

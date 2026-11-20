@@ -57,6 +57,8 @@ interface DispatchBackoff {
   nextEligibleAt: number;
   /** When it was last recorded, on the coordinator's own count of rejections. */
   recorded: number;
+  /** The environment the command was refused by, when it names one. */
+  environmentId: EnvironmentId | null;
 }
 const dispatchBackoffBaseMs = 1_000;
 const dispatchBackoffMaxMs = 30_000;
@@ -128,6 +130,16 @@ export class ExecutionCoordinator {
     this.#controller = new AbortController();
     this.wake();
   }
+  /**
+   * The environment's Runner says it can take work again (its person resumed
+   * agents): what it refused meanwhile is retried now, not at its backoff.
+   */
+  wakeEnvironment(environmentId: EnvironmentId): void {
+    for (const [commandId, backoff] of this.#dispatchBackoff)
+      if (backoff.environmentId === environmentId) this.#dispatchBackoff.delete(commandId);
+    this.wake();
+  }
+
   wake(): void {
     if (!this.#controller || this.#controller.signal.aborted) return;
     this.#cancelPoll?.();
@@ -328,7 +340,7 @@ export class ExecutionCoordinator {
           await this.#store.retryCommand(command.id, dispatchError);
           // Recorded once the retry has committed: a listing read before then
           // misses the command, and must not take it for one that left.
-          this.#backOff(command.id);
+          this.#backOff(command.id, command.environmentId ?? null);
         });
       } else if (dispatchError.disposition === "failed") {
         await this.#settle(command.id, () =>
@@ -363,11 +375,12 @@ export class ExecutionCoordinator {
    * command is wrong. Pacing each command's own retries keeps one unreachable
    * Runner from spinning the whole queue at poll speed.
    */
-  #backOff(commandId: CommandId): void {
+  #backOff(commandId: CommandId, environmentId: EnvironmentId | null): void {
     const entry = this.#dispatchBackoff.get(commandId) ?? {
       attempts: 0,
       nextEligibleAt: 0,
       recorded: 0,
+      environmentId,
     };
     entry.nextEligibleAt =
       this.#now() + Math.min(dispatchBackoffBaseMs * 2 ** entry.attempts, dispatchBackoffMaxMs);

@@ -1,5 +1,6 @@
 import {
   nonTerminalRunStatuses,
+  type AgentSessionId,
   type CommandId,
   type MessageId,
   type RequestId,
@@ -28,6 +29,8 @@ export interface ConnectionLineageWork {
   readonly steers: readonly CommandId[];
   /** Lineage automations with occurrences that have not reached a computer. */
   readonly pendingOccurrenceTriggers: readonly TriggerId[];
+  /** The connection's active direct-work sessions. */
+  readonly sessions: readonly AgentSessionId[];
 }
 
 export async function connectionLineageWork(
@@ -41,7 +44,8 @@ export async function connectionLineageWork(
       .select("id")
       .where("createdBy", "=", userId)
       .where("originConnectionId", "=", connectionId);
-  const [runs, inputs, requests, triggers, steers, pendingOccurrenceTriggers] = await Promise.all([
+  const [runs, inputs, requests, triggers, steers, pendingOccurrenceTriggers, sessions] =
+    await Promise.all([
     database
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
@@ -134,6 +138,14 @@ export async function connectionLineageWork(
       )
       .orderBy("triggers.id")
       .execute(),
+    database
+      .selectFrom("agentSessions")
+      .select("id")
+      .where("userId", "=", userId)
+      .where("connectionId", "=", connectionId)
+      .where("status", "=", "active")
+      .orderBy("id")
+      .execute(),
   ]);
   return {
     runs: runs.map((run) => ({
@@ -146,6 +158,7 @@ export async function connectionLineageWork(
     triggers: triggers.map(({ id }) => id),
     steers: steers.map(({ id }) => id),
     pendingOccurrenceTriggers: pendingOccurrenceTriggers.map(({ id }) => id),
+    sessions: sessions.map(({ id }) => id),
   };
 }
 
@@ -208,6 +221,8 @@ export async function lineageOutstanding(
           where trigger_id in (select id from lineage_triggers) and status = 'running')
       + (select count(*) from trigger_watch_activations
           where trigger_id in (select id from lineage_triggers) and observed = 'running')
+      + (select count(*) from agent_operations
+          where connection_id = ${connectionId} and state = 'handed-off')
         as handed_off,
       (select count(*) from runs
         where (connection_id = ${connectionId} or thread_id in (select id from lineage_threads))
@@ -221,6 +236,10 @@ export async function lineageOutstanding(
           where origin_connection_id = ${connectionId} and status = 'active')
       + (select count(*) from trigger_occurrences
           where trigger_id in (select id from lineage_triggers) and status = 'pending')
+      + (select count(*) from agent_sessions
+          where connection_id = ${connectionId} and status = 'active')
+      + (select count(*) from agent_operations
+          where connection_id = ${connectionId} and state in ('admitted', 'pending', 'approved'))
         as waiting
   `.execute(database);
   const row = rows[0];
@@ -269,14 +288,44 @@ export async function completeCleanupIfSettled(
     .where(sql<string>`runs.failure->>'code'`, "in", [...lostContactCodes])
     .orderBy("runs.completedAt", "desc")
     .executeTakeFirst();
-  await database
-    .updateTable("agentConnections")
-    .set({
-      cleanupCompletedAt: new Date(),
-      ...(lost
+  // A direct operation that left the Home and never reported how it ended.
+  const unknown = await database
+    .selectFrom("agentOperations")
+    .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
+    .innerJoin("threads", "threads.id", "agentSessions.threadId")
+    .select([
+      "agentOperations.id",
+      "agentOperations.tool",
+      "agentOperations.target",
+      "agentOperations.completedAt",
+      "agentSessions.threadId",
+      "threads.title",
+    ])
+    .where("agentOperations.connectionId", "=", connectionId)
+    .where("agentOperations.outcome", "=", "unknown")
+    .where("agentOperations.completedAt", ">=", connection.cleanupRequestedAt)
+    .orderBy("agentOperations.completedAt", "desc")
+    .executeTakeFirst();
+  const uncertain =
+    unknown &&
+    (!lost || (unknown.completedAt?.getTime() ?? 0) >= (lost.completedAt?.getTime() ?? 0))
+      ? {
+          at: unknown.completedAt ?? new Date(),
+          fact: {
+            kind: "operation",
+            operationId: unknown.id,
+            taskId: unknown.threadId,
+            task: unknown.title,
+            tool: unknown.tool,
+            target: unknown.target.name,
+            device: unknown.target.device?.name ?? null,
+            reason: "contact-lost",
+          },
+        }
+      : lost
         ? {
-            lastActionUncertainAt: lost.completedAt ?? new Date(),
-            lastActionUncertain: {
+            at: lost.completedAt ?? new Date(),
+            fact: {
               kind: "run",
               runId: lost.id,
               taskId: lost.threadId,
@@ -285,6 +334,13 @@ export async function completeCleanupIfSettled(
               reason: lost.code,
             },
           }
+        : null;
+  await database
+    .updateTable("agentConnections")
+    .set({
+      cleanupCompletedAt: new Date(),
+      ...(uncertain
+        ? { lastActionUncertainAt: uncertain.at, lastActionUncertain: uncertain.fact }
         : {}),
     })
     .where("id", "=", connectionId)

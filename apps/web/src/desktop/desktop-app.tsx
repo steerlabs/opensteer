@@ -44,6 +44,7 @@ import {
 import { ToastProvider } from "../components/toast.js";
 import { createBrowserHostClient } from "../host/browser-host-client.js";
 import { disposeMessageOutbox } from "@opensteer/client/host";
+import { UnreachableHomeLine } from "../components/asleep-moment.js";
 import { ConnectionGateView } from "../components/connection-shell.js";
 import { useClientConnectionEverReady } from "@opensteer/client/react";
 import { browserClientLifecycle } from "../host/browser-lifecycle.js";
@@ -542,6 +543,17 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     // A place this app couldn't reach yet keeps trying through its own
     // connection, which explains itself on the shared clock; only a refusal is
     // final enough for main's own words.
+    // A Home reached at its own address is never a sleeping Mac; the line decides the rest.
+    const unreachableHome = selected ? (
+      <UnreachableHomeLine
+        deploymentId={selected.id}
+        desktopBridge={bridge}
+        exposure={selected.access === "native" ? "networked" : "loopback"}
+        hostedHere={selected.onThisComputer}
+        macName={selected.name}
+        portalOrigin={hostClient?.getSnapshot().identityConfig?.portalOrigin ?? null}
+      />
+    ) : null;
     const otherComputers =
       snapshot.deployments.length > 1
         ? { label: "Other computers", onPress: () => selected && setChooserFor(selected.id) }
@@ -557,6 +569,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
           connection={hostClient.connection}
           scope="app"
           secondary={otherComputers}
+          unreachableAside={unreachableHome}
         />
       );
     if (presentation === "blocked" && selectedConnection?.failure) {
@@ -642,6 +655,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
             connection={hostClient.connection}
             scope="app"
             secondary={otherComputers}
+            unreachableAside={unreachableHome}
           />
         );
       return (

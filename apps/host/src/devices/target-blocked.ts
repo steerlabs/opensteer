@@ -11,11 +11,15 @@ export function deviceAccessBlocked(error: unknown): Blocked | undefined {
     reason: error.reason,
     computerId: error.machineId,
     capability: error.capability,
-    ...(error.reason === "device-asleep"
-      ? { next: "Tell the person it is asleep; work can continue once it wakes." }
-      : error.reason === "device-offline"
-        ? { next: "Continue without it and tell the person what the message says." }
-        : {}),
+    ...(error.reason === "device-stopped"
+      ? {
+          next: "Tell the person agents are stopped on it; work there can continue once they resume them on that computer.",
+        }
+      : error.reason === "device-asleep"
+        ? { next: "Tell the person it is asleep; work can continue once it wakes." }
+        : error.reason === "device-offline"
+          ? { next: "Continue without it and tell the person what the message says." }
+          : {}),
   });
   return { code, message, next: next ?? "Continue without this device." };
 }

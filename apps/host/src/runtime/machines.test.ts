@@ -1045,3 +1045,104 @@ it.each([
     });
   },
 );
+
+it("projects a Mac whose person stopped agents on it as stopped, and the iPhone it drives too", () => {
+  const macId = createId("runner");
+  const phoneId = DeviceIdSchema.parse(createId("device"));
+  const stoppedAt = new Date("2026-11-20T10:42:00.000Z");
+  const stoppedMac = runner({
+    id: macId,
+    connected: true,
+    agentsStoppedSince: stoppedAt,
+    name: "Studio MacBook",
+    device: { app: "opensteer", form: "laptop", platform: "macos" },
+    allowedModules: ["browser", "integrations", "shell"],
+    modules: {
+      browser: { runtimeId: "rt-1", wireVersion: 2 },
+      integrations: { platform: "darwin", protocolVersion: 4 },
+      shell: {
+        fullDiskAccess: true,
+        hostPublicKey:
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH",
+        platform: "darwin",
+      },
+    },
+  });
+  const projected = projectMachines({
+    access: new Map(),
+    apps: new Map(),
+    deploymentOwnsMainComputer: true,
+    pendingRunners: [],
+    runners: [stoppedMac],
+    threadsByEnvironment: new Map(),
+    devices: [
+      {
+        device: {
+          id: DeviceIdSchema.parse(macId),
+          kind: "computer",
+          platform: "macos",
+          form: "laptop",
+          name: stoppedMac.name,
+          ownerKind: "user",
+          removedAt: null,
+          accessPolicy: { ...machineAccessPolicyDefault, apps: true, browser: true, reach: "owner" },
+        },
+        drivers: [
+          { role: "self", runnerId: macId, runnerName: stoppedMac.name, generation: 1, attached: true },
+        ],
+        selfRunnerId: macId,
+        screenStatus: null,
+        screenConnected: false,
+        phoneAccess: null,
+      },
+      {
+        device: {
+          id: phoneId,
+          kind: "phone",
+          platform: "ios",
+          form: "phone",
+          name: "Work iPhone",
+          ownerKind: "user",
+          removedAt: null,
+          accessPolicy: { ...machineAccessPolicyDefault, apps: true, browser: false },
+        },
+        drivers: [
+          {
+            role: "screen",
+            runnerId: macId,
+            runnerName: stoppedMac.name,
+            generation: 1,
+            attached: true,
+          },
+        ],
+        selfRunnerId: null,
+        screenStatus: null,
+        screenConnected: true,
+        screenStopped: true,
+        phoneAccess: "read-write",
+      },
+    ],
+  });
+  const mac = projected.find((machine) => machine.id === macId);
+  expect(mac).toMatchObject({
+    status: "online",
+    agentsStoppedSince: stoppedAt.toISOString(),
+    capabilities: {
+      browser: { state: "unavailable", reason: { kind: "driver-stopped" } },
+      files: { state: "unavailable", reason: { kind: "driver-stopped" } },
+    },
+  });
+  const phone = projected.find((machine) => machine.id === phoneId);
+  expect(phone?.phoneDisplay?.control).toEqual({
+    state: "unavailable",
+    reason: { kind: "driver-stopped" },
+  });
+  expect(projectMachines({
+    access: new Map(),
+    apps: new Map(),
+    deploymentOwnsMainComputer: true,
+    pendingRunners: [],
+    runners: [runner({ id: createId("runner"), connected: true })],
+    threadsByEnvironment: new Map(),
+  })[0]).not.toHaveProperty("agentsStoppedSince");
+});

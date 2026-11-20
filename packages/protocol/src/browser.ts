@@ -306,7 +306,11 @@ export const BrowserCdpSessionIdSchema = z.string().min(1).max(512);
 export const BrowserCdpParametersSchema = z.record(z.string(), z.unknown());
 
 export const BrowserCdpReplyBudgetSchema = z.strictObject({
-  maxBytes: z.number().int().min(2).max(1024 * 1024 - 4096),
+  maxBytes: z
+    .number()
+    .int()
+    .min(2)
+    .max(1024 * 1024 - 4096),
   maxDepth: z.number().int().min(1).max(32),
   maxEntries: z.number().int().min(1).max(16_384),
 });
@@ -328,6 +332,7 @@ export const BrowserCdpEventSchema = z.strictObject({
   parameters: BrowserCdpParametersSchema,
   sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   sessionId: BrowserCdpSessionIdSchema.optional(),
+  scriptAttachmentId: z.uuid().optional(),
 });
 
 const browserRequestBase = {
@@ -693,6 +698,8 @@ const BaselineBrowserClientMessageSchema = z
       ...browserRequestBase,
       command: BrowserCdpCommandSchema,
       replyBudget: BrowserCdpReplyBudgetSchema.optional(),
+      scriptAttachmentId: z.uuid().optional(),
+      scriptEventBudget: BrowserCdpReplyBudgetSchema.optional(),
       actorToken: z.uuid().optional(),
       attachmentId: z.uuid().optional(),
       /** Host-only attribution for Page.navigate and Opensteer.openTab. */
@@ -839,7 +846,11 @@ const {
   ...runtimeSnapshotShape
 } = BrowserViewerSnapshotSchema.shape;
 export const BrowserRuntimeSnapshotSchema = z
-  .strictObject({ ...runtimeSnapshotShape, cdpReplyBudget: z.literal(1).optional() })
+  .strictObject({
+    ...runtimeSnapshotShape,
+    cdpReplyBudget: z.literal(1).optional(),
+    scriptAttachments: z.literal(1).optional(),
+  })
   .superRefine((snapshot, context) => {
     if (
       snapshot.editingVersion === 2
@@ -1170,6 +1181,8 @@ export const BrowserProfileSchema = z.object({
   homeRunnerId: RunnerIdSchema.nullable().default(null),
   id: BrowserProfileIdSchema,
   name: z.string().min(1).max(120),
+  /** The profile an AI engine signs in through: never offered to a connected agent's grant. */
+  purpose: z.literal("engine-sign-in").optional(),
 });
 export type BrowserProfile = z.infer<typeof BrowserProfileSchema>;
 
@@ -1331,6 +1344,7 @@ export const browserHostMethods = {
   resumeTab: "Opensteer.resumeTab",
   listTabs: "Opensteer.listTabs",
   contextCandidate: "Opensteer.contextCandidate",
+  closeScriptAttachment: "Opensteer.closeScriptAttachment",
 } as const;
 export const TargetedBrowserClientMessageSchema = BrowserClientMessageSchema.superRefine(
   (message, context) => {

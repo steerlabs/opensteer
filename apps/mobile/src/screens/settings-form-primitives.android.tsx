@@ -247,6 +247,8 @@ export function UnknownToggleRow(props: {
 /** A name and the line under it, optionally opening or doing something. */
 export function LinkRow(props: {
   readonly detail?: string | null | undefined;
+  /** Amber for a thing that needs the person. */
+  readonly detailTone?: "attention" | undefined;
   readonly destructive?: boolean | undefined;
   readonly disabled?: boolean | undefined;
   readonly lead?: ReactNode;
@@ -273,7 +275,9 @@ export function LinkRow(props: {
       </ListItem.HeadlineContent>
       {props.detail ? (
         <ListItem.SupportingContent>
-          <Text color={color.muted}>{props.detail}</Text>
+          <Text color={props.detailTone === "attention" ? color.amber : color.muted}>
+            {props.detail}
+          </Text>
         </ListItem.SupportingContent>
       ) : null}
       {props.lead ? <ListItem.LeadingContent>{props.lead}</ListItem.LeadingContent> : null}

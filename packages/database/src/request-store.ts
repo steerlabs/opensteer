@@ -3316,10 +3316,12 @@ async function lockRequestOrigin(
 ): Promise<LockedRequestOrigin | undefined> {
   const origin = requestOriginOf(input);
   if (origin.originatingAgentSessionId !== undefined) {
+    // A session ranks before its task: the session row is held first.
     const parent = await transaction
       .selectFrom("agentSessions")
       .select("threadId")
       .where("id", "=", origin.originatingAgentSessionId)
+      .$if(lock, (q) => q.forNoKeyUpdate())
       .executeTakeFirst();
     if (!parent) return undefined;
     if (lock) await lockRequestThreads(transaction, [parent.threadId]);
@@ -3328,7 +3330,6 @@ async function lockRequestOrigin(
       .innerJoin("threads", "threads.id", "agentSessions.threadId")
       .select(["agentSessions.status", "agentSessions.userId", "threads.environmentId"])
       .where("agentSessions.id", "=", origin.originatingAgentSessionId)
-      .$if(lock, (q) => q.forNoKeyUpdate("agentSessions"))
       .executeTakeFirst();
     return session
       ? {

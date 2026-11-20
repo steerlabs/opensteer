@@ -232,6 +232,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       const identity = this.#runners.identityForEnvironment(command.environmentId);
       if (identity && !identity.capabilities.includes("execution-plane-v2")) return true;
     }
+    // Work for a computer whose person stopped agents on it waits without
+    // dispatch attempts; its Runner says when they resume.
+    if (
+      (command.type === "run.execute" || command.type === "trigger.execute") &&
+      this.#runners.areAgentsStopped(command.environmentId)
+    )
+      return false;
     if (command.type !== "run.execute") return this.#runners.isAttached(command.environmentId);
     // Attachment can wake dispatch before this connection's first account inspection answers.
     if (this.#runnerRegistrationPending(command.environmentId)) return false;

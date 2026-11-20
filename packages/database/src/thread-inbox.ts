@@ -2161,12 +2161,19 @@ async function lockThreadInputPreconditions(
   await requirePersonalOwner(transaction, input.requestedBy);
   const observed = await transaction
     .selectFrom("threads")
-    .select("harnessInstanceId")
+    .select(["harnessInstanceId", "worker"])
     .where("id", "=", input.threadId)
     .where("removedAt", "is", null)
     .executeTakeFirstOrThrow(
       () => new OpensteerError({ code: "not_found", message: "Task not found" }),
     );
+  // A connected agent works this task directly; no native Run ever starts on it.
+  if (observed.worker === "external")
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "external-agent-task",
+      message: "A connected agent is doing this task itself, so it takes no messages here.",
+    });
   const active = await transaction
     .selectFrom("runs")
     .select("id")

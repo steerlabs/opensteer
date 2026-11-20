@@ -72,6 +72,8 @@ export async function serveMcp(
     readonly unsubscribed?: () => void;
     /** The person's tab strip, as the task tools read it. */
     readonly tabs?: Pick<import("../tabs/ports.js").TabServicePort, "get">;
+    /** The tab tools themselves, for direct work through agent sessions. */
+    readonly tabHandlers?: import("./handlers/tabs.js").TabToolHandlers;
     /** The person's Macs and phones as the computer-use service reports them. */
     readonly computerApps?: {
       readonly computerUseInventory: (owner: UserId) => Promise<unknown>;
@@ -222,7 +224,7 @@ export async function serveMcp(
       connections: new ConnectionAuthenticator(new AgentConnectionStore(store.database)),
     }),
     handlers: agentToolHandlers({
-      tabs: {} as never,
+      tabs: options.tabHandlers ?? ({} as never),
       administration: new Proxy(
         {},
         {
@@ -332,6 +334,9 @@ export async function queuedRun(
 export function commands(
   storeFixture: Awaited<ReturnType<typeof createStoreFixture>>,
   userId: UserId,
+  options: {
+    readonly afterStop?: Parameters<typeof connectionCommandEffects>[0]["afterStop"];
+  } = {},
 ) {
   const store = new AgentConnectionStore(storeFixture.database);
   const failures: unknown[] = [];
@@ -339,6 +344,7 @@ export function commands(
     store: storeFixture.store,
     closeLineage: (connectionId) => lastService!.closeLineage(connectionId),
     onFailure: (error) => failures.push(error),
+    ...(options.afterStop ? { afterStop: options.afterStop } : {}),
   });
   const context = {
     session: { id: createId("authSession"), user: { id: userId, disabledAt: null } },

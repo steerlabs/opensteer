@@ -4,10 +4,13 @@ import { Link } from "react-router";
 import type { MachineSummary, OtherDevice } from "@opensteer/protocol";
 import {
   computerGlyph,
-  devicesView,
+  deviceWords,
+  devicesScreen,
   hostsDeployment,
-  isDeviceAsleep,
-  type DeviceRow,
+  type DeviceRowTone,
+  type DeviceScreenRow,
+  type HomeRowView,
+  type HomeSymbol,
   type SignedInDeviceRow,
 } from "@opensteer/client/computers";
 import { otherDeviceLine } from "@opensteer/client/settings";
@@ -31,7 +34,7 @@ import { useThreadPath } from "../start-task.js";
 import { useToast } from "../toast.js";
 import { mutationIdempotencyKey } from "@opensteer/client/host";
 import { AddDeviceDialog } from "./add-device-dialog.js";
-import { deviceStatusLine, deviceUsesLine } from "./device-access.js";
+import { useHomeKind } from "./home-facts.js";
 import { deviceRoute, otherDeviceRoute } from "./device-routes.js";
 
 export const otherDeviceIcon: Record<OtherDevice["kind"], IconName> = {
@@ -46,6 +49,7 @@ const deviceKinds = ["machine"] as const;
 
 export function DevicesSection() {
   const { desktopBridge, hostClient, snapshot } = useShell();
+  const home = useHomeKind();
   const toast = useToast();
   const hereId = useHereId();
   const [adding, setAdding] = useState(false);
@@ -59,13 +63,16 @@ export function DevicesSection() {
     () => hostClient.rpc["devices.overview.get"]({}).then(unwrapRpcResult),
     `devices-overview:${snapshot.machineRevision}`,
   );
-  const view = devicesView({
+  const homeName = snapshot.machines.find(hostsDeployment)?.name ?? "Home";
+  const view = devicesScreen({
     machines: snapshot.machines,
     sessions: sessions.data?.sessions ?? [],
     hereId,
-    otherDevices: overview.data?.otherDevices ?? [],
+    home,
+    deploymentName: homeName,
+    devicesAvailable: snapshot.devicesAvailable === true,
   });
-  const homeName = snapshot.machines.find(hostsDeployment)?.name ?? "Home";
+  const otherDevices = overview.data?.otherDevices ?? [];
   const machinesRead = useUnreadableResources(hostClient, deviceKinds);
 
   function signOut(row: SignedInDeviceRow) {
@@ -100,11 +107,11 @@ export function DevicesSection() {
         action={
           <button className="btn btn--primary" onClick={() => setAdding(true)} type="button">
             <Icon name="plus" />
-            Add a device
+            {deviceWords("devices.add")}
           </button>
         }
-        lead={`Everywhere you’re signed in. Your agent runs on ${homeName} and reaches the rest.`}
-        title="Devices"
+        lead={view.lead}
+        title={view.title}
       />
       {/* With devices held they stay, with their controls, under the error. */}
       {machinesRead.unreadable && machinesRead.held ? (
@@ -113,18 +120,35 @@ export function DevicesSection() {
       {machinesRead.unreadable && !machinesRead.held ? (
         <SettingsUnreadable label="your devices" onRetry={machinesRead.retry} />
       ) : (
-        <ul className="card devices-list">
-          {view.devices.map((row) => (
-            <DeviceListRow here={row.machine.id === hereId} key={row.machine.id} row={row} />
-          ))}
-        </ul>
+        <>
+          <section aria-labelledby="devices-home-title" className="settings-group">
+            <h2 className="settings-group__title" id="devices-home-title">
+              {deviceWords("devices.section.home")}
+            </h2>
+            <ul className="card devices-list">
+              <HomeListRow here={view.home.machineId === hereId} row={view.home} />
+            </ul>
+          </section>
+          {view.devices.length > 0 ? (
+            <section aria-labelledby="devices-devices-title" className="settings-group">
+              <h2 className="settings-group__title" id="devices-devices-title">
+                {deviceWords("devices.section.devices")}
+              </h2>
+              <ul className="card devices-list">
+                {view.devices.map((row) => (
+                  <DeviceListRow key={row.machine.id} row={row} />
+                ))}
+              </ul>
+            </section>
+          ) : null}
+        </>
       )}
       {sessions.data === null && !sessions.error ? (
         <LoadingRows label="Loading devices" rows={1} />
       ) : view.alsoSignedIn.length > 0 ? (
         <section aria-labelledby="devices-also-title" className="settings-group">
           <h2 className="settings-group__title" id="devices-also-title">
-            Also signed in
+            {deviceWords("devices.section.alsoSignedIn")}
           </h2>
           <p className="settings-group__caption">{view.alsoSignedInCaption}</p>
           <ul className="card devices-list">
@@ -157,29 +181,71 @@ export function DevicesSection() {
         </section>
       ) : null}
       <SettingsError message={error ?? sessions.error ?? overview.error} />
-      {view.otherDevices.length > 0 ? <OtherDevices devices={view.otherDevices} /> : null}
+      {otherDevices.length > 0 ? <OtherDevices devices={otherDevices} /> : null}
       {adding ? <AddDeviceDialog homeName={homeName} onClose={() => setAdding(false)} /> : null}
     </>
   );
 }
 
-function deviceBadge(machine: MachineSummary, here: boolean): string | null {
-  if (here || hostsDeployment(machine)) return null;
+function deviceBadge(machine: MachineSummary): string | null {
   if (isAgentPhone(machine) || machine.kind === "agent-phone") return "Agent Phone";
   if (machine.kind === "server") return "Server";
   return null;
 }
 
-function DeviceListRow({ here, row }: { readonly here: boolean; readonly row: DeviceRow }) {
-  const { snapshot } = useShell();
+const homeIcons: Readonly<Record<HomeSymbol, IconName>> = {
+  laptop: "laptop",
+  server: "server",
+  cloud: "cloud",
+};
+
+/** One status word, one dot: asleep and needs-update are amber, offline is quiet. */
+const toneDots: Readonly<Record<DeviceRowTone, string>> = {
+  online: "ok",
+  asleep: "warn",
+  attention: "warn",
+  waiting: "busy",
+  offline: "muted",
+};
+
+function HomeListRow({ here, row }: { readonly here: boolean; readonly row: HomeRowView }) {
+  const body = (
+    <>
+      <span aria-hidden className="devices-row__glyph">
+        <Icon name={homeIcons[row.symbol]} />
+      </span>
+      <span className="card__row-body">
+        <span className="card__row-title devices-row__title">
+          <span className="devices-row__name">{row.title}</span>
+          {here ? <HerePin /> : null}
+          {row.badge ? <span className="chip devices-row__badge">{row.badge}</span> : null}
+        </span>
+        <span className="card__row-detail devices-row__status">{row.detail}</span>
+      </span>
+    </>
+  );
+  return (
+    <li className="devices-list__item">
+      {row.machineId ? (
+        <Link className="card__row devices-row" to={deviceRoute(row.machineId)}>
+          {body}
+          <Icon className="devices-row__chevron" name="chevron-right" />
+        </Link>
+      ) : (
+        <span className="card__row devices-row">{body}</span>
+      )}
+    </li>
+  );
+}
+
+function DeviceListRow({ row }: { readonly row: DeviceScreenRow }) {
   const { machine } = row;
-  const badge = deviceBadge(machine, here);
-  const uses = deviceUsesLine(machine, snapshot.devicesAvailable === true);
-  const away = machine.status === "offline" && !isDeviceAsleep(machine);
+  const badge = row.thisDevice ? null : deviceBadge(machine);
+  const away = row.tone === "offline";
   return (
     <li className="devices-list__item">
       <Link
-        className={`card__row devices-row${away ? " devices-row--away" : ""}${here ? " devices-row--here" : ""}`}
+        className={`card__row devices-row${away ? " devices-row--away" : ""}${row.thisDevice ? " devices-row--here" : ""}`}
         to={deviceRoute(machine.id)}
       >
         <span aria-hidden className="devices-row__glyph">
@@ -187,14 +253,14 @@ function DeviceListRow({ here, row }: { readonly here: boolean; readonly row: De
         </span>
         <span className="card__row-body">
           <span className="card__row-title devices-row__title">
-            <span className="devices-row__name">{row.label}</span>
-            {here ? <HerePin /> : null}
+            <span className="devices-row__name">{row.title}</span>
+            {row.thisDevice ? <HerePin /> : null}
             {badge ? <span className="chip devices-row__badge">{badge}</span> : null}
           </span>
-          <span className="card__row-detail devices-row__status">{deviceStatusLine(machine)}</span>
-          {uses && !hostsDeployment(machine) ? (
-            <span className="card__row-detail devices-row__uses">{uses}</span>
-          ) : null}
+          <span className="card__row-detail devices-row__status">
+            <span aria-hidden className={`status-dot status-dot--${toneDots[row.tone]}`} />
+            {row.detail}
+          </span>
         </span>
         <Icon className="devices-row__chevron" name="chevron-right" />
       </Link>

@@ -80,6 +80,7 @@ import {
   type RunId,
   type RunnerId,
   type ThreadId,
+  type TabId,
   type UserId,
   type DeploymentId,
 } from "@opensteer/core";
@@ -189,6 +190,14 @@ export class BrowserCdpConnectionEnded extends Error {
   override readonly name = "BrowserCdpConnectionEnded";
 }
 
+function browserCommandOutcomeUnknown(): OpensteerError {
+  return new OpensteerError({
+    code: "conflict",
+    reason: "outcome-unknown",
+    message: "The browser disconnected before confirming the action. Observe the page before trying again.",
+  });
+}
+
 function browserActionFailure(reason: BrowserActionErrorCode, message: string): OpensteerError {
   return new OpensteerError({
     code: reason === "forbidden" ? "forbidden" : "conflict",
@@ -237,6 +246,8 @@ export interface BrowserProfileRecord {
   readonly id: BrowserProfileId;
   readonly name: string;
   readonly ownerId: UserId;
+  /** `engine-sign-in`: where an AI engine signs in; no connected agent's grant may name it. */
+  readonly purpose?: "person" | "engine-sign-in";
 }
 
 /** One granted browser profile as an agent sees it. */
@@ -346,6 +357,7 @@ export interface BrowserSessionRepository {
     readonly idempotencyKey: string;
     readonly name: string;
     readonly ownerId: UserId;
+    readonly purpose?: "person" | "engine-sign-in";
   }): Promise<BrowserProfileRecord>;
 
   createBrowserSession(input: {
@@ -606,6 +618,7 @@ interface ConfirmedCdpDispatch {
   readonly maxDepth: number;
   readonly maxEntries: number;
   readonly signal?: AbortSignal;
+  readonly eventBudget?: Pick<ConfirmedCdpDispatch, "maxBytes" | "maxDepth" | "maxEntries">;
 }
 
 type BrowserCdpRequest = Extract<BrowserClientMessage, { readonly type: "cdp.command" }>;
@@ -825,7 +838,7 @@ export class BrowserService {
   readonly #detachRunnerAgents: BrowserServiceOptions["detachRunnerAgents"];
   readonly standardCdpTickets = new StandardCdpTickets();
   readonly #standardCdpAttachments = new Map<string, StandardCdpEntry>();
-  readonly #deviceAttachments = new Map<string, { runnerId: RunnerId; close: () => void }>();
+  readonly #deviceAttachments = new Map<string, { runnerId: RunnerId; close: () => void; binding?: string }>();
   withRunnerAdmission<T>(runnerId: RunnerId, action: () => Promise<T>): Promise<T> {
     return this.#agentAdmissions.run(runnerId, action);
   }
@@ -999,6 +1012,8 @@ export class BrowserService {
     readonly name: string;
     readonly ownerId: UserId;
     readonly idempotencyKey: string;
+    /** `engine-sign-in` keeps it out of every connected agent's grant. */
+    readonly purpose?: "person" | "engine-sign-in";
   }): Promise<BrowserProfile> {
     if (!input.homeRunnerId && this.#repository instanceof OpensteerStore) {
       const previous = await this.#repository.database
@@ -2632,6 +2647,7 @@ export class BrowserService {
       id: profile.id,
       name: profile.name,
       home: this.#profileHome(profile, homes),
+      ...(profile.purpose === "engine-sign-in" ? { purpose: profile.purpose } : {}),
     }));
   }
 
@@ -2736,7 +2752,12 @@ export class BrowserService {
       return { kind: "page", sessionId: session.id, surfaceId: row.id };
     },
     bind: (claims, row) => this.bindPage(claims, row),
-    bindBrowserScript: (actor, row) => this.#bindWorkspacePage(actor.authority, row, actor.signal),
+    bindBrowserScript: (actor, row) => {
+      if (row.pageBinding && this.tabOccupants(actor.authority.ownerId, row.pageBinding.sessionId, row.id).some(
+        ({ threadId, holding }) => holding && threadId !== actor.threadId,
+      )) throw new OpensteerError({ code: "conflict", message: "This tab is in use by another task." });
+      return this.#bindWorkspacePage(actor.authority, row, actor.signal);
+    },
     closeViewers: async (_ownerId, row) => {
       if (row.pageBinding)
         this.#brokers.get(row.pageBinding.sessionId)?.removePersonTab(row.id, row.generation);
@@ -3311,6 +3332,10 @@ export class BrowserService {
    * open. Its agent stops acting in them at once, and any command of its that
    * answers afterwards does not make it look acting again.
    */
+  browserBindingEnded(agentBindingId: string): boolean {
+    return this.#closed || this.#endedBindings.has(agentBindingId);
+  }
+
   async detachAgentSessionsForBinding(
     agentBindingId: string,
   ): Promise<readonly BrowserSessionId[]> {
@@ -3742,6 +3767,8 @@ export class BrowserService {
       readonly ownerId: UserId;
       readonly expiresAt?: number;
       readonly sessionId?: BrowserSessionId;
+      readonly scriptTabId?: TabId;
+      readonly scriptThreadId?: ThreadId;
     },
     onEvent: (event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"]) => void,
     onClosed?: () => void,
@@ -3770,6 +3797,8 @@ export class BrowserService {
       readonly ownerId: UserId;
       readonly expiresAt?: number;
       readonly sessionId?: BrowserSessionId;
+      readonly scriptTabId?: TabId;
+      readonly scriptThreadId?: ThreadId;
     },
     onEvent: (event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"]) => void,
     onClosed?: () => void,
@@ -3785,6 +3814,12 @@ export class BrowserService {
     request(command: BrowserCdpRequest["command"]): Promise<unknown>;
   }> {
     const { record, broker } = await this.#admitAgentBackend(input, "cdp", true);
+    if (input.scriptTabId && (this.#endedBindings.has(input.agentBindingId) || this.#closed))
+      throw new BrowserCdpConnectionEnded("This browser attachment has ended.");
+    if (input.scriptTabId && !broker.supportsBrowserScriptAttachments)
+      throw new OpensteerError({ code: "conflict", message: "Update the browser computer to run browser scripts." });
+    const scriptAttachmentId = input.scriptTabId ? randomUUID() : undefined;
+    let scriptOpening: Promise<BrowserCdpResponse> | undefined;
     const nativeAttachment =
       this.#resolveTarget(placementOf(record))?.localProfileStorage?.engine === "android-webview"
         ? {
@@ -3807,6 +3842,12 @@ export class BrowserService {
       attachmentClosed = true;
       this.#deviceAttachments.delete(deviceAttachmentId);
       unsubscribe();
+      if (scriptAttachmentId && scriptOpening) {
+        void scriptOpening.then(() => broker.sendHostCommand({
+          type: "cdp.command", scriptAttachmentId, requestId: randomUUID(),
+          command: { method: browserHostMethods.closeScriptAttachment },
+        })).catch(this.#onError);
+      }
       if (nativeAttachment) {
         this.#actionAttachments.delete(nativeAttachment.attachmentId);
         void broker
@@ -3819,8 +3860,12 @@ export class BrowserService {
       }
       onClosed?.();
     };
-    const unsubscribe = broker.subscribeCdp(onEvent, close);
-    this.#deviceAttachments.set(deviceAttachmentId, { runnerId: record.runnerId, close });
+    const unsubscribe = broker.subscribeCdp((event) => {
+      if (event.scriptAttachmentId === scriptAttachmentId) onEvent(event);
+    }, close);
+    this.#deviceAttachments.set(deviceAttachmentId, {
+      runnerId: record.runnerId, close, ...(scriptAttachmentId ? { binding: input.agentBindingId } : {}),
+    });
     if (nativeAttachment) {
       this.#actionAttachments.set(nativeAttachment.attachmentId, {
         binding: input.agentBindingId,
@@ -3900,6 +3945,13 @@ export class BrowserService {
           throw new BrowserCdpConnectionEnded(
             "This Run selected another browser. Bind the exact tab with Browser Harness openPage(tabId).",
           );
+        if (input.scriptTabId) {
+          if (this.tabOccupants(input.ownerId, record.id, input.scriptTabId).some(({ threadId, holding }) => holding && threadId !== input.scriptThreadId))
+            throw new OpensteerError({ code: "conflict", message: "This tab is in use by another task." });
+          if (command.method === browserHostMethods.resumeTab &&
+            (scriptOpening || command.parameters?.surfaceId !== input.scriptTabId || !confirmed?.eventBudget))
+            throw new OpensteerError({ code: "forbidden", message: "Bind tabs with openPage(tabId)." });
+        }
         if (command.method === "Opensteer.stageFile" && !broker.fileStaging) {
           throw new OpensteerError({
             code: "conflict",
@@ -3949,12 +4001,15 @@ export class BrowserService {
         };
         const answered = broker.requestCdp({
           ...(replyBudget ? { replyBudget } : {}),
+          ...(scriptAttachmentId ? { scriptAttachmentId } : {}),
+          ...(confirmed?.eventBudget ? { scriptEventBudget: confirmed.eventBudget } : {}),
           command,
           ...(actorToken ? { actorToken } : {}),
           ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
           requestId: globalThis.crypto.randomUUID(),
           type: "cdp.command",
         }, confirmed?.signal);
+        if (scriptAttachmentId && command.method === browserHostMethods.resumeTab) scriptOpening = answered;
         return {
           result: answered.then(async (response) => {
             if (
@@ -5323,6 +5378,8 @@ export class BrowserService {
 
   #forgetAgentBinding(agentBindingId: string): void {
     this.closeStandardCdpForBinding(agentBindingId, "The browser task ended.");
+    for (const attachment of this.#deviceAttachments.values())
+      if (attachment.binding === agentBindingId) attachment.close();
     for (const attachment of this.#actionAttachments.values())
       if (attachment.binding === agentBindingId) attachment.close();
     for (const actor of this.#actors.values())
@@ -5825,6 +5882,7 @@ export class HostedBrowserBroker {
     string,
     {
       readonly expectedType: "cdp.result";
+      submitted: boolean;
       readonly reject: (error: unknown) => void;
       readonly resolve: (response: BrowserCdpResponse) => void;
       readonly timeout: NodeJS.Timeout | undefined;
@@ -6401,6 +6459,10 @@ export class HostedBrowserBroker {
     });
   }
 
+  get supportsBrowserScriptAttachments(): boolean {
+    return this.#snapshot?.scriptAttachments === 1;
+  }
+
   get supportsCdpReplyBudget(): boolean {
     return this.#snapshot?.cdpReplyBudget === 1;
   }
@@ -6439,15 +6501,14 @@ export class HostedBrowserBroker {
         );
       }, agentRequestTimeoutMs);
       timeout?.unref();
-      this.#pendingCdpRequests.set(parsed.requestId, {
-        expectedType: "cdp.result",
-        reject,
-        resolve,
-        timeout,
-      });
-      void this.#sendCommand(parsed, signal).catch((error) => {
-        const pending = this.#pendingCdpRequests.get(parsed.requestId);
-        if (!pending) return;
+      const pending = { expectedType: "cdp.result" as const, submitted: false, reject, resolve, timeout };
+      this.#pendingCdpRequests.set(parsed.requestId, pending);
+      void this.#sendCommand(parsed, signal, () => { pending.submitted = true; }).catch((error) => {
+        if (this.#pendingCdpRequests.get(parsed.requestId) !== pending) return;
+        if (parsed.replyBudget && pending.submitted) {
+          this.#socket.terminate();
+          return;
+        }
         clearTimeout(pending.timeout);
         this.#pendingCdpRequests.delete(parsed.requestId);
         pending.reject(error);
@@ -7698,7 +7759,7 @@ export class HostedBrowserBroker {
     return operation;
   }
 
-  #sendCommand(message: BrowserClientMessage, signal?: AbortSignal): Promise<void> {
+  #sendCommand(message: BrowserClientMessage, signal?: AbortSignal, onSubmit?: () => void): Promise<void> {
     if (
       message.type === "navigation.reload" &&
       message.ignoreCache !== undefined &&
@@ -7803,7 +7864,9 @@ export class HostedBrowserBroker {
                 break;
             }
           }
-          this.#socket.send(JSON.stringify(runtimeMessage), { binary: false }, (error) =>
+          const frame = JSON.stringify(runtimeMessage);
+          onSubmit?.();
+          this.#socket.send(frame, { binary: false }, (error) =>
             error ? reject(error) : resolve(),
           );
         }),
@@ -7853,7 +7916,9 @@ export class HostedBrowserBroker {
       for (const pending of this.#pendingCdpRequests.values()) {
         clearTimeout(pending.timeout);
         pending.reject(
-          new OpensteerError({ code: "conflict", message: "Browser Runtime disconnected." }),
+          pending.submitted && pending.timeout === undefined
+            ? browserCommandOutcomeUnknown()
+            : new OpensteerError({ code: "conflict", message: "Browser Runtime disconnected." }),
         );
       }
       this.#pendingCdpRequests.clear();
@@ -8316,7 +8381,12 @@ function watchFrameEnvelope(
 }
 
 export function publicProfile(record: BrowserProfileRecord): BrowserProfile {
-  return { homeRunnerId: record.homeRunnerId ?? null, id: record.id, name: record.name };
+  return {
+    homeRunnerId: record.homeRunnerId ?? null,
+    id: record.id,
+    name: record.name,
+    ...(record.purpose === "engine-sign-in" ? { purpose: record.purpose } : {}),
+  };
 }
 
 function publicSession(record: BrowserSessionRecord): HostedBrowserSession {

@@ -320,7 +320,7 @@ export class ReplService<Request extends AnyReplRequest> {
     }
     if (message.type === "settled") {
       call.ready = false;
-      call.abandoned = call.mutationsInFlight
+      call.abandoned ??= call.mutationsInFlight
         ? "outcome-unknown"
         : call.operationsInFlight
           ? "operation-pending"
@@ -493,6 +493,7 @@ export class ReplService<Request extends AnyReplRequest> {
     } catch (error) {
       if (call.cancellation.signal.aborted && error === call.cancellation.signal.reason) return;
       const failure = this.#events!.error(error);
+      if (failure.code === "outcome-unknown") call.abandoned = "outcome-unknown";
       if (this.#contexts.get(call.key)?.call === call && !call.cancellation.signal.aborted)
         this.#post({ type: "reply", ...address, error: boundedReplFailure(failure) });
     }
@@ -537,7 +538,7 @@ export class ReplService<Request extends AnyReplRequest> {
       error = {
         code: "outcome-unknown",
         message:
-          "Browser code ended while an action was still pending. Observe the page before deciding what to do next.",
+          "A browser action did not confirm its outcome. Observe the page before deciding what to do next.",
         performed: [],
       };
     else if (

@@ -15,7 +15,7 @@ import {
   setPhoneUseAccess,
 } from "@opensteer/client/integrations";
 import { TabTargetSchema } from "@opensteer/core";
-import { computerStatus } from "@opensteer/client/computers";
+import { computerStatus, deviceStoppedLabel } from "@opensteer/client/computers";
 import {
   canRespondToRequests,
   mutationIdempotencyKey,
@@ -294,11 +294,13 @@ function DevicePage(props: {
     : [];
   const removal = deviceRemoval(machine, { noun: thisPhoneNoun, profiles, thisDevice });
   const kind = isHome(machine) ? null : deviceKindLabel(machine);
-  const status = isHome(machine)
-    ? "Home · your agent runs here"
-    : [kind, phoneScreenStatus(machine)?.label ?? computerStatus(machine).label]
-        .filter(Boolean)
-        .join(" · ");
+  const status =
+    deviceStoppedLabel(machine) ??
+    (isHome(machine)
+      ? "Home · your agent runs here"
+      : [kind, phoneScreenStatus(machine)?.label ?? computerStatus(machine).label]
+          .filter(Boolean)
+          .join(" · "));
   const notificationsOn = push.status === "registered" && wantsAlerts(push.preferences);
   const screen = screenMac === null ? null : screenSection();
   const asleepDetail = isHome(machine) ? null : deviceAsleepDetail(machine);

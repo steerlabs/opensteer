@@ -23,6 +23,7 @@ import {
   homeFilesOutputImageMaxBytes,
   runFileTransferProofPayload,
   runnerPowerStateCapability,
+  runnerAgentStopCapability,
   sameRunnerConnectionFence,
   computerAppMaxTimeoutMs,
 } from "@opensteer/protocol";
@@ -98,6 +99,7 @@ import {
 import { probeFullDiskAccess, type FullDiskAccessProbeOptions } from "../shell/full-disk-access.js";
 import type { PreparedShellModule } from "../shell/shell-host-key.js";
 import { ShellModuleHandler } from "../shell/shell-module-handler.js";
+import type { AgentWorkSource } from "../runtime/agent-stop-file.js";
 
 const maximumFrameBytes = 1024 * 1024;
 const maximumQueuedInboundBytes = 4 * maximumFrameBytes;
@@ -282,6 +284,12 @@ export interface ReconnectingHostConnectionOptions {
   readonly platform?: NodeJS.Platform;
   readonly runtimeVersion: string;
   readonly shellModule?: PreparedShellModule;
+  /**
+   * The person's Stop for agent work on this computer. When given, this Runner
+   * tells a Home that accepts it when agents are stopped and when they resume,
+   * and its shell module refuses and ends agent shells while stopped.
+   */
+  readonly agentWork?: AgentWorkSource;
 }
 
 export class ReconnectingHostConnection {
@@ -352,6 +360,11 @@ export class ReconnectingHostConnection {
         sleepingSent: boolean;
       }
     | undefined;
+  readonly #agentWork: AgentWorkSource | undefined;
+  /** The socket the Home accepted agent-stop notices on, and how to stop telling it. */
+  #agentNotices: { readonly socket: WebSocket; readonly unsubscribe: () => void } | undefined;
+  /** The last agent-stop notice sent, settled whether or not it reached the Home. */
+  #agentNotice: Promise<void> = Promise.resolve();
   /** The engines the current socket's hello advertised; see `recheckEngines`. */
   #advertisedEngines: { readonly signature: string; readonly socket: WebSocket } | undefined;
   /** The work this socket is serving, so a recheck can see whether any is still queued. */
@@ -395,6 +408,7 @@ export class ReconnectingHostConnection {
     this.#onRevoked = options.onRevoked;
     this.#runtimeVersion = options.runtimeVersion;
     this.#shellModule = options.shellModule;
+    this.#agentWork = options.agentWork;
     if (
       !options.agents &&
       !options.browserBridge &&
@@ -514,6 +528,36 @@ export class ReconnectingHostConnection {
     if (this.#activeSink) this.#activeSink.sleepingSent = false;
   }
 
+  /** Settles once the last agent-stop notice was sent, or could not be. */
+  agentNoticeSent(): Promise<void> {
+    return this.#agentNotice;
+  }
+
+  /**
+   * Tells the Home on this connection whether the person has agents stopped
+   * here: once now if they are, then at each change while it lasts.
+   */
+  #tellAgentWork(sink: CausallyOrderedRunnerSink, socket: WebSocket): void {
+    const source = this.#agentWork;
+    if (!source) return;
+    this.#agentNotices?.unsubscribe();
+    const tell = () => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      this.#agentNotice = sink
+        .send(
+          source.stopped()
+            ? {
+                stoppedAt: (source.stoppedAt() ?? new Date()).toISOString(),
+                type: "runner.agents.stopped",
+              }
+            : { type: "runner.agents.resumed" },
+        )
+        .catch(() => undefined);
+    };
+    this.#agentNotices = { socket, unsubscribe: source.subscribe(tell) };
+    if (source.stopped()) tell();
+  }
+
   /**
    * The Host learns this computer's engines only from a hello, so when a CLI
    * has appeared or gone since this socket's, the Runner reconnects to say
@@ -621,6 +665,7 @@ export class ReconnectingHostConnection {
       }
       if (welcome.acceptsPowerState && this.#supportsPowerState())
         this.#activeSink = { sink, sleepingSent: false, socket };
+      if (welcome.acceptsAgentStop && this.#agentWork) this.#tellAgentWork(sink, socket);
       await this.#onConnected?.({
         environmentId: this.#agents ? this.#identity.environmentId : null,
         runnerId: this.#identity.runnerId,
@@ -663,6 +708,10 @@ export class ReconnectingHostConnection {
       socket.off("error", onError);
       socket.off("error", absorbSocketError);
       if (this.#activeSink?.socket === socket) this.#activeSink = undefined;
+      if (this.#agentNotices?.socket === socket) {
+        this.#agentNotices.unsubscribe();
+        this.#agentNotices = undefined;
+      }
       if (this.#socket === socket) this.#socket = undefined;
       if (this.#advertisedEngines?.socket === socket) this.#advertisedEngines = undefined;
       if (sink) {
@@ -792,6 +841,7 @@ export class ReconnectingHostConnection {
           ? [agentHomeFilesCapability]
           : []),
         ...(this.#supportsPowerState() ? [runnerPowerStateCapability] : []),
+        ...(this.#agentWork ? [runnerAgentStopCapability] : []),
         ...(agents ? ([runEventsCapability] as const) : []),
         ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
           ? ["voice-run-v1" as const]
@@ -1135,6 +1185,7 @@ export class ReconnectingHostConnection {
     const shell = this.#shellModule;
     if (!shell) return undefined;
     const handler = new ShellModuleHandler({
+      ...(this.#agentWork ? { agentWork: this.#agentWork } : {}),
       helperBinary: shell.helperBinary,
       hostKeyPath: shell.hostKeyPath,
       logger: this.#logger,

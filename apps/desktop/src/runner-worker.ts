@@ -1,5 +1,5 @@
 import { safeMessage } from "@opensteer/shared/safeMessage";
-import { runRunnerDaemon } from "@opensteer/runner";
+import { manualAgentWork, runRunnerDaemon } from "@opensteer/runner";
 import { refuseInspectorSignal } from "./supervisor/inspector-signal.js";
 import {
   RunnerWorkerEnginesRecheckMessageSchema,
@@ -31,12 +31,30 @@ let notifySleeping: () => void = () => undefined;
 let notifyAwake: () => void = () => undefined;
 // A Run can only be running once the daemon has started.
 let stopRun: (runId: string) => boolean = () => false;
+let agentNoticeSent: () => Promise<void> = () => Promise.resolve();
+// The person's Stop on this Mac, as the desktop app tells this Device Runner.
+const agentWork = manualAgentWork();
+/** How long a stop for the person's Stop waits for its Home to hear it first. */
+const agentNoticeWaitMs = 1_500;
 
 parent.on("message", (event) => {
-  const value = event.data as { type?: unknown };
+  const value = event.data as { type?: unknown; agentsStopped?: unknown };
   if (value?.type === "runner.worker.stop") {
-    shutdown.abort(new Error("The Opensteer desktop app is stopping local execution."));
-    deliverSecrets(null);
+    const stop = () => {
+      shutdown.abort(new Error("The Opensteer desktop app is stopping local execution."));
+      deliverSecrets(null);
+    };
+    if (value.agentsStopped !== true) {
+      stop();
+      return;
+    }
+    // The person stopped agents on this Mac: its Home hears that before the
+    // Runner goes, so it says "stopped" rather than "offline".
+    agentWork.set(true);
+    void Promise.race([
+      agentNoticeSent(),
+      new Promise<void>((resolve) => setTimeout(resolve, agentNoticeWaitMs).unref()),
+    ]).finally(stop);
     return;
   }
   if (RunnerWorkerEnginesRecheckMessageSchema.safeParse(event.data).success) {
@@ -67,7 +85,9 @@ void delivered
         notifyAwake = control.notifyAwake;
         recheckEngines = control.recheckEngines;
         stopRun = control.stopRun;
+        agentNoticeSent = control.agentNoticeSent;
       },
+      agentWork,
       onActivity: (runs) => {
         parent.postMessage({
           runs: runs.map(({ runId, startedAt, purpose, engine }) => ({

@@ -46,6 +46,7 @@ export * from "./memory-pass-store.js";
 export * from "./message-team-sources.js";
 
 export * from "./agent-connection-store.js";
+export * from "./agent-session-store.js";
 
 export * from "./thread-caller.js";
 

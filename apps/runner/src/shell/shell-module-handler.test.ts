@@ -23,12 +23,15 @@ import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ShellModuleHandler,
+  shellAgentsStoppedSentence,
   pumpReadableToWebSocket,
   pumpWebSocketToWritable,
   shellHelperEnvironment,
 } from "./shell-module-handler.js";
 
 const directories: string[] = [];
+import { manualAgentWork, type AgentWorkSource } from "../runtime/agent-stop-file.js";
+
 const handlers: ShellModuleHandler[] = [];
 const cleanups: Array<() => void> = [];
 const servers: Array<{
@@ -290,6 +293,50 @@ describe("ShellModuleHandler", () => {
       type: "runner.shell.session.closed",
     });
     expect(reports.at(-1)).not.toHaveProperty("auditDropped");
+    await handler.detach();
+  });
+
+  it("refuses an agent's shell while the person has agents stopped, and ends open ones at Stop", async () => {
+    const directory = await temporaryDirectory();
+    const helper = await helperScript(
+      directory,
+      join(directory, "init.json"),
+      `fd.write('{"kind":"ready"}\\n');`,
+    );
+    const host = await fakeDataHost();
+    const agentWork = manualAgentWork();
+    const { handler, reports, reported } = handlerFor(
+      helper,
+      host.url,
+      100,
+      undefined,
+      undefined,
+      agentWork,
+    );
+    const open = openMessage();
+    await handler.handleFrame(Buffer.from(JSON.stringify(open)), false);
+    await reported("runner.shell.session.opened");
+
+    agentWork.set(true);
+    await reported("runner.shell.session.closed");
+    expect(reports.at(-1)).toMatchObject({
+      reason: "stopped-by-owner",
+      sessionId: open.sessionId,
+      type: "runner.shell.session.closed",
+    });
+
+    const refused = openMessage();
+    await handler.handleFrame(Buffer.from(JSON.stringify(refused)), false);
+    await reported("runner.shell.session.rejected");
+    expect(reports.at(-1)).toMatchObject({
+      error: { code: "computer_stopped", message: shellAgentsStoppedSentence },
+      sessionId: refused.sessionId,
+    });
+
+    agentWork.set(false);
+    const resumed = openMessage();
+    await handler.handleFrame(Buffer.from(JSON.stringify(resumed)), false);
+    await reported("runner.shell.session.opened", 2);
     await handler.detach();
   });
 
@@ -581,6 +628,7 @@ function handlerFor(
   cleanupWaitMs = 100,
   resolveDataTransport?: typeof import("@opensteer/runner-client").runnerWebSocketTransport,
   sendReport?: (report: ShellModuleEvent) => Promise<void>,
+  agentWork?: AgentWorkSource,
 ) {
   const reports: ShellModuleEvent[] = [];
   const received = new EventEmitter();
@@ -598,6 +646,7 @@ function handlerFor(
     logger: { error: () => undefined, info: () => undefined },
     ...(resolveDataTransport ? { resolveDataTransport } : {}),
     transport: { controlCaPath: undefined, hostUrl, mode: "development" },
+    ...(agentWork ? { agentWork } : {}),
   });
   const stream: RunnerModuleStream = {
     browserAttachPublicKeys: undefined,

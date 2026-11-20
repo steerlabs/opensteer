@@ -211,7 +211,9 @@ export function registerIdentityRoutes(
       );
     });
   }
-  app.get("/v1/auth/oidc/callback", async (request, reply) => {
+  // The identity provider sends the browser here; a navigation states no API
+  // version (a team's travels in the OIDC state and is checked there).
+  app.get("/v1/auth/oidc/callback", { config: unversionedRoute }, async (request, reply) => {
     const incoming = new Request(
       new URL(request.raw.url ?? request.url, authenticator.publicOrigin),
       {

@@ -399,6 +399,8 @@ export function useConnectionGate(
      * a fact about that read, with its own way to try again.
      */
     readonly failed?: { readonly resource: string; readonly onRetry: () => void } | null;
+    /** Said under the explanation only when the Home can't be reached from here. */
+    readonly unreachableAside?: ReactNode;
   },
 ): ReactNode | null {
   const gating = !options.ready;
@@ -455,8 +457,13 @@ function GateFor({
         : said.action === "update" && options.onUpdate
           ? { label: clientIssueActions.update, onPress: options.onUpdate }
           : null;
+  const unreachable =
+    state.issue?.code === "connection" &&
+    state.issue.reason === "unreachable" &&
+    (state.route ?? state.issue.route) !== "same-computer";
   return (
     <ConnectionGate
+      aside={unreachable ? options.unreachableAside : null}
       detail={said.detail ?? ""}
       primary={primary ?? back}
       scope={options.scope}

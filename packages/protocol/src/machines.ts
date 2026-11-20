@@ -137,6 +137,12 @@ export const MachineSummarySchema = z.object({
    * older clients ignore it and read `status: "offline"`.
    */
   asleepSince: z.string().nullable().optional(),
+  /**
+   * When the person stopped agents on this computer from the computer itself,
+   * while that holds: online or not, nothing new starts on it until they
+   * resume. Additive, so older clients ignore it and read `status` alone.
+   */
+  agentsStoppedSince: z.string().nullable().optional(),
   lastSeenAt: z.string().nullable(),
   /**
    * The Opensteer build this computer runs, as its current connection said

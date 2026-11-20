@@ -37,6 +37,8 @@ export const HostBootstrapEnvironmentSchema = z.object({
   runnerId: z.string().min(1).nullable(),
   status: HostEnvironmentStatusSchema,
   can: z.object({ executeTasks: z.boolean() }),
+  /** When the person stopped agents on this environment's computer, while that holds. */
+  agentsStoppedSince: z.string().nullable().optional(),
 });
 
 export const HostBootstrapHarnessSchema = z.object({

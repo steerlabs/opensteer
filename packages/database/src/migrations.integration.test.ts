@@ -37,6 +37,7 @@ import { cloneTestDatabase, type TestDatabase } from "./test-database.test-suppo
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { TriggerStore } from "./trigger-store.js";
 import { agentGrantsMigrationName } from "./agent-grants-migration.js";
+import { agentSessionsMigrationName } from "./agent-sessions-migration.js";
 import { teamRequestView } from "./team-chat-store.js";
 import {
   PersonalTeamRequestsStore,
@@ -880,6 +881,42 @@ describe("fresh personal/team lineage", () => {
       [],
     );
   });
+  it("adds agent sessions without touching existing tasks, and keeps their invariants in the database", async () => {
+    await migrateToLatest(database, migrationsBefore(agentSessionsMigrationName));
+    const owner = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    const existing = await legacyTask(owner, "Existing");
+    await migrateToLatest(database);
+    expect(
+      await database
+        .selectFrom("threads")
+        .select("worker")
+        .where("id", "=", existing.id as never)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ worker: "native" });
+    // A task worked by an external agent always belongs to a connection's lineage.
+    await expect(
+      sql`update threads set worker = 'external' where id = ${existing.id}`.execute(database),
+    ).rejects.toMatchObject({ constraint: "threads_external_worker_lineage" });
+    const reserved = async () =>
+      sql`insert into harness_instances (id,environment_id,driver_kind,name,config,runtime_revision,state_kind,enabled,is_default,source_id,removed_at)
+        select ${createId("harnessInstance")},environment_id,'external-agent','Connected agent','{}',1,'isolated',false,false,'external-agent',now()
+        from threads where id = ${existing.id}`.execute(database);
+    await reserved();
+    await expect(reserved()).rejects.toMatchObject({
+      constraint: "harness_instances_external_agent",
+    });
+    const profile = createId("browserProfile");
+    await sql`insert into browser_profiles (id,owner_id,name) values (${profile},${owner.userId},'Work')`.execute(
+      database,
+    );
+    expect(
+      await database.selectFrom("browserProfiles").select("purpose").executeTakeFirstOrThrow(),
+    ).toEqual({ purpose: "person" });
+    await expect(
+      sql`update browser_profiles set purpose = 'shared' where id = ${profile}`.execute(database),
+    ).rejects.toMatchObject({ code: "23514" });
+  });
+
   it("keeps every plugin a person registered under one name, each later one under a free name", async () => {
     await migrateToLatest(database, migrationsBefore(onePluginPerOwnerNameMigrationName));
     const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");

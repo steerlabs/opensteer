@@ -11,6 +11,10 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { AgentConnection, AgentConnectionState } from "@opensteer/protocol";
+import {
+  AgentConnectionIdentityAtConsentSchema,
+  type AgentConnectionIdentityAtConsent,
+} from "@opensteer/control-plane-protocol";
 import { randomUUID } from "node:crypto";
 import type { Kysely, Selectable } from "kysely";
 import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
@@ -37,9 +41,12 @@ export class AgentConnectionStore {
     grant?: AgentGrant;
     clientFingerprint?: string;
     redirectUri?: string;
+    /** Who the person was shown at consent. */
+    identityAtConsent?: AgentConnectionIdentityAtConsent;
   }): Promise<AgentConnection> {
     return withPersonalTransaction(this.database, async (tx) => {
       await requirePersonalOwner(tx, input.userId);
+      if (input.grant) await assertGrantable(tx, input.userId, input.grant);
       const row = await tx
         .insertInto("agentConnections")
         .values({
@@ -60,6 +67,9 @@ export class AgentConnectionStore {
           consentVersion: input.grant ? 2 : 1,
           clientFingerprint: input.clientFingerprint ?? null,
           redirectUri: input.redirectUri ?? null,
+          identityAtConsent: input.identityAtConsent
+            ? jsonValue(AgentConnectionIdentityAtConsentSchema.parse(input.identityAtConsent))
+            : null,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -183,6 +193,7 @@ export class AgentConnectionStore {
           message: "This connected agent changed since you opened it. Review it and try again.",
         });
       const grant = input.grant ? AgentGrantSchema.parse(input.grant) : current.grant;
+      if (input.grant) await assertGrantable(tx, userId, grant);
       const accessMode = input.accessMode ?? current.accessMode;
       const narrowed =
         agentGrantNarrowed(current.grant, grant) ||
@@ -295,10 +306,48 @@ function view(row: Selectable<AgentConnectionTable>, state: AgentConnectionState
         }
       : null,
     revokedAt: row.revokedAt?.toISOString() ?? null,
+    identityAtConsent: identityAtConsent(row.identityAtConsent),
     createdAt: row.createdAt.toISOString(),
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
     expiresAt: row.expiresAt.toISOString(),
   };
+}
+
+/**
+ * A selected grant may not name the profile an AI engine signs in through: that sign-in is the
+ * person's own. `everything` is the person's whole authority and still reaches it.
+ */
+async function assertGrantable(
+  database: Kysely<DatabaseSchema>,
+  userId: UserId,
+  grant: AgentGrant,
+): Promise<void> {
+  if (grant.scope !== "selected") return;
+  const profileIds = grant.resources.flatMap((resource) =>
+    resource.kind === "browser-profile" ? [resource.profileId] : [],
+  );
+  if (!profileIds.length) return;
+  const reserved = await database
+    .selectFrom("browserProfiles")
+    .select("id")
+    .where("ownerId", "=", userId)
+    .where("id", "in", profileIds)
+    .where("purpose", "=", "engine-sign-in")
+    .executeTakeFirst();
+  if (reserved)
+    throw new OpensteerError({
+      code: "bad_request",
+      reason: "engine-sign-in-profile",
+      message: "The AI engine sign-in profile can't be given to a connected agent.",
+    });
+}
+
+/** A stored identity that no longer parses is shown as unknown, never guessed. */
+function identityAtConsent(
+  value: Readonly<Record<string, unknown>> | null,
+): AgentConnectionIdentityAtConsent | null {
+  const parsed = AgentConnectionIdentityAtConsentSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 function detailText(detail: Readonly<Record<string, unknown>> | null, key: string): string | null {

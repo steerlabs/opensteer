@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import type { MachineSummary } from "@opensteer/protocol";
-import { withDeviceSwitch } from "@opensteer/client/computers";
+import { deviceWords, withDeviceSwitch } from "@opensteer/client/computers";
 import type { HostClient } from "@opensteer/client/host";
 import { act, failureWords } from "../use-action.js";
 import {
@@ -105,6 +105,7 @@ export function DeviceAccessSwitches({
           );
         })}
       </div>
+      <p className="settings-group__caption">{deviceWords("devices.switch.footer")}</p>
       {notice ? <DeviceAccessNotice notice={notice} /> : null}
     </section>
   );

@@ -25,6 +25,7 @@ import {
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
 import {
   AgentGrantSchema,
+  AgentSessionIdSchema,
   DeviceIdSchema,
   DeviceDriverGenerationSchema,
   TabIdSchema,
@@ -883,6 +884,13 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     connectionId: AgentConnectionIdSchema,
     type: z.literal("connection.uncertain.acknowledge"),
   }),
+  /** The person's Stop on a task a connected agent works itself, bound to the session they saw. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    threadId: ThreadIdSchema,
+    agentSessionId: AgentSessionIdSchema,
+    type: z.literal("agent.session.stop"),
+  }),
   /** Takes a revoked or expired connection off the list. */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1342,6 +1350,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("connection.update"), connection: AgentConnectionSchema }),
   z.object({ type: z.literal("connection.remove") }),
   z.object({ type: z.literal("connection.uncertain.acknowledge") }),
+  z.object({ ended: z.boolean(), type: z.literal("agent.session.stop") }),
   z.object({
     type: z.literal("connection.authorize"),
     completionPath: z.string().startsWith("/oauth/mcp/complete?"),
@@ -1831,9 +1840,12 @@ const hostApiGroup3 = defineRpc({
   "channels.get": declaration("GET", emptyInputSchema, ChannelDashboardViewSchema),
   "connections.list": declaration(
     "GET",
-    /** Revoked connections stay listed with their outcome only for clients that ask. */
     z.strictObject({ includeRevoked: z.boolean().optional() }),
-    z.object({ connections: z.array(AgentConnectionSchema) }),
+    z.object({
+      connections: z.array(AgentConnectionSchema),
+      /** Present on Homes with grants. Legacy readers still see only active connections. */
+      endedConnections: z.array(AgentConnectionSchema).optional(),
+    }),
   ),
   "connections.authorization.get": declaration(
     "GET",

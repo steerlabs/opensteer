@@ -410,6 +410,42 @@ describe("ExecutionCoordinator", () => {
     expect(store.retryCommand).toHaveBeenCalledTimes(2);
   });
 
+  it("retries what a Runner refused at once when that Runner's computer resumes agents", async () => {
+    const command = pendingCommand();
+    const other = pendingCommand();
+    const time = manualClock();
+    let pending = [command, other];
+    const store = backoffStore(() => pending);
+    let refusing = true;
+    const dispatch = vi.fn(async (sent: { id: string }) => {
+      if (refusing) throw new CommandDispatchError("Agents are stopped on this computer", "retry");
+      pending = pending.filter((candidate) => candidate.id !== sent.id);
+    });
+    const coordinator = new ExecutionCoordinator({
+      dispatcher: { isAvailable: () => true, dispatch },
+      dispatcherId: "test-dispatcher",
+      maxConcurrentRuns: 2,
+      maxConcurrentTriggerPrograms: 1,
+      maxQueuedBytes: 10_000,
+      maxQueuedCommands: 10,
+      clock: time.clock,
+      pollIntervalMs: 1,
+      store: store.value,
+    });
+    coordinator.start();
+    await waitFor(() => dispatch.mock.calls.length === 2);
+    await waitFor(() => time.timers().length > 0);
+    refusing = false;
+    const dispatched = (id: string) =>
+      dispatch.mock.calls.filter(([candidate]) => (candidate as { id: string }).id === id).length;
+    // Only the resumed computer's work goes again, and without waiting out its backoff.
+    coordinator.wakeEnvironment(command.environmentId!);
+    await waitFor(() => dispatched(command.id) === 2);
+    await wakeRepeatedly(coordinator, () => store.listPendingCommands.mock.calls.length);
+    expect(dispatched(other.id)).toBe(1);
+    await coordinator.stop();
+  });
+
   /*
    * A stop or a Request answer can be on the wire when the connection drops,
    * so its delivery is uncertain:

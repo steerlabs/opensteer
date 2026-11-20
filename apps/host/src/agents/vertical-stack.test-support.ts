@@ -87,6 +87,8 @@ export interface VerticalStack {
   settledRunEvent(runId: RunId): import("@opensteer/protocol").PendingAgentEvent | undefined;
   /** The person's Stop for one Run on the computer running it, as that computer's menu bar sends it. */
   stopRunLocally(runId: RunId): boolean;
+  /** Settles once the Runner reports this Run among the work it is doing. */
+  runStarted(runId: RunId): Promise<void>;
   crashRunner(beforeRestart?: () => Promise<void>): Promise<void>;
   /** A separate database/Deployment using this harness; closed with this fixture. */
   startAdditionalPersonal(): Promise<VerticalStack>;
@@ -202,6 +204,8 @@ export interface VerticalStackOptions {
   readonly runTimeoutMs: number;
   /** Captures Runner diagnostics for engine lifecycle journeys. */
   readonly runnerLogger?: RunnerLogger;
+  /** The person's Stop on the Runner's computer, as its menu bar would set it. */
+  readonly agentWork?: import("@opensteer/runner").AgentWorkSource;
   /** Original Host diagnostics, before an acceptance journey scrubs exports. */
   readonly hostLog?: (line: string) => void;
   /** Runs the one Runner executes at once; one unless a journey needs more. */

@@ -68,6 +68,8 @@ export interface BrowserProfileRecord {
   readonly id: BrowserProfileId;
   readonly name: string;
   readonly ownerId: UserId;
+  /** `engine-sign-in`: where an AI engine signs in; no connected agent's grant may name it. */
+  readonly purpose?: "person" | "engine-sign-in";
 }
 
 export interface BrowserSessionRecord {
@@ -121,6 +123,7 @@ export async function insertBrowserProfileOnLockedHome(
     readonly name: string;
     readonly ownerId: UserId;
     readonly homeRunnerId: RunnerId | null;
+    readonly purpose?: "person" | "engine-sign-in";
   },
 ): Promise<BrowserProfileRecord> {
   await assertPersonalOwner(transaction, input.ownerId);
@@ -160,8 +163,9 @@ export async function insertBrowserProfileOnLockedHome(
         name: input.name,
         ownerId: input.ownerId,
         homeRunnerId: input.homeRunnerId,
+        purpose: input.purpose ?? "person",
       })
-      .returning(["id", "name", "ownerId", "homeRunnerId"])
+      .returning(["id", "name", "ownerId", "homeRunnerId", "purpose"])
       .executeTakeFirstOrThrow(databaseOperationOptions());
   });
 }
@@ -173,6 +177,7 @@ export async function createBrowserProfile(
     readonly homeRunnerId?: RunnerId | null;
     readonly name: string;
     readonly ownerId: UserId;
+    readonly purpose?: "person" | "engine-sign-in";
   },
 ): Promise<BrowserProfileRecord> {
   return commitPersonalMutation(database, async (transaction) => {
@@ -198,7 +203,7 @@ export async function createBrowserProfile(
         throw idempotencyConflict(input.idempotencyKey);
       const profile = await transaction
         .selectFrom("browserProfiles")
-        .select(["id", "name", "ownerId", "homeRunnerId"])
+        .select(["id", "name", "ownerId", "homeRunnerId", "purpose"])
         .where("id", "=", recorded.data.profileId)
         .where("ownerId", "=", input.ownerId)
         .where("archivedAt", "is", null)
@@ -251,7 +256,7 @@ export async function getBrowserProfile(
   await assertPersonalOwner(database, ownerId);
   const row = await database
     .selectFrom("browserProfiles")
-    .select(["id", "name", "ownerId", "homeRunnerId"])
+    .select(["id", "name", "ownerId", "homeRunnerId", "purpose"])
     .where("id", "=", profileId)
     .where("ownerId", "=", ownerId)
     .where("archivedAt", "is", null)
@@ -266,7 +271,7 @@ export async function listBrowserProfiles(
   await assertPersonalOwner(database, ownerId);
   return database
     .selectFrom("browserProfiles")
-    .select(["id", "name", "ownerId", "homeRunnerId"])
+    .select(["id", "name", "ownerId", "homeRunnerId", "purpose"])
     .where("ownerId", "=", ownerId)
     .where("archivedAt", "is", null)
     .orderBy("createdAt", "asc")
@@ -293,7 +298,7 @@ export async function renameBrowserProfile(
         .where("id", "=", input.profileId)
         .where("ownerId", "=", input.ownerId)
         .where("archivedAt", "is", null)
-        .returning(["id", "name", "ownerId", "homeRunnerId"])
+        .returning(["id", "name", "ownerId", "homeRunnerId", "purpose"])
         .executeTakeFirst(databaseOperationOptions());
       if (!row)
         throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });

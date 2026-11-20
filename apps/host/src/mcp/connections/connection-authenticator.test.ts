@@ -130,7 +130,7 @@ describe("stateless MCP registration", () => {
     });
   }
   const challenge = createHash("sha256").update("x".repeat(64)).digest("base64url");
-  it("survives a Host restart without a client registry and binds registration to its issuer", () => {
+  it("survives a Host restart without a client registry and binds registration to its issuer", async () => {
     const registered = oauth().register(origin, {
       client_name: "Example",
       redirect_uris: ["https://client.example/cb"],
@@ -143,18 +143,18 @@ describe("stateless MCP registration", () => {
       code_challenge: challenge,
       code_challenge_method: "S256",
     };
-    expect(oauth().authorize(origin, request)).toMatch(/^\/mcp-authorization\?request=/);
-    expect(() =>
+    expect(await oauth().authorize(origin, request)).toMatch(/^\/mcp-authorization\?request=/);
+    await expect(
       oauth().authorize("https://other.example", {
         ...request,
         resource: "https://other.example" + mcpResourcePath,
       }),
-    ).toThrow("invalid_client");
-    expect(() =>
+    ).rejects.toThrow("invalid_client");
+    await expect(
       oauth().authorize(origin, { ...request, client_id: registered.client_id + "tampered" }),
-    ).toThrow("invalid_client");
+    ).rejects.toThrow("invalid_client");
   });
-  it("rejects unsafe redirects, missing resource, changed resource and weaker PKCE", () => {
+  it("rejects unsafe redirects, wrong resources, and weaker PKCE", async () => {
     for (const uri of [
       "https://user:password@client.example/cb",
       "http://client.example/cb",
@@ -171,14 +171,18 @@ describe("stateless MCP registration", () => {
       code_challenge: challenge,
       code_challenge_method: "S256",
     };
-    expect(() => oauth().authorize(origin, { ...input, resource: undefined })).toThrow();
-    expect(() =>
+    await expect(oauth().authorize(origin, { ...input, resource: "" })).rejects.toThrow(
+      "invalid_target",
+    );
+    await expect(
       oauth().authorize(origin, { ...input, resource: input.resource + "?other" }),
-    ).toThrow("invalid_target");
-    expect(() => oauth().authorize(origin, { ...input, code_challenge_method: "plain" })).toThrow();
-    expect(() =>
+    ).rejects.toThrow("invalid_target");
+    await expect(
+      oauth().authorize(origin, { ...input, code_challenge_method: "plain" }),
+    ).rejects.toThrow();
+    await expect(
       oauth().authorize(origin, { ...input, redirect_uri: "http://localhost:54001/cb" }),
-    ).toThrow("invalid_redirect_uri");
+    ).rejects.toThrow("invalid_redirect_uri");
   });
   it("allows only the loopback port exception and matches HTTPS exactly", () => {
     expect(redirectMatches("http://127.0.0.1/cb", "http://127.0.0.1:52000/cb")).toBe(true);

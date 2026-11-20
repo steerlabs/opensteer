@@ -1,12 +1,12 @@
 import type { AuthSessionSummary } from "@opensteer/core";
 import {
   computerGlyph,
-  computerStatus,
-  devicesView,
-  hostsDeployment,
-  isServiceMachine,
+  deviceStoppedLabel,
+  deviceWords,
+  devicesScreen,
+  type DeviceRowTone,
+  type HomeKindFact,
 } from "@opensteer/client/computers";
-import { phoneScreenMac, phoneScreenStatus } from "@opensteer/client/integrations";
 import type { MachineSummary, OtherDevice } from "@opensteer/protocol";
 import type { SFSymbolName } from "../ui/symbol.js";
 import { computerSymbols } from "./settings-model.js";
@@ -24,10 +24,12 @@ export interface DeviceListRow {
   readonly detail: string;
   readonly symbol: SFSymbolName;
   readonly opens: DeviceRowOpens;
+  /** Amber for a Device that is asleep or needs an update; absent otherwise. */
+  readonly tone?: "attention";
 }
 
 interface DeviceListSection {
-  readonly key: "here" | "other" | "signed-in";
+  readonly key: "home" | "devices" | "signed-in";
   readonly title: string;
   readonly footer: string | null;
   readonly rows: readonly DeviceListRow[];
@@ -39,102 +41,129 @@ export type PhoneHere =
   | { readonly state: "needs-setup"; readonly deviceName: string }
   | { readonly state: "none" };
 
+const homeSymbols = { server: "server.rack", cloud: "cloud" } as const;
+
+/** The phone's Devices screen: the Home, then every Device with this phone first, then sessions. */
 export function deviceListSections(input: {
   readonly machines: readonly MachineSummary[];
   readonly sessions: readonly AuthSessionSummary[];
   readonly here: PhoneHere;
   readonly noun: string;
+  readonly home: HomeKindFact;
+  readonly deploymentName: string;
+  readonly devicesAvailable: boolean;
   readonly otherDevices?: readonly OtherDevice[];
   readonly now?: Date;
 }): readonly DeviceListSection[] {
   const hereId = input.here.state === "member" ? input.here.runnerId : null;
-  const view = devicesView({
+  const screen = devicesScreen({
     machines: input.machines,
     sessions: input.sessions,
     hereId,
-    otherDevices: input.otherDevices ?? [],
+    home: input.home,
+    deploymentName: input.deploymentName,
+    devicesAvailable: input.devicesAvailable,
+    ...(input.now ? { now: input.now } : {}),
   });
-  // One Home: an explicit kind wins over the older ownership reading.
-  const homeMachine =
-    view.devices.find(({ machine }) => machine.kind === "home")?.machine ??
-    view.devices.find(({ machine }) => hostsDeployment(machine))?.machine ??
-    null;
-  const row = (machine: MachineSummary, thisDevice: boolean): DeviceListRow => {
-    const status =
-      machine.id === homeMachine?.id
-        ? "Home · your agent runs here"
-        : (screenStatusLine(machine) ?? computerStatus(machine, input.now).label);
-    const kind = thisDevice || machine.id === homeMachine?.id ? null : deviceKindLabel(machine);
+  const homeMachine = input.machines.find(({ id }) => id === screen.home.machineId) ?? null;
+  const homeRow: DeviceListRow = {
+    key: screen.home.machineId ?? "home",
+    title: screen.home.title,
+    // The person's Stop on the Home Mac itself, in the Mac's own words, says more than its kind.
+    detail:
+      (homeMachine === null ? null : deviceStoppedLabel(homeMachine, input.now)) ??
+      screen.home.detail,
+    symbol:
+      screen.home.symbol === "laptop"
+        ? homeMachine === null
+          ? "laptopcomputer"
+          : computerSymbols[computerGlyph(homeMachine)]
+        : homeSymbols[screen.home.symbol],
+    opens:
+      screen.home.machineId === null ? null : { kind: "device", machineId: screen.home.machineId },
+  };
+  const row = (device: (typeof screen.devices)[number]): DeviceListRow => {
+    const kind = device.thisDevice ? null : deviceKindLabel(device.machine);
     return {
-      key: machine.id,
-      title: machine.name,
-      detail: thisDevice
-        ? `This ${input.noun} · ${status}`
+      key: device.machine.id,
+      title: device.title,
+      detail: device.thisDevice
+        ? `This ${input.noun} · ${device.detail}`
         : kind === null
-          ? status
-          : `${kind} · ${status}`,
-      symbol: deviceSymbol(machine, thisDevice),
-      opens: { kind: "device", machineId: machine.id },
+          ? device.detail
+          : `${kind} · ${device.detail}`,
+      symbol: deviceSymbol(device.machine, device.thisDevice),
+      opens: { kind: "device", machineId: device.machine.id },
+      ...(attention(device.tone) ? { tone: "attention" as const } : {}),
     };
   };
-  const first: DeviceListRow[] = [];
-  const thisDevice = view.devices.find((device) => device.thisDevice);
-  if (thisDevice !== undefined) first.push(row(thisDevice.machine, true));
-  else if (input.here.state === "elsewhere")
-    first.push({
-      key: "this-phone",
-      title: `This ${input.noun}`,
-      detail: `Set up with ${input.here.deploymentName}`,
-      symbol: "smartphone",
-      opens: {
-        kind: "use-here",
-        elsewhere: input.here.deploymentId,
-        elsewhereName: input.here.deploymentName,
-      },
-    });
-  else if (input.here.state === "needs-setup")
-    first.push({
-      key: "this-phone",
-      title: input.here.deviceName,
-      detail: `This ${input.noun} · Finish setting up`,
-      symbol: "smartphone",
-      opens: { kind: "set-up" },
-    });
-  const home = view.devices.find(
-    (device) => !device.thisDevice && device.machine.id === homeMachine?.id,
-  );
-  if (home !== undefined) first.push(row(home.machine, false));
-  const others = view.devices
-    .filter((device) => !device.thisDevice && device !== home && !isServiceMachine(device.machine))
-    .map((device) => row(device.machine, false));
+  const thisDevice = screen.devices.find((device) => device.thisDevice);
+  const first: DeviceListRow[] =
+    thisDevice !== undefined
+      ? [row(thisDevice)]
+      : input.here.state === "elsewhere"
+        ? [
+            {
+              key: "this-phone",
+              title: `This ${input.noun}`,
+              detail: `Set up with ${input.here.deploymentName}`,
+              symbol: "smartphone",
+              opens: {
+                kind: "use-here",
+                elsewhere: input.here.deploymentId,
+                elsewhereName: input.here.deploymentName,
+              },
+            },
+          ]
+        : input.here.state === "needs-setup"
+          ? [
+              {
+                key: "this-phone",
+                title: input.here.deviceName,
+                detail: `This ${input.noun} · Finish setting up`,
+                symbol: "smartphone",
+                opens: { kind: "set-up" },
+              },
+            ]
+          : [];
+  const others = screen.devices.filter((device) => !device.thisDevice).map(row);
   // This phone's own unbound session is the phone itself, never "also signed in".
-  const signedIn = view.alsoSignedIn
+  const signedIn = screen.alsoSignedIn
     .filter(({ session }) => !session.current)
-    .map(({ session, label, status }): DeviceListRow => ({
-      key: session.id,
-      title: label,
-      detail: status,
-      symbol: session.form === "mobile" ? "smartphone" : "globe",
-      opens: { kind: "session", session },
-    }));
-  return [
-    { key: "here" as const, title: "", footer: null, rows: first },
-    { key: "other" as const, title: "Other devices", footer: null, rows: others },
+    .map(
+      ({ session, label, status }): DeviceListRow => ({
+        key: session.id,
+        title: label,
+        detail: status,
+        symbol: session.form === "mobile" ? "smartphone" : "globe",
+        opens: { kind: "session", session },
+      }),
+    );
+  const sections: DeviceListSection[] = [
     {
-      key: "signed-in" as const,
-      title: "Also signed in",
-      footer: view.alsoSignedInCaption,
+      key: "home",
+      title: deviceWords("devices.section.home"),
+      footer: screen.lead,
+      rows: [homeRow],
+    },
+    {
+      key: "devices",
+      title: deviceWords("devices.section.devices"),
+      footer: null,
+      rows: [...first, ...others],
+    },
+    {
+      key: "signed-in",
+      title: deviceWords("devices.section.alsoSignedIn"),
+      footer: screen.alsoSignedInCaption,
       rows: signedIn,
     },
-  ].filter((section) => section.rows.length > 0);
+  ];
+  return sections.filter((section) => section.rows.length > 0);
 }
 
-/** A Mac-driven phone's state, naming the Mac only as what controls it. */
-function screenStatusLine(machine: MachineSummary): string | null {
-  const status = phoneScreenStatus(machine);
-  const mac = phoneScreenMac(machine);
-  if (!status || !mac) return null;
-  return status.tone === "online" ? `${status.label} · through ${mac.name}` : status.label;
+function attention(tone: DeviceRowTone): boolean {
+  return tone === "asleep" || tone === "attention";
 }
 
 /** What kind of device it is, where its name alone doesn't say: from the Host's kind only. */

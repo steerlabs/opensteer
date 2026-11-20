@@ -651,6 +651,7 @@ export class BrowserController {
       targetedStreamingVersion: 1,
       inputLanesVersion: 1,
       cdpReplyBudget: 1,
+      scriptAttachments: 1,
       ...(this.claims.surfaceState === 1 ? { surfaceState: 1 } : {}),
       ...(this.saveAuthority
         ? { personFillVersion: 2 }
@@ -999,6 +1000,12 @@ export class BrowserController {
         });
     }
     const queue = isCdpRequest(message) ? this.agentCommands : this.viewerCommands;
+    if (queue.pending >= this.maxPendingCommands && isCdpRequest(message) && message.replyBudget)
+      return this.send({
+        type: "cdp.error",
+        requestId: message.requestId,
+        error: new BrowserRuntimeError("conflict", "The browser command queue is full.").toProtocolError(),
+      });
     return this.enqueueOperation(queue, () => ({ done: this.run(message, surfaceId), surfaceId }));
   }
 
@@ -1020,6 +1027,9 @@ export class BrowserController {
             await this.cdpRouter.send(this.claims.sessionId, {
               method: message.command.method,
               parameters: message.command.parameters ?? {},
+              ...(message.scriptAttachmentId
+                ? { scriptAttachmentId: message.scriptAttachmentId }
+                : {}),
               ...(message.command.sessionId === undefined
                 ? {}
                 : { sessionId: message.command.sessionId }),
@@ -1330,7 +1340,11 @@ export class BrowserController {
         const targetId =
           sessionId === undefined
             ? null
-            : this.cdpRouter.attachedTargetId(this.claims.sessionId, sessionId);
+            : this.cdpRouter.attachedTargetId(
+                this.claims.sessionId,
+                sessionId,
+                message.scriptAttachmentId,
+              );
         return targetId ? (this.ledger.surfaceIdForTarget(targetId) ?? null) : null;
       }
       case "surface.activate":
@@ -1530,6 +1544,12 @@ export class BrowserController {
       message.command.method === "Target.closeTarget" &&
       typeof message.command.parameters?.targetId === "string"
     ) {
+      if (message.scriptAttachmentId)
+        this.cdpRouter.assertScriptTarget(
+          this.claims.sessionId,
+          message.scriptAttachmentId,
+          message.command.parameters.targetId,
+        );
       const id = this.ledger.surfaceIdForTarget(message.command.parameters.targetId);
       if (id) {
         await this.ledger.closeSurface(id, "agent-closed");
@@ -3226,6 +3246,12 @@ export class BrowserController {
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
   ): Promise<void> {
     const requested = message.command;
+    if (message.scriptAttachmentId)
+      this.cdpRouter.assertScriptTarget(
+        this.claims.sessionId,
+        message.scriptAttachmentId,
+        typeof requested.parameters?.targetId === "string" ? requested.parameters.targetId : undefined,
+      );
     const inputSurface = this.pageOf(message);
     if (
       inputSurface &&
@@ -3238,13 +3264,18 @@ export class BrowserController {
     const command: CdpCommand = {
       method: requested.method,
       ...(message.replyBudget ? { replyBudget: message.replyBudget } : {}),
+      ...(message.scriptAttachmentId ? { scriptAttachmentId: message.scriptAttachmentId } : {}),
       ...(requested.parameters === undefined ? {} : { parameters: requested.parameters }),
       ...(requested.sessionId === undefined ? {} : { sessionId: requested.sessionId }),
     };
     const pageTargetId =
       command.sessionId === undefined
         ? null
-        : this.cdpRouter.attachedTargetId(this.claims.sessionId, command.sessionId);
+        : this.cdpRouter.attachedTargetId(
+            this.claims.sessionId,
+            command.sessionId,
+            command.scriptAttachmentId,
+          );
     if (message.navigationId && command.method === "Page.navigate" && pageTargetId) {
       this.cdpRouter.admitPageCommand(this.claims.sessionId, command);
       const surfaceId = this.ledger.surfaceIdForTarget(pageTargetId);
@@ -3335,7 +3366,9 @@ export class BrowserController {
         // As CDP's own createTarget does, the tab loads in the background; a
         // failed load stays visible in the tab.
         if (tabUrl && binding) {
-          void binding.cdp.send("Page.navigate", { url: tabUrl }).catch(() => undefined);
+          const navigation = binding.cdp.send("Page.navigate", { url: tabUrl });
+          if (message.replyBudget) await navigation;
+          else void navigation.catch(() => undefined);
         }
       }
     }
@@ -3370,7 +3403,11 @@ export class BrowserController {
     }
     const reply = this.withTargetMetadata(command, result, attachedActivity);
     if (message.replyBudget && boundedJsonSize(reply, message.replyBudget) === undefined)
-      throw new BrowserRuntimeError("bad_message", "Browser result exceeds its byte or nesting limit.", { reason: "browser-reply-limit" });
+      throw new BrowserRuntimeError(
+        "bad_message",
+        "Browser result exceeds its byte or nesting limit.",
+        { reason: "browser-reply-limit" },
+      );
     await this.send({
       requestId: message.requestId,
       result: BrowserCdpResultSchema.parse(reply),
@@ -3539,6 +3576,21 @@ export class BrowserController {
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
   ): Promise<void> {
     const parameters = message.command.parameters;
+    if (message.command.method === browserHostMethods.closeScriptAttachment) {
+      if (!message.scriptAttachmentId)
+        throw new BrowserRuntimeError("bad_message", "Missing browser script attachment.");
+      const cleanups = this.cancelProducerOperations({
+        type: "input.cancel",
+        producerId: message.scriptAttachmentId,
+      });
+      void this.cdpRouter.closeScriptAttachment(
+        this.claims.sessionId,
+        message.scriptAttachmentId,
+        Promise.allSettled(cleanups.map(({ done }) => done)),
+      );
+      await this.send({ type: "cdp.result", requestId: message.requestId, result: {} });
+      return;
+    }
     if (message.command.method === browserHostMethods.listTabs) {
       const parsed = BrowserListTabsParametersSchema.safeParse(parameters ?? {});
       if (!parsed.success) throw new BrowserRuntimeError("bad_message", "Invalid tab-list cursor.");
@@ -3590,16 +3642,30 @@ export class BrowserController {
       if (reloaded) await this.drainTabs();
       const dialog = this.ledger.dialogOf(parsed.data.surfaceId);
       const result = {
-          surfaceId: parsed.data.surfaceId,
-          targetId: binding.targetId,
-          documentId: binding.surface.documentId,
-          dialog: dialog ? { id: dialog.id, message: dialog.message, type: dialog.type } : null,
-          userActivity: this.ledger.targetActivity(binding.targetId) ?? null,
-          pageResize: this.ledger.targetResize(binding.targetId) ?? null,
-          reloaded,
+        surfaceId: parsed.data.surfaceId,
+        targetId: binding.targetId,
+        documentId: binding.surface.documentId,
+        dialog: dialog ? { id: dialog.id, message: dialog.message, type: dialog.type } : null,
+        userActivity: this.ledger.targetActivity(binding.targetId) ?? null,
+        pageResize: this.ledger.targetResize(binding.targetId) ?? null,
+        reloaded,
       };
       if (message.replyBudget && boundedJsonSize(result, message.replyBudget) === undefined)
-        throw new BrowserRuntimeError("bad_message", "Browser result exceeds its byte or nesting limit.", { reason: "browser-reply-limit" });
+        throw new BrowserRuntimeError(
+          "bad_message",
+          "Browser result exceeds its byte or nesting limit.",
+          { reason: "browser-reply-limit" },
+        );
+      if (message.scriptAttachmentId && message.scriptEventBudget)
+        this.cdpRouter.openScriptAttachment(
+          this.claims.sessionId,
+          message.scriptAttachmentId,
+          binding.targetId,
+          message.scriptEventBudget,
+          (event) => {
+            void this.send({ event, type: "cdp.event" }).catch(() => undefined);
+          },
+        );
       await this.send({ type: "cdp.result", requestId: message.requestId, result });
       return;
     }
@@ -3711,7 +3777,9 @@ export class BrowserController {
           const binding = this.ledger.binding(tabId);
           if (!binding) throw new BrowserRuntimeError("not_found", "The new tab closed.");
           if (origin === "person") this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
-          void this.ledger.navigate(tabId, url, message.navigationId).catch(() => undefined);
+          const navigation = this.ledger.navigate(tabId, url, message.navigationId);
+          if (message.replyBudget) await navigation;
+          else void navigation.catch(() => undefined);
         }
       }
       await this.drainTabs();
@@ -3910,10 +3978,18 @@ export class BrowserController {
     return method === "Target.getTargets" && Array.isArray(record.targetInfos)
       ? {
           ...record,
-          rootSurfaceId: this.rootSurfaceId,
-          rootTargetId: this.rootSurfaceId
-            ? (this.ledger.binding(this.rootSurfaceId)?.targetId ?? null)
-            : record.rootTargetId,
+          ...(command.scriptAttachmentId
+            ? {
+                rootSurfaceId: typeof record.rootTargetId === "string"
+                  ? (this.ledger.surfaceIdForTarget(record.rootTargetId) ?? null)
+                  : null,
+              }
+            : {
+                rootSurfaceId: this.rootSurfaceId,
+                rootTargetId: this.rootSurfaceId
+                  ? (this.ledger.binding(this.rootSurfaceId)?.targetId ?? null)
+                  : record.rootTargetId,
+              }),
           targetInfos: record.targetInfos.map(decorate),
         }
       : method === "Target.getTargetInfo"
@@ -3998,7 +4074,10 @@ function normalizeControllerError(error: unknown): BrowserRuntimeError {
         : error.code === "forbidden"
           ? "forbidden"
           : "conflict";
-  return new BrowserRuntimeError(code, error.message, { cause: error });
+  return new BrowserRuntimeError(code, error.message, {
+    cause: error,
+    ...(error.code === "too_large" ? { reason: "browser-reply-limit" } : {}),
+  });
 }
 
 const selectedTextExpression = `(() => {
@@ -4063,6 +4142,7 @@ function safeNavigationUrl(value: string): string {
 function inputProducer(message: BrowserClientMessage): string {
   if (message.producerId) return message.producerId;
   if (message.type !== "cdp.command") return "legacy-viewer";
+  if (message.scriptAttachmentId) return message.scriptAttachmentId;
   if (message.actorToken) return message.actorToken;
   const detached =
     message.command.method === "Target.detachFromTarget"

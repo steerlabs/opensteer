@@ -4,6 +4,11 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 import { createId, type ThreadAccessMode } from "@opensteer/core";
+import {
+  embedderAssertionJwtTyp,
+  type AgentDirectoryDocument,
+} from "@opensteer/control-plane-protocol";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { AgentConnectionStore } from "@opensteer/database";
 import {
   createStoreFixture,
@@ -43,7 +48,7 @@ const origin = "http://127.0.0.1:4310";
 const redirectUri = "http://127.0.0.1:49210/callback";
 const verifier = "a".repeat(64);
 
-async function fixture() {
+async function fixture(options: { readonly directory?: AgentDirectoryDocument | null } = {}) {
   const fixture = await createStoreFixture();
   const database = fixture.database;
   let now = Date.now();
@@ -92,6 +97,9 @@ async function fixture() {
     signingKey: keys.privateKey,
     verificationKey: keys.publicKey,
     now: () => now,
+    ...(options.directory !== undefined
+      ? { directory: { get: async () => options.directory ?? null } }
+      : {}),
   });
   let remoteOrigin: string | null = null;
   const app = Fastify();
@@ -150,35 +158,76 @@ async function fixture() {
     await transport.handleRequest(request.raw, reply.raw, request.body);
   });
   const headers = { host: new URL(origin).host, origin, cookie };
-  async function begin() {
+  async function register(redirect = redirectUri) {
     const registration = await app.inject({
       method: "POST",
       url: `${mcpIssuerPath}/register`,
       headers,
-      payload: { client_name: "Test agent", redirect_uris: [redirectUri] },
+      payload: { client_name: "Test agent", redirect_uris: [redirect] },
     });
     expect(registration.statusCode).toBe(201);
-    const clientId: string = registration.json().client_id;
+    return registration.json().client_id as string;
+  }
+  /** The authorization request as a client sends it; `assertion` signs over its fields. */
+  async function request(
+    input: {
+      readonly redirect?: string;
+      readonly clientId?: string;
+      readonly parameters?: Readonly<Record<string, string | undefined>>;
+      readonly assertion?: (bound: {
+        clientId: string;
+        redirectUri: string;
+        codeChallenge: string;
+        state: string;
+      }) => Promise<string>;
+    } = {},
+  ) {
+    const redirect = input.redirect ?? redirectUri;
+    const clientId = input.clientId ?? (await register(redirect));
+    const codeChallenge = createHash("sha256").update(verifier).digest("base64url");
     const query = new URLSearchParams({
       client_id: clientId,
       response_type: "code",
-      redirect_uri: redirectUri,
-      code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+      redirect_uri: redirect,
+      code_challenge: codeChallenge,
       code_challenge_method: "S256",
       resource: origin + mcpResourcePath,
       state: "client-state",
     });
+    for (const [name, value] of Object.entries(input.parameters ?? {})) {
+      if (value === undefined) query.delete(name);
+      else query.set(name, value);
+    }
+    if (input.assertion)
+      query.set(
+        "opensteer_embedder_assertion",
+        await input.assertion({
+          clientId,
+          redirectUri: redirect,
+          codeChallenge,
+          state: "client-state",
+        }),
+      );
     const authorization = await app.inject({
       method: "GET",
       url: `${mcpIssuerPath}/authorize?${query}`,
       headers,
     });
+    return { clientId, query, authorization };
+  }
+  async function begin(input: Parameters<typeof request>[0] = {}) {
+    const { clientId, query, authorization } = await request(input);
     expect(authorization.statusCode).toBe(303);
-    const requestId = new URL(authorization.headers.location!, origin).searchParams.get("request")!;
+    const location = new URL(authorization.headers.location!, origin);
+    expect(location.pathname, location.href).toBe("/mcp-authorization");
+    const requestId = location.searchParams.get("request")!;
     return { clientId, requestId, query };
   }
-  async function authorize(mode: ThreadAccessMode = "approval-required") {
-    const { clientId, requestId, query } = await begin();
+  async function authorize(
+    mode: ThreadAccessMode = "approval-required",
+    input?: Parameters<typeof request>[0],
+  ) {
+    const { clientId, requestId, query } = await begin(input);
     const read = await injectRpcRequest(
       app,
       "connections.authorization.get",
@@ -186,6 +235,7 @@ async function fixture() {
       headers,
     );
     expect(read.statusCode, read.body).toBe(200);
+    expect(read.json().data.grantsAvailable).toBe(true);
     const approval = await injectRpcRequest(
       app,
       "commands.dispatch",
@@ -211,24 +261,29 @@ async function fixture() {
     const code = redirect.searchParams.get("code")!;
     return { code, clientId, requestId, query };
   }
-  const exchange = (
+  function exchange(
     grant: { code: string; clientId: string },
-    changes: Record<string, string> = {},
-  ) =>
-    app.inject({
+    changes: Record<string, string | undefined> = {},
+  ) {
+    const payload = new URLSearchParams({
+      grant_type: "authorization_code",
+      code: grant.code,
+      client_id: grant.clientId,
+      redirect_uri: redirectUri,
+      code_verifier: verifier,
+      resource: origin + mcpResourcePath,
+    });
+    for (const [name, value] of Object.entries(changes)) {
+      if (value === undefined) payload.delete(name);
+      else payload.set(name, value);
+    }
+    return app.inject({
       method: "POST",
       url: `${mcpIssuerPath}/token`,
       headers: { ...headers, "content-type": "application/x-www-form-urlencoded" },
-      payload: new URLSearchParams({
-        grant_type: "authorization_code",
-        code: grant.code,
-        client_id: grant.clientId,
-        redirect_uri: redirectUri,
-        code_verifier: verifier,
-        resource: origin + mcpResourcePath,
-        ...changes,
-      }).toString(),
+      payload: payload.toString(),
     });
+  }
   return {
     ...fixture,
     database,
@@ -238,6 +293,7 @@ async function fixture() {
     owner,
     headers,
     connections,
+    request,
     begin,
     authorize,
     exchange,
@@ -326,6 +382,7 @@ integration("external MCP OAuth over HTTP", () => {
     expect(tools.json().result.tools).toMatchObject([{ name: "probe" }]);
     const listed = await injectRpcRequest(f.app, "connections.list", {}, f.headers);
     expect(listed.statusCode).toBe(200);
+    expect(listed.json().data.endedConnections).toEqual([]);
     expect(listed.json().data.connections).toMatchObject([
       {
         id: row.id,
@@ -382,9 +439,11 @@ integration("external MCP OAuth over HTTP", () => {
       payload: { jsonrpc: "2.0", id: 3, method: "tools/list" },
     });
     expect(next.statusCode).toBe(401);
-    expect(
-      (await injectRpcRequest(f.app, "connections.list", {}, f.headers)).json().data.connections,
-    ).toEqual([]);
+    const ended = await injectRpcRequest(f.app, "connections.list", {}, f.headers);
+    expect(ended.json().data).toMatchObject({
+      connections: [],
+      endedConnections: [{ id: row.id, state: "stopped" }],
+    });
     expect(
       (
         await injectRpcRequest(f.app, "connections.list", { includeRevoked: true }, f.headers)
@@ -402,6 +461,108 @@ integration("external MCP OAuth over HTTP", () => {
         await injectRpcRequest(f.app, "connections.list", { includeRevoked: true }, f.headers)
       ).json().data.connections,
     ).toEqual([]);
+  });
+
+  it("registers a desktop client's HTTPS and loopback callbacks and drops custom schemes", async () => {
+    const f = await fixture();
+    const secure = "https://agent.example/oauth/callback";
+    const custom = [
+      "cursor://anysphere.cursor/oauth/callback",
+      "vscode://vscode.github-authentication/oauth/callback",
+    ];
+    const register = (redirects: string[]) =>
+      f.app.inject({
+        method: "POST",
+        url: `${mcpIssuerPath}/register`,
+        headers: f.headers,
+        payload: { client_name: "Desktop agent", redirect_uris: redirects },
+      });
+    const registration = await register([secure, ...custom, redirectUri]);
+    expect(registration.statusCode, registration.body).toBe(201);
+    const { client_id: clientId, redirect_uris } = registration.json();
+    expect(redirect_uris).toEqual([secure, redirectUri]);
+    for (const redirect of [secure, redirectUri]) {
+      const { authorization } = await f.request({ clientId, redirect });
+      expect(authorization.statusCode).toBe(303);
+      expect(authorization.headers.location).toMatch(/^\/mcp-authorization\?/u);
+    }
+    for (const redirect of [...custom, "https://agent.example/unregistered"]) {
+      const { authorization } = await f.request({ clientId, redirect });
+      expect(authorization.statusCode).toBe(400);
+      expect(authorization.json()).toEqual({ error: "invalid_redirect_uri" });
+      expect(authorization.headers.location).toBeUndefined();
+    }
+    const refused = await register(custom);
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json()).toEqual({ error: "invalid_client_metadata" });
+  });
+
+  it("defaults an omitted MCP resource and accepts a single trailing slash", async () => {
+    const f = await fixture();
+    const canonical = origin + mcpResourcePath;
+    for (const [authorizationResource, tokenResource] of [
+      [canonical, undefined],
+      [canonical, canonical + "/"],
+      [canonical + "/", canonical],
+      [undefined, canonical],
+    ]) {
+      const grant = await f.authorize("approval-required", {
+        parameters: { resource: authorizationResource },
+      });
+      const response = await f.exchange(grant, { resource: tokenResource });
+      expect(response.statusCode, response.body).toBe(200);
+      const { access_token: token } = response.json();
+      const hash = credentialHash(token);
+      await expect(f.connections.authenticate(hash, canonical)).resolves.toMatchObject({
+        userId: f.owner.user.id,
+      });
+      await expect(f.connections.authenticate(hash, canonical + "/")).resolves.toBeNull();
+    }
+    for (const resource of [
+      "https://agent.example" + mcpResourcePath,
+      canonical + "//",
+      canonical + "?other=/",
+      canonical + "#/",
+      canonical.replace("/v1/", "/v1/./"),
+    ]) {
+      const { authorization } = await f.request({ parameters: { resource } });
+      expect(new URL(authorization.headers.location!).searchParams.get("error")).toBe(
+        "invalid_target",
+      );
+      const grant = await f.authorize();
+      const refused = await f.exchange(grant, { resource });
+      expect(refused.statusCode).toBe(400);
+      expect(refused.json()).toEqual({ error: "invalid_target" });
+      expect((await f.exchange(grant)).json()).toEqual({ error: "invalid_grant" });
+    }
+  });
+
+  it("grants only opensteer for an empty scope or extra scopes such as offline_access", async () => {
+    const f = await fixture();
+    for (const scope of ["", "opensteer offline_access", "offline_access"]) {
+      const grant = await f.authorize("approval-required", { parameters: { scope } });
+      const response = await f.exchange(grant, { scope });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ scope: "opensteer" });
+      expect(response.json()).not.toHaveProperty("refresh_token");
+    }
+    const { authorization: malformed } = await f.request({
+      parameters: { scope: 'opensteer "bad"' },
+    });
+    expect(new URL(malformed.headers.location!).searchParams.get("error")).toBe("invalid_scope");
+    for (const parameters of [{ code_challenge: undefined }, { code_challenge_method: "plain" }]) {
+      const { authorization } = await f.request({
+        parameters: { ...parameters, scope: "opensteer offline_access" },
+      });
+      expect(new URL(authorization.headers.location!).searchParams.get("error")).toBe(
+        "invalid_request",
+      );
+    }
+    const grant = await f.authorize();
+    expect((await f.exchange(grant, { code_verifier: undefined })).json()).toEqual({
+      error: "invalid_grant",
+    });
+    expect((await f.exchange(grant)).json()).toEqual({ error: "invalid_grant" });
   });
 
   it("publishes exact route metadata and refuses unconfigured or removed routes", async () => {
@@ -423,8 +584,25 @@ integration("external MCP OAuth over HTTP", () => {
         registration_endpoint: `${route}${mcpIssuerPath}/register`,
         code_challenge_methods_supported: ["S256"],
       });
+      const root = await f.app.inject({
+        method: "GET",
+        url: "/.well-known/oauth-authorization-server",
+        headers,
+      });
+      expect(root.statusCode).toBe(200);
+      expect(root.json()).toEqual(server.json());
+      expect(root.headers["access-control-allow-origin"]).toBe("*");
     }
     f.setRemoteOrigin(null);
+    expect(
+      (
+        await f.app.inject({
+          method: "GET",
+          url: "/.well-known/oauth-authorization-server",
+          headers: { host: "home.connect.example", "x-forwarded-proto": "https" },
+        })
+      ).statusCode,
+    ).toBe(403);
     const removed = await f.app.inject({
       method: "GET",
       url: mcpResourceMetadataPath,
@@ -573,5 +751,211 @@ integration("external MCP OAuth over HTTP", () => {
     await expect(f.oauth.authenticator.authenticate(token)).rejects.toMatchObject({
       code: "unauthorized",
     });
+  });
+
+  it("shows who asked from what the Home can prove, and refuses an invalid embedder assertion", async () => {
+    const { publicKey, privateKey } = await generateKeyPair("EdDSA", { crv: "Ed25519" });
+    const { x } = await exportJWK(publicKey);
+    const directory: AgentDirectoryDocument = {
+      revision: 3,
+      issuedAt: new Date().toISOString(),
+      entries: [
+        { id: "agentpay", displayName: "AgentPay", origins: ["https://agentpay.example"] },
+        {
+          id: "errand",
+          displayName: "Errand",
+          origins: ["https://errand.example"],
+          keys: {
+            keys: [
+              { kty: "OKP", crv: "Ed25519", x: x!, kid: "errand-1", use: "sig", alg: "EdDSA" },
+            ],
+          },
+          embedsVia: ["agentpay"],
+        },
+      ],
+    };
+    const f = await fixture({ directory });
+    const platform = "https://agentpay.example/oauth/callback";
+    let jti = 0;
+    const assertion =
+      (overrides: Record<string, unknown> = {}) =>
+      async (bound: {
+        clientId: string;
+        redirectUri: string;
+        codeChallenge: string;
+        state: string;
+      }) =>
+        new SignJWT({
+          iss: "https://errand.example",
+          sub: bound.clientId,
+          aud: origin + mcpIssuerPath,
+          redirect_uri: bound.redirectUri,
+          code_challenge: bound.codeChallenge,
+          state: bound.state,
+          iat: Math.floor(f.now() / 1000),
+          exp: Math.floor(f.now() / 1000) + 120,
+          jti: `jti-${++jti}`,
+          ...overrides,
+        })
+          .setProtectedHeader({ alg: "EdDSA", typ: embedderAssertionJwtTyp, kid: "errand-1" })
+          .sign(privateKey);
+    const read = async (requestId: string) =>
+      (
+        await injectRpcRequest(f.app, "connections.authorization.get", { requestId }, f.headers)
+      ).json().data;
+    const embedded = await f.begin({ redirect: platform, assertion: assertion() });
+    expect(await read(embedded.requestId)).toMatchObject({
+      identityAtConsent: {
+        kind: "platform-and-embedder",
+        platformDirectoryId: "agentpay",
+        embedderDirectoryId: "errand",
+        directoryRevision: 3,
+      },
+      identity: {
+        heading: "Errand via AgentPay",
+        detail: "Errand asked for this. AgentPay will hold the access.",
+        verified: true,
+        warning: "Only approve if you started this yourself.",
+      },
+    });
+    expect((await read((await f.begin({ redirect: platform })).requestId)).identity).toMatchObject({
+      evidenceKind: "platform",
+      heading: "AgentPay",
+      detail: "https://agentpay.example",
+      verified: true,
+    });
+    expect(
+      (await read((await f.begin({ redirect: "https://unknown.example/cb" })).requestId)).identity,
+    ).toMatchObject({
+      evidenceKind: "unverified",
+      heading: "Test agent",
+      detail: "https://unknown.example",
+      verified: false,
+      selfAsserted: true,
+    });
+    expect((await read((await f.begin()).requestId)).identity).toMatchObject({
+      evidenceKind: "unverified",
+      detail: "an app on this computer",
+      origins: [],
+    });
+
+    // A present assertion that fails is refused to the client, never shown as an unverified agent.
+    const replayed = assertion({ jti: "used-once" });
+    expect(
+      (await f.request({ redirect: platform, assertion: replayed })).authorization.headers.location,
+    ).toContain("/mcp-authorization?");
+    for (const refused of [
+      await f.request({ redirect: platform, assertion: assertion({ state: "another-request" }) }),
+      await f.request({ redirect: platform, assertion: replayed }),
+      await f.request({ redirect: "https://unknown.example/cb", assertion: assertion() }),
+    ]) {
+      expect(refused.authorization.statusCode).toBe(303);
+      const location = new URL(refused.authorization.headers.location!, origin);
+      expect(location.searchParams.get("error")).toBe("invalid_request");
+      expect(location.pathname).not.toBe("/mcp-authorization");
+    }
+
+    // What the person was shown is kept on the connection and listed with it.
+    const approval = await injectRpcRequest(
+      f.app,
+      "commands.dispatch",
+      {
+        type: "connection.authorize",
+        requestId: embedded.requestId,
+        idempotencyKey: "embedded-consent",
+        decision: { kind: "approve", label: "Errand", accessMode: "approval-required" },
+      },
+      f.headers,
+    );
+    expect(approval.statusCode, approval.body).toBe(200);
+    const listed = (await injectRpcRequest(f.app, "connections.list", {}, f.headers)).json().data
+      .connections;
+    expect(listed).toMatchObject([
+      {
+        label: "Errand",
+        identityAtConsent: { kind: "platform-and-embedder", keyThumbprint: expect.any(String) },
+        identity: { heading: "Errand via AgentPay" },
+      },
+    ]);
+  });
+
+  it("tells a consent that was already answered from one that expired", async () => {
+    const f = await fixture();
+    const read = (requestId: string) =>
+      injectRpcRequest(f.app, "connections.authorization.get", { requestId }, f.headers);
+    const answered = await read((await f.authorize()).requestId);
+    expect(answered.statusCode).not.toBe(200);
+    expect(answered.body).toContain("consent-answered");
+    expect(answered.body).toContain("This agent connection request was already answered.");
+    const { requestId } = await f.begin();
+    f.setNow(f.now() + 11 * 60_000);
+    const expired = await read(requestId);
+    expect(expired.statusCode).not.toBe(200);
+    expect(expired.body).toContain("consent-expired");
+    expect(expired.body).toContain("expired. Start again from the agent.");
+  });
+
+  it("keeps the AI engine sign-in profile out of a selected grant, at consent and on edit", async () => {
+    const f = await fixture();
+    const profile = (name: string, purpose?: "engine-sign-in") =>
+      f.store.createBrowserProfile({
+        ownerId: f.owner.user.id,
+        name,
+        idempotencyKey: `profile:${name}`,
+        homeRunnerId: null,
+        ...(purpose ? { purpose } : {}),
+      });
+    const signIn = await profile("AI engine sign-in", "engine-sign-in");
+    const shopping = await profile("Shopping");
+    const selected = (profileId: string) => ({
+      scope: "selected" as const,
+      tasks: false,
+      resources: [{ kind: "browser-profile" as const, profileId }],
+    });
+    const { requestId } = await f.begin();
+    const approve = (key: string, grant: unknown) =>
+      injectRpcRequest(
+        f.app,
+        "commands.dispatch",
+        {
+          type: "connection.authorize",
+          requestId,
+          idempotencyKey: key,
+          decision: { kind: "approve", label: "My agent", accessMode: "auto", grant },
+        },
+        f.headers,
+      );
+    const refused = await approve("with-sign-in", selected(signIn.id));
+    expect(refused.statusCode).not.toBe(200);
+    expect(refused.body).toContain("engine-sign-in-profile");
+    expect(await f.database.selectFrom("agentConnections").select("id").execute()).toEqual([]);
+    const approved = await approve("without-sign-in", selected(shopping.id));
+    expect(approved.statusCode, approved.body).toBe(200);
+    const { id } = await f.database
+      .selectFrom("agentConnections")
+      .select("id")
+      .executeTakeFirstOrThrow();
+    const update = (key: string, grant: unknown) =>
+      injectRpcRequest(
+        f.app,
+        "commands.dispatch",
+        {
+          type: "connection.update",
+          connectionId: id,
+          expectedRevision: 1,
+          idempotencyKey: key,
+          grant,
+        },
+        f.headers,
+      );
+    const widened = await update("add-sign-in", {
+      ...selected(shopping.id),
+      resources: [...selected(shopping.id).resources, ...selected(signIn.id).resources],
+    });
+    expect(widened.statusCode).not.toBe(200);
+    expect(widened.body).toContain("engine-sign-in-profile");
+    // `everything` is the person's whole authority, so it still reaches that profile.
+    const everything = await update("everything", { scope: "everything" });
+    expect(everything.statusCode, everything.body).toBe(200);
   });
 });

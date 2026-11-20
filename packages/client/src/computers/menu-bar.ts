@@ -103,6 +103,8 @@ export const MenuBarStatusSchema = z.strictObject({
     stoppedAt: z.iso.datetime().nullable(),
     offline: Text.nullable(),
     problem: Text.nullable(),
+    /** The Home the window shows says this Mac is stopped too, once it does. */
+    confirmed: Text.nullable(),
   }),
   /** What macOS will do at login, and whether this Mac has anything to open for. */
   openAtLogin: z.strictObject({ on: z.boolean(), available: z.boolean() }),
@@ -240,6 +242,12 @@ export function menuBarStatus(input: MenuBarInput): MenuBarStatus {
         ? menuBarWords("menubar.stopAll.offline", { home: unreachableName })
         : null,
       problem: input.stop.problem,
+      confirmed:
+        input.stop.phase === "stopped" && input.thisMac?.machine?.agentsStoppedSince
+          ? menuBarWords("menubar.stopped.confirmed", {
+              home: homeNames(input).get(input.thisMac.deploymentId) ?? "Your Home",
+            })
+          : null,
     },
     openAtLogin: input.openAtLogin,
     icon: {

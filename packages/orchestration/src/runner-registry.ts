@@ -23,6 +23,7 @@ import { createId, OpensteerError, placeInputFailure } from "@opensteer/core";
 import {
   agentHomeFilesCapability,
   runnerPowerStateCapability,
+  runnerAgentStopCapability,
   type HostAppRequest,
   type HostHomeFileRequest,
   type HostOutputImageUpload,
@@ -194,6 +195,11 @@ type RunnerHarnessInstallation = Extract<
 >;
 export interface RunnerRegistryHooks {
   onAppState?(identity: RunnerIdentity, state: RunnerAppState): void;
+  /**
+   * The person stopped agents on this Runner's computer (`stoppedSince`), or
+   * resumed them (null). Held work may be dispatched again on resume.
+   */
+  onAgentWork?(identity: RunnerIdentity, stoppedSince: Date | null): void;
   authorize(identity: RunnerIdentity): Promise<void>;
   /** Persist the Runner receipt before any causally later event is admitted. */
   onCommandAccepted?(identity: RunnerIdentity, receipt: RunnerCommandAccepted): Promise<void>;
@@ -522,6 +528,8 @@ interface RunnerConnection {
   lastSeenAt: number;
   /** Timestamp when this connection last reported `runner.power.sleeping`. */
   sleepAnnouncedAtMs: number | undefined;
+  /** When the person stopped agents on this computer, as its last notice said. */
+  agentsStoppedAtMs: number | undefined;
 }
 interface RunnerRegistryOptions {
   readonly commandAckTimeoutMs?: number;
@@ -615,6 +623,15 @@ export class RunnerRegistry {
   readonly #highestGeneration = new Map<RunnerId, number>();
   /** Timestamp (`asleepSince`) for disconnected Runners that reported sleep. */
   readonly #asleep = new Map<RunnerId, { readonly since: number; readonly generation: number }>();
+  /**
+   * Runners whose computer had agents stopped by the person when their last
+   * connection ended. In memory only: a Home restart forgets it, and the
+   * Runner says it again when it reconnects still stopped.
+   */
+  readonly #agentsStopped = new Map<
+    RunnerId,
+    { readonly since: number; readonly generation: number }
+  >();
   readonly #lifetime = new AbortController();
   #closing = false;
   #closePromise: Promise<void> | undefined;
@@ -737,9 +754,12 @@ export class RunnerRegistry {
       observedRunIds: new Set(),
       observedTriggerOccurrenceIds: new Set(),
       sleepAnnouncedAtMs: undefined,
+      agentsStoppedAtMs: undefined,
     };
     connection.leaseTimer = this.#leaseTimer(connection);
     this.#asleep.delete(identity.runnerId);
+    // A Runner still stopped says so again on this connection.
+    this.#agentsStopped.delete(identity.runnerId);
     this.#byRunner.set(identity.runnerId, connection);
     this.#byPeer.set(peer.id, connection);
     for (const environmentId of identity.environmentIds)
@@ -760,6 +780,9 @@ export class RunnerRegistry {
         heartbeatIntervalMs: Math.min(15_000, Math.floor(this.#executionLeaseMs / 4)),
         ...(identity.capabilities.includes(runnerPowerStateCapability)
           ? { acceptsPowerState: true as const }
+          : {}),
+        ...(identity.capabilities.includes(runnerAgentStopCapability)
+          ? { acceptsAgentStop: true as const }
           : {}),
         ...(identity.capabilities.includes(agentHomeFilesCapability) &&
         this.#hooks.onAgentHomeReport
@@ -837,6 +860,8 @@ export class RunnerRegistry {
   hasRunCapacity(environmentId: EnvironmentId, dispatching = 0): boolean {
     const connection = this.#byEnvironment.get(environmentId);
     if (!connection?.attached) return false;
+    // A computer whose person stopped agents takes nothing new until they resume.
+    if (connection.agentsStoppedAtMs !== undefined) return false;
     const capacity = connection.identity.modules.agents?.maxConcurrentRuns ?? 1;
     return connection.ownedRunIds.size + dispatching < capacity;
   }
@@ -861,6 +886,33 @@ export class RunnerRegistry {
   }
   isRunnerAsleep(runnerId: RunnerId): boolean {
     return this.asleepSince(runnerId) !== null;
+  }
+
+  /**
+   * When the person stopped agents on this Runner's computer, while that
+   * holds: on its live connection, or as its last connection left it. Null
+   * when they never did, resumed, or the Runner was removed. `generation`
+   * names the connection the caller read the Runner at.
+   */
+  agentsStoppedSince(runnerId: RunnerId, generation?: number): Date | null {
+    if (this.#closing) return null;
+    const connection = this.#byRunner.get(runnerId);
+    if (connection) {
+      if (connection.agentsStoppedAtMs === undefined) return null;
+      return generation === undefined || connection.identity.connectionGeneration === generation
+        ? new Date(connection.agentsStoppedAtMs)
+        : null;
+    }
+    const stopped = this.#agentsStopped.get(runnerId);
+    if (!stopped) return null;
+    return generation === undefined || stopped.generation === generation
+      ? new Date(stopped.since)
+      : null;
+  }
+
+  /** Whether the environment's Runner said the person stopped agents on its computer. */
+  areAgentsStopped(environmentId: EnvironmentId): boolean {
+    return this.#byEnvironment.get(environmentId)?.agentsStoppedAtMs !== undefined;
   }
 
   /**
@@ -1159,6 +1211,7 @@ export class RunnerRegistry {
   async revoke(runnerId: RunnerId): Promise<void> {
     this.#revokedRunnerIds.add(runnerId);
     this.#asleep.delete(runnerId);
+    this.#agentsStopped.delete(runnerId);
     const connection = this.#byRunner.get(runnerId);
     if (connection) {
       await this.#disconnect(
@@ -2489,6 +2542,24 @@ export class RunnerRegistry {
           connection.sleepAnnouncedAtMs = this.#now();
         }
         break;
+      case "runner.agents.stopped":
+      case "runner.agents.resumed": {
+        // A Runner that never advertised this is not believed.
+        if (!connection.identity.capabilities.includes(runnerAgentStopCapability)) break;
+        const stoppedAtMs =
+          message.type === "runner.agents.stopped"
+            ? Math.min(Date.parse(message.stoppedAt), this.#now())
+            : undefined;
+        if (stoppedAtMs === connection.agentsStoppedAtMs) break;
+        connection.agentsStoppedAtMs = stoppedAtMs;
+        this.#hooks.onAgentWork?.(
+          connection.identity,
+          stoppedAtMs === undefined ? null : new Date(stoppedAtMs),
+        );
+        // Work held for this computer may start now.
+        if (stoppedAtMs === undefined) this.#hooks.onRunDispatchAvailable?.();
+        break;
+      }
       case "runner.heartbeat":
         this.#renewLease(connection, message.sentAt);
         if (
@@ -3022,6 +3093,7 @@ export class RunnerRegistry {
     if (this.#closePromise) return this.#closePromise;
     this.#closing = true;
     this.#asleep.clear();
+    this.#agentsStopped.clear();
     this.#lifetime.abort(new Error("Runner registry is closing"));
     this.#closePromise = this.#close();
     return this.#closePromise;
@@ -3083,6 +3155,13 @@ export class RunnerRegistry {
           since: connection.sleepAnnouncedAtMs,
         });
       }
+      // The person's Stop outlives the connection: a Device Runner says it
+      // just before it is stopped, and nothing but the person ends it.
+      if (connection.agentsStoppedAtMs !== undefined && code !== runnerIdentityRevokedCloseCode)
+        this.#agentsStopped.set(connection.identity.runnerId, {
+          generation: connection.identity.connectionGeneration,
+          since: connection.agentsStoppedAtMs,
+        });
     }
     // An auxiliary stream exists only beside a live primary connection: its
     // whole authority is the fence the primary handed it.

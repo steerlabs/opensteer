@@ -29,6 +29,7 @@ const tileShape = shapes.roundedRectangle({ cornerRadius: 7, roundedCornerStyle:
 export function Lines(props: {
   readonly detail: string | null;
   readonly title: string;
+  readonly detailColor?: string;
 }): ReactNode {
   return (
     <VStack alignment="leading" spacing={2}>
@@ -37,7 +38,9 @@ export function Lines(props: {
       </Text>
       {/* Inside a Button, hierarchical secondary would take the button's tint. */}
       {props.detail === null ? null : (
-        <Text modifiers={[foregroundStyle(color.muted), footnote]}>{props.detail}</Text>
+        <Text modifiers={[foregroundStyle(props.detailColor ?? color.muted), footnote]}>
+          {props.detail}
+        </Text>
       )}
     </VStack>
   );

@@ -38,7 +38,7 @@ import {
   type RunnerLocalActivity,
   type RunnerRuntimeOptions,
 } from "./runtime/runtime.js";
-import { agentStopFile } from "./runtime/agent-stop-file.js";
+import { watchAgentStopFile, type AgentWorkSource } from "./runtime/agent-stop-file.js";
 import { ExecutionContainment } from "./runtime/execution-containment.js";
 import { RunnerReadinessFile } from "./runtime/readiness-file.js";
 import { describeRunnerDevice } from "./device.js";
@@ -119,7 +119,14 @@ export async function runRunnerDaemon(
        * when no such Run is running here.
        */
       readonly stopRun: (runId: string) => boolean;
+      /** Settles once the last agent-stop notice went to the Home, or could not. */
+      readonly agentNoticeSent: () => Promise<void>;
     }) => void;
+    /**
+     * The person's Stop for agent work on this computer, when a supervisor
+     * holds it. Otherwise the Stop file the configuration names is watched.
+     */
+    readonly agentWork?: AgentWorkSource;
     /**
      * The Runs this Runner is doing work for, each time that changes and once
      * when the daemon starts. A Runner that runs no agents never calls it.
@@ -166,6 +173,12 @@ export async function runRunnerDaemon(
   let started: StartedRunner | undefined;
   let connection: ReconnectingHostConnection | undefined;
   let stopActivity: (() => void) | undefined;
+  const watchedStop = options.agentWork
+    ? undefined
+    : applicationConfig.agentStopFile
+      ? watchAgentStopFile(applicationConfig.agentStopFile)
+      : undefined;
+  const agentWork = options.agentWork ?? watchedStop;
   try {
     const identityStore = new FileRunnerIdentityStore({
       dataDirectory: config.dataDirectory,
@@ -176,6 +189,7 @@ export async function runRunnerDaemon(
     const identity = await identityStore.loadOrCreate();
     started = config.modules.includes("agents")
       ? await startAgentsRunner({
+          ...(agentWork ? { agentWork } : {}),
           applicationConfig,
           bootId,
           config,
@@ -196,6 +210,7 @@ export async function runRunnerDaemon(
       runnerKind: config.runnerKind,
     });
     connection = new ReconnectingHostConnection({
+      ...(agentWork ? { agentWork } : {}),
       ...(started.agents ? { agents: started.agents } : {}),
       ...(config.browserBridge ? { browserBridge: config.browserBridge } : {}),
       bootId,
@@ -230,6 +245,7 @@ export async function runRunnerDaemon(
         const parsed = RunIdSchema.safeParse(runId);
         return parsed.success && (runtime?.stopRunLocally(parsed.data) ?? false);
       },
+      agentNoticeSent: () => running.agentNoticeSent(),
     });
     const onActivity = options.onActivity;
     if (runtime && onActivity) {
@@ -241,6 +257,7 @@ export async function runRunnerDaemon(
   } finally {
     signal?.removeEventListener("abort", externalAbort);
     stopActivity?.();
+    watchedStop?.close();
     connection?.close();
     await readiness?.disconnected();
     await started?.close();
@@ -257,6 +274,7 @@ export async function runRunnerDaemon(
  * still runs threads is worth having even when nobody can `ssh` to it.
  */
 async function startAgentsRunner(input: {
+  readonly agentWork?: AgentWorkSource;
   readonly applicationConfig: RunnerApplicationConfig;
   readonly phoneScreens?: PhoneScreenDriver;
   readonly bootId: RunnerDescriptor["bootId"];
@@ -389,9 +407,7 @@ async function startAgentsRunner(input: {
       logger,
     ),
     harnessRuntimeBoundary,
-    ...(applicationConfig.agentStopFile
-      ? { agentWorkStopped: agentStopFile(applicationConfig.agentStopFile) }
-      : {}),
+    ...(input.agentWork ? { agentWorkStopped: () => input.agentWork!.stopped() } : {}),
     ...(harnessSandbox ? { harnessSandbox } : {}),
     plugins: cacheRunPlugins,
     logger,

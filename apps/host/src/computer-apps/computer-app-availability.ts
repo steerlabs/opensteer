@@ -19,6 +19,8 @@ export function phoneDeviceUnavailableDetail(phone: {
       return `${phone.name}'s screen driver is offline${location}. Continue other work until it returns.`;
     case "driver-asleep":
       return `${phone.name}'s screen driver is asleep${location}. Wait until it wakes or continue other work.`;
+    case "driver-stopped":
+      return `Agents are stopped on ${phone.name}'s screen driver${location}. Wait until the person resumes them or continue other work.`;
     case "access-off":
       return `Apps access is off on ${phone.name}. Use computer_access_request if needed.`;
     case "trust-required":

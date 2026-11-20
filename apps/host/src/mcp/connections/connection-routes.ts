@@ -3,7 +3,9 @@ import type { ConnectionCaller } from "../agent-caller.js";
 import type { UserId } from "@opensteer/core";
 import { OpensteerError } from "@opensteer/core";
 import {
+  AgentConnectionConsentSchema,
   rpcSuccess,
+  type AgentConnection,
   type HostApiHandlers,
   type HostApiCommand,
   type HostApiServerContext,
@@ -19,6 +21,7 @@ import {
   mcpResourcePath,
   mcpResourceMetadataPath,
   mcpServerMetadataPath,
+  presentIdentity,
 } from "./connection-oauth.js";
 import { connectionCredentialPrefix } from "./connection-authenticator.js";
 
@@ -111,11 +114,15 @@ export function registerConnectionRoutes(
         .send({ error: "unauthorized" });
     }
   });
+  const rootMetadataPath = "/.well-known/oauth-authorization-server";
+  const serverMetadataPaths = [mcpServerMetadataPath];
+  if (!app.hasRoute({ method: "GET", url: rootMetadataPath }))
+    serverMetadataPaths.push(rootMetadataPath);
   app.addHook("onSend", async (request, reply, payload) => {
     const path = request.url.split("?", 1)[0];
     if (
       path === mcpResourceMetadataPath ||
-      path === mcpServerMetadataPath ||
+      serverMetadataPaths.includes(path ?? "") ||
       path === "/.well-known/oauth-protected-resource" ||
       path === `${mcpIssuerPath}/register` ||
       path === `${mcpIssuerPath}/token`
@@ -137,21 +144,22 @@ export function registerConnectionRoutes(
         scopes_supported: ["opensteer"],
       });
     });
-  app.get(mcpServerMetadataPath, async (request, reply) => {
-    const issuer = (await getOrigin(request)) + mcpIssuerPath;
-    return reply.header("cache-control", "no-store").send({
-      issuer,
-      authorization_endpoint: `${issuer}/authorize`,
-      token_endpoint: `${issuer}/token`,
-      registration_endpoint: `${issuer}/register`,
-      response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code"],
-      code_challenge_methods_supported: ["S256"],
-      token_endpoint_auth_methods_supported: ["none"],
-      scopes_supported: ["opensteer"],
-      authorization_response_iss_parameter_supported: true,
+  for (const path of serverMetadataPaths)
+    app.get(path, async (request, reply) => {
+      const issuer = (await getOrigin(request)) + mcpIssuerPath;
+      return reply.header("cache-control", "no-store").send({
+        issuer,
+        authorization_endpoint: `${issuer}/authorize`,
+        token_endpoint: `${issuer}/token`,
+        registration_endpoint: `${issuer}/register`,
+        response_types_supported: ["code"],
+        grant_types_supported: ["authorization_code"],
+        code_challenge_methods_supported: ["S256"],
+        token_endpoint_auth_methods_supported: ["none"],
+        scopes_supported: ["opensteer"],
+        authorization_response_iss_parameter_supported: true,
+      });
     });
-  });
   // Keep OAuth errors and responses away from generic error serializers and logs.
   app.register(async (routes) => {
     for (const path of [`${mcpIssuerPath}/register`, `${mcpIssuerPath}/token`])
@@ -189,7 +197,7 @@ export function registerConnectionRoutes(
         .send(oauth.register(await getOrigin(request), request.body)),
     );
     routes.get(`${mcpIssuerPath}/authorize`, async (request, reply) => {
-      const path = oauth.authorize(
+      const path = await oauth.authorize(
         await getOrigin(request),
         uniqueParameters(new URL(request.url, options.canonicalOrigin).searchParams),
       );
@@ -243,15 +251,33 @@ export function createConnectionRpcHandlers(
   oauth: ConnectionOAuth,
 ): Pick<HostApiHandlers, "connections.list" | "connections.authorization.get"> {
   return {
-    "connections.list": async (input, context) =>
-      rpcSuccess({
-        connections: await oauth.store.list(requireOwner(context).user.id, {
-          includeRevoked: input.includeRevoked === true,
-        }),
-      }),
+    "connections.list": async (input, context) => {
+      const connections = (
+        await oauth.store.list(requireOwner(context).user.id, { includeRevoked: true })
+      ).map(withIdentity);
+      return rpcSuccess(
+        input.includeRevoked
+          ? { connections, endedConnections: [] }
+          : {
+              connections: connections.filter((connection) => connection.state === "active"),
+              endedConnections: connections.filter((connection) => connection.state !== "active"),
+            },
+      );
+    },
     "connections.authorization.get": async (input, context) =>
-      rpcSuccess(await oauth.consent(input.requestId, requireOwner(context).user.id)),
+      rpcSuccess(
+        AgentConnectionConsentSchema.parse({
+          ...(await oauth.consent(input.requestId, requireOwner(context).user.id)),
+          grantsAvailable: true,
+        }),
+      ),
   };
+}
+/** A connection with how the Home words who asked, from what it recorded at consent. */
+function withIdentity(connection: AgentConnection): AgentConnection {
+  return connection.identityAtConsent
+    ? { ...connection, identity: presentIdentity(connection.identityAtConsent) }
+    : connection;
 }
 export type ConnectionCommand = Extract<
   HostApiCommand,
@@ -296,13 +322,21 @@ export function connectionCommandEffects(options: {
   >;
   readonly closeLineage: (connectionId: string) => Promise<void>;
   readonly onFailure: (error: unknown, connectionId?: string) => void;
+  /** After a lineage was stopped: abort this process's work for sessions that ended. */
+  readonly afterStop?: (connectionId: string, reason: "disconnect" | "narrowed") => Promise<void>;
 }): ConnectionCommandEffects & { readonly driveCleanups: () => Promise<void> } {
   let pass: Promise<void> | null = null;
+  const afterStop = async (connectionId: string, reason: "disconnect" | "narrowed") => {
+    await options.afterStop?.(connectionId, reason).catch((error: unknown) =>
+      options.onFailure(error, connectionId),
+    );
+  };
   const driveCleanups = (): Promise<void> =>
     (pass ??= (async () => {
       try {
-        const { failures } = await options.store.driveConnectionCleanups();
+        const { failures, processed } = await options.store.driveConnectionCleanups();
         for (const error of failures) options.onFailure(error);
+        for (const connectionId of processed) await afterStop(connectionId, "disconnect");
       } finally {
         pass = null;
       }
@@ -314,6 +348,7 @@ export function connectionCommandEffects(options: {
       if (reason === "disconnect") return driveCleanups();
       const { failures } = await options.store.stopConnectionLineage(userId, connectionId, reason);
       for (const error of failures) options.onFailure(error, connectionId);
+      await afterStop(connectionId, reason);
     },
   };
 }

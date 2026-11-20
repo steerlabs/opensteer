@@ -24,6 +24,11 @@ import WebSocket, { type RawData } from "ws";
 import { z } from "zod";
 import type { RunnerLogger } from "../host/host-connection.js";
 import { shellSentence, shellSocketCloseWaitMs } from "./shell-transport.js";
+import type { AgentWorkSource } from "../runtime/agent-stop-file.js";
+
+/** Every shell this module hosts is an agent Run's: its authority names the Run. */
+export const shellAgentsStoppedSentence =
+  "Agents are stopped on this computer by its person. Shells open again when they resume them.";
 
 const maximumControlFrameBytes = 1024 * 1024;
 const maximumLifecycleLineBytes = 8 * 1024;
@@ -74,6 +79,11 @@ type ShellOutboundReport =
     };
 
 export interface ShellModuleHandlerOptions {
+  /**
+   * The person's Stop on this computer. Every shell here is opened for an
+   * agent's Run, so while stopped none opens, and Stop ends those open.
+   */
+  readonly agentWork?: AgentWorkSource;
   readonly cleanupWaitMs?: number;
   readonly helperBinary: string;
   readonly hostKeyPath: string;
@@ -94,9 +104,19 @@ export class ShellModuleHandler {
   readonly #options: ShellModuleHandlerOptions;
   readonly #sessions = new Map<ShellSessionId, ShellTargetSession>();
   #stream: RunnerModuleStream | undefined;
+  #stopListening: () => void = () => undefined;
 
   constructor(options: ShellModuleHandlerOptions) {
     this.#options = options;
+  }
+
+  /** The person stopped agents here: every shell ends, as its owner stopping it. */
+  async #endForStop(): Promise<void> {
+    await Promise.allSettled(
+      [...this.#sessions.values()].map((session) =>
+        session.close("stopped-by-owner", shellAgentsStoppedSentence),
+      ),
+    );
   }
 
   get maxPayloadBytes(): number {
@@ -105,9 +125,17 @@ export class ShellModuleHandler {
 
   attach(stream: RunnerModuleStream): void {
     this.#stream = stream;
+    const source = this.#options.agentWork;
+    this.#stopListening();
+    this.#stopListening = source
+      ? source.subscribe(() => {
+          if (source.stopped()) void this.#endForStop();
+        })
+      : () => undefined;
   }
 
   async detach(): Promise<void> {
+    this.#stopListening();
     const sessions = [...this.#sessions.values()];
     await Promise.allSettled(
       sessions.map((session) => session.close("machine-disconnected", "Shell module detached")),
@@ -142,6 +170,14 @@ export class ShellModuleHandler {
     if (this.#sessions.has(message.sessionId)) {
       void this.#send({
         error: { code: "duplicate-session", message: "This shell session is already open." },
+        sessionId: message.sessionId,
+        type: "runner.shell.session.rejected",
+      });
+      return;
+    }
+    if (this.#options.agentWork?.stopped()) {
+      void this.#send({
+        error: { code: "computer_stopped", message: shellAgentsStoppedSentence },
         sessionId: message.sessionId,
         type: "runner.shell.session.rejected",
       });

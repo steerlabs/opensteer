@@ -2,6 +2,7 @@ import {
   AssignmentSummarySchema,
   AuthSessionIdSchema,
   DeploymentIdSchema,
+  AgentSessionIdSchema,
   EnvironmentIdSchema,
   ExecutionNodeIdSchema,
   HarnessInstanceIdSchema,
@@ -186,6 +187,8 @@ const task = z.object({
   harnessInstanceId: HarnessInstanceIdSchema,
   /** A Run waits to start and none is executing. */
   runQueued: z.boolean(),
+  /** A connected agent is working this task itself; Stop it with `agent.session.stop`. */
+  agentSessionId: AgentSessionIdSchema.nullable().optional(),
 });
 /** A task row plus the full Thread detail view, return hint included. */
 export const PersonalDetailThreadSchema = task.extend({ thread: ThreadViewSchema });

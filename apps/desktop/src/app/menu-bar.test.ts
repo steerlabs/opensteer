@@ -23,7 +23,7 @@ const status = (change: Partial<MenuBarStatus> = {}): MenuBarStatus => ({
   rightNow: [],
   thisMac: null,
   thisMacNote: null,
-  stop: { phase: "running", stoppedAt: null, offline: null, problem: null },
+  stop: { phase: "running", stoppedAt: null, offline: null, problem: null, confirmed: null },
   openAtLogin: { on: true, available: true },
   icon: { attention: false, unreachable: false, stopped: false },
   ...change,

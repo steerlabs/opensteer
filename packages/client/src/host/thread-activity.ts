@@ -96,7 +96,12 @@ export function threadStartHold(
     readonly thread: Pick<ThreadSummary, "environmentId" | "harnessInstanceId" | "harnessLabel">;
   },
 ): string | null {
-  return nextQueuedRun(input) !== null && threadAccountPreparing(input.environments, input.thread)
+  if (nextQueuedRun(input) === null) return null;
+  const environment = input.environments.find(({ id }) => id === input.thread.environmentId);
+  // The person stopped agents on the computer this task runs on.
+  if (environment?.agentsStoppedSince)
+    return `Waiting: agents are stopped on ${environment.name}. This starts when they’re resumed there.`;
+  return threadAccountPreparing(input.environments, input.thread)
     ? accountGettingReady(input.thread.harnessLabel)
     : null;
 }

@@ -1,3 +1,4 @@
+import { deviceWords } from "./devices-copy.js";
 import { computerStatus, isServiceMachine } from "./computers.js";
 import type { AuthSessionSummary } from "@opensteer/core";
 import {
@@ -50,8 +51,7 @@ export function deviceMembership(input: DeviceMembershipInput): DeviceMembership
 }
 
 /** Designer copy for a sleeping Device on its detail page. */
-export const deviceAsleepExplanation =
-  "Its tabs and apps wait until it wakes. Agents can’t use it meanwhile.";
+export const deviceAsleepExplanation = deviceWords("devices.asleep.explain");
 
 /**
  * Whether the Home currently reports this Device as asleep (disconnected after
@@ -63,6 +63,29 @@ export function isDeviceAsleep(machine: Pick<MachineSummary, "status" | "asleepS
     typeof machine.asleepSince === "string" &&
     machine.asleepSince.length > 0
   );
+}
+
+/**
+ * Whether the person stopped agents on this Device from the Device itself
+ * ("Stop everything on this Mac"), as its Runner told the Home.
+ */
+export function isDeviceStopped(machine: Pick<MachineSummary, "agentsStoppedSince">): boolean {
+  return typeof machine.agentsStoppedSince === "string" && machine.agentsStoppedSince.length > 0;
+}
+
+/** "Stopped on Studio Mac · since 10:42 AM", or null when agents are not stopped there. */
+export function deviceStoppedLabel(
+  machine: Pick<MachineSummary, "agentsStoppedSince" | "name">,
+  now = new Date(),
+  locale?: string,
+): string | null {
+  if (!isDeviceStopped(machine)) return null;
+  const at = new Date(machine.agentsStoppedSince!);
+  const when =
+    at.toDateString() === now.toDateString()
+      ? at.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" })
+      : at.toLocaleDateString(locale, { month: "short", day: "numeric" });
+  return `Stopped on ${machine.name} · since ${when}`;
 }
 
 /** Calm explanation shown on a sleeping Device's page, or null when not asleep. */
@@ -113,9 +136,9 @@ export function devicesView(input: {
         asleep: isDeviceAsleep(machine),
         asleepDetail: deviceAsleepDetail(machine),
         capabilitySummary: machine.phoneDisplay ? "Screen control" : null,
-        status: isHomeDevice(machine)
-          ? "Home · your agent runs here"
-          : computerStatus(machine).label,
+        status:
+          deviceStoppedLabel(machine) ??
+          (isHomeDevice(machine) ? "Home · your agent runs here" : computerStatus(machine).label),
         thisDevice: machine.id === input.hereId,
       })),
     alsoSignedIn: input.sessions

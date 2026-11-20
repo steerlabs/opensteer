@@ -128,6 +128,10 @@ const replyTooLarge = () =>
 
 function publicFailure(error: unknown): ReplFailure {
   if (
+    error instanceof OpensteerError &&
+    (error.reason === "outcome-unknown" || error.reason === "browser-tab-open-outcome-unknown")
+  ) return { code: "outcome-unknown", message: error.message, performed: [] };
+  if (
     error instanceof BrowserBridgeError ||
     (error instanceof OpensteerError && error.code !== "internal")
   ) {

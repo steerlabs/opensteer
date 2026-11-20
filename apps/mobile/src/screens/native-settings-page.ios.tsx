@@ -228,7 +228,11 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
         >
           <HStack alignment="center" modifiers={[contentShape(shapes.rectangle())]} spacing={12}>
             {row.symbol === undefined ? null : <Tile symbol={row.symbol} />}
-            <Lines detail={row.detail ?? null} title={row.label} />
+            <Lines
+              detail={row.detail ?? null}
+              title={row.label}
+              {...(row.tone === "attention" ? { detailColor: color.amber } : {})}
+            />
             <Spacer />
             {row.opens === true ? <Chevron /> : null}
           </HStack>

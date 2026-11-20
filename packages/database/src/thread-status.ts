@@ -1,5 +1,6 @@
 import {
   SequenceSchema,
+  type AgentSessionId,
   contentSaysSomething,
   utf8Prefix,
   type ContentPart,
@@ -57,6 +58,12 @@ export async function writeThreadSummary(
       .returningAll()
       .returning(taskPageThreadSelections())
       .returning(threadRunQueued.as("runQueued"))
+      .returning(
+        sql<AgentSessionId | null>`(
+          select agent_sessions.id from agent_sessions
+          where agent_sessions.thread_id = threads.id and agent_sessions.status = 'active'
+        )`.as("agentSessionId"),
+      )
       .executeTakeFirstOrThrow();
     const threadScope = `thread:${threadId}` as const;
     const view = {
@@ -76,6 +83,7 @@ export async function writeThreadSummary(
       environmentId: row.environmentId,
       harnessInstanceId: row.harnessInstanceId,
       runQueued: row.runQueued,
+      ...(row.agentSessionId ? { agentSessionId: row.agentSessionId } : {}),
     };
     const thread = row.removedAt
       ? undefined
@@ -227,6 +235,15 @@ export async function projectThreadState(
         (join) => join.onTrue(),
       )
       .select([
+        sql<string | null>`(
+          select case when exists (
+            select 1 from requests
+            where requests.originating_agent_session_id = agent_sessions.id
+              and requests.status = 'pending'
+          ) then 'waiting' else 'active' end
+          from agent_sessions
+          where agent_sessions.thread_id = threads.id and agent_sessions.status = 'active'
+        )`.as("agentSession"),
         "threads.status",
         "threads.inputQueuePaused",
         "threads.failurePreview",
@@ -253,6 +270,7 @@ export async function projectThreadState(
             earliestActiveRunStatus: active?.status ?? null,
             inputQueuePaused: thread.inputQueuePaused,
             lastRunFailed: failed,
+            agentSession: row.agentSession as "active" | "waiting" | null,
           });
     const failure = last?.failure;
     const failurePreview =

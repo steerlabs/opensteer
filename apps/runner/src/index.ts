@@ -28,3 +28,4 @@ export * from "./computer-apps/phone-screen-driver.js";
 export * from "./messaging/prepare.js";
 export * from "./computer-apps/local-mcp-servers.js";
 export { ExecutionContainment, executionScopeVariable } from "./runtime/execution-containment.js";
+export * from "./runtime/agent-stop-file.js";

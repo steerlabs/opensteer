@@ -1,3 +1,4 @@
+import { AsleepStepLine, isAsleepStep } from "./asleep-moment.js";
 import { RetainedToolImage } from "./asset-image.js";
 import {
   hostMessageOutbox,
@@ -2172,6 +2173,7 @@ function Step({
         onToggle={() => setOpen(!open)}
         open={open}
       />
+      {isAsleepStep(entry) ? <AsleepStepLine tool={entry} /> : null}
       {open ? <ToolDetail tool={entry} /> : null}
     </div>
   );

@@ -3,7 +3,9 @@ import { deviceAccess, type DeviceInitialAccess, type MachineSummary } from "@op
 import {
   computerStatus,
   deviceAccessRows,
+  deviceWords,
   hostsDeployment,
+  deviceStoppedLabel,
   isDeviceAsleep,
   type DeviceAccessRow,
   type DeviceCapability,
@@ -18,9 +20,9 @@ import {
 export type { DeviceCapability };
 
 export const capabilityLabel: Readonly<Record<DeviceCapability, string>> = {
-  browser: "Browser",
-  apps: "Apps",
-  files: "Files and commands",
+  browser: deviceWords("devices.switch.browser"),
+  apps: deviceWords("devices.switch.apps"),
+  files: deviceWords("devices.switch.files"),
 };
 
 /** The setup screen's words, about the Mac the person is sitting at. */
@@ -124,6 +126,8 @@ export function deviceStatusLine(machine: MachineSummary, now = new Date()): str
   if (hostsDeployment(machine)) return "Home · your agent runs here";
   const screen = phoneScreenStatus(machine);
   if (screen) return screen.label;
+  const stopped = deviceStoppedLabel(machine, now);
+  if (stopped) return stopped;
   if (machine.status === "online") return "Online";
   if (machine.status === "pending")
     return machine.expiresAt

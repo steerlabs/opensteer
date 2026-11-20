@@ -1160,6 +1160,29 @@ export const RunnerPowerSleepingSchema = z.strictObject({
 export type RunnerPowerSleeping = z.infer<typeof RunnerPowerSleepingSchema>;
 
 /**
+ * Capability advertised by Runners that tell the Home when the person stopped
+ * agents on their computer (the desktop app's "Stop everything on this Mac")
+ * and when they resume. Sent only to a Home whose welcome accepts it.
+ */
+export const runnerAgentStopCapability = "runner-agent-stop-v1" as const;
+
+/** The person stopped agents on this computer; nothing new starts until they resume. */
+export const RunnerAgentsStoppedSchema = z.strictObject({
+  ...fencedMessageBase,
+  /** When the person stopped them, as this computer saved it. */
+  stoppedAt: IsoDateTimeSchema,
+  type: z.literal("runner.agents.stopped"),
+});
+export type RunnerAgentsStopped = z.infer<typeof RunnerAgentsStoppedSchema>;
+
+/** The person resumed agents on this computer; held work may start now. */
+export const RunnerAgentsResumedSchema = z.strictObject({
+  ...fencedMessageBase,
+  type: z.literal("runner.agents.resumed"),
+});
+export type RunnerAgentsResumed = z.infer<typeof RunnerAgentsResumedSchema>;
+
+/**
  * Everything an agent-executing machine offers. Only this module carries an
  * environment, harnesses and storage: a Runner that exists to relay a browser
  * or a messaging transport has no work location and must not be made to invent
@@ -1988,6 +2011,8 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     result: RunnerVoiceResultSchema,
   }),
   RunnerPowerSleepingSchema,
+  RunnerAgentsStoppedSchema,
+  RunnerAgentsResumedSchema,
 ]);
 export type RunnerOperationalMessage = z.infer<typeof RunnerOperationalMessageSchema>;
 
@@ -2037,6 +2062,8 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     environmentIds: z.array(EnvironmentIdSchema).max(100),
     heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),
     acceptsPowerState: z.literal(true).optional(),
+    /** The Home understands `runner.agents.stopped` and `runner.agents.resumed`. */
+    acceptsAgentStop: z.literal(true).optional(),
     acceptsHomeFiles: z.literal(true).optional(),
     agentHome: ComputerFolderSchema.optional(),
     agentHomeIsProvisional: z.literal(true).optional(),

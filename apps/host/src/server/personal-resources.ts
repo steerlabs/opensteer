@@ -368,6 +368,7 @@ export class PersonalResources {
             "profile.id",
             "profile.name",
             "profile.homeRunnerId",
+            "profile.purpose",
             "profile.archivedAt",
             "deletion.runnerId as computerId",
             "deletion.state as deletionState",
@@ -383,8 +384,17 @@ export class PersonalResources {
           query = query.where("profile.id", "=", BrowserProfileIdSchema.parse(input.id));
         return page(await query.execute(), (selected) => ({
           kind: "browser-profile",
-          profiles: selected.flatMap(({ archivedAt, id, name, homeRunnerId }) =>
-            archivedAt ? [] : [{ id, name, homeRunnerId }],
+          profiles: selected.flatMap(({ archivedAt, id, name, homeRunnerId, purpose }) =>
+            archivedAt
+              ? []
+              : [
+                  {
+                    id,
+                    name,
+                    homeRunnerId,
+                    ...(purpose === "engine-sign-in" ? { purpose } : {}),
+                  },
+                ],
           ),
           deletions: selected.flatMap(({ id, computerId, deletionState }) =>
             computerId &&
@@ -455,6 +465,11 @@ export class PersonalResources {
           executeTasks:
             !!runner && !toolFailure && this.#dependencies.execution.canExecute(environment.id),
         },
+        ...(() => {
+          const runnerId = runner?.runnerId ?? environment.runnerId;
+          const stopped = runnerId ? this.#dependencies.runners.agentsStoppedSince(runnerId) : null;
+          return stopped ? { agentsStoppedSince: stopped.toISOString() } : {};
+        })(),
       };
     });
   }

@@ -8,6 +8,7 @@ import * as deviceDriverStore from "./device-driver-store.js";
 import * as waitingInputs from "./waiting-inputs.js";
 import { setExecutionClock } from "./personal-transaction.js";
 import { pauseLineageTrigger, TriggerStore } from "./trigger-store.js";
+import { endAgentSessions, sessionsUsingWithdrawn } from "./agent-session-store.js";
 import {
   completeCleanupIfSettled,
   connectionLineageWork,
@@ -649,6 +650,7 @@ export class OpensteerStore {
     readonly idempotencyKey: string;
     readonly name: string;
     readonly ownerId: UserId;
+    readonly purpose?: "person" | "engine-sign-in";
   }): Promise<BrowserProfileRecord> {
     return browserSessionStore.createBrowserProfile(this.#database, input);
   }
@@ -986,6 +988,29 @@ export class OpensteerStore {
           ...(reason === "narrowed" || !run.lineageTask ? { keepQueueRunning: true } : {}),
         }),
       );
+    await attempt(async () => {
+      const ending =
+        reason === "disconnect"
+          ? work.sessions
+          : await sessionsUsingWithdrawn(this.#database, userId, connectionId, work.sessions);
+      if (!ending.length) return;
+      const cleanup = await this.#database
+        .selectFrom("agentConnections")
+        .select("cleanupReason")
+        .where("id", "=", connectionId)
+        .executeTakeFirst();
+      await endAgentSessions(this.#database, {
+        userId,
+        connectionId,
+        sessionIds: ending,
+        reason:
+          reason === "narrowed"
+            ? "narrowed"
+            : cleanup?.cleanupReason === "expired"
+              ? "expired"
+              : "revoked",
+      });
+    });
     return { failures };
   }
 
@@ -997,17 +1022,21 @@ export class OpensteerStore {
   async driveConnectionCleanups(): Promise<{
     readonly failures: readonly unknown[];
     readonly settled: readonly string[];
+    /** Every connection this pass stopped, settled or not. */
+    readonly processed: readonly string[];
   }> {
     await requestExpiredCleanups(this.#database);
     const failures: unknown[] = [];
     const settled: string[] = [];
+    const processed: string[] = [];
     for (const { userId, connectionId } of await openCleanups(this.#database)) {
+      processed.push(connectionId);
       failures.push(
         ...(await this.stopConnectionLineage(userId, connectionId, "disconnect")).failures,
       );
       if (await completeCleanupIfSettled(this.#database, connectionId)) settled.push(connectionId);
     }
-    return { failures, settled };
+    return { failures, settled, processed };
   }
 
   /** Each automation's origin connection, for lineage visibility. */

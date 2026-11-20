@@ -2,6 +2,7 @@ import { integrationAccessCeilingForRun } from "@opensteer/integration-core/effe
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import {
   AgentGrantSchema,
+  AgentSessionIdSchema,
   RunIdSchema,
   threadAccessModeAtMost,
   ThreadIdSchema,
@@ -130,6 +131,18 @@ async function bindingFacts(
       .executeTakeFirst();
     return row ? { threadId: row.threadId, runId, agentConnectionId: row.connectionId } : null;
   }
+  if (bindingId.startsWith("session:")) {
+    const sessionId = AgentSessionIdSchema.parse(bindingId.slice(8));
+    const row = await database
+      .selectFrom("agentSessions")
+      .select(["threadId", "connectionId", "status"])
+      .where("id", "=", sessionId)
+      .executeTakeFirst();
+    // An ended session has no authority at all.
+    return row?.status === "active"
+      ? { threadId: row.threadId, runId: null, agentConnectionId: row.connectionId }
+      : null;
+  }
   if (bindingId.startsWith("thread:")) {
     const threadId = ThreadIdSchema.parse(bindingId.slice(7));
     const row = await database
@@ -215,8 +228,11 @@ export async function admitExecution(
     throw forbidden("Task authority is no longer available");
   const thread = await ownedThread(database, facts.threadId, ownerUserId);
   const isRun = facts.runId !== null;
+  // A program's or a session's mode is its task's (and its connection's), never a Run's.
   const isProgram =
-    subject.bindingId.startsWith("trigger:") || subject.bindingId.startsWith("watch:");
+    subject.bindingId.startsWith("trigger:") ||
+    subject.bindingId.startsWith("watch:") ||
+    subject.bindingId.startsWith("session:");
   // A program's own mode is its anchor task's; another Run sharing the anchor is not its lineage.
   const run = isProgram
     ? undefined
@@ -239,7 +255,12 @@ export async function admitExecution(
   };
   if (!facts.agentConnectionId)
     return { ...execution, agentConnection: null, mode: runMode ?? thread.accessMode };
-  const connection = await liveDelegatingConnection(database, ownerUserId, facts.agentConnectionId);
+  // A session acts directly and needs no Tasks switch; delegated work needs it.
+  const connection = subject.bindingId.startsWith("session:")
+    ? await liveAgentConnection(database, ownerUserId, facts.agentConnectionId)
+    : await liveDelegatingConnection(database, ownerUserId, facts.agentConnectionId);
+  if (subject.bindingId.startsWith("session:") && !directOperationsAllowed(connection))
+    throw forbidden("This connected agent was approved before direct work.");
   return {
     ...execution,
     agentConnection: connection,

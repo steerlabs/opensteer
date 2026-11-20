@@ -72,6 +72,12 @@ a.devices-row:focus-visible {
   color: var(--muted);
 }
 
+.devices-row__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
 .devices-row__chevron {
   flex: none;
   color: var(--muted);

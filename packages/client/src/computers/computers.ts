@@ -4,7 +4,8 @@ import type { MachineSummary, RunnerDevicePlatform } from "@opensteer/protocol";
 import { formatRelativeTime } from "../host/thread-list-model.js";
 import { computerAppRows } from "../integrations/computer-apps.js";
 import { computerUseView, phoneUseView } from "../integrations/computer-use.js";
-import { isDeviceAsleep } from "./devices.js";
+import { deviceWords } from "./devices-copy.js";
+import { deviceStoppedLabel, isDeviceAsleep } from "./devices.js";
 
 /**
  * The Computers page, as every client reads it.
@@ -410,7 +411,11 @@ export function computerStatus(machine: MachineSummary, now = new Date()): Compu
       label: machine.detail ?? `Update Opensteer on ${machine.name}.`,
       tone: "waiting",
     };
-  if (machine.status === "online") return { label: "Online", tone: "online" };
+  // The person's Stop on the computer itself says more than online or offline.
+  const stopped = deviceStoppedLabel(machine, now);
+  if (stopped) return { label: stopped, tone: "waiting" };
+  if (machine.status === "online")
+    return { label: deviceWords("devices.status.online"), tone: "online" };
   if (machine.status === "pending") {
     const minutes = machine.expiresAt
       ? Math.max(0, Math.ceil((new Date(machine.expiresAt).getTime() - now.getTime()) / 60_000))
@@ -430,14 +435,18 @@ export function computerStatus(machine: MachineSummary, now = new Date()): Compu
   if (isDeviceAsleep(machine)) {
     const seen = machine.lastSeenAt ?? machine.asleepSince;
     return {
-      label: seen ? `Asleep · seen ${formatRelativeTime(seen, now)}` : "Asleep",
+      label: seen
+        ? deviceWords("devices.status.asleep", { time: formatRelativeTime(seen, now) })
+        : deviceWords("devices.status.asleepNow"),
       tone: "waiting",
     };
   }
   return {
     label: machine.lastSeenAt
-      ? `Offline · seen ${formatRelativeTime(machine.lastSeenAt, now)}`
-      : "Offline",
+      ? deviceWords("devices.status.offline", {
+          time: formatRelativeTime(machine.lastSeenAt, now),
+        })
+      : deviceWords("devices.status.offlineNow"),
     tone: "offline",
   };
 }

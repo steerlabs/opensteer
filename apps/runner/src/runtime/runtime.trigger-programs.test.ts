@@ -120,6 +120,7 @@ function runtimeFixture(input: {
     environmentId,
     harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
     harnesses: {
+      adoptRuntimeBoundary: () => undefined,
       canRunDriver: () => true,
       close: async () => undefined,
       listDrivers: () => [],

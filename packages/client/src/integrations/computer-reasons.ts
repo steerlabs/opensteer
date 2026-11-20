@@ -18,6 +18,7 @@ export type ComputerNotReady =
   | "not-connected"
   | "driver-offline"
   | "driver-asleep"
+  | "driver-stopped"
   | "locked"
   | "protected"
   | "setup-required"
@@ -59,6 +60,7 @@ export function computerReadiness(input: {
       case "not-connected":
       case "driver-offline":
       case "driver-asleep":
+      case "driver-stopped":
       case "locked":
       case "protected":
       case "access-off":
@@ -155,6 +157,7 @@ export function computerNotReadyStatus(reason: ComputerNotReady): ComputerNotRea
     case "not-connected":
     case "driver-offline":
     case "driver-asleep":
+    case "driver-stopped":
       return { label: deviceReasonLabel({ kind: reason }), tone: "away" };
     case "locked":
     case "protected":
@@ -201,6 +204,8 @@ export function computerReasonWords(
       return `The computer driving ${names.machine} is offline.`;
     case "driver-asleep":
       return `The computer driving ${names.machine} is asleep.`;
+    case "driver-stopped":
+      return `Agents are stopped on the computer driving ${names.machine}.`;
     case "setup-required":
     case "trust-required":
     case "developer-mode-required":

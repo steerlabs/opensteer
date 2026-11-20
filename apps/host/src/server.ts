@@ -388,6 +388,12 @@ export interface HostServerDependencies {
       readonly settlementSessionId: string;
       readonly response: import("@opensteer/core").RequestResponse;
     }): Promise<void>;
+    /** The person's Stop on a connected agent's own task. */
+    stopSession(input: {
+      readonly ownerUserId: import("@opensteer/core").UserId;
+      readonly threadId: import("@opensteer/core").ThreadId;
+      readonly sessionId: import("@opensteer/core").AgentSessionId;
+    }): Promise<{ readonly ended: boolean }>;
   };
   readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
@@ -1187,6 +1193,9 @@ export async function createHostServer(
           asleepSince: runner.revokedAt
             ? null
             : dependencies.runners.asleepSince(runner.id, runner.connectionGeneration),
+          agentsStoppedSince: runner.revokedAt
+            ? null
+            : dependencies.runners.agentsStoppedSince(runner.id, runner.connectionGeneration),
           connected: !!live,
           device: runner.device,
           enrollmentId: runner.enrollmentId,
@@ -1352,6 +1361,9 @@ export async function createHostServer(
             !!screenDriver &&
             screenGeneration !== undefined &&
             dependencies.runners.asleepSince(screenDriver.runnerId, screenGeneration) !== null,
+          screenStopped:
+            !!screenDriver &&
+            dependencies.runners.agentsStoppedSince(screenDriver.runnerId) !== null,
           screenStatus: dependencies.computerApps.deviceStatus(device.id),
           screenConnected:
             !!screenDriver &&
@@ -1947,6 +1959,19 @@ export async function createHostServer(
           ...(await threadService.interrupt({ kind: "person", userId }, command)),
           type: command.type,
         };
+      case "agent.session.stop": {
+        if (!dependencies.agentOperations)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Connected agents' direct work is unavailable on this Home.",
+          });
+        const result = await dependencies.agentOperations.stopSession({
+          ownerUserId: userId,
+          threadId: command.threadId,
+          sessionId: command.agentSessionId,
+        });
+        return { ended: result.ended, type: command.type };
+      }
 
       case "request.respond": {
         const expectedRevision = command.expectedRevision;
@@ -1968,6 +1993,16 @@ export async function createHostServer(
             response: command.response,
           };
           await (async (): Promise<void> => {
+            // A connected agent's direct operation: the answer settles it, with no Runner.
+            if (pending.originatingAgentSessionId) {
+              if (!dependencies.agentOperations)
+                throw new OpensteerError({
+                  code: "conflict",
+                  message: "Connected agents' direct work is unavailable on this Home.",
+                });
+              await dependencies.agentOperations.respond(input);
+              return;
+            }
             switch (pending.kind) {
               case "plugin.account":
               case "plugin.approval":
@@ -3086,7 +3121,6 @@ export function advertisedCapabilities(
     "thread-titles-v1",
     "message-origin-v1",
     "task-marks-v1",
-    "agent-grants-v1",
     "task-family-v1",
     "snapshot-messages-omit-v1",
     "history-turns-v1",

@@ -56,7 +56,8 @@ export function agentToolFailure(error: unknown, access: AgentToolAccess): Agent
     const device =
       error.reason === "device-access-off" ||
       error.reason === "device-offline" ||
-      error.reason === "device-asleep"
+      error.reason === "device-asleep" ||
+      error.reason === "device-stopped"
         ? DeviceRefusalContextSchema.safeParse(error.details).data
         : undefined;
     return {

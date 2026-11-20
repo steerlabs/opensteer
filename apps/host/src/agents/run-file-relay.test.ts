@@ -11,7 +11,6 @@ import {
   runFileTransferPath,
 } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HarnessSignInBrowser } from "../identity/harness-sign-in-browser.js";
 import { signHostDiscovery } from "../identity/host-keys.js";
 import { createHostServer } from "../server.js";
 import { hostServerTestDependencies } from "../server/host-server-test-harness.js";
@@ -120,9 +119,6 @@ describe("the transfer route", () => {
   });
 
   async function serve(relay: RunFileRelay): Promise<string> {
-    const signIn = vi
-      .spyOn(HarnessSignInBrowser.prototype, "follow")
-      .mockReturnValue(() => undefined);
     const app = await createHostServer(
       hostServerTestDependencies({
         discovery: signHostDiscovery(generateKeyPairSync("ed25519"), {
@@ -134,7 +130,7 @@ describe("the transfer route", () => {
         }),
         runFiles: relay,
       }),
-    ).finally(() => signIn.mockRestore());
+    );
     closing.push(() => app.close());
     return app.listen({ host: "127.0.0.1", port: 0 });
   }

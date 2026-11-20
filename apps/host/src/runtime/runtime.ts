@@ -43,6 +43,7 @@ import {
   canReadTab,
 } from "../tabs/tab-authority.js";
 import { TabToolHandlers } from "../mcp/handlers/tabs.js";
+import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
 import { createTranscriptFileServices } from "../threads/transcript-files.js";
 import { TranscriptFileAccess } from "../threads/transcript-file-access.js";
 import {
@@ -90,6 +91,7 @@ import { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
 import { HarnessCatalogReconciliationOwner } from "../agents/harness-catalogs.js";
 import { ThreadService } from "../threads/thread-service.js";
 import { ConnectionOAuth, connectionCommandEffects } from "../mcp/connections/index.js";
+import { AgentDirectoryCache } from "../mcp/connections/agent-directory.js";
 import { AgentConnectionStore, recoverAssignmentResultWaits } from "@opensteer/database";
 import { createHmac } from "node:crypto";
 import { withFolderPluginPackage } from "../local-servers/folder-plugin-package.js";
@@ -697,6 +699,7 @@ export async function createHostRuntime(
     };
     let react = (_reaction: PersonalCommitReaction): void => undefined;
     let wakeExecutionCoordinator = (): void => undefined;
+    let wakeEnvironmentDispatch = (_environmentId: EnvironmentId): void => undefined;
     let syncHead = "0";
     const reportMutationFailure = (error: unknown) =>
       console.warn("Personal mutation follow-up failed", {
@@ -758,6 +761,9 @@ export async function createHostRuntime(
       store: new AgentConnectionStore(database),
       signingKey: keys.privateKey,
       verificationKey: keys.publicKey,
+      ...agentDirectoryFor(
+        config.personalAccountIssuer ?? config.account?.issuer ?? config.managedHome?.accountOrigin,
+      ),
     });
     const triggerStore = new TriggerStore(database);
     const accountDirectoryStore = new AccountDirectoryStore(database);
@@ -957,7 +963,10 @@ export async function createHostRuntime(
           binding.role === "self"
             ? runners.isRunnerConnected(binding.runnerId)
             : computerApps.attached(deviceId),
-          { asleep: runners.isRunnerAsleep(binding.runnerId) },
+          {
+            asleep: runners.isRunnerAsleep(binding.runnerId),
+            stopped: runners.agentsStoppedSince(binding.runnerId) !== null,
+          },
         );
       },
       onDeviceInputWithdrawn: (deviceId) => displayStreams?.withdrawOwnerInput(deviceId),
@@ -978,7 +987,10 @@ export async function createHostRuntime(
           await store.requireSelfDeviceId(runnerId),
           "apps",
           runners.isRunnerConnected(runnerId),
-          { asleep: runners.isRunnerAsleep(runnerId) },
+          {
+            asleep: runners.isRunnerAsleep(runnerId),
+            stopped: runners.agentsStoppedSince(runnerId) !== null,
+          },
         ),
       packageSource: (serverId, runnerId, launch) =>
         pluginPackages?.computerSource(serverId, runnerId, launch),
@@ -1085,9 +1097,10 @@ export async function createHostRuntime(
                           ? {
                               state: "unavailable" as const,
                               reason: {
-                                kind:
-                                  screenGeneration !== undefined &&
-                                  runnerRegistry?.asleepSince(screen.runnerId, screenGeneration)
+                                kind: runnerRegistry?.agentsStoppedSince(screen.runnerId)
+                                  ? ("driver-stopped" as const)
+                                  : screenGeneration !== undefined &&
+                                      runnerRegistry?.asleepSince(screen.runnerId, screenGeneration)
                                     ? ("driver-asleep" as const)
                                     : ("driver-offline" as const),
                               },
@@ -1205,7 +1218,10 @@ export async function createHostRuntime(
           await store.requireSelfDeviceId(runnerId),
           "browser",
           runners.isRunnerConnected(runnerId),
-          { asleep: runners.isRunnerAsleep(runnerId) },
+          {
+            asleep: runners.isRunnerAsleep(runnerId),
+            stopped: runners.agentsStoppedSince(runnerId) !== null,
+          },
         ),
       requireAgentVisibility: async (runnerId) =>
         requireDeviceAccess(database, await store.requireSelfDeviceId(runnerId), "browser", true),
@@ -2186,6 +2202,14 @@ export async function createHostRuntime(
           auxiliaryModuleOwners[stream.fence.module](stream.identity.runnerId, reason);
         },
         onModuleReadiness: async () => runnerChanged(true),
+        // The person stopped or resumed agents on that computer: its Device
+        // and tasks say so at once, and on resume what it held starts now.
+        onAgentWork: (identity, stoppedSince) => {
+          void runnerChanged(true);
+          if (stoppedSince === null)
+            for (const environmentId of identity.environmentIds)
+              wakeEnvironmentDispatch(environmentId);
+        },
         onShellFullDiskAccess: async (identity, value) => {
           const changed = await store.setRunnerShellFullDiskAccess(
             identity.runnerId,
@@ -2755,6 +2779,7 @@ export async function createHostRuntime(
     // Registration is the earliest proof that queued execution can make
     // progress. The hook is profile-neutral and changes only dispatch latency.
     wakeExecutionCoordinator = () => coordinator.wake();
+    wakeEnvironmentDispatch = (environmentId) => coordinator.wakeEnvironment(environmentId);
     dispatchingRunIds = () => coordinator.dispatchingRunIds();
     // Commands run concurrently across Threads, and a few at a time so the
     // database pool keeps room for Runner events, dispatch and reads.
@@ -3104,6 +3129,13 @@ export async function createHostRuntime(
       accountLinked: (input) => pluginTools.accountLinked(input),
     });
     void pluginService.start().catch(() => undefined);
+    // An external agent's direct work: sessions, operations and the person's answers to them.
+    let reportAgentSessionError: (error: unknown) => void = () => {};
+    const agentSessions = new AgentSessionService({
+      store,
+      closeBinding: (bindingId, reason) => browser.closeStandardCdpForBinding(bindingId, reason),
+      onError: (error) => reportAgentSessionError(error),
+    });
     const agentTools = new OpensteerMcpService({
       pluginExecutions,
       teamsAvailable: async () =>
@@ -3137,7 +3169,13 @@ export async function createHostRuntime(
         plugins: pluginTools,
         localServers: localServerRegistry,
         apps,
-        tabs: new TabToolHandlers(tabs),
+        tabs: new TabToolHandlers(
+          tabs,
+          agentSessions,
+          async (caller, profileId) =>
+            (await browser.listProfiles(caller.userId)).find(({ id }) => id === profileId)?.name ??
+            null,
+        ),
         product: productHandlers,
         devices: deviceTools,
         triggers: new TriggerToolHandlers(triggers, store),
@@ -3293,12 +3331,15 @@ export async function createHostRuntime(
       },
       onFailure: (error, connectionId) =>
         app.log.warn({ err: error, connectionId }, "A connected agent's work did not stop"),
+      afterStop: (connectionId, reason) =>
+        agentSessions.closeConnection(connectionId, reason === "disconnect"),
     });
     const driveConnectionCleanups = connectionEffects.driveCleanups;
     const app = await createHostServer(
       {
         connections,
         connectionEffects,
+        agentOperations: agentSessions,
         passkeys: config.passkeys === true,
         ...(notificationPreviews ? { notificationPreviews } : {}),
         ...(accountAdoptionControlClient
@@ -3412,10 +3453,18 @@ export async function createHostRuntime(
     }, 30_000);
     connectionCleanupTimer.unref();
     app.addHook("onClose", async () => clearInterval(connectionCleanupTimer));
-    // A cleanup interrupted by the last shutdown finishes now.
-    void driveConnectionCleanups().catch((error: unknown) =>
-      app.log.warn({ err: error }, "Connected agent cleanup failed"),
-    );
+    reportAgentSessionError = (error) =>
+      app.log.warn({ err: error }, "A connected agent's direct work failed to settle");
+    app.addHook("onClose", async () => {
+      agentSessions.stop();
+      await agentSessions.drain();
+    });
+    // Work handed off before this process can no longer report: its outcome is unknown. Then a
+    // cleanup interrupted by the last shutdown finishes, recording it as uncertain.
+    void agentSessions
+      .start()
+      .then(() => driveConnectionCleanups())
+      .catch((error: unknown) => app.log.warn({ err: error }, "Connected agent cleanup failed"));
     reportDispatchError = (error, commandId) =>
       app.log.warn({ err: error, commandId }, "Runner command dispatch failed");
     reportContinuationError = (error) => app.log.error({ err: error }, "Continuation failed");
@@ -3808,6 +3857,19 @@ export function hostAppRealOrigins(
   exposure: import("@opensteer/core").HostExposure,
 ): boolean {
   return hostExposurePolicy(shape, exposure).personalRemoteAccess;
+}
+
+/**
+ * The verified agent directory, read only from the Home's own Account origin. A Home with no
+ * Account, or one that is not a public HTTPS origin, shows every agent as unverified.
+ */
+function agentDirectoryFor(issuer: URL | undefined): { directory?: AgentDirectoryCache } {
+  if (!issuer || issuer.protocol !== "https:") return {};
+  try {
+    return { directory: new AgentDirectoryCache({ issuer: new URL(issuer.origin) }) };
+  } catch {
+    return {};
+  }
 }
 
 function requirePluginRun(caller: import("../mcp/agent-caller.js").AgentCaller) {

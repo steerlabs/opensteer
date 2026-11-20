@@ -8,7 +8,8 @@ export const agentSessionsMigrationName = "0043_agent_sessions";
  * that agent, the durable receipt of every mediated operation, and Requests that originate from a
  * session. A session task keeps the ordinary placement columns: it is placed on the hosting
  * environment with a reserved, disabled engine (see `agent-session-store.ts`), so every thread
- * still has a placement and no native path can start a Run for it.
+ * still has a placement and no native path can start a Run for it. The engine sign-in profile is
+ * marked so no grant can name it, and a connection keeps who the person was shown at consent.
  */
 export async function applyAgentSessions(database: Kysely<DatabaseSchema>) {
   await sql`
@@ -72,6 +73,11 @@ export async function applyAgentSessions(database: Kysely<DatabaseSchema>) {
     );
     create unique index requests_agent_session_call_identity on requests(originating_agent_session_id, call_id)
       where originating_agent_session_id is not null;
+    create unique index harness_instances_external_agent on harness_instances(environment_id)
+      where driver_kind = 'external-agent';
+    alter table browser_profiles add column purpose text not null default 'person'
+      check (purpose in ('person', 'engine-sign-in'));
+    alter table agent_connections add column identity_at_consent jsonb;
     alter table plugin_executions add column agent_session_id text references agent_sessions(id);
     alter table plugin_executions drop constraint plugin_executions_check;
     alter table plugin_executions add constraint plugin_executions_origin_check

@@ -27,6 +27,7 @@ export interface HarnessSignInBrowserDependencies {
       readonly home: { readonly runnerId: RunnerId } | null;
       readonly id: BrowserProfileId;
       readonly name: string;
+      readonly purpose?: "person" | "engine-sign-in";
     }[]
   >;
   readonly createProfile: (input: {
@@ -34,6 +35,8 @@ export interface HarnessSignInBrowserDependencies {
     readonly idempotencyKey: string;
     readonly name: string;
     readonly ownerId: UserId;
+    /** Marks it so no connected agent's grant can name it. */
+    readonly purpose: "engine-sign-in";
   }) => Promise<{ readonly id: BrowserProfileId }>;
   readonly openTab: (
     ownerId: UserId,
@@ -193,7 +196,8 @@ export class HarnessSignInBrowser {
       const profiles = await this.#dependencies.listProfiles(ownerId);
       const existing = profiles.find(
         (profile) =>
-          profile.name === harnessSignInProfileName && profile.home?.runnerId === runnerId,
+          (profile.purpose === "engine-sign-in" || profile.name === harnessSignInProfileName) &&
+          profile.home?.runnerId === runnerId,
       );
       if (existing) return existing.id;
       const profile = await this.#dependencies.createProfile({
@@ -201,6 +205,7 @@ export class HarnessSignInBrowser {
         idempotencyKey: `harness-sign-in-profile:${randomUUID()}`,
         name: harnessSignInProfileName,
         ownerId,
+        purpose: "engine-sign-in",
       });
       return profile.id;
     })();

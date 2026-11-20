@@ -1,3 +1,4 @@
+import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
 import { RealtimeHub } from "@opensteer/orchestration";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { ResourceRevisions } from "../runtime/personal-resource-revisions.js";
@@ -63,7 +64,15 @@ export function hostServerTestDependencies(
     egress: inert(),
     execution: inert(),
     teamLinks: inert(),
-    harnessAuthenticationCoordinator: inert(),
+    harnessAuthenticationCoordinator: new HarnessAuthenticationCoordinator({
+      harnesses: { getHarnessInstance: async () => null },
+      runners: {
+        isAvailable: () => false,
+        manageHarnessAuthentication: async () => {
+          throw new Error("No Runner is connected in this fixture");
+        },
+      },
+    }),
     integrations: {
       access: inert(),
       authAttempts: inert(),

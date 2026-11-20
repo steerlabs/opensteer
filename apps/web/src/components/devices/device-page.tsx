@@ -68,6 +68,7 @@ import { IphoneWifiRow } from "./iphone-wifi-row.js";
 import { computerAppIdFromHash, devicesRoute } from "./device-routes.js";
 import { useThisDevice } from "./this-device.js";
 import { HomeCloudComputerRow } from "../settings/sections/cloud-computer.js";
+import { HomeFacts } from "./home-facts.js";
 
 export function DevicePage() {
   const { deviceId } = useParams();
@@ -695,6 +696,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
 
         {home ? (
           <>
+            <HomeFacts machine={machine} />
             {/* A networked Home is reached at its own address; only a loopback one has Remote access. */}
             {snapshot.identityConfig?.exposure === "loopback" ? (
               <div id="use-from-anywhere">

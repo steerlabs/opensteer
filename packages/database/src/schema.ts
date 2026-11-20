@@ -1410,6 +1410,8 @@ export interface BrowserProfileTable {
   storageBindingId: Generated<string | null>;
   storageEngine: Generated<BrowserEngine | null>;
   initialized: Generated<boolean>;
+  /** `engine-sign-in`: the profile an AI engine signs in through; no grant may name it. */
+  purpose: Generated<"person" | "engine-sign-in">;
   archivedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
@@ -1942,6 +1944,8 @@ export interface AgentConnectionTable {
   cleanupCompletedAt: Generated<Date | null>;
   /** The person removed this revoked connection from their list. */
   removedAt: Generated<Date | null>;
+  /** Who the person was shown at consent (`AgentConnectionIdentityAtConsent`); null before 0043. */
+  identityAtConsent: Generated<Readonly<Record<string, unknown>> | null>;
 }
 
 export interface AgentSessionTable {

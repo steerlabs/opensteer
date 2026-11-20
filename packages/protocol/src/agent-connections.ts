@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentConnectionIdentityAtConsentSchema } from "@opensteer/control-plane-protocol";
 import {
   AgentGrantSchema,
   ThreadAccessModeSchema,
@@ -23,6 +24,31 @@ export const AgentConnectionStateSchema = z.enum([
   "stopped",
 ]);
 export type AgentConnectionState = z.infer<typeof AgentConnectionStateSchema>;
+
+/**
+ * How the Home words who asked, from what it could prove at consent: a verified embedder via a
+ * verified platform, a verified platform, or the name the client gave itself.
+ */
+export const AgentConnectionIdentityPresentationSchema = z.object({
+  evidenceKind: z.enum(["platform-and-embedder", "platform", "unverified"]),
+  verified: z.boolean(),
+  selfAsserted: z.boolean(),
+  heading: z.string().min(1).max(300),
+  detail: z.string().max(500),
+  origins: z
+    .array(
+      z.object({
+        role: z.enum(["embedder", "platform", "redirect"]),
+        label: z.string().min(1).max(200),
+        origin: z.string().max(2048),
+      }),
+    )
+    .max(4),
+  warning: z.string().max(200),
+});
+export type AgentConnectionIdentityPresentation = z.infer<
+  typeof AgentConnectionIdentityPresentationSchema
+>;
 
 export const AgentConnectionSchema = z.object({
   id: AgentConnectionIdSchema,
@@ -57,6 +83,9 @@ export const AgentConnectionSchema = z.object({
     .nullable()
     .optional(),
   revokedAt: z.iso.datetime({ offset: true }).nullable().optional(),
+  /** What the Home could prove about who asked, recorded at consent; null before it was kept. */
+  identityAtConsent: AgentConnectionIdentityAtConsentSchema.nullable().optional(),
+  identity: AgentConnectionIdentityPresentationSchema.optional(),
 
   createdAt: z.iso.datetime({ offset: true }),
   lastUsedAt: z.iso.datetime({ offset: true }).nullable(),
@@ -64,13 +93,21 @@ export const AgentConnectionSchema = z.object({
 });
 export type AgentConnection = z.infer<typeof AgentConnectionSchema>;
 export const AgentConnectionConsentSchema = z.object({
+  grantsAvailable: z.literal(true).optional(),
   requestId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
   clientName: z.string().min(1).max(100),
   redirectUri: z.url(),
   resource: z.url(),
   expiresAt: z.iso.datetime({ offset: true }),
+  identityAtConsent: AgentConnectionIdentityAtConsentSchema.optional(),
+  identity: AgentConnectionIdentityPresentationSchema.optional(),
 });
 export type AgentConnectionConsent = z.infer<typeof AgentConnectionConsentSchema>;
+/** Why a consent read is refused (`OpensteerError.reason`): answered and expired read differently. */
+export const agentConnectionConsentRefusals = {
+  answered: "consent-answered",
+  expired: "consent-expired",
+} as const;
 
 export const AgentConnectionAuthorizationTargetSchema = z.strictObject({
   deploymentId: DeploymentIdSchema,

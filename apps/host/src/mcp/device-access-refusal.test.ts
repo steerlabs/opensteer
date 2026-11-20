@@ -62,3 +62,15 @@ it("distinguishes device-asleep refusals with computer_asleep and calm wake guid
   expect(result.content[0]!.text).toMatch(/wakes/iu);
   expect(result.content[0]!.text).toMatch(/do not request access/iu);
 });
+
+it("tells an agent a Device whose person stopped agents is stopped, not offline", () => {
+  const machineId = createId("runner");
+  const error = new DeviceAccessRefusal("device-stopped", DeviceIdSchema.parse(machineId), "files");
+  const result = agentToolFailureResult(agentToolFailure(error, "write"));
+  expect(result.structuredContent.error).toEqual({
+    code: "computer_stopped",
+    message: error.message,
+    next: expect.stringContaining("wait until the person resumes agents there"),
+  });
+  expect(error.message).toMatch(/Agents are stopped on this Device by the person/u);
+});
