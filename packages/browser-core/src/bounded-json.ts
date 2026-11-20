@@ -17,7 +17,12 @@ export function boundedJsonSize(value: unknown, budget: JsonSizeBudget): number 
       else if (code < 32) bytes -= 6;
       else if (code < 128) bytes--;
       else if (code < 2048) bytes -= 2;
-      else if (code >= 0xd800 && code <= 0xdbff && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) {
+      else if (
+        code >= 0xd800 &&
+        code <= 0xdbff &&
+        text.charCodeAt(i + 1) >= 0xdc00 &&
+        text.charCodeAt(i + 1) <= 0xdfff
+      ) {
         i++;
         bytes -= 4;
       } else bytes -= code >= 0xd800 && code <= 0xdfff ? 6 : 3;
@@ -29,7 +34,10 @@ export function boundedJsonSize(value: unknown, budget: JsonSizeBudget): number 
     if (--entries < 0 || bytes < 0) return false;
     if (typeof item === "string") return stringSize(item);
     if (item === null || typeof item === "boolean" || typeof item === "number") {
-      bytes -= item === null || (typeof item === "number" && !Number.isFinite(item)) ? 4 : String(item).length;
+      bytes -=
+        item === null || (typeof item === "number" && !Number.isFinite(item))
+          ? 4
+          : String(item).length;
       return bytes >= 0;
     }
     if (!item || typeof item !== "object" || depth >= budget.maxDepth) return false;

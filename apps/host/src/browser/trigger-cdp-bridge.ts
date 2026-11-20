@@ -240,6 +240,20 @@ async function authenticateConnection<Scope>(
   return { scope, sessionId, token };
 }
 
+const lineageSockets = new WeakMap<CdpRouteOptions<unknown>["browser"], Map<WebSocket, string>>();
+
+export async function closeLegacyCdpForConnection(
+  browser: BrowserService,
+  connectionId: string,
+  resolveLineage: OpensteerStore["bindingAgentConnectionId"],
+): Promise<void> {
+  await Promise.all(
+    [...(lineageSockets.get(browser) ?? [])].map(async ([socket, bindingId]) => {
+      if (await resolveLineage(bindingId) === connectionId) socket.terminate();
+    }),
+  );
+}
+
 function registerCdpRoute<Scope>(app: FastifyInstance, options: CdpRouteOptions<Scope>): void {
   const connections = new WeakMap<
     object,
@@ -256,6 +270,14 @@ function registerCdpRoute<Scope>(app: FastifyInstance, options: CdpRouteOptions<
     (socket, request) => {
       const connection = connections.get(request.raw);
       if (!connection) return socket.close(1008, "Authentication required");
+      let sockets = lineageSockets.get(options.browser);
+      if (!sockets) {
+        sockets = new Map();
+        lineageSockets.set(options.browser, sockets);
+      }
+      const active = sockets;
+      active.set(socket, options.authority(connection.scope).agentBindingId);
+      socket.once("close", () => active.delete(socket));
       attachCdpSocket(socket, options, connection);
     },
   );

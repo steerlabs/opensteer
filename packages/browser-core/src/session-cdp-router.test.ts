@@ -3,6 +3,7 @@ import {
   SessionCdpRouter,
   type BrowserCdpBackend,
   type CdpChannel,
+  type CdpCommand,
   type CdpEvent,
   type CdpParameters,
 } from "./session-cdp-router.js";
@@ -100,6 +101,103 @@ class FakeBackend implements BrowserCdpBackend {
 }
 
 describe("SessionCdpRouter", () => {
+  it("scopes browser scripts to their root, descendants and private CDP channels", async () => {
+    const backend = new FakeBackend();
+    const root = { targetId: "first", type: "page" };
+    const other = { targetId: "second", type: "page" };
+    const popup = { targetId: "popup", type: "page", openerId: root.targetId };
+    const siblingPopup = { targetId: "sibling-popup", type: "page", openerId: other.targetId };
+    backend.targetInfos = [root, other, popup, siblingPopup];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("session", root.targetId, async () => true, "/files/a");
+    router.claimTarget("session", other.targetId);
+    const first = vi.fn<(event: CdpEvent) => void>();
+    const second = vi.fn<(event: CdpEvent) => void>();
+    const budget = { maxBytes: 1024, maxDepth: 8, maxEntries: 64 };
+    router.openScriptAttachment("session", "first-script", root.targetId, budget, first);
+    router.openScriptAttachment("session", "second-script", other.targetId, budget, second);
+    const send = (scriptAttachmentId: string, command: CdpCommand) =>
+      router.send("session", { ...command, scriptAttachmentId });
+    const attach = (id: string, targetId: string) =>
+      send(id, { method: "Target.attachToTarget", parameters: { targetId } });
+
+    const otherChannel = await attach("second-script", other.targetId);
+    await expect(attach("first-script", other.targetId)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await expect(
+      send("first-script", {
+        method: "Runtime.evaluate",
+        ...(otherChannel as { sessionId: string }),
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    backend.channels.get(other.targetId)!.emit("Log.entryAdded", { text: "second" });
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledWith(expect.objectContaining({ method: "Log.entryAdded" }));
+    second.mockClear();
+
+    router.claimTarget("session", popup.targetId);
+    backend.emit("Target.targetCreated", { targetInfo: popup });
+    backend.emit("Target.targetCreated", { targetInfo: siblingPopup });
+    router.claimTarget("session", siblingPopup.targetId);
+    expect(first).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ parameters: { targetInfo: popup } }),
+    );
+    expect(second).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ parameters: { targetInfo: siblingPopup } }),
+    );
+    await expect(send("first-script", { method: "Target.getTargets" })).resolves.toEqual({
+      rootTargetId: root.targetId,
+      targetInfos: [root, popup],
+    });
+    await expect(attach("first-script", popup.targetId)).resolves.toHaveProperty("sessionId");
+    await expect(attach("first-script", siblingPopup.targetId)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await router.closeScriptAttachment("session", "first-script", Promise.resolve());
+    await expect(send("first-script", { method: "Target.getTargets" })).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(send("second-script", { method: "Target.getTargets" })).resolves.toHaveProperty(
+      "rootTargetId",
+      other.targetId,
+    );
+    await router.close();
+  });
+
+  it("rejects oversized script replies and drops events before delivering them", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("session", "root", async () => true, "/files/a");
+    const event = vi.fn<(event: CdpEvent) => void>();
+    const budget = { maxBytes: 4096, maxDepth: 6, maxEntries: 32 };
+    router.openScriptAttachment("session", "script", "root", budget, event);
+    const channel = (await router.send("session", {
+      method: "Target.attachToTarget",
+      parameters: { targetId: "root" },
+      scriptAttachmentId: "script",
+    })) as { sessionId: string };
+    const page = backend.channels.get("root")!;
+    const deep = { a: { b: { c: { d: { e: { f: { g: 1 } } } } } } };
+    const wide = { values: Array.from({ length: 32 }, () => 0) };
+    for (const result of [deep, wide]) {
+      page.results.set("Runtime.evaluate", result);
+      await expect(
+        router.send("session", {
+          method: "Runtime.evaluate",
+          sessionId: channel.sessionId,
+          scriptAttachmentId: "script",
+          replyBudget: budget,
+        }),
+      ).rejects.toMatchObject({ code: "too_large" });
+      page.emit("Log.entryAdded", result);
+    }
+    expect(event).not.toHaveBeenCalled();
+    page.emit("Log.entryAdded", { text: "fits" });
+    expect(event).toHaveBeenCalledOnce();
+    await router.close();
+  });
+
   it("opens a virtual browser root and announces only owned pages before replying", async () => {
     const backend = new FakeBackend();
     const root = { targetId: "root-a", type: "page", browserContextId: "profile" };

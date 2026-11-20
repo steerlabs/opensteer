@@ -114,6 +114,7 @@ export const hostApiScopes = {
   "connections.list": "session",
   "connections.authorization.get": "session",
   "personal.remoteAccess.get": "session",
+  "personal.accountLink.get": "session",
   "plugins.overview.get": "session",
   "devices.overview.get": "session",
   "plugins.installed.list": "session",

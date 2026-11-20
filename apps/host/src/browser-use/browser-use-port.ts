@@ -86,6 +86,8 @@ export function createBrowserUsePort({
     if (binding.backend !== "cdp")
       throw refused("conflict", "This tab does not support the Browser Harness CDP backend.");
     let target: Target | undefined;
+    let root: string | undefined;
+    const detached = new Set<string>();
     let closed = false;
     const stop = () => {
       closed = true;
@@ -106,14 +108,20 @@ export function createBrowserUsePort({
           scriptThreadId: threadId,
         },
         (event) => {
-          if (!target || closed) return;
-          if (
-            (event.method === "Target.detachedFromTarget" &&
-              event.parameters.sessionId === target.sessionId) ||
-            (event.method === "Target.targetDestroyed" &&
-              event.parameters.targetId === target.targetId)
-          ) {
-            target.relay.close();
+          if (closed) return;
+          const destroyed = event.method === "Target.targetDestroyed" && event.parameters.targetId;
+          const endedSession = event.method === "Target.detachedFromTarget" && event.parameters.sessionId;
+          if ((root && destroyed === root) || (target && endedSession === target.sessionId)) {
+            stop();
+            relay?.close();
+            return;
+          }
+          if (!target) {
+            const id = destroyed || endedSession;
+            if (typeof id === "string") {
+              if (detached.size >= 32) stop();
+              else detached.add(id);
+            }
             return;
           }
           target.listen?.(event);
@@ -128,6 +136,8 @@ export function createBrowserUsePort({
       ).result;
       checkReply(pageReply, call);
       const page = resumed.parse(pageReply);
+      root = page.targetId;
+      if (closed || detached.has(root)) throw ended();
       const channelReply = await (
         await relay.dispatch(
           {
@@ -139,7 +149,7 @@ export function createBrowserUsePort({
       ).result;
       checkReply(channelReply, call);
       const channel = attached.parse(channelReply);
-      if (closed) throw ended();
+      if (closed || detached.has(channel.sessionId)) throw ended();
       const fields = browserTargetSchema.parse({ ...page, ...channel, tabId: binding.tabId });
       checkReply({ ...fields, handle: "0000000000000000" }, call);
       target = { ...fields, relay, port, closed };
@@ -215,6 +225,12 @@ export function createBrowserUsePort({
         translate(error);
       }
     },
+    release(target) {
+      delete target.listen;
+      delete target.onEnd;
+      target.closed = true;
+      target.relay.close();
+    },
     subscribe(target, onEvent, onEnd, budget) {
       if (target.closed) {
         onEnd();
@@ -233,10 +249,7 @@ export function createBrowserUsePort({
           ...(sessionId ? { sessionId } : {}),
         });
       };
-      return () => {
-        delete target.onEnd;
-        target.relay.close();
-      };
+      return () => port.release?.(target);
     },
   };
   return port;

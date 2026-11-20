@@ -6,10 +6,7 @@ import type { Kysely } from "kysely";
 export type DeviceCapability = "browser" | "apps" | "files";
 export class DeviceAccessRefusal extends OpensteerError {
   override readonly reason:
-    | "device-access-off"
-    | "device-asleep"
-    | "device-offline"
-    | "device-stopped";
+    "device-access-off" | "device-asleep" | "device-offline" | "device-stopped";
   readonly machineId: DeviceId;
   readonly capability: DeviceCapability;
   constructor(
@@ -27,10 +24,10 @@ export class DeviceAccessRefusal extends OpensteerError {
         reason === "device-stopped"
           ? "Agents are stopped on this Device by the person, from the Device itself. Wait until they resume them; do not request access."
           : reason === "device-asleep"
-          ? "Device is asleep. Wait until it wakes; do not request access."
-          : reason === "device-offline"
-            ? "Device is offline. Do not request access."
-            : `${capability} is off. Use computer_access_request if needed.`,
+            ? "Device is asleep. Wait until it wakes; do not request access."
+            : reason === "device-offline"
+              ? "Device is offline. Do not request access."
+              : `${capability} is off. Use computer_access_request if needed.`,
       details: { machineId, capability },
     });
     this.reason = reason;

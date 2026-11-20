@@ -17,8 +17,6 @@ import type {
 /** The profile engine sign-ins open in, so a provider's cookies stay out of every other one. */
 export const harnessSignInProfileName = "AI engine sign-in";
 
-const defaultLifetimeMs = 15 * 60_000;
-
 export interface HarnessSignInBrowserDependencies {
   /** Whether the browser on this computer can open a page now. */
   readonly browserAvailable: (runnerId: RunnerId) => boolean;
@@ -47,8 +45,6 @@ export interface HarnessSignInBrowserDependencies {
   readonly hasTab: (ownerId: UserId, tabId: TabId) => Promise<boolean>;
   readonly closeTab: (ownerId: UserId, tabId: TabId, idempotencyKey: string) => Promise<void>;
   readonly onError: (error: unknown) => void;
-  /** Closes a tab nobody settled; matches the longest a sign-in attempt lives. */
-  readonly lifetimeMs?: number;
 }
 
 interface OpenSignIn {
@@ -67,14 +63,11 @@ interface OpenSignIn {
  */
 export class HarnessSignInBrowser {
   readonly #dependencies: HarnessSignInBrowserDependencies;
-  readonly #lifetimeMs: number;
   readonly #open = new Map<string, OpenSignIn>();
-  readonly #generations = new Map<string, number>();
   readonly #profiles = new Map<string, Promise<BrowserProfileId>>();
 
   constructor(dependencies: HarnessSignInBrowserDependencies) {
     this.#dependencies = dependencies;
-    this.#lifetimeMs = dependencies.lifetimeMs ?? defaultLifetimeMs;
   }
 
   /** Follows the coordinator, so every way an attempt ends closes its tab. */
@@ -85,7 +78,7 @@ export class HarnessSignInBrowser {
   }
 
   async browse(input: {
-    readonly coordinator: Pick<HarnessAuthenticationCoordinator, "isLive" | "read">;
+    readonly coordinator: Pick<HarnessAuthenticationCoordinator, "trackAttempt" | "read">;
     readonly ownerId: UserId;
     readonly runnerId: RunnerId | undefined;
     readonly signal: AbortSignal;
@@ -93,6 +86,7 @@ export class HarnessSignInBrowser {
   }): Promise<TabId> {
     const environmentId = input.target.environment.id;
     const harnessInstanceId = input.target.harness.id;
+    const remaining = input.coordinator.trackAttempt(environmentId, harnessInstanceId);
     const envelope = await input.coordinator.read(input.target, input.signal);
     if (envelope.environmentStatus !== "connected" || input.runnerId === undefined)
       throw new OpensteerError({
@@ -101,14 +95,7 @@ export class HarnessSignInBrowser {
         retryable: true,
       });
     const authentication = envelope.authentication;
-    if (
-      authentication.status !== "pending" ||
-      !input.coordinator.isLive(environmentId, harnessInstanceId)
-    )
-      throw new OpensteerError({
-        code: "conflict",
-        message: "This sign-in has ended. Start it again.",
-      });
+    if (authentication.status !== "pending" || remaining() === 0) throw signInEnded();
     if (
       authentication.challenge.kind !== "browser-code" ||
       !harnessChallengeReturnsToLoopback(authentication.challenge)
@@ -122,33 +109,38 @@ export class HarnessSignInBrowser {
       input.ownerId,
       input.runnerId,
       authentication.challenge.authorizationUrl,
+      remaining,
     );
   }
 
   /** Closes what this attempt opened. Safe to call for an attempt that opened nothing. */
   async settle(environmentId: EnvironmentId, harnessInstanceId: HarnessInstanceId): Promise<void> {
     const key = this.#key(environmentId, harnessInstanceId);
-    this.#generations.set(key, (this.#generations.get(key) ?? 0) + 1);
     const open = this.#open.get(key);
-    if (!open) {
-      this.#generations.delete(key);
-      return;
-    }
+    if (!open) return;
     this.#open.delete(key);
-    this.#generations.delete(key);
     clearTimeout(open.timer);
     await this.#close(open.ownerId, open.tabId);
   }
 
-  async #openTab(key: string, ownerId: UserId, runnerId: RunnerId, url: string): Promise<TabId> {
+  async #openTab(
+    key: string,
+    ownerId: UserId,
+    runnerId: RunnerId,
+    url: string,
+    remaining: () => number,
+  ): Promise<TabId> {
     const existing = this.#open.get(key);
     if (
       existing?.ownerId === ownerId &&
       existing.url === url &&
       (await this.#dependencies.hasTab(ownerId, existing.tabId))
-    )
+    ) {
+      if (remaining() === 0) throw signInEnded();
       return existing.tabId;
-    if (existing) {
+    }
+    if (remaining() === 0) throw signInEnded();
+    if (existing && this.#open.get(key) === existing) {
       this.#open.delete(key);
       clearTimeout(existing.timer);
       await this.#close(existing.ownerId, existing.tabId);
@@ -160,28 +152,25 @@ export class HarnessSignInBrowser {
         message:
           "The computer this AI engine runs on has no browser to finish this sign-in in. Open the sign-in page on this device instead.",
       });
-    const generation = this.#generations.get(key) ?? 0;
     const profileId = await this.#profile(ownerId, runnerId);
+    if (remaining() === 0) throw signInEnded();
     const tabId = await this.#dependencies.openTab(
       ownerId,
       { kind: "page", profileId, url },
       `harness-sign-in:${randomUUID()}`,
     );
     // The attempt ended, or another open replaced this one, while the page opened.
-    if ((this.#generations.get(key) ?? 0) !== generation || this.#open.has(key)) {
+    const timeout = remaining();
+    if (timeout === 0 || this.#open.has(key)) {
       await this.#close(ownerId, tabId);
-      throw new OpensteerError({
-        code: "conflict",
-        message: "This sign-in has ended. Start it again.",
-      });
+      throw signInEnded();
     }
     const timer = setTimeout(() => {
       const open = this.#open.get(key);
       if (open?.tabId !== tabId) return;
       this.#open.delete(key);
-      this.#generations.delete(key);
       void this.#close(ownerId, tabId);
-    }, this.#lifetimeMs);
+    }, timeout);
     timer.unref?.();
     this.#open.set(key, { ownerId, tabId, timer, url });
     return tabId;
@@ -195,9 +184,7 @@ export class HarnessSignInBrowser {
     const created = (async () => {
       const profiles = await this.#dependencies.listProfiles(ownerId);
       const existing = profiles.find(
-        (profile) =>
-          (profile.purpose === "engine-sign-in" || profile.name === harnessSignInProfileName) &&
-          profile.home?.runnerId === runnerId,
+        (profile) => profile.purpose === "engine-sign-in" && profile.home?.runnerId === runnerId,
       );
       if (existing) return existing.id;
       const profile = await this.#dependencies.createProfile({
@@ -230,4 +217,11 @@ export class HarnessSignInBrowser {
   #key(environmentId: EnvironmentId, harnessInstanceId: HarnessInstanceId): string {
     return `${environmentId}:${harnessInstanceId}`;
   }
+}
+
+function signInEnded(): OpensteerError {
+  return new OpensteerError({
+    code: "conflict",
+    message: "This sign-in has ended. Start it again.",
+  });
 }

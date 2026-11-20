@@ -162,6 +162,8 @@ interface ConnectionState {
   nextSequence: number;
 }
 
+const standardJsonBudget = { maxBytes: Infinity, maxDepth: 32, maxEntries: 16_384 };
+
 const defaultLimits: SessionCdpRouterLimits = {
   maxCommandBytes: 432 * 1_024,
   maxEventBytes: 432 * 1_024,
@@ -522,13 +524,21 @@ export class SessionCdpRouter {
     if (session.session.scripts.size >= 128)
       throw new SessionCdpRouterError("too_large", "Too many browser script attachments.");
     const state = this.#openConnection(session.session, undefined, {
-      id, root, eventBudget, closing: false, active: new Set(),
+      id,
+      root,
+      eventBudget,
+      closing: false,
+      active: new Set(),
     });
     session.session.scripts.set(id, state);
     this.#observe(state, onEvent);
   }
 
-  async closeScriptAttachment(sessionId: string, id: string, cleanup: Promise<unknown>): Promise<void> {
+  async closeScriptAttachment(
+    sessionId: string,
+    id: string,
+    cleanup: Promise<unknown>,
+  ): Promise<void> {
     const state = this.#sessions.get(sessionId)?.session.scripts.get(id);
     if (!state?.script || state.script.closing) return;
     state.script.closing = true;
@@ -597,13 +607,10 @@ export class SessionCdpRouter {
   }
 
   #assertResultSize(result: unknown, maxResultBytes: number, budget?: JsonSizeBudget): void {
-    if (
-      boundedJsonSize(result, {
-        maxBytes: Math.min(maxResultBytes, budget?.maxBytes ?? maxResultBytes),
-        maxDepth: budget?.maxDepth ?? 32,
-        maxEntries: budget?.maxEntries ?? 65_536,
-      }) === undefined
-    ) {
+    const tooLarge = budget
+      ? boundedJsonSize(result, { ...budget, maxBytes: Math.min(maxResultBytes, budget.maxBytes) }) === undefined
+      : serializedBytes(result) > maxResultBytes;
+    if (tooLarge) {
       throw new SessionCdpRouterError(
         "too_large",
         "CDP result exceeds the bounded agent transport. Query a narrower result in the page.",
@@ -809,7 +816,7 @@ export class SessionCdpRouter {
         : command.method.startsWith("Target.")
           ? await this.#sendTargetCommand(state, command)
           : await this.#backend.send(command.method, command.parameters);
-    this.#assertResultSize(result, this.#sessionLimits(state).maxResultBytes, command.replyBudget);
+    this.#assertResultSize(result, this.#sessionLimits(state).maxResultBytes, command.replyBudget ?? (state.standard ? standardJsonBudget : undefined));
     return result;
   }
 
@@ -1698,16 +1705,12 @@ export class SessionCdpRouter {
       ...(state.script ? { scriptAttachmentId: state.script.id } : {}),
       ...(sessionId ? { sessionId } : {}),
     };
-    if (
-      boundedJsonSize(event, {
-        maxBytes: Math.min(
-          this.#sessionLimits(state).maxEventBytes,
-          state.script?.eventBudget.maxBytes ?? Infinity,
-        ),
-        maxDepth: state.script?.eventBudget.maxDepth ?? 28,
-        maxEntries: state.script?.eventBudget.maxEntries ?? 16_384,
-      }) === undefined
-    ) {
+    const maxBytes = this.#sessionLimits(state).maxEventBytes;
+    const budget = state.script?.eventBudget ?? (state.standard ? standardJsonBudget : undefined);
+    const tooLarge = budget
+      ? boundedJsonSize(event, { ...budget, maxBytes: Math.min(maxBytes, budget.maxBytes) }) === undefined
+      : serializedBytes(event) > maxBytes;
+    if (tooLarge) {
       if (state.standard) {
         state.standard.onOverflow?.();
         this.#closeConnection(state);

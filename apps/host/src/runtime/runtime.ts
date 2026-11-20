@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { CommandIdSchema } from "@opensteer/core";
+import { CorrelationIdSchema } from "@opensteer/protocol";
+import { closeLegacyCdpForConnection } from "../browser/trigger-cdp-bridge.js";
 import { ChromeSharedTabs } from "../browser/chrome-shared-tabs.js";
 import { ResourceRevisions } from "./personal-resource-revisions.js";
 import { PersonalLiveText } from "./personal-live-text.js";
@@ -2372,6 +2376,11 @@ export async function createHostRuntime(
             .catch((error) => app.log.warn({ err: error }, "App state report failed"));
         },
         onDisconnect: async (identity, scope) => {
+          if (scope.reason !== "superseded" && scope.reason !== "shutdown")
+            await store.markConnectionAttemptsContactLost({
+              runnerId: identity.runnerId,
+              runnerBootId: identity.bootId,
+            });
           void apps
             ?.onRunnerDisconnected(identity.runnerId, identity.connectionId)
             .catch((error) => app.log.warn({ err: error }, "App disconnect handling failed"));
@@ -3325,9 +3334,52 @@ export async function createHostRuntime(
     // Disconnect and expiry share one durable cleanup; one pass at a time drives every open one.
     const connectionEffects = connectionCommandEffects({
       store,
-      closeLineage: (connectionId) => {
-        browser.closeStandardCdpForConnection(connectionId, "Agent connection authority ended.");
-        return agentTools.closeLineage(connectionId);
+      closeLineage: async (connectionId, minimumGrantRevision) => {
+        if (minimumGrantRevision === undefined) {
+          browser.closeStandardCdpForConnection(connectionId, "Agent connection authority ended.");
+          await closeLegacyCdpForConnection(browser, connectionId,
+            (bindingId) => store.bindingAgentConnectionId(bindingId));
+        }
+        await agentTools.closeLineage(connectionId, minimumGrantRevision);
+      },
+      stopper: {
+        async stop(attempt, cleanup) {
+          if (attempt.kind === "watch") {
+            if (attempt.environmentId) watchService?.changed(attempt.environmentId);
+            return;
+          }
+          if (attempt.kind === "plugin") {
+            await pluginExecutions?.stopConnectionExecution(attempt.id, cleanup.connectionId);
+            return;
+          }
+          if (attempt.kind !== "occurrence" && attempt.kind !== "run-attempt") return;
+          if (!attempt.environmentId || attempt.generation === null) return;
+          const identity = runners.identityForEnvironment(attempt.environmentId);
+          if (!identity || identity.runnerId !== attempt.runnerId ||
+            identity.bootId !== attempt.runnerBootId) return;
+          const hash = createHash("sha256")
+            .update(JSON.stringify([cleanup.connectionId, attempt.kind, attempt.id, attempt.generation]))
+            .digest("hex");
+          const stopId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+          const base = {
+            commandId: CommandIdSchema.parse(`cmd_${stopId}`),
+            correlationId: CorrelationIdSchema.parse(`cmd_${stopId}`),
+            environmentId: attempt.environmentId,
+          };
+          if (attempt.kind === "occurrence")
+            await runners.dispatch(
+              { ...base, type: "trigger.interrupt", occurrenceId: attempt.id },
+              AbortSignal.timeout(3_000),
+              { connectionGeneration: identity.connectionGeneration },
+            );
+          else if (attempt.threadId)
+            await runners.dispatch(
+              { ...base, type: "run.interrupt", runId: attempt.runId,
+                threadId: attempt.threadId, bindingGeneration: attempt.generation },
+              AbortSignal.timeout(3_000),
+              { connectionGeneration: identity.connectionGeneration },
+            );
+        },
       },
       onFailure: (error, connectionId) =>
         app.log.warn({ err: error, connectionId }, "A connected agent's work did not stop"),

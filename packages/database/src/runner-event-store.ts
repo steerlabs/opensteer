@@ -908,6 +908,21 @@ export async function commitRunnerEvent(
   if (input.integration && event.type !== "tool.started")
     throw new Error("Only tool.started reports can have an integration subject");
   const integration = input.integration && IntegrationCallSubjectSchema.parse(input.integration);
+  const terminalReceipt =
+    event.type === "run.completed" || event.type === "run.failed" ||
+    event.type === "run.interrupted";
+  let connectionId: string | null = null;
+  const recordTerminalEvidence = async () => {
+    if (!terminalReceipt || !connectionId) return;
+    await database.updateTable("runAttempts").set({ terminalEvidenceAt: new Date() })
+      .where("runId", "=", event.runId)
+      .where("bindingGeneration", "=", event.bindingGeneration)
+      .where("runnerId", "=", input.runnerId)
+      .where("runnerBootId", "=", input.runnerBootId)
+      .where((eb) => eb.or([eb("connectionId", "=", connectionId), eb("connectionId", "is", null)]))
+      .where("terminalEvidenceAt", "is", null)
+      .execute();
+  };
   let duplicateRunUsage = false;
   let revokedGrants: readonly RevokedRunGrant[] = [];
   const statement = { ...event, runnerId: input.runnerId, runnerBootId: input.runnerBootId };
@@ -1098,6 +1113,7 @@ export async function commitRunnerEvent(
         },
         {
           now: executionNow(),
+          onRunLoaded: (run) => { connectionId = run.connectionId; },
           allowExpiredLease: event.type === "run.interrupted" && event.data.cause === "lease-lost",
         },
       ),
@@ -1109,8 +1125,11 @@ export async function commitRunnerEvent(
       result = await accept();
       if ("finishing" in result) throw new Error("Run finish did not commit its Runner receipt");
     }
+    await recordTerminalEvidence();
     return { ...result, duplicateRunUsage, revokedGrants };
   } catch (error) {
+    // A former binding can prove that it stopped without changing the current Run.
+    await recordTerminalEvidence();
     if (!isConstraintViolation(error)) throw error;
     throw new OpensteerError({
       code: "conflict",

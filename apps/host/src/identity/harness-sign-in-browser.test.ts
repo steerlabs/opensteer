@@ -51,7 +51,12 @@ const loopback = browserCode("http://127.0.0.1:51121/oauth-callback");
 function fixture(
   options: {
     readonly browser?: boolean;
-    readonly profiles?: { id: BrowserProfileId; name: string; runnerId: RunnerId | null }[];
+    readonly profiles?: {
+      id: BrowserProfileId;
+      name: string;
+      runnerId: RunnerId | null;
+      purpose: "person" | "engine-sign-in";
+    }[];
   } = {},
 ) {
   let state: HarnessAuthenticationState = loopback;
@@ -72,7 +77,12 @@ function fixture(
   const createProfile = vi.fn(
     async (input: { homeRunnerId: RunnerId; name: string; ownerId: UserId }) => {
       const id = createId("browserProfile") as BrowserProfileId;
-      profiles.push({ id, name: input.name, runnerId: input.homeRunnerId });
+      profiles.push({
+        id,
+        name: input.name,
+        runnerId: input.homeRunnerId,
+        purpose: "engine-sign-in",
+      });
       return { id };
     },
   );
@@ -85,10 +95,11 @@ function fixture(
     createProfile,
     hasTab: async (_ownerId, tabId) => tabs.has(tabId),
     listProfiles: async () =>
-      profiles.map(({ id, name, runnerId }) => ({
+      profiles.map(({ id, name, runnerId, purpose }) => ({
         home: runnerId ? { runnerId } : null,
         id,
         name,
+        purpose,
       })),
     onError: (error) => {
       throw error;
@@ -128,8 +139,13 @@ describe("HarnessSignInBrowser", () => {
     const elsewhere = createId("browserProfile") as BrowserProfileId;
     const signIn = fixture({
       profiles: [
-        { id: theirs, name: "Work", runnerId: homeRunner },
-        { id: elsewhere, name: harnessSignInProfileName, runnerId: otherRunner },
+        { id: theirs, name: harnessSignInProfileName, runnerId: homeRunner, purpose: "person" },
+        {
+          id: elsewhere,
+          name: harnessSignInProfileName,
+          runnerId: otherRunner,
+          purpose: "engine-sign-in",
+        },
       ],
     });
     await signIn.coordinator.ensure(target, signal, selection);
@@ -186,8 +202,12 @@ describe("HarnessSignInBrowser", () => {
     vi.useFakeTimers();
     const signIn = fixture();
     await signIn.coordinator.ensure(target, signal, selection);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    signIn.setNow(1_000 + 5 * 60_000);
     const tabId = await signIn.browse();
-    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    await vi.advanceTimersByTimeAsync(10 * 60_000 - 1);
+    expect(signIn.tabs.has(tabId)).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
     expect(signIn.closed).toEqual([tabId]);
 
     // The coordinator's own deadline closes it too, when something asks first.

@@ -188,7 +188,7 @@ export class AgentSessionService {
   }
   /** Settles once every operation handed off in this process has recorded its outcome. */
   async drain(): Promise<void> {
-    await Promise.allSettled([...this.#running.values()]);
+    await Promise.allSettled(this.#running.values());
   }
   stop(): void {
     clearInterval(this.#sweeper);

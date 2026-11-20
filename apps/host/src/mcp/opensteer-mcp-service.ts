@@ -714,10 +714,14 @@ export class OpensteerMcpService {
     );
   }
   /** Closes every session held by a connection or by work in its lineage. */
-  async closeLineage(connectionId: string): Promise<void> {
+  async closeLineage(connectionId: string, minimumGrantRevision?: number): Promise<void> {
     await Promise.allSettled(
       [...this.#activeSessions]
-        .filter((session) => session.authority.startsWith(`${connectionId}:`))
+        .filter(({ authority }) => {
+          const [id, revision] = authority.split(":");
+          return id === connectionId &&
+            (minimumGrantRevision === undefined || Number(revision) < minimumGrantRevision);
+        })
         .map((session) => this.#closeSession(session)),
     );
   }

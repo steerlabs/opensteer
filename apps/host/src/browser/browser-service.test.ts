@@ -5887,6 +5887,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return {
       execution: {
         mode: "full-access" as const,
+        actor: "native" as const,
         agentConnection: null,
         threadId: null,
         runId: null,
@@ -8380,14 +8381,36 @@ it.each(["register", "inventory", "revoke", "offline", "expire", "close"] as con
 /** A connected agent's selected grant, as the Home resolves it for any binding of its lineage. */
 class SelectedGrantRepository extends MemoryBrowserRepository {
   granted: readonly BrowserProfileId[] = [];
-  override async resolveResourceAccess(): ReturnType<
-    NonNullable<BrowserSessionRepository["resolveResourceAccess"]>
-  > {
+  /** The execution's effective mode as the resolver reports it now. */
+  mode: import("@opensteer/core").ThreadAccessMode = "full-access";
+  /** `everything`: one connection per binding, so each binding is its own lineage. */
+  scope: "selected" | "everything" = "selected";
+  override async resolveResourceAccess(
+    input?: Parameters<NonNullable<BrowserSessionRepository["resolveResourceAccess"]>>[0],
+  ): ReturnType<NonNullable<BrowserSessionRepository["resolveResourceAccess"]>> {
     const base = await super.resolveResourceAccess();
+    if (this.scope === "everything")
+      return {
+        ...base,
+        execution: {
+          ...base.execution,
+          actor: "agent" as const,
+          mode: this.mode,
+          agentConnection: {
+            agentConnectionId: `mcn_${input?.agentBindingId ?? "none"}`,
+            grantRevision: 1,
+            consentVersion: 2,
+            accessMode: "full-access" as const,
+            grant: { scope: "everything" as const },
+          },
+        },
+      };
     return {
       ...base,
       execution: {
         ...base.execution,
+        actor: "agent" as const,
+        mode: this.mode,
         agentConnection: {
           agentConnectionId: "mcn_selected",
           grantRevision: 2,
@@ -8426,7 +8449,7 @@ describe("a connected agent's selected grant admits the exact profile before any
       expect(bind).not.toHaveBeenCalled();
       expect(runtime.connectionCount()).toBe(0);
     };
-    return { ownerId, kept, withdrawn, service, runtime, create, nothingStarted };
+    return { ownerId, kept, withdrawn, service, runtime, create, nothingStarted, repository };
   }
   const refusal = { code: "forbidden", message: expect.stringContaining("connected agent") };
 
@@ -8529,5 +8552,111 @@ describe("a connected agent's selected grant admits the exact profile before any
     expect(opened.wasExisting).toBe(false);
     expect(create).toHaveBeenCalledOnce();
     expect(runtime.connectionCount()).toBe(1);
+  });
+
+  it.each(["a lowered mode", "a withdrawn profile"] as const)(
+    "refuses a write after %s at the attach and at each command, and forwards nothing",
+    async (change) => {
+      const keys = generateKeyPairSync("ed25519");
+      const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+        targetedStreaming: true,
+      });
+      const ownerId = createId("user");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      repository.granted = [kept.id];
+      const service = freshService({ keys, runtime, repository });
+      const authority = { agentBindingId: "run:selected-write", ownerId };
+      const opened = await service.openAgentSession({ ...authority, profileId: kept.id });
+      const cdp = await service.attachCdpForAgent(
+        { ...authority, sessionId: opened.session.id },
+        () => undefined,
+      );
+      const forwarded: string[] = [];
+      const send = WebSocket.prototype.send;
+      vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (this: WebSocket, ...args) {
+        const [data] = args;
+        if (typeof data === "string" && JSON.parse(data).type === "cdp.command")
+          forwarded.push(data);
+        return Reflect.apply(send, this, args);
+      });
+      // Changed after the attach was admitted and before the command is enqueued.
+      if (change === "a lowered mode") repository.mode = "approval-required";
+      else repository.granted = [];
+      await expect(
+        cdp.dispatch({ method: "Runtime.evaluate", params: { expression: "1" } } as never),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      await expect(
+        service.attachCdpForAgent({ ...authority, sessionId: opened.session.id }, () => undefined),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect(forwarded).toEqual([]);
+    },
+  );
+
+  it.each(["openAgentSession", "tab_open"] as const)(
+    "stops the browser %s started when the profile is withdrawn while it starts",
+    async (path) => {
+      const { ownerId, kept, withdrawn, service, create, repository } = await setup();
+      // Withdrawn after the start check admitted it, before the browser came up; another
+      // profile stays granted, so only a check of this exact profile refuses it.
+      create.mockImplementationOnce(async (input) => {
+        const created = await MemoryBrowserRepository.prototype.createBrowserSession.call(
+          repository,
+          input,
+        );
+        repository.granted = [withdrawn.id];
+        return created;
+      });
+      const agent = { ownerId, agentBindingId: "run:selected-start", threadId: createId("thread") };
+      await expect(
+        path === "openAgentSession"
+          ? service.openAgentSession({ ...agent, profileId: kept.id })
+          : service.openTab(
+              ownerId,
+              {
+                type: "browser.tab.open",
+                idempotencyKey: "withdrawn-while-starting",
+                identity: { kind: "profile", profileId: kept.id },
+              },
+              agent,
+            ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect(create).toHaveBeenCalledOnce();
+      const sessionId = create.mock.calls[0]![0].id;
+      // The browser it started is stopped, not left running for nobody.
+      expect((await repository.getBrowserSessionForOwner(sessionId, ownerId))?.state).toMatch(
+        /^(closed|failed)$/,
+      );
+    },
+  );
+
+  it("never pools two lineages' Guest pages in one browser, and refuses Guest to a selected grant", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    repository.scope = "everything";
+    const create = vi.spyOn(repository, "createBrowserSession");
+    const service = freshService({ keys, runtime, repository });
+    for (const lineage of ["first", "second"])
+      await service.openTab(
+        ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `guest-${lineage}`,
+          identity: { kind: "guest" },
+        },
+        { ownerId, agentBindingId: `run:guest-${lineage}`, threadId: createId("thread") },
+      );
+    expect(new Set(create.mock.calls.map(([input]) => input.id)).size).toBe(2);
+    repository.scope = "selected";
+    await expect(
+      service.openTab(
+        ownerId,
+        { type: "browser.tab.open", idempotencyKey: "guest-selected", identity: { kind: "guest" } },
+        { ownerId, agentBindingId: "run:guest-selected", threadId: createId("thread") },
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(create).toHaveBeenCalledTimes(2);
   });
 });

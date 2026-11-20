@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { Worker } from "node:worker_threads";
-import { refused } from "@opensteer/core";
+import { OpensteerError, refused } from "@opensteer/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   computerReplLimits as limits,
@@ -232,6 +232,28 @@ describe("browser REPL", () => {
       await run('try { await page.cdp("Runtime.evaluate"); } catch (error) { return error.code; }'),
     ).toEqual({
       content: [text("forbidden")],
+    });
+  });
+
+  it("reports lost browser confirmation even if the script catches it", async () => {
+    const { run } = setup({
+      command: async () => {
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "outcome-unknown",
+          message: "The browser disconnected before confirming the action.",
+        });
+      },
+    });
+    expect(
+      await run(`${bind}
+      try { await page.cdp("Runtime.evaluate"); }
+      catch (error) { print(error.code); }
+      return "done";`),
+    ).toMatchObject({
+      content: expect.arrayContaining([{ type: "text", text: "outcome-unknown" }]),
+      isError: true,
+      structuredContent: { error: { code: "outcome-unknown" } },
     });
   });
 

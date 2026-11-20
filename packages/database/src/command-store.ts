@@ -108,6 +108,7 @@ export type RunnerControlInput =
       readonly threadId: ThreadId;
       readonly type: "run.interrupt";
       readonly keepQueueRunning?: true;
+      readonly expectedBindingGeneration?: number | null;
       readonly authority?: ThreadCallerAuthority;
     }
   | {
@@ -697,6 +698,9 @@ function canonicalRunnerControlInput(input: RunnerControlInput): Readonly<Record
     case "run.interrupt":
       return {
         ...(input.keepQueueRunning ? { keepQueueRunning: true } : {}),
+        ...(input.expectedBindingGeneration !== undefined
+          ? { expectedBindingGeneration: input.expectedBindingGeneration }
+          : {}),
         idempotencyKey: input.idempotencyKey,
         requestedBy: input.requestedBy,
         runId: input.runId,
@@ -848,6 +852,11 @@ export async function enqueueRunnerControlInTransaction(
         message: "Run not found for thread",
       });
     }
+    if (
+      input.type === "run.interrupt" &&
+      input.expectedBindingGeneration !== undefined &&
+      run.bindingGeneration !== input.expectedBindingGeneration
+    ) throw new OpensteerError({ code: "conflict", message: "The Run execution changed" });
     if (run.finishIntent)
       throw new OpensteerError({
         code: "conflict",

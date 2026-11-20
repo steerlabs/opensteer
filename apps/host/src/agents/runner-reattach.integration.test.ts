@@ -30,6 +30,9 @@ import { z } from "zod";
 import { observeDispatchReadiness } from "./dispatch-readiness.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
+import { RunnerRegistry } from "@opensteer/orchestration";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { manualAgentWork, type AgentWorkSource } from "@opensteer/runner";
 import { readCodexRunCaptures } from "./codex-capture.test-support.js";
 
 /*
@@ -161,6 +164,7 @@ integration("Runs that outlive their connection", () => {
     readonly maxConcurrentRuns?: number;
     readonly scenario?: string;
     readonly gatePreparation?: true;
+    readonly agentWork?: AgentWorkSource;
   }): Promise<{
     readonly captured: () => Promise<z.infer<typeof captureSchema>[]>;
     readonly releasePreparation: () => Promise<void>;
@@ -206,6 +210,7 @@ integration("Runs that outlive their connection", () => {
       return registry;
     };
     stack = await startVerticalStack({
+      ...(input.agentWork ? { agentWork: input.agentWork } : {}),
       ...(input.executionClock
         ? {
             executionClock: input.executionClock,
@@ -1202,6 +1207,44 @@ integration("Runs that outlive their connection", () => {
       30_000,
       "stop delivered",
     );
+  }, 120_000);
+  it("holds a task while agents are stopped on its computer, and starts it the moment they resume", async () => {
+    const agentWork = manualAgentWork();
+    const { stack: active } = await start({ executionLeaseMs: 60_000, agentWork });
+    // Waits on the Home having taken the Runner's notice, not on a timer.
+    const handle = RunnerRegistry.prototype.handle;
+    const told = (type: "runner.agents.stopped" | "runner.agents.resumed") => {
+      const handled = Promise.withResolvers<void>();
+      const spy = vi.spyOn(RunnerRegistry.prototype, "handle").mockImplementation(async function (
+        this: RunnerRegistry,
+        peer,
+        message,
+      ) {
+        await handle.call(this, peer, message);
+        if ((message as { type?: string }).type === type) {
+          spy.mockRestore();
+          handled.resolve();
+        }
+      });
+      return handled.promise;
+    };
+    const stopped = told("runner.agents.stopped");
+    agentWork.set(true);
+    await stopped;
+    const threadId = await thread(active, "Held while stopped");
+    const runId = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
+    expect((await run(active, runId)).status).toBe("queued");
+    const machines = await active.api["machines.list"]({});
+    if (!machines.ok) throw new Error(machines.error.message);
+    expect(machines.data.machines.some((machine) => machine.agentsStoppedSince)).toBe(true);
+
+    const resumed = told("runner.agents.resumed");
+    agentWork.set(false);
+    await resumed;
+    // Well inside the dispatch backoff's 30 seconds: resume wakes it at once.
+    await withTimeout(active.runStarted(runId), 5_000, {
+      timeoutError: () => new Error("The held Run did not start on resume"),
+    });
   }, 120_000);
   it("records a Run its computer stopped as interrupted, at once while the Home is reachable", async () => {
     const { stack: active } = await start({ executionLeaseMs: 60_000 });

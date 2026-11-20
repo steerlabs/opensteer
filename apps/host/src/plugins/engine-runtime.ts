@@ -548,6 +548,7 @@ export async function startEngine(
             context: PluginCaller;
             controller: AbortController;
             driving: boolean;
+            driverDone: ReturnType<typeof Promise.withResolvers<void>>;
             direct: boolean;
           }
         >();
@@ -1347,6 +1348,7 @@ export async function startEngine(
               context,
               controller,
               driving: true,
+              driverDone: Promise.withResolvers<void>(),
               direct: operation === "call",
             };
             executions.set(id, record);
@@ -1400,6 +1402,7 @@ export async function startEngine(
               return yield* completed(record, result, catalog);
             } finally {
               record.driving = false;
+              record.driverDone.resolve();
               signal.removeEventListener("abort", abort);
             }
           }
@@ -1425,6 +1428,7 @@ export async function startEngine(
               );
             if (operation === "cancel") {
               record.controller.abort();
+              yield* Effect.promise(() => record.driverDone.promise);
               if (record.view.interaction)
                 yield* manager.discard(
                   context.caller,
@@ -1467,6 +1471,7 @@ export async function startEngine(
                 new PluginServiceError("invalid", "The interaction has not been answered"),
               );
             record.driving = true;
+            record.driverDone = Promise.withResolvers<void>();
             const abort = () => record.controller.abort();
             signal.addEventListener("abort", abort, { once: true });
             try {
@@ -1497,6 +1502,7 @@ export async function startEngine(
               );
             } finally {
               record.driving = false;
+              record.driverDone.resolve();
               signal.removeEventListener("abort", abort);
             }
           }

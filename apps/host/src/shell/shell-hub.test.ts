@@ -20,7 +20,13 @@ import {
   runScope,
 } from "./shell-hub.test-support.js";
 
-function harness(options: { readonly openTimeoutMs?: number; readonly stallSends?: boolean } = {}) {
+function harness(
+  options: {
+    readonly openTimeoutMs?: number;
+    readonly stallSends?: boolean;
+    readonly agentsStopped?: boolean;
+  } = {},
+) {
   const owner = createId("user");
   const target = createId("runner");
   const callerRunnerId = createId("runner");
@@ -45,7 +51,10 @@ function harness(options: { readonly openTimeoutMs?: number; readonly stallSends
     onAuditError,
     onControlError,
     ...(options.openTimeoutMs === undefined ? {} : { openTimeoutMs: options.openTimeoutMs }),
-    runners: { identityForRunner: () => ({ name: "cloud-1" }) } as never,
+    runners: {
+      identityForRunner: () => ({ name: "cloud-1" }),
+      agentsStoppedSince: () => (options.agentsStopped ? new Date() : null),
+    } as never,
     store,
     terminationDeadlineMs: 5,
   });
@@ -1008,6 +1017,21 @@ describe("ShellHub shutdown", () => {
     await closing;
 
     expect(context.store.state.events.get(session.sessionId)).toEqual([{ kind: "truncated" }]);
+  });
+
+  it("refuses an agent's shell to a computer whose person stopped agents, saying so", async () => {
+    const context = harness({ agentsStopped: true });
+    await expect(
+      context.hub.connect({
+        signal: new AbortController().signal,
+        target: context.target,
+        token: "caller-token",
+      }),
+    ).rejects.toMatchObject({
+      code: "target_offline",
+      message: expect.stringMatching(/^Agents are stopped on .+ by its person\./u),
+    });
+    expect(context.peer.sent).toEqual([]);
   });
 
   it("tells a caller that arrives after shutdown that Opensteer is going away", async () => {

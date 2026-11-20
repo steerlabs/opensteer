@@ -1085,10 +1085,21 @@ it("projects a Mac whose person stopped agents on it as stopped, and the iPhone 
           name: stoppedMac.name,
           ownerKind: "user",
           removedAt: null,
-          accessPolicy: { ...machineAccessPolicyDefault, apps: true, browser: true, reach: "owner" },
+          accessPolicy: {
+            ...machineAccessPolicyDefault,
+            apps: true,
+            browser: true,
+            reach: "owner",
+          },
         },
         drivers: [
-          { role: "self", runnerId: macId, runnerName: stoppedMac.name, generation: 1, attached: true },
+          {
+            role: "self",
+            runnerId: macId,
+            runnerName: stoppedMac.name,
+            generation: 1,
+            attached: true,
+          },
         ],
         selfRunnerId: macId,
         screenStatus: null,
@@ -1137,12 +1148,14 @@ it("projects a Mac whose person stopped agents on it as stopped, and the iPhone 
     state: "unavailable",
     reason: { kind: "driver-stopped" },
   });
-  expect(projectMachines({
-    access: new Map(),
-    apps: new Map(),
-    deploymentOwnsMainComputer: true,
-    pendingRunners: [],
-    runners: [runner({ id: createId("runner"), connected: true })],
-    threadsByEnvironment: new Map(),
-  })[0]).not.toHaveProperty("agentsStoppedSince");
+  expect(
+    projectMachines({
+      access: new Map(),
+      apps: new Map(),
+      deploymentOwnsMainComputer: true,
+      pendingRunners: [],
+      runners: [runner({ id: createId("runner"), connected: true })],
+      threadsByEnvironment: new Map(),
+    })[0],
+  ).not.toHaveProperty("agentsStoppedSince");
 });

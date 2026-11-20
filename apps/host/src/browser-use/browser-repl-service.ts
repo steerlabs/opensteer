@@ -79,6 +79,7 @@ export interface BrowserUsePort<Target extends BrowserUseTarget = BrowserUseTarg
     sessionId: string | undefined,
     call: BrowserUseCall,
   ): Promise<string>;
+  release?(target: Target): void;
   subscribe(
     target: Target,
     onEvent: (event: BrowserUseEvent) => void,
@@ -130,7 +131,8 @@ function publicFailure(error: unknown): ReplFailure {
   if (
     error instanceof OpensteerError &&
     (error.reason === "outcome-unknown" || error.reason === "browser-tab-open-outcome-unknown")
-  ) return { code: "outcome-unknown", message: error.message, performed: [] };
+  )
+    return { code: "outcome-unknown", message: error.message, performed: [] };
   if (
     error instanceof BrowserBridgeError ||
     (error instanceof OpensteerError && error.code !== "internal")
@@ -206,8 +208,8 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     });
   }
 
-  execute(contextKey: string, code: string, signal?: AbortSignal): Promise<ReplResult> {
-    return this.#repl.execute({ runId: contextKey, generation: 0 }, code, signal);
+  execute(contextKey: string, code: string, signal?: AbortSignal, bindingKey?: string): Promise<ReplResult> {
+    return this.#repl.execute({ runId: contextKey, generation: 0 }, code, signal, undefined, bindingKey);
   }
 
   disposeContext(contextKey: string): void {
@@ -360,8 +362,9 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
         "At most 16 page handles may be opened in a browser context.",
       );
     state.opening++;
+    let unclaimed: Target | undefined;
     try {
-      const target = await (request.operation === "browser.open"
+      const target = (unclaimed = await (request.operation === "browser.open"
         ? this.#port.openPage(request.args.tabId, call)
         : this.#port.newPage(
             {
@@ -371,7 +374,7 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
                 : { profileId: request.args.profileId }),
             },
             call,
-          ));
+          )));
       call.signal.throwIfAborted();
       const { tabId, targetId, sessionId, dialog } = target;
       const metadataBytes = [
@@ -420,8 +423,10 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
           "This page handle has ended. Bind the tab again with openPage(tabId).",
         );
       }
+      unclaimed = undefined;
       return { value: binding.value };
     } finally {
+      if (unclaimed) this.#port.release?.(unclaimed);
       state.opening--;
     }
   }

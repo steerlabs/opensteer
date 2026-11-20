@@ -406,6 +406,11 @@ export class BrowserController {
   >();
   private readonly keyOwners = new Map<BrowserSurfaceId, string>();
   private readonly lanes = new Map<BrowserSurfaceId, BrowserInputLane>();
+  private readonly scriptCommands = new Map<string, {
+    message: Extract<BrowserClientMessage, { type: "cdp.command" }>;
+    started: boolean;
+  }>();
+  private readonly cancelledScriptCommands = new WeakSet<BrowserClientMessage>();
   private readonly canceledGenerations = new Map<string, number>();
   private readonly hoverOwners = new Map<BrowserSurfaceId, { owner: string; cdp: CdpChannel }>();
   private readonly cleanupReservations = new Set<string>();
@@ -652,6 +657,7 @@ export class BrowserController {
       inputLanesVersion: 1,
       cdpReplyBudget: 1,
       scriptAttachments: 1,
+      scriptCancellation: 1,
       ...(this.claims.surfaceState === 1 ? { surfaceState: 1 } : {}),
       ...(this.saveAuthority
         ? { personFillVersion: 2 }
@@ -840,6 +846,39 @@ export class BrowserController {
   }
 
   private enqueue(message: BrowserClientMessage): Promise<void> {
+    if (!isCdpRequest(message)) return this.enqueueCommand(message);
+    if (message.command.method === browserHostMethods.cancelScriptCommand)
+      return this.cancelScriptCommand(message);
+    if (!message.replyBudget || (!message.scriptAttachmentId && message.command.method !== browserHostMethods.openTab))
+      return this.enqueueCommand(message);
+    if (this.scriptCommands.has(message.requestId) || this.scriptCommands.size >= this.maxPendingCommands)
+      return this.send({
+        type: "cdp.error", requestId: message.requestId,
+        error: new BrowserRuntimeError("conflict", "The browser command queue is full or the request ID is already active.").toProtocolError(),
+      });
+    this.scriptCommands.set(message.requestId, { message, started: false });
+    return this.enqueueCommand(message).finally(() => this.scriptCommands.delete(message.requestId));
+  }
+
+  private async cancelScriptCommand(message: Extract<BrowserClientMessage, { type: "cdp.command" }>): Promise<void> {
+    const requestId = message.command.parameters?.requestId;
+    const command = typeof requestId === "string" ? this.scriptCommands.get(requestId) : undefined;
+    if (!command || command.message.scriptAttachmentId !== message.scriptAttachmentId || command.started)
+      return;
+    // A physical release is cleanup for an earlier command and has its own reservation.
+    if (isInputRelease(command.message)) return;
+    this.cancelledScriptCommands.add(command.message);
+    for (const lane of this.lanes.values()) lane.cancel((entry) => entry === command.message);
+    // Input-lane refusals and general queue cancellation use the same terminal acknowledgement.
+    await this.send({
+      type: "cdp.error", requestId: command.message.requestId,
+      error: new BrowserRuntimeError("conflict", "The browser command was cancelled before dispatch.", {
+        reason: "browser-command-cancelled",
+      }).toProtocolError(),
+    });
+  }
+
+  private enqueueCommand(message: BrowserClientMessage): Promise<void> {
     if (message.type === "session.state") {
       this.sessionState?.(message);
       return Promise.resolve();
@@ -1004,7 +1043,10 @@ export class BrowserController {
       return this.send({
         type: "cdp.error",
         requestId: message.requestId,
-        error: new BrowserRuntimeError("conflict", "The browser command queue is full.").toProtocolError(),
+        error: new BrowserRuntimeError(
+          "conflict",
+          "The browser command queue is full.",
+        ).toProtocolError(),
       });
     return this.enqueueOperation(queue, () => ({ done: this.run(message, surfaceId), surfaceId }));
   }
@@ -1175,6 +1217,7 @@ export class BrowserController {
       if (reservation && !held && !pending) this.cleanupReservations.delete(reservation);
     }
     await this.refuseClipboard(message);
+    if (this.cancelledScriptCommands.has(message)) return;
     const error = new BrowserRuntimeError(
       "conflict",
       "Browser input was not applied. Try the action again.",
@@ -1265,6 +1308,9 @@ export class BrowserController {
     message: BrowserClientMessage,
     surfaceId: BrowserSurfaceId | null = null,
   ): Promise<void> {
+    if (this.cancelledScriptCommands.has(message)) return;
+    const command = isCdpRequest(message) ? this.scriptCommands.get(message.requestId) : undefined;
+    if (command?.message === message) command.started = true;
     try {
       const target = surfaceId ?? this.pageOf(message);
       const lifecycle =
@@ -3250,7 +3296,9 @@ export class BrowserController {
       this.cdpRouter.assertScriptTarget(
         this.claims.sessionId,
         message.scriptAttachmentId,
-        typeof requested.parameters?.targetId === "string" ? requested.parameters.targetId : undefined,
+        typeof requested.parameters?.targetId === "string"
+          ? requested.parameters.targetId
+          : undefined,
       );
     const inputSurface = this.pageOf(message);
     if (
@@ -3366,9 +3414,7 @@ export class BrowserController {
         // As CDP's own createTarget does, the tab loads in the background; a
         // failed load stays visible in the tab.
         if (tabUrl && binding) {
-          const navigation = binding.cdp.send("Page.navigate", { url: tabUrl });
-          if (message.replyBudget) await navigation;
-          else void navigation.catch(() => undefined);
+          void binding.cdp.send("Page.navigate", { url: tabUrl }).catch(() => undefined);
         }
       }
     }
@@ -3980,9 +4026,10 @@ export class BrowserController {
           ...record,
           ...(command.scriptAttachmentId
             ? {
-                rootSurfaceId: typeof record.rootTargetId === "string"
-                  ? (this.ledger.surfaceIdForTarget(record.rootTargetId) ?? null)
-                  : null,
+                rootSurfaceId:
+                  typeof record.rootTargetId === "string"
+                    ? (this.ledger.surfaceIdForTarget(record.rootTargetId) ?? null)
+                    : null,
               }
             : {
                 rootSurfaceId: this.rootSurfaceId,

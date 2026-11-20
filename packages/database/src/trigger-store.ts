@@ -940,11 +940,19 @@ export class TriggerStore {
             .set({
               desired: "stopped",
               leaseExpiresAt: null,
-              observed: "stopped",
+              observed: sql`case when runner_id is null then 'stopped' else observed end`,
               updatedAt: new Date(),
             })
             .where("id", "=", row.id)
             .execute();
+          continue;
+        }
+        const witness = await automationHandoffWitness(transaction, trigger);
+        if (
+          row.connectionId && row.runnerBootId !== input.runnerBootId &&
+          !row.terminalEvidenceAt
+        ) {
+          // A new process must not replace the only record of the old generation.
           continue;
         }
         const nextExecutionGeneration =
@@ -960,6 +968,7 @@ export class TriggerStore {
         const updated = await transaction
           .updateTable("triggerWatchActivations")
           .set({
+            ...(row.runnerId ? {} : witness),
             executionGeneration: nextExecutionGeneration,
             leaseExpiresAt: input.leaseExpiresAt,
             ...(row.runnerBootId === input.runnerBootId
@@ -1000,6 +1009,20 @@ export class TriggerStore {
         reconcileGeneration,
       };
     });
+  }
+  async stopConnectionWatch(id: TriggerWatchActivationId, generation: number): Promise<void> {
+    await this.#database
+      .updateTable("triggerWatchActivations")
+      .set({
+        desired: "stopped",
+        leaseExpiresAt: null,
+        observed: sql`case when runner_id is null then 'stopped' else observed end`,
+        updatedAt: new Date(),
+      })
+      .where("id", "=", id)
+      .where("executionGeneration", "=", String(generation))
+      .where("desired", "=", "active")
+      .execute();
   }
   async assertActiveWatchBinding(input: ActiveWatchBindingInput): Promise<void> {
     await assertActiveWatchBinding(this.#database, input);
@@ -1109,7 +1132,11 @@ export class TriggerStore {
           healthySince: input.healthySince,
           lastError: input.lastError,
           lastExitCode: input.lastExitCode,
-          observed: autoPaused || activation.desired === "stopped" ? "stopped" : input.observed,
+          observed: input.observed,
+          ...((input.observed === "stopped" || input.observed === "expired") &&
+          activation.connectionId
+            ? { terminalEvidenceAt: activation.terminalEvidenceAt ?? now }
+            : {}),
           restartCount: input.restartCount,
           stderrTail: input.stderrTail,
           stdoutTail: input.stdoutTail,
@@ -1441,6 +1468,11 @@ export class TriggerStore {
           message: "Automation occurrence was canceled before it reached its computer",
         };
         const canceledOccurrenceIds: TriggerOccurrenceId[] = [];
+        if (pending.length) {
+          await transaction.selectFrom("commands").select("id")
+            .where("id", "in", pending.map(({ commandId }) => commandId))
+            .orderBy("id", "asc").forNoKeyUpdate().execute();
+        }
         for (const row of pending) {
           const command = await transaction
             .updateTable("commands")
@@ -1675,10 +1707,12 @@ export class TriggerStore {
       await requireTriggerLaunchAuthority(transaction, trigger);
       let executionGeneration = occurrence.executionGeneration;
       if (occurrence.status === "pending") {
+        const witness = await automationHandoffWitness(transaction, trigger);
         executionGeneration += 1;
         await transaction
           .updateTable("triggerOccurrences")
           .set({
+            ...witness,
             executionGeneration,
             runnerBootId: input.runnerBootId,
             runnerId: input.runnerId,
@@ -1724,8 +1758,6 @@ export class TriggerStore {
         .where("id", "=", occurrence.triggerId)
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
-      if (occurrence.status !== "running") return occurrenceFromRow(occurrence);
-      await requireTriggerExecutionAuthority(transaction, trigger);
       if (
         occurrence.executionGeneration !== input.executionGeneration ||
         occurrence.runnerId !== input.runnerId ||
@@ -1736,11 +1768,15 @@ export class TriggerStore {
           message: "Trigger result binding is stale",
         });
       }
+      if (occurrence.status !== "running" && !occurrence.connectionId)
+        return occurrenceFromRow(occurrence);
+      if (occurrence.terminalEvidenceAt) return occurrenceFromRow(occurrence);
       const now = new Date();
       const updated = await transaction
         .updateTable("triggerOccurrences")
         .set({
           completedAt: new Date(input.output.completedAt),
+          ...(occurrence.connectionId ? { terminalEvidenceAt: now } : {}),
           error: input.output.error
             ? jsonValue({
                 message: input.output.error,
@@ -1860,7 +1896,8 @@ export class TriggerStore {
       let query = transaction
         .selectFrom("triggerOccurrences")
         .select(["commandId", "event", "id", "revisionId", "triggerId"])
-        .where("status", "=", "running");
+        .where("status", "=", "running")
+        .where("connectionId", "is", null);
       if (input.activeOccurrenceIds) {
         query = query.where("id", "in", input.activeOccurrenceIds);
       }
@@ -2382,12 +2419,29 @@ async function stopActiveWatchActivation(
     .set({
       desired: "stopped",
       leaseExpiresAt: null,
-      observed: "stopped",
+      observed: sql`case when runner_id is null then 'stopped' else observed end`,
       updatedAt: now,
     })
     .where("triggerId", "=", triggerId)
     .where("desired", "=", "active")
     .execute();
+}
+async function automationHandoffWitness(
+  transaction: Transaction<DatabaseSchema>,
+  trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "originConnectionId">,
+) {
+  if (!trigger.originConnectionId) return {};
+  const connection = await liveDelegatingConnection(
+    transaction, trigger.createdBy, trigger.originConnectionId,
+  );
+  const thread = await transaction.selectFrom("threads").select("accessMode")
+    .where("id", "=", trigger.anchorThreadId).executeTakeFirstOrThrow();
+  return {
+    connectionId: connection.agentConnectionId,
+    admittedGrantRevision: connection.grantRevision,
+    admittedAccessMode: threadAccessModeAtMost(thread.accessMode, connection.accessMode)
+      ? thread.accessMode : connection.accessMode,
+  };
 }
 /**
  * A new occurrence, dispatch or program call: its anchor's environment and, for an automation a

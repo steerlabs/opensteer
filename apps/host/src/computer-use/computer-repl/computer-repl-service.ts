@@ -45,6 +45,7 @@ interface Call<Request> {
   readonly id: string;
   readonly context: ComputerReplContext;
   readonly key: string;
+  readonly bindingKey: string;
   readonly code: string;
   readonly invoke: (request: ReplInvocation<Request>) => Promise<ReplReply>;
   readonly deadline: number;
@@ -104,6 +105,7 @@ export class ReplService<Request extends AnyReplRequest> {
   #executing = 0;
   #browserPending = 0;
   readonly #browserPendingByContext = new Map<string, number>();
+  readonly #browserPendingByBinding = new Map<string, number>();
   #closed = false;
   constructor(
     options: ReplOptions<Request> & {
@@ -149,6 +151,7 @@ export class ReplService<Request extends AnyReplRequest> {
     code: string,
     signal?: AbortSignal,
     invoke: (request: ReplInvocation<Request>) => Promise<ReplReply> = this.#invoke,
+    bindingKey = context.runId,
   ): Promise<ReplResult> {
     if (this.#closed || this.#ended.has(context.runId))
       return Promise.resolve(
@@ -219,6 +222,7 @@ export class ReplService<Request extends AnyReplRequest> {
       const call: Call<Request> = {
         id: randomUUID(),
         key,
+        bindingKey,
         context,
         code,
         invoke,
@@ -453,9 +457,11 @@ export class ReplService<Request extends AnyReplRequest> {
       request.operation === "browser.command";
     const portOperation = mutation || request.operation === "browser.pages";
     const pending = this.#browserPendingByContext.get(call.key) ?? 0;
+    const bindingPending = this.#browserPendingByBinding.get(call.bindingKey) ?? 0;
     if (
       portOperation &&
       (pending >= browserReplLimits.pending ||
+        bindingPending >= browserReplLimits.bindingPending ||
         this.#browserPending >= browserReplLimits.totalPending)
     ) {
       reject("bridge-limit", "Too many browser operations are still pending.");
@@ -463,6 +469,7 @@ export class ReplService<Request extends AnyReplRequest> {
     }
     if (portOperation) {
       this.#browserPendingByContext.set(call.key, pending + 1);
+      this.#browserPendingByBinding.set(call.bindingKey, bindingPending + 1);
       this.#browserPending++;
       call.operationsInFlight++;
       if (mutation) call.mutationsInFlight++;
@@ -482,6 +489,9 @@ export class ReplService<Request extends AnyReplRequest> {
           const count = this.#browserPendingByContext.get(call.key)!;
           if (count === 1) this.#browserPendingByContext.delete(call.key);
           else this.#browserPendingByContext.set(call.key, count - 1);
+          const bindingCount = this.#browserPendingByBinding.get(call.bindingKey)!;
+          if (bindingCount === 1) this.#browserPendingByBinding.delete(call.bindingKey);
+          else this.#browserPendingByBinding.set(call.bindingKey, bindingCount - 1);
           this.#browserPending--;
           call.operationsInFlight--;
           if (mutation) call.mutationsInFlight--;

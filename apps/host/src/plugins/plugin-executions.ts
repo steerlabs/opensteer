@@ -17,7 +17,7 @@ import {
   commitPersonalMutation,
   type PersonalCommitReaction,
 } from "@opensteer/database/personal-mutation";
-import type { AgentCaller, RunCaller } from "../mcp/agent-caller.js";
+import { callerLineage, type AgentCaller, type RunCaller } from "../mcp/agent-caller.js";
 import { pluginCaller, type PluginAuthority } from "./plugin-authority.js";
 import {
   JsonSchema,
@@ -69,6 +69,7 @@ export class PluginExecutions {
       if (!caller || caller.kind === "connection") return;
       const thread = caller.kind === "run" ? caller.thread : caller.anchor;
       const context = pluginCaller(caller);
+      const lineage = callerLineage(caller);
       await this.options.records.insert({
         id: execution.id,
         ownerUserId: caller.userId,
@@ -82,6 +83,11 @@ export class PluginExecutions {
           caller.kind === "program" && caller.program.kind === "watch"
             ? caller.program.activationId
             : null,
+        ...(lineage ? {
+          connectionId: lineage.agentConnectionId,
+          admittedGrantRevision: lineage.revision,
+          admittedAccessMode: caller.accessMode,
+        } : {}),
         caller: execution.caller,
         mode: context.mode,
         state: "running",
@@ -93,7 +99,13 @@ export class PluginExecutions {
       });
       row = await this.options.records.execution(execution.id);
     }
-    if (!row || terminal.has(row.state)) return;
+    if (!row) return;
+    if (row.connectionId && terminal.has(execution.state) && !row.terminalEvidenceAt) {
+      await this.options.store.database.updateTable("pluginExecutions")
+        .set({ terminalEvidenceAt: new Date() })
+        .where("id", "=", row.id).where("terminalEvidenceAt", "is", null).execute();
+    }
+    if (terminal.has(row.state)) return;
     const result =
       execution.state === "completed" && execution.result ? object.parse(execution.result) : null;
     const updated = await this.options.records.updateLive(execution.id, {
@@ -120,6 +132,12 @@ export class PluginExecutions {
   async recover() {
     await this.#reports;
     for (const row of await this.options.records.unfinished()) {
+      if (row.connectionId && !row.terminalEvidenceAt) {
+        await this.options.store.database.updateTable("pluginExecutions")
+          .set({ contactLostAt: new Date() })
+          .where("id", "=", row.id).where("contactLostAt", "is", null).execute();
+        continue;
+      }
       const updated = await this.options.records.updateLive(row.id, {
         state: "interrupted",
         reason: pluginInterruptedReason,
@@ -643,6 +661,14 @@ export class PluginExecutions {
             "plugin-interrupted",
             `Plugin authority changed. ${pluginInterruptedReason}`,
           );
+  }
+  async stopConnectionExecution(id: string, connectionId: string): Promise<void> {
+    const row = await this.options.records.execution(id);
+    if (!row || (row.connectionId !== null && row.connectionId !== connectionId) ||
+      row.terminalEvidenceAt || row.contactLostAt) return;
+    const result = await this.options.service.cancel({ execution: id }, this.#context(row),
+      AbortSignal.timeout(3_000));
+    await this.#record(result);
   }
   async #cancel(row: PluginExecutionRecord) {
     await this.#end(

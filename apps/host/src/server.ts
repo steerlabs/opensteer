@@ -569,6 +569,7 @@ export async function createHostServer(
       dependencies.browser.resourcePlacements([runnerId]).some((placement) => placement.available),
     closeTab: async (ownerId, tabId, idempotencyKey) => {
       await dependencies.tabs.close({ kind: "person", ownerId }, [tabId], idempotencyKey);
+      await dependencies.browser.closeEngineSignInPage(ownerId, tabId, idempotencyKey);
     },
     createProfile: (input) => dependencies.browser.createProfile(input),
     hasTab: (ownerId, tabId) =>
@@ -2434,6 +2435,17 @@ export async function createHostServer(
           });
         return { type: command.type, pairing: await service.issuePairingCode({ session }) };
       }
+      case "personal.accountLink.unlink": {
+        const service = dependencies.personalAccountLink?.service;
+        if (!service)
+          throw new OpensteerError({
+            code: "not_found",
+            message: "Opensteer Account linking is unavailable",
+          });
+        await service.unlinkAccount({ session }, context.afterResponse);
+        service.administration.changed();
+        return { type: command.type };
+      }
       case "personal.accountLink.approve":
       case "personal.accountLink.complete":
       case "personal.accountLink.resume": {
@@ -2677,6 +2689,15 @@ export async function createHostServer(
               });
             },
           }),
+      "personal.accountLink.get": async (_input, context) => {
+        const service = dependencies.personalAccountLink?.service;
+        if (!service)
+          throw new OpensteerError({
+            code: "not_found",
+            message: "Opensteer Account linking is unavailable",
+          });
+        return rpcSuccess(await service.accountLinkStatus(context.session!));
+      },
       "personal.remoteAccess.get": async (_input, context) => {
         const service = dependencies.personalRemoteAccess?.service;
         if (!service)

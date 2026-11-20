@@ -37,6 +37,7 @@ export * from "./account-id.js";
 export * from "./agent-directory.js";
 export * from "./connect.js";
 export * from "./cloud-computers.js";
+export * from "./cloud-computer-deletion.js";
 export * from "./cloud-computer-copy.js";
 export * from "./organizations.js";
 export * from "./organization-copy.js";

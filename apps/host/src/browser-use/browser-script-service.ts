@@ -53,10 +53,10 @@ function tabAccess(
   });
   return {
     async *pages(call) {
-      const { actor } = await actorFor(call.signal);
+      const { actor, execution } = await actorFor(call.signal);
       await browser.flushPendingTabDescriptors();
       for await (const row of tabs.browserScriptPages(actor)) {
-        if (!row.url) continue;
+        if (!row.url || (execution.agentConnection && !row.profileId)) continue;
         if (
           row.pageBinding &&
           browser
@@ -73,9 +73,12 @@ function tabAccess(
       }
     },
     async bind(tabId, signal) {
-      const { actor } = await actorFor(signal);
+      const { actor, execution } = await actorFor(signal);
       await browser.flushPendingTabDescriptors();
-      return bind(actor, tabId);
+      return {
+        binding: await tabs.bindBrowserScript(actor, TabIdSchema.parse(tabId), { savedProfileOnly: execution.agentConnection !== null }),
+        threadId: actor.threadId,
+      };
     },
     async open(input, key, signal) {
       const { execution, actor } = await actorFor(signal);
@@ -132,6 +135,7 @@ export class BrowserScriptService {
         newPage: (input, call) => byContext(call.contextKey).newPage(input, call),
         command: (target, method, params, sessionId, call) =>
           byContext(call.contextKey).command(target, method, params, sessionId, call),
+        release: (target) => target.port.release?.(target),
         subscribe: (target, onEvent, onEnd, budget) =>
           target.port.subscribe(target, onEvent, onEnd, budget),
       },
@@ -202,6 +206,7 @@ export class BrowserScriptService {
       key,
       code,
       callSignal ? AbortSignal.any([callSignal, binding.lifetime.signal]) : binding.lifetime.signal,
+      JSON.stringify([ownerId, agentBindingId]),
     );
   }
 

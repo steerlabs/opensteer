@@ -1,3 +1,4 @@
+import { CloudComputerDeletionSchema } from "./cloud-computer-deletion.js";
 import {
   DeploymentIdSchema,
   HostInstanceIdSchema,
@@ -54,6 +55,7 @@ export const CloudComputerProviderWriteSchema = z.strictObject({
   kind: z.enum(["create", "dns-a", "dns-aaaa", "power-on"]),
   generation: CloudComputerGenerationSchema,
   serverId: z.number().int().positive().optional(),
+  recoverAfter: z.iso.datetime().optional(),
 });
 export type CloudComputerProviderWrite = z.infer<typeof CloudComputerProviderWriteSchema>;
 
@@ -179,6 +181,11 @@ export const CloudComputerCheckSchema = z.discriminatedUnion("operation", [
     write: CloudComputerProviderWriteSchema,
   }),
   z.strictObject({ operation: z.literal("finish-provider-write"), token: z.uuid() }),
+  z.strictObject({
+    operation: z.literal("recover-provider-write"),
+    revision: CloudComputerDesiredRevisionSchema,
+    token: z.uuid(),
+  }),
   z.strictObject({
     operation: z.enum(["mutate", "create"]),
     revision: CloudComputerDesiredRevisionSchema,
@@ -351,6 +358,7 @@ const cloudComputerViewFields = {
   region: CloudComputerRegionSchema.optional(),
   egressAddress: CloudComputerEgressAddressSchema.optional(),
   renewsAt: z.iso.datetime().optional(),
+  deletion: CloudComputerDeletionSchema.optional(),
 };
 const cloudComputerReasonFields = {
   reason: z.string().min(1).max(1000),

@@ -1,3 +1,4 @@
+import { endAgentSessions } from "./agent-session-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { recoverRemovedAskTasks } from "./task-admission-store.js";
 import { recordThreadVisit } from "./thread-visits.js";
@@ -8,12 +9,19 @@ import * as deviceDriverStore from "./device-driver-store.js";
 import * as waitingInputs from "./waiting-inputs.js";
 import { setExecutionClock } from "./personal-transaction.js";
 import { pauseLineageTrigger, TriggerStore } from "./trigger-store.js";
-import { endAgentSessions, sessionsUsingWithdrawn } from "./agent-session-store.js";
 import {
+  claimConnectionCleanup,
   completeCleanupIfSettled,
-  connectionLineageWork,
+  connectionAttempts,
+  markConnectionAttemptsContactLost,
+  outstandingAttempts,
+  recordConnectionRunHandoff,
+  type ConnectionAttemptStopper,
+  type ConnectionCleanup,
   openCleanups,
   requestExpiredCleanups,
+  releaseConnectionCleanupClaim,
+  renewConnectionCleanupClaim,
   settleLineageRequests,
 } from "./connection-disconnect.js";
 import { bindDeviceSession, revokeDeviceSession, leaveDevice } from "./device-store.js";
@@ -926,115 +934,141 @@ export class OpensteerStore {
     return admitExecution(this.#database, input);
   }
 
-  /**
-   * Stops what a connection's lineage still holds, after its decision committed: on Disconnect
-   * its pending Requests settle, its queued inputs are cancelled, its Runs are interrupted (an
-   * owner task the connection sent to keeps its queue running) and its automations pause; when
-   * a grant only narrowed, its live Runs are interrupted and continue under the new authority on
-   * their next input. Each step is its own idempotent mutation in declared lock order, and every
-   * admission re-reads the connection, so work this sweep misses is refused where it would start.
-   */
-  async stopConnectionLineage(
-    userId: UserId,
-    connectionId: string,
-    reason: "disconnect" | "narrowed",
-  ): Promise<{ readonly failures: readonly unknown[] }> {
-    const work = await connectionLineageWork(this.#database, userId, connectionId);
-    const failures: unknown[] = [];
-    const attempt = async (step: () => Promise<unknown>) => {
-      try {
-        await step();
-      } catch (error) {
-        failures.push(error);
-      }
-    };
-    if (reason === "disconnect") {
-      await attempt(() => settleLineageRequests(this.#database, work.requests));
-      for (const input of work.inputs)
-        await attempt(() =>
-          this.cancelThreadInput({
-            threadId: input.threadId,
-            messageId: input.messageId,
-            idempotencyKey: `disconnect:${connectionId}:${input.messageId}`,
-            requestedBy: userId,
-          }),
-        );
-      for (const triggerId of work.triggers)
-        await attempt(() => pauseLineageTrigger(this.#database, triggerId));
-      for (const triggerId of work.pendingOccurrenceTriggers)
-        await attempt(() =>
-          new TriggerStore(this.#database).cancelPendingOccurrences(userId, {
-            actorThreadId: null,
-            triggerId,
-          }),
-        );
-      for (const commandId of work.steers)
-        await attempt(() =>
-          commandStore.refuseSteer(
-            this.#database,
-            commandId,
-            "The connected agent this message came through was disconnected.",
-          ),
-        );
-    }
-    for (const run of work.runs)
-      await attempt(() =>
-        this.enqueueRunnerControl({
-          type: "run.interrupt",
-          idempotencyKey: `${reason}:${connectionId}:${run.id}`,
-          requestedBy: userId,
-          runId: run.id,
-          threadId: run.threadId,
-          ...(reason === "narrowed" || !run.lineageTask ? { keepQueueRunning: true } : {}),
-        }),
-      );
-    await attempt(async () => {
-      const ending =
-        reason === "disconnect"
-          ? work.sessions
-          : await sessionsUsingWithdrawn(this.#database, userId, connectionId, work.sessions);
-      if (!ending.length) return;
-      const cleanup = await this.#database
-        .selectFrom("agentConnections")
-        .select("cleanupReason")
-        .where("id", "=", connectionId)
-        .executeTakeFirst();
-      await endAgentSessions(this.#database, {
-        userId,
-        connectionId,
-        sessionIds: ending,
-        reason:
-          reason === "narrowed"
-            ? "narrowed"
-            : cleanup?.cleanupReason === "expired"
-              ? "expired"
-              : "revoked",
-      });
-    });
-    return { failures };
+  recordConnectionRunHandoff(input: Parameters<typeof recordConnectionRunHandoff>[1]) {
+    return recordConnectionRunHandoff(this.#database, input);
   }
 
-  /**
-   * Drives every open cleanup (Disconnect or expiry) toward completion: stop what the lineage
-   * still holds, then settle the record once nothing is outstanding. Idempotent; run by a worker
-   * and at Host startup, so a cleanup interrupted by a restart still finishes.
-   */
-  async driveConnectionCleanups(): Promise<{
+  markConnectionAttemptsContactLost(input: Parameters<typeof markConnectionAttemptsContactLost>[1]) {
+    return markConnectionAttemptsContactLost(this.#database, input);
+  }
+
+  async driveConnectionCleanups(options: {
+    readonly stopper?: ConnectionAttemptStopper;
+    readonly onCleanup?: (cleanup: ConnectionCleanup) => Promise<void>;
+  } = {}): Promise<{
     readonly failures: readonly unknown[];
     readonly settled: readonly string[];
-    /** Every connection this pass stopped, settled or not. */
     readonly processed: readonly string[];
   }> {
     await requestExpiredCleanups(this.#database);
     const failures: unknown[] = [];
     const settled: string[] = [];
     const processed: string[] = [];
-    for (const { userId, connectionId } of await openCleanups(this.#database)) {
-      processed.push(connectionId);
-      failures.push(
-        ...(await this.stopConnectionLineage(userId, connectionId, "disconnect")).failures,
-      );
-      if (await completeCleanupIfSettled(this.#database, connectionId)) settled.push(connectionId);
+    const step = async (work: () => Promise<unknown>) => {
+      try {
+        await work();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+    for (const cleanup of await openCleanups(this.#database)) {
+      const { userId, connectionId, reason } = cleanup;
+      const token = await claimConnectionCleanup(this.#database, connectionId);
+      if (!token) continue;
+      try {
+        const attempts = outstandingAttempts(await connectionAttempts(this.#database, connectionId));
+        if (attempts.length || cleanup.pending) {
+          processed.push(connectionId);
+          if (options.onCleanup) await step(() => options.onCleanup!(cleanup));
+        }
+        for (const attempt of attempts) {
+          if (!(await renewConnectionCleanupClaim(this.#database, connectionId, token))) break;
+          const key = `connection-stop:${connectionId}:${attempt.kind}:${attempt.id}:${attempt.generation ?? "local"}`;
+          switch (attempt.kind) {
+            case "request":
+              await step(() => settleLineageRequests(this.#database, [attempt.id]));
+              break;
+            case "input":
+              await step(() =>
+                this.cancelThreadInput({
+                  threadId: attempt.threadId!,
+                  messageId: attempt.id,
+                  idempotencyKey: key,
+                  requestedBy: userId,
+                }),
+              );
+              break;
+            case "trigger":
+              await step(() => pauseLineageTrigger(this.#database, attempt.id));
+              break;
+            case "steer":
+              await step(() => commandStore.refuseSteer(
+                this.#database,
+                attempt.id,
+                "The connected agent's access ended before this message could be delivered.",
+              ));
+              break;
+            case "run":
+            case "run-attempt": {
+              const runId = attempt.kind === "run" ? attempt.id : attempt.runId;
+              const row = await this.#database
+                .selectFrom("runs")
+                .innerJoin("threads", "threads.id", "runs.threadId")
+                .select(["runs.bindingGeneration", "runs.status", "threads.originConnectionId"])
+                .where("runs.id", "=", runId)
+                .executeTakeFirst();
+              const canEnqueue =
+                row && row.bindingGeneration === attempt.generation &&
+                ["queued", "starting", "running", "waiting"].includes(row.status);
+              if (canEnqueue)
+                await step(() =>
+                  this.enqueueRunnerControl({
+                    type: "run.interrupt",
+                    idempotencyKey: key,
+                    requestedBy: userId,
+                    runId,
+                    threadId: attempt.threadId!,
+                    expectedBindingGeneration: attempt.generation,
+                    ...(reason === "narrowed" || row.originConnectionId !== connectionId
+                      ? { keepQueueRunning: true }
+                      : {}),
+                  }),
+                );
+              else if (attempt.handedOff && options.stopper)
+                await step(() => options.stopper!.stop(attempt, cleanup));
+              break;
+            }
+            case "occurrence":
+              if (attempt.handedOff) {
+                if (options.stopper) await step(() => options.stopper!.stop(attempt, cleanup));
+              } else {
+                const row = await this.#database
+                  .selectFrom("triggerOccurrences").select("triggerId").where("id", "=", attempt.id)
+                  .executeTakeFirst();
+                if (row) await step(() =>
+                  new TriggerStore(this.#database).cancelPendingOccurrences(userId, {
+                    actorThreadId: null,
+                    triggerId: row.triggerId,
+                    occurrenceId: attempt.id,
+                  }),
+                );
+              }
+              break;
+            case "watch":
+              await step(() => new TriggerStore(this.#database).stopConnectionWatch(
+                attempt.id, attempt.generation!,
+              ));
+              if (attempt.handedOff && options.stopper)
+                await step(() => options.stopper!.stop(attempt, cleanup));
+              break;
+            case "session":
+              await step(() => endAgentSessions(this.#database, {
+                userId, sessionIds: [attempt.id], reason,
+              }));
+              break;
+            case "operation":
+              // The direct-operation transport owns the correlated stop and receipt.
+              if (options.stopper) await step(() => options.stopper!.stop(attempt, cleanup));
+              break;
+            default:
+              if (options.stopper) await step(() => options.stopper!.stop(attempt, cleanup));
+              break;
+          }
+        }
+        if (await completeCleanupIfSettled(this.#database, connectionId, token)) settled.push(connectionId);
+      } finally {
+        await releaseConnectionCleanupClaim(this.#database, connectionId, token);
+      }
     }
     return { failures, settled, processed };
   }

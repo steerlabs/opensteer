@@ -279,6 +279,15 @@ export class HarnessAuthenticationCoordinator {
     return this.#liveAttempt(environmentId, harnessInstanceId) !== undefined;
   }
 
+  /** The time left on this exact attempt, or zero after it ends or is replaced. */
+  trackAttempt(environmentId: EnvironmentId, harnessInstanceId: HarnessInstanceId): () => number {
+    const attempt = this.#liveAttempt(environmentId, harnessInstanceId);
+    return () =>
+      attempt && this.#liveAttempt(environmentId, harnessInstanceId) === attempt
+        ? Math.max(0, attempt.hardExpiresAt - this.#now())
+        : 0;
+  }
+
   /**
    * Hears every attempt end: settled, cancelled, replaced by another way in, or
    * past its deadline. What an attempt opened for the person closes with it.

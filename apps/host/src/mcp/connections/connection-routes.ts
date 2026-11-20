@@ -307,50 +307,32 @@ export interface ConnectionCommandEffects {
     connectionId: string,
     reason: "disconnect" | "narrowed",
   ) => Promise<void>;
-  /** Ends what the connection's lineage holds open in this process, such as MCP sessions. */
-  readonly closeLineage?: (connectionId: string) => Promise<void>;
 }
-/**
- * The runtime's effects for connection commands: a revoke or expiry is driven to completion as
- * one durable cleanup (one pass at a time, also on a timer and at startup), a narrowing stops the
- * lineage's live Runs, and both close what this process holds open for the lineage.
- */
 export function connectionCommandEffects(options: {
   readonly store: Pick<
     import("@opensteer/database").OpensteerStore,
-    "driveConnectionCleanups" | "stopConnectionLineage"
+    "driveConnectionCleanups"
   >;
-  readonly closeLineage: (connectionId: string) => Promise<void>;
+  readonly closeLineage: (connectionId: string, revision?: number) => Promise<void>;
+  readonly stopper?: NonNullable<Parameters<
+    import("@opensteer/database").OpensteerStore["driveConnectionCleanups"]
+  >[0]>["stopper"];
   readonly onFailure: (error: unknown, connectionId?: string) => void;
   /** After a lineage was stopped: abort this process's work for sessions that ended. */
   readonly afterStop?: (connectionId: string, reason: "disconnect" | "narrowed") => Promise<void>;
 }): ConnectionCommandEffects & { readonly driveCleanups: () => Promise<void> } {
-  let pass: Promise<void> | null = null;
-  const afterStop = async (connectionId: string, reason: "disconnect" | "narrowed") => {
-    await options.afterStop?.(connectionId, reason).catch((error: unknown) =>
-      options.onFailure(error, connectionId),
-    );
+  const driveCleanups = async () => {
+    const { failures } = await options.store.driveConnectionCleanups({
+      ...(options.stopper ? { stopper: options.stopper } : {}),
+      onCleanup: async ({ connectionId, reason, minimumGrantRevision }) => {
+        const narrowed = reason === "narrowed";
+        await options.closeLineage(connectionId, narrowed ? minimumGrantRevision : undefined);
+        await options.afterStop?.(connectionId, narrowed ? "narrowed" : "disconnect");
+      },
+    });
+    for (const error of failures) options.onFailure(error);
   };
-  const driveCleanups = (): Promise<void> =>
-    (pass ??= (async () => {
-      try {
-        const { failures, processed } = await options.store.driveConnectionCleanups();
-        for (const error of failures) options.onFailure(error);
-        for (const connectionId of processed) await afterStop(connectionId, "disconnect");
-      } finally {
-        pass = null;
-      }
-    })());
-  return {
-    driveCleanups,
-    closeLineage: options.closeLineage,
-    stopLineage: async (userId, connectionId, reason) => {
-      if (reason === "disconnect") return driveCleanups();
-      const { failures } = await options.store.stopConnectionLineage(userId, connectionId, reason);
-      for (const error of failures) options.onFailure(error, connectionId);
-      await afterStop(connectionId, reason);
-    },
-  };
+  return { driveCleanups, stopLineage: driveCleanups };
 }
 export async function handleConnectionCommand(
   oauth: ConnectionOAuth,
@@ -363,7 +345,6 @@ export async function handleConnectionCommand(
     case "connection.revoke":
       // Authority ends when this commits; a retry still finishes stopping the lineage.
       await oauth.store.revoke(session.user.id, command.connectionId);
-      await effects.closeLineage?.(command.connectionId);
       await effects.stopLineage?.(session.user.id, command.connectionId, "disconnect");
       return { type: "connection.revoke" as const };
     case "connection.update": {
@@ -374,7 +355,6 @@ export async function handleConnectionCommand(
         ...(command.accessMode !== undefined ? { accessMode: command.accessMode } : {}),
         ...(command.grant !== undefined ? { grant: command.grant } : {}),
       });
-      await effects.closeLineage?.(command.connectionId);
       if (narrowed) await effects.stopLineage?.(session.user.id, command.connectionId, "narrowed");
       return { type: "connection.update" as const, connection };
     }

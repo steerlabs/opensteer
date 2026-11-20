@@ -193,7 +193,8 @@ export interface ShellHubOptions {
   readonly onAuditError: (sessionId: ShellSessionId, error: unknown) => void;
   readonly onControlError: (runnerId: RunnerId, error: unknown) => void;
   readonly openTimeoutMs?: number;
-  readonly runners: Pick<RunnerRegistry, "identityForRunner">;
+  readonly runners: Pick<RunnerRegistry, "identityForRunner"> &
+    Partial<Pick<RunnerRegistry, "agentsStoppedSince">>;
   readonly store: ShellHubStore;
   readonly terminationDeadlineMs?: number;
 }
@@ -446,6 +447,13 @@ export class ShellHub implements ShellControlStreamHandler {
     // their absence is: a caller that arrived as the Host was going is told
     // that, not that the computer it asked for happens to be offline.
     if (this.#closed) throw shuttingDown();
+    // Every shell is an agent's: while the person has agents stopped on that
+    // computer none opens, and the caller is told why, connected or not.
+    if (this.#options.runners.agentsStoppedSince?.(input.target))
+      throw rejection(
+        "target_offline",
+        `Agents are stopped on ${target.name} by its person. It accepts connections again when they resume them there.`,
+      );
     if (!this.#liveStream(input.target)) throw offline();
     const thread = await this.#options.store.getThreadForOwner(scope.threadId, scope.requestedBy);
     if (!thread) throw rejection("run_invalid", "This Run has ended.");

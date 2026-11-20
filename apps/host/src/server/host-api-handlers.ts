@@ -127,6 +127,7 @@ export function createHostApiHandlers(
 ): Omit<
   HostApiHandlers,
   | "personal.remoteAccess.get"
+  | "personal.accountLink.get"
   | "connections.list"
   | "connections.authorization.get"
   | `team.${string}`
@@ -232,6 +233,7 @@ export function createHostApiHandlers(
     | "apps.list"
     | "apps.get"
     | "personal.remoteAccess.get"
+    | "personal.accountLink.get"
     | "connections.list"
     | "connections.authorization.get"
     | `team.${string}`

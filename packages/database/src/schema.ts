@@ -926,6 +926,8 @@ export interface RunTable {
   voiceSessionId: Generated<string | null>;
   /** The task's origin connection, otherwise its activating input's; null for owner work. */
   connectionId: Generated<string | null>;
+  admittedGrantRevision: Generated<number | null>;
+  admittedAccessMode: Generated<ThreadAccessMode | null>;
   nextRunnerOrdinal: Generated<number>;
   /** The binding generation this Run acquired; null until it has one. */
   bindingGeneration: Generated<number | null>;
@@ -959,6 +961,11 @@ export interface RunTable {
  * The current attempt's outcome is the Run's own status.
  */
 export interface RunAttemptTable {
+  connectionId: Generated<string | null>;
+  admittedGrantRevision: Generated<number | null>;
+  admittedAccessMode: Generated<ThreadAccessMode | null>;
+  terminalEvidenceAt: Generated<Date | null>;
+  contactLostAt: Generated<Date | null>;
   id: RunAttemptId;
   runId: RunId;
   ordinal: number;
@@ -1184,6 +1191,11 @@ interface TriggerRevisionTable {
 }
 
 export interface TriggerWatchActivationTable {
+  connectionId: Generated<string | null>;
+  admittedGrantRevision: Generated<number | null>;
+  admittedAccessMode: Generated<ThreadAccessMode | null>;
+  terminalEvidenceAt: Generated<Date | null>;
+  contactLostAt: Generated<Date | null>;
   id: TriggerWatchActivationId;
   triggerId: TriggerId;
   revisionId: TriggerRevisionId;
@@ -1214,6 +1226,11 @@ export interface TriggerWatchActivationTable {
 }
 
 export interface TriggerOccurrenceTable {
+  connectionId: Generated<string | null>;
+  admittedGrantRevision: Generated<number | null>;
+  admittedAccessMode: Generated<ThreadAccessMode | null>;
+  terminalEvidenceAt: Generated<Date | null>;
+  contactLostAt: Generated<Date | null>;
   causalChainId: Generated<CausalChainId | null>;
   id: TriggerOccurrenceId;
   triggerId: TriggerId;
@@ -1936,10 +1953,15 @@ export interface AgentConnectionTable {
   redirectUri: Generated<string | null>;
   /** Contact was lost with a handed-off execution in this lineage while it was being stopped. */
   lastActionUncertainAt: Generated<Date | null>;
+  acknowledgedUncertaintyAt: Generated<Date | null>;
   /** What the person should check: the Device, tool, target and when. */
   lastActionUncertain: Generated<Readonly<Record<string, unknown>> | null>;
   /** Disconnect or expiry: one durable cleanup, driven to completion by the Home. */
-  cleanupReason: Generated<"revoked" | "expired" | null>;
+  cleanupReason: Generated<"revoked" | "expired" | "narrowed" | null>;
+  cleanupMinimumGrantRevision: Generated<number | null>;
+  cleanupMaximumMode: Generated<ThreadAccessMode | null>;
+  cleanupClaimToken: Generated<string | null>;
+  cleanupClaimExpiresAt: Generated<Date | null>;
   cleanupRequestedAt: Generated<Date | null>;
   cleanupCompletedAt: Generated<Date | null>;
   /** The person removed this revoked connection from their list. */
@@ -2005,6 +2027,11 @@ export interface DatabaseSchema {
     versionAuthors: JsonColumn<Record<string, "catalog" | "agent">>;
   };
   pluginExecutions: {
+    connectionId: Generated<string | null>;
+    admittedGrantRevision: Generated<number | null>;
+    admittedAccessMode: Generated<ThreadAccessMode | null>;
+    terminalEvidenceAt: Generated<Date | null>;
+    contactLostAt: Generated<Date | null>;
     id: string;
     ownerUserId: UserId;
     threadId: ThreadId;

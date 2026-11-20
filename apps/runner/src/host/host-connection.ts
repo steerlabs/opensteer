@@ -1037,17 +1037,28 @@ export class ReconnectingHostConnection {
       this.#ticketWaiters.set(requestId, { module, reject, resolve });
     });
     try {
-      await sendWireMessage(socket, {
-        ...this.#fence.fence,
-        module,
-        requestId,
-        type: "runner.auxiliary.ticket-request",
-      });
-      return await withTimeout(issued, handshakeTimeoutMs, {
-        abortFallback: "Runner connection closed",
-        signal,
-        timeoutError: () => new Error(`Host did not issue a ${module} module ticket`),
-      });
+      // The answer is awaited together with the request's own write, never
+      // after it: a connection that closes while the request is still being
+      // written rejects the answer, and that rejection must already have a
+      // listener, or it surfaces as unhandled.
+      const [, ticket] = await withTimeout(
+        Promise.all([
+          sendWireMessage(socket, {
+            ...this.#fence.fence,
+            module,
+            requestId,
+            type: "runner.auxiliary.ticket-request",
+          }),
+          issued,
+        ]),
+        handshakeTimeoutMs,
+        {
+          abortFallback: "Runner connection closed",
+          signal,
+          timeoutError: () => new Error(`Host did not issue a ${module} module ticket`),
+        },
+      );
+      return ticket;
     } finally {
       this.#ticketWaiters.delete(requestId);
     }

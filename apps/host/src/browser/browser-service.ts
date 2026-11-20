@@ -1584,11 +1584,15 @@ export class BrowserService {
               broker?.abort("Browser opening failed."),
             )?.catch(() => undefined);
           }
-          if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled);
+          if (settled?.outcome.kind === "failed")
+            throw error instanceof OpensteerError && error.code === "forbidden"
+              ? error
+              : this.#tabOpenFailure(settled);
         } catch (settlementError) {
           if (
-            settlementError instanceof OpensteerError &&
-            settlementError.reason === "browser-tab-open-failed"
+            settlementError === error ||
+            (settlementError instanceof OpensteerError &&
+              settlementError.reason === "browser-tab-open-failed")
           )
             throw settlementError;
         }
@@ -1745,12 +1749,31 @@ export class BrowserService {
               command.url && !agent ? { ownerId, typed: command.typed === true } : undefined,
             );
             const openingBinding = binding;
-            pendingFinish = async () => {
-              if (agent) {
-                await this.admitAgentBrowser(agent);
+            const openingSessionId = opening.sessionId!;
+            const openingProfileId =
+              "profileId" in opening ? ((opening.profileId as BrowserProfileId) ?? null) : null;
+            // The exact profile, or Guest, again at the start and once the browser is up; a
+            // browser this open started is stopped when either check refuses it.
+            const admitExact = async () => {
+              if (!agent) return;
+              try {
+                await this.admitAgentBrowser(agent, "read-write", [], this.#repository, false, {
+                  profileId: openingProfileId,
+                });
                 await this.#requireAgentAccess(runnerId);
+              } catch (error) {
+                await this.stop(ownerId, openingSessionId).catch(() => undefined);
+                throw error;
               }
+            };
+            pendingFinish = async () => {
+              // A start refused before it finished is still settled, so its attach is observed.
+              await admitExact().catch(async (error: unknown) => {
+                await finish().catch(() => undefined);
+                throw error;
+              });
               await finish();
+              await admitExact();
               if (!tabId)
                 throw this.#tabOpenRefusal(
                   "browser-tab-open-outcome-unknown",
@@ -1794,7 +1817,11 @@ export class BrowserService {
             outcome: { kind: "failed", reason: "failed" },
           });
           const settled = await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey);
-          if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled, error);
+          // A refusal of the task's authority stays a refusal; anything else failed to open.
+          if (settled?.outcome.kind === "failed")
+            throw error instanceof OpensteerError && error.code === "forbidden"
+              ? error
+              : this.#tabOpenFailure(settled, error);
         }
         throw error;
       }
@@ -1989,7 +2016,30 @@ export class BrowserService {
     return new Set((await this.#repository.authorizedPlaceThreadIds?.(ownerId, ids)) ?? []);
   }
 
-  closeTab(ownerId: UserId, command: BrowserTabCloseCommand): Promise<BrowserTabCloseResult> {
+  async closeEngineSignInPage(ownerId: UserId, tabId: TabId, idempotencyKey: string): Promise<void> {
+    const tab = await this.#workspaceTabs?.get(ownerId, tabId, true);
+    const binding = tab?.pageBinding;
+    if (!tab?.closedAt || !binding) return;
+    const broker = this.#brokers.get(binding.sessionId);
+    if (!broker?.live || !broker.pageOf(binding.surfaceId)) return;
+    await this.closeTab(
+      ownerId,
+      {
+        type: "browser.tab.close",
+        sessionId: binding.sessionId,
+        surfaceId: binding.surfaceId,
+        inventoryRevision: broker.inventoryRevision,
+        idempotencyKey,
+      },
+      true,
+    );
+  }
+
+  closeTab(
+    ownerId: UserId,
+    command: BrowserTabCloseCommand,
+    durableClose = false,
+  ): Promise<BrowserTabCloseResult> {
     return this.#serializeKey(command.sessionId, async () => {
       const key = `${ownerId}:${command.idempotencyKey}`;
       const fingerprint = createHash("sha256").update(JSON.stringify(command)).digest("hex");
@@ -2011,7 +2061,8 @@ export class BrowserService {
           code: "conflict",
           message: "The browser computer is unavailable or needs an update.",
         });
-      if (broker.inventoryRevision !== command.inventoryRevision)
+      const durable = durableClose && broker.tabRestoreVersion;
+      if (!durable && broker.inventoryRevision !== command.inventoryRevision)
         throw new OpensteerError({
           code: "conflict",
           reason: staleBrowserTabInventoryReason,
@@ -2026,6 +2077,7 @@ export class BrowserService {
             parameters: {
               surfaceId: command.surfaceId,
               inventoryRevision: broker.inventoryRevision,
+              ...(durable ? { durable: true } : {}),
             },
           },
         })
@@ -3277,7 +3329,14 @@ export class BrowserService {
       opened.session.id,
       input.ownerId,
     );
-    if (!openedRecord || !(await this.agentMayAccessSession(input, openedRecord))) {
+    // The post-open check refusing, by throwing or otherwise, stops the browser it started.
+    const reachable =
+      openedRecord &&
+      (await this.agentMayAccessSession(input, openedRecord).catch(async (error: unknown) => {
+        await this.stop(input.ownerId, opened.session.id).catch(() => undefined);
+        throw error;
+      }));
+    if (!reachable) {
       await this.stop(input.ownerId, opened.session.id).catch(() => undefined);
       throw new OpensteerError({
         code: "forbidden",
@@ -3843,7 +3902,7 @@ export class BrowserService {
       this.#deviceAttachments.delete(deviceAttachmentId);
       unsubscribe();
       if (scriptAttachmentId && scriptOpening) {
-        void scriptOpening.then(() => broker.sendHostCommand({
+        void scriptOpening.then(() => broker.sendScriptCleanup({
           type: "cdp.command", scriptAttachmentId, requestId: randomUUID(),
           command: { method: browserHostMethods.closeScriptAttachment },
         })).catch(this.#onError);
@@ -5147,7 +5206,9 @@ export class BrowserService {
         grantRevision: authority.execution.agentConnection?.grantRevision ?? null,
         agentConnectionId: authority.execution.agentConnection?.agentConnectionId ?? null,
       });
-      if (!executionAccess(authority.execution, access))
+      // Exactly the level asked for: the intersection can be read where a write was requested.
+      const level = executionAccess(authority.execution, access);
+      if (!level || (access === "read-write" && level !== "read-write"))
         throw new OpensteerError({
           code: "forbidden",
           message:
@@ -5882,6 +5943,8 @@ export class HostedBrowserBroker {
     string,
     {
       readonly expectedType: "cdp.result";
+      readonly removeAbort: () => void;
+      readonly bounded: boolean;
       submitted: boolean;
       readonly reject: (error: unknown) => void;
       readonly resolve: (response: BrowserCdpResponse) => void;
@@ -5894,6 +5957,7 @@ export class HostedBrowserBroker {
    * arriving while an import is outstanding cannot be taken for an export's.
    */
   readonly #pendingStateImports = new Map<string, PendingStateImport>();
+  #scriptCleanup = 0;
   #commandTail = Promise.resolve();
   #runtimeFrameTail = Promise.resolve();
   #stateImportTail = Promise.resolve();
@@ -6460,11 +6524,25 @@ export class HostedBrowserBroker {
   }
 
   get supportsBrowserScriptAttachments(): boolean {
-    return this.#snapshot?.scriptAttachments === 1;
+    return this.#snapshot?.scriptAttachments === 1 && this.supportsScriptCancellation;
+  }
+
+  get supportsScriptCancellation(): boolean {
+    return this.#snapshot?.scriptCancellation === 1;
   }
 
   get supportsCdpReplyBudget(): boolean {
     return this.#snapshot?.cdpReplyBudget === 1;
+  }
+
+  async sendScriptCleanup(message: BrowserCdpRequest): Promise<void> {
+    if (this.#scriptCleanup >= 256) throw new Error("Browser script cleanup queue is full.");
+    this.#scriptCleanup++;
+    try {
+      await this.#sendCommand(message, AbortSignal.timeout(5_000));
+    } finally {
+      this.#scriptCleanup--;
+    }
   }
 
   requestCdp(message: BrowserCdpRequest, signal?: AbortSignal): Promise<BrowserCdpResponse> {
@@ -6501,7 +6579,26 @@ export class HostedBrowserBroker {
         );
       }, agentRequestTimeoutMs);
       timeout?.unref();
-      const pending = { expectedType: "cdp.result" as const, submitted: false, reject, resolve, timeout };
+      const cancel = () => {
+        if (!pending.submitted || this.#pendingCdpRequests.get(parsed.requestId) !== pending)
+          return;
+        void this.sendScriptCleanup({
+          type: "cdp.command",
+          requestId: randomUUID(),
+          ...(parsed.scriptAttachmentId ? { scriptAttachmentId: parsed.scriptAttachmentId } : {}),
+          command: {
+            method: browserHostMethods.cancelScriptCommand,
+            parameters: { requestId: parsed.requestId },
+          },
+        }).catch((error: unknown) => console.error("browser.script.cancel.failed", error));
+      };
+      const pending = {
+        expectedType: "cdp.result" as const, submitted: false, reject, resolve, timeout,
+        bounded: parsed.replyBudget !== undefined,
+        removeAbort: () => signal?.removeEventListener("abort", cancel),
+      };
+      if (this.supportsScriptCancellation && parsed.replyBudget)
+        signal?.addEventListener("abort", cancel, { once: true });
       this.#pendingCdpRequests.set(parsed.requestId, pending);
       void this.#sendCommand(parsed, signal, () => { pending.submitted = true; }).catch((error) => {
         if (this.#pendingCdpRequests.get(parsed.requestId) !== pending) return;
@@ -6510,6 +6607,7 @@ export class HostedBrowserBroker {
           return;
         }
         clearTimeout(pending.timeout);
+        pending.removeAbort();
         this.#pendingCdpRequests.delete(parsed.requestId);
         pending.reject(error);
       });
@@ -7149,9 +7247,29 @@ export class HostedBrowserBroker {
     const pending = this.#pendingCdpRequests.get(message.requestId);
     if (!pending) return;
     clearTimeout(pending.timeout);
+    pending.removeAbort();
     this.#pendingCdpRequests.delete(message.requestId);
     if (message.type === "cdp.error") {
-      pending.reject(new BrowserCdpRefusal(agentProtocolError(message.error)));
+      const cause = agentProtocolError(message.error);
+      if (pending.bounded) {
+        const words = {
+          bad_message: "The browser rejected the CDP command or its parameters.",
+          conflict: "The browser could not complete the command in its current state.",
+          forbidden: "This CDP operation is outside the browser attachment's authority.",
+          internal: "The browser command failed.",
+          not_found: "The browser target or CDP session no longer exists.",
+        };
+        if (message.error.code === "internal") console.error("browser.script.command.failed", cause);
+        pending.reject(new BrowserCdpRefusal(new OpensteerError({
+          code: cause.code,
+          message: words[message.error.code],
+          retryable: cause.retryable,
+          ...(cause.reason === "browser-reply-limit" ||
+              cause.reason === "browser-command-cancelled" ||
+              cause.reason === "browser-input-canceled" ||
+              cause.reason === "browser-tab-open-closed" ? { reason: cause.reason } : {}),
+        })));
+      } else pending.reject(new BrowserCdpRefusal(cause));
       return;
     }
     if (message.type !== pending.expectedType) {
@@ -7915,6 +8033,7 @@ export class HostedBrowserBroker {
       this.#pendingStateImports.clear();
       for (const pending of this.#pendingCdpRequests.values()) {
         clearTimeout(pending.timeout);
+        pending.removeAbort();
         pending.reject(
           pending.submitted && pending.timeout === undefined
             ? browserCommandOutcomeUnknown()

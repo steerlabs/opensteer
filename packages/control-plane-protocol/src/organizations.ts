@@ -1,3 +1,4 @@
+import { CloudComputerDeletionSchema } from "./cloud-computer-deletion.js";
 import {
   AgentSessionIdSchema,
   DeploymentIdSchema,
@@ -243,6 +244,7 @@ export const WorkAssignmentViewSchema = z.strictObject({
   suspended: z.boolean(),
   deleted: z.boolean(),
   retainUntil: instant.nullable(),
+  deletion: CloudComputerDeletionSchema.optional(),
   audit: WorkAuditStatusSchema,
 });
 export type WorkAssignmentView = z.infer<typeof WorkAssignmentViewSchema>;

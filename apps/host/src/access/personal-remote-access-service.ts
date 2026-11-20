@@ -58,6 +58,8 @@ import {
   type IssuePersonalPairingCodeResponse,
   type PersonalPairingCodeCredential,
   type PersonalRemoteAccessStatus,
+  PersonalAccountLinkStatusSchema,
+  type PersonalAccountLinkStatus,
 } from "@opensteer/protocol";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { HostKeyPair } from "../identity/host-keys.js";
@@ -676,6 +678,37 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     });
     await this.#executeAccountOperation(linked);
     return this.status();
+  }
+
+  /** The owner's view of the Account link alone, whatever Remote access is doing. */
+  async accountLinkStatus(session: AuthenticatedSession): Promise<PersonalAccountLinkStatus> {
+    const status = await this.administration.status(session);
+    let managed = false;
+    try {
+      await refuseManagedAccountUnlink(this.#database);
+    } catch {
+      managed = true;
+    }
+    return PersonalAccountLinkStatusSchema.parse({
+      accountIssuer: status.accountIssuer,
+      accountLink: status.access.accountLink,
+      authorityEnvelope: status.authorityEnvelope,
+      managed,
+    });
+  }
+
+  /**
+   * Ends the Account link on this Host's own authority, as the desktop
+   * executor would step it: the Account's sessions here first, then the link.
+   */
+  async unlinkAccount(
+    caller: { readonly session: AuthenticatedSession },
+    afterResponse?: (effect: () => void) => void,
+  ): Promise<void> {
+    await requirePersonalAdministrator(this.#database, caller.session);
+    await refuseManagedAccountUnlink(this.#database);
+    await this.revokeAccountSessions(caller, afterResponse);
+    await this.removeAccountLink(caller, afterResponse);
   }
 
   async revokeAccountSessions(

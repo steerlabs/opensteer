@@ -20,7 +20,7 @@ import type { Kysely, Selectable } from "kysely";
 import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { databaseOperation } from "./operation-budget.js";
-import { lineageOutstanding } from "./connection-disconnect.js";
+import { connectionAttempts, outstandingAttempts } from "./connection-disconnect.js";
 import { jsonValue } from "./store-primitives.js";
 
 export class AgentConnectionStore {
@@ -143,9 +143,9 @@ export class AgentConnectionStore {
     const states = await Promise.all(
       rows.map(async (row): Promise<AgentConnectionState> => {
         if (row.revokedAt === null && row.expiresAt > now) return "active";
-        if (row.cleanupCompletedAt) return "stopped";
-        const outstanding = await lineageOutstanding(this.database, row.id);
-        if (outstanding.handedOff) return "stopping";
+        const outstanding = outstandingAttempts(await connectionAttempts(this.database, row.id));
+        if (outstanding.some((attempt) => attempt.handedOff)) return "stopping";
+        if (outstanding.length === 0 && row.cleanupCompletedAt) return "stopped";
         return row.revokedAt === null ? "expired" : "revoked";
       }),
     );
@@ -156,7 +156,7 @@ export class AgentConnectionStore {
     await requirePersonalOwner(this.database, userId);
     await this.database
       .updateTable("agentConnections")
-      .set({ lastActionUncertainAt: null, lastActionUncertain: null })
+      .set({ lastActionUncertainAt: null, lastActionUncertain: null, acknowledgedUncertaintyAt: this.now() })
       .where("id", "=", id)
       .where("userId", "=", userId)
       .execute();
@@ -172,7 +172,7 @@ export class AgentConnectionStore {
       readonly grant?: AgentGrant;
     },
   ): Promise<{ readonly connection: AgentConnection; readonly narrowed: boolean }> {
-    return withPersonalTransaction(this.database, async (tx) => {
+    return commitPersonalMutation(this.database, async (tx) => {
       await requirePersonalOwner(tx, userId);
       const current = await tx
         .selectFrom("agentConnections")
@@ -205,6 +205,13 @@ export class AgentConnectionStore {
           accessMode,
           grant: jsonValue(grant),
           grantRevision: current.grantRevision + 1,
+          ...(narrowed ? {
+            cleanupReason: "narrowed" as const,
+            cleanupRequestedAt: this.now(),
+            cleanupMinimumGrantRevision: current.grantRevision + 1,
+            cleanupMaximumMode: accessMode,
+            cleanupCompletedAt: null,
+          } : {}),
         })
         .where("id", "=", current.id)
         .returningAll()
@@ -239,6 +246,7 @@ export class AgentConnectionStore {
           // restart, and its state is read from what is still outstanding.
           cleanupReason: "revoked",
           cleanupRequestedAt: this.now(),
+          cleanupCompletedAt: null,
         })
         .where("id", "=", row.id)
         .execute();
@@ -247,33 +255,39 @@ export class AgentConnectionStore {
   }
   /** Takes an ended connection off the list; an active one must be disconnected first. */
   async remove(userId: UserId, id: string): Promise<void> {
-    await requirePersonalOwner(this.database, userId);
-    const row = await this.database
-      .selectFrom("agentConnections")
-      .select(["revokedAt", "expiresAt", "cleanupCompletedAt"])
-      .where("id", "=", id)
-      .where("userId", "=", userId)
-      .executeTakeFirst();
-    if (!row) return;
-    if (row.revokedAt === null && row.expiresAt > this.now())
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Disconnect this agent before removing it.",
-      });
-    // A connection whose work has not finished stopping stays visible until it has.
-    if (row.cleanupCompletedAt === null)
-      throw new OpensteerError({
-        code: "conflict",
-        reason: "cleanup-outstanding",
-        message: "This agent's work is still stopping. Remove it once it has stopped.",
-      });
-    await this.database
-      .updateTable("agentConnections")
-      .set({ removedAt: this.now() })
-      .where("id", "=", id)
-      .where("userId", "=", userId)
-      .where("removedAt", "is", null)
-      .execute();
+    await commitPersonalMutation(this.database, async (tx) => {
+      await requirePersonalOwner(tx, userId);
+      const row = await tx
+        .selectFrom("agentConnections")
+        .select(["revokedAt", "expiresAt", "cleanupCompletedAt"])
+        .forNoKeyUpdate()
+        .where("id", "=", id)
+        .where("userId", "=", userId)
+        .executeTakeFirst();
+      if (!row) return;
+      if (row.revokedAt === null && row.expiresAt > this.now())
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Disconnect this agent before removing it.",
+        });
+      // A connection whose work has not finished stopping stays visible until it has.
+      if (
+        row.cleanupCompletedAt === null ||
+        outstandingAttempts(await connectionAttempts(tx, id)).length
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "cleanup-outstanding",
+          message: "This agent's work is still stopping. Remove it once it has stopped.",
+        });
+      await tx
+        .updateTable("agentConnections")
+        .set({ removedAt: this.now() })
+        .where("id", "=", id)
+        .where("userId", "=", userId)
+        .where("removedAt", "is", null)
+        .execute();
+    });
   }
 }
 function view(row: Selectable<AgentConnectionTable>, state: AgentConnectionState): AgentConnection {

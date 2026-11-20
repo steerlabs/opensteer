@@ -944,16 +944,22 @@ export class TabService implements TabServicePort {
   async requireOpenPage(claims: RunToolScope, tabId: TabId): Promise<PageAgentBinding> {
     return this.#bindPage({ kind: "run", claims }, tabId);
   }
-  async bindBrowserScript(actor: BrowserBindingTabActor, tabId: TabId): Promise<PageAgentBinding> {
-    return this.#bindPage(actor, tabId);
+  async bindBrowserScript(
+    actor: BrowserBindingTabActor,
+    tabId: TabId,
+    options?: { savedProfileOnly: boolean },
+  ): Promise<PageAgentBinding> {
+    return this.#bindPage(actor, tabId, options?.savedProfileOnly);
   }
-  async #bindPage(actor: Extract<TabActor, { kind: "run" | "browser-binding" }>, tabId: TabId) {
+  async #bindPage(actor: Extract<TabActor, { kind: "run" | "browser-binding" }>, tabId: TabId, savedProfileOnly = false) {
     const row = await this.#row(actor, tabId);
     if (row.kind !== "page")
       throw new OpensteerError({
         code: "bad_request",
         message: "Use Browser Harness only with a page tab.",
       });
+    if (savedProfileOnly && !row.profileId)
+      throw new OpensteerError({ code: "forbidden", message: "This browser connection requires a granted saved profile. Guest tabs are unavailable." });
     await this.options.authorize(actor, row, this.options.store.database);
     if (actor.kind === "browser-binding") actor.signal?.throwIfAborted();
     const binding = actor.kind === "run"

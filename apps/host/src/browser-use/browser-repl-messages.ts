@@ -4,6 +4,7 @@ export const browserReplLimits = {
   handles: 16,
   pending: 32,
   totalPending: 128,
+  bindingPending: 64,
   requests: 1_024,
   requestBytes: 4 * 1024 * 1024,
   depth: 32,

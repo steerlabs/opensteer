@@ -89,6 +89,7 @@ const ControlPayloadSchema = z.discriminatedUnion("type", [
       runId: RunIdSchema,
       threadId: ThreadIdSchema,
       type: z.literal("run.interrupt"),
+      expectedBindingGeneration: z.number().int().positive().nullable().optional(),
     })
     .passthrough(),
   z
@@ -804,7 +805,16 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         });
         // The plan (mode, tools, packages) was built for one grant revision and mode; a change
         // committed while planning means this command describes authority that no longer holds.
-        if (authority.agentConnection) await this.#assertPlannedAuthority(context.run, authority);
+        if (authority.agentConnection) {
+          await this.#assertPlannedAuthority(context.run, authority);
+          await this.#store.recordConnectionRunHandoff({
+            runId: context.run.id,
+            bindingGeneration: binding.bindingGeneration,
+            connectionId: authority.agentConnection.agentConnectionId,
+            grantRevision: authority.agentConnection.grantRevision,
+            mode: authority.mode,
+          });
+        }
       },
       connectionGeneration: identity.connectionGeneration,
     };
@@ -980,6 +990,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       case "run.interrupt":
         runnerCommand = {
           ...base,
+          ...(payload.data.expectedBindingGeneration
+            ? { bindingGeneration: payload.data.expectedBindingGeneration }
+            : {}),
           runId: payload.data.runId,
           threadId: payload.data.threadId,
           type: "run.interrupt",

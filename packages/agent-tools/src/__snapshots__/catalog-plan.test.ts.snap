@@ -387,9 +387,26 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           ],
           "type": "string",
         },
+        "operationKey": {
+          "description": "Connected agents only: your key for this call. Repeat the same call with it to resume one that is waiting on the person.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string",
+        },
         "query": {
           "maxLength": 200,
           "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Connected agents only: why you are doing this, shown to the person who reviews it.",
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "taskId": {
+          "description": "Connected agents only: your current task from an earlier result. Omit to continue or start one.",
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
       },
@@ -401,12 +418,25 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "connection",
     ],
     "description": "Open a website, exact desktop window, Agent Phone or iPhone screen, or published app in the person's shared tab list. A profile stays on its home computer; Guest defaults to the hosting computer. windowId comes from computer_use app.windows(); bundleId opens or launches that approved app and binds its chosen window. Phone and app targets reuse their one tab. Publishing an app alone does not open it. The returned tabId works with tab tools and show_to_person; opening does not move the person's selection.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "operationKey": {
+          "description": "Connected agents only: your key for this call. Repeat the same call with it to resume one that is waiting on the person.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Connected agents only: why you are doing this, shown to the person who reviews it.",
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string",
+        },
         "target": {
           "anyOf": [
             {
@@ -626,6 +656,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
             },
           ],
         },
+        "taskId": {
+          "description": "Connected agents only: your current task from an earlier result. Omit to continue or start one.",
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
       },
       "required": [
         "target",
@@ -638,12 +673,25 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "connection",
     ],
     "description": "Remove these entries from the person's tab list. This does not quit a desktop app, stop a phone, stop agent work or stop an app server. Each ID is independent; closed lists successes and failed gives per-tab errors. Use app_stop to stop an app server.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "operationKey": {
+          "description": "Connected agents only: your key for this call. Repeat the same call with it to resume one that is waiting on the person.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Connected agents only: why you are doing this, shown to the person who reviews it.",
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string",
+        },
         "tabIds": {
           "description": "Tab ID(s) from tab_list, tab_open, or a bound computer_use handle.",
           "items": {
@@ -654,6 +702,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "maxItems": 500,
           "minItems": 1,
           "type": "array",
+        },
+        "taskId": {
+          "description": "Connected agents only: your current task from an earlier result. Omit to continue or start one.",
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
         },
       },
       "required": [

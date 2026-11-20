@@ -152,7 +152,11 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     authority: Authority,
     context: RunnerStatementContext,
   ) => Promise<Exclude<Disposition, "terminal-noop">>,
-  options?: { readonly now: number; readonly allowExpiredLease: boolean },
+  options?: {
+    readonly now: number;
+    readonly allowExpiredLease: boolean;
+    readonly onRunLoaded?: (run: RunnerStatementContext["run"]) => void;
+  },
 ): Promise<
   { readonly throughOrdinal: number; readonly replayed: boolean } | { readonly finishing: true }
 > {
@@ -183,6 +187,7 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     });
   const { receiptRunnerId, receiptRunnerBootId, receiptBindingGeneration, receiptDigest, ...run } =
     loaded;
+  options?.onRunLoaded?.(run);
   const digest = reportedDigest(statement);
   if (receiptDigest) {
     if (
