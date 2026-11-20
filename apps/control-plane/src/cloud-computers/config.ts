@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import {
   CloudComputerBootReleaseSchema,
-  CloudComputerBootResponseSchema,
   CloudComputerHostnameSchema,
   CloudComputerLocationSchema,
   CloudComputerPlanSchema,
@@ -43,7 +42,6 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
       })
       .pipe(CloudComputerBootReleaseSchema.merge(CloudComputerReleaseSchema)),
   );
-  const backup = CloudComputerBootResponseSchema.shape.backup.shape;
   return {
     provisionerEmail: read(
       "PROVISIONER_EMAIL",
@@ -74,12 +72,15 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
           .pipe(CloudComputerPlanSchema.shape.amountMinor),
       ),
     },
-    backup: {
-      endpoint: read("BACKUP_ENDPOINT", backup.endpoint),
-      bucket: read("BACKUP_BUCKET", backup.bucket),
-      accessKeyId: read("BACKUP_ACCESS_KEY_ID", backup.accessKeyId),
-      secretAccessKey: read("BACKUP_SECRET_ACCESS_KEY", backup.secretAccessKey),
-    },
+    ipv6Enabled:
+      env[`${prefix}IPV6`] === undefined && env[`${prefix}IPV6_FILE`] === undefined
+        ? false
+        : read("IPV6", z.enum(["off", "on"])) === "on",
+    interval:
+      env[`${prefix}PRICE_INTERVAL`] === undefined &&
+      env[`${prefix}PRICE_INTERVAL_FILE`] === undefined
+        ? ("month" as const)
+        : read("PRICE_INTERVAL", z.enum(["day", "week", "month", "year"])),
   };
 }
 

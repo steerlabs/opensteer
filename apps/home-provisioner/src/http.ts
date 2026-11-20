@@ -106,3 +106,17 @@ function retryAt(headers: Headers): number {
   }
   return now + 1_000;
 }
+
+export function provisionerFailure(error: unknown) {
+  if (!(error instanceof RemoteRequestError)) return { event: "home-provisioner.pass.failed" };
+  const { service, status, retryAt } = error;
+  const event =
+    service === "Account" && (status === 401 || status === 403)
+      ? "home-provisioner.account.refused"
+      : service === "Account" && status === 409
+        ? "home-provisioner.lease.conflict"
+        : status === 429
+          ? "home-provisioner.provider.rate-limited"
+          : "home-provisioner.pass.failed";
+  return { event, service, status, retryAt };
+}

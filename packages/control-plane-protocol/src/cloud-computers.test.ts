@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CloudComputerBootRequestSchema,
+  CloudComputerBootCompleteRequestSchema,
   CloudComputerDeleteRequestSchema,
   CloudComputerDesiredResponseSchema,
   CloudComputerIdSchema,
@@ -17,6 +18,7 @@ const desired = {
   id: "cc_00000000-0000-4000-8000-000000000001",
   hostname: "home-1.example.com",
   generation: 1,
+  revision: 1,
   state: "active",
   region: "ash",
   serverType: "cpx22",
@@ -34,6 +36,7 @@ const identity = {
 const report = {
   id: desired.id,
   generation: 1,
+  revision: 1,
   phase: "ready",
   providerServerId: 27,
   ipv4: "192.0.2.42",
@@ -151,4 +154,16 @@ it("validates boot inputs and keeps installation secrets off Account views", () 
       setupCode: "leak",
     }),
   ).not.toHaveProperty("setupCode");
+});
+
+it("requires a revision on reports and validates a boot-complete identity", () => {
+  expect(CloudComputerReportSchema.safeParse({ ...report, revision: undefined }).success).toBe(
+    false,
+  );
+  expect(CloudComputerReportResponseSchema.parse({ recorded: false })).toEqual({ recorded: false });
+  const body = { hostname: desired.hostname, bootstrapToken: "issued_token", identity };
+  expect(CloudComputerBootCompleteRequestSchema.parse(body)).toEqual(body);
+  expect(
+    CloudComputerBootCompleteRequestSchema.safeParse({ ...body, identity: undefined }).success,
+  ).toBe(false);
 });

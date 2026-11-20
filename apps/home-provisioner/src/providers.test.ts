@@ -3,6 +3,7 @@ import { CloudComputerIdSchema } from "@opensteer/control-plane-protocol";
 import { expect, it, vi } from "vitest";
 import { CloudflareDns } from "./cloudflare.js";
 import { HetznerCloud } from "./hetzner.js";
+import { provisionerFailure, RemoteRequestError } from "./http.js";
 
 const token = "provider_credential_must_never_escape";
 const zoneId = "0".repeat(32);
@@ -446,4 +447,77 @@ it("keeps echoed tokens out of provider errors and logs", async () => {
     stderr.mockRestore();
     stdout.mockRestore();
   }
+});
+
+it("recovers a labelled server by recorded ID or deterministic name when its labels drift", async () => {
+  const drifted = {
+    ...baseVm,
+    labels: { "opensteer.com/cloud-computer": "changed" },
+    status: "deleting",
+  };
+  await withServer(
+    [
+      { method: "GET", path: "/v1/servers", response: { servers: [], meta: meta() } },
+      { method: "GET", path: "/v1/servers/12", response: { server: drifted } },
+      { method: "GET", path: "/v1/servers", response: { servers: [], meta: meta() } },
+      {
+        method: "GET",
+        path: "/v1/servers",
+        matches: (url) => expect(url.searchParams.get("name")).toBe(name),
+        response: { servers: [drifted], meta: meta() },
+      },
+    ],
+    async (origin) => {
+      const provider = hetzner(origin);
+      const expected = [{ id: 12, generation: 3, status: "deleting" }];
+      await expect(
+        provider.find(id, signal, { generation: 3, providerServerId: 12 }),
+      ).resolves.toMatchObject(expected);
+      await expect(provider.find(id, signal, { generation: 3 })).resolves.toMatchObject(expected);
+    },
+  );
+});
+
+it("uses forced power-off when graceful shutdown cannot turn the VM off", async () => {
+  await withServer(
+    [
+      { method: "POST", path: "/v1/servers/12/actions/shutdown", response: action() },
+      {
+        method: "GET",
+        path: "/v1/servers/12",
+        response: { server: { ...baseVm, status: "running" } },
+      },
+      {
+        method: "GET",
+        path: "/v1/servers/12",
+        response: { server: { ...baseVm, status: "running" } },
+      },
+      { method: "POST", path: "/v1/servers/12/actions/poweroff", response: action() },
+    ],
+    async (origin) => {
+      const check = vi.fn(async () => {});
+      const wait = vi.fn(async () => {
+        throw new DOMException("Grace period elapsed", "TimeoutError");
+      });
+      await hetzner(origin, wait).powerOff(12, signal, check);
+      expect(check).toHaveBeenCalledTimes(2);
+    },
+  );
+});
+
+it("reports separate Account denial, lease contention, and provider rate-limit events", () => {
+  expect(provisionerFailure(new RemoteRequestError("Account", 403))).toMatchObject({
+    event: "home-provisioner.account.refused",
+    status: 403,
+  });
+  expect(provisionerFailure(new RemoteRequestError("Account", 409))).toMatchObject({
+    event: "home-provisioner.lease.conflict",
+    status: 409,
+  });
+  expect(provisionerFailure(new RemoteRequestError("Hetzner", 429, 4000))).toEqual({
+    event: "home-provisioner.provider.rate-limited",
+    service: "Hetzner",
+    status: 429,
+    retryAt: 4000,
+  });
 });

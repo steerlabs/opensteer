@@ -68,6 +68,8 @@ export const databaseLockOrder = [
   // Cloud session ownership precedes Account capacity, Deployment identity and origin.
   "advisory:cloud",
   "advisory:account-capacity",
+  "advisory:cloud-computer-backup-pool",
+  "advisory:cloud-computer-billing-reconcile",
   "advisory:deployment",
   "advisory:origin",
   "advisory:browser-source-pairing",
@@ -101,6 +103,9 @@ export const databaseLockOrder = [
   "personal_settings",
   // Run admission and control precede Occurrences and browser execution state.
   "agent_connections",
+  // A session and its operations are admitted under their connection, before any Run.
+  "agent_sessions",
+  "agent_operations",
   "runs",
   "agent_control_requests",
   "trigger_control_requests",
@@ -274,6 +279,7 @@ export const databaseLockOrder = [
   "control-plane:hosted_oauth_broker_attempts",
   "control-plane:hosted_oauth_broker_refreshes",
   "control-plane:portal_sessions",
+  "control-plane:cloud_computer_provisioner_lease",
   "control-plane:cloud_computer_stripe_events",
   // Account authority precedes session, notification and Personal-link mutations.
   "control-plane:users",
@@ -299,6 +305,7 @@ export const databaseLockOrder = [
   "control-plane:cloud_computer_checkouts",
   "control-plane:cloud_computers",
   "control-plane:cloud_computer_egress_endpoints",
+  "control-plane:cloud_computer_backup_targets",
   "control-plane:cloud_deployment_operations",
   "control-plane:oauth_refresh_token",
   "control-plane:oauth_consents",
@@ -313,6 +320,10 @@ export function databaseLockRank(resource: string): number {
  * shared identity domain until their production key format is declared here.
  */
 export function advisoryLockResource(key: string, seed: number): string {
+  if (seed === 0 && key === "cloud-computer-billing-reconcile")
+    return "advisory:cloud-computer-billing-reconcile";
+  if (seed === 0 && key === "cloud-computer-backup-pool")
+    return "advisory:cloud-computer-backup-pool";
   if (seed === 2) return "advisory:adoption-proof";
   if (seed === 1) return "advisory:origin";
   if (seed !== 0) throw new Error(`Undeclared advisory hash seed: ${seed}`);

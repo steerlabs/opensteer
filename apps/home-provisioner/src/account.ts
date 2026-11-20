@@ -1,5 +1,12 @@
+import { randomUUID } from "node:crypto";
 import {
   CloudComputerDesiredResponseSchema,
+  CloudComputerCheckResponseSchema,
+  cloudComputerCheckPath,
+  cloudComputerLeasePath,
+  cloudComputerLeaseHeader,
+  type CloudComputerCheck,
+  type CloudComputerId,
   CloudComputerReportResponseSchema,
   cloudComputerStatusPath,
   cloudComputersDesiredPath,
@@ -10,8 +17,10 @@ import { z } from "zod";
 import { json, RemoteRequestError, request, type HttpOptions } from "./http.js";
 
 export interface AccountApi {
+  acquire(signal: AbortSignal): Promise<void>;
+  check(id: CloudComputerId, check: CloudComputerCheck, signal: AbortSignal): Promise<boolean>;
   desired(signal: AbortSignal): Promise<readonly CloudComputerDesired[]>;
-  report(report: CloudComputerReport, signal: AbortSignal): Promise<void>;
+  report(report: CloudComputerReport, signal: AbortSignal): Promise<boolean>;
 }
 
 export function accountRefused(error: unknown): error is RemoteRequestError {
@@ -53,8 +62,39 @@ export function workloadIdentityToken(audience: string, http: HttpOptions): Work
   };
 }
 
-export function accountClient(origin: URL, token: WorkloadToken, http: HttpOptions): AccountApi {
+export function accountClient(
+  origin: URL,
+  token: WorkloadToken,
+  http: HttpOptions,
+  holder: string = randomUUID(),
+): AccountApi {
+  const headers = async (signal: AbortSignal) => ({
+    authorization: `Bearer ${await token(signal)}`,
+    [cloudComputerLeaseHeader]: holder,
+  });
   return {
+    async acquire(signal) {
+      await request(
+        "Account",
+        new URL(cloudComputerLeasePath, origin),
+        http,
+        signal,
+        json(z.object({ acquired: z.literal(true) })),
+        { method: "POST", body: { holder }, headers: await headers(signal) },
+      );
+    },
+    async check(id, check, signal) {
+      return (
+        await request(
+          "Account",
+          new URL(cloudComputerCheckPath(id), origin),
+          http,
+          signal,
+          json(CloudComputerCheckResponseSchema),
+          { method: "POST", body: check, headers: await headers(signal) },
+        )
+      ).allowed;
+    },
     async desired(signal) {
       const { computers } = await request(
         "Account",
@@ -63,13 +103,13 @@ export function accountClient(origin: URL, token: WorkloadToken, http: HttpOptio
         signal,
         json(CloudComputerDesiredResponseSchema),
         {
-          headers: { authorization: `Bearer ${await token(signal)}` },
+          headers: await headers(signal),
         },
       );
       return computers;
     },
     async report(report, signal) {
-      await request(
+      const { recorded } = await request(
         "Account",
         new URL(cloudComputerStatusPath(report.id), origin),
         http,
@@ -78,9 +118,10 @@ export function accountClient(origin: URL, token: WorkloadToken, http: HttpOptio
         {
           method: "POST",
           body: report,
-          headers: { authorization: `Bearer ${await token(signal)}` },
+          headers: await headers(signal),
         },
       );
+      return recorded;
     },
   };
 }

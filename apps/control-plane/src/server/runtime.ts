@@ -1,3 +1,4 @@
+import { CloudComputerClaimer, HttpManagedHomeClient } from "../cloud-computers/claim.js";
 import { CloudComputerStore } from "../cloud-computers/store.js";
 import { CloudComputerStripe } from "../cloud-computers/stripe.js";
 import { appleClientSecret } from "../auth/apple-sign-in.js";
@@ -48,6 +49,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
   assertNativeOAuthConfig(config);
   const database = createControlPlaneDatabase({ connectionString: config.databaseUrl });
   let hostedTeamBootstrap: HostedTeamBootstrapper | undefined;
+  let cloudComputerClaimer: CloudComputerClaimer | undefined;
   try {
     await migrateControlPlaneToLatest(database);
     const appleSignIn = config.appleSignIn;
@@ -147,6 +149,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
           ? {
               cloudComputers: {
                 store: cloudComputers,
+                kickBootstrap: () => cloudComputerClaimer?.kick(),
                 stripeWebhookSecret: cloud.stripeWebhookSecret,
                 verifyProvisioner: googleServiceAccountVerifier({
                   audience: config.publicOrigin.origin,
@@ -193,6 +196,8 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     await personalRemoteAccount.purgeExpired();
     await portalSessions.purgeExpired();
     await hostedOAuthBrokerStore?.purgeExpired(new Date());
+    const billingError = () => server.log.error("Cloud Computer billing reconciliation failed");
+    await cloudComputers?.checkOffer().catch(billingError);
     await server.listen({ host: config.listenHost, port: config.listenPort });
 
     server.log.info({ apns: Boolean(apns), fcm: Boolean(fcm) }, "Push providers configured");
@@ -233,6 +238,31 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         })
       : undefined;
     hostedTeamBootstrap?.start();
+    cloudComputerClaimer = cloudComputers
+      ? new CloudComputerClaimer({
+          store: cloudComputers,
+          home: new HttpManagedHomeClient(),
+          issuer: config.publicOrigin,
+          sign: async (claims) => (await auth.api.signJWT({ body: { payload: claims } })).token,
+          onError: (error) => server.log.error({ err: error }, "Cloud Computer claim failed"),
+        })
+      : undefined;
+    cloudComputerClaimer?.start();
+
+    let billingPass: Promise<void> | undefined;
+    const runBilling = () => {
+      if (!billingPass && cloudComputers) {
+        billingPass = cloudComputers
+          .reconcileBilling(billingError)
+          .catch(billingError)
+          .finally(() => {
+            billingPass = undefined;
+          });
+      }
+    };
+    const billingTimer = cloudComputers ? setInterval(runBilling, 60_000) : undefined;
+    billingTimer?.unref();
+    runBilling();
 
     const cleanup = setInterval(() => {
       void Promise.all([
@@ -249,7 +279,10 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
       close: () => {
         closePromise ??= (async () => {
           clearInterval(cleanup);
+          clearInterval(billingTimer);
+          await billingPass;
           await hostedTeamBootstrap?.close();
+          await cloudComputerClaimer?.close();
           await notificationDelivery?.close();
           apns?.close();
           await server.close();

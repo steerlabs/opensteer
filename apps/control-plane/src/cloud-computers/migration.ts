@@ -111,3 +111,46 @@ export const cloudComputersMigration: Migration = {
     `.execute(database);
   },
 };
+
+/**
+ * The Account-bound claim of a ready Home: the OIDC client and link credential
+ * the boot exchange hands it, and the claim's retry state. Add-only: the
+ * previous release never reads these columns.
+ */
+export const cloudComputerClaimMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.cloud_computers
+        add column oidc_client_id text unique,
+        add column sealed_oidc_client_secret text,
+        add column sealed_host_credential text,
+        add column claim_attempt integer not null default 0 check (claim_attempt >= 0),
+        add column claim_next_at timestamptz,
+        add column claim_error text check (char_length(claim_error) between 1 and 1000)
+    `.execute(database);
+    await sql`
+      create index cloud_computers_claim_due on public.cloud_computers (claim_next_at)
+      where phase = 'ready' and bootstrap_receipt_at is null and claim_error is null
+        and tombstoned_at is null
+    `.execute(database);
+    await sql`
+      create or replace function public.cloud_computer_orphan_tombstone() returns trigger
+      language plpgsql as $$
+      begin
+        new.state := 'deleted';
+        new.phase := 'deleting';
+        new.setup_code_digest := null;
+        new.sealed_setup_code := null;
+        new.sealed_bootstrap_token := null;
+        new.bootstrap_digest := null;
+        new.bootstrap_expires_at := null;
+        new.sealed_backup_password := null;
+        new.sealed_oidc_client_secret := null;
+        new.sealed_host_credential := null;
+        new.deleted_at := now();
+        return new;
+      end
+      $$
+    `.execute(database);
+  },
+};

@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: home-provisioner
+  namespace: opensteer-system
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: home-provisioner
+  template:
+    metadata:
+      labels:
+        app: home-provisioner
+    spec:
+      serviceAccountName: home-provisioner
+      containers:
+        - name: home-provisioner
+          image: home-provisioner
+          env:
+            - name: OPENSTEER_HOME_PROVISIONER_REPLICAS
+              value: "1"
+          envFrom:
+            - secretRef:
+                name: home-provisioner-env

@@ -4,6 +4,13 @@ import {
   accountCloudComputersPath,
   CloudComputerBillingUrlResponseSchema,
   CloudComputerBootRequestSchema,
+  CloudComputerBootCompleteRequestSchema,
+  CloudComputerBootCompleteResponseSchema,
+  CloudComputerCheckSchema,
+  CloudComputerCheckResponseSchema,
+  CloudComputerLeaseSchema,
+  cloudComputerLeasePath,
+  cloudComputerLeaseHeader,
   CloudComputerBootResponseSchema,
   CloudComputerCheckoutRequestSchema,
   CloudComputerDeleteRequestSchema,
@@ -57,42 +64,75 @@ export function registerCloudComputerRoutes(
     return principal.accountId;
   }
 
-  app.get(cloudComputersDesiredPath, async (request, reply) => {
+  async function requireLease(request: FastifyRequest) {
+    await options.verifyProvisioner(request.headers.authorization);
+    const lease = CloudComputerLeaseSchema.safeParse({
+      holder: request.headers[cloudComputerLeaseHeader],
+    });
+    if (!lease.success || !(await store.lease(lease.data.holder, false))) {
+      throw new ControlPlaneError("forbidden", "Cloud Computer provisioner lease is not held");
+    }
+  }
+
+  app.post(cloudComputerLeasePath, async (request, reply) => {
     privateResponse(reply);
     await options.verifyProvisioner(request.headers.authorization);
+    const { holder } = CloudComputerLeaseSchema.parse(request.body);
+    if (!(await store.lease(holder, true))) {
+      throw new ControlPlaneError("conflict", "Another Cloud Computer provisioner holds the lease");
+    }
+    return { acquired: true };
+  });
+  app.post(`${provisionerPath}/check`, async (request, reply) => {
+    privateResponse(reply);
+    await requireLease(request);
+    const { id } = params.parse(request.params);
+    return CloudComputerCheckResponseSchema.parse({
+      allowed: await store.check(id, CloudComputerCheckSchema.parse(request.body)),
+    });
+  });
+
+  app.get(cloudComputersDesiredPath, async (request, reply) => {
+    privateResponse(reply);
+    await requireLease(request);
     return CloudComputerDesiredResponseSchema.parse({ computers: await store.desired() });
   });
 
   app.post(`${provisionerPath}/status`, async (request, reply) => {
     privateResponse(reply);
-    await options.verifyProvisioner(request.headers.authorization);
+    await requireLease(request);
     const { id } = params.parse(request.params);
     const report = CloudComputerReportSchema.parse(request.body);
     if (report.id !== id)
       throw new ControlPlaneError("bad_request", "Cloud Computer report ID does not match the URL");
-    if (await store.report(report)) options.kickBootstrap?.();
-    return CloudComputerReportResponseSchema.parse({ recorded: true });
+    const result = await store.report(report);
+    if (result.kick) options.kickBootstrap?.();
+    return CloudComputerReportResponseSchema.parse({ recorded: result.recorded });
   });
 
   const bootLimit = new BootRateLimit();
-  const boot = async (request: FastifyRequest, reply: FastifyReply) => {
-    privateResponse(reply);
-    const { id } = params.parse(request.params);
-    if (!bootLimit.allow(id, request.ip)) {
-      return reply
-        .code(429)
-        .header("retry-after", "60")
-        .send({
-          error: { code: "rate_limited", message: "Too many Cloud Computer boot requests" },
-        });
-    }
-    const body = CloudComputerBootRequestSchema.safeParse(request.body);
-    if (!body.success)
-      throw new ControlPlaneError("bad_request", "Invalid Cloud Computer boot request");
-    return CloudComputerBootResponseSchema.parse(await store.boot(id, body.data));
-  };
-  app.post(`${provisionerPath}/boot`, { bodyLimit: 4096 }, boot);
-  app.post(`${provisionerPath}/bootstrap`, { bodyLimit: 4096 }, boot);
+  for (const action of ["boot", "boot-complete"] as const)
+    app.post(`${provisionerPath}/${action}`, { bodyLimit: 4096 }, async (request, reply) => {
+      privateResponse(reply);
+      const { id } = params.parse(request.params);
+      if (!bootLimit.allow(id, request.ip)) {
+        return reply
+          .code(429)
+          .header("retry-after", "60")
+          .send({
+            error: { code: "rate_limited", message: "Too many Cloud Computer boot requests" },
+          });
+      }
+      if (action === "boot-complete") {
+        const body = CloudComputerBootCompleteRequestSchema.parse(request.body);
+        await store.bootComplete(id, body);
+        return CloudComputerBootCompleteResponseSchema.parse({ completed: true });
+      }
+      const body = CloudComputerBootRequestSchema.safeParse(request.body);
+      if (!body.success)
+        throw new ControlPlaneError("bad_request", "Invalid Cloud Computer boot request");
+      return CloudComputerBootResponseSchema.parse(await store.boot(id, body.data));
+    });
 
   app.get(accountCloudComputersPath, async (request, reply) => {
     privateResponse(reply);

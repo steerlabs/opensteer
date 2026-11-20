@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import {
   CloudComputerGenerationSchema,
+  CloudComputerIdSchema,
   type CloudComputerId,
 } from "@opensteer/control-plane-protocol";
 import { refused } from "@opensteer/core";
@@ -95,15 +96,22 @@ export class HetznerCloud implements VmProvider {
     this.#wait = options.wait ?? ((ms, signal) => delay(ms, undefined, { signal }));
   }
 
-  async ensureFirewall(signal: AbortSignal): Promise<number> {
+  async ensureFirewall(signal: AbortSignal, check?: () => Promise<void>): Promise<number> {
     let current = await this.#findFirewall(signal);
     if (!current) {
       try {
-        const result = await this.#request("firewalls", firewallCreated, signal, "POST", {
-          name: firewallName,
-          labels: { [managedLabel]: managedBy },
-          rules,
-        });
+        const result = await this.#request(
+          "firewalls",
+          firewallCreated,
+          signal,
+          "POST",
+          {
+            name: firewallName,
+            labels: { [managedLabel]: managedBy },
+            rules,
+          },
+          check,
+        );
         await this.#actions("firewalls", result.actions, signal);
         return result.firewall.id;
       } catch (error) {
@@ -132,6 +140,7 @@ export class HetznerCloud implements VmProvider {
         signal,
         "POST",
         { rules },
+        check,
       );
       await this.#actions("firewalls", result.actions, signal);
     }
@@ -160,7 +169,12 @@ export class HetznerCloud implements VmProvider {
     return found[0];
   }
 
-  async ensureFirewallAttached(server: VmServer, firewallId: number, signal: AbortSignal) {
+  async ensureFirewallAttached(
+    server: VmServer,
+    firewallId: number,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ) {
     const attachment = server.firewalls.find((entry) => entry.id === firewallId);
     if (attachment) return attachment.status === "applied";
     const result = await this.#request(
@@ -169,6 +183,7 @@ export class HetznerCloud implements VmProvider {
       signal,
       "POST",
       { apply_to: [{ type: "server", server: { id: server.id } }] },
+      check,
     );
     await this.#actions("firewalls", result.actions, signal);
     const observed = await this.describe(server.id, signal);
@@ -178,60 +193,100 @@ export class HetznerCloud implements VmProvider {
     );
   }
 
-  async find(id: CloudComputerId, signal: AbortSignal): Promise<readonly VmServer[]> {
-    return (await this.#find(id, signal)).map(server);
+  async find(
+    id: CloudComputerId,
+    signal: AbortSignal,
+    expected?: {
+      generation: number;
+      providerServerId?: number | undefined;
+      previousProviderServerId?: number | undefined;
+    },
+  ): Promise<readonly VmServer[]> {
+    const found = new Map(
+      (await this.#find(id, signal))
+        .filter((entry) => managedServer(entry)?.id === id)
+        .map((entry) => [entry.id, server(entry)]),
+    );
+    if (!expected) return [...found.values()];
+    for (const serverId of [expected.providerServerId, expected.previousProviderServerId]) {
+      if (serverId && !found.has(serverId)) {
+        const entry = await this.#describe(serverId, signal);
+        if (entry && managedServer(entry)?.id !== id) {
+          throw refused(
+            "conflict",
+            "Recorded Hetzner server identity does not match this Cloud Computer",
+          );
+        }
+        if (entry) found.set(entry.id, server(entry));
+      }
+    }
+    if (![...found.values()].some((entry) => entry.generation === expected.generation)) {
+      const name = serverName(id, expected.generation);
+      for (const entry of await this.#list({ name }, signal)) {
+        if (entry.name === name) found.set(entry.id, server(entry));
+      }
+    }
+    return [...found.values()];
   }
 
-  async #find(id: CloudComputerId, signal: AbortSignal, generation?: number) {
-    const selector =
+  async listManaged(signal: AbortSignal) {
+    return (await this.#list({ label_selector: homeLabel }, signal)).flatMap((entry) => {
+      const identity = managedServer(entry);
+      return identity ? [{ id: identity.id, server: server(entry) }] : [];
+    });
+  }
+
+  #find(id: CloudComputerId, signal: AbortSignal, generation?: number) {
+    const label_selector =
       `${homeLabel}=${id}` + (generation === undefined ? "" : `,${generationLabel}=${generation}`);
+    return this.#list({ label_selector }, signal);
+  }
+
+  async #list(filter: Record<string, string>, signal: AbortSignal) {
     const result: HetznerVm[] = [];
     let page: number | null = 1;
     while (page !== null) {
-      const query = new URLSearchParams({
-        label_selector: selector,
-        page: String(page),
-        per_page: "50",
-      });
+      const query = new URLSearchParams({ ...filter, page: String(page), per_page: "50" });
       const response = await this.#request(`servers?${query}`, serversResponse, signal);
-      if (
-        response.servers.some(
-          (entry) =>
-            entry.labels[homeLabel] !== id ||
-            (generation !== undefined && entry.labels[generationLabel] !== String(generation)),
-        )
-      ) {
-        throw refused(
-          "conflict",
-          "Hetzner returned a server outside the Cloud Computer label selector",
-        );
-      }
       result.push(...response.servers);
       page = nextPage(page, response.meta);
     }
     return result;
   }
 
-  async create(input: CreateVm, signal: AbortSignal): Promise<VmServer> {
-    const name = `os-${input.id.replace("_", "-")}-${input.generation}`;
+  async create(
+    input: CreateVm,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<VmServer> {
+    const name = serverName(input.id, input.generation);
     let created: z.infer<typeof serverCreated>;
     try {
-      created = await this.#request("servers", serverCreated, signal, "POST", {
-        name,
-        server_type: input.serverType,
-        location: input.region,
-        image: input.image,
-        user_data: input.userData,
-        labels: { [homeLabel]: input.id, [generationLabel]: String(input.generation) },
-        firewalls: [{ firewall: input.firewallId }],
-        public_net: { enable_ipv4: true, enable_ipv6: true },
-        start_after_create: false,
-      });
+      created = await this.#request(
+        "servers",
+        serverCreated,
+        signal,
+        "POST",
+        {
+          name,
+          server_type: input.serverType,
+          location: input.region,
+          image: input.image,
+          user_data: input.userData,
+          labels: { [homeLabel]: input.id, [generationLabel]: String(input.generation) },
+          firewalls: [{ firewall: input.firewallId }],
+          public_net: { enable_ipv4: true, enable_ipv6: true },
+          start_after_create: false,
+        },
+        check,
+      );
     } catch (error) {
       if (!isConflict(error)) throw error;
       const existing = await this.#find(input.id, signal, input.generation);
       const match = existing[0];
       if (existing.length === 1 && match?.name === name) return server(match);
+      const byName = (await this.#list({ name }, signal)).find((entry) => entry.name === name);
+      if (byName) return server(byName);
       throw error;
     }
 
@@ -249,41 +304,63 @@ export class HetznerCloud implements VmProvider {
   }
 
   async describe(id: number, signal: AbortSignal): Promise<VmServer | undefined> {
+    const entry = await this.#describe(id, signal);
+    return entry ? server(entry) : undefined;
+  }
+
+  async #describe(id: number, signal: AbortSignal) {
     try {
       const result = await this.#request(`servers/${id}`, serverResponse, signal);
       if (result.server.id !== id)
         throw refused("conflict", "Hetzner returned a different server ID");
-      return server(result.server);
+      return result.server;
     } catch (error) {
       if (isNotFound(error)) return undefined;
       throw error;
     }
   }
 
-  async powerOn(id: number, signal: AbortSignal) {
-    await this.#serverAction(`servers/${id}/actions/poweron`, "POST", signal);
+  async powerOn(id: number, signal: AbortSignal, check?: () => Promise<void>) {
+    await this.#serverAction(`servers/${id}/actions/poweron`, "POST", signal, check);
   }
 
-  async powerOff(id: number, signal: AbortSignal) {
-    const deadline = AbortSignal.any([signal, AbortSignal.timeout(this.#options.actionTimeoutMs)]);
-    await this.#serverAction(`servers/${id}/actions/shutdown`, "POST", deadline);
-    let current = await this.describe(id, deadline);
-    while (current && current.status !== "off") {
-      await this.#wait(1_000, deadline);
-      current = await this.describe(id, deadline);
-    }
-  }
-
-  async delete(id: number, signal: AbortSignal) {
+  async powerOff(id: number, signal: AbortSignal, check?: () => Promise<void>) {
+    const graceful = AbortSignal.timeout(Math.min(this.#options.actionTimeoutMs, 30_000));
+    const deadline = AbortSignal.any([signal, graceful]);
     try {
-      await this.#serverAction(`servers/${id}`, "DELETE", signal);
+      await this.#serverAction(`servers/${id}/actions/shutdown`, "POST", deadline, check);
+      let current = await this.describe(id, deadline);
+      while (current && current.status !== "off" && current.status !== "deleting") {
+        await this.#wait(1_000, deadline);
+        current = await this.describe(id, deadline);
+      }
+      return;
+    } catch (error) {
+      signal.throwIfAborted();
+      if (isNotFound(error)) return;
+      if (error instanceof RemoteRequestError && [401, 403, 429].includes(error.status))
+        throw error;
+    }
+    const current = await this.describe(id, signal);
+    if (!current || current.status === "off" || current.status === "deleting") return;
+    await this.#serverAction(`servers/${id}/actions/poweroff`, "POST", signal, check);
+  }
+
+  async delete(id: number, signal: AbortSignal, check?: () => Promise<void>) {
+    try {
+      await this.#serverAction(`servers/${id}`, "DELETE", signal, check);
     } catch (error) {
       if (!isNotFound(error)) throw error;
     }
   }
 
-  async #serverAction(path: string, method: string, signal: AbortSignal) {
-    const { action } = await this.#request(path, actionResponse, signal, method);
+  async #serverAction(
+    path: string,
+    method: string,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ) {
+    const { action } = await this.#request(path, actionResponse, signal, method, undefined, check);
     await this.#actions("servers", [action], signal);
   }
 
@@ -317,12 +394,16 @@ export class HetznerCloud implements VmProvider {
     shutdown: AbortSignal,
     method = "GET",
     body?: unknown,
+    check?: () => Promise<void>,
   ): Promise<T> {
     const signal = AbortSignal.any([shutdown, AbortSignal.timeout(this.#options.timeoutMs)]);
     for (let attempt = 0; ; attempt++) {
       const waitMs = this.#retryAt - Date.now();
-      if (waitMs >= this.#options.timeoutMs) throw new RemoteRequestError("Hetzner", 429);
+      if (waitMs >= this.#options.timeoutMs)
+        throw new RemoteRequestError("Hetzner", 429, this.#retryAt);
       if (waitMs > 0) await this.#wait(waitMs, signal);
+      await check?.();
+      signal.throwIfAborted();
       try {
         return await request(
           "Hetzner",
@@ -359,11 +440,25 @@ function isConflict(error: unknown): boolean {
   return error instanceof RemoteRequestError && (error.status === 409 || error.status === 422);
 }
 
+function serverName(id: CloudComputerId, generation: number) {
+  return `os-${id.replace("_", "-")}-${generation}`;
+}
+
+function managedServer(input: HetznerVm) {
+  const name = /^os-cc-([0-9a-f-]{36})-(\d+)$/u.exec(input.name);
+  const id = CloudComputerIdSchema.safeParse(name ? `cc_${name[1]}` : input.labels[homeLabel]);
+  const generation = CloudComputerGenerationSchema.safeParse(
+    Number(name?.[2] ?? input.labels[generationLabel]),
+  );
+  return id.success && generation.success
+    ? { id: id.data, generation: generation.data }
+    : undefined;
+}
+
 function server(input: HetznerVm): VmServer {
-  const generation = CloudComputerGenerationSchema.safeParse(Number(input.labels[generationLabel]));
-  if (!generation.success || String(generation.data) !== input.labels[generationLabel]) {
-    throw refused("conflict", "A Hetzner server has an invalid Cloud Computer generation label");
-  }
+  const identity = managedServer(input);
+  if (!identity)
+    throw refused("conflict", "A Hetzner server has an invalid Cloud Computer identity");
   const { ipv4, ipv6, firewalls } = input.public_net;
   let ipv6Address = null;
   if (ipv6 && !ipv6.blocked) {
@@ -375,8 +470,11 @@ function server(input: HetznerVm): VmServer {
   }
   return {
     id: input.id,
-    generation: generation.data,
-    status: input.status === "off" || input.status === "running" ? input.status : "transitioning",
+    generation: identity.generation,
+    status:
+      input.status === "off" || input.status === "running" || input.status === "deleting"
+        ? input.status
+        : "transitioning",
     ipv4: ipv4 && !ipv4.blocked ? ipv4.ip : null,
     ipv6: ipv6Address,
     firewalls,

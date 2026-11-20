@@ -1,9 +1,10 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { accountClient, workloadIdentityToken } from "./account.js";
+import { accountClient, accountRefused, workloadIdentityToken } from "./account.js";
 import { CloudflareDns } from "./cloudflare.js";
 import { loadConfig } from "./config.js";
 import { discoverHome } from "./discovery.js";
 import { HetznerCloud } from "./hetzner.js";
+import { provisionerFailure, RemoteRequestError } from "./http.js";
 import { Reconciler } from "./reconcile.js";
 
 async function main(): Promise<void> {
@@ -17,12 +18,15 @@ async function main(): Promise<void> {
   }
 
   const http = { timeoutMs: config.timeoutMs };
+  const account = accountClient(
+    config.accountOrigin,
+    workloadIdentityToken(config.accountOrigin.origin, http),
+    http,
+  );
   const reconciler = new Reconciler({
-    account: accountClient(
-      config.accountOrigin,
-      workloadIdentityToken(config.accountOrigin.origin, http),
-      http,
-    ),
+    account,
+    onError: logFailure,
+    orphanGraceMs: config.orphanGraceMs,
     provider: new HetznerCloud({
       ...http,
       token: config.hetznerToken,
@@ -41,15 +45,21 @@ async function main(): Promise<void> {
   const stop = () => shutdown.abort();
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
-  console.log(JSON.stringify({ event: "home-provisioner.started" }));
-
   try {
+    await account.acquire(shutdown.signal);
+    console.log(JSON.stringify({ event: "home-provisioner.started" }));
     while (!shutdown.signal.aborted) {
       try {
         await reconciler.pass(shutdown.signal);
-      } catch {
-        if (!shutdown.signal.aborted)
-          console.error(JSON.stringify({ event: "home-provisioner.pass.failed" }));
+      } catch (error) {
+        if (!shutdown.signal.aborted) logFailure(error);
+        if (
+          accountRefused(error) ||
+          (error instanceof RemoteRequestError &&
+            error.service === "Account" &&
+            error.status === 409)
+        )
+          throw error;
       }
       if (!shutdown.signal.aborted) {
         await delay(config.intervalMs, undefined, { signal: shutdown.signal }).catch(() => {});
@@ -62,7 +72,11 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(() => {
-  console.error(JSON.stringify({ event: "home-provisioner.crashed" }));
+function logFailure(error: unknown): void {
+  console.error(JSON.stringify(provisionerFailure(error)));
+}
+
+main().catch((error: unknown) => {
+  logFailure(error);
   process.exitCode = 1;
 });

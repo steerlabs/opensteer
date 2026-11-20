@@ -115,7 +115,6 @@ it("sends form-encoded Checkout and Billing Portal requests and redacts Stripe f
       accountId,
       requestId,
       priceId: "price_1",
-      expiresAt: new Date(timestamp * 1000),
     });
     await stripe.portal("cus_1");
     for (const operation of [
@@ -125,7 +124,6 @@ it("sends form-encoded Checkout and Billing Portal requests and redacts Stripe f
           accountId,
           requestId,
           priceId: "price_1",
-          expiresAt: new Date(timestamp * 1000),
         }),
     ]) {
       const error = await operation().catch((err: unknown) => err);
@@ -141,7 +139,7 @@ it("sends form-encoded Checkout and Billing Portal requests and redacts Stripe f
       idempotency: `cloud-computer:${accountId}:${requestId}`,
       fields: {
         mode: "subscription",
-        "payment_method_types[0]": "card",
+        "allowed_payment_method_types[0]": "card",
         payment_method_collection: "always",
         "line_items[0][price]": "price_1",
         "line_items[0][quantity]": "1",
@@ -150,11 +148,12 @@ it("sends form-encoded Checkout and Billing Portal requests and redacts Stripe f
         "metadata[request_id]": requestId,
         "subscription_data[metadata][account_id]": accountId,
         "subscription_data[metadata][request_id]": requestId,
-        expires_at: String(timestamp),
         success_url: "https://account.example.test/?cloud-computer=checkout-completed",
         cancel_url: "https://account.example.test/",
       },
     });
+    expect(requests[0]?.fields).not.toHaveProperty("payment_method_types[0]");
+    expect(requests[0]?.fields).not.toHaveProperty("expires_at");
     expect(requests[1]).toMatchObject({
       path: "/v1/billing_portal/sessions",
       method: "POST",
@@ -169,5 +168,45 @@ it("sends form-encoded Checkout and Billing Portal requests and redacts Stripe f
       server.close(() => resolve());
       server.closeAllConnections();
     });
+  }
+});
+
+it("validates the configured recurring offer and issues an immediate Stripe cancellation", async () => {
+  const provider = vi.spyOn(globalThis, "fetch");
+  const actual = {
+    id: "price_1",
+    active: true,
+    currency: "usd",
+    unit_amount: 2900,
+    recurring: { interval: "month", interval_count: 1, usage_type: "licensed" },
+  };
+  try {
+    provider.mockImplementation(async (input, options) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/prices/price_1") return Response.json(actual);
+      expect(url.pathname).toBe("/v1/subscriptions/sub_1");
+      expect(url.searchParams.get("invoice_now")).toBe("false");
+      expect(url.searchParams.get("prorate")).toBe("false");
+      expect(options?.method).toBe("DELETE");
+      return Response.json({ id: "sub_1", status: "canceled" });
+    });
+    const stripe = new CloudComputerStripe({
+      key,
+      returnUrl: new URL("https://account.example.test"),
+    });
+    const wanted = {
+      name: "Cloud Computer",
+      amountMinor: 2900,
+      currency: "usd",
+      interval: "month" as const,
+    };
+    await expect(stripe.validateOffer("price_1", wanted)).resolves.toBeUndefined();
+    for (const patch of [{ amountMinor: 1 }, { currency: "cad" }, { interval: "year" as const }])
+      await expect(stripe.validateOffer("price_1", { ...wanted, ...patch })).rejects.toThrow(
+        "does not match",
+      );
+    await expect(stripe.cancel("sub_1")).resolves.toBeUndefined();
+  } finally {
+    provider.mockRestore();
   }
 });

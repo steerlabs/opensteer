@@ -1,4 +1,4 @@
-import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import {
   accountCloudComputerBillingPortalPath,
   accountCloudComputerCheckoutPath,
@@ -9,17 +9,35 @@ import {
   CloudComputerIdSchema,
   CloudComputerIdentitySchema,
   cloudComputerBootPath,
+  cloudComputerBootCompletePath,
+  cloudComputerLeasePath,
+  cloudComputerLeaseHeader,
   cloudComputerDeleteConfirmation,
   cloudComputerStatusPath,
   cloudComputerStripeWebhookPath,
   cloudComputersDesiredPath,
   ControlPlaneAccountIdSchema,
+  ManagedHomeClaimClaimsSchema,
+  ManagedHomeClaimReceiptDocumentSchema,
+  ManagedHomeClaimReceiptSchema,
+  ManagedHomeClaimRequestSchema,
+  managedHomeClaimPath,
+  managedHomeClaimReceiptSigningBytes,
+  type CloudComputerBootResponse,
   type CloudComputerDesired,
   type CloudComputerReport,
   type ControlPlaneAccountId,
+  type ManagedHomeClaimReceipt,
 } from "@opensteer/control-plane-protocol";
+import {
+  HostDiscoveryDocumentSchema,
+  hostApiVersion,
+  hostDiscoverySigningBytes,
+  hostKeyFingerprint,
+  minimumHostApiVersion,
+} from "@opensteer/deployment-authority";
 import { digestSecret } from "@opensteer/shared/secretDigest";
-import { createLocalJWKSet, exportJWK, SignJWT } from "jose";
+import { createLocalJWKSet, exportJWK, jwtVerify, SignJWT } from "jose";
 import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectLifecycleService } from "../account/connect-lifecycle.js";
@@ -30,6 +48,7 @@ import { ControlPlaneStore } from "../database/store.js";
 import { googleServiceAccountVerifier } from "../hosted-teams/provisioner-routes.js";
 import { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
 import { createControlPlaneServer } from "../server/server.js";
+import { CloudComputerClaimer, HttpManagedHomeClient } from "./claim.js";
 import { loadCloudComputerConfig } from "./config.js";
 import { CloudComputerStore } from "./store.js";
 import type { StripeBilling, StripeSubscription } from "./stripe.js";
@@ -72,14 +91,13 @@ const config = loadCloudComputerConfig({
   OPENSTEER_CLOUD_COMPUTER_PLAN_NAME: "Cloud Computer",
   OPENSTEER_CLOUD_COMPUTER_CURRENCY: "usd",
   OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR: "2900",
-  OPENSTEER_CLOUD_COMPUTER_BACKUP_ENDPOINT: "https://s3.example.test",
-  OPENSTEER_CLOUD_COMPUTER_BACKUP_BUCKET: "test-backups",
-  OPENSTEER_CLOUD_COMPUTER_BACKUP_ACCESS_KEY_ID: "test-access-key",
-  OPENSTEER_CLOUD_COMPUTER_BACKUP_SECRET_ACCESS_KEY: "test-secret-access-key",
 })!;
+// The Home's own signing key: the fingerprint Account pins is the one its discovery proves.
+const homeKeys = generateKeyPairSync("ed25519");
+const homeSpki = homeKeys.publicKey.export({ format: "der", type: "spki" }).toString("base64url");
 const identity = CloudComputerIdentitySchema.parse({
   deploymentId: "dep_00000000-0000-4000-8000-000000000010",
-  hostKeyFingerprint: `sha256:${"a".repeat(43)}`,
+  hostKeyFingerprint: hostKeyFingerprint(homeSpki),
 });
 
 integration("Cloud Computer Account service", () => {
@@ -95,6 +113,11 @@ integration("Cloud Computer Account service", () => {
     checkout,
     portal: vi.fn(async (_customer: string) => ({ url: portalUrl })),
     subscription: vi.fn(async (id: string) => subscriptions.get(id)!),
+    validateOffer: vi.fn<StripeBilling["validateOffer"]>(async () => {}),
+    findCheckout: vi.fn<StripeBilling["findCheckout"]>(async () => undefined),
+    cancel: vi.fn<StripeBilling["cancel"]>(async (id) => {
+      subscriptions.set(id, { ...subscriptions.get(id)!, status: "canceled" });
+    }),
   } satisfies StripeBilling;
   const logs: string[] = [];
   let now = new Date();
@@ -114,8 +137,158 @@ integration("Cloud Computer Account service", () => {
     now: () => now,
   });
   const kickBootstrap = vi.fn();
+  const claimErrors: unknown[] = [];
+  const directory = new ControlPlaneStore(database, publicOrigin, { portalOrigin });
+  const claimer = (
+    fetch: typeof globalThis.fetch,
+    store: ConstructorParameters<typeof CloudComputerClaimer>[0]["store"] = cloud,
+  ) =>
+    new CloudComputerClaimer({
+      store,
+      home: new HttpManagedHomeClient({ fetch }),
+      issuer: publicOrigin,
+      sign: async (claims) => (await auth.api.signJWT({ body: { payload: claims } })).token,
+      onError: (error) => claimErrors.push(error),
+      now: () => now.getTime(),
+    });
+
+  /**
+   * A Home behind exactly the two routes Account calls, making the same checks
+   * the real Host makes (pinned in apps/host managed-home.integration.test.ts):
+   * the Account's EdDSA assertion against its live JWKS, every binding, the
+   * setup code against the digest it booted with, one owner, replay.
+   */
+  function fakeHome(input: {
+    readonly hostname: string;
+    readonly boot: CloudComputerBootResponse;
+    readonly deploymentId?: string;
+  }) {
+    const origin = `https://${input.hostname}`;
+    const document = HostDiscoveryDocumentSchema.parse({
+      canonicalOrigin: origin,
+      deploymentId: input.deploymentId ?? identity.deploymentId,
+      hostInstanceId: "hst_00000000-0000-4000-8000-000000000020",
+      hostKey: { algorithm: "Ed25519" },
+      deploymentShape: { kind: "personal" },
+    });
+    const authority = {
+      document,
+      publicKey: { algorithm: "Ed25519", spki: homeSpki },
+      signature: sign(null, hostDiscoverySigningBytes(document), homeKeys.privateKey).toString(
+        "base64url",
+      ),
+    };
+    const state: { claims: number; receipt?: ManagedHomeClaimReceipt; owner?: string } = {
+      claims: 0,
+    };
+    const answer = (status: number) => Response.json({ error: { status } }, { status });
+    const fetch: typeof globalThis.fetch = async (target, init) => {
+      const url = new URL(String(target));
+      expect(url.origin).toBe(origin);
+      if (url.pathname === "/.well-known/opensteer")
+        return Response.json({
+          kind: "personal",
+          apiVersion: minimumHostApiVersion,
+          currentApiVersion: hostApiVersion,
+          authority,
+          bootstrapMethods: ["oidc"],
+          capabilities: [],
+        });
+      if (url.pathname !== managedHomeClaimPath) return answer(404);
+      state.claims += 1;
+      const request = ManagedHomeClaimRequestSchema.parse(JSON.parse(String(init?.body)));
+      const jwks = await http({ method: "GET", url: "/api/auth/jwks" });
+      let claims;
+      try {
+        const verified = await jwtVerify(request.assertion, createLocalJWKSet(jwks.json()), {
+          algorithms: ["EdDSA"],
+          audience: origin,
+          issuer: publicOrigin.origin,
+          maxTokenAge: "5m",
+        });
+        claims = ManagedHomeClaimClaimsSchema.parse(verified.payload);
+      } catch {
+        return answer(403);
+      }
+      if (
+        claims.authority.deploymentId !== document.deploymentId ||
+        claims.authority.hostKeyFingerprint !== hostKeyFingerprint(homeSpki) ||
+        claims.authority.canonicalOrigin !== origin ||
+        claims.link.hostCredentialSha256 !==
+          createHash("sha256").update(request.hostCredential).digest("base64url") ||
+        digestSecret(request.setupCode) !== input.boot.setupCodeDigest
+      )
+        return answer(403);
+      if (
+        claims.claim.cloudComputerId !== input.boot.managedHome?.cloudComputerId ||
+        claims.claim.generation !== input.boot.managedHome.generation
+      )
+        return answer(409);
+      if (state.receipt)
+        return state.owner === claims.sub ? Response.json(state.receipt) : answer(409);
+      const receiptDocument = ManagedHomeClaimReceiptDocumentSchema.parse({
+        purpose: "opensteer-managed-home-claim-receipt",
+        documentVersion: 1,
+        account: { issuer: publicOrigin.origin, subject: claims.sub },
+        authority: {
+          canonicalOrigin: origin,
+          deploymentId: document.deploymentId,
+          hostInstanceId: document.hostInstanceId,
+          hostKeyFingerprint: hostKeyFingerprint(homeSpki),
+        },
+        claim: claims.claim,
+        linkGeneration: claims.link.generation,
+        claimedAt: new Date().toISOString(),
+      });
+      state.receipt = ManagedHomeClaimReceiptSchema.parse({
+        document: receiptDocument,
+        publicKey: { algorithm: "Ed25519", spki: homeSpki },
+        signature: sign(
+          null,
+          managedHomeClaimReceiptSigningBytes(receiptDocument),
+          homeKeys.privateKey,
+        ).toString("base64url"),
+      });
+      state.owner = claims.sub;
+      return Response.json(state.receipt);
+    };
+    return { fetch, state };
+  }
   const google = generateKeyPairSync("rsa", { modulusLength: 2048 });
   let provisionerToken: string;
+  let listener: URL;
+  const lease = randomUUID();
+  const leaseHeaders = () => ({
+    authorization: `Bearer ${provisionerToken}`,
+    [cloudComputerLeaseHeader]: lease,
+  });
+
+  async function http(input: {
+    method: string;
+    url: string;
+    headers?: Record<string, string>;
+    payload?: unknown;
+  }) {
+    const headers = new Headers(input.headers);
+    if (input.payload !== undefined && !headers.has("content-type"))
+      headers.set("content-type", "application/json");
+    const response = await fetch(new URL(input.url, listener), {
+      method: input.method,
+      headers,
+      ...(input.payload === undefined
+        ? {}
+        : {
+            body: typeof input.payload === "string" ? input.payload : JSON.stringify(input.payload),
+          }),
+    });
+    const body = await response.text();
+    return {
+      statusCode: response.status,
+      body,
+      headers: Object.fromEntries(response.headers),
+      json: () => JSON.parse(body),
+    };
+  }
 
   beforeAll(async () => {
     await migrateControlPlaneToLatest(database);
@@ -156,18 +329,50 @@ integration("Cloud Computer Account service", () => {
       { logger: { level: "error", stream: { write: (line: string) => logs.push(line) } } },
     );
     provisionerToken = await workloadToken(provisionerEmail);
+    listener = new URL(await app.listen({ host: "127.0.0.1", port: 0 }));
   });
 
   beforeEach(async () => {
-    await sql`truncate table cloud_computer_egress_endpoints, cloud_computers, cloud_computer_stripe_events, cloud_computer_checkouts`.execute(
+    await sql`truncate table cloud_computer_egress_endpoints, cloud_computer_backup_targets, cloud_computer_provisioner_lease, cloud_computers, cloud_computer_stripe_events, cloud_computer_checkouts`.execute(
       database,
     );
+    await database.deleteFrom("deployments").where("id", "=", identity.deploymentId).execute();
+    await database.deleteFrom("oauthClients").where("clientId", "like", "occ_%").execute();
+    claimErrors.length = 0;
     checkout.mockClear();
     stripe.subscription.mockClear();
     stripe.portal.mockClear();
+    stripe.cancel.mockClear();
+    stripe.findCheckout.mockReset().mockResolvedValue(undefined);
+    stripe.validateOffer.mockReset().mockResolvedValue(undefined);
     kickBootstrap.mockClear();
     logs.length = 0;
     now = new Date();
+    await cloud.checkOffer();
+    await cloud.addBackupTarget({
+      endpoint: "https://s3.example.test",
+      bucket: "test-backups",
+      prefix: "first",
+      accessKeyId: "access-a",
+      secretAccessKey: "secret-a",
+    });
+    await cloud.addBackupTarget({
+      endpoint: "https://s3.example.test",
+      bucket: "test-backups",
+      prefix: "second",
+      accessKeyId: "access-b",
+      secretAccessKey: "secret-b",
+    });
+    expect(
+      (
+        await http({
+          method: "POST",
+          url: cloudComputerLeasePath,
+          headers: leaseHeaders(),
+          payload: { holder: lease },
+        })
+      ).statusCode,
+    ).toBe(200);
   });
 
   afterAll(async () => {
@@ -220,7 +425,7 @@ integration("Cloud Computer Account service", () => {
     const signature = createHmac("sha256", webhookSecret)
       .update(`${timestamp}.${body}`)
       .digest("hex");
-    return app.inject({
+    return http({
       method: "POST",
       url: cloudComputerStripeWebhookPath,
       payload: body,
@@ -272,7 +477,7 @@ integration("Cloud Computer Account service", () => {
   async function buy(existing?: Awaited<ReturnType<typeof createAccount>>) {
     const account = existing ?? (await createAccount());
     const order = purchase(account.id);
-    const response = await app.inject({
+    const response = await http({
       method: "POST",
       url: accountCloudComputerCheckoutPath,
       headers: account.headers,
@@ -286,10 +491,10 @@ integration("Cloud Computer Account service", () => {
   }
 
   async function getDesired(id: CloudComputerDesired["id"]) {
-    const response = await app.inject({
+    const response = await http({
       method: "GET",
       url: cloudComputersDesiredPath,
-      headers: { authorization: `Bearer ${provisionerToken}` },
+      headers: leaseHeaders(),
     });
     expect(response.statusCode, response.body).toBe(200);
     return CloudComputerDesiredResponseSchema.parse(response.json()).computers.find(
@@ -298,13 +503,14 @@ integration("Cloud Computer Account service", () => {
   }
 
   function report(computer: CloudComputerDesired, patch: Partial<CloudComputerReport> = {}) {
-    return app.inject({
+    return http({
       method: "POST",
       url: cloudComputerStatusPath(computer.id),
-      headers: { authorization: `Bearer ${provisionerToken}` },
+      headers: leaseHeaders(),
       payload: {
         id: computer.id,
         generation: computer.generation,
+        revision: computer.revision,
         phase: "ready",
         providerServerId: 7,
         ipv4: "192.0.2.7",
@@ -317,12 +523,62 @@ integration("Cloud Computer Account service", () => {
   }
 
   function boot(computer: CloudComputerDesired, token = computer.bootstrapToken, id = computer.id) {
-    return app.inject({
+    return http({
       method: "POST",
       url: cloudComputerBootPath(id),
       payload: { hostname: computer.hostname, bootstrapToken: token },
     });
   }
+
+  function complete(computer: CloudComputerDesired, observed = identity) {
+    return http({
+      method: "POST",
+      url: cloudComputerBootCompletePath(computer.id),
+      payload: {
+        hostname: computer.hostname,
+        bootstrapToken: computer.bootstrapToken,
+        identity: observed,
+      },
+    });
+  }
+  async function bootable(computer: CloudComputerDesired) {
+    expect(
+      (await report(computer, { phase: "provisioning", observedIdentity: null })).json(),
+    ).toEqual({ recorded: true });
+    return CloudComputerBootResponseSchema.parse((await boot(computer)).json());
+  }
+
+  it("mounts every Cloud Computer route in the production Fastify composition", async () => {
+    const prefix = "/v1/cloud-computers";
+    const account = accountCloudComputersPath;
+    for (const [method, url] of [
+      ["GET", `${prefix}/desired`],
+      ["POST", `${prefix}/lease`],
+      ["POST", `${prefix}/:id/check`],
+      ["POST", `${prefix}/:id/status`],
+      ["POST", `${prefix}/:id/boot`],
+      ["POST", `${prefix}/:id/boot-complete`],
+      ["POST", cloudComputerStripeWebhookPath],
+      ["GET", account],
+      ["GET", `${account}/:id`],
+      ["DELETE", `${account}/:id`],
+      ["POST", `${account}/:id/suspend`],
+      ["POST", `${account}/:id/resume`],
+      ["POST", accountCloudComputerCheckoutPath],
+      ["POST", accountCloudComputerBillingPortalPath],
+    ] as const)
+      expect(app.hasRoute({ method, url }), `${method} ${url}`).toBe(true);
+    expect(app.hasRoute({ method: "POST", url: `${prefix}/:id/bootstrap` })).toBe(false);
+    const denied = await http({ method: "GET", url: cloudComputersDesiredPath });
+    expect(denied.statusCode).toBe(401);
+    const competing = await http({
+      method: "POST",
+      url: cloudComputerLeasePath,
+      headers: leaseHeaders(),
+      payload: { holder: randomUUID() },
+    });
+    expect(competing.statusCode).toBe(409);
+  });
 
   it("runs checkout through the real reconciler, boot configuration, readiness, suspend, resume and tombstone", async () => {
     const { account, order, id } = await buy();
@@ -339,9 +595,11 @@ integration("Cloud Computer Account service", () => {
       | undefined;
     let records = false;
     let bootCount = 0;
+    let booted: CloudComputerBootResponse | undefined;
     const provider = {
       ensureFirewall: async () => 1,
       ensureFirewallAttached: async () => true,
+      listManaged: async () => [],
       find: async () => (server ? [server] : []),
       create: async ({ generation, userData }: { generation: number; userData: string }) => {
         expect(first?.bootstrapToken).toBeTruthy();
@@ -354,10 +612,17 @@ integration("Cloud Computer Account service", () => {
         if (!bootCount++) {
           const response = await boot(first!);
           expect(response.statusCode, response.body).toBe(200);
-          expect(CloudComputerBootResponseSchema.parse(response.json())).toMatchObject({
+          booted = CloudComputerBootResponseSchema.parse(response.json());
+          expect(booted).toMatchObject({
             hostname: first!.hostname,
             accountOrigin: publicOrigin.origin,
             release: { version: "1.2.3" },
+            // What the Home needs to accept its Account-bound claim and Account sign-in.
+            managedHome: {
+              cloudComputerId: first!.id,
+              generation: first!.generation,
+              oidc: { clientId: expect.stringMatching(/^occ_/u) },
+            },
           });
         }
         server = { ...server!, status: "running" };
@@ -370,6 +635,7 @@ integration("Cloud Computer Account service", () => {
       },
     };
     const dns = {
+      listManaged: async () => [],
       ensureRecords: async () => {
         records = true;
       },
@@ -381,25 +647,15 @@ integration("Cloud Computer Account service", () => {
       accountClient: (
         origin: URL,
         token: () => Promise<string>,
-        http: { timeoutMs: number; fetch: typeof fetch },
+        http: { timeoutMs: number },
+        holder: string,
       ) => {
         desired: (signal: AbortSignal) => Promise<readonly CloudComputerDesired[]>;
-        report: (report: CloudComputerReport, signal: AbortSignal) => Promise<void>;
+        report: (report: CloudComputerReport, signal: AbortSignal) => Promise<boolean>;
       };
     }>("../../../home-provisioner/src/account.js");
     const options = {
-      account: accountClient(publicOrigin, async () => provisionerToken, {
-        timeoutMs: 5000,
-        fetch: async (input, options) => {
-          const response = await app.inject({
-            method: options?.method === "POST" ? "POST" : "GET",
-            url: new URL(String(input)).pathname,
-            headers: Object.fromEntries(new Headers(options?.headers)),
-            ...(typeof options?.body === "string" ? { payload: options.body } : {}),
-          });
-          return new Response(response.body, { status: response.statusCode });
-        },
-      }),
+      account: accountClient(listener, async () => provisionerToken, { timeoutMs: 5000 }, lease),
       provider,
       dns,
       discover: async () => identity,
@@ -416,17 +672,49 @@ integration("Cloud Computer Account service", () => {
     const reconciler = new Reconciler(options);
     const pass = () => reconciler.pass(new AbortController().signal);
     const path = accountCloudComputerPath(id);
-    const read = () => app.inject({ method: "GET", url: path, headers: account.headers });
+    const read = () => http({ method: "GET", url: path, headers: account.headers });
     const mutation = (action: string) =>
-      app.inject({ method: "POST", url: `${path}/${action}`, headers: account.headers });
+      http({ method: "POST", url: `${path}/${action}`, headers: account.headers });
     expect((await read()).json()).toMatchObject({ status: "preparing" });
     await pass();
+    expect(records).toBe(true);
+    expect(kickBootstrap).not.toHaveBeenCalled();
+    expect((await complete(first!)).json()).toEqual({ completed: true });
+    await pass();
+    // Running is not ready: nobody can sign in until the Home is claimed for its Account.
+    expect((await read()).json()).toMatchObject({ status: "preparing" });
+    expect(kickBootstrap).toHaveBeenCalledOnce();
+    await expect(directory.listDeployments(account.id)).resolves.toEqual([]);
+    const home = fakeHome({ hostname: first!.hostname, boot: booted! });
+    expect(await claimer(home.fetch).runOnce()).toBe(1);
+    expect(claimErrors).toEqual([]);
+    expect(home.state.owner).toBe(account.id);
     expect((await read()).json()).toMatchObject({
       status: "ready",
       address: `https://${first!.hostname}`,
       egress: "unavailable",
     });
-    expect(kickBootstrap).toHaveBeenCalledOnce();
+    // Its owner's devices list it as a Home at its own address, signed in with their Account.
+    await expect(directory.listDeployments(account.id)).resolves.toMatchObject([
+      {
+        id: identity.deploymentId,
+        access: "owner",
+        canonicalOrigin: `https://${first!.hostname}`,
+        reachability: "canonical",
+        authorityEnvelope: { document: { deploymentShape: { kind: "personal" } } },
+      },
+    ]);
+    await expect(
+      database
+        .selectFrom("oauthClients")
+        .select(["clientId", "redirectUris", "userId"])
+        .where("clientId", "=", booted!.managedHome!.oidc.clientId)
+        .executeTakeFirst(),
+    ).resolves.toMatchObject({
+      redirectUris: [`https://${first!.hostname}/v1/auth/oidc/callback`],
+      userId: account.id,
+    });
+    expect(await claimer(home.fetch).runOnce()).toBe(0);
     expect(records).toBe(true);
     expect((await getDesired(id))?.observedIdentity).toEqual(identity);
     expect((await boot(first!)).statusCode).toBe(401);
@@ -437,7 +725,7 @@ integration("Cloud Computer Account service", () => {
     expect((await mutation("suspend")).statusCode).toBe(200);
     await pass();
     expect(server?.status).toBe("off");
-    expect(records).toBe(true);
+    expect(records).toBe(false);
     expect((await read()).json()).toMatchObject({
       status: "suspended",
       reason: "You paused this Cloud Computer.",
@@ -447,7 +735,7 @@ integration("Cloud Computer Account service", () => {
     expect((await read()).json()).toMatchObject({ status: "ready" });
     expect(
       (
-        await app.inject({
+        await http({
           method: "POST",
           url: accountCloudComputerBillingPortalPath,
           headers: account.headers,
@@ -457,7 +745,7 @@ integration("Cloud Computer Account service", () => {
     expect(stripe.portal).toHaveBeenCalledWith(order.customer);
     expect(
       (
-        await app.inject({
+        await http({
           method: "DELETE",
           url: path,
           headers: account.headers,
@@ -467,7 +755,7 @@ integration("Cloud Computer Account service", () => {
     ).toBe(400);
     expect(
       (
-        await app.inject({
+        await http({
           method: "DELETE",
           url: path,
           headers: account.headers,
@@ -481,6 +769,15 @@ integration("Cloud Computer Account service", () => {
     expect(records).toBe(false);
     expect(await getDesired(id)).toBeUndefined();
     expect((await read()).json()).toMatchObject({ status: "deleted" });
+    // A deleted Cloud Computer leaves no listing and no sign-in client behind.
+    await expect(directory.listDeployments(account.id)).resolves.toEqual([]);
+    await expect(
+      database
+        .selectFrom("oauthClients")
+        .select("clientId")
+        .where("clientId", "=", booted!.managedHome!.oidc.clientId)
+        .execute(),
+    ).resolves.toEqual([]);
     expect(
       (
         await database
@@ -495,7 +792,7 @@ integration("Cloud Computer Account service", () => {
   it("replays checkout requests and events, fences one live computer and honors billing without undoing manual suspension", async () => {
     const { account, order, id } = await buy();
     const start = (requestId: string) =>
-      app.inject({
+      http({
         method: "POST",
         url: accountCloudComputerCheckoutPath,
         headers: account.headers,
@@ -510,7 +807,7 @@ integration("Cloud Computer Account service", () => {
     expect(
       (await webhook("checkout.session.completed", order.session, "evt_replay")).statusCode,
     ).toBe(200);
-    const list = await app.inject({
+    const list = await http({
       method: "GET",
       url: accountCloudComputersPath,
       headers: account.headers,
@@ -547,14 +844,11 @@ integration("Cloud Computer Account service", () => {
     expect(await cloud.show(id)).toMatchObject({ reason: "Your subscription ended." });
   });
 
-  it("gates the provisioner, fences generations, pins identity, and revokes boot credentials at ready or expiry", async () => {
+  it("starts boot expiry on server creation, fences revisions, and pins only boot-complete", async () => {
     const { id } = await buy();
-    expect((await app.inject({ method: "GET", url: cloudComputersDesiredPath })).statusCode).toBe(
-      401,
-    );
     expect(
       (
-        await app.inject({
+        await http({
           method: "GET",
           url: cloudComputersDesiredPath,
           headers: {
@@ -563,58 +857,148 @@ integration("Cloud Computer Account service", () => {
         })
       ).statusCode,
     ).toBe(403);
-    const first = (await getDesired(id))!;
-    expect(first.bootstrapToken).toBeTruthy();
-    expect((await getDesired(id))?.bootstrapToken).toBe(first.bootstrapToken);
-    expect(
-      (await report(first, { id: CloudComputerIdSchema.parse(`cc_${randomUUID()}`) })).statusCode,
-    ).toBe(400);
+    const initial = (await getDesired(id))!;
+    expect(initial.bootstrapToken).toBeTruthy();
     const denied = await boot(
-      first,
-      first.bootstrapToken,
+      initial,
+      initial.bootstrapToken,
       CloudComputerIdSchema.parse(`cc_${randomUUID()}`),
     );
     expect(denied.statusCode).toBe(401);
-    expect(denied.body).not.toContain(first.bootstrapToken!);
-    const booted = await boot(first);
-    expect(booted.statusCode).toBe(200);
-    expect((await boot(first)).json()).toEqual(booted.json());
-    expect((await report(first, { phase: "booting", observedIdentity: null })).statusCode).toBe(
-      200,
-    );
-    expect((await getDesired(id))?.bootstrapToken).toBeUndefined();
-    expect((await boot(first)).statusCode).toBe(200);
-
-    await cloud.mutate(id, "reissue");
-    const second = (await getDesired(id))!;
-    expect(second.generation).toBe(first.generation + 1);
-    expect(second.bootstrapToken).not.toBe(first.bootstrapToken);
-    expect((await boot(second, first.bootstrapToken)).statusCode).toBe(401);
-    expect((await report(first)).statusCode).toBe(200);
-    expect((await getDesired(id))?.observedIdentity).toBeUndefined();
+    expect(denied.body).not.toContain(initial.bootstrapToken!);
+    expect((await boot(initial)).statusCode).toBe(401);
+    expect((await report(initial)).json()).toEqual({ recorded: false });
     now = new Date(now.getTime() + 21 * 60_000);
-    expect((await boot(second)).statusCode).toBe(401);
-    expect((await getDesired(id))?.bootstrapToken).toBeUndefined();
+    expect(await cloud.lease(lease, true)).toBe(true);
+    expect((await getDesired(id))?.bootstrapToken).toBe(initial.bootstrapToken);
     await cloud.mutate(id, "reissue");
-    const third = (await getDesired(id))!;
-    const install = CloudComputerBootResponseSchema.parse((await boot(third)).json());
-    expect((await report(third)).statusCode).toBe(200);
+    const first = (await getDesired(id))!;
+    expect(first.generation).toBe(initial.generation);
+    expect(first.bootstrapToken).not.toBe(initial.bootstrapToken);
+    expect(
+      (await report(initial, { phase: "provisioning", observedIdentity: null })).json(),
+    ).toEqual({ recorded: false });
+
+    const config = await bootable(first);
+    expect((await boot(first)).json()).toEqual(config);
+    expect((await getDesired(id))?.observedIdentity).toBeUndefined();
+    expect((await report(first)).json()).toEqual({ recorded: false });
+    expect((await complete(first)).json()).toEqual({ completed: true });
+    expect((await complete(first)).json()).toEqual({ completed: true });
+    expect(
+      (await complete(first, { ...identity, hostKeyFingerprint: `sha256:${"b".repeat(43)}` }))
+        .statusCode,
+    ).toBe(401);
+    expect((await boot(first)).statusCode).toBe(401);
+    const pinned = (await getDesired(id))!;
+    expect(pinned.observedIdentity).toEqual(identity);
+    expect((await report(pinned)).json()).toEqual({ recorded: true });
     expect(
       (
-        await report(third, {
+        await report(pinned, {
           observedIdentity: { ...identity, hostKeyFingerprint: `sha256:${"b".repeat(43)}` },
         })
       ).statusCode,
     ).toBe(409);
-    expect((await getDesired(id))?.observedIdentity).toEqual(identity);
-    expect((await getDesired(id))?.bootstrapToken).toBeUndefined();
-    expect((await boot(third)).statusCode).toBe(401);
-    const setup = await cloud.setupCodeForReadyHome(id, third.generation);
-    expect(setup).toBeTruthy();
-    expect(digestSecret(setup!)).toBe(install.setupCodeDigest);
-    expect(JSON.stringify(install)).not.toContain(setup!);
+    const setup = await cloud.setupCodeForReadyHome(id, pinned.generation);
+    expect(digestSecret(setup!)).toBe(config.setupCodeDigest);
+    expect(JSON.stringify(config)).not.toContain(setup!);
     expect(logs.join("")).not.toContain(first.bootstrapToken!);
-    expect(logs.join("")).not.toContain(third.bootstrapToken!);
+
+    now = new Date(now.getTime() + 50);
+    expect((await report(pinned, { phase: "booting" })).json()).toEqual({ recorded: true });
+    expect((await getDesired(id))?.readinessStartedAt).toBe(now.toISOString());
+    expect((await getDesired(id))?.observedIdentity).toEqual(identity);
+
+    await expect(cloud.mutate(id, "reissue")).rejects.toThrow("working Home");
+    await expect(cloud.mutate(id, "replace", undefined, "")).rejects.toThrow("snapshot");
+    await cloud.mutate(id, "replace", undefined, "aabbccdd");
+    const replacement = (await getDesired(id))!;
+    expect(replacement).toMatchObject({
+      generation: pinned.generation + 1,
+      restoreSnapshot: "aabbccdd",
+      previousProviderServerId: 7,
+    });
+    expect((await boot(replacement, first.bootstrapToken)).statusCode).toBe(401);
+    const newConfig = await bootable(replacement);
+    expect(newConfig.restoreSnapshot).toBe("aabbccdd");
+    now = new Date(now.getTime() + 21 * 60_000);
+    expect((await boot(replacement)).statusCode).toBe(401);
+    expect((await complete(replacement)).statusCode).toBe(401);
+  });
+
+  it("recovers a claim the Home committed from the Home's own receipt", async () => {
+    const { account, id } = await buy();
+    const computer = (await getDesired(id))!;
+    const booted = await bootable(computer);
+    expect((await complete(computer)).statusCode).toBe(200);
+    expect((await report((await getDesired(id))!)).json()).toEqual({ recorded: true });
+    const home = fakeHome({ hostname: computer.hostname, boot: booted });
+    let crash = true;
+    const crashing = {
+      claimDue: () => cloud.claimDue(),
+      claimMaterial: (job: Parameters<typeof cloud.claimMaterial>[0]) => cloud.claimMaterial(job),
+      deferClaim: (job: Parameters<typeof cloud.deferClaim>[0], at: Date) =>
+        cloud.deferClaim(job, at),
+      failClaim: (job: Parameters<typeof cloud.failClaim>[0], reason: string) =>
+        cloud.failClaim(job, reason),
+      recordClaim: async (...args: Parameters<typeof cloud.recordClaim>) => {
+        if (crash) {
+          crash = false;
+          throw new Error("Account stopped before recording the claim");
+        }
+        return cloud.recordClaim(...args);
+      },
+    };
+    // The Home committed its owner, then Account lost the answer.
+    expect(await claimer(home.fetch, crashing).runOnce()).toBe(1);
+    expect(home.state.owner).toBe(account.id);
+    const first = home.state.receipt;
+    expect((await cloud.show(id, account.id)).status).toBe("preparing");
+    // Not due again until its backoff passes.
+    expect(await claimer(home.fetch).runOnce()).toBe(0);
+    // Its backoff elapses (moved, not waited for: the assertion is signed at the real time).
+    await database
+      .updateTable("cloudComputers")
+      .set({ claimNextAt: new Date(now.getTime() - 1) })
+      .where("id", "=", id)
+      .execute();
+    expect(await claimer(home.fetch).runOnce()).toBe(1);
+    expect(claimErrors).toHaveLength(1);
+    expect(home.state.claims).toBe(2);
+    expect(home.state.receipt).toBe(first);
+    expect(
+      (
+        await database
+          .selectFrom("cloudComputers")
+          .select("bootstrapReceipt")
+          .where("id", "=", id)
+          .executeTakeFirstOrThrow()
+      ).bootstrapReceipt,
+    ).toEqual(first);
+    expect((await cloud.show(id, account.id)).status).toBe("ready");
+    await expect(directory.listDeployments(account.id)).resolves.toHaveLength(1);
+  });
+
+  it("never claims a Home whose identity differs from the one Account pinned", async () => {
+    const { account, id } = await buy();
+    const computer = (await getDesired(id))!;
+    const booted = await bootable(computer);
+    expect((await complete(computer)).statusCode).toBe(200);
+    expect((await report((await getDesired(id))!)).json()).toEqual({ recorded: true });
+    const impostor = fakeHome({
+      hostname: computer.hostname,
+      boot: booted,
+      deploymentId: "dep_00000000-0000-4000-8000-000000000099",
+    });
+    expect(await claimer(impostor.fetch).runOnce()).toBe(1);
+    expect(impostor.state.claims).toBe(0);
+    expect(await cloud.show(id, account.id)).toMatchObject({
+      status: "needs_attention",
+      reason: "Your Cloud Computer couldn’t be set up for your Account. Contact support.",
+    });
+    expect(await claimer(impostor.fetch).runOnce()).toBe(0);
+    await expect(directory.listDeployments(account.id)).resolves.toEqual([]);
   });
 
   it("assigns egress exclusively and releases it only upon a confirmed tombstone", async () => {
@@ -629,8 +1013,10 @@ integration("Cloud Computer Account service", () => {
     );
     const first = (await getDesired((await buy()).id))!;
     const second = (await getDesired((await buy()).id))!;
-    const firstBoot = CloudComputerBootResponseSchema.parse((await boot(first)).json());
-    const secondBoot = CloudComputerBootResponseSchema.parse((await boot(second)).json());
+    const firstBoot = await bootable(first);
+    const secondBoot = await bootable(second);
+    expect(firstBoot.backup.accessKeyId).not.toBe(secondBoot.backup.accessKeyId);
+    expect(firstBoot.backup.prefix).not.toBe(secondBoot.backup.prefix);
     expect(firstBoot.egress).toEqual(endpoint);
     expect(secondBoot.egress).toBeUndefined();
     expect(secondBoot.backup.password).not.toBe(firstBoot.backup.password);
@@ -639,7 +1025,7 @@ integration("Cloud Computer Account service", () => {
     expect((await cloud.listEgressEndpoints())[0]?.computerId).toBe(first.id);
     expect(
       (
-        await report(first, {
+        await report((await getDesired(first.id))!, {
           phase: "deleted",
           providerServerId: null,
           ipv4: null,
@@ -648,16 +1034,229 @@ integration("Cloud Computer Account service", () => {
       ).statusCode,
     ).toBe(200);
     expect((await cloud.listEgressEndpoints())[0]?.computerId).toBeNull();
-    expect(CloudComputerBootResponseSchema.parse((await boot(second)).json()).egress).toEqual(
-      endpoint,
+    expect(
+      CloudComputerBootResponseSchema.parse((await boot(second)).json()).egress,
+    ).toBeUndefined();
+    expect((await cloud.listEgressEndpoints())[0]?.needsRotation).toBe(true);
+    const retired = (await cloud.listBackupTargets()).find(
+      (target) => target.prefix === firstBoot.backup.prefix,
+    )!;
+    expect(retired.needsRotation).toBe(true);
+    const customer = await createAccount();
+    const order = purchase(customer.id);
+    await expect(cloud.checkout(customer.id, order.requestId)).rejects.toThrow(
+      "not available right now",
     );
+    await cloud.rotateBackupTarget(retired.id, {
+      accessKeyId: "access-c",
+      secretAccessKey: "secret-c",
+    });
+    await cloud.rotateEgressEndpoint(endpointId, {
+      username: "egress-user",
+      password: "rotated-password",
+    });
+    const third = await buy(customer);
+    const config = await bootable((await getDesired(third.id))!);
+    expect(config.backup.accessKeyId).toBe("access-c");
+    expect(config.egress?.password).toBe("rotated-password");
+  });
+
+  it("records delete before contacting Stripe and tombstones only after cancellation", async () => {
+    const { id, account, order } = await buy();
+    await bootable((await getDesired(id))!);
+    stripe.cancel.mockRejectedValueOnce(new Error("Stripe unavailable"));
+    expect(await cloud.mutate(id, "delete", account.id)).toMatchObject({
+      status: "needs_attention",
+    });
+    expect((await getDesired(id))?.state).toBe("active");
+    expect(
+      (
+        await database
+          .selectFrom("cloudComputers")
+          .select("deletionRequestedAt")
+          .where("id", "=", id)
+          .executeTakeFirstOrThrow()
+      ).deletionRequestedAt,
+    ).toBeInstanceOf(Date);
+    await cloud.reconcileBilling(() => {
+      throw new Error("unexpected periodic billing failure");
+    });
+    expect(stripe.cancel).toHaveBeenLastCalledWith(order.subscription);
+    expect((await getDesired(id))?.state).toBe("deleted");
+  });
+
+  it("reuses the same suspended Home after a final subscription cancellation", async () => {
+    const { id, account, order } = await buy();
+    const first = (await getDesired(id))!;
+    const config = await bootable(first);
+    subscriptions.set(order.subscription, { ...order.details, status: "canceled" });
+    await cloud.reconcileBilling(() => {
+      throw new Error("unexpected periodic billing failure");
+    });
+    expect(await cloud.show(id)).toMatchObject({ status: "suspended" });
+    const replacement = await buy(account);
+    expect(replacement.id).toBe(id);
+    const resumed = (await getDesired(id))!;
+    expect(resumed).toMatchObject({
+      generation: first.generation,
+      providerServerId: 7,
+      state: "active",
+    });
+    const same = CloudComputerBootResponseSchema.parse((await boot(first)).json());
+    expect(same.backup).toEqual(config.backup);
+  });
+
+  it("recovers an abandoned Checkout create and durably defers payment during an Account deletion fence", async () => {
+    const account = await createAccount();
+    const lost = purchase(account.id);
+    checkout.mockRejectedValueOnce(new Error("Checkout create never reached Stripe"));
+    await expect(cloud.checkout(account.id, lost.requestId)).rejects.toThrow(
+      "never reached Stripe",
+    );
+    now = new Date(now.getTime() + 60_001);
+    const order = purchase(account.id);
+    expect(await cloud.checkout(account.id, order.requestId)).toEqual({ url: checkoutUrl });
+    expect(stripe.findCheckout).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: lost.requestId, sessionId: null }),
+    );
+    expect(
+      await database
+        .selectFrom("cloudComputerCheckouts")
+        .select("status")
+        .where("requestId", "=", lost.requestId)
+        .executeTakeFirst(),
+    ).toEqual({ status: "expired" });
+
+    await database
+      .updateTable("users")
+      .where("id", "=", account.id)
+      .set({ deletionFencedUntil: new Date(now.getTime() + 60_001) })
+      .executeTakeFirst();
+    expect(
+      (await webhook("checkout.session.completed", order.session, "evt_fenced")).statusCode,
+    ).toBe(200);
+    expect(await cloud.list(account.id)).toEqual([]);
+    expect(
+      (
+        await database
+          .selectFrom("cloudComputerStripeEvents")
+          .select("deferredCheckout")
+          .where("id", "=", "evt_fenced")
+          .executeTakeFirstOrThrow()
+      ).deferredCheckout,
+    ).toMatchObject({ id: order.session.id });
+    now = new Date(now.getTime() + 60_002);
+    await cloud.reconcileBilling(() => {
+      throw new Error("unexpected periodic billing failure");
+    });
+    expect(await cloud.list(account.id)).toHaveLength(1);
+    expect(
+      (
+        await database
+          .selectFrom("cloudComputerStripeEvents")
+          .select("deferredCheckout")
+          .where("id", "=", "evt_fenced")
+          .executeTakeFirstOrThrow()
+      ).deferredCheckout,
+    ).toBeNull();
+  });
+
+  it("blocks sales on an invalid Stripe offer and recovers missed completion, paused collection and payment", async () => {
+    const customer = await createAccount();
+    const order = purchase(customer.id);
+    stripe.validateOffer.mockRejectedValueOnce(new Error("offer differs"));
+    await expect(cloud.checkOffer()).rejects.toThrow("offer differs");
+    await expect(cloud.checkout(customer.id, order.requestId)).rejects.toThrow(
+      "not available right now",
+    );
+    expect(checkout).not.toHaveBeenCalled();
+    await cloud.checkOffer();
+    await cloud.checkout(customer.id, order.requestId);
+    stripe.findCheckout.mockResolvedValueOnce({
+      id: order.session.id,
+      status: "complete",
+      url: null,
+      payment: { ...order.session, mode: "subscription", payment_status: "paid" },
+    });
+    const tick = () =>
+      cloud.reconcileBilling(() => {
+        throw new Error("unexpected periodic billing failure");
+      });
+    await tick();
+    const [computer] = await cloud.list(customer.id);
+    expect(computer?.status).toBe("preparing");
+    subscriptions.set(order.subscription, {
+      ...order.details,
+      pause_collection: { behavior: "void" },
+    });
+    await tick();
+    expect(await cloud.show(computer!.id)).toMatchObject({ status: "suspended" });
+    subscriptions.set(order.subscription, order.details);
+    await tick();
+    expect(await cloud.show(computer!.id)).toMatchObject({ status: "preparing" });
+  });
+
+  it("does not recreate a deleted Home when a pending resubscription pays late", async () => {
+    const { id, account, order } = await buy();
+    subscriptions.set(order.subscription, { ...order.details, status: "canceled" });
+    await cloud.reconcileBilling(() => {
+      throw new Error("unexpected periodic billing failure");
+    });
+    const second = purchase(account.id);
+    await cloud.checkout(account.id, second.requestId);
+    await cloud.mutate(id, "delete", account.id);
+    const deletion = (await getDesired(id))!;
+    expect(
+      (
+        await report(deletion, {
+          phase: "deleted",
+          providerServerId: null,
+          ipv4: null,
+          observedIdentity: null,
+        })
+      ).json(),
+    ).toEqual({ recorded: true });
+    expect((await webhook("checkout.session.completed", second.session)).statusCode).toBe(200);
+    expect(stripe.cancel).toHaveBeenCalledWith(second.subscription);
+    expect(await cloud.list(account.id)).toMatchObject([{ id, status: "deleted" }]);
+  });
+
+  it("continues to find and cancel a pending Checkout after Account deletion", async () => {
+    const owner = await createAccount();
+    const order = purchase(owner.id);
+    await cloud.checkout(owner.id, order.requestId);
+    await database.deleteFrom("users").where("id", "=", owner.id).executeTakeFirst();
+    expect(
+      await database
+        .selectFrom("cloudComputerCheckouts")
+        .select("requestId")
+        .where("accountId", "=", owner.id)
+        .execute(),
+    ).toEqual([]);
+    stripe.findCheckout.mockResolvedValueOnce({
+      id: order.session.id,
+      status: "complete",
+      url: null,
+      payment: { ...order.session, mode: "subscription", payment_status: "paid" },
+    });
+    await cloud.reconcileBilling(() => {
+      throw new Error("unexpected periodic billing failure");
+    });
+    expect(stripe.cancel).toHaveBeenCalledWith(order.subscription);
+    expect(
+      await database
+        .selectFrom("cloudComputerBackupTargets")
+        .select("checkoutKey")
+        .where("checkoutKey", "is not", null)
+        .execute(),
+    ).toEqual([]);
   });
 
   it("rate limits boot attempts and admits only signed Stripe webhooks", async () => {
     const id = CloudComputerIdSchema.parse(`cc_${randomUUID()}`);
     const path = cloudComputerBootPath(id);
     for (let attempt = 0; attempt < 20; attempt++) {
-      const response = await app.inject({
+      const response = await http({
         method: "POST",
         url: path,
         payload: { hostname: "unknown.example.test", bootstrapToken: "guessed" },
@@ -665,7 +1264,7 @@ integration("Cloud Computer Account service", () => {
       expect(response.statusCode).toBe(401);
       expect(response.body).not.toContain("guessed");
     }
-    const limited = await app.inject({
+    const limited = await http({
       method: "POST",
       url: path,
       payload: { hostname: "unknown.example.test", bootstrapToken: "guessed" },
@@ -673,7 +1272,7 @@ integration("Cloud Computer Account service", () => {
     expect(limited.statusCode).toBe(429);
     expect(limited.headers["retry-after"]).toBe("60");
     expect(logs.join("")).not.toContain("guessed");
-    const forged = await app.inject({
+    const forged = await http({
       method: "POST",
       url: cloudComputerStripeWebhookPath,
       payload: { id: "evt_forged", type: "invoice.paid", data: { object: {} } },

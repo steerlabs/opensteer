@@ -13,6 +13,8 @@ const envSchema = z.object({
   OPENSTEER_HOME_REQUEST_TIMEOUT_MS: milliseconds(100, 60_000).default(15_000),
   OPENSTEER_HOME_ACTION_TIMEOUT_MS: milliseconds(1_000, 600_000).default(90_000),
   OPENSTEER_HOME_READINESS_TIMEOUT_MS: milliseconds(1_000, 3_600_000).default(600_000),
+  OPENSTEER_HOME_PROVISIONER_REPLICAS: z.literal("1").default("1"),
+  OPENSTEER_HOME_ORPHAN_GRACE_MS: milliseconds(60_000, 86_400_000).default(300_000),
   OPENSTEER_HOME_CONCURRENCY: milliseconds(1, 16).default(4),
 });
 
@@ -41,6 +43,7 @@ export function loadConfig(env: NodeJS.ProcessEnv) {
     actionTimeoutMs: parsed.OPENSTEER_HOME_ACTION_TIMEOUT_MS,
     readinessTimeoutMs: parsed.OPENSTEER_HOME_READINESS_TIMEOUT_MS,
     concurrency: parsed.OPENSTEER_HOME_CONCURRENCY,
+    orphanGraceMs: parsed.OPENSTEER_HOME_ORPHAN_GRACE_MS,
   };
 }
 

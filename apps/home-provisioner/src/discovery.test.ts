@@ -5,7 +5,7 @@ import {
   hostKeyFingerprint,
 } from "@opensteer/deployment-authority";
 import { expect, it, vi } from "vitest";
-import { discoverHome } from "./discovery.js";
+import { discoverHome, homeTlsOptions } from "./discovery.js";
 
 const hostname = "home.example.com";
 const keys = generateKeyPairSync("ed25519");
@@ -40,7 +40,7 @@ it.each(["valid", "wrong-origin", "invalid-signature"])(
       }),
     );
     const discover = discoverHome({ timeoutMs: 1000, fetch });
-    await expect(discover(hostname, new AbortController().signal)).resolves.toEqual(
+    await expect(discover(hostname, "192.0.2.7", new AbortController().signal)).resolves.toEqual(
       scenario === "valid"
         ? {
             deploymentId: document.deploymentId,
@@ -54,3 +54,12 @@ it.each(["valid", "wrong-origin", "invalid-signature"])(
     );
   },
 );
+
+it("dials the provider address with the hostname as SNI and Host", () => {
+  expect(homeTlsOptions("home.example.test", "2001:db8::12")).toMatchObject({
+    hostname: "2001:db8::12",
+    servername: "home.example.test",
+    headers: { host: "home.example.test" },
+    rejectUnauthorized: true,
+  });
+});

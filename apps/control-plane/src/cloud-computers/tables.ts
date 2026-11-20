@@ -28,6 +28,12 @@ export interface CloudComputerTable {
   sealedBackupPassword: string | null;
   bootstrapReceipt: ColumnType<unknown, string | null, string | null>;
   bootstrapReceiptAt: NullableTimestamp;
+  oidcClientId: string | null;
+  sealedOidcClientSecret: string | null;
+  sealedHostCredential: string | null;
+  claimAttempt: Generated<number>;
+  claimNextAt: NullableTimestamp;
+  claimError: string | null;
   readinessStartedAt: Timestamp;
   phase: CloudComputerReport["phase"];
   providerServerId: string | null;
@@ -45,6 +51,15 @@ export interface CloudComputerTable {
   stripePriceId: string;
   billingCurrency: string;
   billingStatus: BillingStatus;
+  revision: Generated<number>;
+  everReady: Generated<boolean>;
+  createAttempted: Generated<boolean>;
+  bootCompletedAt: NullableTimestamp;
+  completedBootDigest: string | null;
+  previousProviderServerId: string | null;
+  restoreSnapshot: string | null;
+  ipv6Enabled: Generated<boolean>;
+  deletionRequestedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
   reportedAt: NullableTimestamp;
@@ -56,6 +71,9 @@ export interface CloudComputerCheckoutTable {
   accountId: ControlPlaneAccountId;
   requestId: string;
   expiresAt: Timestamp;
+  createdAt: Timestamp;
+  lastStripeAttemptAt: NullableTimestamp;
+  targetComputerId: CloudComputerId | null;
   stripeSessionId: string | null;
   url: string | null;
   stripePriceId: string;
@@ -68,6 +86,7 @@ export interface CloudComputerEgressEndpointTable {
   url: string;
   username: string;
   sealedPassword: string;
+  needsRotation: Generated<boolean>;
   computerId: CloudComputerId | null;
 }
 
@@ -75,4 +94,17 @@ export interface CloudComputerStripeEventTable {
   id: string;
   type: string;
   receivedAt: Timestamp;
+  deferredCheckout: ColumnType<unknown, string | null | undefined, string | null>;
+}
+
+export interface CloudComputerBackupTargetTable {
+  id: string;
+  endpoint: string;
+  bucket: string;
+  prefix: string;
+  principalFingerprint: string;
+  sealedCredentials: string;
+  computerId: CloudComputerId | null;
+  checkoutKey: string | null;
+  needsRotation: Generated<boolean>;
 }

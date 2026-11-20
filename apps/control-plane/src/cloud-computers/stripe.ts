@@ -1,6 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
-import type { ControlPlaneAccountId } from "@opensteer/control-plane-protocol";
+import type {
+  ControlPlaneAccountId,
+  CloudComputerPlanSchema,
+} from "@opensteer/control-plane-protocol";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { z } from "zod";
 import { ControlPlaneError } from "../server/errors.js";
@@ -28,7 +31,7 @@ const checkout = z.object({
   client_reference_id: ControlPlaneAccountIdSchema,
   metadata,
 });
-const completed = checkout.extend({
+export const StripePaidCheckoutSchema = checkout.extend({
   customer: customerId,
   subscription: subscriptionId,
   currency: z.string(),
@@ -41,7 +44,7 @@ const eventSchema = z.object({
 });
 
 export type StripeEvent = { id: string; type: string } & (
-  | { operation: "completed"; checkout: z.infer<typeof completed> }
+  | { operation: "completed"; checkout: z.infer<typeof StripePaidCheckoutSchema> }
   | { operation: "expired"; checkout: z.infer<typeof checkout> }
   | { operation: "billing"; subscriptionId: string }
   | { operation: "ignore" }
@@ -72,8 +75,9 @@ export function decodeStripeEvent(raw: Buffer): StripeEvent {
     const { id, type, data } = eventSchema.parse(JSON.parse(raw.toString("utf8")));
     const base = { id, type };
     switch (type) {
+      case "checkout.session.async_payment_succeeded":
       case "checkout.session.completed": {
-        const result = completed.safeParse(data.object);
+        const result = StripePaidCheckoutSchema.safeParse(data.object);
         if (!result.success || result.data.payment_status !== "paid")
           return { ...base, operation: "ignore" };
         return { ...base, operation: "completed", checkout: result.data };
@@ -105,7 +109,30 @@ export function decodeStripeEvent(raw: Buffer): StripeEvent {
 
 const hostedSession = z.object({ url: z.url({ protocol: /^https$/u }) });
 const createdSession = hostedSession.extend({ id: sessionId });
+const checkoutRecord = z
+  .object({
+    id: sessionId,
+    status: z.enum(["open", "complete", "expired"]),
+    url: z.url({ protocol: /^https$/u }).nullable(),
+    metadata: z.record(z.string(), z.string()).nullable(),
+  })
+  .passthrough();
+const checkoutPage = z.object({ has_more: z.boolean(), data: z.array(checkoutRecord) });
+const price = z.object({
+  id: stripeToken("price"),
+  active: z.boolean(),
+  currency: z.string(),
+  unit_amount: z.number().int().nullable(),
+  recurring: z
+    .object({
+      interval: z.string(),
+      interval_count: z.number().int(),
+      usage_type: z.literal("licensed"),
+    })
+    .nullable(),
+});
 const stripeSubscription = z.object({
+  pause_collection: z.object({ behavior: z.string() }).nullish(),
   id: subscriptionId,
   customer: customerId,
   status: z.enum([
@@ -140,7 +167,6 @@ export interface CheckoutInput {
   readonly accountId: ControlPlaneAccountId;
   readonly requestId: string;
   readonly priceId: string;
-  readonly expiresAt: Date;
 }
 
 interface StripeOptions {
@@ -164,7 +190,7 @@ export class CloudComputerStripe {
       createdSession,
       {
         mode: "subscription",
-        "payment_method_types[0]": "card",
+        "allowed_payment_method_types[0]": "card",
         payment_method_collection: "always",
         "line_items[0][price]": input.priceId,
         "line_items[0][quantity]": "1",
@@ -175,7 +201,6 @@ export class CloudComputerStripe {
         "subscription_data[metadata][request_id]": input.requestId,
         success_url: success.toString(),
         cancel_url: this.#options.returnUrl.toString(),
-        expires_at: String(Math.floor(input.expiresAt.getTime() / 1000)),
       },
       `cloud-computer:${input.accountId}:${input.requestId}`,
     );
@@ -195,18 +220,106 @@ export class CloudComputerStripe {
     );
   }
 
+  async validateOffer(
+    id: string,
+    offer: z.infer<typeof CloudComputerPlanSchema> & { interval: string },
+  ): Promise<void> {
+    const actual = await this.#request(`prices/${stripeToken("price").parse(id)}`, price);
+    if (
+      actual.id !== id ||
+      !actual.active ||
+      actual.currency !== offer.currency ||
+      actual.unit_amount !== offer.amountMinor ||
+      actual.recurring?.interval !== offer.interval ||
+      actual.recurring.interval_count !== 1
+    ) {
+      throw new ControlPlaneError(
+        "unavailable",
+        "The configured Stripe price does not match the Cloud Computer offer",
+      );
+    }
+  }
+
+  async findCheckout(
+    input: Pick<CheckoutInput, "accountId" | "requestId"> & {
+      sessionId: string | null;
+      createdAt: Date;
+    },
+  ) {
+    const matches = (record: z.infer<typeof checkoutRecord>) =>
+      record.metadata?.account_id === input.accountId &&
+      record.metadata.request_id === input.requestId;
+    let record: z.infer<typeof checkoutRecord> | undefined;
+    if (input.sessionId) {
+      record = await this.#request(
+        `checkout/sessions/${sessionId.parse(input.sessionId)}`,
+        checkoutRecord,
+      );
+      if (!matches(record))
+        throw new ControlPlaneError("unavailable", "Stripe returned another Checkout Session");
+    } else {
+      const query = new URLSearchParams({
+        "created[gte]": String(Math.floor(input.createdAt.getTime() / 1000)),
+        limit: "100",
+      });
+      for (let page = 0; ; page++) {
+        if (page === 20)
+          throw new ControlPlaneError(
+            "unavailable",
+            "Stripe Checkout lookup could not be completed",
+          );
+        const result = await this.#request(`checkout/sessions?${query}`, checkoutPage);
+        for (const candidate of result.data.filter(matches)) {
+          if (record)
+            throw new ControlPlaneError(
+              "unavailable",
+              "More than one Stripe Checkout Session matched",
+            );
+          record = candidate;
+        }
+        if (!result.has_more) break;
+        const last = result.data.at(-1);
+        if (!last)
+          throw new ControlPlaneError("unavailable", "Stripe Checkout pagination was incomplete");
+        query.set("starting_after", last.id);
+      }
+    }
+    if (!record) return undefined;
+    const paid = StripePaidCheckoutSchema.safeParse(record);
+    return {
+      id: record.id,
+      status: record.status,
+      url: record.url,
+      payment: paid.success && paid.data.payment_status === "paid" ? paid.data : undefined,
+    };
+  }
+
+  async cancel(id: string): Promise<void> {
+    const canceled = z.object({ id: subscriptionId, status: z.literal("canceled") });
+    const result = await this.#request(
+      `subscriptions/${subscriptionId.parse(id)}?invoice_now=false&prorate=false`,
+      canceled,
+      undefined,
+      undefined,
+      "DELETE",
+    );
+    if (result.id !== id)
+      throw new ControlPlaneError("unavailable", "Stripe returned another subscription");
+  }
+
   async #request<T>(
     path: string,
     schema: z.ZodType<T>,
     form?: Record<string, string>,
     idempotencyKey?: string,
+    method = form ? "POST" : "GET",
   ): Promise<T> {
     const signal = AbortSignal.timeout(10_000);
     try {
       const response = await fetch(
         new URL(path, this.#options.baseUrl ?? "https://api.stripe.com/v1/"),
         {
-          method: form ? "POST" : "GET",
+          method,
           headers: {
             authorization: `Bearer ${this.#options.key}`,
             "stripe-version": stripeApiVersion,
@@ -230,15 +343,20 @@ export class CloudComputerStripe {
 }
 
 export type StripeSubscription = Awaited<ReturnType<CloudComputerStripe["subscription"]>>;
-export type StripeBilling = Pick<CloudComputerStripe, "checkout" | "portal" | "subscription">;
+export type StripeBilling = Pick<
+  CloudComputerStripe,
+  "checkout" | "portal" | "subscription" | "cancel" | "findCheckout" | "validateOffer"
+>;
 
 export function billingStatus(subscription: StripeSubscription): BillingStatus {
   switch (subscription.status) {
     case "active":
+      if (subscription.pause_collection) return "inactive";
+      if (subscription.latest_invoice?.status === "paid") return "active";
       return subscription.latest_invoice?.status === "open" &&
         subscription.latest_invoice.attempt_count > 0
         ? "payment_failed"
-        : "active";
+        : "inactive";
     case "past_due":
     case "unpaid":
     case "canceled":

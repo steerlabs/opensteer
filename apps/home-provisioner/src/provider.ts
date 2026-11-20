@@ -8,7 +8,7 @@ export interface Addresses {
 export interface VmServer extends Addresses {
   readonly id: number;
   readonly generation: number;
-  readonly status: "running" | "off" | "transitioning";
+  readonly status: "running" | "off" | "transitioning" | "deleting";
   readonly firewalls: readonly { id: number; status: "applied" | "pending" }[];
 }
 
@@ -23,21 +23,37 @@ export interface CreateVm {
 }
 
 export interface VmProvider {
-  ensureFirewall(signal: AbortSignal): Promise<number>;
+  ensureFirewall(signal: AbortSignal, check?: () => Promise<void>): Promise<number>;
   ensureFirewallAttached(
     server: VmServer,
     firewallId: number,
     signal: AbortSignal,
+    check?: () => Promise<void>,
   ): Promise<boolean>;
-  find(id: CloudComputerId, signal: AbortSignal): Promise<readonly VmServer[]>;
-  create(input: CreateVm, signal: AbortSignal): Promise<VmServer>;
+  find(
+    id: CloudComputerId,
+    signal: AbortSignal,
+    expected?: {
+      generation: number;
+      providerServerId?: number | undefined;
+      previousProviderServerId?: number | undefined;
+    },
+  ): Promise<readonly VmServer[]>;
+  listManaged(signal: AbortSignal): Promise<readonly { id: CloudComputerId; server: VmServer }[]>;
+  create(input: CreateVm, signal: AbortSignal, check?: () => Promise<void>): Promise<VmServer>;
   describe(id: number, signal: AbortSignal): Promise<VmServer | undefined>;
-  powerOn(id: number, signal: AbortSignal): Promise<void>;
-  powerOff(id: number, signal: AbortSignal): Promise<void>;
-  delete(id: number, signal: AbortSignal): Promise<void>;
+  powerOn(id: number, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
+  powerOff(id: number, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
+  delete(id: number, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
 }
 
 export interface DnsProvider {
-  ensureRecords(hostname: string, addresses: Addresses, signal: AbortSignal): Promise<void>;
-  removeRecords(hostname: string, signal: AbortSignal): Promise<void>;
+  ensureRecords(
+    hostname: string,
+    addresses: Addresses,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<void>;
+  removeRecords(hostname: string, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
+  listManaged(signal: AbortSignal): Promise<readonly { id: CloudComputerId; hostname: string }[]>;
 }

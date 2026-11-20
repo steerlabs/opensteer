@@ -1,4 +1,7 @@
-import { CloudComputerHostnameSchema } from "@opensteer/control-plane-protocol";
+import {
+  CloudComputerIdSchema,
+  CloudComputerHostnameSchema,
+} from "@opensteer/control-plane-protocol";
 import { refused } from "@opensteer/core";
 import { z } from "zod";
 import { json, RemoteRequestError, request, type HttpOptions } from "./http.js";
@@ -41,7 +44,12 @@ export class CloudflareDns implements DnsProvider {
     );
   }
 
-  async ensureRecords(hostname: string, addresses: Addresses, signal: AbortSignal): Promise<void> {
+  async ensureRecords(
+    hostname: string,
+    addresses: Addresses,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<void> {
     const existing = await this.#list(hostname, signal);
     if (
       existing.some(
@@ -60,21 +68,31 @@ export class CloudflareDns implements DnsProvider {
       const current =
         matching.find((record) => sameAddress(type, record.content, content)) ?? matching[0];
       for (const record of matching) {
-        if (content === null || record.id !== current?.id) await this.#delete(record.id, signal);
+        if (content === null || record.id !== current?.id) {
+          await check?.();
+          await this.#delete(record.id, signal);
+        }
       }
       if (content === null) continue;
       const body = { type, content, name: hostname, ttl: 1, proxied: false, comment: owner };
       if (!current) {
+        await check?.();
         await this.#request(this.#records, savedResponse, signal, "POST", body);
       } else if (current.proxied !== false || !sameAddress(type, current.content, content)) {
+        await check?.();
         await this.#request(this.#record(current.id), savedResponse, signal, "PATCH", body);
       }
     }
   }
 
-  async removeRecords(hostname: string, signal: AbortSignal): Promise<void> {
+  async removeRecords(
+    hostname: string,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<void> {
     for (const record of await this.#list(hostname, signal)) {
       if ((record.type === "A" || record.type === "AAAA") && record.comment === owner) {
+        await check?.();
         await this.#delete(record.id, signal);
       }
     }
@@ -84,17 +102,36 @@ export class CloudflareDns implements DnsProvider {
     if (!CloudComputerHostnameSchema.safeParse(hostname).success) {
       throw refused("bad_request", "Invalid Cloud Computer DNS name");
     }
+    return (await this.#lookup({ "name.exact": hostname }, signal)).filter(
+      (entry) => entry.name === hostname,
+    );
+  }
+
+  async listManaged(signal: AbortSignal) {
+    const records = await this.#lookup({ "comment.exact": owner }, signal);
+    return records.flatMap((record) => {
+      const label = record.name.split(".")[0] ?? "";
+      const id = CloudComputerIdSchema.safeParse(label.replace(/^cc-/u, "cc_"));
+      return record.comment === owner &&
+        (record.type === "A" || record.type === "AAAA") &&
+        id.success
+        ? [{ id: id.data, hostname: record.name }]
+        : [];
+    });
+  }
+
+  async #lookup(filter: Record<string, string>, signal: AbortSignal) {
     const result: RecordEntry[] = [];
     const url = new URL(this.#records);
     const perPage = 100;
     for (let page = 1; ; page++) {
       url.search = new URLSearchParams({
-        "name.exact": hostname,
+        ...filter,
         page: String(page),
         per_page: String(perPage),
       }).toString();
       const response = await this.#request(url, listResponse, signal);
-      result.push(...response.result.filter((entry) => entry.name === hostname));
+      result.push(...response.result);
       if (
         response.result_info?.total_pages !== undefined
           ? page >= response.result_info.total_pages

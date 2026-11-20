@@ -40,10 +40,14 @@ export const CloudComputerIdentitySchema = z.strictObject({
 });
 export type CloudComputerIdentity = z.infer<typeof CloudComputerIdentitySchema>;
 
+export const CloudComputerSnapshotSchema = z.string().regex(/^[0-9a-f]{8,64}$/u);
+export const CloudComputerDesiredRevisionSchema = z.number().int().positive();
+
 export const CloudComputerDesiredSchema = z
   .object({
     id: CloudComputerIdSchema,
     generation: CloudComputerGenerationSchema,
+    revision: CloudComputerDesiredRevisionSchema,
     state: z.enum(["active", "suspended", "deleted"]),
     hostname: CloudComputerHostnameSchema,
     // Null selects the provisioner's configured default.
@@ -51,6 +55,11 @@ export const CloudComputerDesiredSchema = z
     serverType: CloudComputerLocationSchema.nullable(),
     release: CloudComputerReleaseSchema,
     bootstrapToken: CloudComputerBootstrapTokenSchema.optional(),
+    providerServerId: z.number().int().positive().optional(),
+    previousProviderServerId: z.number().int().positive().optional(),
+    ipv6Enabled: z.boolean().optional(),
+    restoreSnapshot: CloudComputerSnapshotSchema.optional(),
+    bootCompleted: z.boolean().optional(),
     // Account sets this on activation and generation bumps to preserve the initial deadline.
     readinessStartedAt: z.iso.datetime({ offset: true }).optional(),
     // Account echoes the first accepted identity for this generation across provisioner restarts.
@@ -89,6 +98,7 @@ export const CloudComputerReportSchema = z
   .strictObject({
     id: CloudComputerIdSchema,
     generation: CloudComputerGenerationSchema,
+    revision: CloudComputerDesiredRevisionSchema,
     phase: CloudComputerPhaseSchema,
     providerServerId: z.number().int().positive().nullable(),
     ipv4: z.ipv4().nullable(),
@@ -135,8 +145,22 @@ export const CloudComputerReportSchema = z
   });
 export type CloudComputerReport = z.infer<typeof CloudComputerReportSchema>;
 
-export const CloudComputerReportResponseSchema = z.object({ recorded: z.literal(true) });
+export const CloudComputerReportResponseSchema = z.object({ recorded: z.boolean() });
 export type CloudComputerReportResponse = z.infer<typeof CloudComputerReportResponseSchema>;
+
+export const CloudComputerLeaseSchema = z.strictObject({ holder: z.uuid() });
+export const CloudComputerCheckSchema = z.discriminatedUnion("operation", [
+  z.strictObject({ operation: z.literal("orphan") }),
+  z.strictObject({
+    operation: z.enum(["mutate", "create"]),
+    revision: CloudComputerDesiredRevisionSchema,
+  }),
+]);
+export type CloudComputerCheck = z.infer<typeof CloudComputerCheckSchema>;
+export const CloudComputerCheckResponseSchema = z.object({ allowed: z.boolean() });
+export const cloudComputerLeaseHeader = "x-opensteer-provisioner-lease";
+export const cloudComputerLeasePath = "/v1/cloud-computers/lease";
+export const cloudComputerCheckPath = (id: CloudComputerId) => `/v1/cloud-computers/${id}/check`;
 
 export const cloudComputersDesiredPath = "/v1/cloud-computers/desired";
 // Account checks that the URL ID matches the body and fences writes on the current generation.
@@ -185,6 +209,17 @@ export const CloudComputerBootRequestSchema = z.strictObject({
   bootstrapToken: CloudComputerBootstrapTokenSchema,
 });
 export type CloudComputerBootRequest = z.infer<typeof CloudComputerBootRequestSchema>;
+export const CloudComputerBootCompleteRequestSchema = CloudComputerBootRequestSchema.extend({
+  identity: CloudComputerIdentitySchema,
+});
+export type CloudComputerBootCompleteRequest = z.infer<
+  typeof CloudComputerBootCompleteRequestSchema
+>;
+export const CloudComputerBootCompleteResponseSchema = z.strictObject({
+  completed: z.literal(true),
+});
+export const cloudComputerBootCompletePath = (id: CloudComputerId) =>
+  `/v1/cloud-computers/${id}/boot-complete`;
 
 /**
  * What a managed Home needs to accept its Account-bound claim and to sign its
@@ -209,6 +244,8 @@ export const CloudComputerBootResponseSchema = z.strictObject({
   release: CloudComputerBootReleaseSchema,
   egress: CloudComputerEgressSchema.optional(),
   managedHome: CloudComputerManagedHomeSchema.optional(),
+  ipv6Enabled: z.boolean(),
+  restoreSnapshot: CloudComputerSnapshotSchema.optional(),
   backup: z.strictObject({
     endpoint: httpsUrl.refine((value) => new URL(value).origin === value),
     bucket: z
@@ -234,6 +271,7 @@ export const CloudComputerPlanSchema = z.object({
   name: z.string().trim().min(1).max(120),
   currency: z.string().regex(/^[a-z]{3}$/u),
   amountMinor: z.number().int().positive(),
+  interval: z.enum(["day", "week", "month", "year"]).optional(),
 });
 
 const cloudComputerViewFields = {

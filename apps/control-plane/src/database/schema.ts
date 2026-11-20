@@ -1,5 +1,6 @@
 import type {
   CloudComputerCheckoutTable,
+  CloudComputerBackupTargetTable,
   CloudComputerEgressEndpointTable,
   CloudComputerStripeEventTable,
   CloudComputerTable,
@@ -558,6 +559,7 @@ export type HostedTeamStoredStage = "reserving" | "starting" | "configuring" | "
 
 export interface ControlPlaneDatabaseSchema {
   cloudComputers: CloudComputerTable;
+  cloudComputerBackupTargets: CloudComputerBackupTargetTable;
   cloudComputerCheckouts: CloudComputerCheckoutTable;
   cloudComputerEgressEndpoints: CloudComputerEgressEndpointTable;
   cloudComputerStripeEvents: CloudComputerStripeEventTable;

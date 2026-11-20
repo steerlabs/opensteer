@@ -1,7 +1,11 @@
+import { cloudComputerLifecycleMigration } from "../cloud-computers/lifecycle-migration.js";
 import { personNameFromEmail } from "@opensteer/core";
 import { type Kysely, sql } from "kysely";
 import { Migrator, type Migration, type MigrationResultSet } from "kysely/migration";
-import { cloudComputersMigration } from "../cloud-computers/migration.js";
+import {
+  cloudComputerClaimMigration,
+  cloudComputersMigration,
+} from "../cloud-computers/migration.js";
 import { CONTROL_PLANE_BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import type { ControlPlaneDatabaseSchema } from "./schema.js";
 
@@ -511,6 +515,8 @@ const migrationProvider = {
       "0024_plugin_oauth_only_broker": pluginOAuthOnlyBrokerMigration,
       "0026_cloud_computers": cloudComputersMigration,
       "0027_personal_home_account_link": personalHomeAccountLinkMigration,
+      "0028_cloud_computer_claim": cloudComputerClaimMigration,
+      "0029_cloud_computer_lifecycle": cloudComputerLifecycleMigration,
     };
   },
 };

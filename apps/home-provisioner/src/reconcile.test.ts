@@ -15,6 +15,8 @@ import { Reconciler } from "./reconcile.js";
 const home = CloudComputerDesiredSchema.parse({
   id: "cc_00000000-0000-4000-8000-000000000001",
   generation: 1,
+  revision: 1,
+  readinessStartedAt: new Date(10).toISOString(),
   hostname: "home-1.example.com",
   state: "active",
   region: null,
@@ -66,6 +68,9 @@ function harness({ concurrency = 2 } = {}) {
       return 100;
     }),
     ensureFirewallAttached: vi.fn(async () => true),
+    listManaged: vi.fn(async () =>
+      [...servers.values()].map((server) => ({ id: server.home, server })),
+    ),
     find: vi.fn(async (id: CloudComputerId) =>
       [...servers.values()].filter((server) => server.home === id),
     ),
@@ -94,6 +99,9 @@ function harness({ concurrency = 2 } = {}) {
     }),
   } satisfies VmProvider;
   const dns = {
+    listManaged: vi.fn(async () =>
+      [...records.keys()].map((hostname) => ({ id: home.id, hostname })),
+    ),
     ensureRecords: vi.fn(async (hostname: string, addresses: Addresses) => {
       calls.push("dns");
       records.set(hostname, addresses);
@@ -109,14 +117,27 @@ function harness({ concurrency = 2 } = {}) {
     now: 10,
   };
   const account: AccountApi = {
+    acquire: vi.fn(async () => {}),
+    check: vi.fn<AccountApi["check"]>(async (id, check) => {
+      const row = status.desired.find((computer) => computer.id === id);
+      return check.operation === "orphan" ? !row : check.revision === row?.revision;
+    }),
     desired: vi.fn(async () => status.desired),
-    report: vi.fn(async (report) => {
+    report: vi.fn<AccountApi["report"]>(async (report) => {
       reports.push(CloudComputerReportSchema.parse(report));
+      if (report.providerServerId) {
+        status.desired = status.desired.map((row) =>
+          row.id === report.id && row.revision === report.revision
+            ? { ...row, providerServerId: report.providerServerId! }
+            : row,
+        );
+      }
+      return true;
     }),
   };
-  const setup = () =>
+  const setup = (client: AccountApi = account) =>
     new Reconciler({
-      account,
+      account: client,
       provider,
       dns,
       discover: async () => status.identity,
@@ -126,6 +147,7 @@ function harness({ concurrency = 2 } = {}) {
       defaultServerType: "cpx22",
       concurrency,
       readinessTimeoutMs: 1000,
+      orphanGraceMs: 60_000,
       now: () => status.now,
     });
   const reconciler = setup();
@@ -141,6 +163,15 @@ function harness({ concurrency = 2 } = {}) {
     status,
     reports,
     pass: () => reconciler.pass(signal),
+    another: (client: AccountApi) => setup(client).pass(signal),
+    pin: () => {
+      status.desired = status.desired.map((row) => ({
+        ...row,
+        revision: row.revision + 1,
+        bootCompleted: true,
+        observedIdentity: identity,
+      }));
+    },
     restart: () => setup().pass(signal),
     last: () => reports.at(-1),
   };
@@ -154,6 +185,13 @@ describe("Cloud Computer reconciliation", () => {
       async run(h) {
         await h.pass();
         expect(h.calls).toEqual(["firewall", "create:1", "powerOn:1", "dns"]);
+        expect(h.last()).toMatchObject({
+          phase: "booting",
+          observedIdentity: null,
+          providerServerId: 1,
+        });
+        h.pin();
+        await h.pass();
         expect(h.last()).toMatchObject({
           phase: "ready",
           observedIdentity: identity,
@@ -179,7 +217,7 @@ describe("Cloud Computer reconciliation", () => {
         });
         await h.restart();
         expect(h.provider.create).toHaveBeenCalledTimes(1);
-        expect(h.last()?.phase).toBe("ready");
+        expect(h.last()?.phase).toBe("booting");
       },
     },
     {
@@ -189,7 +227,7 @@ describe("Cloud Computer reconciliation", () => {
         h.put(home, "off");
         await h.pass();
         expect(h.calls).toEqual(["firewall", "powerOn:1", "dns"]);
-        expect(h.last()?.phase).toBe("ready");
+        expect(h.last()?.phase).toBe("booting");
       },
     },
     {
@@ -216,7 +254,7 @@ describe("Cloud Computer reconciliation", () => {
         });
         expect(h.provider.create).toHaveBeenCalledTimes(1);
         expect(h.provider.delete).not.toHaveBeenCalled();
-        expect(h.reports).toHaveLength(2);
+        expect(h.reports.map(({ phase }) => phase)).toEqual(["provisioning", "booting", "failed"]);
       },
     },
     {
@@ -238,6 +276,8 @@ describe("Cloud Computer reconciliation", () => {
       name: "reports changed identity and retains the first identity",
       async run(h) {
         await h.pass();
+        h.pin();
+        await h.pass();
         h.status.identity = changed;
         await h.pass();
         expect(h.last()).toMatchObject({
@@ -245,7 +285,8 @@ describe("Cloud Computer reconciliation", () => {
           observedIdentity: identity,
           lastError: "The Cloud Computer reported a different Home identity for this generation.",
         });
-        h.status.desired = [{ ...home, observedIdentity: identity }];
+        expect(h.records.has(home.hostname)).toBe(false);
+        h.status.desired = [{ ...h.status.desired[0]!, observedIdentity: identity }];
         await h.restart();
         expect(h.last()).toMatchObject({ phase: "failed", observedIdentity: identity });
       },
@@ -256,7 +297,18 @@ describe("Cloud Computer reconciliation", () => {
         h.put(home, "running");
         h.status.desired = [{ ...home, generation: 2 }];
         await h.pass();
-        expect(h.calls).toEqual(["firewall", "create:2", "delete:1", "powerOn:2", "dns"]);
+        expect(h.calls).toEqual([
+          "removeDns",
+          "powerOff:1",
+          "firewall",
+          "create:2",
+          "powerOn:2",
+          "dns",
+        ]);
+        expect(h.servers.get(1)?.status).toBe("off");
+        h.pin();
+        await h.pass();
+        expect(h.calls.at(-1)).toBe("delete:1");
         expect(h.last()).toMatchObject({ phase: "ready", generation: 2, providerServerId: 2 });
       },
     },
@@ -286,13 +338,23 @@ describe("Cloud Computer reconciliation", () => {
       name: "suspends and resumes the same VM, DNS and identity",
       async run(h) {
         await h.pass();
-        const addresses = h.records.get(home.hostname);
-        h.status.desired = [{ ...home, state: "suspended", bootstrapToken: undefined }];
+        h.pin();
+        const active = h.status.desired[0]!;
+        h.status.desired = [
+          {
+            ...active,
+            revision: active.revision + 1,
+            state: "suspended",
+            bootstrapToken: undefined,
+          },
+        ];
         await h.pass();
         expect(h.servers.get(1)?.status).toBe("off");
-        expect(h.records.get(home.hostname)).toEqual(addresses);
+        expect(h.records.has(home.hostname)).toBe(false);
         expect(h.last()).toMatchObject({ phase: "suspended", observedIdentity: identity });
-        h.status.desired = [{ ...home, bootstrapToken: undefined }];
+        h.status.desired = [
+          { ...active, revision: active.revision + 2, bootstrapToken: undefined },
+        ];
         await h.pass();
         expect(h.servers.get(1)?.status).toBe("running");
         expect(h.last()).toMatchObject({
@@ -345,7 +407,7 @@ describe("Cloud Computer reconciliation", () => {
               phase: "failed",
               lastError: "The Cloud Computer provider operation failed.",
             }),
-            expect.objectContaining({ id: second.id, phase: "ready" }),
+            expect.objectContaining({ id: second.id, phase: "booting" }),
           ]),
         );
       },
@@ -365,11 +427,90 @@ describe("Cloud Computer reconciliation", () => {
       async run(h) {
         await h.pass();
         await h.pass();
-        expect(h.reports).toHaveLength(1);
+        expect(h.reports.map(({ phase }) => phase)).toEqual(["provisioning", "booting"]);
       },
     },
   ];
   it.each(cases)("$name", ({ run }) => run(harness()));
+
+  it("refuses a second reconciler while a stale pass is blocked before creating a VM", async () => {
+    const h = harness({ concurrency: 1 });
+    const entered = Promise.withResolvers<void>();
+    const proceed = Promise.withResolvers<void>();
+    let owner: string | undefined;
+    const client = (holder: string): AccountApi => ({
+      ...h.account,
+      async acquire() {
+        if (owner && owner !== holder) throw new RemoteRequestError("Account", 409);
+        owner = holder;
+      },
+    });
+    h.provider.find.mockImplementationOnce(async () => {
+      entered.resolve();
+      await proceed.promise;
+      return [];
+    });
+    const running = h.another(client("a"));
+    await entered.promise;
+    h.status.desired = [{ ...home, revision: 2, state: "deleted", bootstrapToken: undefined }];
+    await expect(h.another(client("b"))).rejects.toMatchObject({ status: 409 });
+    proceed.resolve();
+    await running;
+    expect(h.provider.create).not.toHaveBeenCalled();
+    expect(h.dns.ensureRecords).not.toHaveBeenCalled();
+    await h.another(client("a"));
+    expect(h.last()?.phase).toBe("deleted");
+  });
+
+  it("sweeps orphaned VMs and DNS only after the grace period and a fresh check", async () => {
+    const h = harness();
+    h.put(home, "running");
+    h.records.set(home.hostname, { ipv4: "192.0.2.1", ipv6: null });
+    h.status.desired = [];
+    await h.pass();
+    expect(h.provider.delete).not.toHaveBeenCalled();
+    h.status.now += 60_000;
+    await h.pass();
+    expect(h.provider.delete).toHaveBeenCalledOnce();
+    expect(h.records.size).toBe(0);
+  });
+
+  it("follows a deleting VM to absence without reissuing deletion", async () => {
+    const h = harness();
+    h.put(home, "deleting");
+    h.status.desired = [{ ...home, state: "deleted", bootstrapToken: undefined }];
+    await h.pass();
+    expect(h.last()?.phase).toBe("deleting");
+    expect(h.provider.delete).not.toHaveBeenCalled();
+    h.servers.clear();
+    await h.pass();
+    expect(h.last()?.phase).toBe("deleted");
+  });
+
+  it("publishes AAAA only after Account explicitly enables IPv6", async () => {
+    const h = harness();
+    const server = h.put(home, "running");
+    h.servers.set(server.id, { ...server, ipv6: "2001:db8::1" });
+    await h.pass();
+    expect(h.records.get(home.hostname)?.ipv6).toBeNull();
+    h.status.desired = [{ ...h.status.desired[0]!, revision: 2, ipv6Enabled: true }];
+    await h.pass();
+    expect(h.records.get(home.hostname)?.ipv6).toBe("2001:db8::1");
+  });
+
+  it("does not deduplicate a discarded report or one from an older desired revision", async () => {
+    const h = harness();
+    const server = h.put(home, "running");
+    h.status.desired = [{ ...home, providerServerId: server.id }];
+    vi.mocked(h.account.report).mockResolvedValueOnce(false);
+    await h.pass();
+    await h.pass();
+    expect(h.account.report).toHaveBeenCalledTimes(2);
+    h.status.desired = [{ ...h.status.desired[0]!, revision: 2 }];
+    await h.pass();
+    expect(h.last()?.revision).toBe(2);
+    expect(h.account.report).toHaveBeenCalledTimes(3);
+  });
 
   it.each([401, 403])(
     "aborts on Account HTTP %i before scheduling another home",
