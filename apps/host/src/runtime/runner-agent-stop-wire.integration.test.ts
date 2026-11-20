@@ -10,7 +10,6 @@ import {
 import { RunnerRegistry } from "@opensteer/orchestration";
 import {
   FileRunnerIdentityStore,
-  manualAgentWork,
   ReconnectingHostConnection,
 } from "@opensteer/runner";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
@@ -97,11 +96,10 @@ it("says a Device is stopped while its person has agents stopped, through a reco
     const dataDirectory = join(home.config.dataDirectory, "stop-runner");
     const identityStore = new FileRunnerIdentityStore({ dataDirectory, environmentless: true });
     const identity = await identityStore.loadOrCreate();
-    const agentWork = manualAgentWork();
-    const startRunner = async (token?: string) => {
+    const startRunner = async (token?: string, agentsStoppedSince: string | null = null) => {
       const connected = Promise.withResolvers<void>();
       const connection = new ReconnectingHostConnection({
-        agentWork,
+        agentsStoppedSince,
         bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
         config: parseRunnerConfig({
           OPENSTEER_DEPLOYMENT_KIND: "personal",
@@ -140,11 +138,12 @@ it("says a Device is stopped while its person has agents stopped, through a reco
     await startRunner(await enrollment());
     expect((await readMac(identity.runnerId)).agentsStoppedSince).toBeUndefined();
 
-    // The person stops agents: the Device says so while it is still online.
     const stoppedAt = new Date(clock.now() - 60_000);
-    const firstNotice = told("runner.agents.stopped");
-    agentWork.set(true, stoppedAt);
-    await firstNotice;
+    const normalDrop = waitForDrop(identity.runnerId);
+    stop!.abort();
+    await running;
+    await normalDrop;
+    await startRunner(undefined, stoppedAt.toISOString());
     expect(await readMac(identity.runnerId)).toMatchObject({
       status: "online",
       agentsStoppedSince: stoppedAt.toISOString(),
@@ -164,7 +163,7 @@ it("says a Device is stopped while its person has agents stopped, through a reco
 
     // It reconnects still stopped and says so again on the new connection.
     const again = told("runner.agents.stopped");
-    await startRunner();
+    await startRunner(undefined, stoppedAt.toISOString());
     await again;
     expect(await readMac(identity.runnerId)).toMatchObject({
       status: "online",
@@ -172,9 +171,11 @@ it("says a Device is stopped while its person has agents stopped, through a reco
     });
 
     // The person resumes: plain online.
-    const resumed = told("runner.agents.resumed");
-    agentWork.set(false);
-    await resumed;
+    const stoppedDrop = waitForDrop(identity.runnerId);
+    stop!.abort();
+    await running;
+    await stoppedDrop;
+    await startRunner();
     const live = await readMac(identity.runnerId);
     expect(live.status).toBe("online");
     expect(live.agentsStoppedSince).toBeUndefined();

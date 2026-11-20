@@ -384,10 +384,28 @@ function selfHostedDiscovery(
 }
 
 function setupStateResponse(setupState: "complete" | "required"): Response {
-  return new Response(JSON.stringify({ ok: true, data: { setupState } }), {
-    headers: { "content-type": "application/json" },
-    status: 200,
-  });
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      data: {
+        deployment: { kind: "personal", name: "Test Home" },
+        emailDeliveryAvailable: false,
+        localPasswordEnabled: false,
+        machineOwner: false,
+        oidcProviders: [],
+        passkeysEnabled: false,
+        exposure: "networked",
+        portalOrigin: null,
+        publicOrigin: "https://home.example.test",
+        setupState,
+        signupPolicy: "closed",
+      },
+    }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    },
+  );
 }
 
 function discoveryResponse(discovery: HostDiscoveryEnvelope): Response {

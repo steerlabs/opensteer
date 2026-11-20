@@ -1,10 +1,12 @@
 import {
   BrowserProfileIdSchema,
+  BrowserSourceIdSchema,
   UserIdSchema,
   type AgentGrant,
   type ThreadAccessMode,
 } from "@opensteer/core";
 import type { AgentConnectionIdentityAtConsent } from "@opensteer/control-plane-protocol";
+import type { ChromeTabGrantCatalog } from "../host/connected-agent-options.js";
 import type {
   AgentConnection,
   AgentConnectionConsent,
@@ -14,9 +16,22 @@ import type {
 /**
  * Connected agents a preview opens on (`?mock-agents`): one per state the list and an
  * agent's page show, and a consent waiting at `/mcp-authorization?request=` the scene's
- * `requestId`. `?mock-agents=expired` holds no consent, so its page says it expired.
+ * `requestId`. `?mock-agents=expired` holds no consent, so its page says it expired. The
+ * other scenes change only who asks and which Chrome can share tabs: `verified` (a verified
+ * platform, no Chrome paired), `pair` (a verified pairing, two Chromes), `repair` (a Chrome
+ * that must be paired again), `local` (an app on this computer), `long` (long names) and
+ * `changed` (verified when read, no longer by the time the person allows it).
  */
-export const mockConnectedAgentScenes = ["seeded", "expired"] as const;
+export const mockConnectedAgentScenes = [
+  "seeded",
+  "expired",
+  "verified",
+  "pair",
+  "repair",
+  "local",
+  "long",
+  "changed",
+] as const;
 export type MockConnectedAgentScene = (typeof mockConnectedAgentScenes)[number];
 
 export const mockConsentRequestId = "mockconsentrequest0000000000000000000000000";
@@ -158,6 +173,8 @@ export function mockConnectedAgents(
 ): {
   readonly connections: readonly AgentConnection[];
   readonly connectionConsent?: AgentConnectionConsent;
+  readonly chromeTabs?: ChromeTabGrantCatalog;
+  readonly connectionConsentChange?: AgentConnectionConsent;
 } {
   const connections = [
     agent({
@@ -245,15 +262,74 @@ export function mockConnectedAgents(
     }),
   ];
   if (scene === "expired") return { connections };
-  return {
-    connections,
-    connectionConsent: {
-      requestId: mockConsentRequestId,
-      clientName: "Grok",
-      redirectUri: "https://grok.com/oauth/callback",
-      ...selfNamed("Grok", "https://grok.com", false),
-      resource: "http://127.0.0.1:4315/internal/v1/mcp",
-      expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
-    },
+  const chrome = (computerName: string, n: number, paired = true) => ({
+    sourceId: BrowserSourceIdSchema.parse(`bsr_00000000-0000-4000-8000-00000000000${n}`),
+    computerName,
+    paired,
+  });
+  const chromeTabs: ChromeTabGrantCatalog =
+    scene === "verified"
+      ? { chromeTabs: [] }
+      : scene === "pair"
+        ? { chromeTabs: [chrome("Studio Mac", 1), chrome("MacBook Air", 2)] }
+        : scene === "repair"
+          ? { chromeTabs: [chrome("Studio Mac", 1, false)], chromeTabsNeedPairing: true }
+          : scene === "long"
+            ? { chromeTabs: [chrome("Alexandra’s MacBook Pro (16-inch, 2024, Work)", 1)] }
+            : { chromeTabs: [chrome("Studio Mac", 1)] };
+  const longName = "Personal Shopping Concierge for Weekly Groceries and Household Errands";
+  const who =
+    scene === "verified" || scene === "changed"
+      ? {
+          clientName: "Claude",
+          redirect: "https://claude.ai/api/mcp/auth_callback",
+          ...verifiedPlatform("claude", "Claude", "https://claude.ai"),
+        }
+      : scene === "pair"
+        ? {
+            clientName: "Errand",
+            redirect: "https://agentpay.example/oauth/callback",
+            ...errandViaAgentPay,
+          }
+        : scene === "local"
+          ? {
+              clientName: "Claude Code",
+              redirect: "http://127.0.0.1:53682/callback",
+              ...selfNamed("Claude Code", "http://127.0.0.1:53682", true),
+            }
+          : scene === "long"
+            ? {
+                clientName: longName,
+                redirect: "https://concierge-shopping-assistant.example/oauth/callback",
+                ...selfNamed(longName, "https://concierge-shopping-assistant.example", false),
+              }
+            : {
+                clientName: "Grok",
+                redirect: "https://grok.com/oauth/callback",
+                ...selfNamed("Grok", "https://grok.com", false),
+              };
+  const consent: AgentConnectionConsent = {
+    requestId: mockConsentRequestId,
+    clientName: who.clientName,
+    redirectUri: who.redirect,
+    identityAtConsent: who.identityAtConsent,
+    identity: who.identity,
+    ...chromeTabs,
+    resource: "http://127.0.0.1:4315/internal/v1/mcp",
+    expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
   };
+  if (scene === "changed") {
+    const after = selfNamed("Claude", "https://claude.ai", false);
+    return {
+      connections,
+      chromeTabs,
+      connectionConsent: { ...consent, verificationSnapshot: "a".repeat(64) },
+      connectionConsentChange: {
+        ...consent,
+        ...after,
+        verificationSnapshot: "b".repeat(64),
+      },
+    };
+  }
+  return { connections, chromeTabs, connectionConsent: consent };
 }

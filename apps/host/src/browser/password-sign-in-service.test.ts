@@ -342,6 +342,7 @@ describe("connected agent login leases", () => {
           bindingId,
           grantRevision: 3,
           profileId,
+          tabGeneration: 1,
           authorized,
           signal: new AbortController().signal,
         },

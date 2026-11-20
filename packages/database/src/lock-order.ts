@@ -272,6 +272,9 @@ export const databaseLockOrder = [
   // The deferred integration trigger writes generations at COMMIT, after Personal projections.
   "integration_authority_generations",
   // Account-service tables are separate physical resources from identically named Host tables.
+  "work_home_policy",
+  "work_audit_head",
+  "work_audit_outbox",
   "control-plane:auth_accounts",
   "control-plane:auth_jwks",
   "control-plane:auth_rate_limits",

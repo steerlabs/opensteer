@@ -11,6 +11,42 @@ import { describeStore, pendingEvent } from "./store.integration.test-support.js
 // and tools. An ordinary refused event must not consume its Runner ordinal;
 // the explicit lease-lost report must remain admissible for classification.
 describeStore("execution lease clock", (it) => {
+  it("refuses tool authority for a generation with terminal evidence before grant cleanup", async ({
+    storeFixture: { startRunFixture, store, database },
+  }) => {
+    const f = await startRunFixture("terminal-evidence-authority");
+    const authority = {
+      bindingGeneration: f.bindingGeneration,
+      environmentId: f.environmentId,
+      requestedBy: f.userId,
+      runId: f.run.id,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      threadId: f.threadId,
+    };
+    await expect(store.assertActiveGrant(authority)).resolves.toMatchObject({
+      agentConnectionId: null,
+    });
+    const attempt = await database
+      .updateTable("runAttempts")
+      .set({ terminalEvidenceAt: new Date() })
+      .where("runId", "=", f.run.id)
+      .where("bindingGeneration", "=", f.bindingGeneration)
+      .executeTakeFirst();
+    expect(attempt.numUpdatedRows).toBe(1n);
+    expect(
+      await database
+        .selectFrom("grants")
+        .select("status")
+        .where("runId", "=", f.run.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "active" });
+    await expect(store.assertActiveGrant(authority)).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Run tool authority has ended",
+    });
+  });
+
   it("refuses expired authority before classification without consuming the ordinal", async ({
     storeFixture,
   }) => {

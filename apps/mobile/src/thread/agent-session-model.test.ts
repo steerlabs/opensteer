@@ -71,7 +71,7 @@ describe("a connected agent's own task on the phone", () => {
     const snapshot = seeded();
     expect(sessionRowOf(snapshot, mockAgentWorkThreads.working)).toMatchObject({
       agent: { name: "Claude", providerId: "anthropic" },
-      line: "Claude · Travel",
+      line: "Claude is working",
       working: true,
     });
     expect(sessionRowOf(snapshot, "thr_00000000-0000-4000-8000-00000000ffff")).toBeNull();
@@ -97,9 +97,9 @@ describe("a direct operation's Request on the phone", () => {
     );
     expect(item?.view).toMatchObject({
       state: "pending",
-      question: "Allow browser_use on Shopping?",
+      question: "Run a browser script in Shopping?",
       agentWords: { text: "Buy the $12 phone case you asked for." },
-      answers: { allow: { label: "Allow once" }, deny: { label: "Don't allow" } },
+      answers: { allow: { label: "Allow once" }, deny: { label: "Don’t allow" } },
     });
     expect(item?.view.calls?.text).toContain("Place order");
   });
@@ -109,7 +109,10 @@ describe("a direct operation's Request on the phone", () => {
     const request = requestsOf(snapshot, mockAgentWorkThreads.waiting)[0]!;
     expect(
       needsYouOperation(snapshot, { request, threadId: mockAgentWorkThreads.waiting }),
-    ).toMatchObject({ listTitle: "Grok: Allow browser_use on Shopping?", agent: { name: "Grok" } });
+    ).toMatchObject({
+      listTitle: "Grok: Run a browser script in Shopping?",
+      agent: { name: "Grok" },
+    });
     expect(
       needsYouOperation(snapshot, {
         request: { ...request, originatingAgentSessionId: null },
@@ -148,9 +151,13 @@ describe("a tab a connected agent uses, on the phone", () => {
       stop: { sessionId: expect.any(String) },
     });
     const waiting = { threadId: mockAgentWorkThreads.waiting, title: "Buy the phone case" };
-    expect(placeSessionLine(snapshot, { tabId: "mock-tab-0-0", occupants: [waiting] })?.line).toBe(
-      "You and Grok are using this page, for “Buy the phone case”",
-    );
+    expect(
+      placeSessionLine(snapshot, {
+        tabId: "mock-tab-0-0",
+        sharedFromChrome: true,
+        occupants: [waiting],
+      })?.line,
+    ).toBe("You and Grok are using this page, for “Buy the phone case”");
     const stopped = { threadId: mockAgentWorkThreads.stopped, title: "Renew" };
     expect(placeSessionLine(snapshot, { tabId: "x", occupants: [stopped] })).toMatchObject({
       line: "Stopped by you",
@@ -204,6 +211,6 @@ describe("who the agent is, on the phone", () => {
     });
     expect(withdrawn.verified).toBe(false);
     expect(withdrawn.withdrawn?.line).toMatch(/^No longer verified since /u);
-    expect(withdrawn.withdrawn?.detail).toMatch(/ChatGPT/u);
+    expect(withdrawn.withdrawn?.detail).toBe("Check its last action or disconnect it.");
   });
 });

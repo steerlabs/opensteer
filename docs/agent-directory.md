@@ -79,4 +79,4 @@ The Home persists its last accepted directory across restarts. It rejects lower 
 
 The Home refreshes at start and in the background. Consent uses the current copy immediately. On a Home that has never accepted a copy, consent can wait for the first refresh for at most two seconds. Without a usable copy, consent continues with an unverified identity.
 
-A supplied statement that is malformed, expired, replayed, or otherwise unverifiable also leaves consent fully unverified, even for a known platform. A newer directory can withdraw support for an existing connection's recorded identity. The Home records the first withdrawal separately and preserves the evidence recorded at consent.
+A supplied statement that is malformed, expired, replayed, or otherwise unverifiable also leaves consent fully unverified, even for a known platform. A newer directory can withdraw verification by removing an origin, a pairing, or the signing key used at consent. The Home records the first withdrawal and preserves the original evidence. Pending consent uses the current local directory. If verification changes before approval, the Home asks the person to review the request again.

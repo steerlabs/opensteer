@@ -21,6 +21,7 @@ import {
 import { sql, type Kysely } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { sessionsUsingWithdrawn } from "./agent-session-store.js";
 import type { DatabaseSchema } from "./schema.js";
 
 export interface ConnectionCleanup {
@@ -54,13 +55,13 @@ export type LineageAttempt =
   | ConnectionAttempt<"steer", CommandId>
   | ConnectionAttempt<"trigger", TriggerId>
   | ConnectionAttempt<"session", AgentSessionId>
-  | ConnectionAttempt<"operation">
+  | ConnectionAttempt<"operation", AgentOperationId>
   | ConnectionAttempt<"plugin" | "standard-cdp" | "shared-chrome">;
 
 export interface ConnectionAttemptStopper {
   stop(attempt: LineageAttempt, cleanup: ConnectionCleanup): Promise<void | "ended" | "contact-lost">;
   stopDirectOperation?(
-    attempt: ConnectionAttempt<"operation">,
+    attempt: ConnectionAttempt<"operation", AgentOperationId>,
     cleanup: ConnectionCleanup,
   ): Promise<void>;
 }
@@ -84,7 +85,7 @@ export async function connectionAttempts(
       or (${typeof revision === "string" ? sql.ref(revision) : revision} = f.cleanup_minimum_grant_revision
         and array_position(${modes}, ${typeof mode === "string" ? sql.ref(mode) : mode}) > array_position(${modes}, f.cleanup_maximum_mode)))`;
   };
-  const { rows } = await sql<LineageAttempt>`
+  const { rows } = await sql<LineageAttempt & { readonly disconnected: boolean; readonly userId: UserId }>`
     with floor as (
       select *, revoked_at is not null or expires_at <= now() as disconnected
       from agent_connections where id = ${connectionId}
@@ -219,9 +220,9 @@ export async function connectionAttempts(
       union all
       select 'session', s.id, null, s.thread_id, null, null, null, false, null, null, null
       from agent_sessions s join floor f on f.id = s.connection_id
-      where s.status = 'active' and f.disconnected
+      where s.status = 'active' and (f.disconnected or f.cleanup_reason = 'narrowed')
       union all
-      select 'operation', o.id, null, s.thread_id, null, null, null,
+      select 'operation', o.id, o.grant_revision, s.thread_id, null, null, null,
         o.handed_off_at is not null, o.terminal_evidence_at, o.contact_lost_at, null
       from agent_operations o join floor f on f.id = o.connection_id
       join agent_sessions s on s.id = o.session_id
@@ -230,9 +231,15 @@ export async function connectionAttempts(
       where (o.terminal_evidence_at is null or o.contact_lost_at is not null)
         and ${belowFloor("o.grant_revision", "o.mode")}
     )
-    select * from attempts order by kind, id
+    select attempts.*, floor.disconnected, floor.user_id from attempts cross join floor
+    order by case when kind = 'session' then 0 else 1 end, kind, id
   `.execute(database);
-  return rows;
+  const first = rows[0];
+  if (!first || first.disconnected) return rows;
+  const sessions = rows.flatMap((row) => row.kind === "session" ? [row.id] : []);
+  if (!sessions.length) return rows;
+  const withdrawn = new Set(await sessionsUsingWithdrawn(database, first.userId, connectionId, sessions));
+  return rows.filter((row) => row.kind !== "session" || withdrawn.has(row.id));
 }
 
 export function outstandingAttempts(attempts: readonly LineageAttempt[]) {

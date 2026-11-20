@@ -74,7 +74,7 @@ export interface PersonalRuntime {
     readonly downForMs?: number;
     readonly whileDown?: () => Promise<void>;
   }): Promise<void>;
-  restartRunner(): Promise<void>;
+  restartRunner(agentsStoppedSince?: string | null): Promise<void>;
   close(): Promise<void>;
 }
 export async function startPersonalRuntime(input: {
@@ -238,6 +238,7 @@ export async function startPersonalRuntime(input: {
       await runnerIntegrations?.close?.();
     }
   }
+  let bootMode = vertical?.agentsStoppedSince;
   async function startRunner() {
     lifetime.signal.throwIfAborted();
     catalogs = Promise.withResolvers<void>();
@@ -300,9 +301,6 @@ export async function startPersonalRuntime(input: {
         : {}),
       ...(vertical?.machineAccess ? { machineAccess: vertical.machineAccess } : {}),
       ...(vertical?.runnerLogger ? { logger: vertical.runnerLogger } : {}),
-      ...(vertical?.agentWork
-        ? { agentWorkStopped: () => vertical.agentWork?.stopped() ?? false }
-        : {}),
       bootId,
       dataDirectory: config.dataDirectory,
       environmentId,
@@ -392,6 +390,7 @@ export async function startPersonalRuntime(input: {
         bootId,
         config: { ...config, hostUrl: config.hostUrl.toString() },
         engine: vertical.runnerChild,
+        agentsStoppedSince: bootMode,
         harnessInstance: vertical.harnessInstance,
         mountedWorkspacePath: input.agentHome.path,
         attachmentRoot: join(directory, "attachments"),
@@ -410,7 +409,7 @@ export async function startPersonalRuntime(input: {
       return;
     }
     connection = new ReconnectingHostConnection({
-      ...(vertical?.agentWork ? { agentWork: vertical.agentWork } : {}),
+      ...(bootMode === undefined ? {} : { agentsStoppedSince: bootMode }),
       ...(vertical?.executionClock ? { executionClock: vertical.executionClock } : {}),
       ...(runnerIntegrations ? { integrationsModule: runnerIntegrations } : {}),
       browserBridge: config.browserBridge,
@@ -631,8 +630,9 @@ export async function startPersonalRuntime(input: {
           timeoutError: () => new Error("Runner did not reattach after Host restart"),
         });
       },
-      async restartRunner() {
+      async restartRunner(mode) {
         await stopRunner(true);
+        if (mode !== undefined) bootMode = mode;
         await startRunner();
       },
       async close() {

@@ -11,6 +11,10 @@ export const ToolErrorSchema = z.strictObject({
     .strictObject({ id: z.string().min(1).max(100), name: z.string().min(1).max(200) })
     .optional(),
 });
+export const ToolErrorViewSchema = z.object({
+  ...ToolErrorSchema.shape,
+  device: z.object(ToolErrorSchema.shape.device.unwrap().shape).optional(),
+});
 export type ToolError = z.infer<typeof ToolErrorSchema>;
 export const ToolFailureSchema = z.strictObject({ error: ToolErrorSchema });
 export type ToolFailure = z.infer<typeof ToolFailureSchema>;

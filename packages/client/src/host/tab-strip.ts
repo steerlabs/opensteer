@@ -25,6 +25,7 @@ export function tabStrip(
   layout: TabLayout,
   known: { has(tabId: TabId): boolean },
   previous?: TabStrip,
+  sharedTabs: readonly TabId[] = [],
 ): TabStrip {
   const reuse = new Map(
     previous?.entries.map((entry) => [
@@ -47,6 +48,16 @@ export function tabStrip(
         ? old
         : { kind: "group", group: item.group, tabIds },
     );
+  }
+  if (sharedTabs.length) {
+    const listed = new Set(
+      entries.flatMap((entry) => (entry.kind === "tab" ? [entry.tabId] : entry.tabIds)),
+    );
+    for (const tabId of sharedTabs) {
+      if (listed.has(tabId)) continue;
+      const old = reuse.get(tabId);
+      entries.push(old?.kind === "tab" ? old : { kind: "tab", tabId });
+    }
   }
   const ordered = entries.flatMap((entry) => (entry.kind === "tab" ? [entry.tabId] : entry.tabIds));
   const visible = entries.flatMap((entry) =>

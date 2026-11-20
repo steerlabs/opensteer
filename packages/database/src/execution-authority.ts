@@ -12,6 +12,7 @@ import {
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { liveDelegatingConnection } from "./resource-access.js";
+import { workPolicyFor } from "./work-policy.js";
 type Database = Kysely<DatabaseSchema>;
 export interface ActiveExecutionBindingInput {
   readonly lostExecution?: boolean;
@@ -147,6 +148,20 @@ export async function assertActiveGrant(
     .where("runId", "=", input.runId)
     .where("status", "=", "active")
     .where("bindingGeneration", "=", input.bindingGeneration)
+    .where((eb) =>
+      eb.not(
+        eb.exists(
+          eb
+            .selectFrom("runAttempts")
+            .select("id")
+            .whereRef("runAttempts.runId", "=", "grants.runId")
+            .whereRef("runAttempts.bindingGeneration", "=", "grants.bindingGeneration")
+            .whereRef("runAttempts.runnerId", "=", "grants.runnerId")
+            .whereRef("runAttempts.runnerBootId", "=", "grants.runnerBootId")
+            .where("runAttempts.terminalEvidenceAt", "is not", null),
+        ),
+      ),
+    )
     .$if(input.grantId !== undefined, (query) => query.where("id", "=", input.grantId!))
     .executeTakeFirst();
   if (
@@ -228,6 +243,8 @@ export async function admitThreadExecution(
 ): Promise<{
   readonly environmentId: EnvironmentId;
 } | null> {
+  const work = await workPolicyFor(database);
+  if (work && work.state !== "active") return null;
   const row = await database
     .selectFrom("threads")
     .select("threads.environmentId")

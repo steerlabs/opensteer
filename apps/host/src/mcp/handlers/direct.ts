@@ -1,7 +1,8 @@
 import { OpensteerError } from "@opensteer/core";
-import type {
-  AgentSessionService,
-  DirectOperationResult,
+import {
+  OperationOutcomeUnknown,
+  type AgentSessionService,
+  type DirectOperationResult,
 } from "../../agent-sessions/agent-session-service.js";
 
 /**
@@ -18,6 +19,19 @@ export function directResult<Result extends object>(outcome: DirectOperationResu
     ...(outcome.status === "pending" ? { requestId: outcome.requestId } : {}),
     ...(outcome.status === "completed" ? {} : { next: outcome.next }),
   };
+}
+
+export async function browserEffect<Result>(run: () => Promise<Result>): Promise<Result> {
+  try {
+    return await run();
+  } catch (error) {
+    if (
+      error instanceof OpensteerError &&
+      (error.reason === "outcome-unknown" || error.reason === "browser-tab-open-outcome-unknown")
+    )
+      throw new OperationOutcomeUnknown(error.message);
+    throw error;
+  }
 }
 
 /** The session pipeline, or a refusal on a Home that was started without it. */

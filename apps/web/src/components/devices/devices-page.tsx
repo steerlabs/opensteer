@@ -1,4 +1,4 @@
-import { useUnreadableResources } from "@opensteer/client/react";
+import { useUnreadableResources, useWorkPolicy } from "@opensteer/client/react";
 import { useState } from "react";
 import { Link } from "react-router";
 import type { MachineSummary, OtherDevice } from "@opensteer/protocol";
@@ -14,7 +14,7 @@ import {
   type SignedInDeviceRow,
 } from "@opensteer/client/computers";
 import { otherDeviceLine } from "@opensteer/client/settings";
-import { unwrapRpcResult } from "@opensteer/client/host";
+import { unwrapRpcResult, workDeviceLimit } from "@opensteer/client/host";
 import { isAgentPhone } from "@opensteer/client/integrations";
 import { act, failureWords } from "../use-action.js";
 import { useShell } from "../app-shell.js";
@@ -50,6 +50,8 @@ const deviceKinds = ["machine"] as const;
 export function DevicesSection() {
   const { desktopBridge, hostClient, snapshot } = useShell();
   const home = useHomeKind();
+  // A work Home whose organization keeps other devices out says so where a device would be added.
+  const addLimit = workDeviceLimit(useWorkPolicy(hostClient));
   const toast = useToast();
   const hereId = useHereId();
   const [adding, setAdding] = useState(false);
@@ -105,10 +107,23 @@ export function DevicesSection() {
     <>
       <SectionHeader
         action={
-          <button className="btn btn--primary" onClick={() => setAdding(true)} type="button">
-            <Icon name="plus" />
-            {deviceWords("devices.add")}
-          </button>
+          <span className="devices__add">
+            <button
+              aria-describedby={addLimit ? "devices-add-limit" : undefined}
+              className="btn btn--primary"
+              disabled={addLimit !== null}
+              onClick={() => setAdding(true)}
+              type="button"
+            >
+              <Icon name="plus" />
+              {deviceWords("devices.add")}
+            </button>
+            {addLimit ? (
+              <span className="devices__add-limit" id="devices-add-limit">
+                {addLimit}
+              </span>
+            ) : null}
+          </span>
         }
         lead={view.lead}
         title={view.title}

@@ -29,6 +29,9 @@ import type {
 } from "@opensteer/protocol/desktop";
 import {
   allTabs,
+  chromeTabDetail,
+  chromeTabUsedBy,
+  placeAgents,
   browserSiteLabel,
   devicesElsewhere,
   placeDeviceLabels,
@@ -48,6 +51,8 @@ import {
   type HostSnapshot,
   type PlaceItem,
   type TaskRow,
+  workHomeMark,
+  type WorkHomeMark,
 } from "@opensteer/client/host";
 import {
   useHostSelector,
@@ -61,6 +66,7 @@ import {
   useTabDeviceChoice,
   useTabFilterMatches,
   useVoiceValue,
+  useWorkPolicy,
 } from "@opensteer/client/react";
 import { LoadingRows } from "./loading-rows.js";
 import { useWindowedRows } from "./workspace/windowed-rows.js";
@@ -70,6 +76,7 @@ import { voiceRowKey } from "./voice-cursor.js";
 import { deploymentNameFrom } from "./deployment-name.js";
 import { useConnectionDot } from "./connection-shell.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
+import { workHomePath } from "./settings/work-home-path.js";
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
 import { createPortal } from "react-dom";
@@ -184,6 +191,7 @@ export function Sidebar({
     [hereId],
   );
   const homeId = useHostSelector(hostClient, selectHome);
+  const work = workHomeMark(useWorkPolicy(hostClient));
   const selectElsewhere = useCallback(
     (snapshot: HostSnapshot) => devicesElsewhere(snapshot.machines, homeId),
     [homeId],
@@ -981,6 +989,7 @@ export function Sidebar({
         onCloseMobile={onCloseMobile}
         onThisComputer={deployment?.onThisComputer === true}
         placeName={placeName}
+        work={work}
         workspace={workspace}
       />
     </nav>
@@ -1401,6 +1410,7 @@ const TabRowItem = memo(function TabRowItem({
     <TabRow
       {...props}
       badge={badges ? place.identity : null}
+      sort={place.tab.sharedByPerson ? null : props.sort}
       device={device}
       directory={directory}
       place={place}
@@ -1479,6 +1489,15 @@ const TabRow = memo(function TabRow({
     () => actingOccupants(place.occupants, activity),
     [place.occupants, activity],
   );
+  const sharedChrome = place.tab.sharedByPerson;
+  const sharedDetail = sharedChrome ? chromeTabDetail(sharedChrome.computerName) : null;
+  const sharedUsers = sharedChrome
+    ? chromeTabUsedBy(
+        placeAgents({ destination: place.destination, occupants }, directory.snapshot).agents.map(
+          (agent) => agent.connectedAgentName ?? agent.title,
+        ),
+      )
+    : null;
   const site = place.site ? browserSiteLabel(place.site) : null;
   // A phone's row is its name already.
   const elsewhere =
@@ -1486,7 +1505,8 @@ const TabRow = memo(function TabRow({
   // The whole destination in words, label or not: "Q4 numbers – Notion — Work · Mac mini · Offline".
   const where =
     [
-      presentation ? browserWords(presentation, hereId) : elsewhere,
+      sharedDetail ?? (presentation ? browserWords(presentation, hereId) : elsewhere),
+      sharedUsers,
       // Marked though it is this device (not the main computer): the label overrides the mark's name.
       device?.id === hereId ? device.name : null,
       place.unavailableReason,
@@ -1592,7 +1612,15 @@ const TabRow = memo(function TabRow({
             </span>
           ) : null}
         </span>
-        <span className="side-tab__title">{place.title}</span>
+        {sharedDetail ? (
+          <span className="side-tab__words">
+            <span className="side-tab__title">{place.title}</span>
+            <span className="side-tab__detail">{sharedDetail}</span>
+            {sharedUsers ? <span className="side-tab__detail">{sharedUsers}</span> : null}
+          </span>
+        ) : (
+          <span className="side-tab__title">{place.title}</span>
+        )}
         {device ? <DeviceLabel className="side-tab__device" device={device} iconOnly /> : null}
       </button>
       <OccupantMarks
@@ -1732,12 +1760,15 @@ function SidebarFooter({
   onCloseMobile,
   onThisComputer,
   placeName,
+  work,
   workspace,
 }: {
   readonly connection: ReturnType<typeof useConnectionDot>;
   readonly onCloseMobile: () => void;
   readonly onThisComputer: boolean;
   readonly placeName: string;
+  /** A work Home's quiet mark, said under its name; null on a personal Home. */
+  readonly work: WorkHomeMark | null;
   readonly workspace: WorkspaceState;
 }) {
   const navigate = useNavigate();
@@ -1767,6 +1798,9 @@ function SidebarFooter({
     { icon: "bolt", label: "Automations", onSelect: () => go("/automations", true) },
     { icon: "app", label: "Apps", onSelect: () => go("/apps", true) },
     { icon: "settings", label: "Settings", onSelect: () => go("/settings", false) },
+    ...(work
+      ? [{ icon: "shield" as const, label: work.seeTitle, onSelect: () => go(workHomePath, false) }]
+      : []),
     // Once in a team, this lives under Settings → Teams instead.
     ...(inTeams
       ? []
@@ -1784,7 +1818,7 @@ function SidebarFooter({
         <button
           aria-expanded={open}
           aria-haspopup="menu"
-          aria-label={`${placeName}${connection.words ? `, ${connection.words}` : ""}.${signInEnded ? " Sign in again." : ""} ${places ? "Places and menu" : "Menu"}`}
+          aria-label={`${placeName}${work ? `, ${work.badge}` : ""}${connection.words ? `, ${connection.words}` : ""}.${signInEnded ? " Sign in again." : ""} ${places ? "Places and menu" : "Menu"}`}
           className="sidebar__place"
           onClick={() => setOpen((value) => !value)}
           ref={anchorRef}
@@ -1795,13 +1829,29 @@ function SidebarFooter({
             {signInEnded ? <span className="sidebar__place-alert" /> : null}
           </span>
           {/* The dot only: the pill over the main column says what is wrong. */}
-          <span className="sidebar__place-text sidebar__place-line">
-            <span
-              aria-hidden
-              className={`sidebar__status-dot sidebar__status-dot--${connection.tone}`}
-            />
-            <span className="sidebar__place-name">{placeName}</span>
-          </span>
+          {work ? (
+            <span className="sidebar__place-text">
+              <span className="sidebar__place-text sidebar__place-line">
+                <span
+                  aria-hidden
+                  className={`sidebar__status-dot sidebar__status-dot--${connection.tone}`}
+                />
+                <span className="sidebar__place-name">{placeName}</span>
+              </span>
+              <span className="work-badge work-badge--quiet">
+                <Icon name="users" />
+                {work.badge}
+              </span>
+            </span>
+          ) : (
+            <span className="sidebar__place-text sidebar__place-line">
+              <span
+                aria-hidden
+                className={`sidebar__status-dot sidebar__status-dot--${connection.tone}`}
+              />
+              <span className="sidebar__place-name">{placeName}</span>
+            </span>
+          )}
           <Icon className="sidebar__place-settings" name="chevron-down" />
         </button>
         <DesktopUpdateButton />

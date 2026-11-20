@@ -20,6 +20,7 @@ import {
 } from "../local-servers/plugin-package-service.js";
 import {
   connection,
+  commands,
   createTask,
   queuedRun,
   serveMcp,
@@ -37,7 +38,7 @@ const plugin = (pluginId: string) =>
 function dispatcher(
   storeFixture: Fixture,
   runnerId: string,
-  hooks: { readonly planning: () => Promise<void> },
+  hooks: { readonly planning: () => Promise<void>; readonly afterFence?: () => Promise<void> },
   sent: RunnerCommand[],
   issued: (readonly string[])[],
 ) {
@@ -94,6 +95,7 @@ function dispatcher(
         options?: { readonly beforeSend?: () => Promise<void> },
       ) => {
         await options?.beforeSend?.();
+        await hooks.afterFence?.();
         sent.push(command);
         return { type: "runner.command-accepted" };
       },
@@ -168,8 +170,10 @@ describeStore("a connected agent's authority at the send", (it) => {
       await Promise.race([entered.promise, result.then(() => { throw new Error("Run did not reach planning"); })]);
       expect(await database.selectFrom("runs").select("bindingGeneration").where("id", "=", run.id)
         .executeTakeFirstOrThrow()).toMatchObject({ bindingGeneration: expect.any(Number) });
-      await new AgentConnectionStore(database).revoke(f.userId, agent.id);
-      expect(await store.driveConnectionCleanups()).toEqual({ failures: [], settled: [agent.id] });
+      const home = commands(storeFixture, f.userId);
+      await home.revoke(agent.id);
+      expect(home.failures).toEqual([]);
+      expect((await home.list()).find(({ id }) => id === agent.id)?.state).toBe("stopped");
       expect(await database.selectFrom("runs").select("status").where("id", "=", run.id)
         .executeTakeFirstOrThrow()).toEqual({ status: "interrupted" });
     } finally {
@@ -177,6 +181,42 @@ describeStore("a connected agent's authority at the send", (it) => {
       await result;
     }
     expect(sent).toEqual([]);
+  });
+
+  it("keeps the exact Run in Stopping when its handoff wins before revoke", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("handoff-before-revoke");
+    const { database, store } = storeFixture;
+    const agent = await connection(store, await serveMcp(storeFixture), { userId: f.userId, accessMode: "full-access" });
+    const task = await createTask(agent, f, "handoff-before-revoke");
+    const run = await queuedRun(storeFixture, task);
+    const command = await database.selectFrom("commands").select("id")
+      .where("runId", "=", run.id).where("type", "=", "run.execute").executeTakeFirstOrThrow();
+    const claimed = await store.claimCommand(command.id, "handoff-before-revoke");
+    if (!claimed) throw new Error("Expected the Run's command");
+    const stamped = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const sent: RunnerCommand[] = [];
+    const dispatch = dispatcher(storeFixture, f.runnerId, {
+      planning: async () => {},
+      afterFence: async () => { stamped.resolve(); await release.promise; },
+    }, sent, []).dispatch(claimed.command, new AbortController().signal);
+    const stopped: unknown[] = [];
+    const home = commands(storeFixture, f.userId, { stopper: { async stop(attempt) {
+      stopped.push(attempt);
+    } } });
+    try {
+      await Promise.race([stamped.promise, dispatch.then(() => { throw new Error("Run did not reach handoff"); })]);
+      expect(sent).toEqual([]);
+      await home.revoke(agent.id);
+      expect(home.failures).toEqual([]);
+      expect(stopped).toEqual([expect.objectContaining({ kind: "run-attempt", runId: run.id, generation: expect.any(Number) })]);
+      expect((await home.list()).find(({ id }) => id === agent.id)?.state).toBe("stopping");
+      await expect(home.remove(agent.id)).rejects.toMatchObject({ reason: "cleanup-outstanding" });
+    } finally {
+      release.resolve();
+      await dispatch;
+    }
+    expect(sent).toEqual([expect.objectContaining({ type: "run.execute", context: expect.objectContaining({ runId: run.id }) })]);
   });
 
   const cases: readonly {

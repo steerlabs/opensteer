@@ -72,10 +72,8 @@ export const MenuBarRowSchema = z.strictObject({
 export type MenuBarRow = z.infer<typeof MenuBarRowSchema>;
 
 /**
- * The person's Stop for this Mac. `stopping` until what was using this Mac is
- * confirmed ended, `stopped` once it is, `failed` when something did not stop
- * or the Stop could not be saved, with `problem` saying what and Stop
- * everything offered again.
+ * The person's Stop for this Mac. A stopped mode can carry a problem. The
+ * stopped time is shown only after the desktop confirms the old work ended.
  */
 export const MenuBarStopPhaseSchema = z.enum(["running", "stopping", "stopped", "failed"]);
 export type MenuBarStopPhase = z.infer<typeof MenuBarStopPhaseSchema>;
@@ -136,24 +134,12 @@ export const MenuBarSwitchInputSchema = z.strictObject({
 });
 export type MenuBarSwitchInput = z.infer<typeof MenuBarSwitchInputSchema>;
 
-/**
- * @deprecated The popover no longer stops one row (rows only open their task);
- * this goes with desktop main's per-row Stop.
- */
-export const MenuBarRowStopInputSchema = z.strictObject({ id: z.string().min(1).max(300) });
-
 /** What the Opensteer menu bar item's popover can ask of desktop main. */
 export interface OpensteerMenuBarBridge {
   status(): Promise<MenuBarStatus>;
   onStatus(listener: (status: MenuBarStatus) => void): () => void;
   setSwitch(input: MenuBarSwitchInput): Promise<void>;
-  /**
-   * Opens a row's task in the app, switching to its Home first. Until desktop
-   * main offers it, a row opens the app instead.
-   */
-  openRow?(target: MenuBarRowTarget): Promise<void>;
-  /** @deprecated Never called: the popover's only Stop is Stop everything. */
-  stopRow?(input: { readonly id: string }): Promise<void>;
+  openRow(target: MenuBarRowTarget): Promise<void>;
   stop(): Promise<void>;
   resume(): Promise<void>;
   setOpenAtLogin(on: boolean): Promise<void>;
@@ -563,7 +549,7 @@ function deviceStatus(
       status: menuBarWords("menubar.status.signedOut", { home: home.name }),
     };
   if (stopped)
-    return read === null
+    return read == null
       ? {
           tone: "attention",
           reachable: false,

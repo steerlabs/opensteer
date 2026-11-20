@@ -2,6 +2,9 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { createId } from "@opensteer/core";
+import type { AgentConnectionConsent } from "@opensteer/protocol";
+import { mockConnectedAgents } from "@opensteer/client/mock";
 import { HostClientRequestError, type HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import type { MachineSummary } from "@opensteer/protocol";
@@ -94,6 +97,7 @@ function consentHost(
   options: {
     readonly homes?: readonly string[];
     readonly macOnline?: boolean;
+    readonly consent?: Partial<AgentConnectionConsent>;
     readonly grants?: boolean;
   } = {},
 ) {
@@ -106,6 +110,7 @@ function consentHost(
       redirectUri: "https://grok.com/oauth/callback",
       resource: "https://home.example/internal/v1/mcp",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      ...options.consent,
     },
   });
   const machines = [
@@ -180,15 +185,92 @@ const sheetSections = () =>
   (state.sheet as unknown as { sections: readonly NativeSettingsSection[] }).sections;
 
 describe("agent consent on the phone", () => {
+  it.each([390, 1440])(
+    "keeps the name as a claim and grants a paired Chrome at %d px",
+    async (width) => {
+      const sourceId = createId("browserSource");
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(width);
+      const client = consentHost({
+        homes: [],
+        consent: {
+          clientName: "Grok\u202e\nVerified",
+          chromeTabs: [{ sourceId, computerName: "Work Mac", paired: true }],
+          chromeTabsNeedPairing: true,
+        },
+      });
+      const dispatch = vi.spyOn(client, "dispatch");
+      await open(client);
+      expect(ready()).toMatchObject({
+        title: "An agent wants to connect",
+        mark: null,
+        label: "Grok Verified",
+        who: { heading: "It calls itself: Grok Verified" },
+      });
+      const choice = row("resources", sourceId);
+      expect(choice).toMatchObject({
+        label: "Tabs you share from Chrome on Work Mac",
+        detail: expect.stringContaining("only while you share it from Chrome’s toolbar"),
+      });
+      expect(ready().sections?.some(({ key }) => key === "chrome-pairing")).toBe(false);
+      if (choice.kind !== "toggle") throw new Error("Expected a Chrome toggle");
+      await act(async () => choice.onChange(true));
+      await act(async () => ready().onAllow());
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          decision: expect.objectContaining({
+            grant: {
+              scope: "selected",
+              resources: [{ kind: "chrome-tabs", sourceId }],
+              tasks: false,
+            },
+          }),
+        }),
+      );
+    },
+  );
+
+  it.each([390, 1440])(
+    "renders both verified origins and a pairing hint at %d px",
+    async (width) => {
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(width);
+      const { identity, identityAtConsent } = mockConnectedAgents("seeded").connections.find(
+        ({ label }) => label === "Errand",
+      )!;
+      await open(
+        consentHost({
+          consent: {
+            clientName: "Client-supplied name",
+            ...(identity ? { identity } : {}),
+            ...(identityAtConsent ? { identityAtConsent } : {}),
+            chromeTabs: [],
+            chromeTabsNeedPairing: true,
+          },
+        }),
+      );
+      expect(ready()).toMatchObject({
+        title: "Errand via AgentPay",
+        who: {
+          origins: [
+            "Asked for this: Errand · https://errand.example",
+            "Holds the access: AgentPay · https://agentpay.example",
+          ],
+        },
+      });
+      expect(section("chrome-pairing").footer?.text).toBe(
+        "To share tabs with a connected agent, pair Chrome again.",
+      );
+    },
+  );
+
   it("opens on Choose what it can use, with a new dedicated profile on the Home", async () => {
     await open(consentHost());
     const form = ready();
-    expect(form.title).toBe("Grok wants to use your Opensteer");
-    expect(form.mark).toEqual({ providerId: null, initial: "G" });
+    expect(form.title).toBe("An agent wants to connect");
+    expect(form.mark).toBeNull();
     // Grok named itself: the Home verified nothing, so no check and no logo.
     expect(form.who).toEqual({
-      heading: "Says it is Grok",
-      detail: "https://grok.com",
+      heading: "It calls itself: Grok",
+      origins: [],
       verified: false,
       warning: "Only approve if you started this yourself.",
     });
@@ -206,7 +288,10 @@ describe("agent consent on the phone", () => {
       selected: true,
       detail: "Asks you before anything that changes something.",
     });
-    expect(form.finePrint).toContain("Grok can’t approve its own requests");
+    // Saved passwords stay closed to it; a filled one is readable in the page, so never "can't see".
+    expect(form.finePrint).toBe(
+      "This connected agent can’t approve its own requests, open your saved passwords or cards, or change your settings. It lasts 30 days. Disconnect it any time in Settings → Connected agents.",
+    );
   });
 
   it("keeps the simple consent on a Home without grants", async () => {
@@ -216,8 +301,11 @@ describe("agent consent on the phone", () => {
     expect(ready()).toMatchObject({
       sections: null,
       mark: null,
-      title: "Allow Grok to use Opensteer?",
+      title: "An agent wants to connect",
     });
+    expect(ready().finePrint).toBe(
+      "It can’t approve requests, open your saved passwords or give anyone access. This lasts 30 days, and you can remove it any time in Settings → Connected agents.",
+    );
     await act(async () => ready().onAllow());
     expect(dispatch.mock.calls.map(([command]) => command.type)).toEqual(["connection.authorize"]);
     expect(dispatch.mock.calls[0]![0]).toMatchObject({
@@ -236,13 +324,15 @@ describe("agent consent on the phone", () => {
       value: cloudRunner,
       menu: true,
     });
-    expect(section("profiles", sheetSections()).footer?.text).toContain("Grok gets full control");
+    expect(section("profiles", sheetSections()).footer?.text).toBe(
+      "This connected agent gets full control of each profile you pick, including every site signed in there. It can’t open your saved passwords or cards. When it needs one, it asks you and Opensteer fills it in; once filled, the page and the agent can read it.",
+    );
     await press(row("profiles", shopping, sheetSections()));
     expect(detail(row("resources", "browser"))).toBe(
       "New dedicated profile · On Cloud Computer · starts signed out, Shopping",
     );
     expect(section("resources").footer?.text).toBe(
-      "Grok can use every site you’re signed in to in Shopping, as you. A new profile starts signed out.",
+      "This connected agent can use every site you’re signed in to in Shopping, as you. A new profile starts signed out.",
     );
     await act(async () => state.sheet!.onClose());
     expect(state.sheet).toBeNull();
@@ -293,7 +383,7 @@ describe("agent consent on the phone", () => {
     if (tasks.kind !== "toggle") throw new Error("Tasks is a switch");
     await act(async () => tasks.onChange(true));
     expect(section("tasks").footer).toEqual({
-      text: "This is the most powerful choice. Work it starts can change anything on Cloud Computer that your own agents can, inside the safety mode below.",
+      text: "This is the most powerful choice. Work it starts can change anything on Cloud Computer that your own agents can, inside the safety mode below. Opensteer can stop what happens next, but can’t undo what an agent already did.",
       tone: "danger",
     });
   });
@@ -374,7 +464,7 @@ describe("agent consent on the phone", () => {
     await press(row("resources", "browser"));
     await press(row("new", "new", sheetSections()));
     expect(section("resources").footer?.text).toBe(
-      "Grok can connect, but can’t use anything until you choose something.",
+      "This connected agent can connect, but can’t use anything until you choose something.",
     );
   });
 
@@ -390,7 +480,7 @@ describe("agent consent on the phone", () => {
   it("says the new profile waits for its Device when that Device is offline", async () => {
     await open(consentHost({ homes: [macRunner], macOnline: false }));
     expect(section("resources").footer?.text).toBe(
-      "None of your devices are online. Grok can use its profile once MacBook Pro is back.",
+      "None of your devices are online. This connected agent can use its profile once MacBook Pro is back.",
     );
   });
 
@@ -402,6 +492,126 @@ describe("agent consent on the phone", () => {
       detail: "Start connecting again from the agent.",
       onRetry: null,
     });
+  });
+
+  it("reads the consent again when its verification changed, keeping the choices still offered", async () => {
+    const [workMac, homeMac] = [createId("browserSource"), createId("browserSource")];
+    const claude = mockConnectedAgents("seeded").connections.find(
+      ({ label }) => label === "Claude",
+    )!;
+    const client = consentHost();
+    const consent = {
+      requestId,
+      clientName: "Claude",
+      redirectUri: "https://claude.ai/api/mcp/auth_callback",
+      resource: "https://home.example/internal/v1/mcp",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      grantsAvailable: true as const,
+    };
+    const reads = [
+      {
+        ...consent,
+        identity: claude.identity!,
+        identityAtConsent: claude.identityAtConsent!,
+        verificationSnapshot: "a".repeat(64),
+        chromeTabs: [
+          { sourceId: workMac, computerName: "Work Mac", paired: true },
+          { sourceId: homeMac, computerName: "Home Mac", paired: true },
+        ],
+      },
+      // Read again: no longer verified, and one Chrome is no longer paired.
+      {
+        ...consent,
+        verificationSnapshot: "b".repeat(64),
+        chromeTabs: [{ sourceId: workMac, computerName: "Work Mac", paired: true }],
+      },
+    ];
+    let read = 0;
+    Object.defineProperty(client.rpc, "connections.authorization.get", {
+      value: vi.fn(async () => ({ ok: true, data: reads[Math.min(read++, 1)] })),
+      configurable: true,
+    });
+    let attempts = 0;
+    const dispatch = vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type === "browser.profile.create")
+        return {
+          type: "browser.profile.create",
+          profile: { id: created, name: "Mine", homeRunnerId: cloudRunner },
+        } as never;
+      if (command.type === "connection.authorize" && ++attempts === 1)
+        throw new HostClientRequestError({
+          code: "conflict",
+          reason: "consent-verification-changed",
+          message: "This agent's verification changed. Review it again.",
+          status: 409,
+        });
+      return { type: "connection.authorize", completionPath: "/oauth/done" } as never;
+    });
+    await open(client);
+    expect(ready()).toMatchObject({
+      title: "Claude",
+      who: { heading: "Verified", verified: true },
+    });
+    await act(async () => ready().onLabel("Mine"));
+    for (const source of [workMac, homeMac]) {
+      const toggle = row("resources", source);
+      if (toggle.kind !== "toggle") throw new Error("Expected a Chrome toggle");
+      await act(async () => toggle.onChange(true));
+    }
+    const tasks = row("tasks", "tasks");
+    if (tasks.kind !== "toggle") throw new Error("Tasks is a switch");
+    await act(async () => tasks.onChange(true));
+    await press(row("mode", "auto"));
+    expect(ready().notice).toBeNull();
+
+    await act(async () => ready().onAllow());
+    // The agent as the Home now presents it, with one line beside Allow; not "Already answered".
+    expect(ready()).toMatchObject({
+      title: "An agent wants to connect",
+      mark: null,
+      who: { heading: "It calls itself: Claude", verified: false },
+      notice: "This agent's verification changed. Review it again.",
+      error: null,
+      label: "Mine",
+      mode: "auto",
+      busy: null,
+    });
+    expect(row("resources", workMac)).toMatchObject({ kind: "toggle", value: true });
+    expect(() => row("resources", homeMac)).toThrow();
+    expect(row("tasks", "tasks")).toMatchObject({ kind: "toggle", value: true });
+
+    await act(async () => ready().onAllow());
+    const authorizations = dispatch.mock.calls
+      .map(([command]) => command)
+      .filter((command) => command.type === "connection.authorize");
+    expect(authorizations[0]).toMatchObject({
+      decision: { verificationSnapshot: "a".repeat(64) },
+    });
+    expect(authorizations[1]).toMatchObject({
+      decision: {
+        kind: "approve",
+        label: "Mine",
+        accessMode: "auto",
+        verificationSnapshot: "b".repeat(64),
+        grant: {
+          scope: "selected",
+          tasks: true,
+        },
+      },
+    });
+    const { resources } = (authorizations[1] as { decision: { grant: { resources: unknown[] } } })
+      .decision.grant;
+    expect(resources).toHaveLength(2);
+    expect(resources).toEqual(
+      expect.arrayContaining([
+        { kind: "chrome-tabs", sourceId: workMac },
+        { kind: "browser-profile", profileId: created },
+      ]),
+    );
+    expect(
+      dispatch.mock.calls.filter(([command]) => command.type === "browser.profile.create"),
+    ).toHaveLength(1);
+    expect(state.openURL).toHaveBeenCalledOnce();
   });
 
   it("says when the request was already answered on another device", async () => {
@@ -470,7 +680,7 @@ describe("agent consent on the phone", () => {
     await act(async () => ready().onAllow());
     expect(finish).toBeTypeOf("function");
     await act(async () => render("b".repeat(43)));
-    await vi.waitFor(() => expect(ready().title).toContain("Second agent"));
+    await vi.waitFor(() => expect(ready().label).toBe("Second agent"));
     await act(async () =>
       finish!({ type: "connection.authorize", completionPath: "/oauth/mcp/complete?request=a" }),
     );

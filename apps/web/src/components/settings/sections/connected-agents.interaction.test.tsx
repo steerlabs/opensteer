@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { createId } from "@opensteer/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -125,6 +126,40 @@ describe("Connected agents list", () => {
 });
 
 describe("one connected agent", () => {
+  it.each([390, 1440])("reads and saves the paired Chrome grant at %d px", async (width) => {
+    const sourceId = createId("browserSource");
+    host = seeded();
+    const read = vi.fn(async () => ({
+      ok: true,
+      data: {
+        extensionDirectory: null,
+        sources: [],
+        sites: [],
+        chromeTabs: [{ paired: true, sourceId, computerName: "Work Mac" }],
+      },
+    }));
+    Object.defineProperty(host.rpc, "browser.sources.get", { value: read, configurable: true });
+    const dispatch = vi.spyOn(host, "dispatch");
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(width);
+    const page = await mount(host, `${base}/${grok}`);
+    page.style.width = `${width}px`;
+    const option = page.querySelector<HTMLInputElement>(
+      '[aria-label="Tabs you share from Chrome on Work Mac"]',
+    )!;
+    expect(read).toHaveBeenCalled();
+    expect(option.checked).toBe(false);
+    await act(async () => option.click());
+    await act(async () => buttonNamed(page, "Save").click());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "connection.update",
+        grant: expect.objectContaining({
+          resources: expect.arrayContaining([{ kind: "chrome-tabs", sourceId }]),
+        }),
+      }),
+    );
+  });
+
   it("shows what it can use, who it says it is, and the honest empty activity", async () => {
     host = seeded();
     const page = await mount(host, `${base}/mcn_00000000-0000-4000-8000-000000000003`);
@@ -180,6 +215,10 @@ describe("one connected agent", () => {
     host = seeded();
     const dispatch = vi.spyOn(host, "dispatch");
     const page = await mount(host, `${base}/mcn_00000000-0000-4000-8000-000000000002`);
+    // Its verified name is the title; the line under it only says so.
+    await vi.waitFor(() =>
+      expect(page.querySelector(".agent-who__name")?.textContent).toBe("Verified"),
+    );
     await vi.waitFor(() => expect(page.textContent).toContain("Disconnect Claude"));
     await act(async () => page.querySelector<HTMLInputElement>('input[value="selected"]')!.click());
     await act(async () => buttonNamed(page, "Save").click());

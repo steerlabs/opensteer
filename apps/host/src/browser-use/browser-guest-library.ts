@@ -269,6 +269,7 @@ function bindPage({ handle, tabId, targetId, sessionId, dialog }) {
   };
   state.page = Object.freeze({
     ...page, tabId, captureScreenshot,
+    close: () => command("Target.closeTarget", { targetId }),
     cdp: (method, params, session) => command(method, params, session),
     clickAt: (x, y, { button = "left", clicks = 1 } = {}) => page.mouse.click(x, y, { button, clickCount: clicks }),
     currentTab, ensureRealTab: currentTab, fillInput, js, pageInfo, pressKey,
@@ -302,5 +303,13 @@ Object.assign(globalThis, {
   print,
   printImage: (data, mimeType = "image/png") => call("image", null, { data, mimeType }).then(() => undefined),
   sleep,
+  help: () => print([
+    "Browser script globals: pages(), openPage(tabId), newPage(url, {profileId}), print(...values), printImage(data, mimeType), sleep(ms), help(). Use await for browser calls.",
+    "Page: tabId, goto(url, {timeout}), close(), locator(css), getByRole(role, options), getByText(text, options), getByLabel(text, options), evaluate(fn, arg), url(), title(), waitForURL(expected, {timeout}), waitForFunction(fn, arg, {timeout}), waitForTimeout(ms), screenshot(), ariaSnapshot().",
+    "Page input: keyboard.press(key), keyboard.type(text), keyboard.insertText(text), mouse.click(x, y, options), clickAt(x, y, options), fillInput(selector, value, options), pressKey(key, options), typeText(text), scroll(x, y, options).",
+    "Page details and CDP: js(expression), cdp(method, params, sessionId), currentTab(), ensureRealTab(), pageInfo(), gotoUrl(url), captureScreenshot(), drainEvents(), respondDialog(options), waitForElement(selector, options), waitForLoad(options), waitForNetworkIdle(options).",
+    "Locator: locator(css), getByRole(role, options), getByText(text, options), getByLabel(text, options), first(), last(), nth(index), filter(options), click(options), dblclick(options), fill(value, options), clear(options), press(key, options), check(options), uncheck(options), setChecked(value, options), selectOption(values, options), count(), textContent(), innerText(), allInnerTexts(), inputValue(), isVisible(), isChecked(), isEnabled(), getAttribute(name), waitFor(options), evaluate(fn, arg), ariaSnapshot().",
+    "Open and close tabs only in a browser profile. A Chrome tab the person shared can follow its popups but cannot create or close tabs. Screenshots appear in tool output.",
+  ].join("\n")),
 });
 `;

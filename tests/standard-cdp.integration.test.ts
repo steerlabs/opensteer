@@ -251,6 +251,23 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     const page = leftContext.pages()[0]!;
     await page.goto(origin);
     expect(await page.evaluate(() => document.title)).toBe("Home CDP fixture");
+    for (const context of [leftContext, rightContext]) {
+      const owned = context.pages()[0]!;
+      const cdp = await context.newCDPSession(owned);
+      expect(await cdp.send("Target.getTargets")).toMatchObject({
+        targetInfos: [expect.objectContaining({ url: owned.url(), type: "page" })],
+      });
+      await cdp.send("Network.enable");
+      for (const [method, parameters] of [
+        ["Opensteer.fillLogin", { loginRef: `lgn_${"1".repeat(32)}`, field: "password" }],
+        ["Opensteer.fillCard", { cardRef: `crd_${"1".repeat(32)}`, field: "number" }],
+      ] as const) {
+        const fill: Promise<unknown> = Reflect.apply(cdp.send, cdp, [method, parameters]);
+        await expect(fill).rejects.toThrow("Saved login and card fills use browser_use");
+      }
+      await cdp.detach();
+      expect(await owned.evaluate(() => 42)).toBe(42);
+    }
     const largeArgument = "x".repeat(1_100_000);
     expect(await page.evaluate((value) => value.length, largeArgument)).toBe(largeArgument.length);
     await page.evaluate(() => {

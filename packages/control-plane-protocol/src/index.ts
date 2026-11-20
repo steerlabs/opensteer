@@ -3,6 +3,7 @@ import {
   AuthSessionIdSchema,
   AuthAdmissionIdSchema,
   DeploymentIdSchema,
+  DeploymentShapeViewSchema,
   OpensteerNativeApplicationSchema,
   TeamChannelIdSchema,
   HostInstanceIdSchema,
@@ -24,7 +25,10 @@ import {
   HostDiscoveryEnvelopeSchema,
   sameDiscoveryDocument,
 } from "@opensteer/deployment-authority/authority";
-import { PersonalHostAccessRouteEnvelopeSchema } from "@opensteer/deployment-authority/personal-access-route";
+import {
+  isPersonalHost,
+  PersonalHostAccessRouteEnvelopeSchema,
+} from "@opensteer/deployment-authority/personal-access-route";
 import {
   ConnectOperationCompletionSchema,
   PersonalHostAccessAuthoritySchema,
@@ -320,7 +324,8 @@ export function isCanonicalPersonalHome(entry: {
   const document = (
     entry.authorityEnvelope as { document?: { deploymentShape?: { kind?: unknown } } }
   )?.document;
-  return document?.deploymentShape?.kind === "personal";
+  const shape = DeploymentShapeViewSchema.safeParse(document?.deploymentShape);
+  return shape.success && isPersonalHost({ deploymentShape: shape.data });
 }
 
 export const ListAccountDeploymentsResponseSchema = z.object({

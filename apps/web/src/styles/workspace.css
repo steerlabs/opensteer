@@ -1326,6 +1326,20 @@ button.side-needs:hover {
   flex: 1;
 }
 
+.side-tab__words {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
+.side-tab__detail {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Marks sit in the marks' 20px column, so every row's title starts on one line. */
 .side-tab .place-mark,
 .side-new__main svg {
@@ -4250,6 +4264,11 @@ html[data-tab-sorting] * {
 .operation-request__settled {
   margin: 0;
   color: var(--text-soft);
+}
+
+.operation-request__summary,
+.operation-request__calls .link-button {
+  font-size: var(--text-sm);
 }
 
 .operation-request__after {

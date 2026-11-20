@@ -30,9 +30,6 @@ import { z } from "zod";
 import { observeDispatchReadiness } from "./dispatch-readiness.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
-import { RunnerRegistry } from "@opensteer/orchestration";
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import { manualAgentWork, type AgentWorkSource } from "@opensteer/runner";
 import { readCodexRunCaptures } from "./codex-capture.test-support.js";
 
 /*
@@ -164,7 +161,8 @@ integration("Runs that outlive their connection", () => {
     readonly maxConcurrentRuns?: number;
     readonly scenario?: string;
     readonly gatePreparation?: true;
-    readonly agentWork?: AgentWorkSource;
+    readonly agentsStoppedSince?: string | null;
+    readonly realRunner?: boolean;
   }): Promise<{
     readonly captured: () => Promise<z.infer<typeof captureSchema>[]>;
     readonly releasePreparation: () => Promise<void>;
@@ -210,7 +208,9 @@ integration("Runs that outlive their connection", () => {
       return registry;
     };
     stack = await startVerticalStack({
-      ...(input.agentWork ? { agentWork: input.agentWork } : {}),
+      ...(input.agentsStoppedSince === undefined
+        ? {}
+        : { agentsStoppedSince: input.agentsStoppedSince }),
       ...(input.executionClock
         ? {
             executionClock: input.executionClock,
@@ -233,6 +233,21 @@ integration("Runs that outlive their connection", () => {
         stateKind: "isolated",
       },
       harnesses,
+      ...(input.realRunner
+        ? {
+            runnerChild: {
+              fixture: fakeCodexAppServer,
+              arguments: [
+                "--scenario=long-stream-held",
+                "--unique-threads",
+                `--release-file=${releaseFile}`,
+                "--capture-records",
+                `--capture=${captureFile}`,
+                "--capture-process-id",
+              ],
+            },
+          }
+        : {}),
       harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       maxConcurrentRuns: input.maxConcurrentRuns ?? 1,
       runTimeoutMs: 60_000,
@@ -1208,43 +1223,77 @@ integration("Runs that outlive their connection", () => {
       "stop delivered",
     );
   }, 120_000);
-  it("holds a task while agents are stopped on its computer, and starts it the moment they resume", async () => {
-    const agentWork = manualAgentWork();
-    const { stack: active } = await start({ executionLeaseMs: 60_000, agentWork });
-    // Waits on the Home having taken the Runner's notice, not on a timer.
-    const handle = RunnerRegistry.prototype.handle;
-    const told = (type: "runner.agents.stopped" | "runner.agents.resumed") => {
-      const handled = Promise.withResolvers<void>();
-      const spy = vi.spyOn(RunnerRegistry.prototype, "handle").mockImplementation(async function (
-        this: RunnerRegistry,
-        peer,
-        message,
-      ) {
-        await handle.call(this, peer, message);
-        if ((message as { type?: string }).type === type) {
-          spy.mockRestore();
-          handled.resolve();
-        }
-      });
-      return handled.promise;
-    };
-    const stopped = told("runner.agents.stopped");
-    agentWork.set(true);
-    await stopped;
+  it("ends an active Run with a real Runner restart and starts its queued successor on Resume", async () => {
+    const { stack: active, turnPids } = await start({
+      executionLeaseMs: 60_000,
+      realRunner: true,
+      agentsStoppedSince: null,
+    });
+    const manuallyPaused = await thread(active, "Manually paused");
+    const pausedRun = (
+      await active.queueMessage({ text: "Write at length.", threadId: manuallyPaused })
+    ).runId!;
+    await waitFor(
+      async () => (await liveAssistant(active, manuallyPaused)) === heldText,
+      30_000,
+      "working",
+    );
+    await active.queueMessage({ text: "Keep this one paused.", threadId: manuallyPaused });
+    await active.interruptRun(manuallyPaused, pausedRun);
+    await waitFor(
+      async () => (await run(active, pausedRun)).status === "interrupted",
+      30_000,
+      "manual Stop",
+    );
+
     const threadId = await thread(active, "Held while stopped");
-    const runId = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
-    expect((await run(active, runId)).status).toBe("queued");
+    const first = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
+    await waitFor(
+      async () => (await liveAssistant(active, threadId)) === heldText,
+      30_000,
+      "working",
+    );
+    const pids = await turnPids();
+    expect(pids.length).toBeGreaterThan(0);
+    await active.queueMessage({ text: "Resume working after Stop.", threadId });
+
+    const started = performance.now();
+    await active.restartRunner(new Date().toISOString());
+    console.info(`Runner Stop restart (fixture): ${Math.round(performance.now() - started)} ms`);
+    expect(await run(active, first)).toMatchObject({
+      status: "failed",
+      failure: {
+        code: "computer_stopped",
+        message: expect.stringMatching(/^Stopped on .+\.$/u),
+      },
+    });
+    for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);
     const machines = await active.api["machines.list"]({});
     if (!machines.ok) throw new Error(machines.error.message);
     expect(machines.data.machines.some((machine) => machine.agentsStoppedSince)).toBe(true);
+    const newThread = await thread(active, "Sent while stopped");
+    const newRun = (await active.queueMessage({ text: "Wait for this Mac.", threadId: newThread }))
+      .runId!;
+    expect((await run(active, newRun)).status).toBe("queued");
 
-    const resumed = told("runner.agents.resumed");
-    agentWork.set(false);
-    await resumed;
-    // Well inside the dispatch backoff's 30 seconds: resume wakes it at once.
-    await withTimeout(active.runStarted(runId), 5_000, {
-      timeoutError: () => new Error("The held Run did not start on resume"),
-    });
+    const successor = await active.host.store.database
+      .selectFrom("runs")
+      .select("id")
+      .where("threadId", "=", threadId)
+      .where("status", "=", "queued")
+      .executeTakeFirstOrThrow();
+    await active.restartRunner(null);
+    await waitFor(
+      async () => (await run(active, successor.id)).status === "running",
+      5_000,
+      "held Run on Resume",
+    );
+    const pause = await active.host.store.database
+      .selectFrom("threads")
+      .select("inputQueuePaused")
+      .where("id", "=", manuallyPaused)
+      .executeTakeFirstOrThrow();
+    expect(pause.inputQueuePaused).toBe(true);
   }, 120_000);
   it("records a Run its computer stopped as interrupted, at once while the Home is reachable", async () => {
     const { stack: active } = await start({ executionLeaseMs: 60_000 });

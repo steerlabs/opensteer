@@ -11,6 +11,7 @@ import {
 } from "@opensteer/core";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { classifyClientFailure } from "@opensteer/client/connections";
+import type { EffectiveWorkPolicy } from "@opensteer/control-plane-protocol";
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "./icon.js";
 import { SectionHeader, SettingsRow } from "./settings/primitives.js";
@@ -19,12 +20,15 @@ import {
   agentClaim,
   agentConsentHeading,
   workWords,
+  workHomeMark,
   agentBrowserOptions,
   agentHomeName,
   agentWords,
   answerAgentConnection,
   connectedAgentIdentity,
   connectionDestination,
+  consentVerificationChanged,
+  draftForCatalog,
   createDedicatedProfile,
   grantFromDraft,
   unwrapRpcResult,
@@ -32,7 +36,7 @@ import {
   type HostClient,
   type HostSnapshot,
 } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, useWorkPolicy } from "@opensteer/client/react";
 import { AgentGrantEditor, ConnectionModeChoices } from "./settings/agent-grant-editor.js";
 import { AgentMark } from "./settings/agent-mark.js";
 import { QrCode } from "./first-run/qr-code.js";
@@ -81,9 +85,13 @@ export function McpAuthorization({
   });
   const home = agentHomeName({ machines, identityConfig });
   const [load, setLoad] = useState<Load>({ kind: "loading" });
+  // A work Home's ceiling is known before any choice is offered, so none is offered then refused.
+  const workPolicy = useWorkPolicy(client);
   const grantsAvailable = load.kind === "ready" && load.consent.grantsAvailable === true;
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // The Home refused an approval because who the agent is changed: it was read again.
+  const [changed, setChanged] = useState(false);
   const [busy, setBusy] = useState<"allow" | "deny" | null>(null);
   const [allowed, setAllowed] = useState(false);
   const [label, setLabel] = useState("");
@@ -99,6 +107,7 @@ export function McpAuthorization({
     ++revision.current;
     setLoad({ kind: "loading" });
     setError(null);
+    setChanged(false);
     setBusy(null);
     setAllowed(false);
     setLabel("");
@@ -143,6 +152,7 @@ export function McpAuthorization({
     const current = revision.current;
     setBusy(approve ? "allow" : "deny");
     setError(null);
+    setChanged(false);
     const stale = () => current !== revision.current;
     try {
       let grant;
@@ -183,6 +193,10 @@ export function McpAuthorization({
       } else window.location.assign(completion);
     } catch (reason) {
       if (stale()) return;
+      if (approve && consentVerificationChanged(reason)) {
+        await reviewAgain(consent.requestId, stale);
+        return;
+      }
       const code = failureCode(reason);
       if (code === "conflict") setLoad({ kind: "answered" });
       else if (code === "not_found") setLoad({ kind: "expired", agent: null });
@@ -202,11 +216,32 @@ export function McpAuthorization({
     }
   }
 
+  /** Shows the consent as the Home now presents it, keeping the choices it still offers. */
+  async function reviewAgain(id: string, stale: () => boolean) {
+    try {
+      const fresh = unwrapRpcResult(
+        await client.rpc["connections.authorization.get"]({ requestId: id }),
+      );
+      if (stale()) return;
+      setLoad({ kind: "ready", consent: fresh });
+      setDraft((current) => current && draftForCatalog(current, fresh));
+      setChanged(true);
+    } catch (reason) {
+      if (stale()) return;
+      setLoad(
+        failureCode(reason) === "not_found" ? { kind: "expired", agent: null } : { kind: "failed" },
+      );
+    }
+    setBusy(null);
+  }
+
   return (
     <main className="page settings settings-layout">
       <div className="settings-content">
         <div className="settings-content__inner agent-consent">
-          {load.kind === "loading" ? <p role="status">{agentWords("consent.loading")}</p> : null}
+          {load.kind === "loading" || (load.kind === "ready" && workPolicy === undefined) ? (
+            <p role="status">{agentWords("consent.loading")}</p>
+          ) : null}
           {load.kind === "missing" ? (
             <p className="notice notice--error" role="alert">
               {agentWords("consent.missing")}
@@ -238,19 +273,20 @@ export function McpAuthorization({
           {load.kind === "ready" && allowed ? (
             <div className="card" role="status">
               <SettingsRow
-                detail={agentWords("consent.allowed.detail", { agent: label.trim() })}
+                detail={agentWords("consent.allowed.detail")}
                 title={
                   <>
                     <Icon name="check-circle" />
-                    {agentWords("consent.allowed.title", { agent: label.trim() })}
+                    {agentWords("consent.allowed.title")}
                   </>
                 }
               />
             </div>
           ) : null}
-          {load.kind === "ready" && !allowed ? (
+          {load.kind === "ready" && !allowed && workPolicy !== undefined ? (
             <ConsentForm
               busy={busy}
+              changed={changed}
               consent={load.consent}
               error={error}
               grants={
@@ -264,6 +300,7 @@ export function McpAuthorization({
                     }
                   : null
               }
+              workPolicy={workPolicy}
               label={label}
               mode={mode}
               onDecide={(approve) => void decide(approve)}
@@ -307,6 +344,7 @@ function ConsentEnded({
 
 function ConsentForm({
   busy,
+  changed,
   consent,
   error,
   grants,
@@ -315,8 +353,11 @@ function ConsentForm({
   onDecide,
   onLabel,
   onMode,
+  workPolicy,
 }: {
   readonly busy: "allow" | "deny" | null;
+  /** Its verification changed since the person last read it, and it was read again. */
+  readonly changed: boolean;
   readonly consent: AgentConnectionConsent;
   readonly error: string | null;
   readonly grants: {
@@ -331,7 +372,10 @@ function ConsentForm({
   readonly onDecide: (approve: boolean) => void;
   readonly onLabel: (label: string) => void;
   readonly onMode: (mode: ThreadAccessMode) => void;
+  /** The Home's work policy, or null on a personal Home. */
+  readonly workPolicy: EffectiveWorkPolicy | null;
 }) {
+  const work = workHomeMark(workPolicy);
   // Who asked, in the Home's words where it said; never a provider guessed from a domain.
   const identity = connectedAgentIdentity(
     {
@@ -347,18 +391,37 @@ function ConsentForm({
   const disabled = busy !== null;
   return (
     <>
+      {work ? (
+        <p className="agent-consent__work">
+          <span className="work-badge work-badge--quiet">
+            <Icon name="users" />
+            {work.badge}
+          </span>
+        </p>
+      ) : null}
       <div className="agent-consent__identity">
-        {heading.mark ? <AgentMark identity={{ ...identity, initial: heading.title[0] ?? "A" }} large /> : null}
+        {heading.mark ? (
+          <AgentMark
+            identity={{ ...identity, initial: Array.from(heading.title)[0] ?? "A" }}
+            large
+          />
+        ) : null}
         <SectionHeader title={heading.title} />
       </div>
-      <AgentWhoLine who={identity.who} claim={heading.claim ?? undefined} />
-      <p className="agent-consent__where">
-        <Icon name={identity.local ? "laptop" : "globe"} />
-        <span>{connectionDestination(consent.redirectUri)}</span>
-      </p>
-      {identity.who.selfAsserted ? (
-        <p className="settings-section__lead">{agentWords("consent.unverified")}</p>
-      ) : null}
+      {/* Verified: its labelled origins say where access goes. Not: its claim, then where. */}
+      {identity.who.verified ? (
+        <AgentWhoLine nameShown={false} who={identity.who} />
+      ) : (
+        <>
+          {heading.claim ? (
+            <p className="agent-who__claim agent-consent__claim">{heading.claim}</p>
+          ) : null}
+          <p className="agent-consent__where">
+            <Icon name={identity.local ? "laptop" : "globe"} />
+            <span>{connectionDestination(consent.redirectUri)}</span>
+          </p>
+        </>
+      )}
       <p className="agent-consent__warning" role="note">
         {identity.who.warning}
       </p>
@@ -373,12 +436,14 @@ function ConsentForm({
             draft={grants.draft}
             home={grants.home}
             onChange={grants.onDraft}
+            workPolicy={workPolicy ?? undefined}
           />
           <ConnectionModeChoices
             disabled={disabled}
             mode={mode}
             onChange={onMode}
             showSettingsNote={grants.draft.scope === "everything"}
+            workPolicy={workPolicy ?? undefined}
           />
         </>
       ) : (
@@ -419,6 +484,11 @@ function ConsentForm({
           ? agentWords("consent.finePrint", { agent })
           : agentWords("consent.legacyFinePrint")}
       </p>
+      {changed ? (
+        <p className="notice notice--warn" role="alert">
+          {agentWords("consent.error.verificationChanged")}
+        </p>
+      ) : null}
       {error ? (
         <p className="notice notice--error" role="alert">
           {error}

@@ -77,7 +77,6 @@ import type { HarnessProcessSandbox, HarnessSandboxRunPlan } from "../sandbox/ha
 import { ExecutionContainment, executionScopeVariable } from "./execution-containment.js";
 import {
   RunnerRuntime,
-  agentWorkStoppedSentence,
   harnessProcessEnvironment,
   type RunnerMessageSink,
 } from "./runtime.js";
@@ -6468,7 +6467,6 @@ function configuredRuntime(input: {
     typeof RunnerRuntime
   >[0]["agentHome"]["prepare"];
   readonly watchSupervisor?: ConstructorParameters<typeof RunnerRuntime>[0]["watchSupervisor"];
-  readonly agentWorkStopped?: () => boolean;
 }): RunnerRuntime {
   return runtimeWithLeaseGrants(
     {
@@ -6493,7 +6491,6 @@ function configuredRuntime(input: {
       privateStateDirectory: input.privateStateDirectory ?? testPrivateStateRoot,
       projectContinuationIdentity,
       ...(input.watchSupervisor ? { watchSupervisor: input.watchSupervisor } : {}),
-      ...(input.agentWorkStopped ? { agentWorkStopped: input.agentWorkStopped } : {}),
       agentHome: {
         folder: async ({ path }: { readonly path: string }) => path,
         prepare:
@@ -6665,7 +6662,7 @@ it("creates the attachment directory before launch and drains file work before R
 });
 
 describe("this computer's own view and Stop of its Runs", () => {
-  function blockingRuntime(agentWorkStopped?: () => boolean) {
+  function blockingRuntime() {
     const registry = new HarnessRegistry();
     registry.registerDriver(
       new FakeHarnessDriver("blocking-driver", () => new BlockingHarnessSession()),
@@ -6674,7 +6671,6 @@ describe("this computer's own view and Stop of its Runs", () => {
     const runtime = configuredRuntime({
       environmentId,
       registry,
-      ...(agentWorkStopped ? { agentWorkStopped } : {}),
     });
     return { environmentId, registry, runtime };
   }
@@ -6769,24 +6765,5 @@ describe("this computer's own view and Stop of its Runs", () => {
     }
   });
 
-  it("refuses new agent work, for the Home to retry, while the person has agents stopped here", async () => {
-    let stopped = true;
-    const { environmentId, registry, runtime } = blockingRuntime(() => stopped);
-    const execute = executeCommand(environmentId, "blocking-driver");
-    const sink: RunnerMessageSink = { send: async () => undefined };
-    try {
-      await reconcile(registry, execute);
-      await expect(runtime.handleCommand(execute, sink)).resolves.toEqual({
-        status: "rejected",
-        error: { code: "conflict", message: agentWorkStoppedSentence, retryable: true },
-      });
-      expect(runtime.localActivity()).toEqual([]);
-      stopped = false;
-      await expect(runtime.handleCommand(execute, sink)).resolves.toEqual({ status: "accepted" });
-      expect(runtime.stopRunLocally(execute.context.runId)).toBe(true);
-      await waitUntil(() => runtime.activeRunIds().length === 0);
-    } finally {
-      await runtime.close();
-    }
-  });
+
 });

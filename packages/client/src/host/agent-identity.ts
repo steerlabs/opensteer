@@ -62,7 +62,10 @@ export function agentClaim(name: string, maxLength = agentClaimMaxLength): strin
   const chars = Array.from(flat);
   if (!chars.length) return workWords("who.unnamed");
   return chars.length > maxLength
-    ? `${chars.slice(0, maxLength - 1).join("").trimEnd()}…`
+    ? `${chars
+        .slice(0, maxLength - 1)
+        .join("")
+        .trimEnd()}…`
     : flat;
 }
 
@@ -114,6 +117,42 @@ export function agentWho(input: {
       })),
     };
   }
+  if (recorded && recorded.kind !== "unverified") {
+    const pair = recorded.kind === "platform-and-embedder";
+    const origins: AgentWhoOrigin[] = [
+      {
+        role: "platform",
+        name: recorded.platformName,
+        origin: recorded.platformOrigin,
+        roleLabel: workWords("who.origin.platform"),
+      },
+    ];
+    if (pair)
+      origins.unshift({
+        role: "embedder",
+        name: recorded.embedderName,
+        origin: recorded.embedderOrigin,
+        roleLabel: workWords("who.origin.embedder"),
+      });
+    return {
+      heading: pair
+        ? workWords("who.pair", {
+            embedder: recorded.embedderName,
+            platform: recorded.platformName,
+          })
+        : recorded.platformName,
+      detail: recorded.platformOrigin,
+      verified: withdrawnSince === null,
+      selfAsserted: false,
+      providerId:
+        withdrawnSince === null ? (platformLogos[recorded.platformDirectoryId] ?? null) : null,
+      local,
+      withdrawnSince,
+      warning: workWords("who.consentWarning"),
+      claim: null,
+      origins,
+    };
+  }
   const claim = agentClaim(input.clientName);
   const redirectOrigin = local ? null : originOf(input.redirect);
   return {
@@ -144,9 +183,11 @@ export function agentWho(input: {
  * nothing the client supplied. Not verified: a neutral heading with no mark, and the
  * client's name only in the labelled claim below it.
  */
-export function agentConsentHeading(
-  who: AgentWho,
-): { readonly title: string; readonly mark: boolean; readonly claim: string | null } {
+export function agentConsentHeading(who: AgentWho): {
+  readonly title: string;
+  readonly mark: boolean;
+  readonly claim: string | null;
+} {
   return who.verified
     ? { title: who.heading, mark: true, claim: null }
     : {
@@ -158,7 +199,11 @@ export function agentConsentHeading(
 
 export function agentWhoOriginLine(origin: AgentWhoOrigin): string {
   return origin.name
-    ? workWords("who.namedOrigin", { role: origin.roleLabel, name: origin.name, origin: origin.origin })
+    ? workWords("who.namedOrigin", {
+        role: origin.roleLabel,
+        name: origin.name,
+        origin: origin.origin,
+      })
     : workWords("who.redirectOrigin", { role: origin.roleLabel, origin: origin.origin });
 }
 

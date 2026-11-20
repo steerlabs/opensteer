@@ -55,7 +55,10 @@ export function agentGrantSections(
     readonly mode: ThreadAccessMode;
     readonly onScope: (scope: AgentGrantDraft["scope"]) => void;
     readonly onOpen: (sheet: AgentGrantSheet) => void;
-    readonly onChromeTab: (resource: ReturnType<typeof chromeTabGrantOptions>["options"][number]["resource"], on: boolean) => void;
+    readonly onChromeTab: (
+      resource: ReturnType<typeof chromeTabGrantOptions>["options"][number]["resource"],
+      on: boolean,
+    ) => void;
     readonly onTasks: (on: boolean) => void;
   },
 ): readonly NativeSettingsSection[] {
@@ -155,8 +158,8 @@ export function agentGrantSections(
       ],
       ...(resourcesFooter ? { footer: resourcesFooter } : {}),
     },
-    ...(chrome.needsPairing
-      ? [{ key: "chrome-pairing", title: "", rows: [], footer: { text: agentWords("consent.chromeTabs.repair") } }]
+    ...(chrome.repair
+      ? [{ key: "chrome-pairing", title: "", rows: [], footer: { text: chrome.repair } }]
       : []),
     {
       key: "tasks",
@@ -166,7 +169,7 @@ export function agentGrantSections(
           key: "tasks",
           kind: "toggle",
           label: agentWords("consent.tasks.title"),
-          detail: limits.tasks ?? agentWords("consent.tasks.detail", { agent, home: context.home }),
+          detail: limits.tasks ?? agentWords("consent.tasks.detail", { home: context.home }),
           value: draft.tasks,
           disabled: disabled || (limits.tasks !== null && !draft.tasks),
           onChange: context.onTasks,
@@ -260,7 +263,7 @@ export function agentGrantSheetSections(
             title: "",
             rows: options.map((option) => pluginRow(option, context)),
             footer: {
-              text: `${agentWords("consent.plugins.footer", { agent: context.agent })}${
+              text: `${agentWords("consent.plugins.footer")}${
                 more ? ` ${agentWords("consent.plugins.more")}` : ""
               }`,
             },
@@ -287,7 +290,7 @@ function browserSections(
           kind: "choice",
           multiple: true,
           label: `${agentWords("consent.browser.newProfile")} · ${agentWords("consent.browser.newProfile.badge")}`,
-          detail: agentWords("consent.browser.newProfile.detail", { agent }),
+          detail: agentWords("consent.browser.newProfile.detail"),
           selected: draft.newProfile !== null,
           disabled,
           onPress: () =>

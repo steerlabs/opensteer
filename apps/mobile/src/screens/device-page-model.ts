@@ -69,7 +69,7 @@ export function deviceSwitches(
     : !machine.access?.policy
       ? machine.status === "pending"
         ? "These switches appear once this device has connected."
-        : "Update Opensteer on your Mac to change what your agent can use here."
+        : "Update Opensteer on your Mac to change what your own agents can use here."
       : !options.devicesAvailable && rows.some(({ key }) => key !== "files")
         ? "Update Opensteer on your Mac to change Browser and Apps."
         : null;
@@ -114,13 +114,13 @@ export function deviceRemoval(
     return {
       label: `Sign out and remove this ${options.noun}`,
       title: `Sign out and remove this ${options.noun}?`,
-      message: `Your agent can no longer use this ${options.noun}. Browser profiles kept here are deleted.`,
+      message: `Your own agents can no longer use this ${options.noun}. Browser profiles kept here are deleted.`,
     };
   return {
     label: "Remove",
     title: `Remove ${machine.name}?`,
     message: [
-      "It is signed out and your agent can't use it.",
+      "It is signed out and your own agents can't use it.",
       machine.status === "online" ? null : "It finishes the next time it connects.",
       deviceRemovalProfiles(machine, options.profiles) ??
         "Browser profiles kept on it are deleted.",

@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { createId } from "@opensteer/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { HostClientRequestError } from "@opensteer/client/host";
@@ -125,6 +126,53 @@ async function answer(text: string) {
 const status = () => section("status")!.rows[0] as Extract<NativeSettingsRow, { kind: "status" }>;
 
 describe("one connected agent on the phone", () => {
+  it.each([390, 1440])(
+    "saves a paired Chrome on an active connection after verification is withdrawn at %d px",
+    async (width) => {
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(width);
+      const sourceId = createId("browserSource");
+      const connections = mockConnectedAgents("seeded").connections;
+      const connection = connections.find(({ label }) => label === "ChatGPT")!;
+      const client = new MockHostClient({
+        latencyMs: 0,
+        connections: [{ ...connection, verificationWithdrawnAt: "2026-11-20T11:00:00.000Z" }],
+      });
+      const read = vi.fn(async () => ({
+        ok: true,
+        data: {
+          extensionDirectory: null,
+          sources: [],
+          sites: [],
+          chromeTabs: [{ paired: true, sourceId, computerName: "Work Mac" }],
+        },
+      }));
+      Object.defineProperty(client.rpc, "browser.sources.get", { value: read, configurable: true });
+      const dispatch = vi.spyOn(client, "dispatch");
+      await open(connection.id, client);
+      expect(row("withdrawn", "withdrawn").label).toMatch(/^No longer verified since /u);
+      // Its name is the title; the who rows add only where its access goes.
+      expect(section("who")?.rows.map(({ label }) => label)).toEqual([
+        "Holds the access: ChatGPT · https://chatgpt.com",
+      ]);
+      expect(section("withdrawn")?.footer?.text).toBe("Check its last action or disconnect it.");
+      expect(row("withdrawn", "disconnect").label).toBe("Disconnect ChatGPT");
+      const option = row("resources", sourceId);
+      expect(option.label).toBe("Tabs you share from Chrome on Work Mac");
+      if (option.kind !== "toggle") throw new Error("Expected a Chrome toggle");
+      await act(async () => option.onChange(true));
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "connection.update",
+          grant: {
+            scope: "selected",
+            tasks: false,
+            resources: [{ kind: "chrome-tabs", sourceId }],
+          },
+        }),
+      );
+    },
+  );
+
   it("shows its state, what it can use, its mode, who it says it is, and honest empty activity", async () => {
     await open(trips);
     expect(state.setOptions).toHaveBeenCalledWith({ title: "Trip planner" });

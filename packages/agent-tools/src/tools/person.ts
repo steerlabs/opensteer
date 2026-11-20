@@ -101,7 +101,7 @@ export const ask_person = defineAgentTool({
   opensRequest: true,
   title: "Ask the person",
   description:
-    "Ask the person for a decision or answer only they can give. It reaches Needs you and their devices. Prepare the work first and put it in detail, such as the exact draft or plan, so one answer settles it. The person can always type their own answer instead of an option. While they watch, the call waits for the answer; otherwise it returns pending and their answer later continues this task, even days later. A dismissed question means no: do not ask it again unless something changed. Never ask for passwords, codes or access: Request tools cover those. Refused on a delegation: ask the delegating task. In a connected session, pass taskId and ask one question with choices. Use the page for passwords or codes. Pending means the person is deciding in Needs you. Retry later with the same operationKey and arguments.",
+    "Ask the person for a decision or answer only they can give. It reaches Needs you and their devices. Prepare the work first and put it in detail, such as the exact draft or plan, so one answer settles it. The person can always type their own answer instead of an option. While they watch, the call waits for the answer; otherwise it returns pending and their answer later continues this task, even days later. A dismissed question means no: do not ask it again unless something changed. Never ask for passwords, codes or access: Request tools cover those. Refused on a delegation: ask the delegating task. In a connected session, pass taskId and ask one question with choices. Use the page for passwords or codes.",
   input: z.strictObject({
     title: z
       .string()

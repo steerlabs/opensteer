@@ -53,7 +53,10 @@ export class TabStore implements TabsReadModel {
   get strip(): TabStrip {
     if (this.#strip && this.#stripOf?.layout === this.#layout && this.#stripOf.rows === this.#rows)
       return this.#strip;
-    this.#strip = tabStrip(this.#layout, this.#rows, this.#strip ?? undefined);
+    const sharedTabs = [...this.#rows.values()].flatMap((tab) =>
+      tab.sharedByPerson ? [tab.tabId] : [],
+    );
+    this.#strip = tabStrip(this.#layout, this.#rows, this.#strip ?? undefined, sharedTabs);
     this.#stripOf = { layout: this.#layout, rows: this.#rows };
     return this.#strip;
   }

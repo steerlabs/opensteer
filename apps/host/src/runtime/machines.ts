@@ -495,13 +495,11 @@ function projectDeviceMachines(input: MachineProjectionInput): readonly MachineL
     const physical = screen
       ? !screen.attached
         ? available(false, "not-connected")
-        : screenStopped
-          ? available(false, "driver-stopped")
-          : screenAsleep
-            ? available(false, "driver-asleep")
-            : !screenConnected
-              ? available(false, "driver-offline")
-              : (screenStatus?.availability ?? available(false, "unreported"))
+        : screenAsleep
+          ? available(false, "driver-asleep")
+          : !screenConnected
+            ? available(false, "driver-offline")
+            : (screenStatus?.availability ?? available(false, "unreported"))
       : self?.status !== "online"
         ? available(false, offlineReason)
         : !android || phoneComputerUse.state === "ready"
@@ -545,7 +543,7 @@ function projectDeviceMachines(input: MachineProjectionInput): readonly MachineL
             ? { state: "disabled", reason: { kind: "access-off" } }
             : !phoneAccess
               ? available(false, "approval-required")
-              : physical,
+              : screenStopped ? available(false, "driver-stopped") : physical,
           view: !phoneAccess
             ? available(false, "approval-required")
             : screen && screenStatus?.ownerViewVersion !== 1 && physical.state === "ready"

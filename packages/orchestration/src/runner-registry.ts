@@ -25,6 +25,7 @@ import {
   attemptStopStateCapability,
   runnerPowerStateCapability,
   runnerAgentStopCapability,
+  runnerRestartingCloseCode,
   type HostAppRequest,
   type HostHomeFileRequest,
   type HostOutputImageUpload,
@@ -124,7 +125,8 @@ export type RunnerStreamLossReason =
   | "revoked"
   | "superseded"
   | "transport-disconnected"
-  | "primary-lost";
+  | "primary-lost"
+  | "device-restarting";
 
 /**
  * What the caller of `dispatch` learns. The connection fence is absent because
@@ -712,6 +714,7 @@ export class RunnerRegistry {
     this.#assertNewestGeneration(identity);
     const settled = deferred<void>();
     const now = this.#now();
+    const previouslyStopped = this.#agentsStopped.has(identity.runnerId);
     const connection: RunnerConnection = {
       attached: false,
       auxiliaryStreams: new Map(),
@@ -756,11 +759,13 @@ export class RunnerRegistry {
       observedRunIds: new Set(),
       observedTriggerOccurrenceIds: new Set(),
       sleepAnnouncedAtMs: undefined,
-      agentsStoppedAtMs: undefined,
+      agentsStoppedAtMs:
+        identity.agentsStoppedSince && identity.capabilities.includes(runnerAgentStopCapability)
+          ? Math.min(Date.parse(identity.agentsStoppedSince), now)
+          : undefined,
     };
     connection.leaseTimer = this.#leaseTimer(connection);
     this.#asleep.delete(identity.runnerId);
-    // A Runner still stopped says so again on this connection.
     this.#agentsStopped.delete(identity.runnerId);
     this.#byRunner.set(identity.runnerId, connection);
     this.#byPeer.set(peer.id, connection);
@@ -818,6 +823,8 @@ export class RunnerRegistry {
     if (this.#hooks.onRegistered) {
       void this.#runHook(() => this.#hooks.onRegistered?.(identity)).catch(() => undefined);
     }
+    if (identity.agentsStoppedSince === null && previouslyStopped)
+      this.#hooks.onAgentWork?.(identity, null);
     return identity;
   }
   #assertNewestGeneration(identity: Pick<RunnerIdentity, "connectionGeneration" | "runnerId">) {
@@ -1087,10 +1094,10 @@ export class RunnerRegistry {
     stream.leaseTimer = this.#auxiliaryLeaseTimer(stream);
     return auxiliarySnapshot(stream);
   }
-  detachAuxiliary(peer: RunnerAuxiliaryPeer): void {
+  detachAuxiliary(peer: RunnerAuxiliaryPeer, reason: RunnerStreamLossReason = "transport-disconnected"): void {
     const stream = this.#auxiliaryByPeer.get(peer.id);
     if (!stream || stream.peer !== peer) return;
-    this.#removeAuxiliary(stream, "transport-disconnected");
+    this.#removeAuxiliary(stream, reason);
   }
   #removeAuxiliary(stream: AuxiliaryStream, reason: RunnerStreamLossReason): void {
     if (stream.detached) return;
@@ -2120,6 +2127,10 @@ export class RunnerRegistry {
     const { beforeAck, beforeSend, connectionGeneration, fenceRequestSend, onNotAdmitted } =
       options;
     RunnerCommandSchema.parse(command);
+    const startsWork = command.type === "run.execute" || command.type === "trigger.execute" || command.type === "watch.reconcile";
+    const refuseStopped = () => new CommandDispatchError("Agents are stopped on this computer.", "retry", {
+      cause: { code: "conflict", reason: "computer_stopped", retryable: true, message: "Agents are stopped on this computer." },
+    });
     if (
       command.type === "request.resolve" &&
       (!fenceRequestSend || connectionGeneration === undefined)
@@ -2132,6 +2143,7 @@ export class RunnerRegistry {
         current.identity.connectionGeneration === connectionGeneration)
         ? current
         : undefined;
+    if (startsWork && connection?.agentsStoppedAtMs !== undefined) throw refuseStopped();
     if (connection?.pendingAcks.has(command.commandId))
       throw new CommandDispatchError("Runner command is already in flight", "retry");
     let runCancellation:
@@ -2292,6 +2304,7 @@ export class RunnerRegistry {
         ) {
           throw new CommandDispatchError("Runner is offline", "retry");
         }
+        if (startsWork && connection.agentsStoppedAtMs !== undefined) throw refuseStopped();
         throwIfAborted(signal, "Aborted");
         sent = true;
         const sending = prepared ? prepared() : connection.peer.send(frame);
@@ -3129,9 +3142,13 @@ export class RunnerRegistry {
     this.#canceledRuns.delete(runId);
     if (released) this.#hooks.onRunDispatchAvailable?.();
   }
-  disconnect(peer: RunnerPeer): void {
+  disconnect(peer: RunnerPeer, restarting = false): void {
     const connection = this.#byPeer.get(peer.id);
-    if (connection) void this.#disconnect(connection, new Error("Runner disconnected"));
+    if (connection) void this.#disconnect(
+      connection,
+      new Error(restarting ? "The device is restarting." : "Runner disconnected"),
+      restarting ? runnerRestartingCloseCode : 1001,
+    );
   }
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
@@ -3215,7 +3232,11 @@ export class RunnerRegistry {
       // end saying the machine went away rather than that it was removed.
       this.#removeAuxiliary(
         stream,
-        code === runnerIdentityRevokedCloseCode ? "revoked" : "primary-lost",
+        code === runnerIdentityRevokedCloseCode
+          ? "revoked"
+          : code === runnerRestartingCloseCode
+            ? "device-restarting"
+            : "primary-lost",
       );
       stream.peer.close(code, error.message);
     }

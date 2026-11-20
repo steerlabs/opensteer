@@ -63,6 +63,7 @@ type ChromeSource = {
 };
 type Share = {
   info: BrowserSourceTabShared;
+  readonly generation: string;
   readonly createdAt: string;
   updatedAt: string;
   readonly source: ChromeSource;
@@ -257,6 +258,11 @@ export class ChromeSharedTabs {
           }))
         : [],
     );
+  }
+
+  shareGeneration(tabId: string, sourceId: BrowserSourceId): string | null {
+    const share = this.#shares.get(tabId);
+    return share?.source.sourceId === sourceId ? share.generation : null;
   }
 
   async issueStandardCdpTicket(input: {
@@ -535,14 +541,7 @@ export class ChromeSharedTabs {
       execution.actor !== "person" &&
       ((execution.runId && !execution.runMode) ||
         (!execution.agentConnection && execution.mode !== "full-access") ||
-        (execution.agentConnection &&
-          !list &&
-          executionAccess(execution) !== "read-write" &&
-          !(
-            execution.subject.kind === "binding" &&
-            execution.subject.bindingId.startsWith("session:") &&
-            execution.mode === "approval-required"
-          )))
+        (execution.agentConnection && !list && executionAccess(execution) !== "read-write"))
     )
       throw forbidden("This task's access mode does not allow shared Chrome control.");
     if (
@@ -727,6 +726,7 @@ export class ChromeSharedTabs {
     const createdAt = new Date().toISOString();
     const share = {
       info,
+      generation: randomUUID(),
       group,
       source,
       createdAt,

@@ -415,7 +415,14 @@ export function createPersonalReads(
       );
       return rpcSuccess(
         hostApi["personal.shell.get"].success.parse(
-          cut.kind === "snapshot" ? cut.snapshot : unavailable(),
+          cut.kind === "snapshot"
+            ? {
+                ...cut.snapshot,
+                ...(dependencies.workHome
+                  ? { effectiveWorkPolicy: await dependencies.workHome.read() }
+                  : {}),
+              }
+            : unavailable(),
         ),
       );
     },

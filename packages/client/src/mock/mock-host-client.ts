@@ -56,6 +56,10 @@ import {
   type IphoneScreenDetachCommand,
 } from "@opensteer/protocol";
 import { NeedsYouPageSchema } from "@opensteer/protocol";
+import {
+  agentConnectionConsentRefusals,
+  agentConnectionVerificationChangedMessage,
+} from "@opensteer/protocol";
 import { clearRunPageViews } from "../host/run-page-memory.js";
 import { clearRunPlacePictures } from "../host/run-place-picture.js";
 import { localReference } from "../references/local.js";
@@ -1865,6 +1869,15 @@ export interface MockHostClientOptions {
   sessions?: readonly AuthSessionSummary[];
   connections?: readonly import("@opensteer/protocol").AgentConnection[];
   connectionConsent?: import("@opensteer/protocol").AgentConnectionConsent;
+  /**
+   * The consent as the Home presents it once its verification changes: the first approval is
+   * refused for the change, and the request reads like this from then on.
+   */
+  connectionConsentChange?: import("@opensteer/protocol").AgentConnectionConsent;
+  /** The work policy `personal.shell.get` reports; none on a personal Home. */
+  workPolicy?: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy;
+  /** Which paired Chromes can share tabs with a connected agent, as `browser.sources.get` says. */
+  chromeTabs?: import("../host/connected-agent-options.js").ChromeTabGrantCatalog;
   /** Whether the connection reads report grants support. Defaults to true. */
   grantsAvailable?: boolean;
   /** The Opensteer website this Home names, where Account billing happens; none by default. */
@@ -2251,7 +2264,8 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     },
     "browser.password-sign-in.get": async ({ requestId }) =>
       rpcSuccess(client.passwordSignInCard(requestId)),
-    "browser.sources.get": async () => rpcSuccess(client.chrome.state()),
+    "browser.sources.get": async () =>
+      rpcSuccess({ ...client.chrome.state(), ...client.chromeTabs }),
     "browser.sources.inspect": async (input) => {
       try {
         return rpcSuccess(client.chrome.inspect(input.url));
@@ -2364,7 +2378,10 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       return rpcSuccess({ favicon: await client.places.icon(tabId, input.iconRef, row) });
     },
     "personal.shell.get": async ({ selectedThreadId }) =>
-      rpcSuccess(mockScopedShell(client.getSnapshot(), mockThread, selectedThreadId)),
+      rpcSuccess({
+        ...mockScopedShell(client.getSnapshot(), mockThread, selectedThreadId),
+        ...(client.workPolicy ? { effectiveWorkPolicy: client.workPolicy } : {}),
+      }),
     "thread.snapshot.get": async ({ threadId, nodeId }) => {
       const detail = mockScopedDetail(
         client.getSnapshot(),
@@ -4964,8 +4981,8 @@ export class MockHostClient implements HostClient {
   }
 
   /** Connected agents working tasks themselves, in each state, with a tab each uses. */
-  mockAgentWork(): void {
-    this.#state.mockAgentWork();
+  mockAgentWork(options: { readonly long?: boolean } = {}): void {
+    this.#state.mockAgentWork(options);
   }
 
   /** The person's Stop on a connected agent's task, bound to the session they saw. */
@@ -5887,6 +5904,8 @@ class MockHostState {
   readonly grantsAvailable: boolean;
   private connections: import("@opensteer/protocol").AgentConnection[];
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
+  readonly chromeTabs: import("../host/connected-agent-options.js").ChromeTabGrantCatalog;
+  readonly workPolicy: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null;
   private connectionDecision: { requestId: string; fingerprint: string } | null = null;
   connectionConsent(requestId: string) {
     const consent = this.pendingConnectionConsent;
@@ -5899,8 +5918,24 @@ class MockHostState {
       throw mockNotFound("This agent connection request expired. Start again from the agent.");
     return consent;
   }
+  #consentChange: import("@opensteer/protocol").AgentConnectionConsent | null;
   authorizeConnection(command: Extract<HostApiCommand, { type: "connection.authorize" }>) {
+    if (command.decision.kind === "approve" && this.#consentChange) {
+      this.pendingConnectionConsent = this.#consentChange;
+      this.#consentChange = null;
+    }
     const consent = this.connectionConsent(command.requestId);
+    if (
+      command.decision.kind === "approve" &&
+      consent.verificationSnapshot &&
+      command.decision.verificationSnapshot !== consent.verificationSnapshot
+    )
+      throw new HostClientRequestError({
+        code: "conflict",
+        reason: agentConnectionConsentRefusals.verificationChanged,
+        message: agentConnectionVerificationChangedMessage,
+        status: 409,
+      });
     const fingerprint = JSON.stringify(command.decision);
     if (this.connectionDecision?.requestId === command.requestId) {
       if (this.connectionDecision.fingerprint !== fingerprint)
@@ -5932,16 +5967,17 @@ class MockHostState {
       completionPath: `/oauth/mcp/complete?request=${command.requestId}`,
     };
   }
+  #agentOperations: ReturnType<typeof mockAgentWork>["operations"] = [];
+
   /** The preview's direct operations, newest first, as the Home's activity reads page them. */
   agentActivity(filter: { readonly threadId?: string; readonly connectionId?: string }) {
-    const sessions = Object.entries(this.snapshot.agentWork?.sessions ?? {});
-    const operations = sessions
+    const operations = this.#agentOperations
       .filter(
-        ([threadId, slot]) =>
-          (filter.threadId === undefined || threadId === filter.threadId) &&
-          (filter.connectionId === undefined || slot.connection.id === filter.connectionId),
+        ({ operation, connectionId }) =>
+          (filter.threadId === undefined || operation.taskId === filter.threadId) &&
+          (filter.connectionId === undefined || connectionId === filter.connectionId),
       )
-      .flatMap(([, slot]) => slot.operations ?? [])
+      .map(({ operation }) => operation)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
     return { operations: operations.slice(0, 50), nextBefore: null };
   }
@@ -6799,6 +6835,9 @@ class MockHostState {
       };
     this.connections = [...(options.connections ?? [])];
     this.pendingConnectionConsent = options.connectionConsent ?? null;
+    this.chromeTabs = options.chromeTabs ?? {};
+    this.workPolicy = options.workPolicy ?? null;
+    this.#consentChange = options.connectionConsentChange ?? null;
     for (const p of options.agentPlugins ?? []) {
       const id = crypto.randomUUID();
       const at = new Date(0).toISOString();
@@ -7372,13 +7411,19 @@ class MockHostState {
   }
 
   stopAgentSession(threadId: string, sessionId: string): boolean {
-    const slot = this.snapshot.agentWork?.sessions?.[threadId];
+    const slot = this.snapshot.threads.find(({ id }) => id === threadId)?.externalWork;
     if (!slot || slot.sessionId !== sessionId || slot.status === "ended") return false;
     this.update({
       ...this.snapshot,
       threads: this.snapshot.threads.map((thread) =>
         thread.id === threadId
-          ? { ...thread, status: "idle", agentSessionId: null, pendingRequests: 0 }
+          ? {
+              ...thread,
+              status: "idle",
+              agentSessionId: null,
+              pendingRequests: 0,
+              externalWork: { ...slot, status: "ended", endReason: "stopped" },
+            }
           : thread,
       ),
       requests: {
@@ -7393,18 +7438,11 @@ class MockHostState {
             : request,
         ),
       },
-      agentWork: {
-        ...this.snapshot.agentWork,
-        sessions: {
-          ...this.snapshot.agentWork?.sessions,
-          [threadId]: { ...slot, status: "ended", endReason: "stopped" },
-        },
-      },
     });
     return true;
   }
 
-  mockAgentWork(): void {
+  mockAgentWork(options: { readonly long?: boolean } = {}): void {
     const template = this.snapshot.threads.find(({ purpose }) => purpose === "task");
     const user = this.snapshot.user;
     if (!template || !user) throw new Error("No task to copy.");
@@ -7413,7 +7451,18 @@ class MockHostState {
       userId: user.id,
       template,
       connections: this.connections,
+      ...(options.long ? { long: true } : {}),
     });
+    this.#agentOperations = seed.operations;
+    this.connections = this.connections.map((connection) =>
+      connection.label === "ChatGPT"
+        ? {
+            ...connection,
+            verificationWithdrawnAt: new Date(this.now().getTime() - 3 * 86_400_000).toISOString(),
+          }
+        : connection,
+    );
+    this.tabCatalog.markSharedFromChrome(TabIdSchema.parse("mock-tab-0-0"));
     const at = this.now().toISOString();
     // The working agent uses a tab of its own; the waiting one, a tab the person shares.
     const placed: Readonly<Record<string, string>> = {
@@ -7448,7 +7497,6 @@ class MockHostState {
       threads: [...this.snapshot.threads, ...seed.threads],
       requests: { ...this.snapshot.requests, ...seed.requests } as typeof this.snapshot.requests,
       browserSessions,
-      agentWork: { ...seed.agentWork, sharedTabs: ["mock-tab-0-0"] },
     });
   }
 

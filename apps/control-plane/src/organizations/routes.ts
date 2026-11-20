@@ -4,6 +4,8 @@ import {
   accountOrganizationsPath,
   organizationWorkPath,
   workAuditFlushPath,
+  workPolicyChangedPath,
+  WorkPolicyChangedClaimsSchema,
   ControlPlaneAccountIdSchema,
   MyOrganizationsResponseSchema,
   OrganizationAdminResponseSchema,
@@ -189,15 +191,16 @@ export function registerOrganizationRoutes(
         ),
       );
     });
-    privateApp.put(`${orgPath}/policy`, async (request) =>
-      WorkPolicyUpdateResponseSchema.parse(
-        await organizations.setPolicy(
-          orgParams.parse(request.params).organizationId,
-          await writer(request),
-          OrganizationPolicyRequestSchema.parse(request.body),
-        ),
-      ),
-    );
+    privateApp.put(`${orgPath}/policy`, async (request) => {
+      const { organizationId } = orgParams.parse(request.params);
+      const result = await organizations.setPolicy(
+        organizationId,
+        await writer(request),
+        OrganizationPolicyRequestSchema.parse(request.body),
+      );
+      await notifyWorkPolicy({ ...options, workHomeFetch }, organizationId);
+      return WorkPolicyUpdateResponseSchema.parse(result);
+    });
     privateApp.get(`${assignmentPath}/audit`, async (request, reply) => {
       const { organizationId, assignmentId } = assignmentParams.parse(request.params);
       const { after } = WorkAuditExportQuerySchema.parse(request.query);
@@ -306,7 +309,7 @@ export async function offboardWorkAssignment(
       const { token } = await options.auth.api.signJWT({ body: { payload: claims } });
       const response = await options.workHomeFetch(new URL(workAuditFlushPath, home.origin), {
         method: "POST",
-        redirect: "error",
+        redirect: "manual",
         credentials: "omit",
         cache: "no-store",
         signal: AbortSignal.timeout(2_000),
@@ -320,4 +323,48 @@ export async function offboardWorkAssignment(
     }
   }
   return organizations.finishOffboard(organizationId, account, assignmentId, confirmed);
+}
+
+export async function notifyWorkPolicy(
+  options: {
+    readonly organizations: OrganizationStore;
+    readonly auth: ControlPlaneAuth;
+    readonly publicOrigin: URL;
+    readonly workHomeFetch: typeof globalThis.fetch;
+  },
+  organizationId: OrganizationId,
+): Promise<void> {
+  const signal = AbortSignal.timeout(2_000);
+  try {
+    const homes = await options.organizations.policyNoticeHomes(organizationId);
+    for (let offset = 0; offset < homes.length && !signal.aborted; offset += 8) {
+      await Promise.allSettled(
+        homes.slice(offset, offset + 8).map(async (home) => {
+          const origin = new URL(`https://${home.hostname}`);
+          const iat = Math.floor(Date.now() / 1_000);
+          const claims = WorkPolicyChangedClaimsSchema.parse({
+            tokenUse: "opensteer-work-policy-changed",
+            iss: options.publicOrigin.origin,
+            aud: origin.origin,
+            assignmentId: home.assignmentId,
+            deploymentId: home.deploymentId,
+            iat,
+            exp: iat + 30,
+          });
+          const assertion = await signAccountDocument(options.auth, claims);
+          const response = await options.workHomeFetch(new URL(workPolicyChangedPath, origin), {
+            method: "POST",
+            credentials: "omit",
+            redirect: "manual",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ assertion }),
+            signal,
+          });
+          await response.body?.cancel();
+        }),
+      );
+    }
+  } catch {
+    // The Home also reads periodically, including after a lost notice.
+  }
 }

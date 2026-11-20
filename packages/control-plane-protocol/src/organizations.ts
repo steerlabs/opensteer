@@ -136,7 +136,7 @@ export const WorkAuditRecordSchema = z.discriminatedUnion("kind", [
     policyRevision: sequence,
     decidedBy: z.enum(["owner", "policy", "device", "system"]),
     handedOffAt: instant.nullable(),
-    outcome: z.enum(["allowed", "denied", "completed", "failed", "stopped"]),
+    outcome: z.enum(["allowed", "denied", "completed", "failed", "stopped", "unknown"]),
   }),
   z.strictObject({ ...recordBase, kind: z.literal("request.opened"), ...request }),
   z.strictObject({
@@ -166,12 +166,15 @@ export const WorkAuditRecordSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 export type WorkAuditRecord = z.infer<typeof WorkAuditRecordSchema>;
-export const workAuditRecordKinds = WorkAuditRecordSchema.options.map((record) => record.shape.kind.value);
+export const workAuditKindValues = WorkAuditRecordSchema.options.map(
+  (record) => record.shape.kind.value,
+);
 export const EffectiveWorkPolicySchema = WorkPolicySchema.extend({
   organizationName: OrganizationNameSchema,
   appliedRevision: sequence,
-  auditRecordKinds: z.array(z.enum(workAuditRecordKinds)),
+  auditRecordKinds: z.array(z.enum(workAuditKindValues)),
 });
+export const EffectiveWorkPolicyViewSchema = z.object(EffectiveWorkPolicySchema.shape);
 export type EffectiveWorkPolicy = z.infer<typeof EffectiveWorkPolicySchema>;
 export const WorkAuditPushSchema = z
   .strictObject({

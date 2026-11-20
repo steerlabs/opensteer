@@ -1,6 +1,5 @@
 import type { IphoneRunnerPort } from "@opensteer/protocol/iphone-bridge";
 import { fixture as iphoneFixture, ownerA, ownerB } from "../iphone/test-support.js";
-import { openAgentAdmission, type AgentAdmission } from "../app/agent-admission.js";
 import { MacOwnerSourceSchema, DisplayStreamIdSchema } from "@opensteer/protocol";
 import type {
   ComputerUseHelperEvent,
@@ -1051,7 +1050,6 @@ function openAnswer(params: unknown): unknown {
 async function bridgeHarness(
   options: {
     readonly iphone?: IphoneRunnerPort;
-    readonly admission?: AgentAdmission;
     readonly graceMs?: number;
     readonly ownerInputVersion?: 2 | undefined;
     readonly passwords?: PasswordsAuthorityPort;
@@ -1118,7 +1116,6 @@ async function bridgeHarness(
       ...(options.passwords ? { passwords: options.passwords } : {}),
       helper,
       ...(options.iphone ? { iphone: options.iphone } : {}),
-      ...(options.admission ? { admission: options.admission } : {}),
       now: () => clock.at,
       onDataPermissionRequired: permissionRequired,
       ownership,
@@ -1250,37 +1247,20 @@ async function bridgeHarness(
   };
 }
 
-it("hands an iPhone call the Stop of the admission it was let in under, whatever opens after", async () => {
-  const admission = openAgentAdmission();
-  const held = Promise.withResolvers<void>();
-  const seen: AbortSignal[] = [];
-  const iphone: IphoneRunnerPort = {
-    connect: () => ({
-      request: async (_method, _params, options) => {
-        if (options.signal) seen.push(options.signal);
-        await held.promise;
-        // What the iPhone service does at the last moment before the native call.
-        if (options.signal?.aborted) throw new Error("cancelled");
-        return {} as never;
-      },
-      close: () => undefined,
-    }),
-  };
-  const h = await bridgeHarness({ iphone, admission });
-  const connected = await h.connect(h.token, undefined, undefined, true);
-  const observing = connected.call(1, "iphone.observe", {
-    deviceId: "dev_1",
-    driverGeneration: 1,
-    sessionId: "session",
-    runId: "run",
-    includeScreenshot: true,
+it("waits for the worker's agent sessions to close before confirming its disconnect", async () => {
+  const h = await bridgeHarness();
+  const runner = await h.connect(h.token);
+  const sessionId = sessionA;
+  h.reply("session.open", openAnswer);
+  await expect(
+    runner.call(1, "session.open", { sessionId, threadTitle: null }),
+  ).resolves.toMatchObject({
+    result: { sessionId },
   });
-  await vi.waitFor(() => expect(seen).toHaveLength(1));
-  admission.close();
-  admission.reopen();
-  held.resolve();
-  expect(seen[0]?.aborted).toBe(true);
-  await expect(observing).resolves.toMatchObject({ error: expect.anything() });
+  const confirmed = h.server.workerDisconnected();
+  runner.close();
+  await expect(confirmed).resolves.toBe(true);
+  expect(h.calls).toContainEqual(["session.close", { sessionId }]);
 });
 
 it("requires iPhone opt-in and fences slot and generation on the shared bridge", async () => {

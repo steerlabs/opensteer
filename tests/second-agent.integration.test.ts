@@ -333,10 +333,6 @@ integration("a second agent on the person's computer", () => {
       const address = await browserServer.start();
       stack = await startPersonalRuntime({
         databaseUrl,
-        // The Home's own errors, so an internal failure in what an agent was told is explained.
-        hostLog: (line) => {
-          if (/"level":(50|60)/u.test(line)) console.error(line.slice(0, 4_000));
-        },
         agentHome: { computerId: runnerId, path: join(scratch, "workspace") },
         browser: {
           bridgeToken,
@@ -696,11 +692,9 @@ integration("a second agent on the person's computer", () => {
         { code: "print(1)", profileId: otherProfile.id },
         { code: "print(1)", profileId: createId("browserProfile") },
       );
-      await sameAsAbsent(
-        "tab_open",
-        { target: { kind: "page", profileId: otherProfile.id, url: siteOrigin.href } },
-        { target: { kind: "page", profileId: createId("browserProfile"), url: siteOrigin.href } },
-      );
+      const { tools } = await self.client.listTools();
+      expect(tools.map(({ name }) => name)).not.toContain("tab_open");
+      expect(tools.map(({ name }) => name)).not.toContain("tab_close");
     }
     // Inside A's own script, B's tab is not there to list or bind.
     const [tabB] = work.b.tabs;
@@ -768,15 +762,15 @@ integration("a second agent on the person's computer", () => {
     });
     await decide(script, "refuse");
     const refusal = failure(await refusedCall);
-    expect(refusal.code).toBe("forbidden");
+    // The code an outside client receives for a refusal, and the reason in words it can act on.
+    expect(refusal).toMatchObject({
+      code: "declined_by_person",
+      message: "The person did not allow it.",
+    });
     expect(site.hits.some(({ path }) => path === refusedProbe)).toBe(false);
   }, 180_000);
 
-  // The fixed wording is "Run a script in {profile}?" and "Let {agent} take direct control of
-  // {profile}?" with "Allow once": AgentSessionService's directOperationAction still titles them
-  // "Run a browser script in …" / "Connect directly to …", says "A connected agent" rather than
-  // the agent's name, and the Request's choice reads "Allow".
-  it.fails(
+  it(
     "asks in the fixed words, naming the agent",
     async () => {
       const call = a.call("browser_use", { code: `print("named")` });

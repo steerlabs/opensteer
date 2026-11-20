@@ -10,13 +10,13 @@ import {
   type Request,
 } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
-import type { AgentSessionSlot, AgentWorkSlots, SessionConnection } from "../host/agent-work.js";
+import type { AgentSessionSlot, SessionConnection } from "../host/agent-work.js";
 import type { ThreadSummary } from "../host/client.js";
 
 /**
  * Connected agents working tasks themselves (`?mock-agent-work`): one task working, one
  * waiting on the person's answer, one the person stopped, and one that ended when its agent
- * was disconnected. The facts no Home reports yet ride the snapshot's `agentWork` slots.
+ * was disconnected. `?mock-agent-work=long` gives the waiting one long names and no reason.
  */
 export const mockAgentWorkThreads = {
   working: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-0000000000a1"),
@@ -51,10 +51,12 @@ export function mockAgentWork(input: {
   readonly userId: string;
   readonly template: ThreadSummary;
   readonly connections: readonly AgentConnection[];
+  /** Long profile, device, tab and task names, and a Request without the agent's reason. */
+  readonly long?: boolean;
 }): {
   readonly threads: readonly ThreadSummary[];
   readonly requests: Readonly<Record<string, readonly Request[]>>;
-  readonly agentWork: AgentWorkSlots;
+  readonly operations: readonly { connectionId: string; operation: AgentOperationView }[];
 } {
   const at = (minutesAgo: number) =>
     new Date(input.now.getTime() - minutesAgo * 60_000).toISOString();
@@ -95,6 +97,9 @@ export function mockAgentWork(input: {
   const errand = connectionOf(input.connections, "Errand");
   const shop = connectionOf(input.connections, "Shop helper");
   const lisbon = profile("Travel");
+  const shopping = input.long
+    ? "Household shopping and weekly groceries (shared with family)"
+    : "Shopping";
   const slots: Record<string, AgentSessionSlot> = {
     [mockAgentWorkThreads.working]: {
       sessionId: sessions.working,
@@ -173,7 +178,7 @@ export function mockAgentWork(input: {
           sessions.waiting,
           {
             tool: "tab_list",
-            target: profile("Shopping"),
+            target: profile(shopping),
             effect: "read",
             decision: { by: "structural-read" },
           },
@@ -184,7 +189,7 @@ export function mockAgentWork(input: {
           sessions.waiting,
           {
             tool: "browser_use",
-            target: profile("Shopping"),
+            target: profile(shopping),
             decision: null,
             outcome: null,
             state: "pending",
@@ -268,10 +273,25 @@ export function mockAgentWork(input: {
     askedAt: at(minutesAgo),
     doneAt: null,
     agentSessionId,
+    externalWork: {
+      sessionId: AgentSessionIdSchema.parse(slots[id]!.sessionId),
+      connection: slots[id]!.connection,
+      status: slots[id]!.status,
+      endReason: slots[id]!.endReason,
+    },
   });
   const calls =
     "const page = await tab('Shopping');\nawait page.click('Add to cart');\nawait page.click('Place order');";
   const request = RequestSchema.parse({
+    agentOperation: {
+      operationId: "aop_00000000-0000-4000-8000-000000000107",
+      connectionId: grok.id,
+      summary: `A connected agent wants to run a browser script in ${shopping} on Studio Mac.`,
+      calls,
+      agentReason: input.long ? null : "Buy the $12 phone case you asked for.",
+      target: profile(shopping),
+      decisionFieldId: "operation-decision",
+    },
     callId: `operation:aop_00000000-0000-4000-8000-000000000107:mock`,
     cancellationReason: null,
     createdAt: at(1),
@@ -285,14 +305,14 @@ export function mockAgentWork(input: {
     payload: { kind: "person.question" },
     presentation: {
       kind: "form",
-      title: "Allow browser_use on Shopping?",
-      detail: `A connected agent wants to run browser_use on Shopping on Studio Mac.\n\nWhat it will run:\n${calls}\n\nThe agent's own reason (its words, not checked): Buy the $12 phone case you asked for.`,
+      title: `Run a browser script in ${shopping}?`,
+      detail: `A connected agent wants to run a browser script in ${shopping} on Studio Mac.\n\nWhat it will run:\n${calls}${input.long ? "" : "\n\nThe agent's own reason (its words, not checked): Buy the $12 phone case you asked for."}`,
       fields: [
         {
           id: "operation-decision",
           prompt: "Allow this once?",
           choices: [
-            { label: "Allow", value: "allow" },
+            { label: "Allow once", value: "allow" },
             { label: "Don't allow", value: "deny" },
           ],
           custom: false,
@@ -318,28 +338,22 @@ export function mockAgentWork(input: {
         0,
         sessions.working,
       ),
-      task(mockAgentWorkThreads.waiting, "Buy the phone case", "waiting", 4, 1, sessions.waiting),
+      task(
+        mockAgentWorkThreads.waiting,
+        input.long
+          ? "Buy the replacement phone case and a screen protector before the trip on Friday"
+          : "Buy the phone case",
+        "waiting",
+        4,
+        1,
+        sessions.waiting,
+      ),
       task(mockAgentWorkThreads.stopped, "Renew the parking permit", "idle", 90),
       task(mockAgentWorkThreads.ended, "Compare running shoes", "idle", 45),
     ],
     requests: { [mockAgentWorkThreads.waiting]: [request] },
-    agentWork: {
-      sessions: slots,
-      requests: {
-        [mockAgentOperationRequestId]: {
-          operationId: "aop_00000000-0000-4000-8000-000000000107",
-          connection: grok,
-          summary: "Grok wants to run a script on Shopping on Studio Mac.",
-          calls,
-          agentReason: "Buy the $12 phone case you asked for.",
-          target: profile("Shopping"),
-        },
-      },
-      withdrawn: {
-        [connectionOf(input.connections, "ChatGPT").id]: new Date(
-          input.now.getTime() - 3 * 86_400_000,
-        ).toISOString(),
-      },
-    },
+    operations: Object.values(slots).flatMap(({ operations, connection }) =>
+      (operations ?? []).map((operation) => ({ connectionId: connection.id, operation })),
+    ),
   };
 }

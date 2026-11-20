@@ -1,3 +1,4 @@
+import { quitCompletelyConfirmation, type QuitConfirmation } from "./background-mode.js";
 import type { ShutdownLog } from "./desktop-shutdown.js";
 
 export interface QuitActions {
@@ -12,20 +13,32 @@ export interface QuitActions {
  * shutdown. Termination macOS starts and SIGTERM never come through here.
  */
 export class DesktopQuitRouting {
-  readonly #shutdown: { readonly requested: boolean; request(reason: string): void };
+  readonly #shutdown: {
+    readonly requested: boolean;
+    readonly signal: AbortSignal;
+    request(reason: string): void;
+  };
   readonly #hideWindows: () => void;
   readonly #log: ShutdownLog;
+  readonly #confirm: (confirmation: QuitConfirmation, signal: AbortSignal) => Promise<boolean>;
+  #earlyQuestion: Promise<void> | null = null;
   #mode: { quitRequested(): void; quitCompletely(): Promise<boolean> } | null = null;
   #quitBeforeStart = false;
 
   constructor(options: {
-    readonly shutdown: { readonly requested: boolean; request(reason: string): void };
+    readonly shutdown: {
+      readonly requested: boolean;
+      readonly signal: AbortSignal;
+      request(reason: string): void;
+    };
     readonly hideWindows: () => void;
     readonly log: ShutdownLog;
+    readonly confirm: (confirmation: QuitConfirmation, signal: AbortSignal) => Promise<boolean>;
   }) {
     this.#shutdown = options.shutdown;
     this.#hideWindows = options.hideWindows;
     this.#log = options.log;
+    this.#confirm = options.confirm;
   }
 
   readonly actions: QuitActions = {
@@ -39,8 +52,23 @@ export class DesktopQuitRouting {
       this.#hideWindows();
     },
     completely: () => {
+      if (this.#shutdown.requested) return;
       if (!this.#mode) {
-        this.#shutdown.request("quit-completely");
+        const confirmation = quitCompletelyConfirmation({
+          known: false,
+          hostsHome: false,
+          deviceHomes: [],
+          lines: [],
+        });
+        if (confirmation && !this.#earlyQuestion)
+          this.#earlyQuestion = this.#confirm(confirmation, this.#shutdown.signal)
+            .then((accepted) => {
+              if (accepted && !this.#shutdown.requested) this.#shutdown.request("quit-completely");
+            })
+            .catch(() => undefined)
+            .finally(() => {
+              this.#earlyQuestion = null;
+            });
         return;
       }
       void this.#mode.quitCompletely().catch((error: unknown) =>

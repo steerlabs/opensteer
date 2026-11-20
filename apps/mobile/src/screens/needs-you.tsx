@@ -17,7 +17,7 @@ import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { ExternalAgentMark } from "./external-agent-mark.js";
 import { needsYouOperation } from "../thread/agent-session-model.js";
 
-const selectAgentWork = (snapshot: HostSnapshot) => snapshot.agentWork;
+const selectThreads = (snapshot: HostSnapshot) => snapshot.threads;
 
 export function NeedsYouScreen(props: StaticScreenProps<{ readonly deploymentId: string }>) {
   const { deploymentId } = props.route.params;
@@ -115,11 +115,11 @@ function NeedsYouRow(props: {
   const destination = entryDestination(entry);
   const ask = entry.kind === "team-ask" ? entry : null;
   // A connected agent's direct operation: named by its agent and the Home's question.
-  const agentWork = useHostSelector(client, selectAgentWork);
+  const threads = useHostSelector(client, selectThreads);
   const operation =
     entry.kind === "request"
       ? needsYouOperation(
-          { agentWork },
+          { threads },
           { request: entry.request, threadId: entry.navigationThreadId },
         )
       : null;

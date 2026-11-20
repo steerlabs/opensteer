@@ -57,13 +57,10 @@ export const menuBarCopy = {
   "menubar.stopped.confirmed": "{home} shows this Mac as stopped too.",
   "menubar.resume": "Resume",
   "menubar.stop.unsaved":
-    "Agents are stopped now, but Opensteer couldn’t save that, so they could start again after Opensteer restarts. Press Stop everything to try again.",
+    "Opensteer couldn’t save Stop. Agents could start again when Opensteer restarts.",
   "menubar.stop.unread":
     "Opensteer couldn’t read whether you stopped agents on this Mac, so they stay stopped. Press Resume to let them use this Mac again.",
-  "menubar.stop.partial":
-    "Some agent work on this Mac didn’t stop ({parts}). Press Stop everything to try again.",
   "menubar.resume.unsaved": "Opensteer couldn’t save Resume, so agents stay stopped. Try again.",
-  "menubar.resume.partial": "Agents may use this Mac again, but {parts} didn’t come back yet.",
   "menubar.open": "Open Opensteer",
   "menubar.settings": "Settings…",
   "menubar.more": "More",

@@ -160,18 +160,6 @@ describe("Right now", () => {
     }
   });
 
-  it("opens the app from a row while desktop main cannot open one task", async () => {
-    const { openRow: _unused, ...older } = bridge(menuBarStates.active);
-    const view = await render(older);
-    try {
-      const rows = view.node.querySelectorAll<HTMLButtonElement>(".menu-bar__activity-row");
-      await act(async () => rows[2]!.click());
-      expect(older.openApp).toHaveBeenCalledTimes(1);
-    } finally {
-      await view.close();
-    }
-  });
-
   it("names a connected agent as its connection proved it, with the task it works on", async () => {
     const value = bridge(menuBarStates.agents);
     const view = await render(value);
@@ -286,6 +274,29 @@ describe("Stop everything", () => {
       );
       await act(async () => view.button("Stop everything on this Mac")!.click());
       expect(value.stop).toHaveBeenCalledOnce();
+    } finally {
+      await view.close();
+    }
+  });
+
+  it("offers Resume without claiming an unconfirmed stop ended all work", async () => {
+    const view = await render(
+      bridge({
+        ...menuBarStates.stopFailed,
+        stop: {
+          ...menuBarStates.stopFailed.stop,
+          phase: "stopped",
+          stoppedAt: null,
+          problem: "Couldn't confirm that one device connection on this Mac stopped.",
+        },
+      }),
+    );
+    try {
+      expect(view.text()).not.toMatch(/Stopped everything|until you resume/);
+      expect(view.text()).toContain(
+        "Couldn't confirm that one device connection on this Mac stopped.",
+      );
+      expect(view.button("Resume")).toBeDefined();
     } finally {
       await view.close();
     }

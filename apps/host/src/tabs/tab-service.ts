@@ -698,6 +698,9 @@ export class TabService implements TabServicePort {
     if (!row || !(await this.options.canRead(actor, row, this.options.store.database))) notFound();
     return row;
   }
+  async connectionTab(actor: Extract<TabActor, { kind: "connection" | "browser-binding" }>, tabId: TabId) {
+    return this.#row(actor, tabId);
+  }
   async #fence(actor: TabActor, row: TabRecord, viewer: TabViewer): Promise<void> {
     const current = await this.#row(actor, row.id);
     if (
@@ -709,7 +712,12 @@ export class TabService implements TabServicePort {
     )
       conflict();
   }
-  async close(actor: TabActor, tabIds: TabId[], key: string): Promise<TabCloseResult> {
+  async close(
+    actor: TabActor,
+    tabIds: TabId[],
+    key: string,
+    expectedGeneration?: number,
+  ): Promise<TabCloseResult> {
     TabCloseInputSchema.parse({ tabIds });
     const failed: TabCloseResult["failed"] = [],
       permitted = new Set<TabId>(),
@@ -724,10 +732,13 @@ export class TabService implements TabServicePort {
           try {
             const row = rows.find((row) => row.id === tabId);
             if (!row || row.ownerId !== owner(actor) || denied.has(row.id)) notFound();
+            if (expectedGeneration !== undefined && row.generation !== expectedGeneration)
+              conflict();
             await this.options.authorizeMembership(actor, tx);
             permitted.add(tabId);
             cleanup.push(row);
           } catch (error) {
+            if (expectedGeneration !== undefined) throw error;
             failed.push({
               tabId,
               error: normalizeToolError({
@@ -970,18 +981,24 @@ export class TabService implements TabServicePort {
   async bindBrowserScript(
     actor: BrowserBindingTabActor,
     tabId: TabId,
-    options?: { savedProfileOnly: boolean },
+    options?: { savedProfileOnly: boolean; expectedGeneration?: number },
   ): Promise<PageAgentBinding> {
-    return this.#bindPage(actor, tabId, options?.savedProfileOnly);
+    return this.#bindPage(actor, tabId, options);
   }
-  async #bindPage(actor: Extract<TabActor, { kind: "run" | "browser-binding" }>, tabId: TabId, savedProfileOnly = false) {
+  async #bindPage(
+    actor: Extract<TabActor, { kind: "run" | "browser-binding" }>,
+    tabId: TabId,
+    options?: { savedProfileOnly: boolean; expectedGeneration?: number },
+  ) {
     const row = await this.#row(actor, tabId);
+    if (options?.expectedGeneration !== undefined && row.generation !== options.expectedGeneration)
+      conflict();
     if (row.kind !== "page")
       throw new OpensteerError({
         code: "bad_request",
         message: "Use Browser Harness only with a page tab.",
       });
-    if (savedProfileOnly && !row.profileId)
+    if (options?.savedProfileOnly && !row.profileId)
       throw new OpensteerError({ code: "forbidden", message: "This browser connection requires a granted saved profile. Guest tabs are unavailable." });
     await this.options.authorize(actor, row, this.options.store.database);
     if (actor.kind === "browser-binding") actor.signal?.throwIfAborted();

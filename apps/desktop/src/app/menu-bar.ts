@@ -11,10 +11,11 @@ import type {
   WebPreferences,
 } from "electron";
 import {
-  MenuBarRowStopInputSchema,
+  MenuBarRowTargetSchema,
   MenuBarStatusSchema,
   MenuBarSwitchInputSchema,
   type MenuBarStatus,
+  type MenuBarRowTarget,
 } from "@opensteer/client/computers";
 import { z } from "zod";
 import { menuBarChannels, menuBarPopoverUrl } from "./menu-bar-channels.js";
@@ -114,13 +115,14 @@ export function menuBarPopoverBounds(item: Rectangle, workArea: Rectangle): Rect
 export interface DesktopMenuBarOptions {
   readonly service: Pick<
     DesktopMenuBarService,
-    "changed" | "icon" | "refresh" | "setSwitch" | "status" | "stopRow" | "subscribe"
+    "changed" | "icon" | "refresh" | "setSwitch" | "status" | "subscribe"
   >;
   readonly actions: {
     stop(): Promise<void>;
     resume(): Promise<void>;
     setOpenAtLogin(on: boolean): Promise<void>;
     openApp(): Promise<void>;
+    openRow(target: MenuBarRowTarget): Promise<void>;
     openNeedsYou(deploymentId: string): Promise<void>;
     openSettings(): Promise<void>;
     quitCompletely(): Promise<void>;
@@ -316,9 +318,11 @@ export class DesktopMenuBar {
     handle(menuBarChannels.setSwitch, (input) =>
       service.setSwitch(MenuBarSwitchInputSchema.parse(input)),
     );
-    handle(menuBarChannels.stopRow, async (input) =>
-      service.stopRow(MenuBarRowStopInputSchema.parse(input).id),
-    );
+    handle(menuBarChannels.openRow, async (input) => {
+      const target = MenuBarRowTargetSchema.parse(input);
+      this.#popover?.hide();
+      await actions.openRow(target);
+    });
     handle(menuBarChannels.stop, () => actions.stop());
     handle(menuBarChannels.resume, () => actions.resume());
     handle(menuBarChannels.setOpenAtLogin, async (input) => {

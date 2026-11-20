@@ -13,7 +13,7 @@ const auditTables = [
   ["work_home_policy", "update"],
 ] as const;
 
-export async function enableWorkHomeTriggers(db: Kysely<unknown>): Promise<void> {
+export async function enableWorkHomeTriggers<DB>(db: Kysely<DB>): Promise<void> {
   for (const [table] of auditTables) {
     await sql`alter table ${sql.table(table)} enable trigger work_audit_capture`.execute(db);
   }
@@ -48,6 +48,7 @@ export async function applyWorkHome(db: Kysely<unknown>): Promise<void> {
       hash text not null
     );
     alter table agent_operations add column work_policy_revision integer;
+    alter table commands add column work_owner_stop boolean;
 
     create function work_audit_append(fields jsonb, moment timestamptz) returns void
     language plpgsql as $$
@@ -57,7 +58,7 @@ export async function applyWorkHome(db: Kysely<unknown>): Promise<void> {
       canonical text;
       next_hash text;
     begin
-      select * into strict head from work_audit_head where singleton for update;
+      select * into strict head from work_audit_head where singleton for no key update;
       entry := fields || jsonb_build_object(
         'sequence', head.sequence + 1,
         'at', to_char(moment at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
@@ -74,12 +75,17 @@ export async function applyWorkHome(db: Kysely<unknown>): Promise<void> {
     declare
       current_policy work_home_policy%rowtype;
     begin
-      select * into strict current_policy from work_home_policy where singleton;
+      if tg_table_name = 'auth_sessions' then
+        select * into strict current_policy from work_home_policy where singleton for share;
+      else
+        select * into strict current_policy from work_home_policy where singleton;
+      end if;
       if current_policy.state <> 'active' then
         raise exception 'Sign-in and new work on this Home have ended' using errcode = '42501';
       end if;
       if tg_table_name = 'devices' then
         if current_policy.policy->>'devices' <> 'assignee-may-enroll' and
+          not exists (select 1 from devices where id = new.id and removed_at is null) and
           (new.owner_kind <> 'deployment' or exists (
             select 1 from devices where owner_kind = 'deployment' and removed_at is null
           )) then
@@ -96,7 +102,7 @@ export async function applyWorkHome(db: Kysely<unknown>): Promise<void> {
       for each row execute function work_home_gate();
     create trigger work_sign_in before insert on auth_sessions
       for each row execute function work_home_gate();
-    create trigger work_operation_policy before insert on agent_operations
+    create trigger work_operation_policy before insert or update of handed_off_at, mode, grant_revision on agent_operations
       for each row execute function work_home_gate();
     alter table devices disable trigger work_device_enrollment;
     alter table auth_sessions disable trigger work_sign_in;
@@ -138,7 +144,8 @@ export async function applyWorkHome(db: Kysely<unknown>): Promise<void> {
           end if;
         end if;
       when 'agent_operations' then
-        if new.outcome is not null and (tg_op = 'INSERT' or old.outcome is null) then
+        if (new.outcome is not null and (tg_op = 'INSERT' or old.outcome is null)) or
+          (new.handed_off_at is not null and (tg_op = 'INSERT' or old.handed_off_at is null)) then
           target_kind := new.target#>>'{grant,kind}';
           case target_kind
             when 'browser-profile' then
@@ -169,18 +176,19 @@ export async function applyWorkHome(db: Kysely<unknown>): Promise<void> {
             'decidedBy',case when new.decision->>'by' = 'person' or new.decision->>'reason' = 'person' then 'owner'
               when new.decision->>'by' in ('structural-read','full-access','reviewer') then 'policy' else 'system' end,
             'handedOffAt',to_char(new.handed_off_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
-            'outcome',case new.outcome when 'completed' then 'completed'
-              when 'refused' then case when new.decision->>'reason' = 'stopped' then 'stopped' else 'denied' end
+            'outcome',case when new.outcome is null then 'allowed' when new.outcome = 'completed' then 'completed'
+              when new.outcome = 'unknown' then 'unknown'
+              when new.outcome = 'refused' then case when new.decision->>'reason' = 'stopped' then 'stopped' else 'denied' end
               else 'failed' end
           );
         end if;
       when 'requests' then
         if tg_op = 'INSERT' and new.status = 'pending' then
           event := jsonb_build_object('kind','request.opened','requestId',new.id);
-        elsif tg_op = 'UPDATE' and old.status = 'pending' and new.response->>'outcome' = 'expired' then
+        elsif tg_op = 'UPDATE' and old.status = 'pending' and (new.response->>'outcome' = 'expired' or new.cancellation_reason = 'plugin-expired') then
           event := jsonb_build_object('kind','request.expired','requestId',new.id);
         elsif tg_op = 'UPDATE' and old.status = 'pending' and new.status <> 'pending' and
-          new.resolved_by is not null and new.settlement_provenance is not null and new.settlement_provenance->>'kind' is distinct from 'agent' then
+          new.resolved_by is not null and new.settlement_provenance->>'kind' is distinct from 'agent' then
           event := jsonb_build_object(
             'kind','request.answered','requestId',new.id,'ownerId',new.resolved_by,
             'outcome',case new.status when 'fulfilled' then 'approved' when 'declined' then 'denied' else 'canceled' end
@@ -208,7 +216,8 @@ export async function applyWorkHome(db: Kysely<unknown>): Promise<void> {
           event := jsonb_build_object('kind','owner.signed_out','ownerId',old.user_id);
         end if;
       when 'commands' then
-        if new.type in ('run.interrupt','node.stop') and new.authority_source->>'kind' = 'user-session' then
+        if (new.type = 'run.interrupt' and new.work_owner_stop) or
+          (new.type = 'node.stop' and new.authority_source->>'kind' = 'user-session') then
           event := jsonb_build_object('kind','stop','ownerId',new.requested_by);
         end if;
       when 'work_home_policy' then

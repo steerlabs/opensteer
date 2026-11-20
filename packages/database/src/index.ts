@@ -154,3 +154,5 @@ export {
 } from "./browser-standard-cdp-lease.js";
 
 export * from "./shared-chrome-attempts.js";
+
+export { WorkHomeStore } from "./work-home.js";

@@ -510,10 +510,8 @@ export class ThreadService {
       ...command,
       requestedBy: actor.userId,
       ...(actor.kind === "person"
-        ? {}
-        : {
-            authority: threadCallerAuthority(actor),
-          }),
+        ? { auditOwnerStop: true as const }
+        : { authority: threadCallerAuthority(actor) }),
     });
     return {
       wasDuplicate: result.wasDuplicate,

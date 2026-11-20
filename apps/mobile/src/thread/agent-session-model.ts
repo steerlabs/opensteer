@@ -15,40 +15,26 @@ import {
   type SessionAgent,
   type SessionTaskView,
 } from "@opensteer/client/host";
-import type { Request } from "@opensteer/core";
+import type { AgentOperationView, Request } from "@opensteer/core";
 
-/**
- * The phone's reading of a connected agent's own work, from the shared view model and the
- * snapshot's optional `agentWork` slots. Everything here is pure, so each state is tested
- * without drawing anything.
- */
-
-interface AgentWorkSource {
-  readonly threads: HostSnapshot["threads"];
-  readonly agentWork?: HostSnapshot["agentWork"] | undefined;
-}
+type AgentWorkSource = Pick<HostSnapshot, "threads">;
 
 function slotOf(snapshot: AgentWorkSource, threadId: string): AgentSessionSlot | null {
-  // The preview's slot, else what the Home reports on the task row itself.
-  return (
-    snapshot.agentWork?.sessions?.[threadId] ??
-    sessionSlotFromHome(snapshot.threads.find(({ id }) => id === threadId)?.externalWork)
-  );
-}
-
-function withdrawnFor(snapshot: AgentWorkSource, slot: AgentSessionSlot | null): string | null {
-  return slot === null ? null : (snapshot.agentWork?.withdrawn?.[slot.connection.id] ?? null);
+  return sessionSlotFromHome(snapshot.threads.find(({ id }) => id === threadId)?.externalWork);
 }
 
 /** A task's session view, or null for any task a connected agent doesn't work itself. */
-export function sessionTaskOf(snapshot: AgentWorkSource, threadId: string): SessionTaskView | null {
+export function sessionTaskOf(
+  snapshot: AgentWorkSource,
+  threadId: string,
+  operations?: readonly AgentOperationView[],
+): SessionTaskView | null {
   const thread = snapshot.threads.find(({ id }) => id === threadId);
   if (!thread) return null;
-  const slot = slotOf(snapshot, threadId);
+  const slot = sessionSlotFromHome(thread.externalWork, operations);
   return sessionTaskView({
     thread: { status: thread.status, agentSessionId: thread.agentSessionId ?? null },
     slot,
-    withdrawnAt: withdrawnFor(snapshot, slot),
   });
 }
 
@@ -85,9 +71,7 @@ export function operationRequestsOf(
     if (operationDecisionField(request) === null) return [];
     const view = operationRequestView({
       request,
-      slot: snapshot.agentWork?.requests?.[request.id],
       session,
-      withdrawnAt: withdrawnFor(snapshot, session),
     });
     return view === null ? [] : [{ request, view }];
   });
@@ -99,18 +83,15 @@ export function operationRequestsOf(
 
 /** How a Needs you row names a direct operation's Request: its agent and the Home's question. */
 export function needsYouOperation(
-  snapshot: { readonly agentWork?: HostSnapshot["agentWork"] | undefined },
+  snapshot: AgentWorkSource,
   input: {
     readonly request: Parameters<typeof operationRequestView>[0]["request"];
     readonly threadId: string;
   },
 ): OperationRequestView | null {
-  const session = snapshot.agentWork?.sessions?.[input.threadId] ?? null;
   return operationRequestView({
     request: input.request,
-    slot: snapshot.agentWork?.requests?.[input.request.id],
-    session,
-    withdrawnAt: session ? (snapshot.agentWork?.withdrawn?.[session.connection.id] ?? null) : null,
+    session: slotOf(snapshot, input.threadId),
   });
 }
 
@@ -119,6 +100,7 @@ export function placeSessionLine(
   snapshot: AgentWorkSource,
   input: {
     readonly tabId: string | null;
+    readonly sharedFromChrome?: boolean;
     /** The place's occupants, acting first. */
     readonly occupants: readonly { readonly threadId: string; readonly title: string }[];
   },
@@ -133,15 +115,13 @@ export function placeSessionLine(
     const slot = slotOf(snapshot, occupant.threadId);
     if (slot === null) continue;
     const said = tabAgentLine({
-      tabId: input.tabId,
       occupant,
       slot,
-      sharedTabs: snapshot.agentWork?.sharedTabs,
-      withdrawnAt: withdrawnFor(snapshot, slot),
+      sharedFromChrome: input.sharedFromChrome === true,
     });
     if (said === null) continue;
     return {
-      agent: sessionAgent(slot.connection, withdrawnFor(snapshot, slot)),
+      agent: sessionAgent(slot.connection),
       threadId: occupant.threadId,
       ...said,
     };
@@ -172,10 +152,7 @@ export function whoLines(
     heading: whoHeading(who),
     detail: who.detail,
     verified: who.verified,
-    withdrawn:
-      line === null
-        ? null
-        : { line, detail: workWords("who.withdrawnDetail", { agent: who.heading }) },
+    withdrawn: line === null ? null : { line, detail: workWords("who.withdrawnDetail") },
     warning: options.consent ? who.warning : null,
   };
 }

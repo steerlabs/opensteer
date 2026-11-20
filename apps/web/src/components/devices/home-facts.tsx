@@ -1,10 +1,11 @@
+import { personalHomeShape } from "@opensteer/client/computers";
 import {
   deviceWords,
   homeKind,
   serverHomeFacts,
   type HomeKindFact,
 } from "@opensteer/client/computers";
-import { useCloudComputer } from "@opensteer/client/react";
+import { useCloudComputer, useWorkPolicy } from "@opensteer/client/react";
 import type { MachineSummary } from "@opensteer/protocol";
 import { useShell } from "../app-shell.js";
 import { SettingsGroup, SettingsRow } from "../settings/primitives.js";
@@ -16,14 +17,16 @@ import { useCloudComputerAccount } from "../settings/sections/cloud-computer.js"
  * window runs on the Home itself.
  */
 export function useHomeKind(): HomeKindFact {
-  const { desktopDeployment, snapshot } = useShell();
+  const { desktopDeployment, hostClient, snapshot } = useShell();
   const cloud = useCloudComputer(useCloudComputerAccount());
+  const work = useWorkPolicy(hostClient);
   return homeKind({
     exposure: snapshot.identityConfig?.exposure,
     homeKind: snapshot.identityConfig?.homeKind,
     deploymentId: snapshot.deploymentId,
     hostedHere: desktopDeployment?.onThisComputer === true,
     account: cloud.views,
+    workOrganization: work?.organizationName ?? null,
   });
 }
 
@@ -41,7 +44,7 @@ export function HomeFacts({ machine }: { readonly machine: MachineSummary }) {
   const facts = serverHomeFacts({
     publicOrigin: snapshot.identityConfig?.publicOrigin ?? null,
     homeMachine: machine,
-    personal: snapshot.deploymentShape?.kind === "personal",
+    personal: personalHomeShape(snapshot.deploymentShape),
     role: snapshot.role,
   });
   if (!facts.address && !facts.version && !facts.owner) return null;

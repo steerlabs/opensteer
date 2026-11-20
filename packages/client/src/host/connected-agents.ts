@@ -9,6 +9,7 @@ import {
 } from "@opensteer/core";
 import { classifyClientFailure } from "../connections/operation-error.js";
 import {
+  agentConnectionConsentRefusals,
   agentConnectionMcpPath,
   type AgentConnection,
   type AgentConnectionConsent,
@@ -569,11 +570,22 @@ export async function answerAgentConnection(
             kind: "approve",
             label: decision.label.trim(),
             accessMode: decision.accessMode,
+            ...(consent.verificationSnapshot
+              ? { verificationSnapshot: consent.verificationSnapshot }
+              : {}),
             ...(consent.grantsAvailable && decision.grant ? { grant: decision.grant } : {}),
           },
   });
   if (result.type !== "connection.authorize") throw new Error("Unexpected consent result.");
   return new URL(result.completionPath, consent.resource).href;
+}
+
+/**
+ * The Home refused an approval because who the agent is changed after the consent was read.
+ * Only this refusal means "read it again"; every other one keeps its own meaning.
+ */
+export function consentVerificationChanged(error: unknown): boolean {
+  return classifyClientFailure(error).reason === agentConnectionConsentRefusals.verificationChanged;
 }
 
 /** The same words every Thread uses for these modes. */

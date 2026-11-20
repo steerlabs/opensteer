@@ -36,7 +36,7 @@ export interface LocalBrowserRuntimeOptions {
    * the only path to it the Host can attribute to this Mac today.
    */
   readonly loginAuthority?: BrowserLoginAuthority;
-  /** The person's Stop on this Mac: refuses an agent's tabs and commands while it holds. */
+  /** Activity tracking for the menu bar. */
   readonly agentGate?: AgentBrowserGate;
 }
 
@@ -51,17 +51,13 @@ class GatedBrowserRuntime extends BrowserRuntime {
   override attach(
     ...[ticket, sink, options = {}]: Parameters<BrowserRuntime["attach"]>
   ): Promise<BrowserAttachment> {
-    return this.#gate.attach(ticket, sink, options.signal, (signal) =>
-      super.attach(ticket, sink, { ...options, signal }),
-    );
+    return this.#gate.attach(ticket, () => super.attach(ticket, sink, options));
   }
 
   override attachStandardCdp(
     ...[ticket, overload, signal]: Parameters<BrowserRuntime["attachStandardCdp"]>
   ): ReturnType<BrowserRuntime["attachStandardCdp"]> {
-    return this.#gate.attachStandard(signal, (admitted) =>
-      super.attachStandardCdp(ticket, overload, admitted),
-    );
+    return this.#gate.attachStandard(() => super.attachStandardCdp(ticket, overload, signal));
   }
 }
 

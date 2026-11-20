@@ -26,11 +26,9 @@ export const directInput = {
     .min(1)
     .max(200)
     .optional()
-    .describe(
-      "Connected agents only: your key for this call. Repeat the same call with it to resume one that is waiting on the person.",
-    ),
+    .describe("Connected agents only: the key for retrying this call."),
   taskId: ThreadIdSchema.optional().describe(
-    "Connected agents only: your current task from an earlier result. Omit to continue or start one.",
+    "Connected agents only: taskId from an earlier result.",
   ),
   reason: z
     .string()
@@ -38,7 +36,7 @@ export const directInput = {
     .min(1)
     .max(2_000)
     .optional()
-    .describe("Connected agents only: why you are doing this, shown to the person who reviews it."),
+    .describe("Connected agents only: why, shown to the person reviewing."),
 };
 /** What a connected agent's direct call reports beside the tool's own result. */
 export const directOutput = {

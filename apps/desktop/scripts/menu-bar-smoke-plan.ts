@@ -2,7 +2,6 @@
 export const menuBarSmokeTrials = [
   "popover-phases",
   "home-stop",
-  "row-stop",
   "quit-logout",
   "quit-sigterm",
   "early-quit",
@@ -28,7 +27,6 @@ export interface MenuBarTrialPlan {
 const plans: Readonly<Record<MenuBarSmokeTrial, Omit<MenuBarTrialPlan, "trial">>> = {
   "popover-phases": { needsHome: false, drive: "self" },
   "home-stop": { needsHome: true, drive: "self" },
-  "row-stop": { needsHome: false, drive: "self" },
   "quit-logout": { needsHome: false, drive: "quit-question" },
   "quit-sigterm": { needsHome: false, drive: "quit-question" },
   "early-quit": { needsHome: false, drive: "quit-during-startup" },
@@ -54,8 +52,6 @@ export function menuBarSmokeAccepted(
 ): boolean {
   return (
     menuBarSmokeTrials.every((trial) => results.some((row) => row.trial === trial)) &&
-    results.every(
-      (row) => row.outcome === "pass" || (row.trial === "row-stop" && row.outcome === "unverified"),
-    )
+    results.every((row) => row.outcome === "pass")
   );
 }

@@ -101,6 +101,157 @@ class FakeBackend implements BrowserCdpBackend {
 }
 
 describe("SessionCdpRouter", () => {
+  it("gives a browser CDP alias the same confined root in session mode", async () => {
+    const backend = new FakeBackend();
+    const page = { targetId: "owned", type: "page" };
+    const foreign = { targetId: "foreign", type: "page" };
+    backend.targetInfos = [page, foreign];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", page.targetId, async () => true, "/files/a");
+    router.registerSession("b", foreign.targetId, async () => true, "/files/b");
+    const client = router.openStandardClient("a", { wholeContext: false });
+    const sibling = router.openStandardClient("a", { wholeContext: false });
+    const { sessionId } = (await client.send({ method: "Target.attachToBrowserTarget" })) as {
+      sessionId: string;
+    };
+    const alias = (method: string, parameters?: CdpParameters) =>
+      client.send({ method, sessionId, ...(parameters ? { parameters } : {}) });
+    const result = { targetInfos: [{ ...page, browserContextId: "a" }] };
+    await expect(alias("Target.getTargets")).resolves.toEqual(result);
+    await expect(client.send({ method: "Target.getTargets" })).resolves.toEqual(result);
+    const child = (await alias("Target.attachToTarget", {
+      targetId: page.targetId,
+      flatten: true,
+    })) as {
+      sessionId: string;
+    };
+    await expect(client.send({ method: "Target.getTargets", ...child })).resolves.toEqual(result);
+    await expect(alias("Target.getTargetInfo")).resolves.toEqual(
+      await client.send({ method: "Target.getTargetInfo" }),
+    );
+    for (const [method, parameters] of [
+      ["Target.attachToTarget", { targetId: foreign.targetId, flatten: true }],
+      ["Target.getTargetInfo", { targetId: foreign.targetId }],
+      ["Target.getTargets", { browserContextId: "b" }],
+      ["Browser.close", {}],
+      ["Target.createBrowserContext", {}],
+      ["Storage.getCookies", {}],
+      ["Target.attachToBrowserTarget", {}],
+    ] as const) {
+      await expect(alias(method, parameters)).rejects.toMatchObject({ code: "forbidden" });
+    }
+    await expect(sibling.send({ method: "Target.getTargets", sessionId })).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(
+      sibling.send({ method: "Target.detachFromTarget", parameters: { sessionId } }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(backend.commands.map(({ method }) => method)).toEqual([
+      "Target.getTargets",
+      "Target.getTargets",
+      "Target.getTargetInfo",
+      "Target.getTargets",
+    ]);
+    await client.send({ method: "Target.detachFromTarget", parameters: { sessionId } });
+    await expect(alias("Target.getTargets")).rejects.toMatchObject({ code: "not_found" });
+    await expect(client.send({ method: "Target.getTargets" })).resolves.toEqual(result);
+    await router.close();
+  });
+
+  it("routes whole-context commands and target events on the alias without reusing root channels", async () => {
+    const backend = new FakeBackend();
+    backend.dedicatedContext = true;
+    const page = { targetId: "owned", type: "page" };
+    backend.targetInfos = [page];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", page.targetId, async () => true, "/files/a");
+    const client = router.openStandardClient("a", { wholeContext: true });
+    const events: CdpEvent[] = [];
+    client.onEvent((event) => events.push(event));
+    await client.send({
+      method: "Target.setAutoAttach",
+      parameters: { autoAttach: true, flatten: true, waitForDebuggerOnStart: false },
+    });
+    const rootPage = events[0]!.parameters.sessionId;
+    const physical = backend.channels.get(page.targetId)!;
+    const { sessionId } = (await client.send({ method: "Target.attachToBrowserTarget" })) as {
+      sessionId: string;
+    };
+    const alias = (method: string, parameters?: CdpParameters) =>
+      client.send({ method, sessionId, ...(parameters ? { parameters } : {}) });
+    await expect(alias("Storage.getCookies", { browserContextId: "a" })).resolves.toEqual(
+      await client.send({ method: "Storage.getCookies" }),
+    );
+    expect(backend.commands.slice(-2)).toEqual([
+      { method: "Storage.getCookies", parameters: {} },
+      { method: "Storage.getCookies" },
+    ]);
+    await alias("Target.setDiscoverTargets", { discover: true });
+    const popup = { targetId: "popup", type: "page", openerId: page.targetId };
+    backend.targetInfos.push(popup);
+    backend.emit("Target.targetCreated", { targetInfo: popup });
+    expect(events.filter(({ method }) => method === "Target.targetCreated")).toEqual([
+      expect.objectContaining({
+        sessionId,
+        parameters: { targetInfo: { ...page, browserContextId: "a" } },
+      }),
+      expect.objectContaining({
+        sessionId,
+        parameters: { targetInfo: { ...popup, browserContextId: "a" } },
+      }),
+    ]);
+    const child = (await alias("Target.attachToTarget", {
+      targetId: page.targetId,
+      flatten: true,
+    })) as {
+      sessionId: string;
+    };
+    expect(child.sessionId).not.toBe(rootPage);
+    const childPhysical = backend.channels.get(page.targetId)!;
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        method: "Target.attachedToTarget",
+        sessionId,
+        parameters: expect.objectContaining({ sessionId: child.sessionId }),
+      }),
+    );
+    await alias("Target.sendMessageToTarget", {
+      ...child,
+      message: JSON.stringify({ id: 42, method: "Network.enable" }),
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        method: "Target.receivedMessageFromTarget",
+        sessionId,
+        parameters: {
+          ...child,
+          message: JSON.stringify({ id: 42, result: { method: "Network.enable" } }),
+        },
+      }),
+    );
+    await client.send({ method: "Target.detachFromTarget", parameters: { sessionId } });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        method: "Target.detachedFromTarget",
+        sessionId,
+        parameters: expect.objectContaining({ sessionId: child.sessionId }),
+      }),
+    );
+    expect(events.at(-1)).toMatchObject({
+      method: "Target.detachedFromTarget",
+      parameters: { sessionId },
+    });
+    expect(childPhysical.closed).toBe(true);
+    expect(physical.closed).toBe(false);
+    await expect(client.send({ method: "Network.enable", ...child })).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(
+      client.send({ method: "Network.enable", sessionId: String(rootPage) }),
+    ).resolves.toEqual({ method: "Network.enable" });
+    await router.close();
+  });
+
   it("scopes browser scripts to their root, descendants and private CDP channels", async () => {
     const backend = new FakeBackend();
     const root = { targetId: "first", type: "page" };

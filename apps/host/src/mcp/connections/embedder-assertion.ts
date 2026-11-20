@@ -1,4 +1,5 @@
 import {
+  agentDirectoryKeyThumbprint,
   EmbedderAssertionClaimsSchema,
   EmbedderAssertionTokenSchema,
   embedderAssertionAlgorithms,
@@ -9,12 +10,7 @@ import {
   type AgentDirectoryEntry,
   type EmbedderAssertionClaims,
 } from "@opensteer/control-plane-protocol";
-import {
-  calculateJwkThumbprint,
-  compactVerify,
-  decodeProtectedHeader,
-  importJWK,
-} from "jose";
+import { compactVerify, decodeProtectedHeader, importJWK } from "jose";
 import { z } from "zod";
 import { extractRedirectOrigin, isLoopbackRedirect, matchPlatform } from "./agent-directory.js";
 
@@ -194,7 +190,9 @@ export async function verifyEmbedderAssertion(
 
   const parsedClaims = EmbedderAssertionClaimsSchema.safeParse(verifiedJson);
   if (!parsedClaims.success) {
-    if (parsedClaims.error.issues.some((issue) => issue.code === "custom" && issue.path[0] === "exp")) {
+    if (
+      parsedClaims.error.issues.some((issue) => issue.code === "custom" && issue.path[0] === "exp")
+    ) {
       return fail("invalid-lifetime", "Embedder assertion lifetime exceeds two minutes");
     }
     return fail("malformed", "Embedder assertion claims are invalid");
@@ -229,7 +227,7 @@ export async function verifyEmbedderAssertion(
   let fresh: boolean;
   let keyThumbprint: string;
   try {
-    keyThumbprint = await calculateJwkThumbprint(jwk, "sha256");
+    keyThumbprint = await agentDirectoryKeyThumbprint(key);
     fresh = await claim(claims.iss, claims.jti, new Date(deadline));
   } catch {
     return fail("replay-store-unavailable", "Could not record the embedder statement");
@@ -303,13 +301,26 @@ export async function resolveConsentIdentity(
     }
   }
 
-  const isLoopback = isLoopbackRedirect(input.request.redirectUri);
+  return unverifiedConsentIdentity(
+    input.request.redirectUri,
+    input.clientName,
+    input.directory,
+    recordedAt,
+  );
+}
+
+export function unverifiedConsentIdentity(
+  redirectUri: string,
+  clientName: string,
+  directory: AgentDirectoryDocument | null,
+  recordedAt: string,
+): AgentConnectionIdentityAtConsent {
   return {
     kind: "unverified",
-    redirectOrigin: extractRedirectOrigin(input.request.redirectUri),
-    isLoopback,
-    clientName: input.clientName,
-    directoryRevision: input.directory?.revision ?? null,
+    redirectOrigin: extractRedirectOrigin(redirectUri),
+    isLoopback: isLoopbackRedirect(redirectUri),
+    clientName,
+    directoryRevision: directory?.revision ?? null,
     recordedAt,
   };
 }

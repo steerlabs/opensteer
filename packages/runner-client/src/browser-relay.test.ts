@@ -1,4 +1,6 @@
 import {
+  BrowserAttachTicketClaimsSchema,
+  browserRuntimeWireVersion,
   LocalProfileBindingSchema,
   RunnerAuxiliaryFrameFenceSchema,
   type HeldLocalProfile,
@@ -26,7 +28,7 @@ const binding = LocalProfileBindingSchema.parse({
   runnerId: `rnr_${randomUUID()}`,
   profileId: `bpr_${randomUUID()}`,
 });
-function fixture(negotiated = true) {
+function fixture(negotiated = true, stopped = false) {
   const bridge = new LocalBrowserRuntimeBridge({
     bridgeToken: "x".repeat(64),
     runtimeId: "runtime_test",
@@ -36,7 +38,7 @@ function fixture(negotiated = true) {
     wireVersion: 2,
     localProfileStorage: storage,
   });
-  const relay = new BrowserModuleRelay(bridge);
+  const relay = new BrowserModuleRelay(bridge, stopped);
   const messages: Record<string, unknown>[] = [];
   const notices = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
   const fence = RunnerAuxiliaryFrameFenceSchema.parse({
@@ -92,6 +94,68 @@ function fixture(negotiated = true) {
   };
   return { bridge, relay, stream, inventory, messages, lease, capability, send, wait };
 }
+
+it("refuses an agent attach in stopped mode before asking the local browser", async () => {
+  const f = fixture(true, true);
+  const attach = vi.spyOn(f.bridge, "attach");
+  try {
+    await f.relay.attach(f.stream);
+    await f.send({ type: "capability.grant", lease: f.lease });
+    const failed = f.wait("browser.command-error");
+    await f.send({
+      type: "browser.attach",
+      capability: f.capability,
+      channelId: `bch_${randomUUID()}`,
+      attachTicket: "abc.def.ghi",
+    });
+    await failed;
+    expect(f.messages.at(-1)).toMatchObject({
+      type: "browser.command-error",
+      error: { reason: "device-stopped" },
+    });
+    expect(attach).not.toHaveBeenCalled();
+  } finally {
+    f.relay.detach();
+  }
+});
+
+it("relays a person's attachment in stopped mode", async () => {
+  const f = fixture(true, true);
+  const attach = vi.spyOn(f.bridge, "attach").mockResolvedValue({ type: "browser.attached" });
+  const now = new Date().toISOString();
+  const claims = BrowserAttachTicketClaimsSchema.parse({
+    access: "read-write",
+    actor: "person",
+    audience: "opensteer-browser-runtime",
+    creationOrigin: "person",
+    expiresAt: now,
+    identity: { kind: "fresh" },
+    issuedAt: now,
+    nonce: randomUUID(),
+    operationExpiresAt: now,
+    remainingBudgetMs: 1000,
+    runtimeId: "runtime_test",
+    sessionId: `bsn_${randomUUID()}`,
+    subject: "person",
+    wireVersion: browserRuntimeWireVersion,
+  });
+  const attachTicket = `test.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.test`;
+  try {
+    await f.relay.attach(f.stream);
+    await f.send({ type: "capability.grant", lease: f.lease });
+    const attached = f.wait("browser.attached");
+    await f.send({
+      type: "browser.attach",
+      capability: f.capability,
+      channelId: `bch_${randomUUID()}`,
+      attachTicket,
+    });
+    await attached;
+    expect(attach).toHaveBeenCalledOnce();
+  } finally {
+    f.relay.detach();
+  }
+});
 
 describe("BrowserModuleRelay native profiles", () => {
   it("opens relay channel 33", async () => {

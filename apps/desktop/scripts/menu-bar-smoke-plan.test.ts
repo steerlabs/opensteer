@@ -14,16 +14,16 @@ it("runs every trial in order, or the ones named, and refuses an unknown one", (
   expect(() => menuBarSmokeTrialPlan(["tray"])).toThrow(/Unknown menu bar smoke trial: tray/u);
 });
 
-it("accepts the journey only when every trial passed, the real helper alone may be unverified", () => {
+it("accepts the journey only when every trial passed", () => {
   const all = menuBarSmokeTrials.map((trial) => ({ trial, outcome: "pass" as const }));
   expect(menuBarSmokeAccepted(all)).toBe(true);
   expect(
     menuBarSmokeAccepted(
       all.map((row) =>
-        row.trial === "row-stop" ? { ...row, outcome: "unverified" as const } : row,
+        row.trial === "home-stop" ? { ...row, outcome: "unverified" as const } : row,
       ),
     ),
-  ).toBe(true);
+  ).toBe(false);
   expect(
     menuBarSmokeAccepted(
       all.map((row) => (row.trial === "dock" ? { ...row, outcome: "unverified" as const } : row)),

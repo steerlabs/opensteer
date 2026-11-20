@@ -84,5 +84,5 @@ function computerName(origin: string): string {
 
 function addressDeploymentName(origin: string, kind: "personal" | "team"): string {
   const hostname = new URL(origin).hostname;
-  return hostname.length <= 120 ? hostname : kind === "personal" ? "Home" : "Server";
+  return hostname.length <= 120 ? hostname : ({ personal: "Home", team: "Server" } as const)[kind];
 }

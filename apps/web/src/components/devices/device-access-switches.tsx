@@ -81,7 +81,7 @@ export function DeviceAccessSwitches({
   return (
     <section aria-labelledby="device-uses-title" className="settings-group device-uses">
       <h2 className="settings-group__title" id="device-uses-title">
-        Your agent can use
+        Your own agents can use
       </h2>
       <div className="card device-uses__card">
         {switches.map((item) => {

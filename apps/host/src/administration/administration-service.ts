@@ -17,6 +17,7 @@ import {
 } from "@opensteer/core";
 import {
   hostApi,
+  BrowserProfileSchema,
   PendingBrowserProfileDeletionSchema,
   HarnessModelSettingsMapSchema,
   type HostApiCommand,
@@ -253,10 +254,14 @@ export class AdministrationService {
               deletion: PendingBrowserProfileDeletionSchema.optional(),
             })
             .parse(result);
-        if (command.type === "browser.profile.rename")
+        if (command.type === "browser.profile.rename") {
+          const { purpose, ...profile } = BrowserProfileSchema.extend({
+            purpose: z.enum(["person", "engine-sign-in"]).optional(),
+          }).parse(result);
           fields = {
-            profile: result,
+            profile: { ...profile, ...(purpose === "engine-sign-in" ? { purpose } : {}) },
           };
+        }
         return hostApi["commands.dispatch"].success.parse({
           type: command.type,
           ...fields,

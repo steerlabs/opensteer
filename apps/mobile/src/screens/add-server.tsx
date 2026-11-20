@@ -1,4 +1,5 @@
-import { ClientOperationError } from "@opensteer/client/connections";
+import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
+import { deploymentAddressFailure } from "@opensteer/client/connections";
 import { clientIssue } from "@opensteer/client/feedback";
 import { hostKeyFingerprint } from "@opensteer/deployment-authority";
 import type { VerifiedDeploymentAddress } from "@opensteer/client/connections";
@@ -42,7 +43,7 @@ export function AddServerScreen(): ReactNode {
       .then(setVerified)
       .catch((error: unknown) => {
         if (clientIssue(error, { operation: "action", label: "check" }) !== null)
-          setFailure(addressFailure(error));
+          setFailure(deploymentAddressFailure(error));
       })
       .finally(() => setBusy(false));
   }, [origin]);
@@ -142,7 +143,7 @@ export function AddServerScreen(): ReactNode {
             </AppText>
             <PrimaryButton
               busy={busy}
-              label={verified.kind === "personal" ? "Add Home" : "Add team"}
+              label={isPersonalHost(verified.discovery) ? "Add Home" : "Add team"}
               onPress={add}
             />
             <SecondaryButton label="Use a different address" onPress={() => setVerified(null)} />
@@ -151,13 +152,6 @@ export function AddServerScreen(): ReactNode {
       </ScrollView>
     </Screen>
   );
-}
-
-/** The address door's own refusals say what to do; anything else means nothing answered. */
-function addressFailure(error: unknown): string {
-  return error instanceof ClientOperationError && error.classification === "blocked"
-    ? error.message
-    : "Opensteer isn’t answering at that address.";
 }
 
 const styles = StyleSheet.create({

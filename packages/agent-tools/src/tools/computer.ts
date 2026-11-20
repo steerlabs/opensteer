@@ -103,7 +103,7 @@ export const computer_use = defineAgentTool({
   name: "computer_use",
   title: "Operate Mac apps and phones",
   description:
-    "Run JavaScript to operate approved Mac windows and phone screens (Android Agent Phones and Mac-driven iPhones); variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps() and phones() list visible targets with either access (read/read-write) or blocked {code,message,next}; app(query) and phone(query) match name, id or computerId and throw that blocked error when access is missing. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it. Connected agents: name one app or phone screen shared with you by computerId and app (omit app for a phone screen); the script reaches only that one, and tab() is not available. Use at most 20,000 characters. Set readOnly: true to observe without approval. To continue the same task, pass its taskId. If pending, wait for the person in Needs you, then repeat the same operationKey and arguments. Do not poll.",
+    "Run JavaScript to operate approved Mac windows and phone screens (Android Agent Phones and Mac-driven iPhones); variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps() and phones() list visible targets with either access (read/read-write) or blocked {code,message,next}; app(query) and phone(query) match name, id or computerId and throw that blocked error when access is missing. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it. Connected agents: name one app or phone screen shared with you by computerId and app (omit app for a phone screen); the script reaches only that one, and tab() is not available. Use at most 20,000 characters. Set readOnly: true to observe without approval.",
   input: z.strictObject({
     code: z.string().min(1).max(65536),
     computerId: DeviceIdSchema.optional().describe(
@@ -116,7 +116,10 @@ export const computer_use = defineAgentTool({
       .max(240)
       .optional()
       .describe("Connected agents only: the Mac app's name or bundleId; omit for a phone screen."),
-    readOnly: z.boolean().optional().describe("Connected agents only: allow observation, with no input or other changes."),
+    readOnly: z
+      .boolean()
+      .optional()
+      .describe("Connected agents only: allow observation, with no input or other changes."),
     ...directInput,
   }),
   output: ComputerUseOutputSchema,

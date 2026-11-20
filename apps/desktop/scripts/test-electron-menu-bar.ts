@@ -40,6 +40,11 @@ if (plan.some((trial) => trial.needsHome)) {
   mkdirSync(resources, { mode: 0o700 });
   for (const name of ["personal-runtime", "process-supervisor"])
     execFileSync("cp", ["-cR", path.join(sourceResources, name), resources]);
+  execFileSync("cp", [
+    "-R",
+    path.resolve(import.meta.dirname, "../../../packages/harness-codex/src/test-fixtures"),
+    path.join(resources, "codex-fixture"),
+  ]);
 }
 
 const require = createRequire(import.meta.url);

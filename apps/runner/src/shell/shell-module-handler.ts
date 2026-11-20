@@ -23,8 +23,11 @@ import { type Readable, type Writable } from "node:stream";
 import WebSocket, { type RawData } from "ws";
 import { z } from "zod";
 import type { RunnerLogger } from "../host/host-connection.js";
+import {
+  executionScopeVariable,
+  type ExecutionContainment,
+} from "../runtime/execution-containment.js";
 import { shellSentence, shellSocketCloseWaitMs } from "./shell-transport.js";
-import type { AgentWorkSource } from "../runtime/agent-stop-file.js";
 
 /** Every shell this module hosts is an agent Run's: its authority names the Run. */
 export const shellAgentsStoppedSentence =
@@ -79,11 +82,8 @@ type ShellOutboundReport =
     };
 
 export interface ShellModuleHandlerOptions {
-  /**
-   * The person's Stop on this computer. Every shell here is opened for an
-   * agent's Run, so while stopped none opens, and Stop ends those open.
-   */
-  readonly agentWork?: AgentWorkSource;
+  readonly stopped?: boolean;
+  readonly containment?: ExecutionContainment;
   readonly cleanupWaitMs?: number;
   readonly helperBinary: string;
   readonly hostKeyPath: string;
@@ -104,19 +104,13 @@ export class ShellModuleHandler {
   readonly #options: ShellModuleHandlerOptions;
   readonly #sessions = new Map<ShellSessionId, ShellTargetSession>();
   #stream: RunnerModuleStream | undefined;
-  #stopListening: () => void = () => undefined;
 
   constructor(options: ShellModuleHandlerOptions) {
     this.#options = options;
   }
 
-  /** The person stopped agents here: every shell ends, as its owner stopping it. */
-  async #endForStop(): Promise<void> {
-    await Promise.allSettled(
-      [...this.#sessions.values()].map((session) =>
-        session.close("stopped-by-owner", shellAgentsStoppedSentence),
-      ),
-    );
+  get busy(): boolean {
+    return this.#sessions.size > 0;
   }
 
   get maxPayloadBytes(): number {
@@ -125,17 +119,9 @@ export class ShellModuleHandler {
 
   attach(stream: RunnerModuleStream): void {
     this.#stream = stream;
-    const source = this.#options.agentWork;
-    this.#stopListening();
-    this.#stopListening = source
-      ? source.subscribe(() => {
-          if (source.stopped()) void this.#endForStop();
-        })
-      : () => undefined;
   }
 
   async detach(): Promise<void> {
-    this.#stopListening();
     const sessions = [...this.#sessions.values()];
     await Promise.allSettled(
       sessions.map((session) => session.close("machine-disconnected", "Shell module detached")),
@@ -175,7 +161,7 @@ export class ShellModuleHandler {
       });
       return;
     }
-    if (this.#options.agentWork?.stopped()) {
+    if (this.#options.stopped) {
       void this.#send({
         error: { code: "computer_stopped", message: shellAgentsStoppedSentence },
         sessionId: message.sessionId,
@@ -191,6 +177,7 @@ export class ShellModuleHandler {
         ? {}
         : { idleTimeoutMs: this.#options.idleTimeoutMs }),
       logger: this.#options.logger,
+      ...(this.#options.containment ? { containment: this.#options.containment } : {}),
       message,
       onFinished: () => this.#sessions.delete(message.sessionId),
       ...(this.#options.resolveDataTransport
@@ -212,6 +199,7 @@ export class ShellModuleHandler {
 }
 
 interface ShellTargetSessionOptions {
+  readonly containment?: ExecutionContainment;
   readonly cleanupWaitMs: number;
   readonly helperBinary: string;
   readonly hostKeyPath: string;
@@ -254,7 +242,10 @@ class ShellTargetSession {
   async #start(): Promise<void> {
     try {
       this.#setupAbort.signal.throwIfAborted();
-      const child = spawnShellHelper(this.#options.helperBinary);
+      const child = spawnShellHelper(
+        this.#options.helperBinary,
+        this.#options.containment?.scope(this.#options.message.sessionId),
+      );
       this.#child = child;
       child.stdin.on("error", (error) => {
         if (!this.#closing) {
@@ -566,6 +557,10 @@ class ShellTargetSession {
     const child = this.#child;
     const socket = this.#dataSocket;
     for (const pump of this.#pumps.splice(0)) pump.stop();
+    if (child)
+      await this.#options.containment
+        ?.note(this.#options.message.sessionId, [...this.#processGroups])
+        .catch(() => undefined);
     stopWebSocket(socket, reason);
     const forceSocketClosed = socket
       ? setTimeout(() => {
@@ -630,9 +625,12 @@ class ShellTargetSession {
   }
 }
 
-function spawnShellHelper(binary: string): ShellChild {
+function spawnShellHelper(binary: string, scope?: string): ShellChild {
   const child = spawn(binary, ["shell-serve"], {
-    env: shellHelperEnvironment(process.env),
+    env: {
+      ...shellHelperEnvironment(process.env),
+      ...(scope ? { [executionScopeVariable]: scope } : {}),
+    },
     stdio: ["pipe", "pipe", "pipe", "pipe"],
   });
   const stdin = child.stdin;

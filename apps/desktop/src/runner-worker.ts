@@ -1,11 +1,10 @@
 import { safeMessage } from "@opensteer/shared/safeMessage";
-import { manualAgentWork, runRunnerDaemon } from "@opensteer/runner";
+import { runRunnerDaemon, type RunnerShutdownProof } from "@opensteer/runner";
 import { refuseInspectorSignal } from "./supervisor/inspector-signal.js";
 import {
   RunnerWorkerEnginesRecheckMessageSchema,
   RunnerWorkerPowerMessageSchema,
   RunnerWorkerSecretsMessageSchema,
-  RunnerWorkerStopRunMessageSchema,
 } from "./supervisor/runner-worker-secrets.js";
 
 // Before the Runner holds any credential in memory.
@@ -29,41 +28,15 @@ const delivered = new Promise<Readonly<Record<string, string>> | null>((resolveP
 let recheckEngines: () => void = () => undefined;
 let notifySleeping: () => void = () => undefined;
 let notifyAwake: () => void = () => undefined;
-// A Run can only be running once the daemon has started.
-let stopRun: (runId: string) => boolean = () => false;
-let agentNoticeSent: () => Promise<void> = () => Promise.resolve();
-// The person's Stop on this Mac, as the desktop app tells this Device Runner.
-const agentWork = manualAgentWork();
-/** How long a stop for the person's Stop waits for its Home to hear it first. */
-const agentNoticeWaitMs = 1_500;
-
 parent.on("message", (event) => {
-  const value = event.data as { type?: unknown; agentsStopped?: unknown };
+  const value = event.data as { type?: unknown; restart?: unknown };
   if (value?.type === "runner.worker.stop") {
-    const stop = () => {
-      shutdown.abort(new Error("The Opensteer desktop app is stopping local execution."));
-      deliverSecrets(null);
-    };
-    if (value.agentsStopped !== true) {
-      stop();
-      return;
-    }
-    // The person stopped agents on this Mac: its Home hears that before the
-    // Runner goes, so it says "stopped" rather than "offline".
-    agentWork.set(true);
-    void Promise.race([
-      agentNoticeSent(),
-      new Promise<void>((resolve) => setTimeout(resolve, agentNoticeWaitMs).unref()),
-    ]).finally(stop);
+    shutdown.abort(new Error(value.restart === true ? "device-restarting" : "Runner stopping"));
+    deliverSecrets(null);
     return;
   }
   if (RunnerWorkerEnginesRecheckMessageSchema.safeParse(event.data).success) {
     recheckEngines();
-    return;
-  }
-  const stop = RunnerWorkerStopRunMessageSchema.safeParse(event.data);
-  if (stop.success) {
-    stopRun(stop.data.runId);
     return;
   }
   const power = RunnerWorkerPowerMessageSchema.safeParse(event.data);
@@ -76,6 +49,7 @@ parent.on("message", (event) => {
   if (secrets.success) deliverSecrets(secrets.data.secrets);
 });
 
+let proof: RunnerShutdownProof | undefined;
 void delivered
   .then(async (secrets) => {
     if (secrets === null) return;
@@ -84,14 +58,16 @@ void delivered
         notifySleeping = control.notifySleeping;
         notifyAwake = control.notifyAwake;
         recheckEngines = control.recheckEngines;
-        stopRun = control.stopRun;
-        agentNoticeSent = control.agentNoticeSent;
       },
-      agentWork,
+      onStarted: (control) => parent.postMessage({ type: "runner.worker.ready", control }),
+      onShutdown: (result) => {
+        proof = result;
+      },
       onActivity: (runs) => {
         parent.postMessage({
-          runs: runs.map(({ runId, startedAt, purpose, engine }) => ({
+          runs: runs.map(({ runId, threadId, startedAt, purpose, engine }) => ({
             runId,
+            threadId,
             startedAt,
             purpose,
             engine,
@@ -112,7 +88,7 @@ void delivered
     });
   })
   .then(() => {
-    parent.postMessage({ type: "runner.worker.stopped" });
+    parent.postMessage({ type: "runner.worker.stopped", ...(proof ? { proof } : {}) });
   })
   .catch((error: unknown) => {
     parent.postMessage({

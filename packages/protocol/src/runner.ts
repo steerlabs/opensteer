@@ -1176,6 +1176,8 @@ export const RunnerPowerSleepingSchema = z.strictObject({
 });
 export type RunnerPowerSleeping = z.infer<typeof RunnerPowerSleepingSchema>;
 
+export const runnerRestartingCloseCode = 4012;
+
 /**
  * Capability advertised by Runners that tell the Home when the person stopped
  * agents on their computer (the desktop app's "Stop everything on this Mac")
@@ -1624,6 +1626,7 @@ export function advertisedRunnerModules(modules: RunnerModules): readonly Runner
 
 export const RunnerDescriptorSchema = z
   .object({
+    agentsStoppedSince: IsoDateTimeSchema.nullable().optional(),
     bootId: RunnerBootIdSchema,
     // Capability names are an extensible set, independent of required semantics.
     capabilities: z

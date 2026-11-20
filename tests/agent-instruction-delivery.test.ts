@@ -14,8 +14,8 @@ describe("agent instruction delivery", () => {
     );
     expect(initialization).toContain("McpServer(");
     expect(initialization.match(/instructions/g)).toEqual(["instructions"]);
-    expect(initialization).toContain(
-      'caller.kind === "connection" ? { instructions: connectionInstructions } : {}',
+    expect(initialization.replace(/\s+/gu, " ")).toContain(
+      'caller.kind === "connection" ? { instructions: connectionInstructionsFor(caller.grant, offered) } : {}',
     );
   });
 

@@ -17,6 +17,9 @@ import {
   toolsFor,
   agentToolAnnotations,
   connectionInstructionsFor,
+  connectionTaskKind,
+  connectionToolDescription,
+  connectionToolSchema,
   agentToolFailureResult,
   agentToolRecordResult,
   requestToolNames,
@@ -86,8 +89,10 @@ export class OpensteerMcpService {
     readonly realtime?: Pick<RealtimeHub, "observe">;
     readonly store: Pick<OpensteerStore, "getThreadForOwner" | "threadOrigins"> & {
       readonly requests: Pick<OpensteerStore["requests"], "get">;
+      readonly database?: OpensteerStore["database"];
     };
     readonly publicUrl: URL;
+    readonly connectionPasswords?: boolean;
     readonly teamsAvailable?: () => Promise<boolean>;
     /** A failure the caller was told only that something went wrong. */
     readonly onToolError?: (error: unknown, tool: string) => void;
@@ -101,8 +106,10 @@ export class OpensteerMcpService {
     readonly realtime?: Pick<RealtimeHub, "observe">;
     readonly store: Pick<OpensteerStore, "getThreadForOwner" | "threadOrigins"> & {
       readonly requests: Pick<OpensteerStore["requests"], "get">;
+      readonly database?: OpensteerStore["database"];
     };
     readonly publicUrl: URL;
+    readonly connectionPasswords?: boolean;
     readonly teamsAvailable?: () => Promise<boolean>;
     readonly onToolError?: (error: unknown, tool: string) => void;
   }) {
@@ -396,32 +403,47 @@ export class OpensteerMcpService {
     detachedSessionId?: string,
     longRequestHold = false,
   ): Promise<McpServer> {
+    const offered = await this.#toolsFor(caller);
     const server = new McpServer(
       { name: "opensteer", version: "1.0.0" },
       {
         maxToolInputElements: 10_000,
         ...(caller.kind === "connection"
-          ? { instructions: connectionInstructionsFor(caller.grant) }
+          ? { instructions: connectionInstructionsFor(caller.grant, offered) }
           : {}),
       },
     );
     const advertisedTools: Tool[] = [];
-    for (const tool of await this.#toolsFor(caller)) {
+    for (const tool of offered) {
       const annotations = agentToolAnnotations(tool);
       const registration = {
         annotations,
-        description: tool.description,
+        description: caller.kind === "connection"
+          ? connectionToolDescription(tool, caller.grant)
+          : tool.description,
         title: tool.title,
         // callTool validates every call against the tool's own schema, so a
         // refusal names its field; the SDK only hands the arguments through.
         inputSchema: z.looseObject({}),
       };
-      advertisedTools.push({
-        name: tool.name,
-        ...registration,
-        inputSchema: advertisedToolInputSchema(tool) as Tool["inputSchema"],
-        execution: { taskSupport: "forbidden" },
-      });
+      advertisedTools.push(
+        caller.kind === "connection"
+          ? {
+              name: tool.name,
+              description: registration.description,
+              ...(annotations.readOnlyHint ? { annotations: { readOnlyHint: true } } : {}),
+              inputSchema: advertisedToolInputSchema({
+                input: tool.input,
+                advertisedInputSchema: connectionToolSchema(tool, caller.grant),
+              }) as Tool["inputSchema"],
+            }
+          : {
+              name: tool.name,
+              ...registration,
+              inputSchema: advertisedToolInputSchema(tool) as Tool["inputSchema"],
+              execution: { taskSupport: "forbidden" },
+            },
+      );
       server.registerTool(tool.name, registration, async (args, extra) => {
         const disconnected = extra.authInfo?.extra?.disconnected;
         return this.callToolResult(extra.authInfo?.token ?? "", tool.name, args, {
@@ -551,10 +573,19 @@ export class OpensteerMcpService {
         error,
         access,
         failureCaller ? deviceVisibleTo(callerLineage(failureCaller)?.grant) : () => false,
+        failureCaller?.kind === "connection",
       );
       if (failure.code === internalToolFailureCode && !signal.aborted)
         this.options.onToolError?.(error, name);
-      return agentToolFailureResult(failure);
+      const connection = failureCaller?.kind === "connection"
+        ? {
+            tools: new Set((await this.#toolsFor(failureCaller)).map(({ name }) => name)),
+            ...(/^opensteer_(task|subagent|delegation)_/u.test(name)
+              ? { notFoundMessage: "Task is unavailable" }
+              : {}),
+          }
+        : undefined;
+      return agentToolFailureResult(failure, connection);
     }
   }
 
@@ -581,12 +612,17 @@ export class OpensteerMcpService {
     const key = toolOperationKey(caller, input, identity.operationKey);
     const check = async () => {
       identity.signal?.throwIfAborted();
+      if (caller.kind === "connection") {
+        await this.assertToolOffered(caller, name);
+        await this.#assertConnectionTaskKind(caller, name, input);
+      }
       const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
       const targets = await this.#targets(caller, tool, input);
       const queue = caller.kind === "connection" && tool.name === "opensteer_task_send" &&
         "delivery" in input && input.delivery === "queue";
       toolAccess[queue ? "read" : access](caller, targets);
-      if (!(await this.#toolsFor(caller)).some((spec) => spec.name === tool.name))
+      if (caller.kind !== "connection" &&
+        !(await this.#toolsFor(caller)).some((spec) => spec.name === tool.name))
         throw unavailableTool(caller, tool.name);
       const authorize = this.options.handlers[tool.name]?.authorize as
         ((call: ToolCall<typeof tool.name>) => Promise<void>) | undefined;
@@ -648,12 +684,16 @@ export class OpensteerMcpService {
     if (!found) throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
     const tool = found;
     const input = tool.input.parse(value);
+    if (caller.kind === "connection") {
+      await this.assertToolOffered(caller, name);
+      await this.#assertConnectionTaskKind(caller, name, input);
+    }
     const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
     const targets = await this.#targets(caller, tool, input);
     const queue = caller.kind === "connection" && tool.name === "opensteer_task_send" &&
       "delivery" in input && input.delivery === "queue";
     toolAccess[queue ? "read" : access](caller, targets);
-    await this.assertToolOffered(caller, name);
+    if (caller.kind !== "connection") await this.assertToolOffered(caller, name);
     const authorize = this.options.handlers[tool.name]?.authorize as
       ((call: ToolCall<typeof tool.name>) => Promise<void>) | undefined;
     await authorize?.({
@@ -669,7 +709,7 @@ export class OpensteerMcpService {
       throw unavailableTool(caller, name);
   }
   async #toolsFor(caller: AgentCaller) {
-    return toolsFor({
+    const offered = toolsFor({
       ...caller,
       // The same grant-derived set a lineage Run's dispatch plan carries.
       ...(callerLineage(caller) ? { grant: callerLineage(caller)!.grant } : {}),
@@ -677,6 +717,41 @@ export class OpensteerMcpService {
       // Its handlers recheck personal context and a live team link on every call.
       knowledge: caller.kind === "run",
     });
+    return caller.kind === "connection" && this.options.connectionPasswords === false
+      ? offered.filter(({ name }) => name !== "saved_login_request" && name !== "card_request")
+      : offered;
+  }
+  async #assertConnectionTaskKind(
+    caller: Extract<AgentCaller, { kind: "connection" }>,
+    tool: string,
+    input: object,
+  ): Promise<void> {
+    const kind = connectionTaskKind(tool);
+    const database = this.options.store.database;
+    if (!database || !kind || !("taskId" in input) || typeof input.taskId !== "string") return;
+    const id = ThreadIdSchema.parse(input.taskId);
+    const task = await database.selectFrom("threads")
+      .select(["worker", "originConnectionId"])
+      .where("id", "=", id)
+      .where("createdBy", "=", caller.userId)
+      .where("removedAt", "is", null)
+      .$if(caller.grant.scope === "selected", (query) =>
+        query.where("originConnectionId", "=", caller.connectionId),
+      )
+      .executeTakeFirst();
+    if (kind === "direct" && task?.originConnectionId === caller.connectionId && task.worker !== "external")
+      throw new OpensteerError({
+        code: "conflict",
+        message: "That taskId belongs to a task run by one of the person's agents. Pass a direct-work taskId returned by a direct tool, or omit taskId to start or continue direct work.",
+      });
+    if (kind === "person-agent" && task?.worker === "external") {
+      if (task.originConnectionId !== caller.connectionId)
+        throw new OpensteerError({ code: "not_found", message: "Task is unavailable" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "That taskId is for work you do directly. Pass a taskId for work run by one of the person's agents, such as one returned by opensteer_task_create.",
+      });
+    }
   }
   async #targets(caller: AgentCaller, tool: AgentTool, input: object): Promise<Thread[]> {
     const ids: Thread["id"][] = [];
@@ -691,22 +766,19 @@ export class OpensteerMcpService {
     if (targets)
       for (const value of await targets({ caller, input } as ToolCall<typeof tool.name>))
         await add(value);
-    const threads = await Promise.all(
+    const lineage = callerLineage(caller);
+    const selected = lineage?.grant.scope === "selected" ? lineage.agentConnectionId : undefined;
+    return Promise.all(
       [...new Set(ids)].map(async (id) => {
-        const thread = await this.options.store.getThreadForOwner(id, caller.userId);
+        const thread = await this.options.store.getThreadForOwner(id, caller.userId, selected);
         if (!thread)
-          throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
+          throw new OpensteerError({
+            code: caller.kind === "connection" ? "not_found" : "forbidden",
+            message: "Task is unavailable",
+          });
         return thread;
       }),
     );
-    // A selected grant reaches only the tasks in its own lineage, whatever it names.
-    const lineage = callerLineage(caller);
-    if (lineage?.grant.scope === "selected" && threads.length) {
-      const origins = await this.options.store.threadOrigins(threads.map(({ id }) => id));
-      if (threads.some(({ id }) => origins.get(id) !== lineage.agentConnectionId))
-        throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
-    }
-    return threads;
   }
   #reserve(caller: AgentCaller): boolean {
     const reserved = [...this.#reservations.values()].reduce((sum, count) => sum + count, 0);

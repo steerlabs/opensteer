@@ -4,7 +4,6 @@ import type { NativeSettingsSection } from "./native-settings-page.types.js";
 
 /** An older Home's consent, which takes no grant: the agent may do everything. */
 export const agentAuthorizationFinePrint = agentWords("consent.legacyFinePrint");
-export const agentAuthorizationUnverified = agentWords("consent.unverified");
 export const agentAuthorizationLabelLimit = 120;
 
 export type AgentAuthorizationFormProps =
@@ -22,11 +21,11 @@ export type AgentAuthorizationFormProps =
       readonly title: string;
       /** Its provider's mark when the Home proved its origin, its initial otherwise; null on an older Home. */
       readonly mark: { readonly providerId: string | null; readonly initial: string } | null;
-      readonly destination: string;
+      /** Where access goes, for an agent the Home didn't verify; a verified one's origins say it. */
+      readonly destination: string | null;
       /**
-       * Who is asking, in the Home's words: a verified pair or platform, or the name it gave
-       * itself ("Says it is …") with its origin or "an app on this computer". The warning is
-       * the Home's own line.
+       * Who is asking, in the Home's words: "Verified" with each origin labelled, or the name it
+       * gave itself ("It calls itself …"). The warning is the Home's own line.
        */
       readonly who: {
         readonly heading: string;
@@ -47,6 +46,8 @@ export type AgentAuthorizationFormProps =
       readonly finePrint: string;
       readonly busy: "allow" | "deny" | null;
       readonly error: string | null;
+      /** Said beside Allow after the Home refused it because the agent's verification changed. */
+      readonly notice: string | null;
       readonly onAllow: () => void;
       readonly onDeny: () => void;
     };

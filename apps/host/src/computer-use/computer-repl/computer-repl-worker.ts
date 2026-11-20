@@ -161,7 +161,7 @@ function dispose(key: string, discard = false) {
   context.runtime.dispose();
 }
 let guestModules: ReturnType<typeof browserGuestModules> | undefined;
-async function create(key: string): Promise<Context> {
+async function create(key: string, connection: boolean): Promise<Context> {
   // This release's malloc accounting does not accumulate ArrayBuffer memory.
   // A per-context WASM memory maximum is the hard bound for every allocation.
   const module = await newQuickJSWASMModuleFromVariant(
@@ -260,7 +260,10 @@ async function create(key: string): Promise<Context> {
     vm.unwrapResult(
       vm.evalCode("delete globalThis.__browserReceiveEvents; delete globalThis.__browserEndCall;"),
     ).dispose();
-  } else vm.unwrapResult(vm.evalCode(computerGuestLibrary)).dispose();
+  } else {
+    if (connection) vm.setProp(vm.global, "__computerConnection", vm.true);
+    vm.unwrapResult(vm.evalCode(computerGuestLibrary)).dispose();
+  }
   return context;
 }
 function dispatch(key: string, context: Context, call: Call) {
@@ -655,7 +658,7 @@ async function handle(input: unknown) {
       const creating = { callId: message.callId };
       creations.set(message.context, creating);
       try {
-        context = await create(message.context);
+        context = await create(message.context, message.connection === true);
       } catch (error) {
         if (creations.get(message.context) !== creating) return;
         creations.delete(message.context);

@@ -159,20 +159,25 @@ export function usePlaceStatusRow(props: {
 }): ReactNode {
   const { agents, hostClient, onAnswer, threadId } = props;
   const tabId = props.tabId ?? null;
-  const agentWork = useHostSelector(hostClient, selectAgentWork);
+  const threads = useHostSelector(hostClient, selectThreads);
+  const sharedFromChrome = useHostSelector(
+    hostClient,
+    (snapshot) => tabId !== null && snapshot.tabs.get(tabId)?.sharedByPerson !== undefined,
+  );
   const session = useMemo(
     () =>
       placeSessionLine(
-        { threads: [], agentWork },
+        { threads },
         {
           tabId,
+          sharedFromChrome,
           occupants: agents.agents.map((agent) => ({
             threadId: agent.threadId,
             title: agent.title,
           })),
         },
       ),
-    [agentWork, agents, tabId],
+    [threads, agents, tabId, sharedFromChrome],
   );
   const sessionStop = useAgentSessionStop(hostClient, session?.threadId ?? "");
   const transcript = useThreadTranscript(hostClient, threadId);
@@ -262,7 +267,7 @@ export function usePlaceStatusRow(props: {
   return sessionRow ?? runRow;
 }
 
-const selectAgentWork = (snapshot: HostSnapshot) => snapshot.agentWork;
+const selectThreads = (snapshot: HostSnapshot) => snapshot.threads;
 
 /** A connected agent using this tab, for which task, and the Stop that ends its session. */
 function SessionStatusRow(props: {

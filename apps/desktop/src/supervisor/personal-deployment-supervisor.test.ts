@@ -1400,15 +1400,18 @@ describe("PersonalDeploymentSupervisor", () => {
      * targeted restart could lose Runs, strand the Runner, or outlive the
      * crash-loop guard.
      */
-    it("hands the hosting Runner this Mac's saved Stop, so no new agent work starts while stopped", async () => {
+    it("spawns the hosting Runner in the saved mode and requires a shutdown receipt", async () => {
+      const stoppedSince = "2026-11-20T09:00:00.000Z";
       const fixture = supervisorFixture(null, undefined, undefined, undefined, {
-        agentStopFile: "/Users/test/Library/Application Support/Opensteer/local-stop.json",
+        agentsStoppedSince: () => stoppedSince,
       });
       await fixture.supervisor.start();
-      expect(specsOf(fixture, "runner")[0]!.environment.OPENSTEER_RUNNER_AGENT_STOP_FILE).toBe(
-        "/Users/test/Library/Application Support/Opensteer/local-stop.json",
+      expect(specsOf(fixture, "runner")[0]!.environment.OPENSTEER_RUNNER_AGENTS_STOPPED_SINCE).toBe(
+        stoppedSince,
       );
-      await fixture.supervisor.stop();
+      await expect(fixture.supervisor.stop()).rejects.toThrow(
+        "Personal deployment did not stop cleanly",
+      );
     });
 
     it("restarts only a crashed Host, on its pinned origin and credentials, while the Runner keeps running", async () => {
@@ -1828,7 +1831,7 @@ function supervisorFixture(
     readonly passkeys?: boolean;
     readonly dataReset?: PersonalDataReset;
     readonly files?: PersonalDeploymentFilesystemPort;
-    readonly agentStopFile?: string;
+    readonly agentsStoppedSince?: () => string | null;
   } = {},
 ) {
   const lifecycle: string[] = [];
@@ -1913,7 +1916,7 @@ function supervisorFixture(
       ? { userDataDirectory: "/test", syncExtensionDirectory: restarts.syncExtensionDirectory }
       : {}),
     ...(restarts.dataReset ? { dataReset: restarts.dataReset } : {}),
-    ...(restarts.agentStopFile ? { agentStopFile: restarts.agentStopFile } : {}),
+    ...(restarts.agentsStoppedSince ? { agentsStoppedSince: restarts.agentsStoppedSince } : {}),
     passkeys: restarts.passkeys === true,
     allocatePort: async () => nextPort++,
     log: (event, fields) => logs.push({ event, ...fields }),

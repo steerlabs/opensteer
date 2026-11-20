@@ -33,6 +33,19 @@ const clientPolicyDerivations: Record<string, { count: number; reason: string }>
   },
 };
 const exceptions: Record<string, { counts: Record<string, number>; reason: string }> = {
+  "packages/client/src/computers/devices-screen.ts": {
+    counts: { "input.homeKind": 1, "fact.kind": 1 },
+    reason:
+      "The Home configuration identifies its physical host form, independently of Deployment policy.",
+  },
+  "apps/web/src/components/devices/home-facts.tsx": {
+    counts: { "home.kind": 1 },
+    reason: "The server facts row is selected by the projected Home kind.",
+  },
+  "apps/mobile/src/screens/device-page.tsx": {
+    counts: { homeKind: 1 },
+    reason: "A Device page chooses its server address display from the projected Home kind.",
+  },
   "apps/mobile/src/screens/apps.tsx": {
     counts: { "app.kind": 1 },
     reason:
@@ -190,34 +203,14 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "Navigation selects a verified team deep-link destination rather than a Personal task.",
   },
-  "apps/mobile/src/client/deployment-credentials.ts": {
-    counts: { "connection.kind": 3 },
-    reason: "Personal sessions and team OAuth credentials are distinct credential families.",
-  },
   "apps/mobile/src/client/mock-mode.ts": {
     counts: { "input.kind": 1 },
     reason: "Mock catalog bootstrap methods follow the declared Personal or team identity.",
   },
   "apps/web/src/main.tsx": {
-    counts: { remembered: 3, awaitasked: 1 },
+    counts: { mockHome: 1, remembered: 3, awaitasked: 1 },
     reason:
-      "The per-origin web entry chooses its app from signed discovery and cached deployment kind.",
-  },
-  "apps/mobile/src/client/deployment-rows.ts": {
-    counts: {
-      "connection.kind": 2,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "apps/mobile/src/client/mobile-client.ts": {
-    counts: {
-      kind: 1,
-      "connection.kind": 3,
-      "connection?.kind": 1,
-      "connection.authority.document.deploymentShape.kind": 1,
-    },
-    reason:
-      "Credential and attention reads distinguish personal computers from team sessions; only team credentials follow the Account identity.",
+      "The web entry chooses its app from signed discovery and cached kind. The mock Home comparison only selects a local visual fixture.",
   },
   "apps/mobile/src/screens/add-deployment.tsx": {
     counts: {
@@ -303,13 +296,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
-  "packages/client/src/auth/native-oauth.ts": {
-    counts: {
-      "connection.kind": 4,
-    },
-    reason:
-      "The boundary distinguishes team data from personal resource scope, and only team Hosts take an Account-vouched session exchange.",
-  },
   "packages/client/src/team/native-team-entry.ts": {
     counts: {
       "verified.discovery.deploymentShape.kind": 1,
@@ -365,12 +351,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason:
       "Only a team credential is bound to the Account's team runtime, so only it is fenced by an Account change.",
-  },
-  "packages/client/src/connections/private-deployment-connection.ts": {
-    counts: {
-      "parsed.kind": 1,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
   },
   "packages/client/src/integrations/computer-app-approval.ts": {
     counts: {

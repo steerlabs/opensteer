@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { mockConnectedAgents } from "@opensteer/client/mock";
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { placeList, type TabStrip } from "@opensteer/client/host";
@@ -50,6 +51,25 @@ async function key(init: KeyboardEventInit, done: () => void) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("one tab list", () => {
+  it.each([390, 1440])(
+    "names a shared Chrome tab and its connected agent at %d px",
+    async (width) => {
+      await mount("/", {
+        width,
+        mock: mockConnectedAgents("seeded"),
+        hostClient: (host) => {
+          host.mockAgentWork();
+          return host;
+        },
+      });
+      const tab = placeList(client.getSnapshot()).find(({ tab }) => tab.sharedByPerson)!;
+      const row = element(`[data-place-key="${tab.key}"]`);
+      expect(row.textContent).toContain(`Chrome · ${tab.tab.title}`);
+      expect(row.textContent).toContain(`Shared from ${tab.device.name}`);
+      expect(row.textContent).toContain("Used by Grok");
+    },
+  );
+
   it("draws every kind of tab in the Host's one order, a group's members under it, New tab last", async () => {
     await mount("/");
     expect(drawnRows()).toEqual(expectedRows());

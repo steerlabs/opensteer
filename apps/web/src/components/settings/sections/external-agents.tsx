@@ -74,13 +74,7 @@ function ConnectedAgentsList({
       : null;
   const [guide, setGuide] = useState<ExternalAgentGuide | null>(null);
   const names = { profiles: shell.snapshot.browserProfiles };
-  const list = connectedAgentsView(
-    agents.connections ?? [],
-    names,
-    agents.revoked,
-    new Date(),
-    shell.snapshot.agentWork?.withdrawn,
-  );
+  const list = connectedAgentsView(agents.connections ?? [], names, agents.revoked);
   // Setup takes its baseline from the loaded list, so it waits for the first read.
   const available = (entry: ExternalAgentGuide) =>
     agents.connections !== null &&

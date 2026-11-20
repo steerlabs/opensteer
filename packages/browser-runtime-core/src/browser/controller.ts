@@ -412,6 +412,7 @@ export class BrowserController {
       message: Extract<BrowserClientMessage, { type: "cdp.command" }>;
       started: boolean;
       closing?: boolean;
+      stopNavigation?: () => Promise<unknown>;
     }
   >();
   private readonly cancelledScriptCommands = new WeakSet<BrowserClientMessage>();
@@ -885,10 +886,16 @@ export class BrowserController {
     if (
       !command ||
       command.message.scriptAttachmentId !== message.scriptAttachmentId ||
-      command.started ||
       this.cancelledScriptCommands.has(command.message)
     )
       return;
+    if (command.started) {
+      const stopNavigation = command.stopNavigation;
+      delete command.stopNavigation;
+      // The page lane still holds this navigation. Its original result settles independently.
+      void stopNavigation?.().catch(() => undefined);
+      return;
+    }
     // A physical release is cleanup for an earlier command and has its own reservation.
     if (isInputRelease(command.message)) return;
     this.cancelledScriptCommands.add(command.message);
@@ -3366,14 +3373,30 @@ export class BrowserController {
             command.sessionId,
             command.scriptAttachmentId,
           );
+    const pageSurfaceId = pageTargetId ? this.ledger.surfaceIdForTarget(pageTargetId) : undefined;
+    const navigation = async <T>(send: () => Promise<T>): Promise<T> => {
+      const request = this.scriptCommands.get(message.requestId);
+      const binding = pageSurfaceId ? this.ledger.binding(pageSurfaceId) : null;
+      if (!request || request.message !== message || !binding) return send();
+      if (request.closing)
+        throw new BrowserRuntimeError("conflict", "Browser script attachment ended.");
+      if (command.parameters?.frameId !== undefined) return send();
+      request.stopNavigation = () => binding.cdp.send("Page.stopLoading");
+      try {
+        return await send();
+      } finally {
+        delete request.stopNavigation;
+      }
+    };
     if (message.navigationId && command.method === "Page.navigate" && pageTargetId) {
       this.cdpRouter.admitPageCommand(this.claims.sessionId, command);
-      const surfaceId = this.ledger.surfaceIdForTarget(pageTargetId);
-      if (!surfaceId) throw new BrowserRuntimeError("not_found", "The browser page closed.");
-      const result = await this.ledger.navigate(
-        surfaceId,
-        safeNavigationUrl(z.string().parse(command.parameters?.url)),
-        message.navigationId,
+      if (!pageSurfaceId) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+      const result = await navigation(() =>
+        this.ledger.navigate(
+          pageSurfaceId,
+          safeNavigationUrl(z.string().parse(command.parameters?.url)),
+          message.navigationId,
+        ),
       );
       await this.send({ type: "cdp.result", requestId: message.requestId, result });
       return;
@@ -3393,7 +3416,6 @@ export class BrowserController {
     // A new tab opens blank and loads its URL only once it has its size, so
     // the site's first layout already sees the person's size.
     const tabUrl = command.method === "Target.createTarget" ? this.admittedTabUrl(command) : null;
-    const pageSurfaceId = pageTargetId ? this.ledger.surfaceIdForTarget(pageTargetId) : undefined;
     const settleInput = pageSurfaceId
       ? this.trackAgentInput(pageSurfaceId, message, command)
       : () => undefined;
@@ -3406,6 +3428,14 @@ export class BrowserController {
         : null;
     // Anything but observation can let page script start a passkey ceremony.
     const agentActivity = (targetId: string) => this.#passkeys?.record(targetId, "agent");
+    const send = () =>
+      this.cdpRouter.send(
+        this.claims.sessionId,
+        tabUrl
+          ? { ...command, parameters: { ...command.parameters, url: "about:blank" } }
+          : command,
+        agentActivity,
+      );
     let result: unknown;
     try {
       result =
@@ -3419,13 +3449,9 @@ export class BrowserController {
               )
             : pageTargetId && command.method === "Page.captureScreenshot"
               ? await this.captureAgentViewport(command, pageSurfaceId)
-              : await this.cdpRouter.send(
-                  this.claims.sessionId,
-                  tabUrl
-                    ? { ...command, parameters: { ...command.parameters, url: "about:blank" } }
-                    : command,
-                  agentActivity,
-                );
+              : command.method === "Page.navigate"
+                ? await navigation(send)
+                : await send();
     } finally {
       script?.stop();
     }
@@ -3680,14 +3706,13 @@ export class BrowserController {
         const pending = state.message;
         if (pending.scriptAttachmentId !== message.scriptAttachmentId) continue;
         state.closing = true;
-        if (!state.started)
-          await this.cancelScriptCommand({
-            ...message,
-            command: {
-              method: browserHostMethods.cancelScriptCommand,
-              parameters: { requestId: pending.requestId },
-            },
-          });
+        await this.cancelScriptCommand({
+          ...message,
+          command: {
+            method: browserHostMethods.cancelScriptCommand,
+            parameters: { requestId: pending.requestId },
+          },
+        });
       }
       const cleanups = this.cancelProducerOperations({
         type: "input.cancel",

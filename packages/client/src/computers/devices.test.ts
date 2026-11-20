@@ -326,7 +326,7 @@ it("projects asleep devices with calm status and explanation in devicesView and 
   };
   expect(phoneScreenStatus(sleepingPhone)).toEqual({
     fix: "Screen control comes back when Alex’s MacBook Pro wakes.",
-    label: "Alex’s MacBook Pro is asleep",
+    label: "Asleep on Alex’s MacBook Pro",
     needsSetup: false,
     tone: "waiting",
   });

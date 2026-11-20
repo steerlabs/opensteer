@@ -38,7 +38,7 @@ describe("a Mac-driven phone's status", () => {
         },
       }),
     ).toEqual({
-      label: "Alex’s MacBook Pro is asleep",
+      label: "Asleep on Alex’s MacBook Pro",
       fix: "Screen control comes back when Alex’s MacBook Pro wakes.",
       tone: "waiting",
       needsSetup: false,

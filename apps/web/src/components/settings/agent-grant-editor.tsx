@@ -118,18 +118,29 @@ export function AgentGrantEditor({
             ) : null}
             {chrome.options.map((option) => (
               <label className="card__row" key={option.resource.sourceId}>
+                <span aria-hidden className="card__row-glyph">
+                  <Icon name="browser" />
+                </span>
                 <span className="card__row-body">
                   <span className="card__row-title">{option.name}</span>
-                  <span className="card__row-detail">{agentWords("consent.chromeTabs.detail")}</span>
+                  <span
+                    className="card__row-detail"
+                    id={`agent-grant-chrome-${option.resource.sourceId}`}
+                  >
+                    {agentWords("consent.chromeTabs.detail")}
+                  </span>
                 </span>
                 <span className="card__row-actions">
                   <input
+                    aria-describedby={`agent-grant-chrome-${option.resource.sourceId}`}
                     aria-label={option.name}
                     checked={draftHas(draft, option.resource)}
                     className="switch"
                     disabled={disabled}
                     onChange={(event) =>
-                      onChange(toggleDraftResource(draft, option.resource, event.currentTarget.checked))
+                      onChange(
+                        toggleDraftResource(draft, option.resource, event.currentTarget.checked),
+                      )
                     }
                     role="switch"
                     type="checkbox"
@@ -137,9 +148,6 @@ export function AgentGrantEditor({
                 </span>
               </label>
             ))}
-            {chrome.needsPairing ? (
-              <p className="card__form settings-footnote">{agentWords("consent.chromeTabs.repair")}</p>
-            ) : null}
             <DisclosureRow
               disabled={disabled}
               icon="app"
@@ -212,7 +220,7 @@ export function AgentGrantEditor({
                           />
                         ))}
                         <p className="settings-footnote">
-                          {agentWords("consent.plugins.footer", { agent })}
+                          {agentWords("consent.plugins.footer")}
                           {more ? ` ${agentWords("consent.plugins.more")}` : ""}
                         </p>
                       </>
@@ -221,7 +229,11 @@ export function AgentGrantEditor({
                 </OptionsState>
               </div>
             ) : null}
-            <div className="card__row">
+            <div
+              className={
+                limits.tasks !== null && !draft.tasks ? "card__row is-unavailable" : "card__row"
+              }
+            >
               <span aria-hidden className="card__row-glyph">
                 <Icon name="list" />
               </span>
@@ -230,7 +242,7 @@ export function AgentGrantEditor({
                   {agentWords("consent.tasks.title")}
                 </span>
                 <span className="card__row-detail" id="agent-grant-tasks-detail">
-                  {limits.tasks ?? agentWords("consent.tasks.detail", { agent, home })}
+                  {limits.tasks ?? agentWords("consent.tasks.detail", { home })}
                 </span>
               </span>
               <span className="card__row-actions">
@@ -247,6 +259,7 @@ export function AgentGrantEditor({
               </span>
             </div>
           </div>
+          {chrome.repair ? <p className="settings-footnote">{chrome.repair}</p> : null}
           {draft.tasks ? (
             <p className="settings-footnote agent-grant__warning" role="note">
               {agentWords("consent.tasks.warning", { home })}
@@ -440,7 +453,7 @@ function BrowserChoices({
                 </span>
               </span>
               <span className="card__row-detail">
-                {agentWords("consent.browser.newProfile.detail", { agent })}
+                {agentWords("consent.browser.newProfile.detail")}
               </span>
             </span>
           </label>

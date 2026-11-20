@@ -907,11 +907,6 @@ export interface HostSnapshot {
   /** Days untouched before the reader's tasks move to Done; null until the Host says. */
   quietTaskDays: QuietTaskDays | null;
   identityConfig: IdentityConfig | null;
-  /**
-   * Facts about connected agents' own work that no Home reports yet, keyed by what they
-   * belong to. Only the preview fills it; every screen reads it as optional.
-   */
-  agentWork?: import("./agent-work.js").AgentWorkSlots;
   machines: MachineSummary[];
   /** Bumped when a machine's access sessions change, so readers refetch. */
   machineRevision: number;

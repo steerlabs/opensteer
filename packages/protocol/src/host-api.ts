@@ -873,6 +873,10 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
         kind: z.literal("approve"),
         label: z.string().trim().min(1).max(120),
         accessMode: ThreadAccessModeSchema,
+        verificationSnapshot: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/u)
+          .optional(),
         /** Sent by a client with the grant screen; without it the connection may do everything. */
         grant: AgentGrantSchema.optional(),
       }),

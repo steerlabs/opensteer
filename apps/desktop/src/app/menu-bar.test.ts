@@ -41,7 +41,6 @@ function fixture() {
     refresh: vi.fn(async () => undefined),
     setSwitch: vi.fn(async () => undefined),
     status: vi.fn(async () => current),
-    stopRow: vi.fn(),
     subscribe: (listener: () => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -82,6 +81,7 @@ function fixture() {
     resume: vi.fn(async () => undefined),
     setOpenAtLogin: vi.fn(async () => undefined),
     openApp: vi.fn(async () => undefined),
+    openRow: vi.fn(async () => undefined),
     openNeedsYou: vi.fn(async () => undefined),
     openSettings: vi.fn(async () => undefined),
     quitCompletely: vi.fn(async () => undefined),
@@ -177,19 +177,20 @@ it("logs a status that could not be worked out instead of rejecting", async () =
   );
 });
 
-it("routes the popover's asks to the per-row Stop, Needs you and Settings, from its own frame only", async () => {
-  const { actions, call, menuBar, service } = fixture();
+it("routes the popover's asks to the task, Needs you and Settings, from its own frame only", async () => {
+  const { actions, call, menuBar } = fixture();
   menuBar.start();
   await menuBar.open();
-  await call(menuBarChannels.stopRow, { id: "apps:cus_1" });
-  expect(service.stopRow).toHaveBeenCalledWith("apps:cus_1");
+  const target = { deploymentId: "dep_home", threadId: "thr_test" };
+  await call(menuBarChannels.openRow, target);
+  expect(actions.openRow).toHaveBeenCalledWith(target);
   await call(menuBarChannels.openNeedsYou, "dep_home");
   expect(actions.openNeedsYou).toHaveBeenCalledWith("dep_home");
   await call(menuBarChannels.openSettings);
   expect(actions.openSettings).toHaveBeenCalledOnce();
-  await expect(
-    call(menuBarChannels.stopRow, { id: "apps:cus_1" }, { url: menuBarPopoverUrl }),
-  ).rejects.toThrow(/Only the Opensteer menu bar/);
+  await expect(call(menuBarChannels.openRow, target, { url: menuBarPopoverUrl })).rejects.toThrow(
+    /Only the Opensteer menu bar/,
+  );
 });
 
 it("opens the app's own routes in place, through its router", () => {

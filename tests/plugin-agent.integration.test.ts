@@ -3,7 +3,17 @@ import {
   type PersonalCommitReaction,
 } from "../packages/database/src/personal-mutation.js";
 import { beforeAll, afterAll, afterEach, test, expect, vi } from "vitest";
-import { mkdtemp, rm, mkdir, writeFile, readFile, rename, stat, symlink } from "node:fs/promises";
+import {
+  mkdtemp,
+  realpath,
+  rm,
+  mkdir,
+  writeFile,
+  readFile,
+  rename,
+  stat,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -37,6 +47,10 @@ import {
   startPersonalQueuedRunFixture,
 } from "../packages/database/src/personal-run-fixture.test-support.js";
 import { AgentHomeFiles } from "../apps/host/src/threads/agent-home-files.js";
+import {
+  createInProcessHomeFilesTransport,
+  testNativeFsHelperBinary,
+} from "../apps/host/src/threads/home-files.test-support.js";
 import { withFolderPluginPackage } from "../apps/host/src/local-servers/folder-plugin-package.js";
 import { PluginOwnerApi } from "../apps/host/src/plugins/plugin-owner-api.js";
 import { PluginService } from "../apps/host/src/plugins/plugin-service.js";
@@ -176,7 +190,7 @@ async function answer(
 beforeAll(async () => {
   const clone = await cloneTestDatabase("host");
   database = createDatabase({ connectionString: clone.url });
-  directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-agent-"));
+  directory = await realpath(await mkdtemp(join(tmpdir(), "opensteer-plugin-agent-")));
   personal = await seedPersonalFixture(database, directory);
   store = new OpensteerStore(database);
   records = new PluginAgentStore(database);
@@ -199,8 +213,11 @@ beforeAll(async () => {
   );
   homeFiles = new AgentHomeFiles({
     agentHome: async () => personal.agentHome,
-    helperPath: new URL("../apps/runner/native-fs-helper/opensteer-native-fs-test", import.meta.url)
-      .pathname,
+    transport: createInProcessHomeFilesTransport({
+      agentHomePath: personal.agentHome.path,
+      runnerId: personal.runnerId,
+      helperBinary: testNativeFsHelperBinary,
+    }).transport,
   });
   service = new PluginService({
     limits: { interactionTtlMs: 5000 },
@@ -303,15 +320,7 @@ beforeAll(async () => {
       withFolderPluginPackage({ directory: d, files: homeFiles, install: pluginSourceFiles }),
     exportFiles: async (_c, d, f, authorize, signal) => {
       await exportWait?.();
-      return exportPluginSource(
-        directory,
-        d,
-        f.files,
-        new URL("../apps/runner/native-fs-helper/opensteer-native-fs-test", import.meta.url)
-          .pathname,
-        authorize,
-        signal,
-      );
+      return exportPluginSource(homeFiles, d, f.files, authorize, signal);
     },
   });
   mcp = new OpensteerMcpService({
@@ -324,7 +333,8 @@ beforeAll(async () => {
 }, 60000);
 afterEach(async () => {
   await records.setAccess(personal.userId, plugin, "all");
-  expect(errors).toEqual([]);
+  await executions.settled();
+  expect(errors.splice(0)).toEqual([]);
 });
 afterAll(async () => {
   sessions?.stop();
@@ -613,7 +623,7 @@ test("a connected plugin write is reviewed once, can be declined, and records th
   const reply = async (pending: Record<string, unknown>, decision: "allow" | "deny") => {
     const requestId = RequestIdSchema.parse(pending.requestId);
     expect(await store.requests.get(requestId)).toMatchObject({
-      presentation: { title: "Use Fixture?" },
+      presentation: { title: "Let External change Fixture?" },
       agentOperation: {
         calls: JSON.stringify({ calls: { input: { amount: 7 }, path: "tools.fixture.reviewed" } }),
         agentReason: "My reason",
@@ -1300,7 +1310,17 @@ test("cancelling an export during the root lookup leaves no draft", async () => 
       (error: unknown) => ({ error }),
     );
   try {
-    await deadline(entered.promise, "Export never looked up its root");
+    await deadline(
+      Promise.race([
+        entered.promise,
+        pending.then((outcome) => {
+          throw new Error("Export ended before the hosting Runner looked up its root", {
+            cause: "error" in outcome ? outcome.error : outcome.value,
+          });
+        }),
+      ]),
+      "Export never looked up its root",
+    );
     controller.abort();
     release.resolve();
     expect(await deadline(pending, "Cancelled export never returned")).toHaveProperty("error");

@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { readTaskActivity } from "../host/agent-work.js";
+import type { AgentOperationView } from "@opensteer/core";
 import type { HostClient } from "../host/client.js";
 import { connectedAgentsClient, type ConnectedAgentsSnapshot } from "../host/connected-agents.js";
 import {
@@ -52,25 +54,25 @@ function useLazyRead<T>(
   wanted: boolean,
   read: (client: HostClient, signal: AbortSignal) => Promise<T>,
 ): AgentOptionsRead<T> {
-  const [state, setState] = useState<AgentOptionsRead<T>>({ status: "idle" });
+  const [result, setResult] = useState<{ client: HostClient; state: AgentOptionsRead<T> }>();
+  const state = result?.client === client ? result.state : { status: "idle" as const };
   const [attempt, setAttempt] = useState(0);
   const loaded = state.status === "ready";
   useEffect(() => {
     if (!client || !wanted || loaded) return;
     const controller = new AbortController();
-    setState({ status: "loading" });
+    const receive = (state: AgentOptionsRead<T>) => {
+      if (!controller.signal.aborted) setResult({ client, state });
+    };
+    receive({ status: "loading" });
     read(client, controller.signal).then(
-      (data) => {
-        if (!controller.signal.aborted) setState({ status: "ready", data });
-      },
-      () => {
-        if (!controller.signal.aborted)
-          setState({
-            status: "failed",
-            error: agentWords("consent.edge.listFailed"),
-            retry: () => setAttempt((n) => n + 1),
-          });
-      },
+      (data) => receive({ status: "ready", data }),
+      () =>
+        receive({
+          status: "failed",
+          error: agentWords("consent.edge.listFailed"),
+          retry: () => setAttempt((n) => n + 1),
+        }),
     );
     return () => controller.abort();
   }, [client, wanted, loaded, attempt, read]);
@@ -96,4 +98,28 @@ export function useAgentPluginOptions(
 export function useChromeTabGrantCatalog(client: HostClient | null, wanted: boolean) {
   const result = useLazyRead(client, wanted, readChromeTabGrantCatalog);
   return result.status === "ready" ? result.data : undefined;
+}
+
+export function useTaskActivity(
+  client: HostClient | null,
+  threadId: string,
+  revision: string | null,
+) {
+  const [result, setResult] = useState<{
+    client: HostClient;
+    threadId: string;
+    operations: readonly AgentOperationView[] | undefined;
+  }>();
+  useEffect(() => {
+    if (!client || revision === null) return;
+    const controller = new AbortController();
+    const receive = (operations?: readonly AgentOperationView[]) => {
+      if (!controller.signal.aborted) setResult({ client, threadId, operations });
+    };
+    void readTaskActivity(client, threadId, controller.signal).then(receive, () => receive());
+    return () => controller.abort();
+  }, [client, threadId, revision]);
+  return revision !== null && result?.client === client && result.threadId === threadId
+    ? result.operations
+    : undefined;
 }

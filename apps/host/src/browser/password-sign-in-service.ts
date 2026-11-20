@@ -69,8 +69,9 @@ export interface SessionSignInScope {
   readonly operationId: AgentOperationId;
   readonly grantRevision: number;
   readonly profileId: BrowserProfileId;
+  readonly tabGeneration: number;
   readonly signal: AbortSignal;
-  readonly authorized: () => Promise<boolean>;
+  readonly authorized: (tabGeneration: number) => Promise<boolean>;
 }
 
 interface CallFields {
@@ -289,7 +290,7 @@ export class PasswordSignInService {
 
   #hasAuthority(call: Call): Promise<boolean> {
     return call.direct
-      ? call.direct.authorized()
+      ? call.direct.authorized(call.direct.tabGeneration)
       : this.#requests.hasActiveRunPasswordSignInAuthority(authority(call));
   }
 
@@ -324,7 +325,7 @@ export class PasswordSignInService {
         signal.throwIfAborted();
       }
       const request = await this.#requests.get(result.requestId);
-      if (!request || !(await input.direct.authorized())) return unavailable(input.site, "stopped");
+      if (!request || !(await input.direct.authorized(input.direct.tabGeneration))) return unavailable(input.site, "stopped");
       if (request.status === "pending") return unavailable(input.site, "interrupted");
       if (input.credential === "card") {
         const lease = this.leaseForOperation(operation.id);
@@ -496,7 +497,7 @@ export class PasswordSignInService {
       input.sessionId === call.sessionId &&
       input.profileId === call.direct.profileId &&
       input.tabId === call.surfaceId &&
-      (await call.direct.authorized()) &&
+      (await call.direct.authorized(call.direct.tabGeneration)) &&
       this.#liveLease(input.loginRef) === lease,
     );
   }

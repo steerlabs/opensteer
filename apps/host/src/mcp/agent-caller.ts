@@ -62,7 +62,7 @@ export class AgentCallerResolver {
   readonly options: {
     readonly store: Pick<
       OpensteerStore,
-      "getThreadForOwner" | "admitExecution" | "bindingAgentConnectionId"
+      "getThreadForOwner" | "admitExecution"
     >;
     readonly runs: Pick<RunToolTokenService, "authenticate"> &
       Partial<Pick<RunToolTokenService, "authenticateExecution">>;
@@ -73,7 +73,7 @@ export class AgentCallerResolver {
   constructor(options: {
     readonly store: Pick<
       OpensteerStore,
-      "getThreadForOwner" | "admitExecution" | "bindingAgentConnectionId"
+      "getThreadForOwner" | "admitExecution"
     >;
     readonly runs: Pick<RunToolTokenService, "authenticate"> &
       Partial<Pick<RunToolTokenService, "authenticateExecution">>;
@@ -184,17 +184,14 @@ export class AgentCallerResolver {
       )
         throw unavailable();
       if (lineage.agentConnectionId === null) return { accessMode: thread.accessMode };
-    } else if (
-      !(await this.options.store.bindingAgentConnectionId(bindingId).catch(() => {
-        throw unavailable();
-      }))
-    )
-      return { accessMode: thread.accessMode };
+    }
     const authority = await this.options.store
       .admitExecution({ ownerUserId: owner, subject: { kind: "binding", bindingId } })
       .catch(() => {
         throw unavailable();
       });
+    if (lineage?.agentConnectionId && authority.agentConnection?.agentConnectionId !== lineage.agentConnectionId)
+      throw unavailable();
     return authority.agentConnection
       ? { accessMode: authority.mode, agentConnection: authority.agentConnection }
       : { accessMode: thread.accessMode };

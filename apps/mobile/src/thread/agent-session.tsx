@@ -1,5 +1,6 @@
 import {
   mutationIdempotencyKey,
+  threadInDirectory,
   workWords,
   type HostClient,
   type HostSnapshot,
@@ -7,7 +8,7 @@ import {
   type OperationRequestView,
   type SessionTaskView,
 } from "@opensteer/client/host";
-import { useThreadTranscript } from "@opensteer/client/react";
+import { useTaskActivity, useThreadTranscript } from "@opensteer/client/react";
 import { AgentSessionIdSchema, RequestIdSchema, ThreadIdSchema } from "@opensteer/core";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
@@ -27,22 +28,30 @@ import {
 } from "./agent-session-model.js";
 import type { ThreadHeaderState } from "./thread-pane.js";
 
-const selectAgentWork = (snapshot: HostSnapshot) => snapshot.agentWork;
+function useSessionThread(hostClient: HostClient | null, threadId: string) {
+  const select = useCallback(
+    (snapshot: HostSnapshot) => threadInDirectory(threadId, snapshot),
+    [threadId],
+  );
+  return useHostValue(hostClient, select, null);
+}
 
 /** A task's session view while a connected agent works it itself; null for any other task. */
 export function useSessionTask(
   hostClient: HostClient | null,
   threadId: string,
 ): SessionTaskView | null {
-  const selectThread = useCallback(
-    (snapshot: HostSnapshot) => snapshot.threads.find(({ id }) => id === threadId) ?? null,
-    [threadId],
+  const thread = useSessionThread(hostClient, threadId);
+  const operations = useTaskActivity(
+    hostClient,
+    threadId,
+    thread?.externalWork
+      ? `${thread.updatedAt}|${thread.status}|${thread.externalWork.status}`
+      : null,
   );
-  const thread = useHostValue(hostClient, selectThread, null);
-  const agentWork = useHostValue(hostClient, selectAgentWork, undefined);
   return useMemo(
-    () => (thread === null ? null : sessionTaskOf({ threads: [thread], agentWork }, threadId)),
-    [agentWork, thread, threadId],
+    () => (thread === null ? null : sessionTaskOf({ threads: [thread] }, threadId, operations)),
+    [operations, thread, threadId],
   );
 }
 
@@ -51,15 +60,10 @@ export function useSessionRow(
   hostClient: HostClient | null,
   threadId: string,
 ): ReturnType<typeof sessionRowOf> {
-  const selectThread = useCallback(
-    (snapshot: HostSnapshot) => snapshot.threads.find(({ id }) => id === threadId) ?? null,
-    [threadId],
-  );
-  const thread = useHostValue(hostClient, selectThread, null);
-  const agentWork = useHostValue(hostClient, selectAgentWork, undefined);
+  const thread = useSessionThread(hostClient, threadId);
   return useMemo(
-    () => (thread === null ? null : sessionRowOf({ threads: [thread], agentWork }, threadId)),
-    [agentWork, thread, threadId],
+    () => (thread === null ? null : sessionRowOf({ threads: [thread] }, threadId)),
+    [thread, threadId],
   );
 }
 
@@ -105,10 +109,10 @@ export function AgentSessionPane(props: {
     });
   }, [onHeader, title, view.header]);
   const transcript = useThreadTranscript(hostClient, threadId);
-  const agentWork = useHostValue(hostClient, selectAgentWork, undefined);
+  const thread = useSessionThread(hostClient, threadId);
   const requests = useMemo(
-    () => operationRequestsOf({ threads: [], agentWork }, threadId, transcript.requests),
-    [agentWork, threadId, transcript.requests],
+    () => operationRequestsOf({ threads: thread ? [thread] : [] }, threadId, transcript.requests),
+    [thread, threadId, transcript.requests],
   );
   const stop = useAgentSessionStop(hostClient, threadId);
   const activity = view.activity;
@@ -248,7 +252,9 @@ export function OperationRequestCard(props: {
         </AppText>
       </View>
       <AppText role="bodyMedium">{view.question}</AppText>
-      {view.summary ? <AppText role="secondary">{view.summary}</AppText> : null}
+      {(view.context ?? view.summary) ? (
+        <AppText role="secondary">{view.context ?? view.summary}</AppText>
+      ) : null}
       {view.agentWords === null ? null : (
         <View style={styles.agentWords}>
           <AppText role="caption" tone="muted">

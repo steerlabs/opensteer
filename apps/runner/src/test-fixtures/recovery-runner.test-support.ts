@@ -17,6 +17,7 @@ import { ExecutionContainment, executionScopeVariable } from "../runtime/executi
 interface Boot {
   readonly nativeFsHelperBinary: string;
   readonly bootId: string;
+  readonly agentsStoppedSince?: string | null;
   readonly config: Omit<RunnerConfig, "hostUrl"> & { readonly hostUrl: string };
   readonly engine: { readonly fixture: string; readonly arguments: readonly string[] };
   readonly agentSkills: AgentSkillBundle;
@@ -84,6 +85,7 @@ async function boot(input: Boot) {
   const logger = { error: () => undefined, info: () => undefined };
   const runtime = new RunnerRuntime({
     bootId: input.bootId,
+    containment,
     dataDirectory: config.dataDirectory,
     environmentId: config.environmentId!,
     agentSkills: input.agentSkills,
@@ -130,6 +132,9 @@ async function boot(input: Boot) {
   const identity = await identityStore.loadOrCreate();
   const connection = new ReconnectingHostConnection({
     onConnected: () => authenticated.resolve(),
+    ...(input.agentsStoppedSince === undefined
+      ? {}
+      : { agentsStoppedSince: input.agentsStoppedSince }),
     bootId: RunnerBootIdSchema.parse(input.bootId),
     config,
     identity,

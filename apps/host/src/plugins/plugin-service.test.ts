@@ -156,3 +156,55 @@ it("writes no skill record for a version a later change replaced while it was re
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it("uses the matching engine drain report when the stop reply is lost", async () => {
+  active.clear();
+  const id = "execution";
+  const context = { caller: "owner", mode: "automatic" as const };
+  const state = { id, caller: context.caller, interaction: null };
+  const stopSent = Promise.withResolvers<void>();
+  const child = Object.assign(new EventEmitter(), {
+    connected: true,
+    exitCode: null,
+    signalCode: null,
+    send(raw: unknown) {
+      const message = HostMessageSchema.parse(raw);
+      if (message.type === "init") child.emit("message", { type: "ready", pid: 1, startupMs: 0 });
+      if (message.type === "stop") child.emit("exit");
+      if (message.type !== "request") return;
+      if (message.operation === "call")
+        child.emit("message", {
+          type: "result",
+          id: message.id,
+          operation: message.operation,
+          result: { ...state, state: "running" },
+        });
+      if (message.operation === "cancel") stopSent.resolve();
+    },
+  });
+  vi.mocked(fork).mockReturnValue(child as unknown as ChildProcess);
+  const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-stop-"));
+  const service = new PluginService({
+    processEntry: new URL("file:///unused.js"),
+    databaseUrl: "postgres://unused.invalid/unused",
+    dataDirectory: directory,
+    owner: "owner",
+    credentialKey: new Uint8Array(32),
+    origin: "https://fixture.invalid",
+  });
+  try {
+    await service.call(
+      { executionId: id, calls: { path: "tools.fixture.wait", input: {} } },
+      context,
+    );
+    const stopping = service.stopExecution(id, context, false);
+    await stopSent.promise;
+    const receipt = { ...state, state: "cancelled", drained: true };
+    child.emit("message", { type: "execution", execution: { ...receipt, caller: "another" } });
+    child.emit("message", { type: "execution", execution: receipt });
+    await expect(stopping).resolves.toEqual(receipt);
+  } finally {
+    await service.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

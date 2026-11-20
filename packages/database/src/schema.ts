@@ -1291,6 +1291,7 @@ export interface CommandTable {
   payload: JsonColumn<unknown>;
   encryptedRequestResponse: Generated<Buffer | null>;
   requestResponseKeyVersion: Generated<number | null>;
+  workOwnerStop: Generated<boolean | null>;
   status: CommandStatus;
   attempts: Generated<number>;
   dispatcherId: string | null;
@@ -2446,7 +2447,7 @@ export type DeploymentRow = Selectable<DeploymentTable>;
 export type ThreadRow = Selectable<ThreadTable>;
 export type RunRow = Selectable<RunTable>;
 export type RequestRow = Selectable<RequestTable>;
-export type CommandRow = Selectable<CommandTable>;
+export type CommandRow = Omit<Selectable<CommandTable>, "workOwnerStop">;
 /** A command awaiting dispatch, with the AI account of the Run it names. */
 export type PendingCommandRow = CommandRow & {
   readonly runHarnessInstanceId: HarnessInstanceId | null;

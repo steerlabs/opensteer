@@ -503,7 +503,7 @@ function ThreadView({
           placement.environmentId === selection.environmentId &&
           placement.harnessInstanceId === selection.harnessInstanceId,
       );
-      if (!target) throw new Error("The selected AI engine is no longer available");
+      if (!target) throw new Error("The selected agent is no longer available");
       await applyThreadExecution({
         hostClient,
         recheck: () => reviewSelection(selection),

@@ -148,6 +148,8 @@ async function renderOpensteer(): Promise<void> {
               mockConnectedAgents,
               mockIphoneSetupScenes,
               mockSubagentScenes,
+              mockWorkHomeScenes,
+              mockWorkPolicy,
             },
             { browserPreferencesStorage },
             { browserClientLifecycle },
@@ -241,12 +243,18 @@ async function renderOpensteer(): Promise<void> {
               // `?mock-home=server|cloud`: the Home is reached at its own address, a server or
               // (with `?mock-desktop=home&mock-cloud=ready`) the person's Cloud Computer.
               const mockHome = search.get("mock-home");
+              // `?mock-work` (or `=open`): this Home is a work Home under an organization's policy.
+              const workScene = search.has("mock-work")
+                ? (mockWorkHomeScenes.find((scene) => scene === search.get("mock-work")) ??
+                  "strict")
+                : null;
               const client = new MockHostClient({
                 ...(cloudScene ? { portalOrigin: "https://app.opensteer.example" } : {}),
                 ...(mockHome === "server" || mockHome === "cloud"
                   ? { exposure: "networked" as const }
                   : {}),
                 ...(agents ? mockConnectedAgents(agents) : {}),
+                ...(workScene ? { workPolicy: mockWorkPolicy(workScene) } : {}),
                 // `?mock-sessions=browser`: this window is a web browser's session.
                 ...(desktopScenario === "new-mac" || desktopScenario === "blocked"
                   ? { sessions: mockUnboundSessions("Opensteer for Mac") }
@@ -267,7 +275,8 @@ async function renderOpensteer(): Promise<void> {
               // `?mock-device-states`: a Device asleep and one waiting for an update.
               if (search.has("mock-device-states")) client.mockDeviceStates();
               // `?mock-agent-work`: connected agents working tasks themselves (with `?mock-agents`).
-              if (search.has("mock-agent-work")) client.mockAgentWork();
+              if (search.has("mock-agent-work"))
+                client.mockAgentWork({ long: search.get("mock-agent-work") === "long" });
               // `?mock-iphone-setup` lets this window set up iPhones as Opensteer on a Mac does,
               // playing a whole setup; `?mock-iphone-setup=<state>` holds it at one state.
               const iphoneScene = search.get("mock-iphone-setup");

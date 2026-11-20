@@ -1909,7 +1909,13 @@ export class DisplayStreamHub {
           : displayViewerCloseCodes.ended;
     for (const stream of this.#streams.values())
       if (stream.route?.runnerId === runnerId || (!stream.route && stream.deviceId === runnerId))
-        this.#end(stream, code, "Phone disconnected", 4003);
+        this.#end(
+          stream,
+          code,
+          reason === "device-restarting" ? "The device is restarting." : "Phone disconnected",
+          4003,
+          reason === "device-restarting" ? reason : undefined,
+        );
   }
   #failOwnerSources(stream: Stream, reason: DisplayStreamReason): void {
     for (const viewer of stream.viewers)

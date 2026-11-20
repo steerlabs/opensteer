@@ -66,7 +66,6 @@ try {
       const trials = [
         "popover-phases",
         "home-stop",
-        "row-stop",
         "quit-logout",
         "quit-sigterm",
         "early-quit",
@@ -77,10 +76,7 @@ try {
         trials,
       );
       for (const row of results)
-        assert(
-          row.outcome === "pass" || (row.trial === "row-stop" && row.outcome === "unverified"),
-          `menu-bar ${row.trial}: ${row.outcome} ${row.error ?? ""}`,
-        );
+        assert(row.outcome === "pass", `menu-bar ${row.trial}: ${row.outcome} ${row.error ?? ""}`);
       break;
     }
     case "quit": {

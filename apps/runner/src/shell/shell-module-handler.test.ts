@@ -30,7 +30,6 @@ import {
 } from "./shell-module-handler.js";
 
 const directories: string[] = [];
-import { manualAgentWork, type AgentWorkSource } from "../runtime/agent-stop-file.js";
 
 const handlers: ShellModuleHandler[] = [];
 const cleanups: Array<() => void> = [];
@@ -296,47 +295,22 @@ describe("ShellModuleHandler", () => {
     await handler.detach();
   });
 
-  it("refuses an agent's shell while the person has agents stopped, and ends open ones at Stop", async () => {
-    const directory = await temporaryDirectory();
-    const helper = await helperScript(
-      directory,
-      join(directory, "init.json"),
-      `fd.write('{"kind":"ready"}\\n');`,
-    );
-    const host = await fakeDataHost();
-    const agentWork = manualAgentWork();
-    const { handler, reports, reported } = handlerFor(
-      helper,
-      host.url,
+  it("refuses an agent's shell in stopped mode", async () => {
+    const { handler, reports } = handlerFor(
+      process.execPath,
+      new URL("http://127.0.0.1:1"),
       100,
       undefined,
       undefined,
-      agentWork,
+      true,
     );
-    const open = openMessage();
-    await handler.handleFrame(Buffer.from(JSON.stringify(open)), false);
-    await reported("runner.shell.session.opened");
-
-    agentWork.set(true);
-    await reported("runner.shell.session.closed");
-    expect(reports.at(-1)).toMatchObject({
-      reason: "stopped-by-owner",
-      sessionId: open.sessionId,
-      type: "runner.shell.session.closed",
-    });
-
     const refused = openMessage();
     await handler.handleFrame(Buffer.from(JSON.stringify(refused)), false);
-    await reported("runner.shell.session.rejected");
     expect(reports.at(-1)).toMatchObject({
       error: { code: "computer_stopped", message: shellAgentsStoppedSentence },
       sessionId: refused.sessionId,
+      type: "runner.shell.session.rejected",
     });
-
-    agentWork.set(false);
-    const resumed = openMessage();
-    await handler.handleFrame(Buffer.from(JSON.stringify(resumed)), false);
-    await reported("runner.shell.session.opened", 2);
     await handler.detach();
   });
 
@@ -628,7 +602,7 @@ function handlerFor(
   cleanupWaitMs = 100,
   resolveDataTransport?: typeof import("@opensteer/runner-client").runnerWebSocketTransport,
   sendReport?: (report: ShellModuleEvent) => Promise<void>,
-  agentWork?: AgentWorkSource,
+  stopped = false,
 ) {
   const reports: ShellModuleEvent[] = [];
   const received = new EventEmitter();
@@ -646,7 +620,7 @@ function handlerFor(
     logger: { error: () => undefined, info: () => undefined },
     ...(resolveDataTransport ? { resolveDataTransport } : {}),
     transport: { controlCaPath: undefined, hostUrl, mode: "development" },
-    ...(agentWork ? { agentWork } : {}),
+    stopped,
   });
   const stream: RunnerModuleStream = {
     browserAttachPublicKeys: undefined,

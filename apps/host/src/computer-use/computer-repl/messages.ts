@@ -92,6 +92,7 @@ export const ToWorkerSchema = z.discriminatedUnion("type", [
     context: z.string(),
     callId: z.string(),
     code: z.string(),
+    connection: z.literal(true).optional(),
     events: z.string().optional(),
   }),
   z.object({

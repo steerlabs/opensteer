@@ -51,41 +51,7 @@ vi.mock("@opensteer/browser-runtime-core", async (importOriginal) => ({
   defaultAttachTicketReplayLedgerPath: (root: string) => `${root}/replay`,
   sessionFilesRoot: (root: string) => `${root}/sessions`,
 }));
-import { AgentAdmission } from "../app/agent-admission.js";
-import { AgentBrowserGate } from "../browser/agent-browser-gate.js";
 import { startLocalBrowserRuntime } from "./local-browser-runtime.js";
-
-it("gates the raw CDP attachments the Home's browser connect opens, as it gates any agent's", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "local-browser-standard-"));
-  const admission = new AgentAdmission();
-  const handle = await startLocalBrowserRuntime({
-    downloads: { accept: vi.fn() },
-    pagePolicyPreloadPath: "/page.cjs",
-    profileRoot: directory,
-    runtimeId: "test",
-    agentGate: new AgentBrowserGate(admission),
-  });
-  const runtime = (fakes.server.mock.calls.at(-1)![0] as { runtime: unknown }).runtime as {
-    attachStandardCdp(
-      ticket: string,
-      overflow: () => void,
-      signal: AbortSignal,
-    ): Promise<{ close(): void }>;
-  };
-  try {
-    fakes.attachStandardCdp.mockClear();
-    await expect(
-      runtime.attachStandardCdp("ticket", () => undefined, new AbortController().signal),
-    ).rejects.toThrow(/stopped on this Mac/);
-    expect(fakes.attachStandardCdp).not.toHaveBeenCalled();
-    admission.reopen();
-    await runtime.attachStandardCdp("ticket", () => undefined, new AbortController().signal);
-    expect(fakes.attachStandardCdp).toHaveBeenCalledOnce();
-  } finally {
-    await handle.stop();
-    await rm(directory, { recursive: true, force: true });
-  }
-});
 
 describe("local browser composition", () => {
   it("prepares before advertising and passes the same durable root to engine and runtime", async () => {

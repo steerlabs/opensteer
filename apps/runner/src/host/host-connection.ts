@@ -1,3 +1,4 @@
+import type { ExecutionContainment } from "../runtime/execution-containment.js";
 import { AppServerError } from "../apps/app-server-manager.js";
 import { harnessMinimumVersion } from "@opensteer/core";
 import { meetsMinimumVersion } from "@opensteer/harness";
@@ -26,6 +27,7 @@ import {
   triggerStopGenerationCapability,
   attemptStopStateCapability,
   runnerAgentStopCapability,
+  runnerRestartingCloseCode,
   sameRunnerConnectionFence,
   computerAppMaxTimeoutMs,
 } from "@opensteer/protocol";
@@ -101,7 +103,6 @@ import {
 import { probeFullDiskAccess, type FullDiskAccessProbeOptions } from "../shell/full-disk-access.js";
 import type { PreparedShellModule } from "../shell/shell-host-key.js";
 import { ShellModuleHandler } from "../shell/shell-module-handler.js";
-import type { AgentWorkSource } from "../runtime/agent-stop-file.js";
 
 const maximumFrameBytes = 1024 * 1024;
 const maximumQueuedInboundBytes = 4 * maximumFrameBytes;
@@ -170,6 +171,7 @@ type PostAuthenticationHostMessage = Exclude<
  */
 interface RunnerModuleHandler {
   readonly maxPayloadBytes: number;
+  busy?(): boolean;
   attach(stream: RunnerModuleStream): Promise<void> | void;
   detach(): Promise<void> | void;
   handleFrame(frame: Buffer, isBinary: boolean): Promise<void>;
@@ -180,8 +182,10 @@ function computerAppModuleHandler(
   logger: RunnerLogger,
   config: Pick<RunnerConfig, "hostUrl" | "controlCaPath" | "mode">,
   port?: RunFilePort,
+  stopped = false,
 ): RunnerModuleHandler {
   const handler = new ComputerAppModuleHandler({
+    stopped,
     ...(integrations.files
       ? {
           files: new RunFiles({
@@ -211,6 +215,7 @@ function computerAppModuleHandler(
     detach: () => handler.detach(),
     handleFrame: (frame, isBinary) => handler.handleFrame(frame, isBinary),
     maxPayloadBytes: handler.maxPayloadBytes,
+    busy: () => handler.busy,
   };
 }
 
@@ -291,7 +296,9 @@ export interface ReconnectingHostConnectionOptions {
    * tells a Home that accepts it when agents are stopped and when they resume,
    * and its shell module refuses and ends agent shells while stopped.
    */
-  readonly agentWork?: AgentWorkSource;
+  readonly agentsStoppedSince?: string | null;
+  readonly containment?: ExecutionContainment;
+  readonly updateHeld?: () => boolean;
 }
 
 export class ReconnectingHostConnection {
@@ -362,11 +369,13 @@ export class ReconnectingHostConnection {
         sleepingSent: boolean;
       }
     | undefined;
-  readonly #agentWork: AgentWorkSource | undefined;
+  readonly #agentsStoppedSince: string | null | undefined;
+  readonly #containment: ExecutionContainment | undefined;
+  readonly #updateHeld: () => boolean;
+  #moduleWork = 0;
+  #updateModules: readonly RunnerModuleHandler[] = [];
   /** The socket the Home accepted agent-stop notices on, and how to stop telling it. */
-  #agentNotices: { readonly socket: WebSocket; readonly unsubscribe: () => void } | undefined;
   /** The last agent-stop notice sent, settled whether or not it reached the Home. */
-  #agentNotice: Promise<void> = Promise.resolve();
   /** The engines the current socket's hello advertised; see `recheckEngines`. */
   #advertisedEngines: { readonly signature: string; readonly socket: WebSocket } | undefined;
   /** The work this socket is serving, so a recheck can see whether any is still queued. */
@@ -379,6 +388,7 @@ export class ReconnectingHostConnection {
       options.executionClock ? { now: options.executionClock.now } : {},
     );
     this.#agents = options.agents;
+    this.#agentsStoppedSince = options.agentsStoppedSince;
     this.#browserBridge = options.browserBridge;
     this.#bootId = options.bootId;
     const { enrollmentToken, ...config } = options.config;
@@ -399,6 +409,7 @@ export class ReconnectingHostConnection {
           this.#logger,
           this.#config,
           options.agents?.runtime,
+          this.#agentsStoppedSince != null,
         )
       : undefined;
     this.#messagingDescriptor = options.messagingModule?.descriptor;
@@ -410,7 +421,8 @@ export class ReconnectingHostConnection {
     this.#onRevoked = options.onRevoked;
     this.#runtimeVersion = options.runtimeVersion;
     this.#shellModule = options.shellModule;
-    this.#agentWork = options.agentWork;
+    this.#containment = options.containment;
+    this.#updateHeld = options.updateHeld ?? (() => false);
     if (
       !options.agents &&
       !options.browserBridge &&
@@ -423,6 +435,20 @@ export class ReconnectingHostConnection {
     if (this.#config.maxConcurrentRuns > 1_000) {
       throw new Error("OPENSTEER_MAX_CONCURRENT_RUNS cannot exceed 1000");
     }
+  }
+
+  idleForUpdate(): boolean {
+    const serving = this.#work;
+    if (!serving || serving.socket !== this.#socket || serving.socket.readyState !== WebSocket.OPEN)
+      return false;
+    const { work } = serving;
+    return (
+      work.idle() &&
+      this.#moduleWork === 0 &&
+      !this.#updateModules.some((module) => module.busy?.()) &&
+      Object.values(work.activity()).every((ids) => ids.length === 0) &&
+      (this.#agents?.runtime.idleForUpdate() ?? true)
+    );
   }
 
   async run(signal: AbortSignal): Promise<void> {
@@ -530,36 +556,6 @@ export class ReconnectingHostConnection {
     if (this.#activeSink) this.#activeSink.sleepingSent = false;
   }
 
-  /** Settles once the last agent-stop notice was sent, or could not be. */
-  agentNoticeSent(): Promise<void> {
-    return this.#agentNotice;
-  }
-
-  /**
-   * Tells the Home on this connection whether the person has agents stopped
-   * here: once now if they are, then at each change while it lasts.
-   */
-  #tellAgentWork(sink: CausallyOrderedRunnerSink, socket: WebSocket): void {
-    const source = this.#agentWork;
-    if (!source) return;
-    this.#agentNotices?.unsubscribe();
-    const tell = () => {
-      if (socket.readyState !== WebSocket.OPEN) return;
-      this.#agentNotice = sink
-        .send(
-          source.stopped()
-            ? {
-                stoppedAt: (source.stoppedAt() ?? new Date()).toISOString(),
-                type: "runner.agents.stopped",
-              }
-            : { type: "runner.agents.resumed" },
-        )
-        .catch(() => undefined);
-    };
-    this.#agentNotices = { socket, unsubscribe: source.subscribe(tell) };
-    if (source.stopped()) tell();
-  }
-
   /**
    * The Host learns this computer's engines only from a hello, so when a CLI
    * has appeared or gone since this socket's, the Runner reconnects to say
@@ -601,7 +597,14 @@ export class ReconnectingHostConnection {
     const absorbSocketError = (): void => undefined;
     socket.on("error", absorbSocketError);
     this.#socket = socket;
-    const abort = () => socket.close(1001, "Runner stopping");
+    const abort = () => {
+      const restarting =
+        signal.reason instanceof Error && signal.reason.message === "device-restarting";
+      socket.close(
+        restarting ? runnerRestartingCloseCode : 1001,
+        restarting ? "The device is restarting." : "Runner stopping",
+      );
+    };
     signal.addEventListener("abort", abort, { once: true });
 
     const inbox = new BoundedRunnerInbox<InboundFrame>({
@@ -646,8 +649,10 @@ export class ReconnectingHostConnection {
       await waitForOpen(socket, signal);
       const iterator = inbox[Symbol.asyncIterator]();
       const welcome = await this.#authenticate(socket, iterator, signal);
-      sink = new CausallyOrderedRunnerSink(new WebSocketMessageSink(socket, this.#fence), (runId) =>
-        this.#refreshRunCredentials(socket, runId), welcome.acceptsAttemptStopState === true,
+      sink = new CausallyOrderedRunnerSink(
+        new WebSocketMessageSink(socket, this.#fence),
+        (runId) => this.#refreshRunCredentials(socket, runId),
+        welcome.acceptsAttemptStopState === true,
       );
       const browserHandler = this.#browserModuleHandler();
       const integrationsHandler = this.#integrationsHandler;
@@ -667,7 +672,8 @@ export class ReconnectingHostConnection {
       }
       if (welcome.acceptsPowerState && this.#supportsPowerState())
         this.#activeSink = { sink, sleepingSent: false, socket };
-      if (welcome.acceptsAgentStop && this.#agentWork) this.#tellAgentWork(sink, socket);
+      if (welcome.acceptsAgentStop && this.#agentsStoppedSince)
+        await sink.send({ type: "runner.agents.stopped", stoppedAt: this.#agentsStoppedSince });
       await this.#onConnected?.({
         environmentId: this.#agents ? this.#identity.environmentId : null,
         runnerId: this.#identity.runnerId,
@@ -710,10 +716,6 @@ export class ReconnectingHostConnection {
       socket.off("error", onError);
       socket.off("error", absorbSocketError);
       if (this.#activeSink?.socket === socket) this.#activeSink = undefined;
-      if (this.#agentNotices?.socket === socket) {
-        this.#agentNotices.unsubscribe();
-        this.#agentNotices = undefined;
-      }
       if (this.#socket === socket) this.#socket = undefined;
       if (this.#advertisedEngines?.socket === socket) this.#advertisedEngines = undefined;
       if (sink) {
@@ -836,6 +838,9 @@ export class ReconnectingHostConnection {
       ? await new LocalBrowserRuntimeBridge(bridge).capabilities()
       : {};
     return {
+      ...(this.#agentsStoppedSince === undefined
+        ? {}
+        : { agentsStoppedSince: this.#agentsStoppedSince }),
       bootId: this.#bootId,
       capabilities: [
         ...runnerCapabilities(harnessDrivers),
@@ -843,8 +848,14 @@ export class ReconnectingHostConnection {
           ? [agentHomeFilesCapability]
           : []),
         ...(this.#supportsPowerState() ? [runnerPowerStateCapability] : []),
-        ...(this.#agentWork ? [runnerAgentStopCapability] : []),
-        ...(agents ? ([runEventsCapability, triggerStopGenerationCapability, attemptStopStateCapability] as const) : []),
+        ...(this.#agentsStoppedSince === undefined ? [] : [runnerAgentStopCapability]),
+        ...(agents
+          ? ([
+              runEventsCapability,
+              triggerStopGenerationCapability,
+              attemptStopStateCapability,
+            ] as const)
+          : []),
         ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
           ? ["voice-run-v1" as const]
           : []),
@@ -989,7 +1000,15 @@ export class ReconnectingHostConnection {
       maxPayloadBytes: handler.maxPayloadBytes,
       module,
       mode: this.#config.mode,
-      onFrame: (frame, isBinary) => handler.handleFrame(frame, isBinary),
+      onFrame: async (frame, isBinary) => {
+        if (this.#updateHeld()) throw new Error("Opensteer is preparing to update");
+        this.#moduleWork += 1;
+        try {
+          await handler.handleFrame(frame, isBinary);
+        } finally {
+          this.#moduleWork -= 1;
+        }
+      },
       onInvalidated: () => handler.detach(),
       privateKey: this.#identity.privateKey,
       runnerId: this.#identity.runnerId,
@@ -1012,7 +1031,10 @@ export class ReconnectingHostConnection {
     }
     return {
       close: async () => {
-        opened.close();
+        const restarting =
+          signal.reason instanceof Error && signal.reason.message === "device-restarting";
+        if (restarting) opened.close(runnerRestartingCloseCode, "The device is restarting.");
+        else opened.close();
         await handler.detach();
       },
       closed: opened.closed,
@@ -1185,8 +1207,10 @@ export class ReconnectingHostConnection {
         runtimeId: bridge.runtimeId,
         url: bridge.url,
       }),
+      this.#agentsStoppedSince != null,
     );
     return {
+      busy: () => relay.busy,
       attach: (stream) => relay.attach(stream),
       detach: () => relay.detach(),
       handleFrame: (frame, isBinary) => relay.handleFrame(frame, isBinary),
@@ -1198,7 +1222,8 @@ export class ReconnectingHostConnection {
     const shell = this.#shellModule;
     if (!shell) return undefined;
     const handler = new ShellModuleHandler({
-      ...(this.#agentWork ? { agentWork: this.#agentWork } : {}),
+      stopped: this.#agentsStoppedSince != null,
+      ...(this.#containment ? { containment: this.#containment } : {}),
       helperBinary: shell.helperBinary,
       hostKeyPath: shell.hostKeyPath,
       logger: this.#logger,
@@ -1209,6 +1234,7 @@ export class ReconnectingHostConnection {
       detach: () => handler.detach(),
       handleFrame: (frame, isBinary) => handler.handleFrame(frame, isBinary),
       maxPayloadBytes: handler.maxPayloadBytes,
+      busy: () => handler.busy,
     };
   }
 
@@ -1269,10 +1295,14 @@ export class ReconnectingHostConnection {
         })
       : reachOnlyWorkSession(sink);
     this.#work = { socket, work };
+    this.#updateModules = handlers.map(({ handler }) => handler);
     // Module streams are opened from inside the serving loop, because the
     // ticket each one needs is answered on this connection: the loop below is
     // the only reader of it, so it is the only place that can hand a ticket
     // over. Their own lifetime ends with this connection, never before it.
+    const stopped = this.#agentsStoppedSince != null;
+    const stoppedReplies = stopped ? reachOnlyWorkSession(sink, "stopped") : undefined;
+    const updateReplies = reachOnlyWorkSession(sink, "update");
     const modules = new Map<RunnerAuxiliaryModule, OpenedRunnerModule>();
     const moduleLifetime = new AbortController();
     const moduleSignal = AbortSignal.any([signal, moduleLifetime.signal]);
@@ -1327,7 +1357,10 @@ export class ReconnectingHostConnection {
             this.#credentialWaiters.delete(message.requestId);
             break;
           default:
-            await work.handle(message);
+            if (stoppedReplies && !stoppedWorkAllowed[message.type])
+              await stoppedReplies.handle(message);
+            else if (this.#updateHeld()) await updateReplies.handle(message);
+            else await work.handle(message);
         }
       },
     });
@@ -1379,6 +1412,42 @@ type RunnerWorkMessage = Exclude<
   { readonly type: "host.welcome" | "host.connection.lease-renewed" | "host.auxiliary.ticket" }
 >;
 
+export const stoppedWorkAllowed = {
+  "host.app.cancel": false,
+  "host.app.connect": false,
+  "host.app.start": false,
+  "host.app.stop": false,
+  "host.apps.sync": false,
+  "host.background-text": false,
+  "host.command": false,
+  "host.discover-model-servers": true,
+  "host.executions.acked": true,
+  "host.executions.attached": true,
+  "host.executions.renewed": true,
+  "host.harness-authentication": true,
+  "host.home-files.cancel": true,
+  "host.home-files.download": true,
+  "host.home-files.list": true,
+  "host.home-files.read": true,
+  "host.home-files.resolve": true,
+  "host.home-files.write": false,
+  "host.inspect-harnesses": true,
+  "host.live.resync": false,
+  "host.output-image.upload": false,
+  "host.reconcile-harnesses": true,
+  "host.run-file.cancel": false,
+  "host.run-file.receive": false,
+  "host.run-file.send": false,
+  "host.runs.revoked": true,
+  "host.voice": false,
+} satisfies Record<
+  Exclude<
+    RunnerWorkMessage["type"],
+    "host.grants.credentials" | "host.shell.probe-full-disk-access"
+  >,
+  boolean
+>;
+
 type HarnessCatalogRequest = Extract<
   RunnerWorkMessage,
   { readonly type: "host.reconcile-harnesses" | "host.inspect-harnesses" }
@@ -1400,6 +1469,7 @@ interface RunnerWorkSession {
    * and then cancelled by a reconnect.
    */
   settled(): boolean;
+  idle(): boolean;
   /** Every Run this Runner holds, announced before any other work on a connection. */
   attachInventory(): Extract<
     RunnerOperationalReport,
@@ -1680,6 +1750,17 @@ export class AgentsWorkSession implements RunnerWorkSession {
 
   settled(): boolean {
     return this.#orderedPending === 0 && this.#commandResponses.size === 0;
+  }
+
+  idle(): boolean {
+    return (
+      this.settled() &&
+      this.#fileRequests.size === 0 &&
+      this.#homeFileRequests.size === 0 &&
+      this.#appRequests.size === 0 &&
+      this.#authenticationResponses.size === 0 &&
+      this.#voiceResponses.size === 0
+    );
   }
 
   /** Orders admission without awaiting engine controls already in flight. */
@@ -2256,8 +2337,16 @@ export class AgentsWorkSession implements RunnerWorkSession {
  * Answering plainly is still what keeps a person unblocked: the Run fails now,
  * with a sentence, instead of waiting on a Runner that will never reply.
  */
-function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSession {
-  const notRunningAgents = "This computer does not run agents.";
+function reachOnlyWorkSession(
+  sink: CausallyOrderedRunnerSink,
+  mode?: "stopped" | "update",
+): RunnerWorkSession {
+  const notRunningAgents =
+    mode === "stopped"
+      ? "Agents are stopped on this computer. Resume them on this computer to continue."
+      : mode === "update"
+        ? "Opensteer is preparing to update on this computer."
+        : "This computer does not run agents.";
   return {
     activity: () => ({
       activeRunIds: [],
@@ -2268,8 +2357,16 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
     initialReports: () => Promise.resolve(),
     close: () => Promise.resolve(),
     settled: () => true,
+    idle: () => true,
     handle: async (message) => {
       switch (message.type) {
+        case "host.background-text":
+          await sink.send({
+            type: "runner.background-text-result",
+            attemptId: message.attemptId,
+            result: { ok: false, failure: "unavailable" },
+          });
+          return;
         case "host.reconcile-harnesses":
         case "host.inspect-harnesses":
           await sink.send({
@@ -2312,7 +2409,14 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
           await sink.send({
             commandId: message.command.commandId,
             correlationId: message.command.correlationId,
-            error: { code: "forbidden", message: notRunningAgents, retryable: false },
+            error: mode
+              ? {
+                  code: "conflict",
+                  message: notRunningAgents,
+                  ...(mode === "stopped" ? { reason: "computer_stopped" } : {}),
+                  retryable: true,
+                }
+              : { code: "forbidden", message: notRunningAgents, retryable: false },
             type: "runner.command-rejected",
           });
           return;
@@ -2492,7 +2596,9 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
               commandId: command.commandId,
               correlationId: command.correlationId,
               type: "runner.command-accepted",
-              ...(this.#acceptsAttemptStopState && decision.stopState ? { stopState: decision.stopState } : {}),
+              ...(this.#acceptsAttemptStopState && decision.stopState
+                ? { stopState: decision.stopState }
+                : {}),
               ...(decision.workspacePath ? { workspacePath: decision.workspacePath } : {}),
             }
           : decision.status === "rejected"

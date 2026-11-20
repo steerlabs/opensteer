@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { AgentGrantAppIdentitySchema, AgentGrantPluginTargetSchema } from "./agent-grants.js";
+import {
+  AgentGrantAppIdentitySchema,
+  AgentGrantPluginTargetSchema,
+  AgentGrantPluginTargetViewSchema,
+} from "./agent-grants.js";
 import { DeviceIdSchema } from "./devices.js";
 import {
   AgentOperationIdSchema,
@@ -52,9 +56,31 @@ export const AgentGrantTargetSchema = z.discriminatedUnion("kind", [
 export const AgentOperationTargetSchema = z.strictObject({
   grant: AgentGrantTargetSchema,
   name: z.string().min(1).max(255),
+  untrustedTitle: z.string().max(1024).optional(),
   device: z.strictObject({ id: DeviceIdSchema, name: z.string().min(1).max(255) }).nullable(),
 });
 export type AgentOperationTarget = z.infer<typeof AgentOperationTargetSchema>;
+
+const [profileTarget, chromeTarget, appTarget, pluginTarget, deviceTarget] =
+  AgentGrantTargetSchema.options;
+const AgentGrantTargetViewSchema = z.discriminatedUnion("kind", [
+  z.object(profileTarget.shape),
+  z.object(chromeTarget.shape),
+  z.object({
+    ...appTarget.shape,
+    app: z.union([
+      z.object(appTarget.shape.app.options[0].shape),
+      z.object(appTarget.shape.app.options[1].shape),
+    ]),
+  }),
+  z.object({ ...pluginTarget.shape, target: AgentGrantPluginTargetViewSchema }),
+  z.object(deviceTarget.shape),
+]);
+export const AgentOperationTargetViewSchema = z.object({
+  ...AgentOperationTargetSchema.shape,
+  grant: AgentGrantTargetViewSchema,
+  device: z.object(AgentOperationTargetSchema.shape.device.unwrap().shape).nullable(),
+});
 
 export const AgentOperationStateSchema = z.enum([
   "admitted",
@@ -84,17 +110,25 @@ export const AgentOperationDecisionSchema = z.discriminatedUnion("by", [
 ]);
 export type AgentOperationDecision = z.infer<typeof AgentOperationDecisionSchema>;
 
+const AgentOperationDecisionViewSchema = z.discriminatedUnion("by", [
+  z.object(AgentOperationDecisionSchema.options[0].shape),
+  z.object(AgentOperationDecisionSchema.options[1].shape),
+  z.object(AgentOperationDecisionSchema.options[2].shape),
+  z.object(AgentOperationDecisionSchema.options[3].shape),
+  z.object(AgentOperationDecisionSchema.options[4].shape),
+]);
+
 /** One operation as the person's activity list shows it. */
 export const AgentOperationViewSchema = z.object({
   id: AgentOperationIdSchema,
   sessionId: AgentSessionIdSchema,
   taskId: ThreadIdSchema,
   tool: z.string().min(1).max(100),
-  target: AgentOperationTargetSchema,
+  target: AgentOperationTargetViewSchema,
   mode: ThreadAccessModeSchema,
   effect: z.enum(["read", "write"]),
   state: AgentOperationStateSchema,
-  decision: AgentOperationDecisionSchema.nullable(),
+  decision: AgentOperationDecisionViewSchema.nullable(),
   outcome: AgentOperationOutcomeSchema.nullable(),
   requestId: RequestIdSchema.nullable(),
   createdAt: z.iso.datetime({ offset: true }),

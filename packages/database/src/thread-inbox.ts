@@ -38,6 +38,8 @@ import {
   bindingAgentConnectionId,
   assertSendEligible,
   liveDelegatingConnection,
+  meetsConnectionFloor,
+  sendEligible,
 } from "./resource-access.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import {
@@ -634,6 +636,18 @@ async function claimFollowUps(
     .limit(input.limit)
     .execute();
   if (waiting.length === 0) return { claimed: 0 };
+  const connection = run.connectionId
+    ? await liveDelegatingConnection(transaction, run.requestedBy, run.connectionId)
+        .catch((error: unknown) => {
+          if (error instanceof OpensteerError && error.code === "forbidden") return null;
+          throw error;
+        })
+    : null;
+  const eligible = run.connectionId === null ||
+    (connection !== null && sendEligible(connection, thread.originConnectionId));
+  if (eligible && connection && run.admittedGrantRevision !== null &&
+    !meetsConnectionFloor(connection, run.admittedGrantRevision, run.admittedAccessMode))
+    return { claimed: 0 };
   const ids = waiting.map(({ messageId }) => messageId);
   const locked = await transaction
     .selectFrom("threadInputs")
@@ -657,11 +671,11 @@ async function claimFollowUps(
   for (const messageId of ids) {
     const row = lockedById.get(messageId);
     if (!row) continue;
-    if (!(await channelInputAuthorityIsCurrent(transaction, messageId))) {
+    if (!eligible || !(await channelInputAuthorityIsCurrent(transaction, messageId))) {
       const cancelled = await transaction
         .updateTable("threadInputs")
         .set({
-          cancelReason: "channel-authority-unavailable",
+          cancelReason: eligible ? "channel-authority-unavailable" : "authority-revoked",
           state: "cancelled",
           updatedAt: new Date(),
         })

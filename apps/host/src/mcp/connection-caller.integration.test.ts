@@ -20,6 +20,7 @@ import {
 import {
   AgentConnectionStore,
   assertLineageCompatibleReuse,
+  beginAgentSession,
   type OpensteerStore,
 } from "@opensteer/database";
 import {
@@ -59,7 +60,8 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     });
     const listed = (await agent.client.listTools()).tools.map(({ name }) => name);
     expect(listed).toEqual(
-      agentTools.filter((tool) => tool.callers.includes("connection")).map(({ name }) => name),
+      agentTools.filter((tool) => tool.callers.includes("connection") &&
+        tool.name !== "tab_open" && tool.name !== "tab_close").map(({ name }) => name),
     );
     expect(listed).toContain("opensteer_task_update");
 
@@ -316,6 +318,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
+      grant: { scope: "selected", tasks: true, resources: [] },
     });
     const second = await storeFixture.store.createHarnessInstance({
       config: {},
@@ -345,6 +348,9 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
           operationKey,
         },
       });
+    const accounts = await agent.client.callTool({ name: "opensteer_ai_account_list", arguments: {} });
+    expect(accounts.isError, JSON.stringify(accounts.content)).not.toBe(true);
+    expect(JSON.stringify(accounts.structuredContent)).toContain(second.id);
     expect(f.harnessInstance.isDefault).toBe(true);
     await exclude(f.harnessInstance.id, second.id);
     expect(errorText(await call("all-excluded"))).toContain("Choose aiAccountId for the new task");
@@ -355,6 +361,28 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(await storeFixture.store.getThreadForOwner(threadId, f.userId)).toMatchObject({
       harnessInstanceId: second.id,
     });
+  });
+
+  it("explains both taskId crossings in its own lineage and hides a foreign direct task", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("connection-task-kinds");
+    const url = await serveMcp(storeFixture);
+    const makeAgent = () => connection(storeFixture.store, url, {
+      userId: f.userId, accessMode: "full-access",
+      grant: { scope: "selected", tasks: true,
+        resources: [{ kind: "browser-profile", profileId: createId("browserProfile") }] },
+    });
+    const [agent, foreign] = await Promise.all([makeAgent(), makeAgent()]);
+    const startDirect = async (agentConnectionId: typeof agent.id) =>
+      (await beginAgentSession(storeFixture.database, { userId: f.userId, agentConnectionId })).session.threadId;
+    const direct = await startDirect(agent.id);
+    const other = await startDirect(foreign.id);
+    const native = await createTask(agent, f, "person-agent-work");
+    expect(errorText(await agent.client.callTool({ name: "tab_list", arguments: { taskId: native } })))
+      .toContain("Pass a direct-work taskId");
+    expect(errorText(await send(agent, direct, "send-to-direct")))
+      .toContain("Pass a taskId for work run by one of the person's agents");
+    expect((await send(agent, other, "send-to-foreign")).structuredContent)
+      .toEqual((await send(agent, createId("thread"), "send-to-missing")).structuredContent);
   });
 
   it("lets a connection inspect and update a task through shared domain commands", async ({
@@ -1105,6 +1133,73 @@ describeStore("connection grants and lineage", (it) => {
     await expect(
       assertLineageCompatibleReuse(storeFixture.database, firstTask, owners),
     ).rejects.toThrow("Start a new task for this work");
+  });
+
+  it("includes a human report in the dispatched batch of its connected task", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("lineage-report");
+    const { database, store } = storeFixture;
+    const agent = await connection(store, await serveMcp(storeFixture), {
+      userId: f.userId, accessMode: "full-access", grant: tasksOnly,
+    });
+    const task = await createTask(agent, f, "lineage-report");
+    const report = await store.enqueueThreadInput({
+      requestedBy: f.userId, threadId: task, idempotencyKey: "owner-lineage-report",
+      source: { kind: "human" }, policy: "report", content: [{ type: "text", text: "Owner report" }],
+    });
+    const run = await queuedRun(storeFixture, task);
+    const command = await database.selectFrom("commands").select("id").where("runId", "=", run.id)
+      .where("type", "=", "run.execute").executeTakeFirstOrThrow();
+    await store.claimCommand(command.id, "lineage-report");
+    const context = await store.loadRunDispatchContext(command.id);
+    expect(context.reports.messages.map(({ id }) => id)).toEqual([report.message.id]);
+  });
+
+  it("only lets an everything seed join the owner's provider session while it still qualifies", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("lineage-provider-session");
+    const { database, store } = storeFixture;
+    const agent = await connection(store, await serveMcp(storeFixture), { userId: f.userId, accessMode: "full-access" });
+    const task = await ownerTask(storeFixture, f, "lineage-provider-session");
+    const read = () => database.selectFrom("runs").select(["id", "providerSessionId", "status"])
+      .where("threadId", "=", task).orderBy("runOrdinal").execute();
+    const session = await database.selectFrom("providerSessions").select("id")
+      .where("threadId", "=", task).where("active", "=", true).executeTakeFirstOrThrow();
+    expect((await send(agent, task, "join-owner-session")).isError).not.toBe(true);
+    const [reserved] = await read();
+    expect(reserved).toMatchObject({ providerSessionId: session.id, status: "queued" });
+    const command = await database.selectFrom("commands").select("id").where("runId", "=", reserved!.id)
+      .where("type", "=", "run.execute").executeTakeFirstOrThrow();
+    await new AgentConnectionStore(database).update(f.userId, {
+      connectionId: agent.id, expectedRevision: 1, grant: tasksOnly,
+    });
+    expect(await store.claimCommand(command.id, "lineage-provider-session")).toMatchObject({
+      terminalFailureInput: "seed-input",
+      terminalFailure: "The connected agent's access ended before this work could be delivered.",
+    });
+    expect((await read())[0]?.status).toBe("queued");
+  });
+
+  it("refuses binding the owner's provider session when a queued connection narrows after claim", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("provider-bind-narrowing");
+    const { database, store } = storeFixture;
+    const agent = await connection(store, await serveMcp(storeFixture), {
+      userId: f.userId, accessMode: "full-access",
+    });
+    const task = await ownerTask(storeFixture, f, "provider-bind-narrowing");
+    expect((await send(agent, task, "provider-bind-narrowing")).isError).not.toBe(true);
+    const run = await queuedRun(storeFixture, task);
+    const command = await database.selectFrom("commands").select("id").where("runId", "=", run.id)
+      .where("type", "=", "run.execute").executeTakeFirstOrThrow();
+    expect(await store.claimCommand(command.id, "provider-bind-narrowing")).not.toHaveProperty("terminalFailure");
+    await new AgentConnectionStore(database).update(f.userId, {
+      connectionId: agent.id, expectedRevision: 1, grant: tasksOnly,
+    });
+    await expect(store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000), continuationIdentity: testContinuationIdentity,
+      harnessInstanceId: f.harnessInstance.id, leaseTokenHash: crypto.randomUUID(),
+      runnerBootId: "fixture-boot", runnerId: f.runnerId, runId: run.id, threadId: task,
+    })).rejects.toMatchObject({ code: "forbidden", message: "Task is unavailable" });
+    expect(await database.selectFrom("runs").select("bindingGeneration")
+      .where("id", "=", run.id).executeTakeFirstOrThrow()).toEqual({ bindingGeneration: null });
   });
 
   it("runs lineage work at the minimum mode and only within its grant", async ({

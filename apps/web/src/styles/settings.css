@@ -1228,6 +1228,14 @@ button.card__row > .card__row-body {
   color: var(--text-soft);
   font-size: var(--text-lg);
 }
+.agent-consent__claim {
+  overflow: hidden;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .agent-consent__where svg {
   flex: none;
   width: 16px;
@@ -1585,4 +1593,44 @@ a.connected-agents__row:focus-visible {
   margin: 0;
   color: var(--text);
   font-weight: 600;
+}
+
+/* ---- A work Home seen from inside it: its mark beside the Home's name, and its policy ---- */
+
+.work-badge--quiet {
+  margin-left: 0;
+  align-self: flex-start;
+}
+
+.agent-consent__work {
+  margin: 0 0 calc(var(--space-8) * -1);
+}
+
+.work-see__value {
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  text-align: right;
+}
+
+.devices__add {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-4);
+}
+
+.devices__add-limit {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+/* A choice a work Home's policy rules out: still shown, quieter, with its reason. */
+.agent-consent__mode[aria-disabled="true"],
+.card__row.is-unavailable {
+  cursor: default;
+}
+
+.agent-consent__mode[aria-disabled="true"] .card__row-title,
+.card__row.is-unavailable .card__row-title {
+  color: var(--muted);
 }

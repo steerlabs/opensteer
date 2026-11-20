@@ -49,7 +49,7 @@ import {
   type OrganizationRefusal,
   type OrganizationSection,
 } from "./portal-pages.js";
-import { offboardWorkAssignment } from "./routes.js";
+import { notifyWorkPolicy, offboardWorkAssignment } from "./routes.js";
 import type { OrganizationStore } from "./store.js";
 
 const title = orgWords("org.web.title");
@@ -516,6 +516,15 @@ export function registerOrganizationPortal(
         devices: form.devices,
       }),
     });
+    await notifyWorkPolicy(
+      {
+        organizations: input.organizations,
+        auth: options.auth,
+        publicOrigin: options.publicOrigin,
+        workHomeFetch,
+      },
+      input.organizationId,
+    );
     return "policy";
   });
 

@@ -12,6 +12,7 @@ import { pendingReplacementAttempt } from "./run-attempts.js";
 import { type CommandRow, type ProviderSessionTable, type DatabaseSchema } from "./schema.js";
 import {
   isPlaceContentPart,
+  agentGrantAllowsTasks,
   placeContentLabel,
   surrogateSafeCut,
   threadTitleRequestMaxLength,
@@ -64,6 +65,7 @@ import { readRunThreadState } from "./run-thread-state.js";
 import { newestMessageWindow } from "./message-window.js";
 
 import { channelRunAuthorityIsCurrent } from "./channel-execution.js";
+import { assertSendEligible } from "./resource-access.js";
 import { hasUncertainEarlierExecution } from "./personal-run-state.js";
 import {
   assertActiveExecutionBinding as assertActiveExecutionBindingInStore,
@@ -607,6 +609,7 @@ export async function acquireExecutionBinding(
         "runs.assignmentId",
         "runs.threadId",
         "runs.runOrdinal",
+        "threads.originConnectionId",
       ])
       .where("runs.id", "=", input.runId)
       .forNoKeyUpdate("runs")
@@ -627,6 +630,13 @@ export async function acquireExecutionBinding(
         code: "conflict",
         message: "Run is not awaiting an execution binding",
       });
+    }
+    if (run.connectionId) {
+      const connection = await assertSendEligible(
+        transaction, run.requestedBy, run.originConnectionId, run.connectionId,
+      );
+      if (!connection || !agentGrantAllowsTasks(connection.grant))
+        throw new OpensteerError({ code: "forbidden", message: "Run execution authority is no longer active" });
     }
     if (
       (await assignmentWasCancelled(transaction, run.assignmentId)) ||

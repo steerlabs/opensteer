@@ -16,7 +16,7 @@ import { deviceVisibleTo } from "../../devices/device-visibility.js";
 import type { TabActor, TabServicePort } from "../../tabs/ports.js";
 import { callerLineage, type AgentCaller, type ConnectionCaller } from "../agent-caller.js";
 import { operationId, requireRun } from "../operations.js";
-import { directResult as direct, requireDirectWork } from "./direct.js";
+import { browserEffect, directResult as direct, requireDirectWork } from "./direct.js";
 import type { ToolCall } from "./types.js";
 
 function actor(caller: AgentCaller): TabActor {
@@ -42,25 +42,23 @@ function tabForCaller(caller: AgentCaller, tab: Tab) {
   return deviceVisibleTo(callerLineage(caller)?.grant)(computer.computerId) ? tab : rest;
 }
 
+type ProfileLookup = (
+  caller: ConnectionCaller,
+  profileId: BrowserProfileId,
+) => Promise<Pick<AgentOperationTarget, "name" | "device"> | string | null>;
+
 export class TabToolHandlers {
   readonly #tabs: TabServicePort;
   readonly #sessions: AgentSessionService | undefined;
-  readonly #profileName: (
-    caller: ConnectionCaller,
-    profileId: BrowserProfileId,
-  ) => Promise<string | null>;
+  readonly #profileLookup: ProfileLookup;
   constructor(
     tabs: TabServicePort,
     sessions?: AgentSessionService,
-    /** A granted profile's name, so the person sees what an operation touches. */
-    profileName: (
-      caller: ConnectionCaller,
-      profileId: BrowserProfileId,
-    ) => Promise<string | null> = async () => null,
+    profileLookup: ProfileLookup = async () => null,
   ) {
     this.#tabs = tabs;
     this.#sessions = sessions;
-    this.#profileName = profileName;
+    this.#profileLookup = profileLookup;
   }
   #direct() {
     return requireDirectWork(this.#sessions);
@@ -72,11 +70,12 @@ export class TabToolHandlers {
     if (!profileId) return { grant: { kind: "device" }, name: "Guest browser", device: null };
     // A name is resolved only for a profile the grant reaches; anything else stays unnamed.
     const granted = agentGrantAccess(caller.grant, { kind: "browser-profile", profileId });
-    const name = granted ? await this.#profileName(caller, profileId) : null;
+    const profile = granted ? await this.#profileLookup(caller, profileId) : null;
     return {
       grant: { kind: "browser-profile", profileId },
-      name: name ?? "This browser profile",
-      device: null,
+      ...(profile && typeof profile === "object"
+        ? profile
+        : { name: profile ?? "This browser profile", device: null }),
     };
   }
 
@@ -119,7 +118,7 @@ export class TabToolHandlers {
       if (target.kind !== "page")
         throw new OpensteerError({
           code: "forbidden",
-          message: "A connected agent can only open browser pages here. Pass target.kind = \"page\".",
+          message: 'A connected agent can only open browser pages here. Pass target.kind = "page".',
         });
       return direct(
         await this.#direct().run({
@@ -134,8 +133,8 @@ export class TabToolHandlers {
           effect: "write",
           calls: `tab_open ${canonicalJson({ target })}`,
           execute: async (context) => {
-            const { tab } = await this.#tabs.open(
-              sessionActor(context), target, `operation:${context.operationId}`,
+            const { tab } = await browserEffect(() =>
+              this.#tabs.open(sessionActor(context), target, `operation:${context.operationId}`),
             );
             return { tab: tabForCaller(caller, tab) };
           },
@@ -160,11 +159,7 @@ export class TabToolHandlers {
           message: "Close one tab per call, so each is reviewed on its own.",
         });
       const tabId = tabIds[0] as TabId;
-      // Only a tab this connection can already see; anything else reads as unknown.
-      const visible = await this.#tabs.list(actor(caller), {});
-      const tab = visible.tabs.find((entry) => entry.tabId === tabId) ?? notFound();
-      const profileId =
-        "profile" in tab && tab.profile ? (tab.profile.profileId as BrowserProfileId) : null;
+      const tab = await this.#tabs.connectionTab({ kind: "connection", caller }, tabId);
       return direct(
         await this.#direct().run({
           ownerUserId: caller.userId,
@@ -174,12 +169,20 @@ export class TabToolHandlers {
           operationKey,
           tool: "tab_close",
           input: { tabIds },
-          target: await this.#profileTarget(caller, profileId),
-          targetGeneration: tabId,
+          target: await this.#profileTarget(caller, tab.profileId),
+          targetGeneration: String(tab.generation),
           effect: "write",
           calls: `tab_close ${canonicalJson({ tabIds })}`,
-          execute: (context) =>
-            this.#tabs.close(sessionActor(context), [tabId], `operation:${context.operationId}`),
+          execute: async (context) => {
+            const result = await this.#tabs.close(
+              sessionActor(context),
+              [tabId],
+              `operation:${context.operationId}`,
+              tab.generation,
+            );
+            if (!result.closed.includes(tabId)) notFound();
+            return result;
+          },
           summarize: (result) => ({ closed: result.closed.length, failed: result.failed.length }),
         }),
       );

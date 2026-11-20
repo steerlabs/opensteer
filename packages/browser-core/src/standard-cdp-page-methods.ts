@@ -116,6 +116,7 @@ export const standardCdpPageMethods: ReadonlySet<string> = new Set([
   "Runtime.removeBinding",
   "Runtime.runIfWaitingForDebugger",
   "Target.detachFromTarget",
+  "Target.getTargets",
   "Target.sendMessageToTarget",
   "Target.setAutoAttach",
 ]);

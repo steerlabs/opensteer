@@ -102,6 +102,7 @@ import {
 } from "./run-finalization.js";
 import { liveAgentConnection, meetsConnectionFloor, sendEligible } from "./resource-access.js";
 import { lockLineageConnection } from "./thread-caller.js";
+import { isWorkHomeDatabase } from "./work-home-context.js";
 
 export type RunnerControlInput =
   | {
@@ -111,6 +112,7 @@ export type RunnerControlInput =
       readonly threadId: ThreadId;
       readonly type: "run.interrupt";
       readonly keepQueueRunning?: true;
+      readonly auditOwnerStop?: true;
       readonly expectedBindingGeneration?: number | null;
       readonly stop?: { readonly id: CommandRow["id"]; readonly bootId: string };
       readonly authority?: ThreadCallerAuthority;
@@ -1084,6 +1086,9 @@ export async function enqueueRunnerControlInTransaction(
           encryptedRequestResponse: input.sealedResponse.envelope,
           requestResponseKeyVersion: input.sealedResponse.keyVersion,
         }
+      : {}),
+    ...(input.type === "run.interrupt" && input.auditOwnerStop && isWorkHomeDatabase(transaction)
+      ? { workOwnerStop: true }
       : {}),
     requestedBy: input.requestedBy,
     runId: input.runId,

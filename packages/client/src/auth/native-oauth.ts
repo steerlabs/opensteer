@@ -1,3 +1,4 @@
+import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
 import { TeamRuntimeOwner } from "../team/team-runtime-owner.js";
 import {
   NativeTeamEntry,
@@ -123,7 +124,7 @@ export class TeamIdentityGrantUnsupportedError extends ClientOperationError {
 /** Whether a team Host can be entered with the Account's identity alone, without a browser. */
 export function supportsTeamSessionExchange(connection: DeploymentConnection): boolean {
   return (
-    connection.kind === "team" &&
+    !isPersonalHost(connection.authority.document) &&
     (connection.capabilities ?? []).includes("team-session-exchange-v1")
   );
 }
@@ -131,7 +132,7 @@ export function supportsTeamSessionExchange(connection: DeploymentConnection): b
 /** Whether a team's invite page continues to this app's sign-in once it proved the invite. */
 export function supportsTeamInviteContinuation(connection: DeploymentConnection): boolean {
   return (
-    connection.kind === "team" &&
+    !isPersonalHost(connection.authority.document) &&
     (connection.capabilities ?? []).includes("team-invite-native-continuation-v1")
   );
 }
@@ -597,7 +598,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
    * answers at once, and only an interactive call opens the browser.
    */
   async signInHome(connection: DeploymentConnection, interactive = true): Promise<HostOAuthState> {
-    if (connection.kind === "team" || !usesHostNativeOAuth(connection))
+    if (!isPersonalHost(connection.authority.document) || !usesHostNativeOAuth(connection))
       throw new Error("Only a Home at its own address signs in here.");
     if (await this.authorizationHeader(connection)) return this.hostCredentialState(connection);
     if (!interactive) throw new TeamEntryOutcomeError({ status: "sign-in-required" });
@@ -1076,7 +1077,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     connection: DeploymentConnection,
     rejectedAuthorization?: string | null,
   ): Promise<boolean> {
-    if (connection.kind !== "team") {
+    if (isPersonalHost(connection.authority.document)) {
       const refreshed = await this.refreshTeamAuthorization(connection, rejectedAuthorization);
       return refreshed !== null && refreshed !== rejectedAuthorization;
     }
@@ -1115,7 +1116,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
    * different Opensteer, which must receive no refresh token, bearer or sign-in.
    */
   async #proveSameHome(connection: DeploymentConnection): Promise<void> {
-    if (connection.kind !== "personal" || !usesHostNativeOAuth(connection)) return;
+    if (!isPersonalHost(connection.authority.document) || !usesHostNativeOAuth(connection)) return;
     const saved = connection.authority;
     const key = `${saved.document.deploymentId}:${saved.publicKey.spki}:${saved.document.canonicalOrigin}`;
     if (this.#provenHomes.has(key)) return;
@@ -2121,7 +2122,7 @@ function authorizationUrl(
   clientId: string,
 ): string {
   const url = new URL(endpoints.authorization);
-  if (flow.kind === "host" && flow.connection.kind === "team")
+  if (flow.kind === "host" && !isPersonalHost(flow.connection.authority.document))
     url.searchParams.set(teamOAuthVersionParameter, String(teamApiVersion));
   const resource =
     flow.kind === "account"

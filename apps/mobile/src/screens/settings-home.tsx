@@ -1,4 +1,6 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { workHomeMark } from "@opensteer/client/host";
+import { useWorkPolicy } from "@opensteer/client/react";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { useTeamsSnapshot } from "../team/team-context.js";
 import { SettingsHomeForm } from "./settings-home-form.js";
@@ -17,7 +19,7 @@ const pages = {
   "sign-ins": SignInsSettingsController,
   "external-agents": ExternalAgentsSettingsController,
 };
-import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
+import { DeploymentGate, useAttachedHost, useAttachedHostOf } from "./deployment-gate.js";
 import type { SettingsPage } from "./settings-form.types.js";
 export function SettingsScreen() {
   const navigation = useNavigation();
@@ -39,9 +41,20 @@ export function SettingsScreen() {
 function SettingsHome(props: { readonly team: SettingsHomeTeam | null }) {
   const navigation = useNavigation();
   const { selection } = useMobileState();
+  const deploymentId = selection.deploymentId;
+  const work = workHomeMark(useWorkPolicy(useAttachedHostOf(deploymentId)));
   return (
     <SettingsHomeForm
       team={props.team}
+      work={
+        work && deploymentId
+          ? {
+              badge: work.badge,
+              title: work.seeTitle,
+              onPress: () => navigation.navigate("WorkHomePolicy", { deploymentId }),
+            }
+          : null
+      }
       onOpen={(route) => {
         if (route === "SettingsAiSharing") {
           navigation.navigate(route);

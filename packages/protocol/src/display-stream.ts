@@ -178,6 +178,7 @@ export const DisplayStreamStateSchema = z.enum([
 ]);
 export type DisplayStreamState = z.infer<typeof DisplayStreamStateSchema>;
 export const DisplayStreamReasonSchema = z.enum([
+  "device-restarting",
   "permission-required",
   "encoder-failed",
   "capacity",

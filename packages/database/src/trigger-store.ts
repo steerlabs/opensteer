@@ -271,6 +271,13 @@ export async function createTriggerInTransaction(
   );
   const admitted = await admitTriggerActor(transaction, input.createdBy, input);
   input = admitted.input;
+  const assertAnchorScope = async (anchorThreadId: ThreadId) => {
+    if (!admitted.connection) return;
+    const anchor = await transaction.selectFrom("threads").select("originConnectionId")
+      .where("id", "=", anchorThreadId).executeTakeFirstOrThrow();
+    if (!sendEligible(admitted.connection, anchor.originConnectionId))
+      throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
+  };
   const existing = await transaction
     .selectFrom("triggers")
     .selectAll()
@@ -289,6 +296,7 @@ export async function createTriggerInTransaction(
       },
       "define",
     );
+    await assertAnchorScope(trigger.anchorThreadId);
     if (trigger.requestFingerprint !== requestFingerprint) throw idempotencyConflict();
     await requireTriggerExecutionAuthority(transaction, trigger);
     const revision = await transaction
@@ -326,17 +334,7 @@ export async function createTriggerInTransaction(
     input.createdBy,
     managed !== undefined,
   );
-  // The send rule, under this fence: a connection narrowed to `selected` after the MCP check
-  // may no longer place work on the person's task.
-  if (admitted.connection && !ownTask) {
-    const origin = await transaction
-      .selectFrom("threads")
-      .select("originConnectionId")
-      .where("id", "=", anchorThreadId)
-      .executeTakeFirstOrThrow();
-    if (!sendEligible(admitted.connection, origin.originConnectionId))
-      throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
-  }
+  if (!ownTask) await assertAnchorScope(anchorThreadId);
   const triggerId = createId("trigger");
   const revisionId = createId("triggerRevision");
   const now = new Date();

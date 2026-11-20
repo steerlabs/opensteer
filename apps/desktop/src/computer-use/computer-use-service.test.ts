@@ -38,8 +38,6 @@ import { createHelperAppProvider } from "../../../runner/src/computer-apps/helpe
 import { ComputerAppModuleHandler } from "../../../runner/src/computer-apps/module-handler.js";
 
 import { ComputerUseService } from "./computer-use-service.js";
-import { openAgentAdmission, type AgentAdmission } from "../app/agent-admission.js";
-import { DesktopActivity } from "../app/desktop-activity.js";
 import { computerUseFrameReader, encodeComputerUseFrame } from "./helper-frames.js";
 import type { ComputerUseHelperProcess } from "./helper-install.js";
 import {
@@ -655,186 +653,6 @@ describe.skipIf(!onMac)("the helper connection's lifetime", () => {
   });
 });
 
-describe.skipIf(!onMac)("the person's Stop from the menu bar", () => {
-  it("ends agent sessions, keeps the helper for the person's views, and refuses agents until resumed", async () => {
-    const admission = openAgentAdmission();
-    const harness = await lifetimeHarness({ admission });
-    await harness.observe();
-    expect(harness.computerUse.agentSessions).toBe(1);
-
-    admission.close();
-    await harness.computerUse.pause();
-    expect(harness.computerUse.agentSessions).toBe(0);
-    await vi.waitFor(() =>
-      expect(harness.events).toContainEqual(
-        expect.objectContaining({
-          event: "session.stopped",
-          params: expect.objectContaining({ reason: "user", sessionId: harness.sessionId }),
-        }),
-      ),
-    );
-    expect(harness.helper.methods).toContain("session.close");
-    expect(harness.helper.connections()).toBe(1);
-    const methods = harness.helper.methods.length;
-    await expect(
-      harness.call("session.open", { sessionId: harness.sessionId, threadTitle: null }),
-    ).resolves.toMatchObject({ error: { code: "stopped-by-user" } });
-    expect(harness.helper.methods).toHaveLength(methods);
-    await expect(harness.probe()).resolves.toMatchObject({ permissions: expect.anything() });
-
-    admission.reopen();
-    await expect(
-      harness.call("session.open", { sessionId: harness.sessionId, threadTitle: null }),
-    ).resolves.toEqual({ sessionId: harness.sessionId });
-  });
-
-  it("counts a connected agent's app session in the activity Quit reads, and refuses it while stopped", async () => {
-    const admission = openAgentAdmission();
-    const harness = await stackHarness({ admission });
-    // A connected agent's frame names its session's key, never a Run: `run_` and the session's
-    // own id, as the Host keys it. Nothing here can tell it from a task's, by construction.
-    const sessionKey = `run_${createId("agentSession").split("_")[1]}`;
-    const activity = new DesktopActivity({
-      hostedHome: async () => null,
-      deviceHomes: async () => [],
-      host: () => {
-        throw new Error("No Home is read here.");
-      },
-      local: () => ({ appSessions: harness.computerUse.agentSessions, browserTabs: 0 }),
-    });
-    const first = ComputerUseSessionIdSchema.parse(`cus_${globalThis.crypto.randomUUID()}`);
-    await harness.observe("agent-1", first, sessionKey);
-    await vi.waitFor(
-      () => expect(resultOf(harness.hostStream, "agent-1")?.result).toMatchObject({ kind: "ok" }),
-      { interval: 10, timeout: 10_000 },
-    );
-    expect(harness.computerUse.agentSessions).toBe(1);
-    expect((await activity.snapshot()).lines).toContain("An agent is using apps on this Mac");
-
-    admission.close();
-    await harness.computerUse.pause();
-    expect(harness.computerUse.agentSessions).toBe(0);
-    expect((await activity.snapshot()).lines).not.toContain("An agent is using apps on this Mac");
-    const methods = harness.helper.methods.length;
-    const second = ComputerUseSessionIdSchema.parse(`cus_${globalThis.crypto.randomUUID()}`);
-    await harness.observe("agent-2", second, sessionKey);
-    await vi.waitFor(
-      () =>
-        expect(JSON.stringify(resultOf(harness.hostStream, "agent-2")?.result)).toContain(
-          "stopped-by-user",
-        ),
-      { interval: 10, timeout: 10_000 },
-    );
-    // Refused before the helper heard of it.
-    expect(harness.helper.methods.slice(methods)).not.toContain("session.open");
-    expect(harness.computerUse.agentSessions).toBe(0);
-  });
-
-  it("stops one agent session from the menu bar as the helper's own Stop ends it", async () => {
-    const harness = await lifetimeHarness({});
-    await harness.observe();
-    expect(harness.computerUse.agentSessionDetails()).toEqual([
-      { sessionId: harness.sessionId, threadTitle: null, app: "Notes", state: "active" },
-    ]);
-    const changed = vi.fn();
-    harness.computerUse.onAgentSessionsChanged(changed);
-    expect(harness.computerUse.stopAgentSession(harness.sessionId)).toBe(true);
-    expect(changed).toHaveBeenCalled();
-    // The row stays, stopping, until the helper confirms the close.
-    expect(harness.computerUse.agentSessionDetails()).toEqual([
-      expect.objectContaining({ sessionId: harness.sessionId, state: "stopping" }),
-    ]);
-    await vi.waitFor(() => expect(harness.computerUse.agentSessionDetails()).toEqual([]));
-    await vi.waitFor(() =>
-      expect(harness.events).toContainEqual(
-        expect.objectContaining({
-          event: "session.stopped",
-          params: expect.objectContaining({ reason: "user", sessionId: harness.sessionId }),
-        }),
-      ),
-    );
-    await vi.waitFor(() => expect(harness.helper.methods).toContain("session.close"));
-    expect(harness.helper.connections()).toBe(1);
-    expect(harness.computerUse.stopAgentSession(harness.sessionId)).toBe(false);
-  });
-
-  it("closes a session the person stopped while it was opening, once the open returns", async () => {
-    const harness = await lifetimeHarness({});
-    const open = gate();
-    harness.helper.state.openGate = open.waiting;
-    const opened = harness.call("session.open", {
-      sessionId: harness.sessionId,
-      threadTitle: null,
-    });
-    await vi.waitFor(() => expect(harness.helper.methods).toContain("session.open"));
-    expect(harness.computerUse.stopAgentSession(harness.sessionId)).toBe(true);
-    expect(harness.helper.methods).not.toContain("session.close");
-    expect(harness.computerUse.agentSessionDetails()).toEqual([
-      expect.objectContaining({ state: "stopping" }),
-    ]);
-    open.release();
-    await expect(opened).resolves.toMatchObject({ error: { code: "stopped-by-user" } });
-    await vi.waitFor(() => expect(harness.helper.methods).toContain("session.close"));
-    await vi.waitFor(() => expect(harness.computerUse.agentSessionDetails()).toEqual([]));
-  });
-
-  it("refuses work queued for a stopped session and keeps its row failed while its close fails", async () => {
-    const harness = await lifetimeHarness({});
-    await harness.observe();
-    harness.helper.state.closeFails = true;
-    expect(harness.computerUse.stopAgentSession(harness.sessionId)).toBe(true);
-    const observed = harness.helper.methods.filter((method) => method === "session.observe").length;
-    await expect(
-      harness.call("session.observe", {
-        app: { access: "read", identity: notesIdentity },
-        includeScreenshot: true,
-        window: "window-1",
-        sessionId: harness.sessionId,
-      }),
-    ).resolves.toMatchObject({ error: { code: "stopped-by-user" } });
-    expect(harness.helper.methods.filter((method) => method === "session.observe")).toHaveLength(
-      observed,
-    );
-    await vi.waitFor(() =>
-      expect(harness.computerUse.agentSessionDetails()).toEqual([
-        expect.objectContaining({ sessionId: harness.sessionId, state: "failed" }),
-      ]),
-    );
-    // Stop again from the row: the close is retried and the row goes once it is confirmed.
-    harness.helper.state.closeFails = false;
-    expect(harness.computerUse.stopAgentSession(harness.sessionId)).toBe(true);
-    await vi.waitFor(() => expect(harness.computerUse.agentSessionDetails()).toEqual([]));
-  });
-
-  it("says Stop did not finish while an agent session's close is not confirmed", async () => {
-    const admission = openAgentAdmission();
-    const harness = await lifetimeHarness({ admission });
-    await harness.observe();
-    harness.helper.state.closeFails = true;
-    admission.close();
-    await expect(harness.computerUse.pause()).rejects.toThrow(/didn’t confirm it stopped/);
-    expect(harness.computerUse.agentSessions).toBe(1);
-  });
-
-  it("never sends an open that waited on installation through a Stop, even after Resume", async () => {
-    const admission = openAgentAdmission();
-    const harness = await lifetimeHarness({ admission, running: false });
-    const install = gate();
-    harness.helper.state.installGate = install.waiting;
-    const opened = harness.call("session.open", {
-      sessionId: harness.sessionId,
-      threadTitle: null,
-    });
-    await vi.waitFor(() => expect(harness.helper.commands).toContain("/usr/bin/plutil"));
-    admission.close();
-    await harness.computerUse.pause();
-    admission.reopen();
-    install.release();
-    await expect(opened).resolves.toMatchObject({ error: { code: "stopped-by-user" } });
-    expect(harness.helper.methods).not.toContain("session.open");
-  });
-});
-
 describe.skipIf(!onMac)("one deadline from the bridge frame to the helper frame", () => {
   it("forwards only what is left after a slow installation", async () => {
     const harness = await lifetimeHarness({ running: false });
@@ -901,7 +719,6 @@ function gate(): { readonly release: () => void; readonly waiting: Promise<void>
  * socket, for what the helper connection does between requests.
  */
 async function lifetimeHarness(options: {
-  readonly admission?: AgentAdmission;
   readonly idleDisconnectMs?: number;
   readonly ownerViewVersion?: number;
   readonly installed?: boolean;
@@ -933,7 +750,6 @@ async function lifetimeHarness(options: {
     platform: "darwin",
     run: helper.run,
     teamId: null,
-    ...(options.admission ? { admission: options.admission } : {}),
   });
   cleanups.push(async () => computerUse.stop());
   const bridge = await computerUse.startForSlot("dep_2f1a2b4c-5d6e-4f80-9a1b-2c3d4e5f6071");
@@ -1449,9 +1265,7 @@ function contractOf(definitionId: string, name: string): string {
   return computerAppOperationContract(operation);
 }
 
-async function stackHarness(
-  options: { readonly helperInstallFails?: boolean; readonly admission?: AgentAdmission } = {},
-) {
+async function stackHarness(options: { readonly helperInstallFails?: boolean } = {}) {
   // The helper's socket lives under this home, and a Unix socket path must
   // stay under about a hundred bytes, which the platform temp root can exceed.
   const home = await mkdtemp(path.join(process.platform === "darwin" ? "/tmp" : tmpdir(), "oscu-"));
@@ -1469,7 +1283,6 @@ async function stackHarness(
     platform: "darwin",
     run: helper.run,
     teamId: null,
-    ...(options.admission ? { admission: options.admission } : {}),
   });
   cleanups.push(async () => computerUse.stop());
   const homeConnection = deployment("Home", "https://home.opensteer.test");

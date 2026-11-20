@@ -14,7 +14,11 @@ import {
   type ConnectedAgentStatus,
   type HostClient,
 } from "@opensteer/client/host";
-import { useChromeTabGrantCatalog, useConnectedAgents } from "@opensteer/client/react";
+import {
+  useChromeTabGrantCatalog,
+  useConnectedAgents,
+  useWorkPolicy,
+} from "@opensteer/client/react";
 import type { ThreadAccessMode } from "@opensteer/core";
 import { useShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
@@ -45,6 +49,7 @@ export function ConnectedAgentPage({
   const navigate = useNavigate();
   const agents = useConnectedAgents(client);
   const chromeTabs = useChromeTabGrantCatalog(client, true);
+  const workPolicy = useWorkPolicy(client);
   const { snapshot } = shell;
   const connection = agents.connections?.find((row) => row.id === connectionId) ?? null;
   const [edit, setEdit] = useState<Edit | null>(null);
@@ -140,16 +145,16 @@ export function ConnectedAgentPage({
       <div className="connected-agent__header">
         <AgentMark identity={detail.row.identity} large />
         <h1 className="settings-section__title">{agent}</h1>
-        {detail.live ? (
-          <span className="btn">
+        {detail.live?.threadId ? (
+          <Link className="btn" to={`/tasks/${detail.live.threadId}`}>
             <Icon name="eye" />
             {agentWords("agent.watch")}
-          </span>
+          </Link>
         ) : null}
       </div>
-      <AgentWhoLine who={who} />
+      <AgentWhoLine nameShown={agent !== who.heading} who={who} />
       <AgentWithdrawnNotice
-        onDisconnect={busy ? null : () => setConfirming("disconnect")}
+        onDisconnect={withdrawn && !busy ? () => setConfirming("disconnect") : null}
         who={who}
       />
       <StatusNotice status={detail.status} />
@@ -173,7 +178,8 @@ export function ConnectedAgentPage({
           {agentWords("agent.legacy")}
         </p>
       ) : null}
-      {detail.editable ? (
+      {/* Under a work Home's ceiling, the choices wait for it: none is offered and then refused. */}
+      {detail.editable && workPolicy !== undefined ? (
         <>
           <AgentGrantEditor
             agent={agent}
@@ -184,12 +190,14 @@ export function ConnectedAgentPage({
             draft={draft}
             home={agentHomeName(snapshot)}
             onChange={(next) => change({ draft: next })}
+            workPolicy={workPolicy ?? undefined}
           />
           <ConnectionModeChoices
             disabled={busy}
             mode={mode}
             onChange={(next) => change({ mode: next })}
             showSettingsNote={draft.scope === "everything"}
+            workPolicy={workPolicy ?? undefined}
           />
           {dirty ? (
             <div className="form-actions">

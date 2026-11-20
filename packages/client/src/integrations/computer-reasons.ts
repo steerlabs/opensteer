@@ -198,6 +198,8 @@ export function computerReasonWords(
   names: { readonly target: string; readonly machine: string; readonly phone: boolean },
 ): string {
   switch (reason) {
+    case "device-restarting":
+      return "The device is restarting.";
     case "not-connected":
       return `${names.machine} is not connected.`;
     case "driver-offline":

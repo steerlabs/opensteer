@@ -1,4 +1,6 @@
-import { agentGrantToolFamilies, type AgentGrant } from "@opensteer/core";
+import type { AgentGrant } from "@opensteer/core";
+import { connectionComputerKinds, connectionDirectTools, connectionHasChromeTabs } from "./connection-tools.js";
+import { toolsFor } from "./tools-for.js";
 import type { RunToolCapabilities } from "./registry.js";
 import type { TaskPurpose } from "@opensteer/core";
 
@@ -121,28 +123,40 @@ export function appHostingGuide(input: {
   return `Apps you publish run on this ${input.platform === "darwin" ? "macOS" : "Linux"} computer: \`start\` runs with /bin/sh -c.`;
 }
 
-export const connectionInstructions = `Opensteer runs the person's one agent and tools on their computers. Your connection has personal scope, an access-mode ceiling, expiry and revoke; live resource grants can narrow it further.
-- Tasks: opensteer_task_create, opensteer_task_read and bounded opensteer_task_wait. AI accounts and limits: opensteer_ai_account_list; computers: computer_list. Tasks work in Agent home on the hosting computer.
-- You have no task of your own: always name taskId for task operations. Connections get no delegation or automatic return; wait on taskId.
-- A connection gets no team request authority. Act directly within authorization, including reducing access. Never grant access, raise power, handle credentials, sign in, pair or enroll. Ask the person in your conversation, or delegate a task that can open a Request. Pending is not permission.`;
-
-/** What a connected agent is told about its own grant: brief, and only what is true. */
-export function connectionInstructionsFor(grant: AgentGrant): string {
-  if (grant.scope === "everything") return connectionInstructions;
-  const families = agentGrantToolFamilies(grant);
-  const lines = [
-    "Opensteer runs the person's agents and tools on their computers. The person chose what this connection may use; it has an access-mode ceiling, expiry and revoke, and you see only tasks you started.",
-    families.has("tasks")
-      ? "- Tasks: opensteer_task_create, opensteer_task_read and bounded opensteer_task_wait. A task runs one of the person's own agents on their Home with that computer's files, commands and network, under the task's mode. Always name taskId."
-      : "- You may not ask the person's agents to work on tasks.",
-    ...(families.has("browser") ? ["- Browser: only the browser profiles the person chose."] : []),
-    ...(families.has("computer")
-      ? ["- Apps: only the apps and phone screens the person chose."]
-      : []),
-    ...(families.has("plugins")
-      ? ["- Plugins: only the plugins and accounts the person chose, at the access they chose."]
-      : []),
-    "- To use anything else, ask the person to change what this agent may use under Connected agents. Never handle credentials, sign in, pair or enroll. Pending is not permission.",
-  ];
-  return lines.join("\n");
+export function connectionInstructionsFor(
+  grant: AgentGrant,
+  offered = toolsFor({ kind: "connection", grant, accessMode: "full-access" }),
+): string {
+  const names = new Set<string>(offered.map(({ name }) => name));
+  const { apps, phones } = connectionComputerKinds(grant);
+  const kinds = [
+    names.has("browser_profile_list") && "browser profiles (browser_profile_list)",
+    names.has("tab_list") && connectionHasChromeTabs(grant) && "shared Chrome tabs (tab_list)",
+    names.has("computer_apps") &&
+      (apps && phones ? "apps and phone screens" : apps ? "apps" : "phone screens") + " (computer_apps)",
+    names.has("plugin_search") && "plugins (plugin_search)",
+    names.has("opensteer_task_create") && "the person's agents (opensteer_task_create)",
+  ].filter(Boolean);
+  const direct = [
+    names.has("browser_use") && "browser_use for one script or browser_connect for a CDP endpoint (Playwright or Puppeteer)",
+    names.has("computer_use") && "computer_use for a device script",
+    names.has("plugin_call") && "plugin_call for a plugin",
+  ].filter(Boolean);
+  const hasDirectWork = [...names].some((name) => connectionDirectTools.has(name));
+  return [
+    "Opensteer gives you access to what the person shares on their own devices. Only what they shared is available.",
+    ...(kinds.length ? [`Shared with you: ${kinds.join(", ")}.`] : []),
+    ...(direct.length ? [`Do the work yourself: ${direct.join("; ")}.`] : []),
+    ...(hasDirectWork ? [
+      "The person can watch your direct-work task. Omit taskId to start or continue it, or pass the returned taskId to keep working there.",
+      "Pending means the person was asked. Read taskId, operationId and status in structuredContent. After the person has time to answer, call the same tool with identical arguments and the returned operationId. Do not poll in a loop.",
+      "Unknown means it may have happened. Check the current state before acting again.",
+      "stopped_by_person: stop that task and ask before starting again. declined_by_person: do not retry that action.",
+    ] : []),
+    ...(hasDirectWork && names.has("opensteer_task_create") ? ["The person's agents use a different taskId. Use each ID only with its own kind of tool."] : []),
+    ...(names.has("saved_login_request") ? ["For a page, use saved_login_request or card_request. Opensteer fills secrets into the page without returning them."] : []),
+    ...(names.has("ask_person") ? ["Use ask_person for help or a decision. Never ask for secrets in chat."] : []),
+  ].join("\n");
 }
+
+export const connectionInstructions = connectionInstructionsFor({ scope: "everything" });

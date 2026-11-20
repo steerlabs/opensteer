@@ -10,7 +10,12 @@ import {
   type AgentGrant,
   type UserId,
 } from "@opensteer/core";
-import type { AgentConnection, AgentConnectionState } from "@opensteer/protocol";
+import {
+  agentConnectionConsentRefusals,
+  agentConnectionVerificationChangedMessage,
+  type AgentConnection,
+  type AgentConnectionState,
+} from "@opensteer/protocol";
 import {
   AgentConnectionIdentityAtConsentSchema,
   AgentDirectoryDocumentSchema,
@@ -24,8 +29,14 @@ import { sql, type Kysely, type Selectable } from "kysely";
 import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { databaseOperation } from "./operation-budget.js";
-import { connectionAttempts, latestConnectionUncertainty, outstandingAttempts } from "./connection-disconnect.js";
+import {
+  connectionAttempts,
+  latestConnectionUncertainty,
+  outstandingAttempts,
+} from "./connection-disconnect.js";
 import { jsonValue } from "./store-primitives.js";
+import { connectionPolicyMode } from "./work-policy.js";
+import { closeObsoleteAgentOperationRequests } from "./agent-session-store.js";
 
 export class AgentConnectionStore {
   readonly database: Kysely<DatabaseSchema>;
@@ -51,26 +62,22 @@ export class AgentConnectionStore {
   }): Promise<AgentConnection> {
     return withPersonalTransaction(this.database, async (tx) => {
       await requirePersonalOwner(tx, input.userId);
-      if (input.grant) await assertGrantable(tx, input.userId, input.grant);
       const evidence = input.identityAtConsent;
-      const accepted =
-        input.directoryIssuer && evidence && evidence.kind !== "unverified"
-          ? await tx
-              .selectFrom("agentDirectoryCache")
-              .select(["document", "acceptedAt"])
-              .where("issuer", "=", input.directoryIssuer)
-              .executeTakeFirst()
-          : undefined;
-      const directory = accepted ? AgentDirectoryDocumentSchema.parse(accepted.document) : null;
-      const withdrawal =
-        accepted &&
-        directory &&
-        evidence &&
-        evidence.kind !== "unverified" &&
-        directory.revision > evidence.directoryRevision &&
-        isIdentityStillVerified(evidence, directory) === false
-          ? accepted.acceptedAt
-          : null;
+      if (input.directoryIssuer && evidence && evidence.kind !== "unverified") {
+        const directory = await new AgentConnectionStore(tx, this.now).loadDirectory(
+          input.directoryIssuer,
+        );
+        if (directory && !(await isIdentityStillVerified(evidence, directory))) {
+          throw new OpensteerError({
+            code: "conflict",
+            reason: agentConnectionConsentRefusals.verificationChanged,
+            message: agentConnectionVerificationChangedMessage,
+          });
+        }
+      }
+      const grant = input.grant ? AgentGrantSchema.parse(input.grant) : everythingAgentGrant;
+      const accessMode = await connectionPolicyMode(tx, grant, input.accessMode);
+      if (input.grant) await assertGrantable(tx, input.userId, grant);
       const row = await tx
         .insertInto("agentConnections")
         .values({
@@ -78,23 +85,20 @@ export class AgentConnectionStore {
           userId: input.userId,
           label: input.label,
           clientName: input.clientName,
-          accessMode: input.accessMode,
+          accessMode,
           resource: input.resource,
           createdAt: this.now(),
           expiresAt: input.expiresAt,
           tokenHash: null,
           lastUsedAt: null,
           revokedAt: null,
-          grant: jsonValue(
-            input.grant ? AgentGrantSchema.parse(input.grant) : everythingAgentGrant,
-          ),
+          grant: jsonValue(grant),
           consentVersion: input.grant ? 2 : 1,
           clientFingerprint: input.clientFingerprint ?? null,
           redirectUri: input.redirectUri ?? null,
           identityAtConsent: input.identityAtConsent
             ? jsonValue(AgentConnectionIdentityAtConsentSchema.parse(input.identityAtConsent))
             : null,
-          verificationWithdrawnAt: withdrawal,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -110,7 +114,10 @@ export class AgentConnectionStore {
     return row ? AgentDirectoryDocumentSchema.parse(row.document) : null;
   }
 
-  acceptDirectory(issuer: string, document: AgentDirectoryDocument): Promise<AgentDirectoryDocument> {
+  acceptDirectory(
+    issuer: string,
+    document: AgentDirectoryDocument,
+  ): Promise<AgentDirectoryDocument> {
     return withPersonalTransaction(this.database, async (tx) => {
       const current = await new AgentConnectionStore(tx, this.now).loadDirectory(issuer);
       if (current && document.revision < current.revision) return current;
@@ -141,20 +148,22 @@ export class AgentConnectionStore {
         .where("verificationWithdrawnAt", "is", null)
         .where("identityAtConsent", "is not", null)
         .execute();
-      const withdrawn = rows.filter((row) => {
+      const withdrawn: string[] = [];
+      for (const row of rows) {
         const evidence = identityAtConsent(row.identityAtConsent);
-        return (
+        if (
           evidence &&
           evidence.kind !== "unverified" &&
           evidence.directoryRevision < document.revision &&
-          isIdentityStillVerified(evidence, document) === false
-        );
-      });
+          !(await isIdentityStillVerified(evidence, document))
+        )
+          withdrawn.push(row.id);
+      }
       if (withdrawn.length > 0) {
         await tx
           .updateTable("agentConnections")
           .set({ verificationWithdrawnAt: acceptedAt })
-          .where("id", "in", withdrawn.map((row) => row.id))
+          .where("id", "in", withdrawn)
           .where("verificationWithdrawnAt", "is", null)
           .execute();
       }
@@ -169,7 +178,11 @@ export class AgentConnectionStore {
   ): Promise<boolean> {
     const row = await this.database
       .insertInto("agentEmbedderAssertionClaims")
-      .values({ issuer, statementId, expiresAt })
+      .columns(["issuer", "statementId", "expiresAt"])
+      .expression(
+        sql`select ${issuer}::text, ${statementId}::text, ${expiresAt}::timestamptz
+        where ${expiresAt}::timestamptz > clock_timestamp()`,
+      )
       .onConflict((conflict) => conflict.columns(["issuer", "statementId"]).doNothing())
       .returning(sql<boolean>`expires_at > clock_timestamp()`.as("accepted"))
       .executeTakeFirst();
@@ -179,7 +192,7 @@ export class AgentConnectionStore {
   async pruneEmbedderAssertionClaims(): Promise<void> {
     await this.database
       .deleteFrom("agentEmbedderAssertionClaims")
-      .where("expiresAt", "<=", this.now())
+      .where("expiresAt", "<=", sql<Date>`clock_timestamp()`)
       .execute();
   }
 
@@ -253,9 +266,19 @@ export class AgentConnectionStore {
         if (active && row.cleanupRequestedAt === null) return view(row, "active");
         const attempts = await connectionAttempts(this.database, row.id);
         const outstanding = outstandingAttempts(attempts);
-        const state = active ? "active" : outstanding.some((attempt) => attempt.handedOff)
-          ? "stopping" : outstanding.length === 0 ? "stopped" : row.revokedAt === null ? "expired" : "revoked";
-        return view({ ...row, ...await latestConnectionUncertainty(this.database, row, attempts) }, state);
+        const state = active
+          ? "active"
+          : outstanding.some((attempt) => attempt.handedOff)
+            ? "stopping"
+            : outstanding.length === 0
+              ? "stopped"
+              : row.revokedAt === null
+                ? "expired"
+                : "revoked";
+        return view(
+          { ...row, ...(await latestConnectionUncertainty(this.database, row, attempts)) },
+          state,
+        );
       }),
     );
   }
@@ -306,17 +329,22 @@ export class AgentConnectionStore {
         });
       const grant = input.grant ? AgentGrantSchema.parse(input.grant) : current.grant;
       if (input.grant) await assertGrantable(tx, userId, grant);
-      const accessMode = input.accessMode ?? current.accessMode;
+      const accessMode = await connectionPolicyMode(
+        tx,
+        grant,
+        input.accessMode ?? current.accessMode,
+      );
       const narrowed =
         agentGrantNarrowed(current.grant, grant) ||
         !threadAccessModeAtMost(current.accessMode, accessMode);
+      const changed = !isDeepStrictEqual(current.grant, grant) || current.accessMode !== accessMode;
       const row = await tx
         .updateTable("agentConnections")
         .set({
           label: input.label ?? current.label,
           accessMode,
           grant: jsonValue(grant),
-          grantRevision: current.grantRevision + 1,
+          grantRevision: current.grantRevision + Number(changed),
           ...(narrowed
             ? {
                 cleanupReason: "narrowed" as const,
@@ -330,6 +358,7 @@ export class AgentConnectionStore {
         .where("id", "=", current.id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      if (changed) await closeObsoleteAgentOperationRequests(tx, current.id, row.grantRevision, this.now());
       return { connection: view(row, "active"), narrowed };
     });
   }
@@ -373,7 +402,14 @@ export class AgentConnectionStore {
       await requirePersonalOwner(tx, userId);
       const row = await tx
         .selectFrom("agentConnections")
-        .select(["revokedAt", "expiresAt", "cleanupRequestedAt", "cleanupCompletedAt", "acknowledgedUncertaintyAt", "lastActionUncertainAt"])
+        .select([
+          "revokedAt",
+          "expiresAt",
+          "cleanupRequestedAt",
+          "cleanupCompletedAt",
+          "acknowledgedUncertaintyAt",
+          "lastActionUncertainAt",
+        ])
         .forNoKeyUpdate()
         .where("id", "=", id)
         .where("userId", "=", userId)
@@ -398,11 +434,13 @@ export class AgentConnectionStore {
         .set({
           removedAt: now,
           cleanupCompletedAt: row.cleanupCompletedAt ?? now,
-          ...(row.cleanupRequestedAt === null ? {
-            cleanupRequestedAt: row.revokedAt ?? row.expiresAt,
-            cleanupReason: row.revokedAt ? "revoked" : "expired",
-          } : {}),
-          ...await latestConnectionUncertainty(tx, row, attempts),
+          ...(row.cleanupRequestedAt === null
+            ? {
+                cleanupRequestedAt: row.revokedAt ?? row.expiresAt,
+                cleanupReason: row.revokedAt ? "revoked" : "expired",
+              }
+            : {}),
+          ...(await latestConnectionUncertainty(tx, row, attempts)),
         })
         .where("id", "=", id)
         .where("userId", "=", userId)

@@ -52,7 +52,7 @@ export async function requireOrganizationAccountDeletionAllowed(
     .select(["organizationId", "role"])
     .where("accountId", "=", account)
     .orderBy("organizationId")
-    .forUpdate()
+    .forNoKeyUpdate()
     .execute();
   await tx
     .selectFrom("organizationCheckouts")
@@ -60,14 +60,14 @@ export async function requireOrganizationAccountDeletionAllowed(
     .where("founderAccountId", "=", account)
     .orderBy("organizationId")
     .orderBy("requestId")
-    .forUpdate()
+    .forNoKeyUpdate()
     .execute();
   const assignments = await tx
     .selectFrom("workAssignments")
     .select(["id", "state"])
     .where("assigneeAccountId", "=", account)
     .orderBy("id")
-    .forUpdate()
+    .forNoKeyUpdate()
     .execute();
   if (assignments.some(({ state }) => state !== "ended"))
     throw new ControlPlaneError(

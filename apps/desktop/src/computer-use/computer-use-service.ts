@@ -7,7 +7,6 @@ import { DeploymentIdSchema } from "@opensteer/core";
 import {
   ComputerViewHelperRequestSchema,
   ComputerUseHelperRequestSchema,
-  ComputerUseSessionIdSchema,
   computerUseMaxInstalledApps,
   computerUseMaxTimeoutMs,
   computerUseOutOfTimeSentence,
@@ -20,12 +19,10 @@ import {
   type ComputerUsePermissionPane,
   type ComputerUseResolvedApp,
 } from "@opensteer/protocol";
-import { openAgentAdmission, type AgentAdmission } from "../app/agent-admission.js";
 import {
   ComputerUseBridgeServer,
   ComputerUseSessionOwnership,
   type ComputerUseAgentSession,
-  computerUseStoppedSentence,
   type ComputerUseBridgeHelperPort,
   type ComputerUseBridgeServerOptions,
   type PasswordsAuthorityPort,
@@ -107,7 +104,6 @@ export interface ComputerUseServiceOptions {
   readonly run?: ComputerUseHelperProcess;
   readonly teamId: string | null;
   /** The menu bar's Stop: closed, no agent's request reaches the helper. */
-  readonly admission?: AgentAdmission;
 }
 
 /**
@@ -168,13 +164,11 @@ export class ComputerUseService {
   #lastKnownPermissions: ComputerUsePermissions | null = null;
   #lastKnownDataGrants: ComputerUseDataGrants | null = null;
   #stopped = false;
-  readonly #admission: AgentAdmission;
 
   constructor(options: ComputerUseServiceOptions) {
     this.#now = options.now ?? Date.now;
     this.#options = options;
     this.#platform = options.platform ?? process.platform;
-    this.#admission = options.admission ?? openAgentAdmission();
   }
 
   get supported(): boolean {
@@ -198,7 +192,6 @@ export class ComputerUseService {
     const existing = this.#bridges.get(deploymentId);
     if (existing) return { token: existing.token, url: existing.url };
     const server = new ComputerUseBridgeServer({
-      admission: this.#admission,
       helper: this.#helperPort(),
       ...(iphone ? { iphone } : {}),
       ...(passwords ? { passwords } : {}),
@@ -266,6 +259,10 @@ export class ComputerUseService {
    * The person's answer, to the Runner of the slot the approval came from.
    * False when that Runner is not connected to this desktop right now.
    */
+
+  async workerDisconnected(deploymentId: string): Promise<boolean> {
+    return (await this.#bridges.get(deploymentId)?.workerDisconnected()) ?? true;
+  }
 
   async stopForSlot(deploymentId: string): Promise<void> {
     const server = this.#bridges.get(deploymentId);
@@ -362,19 +359,6 @@ export class ComputerUseService {
     );
   }
 
-  /**
-   * The person's Stop on this Mac: every agent session ends now. Admission,
-   * already closed, refuses what an agent asks next and what it asked before
-   * the Stop but had not yet sent. The person's own views keep working.
-   */
-  async pause(): Promise<void> {
-    await Promise.all([...this.#bridges.values()].map((bridge) => bridge.endAgentSessions()));
-  }
-
-  resume(): void {
-    this.announceGrantsChanged();
-  }
-
   /** Agent sessions open on this Mac's apps, across every slot. */
   get agentSessions(): number {
     return this.#ownership.sessions;
@@ -383,15 +367,6 @@ export class ComputerUseService {
   /** Each agent session on this Mac's apps, as far as this Mac knows it. */
   agentSessionDetails(): readonly ComputerUseAgentSession[] {
     return this.#ownership.agentSessions();
-  }
-
-  /** The person's Stop for one session, from the menu bar; false when it already ended. */
-  stopAgentSession(sessionId: string): boolean {
-    const parsed = ComputerUseSessionIdSchema.safeParse(sessionId);
-    if (!parsed.success) return false;
-    for (const bridge of this.#bridges.values())
-      if (bridge.endAgentSession(parsed.data)) return true;
-    return false;
   }
 
   onAgentSessionsChanged(listener: () => void): () => void {
@@ -596,20 +571,7 @@ export class ComputerUseService {
             "This Mac's helper does not support owner input.",
           );
       }
-      // Installing, connecting and the handshake can outlast a Stop; the
-      // frame is written only if the agent's admission is still the current
-      // one at the moment of the write.
-      const { admission, admitted: alsoAdmitted, ...requestOptions } = options;
-      const admitted = () =>
-        (admission === undefined || this.#admission.current(admission)) &&
-        (alsoAdmitted?.() ?? true);
-      if (!admitted())
-        throw new ComputerUseHelperFailure("stopped-by-user", computerUseStoppedSentence);
-      const result = await client.request(method, params, {
-        ...requestOptions,
-        deadline,
-        ...(admission !== undefined || alsoAdmitted ? { admitted } : {}),
-      });
+      const result = await client.request(method, params, { ...options, deadline });
       if (method === "permissions.get" || method === "permissions.request") {
         this.#rememberPermissions(result);
       }

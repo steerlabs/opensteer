@@ -507,8 +507,9 @@ describe("consent option sources", () => {
 
 describe("connected agents copy", () => {
   it("fills values and keeps the safety mode lines for connections", () => {
-    expect(agentWords("consent.title", { agent: "Grok" })).toBe("Grok wants to use your Opensteer");
-    expect(agentWords("consent.title")).toBe("{agent} wants to use your Opensteer");
+    expect(agentWords("consent.chromeTabs.label", { device: "Work Mac" })).toBe(
+      "Tabs you share from Chrome on Work Mac",
+    );
     expect(connectionModeDescriptions["auto-accept-edits"]).toContain("Asks before anything else");
   });
 });

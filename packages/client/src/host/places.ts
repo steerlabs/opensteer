@@ -10,6 +10,8 @@ import { searchText, type SearchField } from "./search.js";
 import type { HostSnapshot } from "./client.js";
 import type { TabDestination } from "./surfaces.js";
 import type { TabStrip } from "./tab-strip.js";
+import { chromeTabTitle } from "./tab-list.js";
+
 export type { PlaceOccupant } from "@opensteer/protocol";
 
 export type PlaceIcon =
@@ -125,20 +127,21 @@ export function placeOf(tab: Tab, profiles: HostSnapshot["browserProfiles"]): Pl
       : undefined;
   if (held && held.profiles === profile) return held.place;
   let identity: PlaceBrowserIdentity | null = null;
-  if (tab.kind === "page") {
+  if (tab.kind === "page" && !tab.sharedByPerson) {
     identity = browserIdentity(tab.profile?.profileId ?? null, profiles);
     // A deleted or unread profile keeps the name the tab recorded.
     if (identity.kind === "profile" && !profile && tab.profile)
       identity = { ...identity, name: tab.profile.name };
   }
   const unavailable = tab.state === "unavailable";
+  const title = tab.title.trim() || fallbackTitle(tab);
   const place: PlaceItem = {
     key: tab.tabId,
     tab,
     kind: tab.kind,
     destination: { kind: "tab", tabId: tab.tabId },
     identity,
-    title: tab.title.trim() || fallbackTitle(tab),
+    title: tab.sharedByPerson ? chromeTabTitle(title) : title,
     site: tab.kind === "page" ? siteOf(tab.url) : null,
     icon: iconOf(tab),
     device: { machineId: tab.computer.computerId, name: tab.computer.name },

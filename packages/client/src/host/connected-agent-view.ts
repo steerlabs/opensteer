@@ -1,3 +1,4 @@
+import { workWords } from "./agent-work-copy.js";
 import {
   BrowserProfileIdSchema,
   agentGrantPluginTargetKey,
@@ -108,7 +109,9 @@ export interface GrantNames {
 
 export function connectedAgentIdentity(
   source: Pick<AgentConnection, "label" | "clientName"> &
-    Partial<Pick<AgentConnection, "client" | "identity" | "identityAtConsent" | "verificationWithdrawnAt">>,
+    Partial<
+      Pick<AgentConnection, "client" | "identity" | "identityAtConsent" | "verificationWithdrawnAt">
+    >,
   redirectUri?: string,
   withdrawnAt?: string | null,
 ): ConnectedAgentIdentity {
@@ -120,9 +123,10 @@ export function connectedAgentIdentity(
     identityAtConsent: source.identityAtConsent,
     withdrawnAt: source.verificationWithdrawnAt ?? withdrawnAt,
   });
-  const initial = Array.from(source.label.trim() || source.clientName)[0]?.toUpperCase() ?? "?";
+  const label = who.providerId ? who.heading : source.label;
+  const initial = Array.from(label.trim() || source.clientName)[0]?.toUpperCase() ?? "?";
   return {
-    label: source.label,
+    label,
     clientName: source.clientName,
     origin: hostOf(redirect),
     local: who.local,
@@ -234,7 +238,7 @@ export function connectedAgentRow(
   const identity = connectedAgentIdentity(connection, undefined, withdrawnAt);
   const withdrawn = phase === "active" ? agentWithdrawnLine(identity.who) : null;
   const { line, tone } = withdrawn
-    ? { line: withdrawn, tone: "attention" as const }
+    ? { line: `${withdrawn} ${workWords("who.withdrawnDetail")}`, tone: "attention" as const }
     : rowLine(connection, phase, names);
   return {
     id: connection.id,

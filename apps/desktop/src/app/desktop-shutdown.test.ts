@@ -207,7 +207,9 @@ it.each([
     });
     const install = vi.fn();
     const updating = shutdown.requestUpdate(install);
-    const rejected = expect(updating).rejects.toThrow(/ended the app before the update could finish/);
+    const rejected = expect(updating).rejects.toThrow(
+      /ended the app before the update could finish/,
+    );
     await vi.advanceTimersByTimeAsync(0);
     terminate(power);
     release();

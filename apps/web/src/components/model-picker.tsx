@@ -88,9 +88,7 @@ export function ModelPicker({
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={
-          required
-            ? "Choose AI"
-            : `Engine and model: ${named}${unavailable ? " (unavailable)" : ""}`
+          required ? "Choose AI" : `Agent and model: ${named}${unavailable ? " (unavailable)" : ""}`
         }
         title={[named, unavailable ? placement?.accountName : null].filter(Boolean).join(" · ")}
         aria-description={
@@ -123,7 +121,7 @@ export function ModelPicker({
           align="end"
           anchor={anchorRef.current}
           className="popover--execution"
-          label="Choose an engine and model"
+          label="Choose an agent and model"
           role="dialog"
           onClose={close}
           onEscape={view === null ? undefined : () => setView(null)}

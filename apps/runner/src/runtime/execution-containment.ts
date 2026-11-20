@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
@@ -27,12 +28,29 @@ const pollMs = 100;
  */
 export type TerminationProof = "proven" | "unknown" | "unverifiable";
 
+export const RunnerShutdownProofSchema = z.strictObject({
+  bootId: z.string().regex(/^rbt_[a-zA-Z0-9_-]+$/u),
+  termination: z.enum(["proven", "unknown", "unverifiable"]),
+  processIdentities: z.array(z.string()),
+  unconfirmedScopes: z.array(z.string()).default([]),
+});
+export type RunnerShutdownProof = z.infer<typeof RunnerShutdownProofSchema>;
+
+export async function confirmRunnerShutdown(
+  dataDirectory: string,
+  proof: Pick<RunnerShutdownProof, "bootId" | "processIdentities">,
+): Promise<boolean> {
+  const containment = new ExecutionContainment({ bootId: proof.bootId, dataDirectory });
+  return (await containment.reapBoot(proof.processIdentities)) === "proven";
+}
+
 /** One of the Runner user's processes, and the execution its environment names, if any. */
 interface ListedProcess {
   /** The pid and when the process started: a pid the system gave out again is another process. */
   readonly identity: string;
   readonly pid: number;
   readonly ppid: number;
+  readonly processGroupId?: number;
   readonly scope: string | null;
   /** How to signal it when that is not `process.kill`. */
   readonly signal?: (name: NodeJS.Signals) => void;
@@ -103,19 +121,23 @@ export class ExecutionContainment {
    * stop: what the engine orphans as it exits is then still known to
    * `terminate`.
    */
-  async note(executionId: string): Promise<void> {
+  async note(
+    executionId: string,
+    processGroups: readonly number[] = [],
+  ): Promise<readonly string[]> {
     const list = this.#list;
-    if (!list) return;
+    if (!list) return [];
     const scope = this.scope(executionId);
     const noted = this.#noted.get(scope) ?? new Set<string>();
-    for (const { identity } of membersOf(
-      await list(executionScopeVariable),
-      (candidate) => candidate === scope,
-      noted,
-    )) {
+    const processes = await list(executionScopeVariable);
+    const groups = new Set(processGroups);
+    for (const process of processes)
+      if (process.processGroupId !== undefined && groups.has(process.processGroupId))
+        noted.add(process.identity);
+    for (const { identity } of membersOf(processes, (candidate) => candidate === scope, noted))
       noted.add(identity);
-    }
     this.#noted.set(scope, noted);
+    return [...noted];
   }
 
   /**
@@ -158,9 +180,37 @@ export class ExecutionContainment {
   }
 
   /** Reaps a stopped owner's boot without touching a replacement already running. */
-  async reapBoot(): Promise<TerminationProof> {
+  async reapBoot(processIdentities: readonly string[] = []): Promise<TerminationProof> {
     const prefix = `${this.#installation}.${this.#bootId}.`;
-    return this.#terminate((scope) => scope.startsWith(prefix));
+    return this.#terminate(
+      (scope) => scope.startsWith(prefix),
+      undefined,
+      new Set([...processIdentities, ...[...this.#noted.values()].flatMap((notes) => [...notes])]),
+    );
+  }
+
+  async shutdownProof(): Promise<RunnerShutdownProof> {
+    const prefix = `${this.#installation}.${this.#bootId}.`;
+    const observed = new Set([...this.#noted.values()].flatMap((notes) => [...notes]));
+    let remaining: readonly ListedProcess[] = [];
+    const termination = await this.#terminate(
+      (scope) => scope.startsWith(prefix),
+      undefined,
+      observed,
+      (processes) => {
+        remaining = processes;
+        for (const process of processes) observed.add(process.identity);
+      },
+    ).catch(() => "unknown" as const);
+    return {
+      bootId: this.#bootId,
+      processIdentities: [...observed],
+      termination,
+      unconfirmedScopes:
+        termination === "proven"
+          ? []
+          : [...new Set(remaining.map((process) => process.scope ?? process.identity))],
+    };
   }
 
   /** Stops what an earlier boot of this installation left running. */
@@ -174,6 +224,7 @@ export class ExecutionContainment {
     matches: (scope: string) => boolean,
     stopEngine?: () => Promise<unknown>,
     noted?: ReadonlySet<string>,
+    observe?: (members: readonly ListedProcess[]) => void,
   ): Promise<TerminationProof> {
     const list = this.#list;
     if (!list) {
@@ -185,6 +236,7 @@ export class ExecutionContainment {
     const found = new Set<string>(noted);
     const remaining = async (): Promise<readonly ListedProcess[]> => {
       const members = membersOf(await list(executionScopeVariable), matches, found);
+      observe?.(members);
       found.clear();
       for (const { identity } of members) found.add(identity);
       return members;
@@ -236,7 +288,13 @@ function membersOf(
   found: ReadonlySet<string>,
 ): readonly ListedProcess[] {
   const children = new Map<number, ListedProcess[]>();
+  const groups = new Map<number, ListedProcess[]>();
   for (const listed of processes) {
+    if (listed.processGroupId !== undefined) {
+      const group = groups.get(listed.processGroupId);
+      if (group) group.push(listed);
+      else groups.set(listed.processGroupId, [listed]);
+    }
     const siblings = children.get(listed.ppid);
     if (siblings) siblings.push(listed);
     else children.set(listed.ppid, [listed]);
@@ -248,7 +306,8 @@ function membersOf(
   for (let next = pending.pop(); next; next = pending.pop()) {
     if (members.has(next.pid)) continue;
     members.set(next.pid, next);
-    for (const child of children.get(next.pid) ?? []) {
+    const ownedGroup = next.processGroupId === next.pid ? groups.get(next.pid) : undefined;
+    for (const child of [...(children.get(next.pid) ?? []), ...(ownedGroup ?? [])]) {
       if (child.scope === null || matches(child.scope)) pending.push(child);
     }
   }
@@ -321,6 +380,7 @@ async function listLinuxProcesses(variable: string): Promise<readonly ListedProc
       identity: `${pid}@${fields[19] ?? ""}`,
       pid,
       ppid,
+      processGroupId: Number(fields[2]),
       scope: scope ? scope.slice(prefix.length) : null,
     });
   }
@@ -337,22 +397,23 @@ async function listDarwinProcesses(variable: string): Promise<readonly ListedPro
   if (uid === undefined) return [];
   const { stdout } = await execFileAsync(
     "/bin/ps",
-    ["-E", "-ww", "-U", String(uid), "-o", "pid=,ppid=,lstart=,command="],
+    ["-E", "-ww", "-U", String(uid), "-o", "pid=,ppid=,pgid=,lstart=,command="],
     { maxBuffer: 64 * 1_024 * 1_024 },
   );
   const marker = ` ${variable}=`;
   const found: ListedProcess[] = [];
   for (const line of stdout.split("\n")) {
     // `lstart` is always five words: weekday, month, day, time and year.
-    const words = line.trimStart().split(/\s+/u, 7);
-    const [pid, ppid] = words.slice(0, 2).map(Number);
+    const words = line.trimStart().split(/\s+/u, 8);
+    const [pid, ppid, processGroupId] = words.slice(0, 3).map(Number);
     if (!Number.isSafeInteger(pid) || pid === process.pid || !Number.isSafeInteger(ppid)) continue;
     const at = line.indexOf(marker);
     const scope = at < 0 ? null : line.slice(at + marker.length).split(/\s/u, 1)[0] || null;
     found.push({
-      identity: `${pid}@${words.slice(2, 7).join(" ")}`,
+      identity: `${pid}@${words.slice(3, 8).join(" ")}`,
       pid: pid!,
       ppid: ppid!,
+      ...(processGroupId === undefined ? {} : { processGroupId }),
       scope,
     });
   }

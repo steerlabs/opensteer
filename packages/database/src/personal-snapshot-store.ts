@@ -1,3 +1,4 @@
+import { AgentConnectionIdentityAtConsentSchema } from "@opensteer/control-plane-protocol";
 import type { ThreadId, UserId } from "@opensteer/core";
 import type { DurablePersonalResourceKind } from "@opensteer/protocol/resources";
 import { utf8Prefix } from "@opensteer/core";
@@ -19,9 +20,11 @@ import {
 import {
   currentTasks,
   readInitialTaskWindows,
+  taskExternalWorkSelection,
   taskPageThreadSelections,
   taskPageThreadsFromRows,
   threadRunQueued,
+  type TaskExternalWork,
 } from "./personal-task-store.js";
 
 type Tx = PersonalMutationTransaction;
@@ -55,6 +58,10 @@ export function taskView(task: Task) {
     environmentId: task.environmentId,
     harnessInstanceId: task.harnessInstanceId,
     runQueued: task.runQueued,
+    ...(task.externalWork?.status === "active"
+      ? { agentSessionId: task.externalWork.sessionId }
+      : {}),
+    ...(task.externalWork ? { externalWork: externalWorkView(task.externalWork) } : {}),
   };
 }
 
@@ -113,6 +120,7 @@ export async function detailThreadValue(tx: Tx, viewerId: UserId, threadId: Thre
     .selectAll("threads")
     .select(taskPageThreadSelections())
     .select(threadRunQueued.as("runQueued"))
+    .select(taskExternalWorkSelection)
     .where("threads.id", "=", threadId)
     .where("threads.createdBy", "=", viewerId)
     .where("threads.removedAt", "is", null)
@@ -260,4 +268,28 @@ async function readPendingAttention(tx: Tx) {
     const last = page[49]!;
     before = { at: last.at, id: last.id };
   }
+}
+
+/** A session task's connection as clients name it: no credential, only what the Home proved. */
+function externalWorkView(work: TaskExternalWork) {
+  const { connection } = work;
+  let redirectOrigin: string | null = null;
+  try {
+    redirectOrigin = connection.redirectUri ? new URL(connection.redirectUri).origin : null;
+  } catch {
+    redirectOrigin = null;
+  }
+  const identity = AgentConnectionIdentityAtConsentSchema.safeParse(connection.identityAtConsent);
+  return {
+    sessionId: work.sessionId,
+    status: work.status,
+    endReason: work.endReason,
+    connection: {
+      id: connection.id,
+      label: connection.label,
+      clientName: connection.clientName,
+      client: { fingerprint: connection.clientFingerprint, redirectOrigin },
+      ...(identity.success ? { identityAtConsent: identity.data } : {}),
+    },
+  };
 }

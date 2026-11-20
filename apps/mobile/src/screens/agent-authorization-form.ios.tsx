@@ -27,7 +27,6 @@ import type { ReactNode } from "react";
 import { color } from "../theme.js";
 import {
   agentAuthorizationLabelLimit,
-  agentAuthorizationUnverified,
   type AgentAuthorizationFormProps,
 } from "./agent-authorization-form.types.js";
 import { agentWords } from "@opensteer/client/host";
@@ -88,22 +87,32 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
             {props.who.verified ? (
               <Image color={color.green} size={13} systemName="checkmark.seal.fill" />
             ) : null}
-            <Text modifiers={[font({ textStyle: "subheadline" }), foregroundStyle(color.text), lineLimit(1)]}>
+            <Text
+              modifiers={[
+                font({ textStyle: "subheadline" }),
+                foregroundStyle(color.text),
+                lineLimit(1),
+              ]}
+            >
               {props.who.heading}
             </Text>
           </HStack>
           {props.who.origins.map((line) => (
-            <Text key={line} modifiers={[font({ textStyle: "subheadline" }), foregroundStyle(color.textSoft)]}>{line}</Text>
+            <Text
+              key={line}
+              modifiers={[font({ textStyle: "subheadline" }), foregroundStyle(color.textSoft)]}
+            >
+              {line}
+            </Text>
           ))}
-          <Text modifiers={[secondary, font({ textStyle: "footnote" })]}>{props.destination}</Text>
+          {props.destination === null ? null : (
+            <Text modifiers={[secondary, font({ textStyle: "footnote" })]}>
+              {props.destination}
+            </Text>
+          )}
           {props.who.warning === null ? null : (
             <Text modifiers={[font({ textStyle: "footnote", weight: "semibold" })]}>
               {props.who.warning}
-            </Text>
-          )}
-          {props.who.verified ? null : (
-            <Text modifiers={[secondary, font({ textStyle: "footnote" })]}>
-              {agentAuthorizationUnverified}
             </Text>
           )}
         </VStack>
@@ -128,6 +137,11 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
         <Name busy={busy} label={props.label} onLabel={props.onLabel} />
       </Section>
       <Section>
+        {props.notice === null ? null : (
+          <Text modifiers={[font({ textStyle: "footnote" }), foregroundStyle(color.amber)]}>
+            {props.notice}
+          </Text>
+        )}
         <ErrorText detail={props.error} />
         <Button modifiers={[disabled(busy || !props.label.trim())]} onPress={props.onAllow}>
           <HStack modifiers={[contentShape(shapes.rectangle())]}>

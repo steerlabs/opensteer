@@ -12,7 +12,6 @@ import type { ReactNode } from "react";
 import { color } from "../theme.js";
 import {
   agentAuthorizationLabelLimit,
-  agentAuthorizationUnverified,
   type AgentAuthorizationFormProps,
 } from "./agent-authorization-form.types.js";
 import { agentWords } from "@opensteer/client/host";
@@ -81,8 +80,10 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
       >
         {props.who.verified ? `✓ ${props.who.heading}` : props.who.heading}
       </Text>
-      {props.who.origins.map((line) => <NoteRow key={line} text={line} />)}
-      <NoteRow text={props.destination} />
+      {props.who.origins.map((line) => (
+        <NoteRow key={line} text={line} />
+      ))}
+      {props.destination === null ? null : <NoteRow text={props.destination} />}
       {props.who.warning === null ? null : (
         <Text
           color={color.text}
@@ -90,15 +91,6 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
           style={{ typography: "bodySmall" }}
         >
           {props.who.warning}
-        </Text>
-      )}
-      {props.who.verified ? null : (
-        <Text
-          color={color.muted}
-          modifiers={[padding(16, 0, 16, 8)]}
-          style={{ typography: "bodySmall" }}
-        >
-          {agentAuthorizationUnverified}
         </Text>
       )}
       {props.sections === null ? (
@@ -144,6 +136,15 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
           disabled={busy}
         />
       </Section>
+      {props.notice === null ? null : (
+        <Text
+          color={color.amber}
+          modifiers={[padding(16, 8, 16, 0)]}
+          style={{ typography: "bodySmall" }}
+        >
+          {props.notice}
+        </Text>
+      )}
       <ErrorText detail={props.error} />
       <PrimaryButton
         disabled={busy || !props.label.trim()}

@@ -258,10 +258,20 @@ function notThisSessionsTarget(): never {
   );
 }
 
-const computerObservations = new Set(["apps", "phones", "installedApps", "windows", "bind", "observe"]);
+const computerObservations = new Set([
+  "apps",
+  "phones",
+  "installedApps",
+  "windows",
+  "bind",
+  "observe",
+]);
 
 function computerApprovalGeneration(
-  computer: { readonly policyRevision: number | null; readonly access: IntegrationAccess } | null | undefined,
+  computer:
+    | { readonly policyRevision: number | null; readonly access: IntegrationAccess }
+    | null
+    | undefined,
 ) {
   return `approval:${computer?.policyRevision ?? 0}:${computer?.access ?? "none"}`;
 }
@@ -804,7 +814,9 @@ export class DeviceService {
           throw new IntegrationAuthorizationRequiredError(callable);
         if (caller.session) {
           await caller.session.recheck();
-          if (caller.session.generation !== computerApprovalGeneration(connection.connection.computer))
+          if (
+            caller.session.generation !== computerApprovalGeneration(connection.connection.computer)
+          )
             throw refused("conflict", "The person's approval changed. Start a new operation.");
         }
         const blocked = await this.localDeviceAccessBlocked(connection.deviceId);
@@ -1428,7 +1440,11 @@ export class DeviceService {
           value: z.json().parse(
             mac
               ? { window: result?.window }
-              : { connectionId: target, name: placement.runnerName, computerId: placement.deviceId },
+              : {
+                  connectionId: target,
+                  name: placement.runnerName,
+                  computerId: placement.deviceId,
+                },
           ),
           content,
         };
@@ -1569,6 +1585,7 @@ export class DeviceService {
     if (blocked?.code === "computer_stopped") throw new ToolBlockedError(blocked);
     return {
       connectionId: id,
+      access: placement.access,
       target: AgentOperationTargetSchema.parse({
         grant,
         name: computer?.app?.displayName ?? placement.runnerName,
@@ -1633,7 +1650,10 @@ export class DeviceService {
     if (session) {
       await session.recheck();
       if (session.readOnly && !computerObservations.has(request.operation))
-        throw refused("forbidden", "This script can only observe. Use a new operation to make changes.");
+        throw refused(
+          "forbidden",
+          "This script can only observe. Use a new operation to make changes.",
+        );
       if (request.operation === "tab")
         throw refused(
           "not_found",

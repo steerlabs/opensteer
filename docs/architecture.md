@@ -152,10 +152,13 @@ worker. The person's other work is untouched.
 ## Where a Home runs
 
 - **On a Mac.** The Host listens on loopback; the one signed app stays in the menu bar so the Home
-  and its Devices keep working with the window closed. **Stop on this Mac** is local and works
-  with no Home reachable: while stopped, agent work on the Mac does not exist; the person's own
-  tabs and views are never blocked. A Mac that is going to sleep, or was stopped, tells each Home
-  it serves, so the Home can say "asleep" or "stopped" instead of "offline".
+  and its Devices keep working with the window closed. **Stop on this Mac** saves the choice
+  locally and restarts each Runner in a mode that refuses agent work. That works with every Home
+  out of reach. The app checks that the previous workers and their agent processes have ended
+  before confirming Stop. The person's tabs remain open. An active owner view ends with a
+  device-restarting reason and can be opened again while agents are stopped. A Device trusts its
+  Home to label traffic that acts for the person. A Mac tells each Home when it is going to sleep,
+  and each Runner reports the saved Stop when it connects.
 - **On a Linux server.** One HTTPS origin behind a gateway, a single-use setup link for the first
   owner, and seven services with separate state: the Host, PostgreSQL (no network listener), the
   gateway, the Runner, the browser, the browser's egress proxy and the messaging runtime. Agent

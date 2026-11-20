@@ -83,6 +83,7 @@ const shutdown = new DesktopShutdown({
 // The app's own quit wiring: the production menu, installed at ready as main installs it.
 const quitRouting = new DesktopQuitRouting({
   shutdown,
+  confirm: async () => false,
   hideWindows: () => {
     for (const window of BrowserWindow.getAllWindows()) window.hide();
   },

@@ -593,7 +593,7 @@ export function AppShell({
   const openHarnessAuthentication = useCallback(
     (placement: ThreadPlacementOption, options?: { readonly methodId?: string }) => {
       if (!harnessAuthenticationEnvironmentIds.has(placement.environmentId)) {
-        toast.error(`${placement.whereLabel} does not allow signing AI engines in from here.`);
+        toast.error(`${placement.whereLabel} does not allow signing agents in from here.`);
         return;
       }
       if (!placement.setupAvailable) {

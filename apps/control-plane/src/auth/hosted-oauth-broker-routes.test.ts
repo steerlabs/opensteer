@@ -366,7 +366,7 @@ describe("hosted OAuth browser launch", () => {
     expect(page.statusCode).toBe(200);
     expect(page.body).toContain('name="return_to"');
     expect(page.body).not.toContain('name="oauth_query"');
-    expect(page.body).toContain("Account linked to that Opensteer");
+    expect(page.body).toContain("Sign in with the Opensteer account linked to that Home.");
     expect(page.body).not.toContain("loginHint");
 
     const response = await server.inject({

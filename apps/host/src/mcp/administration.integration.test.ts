@@ -4,7 +4,7 @@ import {
   personalBrowserRepository,
 } from "@opensteer/database/test-support/store";
 import { createId, DeviceIdSchema, type UserId } from "@opensteer/core";
-import { AgentConnectionStore, BrowserSourceStore } from "@opensteer/database";
+import { admitSettingsCaller, AgentConnectionStore, BrowserSourceStore } from "@opensteer/database";
 import { describeStore } from "@opensteer/database/test-support/store";
 import { RealtimeHub } from "@opensteer/orchestration";
 import { randomUUID } from "node:crypto";
@@ -104,7 +104,7 @@ describeStore("MCP administration", (it) => {
       } as unknown as AdministrationDependencies, run.userId);
       try {
         const key = randomUUID();
-        const command = { action: "rename", computerId: run.runnerId, name: "Before" };
+        const command = { computerId: run.runnerId, name: "Before" };
         await agent.call("computer_update", command, key);
         await new AgentConnectionStore(fixture.database).update(run.userId, {
           connectionId: agent.connection.id, expectedRevision: 1, ...change,
@@ -113,6 +113,17 @@ describeStore("MCP administration", (it) => {
           .rejects.toMatchObject({ code: "forbidden" });
         await expect(agent.call("computer_update", { ...command, name: "After" }))
           .rejects.toMatchObject({ code: "forbidden" });
+        await expect(fixture.store.renameRunner(run.runnerId, run.userId, "After", {
+          allowDeployment: true,
+          administration: {
+            requestedBy: run.userId, idempotencyKey: randomUUID(), type: "machine.rename",
+            request: { machineId: run.runnerId, name: "After" },
+            authoritySource: { kind: "mcp" },
+            admit: (transaction) => admitSettingsCaller(transaction, {
+              ownerUserId: run.userId, callerKey: `connection:${agent.connection.id}`,
+            }),
+          },
+        })).rejects.toMatchObject({ code: "forbidden" });
         expect(await fixture.database.selectFrom("runners").select("name")
           .where("id", "=", run.runnerId).executeTakeFirstOrThrow()).toEqual({ name: "Before" });
       } finally {

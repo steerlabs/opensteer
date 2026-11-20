@@ -1,3 +1,4 @@
+import { assertWorkDeviceEnrollment } from "./work-policy.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import {
   lockDeviceRemovalInTransaction,
@@ -1447,6 +1448,7 @@ export async function createRunnerEnrollment(
   },
 ): Promise<RunnerEnrollmentIssuanceRecord> {
   return commitPersonalMutation(database, async (transaction, mutation) => {
+    if (input.runnerKind !== "main") await assertWorkDeviceEnrollment(transaction);
     let preparedIdentity = input.preparedIdentity ?? null;
     if (preparedIdentity) {
       try {
@@ -1742,6 +1744,7 @@ export async function enrollRunnerConnection(
   },
 ): Promise<RunnerConnectionRecord> {
   return commitPersonalMutation(database, async (transaction, mutation) => {
+    if (input.descriptor.runnerKind !== "main") await assertWorkDeviceEnrollment(transaction);
     await sql`select pg_advisory_xact_lock(hashtextextended(${input.enrollmentTokenHash}, 0))`.execute(
       transaction,
       databaseOperationOptions(),

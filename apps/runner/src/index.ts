@@ -27,5 +27,16 @@ export * from "./computer-apps/prepare.js";
 export * from "./computer-apps/phone-screen-driver.js";
 export * from "./messaging/prepare.js";
 export * from "./computer-apps/local-mcp-servers.js";
-export { ExecutionContainment, executionScopeVariable } from "./runtime/execution-containment.js";
-export * from "./runtime/agent-stop-file.js";
+export {
+  confirmRunnerShutdown,
+  ExecutionContainment,
+  executionScopeVariable,
+  RunnerShutdownProofSchema,
+  type RunnerShutdownProof,
+} from "./runtime/execution-containment.js";
+
+export {
+  DesktopRunnerReadySchema,
+  holdDesktopRunnerIdle,
+  type DesktopRunnerReady,
+} from "./runtime/desktop-control.js";

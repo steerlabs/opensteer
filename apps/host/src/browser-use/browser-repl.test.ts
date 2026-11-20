@@ -87,6 +87,17 @@ const bind = 'globalThis.page = await openPage("tab-root");';
 const text = (value: unknown) => ({ type: "text", text: JSON.stringify(value) });
 
 describe("browser REPL", () => {
+  it("prints the browser API without touching a page, and closes a bound page", async () => {
+    const { run, port } = setup();
+    const result = await run("help()");
+    expect(result.content).toEqual([{ type: "text", text: expect.stringMatching(/newPage.*close\(\).*waitForNetworkIdle.*getAttribute/su) }]);
+    expect(port.openPage).not.toHaveBeenCalled();
+    expect(port.command).not.toHaveBeenCalled();
+    await run(`${bind} await page.close()`);
+    expect(port.command).toHaveBeenCalledWith(expect.anything(), "Target.closeTarget",
+      { targetId: root.targetId }, undefined, expect.anything());
+  });
+
   it("lists, binds and opens pages with a persistent Page API and no ambient authority", async () => {
     const command = vi.fn<BrowserUsePort["command"]>(async (_target, method) =>
       JSON.stringify({ method }),

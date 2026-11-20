@@ -6,7 +6,7 @@ export const menuBarChannels = {
   statusChanged: "opensteer-menu-bar:status-changed",
   setSwitch: "opensteer-menu-bar:set-switch",
   stop: "opensteer-menu-bar:stop",
-  stopRow: "opensteer-menu-bar:stop-row",
+  openRow: "opensteer-menu-bar:open-row",
   openNeedsYou: "opensteer-menu-bar:open-needs-you",
   openSettings: "opensteer-menu-bar:open-settings",
   resume: "opensteer-menu-bar:resume",

@@ -1,4 +1,5 @@
 import {
+  BrowserSourceIdSchema,
   AppIdSchema,
   TabSchema,
   TabGroupColorSchema,
@@ -53,6 +54,12 @@ function fail(code: string, message: string, status: number): never {
  */
 export class MockTabCatalog {
   readonly store = new TabStore();
+  #sharedChromeTab: TabId | null = null;
+
+  markSharedFromChrome(tabId: TabId): void {
+    this.#sharedChromeTab = tabId;
+  }
+
   readonly #native = new Map<TabId, MockNativeTab>();
   /** Page tabs closed from the list; the browser world keeps their pages. */
   readonly #hiddenPages = new Set<TabId>();
@@ -109,8 +116,22 @@ export class MockTabCatalog {
     if (!this.#snapshot) return;
     const rows = new Map<TabId, Tab>();
     if (source.session === "authenticated") {
-      for (const tab of this.#pageTabs(source))
-        if (!this.#hiddenPages.has(tab.tabId)) rows.set(tab.tabId, tab);
+      for (const tab of this.#pageTabs(source)) {
+        if (this.#hiddenPages.has(tab.tabId)) continue;
+        rows.set(
+          tab.tabId,
+          tab.tabId === this.#sharedChromeTab
+            ? {
+                ...tab,
+                profile: null,
+                sharedByPerson: {
+                  sourceId: BrowserSourceIdSchema.parse("bsr_00000000-0000-4000-8000-000000000001"),
+                  computerName: tab.computer.name,
+                },
+              }
+            : tab,
+        );
+      }
       for (const native of this.#native.values())
         rows.set(native.tabId, this.#nativeTab(source, native));
     }

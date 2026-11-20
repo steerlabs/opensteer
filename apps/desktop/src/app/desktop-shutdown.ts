@@ -145,6 +145,10 @@ export class DesktopShutdown {
         this.#log("desktop.shutdown.update-skipped", {});
         this.#updateRejected?.(new Error("macOS ended the app before the update could finish."));
         this.#updateRejected = undefined;
+      } else if (install && failed) {
+        clearTimeout(watchdog);
+        exitFailed();
+        return;
       } else if (install) {
         // Electron closes windows before before-quit. The caller destroys them
         // after cleanup; allow Squirrel's subsequent app.quit through unchanged.

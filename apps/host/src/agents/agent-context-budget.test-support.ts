@@ -1,10 +1,15 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { AgentGrant, ThreadAccessMode } from "@opensteer/core";
 import type { AgentCallerKind } from "@opensteer/agent-tools";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 
-export async function measureMcpContext(kind: AgentCallerKind) {
+export async function measureMcpContext(kind: AgentCallerKind, options?: {
+  grant?: AgentGrant;
+  accessMode?: ThreadAccessMode;
+  connectionPasswords?: boolean;
+}) {
   const unavailable = new Proxy(
     {},
     {
@@ -16,15 +21,16 @@ export async function measureMcpContext(kind: AgentCallerKind) {
   const service = new OpensteerMcpService({
     publicUrl: new URL("http://localhost"),
     handlers: unavailable as never,
+    ...(options?.connectionPasswords === undefined ? {} : { connectionPasswords: options.connectionPasswords }),
     callers: unavailable as never,
     store: unavailable as never,
   });
   const server = await service.createServer({
     kind,
     key: "context-budget",
-    accessMode: "full-access",
+    accessMode: options?.accessMode ?? "full-access",
     ...(kind === "run" ? { thread: { teamOrigin: null } } : {}),
-    ...(kind === "connection" ? { grant: { scope: "everything" }, grantRevision: 1 } : {}),
+    ...(kind === "connection" ? { grant: options?.grant ?? { scope: "everything" }, grantRevision: 1 } : {}),
   } as unknown as AgentCaller);
   const client = new Client({ name: "context-budget", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair();
@@ -34,9 +40,10 @@ export async function measureMcpContext(kind: AgentCallerKind) {
     const { tools } = await client.listTools();
     return {
       instructions: client.getInstructions() ?? "",
-      toolsJson: JSON.stringify(
-        tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
-      ),
+      tools,
+      toolsJson: JSON.stringify(kind === "connection"
+        ? tools
+        : tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }))),
     };
   } finally {
     await client.close();

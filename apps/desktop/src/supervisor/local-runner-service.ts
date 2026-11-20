@@ -93,10 +93,13 @@ import {
 } from "./personal-user-environment.js";
 import { localExecutionStatus } from "./local-execution-status.js";
 import {
-  AgentsStoppedError,
-  openAgentAdmission,
-  type AgentAdmission,
-} from "../app/agent-admission.js";
+  confirmRunnerShutdown,
+  DesktopRunnerReadySchema,
+  holdDesktopRunnerIdle,
+  type DesktopRunnerReady,
+  RunnerShutdownProofSchema,
+  type RunnerShutdownProof,
+} from "@opensteer/runner";
 
 const startupTimeoutMs = 90_000;
 const gracefulStopTimeoutMs = 5_000;
@@ -123,7 +126,6 @@ const notEnrolledDetail = "This Mac is not in this Deployment.";
 const neverEnrolledDetail = "This Mac isn’t connected to this Opensteer yet.";
 const revokedDetail = "This Mac was removed from this Deployment.";
 const stoppedDetail = "The Runner is stopped on this Mac.";
-const pausedDetail = "Stopped from the Opensteer menu bar on this Mac. Resume there to reconnect.";
 const removedBeforeConnectedMessage = "This Mac left the Deployment before its Runner connected.";
 const stillRunningMessage =
   "The Runner on this Mac is still running, so nothing was deleted. Try again in a moment.";
@@ -140,13 +142,17 @@ const WorkerMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("runner.worker.connected"),
   }),
   z.strictObject({ type: z.literal("runner.worker.reconnecting") }),
+  z.strictObject({ type: z.literal("runner.worker.ready"), control: DesktopRunnerReadySchema }),
   /**
    * The Host refused this Runner's identity as revoked (close code 4010). The
    * computer is gone from the Deployment whether or not the removal reached
    * this app, so the slot is forgotten rather than retried.
    */
   z.strictObject({ type: z.literal("runner.worker.revoked") }),
-  z.strictObject({ type: z.literal("runner.worker.stopped") }),
+  z.strictObject({
+    type: z.literal("runner.worker.stopped"),
+    proof: RunnerShutdownProofSchema.optional(),
+  }),
   z.strictObject({
     message: z.string().min(1).max(2_000),
     type: z.literal("runner.worker.failed"),
@@ -207,6 +213,7 @@ export interface LocalRunnerServiceDependencies {
       owner: { deploymentId: string; hostInstanceId: string; runnerId: string },
     ): Promise<{ readonly token: string; readonly url: URL } | null>;
     stopForSlot(deploymentId: string): Promise<void>;
+    workerDisconnected?(deploymentId: string): Promise<boolean>;
   };
   /** The OS name of this machine, read once. */
   readonly computerName?: () => Promise<string>;
@@ -239,18 +246,16 @@ export interface LocalRunnerServiceDependencies {
   readonly targets: DesktopLocalRunnerTargetAuthority;
   readonly userEnvironment?: PersonalUserEnvironmentPort;
   /** The menu bar's Stop: closed, no Runner launches here, whoever asks. */
-  /**
-   * The person's Stop on this Mac. Everything that creates a Device Runner
-   * captures its generation on entry and compares it at the last moment.
-   */
-  readonly admission?: Pick<AgentAdmission, "open" | "generation" | "current">;
+  readonly agentsStoppedSince?: () => string | null;
 }
 
 interface RunnerSlot {
   /** The worker is being stopped for the person's Stop; its browser and bridge stay. */
   keepingPersonal: boolean;
-  /** The admission generation the current intent to run was created in. */
-  admittedIn: number;
+  stoppedSince: string | null | undefined;
+  shutdownProof: RunnerShutdownProof | undefined;
+  control: DesktopRunnerReady | undefined;
+  shutdownConfirmed: boolean;
   /** The Runs the running worker's Runner last said it is doing work for. */
   activity: readonly RunnerWorkerRun[];
   /** The module set of the running worker, which a changed `runAgents` restarts. */
@@ -349,7 +354,7 @@ export class LocalRunnerService {
   readonly #userEnvironment: PersonalUserEnvironmentPort;
   #reconcileTail: Promise<void> = Promise.resolve();
   #shuttingDown = false;
-  readonly #admission: Pick<AgentAdmission, "open" | "generation" | "current">;
+  readonly #agentsStoppedSince: (() => string | null) | undefined;
 
   constructor(config: DesktopConfiguration, dependencies: LocalRunnerServiceDependencies) {
     this.#log =
@@ -397,7 +402,7 @@ export class LocalRunnerService {
     };
     this.#targets = dependencies.targets;
     this.#userEnvironment = dependencies.userEnvironment ?? new NativePersonalUserEnvironment();
-    this.#admission = dependencies.admission ?? openAgentAdmission();
+    this.#agentsStoppedSince = dependencies.agentsStoppedSince;
     this.#unsubscribeTargets = this.#targets.subscribe(() => void this.reconcile());
   }
 
@@ -506,8 +511,6 @@ export class LocalRunnerService {
    */
   start(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus> {
     const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
-    if (!this.#admission.open) return Promise.reject(new AgentsStoppedError());
-    const admitted = this.#admission.generation;
     const current = this.#starts.get(parsed.deploymentId);
     if (current) {
       if (JSON.stringify(current.input) === JSON.stringify(parsed)) return current.promise;
@@ -515,7 +518,7 @@ export class LocalRunnerService {
         new Error("This Mac's setup is already connecting. Wait for it to finish."),
       );
     }
-    const promise = this.#startNow(parsed, admitted);
+    const promise = this.#startNow(parsed);
     this.#starts.set(parsed.deploymentId, { input: parsed, promise });
     const done = () => {
       if (this.#starts.get(parsed.deploymentId)?.promise === promise)
@@ -527,8 +530,6 @@ export class LocalRunnerService {
 
   async prepareDeviceSetup(input: DesktopStartLocalRunnerInput): Promise<DevicePreparedIdentity> {
     const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
-    if (!this.#admission.open) throw new AgentsStoppedError();
-    const admitted = this.#admission.generation;
     if (parsed.enrollmentToken)
       throw new Error("Prepare this Mac before requesting its enrollment.");
     const accountGeneration = this.#accountGeneration;
@@ -543,7 +544,6 @@ export class LocalRunnerService {
         this.#fenced.has(parsed.deploymentId)
       )
         throw new Error("Device setup was cancelled by sign-out or removal.");
-      if (!this.#admission.current(admitted)) throw new AgentsStoppedError();
       if (target.source.kind === "account") this.#assertAccountSource(target.source);
     };
     assertCurrent();
@@ -597,8 +597,6 @@ export class LocalRunnerService {
       return operation();
     const prepared = DevicePreparedIdentitySchema.parse(command.preparedIdentity);
     const accountGeneration = this.#accountGeneration;
-    if (!this.#admission.open) return Promise.reject(new AgentsStoppedError());
-    const admitted = this.#admission.generation;
     return this.#setupIssuances.run(async () => {
       const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
       if (
@@ -628,8 +626,6 @@ export class LocalRunnerService {
           runners: { ...preference.runners, [deploymentId]: { ...current, issuanceStarted: true } },
         };
       });
-      // An enrollment is issued only within the admission it was asked in.
-      if (!this.#admission.current(admitted)) throw new AgentsStoppedError();
       return operation();
     });
   }
@@ -688,17 +684,14 @@ export class LocalRunnerService {
     );
   }
 
-  async #startNow(
-    parsed: DesktopStartLocalRunnerInput,
-    admitted: number,
-  ): Promise<DesktopLocalExecutionStatus> {
+  async #startNow(parsed: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus> {
     await this.#finishLegacyLeaves(parsed.deploymentId);
     const membership = (await readMemberships(this.#preferencePath)).runners[parsed.deploymentId];
     if (this.#fenced.has(parsed.deploymentId) || (membership && membership.state !== "active"))
       throw new Error("This Mac was removed. Choose Connect again before joining this Deployment.");
     this.#cancelRestart(parsed.deploymentId);
     const slot = this.#slot(parsed.deploymentId);
-    const intentGeneration = this.#enableIntent(slot, admitted);
+    const intentGeneration = this.#enableIntent(slot);
     try {
       await this.#reconcileTail;
       this.#assertCurrentIntent(slot, intentGeneration);
@@ -827,15 +820,12 @@ export class LocalRunnerService {
 
   async setUpDevice(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus> {
     const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
-    if (!this.#admission.open) throw new AgentsStoppedError();
-    const admitted = this.#admission.generation;
     const existing = (await readMemberships(this.#preferencePath)).runners[parsed.deploymentId];
     const slot = this.#slot(parsed.deploymentId);
     const generation = slot.intentGeneration;
     const assertSetupCurrent = () => {
       if (slot.intentGeneration !== generation)
         throw new Error("Device setup was cancelled before authorization resumed.");
-      if (!this.#admission.current(admitted)) throw new AgentsStoppedError();
     };
     if (parsed.enrollmentToken && existing && existing.state !== "active")
       throw new Error("Resume device setup before handing off an enrollment.");
@@ -1330,7 +1320,10 @@ export class LocalRunnerService {
     if (signal?.aborted) force();
     try {
       await this.#reconcileTail;
-      await Promise.all([...this.#runners.values()].map((slot) => this.#stop(slot)));
+      const slots = [...this.#runners.values()];
+      await Promise.all(slots.map((slot) => this.#stop(slot)));
+      const unconfirmed = slots.filter((slot) => !slot.shutdownConfirmed).length;
+      if (unconfirmed) throw new Error(connectionStopProblem(unconfirmed));
       await exitedWithin(
         Promise.allSettled([...this.#obligations.values(), ...this.#sessionCleanups.values()]),
         this.#stopTimeouts.removalMs,
@@ -1340,43 +1333,56 @@ export class LocalRunnerService {
     }
   }
 
-  /**
-   * The person's Stop on this Mac: every Device Runner here stops now, without
-   * asking any Home. Closed admission keeps any from launching again, whatever
-   * asks, until {@link resume}. Membership and enrollment are untouched.
-   */
-  async pause(): Promise<void> {
-    for (const deploymentId of this.#restartTimers.keys()) this.#cancelRestart(deploymentId);
-    for (const slot of this.#runners.values()) this.#disableIntent(slot);
-    // Each slot's browser and computer-use bridge stay: they are the person's
-    // tabs, Watch and owner views as much as any agent's, and agent
-    // attachments to them are closed by Stop on their own.
-    const stopAll = () =>
-      Promise.all(
-        [...this.#runners.values()].map((slot) => this.#stop(slot, { keepPersonal: true })),
-      );
-    await stopAll();
-    // A launch already past its last admission check may still be exiting.
-    await this.#reconcileTail;
-    await stopAll();
-    const running: string[] = [];
-    for (const [deploymentId, slot] of this.#runners) {
-      if (slot.child) {
-        running.push(deploymentId);
-        continue;
-      }
-      slot.state = "disabled";
-      slot.detail = pausedDetail;
+  async holdIdleForUpdate(): Promise<(() => Promise<void>) | null> {
+    const ids = await this.joinedDeploymentIds();
+    const slots = [...ids].map((id) => this.#runners.get(DeploymentIdSchema.parse(id)));
+    if (slots.some((slot) => !slot?.child || !slot.control || !slot.shutdownConfirmed)) return null;
+    const holds = await Promise.all(slots.map((slot) => holdDesktopRunnerIdle(slot!.control!)));
+    const release = async () => {
+      await Promise.all(holds.map((hold) => hold?.()));
+    };
+    if (holds.includes(null)) {
+      await release();
+      return null;
     }
-    this.#emit();
-    if (running.length)
-      throw new Error(
-        `${running.length} Device Runner(s) on this Mac did not confirm they stopped.`,
-      );
+    return release;
   }
 
-  resume(): Promise<void> {
-    return this.reconcile();
+  async restartForAgentMode(): Promise<void> {
+    const mode = this.#agentsStoppedSince?.();
+    const affected = [...this.#runners.values()].filter(
+      (slot) => slot.stoppedSince !== mode && (slot.child || slot.pendingExits.size > 0),
+    );
+    const unconfirmed = new Set<RunnerSlot>();
+    await Promise.all(
+      affected.map(async (slot) => {
+        if (!slot.child) {
+          unconfirmed.add(slot);
+          await exitedWithin(Promise.all(slot.pendingExits), this.#stopTimeouts.forcedMs);
+          return;
+        }
+        await this.#stop(slot, { keepPersonal: true });
+        if (!slot.shutdownConfirmed) unconfirmed.add(slot);
+      }),
+    );
+    const booted = (slot: RunnerSlot) =>
+      !!slot.child && slot.stoppedSince === mode && !!slot.control;
+    const ready = Promise.withResolvers<void>();
+    const detach = this.subscribe(() => {
+      if (affected.every(booted)) ready.resolve();
+    });
+    const timeout = setTimeout(() => ready.resolve(), 10_000);
+    timeout.unref();
+    try {
+      const reconciling = this.reconcile();
+      if (affected.length) await Promise.race([ready.promise, reconciling]);
+    } finally {
+      clearTimeout(timeout);
+      detach();
+    }
+    for (const slot of affected)
+      if (!booted(slot) || slot.control?.earlierBootsContained !== true) unconfirmed.add(slot);
+    if (unconfirmed.size) throw new Error(connectionStopProblem(unconfirmed.size));
   }
 
   async reconcile(): Promise<void> {
@@ -1418,23 +1424,6 @@ export class LocalRunnerService {
     );
   }
 
-  /**
-   * The person stopped one Run from this Mac. Its Runner interrupts it the way
-   * the Home's own Stop does, and the Home hears the end when it next hears
-   * from that Runner. False when no Runner here is working on that Run.
-   */
-  stopRun(deploymentId: DeploymentId, runId: string): boolean {
-    const slot = this.#runners.get(deploymentId);
-    if (!slot?.child || !slot.activity.some((run) => run.runId === runId)) return false;
-    try {
-      slot.child.postMessage({ runId, type: "runner.worker.stop-run" });
-    } catch {
-      // The worker exited before the supervisor saw its exit event.
-      return false;
-    }
-    return true;
-  }
-
   dispose(): void {
     this.#shuttingDown = true;
     for (const timer of this.#leaveTimers.values()) clearTimeout(timer);
@@ -1445,8 +1434,6 @@ export class LocalRunnerService {
   }
 
   async #reconcileEnabled(): Promise<void> {
-    if (!this.#admission.open) return;
-    const admitted = this.#admission.generation;
     await this.#discoverMemberships();
     const preference = await readMemberships(this.#preferencePath);
     await Promise.all(
@@ -1468,9 +1455,9 @@ export class LocalRunnerService {
           if (current) await this.#finishObligation(deploymentId);
           return;
         }
-        if (this.#fenced.has(deploymentId) || !this.#admission.current(admitted)) return;
+        if (this.#fenced.has(deploymentId)) return;
         const slot = this.#slot(deploymentId);
-        const intentGeneration = this.#enableIntent(slot, admitted);
+        const intentGeneration = this.#enableIntent(slot);
         let target: DesktopLocalRunnerTarget;
         try {
           target = await this.#targets.resolve(deploymentId);
@@ -1525,6 +1512,7 @@ export class LocalRunnerService {
         if (
           slot.activeTarget?.key === target.key &&
           slot.activeRunAgents === runAgents &&
+          slot.stoppedSince === this.#agentsStoppedSince?.() &&
           (!slot.confirmationOnly ||
             runner.confirmingSession ||
             runner.needsSignIn ||
@@ -1577,11 +1565,17 @@ export class LocalRunnerService {
       this.#assertCurrentIntent(slot, intentGeneration);
     }
     if (slot.stopPromise) await slot.stopPromise;
-    if (slot.child && (slot.state === "running" || slot.state === "starting")) {
-      if (slot.activeTarget?.key === target.key && slot.activeRunAgents === runAgents) {
+    if (slot.child) {
+      if (
+        (slot.state === "running" || slot.state === "starting") &&
+        slot.activeTarget?.key === target.key &&
+        slot.activeRunAgents === runAgents &&
+        slot.stoppedSince === this.#agentsStoppedSince?.()
+      ) {
         return this.status(target.deploymentId);
       }
       await this.#stop(slot);
+      if (slot.child) throw new Error(connectionStopProblem(1));
     }
     const operation = this.#launch(
       slot,
@@ -1741,6 +1735,9 @@ export class LocalRunnerService {
         : {}),
     });
     this.#assertCurrentIntent(slot, intentGeneration);
+    const stoppedSince = this.#agentsStoppedSince?.();
+    if (stoppedSince !== undefined)
+      environment.OPENSTEER_RUNNER_AGENTS_STOPPED_SINCE = stoppedSince ?? "";
     const child = this.#fork(this.#config.localExecution.runnerWorkerPath, [], {
       cwd: runnerDataDirectory,
       env: environment,
@@ -1755,6 +1752,9 @@ export class LocalRunnerService {
     void exited.then(() => slot.pendingExits.delete(exited));
     slot.child = child;
     slot.childExit = exited;
+    slot.stoppedSince = stoppedSince;
+    slot.shutdownProof = undefined;
+    slot.control = undefined;
     slot.activeRunAgents = runAgents;
     slot.confirmationOnly = membership?.confirmingSession === true;
     slot.activeTarget = target;
@@ -1791,6 +1791,7 @@ export class LocalRunnerService {
         const startupPending = settleStartup();
         ++statusGeneration;
         verified.reject(error);
+        if (this.#agentsStoppedSince) slot.shutdownConfirmed = false;
         child.kill();
         this.#dropChild(slot, child);
         // Startup owns these resources until all three have ended. Its caller
@@ -1826,9 +1827,13 @@ export class LocalRunnerService {
             void (async () => {
               const parsed = WorkerMessageSchema.safeParse(value);
               if (!parsed.success || slot.child !== child) return;
+              if (parsed.data.type === "runner.worker.ready") {
+                slot.control = parsed.data.control;
+                this.#emit();
+                return;
+              }
               if (parsed.data.type === "runner.worker.stopped" && slot.state === "stopping") {
-                // Daemon cleanup has finished. A referenced native handle must
-                // not turn this acknowledgement into a fixed graceful wait.
+                slot.shutdownProof = parsed.data.proof;
                 child.kill();
                 return;
               }
@@ -1909,9 +1914,10 @@ export class LocalRunnerService {
                   }
                   slot.enrolled = true;
                   slot.state = "running";
-                  slot.detail = runAgents
-                    ? "This Mac is connected and running agents."
-                    : "This Mac is connected.";
+                  slot.detail =
+                    runAgents && !slot.stoppedSince
+                      ? "This Mac is connected and running agents."
+                      : "This Mac is connected.";
                   slot.environmentId = parsed.data.environmentId;
                   slot.runnerId = parsed.data.runnerId;
                   this.#restartPolicy(target.deploymentId).markStarted();
@@ -1979,6 +1985,8 @@ export class LocalRunnerService {
               fail(new Error(`The Runner stopped before it was ready (exit ${code}).`));
               return;
             }
+            if (this.#agentsStoppedSince && slot.state !== "stopping")
+              slot.shutdownConfirmed = false;
             this.#dropChild(slot, child);
             if (!slot.keepingPersonal) {
               void stopSlotBrowser(slot, this.#log);
@@ -2053,15 +2061,20 @@ export class LocalRunnerService {
     }
     const target = slot.activeTarget;
     slot.state = "stopping";
-    slot.detail = "Stopping the Runner on this Mac…";
+    slot.detail = "Stopping this device connection…";
     this.#emit();
     slot.stopPromise = (async () => {
+      const bridgeDrained = slot.computerUseSlotId
+        ? this.#computerUse?.workerDisconnected?.(slot.computerUseSlotId)
+        : undefined;
       if (!keep) await stopSlotBrowser(slot, this.#log);
-      // A stop for the person's Stop lets the worker tell its Home first.
-      child.postMessage(
-        keep ? { type: "runner.worker.stop", agentsStopped: true } : { type: "runner.worker.stop" },
-      );
-      let gone = await exitedWithin(exited, this.#stopTimeouts.gracefulMs);
+      let gone = false;
+      try {
+        child.postMessage({ type: "runner.worker.stop", restart: keep });
+        gone = await exitedWithin(exited, this.#stopTimeouts.gracefulMs);
+      } catch {
+        // The port closed while the worker was leaving. Its exit still has to be observed.
+      }
       if (!gone) {
         child.kill();
         gone = await exitedWithin(exited, this.#stopTimeouts.forcedMs);
@@ -2069,19 +2082,29 @@ export class LocalRunnerService {
       // A worker that has not been seen to exit is still this slot's worker:
       // dropping the handle here would hide a live process from everything
       // that reads the slot afterwards.
+      slot.shutdownConfirmed =
+        gone &&
+        (!this.#agentsStoppedSince ||
+          (!!slot.shutdownProof &&
+            !!target &&
+            (await confirmRunnerShutdown(
+              this.#deploymentDataDirectory(target.deploymentId),
+              slot.shutdownProof,
+            ).catch(() => false))));
+      if (bridgeDrained && !(await bridgeDrained)) slot.shutdownConfirmed = false;
       if (gone) this.#dropChild(slot, child);
       if (!keep) {
         await stopSlotBrowser(slot, this.#log);
         await this.#stopSlotComputerUse(slot);
       }
-      if (target && slot.activeTarget?.key === target.key) {
+      if (gone && target && slot.activeTarget?.key === target.key) {
         slot.activeRunAgents = undefined;
         slot.activeTarget = undefined;
       }
       slot.stopPromise = undefined;
       if (slot.state === "stopping") {
-        slot.state = "disabled";
-        slot.detail = stoppedDetail;
+        slot.state = gone ? "disabled" : "failed";
+        slot.detail = gone ? stoppedDetail : connectionStopProblem(1);
       }
       this.#emit();
     })();
@@ -2119,6 +2142,7 @@ export class LocalRunnerService {
     if (slot.child !== child) return;
     slot.child = undefined;
     slot.childExit = undefined;
+    slot.control = undefined;
     if (slot.activity.length === 0) return;
     slot.activity = [];
     this.#emit();
@@ -2172,7 +2196,10 @@ export class LocalRunnerService {
     if (existing) return existing;
     const created: RunnerSlot = {
       keepingPersonal: false,
-      admittedIn: -1,
+      stoppedSince: undefined,
+      shutdownProof: undefined,
+      control: undefined,
+      shutdownConfirmed: true,
       activity: [],
       activeRunAgents: undefined,
       confirmationOnly: false,
@@ -2271,12 +2298,10 @@ export class LocalRunnerService {
     slot.runnerId = null;
   }
 
-  /** An intent to run, tied to the admission generation its caller was let in under. */
-  #enableIntent(slot: RunnerSlot, admitted: number): number {
+  #enableIntent(slot: RunnerSlot): number {
     if (!slot.desiredEnabled) {
       slot.desiredEnabled = true;
       slot.intentGeneration += 1;
-      slot.admittedIn = admitted;
     }
     return slot.intentGeneration;
   }
@@ -2294,7 +2319,6 @@ export class LocalRunnerService {
     if (this.#shuttingDown || !this.#intentIsCurrent(slot, generation)) {
       throw new Error(removedBeforeConnectedMessage);
     }
-    if (!this.#admission.current(slot.admittedIn)) throw new AgentsStoppedError();
   }
 
   #fence(deploymentId: DeploymentId): void {
@@ -2553,7 +2577,7 @@ export class LocalRunnerService {
     if (row.pendingEnrollment && !row.prepared)
       throw new Error("Waiting for this Mac's pending setup enrollment to retire or expire.");
     if (!row.leaveProof || !row.hostAuthority || !row.lastVerifiedRoute)
-      throw new Error("Waiting for the pinned Host route to confirm removal.");
+      throw new Error("Opensteer needs to verify this device's Home before removing it.");
     if (row.leaveProof.deploymentId !== deploymentId || row.leaveProof.runnerId !== row.runnerId)
       throw new Error("This Mac's leave obligation has inconsistent identity.");
     const authority = verifyHostDiscoveryEnvelope(row.hostAuthority);
@@ -2573,7 +2597,7 @@ export class LocalRunnerService {
           hostKeyFingerprint: hostKeyFingerprint(route.accessRoute.publicKey.spki),
         })
       )
-        throw new Error("The leave route belongs to another Host.");
+        throw new Error("That address belongs to a different Home.");
       if (route.accessRoute.document.route.origin !== route.origin)
         throw new Error("The leave route changed.");
     }
@@ -2857,4 +2881,10 @@ async function readDeviceSigningIdentity(directory: string) {
   )
     throw invalid();
   return { runnerId: file.runnerId, privateKey };
+}
+
+function connectionStopProblem(count: number): string {
+  return count === 1
+    ? "Couldn't confirm that one device connection on this Mac stopped."
+    : `Couldn't confirm that ${count} device connections on this Mac stopped.`;
 }

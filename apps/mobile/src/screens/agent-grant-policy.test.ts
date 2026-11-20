@@ -15,6 +15,7 @@ const context = {
   mode: "approval-required",
   onScope: () => undefined,
   onOpen: () => undefined,
+  onChromeTab: () => undefined,
   onTasks: () => undefined,
 } as const;
 

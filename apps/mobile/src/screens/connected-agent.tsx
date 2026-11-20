@@ -214,7 +214,8 @@ export function ConnectedAgentController(props: {
           onOpen: (which) => setSheet({ which, draft: current }),
           onRemove: remove,
           onScope: changeScope,
-          onChromeTab: (resource, on) => void save({ draft: toggleDraftResource(current, resource, on) }),
+          onChromeTab: (resource, on) =>
+            void save({ draft: toggleDraftResource(current, resource, on) }),
           onTasks: (tasks) => void save({ draft: { ...current, tasks } }),
           pending,
         })}
@@ -279,12 +280,21 @@ export function connectedAgentSections(props: {
       key: "who",
       title: "",
       rows: [
-        {
-          key: "who",
-          kind: "text",
-          label: who.verified ? workWords("who.verifiedAs", { name: who.heading }) : who.heading,
-          ...(detail.row.identity.who.origins.length ? {} : { detail: who.detail }),
-        },
+        // The title is already its name: say only that it is verified, and never repeat it.
+        ...(who.heading === agent && !who.verified
+          ? []
+          : [
+              {
+                key: "who",
+                kind: "text" as const,
+                label: who.verified
+                  ? who.heading === agent
+                    ? workWords("who.verified")
+                    : workWords("who.verifiedAs", { name: who.heading })
+                  : who.heading,
+                ...(detail.row.identity.who.origins.length ? {} : { detail: who.detail }),
+              },
+            ]),
         ...detail.row.identity.who.origins.map((origin): NativeSettingsRow => ({
           key: origin.role,
           kind: "text",

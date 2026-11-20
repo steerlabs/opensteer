@@ -1,3 +1,4 @@
+import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
 import {
   describeConnectionAccess,
   isNetworkedHome,
@@ -151,7 +152,7 @@ export function deploymentSignInLabel(signIn: DeploymentSignIn): string {
  */
 export function deploymentKindLabel(connection: DeploymentConnection): string {
   if (isNetworkedHome(connection.authority.document)) return "Home";
-  if (connection.kind === "personal") return personalComputerKind;
+  if (isPersonalHost(connection.authority.document)) return personalComputerKind;
   return "Team";
 }
 const personalComputerKind = "Personal computer";

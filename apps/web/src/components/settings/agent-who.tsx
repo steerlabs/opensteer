@@ -1,4 +1,10 @@
-import { agentWhoName, agentWhoOriginLine, agentWithdrawnLine, workWords, type AgentWho } from "@opensteer/client/host";
+import {
+  agentWhoName,
+  agentWhoOriginLine,
+  agentWithdrawnLine,
+  workWords,
+  type AgentWho,
+} from "@opensteer/client/host";
 import { Icon } from "../icon.js";
 
 /**
@@ -6,24 +12,50 @@ import { Icon } from "../icon.js";
  * origin, or a name it gave itself, marked as such, with where it returns to. A verified
  * identity the Home stopped vouching for shows only its name here; its notice says since when.
  */
-export function AgentWhoLine({ who, claim }: { readonly who: AgentWho; readonly claim?: string | undefined }) {
-  // A withdrawn verification is said once, where Disconnect is offered: here only its name.
+export function AgentWhoLine({
+  who,
+  claim,
+  nameShown = true,
+}: {
+  readonly who: AgentWho;
+  readonly claim?: string | undefined;
+  /** False where the heading beside it is already this name: "Verified", or only the origins. */
+  readonly nameShown?: boolean;
+}) {
+  // A withdrawn verification is said once, where Disconnect is offered; here only its origins.
+  const name = claim ?? whoName(who, nameShown);
   return (
     <p className={`agent-who${who.verified ? " agent-who--verified" : ""}`}>
-      <Icon
-        className="agent-who__icon"
-        name={who.verified ? "check-circle" : who.local ? "laptop" : "globe"}
-      />
+      {claim ? null : (
+        <Icon
+          className="agent-who__icon"
+          name={who.verified ? "check-circle" : who.local ? "laptop" : "globe"}
+        />
+      )}
       <span className="agent-who__text">
-        <span className={claim ? "agent-who__name agent-who__claim" : "agent-who__name"}>
-          {claim ?? agentWhoName(who)}
-        </span>
-        {who.origins.length ? who.origins.map((origin) => (
-          <span className="agent-who__detail" key={origin.role}>{agentWhoOriginLine(origin)}</span>
-        )) : <span className="agent-who__detail">{who.detail}</span>}
+        {name ? (
+          <span className={claim ? "agent-who__name agent-who__claim" : "agent-who__name"}>
+            {name}
+          </span>
+        ) : null}
+        {who.origins.length ? (
+          who.origins.map((origin) => (
+            <span className="agent-who__detail" key={origin.role}>
+              {agentWhoOriginLine(origin)}
+            </span>
+          ))
+        ) : (
+          <span className="agent-who__detail">{who.detail}</span>
+        )}
       </span>
     </p>
   );
+}
+
+/** "Verified" where the heading beside it is already the verified name; nothing to repeat otherwise. */
+function whoName(who: AgentWho, nameShown: boolean): string | null {
+  if (nameShown || who.selfAsserted) return agentWhoName(who);
+  return who.verified ? workWords("who.verified") : null;
 }
 
 /** On a connection whose verification was withdrawn: what that means, and Disconnect. */
@@ -37,7 +69,7 @@ export function AgentWithdrawnNotice({
   const line = agentWithdrawnLine(who);
   if (!line) return null;
   return (
-    <div className="notice notice--warning agent-who__notice" role="status">
+    <div className="notice notice--warn agent-who__notice" role="status">
       <p className="agent-who__notice-title">{line}</p>
       <p>{workWords("who.withdrawnDetail")}</p>
       {onDisconnect ? (

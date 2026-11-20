@@ -1,4 +1,5 @@
 import {
+  chromeTabUsedBy,
   browserTabPicture,
   tabGroupOf,
   type HostClient,
@@ -541,6 +542,9 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
   const agents = usePlaceAgents(hostClient, place.key);
   const picture =
     props.shown && tab.kind === "page" ? browserTabPicture(hostClient, tab.tabId) : null;
+  const sharedUsers = tab.sharedByPerson
+    ? chromeTabUsedBy(agents.agents.map((agent) => agent.connectedAgentName ?? agent.title))
+    : null;
   const detail = tabDetail(tab, props);
   const unavailable = tab.state === "unavailable";
   const movingThis =
@@ -573,7 +577,10 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
           accessibilityLabel={[
             title,
             ...detail,
-            agents.agents.length > 0 ? agents.agents.map((agent) => agent.title).join(", ") : null,
+            sharedUsers ??
+              (agents.agents.length > 0
+                ? agents.agents.map((agent) => agent.title).join(", ")
+                : null),
             props.needsYou ? "needs you" : null,
           ]
             .filter((part) => part !== null)
@@ -612,6 +619,11 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
             {detail.length === 0 && line === null ? null : (
               <RowSubtitle line={line} subtitle={detail.join(" · ")} />
             )}
+            {sharedUsers ? (
+              <AppText numberOfLines={1} role="caption" tone="muted">
+                {sharedUsers}
+              </AppText>
+            ) : null}
           </View>
           {props.needsYou ? <NeedsYouTag /> : null}
           {agents.agents.length > 0 ? (

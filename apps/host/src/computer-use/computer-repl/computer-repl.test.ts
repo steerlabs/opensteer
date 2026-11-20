@@ -43,6 +43,26 @@ function setup(invoke?: ConstructorParameters<typeof ComputerReplService>[0]["in
   };
 }
 describe("computer REPL worker boundary", () => {
+  it("gives a connection help and the bound app or phone without acquiring it by name", async () => {
+    for (const app of [true, false]) {
+      const invoke = vi.fn<ConstructorParameters<typeof ComputerReplService>[0]["invoke"]>(async ({ operation, target: id }) => {
+        if (operation === "apps") return { value: app ? [{ id: "selected", name: "App", computer: "Mac" }] : [] };
+        if (operation === "phones") return { value: [{ id: "selected", name: "Phone", computerId: "phone" }] };
+        expect(id).toBe("selected");
+        return { value: { tabId: "bound" } };
+      });
+      const context = { runId: runId(), generation: 1, reportUnknownEffects: true as const };
+      const help = output(await service.execute(context, "help()", undefined, invoke));
+      expect(help).toMatch(/await target.*Window:.*Phone:.*installedApps/su);
+      expect(invoke).not.toHaveBeenCalled();
+      expect(output(await service.execute(context,
+        "const t = await target; return [t.id, typeof tab];", undefined, invoke))).toBe('["selected","undefined"]');
+      expect(invoke.mock.calls.map(([request]) => request.operation)).toEqual(app ? ["apps"] : ["apps", "phones", "bind"]);
+    }
+    const { run } = setup();
+    expect(output(await run("return [typeof target, typeof help, typeof tab]"))).toBe('["undefined","undefined","function"]');
+  });
+
   it("persists only within one Run attempt and prints returned JSON", async () => {
     const { service, context, run } = setup();
     expect(output(await run('globalThis.n = 3; print("before"); return {n};'))).toBe(

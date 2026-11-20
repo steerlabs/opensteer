@@ -92,7 +92,7 @@ const identityConfig = {
   emailDeliveryAvailable: false,
   localPasswordEnabled: false,
   machineOwner: false,
-  oidcProviders: [{ id: "opensteer-account", label: "Opensteer account", type: "oidc" as const }],
+  oidcProviders: [{ id: "opensteer-account", label: "Opensteer Account", type: "oidc" as const }],
   passkeysEnabled: false,
   exposure: "networked" as const,
   portalOrigin: null,

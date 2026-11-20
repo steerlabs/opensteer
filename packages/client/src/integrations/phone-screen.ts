@@ -55,14 +55,14 @@ export function phoneScreenStatus(machine: MachineSummary): PhoneScreenStatus | 
       };
     case "driver-stopped":
       return {
-        label: `Agents are stopped on ${mac.name}`,
+        label: `Stopped on ${mac.name}`,
         fix: `Screen control comes back when they are resumed on ${mac.name}.`,
         tone: "waiting",
         needsSetup: false,
       };
     case "driver-asleep":
       return {
-        label: `${mac.name} is asleep`,
+        label: `Asleep on ${mac.name}`,
         fix: `Screen control comes back when ${mac.name} wakes.`,
         tone: "waiting",
         needsSetup: false,

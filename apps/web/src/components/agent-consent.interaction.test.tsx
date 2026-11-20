@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { createId } from "@opensteer/core";
 import { HostClientRequestError, type HostSnapshot } from "@opensteer/client/host";
-import { MockHostClient } from "@opensteer/client/mock";
+import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import type { MachineSummary } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpAuthorization, McpAuthorizationLaunch } from "./mcp-authorization.js";
@@ -126,15 +126,15 @@ describe("agent consent with grants", () => {
   it("opens on Choose what it can use, with a new dedicated profile on the Home and nothing else", async () => {
     host = consentHost();
     const { container } = await mount(host);
-    expect(container.querySelector("h1")?.textContent).toBe("Grok wants to use your Opensteer");
+    expect(container.querySelector("h1")?.textContent).toBe("An agent wants to connect");
     expect(container.textContent).toContain(
       "Access goes to grok.com. Anyone who runs that service gets it.",
     );
     // Grok's name is only the one it gave itself: no verified mark, and it says so.
     expect(container.querySelector(".agent-who--verified")).toBeNull();
-    expect(container.textContent).toContain("Says it is Grok");
+    expect(container.textContent).toContain("It calls itself: Grok");
     expect(container.textContent).toContain("Only approve if you started this yourself.");
-    expect(container.textContent).toContain("App names aren’t verified.");
+    expect(container.textContent).not.toContain("Returns to");
     const checked = [
       ...container.querySelectorAll<HTMLInputElement>('input[type="radio"]:checked'),
     ];
@@ -149,6 +149,9 @@ describe("agent consent with grants", () => {
     ).toBe(false);
     expect(container.textContent).toContain("Asks you before anything that changes something.");
     expect(container.textContent).not.toContain("This is the most powerful choice");
+    expect(container.textContent).toContain(
+      "This connected agent can’t approve its own requests, open your saved passwords or cards, or change your settings.",
+    );
   });
 
   it("lists profiles with their Device in the Browser disclosure, and warns about shared sign-ins", async () => {
@@ -156,7 +159,10 @@ describe("agent consent with grants", () => {
     const { container } = await mount(host);
     await act(async () => buttonNamed(container, "Choose Browser").click());
     expect(detail(container, "Shopping")).toBe("MacBook Pro · Online");
-    expect(container.textContent).toContain("Grok gets full control of each profile you pick");
+    // A filled password is readable in the page, so the footer never says the agent "can't see" it.
+    expect(container.textContent).toContain(
+      "This connected agent gets full control of each profile you pick, including every site signed in there. It can’t open your saved passwords or cards. When it needs one, it asks you and Opensteer fills it in; once filled, the page and the agent can read it.",
+    );
     const keepOn = container.querySelector('[aria-label="Keep it on"]')!;
     expect([...keepOn.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
       "Cloud Computer",
@@ -168,7 +174,7 @@ describe("agent consent with grants", () => {
       "New dedicated profile · On MacBook Pro · starts signed out, Shopping",
     );
     expect(container.textContent).toContain(
-      "Grok can use every site you’re signed in to in Shopping, as you.",
+      "This connected agent can use every site you’re signed in to in Shopping, as you.",
     );
   });
 
@@ -220,11 +226,11 @@ describe("agent consent with grants", () => {
       '[aria-labelledby="agent-grant-tasks"]',
     )!;
     expect(detail(container, "Tasks")).toBe(
-      "Lets Grok ask your own agents to work on Cloud Computer: read and change files and run commands there.",
+      "Lets it ask your own agents to work on Cloud Computer: read and change files and run commands there.",
     );
     await act(async () => tasks.click());
     expect(container.textContent).toContain(
-      "This is the most powerful choice. Work it starts can change anything on Cloud Computer that your own agents can, inside the safety mode below.",
+      "This is the most powerful choice. Work it starts can change anything on Cloud Computer that your own agents can, inside the safety mode below. Opensteer can stop what happens next, but can’t undo what an agent already did.",
     );
   });
 
@@ -385,7 +391,7 @@ describe("agent consent with grants", () => {
     await act(async () => buttonNamed(container, "Choose Browser").click());
     await act(async () => row(container, "New dedicated profile").querySelector("input")!.click());
     expect(container.textContent).toContain(
-      "Grok can connect, but can’t use anything until you choose something.",
+      "This connected agent can connect, but can’t use anything until you choose something.",
     );
     expect(buttonNamed(container, "Allow").disabled).toBe(false);
   });
@@ -408,8 +414,130 @@ describe("agent consent with grants", () => {
     host = consentHost({ homes: [macRunner], macOnline: false });
     const { container } = await mount(host);
     expect(container.textContent).toContain(
-      "None of your devices are online. Grok can use its profile once MacBook Pro is back.",
+      "None of your devices are online. This connected agent can use its profile once MacBook Pro is back.",
     );
+  });
+
+  it("reads the consent again when its verification changed, keeping the choices still offered", async () => {
+    host = consentHost();
+    const [workMac, homeMac] = [createId("browserSource"), createId("browserSource")];
+    const claude = mockConnectedAgents("seeded").connections.find(
+      ({ label }) => label === "Claude",
+    )!;
+    const consent = {
+      requestId,
+      clientName: "Claude",
+      redirectUri: "https://claude.ai/api/mcp/auth_callback",
+      resource: "https://home.example/internal/v1/mcp",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      grantsAvailable: true as const,
+    };
+    const reads = [
+      {
+        ...consent,
+        identity: claude.identity!,
+        identityAtConsent: claude.identityAtConsent!,
+        verificationSnapshot: "a".repeat(64),
+        chromeTabs: [
+          { sourceId: workMac, computerName: "Work Mac", paired: true },
+          { sourceId: homeMac, computerName: "Home Mac", paired: true },
+        ],
+      },
+      // Read again: the directory stopped vouching for it, and one Chrome is no longer paired.
+      {
+        ...consent,
+        verificationSnapshot: "b".repeat(64),
+        chromeTabs: [{ sourceId: workMac, computerName: "Work Mac", paired: true }],
+      },
+    ];
+    let read = 0;
+    Object.defineProperty(host.rpc, "connections.authorization.get", {
+      value: vi.fn(async () => ({ ok: true, data: reads[Math.min(read++, 1)] })),
+      configurable: true,
+    });
+    const dispatch = vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
+      if (command.type === "browser.profile.create")
+        return {
+          type: "browser.profile.create",
+          profile: { id: created, name: "Mine", homeRunnerId: cloudRunner },
+        } as never;
+      if (authorizeCalls(dispatch).length === 1)
+        throw new HostClientRequestError({
+          code: "conflict",
+          reason: "consent-verification-changed",
+          message: "This agent's verification changed. Review it again.",
+          status: 409,
+        });
+      return { type: "connection.authorize", completionPath: "/oauth/done" } as never;
+    });
+    const { container, openExternalUrl } = await mount(host);
+    expect(container.querySelector("h1")?.textContent).toBe("Claude");
+    const name = container.querySelector<HTMLInputElement>('input[placeholder="Connection name"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "Mine");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    for (const label of [
+      "Tabs you share from Chrome on Work Mac",
+      "Tabs you share from Chrome on Home Mac",
+    ])
+      await act(async () =>
+        container.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!.click(),
+      );
+    await act(async () =>
+      container.querySelector<HTMLInputElement>('[aria-labelledby="agent-grant-tasks"]')!.click(),
+    );
+    await act(async () =>
+      container.querySelector<HTMLInputElement>('input[value="auto"]')!.click(),
+    );
+
+    await act(async () => buttonNamed(container, "Allow").click());
+    // The screen is the agent as the Home now presents it, with one line beside Allow.
+    expect(container.querySelector("h1")?.textContent).toBe("An agent wants to connect");
+    expect(container.textContent).toContain("It calls itself: Claude");
+    expect(container.querySelector(".form-actions")?.previousElementSibling?.textContent).toBe(
+      "This agent's verification changed. Review it again.",
+    );
+    expect(container.textContent).not.toContain("Already answered");
+    expect(name.value).toBe("Mine");
+    expect(
+      container.querySelector<HTMLInputElement>(
+        '[aria-label="Tabs you share from Chrome on Work Mac"]',
+      )!.checked,
+    ).toBe(true);
+    expect(
+      container.querySelector('[aria-label="Tabs you share from Chrome on Home Mac"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector<HTMLInputElement>('[aria-labelledby="agent-grant-tasks"]')!.checked,
+    ).toBe(true);
+    expect(container.querySelector<HTMLInputElement>('input[value="auto"]')!.checked).toBe(true);
+
+    await act(async () => buttonNamed(container, "Allow").click());
+    const [first, second] = authorizeCalls(dispatch) as unknown as {
+      decision: { verificationSnapshot: string; label: string; accessMode: string; grant: unknown };
+    }[];
+    expect(first!.decision.verificationSnapshot).toBe("a".repeat(64));
+    expect(second!.decision).toEqual({
+      kind: "approve",
+      label: "Mine",
+      accessMode: "auto",
+      verificationSnapshot: "b".repeat(64),
+      grant: {
+        scope: "selected",
+        tasks: true,
+        resources: expect.arrayContaining([
+          { kind: "browser-profile", profileId: created },
+          { kind: "chrome-tabs", sourceId: workMac },
+        ]),
+      },
+    });
+    expect((second!.decision.grant as { resources: unknown[] }).resources).toHaveLength(2);
+    // The profile the first attempt created is reused, not made twice.
+    expect(
+      dispatch.mock.calls.filter(([command]) => command.type === "browser.profile.create"),
+    ).toHaveLength(1);
+    expect(openExternalUrl).toHaveBeenCalledOnce();
   });
 
   it("says a request expired, or was already answered, and never offers Allow", async () => {
@@ -448,9 +576,7 @@ describe("agent consent with grants", () => {
     const { container } = await mount(host);
     expect(container.textContent).toContain("Can’t review this request");
     await act(async () => buttonNamed(container, "Try again").click());
-    await vi.waitFor(() =>
-      expect(container.textContent).toContain("Grok wants to use your Opensteer"),
-    );
+    await vi.waitFor(() => expect(container.textContent).toContain("An agent wants to connect"));
   });
 });
 

@@ -12,6 +12,7 @@ import {
   registerAgentPageBindingRoute,
   registerTriggerCdpBridge,
   registerWatchCdpBridge,
+  withLegacyRunCdpDrain,
 } from "./trigger-cdp-bridge.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import type { WatchCapabilityTokenService } from "../triggers/watch-capability.js";
@@ -241,6 +242,90 @@ describe("Watch CDP bridge", () => {
 });
 
 describe("Agent CDP bridge", () => {
+  it("refuses a legacy upgrade parked across the terminal drain snapshot", async () => {
+    const app = Fastify();
+    applications.push(app);
+    await app.register(websocket);
+    const runId = createId("run");
+    const requestedBy = createId("user");
+    const auth = {
+      claims: { runId, requestedBy, bindingGeneration: 3 },
+      lineage: { agentConnectionId: "connection", taskOriginConnectionId: null },
+    };
+    const upgradeParked = Promise.withResolvers<void>();
+    const resumeUpgrade = Promise.withResolvers<void>();
+    const detaching = Promise.withResolvers<void>();
+    const finishDetach = Promise.withResolvers<void>();
+    const committing = Promise.withResolvers<void>();
+    const finishCommit = Promise.withResolvers<void>();
+    const authenticateExecution = vi.fn(async () => auth);
+    const close = vi.fn();
+    const attachCdpForAgent = vi.fn(async () => ({
+      close,
+      dispatch: async ({ method }: { method: string }) => {
+        if (method === "Target.detachFromTarget") {
+          detaching.resolve();
+          await finishDetach.promise;
+        }
+        return { result: Promise.resolve({ sessionId: "page-channel" }) };
+      },
+    }));
+    const browser = { attachCdpForAgent } as unknown as BrowserService;
+    registerAgentCdpBridge(app, browser, {
+      authenticateExecution,
+      reauthorize: async () => auth.claims,
+    } as unknown as RunToolTokenService);
+    const port = await listen(app);
+    const url = `ws://127.0.0.1:${port}/internal/v1/browser-cdp/${createBrowserSessionId()}`;
+    const sockets: WebSocket[] = [];
+    const open = async () => {
+      const client = await connect(url, "agent-control-token-1234567890");
+      sockets.push(client.socket);
+      return client;
+    };
+    const early = await open();
+    let terminal: Promise<void> | undefined;
+    try {
+      const attachedPage = new Promise<void>((resolve) =>
+        early.socket.once("message", () => resolve()),
+      );
+      early.socket.send(JSON.stringify({ id: 1, method: "Target.attachToTarget" }));
+      await attachedPage;
+      expect(early.messages).toEqual([{ id: 1, result: { sessionId: "page-channel" } }]);
+      authenticateExecution.mockImplementationOnce(async () => {
+        upgradeParked.resolve();
+        await resumeUpgrade.promise;
+        return auth;
+      });
+      const late = open();
+      const refusal = expect(late).rejects.toThrow("Unexpected server response: 403");
+      await upgradeParked.promise;
+
+      terminal = withLegacyRunCdpDrain(browser, runId, 3, async () => {
+        committing.resolve();
+        await finishCommit.promise;
+      });
+      await detaching.promise;
+      resumeUpgrade.resolve();
+      await refusal;
+      await early.closed;
+
+      finishDetach.resolve();
+      await committing.promise;
+      await expect(open()).rejects.toThrow("Unexpected server response: 403");
+      finishCommit.resolve();
+      await terminal;
+      expect(attachCdpForAgent).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      resumeUpgrade.resolve();
+      finishDetach.resolve();
+      finishCommit.resolve();
+      for (const socket of sockets) socket.terminate();
+      await terminal;
+    }
+  });
+
   it("does not attach a connected Run that settles during the post-upgrade check", async () => {
     const app = Fastify();
     applications.push(app);
@@ -260,7 +345,10 @@ describe("Agent CDP bridge", () => {
         claims: { runId, requestedBy: createId("user"), bindingGeneration: 3 },
         lineage: { agentConnectionId: "connection", taskOriginConnectionId: null },
       }),
-      reauthorize: async () => { entered.resolve(); await resume.promise; },
+      reauthorize: async () => {
+        entered.resolve();
+        await resume.promise;
+      },
     } as unknown as RunToolTokenService);
     const port = await listen(app);
     const { closed, socket } = await connect(
@@ -306,7 +394,10 @@ describe("Agent CDP bridge", () => {
         openAgentSession,
       } as unknown as BrowserService,
       {
-        authenticateExecution: vi.fn(async () => ({ claims: { requestedBy, runId }, lineage: null })),
+        authenticateExecution: vi.fn(async () => ({
+          claims: { requestedBy, runId },
+          lineage: null,
+        })),
         reauthorize: vi.fn(async (scope: unknown) => scope),
       } as unknown as RunToolTokenService,
     );

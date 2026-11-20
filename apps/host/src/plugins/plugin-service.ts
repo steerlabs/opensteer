@@ -1,6 +1,7 @@
 import { pluginEngineEntry, pluginEngineUnavailableReason } from "./engine-resources.js";
 import { PluginSkillCache } from "./plugin-skill-cache.js";
 import { fork, type ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { hkdfSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -126,6 +127,7 @@ export class PluginService {
   readonly #callbacks = new Map<string, AbortController>();
   readonly #executionCallbacks = new Map<string, Set<Promise<void>>>();
   readonly #executionChildren = new Map<string, number>();
+  readonly #drainedExecutions = new EventEmitter();
   readonly #elicits = new Map<
     string,
     { resolve(value: PluginAnswer): void; reject(error: Error): void }
@@ -530,21 +532,54 @@ export class PluginService {
     if (liveExecution.has(execution.state)) this.#executions.set(execution.id, execution);
     else this.#executions.delete(execution.id);
     this.#options.onExecution?.(execution);
+    if (execution.drained) this.#drainedExecutions.emit(execution.id, execution);
   }
   async #drainCallbacks(id: string): Promise<void> {
     await Promise.allSettled(this.#executionCallbacks.get(id) ?? []);
   }
-  async stopExecution(id: string, context: PluginCaller, submitting: boolean): Promise<PluginExecution | undefined> {
+  async stopExecution(
+    id: string,
+    context: PluginCaller,
+    submitting: boolean,
+  ): Promise<PluginExecution | undefined> {
     const generation = this.#executionChildren.get(id);
     if (generation === undefined) {
-      if (submitting) return { id, caller: context.caller, state: "cancelled", interaction: null, drained: true };
+      if (submitting)
+        return { id, caller: context.caller, state: "cancelled", interaction: null, drained: true };
       return;
     }
     if (this.#state.status !== "ready" || generation !== this.#state.generation) return;
-    const result = await this.cancel({ execution: id }, context, AbortSignal.timeout(3_000));
-    if (generation !== this.#state.generation || result.id !== id || result.caller !== context.caller || !result.drained) return;
-    await this.#drainCallbacks(id);
-    return result;
+    const receipt = Promise.withResolvers<PluginExecution>();
+    const confirmed = (result: PluginExecution) =>
+      generation === this.#state.generation &&
+      result.id === id &&
+      result.caller === context.caller &&
+      result.drained &&
+      !liveExecution.has(result.state);
+    const onDrained = (result: PluginExecution) => {
+      if (confirmed(result)) receipt.resolve(result);
+    };
+    this.#drainedExecutions.on(id, onDrained);
+    const finished = new AbortController();
+    const timeout = AbortSignal.timeout(3_000);
+    try {
+      const reply = this.cancel(
+        { execution: id },
+        context,
+        AbortSignal.any([timeout, finished.signal]),
+      ).catch((error: unknown) => {
+        if (timeout.aborted && error instanceof PluginServiceError && error.code === "cancelled")
+          return undefined;
+        throw error;
+      });
+      const result = await Promise.race([receipt.promise, reply]);
+      if (!result || !confirmed(result)) return;
+      await this.#drainCallbacks(id);
+      return result;
+    } finally {
+      this.#drainedExecutions.off(id, onDrained);
+      finished.abort();
+    }
   }
   #send(child: ChildProcess, value: unknown) {
     if (child.connected) child.send(parseIpcMessage(HostMessageSchema, value), () => {});

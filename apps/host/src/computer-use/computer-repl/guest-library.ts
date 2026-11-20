@@ -103,5 +103,28 @@ export const computerGuestLibrary = String.raw`
     if (!state) {state={snapshot:null,ref:info.ref};windowStates.set(key,state);}
     return new Window(result.connectionId,info,state,result.tabId);
   };
+  if (globalThis.__computerConnection) {
+    delete globalThis.__computerConnection;
+    const bindTarget = async () => {
+      const [entry] = await call("apps");
+      if (entry) {
+        if (entry.blocked) throw Object.assign(new ComputerError(entry.blocked.code, entry.blocked.message), { next: entry.blocked.next });
+        return new App(entry);
+      }
+      const [phone] = await call("phones");
+      if (!phone) throw new ComputerError("not_found", "The shared app or phone is unavailable.");
+      if (phone.blocked) throw Object.assign(new ComputerError(phone.blocked.code, phone.blocked.message), { next: phone.blocked.next });
+      return new Phone({...phone,...await call("bind",phone.id)});
+    };
+    Object.defineProperty(globalThis, "target", { get: bindTarget });
+    delete globalThis.tab;
+    globalThis.help = () => print([
+      "Computer script globals: await target (the app or phone named in the tool call), print(...values), sleep(ms), help(). Legacy app(query, {computer}), apps(), phone(query) and phones() reach the same target.",
+      "App: id, name, computer; await windows() to list windows, await window(windowId) to bind one, or await window() for the default.",
+      "Window: tabId, windowId, title; observe({screenshot,emit}), click(target,{button,count}), type(text,{into}), key(keys), setValue(index,value), scroll(target,direction,amount), act(actions).",
+      "Phone: tabId, id, name, computerId, definitionId, platform, navigation, actions, access, blocked; observe(), act(actions), tap(target), longPress(target,durationMs), swipe(from,to,durationMs), drag(from,to,durationMs), type(text,{into}), clear(target), navigate(to), installedApps({query,limit,offset}), launch(appId), scroll(target,direction,amount), wake(), wait(ms), release().",
+      "Await actions. Observe before using indices or coordinates. Targets can be an index or [x,y]. Use only actions offered by that phone.",
+    ].join("\n"));
+  }
 })();
 `;

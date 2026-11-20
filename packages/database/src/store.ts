@@ -1,4 +1,4 @@
-import { endAgentSessions } from "./agent-session-store.js";
+import { endAgentSessions, refuseUnsentAgentOperation } from "./agent-session-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { recoverRemovedAskTasks } from "./task-admission-store.js";
 import { recordThreadVisit } from "./thread-visits.js";
@@ -991,10 +991,18 @@ export class OpensteerStore {
         const attempts = outstandingAttempts(
           await connectionAttempts(this.#database, connectionId),
         );
+        for (const attempt of attempts) {
+          if (attempt.kind !== "session") continue;
+          await step(() => commitPersonalMutation(this.#database, async (tx) => {
+            if (await renewConnectionCleanupClaim(tx, cleanup))
+              await endAgentSessions(tx, { userId, sessionIds: [attempt.id], reason });
+          }));
+        }
         if (attempts.length || cleanup.pending) {
           if (options.onCleanup) await step(() => options.onCleanup!(cleanup));
         }
         for (const attempt of attempts) {
+          if (attempt.kind === "session") continue;
           if (!(await renewConnectionCleanupClaim(this.#database, cleanup))) break;
           const key = `connection-stop:${connectionId}:${attempt.kind}:${attempt.id}:${attempt.generation ?? "local"}`;
           const mutate = (work: (tx: import("kysely").Transaction<DatabaseSchema>) => Promise<unknown>, idempotent = false) =>
@@ -1096,18 +1104,10 @@ export class OpensteerStore {
               );
               if (attempt.handedOff) await stop();
               break;
-            case "session":
-              await mutate((tx) =>
-                endAgentSessions(tx, {
-                  userId,
-                  sessionIds: [attempt.id],
-                  reason,
-                }),
-              );
-              break;
             case "operation":
-              // Until the direct-operation transport is wired, this row remains outstanding.
-              if (options.stopper?.stopDirectOperation)
+              if (!attempt.handedOff)
+                await mutate((tx) => refuseUnsentAgentOperation(tx, attempt.id, attempt.generation!));
+              else if (options.stopper?.stopDirectOperation)
                 await step(() => options.stopper!.stopDirectOperation!(attempt, cleanup));
               break;
             default:
@@ -1377,8 +1377,12 @@ export class OpensteerStore {
   }): Promise<AgentThreadListPage> {
     return threadStore.agentThreadPageForOwner(this.#database, input);
   }
-  async getThreadForOwner(threadId: ThreadId, ownerId: UserId): Promise<Thread | null> {
-    return threadStore.getThreadForOwner(this.#database, threadId, ownerId);
+  async getThreadForOwner(
+    threadId: ThreadId,
+    ownerId: UserId,
+    lineageConnectionId?: string,
+  ): Promise<Thread | null> {
+    return threadStore.getThreadForOwner(this.#database, threadId, ownerId, lineageConnectionId);
   }
 
   /** A Run's attempts and subagents, for a person who can read its Thread; null otherwise. */
@@ -1829,6 +1833,7 @@ export class OpensteerStore {
     /** Runs this Host is dispatching now; their dispatch settles them. */
     readonly dispatchingRunIds: readonly RunId[];
     readonly executions: readonly AnnouncedExecution[];
+    readonly stoppedComputerName?: string;
     readonly leaseExpiresAt: Date;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;

@@ -1009,6 +1009,7 @@ export async function getThreadForOwner(
   database: Kysely<DatabaseSchema>,
   threadId: ThreadId,
   ownerId: UserId,
+  lineageConnectionId?: string,
 ): Promise<Thread | null> {
   return withPersonalReadTransaction(database, async (tx) => {
     await requirePersonalOwner(tx, ownerId);
@@ -1024,6 +1025,9 @@ export async function getThreadForOwner(
       .where("threads.id", "=", threadId)
       .where("threads.createdBy", "=", ownerId)
       .where("threads.removedAt", "is", null)
+      .$if(lineageConnectionId !== undefined, (query) =>
+        query.where("threads.originConnectionId", "=", lineageConnectionId!),
+      )
       .executeTakeFirst();
     return row
       ? { ...threadFromRow(row), returnHint: await compactionReturnHint(tx, threadId) }

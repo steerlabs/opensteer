@@ -1,3 +1,4 @@
+import { sessionAgent } from "./agent-work.js";
 import type { HostSnapshot } from "./client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import type { PlaceItem } from "./places.js";
@@ -8,6 +9,7 @@ export interface PlaceAgent {
   readonly threadId: string;
 
   readonly acting: boolean;
+  readonly connectedAgentName?: string;
   readonly title: string;
 
   readonly mark: TaskMark | null;
@@ -51,6 +53,9 @@ export function placeAgents(
       lastActiveAt: occupant.lastActiveAt,
       mark: thread === null ? null : taskMark(thread),
       threadId: occupant.threadId,
+      ...(thread.externalWork
+        ? { connectedAgentName: sessionAgent(thread.externalWork.connection).name }
+        : {}),
       title: thread?.title.trim() || "Task",
     });
   }
@@ -73,6 +78,7 @@ export function samePlaceAgents(left: PlaceAgents, right: PlaceAgents): boolean 
       return (
         agent.threadId === other.threadId &&
         agent.acting === other.acting &&
+        agent.connectedAgentName === other.connectedAgentName &&
         agent.title === other.title &&
         agent.lastActiveAt === other.lastActiveAt &&
         agent.mark?.icon === other.mark?.icon &&

@@ -11,7 +11,6 @@ export const integrationTestInclude = [
 ];
 export const realBrowserTests = [
   "apps/browser-runtime/src/browser/agent-cursor.test.ts",
-  "apps/browser-runtime/src/browser/browser-repl.test.mjs",
   "apps/browser-runtime/src/browser/browser-test-lifecycle.test.ts",
   "apps/browser-runtime/src/browser/chromium-clipboard.test.ts",
   "apps/browser-runtime/src/browser/chromium-follow-view.test.ts",
@@ -32,6 +31,7 @@ export const realBrowserTests = [
   "apps/browser-runtime/src/browser/session-files.test.ts",
   "apps/web/src/components/apps/app-isolation.test.ts",
   "apps/web/src/components/workspace/workspace-tabs-chromium.interaction.test.tsx",
+  "tests/browser-repl.test.ts",
   "tests/passkey-relay-provider.test.ts",
   "tests/passkey-routing.test.ts",
 ];

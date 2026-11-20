@@ -1,3 +1,4 @@
+import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import {
   createMessageOutboxStorage,
@@ -517,7 +518,9 @@ export class MobileClient {
     });
     this.oauth = new NativeOAuthManager({
       onAccountIdentityChange: () => {
-        const teams = this.#state.catalog.deployments.filter(({ kind }) => kind === "team");
+        const teams = this.#state.catalog.deployments.filter(
+          ({ authority }) => !isPersonalHost(authority.document),
+        );
         for (const { authority } of teams)
           void this.#invalidateSavedView(authority.document.deploymentId);
         if (
@@ -862,7 +865,8 @@ export class MobileClient {
     const id = DeploymentIdSchema.parse(deploymentId);
     const team = this.#state.catalog.deployments.find(
       (connection) =>
-        connection.authority.document.deploymentId === id && connection.kind === "team",
+        connection.authority.document.deploymentId === id &&
+        !isPersonalHost(connection.authority.document),
     );
     if (team) {
       await this.oauth.signInTeam(team, invite ?? undefined);
@@ -1346,7 +1350,7 @@ export class MobileClient {
   };
 
   async signInHost(connection: DeploymentConnection): Promise<void> {
-    if (connection.kind === "team") await this.oauth.signInTeam(connection);
+    if (!isPersonalHost(connection.authority.document)) await this.oauth.signInTeam(connection);
     else await this.oauth.signInHome(connection);
   }
 
@@ -2574,7 +2578,7 @@ export class MobileClient {
     const connection = this.#state.catalog.deployments.find(
       ({ authority }) => authority.document.deploymentId === id,
     );
-    if (connection?.kind !== "personal") return null;
+    if (!connection || !isPersonalHost(connection.authority.document)) return null;
     const authorization = await this.#host.credentials.authorization(connection).catch(() => null);
     if (authorization === null) return null;
     let client: HostClient;
@@ -2952,5 +2956,5 @@ function signedOutAccountState(): DesktopAccountAuthState {
  * drawer and driven by its own session, and is never the selected Deployment.
  */
 export function isPersonalConnection(connection: DeploymentConnection): boolean {
-  return connection.authority.document.deploymentShape.kind === "personal";
+  return isPersonalHost(connection.authority.document);
 }

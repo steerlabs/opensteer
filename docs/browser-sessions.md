@@ -361,9 +361,16 @@ The virtual root supports `Browser.getVersion`, `Target.getTargets`, `Target.get
 a filter, and announces owned pages unpaused even if `waitForDebuggerOnStart` is set.
 Root target discovery accepts up to 64 ordered type filter entries for both the initial
 snapshot and live events. Context creation and disposal, browser shutdown, and browser-wide
-commands outside the supported context operations are refused. Playwright's `newBrowserCDPSession()` and
-`newCDPSession()` helpers use the forbidden browser-target attach method. A raw client can use
-the virtual root directly and request `Target.attachToTarget` for an owned page.
+commands outside the supported context operations are refused.
+
+In both modes, `Target.attachToBrowserTarget` opens a browser-level CDP session that is an alias
+of the connection's virtual root. Playwright's `browser.newBrowserCDPSession()` uses this alias,
+and `context.newCDPSession(page)` opens a separate channel for an owned page through it.
+`Target.getTargets` on either channel uses the same filtered target list as the connection root.
+The alias keeps the connection's mode, lease and command restrictions. Discovery and auto-attach
+subscriptions deliver their events on the alias that enabled them. Calling
+`Target.detachFromTarget` from the connection root closes the alias and its channels. Nested
+browser aliases are refused.
 
 Page and child commands use the [reviewed method list](../packages/browser-core/src/standard-cdp-page-methods.ts).
 Whole-context leases add `Storage.getCookies`, `Storage.setCookies`, `Storage.clearCookies`,
@@ -374,6 +381,27 @@ page's target info. The Runtime supplies the real profile context. At the root,
 `eventsEnabled: true` and leaves the profile's download settings and path alone.
 Other download settings and `Browser.cancelDownload` are refused. Uploads naming paths
 require files staged on the Runtime.
+
+Saved login and card fills use `browser_use` on the personal hosting Mac's Opensteer browser.
+The standard CDP connection refuses both fill commands, including calls through Playwright's
+`context.newCDPSession(page)`. The managed Chromium Runtime has no Passwords broker, and the
+standard relay has no check for a Passwords reference bound to an agent session, tab, and site.
+
+After `saved_login_request` or `card_request` returns a reference for that tab, bind the approved
+tab in `browser_use` and focus the field before each call:
+
+```js
+const page = await openPage(tabId);
+// After focusing the password input:
+await page.cdp("Opensteer.fillLogin", { loginRef, field: "password" });
+// After focusing the card number input:
+await page.cdp("Opensteer.fillCard", { cardRef, field: "number" });
+```
+
+Login fields are `username`, `password`, and `code`. Card fields are `number`, `expiry`,
+`expiry-month`, `expiry-year`, `cvc`, `name`, and `billing-postal-code`. The call returns
+a fill status. If the hosting Mac's browser is unavailable, ask the person to complete the
+sign-in or fill the card in the tab.
 
 Screenshots capture the page surface. Full-page capture requires a clip. Each edge is capped at
 30,720 pixels before and after scaling, scale is capped at 4, and scaled area is capped at

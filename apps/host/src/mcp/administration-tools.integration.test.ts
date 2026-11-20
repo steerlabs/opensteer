@@ -143,6 +143,8 @@ function fixture() {
     browserSources: { listState: vi.fn(async () => ({ sources: [], sites: [] })) },
     runners: {
       isRunnerConnected: vi.fn(() => true),
+      asleepSince: vi.fn(() => null),
+      agentsStoppedSince: vi.fn(() => null),
       moduleReadiness: vi.fn(() => undefined),
     },
     computerApps: {
@@ -201,11 +203,9 @@ const mutations = [
   "browser_profile_update",
 ] as const;
 const reads = [
-  "opensteer_defaults_read",
   "computer_list",
   "browser_profile_list",
   "local_server_list",
-  "opensteer_messaging_bridge_list",
 ] as const;
 describe("administration through the MCP service", () => {
   it.each(mutations)("executes %s and refuses the same action below full-access", async (name) => {
@@ -230,6 +230,16 @@ describe("administration through the MCP service", () => {
     f.setCaller({ ...f.caller(), accessMode: "approval-required" });
     expect(await f.mcp.callTool("token", name, {}, { operationKey: "read" })).toBeDefined();
   });
+  it.each(["opensteer_defaults_read", "opensteer_messaging_bridge_list"])(
+    "keeps the person's settings read %s at full-access",
+    async (name) => {
+      const f = fixture();
+      expect(await f.mcp.callTool("token", name, {}, { operationKey: "read" })).toBeDefined();
+      f.setCaller({ ...f.caller(), accessMode: "approval-required" });
+      await expect(f.mcp.callTool("token", name, {}, { operationKey: "read" }))
+        .rejects.toMatchObject({ code: "forbidden", message: "This tool is unavailable to this caller" });
+    },
+  );
   it("names the hosting computer once, by the same ID as its tools", async () => {
     const f = fixture();
     expect(

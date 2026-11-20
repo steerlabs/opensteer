@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
+import { startDesktopRunnerControl, type DesktopRunnerReady } from "./runtime/desktop-control.js";
+
 import { createHash, randomUUID } from "node:crypto";
-import { realpath } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,8 +12,9 @@ import {
   processSecretsDescriptorVariable,
   readProcessSecrets,
 } from "@opensteer/shared/processSecrets";
+import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { ensurePrivateDirectory } from "@opensteer/shared/privateFiles";
-import { RunIdSchema, type EnvironmentId, type RunnerId } from "@opensteer/core";
+import type { EnvironmentId, RunnerId } from "@opensteer/core";
 import { harnessRuntimeBoundaryForRunner } from "@opensteer/harness";
 import { RunnerBootIdSchema, type RunnerDescriptor } from "@opensteer/protocol";
 import {
@@ -38,8 +41,7 @@ import {
   type RunnerLocalActivity,
   type RunnerRuntimeOptions,
 } from "./runtime/runtime.js";
-import { watchAgentStopFile, type AgentWorkSource } from "./runtime/agent-stop-file.js";
-import { ExecutionContainment } from "./runtime/execution-containment.js";
+import { ExecutionContainment, type RunnerShutdownProof } from "./runtime/execution-containment.js";
 import { RunnerReadinessFile } from "./runtime/readiness-file.js";
 import { describeRunnerDevice } from "./device.js";
 import { harnessLaunchValidationHook } from "./shell/machine-access-setup.js";
@@ -69,7 +71,7 @@ interface StartedRunner {
   readonly integrationsModule?: PreparedIntegrationsModule;
   readonly messagingModule?: PreparedMessagingModule;
   readonly shellModule?: PreparedShellModule;
-  close(): Promise<void>;
+  close(): Promise<RunnerShutdownProof | undefined>;
 }
 
 /**
@@ -112,25 +114,13 @@ export async function runRunnerDaemon(
       readonly notifySleeping: () => void;
       readonly notifyAwake: () => void;
       readonly recheckEngines: () => void;
-      /**
-       * The person stopped one Run on this computer. It ends through the same
-       * interrupt the Home's Stop uses, so the Home records it as interrupted,
-       * when it next hears from this Runner if it is out of reach now. False
-       * when no such Run is running here.
-       */
-      readonly stopRun: (runId: string) => boolean;
-      /** Settles once the last agent-stop notice went to the Home, or could not. */
-      readonly agentNoticeSent: () => Promise<void>;
     }) => void;
-    /**
-     * The person's Stop for agent work on this computer, when a supervisor
-     * holds it. Otherwise the Stop file the configuration names is watched.
-     */
-    readonly agentWork?: AgentWorkSource;
     /**
      * The Runs this Runner is doing work for, each time that changes and once
      * when the daemon starts. A Runner that runs no agents never calls it.
      */
+    readonly onStarted?: (ready: DesktopRunnerReady) => void | Promise<void>;
+    readonly onShutdown?: (proof: RunnerShutdownProof) => void | Promise<void>;
     readonly onActivity?: (runs: readonly RunnerLocalActivity[]) => void;
     readonly onConnected?: (identity: {
       readonly environmentId: EnvironmentId | null;
@@ -172,13 +162,10 @@ export async function runRunnerDaemon(
   const bootId = RunnerBootIdSchema.parse(`rbt_${randomUUID()}`);
   let started: StartedRunner | undefined;
   let connection: ReconnectingHostConnection | undefined;
+  let desktopControl: Awaited<ReturnType<typeof startDesktopRunnerControl>> | undefined;
   let stopActivity: (() => void) | undefined;
-  const watchedStop = options.agentWork
-    ? undefined
-    : applicationConfig.agentStopFile
-      ? watchAgentStopFile(applicationConfig.agentStopFile)
-      : undefined;
-  const agentWork = options.agentWork ?? watchedStop;
+  const agentsStoppedSince = applicationConfig.agentsStoppedSince;
+  const containment = new ExecutionContainment({ bootId, dataDirectory: config.dataDirectory });
   try {
     const identityStore = new FileRunnerIdentityStore({
       dataDirectory: config.dataDirectory,
@@ -187,12 +174,19 @@ export async function runRunnerDaemon(
       ...(config.runnerId ? { runnerId: config.runnerId } : {}),
     });
     const identity = await identityStore.loadOrCreate();
+    const earlierBoots =
+      agentsStoppedSince !== undefined || config.modules.includes("agents")
+        ? await containment.reapEarlierBoots().catch(() => "unknown" as const)
+        : "proven";
+    if (earlierBoots === "unknown")
+      logger.error("An earlier Runner left processes that could not be ended");
     started = config.modules.includes("agents")
       ? await startAgentsRunner({
-          ...(agentWork ? { agentWork } : {}),
           applicationConfig,
           bootId,
           config,
+          containment,
+          earlierBootsContained: earlierBoots === "proven",
           environment,
           identity,
           logger,
@@ -210,11 +204,13 @@ export async function runRunnerDaemon(
       runnerKind: config.runnerKind,
     });
     connection = new ReconnectingHostConnection({
-      ...(agentWork ? { agentWork } : {}),
+      ...(agentsStoppedSince === undefined ? {} : { agentsStoppedSince }),
       ...(started.agents ? { agents: started.agents } : {}),
       ...(config.browserBridge ? { browserBridge: config.browserBridge } : {}),
       bootId,
       config,
+      containment,
+      updateHeld: () => desktopControl?.held() ?? false,
       ...(device ? { device } : {}),
       identity,
       identityStore,
@@ -241,11 +237,6 @@ export async function runRunnerDaemon(
       },
       notifyAwake: () => running.notifyAwake(),
       recheckEngines: () => running.recheckEngines(),
-      stopRun: (runId) => {
-        const parsed = RunIdSchema.safeParse(runId);
-        return parsed.success && (runtime?.stopRunLocally(parsed.data) ?? false);
-      },
-      agentNoticeSent: () => running.agentNoticeSent(),
     });
     const onActivity = options.onActivity;
     if (runtime && onActivity) {
@@ -253,14 +244,23 @@ export async function runRunnerDaemon(
       stopActivity = watched.subscribeLocalActivity(() => onActivity(watched.localActivity()));
       onActivity(watched.localActivity());
     }
+    if (options.onStarted) {
+      desktopControl = await startDesktopRunnerControl(
+        () => earlierBoots === "proven" && running.idleForUpdate(),
+        earlierBoots === "proven",
+      );
+      await options.onStarted(desktopControl.ready);
+    }
     await connection.run(shutdown.signal);
   } finally {
     signal?.removeEventListener("abort", externalAbort);
     stopActivity?.();
-    watchedStop?.close();
+    desktopControl?.close();
     connection?.close();
     await readiness?.disconnected();
-    await started?.close();
+    const proof = await started?.close();
+    if (agentsStoppedSince !== undefined && options.onShutdown)
+      await options.onShutdown(proof ?? (await containment.shutdownProof()));
     await readiness?.settle();
     await lock.release();
   }
@@ -274,17 +274,18 @@ export async function runRunnerDaemon(
  * still runs threads is worth having even when nobody can `ssh` to it.
  */
 async function startAgentsRunner(input: {
-  readonly agentWork?: AgentWorkSource;
   readonly applicationConfig: RunnerApplicationConfig;
   readonly phoneScreens?: PhoneScreenDriver;
   readonly bootId: RunnerDescriptor["bootId"];
   readonly config: RunnerConfig;
+  readonly containment: ExecutionContainment;
+  readonly earlierBootsContained: boolean;
   readonly environment: NodeJS.ProcessEnv;
   readonly identity: RunnerIdentity;
   readonly logger: JsonRunnerLogger;
   readonly signal: AbortSignal;
 }): Promise<StartedRunner> {
-  const { applicationConfig, bootId, config, environment, identity, logger } = input;
+  const { applicationConfig, bootId, config, containment, environment, identity, logger } = input;
   await verifyNodeExecutable(config.nodeExecutable, { environment });
   const shellModule = config.modules.includes("shell")
     ? await prepareShellModule({
@@ -306,13 +307,14 @@ async function startAgentsRunner(input: {
         ...(input.phoneScreens ? { phoneScreens: input.phoneScreens } : {}),
       })
     : undefined;
-  const messagingModule = config.modules.includes("messaging")
-    ? prepareMessagingModule({
-        computerUse: integrationsModule?.computerUse,
-        dataDirectory: config.dataDirectory,
-        platform: process.platform,
-      })
-    : undefined;
+  const messagingModule =
+    !applicationConfig.agentsStoppedSince && config.modules.includes("messaging")
+      ? prepareMessagingModule({
+          computerUse: integrationsModule?.computerUse,
+          dataDirectory: config.dataDirectory,
+          platform: process.platform,
+        })
+      : undefined;
   // Execution assigns a work location once, preserving it through module changes.
   const environmentId = identity.environmentId;
   if (!environmentId) {
@@ -371,11 +373,6 @@ async function startAgentsRunner(input: {
     });
   // The data directory is this process's now, so a Run another boot of it
   // left running is a dead Runner's: it ends before this one takes work.
-  const containment = new ExecutionContainment({ bootId, dataDirectory: config.dataDirectory });
-  const earlierBoots = await containment.reapEarlierBoots();
-  if (earlierBoots === "unknown") {
-    logger.error("An earlier Runner left processes that could not be ended");
-  }
   await prunePluginCache(resolve(config.dataDirectory, "private", "harness-state"));
   const pluginPruner = setInterval(
     () => {
@@ -407,7 +404,6 @@ async function startAgentsRunner(input: {
       logger,
     ),
     harnessRuntimeBoundary,
-    ...(input.agentWork ? { agentWorkStopped: () => input.agentWork!.stopped() } : {}),
     ...(harnessSandbox ? { harnessSandbox } : {}),
     plugins: cacheRunPlugins,
     logger,
@@ -423,7 +419,7 @@ async function startAgentsRunner(input: {
   });
   return {
     agents: {
-      earlierBootsContained: earlierBoots === "proven",
+      earlierBootsContained: input.earlierBootsContained,
       runtime,
       runFileOptions: {
         dataDirectory: config.dataDirectory,
@@ -434,7 +430,7 @@ async function startAgentsRunner(input: {
       clearInterval(pluginPruner);
       await messagingModule?.module.close();
       await integrationsModule?.close?.();
-      await runtime.close();
+      return await runtime.close(applicationConfig.agentsStoppedSince !== undefined);
     },
     ...(integrationsModule ? { integrationsModule } : {}),
     ...(messagingModule ? { messagingModule } : {}),
@@ -478,13 +474,14 @@ async function startReachOnlyRunner(input: {
         ...(input.phoneScreens ? { phoneScreens: input.phoneScreens } : {}),
       })
     : undefined;
-  const messagingModule = input.config.modules.includes("messaging")
-    ? prepareMessagingModule({
-        computerUse: integrationsModule?.computerUse,
-        dataDirectory: input.config.dataDirectory,
-        platform: process.platform,
-      })
-    : undefined;
+  const messagingModule =
+    !input.applicationConfig.agentsStoppedSince && input.config.modules.includes("messaging")
+      ? prepareMessagingModule({
+          computerUse: integrationsModule?.computerUse,
+          dataDirectory: input.config.dataDirectory,
+          platform: process.platform,
+        })
+      : undefined;
   if (!shellModule && !integrationsModule && !input.config.browserBridge) {
     throw new Error(
       "This computer runs no agents and cannot offer a browser, shell access or apps on this platform",
@@ -522,6 +519,8 @@ export function machineAccessRuntimeOptions(
 
 async function main(): Promise<void> {
   const shutdown = new AbortController();
+  const receipt = process.env.OPENSTEER_RUNNER_SHUTDOWN_RECEIPT;
+  delete process.env.OPENSTEER_RUNNER_SHUTDOWN_RECEIPT;
   let receivedSignal = false;
   const stop = (name: string): void => {
     if (receivedSignal) {
@@ -529,12 +528,29 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     receivedSignal = true;
-    shutdown.abort(new Error(`Received ${name}`));
+    if (receipt)
+      void readFile(receipt, "utf8")
+        .catch(() => null)
+        .then((request) =>
+          shutdown.abort(
+            new Error(request === "restarting" ? "device-restarting" : `Received ${name}`),
+          ),
+        );
+    else shutdown.abort(new Error(`Received ${name}`));
   };
   const handlers = shutdownSignals.map((name) => [name, () => stop(name)] as const);
   for (const [name, handler] of handlers) process.on(name, handler);
   try {
-    await runRunnerDaemon(process.env, shutdown.signal);
+    await runRunnerDaemon(
+      process.env,
+      shutdown.signal,
+      receipt
+        ? {
+            onStarted: (ready) => replacePrivateFileAtomically(receipt, JSON.stringify(ready)),
+            onShutdown: (proof) => replacePrivateFileAtomically(receipt, JSON.stringify(proof)),
+          }
+        : {},
+    );
   } finally {
     for (const [name, handler] of handlers) process.off(name, handler);
   }

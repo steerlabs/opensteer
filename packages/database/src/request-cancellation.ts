@@ -6,7 +6,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { isOfflineSettlement } from "./personal-transaction.js";
-import type { Transaction } from "kysely";
+import { sql, type Transaction } from "kysely";
 import { lockRequestThreads, refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -19,6 +19,7 @@ interface Cancellation {
   readonly originatingThreadId?: ThreadId;
   readonly requestIds?: readonly RequestId[];
   readonly requestedBy?: UserId;
+  readonly expireAgentOperation?: boolean;
 }
 
 export function cancelPending(
@@ -66,7 +67,8 @@ async function cancelInTransaction(
   }
   if (input.requestedBy) pending = pending.where("requestedBy", "=", input.requestedBy);
   if (["resource-deleted", "authority-revoked", "plugin-interrupted", "plugin-expired"].includes(input.reason)) {
-    const durable = await pending.where("mode", "=", "durable").orderBy("id", "asc").execute();
+    const durable = await pending.where("mode", "=", "durable")
+      .where("originatingAgentSessionId", "is", null).orderBy("id", "asc").execute();
     for (const row of durable) {
       await transaction.insertInto("requestContinuations").values({
         requestId: row.id,
@@ -120,6 +122,9 @@ async function cancelInTransaction(
       resolvedBy: null,
       responseCommandId: null,
       status: "cancelled",
+      ...(input.expireAgentOperation
+        ? { agentOperation: sql`agent_operation || '{"expired": true}'::jsonb` }
+        : {}),
     })
     .where(
       "id",

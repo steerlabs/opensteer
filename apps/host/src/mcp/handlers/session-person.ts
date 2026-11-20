@@ -1,8 +1,9 @@
 import { parseSignInSite } from "../../browser/sign-in-admission.js";
-import { agentGrantAllows, refused, type RequestId } from "@opensteer/core";
+import { OpensteerError, agentGrantAllows, refused, type RequestId } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { AgentSessionService } from "../../agent-sessions/agent-session-service.js";
 import type { BrowserService } from "../../browser/browser-service.js";
+import type { TabActor, TabServicePort } from "../../tabs/ports.js";
 import type { SavedLoginService } from "../../browser/saved-logins.js";
 import type { ConnectionCaller } from "../agent-caller.js";
 import { directResult } from "./direct.js";
@@ -15,6 +16,7 @@ function tabRefusal() {
 interface SessionPersonOptions {
   readonly sessions: AgentSessionService;
   readonly browser: Pick<BrowserService, "signInTarget">;
+  readonly tabs: Pick<TabServicePort, "connectionTab">;
   readonly logins: Pick<SavedLoginService, "useSessionCredential" | "replaySessionCredential">;
   readonly store: Pick<
     OpensteerStore,
@@ -54,12 +56,36 @@ export class SessionPersonTools {
     const { caller, input, operationKey } = call;
     if (!input.tabId) throw tabRefusal();
     const tabId = input.tabId;
+    const session = await this.#options.store.database
+      .selectFrom("agentSessions")
+      .select(["id", "threadId"])
+      .where("connectionId", "=", caller.connectionId)
+      .where("userId", "=", caller.userId)
+      .where("status", "=", "active")
+      .$if(input.taskId !== undefined, (query) => query.where("threadId", "=", input.taskId!))
+      .executeTakeFirst();
+    if (!session && input.taskId !== undefined) throw tabRefusal();
+    const actor: Extract<TabActor, { kind: "connection" | "browser-binding" }> = session
+      ? {
+          kind: "browser-binding",
+          authority: { agentBindingId: `session:${session.id}`, ownerId: caller.userId },
+          threadId: session.threadId,
+        }
+      : { kind: "connection", caller };
+    const tab = await this.#options.tabs.connectionTab(actor, tabId).catch((error: unknown) => {
+      if (error instanceof OpensteerError && ["not_found", "forbidden"].includes(error.code))
+        throw tabRefusal();
+      throw error;
+    });
+    if (tab.kind !== "page" || !tab.profileId || (!session && tab.openedBy !== "person"))
+      throw tabRefusal();
     const target = await this.#options.browser
       .signInTarget({ ownerId: caller.userId, tabId })
       .catch(() => null);
     if (
       !target?.live ||
-      !target.profileId ||
+      target.profileId !== tab.profileId ||
+      target.tabGeneration !== tab.generation ||
       !agentGrantAllows(
         caller.grant,
         {
@@ -87,7 +113,7 @@ export class SessionPersonTools {
       await this.#options.sessions.run<CredentialResult>({
         ownerUserId: caller.userId,
         agentConnectionId: caller.connectionId,
-        taskId: input.taskId,
+        taskId: session?.threadId,
         operationKey,
         tool,
         input: argumentsForOperation,
@@ -96,7 +122,7 @@ export class SessionPersonTools {
           name: target.profileName ?? "Browser profile",
           device,
         },
-        targetGeneration: JSON.stringify([target.sessionId, tabId, target.tabGeneration]),
+        targetGeneration: String(tab.generation),
         effect: "read",
         calls: JSON.stringify({ tool, tabId, site: input.site }),
         reason: input.reason,
@@ -117,7 +143,7 @@ export class SessionPersonTools {
         },
         execute: async (context) => {
           await context.recheck();
-          const authorized = async () => {
+          const authorized = async (expectedGeneration: number) => {
             try {
               const execution = await this.#options.store.admitExecution({
                 ownerUserId: caller.userId,
@@ -133,7 +159,7 @@ export class SessionPersonTools {
               return (
                 live?.live === true &&
                 live.profileId === profileId &&
-                live.tabGeneration === target.tabGeneration &&
+                live.tabGeneration === expectedGeneration &&
                 matchesSite(live.tabUrl, site)
               );
             } catch {
@@ -153,12 +179,13 @@ export class SessionPersonTools {
               operationId: context.operationId,
               grantRevision: context.grantRevision,
               profileId,
+              tabGeneration: tab.generation,
               signal: context.signal,
               authorized,
             },
           });
           if (result.status === "ready") {
-            if (!(await authorized())) throw tabRefusal();
+            if (!(await authorized(tab.generation))) throw tabRefusal();
             return "loginRef" in result
               ? { loginStatus: "ready" as const, loginRef: result.loginRef }
               : { cardStatus: "ready" as const, cardRef: result.cardRef };

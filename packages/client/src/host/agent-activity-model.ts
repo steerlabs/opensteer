@@ -2381,6 +2381,11 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     "browser_profile_save",
     said(["Saving the browser profile", "Saved the browser profile"], "browser"),
   ],
+  ["browser_use", said(["Running a browser script", "Ran a browser script"], "browser")],
+  [
+    "browser_connect",
+    said(["Opening direct browser control", "Opened direct browser control"], "browser"),
+  ],
   ["browser_session_close", said(["Closing the browser", "Closed the browser"], "browser")],
   ["browser_session_list", said(["Looking up browsers", "Looked up browsers"], "browser")],
   [

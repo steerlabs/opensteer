@@ -685,7 +685,7 @@ export class IphoneService {
         throw new IphoneServiceError("no-session");
     }
     if (method === "iphone.session.open" && session) throw new IphoneServiceError("phone-in-use");
-    const binding = await this.#binding(record);
+    const binding = await this.#binding(record, options.signal);
     const native = await this.#connect();
     const authorized = () => {
       const live = this.#slots.get(deploymentId);

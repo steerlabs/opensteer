@@ -1,8 +1,7 @@
 import { createId } from "@opensteer/core";
 import { MachineSummarySchema, type MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { activityIdle, DesktopActivity, fencedIdle, type HomeHost } from "./desktop-activity.js";
-import { AgentAdmission } from "./agent-admission.js";
+import { activityIdle, DesktopActivity, type HomeHost } from "./desktop-activity.js";
 import type { MenuBarInput } from "@opensteer/client/computers";
 import {
   DesktopMenuBarService,
@@ -177,7 +176,6 @@ function service(
     devices?: MenuBarDeviceHome[];
     selected?: string;
     local?: Local;
-    stopRow?: (id: string) => Promise<boolean> | boolean;
     phase?: MenuBarInput["stop"]["phase"];
   } = {},
 ) {
@@ -189,7 +187,6 @@ function service(
     host: typeof host === "function" ? host : () => host,
     local: () => local,
     stop: () => ({ phase: input.phase ?? "running", stoppedAt: null, problem: null }),
-    stopRow: input.stopRow ?? (() => false),
     openAtLogin: async () => ({ on: true, available: true }),
     log: vi.fn(),
   });
@@ -206,7 +203,15 @@ describe("menu bar state from this Mac alone", () => {
         tabs: [{ sessionId: "bsn_1", profile: true }],
       },
     });
+    const header = Promise.withResolvers<void>();
+    const unsubscribe = menu.subscribe(() => {
+      void menu.status().then((status) => {
+        if (status.homes.length === 2) header.resolve();
+      });
+    });
     const reading = menu.refresh();
+    await header.promise;
+    unsubscribe();
     const status = await menu.status();
     expect(status.homes.map((home) => home.status)).toEqual([
       "This Mac is your Home · Running",
@@ -258,12 +263,33 @@ describe("menu bar state from this Mac alone", () => {
     expect(changed).toHaveBeenCalled();
   });
 
+  it("keeps a newer live count when an older Home read finishes late", async () => {
+    const requested = Promise.withResolvers<void>();
+    const reply = Promise.withResolvers<Awaited<ReturnType<HomeHost["attention.get"]>>>();
+    const home = {
+      ...fakeHost().host,
+      "attention.get": () => {
+        requested.resolve();
+        return reply.promise;
+      },
+    };
+    const menu = service(home);
+    const refresh = menu.refresh();
+    await requested.promise;
+    menu.noteNeedsYou("dep_home", 3);
+    reply.resolve({ ok: true, data: { needsYou: 1, unread: false } });
+    await refresh;
+    expect((await menu.status()).needsYou?.line).toBe("3 need you");
+  });
+
   it("forgets a Home's count once this Mac no longer works for it", async () => {
     const devices = [office()];
     const menu = service(fakeHost().hostFor, { hosted: null, devices });
+    await menu.refresh();
     menu.noteNeedsYou("dep_office", 2);
     expect((await menu.status()).needsYou?.line).toBe("2 need you");
     devices.pop();
+    await menu.refresh();
     expect((await menu.status()).needsYou).toBeNull();
     devices.push(office());
     expect((await menu.status()).needsYou).toBeNull();
@@ -279,7 +305,6 @@ describe("menu bar state from this Mac alone", () => {
       host: fake.hostFor,
       local: () => ({ apps: [], tabs: [] }),
       stop: () => ({ phase, stoppedAt: null, problem: null }),
-      stopRow: () => false,
       openAtLogin: () => new Promise(() => undefined),
       log: vi.fn(),
     });
@@ -291,6 +316,7 @@ describe("menu bar state from this Mac alone", () => {
 
   it("takes the window's live count for the Home it shows, and redraws", async () => {
     const menu = service(fakeHost().hostFor);
+    await menu.refresh();
     const changed = vi.fn();
     menu.subscribe(changed);
     menu.noteNeedsYou("dep_home", 1);
@@ -298,54 +324,6 @@ describe("menu bar state from this Mac alone", () => {
     expect(changed).toHaveBeenCalledTimes(1);
     expect((await menu.status()).needsYou?.line).toBe("1 needs you");
     expect((await menu.status()).icon.attention).toBe(true);
-  });
-
-  it("stops one row the way its kind is stopped, and refuses one that already ended", async () => {
-    const stopRow = vi.fn((id: string) => id === "apps:cus_1");
-    const menu = service(fakeHost().hostFor, { stopRow });
-    const changed = vi.fn();
-    menu.subscribe(changed);
-    await menu.stopRow("apps:cus_1");
-    expect(stopRow).toHaveBeenCalledWith("apps:cus_1");
-    expect(changed).toHaveBeenCalled();
-    await expect(menu.stopRow("apps:cus_gone")).rejects.toThrow(/already ended/);
-  });
-
-  it("keeps a task of this Mac's Home as stopping while its Stop goes out, and failed when it did not", async () => {
-    const fake = fakeHost();
-    const sent = Promise.withResolvers<boolean>();
-    let attempt = 0;
-    const menu = service(fake.hostFor, {
-      stopRow: () => (++attempt === 1 ? sent.promise : Promise.reject(new Error("unreachable"))),
-    });
-    await menu.refresh();
-    const row = async () =>
-      (await menu.status()).rightNow.find((candidate) => candidate.id === "home:thr_flights");
-    expect(await row()).toMatchObject({ kind: "task", stoppable: true, state: "active" });
-    const stopping = menu.stopRow("home:thr_flights");
-    expect(await row()).toMatchObject({ state: "stopping" });
-    sent.resolve(true);
-    await stopping;
-    await expect(menu.stopRow("home:thr_flights")).rejects.toThrow("unreachable");
-    expect(await row()).toMatchObject({ state: "failed" });
-  });
-
-  it("keeps a Device's Run as stopping until its Runner no longer reports it", async () => {
-    const runs = [
-      { deploymentId: "dep_office", runId: "run_1", engine: "Codex", purpose: "task" as const },
-    ];
-    const menu = service(fakeHost().hostFor, {
-      devices: [office()],
-      local: { apps: [], tabs: [], runs } as Local,
-      stopRow: () => true,
-    });
-    await menu.stopRow("runner:dep_office:run_1");
-    expect((await menu.status()).rightNow[0]).toMatchObject({
-      id: "runner:dep_office:run_1",
-      state: "stopping",
-    });
-    runs.pop();
-    expect((await menu.status()).rightNow).toEqual([]);
   });
 });
 
@@ -562,42 +540,6 @@ describe("activity for quitting and updating", () => {
     const { host } = fakeHost({ fail: true });
     const snapshot = await activity(host, {}).snapshot();
     expect(snapshot.known).toBe(false);
-  });
-
-  it("fences the update's last look so nothing new starts before the restart", async () => {
-    const admission = new AgentAdmission();
-    admission.reopen();
-    let openDuringLook: boolean | null = null;
-    const busy = await fencedIdle(
-      admission,
-      () => false,
-      async () => {
-        openDuringLook = admission.open;
-        return false;
-      },
-    );
-    expect(openDuringLook).toBe(false);
-    expect(busy.idle).toBe(false);
-    expect(admission.open).toBe(true);
-
-    const idle = await fencedIdle(
-      admission,
-      () => false,
-      async () => true,
-    );
-    expect(idle.idle).toBe(true);
-    expect(admission.open).toBe(false);
-    idle.release();
-    expect(admission.open).toBe(true);
-
-    // A Stop the person pressed meanwhile is never undone by the update backing off.
-    const stopped = await fencedIdle(
-      admission,
-      () => true,
-      async () => false,
-    );
-    expect(stopped.idle).toBe(false);
-    expect(admission.open).toBe(false);
   });
 });
 

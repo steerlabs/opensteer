@@ -18,7 +18,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocketClient, { WebSocketServer, type WebSocket } from "ws";
 import { ReconnectingHostConnection } from "./host-connection.js";
-import type { AgentWorkSource } from "../runtime/agent-stop-file.js";
 
 const tempRoots: string[] = [];
 
@@ -113,7 +112,6 @@ async function createConnection(input: {
   readonly device: RunnerDevice;
   readonly hostUrl: string;
   readonly platform: "darwin" | "linux";
-  readonly agentWork?: AgentWorkSource;
 }) {
   const root = await mkdtemp(join(tmpdir(), "opensteer-runner-ticket-"));
   tempRoots.push(root);
@@ -124,7 +122,6 @@ async function createConnection(input: {
   const identity = await identityStore.loadOrCreate();
   const events = new EventEmitter();
   const connection = new ReconnectingHostConnection({
-    ...(input.agentWork ? { agentWork: input.agentWork } : {}),
     bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
     config: parseRunnerConfig({
       OPENSTEER_DEPLOYMENT_KIND: "personal",

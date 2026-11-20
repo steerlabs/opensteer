@@ -526,7 +526,11 @@ export class ProductToolHandlers {
     if (input.subagentId) return this.#readSubagent(caller, input);
     const claims = { requestedBy: caller.userId };
     const threadId = !input.taskId ? this.#targetThreadId(caller) : input.taskId;
-    const thread = await this.#store.getThreadForOwner(threadId, claims.requestedBy);
+    const thread = await this.#store.getThreadForOwner(
+      threadId,
+      claims.requestedBy,
+      selectedLineageId(caller),
+    );
     if (!thread) throw forbidden("task is unavailable to this user");
 
     const recent = await readAgentThreadRecent(this.#store.database, {

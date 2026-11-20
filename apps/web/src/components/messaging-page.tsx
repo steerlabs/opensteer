@@ -1064,7 +1064,7 @@ function ChannelReview({
       detail: `Runs started from ${provider.label} use your Opensteer access.`,
       title: "Authority",
     },
-    { detail: "Default AI engine", title: "Runs on" },
+    { detail: "Default agent", title: "Runs on" },
   ];
   return (
     <div className="card">

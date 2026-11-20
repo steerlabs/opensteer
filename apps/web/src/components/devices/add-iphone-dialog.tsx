@@ -349,7 +349,7 @@ export function AddIphoneDialog({
                 </p>
               </div>
             ) : null,
-          detail: again ? `${reach} Your agent can use it as you allowed before.` : reach,
+          detail: again ? `${reach} Your own agents can use it as you allowed before.` : reach,
           title: again ? `${shown} is set up again` : `${shown} is added`,
           tone: "done",
         };
@@ -700,17 +700,17 @@ const accessChoices: readonly {
   {
     value: "read-write",
     title: "View and control",
-    detail: "Your agent can see the screen, tap, swipe, press buttons and open apps.",
+    detail: "Your own agents can see the screen, tap, swipe, press buttons and open apps.",
   },
   {
     value: "read",
     title: "View only",
-    detail: "Your agent can see the screen but can’t touch it.",
+    detail: "Your own agents can see the screen but can’t touch it.",
   },
   {
     value: "none",
     title: "Not yet",
-    detail: "Your agent can’t use it. You can allow it on its page any time.",
+    detail: "Your own agents can’t use it. You can allow it on its page any time.",
   },
 ];
 

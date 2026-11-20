@@ -212,7 +212,7 @@ export function deviceRemovalCopy(input: {
   if (input.thisDevice)
     return {
       title: "Sign out and remove this Mac?",
-      body: "Your agent can no longer use this Mac. Browser profiles kept here are deleted. Your files stay.",
+      body: "Your own agents can no longer use this Mac. Browser profiles kept here are deleted. Your files stay.",
       confirm: "Sign out and remove",
     };
   const profiles = deviceRemovalProfiles(input.machine, input.profiles);

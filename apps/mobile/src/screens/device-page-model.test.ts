@@ -135,13 +135,14 @@ describe("removing a device", () => {
     expect(deviceRemoval(machine({}), { ...none, thisDevice: true })).toEqual({
       label: "Sign out and remove this iPhone",
       title: "Sign out and remove this iPhone?",
-      message: "Your agent can no longer use this iPhone. Browser profiles kept here are deleted.",
+      message:
+        "Your own agents can no longer use this iPhone. Browser profiles kept here are deleted.",
     });
     expect(deviceRemoval(machine({ status: "offline" }), none)).toEqual({
       label: "Remove",
       title: "Remove MacBook Pro (2)?",
       message:
-        "It is signed out and your agent can't use it. It finishes the next time it connects. Browser profiles kept on it are deleted.",
+        "It is signed out and your own agents can't use it. It finishes the next time it connects. Browser profiles kept on it are deleted.",
     });
     // The profiles it holds are named, and an away device erases them when it next connects.
     expect(
@@ -160,7 +161,7 @@ describe("removing a device", () => {
         },
       )?.message,
     ).toBe(
-      "It is signed out and your agent can't use it. It finishes the next time it connects. Its browser profile Work and its sign-ins are deleted. MacBook Pro (2) erases it the next time it connects.",
+      "It is signed out and your own agents can't use it. It finishes the next time it connects. Its browser profile Work and its sign-ins are deleted. MacBook Pro (2) erases it the next time it connects.",
     );
     expect(deviceRemoval(machine({ kind: "home" }), none)).toBeNull();
   });

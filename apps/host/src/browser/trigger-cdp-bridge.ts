@@ -250,17 +250,78 @@ async function authenticateConnection<Scope>(
   return { scope, sessionId, token };
 }
 
-const lineageSockets = new WeakMap<CdpRouteOptions<unknown>["browser"], Map<WebSocket, {
-  readonly authority: CdpAuthority;
-  readonly close: () => Promise<void>;
-}>>();
+const lineageSockets = new WeakMap<
+  CdpRouteOptions<unknown>["browser"],
+  Map<
+    WebSocket,
+    {
+      readonly authority: CdpAuthority;
+      readonly close: () => Promise<void>;
+    }
+  >
+>();
 
-export async function drainLegacyRunCdp(browser: BrowserService, runId: string, generation: number): Promise<void> {
-  await Promise.all([...(lineageSockets.get(browser) ?? [])].flatMap(([socket, binding]) => {
-    if (binding.authority.agentBindingId !== `run:${runId}` || binding.authority.bindingGeneration !== generation) return [];
-    socket.terminate();
-    return [binding.close()];
-  }));
+const drainingRunGenerations = new WeakMap<
+  CdpRouteOptions<unknown>["browser"],
+  Map<string, number>
+>();
+const endedBrowserAccess = "This task's browser access has ended.";
+
+function runGenerationKey(bindingId: string, generation: number): string {
+  return `${bindingId}:${generation}`;
+}
+
+function isDrainingRun(
+  browser: CdpRouteOptions<unknown>["browser"],
+  authority: CdpAuthority,
+): boolean {
+  return (
+    authority.bindingGeneration !== undefined &&
+    drainingRunGenerations
+      .get(browser)
+      ?.has(runGenerationKey(authority.agentBindingId, authority.bindingGeneration)) === true
+  );
+}
+
+export async function withLegacyRunCdpDrain<T>(
+  browser: BrowserService,
+  runId: string,
+  generation: number,
+  finish: () => Promise<T>,
+): Promise<T> {
+  let generations = drainingRunGenerations.get(browser);
+  if (!generations) {
+    generations = new Map();
+    drainingRunGenerations.set(browser, generations);
+  }
+  const key = runGenerationKey(`run:${runId}`, generation);
+  generations.set(key, (generations.get(key) ?? 0) + 1);
+  try {
+    await drainLegacyRunCdp(browser, runId, generation);
+    return await finish();
+  } finally {
+    const remaining = generations.get(key)! - 1;
+    if (remaining) generations.set(key, remaining);
+    else generations.delete(key);
+  }
+}
+
+export async function drainLegacyRunCdp(
+  browser: BrowserService,
+  runId: string,
+  generation: number,
+): Promise<void> {
+  await Promise.all(
+    [...(lineageSockets.get(browser) ?? [])].flatMap(([socket, binding]) => {
+      if (
+        binding.authority.agentBindingId !== `run:${runId}` ||
+        binding.authority.bindingGeneration !== generation
+      )
+        return [];
+      socket.terminate();
+      return [binding.close()];
+    }),
+  );
 }
 
 export async function closeLegacyCdpForConnection(
@@ -287,24 +348,31 @@ function registerCdpRoute<Scope>(app: FastifyInstance, options: CdpRouteOptions<
   app.get(
     options.path,
     {
-      preValidation: async (request) => {
-        connections.set(request.raw, await authenticateConnection(request, options));
+      preValidation: async (request, reply) => {
+        const connection = await authenticateConnection(request, options);
+        if (isDrainingRun(options.browser, options.authority(connection.scope)))
+          return reply.code(403).send({ error: endedBrowserAccess });
+        connections.set(request.raw, connection);
       },
       websocket: true,
     },
     (socket, request) => {
       const connection = connections.get(request.raw);
       if (!connection) return socket.close(1008, "Authentication required");
+      const authority = options.authority(connection.scope);
+      if (isDrainingRun(options.browser, authority)) return socket.close(1008, endedBrowserAccess);
       let sockets = lineageSockets.get(options.browser);
       if (!sockets) {
         sockets = new Map();
         lineageSockets.set(options.browser, sockets);
       }
-      const authority = options.authority(connection.scope);
       const close = attachCdpSocket(socket, options, connection);
       sockets.set(socket, { authority, close });
       socket.once("close", () => {
-        void close().then(() => sockets.delete(socket), () => undefined);
+        void close().then(
+          () => sockets.delete(socket),
+          () => undefined,
+        );
       });
     },
   );
@@ -449,14 +517,20 @@ function attachCdpSocket<Scope>(
     disconnected = true;
     if (expirationTimer) clearTimeout(expirationTimer);
     if (refusalTimer) clearTimeout(refusalTimer);
-    closing = attachmentPromise.then((attachment) => attachment.close(), () => undefined)
+    closing = attachmentPromise
+      .then(
+        (attachment) => attachment.close(),
+        () => undefined,
+      )
       .then(async () => {
         if (options.ownsSession && ownedSessionOpened)
           await options.browser.closeTriggerSessionsForBinding(authority.agentBindingId);
       });
     return closing;
   };
-  socket.once("error", () => { void close().catch(() => undefined); });
+  socket.once("error", () => {
+    void close().catch(() => undefined);
+  });
   socket.on("message", (raw, isBinary) => {
     if (isBinary) {
       closeSocket(socket, new Error("CDP messages must be JSON text"));

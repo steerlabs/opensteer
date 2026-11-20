@@ -137,6 +137,18 @@ describe("ComputerAppModuleHandler", () => {
     expect(inspect).toHaveBeenCalledTimes(2);
   });
 
+  it("refuses calls to computer apps in a stopped boot but still reports their status", async () => {
+    const fixture = setup({ stopped: true });
+    await fixture.handle(invoke("stopped", readOperation));
+    await eventually(() => expect(statuses(fixture.events)).toHaveLength(1));
+    expect(fixture.provider.invoke).not.toHaveBeenCalled();
+    expect(resultFor(fixture.events, "stopped")?.result).toEqual({
+      code: "failed",
+      kind: "error",
+      message: "Agents are stopped. Resume them to continue.",
+    });
+  });
+
   it("refuses unknown definitions, operations and contracts before touching a provider", async () => {
     const fixture = setup();
     await fixture.handle({
@@ -410,6 +422,7 @@ function setup(
     readonly phoneScreens?: FakePhoneScreenDriver;
     readonly computerUse?: ComputerUseHandler;
     readonly screenDrivers?: 1;
+    readonly stopped?: true;
     readonly info?: (message: string, details?: Readonly<Record<string, unknown>>) => void;
     readonly inspect?: ComputerAppProvider["inspect"];
     readonly invoke?: ComputerAppProvider["invoke"];
@@ -426,6 +439,7 @@ function setup(
   const handler = new ComputerAppModuleHandler({
     logger: { error: vi.fn(), info: options.info ?? vi.fn() },
     providers: [provider],
+    ...(options.stopped ? { stopped: true } : {}),
     ...(options.phoneScreens ? { phoneScreens: options.phoneScreens } : {}),
     ...(options.computerUse ? { computerUse: options.computerUse } : {}),
   });

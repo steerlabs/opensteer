@@ -92,7 +92,7 @@ function fixture(work: () => Promise<ActivitySnapshot> = async () => nothing, an
       };
     },
   });
-  const routing = new DesktopQuitRouting({ shutdown, hideWindows: vi.fn(), log });
+  const routing = new DesktopQuitRouting({ shutdown, hideWindows: vi.fn(), log, confirm });
   const exited = () =>
     vi.waitFor(() => expect(application.exit).toHaveBeenCalledWith(0), { timeout: 2_000 });
   return {
@@ -153,6 +153,18 @@ describe("quit routing through the production app menu", () => {
     click(menuItem(routing.actions, "quit"));
     expect(shutdown.requested).toBe(false);
     expect(routing.quitBeforeStart).toBe(true);
+  });
+
+  it("asks about unknown activity when quitting completely during startup", async () => {
+    const { routing, shutdown, confirm } = fixture();
+    confirm.mockResolvedValue(false);
+    click(menuItem(routing.actions, "quit-completely"));
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledOnce());
+    expect(confirm).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: expect.stringContaining("can’t tell") }),
+      expect.any(AbortSignal),
+    );
+    expect(shutdown.requested).toBe(false);
   });
 
   it("runs the full ordered shutdown for Quit Opensteer Completely", async () => {

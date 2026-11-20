@@ -5,12 +5,14 @@ import {
   type DeploymentId,
 } from "@opensteer/core";
 import type { AgentConnectionStore } from "@opensteer/database";
-import type {
-  AgentConnectionIdentityAtConsent,
-  AgentDirectoryDocument,
+import {
+  isIdentityStillVerified,
+  type AgentConnectionIdentityAtConsent,
+  type AgentDirectoryDocument,
 } from "@opensteer/control-plane-protocol";
 import {
   agentConnectionConsentRefusals,
+  agentConnectionVerificationChangedMessage,
   agentConnectionMcpPath,
   type HostApiCommand,
 } from "@opensteer/protocol";
@@ -24,6 +26,7 @@ import {
 import {
   describeIdentity,
   resolveConsentIdentity,
+  unverifiedConsentIdentity,
 } from "./embedder-assertion.js";
 
 export const mcpResourcePath = agentConnectionMcpPath;
@@ -48,7 +51,10 @@ const ClientSchema = z.object({
 type Client = z.infer<typeof ClientSchema>;
 const defaultClientName = "MCP client";
 function sanitizeClientName(name: string): string {
-  return name.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "").replace(/\s+/gu, " ").trim();
+  return name
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 const RegistrationSchema = z.object({
   client_name: z
@@ -97,6 +103,7 @@ interface Consent {
     connectionId: string | null;
   };
   approving?: boolean;
+  verificationChanged?: boolean;
 }
 interface Code {
   readonly authorization: Authorization;
@@ -124,7 +131,11 @@ interface ConnectionOAuthOptions {
    * The Account-signed directory of known agents, from the Home's own Account origin. Absent when
    * the Home has none: every client is then shown as the name it gave itself.
    */
-  readonly directory?: { issuer?: string; get(): Promise<AgentDirectoryDocument | null> };
+  readonly directory?: {
+    issuer?: string;
+    get(): Promise<AgentDirectoryDocument | null>;
+    current(): AgentDirectoryDocument | null;
+  };
 }
 
 export class ConnectionOAuthRedirectError extends ConnectionOAuthError {
@@ -302,16 +313,32 @@ export class ConnectionOAuth {
     }
     return pending;
   }
+  async #currentConsentIdentity(pending: Consent): Promise<AgentConnectionIdentityAtConsent> {
+    const evidence = pending.identityAtConsent;
+    if (evidence.kind === "unverified") return evidence;
+    const directory = this.#options.directory?.current() ?? null;
+    if (await isIdentityStillVerified(evidence, directory)) return evidence;
+    pending.verificationChanged = true;
+    return unverifiedConsentIdentity(
+      pending.authorization.redirect_uri,
+      pending.client.name,
+      directory,
+      evidence.recordedAt,
+    );
+  }
+
   async consent(requestId: string, _userId: UserId) {
     const pending = this.#consent(requestId);
+    const identity = await this.#currentConsentIdentity(pending);
     return {
       requestId,
       clientName: pending.client.name,
       redirectUri: pending.authorization.redirect_uri,
       resource: pending.authorization.resource,
       expiresAt: new Date(pending.expiresAt).toISOString(),
-      identityAtConsent: pending.identityAtConsent,
-      identity: presentIdentity(pending.identityAtConsent),
+      identityAtConsent: identity,
+      identity: presentIdentity(identity),
+      verificationSnapshot: verificationSnapshot(requestId, identity),
     };
   }
   async decide(
@@ -339,25 +366,40 @@ export class ConnectionOAuth {
     } else {
       pending.approving = true;
       try {
-        const connection =
-          command.decision.kind === "deny"
-            ? null
-            : await this.store.create({
-                userId,
-                label: command.decision.label,
-                clientName: pending.client.name,
-                accessMode: command.decision.accessMode,
-                resource: pending.authorization.resource,
-                expiresAt: new Date(this.#now() + connectionTtl),
-                clientFingerprint: credentialHash(pending.authorization.client_id),
-                redirectUri: pending.authorization.redirect_uri,
-                identityAtConsent: pending.identityAtConsent,
-                ...(this.#options.directory?.issuer
-                  ? { directoryIssuer: this.#options.directory.issuer }
-                  : {}),
-                ...(command.decision.grant ? { grant: command.decision.grant } : {}),
-              });
-        pending.decision = { userId, sessionId, fingerprint, connectionId: connection?.id ?? null };
+        const decision = command.decision;
+        let connectionId: string | null = null;
+        if (decision.kind === "approve") {
+          const identity = await this.#currentConsentIdentity(pending);
+          const expected = verificationSnapshot(command.requestId, identity);
+          if (
+            decision.verificationSnapshot !== undefined
+              ? decision.verificationSnapshot !== expected
+              : pending.verificationChanged
+          ) {
+            throw new OpensteerError({
+              code: "conflict",
+              reason: agentConnectionConsentRefusals.verificationChanged,
+              message: agentConnectionVerificationChangedMessage,
+            });
+          }
+          const connection = await this.store.create({
+            userId,
+            label: decision.label,
+            clientName: pending.client.name,
+            accessMode: decision.accessMode,
+            resource: pending.authorization.resource,
+            expiresAt: new Date(this.#now() + connectionTtl),
+            clientFingerprint: credentialHash(pending.authorization.client_id),
+            redirectUri: pending.authorization.redirect_uri,
+            identityAtConsent: identity,
+            ...(this.#options.directory?.issuer
+              ? { directoryIssuer: this.#options.directory.issuer }
+              : {}),
+            ...(decision.grant ? { grant: decision.grant } : {}),
+          });
+          connectionId = connection.id;
+        }
+        pending.decision = { userId, sessionId, fingerprint, connectionId };
       } finally {
         pending.approving = false;
       }
@@ -435,6 +477,13 @@ export class ConnectionOAuth {
     };
   }
 }
+function verificationSnapshot(
+  requestId: string,
+  identity: AgentConnectionIdentityAtConsent,
+): string {
+  return credentialHash(`${requestId}:${identity.kind}`);
+}
+
 /** The consent wording for a recorded identity, as the Host API carries it. */
 export function presentIdentity(identity: AgentConnectionIdentityAtConsent) {
   const presentation = describeIdentity(identity);

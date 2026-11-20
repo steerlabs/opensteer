@@ -71,6 +71,7 @@ const fixtureOwnerId = createId("user");
 let personalFixture: Awaited<
   ReturnType<typeof import("@opensteer/database/test-support/store").createStoreFixture>
 >;
+let hostingPlace: { environmentId: EnvironmentId; runnerId: RunnerId };
 beforeAll(async () => {
   personalFixture = await (
     await import("@opensteer/database/test-support/store")
@@ -92,7 +93,7 @@ beforeAll(async () => {
       disabledAt: null,
     })
     .execute();
-  await (
+  hostingPlace = await (
     await import("@opensteer/database/test-support/personal")
   ).seedPersonalOwnerResources(personalFixture.database, {
     deploymentId: deployment.id,
@@ -113,6 +114,8 @@ function createHostServer(dependencies: HostServerTestOverrides) {
   >;
   const runners = Object.assign(
     {
+      agentsStoppedSince: () => null,
+      asleepSince: () => null,
       identityForRunner: () => undefined,
       isRunnerConnected: () => false,
       moduleReadiness: () => undefined,
@@ -2462,6 +2465,7 @@ describe("durable harness catalogs", () => {
     readonly harnessDrivers?: readonly TestRunnerHarnessDriver[];
     /** What the Runner advertises; defaults to a current Runner. */
     readonly runnerCapabilities?: readonly string[];
+    readonly resourcePlace?: typeof hostingPlace;
     /** Defaults to the Deployment administrator the older cases assume. */
     readonly instanceRole?: "administrator" | "user";
     /** A managed Runner outside this person's listing is not disclosed. */
@@ -2472,7 +2476,7 @@ describe("durable harness catalogs", () => {
     /** An existing-CLI profile belongs to the machine; a private one does not. */
     readonly stateKind?: "ambient" | "isolated";
   }) {
-    const runnerId = createId("runner");
+    const runnerId = options.resourcePlace?.runnerId ?? createId("runner");
     const environment = {
       capabilities: [],
       id: environmentId,
@@ -2556,9 +2560,10 @@ describe("durable harness catalogs", () => {
       // declaring nothing is enforceable.
       harnessAccessModes: () =>
         options.connected ? (options.accessModes ?? ThreadAccessModeSchema.options) : undefined,
-      identityForEnvironment: () =>
-        options.connected
+      identityForEnvironment: (id: EnvironmentId) =>
+        options.connected && id === (options.resourcePlace?.environmentId ?? environmentId)
           ? {
+              runnerId,
               capabilities: options.runnerCapabilities ?? ["agent-tools-plan-v1"],
               modules: {
                 agents: {
@@ -3089,11 +3094,6 @@ describe("durable harness catalogs", () => {
 
   it("serves the committed catalog resource without asking a Runner", async () => {
     const harness = await createCatalogResourceHarness("Committed catalog");
-    await personalFixture.store.recordHarnessCatalogs({
-      catalogs: [{ ...readyCatalog, harnessInstanceId: harness.id }],
-      environmentId: harness.environmentId,
-      expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
-    });
     const { inspectHarnesses, reconcileHarnesses, server } = harnessCatalogServer({
       connected: false,
       environmentKind: "main",
@@ -3127,9 +3127,9 @@ describe("durable harness catalogs", () => {
   it("marks every engine on a Runner without the tool plan as needing an update", async () => {
     const harness = await createCatalogResourceHarness("Unavailable engine");
     const fixture = harnessCatalogServer({
-      catalog: readyCatalog,
       connected: true,
       environmentKind: "main",
+      resourcePlace: hostingPlace,
       harnessDrivers: [
         {
           accessModes: [...ThreadAccessModeSchema.options],
@@ -3154,7 +3154,7 @@ describe("durable harness catalogs", () => {
     try {
       const { environments } = await injectTestResource(app, "harness-catalog");
       const { harnesses } = await injectTestResource(app, "harness");
-      expect(environments[0]?.harnessDrivers).toEqual([
+      expect(environments.find(({ id }) => id === harness.environmentId)?.harnessDrivers).toEqual([
         {
           driverKind: "native",
           readiness: "unavailable",
@@ -3175,22 +3175,19 @@ describe("durable harness catalogs", () => {
   });
 
   async function createCatalogResourceHarness(name: string) {
-    const { id } = await personalFixture.database
-      .selectFrom("executionEnvironments")
-      .innerJoin(
-        "personalSettings",
-        "personalSettings.agentHomeComputerId",
-        "executionEnvironments.runnerId",
-      )
-      .select("executionEnvironments.id")
-      .executeTakeFirstOrThrow();
-    return personalFixture.store.createHarnessInstance({
+    const harness = await personalFixture.store.createHarnessInstance({
       config: {},
       driverKind: readyCatalog.driverKind,
-      environmentId: id,
+      environmentId: hostingPlace.environmentId,
       name,
       stateKind: "isolated",
     });
+    await personalFixture.store.recordHarnessCatalogs({
+      catalogs: [{ ...readyCatalog, harnessInstanceId: harness.id }],
+      environmentId: harness.environmentId,
+      expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
+    });
+    return harness;
   }
 
   it("keeps the hosting computer's status two-valued", async () => {
@@ -3858,7 +3855,7 @@ async function requestRouteServer(options: {
 }) {
   const requests = {
     get: vi.fn(async () => options.request),
-    referenceForOwner: vi.fn(async () => options.request),
+    referenceForOwner: vi.fn(async () => ({ request: options.request, revision: "1" })),
     originatingPendingPage: vi.fn(async () => ({
       requests: [options.request],
       window: { byteCount: 1, hasMore: false, itemCount: 1, nextBefore: null, totalItems: 1 },

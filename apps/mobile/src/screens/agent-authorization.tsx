@@ -12,6 +12,8 @@ import {
   answerAgentConnection,
   connectedAgentIdentity,
   connectionDestination,
+  consentVerificationChanged,
+  draftForCatalog,
   createDedicatedProfile,
   grantFromDraft,
   unwrapRpcResult,
@@ -97,6 +99,8 @@ function AgentAuthorization(props: {
   const [sheet, setSheet] = useState<AgentGrantSheet | null>(null);
   const [busy, setBusy] = useState<"allow" | "deny" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The Home refused an approval because who the agent is changed: it was read again.
+  const [changed, setChanged] = useState(false);
   // A retried approval reuses the profile the first attempt created.
   const createdProfile = useRef<string | null>(null);
   const mounted = useRef(true);
@@ -142,6 +146,7 @@ function AgentAuthorization(props: {
     const { consent } = load;
     setBusy(approve ? "allow" : "deny");
     setError(null);
+    setChanged(false);
     try {
       let grant;
       if (approve && grantsAvailable) {
@@ -179,11 +184,14 @@ function AgentAuthorization(props: {
       if (mounted.current) close();
     } catch (failure) {
       if (!mounted.current) return;
+      if (approve && consentVerificationChanged(failure)) {
+        await reviewAgain(consent.requestId);
+        return;
+      }
       setBusy(null);
       const classified = classifyClientFailure(failure);
       if (classified.code === "conflict") setLoad({ kind: "answered" });
-      else if (classified.code === "not_found")
-        setLoad({ kind: "expired", agent: null });
+      else if (classified.code === "not_found") setLoad({ kind: "expired", agent: null });
       // A lost answer may have decided it; only a refusal says it didn't.
       else
         setError(
@@ -199,6 +207,27 @@ function AgentAuthorization(props: {
         );
     }
   };
+
+  /** Shows the consent as the Home now presents it, keeping the choices it still offers. */
+  async function reviewAgain(id: string) {
+    try {
+      const fresh = unwrapRpcResult(
+        await host.rpc["connections.authorization.get"]({ requestId: id }),
+      );
+      if (!mounted.current) return;
+      setLoad({ kind: "ready", consent: fresh });
+      setDraft((current) => current && draftForCatalog(current, fresh));
+      setChanged(true);
+    } catch (failure) {
+      if (!mounted.current) return;
+      setLoad(
+        classifyClientFailure(failure).code === "not_found"
+          ? { kind: "expired", agent: null }
+          : { kind: "failed" },
+      );
+    }
+    setBusy(null);
+  }
 
   if (load.kind === "loading") return <AgentAuthorizationForm kind="loading" />;
   if (load.kind !== "ready")
@@ -251,17 +280,20 @@ function AgentAuthorization(props: {
       <AgentAuthorizationForm
         kind="ready"
         busy={busy}
-        destination={connectionDestination(consent.redirectUri)}
+        destination={who.verified ? null : connectionDestination(consent.redirectUri)}
         error={error}
         finePrint={
           grantsAvailable ? agentWords("consent.finePrint", { agent }) : agentAuthorizationFinePrint
         }
         label={label}
         mark={
-          heading.mark ? { providerId: identity.providerId, initial: heading.title[0] ?? "A" } : null
+          heading.mark
+            ? { providerId: identity.providerId, initial: Array.from(heading.title)[0] ?? "A" }
+            : null
         }
         mode={mode}
         modes={accessModeOptions}
+        notice={changed ? agentWords("consent.error.verificationChanged") : null}
         onAllow={() => void decide(true)}
         onDeny={() => void decide(false)}
         onLabel={setLabel}
@@ -275,7 +307,8 @@ function AgentAuthorization(props: {
                   mode,
                   onScope: (scope) => setDraft({ ...chosen, scope }),
                   onOpen: setSheet,
-                  onChromeTab: (resource, on) => setDraft(toggleDraftResource(chosen, resource, on)),
+                  onChromeTab: (resource, on) =>
+                    setDraft(toggleDraftResource(chosen, resource, on)),
                   onTasks: (tasks) => setDraft({ ...chosen, tasks }),
                 }),
                 agentModeSection({ mode, disabled, onMode: setMode }),
@@ -284,8 +317,8 @@ function AgentAuthorization(props: {
         }
         title={heading.title}
         who={{
-          heading: heading.claim ?? workWords("who.verifiedAs", { name: heading.title }),
-          origins: who.origins.length ? who.origins.map(agentWhoOriginLine) : [who.detail],
+          heading: heading.claim ?? workWords("who.verified"),
+          origins: who.verified ? who.origins.map(agentWhoOriginLine) : [],
           verified: who.verified,
           warning: who.warning,
         }}

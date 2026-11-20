@@ -1,9 +1,9 @@
 import {
   OpensteerError,
-  ToolBlockedError,
   TabIdSchema,
   agentGrantAccess,
   refused,
+  requestTextMaxLength,
   type AgentOperationTarget,
   type BrowserProfileId,
   type DeviceId,
@@ -26,7 +26,7 @@ import type { CdpAuthority } from "../../browser/standard-cdp-tickets.js";
 import type { BrowserBindingTabActor, TabServicePort } from "../../tabs/ports.js";
 import type { TabService } from "../../tabs/tab-service.js";
 import type { ConnectionCaller } from "../agent-caller.js";
-import { requireDirectWork } from "./direct.js";
+import { browserEffect, requireDirectWork } from "./direct.js";
 import type { ToolCall } from "./types.js";
 
 /** How long one reviewed attachment may hold full control of a profile. */
@@ -119,8 +119,9 @@ interface BrowserToolProfile {
 
 export interface BrowserToolPorts {
   readonly sessions: AgentSessionService | undefined;
-  readonly sharedChromeTabs?: Pick<ChromeSharedTabs, "issueStandardCdpTicket">;
-  readonly tabs: Pick<TabServicePort, "list" | "open"> & Pick<TabService, "bindBrowserScript">;
+  readonly sharedChromeTabs?: Pick<ChromeSharedTabs, "issueStandardCdpTicket" | "shareGeneration">;
+  readonly tabs: Pick<TabServicePort, "list" | "open" | "connectionTab"> &
+    Pick<TabService, "bindBrowserScript">;
   readonly scripts: Pick<BrowserScriptService, "runBrowserScript">;
   readonly confinement: BrowserScriptConfinement;
   readonly profiles: (ownerId: UserId) => Promise<readonly BrowserToolProfile[]>;
@@ -132,8 +133,12 @@ export interface BrowserToolPorts {
 }
 
 type BrowserTarget = { readonly operation: AgentOperationTarget } & (
-  | { readonly profileId: BrowserProfileId; readonly tabId: TabId | null }
-  | { readonly profileId: null; readonly tabId: TabId }
+  | {
+      readonly profileId: BrowserProfileId;
+      readonly tabId: TabId | null;
+      readonly generation: number | null;
+    }
+  | { readonly profileId: null; readonly tabId: TabId; readonly generation: string }
 );
 
 function sessionActor(context: DirectOperationContext): BrowserBindingTabActor {
@@ -146,14 +151,11 @@ function sessionActor(context: DirectOperationContext): BrowserBindingTabActor {
 }
 
 /** A stop or disconnect mid-script: the outcome is unknown, and the agent learns why. */
-function interrupted(context: DirectOperationContext): ToolBlockedError {
+function interrupted(context: DirectOperationContext): OperationOutcomeUnknown {
   const reason = context.signal.reason;
-  return new ToolBlockedError({
-    code: "forbidden",
-    message:
-      reason instanceof OpensteerError ? reason.message : "This work ended before it finished.",
-    next: "Part of it may have happened. Check the page before doing anything else.",
-  });
+  return new OperationOutcomeUnknown(
+    reason instanceof OpensteerError ? reason.message : "This work ended before it finished.",
+  );
 }
 
 function scriptOutput(
@@ -197,6 +199,11 @@ export class BrowserToolHandlers {
   async browser_use({ caller, input, operationKey }: ToolCall<"browser_use">) {
     const connection = requireConnection(caller);
     const { code, tabId, profileId, taskId, reason } = input;
+    if (code.length > requestTextMaxLength)
+      throw refused(
+        "bad_request",
+        `Browser scripts can contain at most ${requestTextMaxLength} characters.`,
+      );
     const target = await this.#target(connection, { tabId, profileId });
     const outcome = await requireDirectWork(this.#ports.sessions).run({
       ownerUserId: connection.userId,
@@ -207,19 +214,22 @@ export class BrowserToolHandlers {
       tool: "browser_use",
       input: { code, profileId: target.profileId, tabId: target.tabId },
       target: target.operation,
-      targetGeneration: target.tabId,
+      targetGeneration: target.generation === null ? null : String(target.generation),
       effect: "write",
       calls: code,
       execute: async (context) => {
         await context.recheck();
+        await this.#checkTab(connection, target);
         const runScript = () =>
-          this.#ports.scripts.runBrowserScript({
-            authority: { agentBindingId: context.bindingId, ownerId: context.ownerUserId },
-            contextKey: target.profileId ?? `chrome:${target.tabId}`,
-            ...(target.profileId === null ? { sharedChromeTabId: target.tabId } : {}),
-            code,
-            signal: context.signal,
-          });
+          browserEffect(() =>
+            this.#ports.scripts.runBrowserScript({
+              authority: { agentBindingId: context.bindingId, ownerId: context.ownerUserId },
+              contextKey: target.profileId ?? `chrome:${target.tabId}`,
+              ...(target.profileId === null ? { sharedChromeTabId: target.tabId } : {}),
+              code,
+              signal: context.signal,
+            }),
+          );
         const result =
           target.profileId === null
             ? await runScript()
@@ -252,13 +262,17 @@ export class BrowserToolHandlers {
       tool: "browser_connect",
       input: { profileId: target.profileId, tabId: target.tabId },
       target: target.operation,
-      targetGeneration: target.tabId,
+      targetGeneration: target.generation === null ? null : String(target.generation),
       effect: "write",
       calls:
         target.profileId === null
           ? `Control of the Chrome tab you shared${where} for up to ${intervalWords}, through CDP. The agent can navigate anywhere in the tab and access sites and cookies this Chrome is signed in to. Stop sharing in Chrome or stop this task to end access.`
           : `Full control of the browser profile "${target.operation.name}"${where} for up to ${intervalWords}, through a raw browser connection (CDP): every page, cookie and signed-in site in that profile. It ends when the time runs out, when you stop this task, or when you disconnect the agent.`,
-      execute: (context) => this.#attach(context, target),
+      execute: async (context) => {
+        await context.recheck();
+        await this.#checkTab(connection, target);
+        return browserEffect(() => this.#attach(context, target));
+      },
       summarize: (result) => ({ tabId: result.tabId, mode: result.mode }),
     });
     const { status, taskId: task, operationId } = outcome;
@@ -276,8 +290,20 @@ export class BrowserToolHandlers {
     };
   }
 
+  async #checkTab(caller: ConnectionCaller, target: BrowserTarget) {
+    if (!target.tabId) return;
+    const generation =
+      target.operation.grant.kind === "chrome-tabs"
+        ? this.#ports.sharedChromeTabs?.shareGeneration(
+            target.tabId,
+            target.operation.grant.sourceId,
+          )
+        : (await this.#ports.tabs.connectionTab({ kind: "connection", caller }, target.tabId))
+            .generation;
+    if (generation !== target.generation) throw tabNotFound();
+  }
+
   async #attach(context: DirectOperationContext, target: BrowserTarget) {
-    await context.recheck();
     const actor = sessionActor(context);
     const tabId =
       target.tabId ??
@@ -302,6 +328,7 @@ export class BrowserToolHandlers {
       } else {
         const page = await this.#ports.tabs.bindBrowserScript(actor, tabId, {
           savedProfileOnly: true,
+          ...(target.generation !== null ? { expectedGeneration: target.generation } : {}),
         });
         await context.recheck();
         issued = await this.#ports.issueTicket({
@@ -345,6 +372,7 @@ export class BrowserToolHandlers {
           "read-write",
     );
     let tabId: TabId | null = null;
+    let generation: number | null = null;
     let profile: BrowserToolProfile | undefined;
     if (place.tabId !== undefined) {
       tabId = TabIdSchema.parse(place.tabId);
@@ -353,17 +381,26 @@ export class BrowserToolHandlers {
       if (!tab) throw tabNotFound();
       if (tab.sharedByPerson) {
         if (!this.#ports.sharedChromeTabs || place.profileId !== undefined) throw tabNotFound();
+        const generation = this.#ports.sharedChromeTabs.shareGeneration(
+          tabId,
+          tab.sharedByPerson.sourceId,
+        );
+        if (!generation) throw tabNotFound();
         return {
           profileId: null,
           tabId,
+          generation,
           operation: {
             grant: { kind: "chrome-tabs", sourceId: tab.sharedByPerson.sourceId },
-            name: (tab.title || "Shared Chrome tab").slice(0, 255),
+            name: `Chrome tab on ${tab.sharedByPerson.computerName}`,
+            untrustedTitle: tab.title,
             device: { id: tab.computer.computerId, name: tab.sharedByPerson.computerName },
           },
         };
       }
-      const owned = tab.kind === "page" ? tab.profile?.profileId : undefined;
+      const row = await this.#ports.tabs.connectionTab({ kind: "connection", caller }, tabId);
+      generation = row.generation;
+      const owned = row.kind === "page" ? row.profileId : undefined;
       if (!owned)
         throw refused(
           "forbidden",
@@ -402,6 +439,7 @@ export class BrowserToolHandlers {
     return {
       profileId: profile.id,
       tabId,
+      generation,
       operation: {
         grant: { kind: "browser-profile", profileId: profile.id },
         name: profile.name,

@@ -3043,6 +3043,19 @@ describe("phone owner input and power", () => {
   });
 });
 
+it("ends an owner view with a typed reason for a planned device restart", async () => {
+  const h = await fixture(true, { phoneOwnerControl: true });
+  const owner = await h.macViewer(false, true);
+  await owner.received(() => owner.json().some((m) => m.phoneOwnerControl === 1));
+  h.apps.detach(h.peer, "device-restarting");
+  await owner.closed;
+  expect(owner.json()).toContainEqual(expect.objectContaining({
+    type: "display.state",
+    state: "stopped",
+    reason: "device-restarting",
+  }));
+});
+
 it("starts the producer before demand when concurrent owner authorization finishes out of order", async () => {
   const h = await fixture(true, { phoneOwnerControl: true });
   const resumeFirst = h.pauseAuthorization();

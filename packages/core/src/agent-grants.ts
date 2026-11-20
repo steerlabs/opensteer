@@ -79,6 +79,34 @@ export type AgentGrant =
 /** One validated value: resources deduplicated by identity (widest access kept) and sorted. */
 export const AgentGrantSchema: z.ZodType<AgentGrant, unknown> =
   AgentGrantInputSchema.transform(canonicalAgentGrant);
+export const AgentGrantPluginTargetViewSchema = z.discriminatedUnion("kind", [
+  z.object(AgentGrantPluginTargetSchema.options[0].shape),
+  z.object(AgentGrantPluginTargetSchema.options[1].shape),
+  z.object(AgentGrantPluginTargetSchema.options[2].shape),
+]);
+export const AgentGrantAppIdentityViewSchema = z.discriminatedUnion("kind", [
+  z.object(AgentGrantAppIdentitySchema.options[0].shape),
+  z.object(AgentGrantAppIdentitySchema.options[1].shape),
+]);
+const [browserProfileGrant, chromeTabsGrant, appGrant, pluginGrant] =
+  AgentGrantResourceSchema.options;
+const AgentGrantResourceViewSchema = z.discriminatedUnion("kind", [
+  z.object(browserProfileGrant.shape),
+  z.object(chromeTabsGrant.shape),
+  z.object({ ...appGrant.shape, app: AgentGrantAppIdentityViewSchema }),
+  z.object({ ...pluginGrant.shape, target: AgentGrantPluginTargetViewSchema }),
+]);
+const [everythingGrant, selectedGrant] = AgentGrantInputSchema.options;
+export const AgentGrantViewSchema: z.ZodType<AgentGrant, unknown> = z
+  .discriminatedUnion("scope", [
+    z.object(everythingGrant.shape),
+    z.object({
+      ...selectedGrant.shape,
+      resources: z.array(AgentGrantResourceViewSchema).max(agentGrantMaxResources),
+    }),
+  ])
+  .transform(canonicalAgentGrant);
+
 export const everythingAgentGrant: AgentGrant = Object.freeze({ scope: "everything" });
 
 export function agentGrantResourceKey(resource: AgentGrantResource): string {

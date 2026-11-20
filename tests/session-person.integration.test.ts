@@ -25,12 +25,14 @@ import {
 import { AgentConnectionStore } from "../packages/database/src/index.js";
 import { NotificationStore } from "../packages/database/src/notification-store.js";
 import {
+  AgentOperationIdSchema,
   BrowserSurfaceIdSchema,
+  createId,
   ThreadIdSchema,
   type Request,
 } from "../packages/core/src/index.js";
 import { z } from "zod";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
@@ -71,7 +73,10 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         executablePath: chromium.executablePath(),
         headless: true,
         chromiumSandbox: false,
-        args: ["--no-proxy-server", "--host-resolver-rules=MAP passwords-fixture.test 127.0.0.1"],
+        args: [
+          "--no-proxy-server",
+          "--host-resolver-rules=MAP passwords-fixture.test 127.0.0.1, MAP other-fixture.test 127.0.0.1",
+        ],
       });
       let chromiumBrowser: LaunchedBrowser | undefined;
       let keys: readonly BrowserAttachPublicKey[] = [];
@@ -180,9 +185,55 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         },
       ));
       close.push(() => authority.close());
+      let loseOpenReply: { url: string; requestId?: string; observed: boolean } | undefined;
       const browser = await startBrowserRuntime(host.hostPort, "existing-main", {
         primary: mac.primary,
-        runtimeRelay,
+        runtimeRelay: {
+          detach: () => runtimeRelay.detach(),
+          async handleFrame(frame, binary) {
+            if (!binary && loseOpenReply) {
+              const command = z
+                .object({
+                  type: z.literal("browser.client-message"),
+                  message: z.object({
+                    type: z.literal("cdp.command"),
+                    requestId: z.string(),
+                    command: z.object({
+                      method: z.literal("Opensteer.openTab"),
+                      parameters: z.object({ url: z.literal(loseOpenReply.url) }),
+                    }),
+                  }),
+                })
+                .safeParse(JSON.parse(frame.toString()));
+              if (command.success) loseOpenReply.requestId = command.data.message.requestId;
+            }
+            await runtimeRelay.handleFrame(frame, binary);
+          },
+          attach: (stream) =>
+            runtimeRelay.attach({
+              ...stream,
+              async send(frame, binary) {
+                if (!binary && loseOpenReply?.requestId) {
+                  const response = z
+                    .object({
+                      type: z.literal("browser.server-message"),
+                      message: z.object({
+                        type: z.literal("cdp.result"),
+                        requestId: z.literal(loseOpenReply.requestId),
+                        result: z.object({ tabId: BrowserSurfaceIdSchema }),
+                      }),
+                    })
+                    .safeParse(JSON.parse(frame.toString()));
+                  if (response.success) {
+                    loseOpenReply.observed = true;
+                    await browser.close();
+                    return;
+                  }
+                }
+                await stream.send(frame, binary);
+              },
+            }),
+        },
         keepAlive: true,
       });
       close.push(() => browser.close());
@@ -253,8 +304,9 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             throw error;
           },
         );
-      const opened = await call("tab_open", {
-        target: { kind: "page", url: site.origin, profileId: profile.id },
+      const opened = await call("browser_use", {
+        profileId: profile.id,
+        code: `const page = await newPage(${JSON.stringify(site.origin)}); print(page.tabId);`,
         operationKey: "open-form",
       });
       expect(
@@ -266,15 +318,10 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           stream: browser.streamOpen(),
         }),
       ).not.toBe(true);
-      const {
-        taskId,
-        tab: { tabId },
-      } = z
-        .object({
-          taskId: ThreadIdSchema,
-          tab: z.object({ tabId: BrowserSurfaceIdSchema }),
-        })
-        .parse(opened.structuredContent);
+      const { taskId } = z.object({ taskId: ThreadIdSchema }).parse(opened.structuredContent);
+      const tabId = z
+        .object({ type: z.literal("text"), text: BrowserSurfaceIdSchema })
+        .parse(opened.content[0]).text;
       const owner = { headers: host.ownerHeaders };
       const pending = async (
         kind: Request["kind"],
@@ -494,6 +541,167 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       });
       expect(witnessed).toEqual([true, true]);
 
+      const cardRef = z.object({ cardRef: z.string() }).parse(cardReply).cardRef;
+      const checkReferences = (page: string) => `
+        print((await ${page}.cdp("Opensteer.fillLogin", ${JSON.stringify({
+          loginRef: ready.loginRef,
+          field: "password",
+        })})).status);
+        print((await ${page}.cdp("Opensteer.fillCard", ${JSON.stringify({
+          cardRef,
+          field: "number",
+        })})).status);
+      `;
+      const fillCommandCount = () =>
+        browser
+          .receivedCommands()
+          .filter(
+            (entry) =>
+              z
+                .object({ method: z.enum(["Opensteer.fillLogin", "Opensteer.fillCard"]) })
+                .safeParse(entry.command).success,
+          ).length;
+      const beforeReplay = fillCommandCount();
+      const expectExpired = (result: Awaited<ReturnType<typeof call>>) => {
+        expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+        expect(result.content).toEqual([
+          { type: "text", text: "expired" },
+          { type: "text", text: "expired" },
+        ]);
+      };
+      expectExpired(
+        await script(
+          "other-tab",
+          `
+        const otherPage = await newPage(${JSON.stringify(site.origin)});
+        ${checkReferences("otherPage")}
+      `,
+        ),
+      );
+      const sibling = await connection.create({
+        userId: host.ownerId,
+        label: "Another research assistant",
+        clientName: "Another research assistant",
+        resource: endpoint.href,
+        expiresAt: new Date(Date.now() + 60 * 60_000),
+        accessMode: "full-access",
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "browser-profile", profileId: profile.id }],
+        },
+      });
+      const siblingToken = connectionCredentialPrefix + randomBytes(32).toString("base64url");
+      expect(await connection.activate(sibling.id, credentialHash(siblingToken))).toBe(true);
+      const siblingCall = await connectAgent(siblingToken);
+      expectExpired(
+        await siblingCall("browser_use", {
+          profileId: profile.id,
+          code: `
+          const ownPage = await newPage(${JSON.stringify(site.origin)});
+          ${checkReferences("ownPage")}
+        `,
+        }),
+      );
+      for (const tool of ["saved_login_request", "card_request"]) {
+        const ask = (target: string) =>
+          siblingCall(tool, {
+            tabId: target,
+            site: site.origin,
+            reason: "Sign in",
+          });
+        const hidden = await ask(tabId);
+        const missing = await ask(createId("tab"));
+        expect(hidden.isError).toBe(true);
+        expect(hidden.content).toEqual(missing.content);
+      }
+      const otherSite = site.origin.replace("passwords-fixture.test", "other-fixture.test");
+      expectExpired(
+        await script(
+          "other-site",
+          pageBinding +
+            `
+        await page.goto(${JSON.stringify(otherSite)});
+        ${checkReferences("page")}
+      `,
+        ),
+      );
+      expect(fillCommandCount()).toBe(beforeReplay);
+      const returned = await script(
+        "return-to-form",
+        pageBinding +
+          `
+        await page.goto(${JSON.stringify(site.origin)});
+      `,
+      );
+      expect(returned.isError, JSON.stringify(returned.content)).not.toBe(true);
+
+      const supervised = await connection.create({
+        userId: host.ownerId,
+        label: "Approval fixture",
+        clientName: "Approval fixture",
+        resource: endpoint.href,
+        expiresAt: new Date(Date.now() + 60 * 60_000),
+        accessMode: "approval-required",
+        grant: sibling.grant,
+      });
+      const reviewedToken = connectionCredentialPrefix + randomBytes(32).toString("base64url");
+      expect(await connection.activate(supervised.id, credentialHash(reviewedToken))).toBe(true);
+      const reviewedCall = await connectAgent(reviewedToken);
+      const reviewedOpen = {
+        profileId: profile.id,
+        code: `const page = await newPage(${JSON.stringify(site.origin)}); print(page.tabId);`,
+        operationKey: "reviewed-open",
+      };
+      const allowOnce = (request: { requestId: Request["id"]; expectedRevision: string }, idempotencyKey: string) =>
+        testRpcData(host.origin, "commands.dispatch", {
+          type: "request.respond", requestId: request.requestId, expectedRevision: request.expectedRevision,
+          idempotencyKey, response: { kind: "form", answers: { decision: ["allow"] } },
+        }, owner);
+      const beforeOpen = browser.receivedCommands().length;
+      const queuedOpen = await pending("person.question", () => reviewedCall("browser_use", reviewedOpen), null);
+      expect(browser.receivedCommands()).toHaveLength(beforeOpen);
+      await allowOnce(queuedOpen, "allow-reviewed-open");
+      const realOpen = await queuedOpen.result;
+      expect(realOpen.structuredContent).toMatchObject({ status: "completed" });
+      const reviewedTabId = z.object({ type: z.literal("text"), text: BrowserSurfaceIdSchema }).parse(realOpen.content[0]).text;
+      const reviewedClose = (operationKey: string) => pending("person.question", () => reviewedCall("browser_use", {
+        tabId: reviewedTabId, operationKey,
+        code: `const page = await openPage(${JSON.stringify(reviewedTabId)}); await page.close();`,
+      }), null);
+      const queuedClose = await reviewedClose("reviewed-close");
+      const closeOperation = AgentOperationIdSchema.parse(queuedClose.row.agentOperation?.operationId);
+      const admittedClose = await host.store.database.selectFrom("agentOperations")
+        .select("targetGeneration").where("id", "=", closeOperation).executeTakeFirstOrThrow();
+      const oldTab = await host.store.database.selectFrom("personalTabs").select("generation")
+        .where("id", "=", reviewedTabId).executeTakeFirstOrThrow();
+      expect(admittedClose.targetGeneration).toBe(String(oldTab.generation));
+      const ownerActor = { kind: "person" as const, ownerId: host.ownerId };
+      const connectionTab = host.runtime.tabs.connectionTab.bind(host.runtime.tabs);
+      const race = vi.spyOn(host.runtime.tabs, "connectionTab").mockImplementationOnce(async (...args) => {
+        expect((await host.runtime.tabs.close(ownerActor, [reviewedTabId], "person-close")).closed).toEqual([reviewedTabId]);
+        await host.runtime.tabs.reopen(ownerActor, reviewedTabId, "person-reopen");
+        return connectionTab(...args);
+      });
+      await allowOnce(queuedClose, "allow-reviewed-close");
+      const closeResult = await queuedClose.result.finally(() => race.mockRestore());
+      expect(closeResult.structuredContent).not.toMatchObject({ status: "completed" });
+      const settledClose = await host.store.database.selectFrom("agentOperations").select("state")
+        .where("id", "=", closeOperation).executeTakeFirstOrThrow();
+      expect(settledClose.state).toBe("failed");
+      const replacement = await host.store.database.selectFrom("personalTabs")
+        .select(["closedAt", "generation"]).where("id", "=", reviewedTabId).executeTakeFirstOrThrow();
+      expect(replacement.closedAt).toBeNull();
+      expect(replacement.generation).not.toBe(oldTab.generation);
+      const freshClose = await reviewedClose("reviewed-close-new-generation");
+      await allowOnce(freshClose, "allow-close-new-generation");
+      const closed = await freshClose.result;
+      expect(closed.structuredContent).toMatchObject({ status: "completed" });
+      expect(closed.isError).not.toBe(true);
+      expect(browser.receivedCommands()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ method: "Target.closeTarget" }),
+      ]));
+
       const stillWaiting = await pending("person.question", () =>
         call("ask_person", {
           taskId,
@@ -542,6 +750,10 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       const staleRef = {
         method: "Opensteer.fillLogin",
         parameters: { loginRef: ready.loginRef, field: "password" },
+      };
+      const staleCard = {
+        method: "Opensteer.fillCard",
+        parameters: { cardRef, field: "number" },
       };
       const bind = {
         ownerId: host.ownerId,
@@ -600,17 +812,19 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         approvals,
       );
       const forwardedBefore = browser.receivedCommands().length;
-      expect(
-        await attachment.request({ ...staleRef, sessionId }).catch(() => ({ status: "expired" })),
-      ).toEqual({ status: "expired" });
+      for (const command of [staleRef, staleCard])
+        expect(
+          await attachment.request({ ...command, sessionId }).catch(() => ({ status: "expired" })),
+        ).toEqual({ status: "expired" });
       expect(
         browser
           .receivedCommands()
           .slice(forwardedBefore)
           .filter(
             (entry) =>
-              z.object({ method: z.literal("Opensteer.fillLogin") }).safeParse(entry.command)
-                .success,
+              z
+                .object({ method: z.enum(["Opensteer.fillLogin", "Opensteer.fillCard"]) })
+                .safeParse(entry.command).success,
           ),
       ).toHaveLength(0);
       const other = await host.store.createBrowserProfile({
@@ -734,6 +948,25 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         passwordFixture.code,
       ])
         expect(traffic).not.toContain(value);
+      loseOpenReply = { url: `${site.origin}/?drop-open-reply`, observed: false };
+      const lost = await siblingCall("browser_use", {
+        profileId: profile.id,
+        code: `await newPage(${JSON.stringify(loseOpenReply.url)});`,
+        operationKey: "lost-browser-open-reply",
+      });
+      const unknown = z.object({ operationId: AgentOperationIdSchema }).passthrough().parse(lost.structuredContent);
+      expect(loseOpenReply.observed).toBe(true);
+      expect(unknown).toMatchObject({
+        status: "unknown",
+        taskId: expect.any(String),
+        operationId: expect.any(String),
+      });
+      const lostRow = await host.store.database
+        .selectFrom("agentOperations")
+        .select("state")
+        .where("id", "=", AgentOperationIdSchema.parse(unknown.operationId))
+        .executeTakeFirstOrThrow();
+      expect(lostRow.state).toBe("unknown");
     } finally {
       for (const dispose of close.reverse()) await dispose().catch(() => undefined);
     }

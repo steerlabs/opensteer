@@ -21,9 +21,9 @@ export function AiSettingsController(): ReactNode {
   const snapshot = useSettingsHost(selection.hostClient);
   const hostClient = selection.hostClient;
   const engineUpdate = useScreenAction(hostClient, "harness-update", {
-    label: "update the engine",
+    label: "update the agent",
     done: "updated",
-    happened: "the engine was updated",
+    happened: "the agent was updated",
     execute: async (input: { environmentId: string; driverKind: string }) => {
       await hostClient!.dispatch({
         driverKind: input.driverKind,

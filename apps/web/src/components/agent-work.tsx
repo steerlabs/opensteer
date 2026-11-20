@@ -1,6 +1,6 @@
 import {
+  sessionSlotFromHome,
   agentSessionSlot,
-  readTaskActivity,
   mutationIdempotencyKey,
   operationRequestView,
   requestDecisionRevision,
@@ -14,33 +14,15 @@ import {
   type SessionTaskView,
   workWords,
 } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
-import type { AgentOperationView, Request, RequestResponse, ThreadStatus } from "@opensteer/core";
+import { useHostSelector, useTaskActivity } from "@opensteer/client/react";
+import type { Request, RequestResponse, ThreadStatus } from "@opensteer/core";
 import type { NeedsYouEntry } from "@opensteer/protocol";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ActionLine } from "./action-line.js";
 import { useOptionalShell, useShell } from "./app-shell.js";
 import { Icon, type IconName } from "./icon.js";
 import { AgentMark } from "./settings/agent-mark.js";
 import { requestAnswer, useAction } from "./use-action.js";
-
-/**
- * A connected agent's task's operations as the Home lists them, read again whenever the task's
- * state changes; undefined until read, or on a Home that does not list them.
- */
-function useTaskActivity(hostClient: HostClient, threadId: string, key: string | null) {
-  const [operations, setOperations] = useState<readonly AgentOperationView[] | undefined>();
-  useEffect(() => {
-    if (key === null) return;
-    const controller = new AbortController();
-    void readTaskActivity(hostClient, threadId, controller.signal).then(
-      (operations) => setOperations(operations),
-      () => setOperations(undefined),
-    );
-    return () => controller.abort();
-  }, [hostClient, threadId, key]);
-  return operations;
-}
 
 /** The view for a connected agent's own task, or null for any other task. */
 export function useSessionTask(threadId: string): SessionTaskView | null {
@@ -49,14 +31,15 @@ export function useSessionTask(threadId: string): SessionTaskView | null {
   const operations = useTaskActivity(
     hostClient,
     threadId,
-    thread?.externalWork ? `${thread.status}|${thread.externalWork.status}` : null,
+    thread?.externalWork
+      ? `${thread.updatedAt}|${thread.status}|${thread.externalWork.status}`
+      : null,
   );
   if (!thread) return null;
   const slot = agentSessionSlot(snapshot, threadId, operations);
   return sessionTaskView({
     thread: { status: thread.status, agentSessionId: thread.agentSessionId ?? null },
     slot,
-    withdrawnAt: slot ? snapshot.agentWork?.withdrawn?.[slot.connection.id] : null,
   });
 }
 
@@ -172,23 +155,19 @@ export function useOperationRequest(
     | "presentation"
     | "originatingAgentSessionId"
     | "response"
+    | "agentOperation"
     | "originatingThreadId"
   >,
 ): OperationRequestView | null {
   const { snapshot } = useShell();
-  const slot = snapshot.agentWork?.requests?.[request.id];
-  const session = agentSessionSlot(snapshot, request.originatingThreadId);
-  const connection = slot?.connection ?? session?.connection;
   return operationRequestView({
     request,
-    slot,
-    session,
-    withdrawnAt: connection ? snapshot.agentWork?.withdrawn?.[connection.id] : null,
+    session: agentSessionSlot(snapshot, request.originatingThreadId),
   });
 }
 
 /**
- * A direct operation waiting on the person: the Home's question and summary, the agent's
+ * A direct operation waiting on the person: the Home's question and where it acts, the agent's
  * own words apart and labelled, the exact calls behind one tap, and two answers.
  */
 export function OperationRequestPanel({
@@ -233,7 +212,9 @@ export function OperationRequestPanel({
         <strong>{view.agent.name}</strong>
       </div>
       <p className="action-panel__title">{view.question}</p>
-      {view.summary ? <p className="operation-request__summary">{view.summary}</p> : null}
+      {(view.context ?? view.summary) ? (
+        <p className="operation-request__summary">{view.context ?? view.summary}</p>
+      ) : null}
       {view.agentWords ? (
         <blockquote className="operation-request__says">
           <span className="operation-request__says-label">{view.agentWords.label}</span>
@@ -296,11 +277,9 @@ export function TabAgentStatus({
   const { snapshot } = useShell();
   const slot = occupant ? agentSessionSlot(snapshot, occupant.threadId) : null;
   const line = tabAgentLine({
-    tabId,
     occupant,
     slot,
-    sharedTabs: snapshot.agentWork?.sharedTabs,
-    withdrawnAt: slot ? snapshot.agentWork?.withdrawn?.[slot.connection.id] : null,
+    sharedFromChrome: snapshot.tabs.get(tabId)?.sharedByPerson !== undefined,
   });
   const stop = useStopSession(occupant?.threadId ?? "", line?.stop?.sessionId ?? null);
   if (!line) return null;
@@ -330,9 +309,10 @@ export function useNeedsYouOperation(entry: NeedsYouEntry): OperationRequestView
   const snapshot = useOptionalShell()?.snapshot;
   if (!snapshot || entry.kind !== "request") return null;
   const { request } = entry;
-  const slot = snapshot.agentWork?.requests?.[request.id];
-  const session = agentSessionSlot(snapshot, request.originatingThreadId);
-  return operationRequestView({ request, slot, session });
+  return operationRequestView({
+    request,
+    session: agentSessionSlot(snapshot, request.originatingThreadId),
+  });
 }
 
 /**
@@ -340,9 +320,9 @@ export function useNeedsYouOperation(entry: NeedsYouEntry): OperationRequestView
  * this task's facts, so a row redraws only when they change.
  */
 export function useSessionTaskRow(hostClient: HostClient, threadId: string) {
-  const slot = useHostSelector(
+  const work = useHostSelector(
     hostClient,
-    useCallback((current) => agentSessionSlot(current, threadId), [threadId]),
+    useCallback((current) => threadInDirectory(threadId, current)?.externalWork, [threadId]),
   );
   const key = useHostSelector(
     hostClient,
@@ -359,7 +339,7 @@ export function useSessionTaskRow(hostClient: HostClient, threadId: string) {
     const [status, agentSessionId] = key.split("|") as [ThreadStatus, string];
     return sessionTaskRow({
       thread: { status, agentSessionId: agentSessionId || null },
-      slot,
+      slot: sessionSlotFromHome(work),
     });
-  }, [key, slot]);
+  }, [key, work]);
 }

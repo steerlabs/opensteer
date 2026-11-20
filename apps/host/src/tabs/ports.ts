@@ -16,7 +16,7 @@ import type {
   UserId,
   WindowId,
 } from "@opensteer/core";
-import type { DatabaseSchema } from "@opensteer/database";
+import type { DatabaseSchema, TabRecord } from "@opensteer/database";
 import type {
   ComputerView,
   TabBootstrap,
@@ -41,13 +41,22 @@ export type TabActor =
   | { kind: "run"; claims: RunToolScope }
   | { kind: "connection"; caller: ConnectionCaller };
 export interface TabServicePort {
+  connectionTab(
+    actor: Extract<TabActor, { kind: "connection" | "browser-binding" }>,
+    tabId: TabId,
+  ): Promise<Pick<TabRecord, "kind" | "profileId" | "generation" | "openedBy">>;
   list(
     actor: TabActor,
     input: TabListInput,
     mayNameComputer?: (deviceId: DeviceId) => boolean,
   ): Promise<TabListResult>;
   open(actor: TabActor, target: TabTarget, key: string): Promise<{ tab: Tab }>;
-  close(actor: TabActor, tabIds: TabId[], key: string): Promise<TabCloseResult>;
+  close(
+    actor: TabActor,
+    tabIds: TabId[],
+    key: string,
+    expectedGeneration?: number,
+  ): Promise<TabCloseResult>;
   reopen(
     actor: TabActor,
     tabId: TabId | undefined,

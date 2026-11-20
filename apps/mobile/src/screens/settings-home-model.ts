@@ -10,6 +10,13 @@ export const settingsDestinations = [
   { route: "SettingsSignIns", title: "Sign-ins", group: "For your agents" },
 ] as const;
 
+/** On a work Home: its mark as the group's title, and the way to what its organization can see. */
+export interface SettingsHomeWork {
+  readonly badge: string;
+  readonly title: string;
+  readonly onPress: () => void;
+}
+
 /** Settings' Teams group: the person's teams, and Join a team. */
 export interface SettingsHomeTeam {
   readonly name: string;

@@ -1,6 +1,9 @@
 import { standardCdpSettledReason } from "@opensteer/protocol/standard-cdp";
 import { RawCdpChunks, RawCdpWriter } from "@opensteer/protocol/raw-cdp-relay";
 import {
+  BrowserAttachTicketClaimsSchema,
+  browserHostMethods,
+  type BrowserClientMessage,
   type BrowserBridgeAttached,
   type ProtocolError,
   type RunnerAuxiliaryRequestId,
@@ -44,6 +47,7 @@ interface ActiveChannel {
  */
 export class BrowserModuleRelay {
   readonly #bridge: LocalBrowserRuntimeBridge;
+  readonly #stopped: boolean;
   readonly #channels = new Map<BrowserChannelId, ActiveChannel>();
   #inventoryComplete = false;
   #capability: BrowserCapabilityLease | undefined;
@@ -51,8 +55,13 @@ export class BrowserModuleRelay {
   #stream: RunnerModuleStream | undefined;
   #streamLifetime = new AbortController();
 
-  constructor(bridge: LocalBrowserRuntimeBridge) {
+  constructor(bridge: LocalBrowserRuntimeBridge, stopped = false) {
     this.#bridge = bridge;
+    this.#stopped = stopped;
+  }
+
+  get busy(): boolean {
+    return this.#channels.size > 0;
   }
 
   get runtimeId(): string {
@@ -218,6 +227,8 @@ export class BrowserModuleRelay {
         });
         return;
       case "browser.attach": {
+        if (this.#stopped && (message.standardCdp || !isPersonTicket(message.attachTicket)))
+          throw new BrowserRelayError(stoppedError.message, { runtimeError: stoppedError });
         if (!this.#inventoryComplete)
           throw new BrowserRelayError("Local browser profile inventory has not completed.");
         const lease = this.#assertCapability(message.capability);
@@ -295,6 +306,18 @@ export class BrowserModuleRelay {
         // channel is terminal there is nothing left to deliver.
         if (!this.#channels.has(message.channelId)) return;
         const channel = this.#assertChannel(message.channelId, message.capability);
+        if (
+          this.#stopped &&
+          (message.message.type === "cdp.raw" || !isPersonFrame(message.message))
+        ) {
+          if (message.message.type === "cdp.command")
+            this.#sink(channel).onServerMessage(message.channelId, {
+              type: "cdp.error",
+              requestId: message.message.requestId,
+              error: stoppedError,
+            });
+          return;
+        }
         try {
           if (message.message.type === "cdp.raw") {
             if (!channel.raw) throw new BrowserRelayError("Raw CDP was not negotiated.");
@@ -549,6 +572,80 @@ function capabilityReference(lease: BrowserCapabilityLease): BrowserCapabilityRe
     capabilityLeaseId: lease.capabilityLeaseId,
     runtimeId: lease.runtimeId,
   };
+}
+
+const stoppedError: ProtocolError = {
+  code: "forbidden",
+  message: "Agents are stopped on this computer. Resume them on this computer to continue.",
+  reason: "device-stopped",
+  retryable: false,
+};
+
+function isPersonTicket(ticket: unknown): boolean {
+  if (typeof ticket !== "string") return false;
+  const payload = ticket.split(".")[1];
+  if (!payload) return false;
+  try {
+    const { data } = BrowserAttachTicketClaimsSchema.safeParse(
+      JSON.parse(Buffer.from(payload, "base64url").toString("utf8")),
+    );
+    return !!data && (data.actor ?? data.creationOrigin) === "person";
+  } catch {
+    return false;
+  }
+}
+
+function isPersonFrame(message: BrowserClientMessage): boolean {
+  switch (message.type) {
+    case "cdp.command":
+      if (message.actorToken || message.attachmentId || message.scriptAttachmentId) return false;
+      if (message.command.method === browserHostMethods.openTab) {
+        return isPersonTicket(message.command.parameters?.operationAuthority);
+      }
+      return (
+        message.command.method === browserHostMethods.closeTab ||
+        message.command.method === browserHostMethods.resumeTab
+      );
+    case "tabs.resync":
+    case "session.state":
+    case "session.saved":
+    case "cursor.query":
+    case "cursor.reset":
+    case "stream.demand":
+    case "stream.subscribe":
+    case "stream.unsubscribe":
+    case "stream.ack":
+    case "viewport.set":
+    case "viewport.follow":
+    case "surface.activate":
+    case "surface.close":
+    case "surface.open":
+    case "navigation.go":
+    case "navigation.back":
+    case "navigation.forward":
+    case "navigation.reload":
+    case "navigation.stop":
+    case "input.pointer":
+    case "input.wheel":
+    case "input.cancel":
+    case "input.key":
+    case "input.command":
+    case "input.compose":
+    case "input.text":
+    case "clipboard.paste-data":
+    case "clipboard.part":
+    case "clipboard.paste":
+    case "dialog.respond":
+    case "passkey.result":
+    case "passkey.claim":
+    case "passkey.respond":
+    case "passkey.cancel":
+    case "autofill.fill":
+    case "passwordSave.answer":
+      return true;
+    default:
+      return false;
+  }
 }
 
 function protocolError(error: unknown): ProtocolError {

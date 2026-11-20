@@ -160,7 +160,7 @@ export function ModelServersCard({
                   disabled={disabled || engine === undefined}
                   onClick={() => connect(server)}
                   title={
-                    engine ? undefined : "Pi can't run here. Add the server with another engine."
+                    engine ? undefined : "Pi can't run here. Add the server with another agent."
                   }
                   type="button"
                 >

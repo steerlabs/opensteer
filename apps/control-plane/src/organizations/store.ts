@@ -2,10 +2,10 @@ import type { z } from "zod";
 import { cancelAndRefundCheckout } from "../cloud-computers/checkout-compensation.js";
 import {
   freeBackupTargets,
+  reconcileSeatBackups,
   replenishSeatBackups,
   reserveSeatBackups,
   settleSeatBackups,
-  trimSeatBackups,
 } from "../cloud-computers/backup-capacity.js";
 import { deletionView } from "../cloud-computers/deletion-view.js";
 import { otherAdmin, workSignInAuthority } from "./identity.js";
@@ -792,12 +792,16 @@ export class OrganizationStore {
           .executeTakeFirst();
       }
     }
-    if (outcome && change)
-      await settleSeatBackups(tx, org.id, change.requestId, outcome === "applied");
-    if (closedAt || outcome === "applied")
-      await trimSeatBackups(tx, org.id, closedAt ? 0 : paidSeats - count);
-    else if (replenish && effective === "active" && !org.closingAt)
-      await replenishSeatBackups(tx, org.id, organizationSeats(org, count).free);
+    await reconcileSeatBackups(
+      tx,
+      org.id,
+      outcome && change ? { requestId: change.requestId, keep: outcome === "applied" } : undefined,
+      closedAt || outcome === "applied"
+        ? { kind: "trim", unused: closedAt ? 0 : paidSeats - count }
+        : replenish && effective === "active" && !org.closingAt
+          ? { kind: "replenish", unused: organizationSeats(org, count).free }
+          : undefined,
+    );
   }
 
   async reconcile(onError: (error: unknown) => void) {
@@ -1370,6 +1374,24 @@ export class OrganizationStore {
         })
         .executeTakeFirstOrThrow();
     }
+  }
+
+  async policyNoticeHomes(id: OrganizationId) {
+    return this.#db
+      .selectFrom("workAssignments")
+      .innerJoin("cloudComputers", "cloudComputers.id", "workAssignments.cloudComputerId")
+      .select([
+        "workAssignments.id as assignmentId",
+        "cloudComputers.hostname",
+        "cloudComputers.deploymentId",
+      ])
+      .where("workAssignments.organizationId", "=", id)
+      .where("workAssignments.state", "=", "active")
+      .where("cloudComputers.state", "=", "active")
+      .where("cloudComputers.phase", "=", "ready")
+      .where("cloudComputers.bootstrapReceiptAt", "is not", null)
+      .where("cloudComputers.deploymentId", "is not", null)
+      .execute();
   }
 
   async setPolicy(

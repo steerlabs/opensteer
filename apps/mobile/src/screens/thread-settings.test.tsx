@@ -180,7 +180,7 @@ describe("Expo engine/account/model journeys", () => {
     await act(async () => target!.click());
   }
   async function browseSecond() {
-    const engine = document.querySelector<HTMLButtonElement>('[aria-label="Engine: Codex"]');
+    const engine = document.querySelector<HTMLButtonElement>('[aria-label="Agent: Codex"]');
     expect(engine).not.toBeNull();
     await act(async () => engine!.click());
     await act(async () =>

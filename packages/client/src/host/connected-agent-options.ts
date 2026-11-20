@@ -35,17 +35,44 @@ export type ChromeTabGrantCatalog = Pick<
 export function chromeTabGrantOptions(catalog?: ChromeTabGrantCatalog) {
   const options = (catalog?.chromeTabs ?? []).flatMap(({ sourceId, computerName, paired }) =>
     paired
-      ? [{
-          resource: { kind: "chrome-tabs" as const, sourceId },
-          name: agentWords("consent.chromeTabs.label", { device: computerName }),
-        }]
+      ? [
+          {
+            resource: { kind: "chrome-tabs" as const, sourceId },
+            name: agentWords("consent.chromeTabs.label", { device: computerName }),
+          },
+        ]
       : [],
   );
+  const needsPairing =
+    options.length === 0 &&
+    (catalog?.chromeTabsNeedPairing === true ||
+      catalog?.chromeTabs?.some(({ paired }) => !paired) === true);
+  const unpaired = catalog?.chromeTabs?.find(({ paired }) => !paired);
   return {
     options,
-    needsPairing: options.length === 0 && (catalog?.chromeTabsNeedPairing === true ||
-      catalog?.chromeTabs?.some(({ paired }) => !paired) === true),
+    needsPairing,
+    /** The one quiet line when a Chrome must be paired again, naming it when the Home says. */
+    repair: needsPairing
+      ? unpaired
+        ? agentWords("consent.chromeTabs.repairOn", { device: unpaired.computerName })
+        : agentWords("consent.chromeTabs.repair")
+      : null,
   };
+}
+
+/**
+ * The person's choices carried onto a consent read again: all of them, except sharing tabs
+ * from a Chrome the new read no longer offers.
+ */
+export function draftForCatalog(
+  draft: AgentGrantDraft,
+  catalog?: ChromeTabGrantCatalog,
+): AgentGrantDraft {
+  const offered = new Set(chromeTabGrantOptions(catalog).options.map((o) => o.resource.sourceId));
+  const resources = draft.resources.filter(
+    (resource) => resource.kind !== "chrome-tabs" || offered.has(resource.sourceId),
+  );
+  return resources.length === draft.resources.length ? draft : { ...draft, resources };
 }
 
 export async function readChromeTabGrantCatalog(

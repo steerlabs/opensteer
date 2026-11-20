@@ -92,7 +92,7 @@ export const plugin_call = defineAgentTool({
   access: "write",
   callers: executionCallers,
   openWorld: true,
-  description: `Call plugin tools at exact paths from plugin_search. Pass one {path,input} as calls, or an array of independent calls to run concurrently; results keep that order with ok and value or error. Use plugin_execute when output feeds another call or to filter large results. Connected agents call one plugin per operation. If pending without an executionId, wait for approval in Needs you, then repeat the same arguments with the returned taskId and original operationKey. Do not poll. Accounts connect through plugin_account_request; never collect secrets in chat. ${pending}`,
+  description: `Call plugin tools at exact paths from plugin_search. Pass one {path,input} as calls, or an array of independent calls to run concurrently; results keep that order with ok and value or error. Use plugin_execute when output feeds another call or to filter large results. Connected agents call one plugin per operation. Accounts connect through plugin_account_request; never collect secrets in chat. ${pending}`,
   input: z.strictObject({ ...directInput, calls: z.union([call, z.array(call).min(1).max(100)]) }),
   output: directExecutionOutput,
 });
@@ -102,7 +102,7 @@ export const plugin_execute = defineAgentTool({
   access: "write",
   callers: executionCallers,
   openWorld: true,
-  description: `Run a short JavaScript program over tools.<plugin>.<tool>() when one result feeds another call or large results should be filtered before reaching you. For one or a few independent calls use plugin_call. Discover with plugin_search or tools.search, and full signatures with plugin_describe or tools.search.describe({paths}). First read opensteer:plugins and its code mode reference. A blocked plugin setting returns {kind:'blocked',blocked:{code,message,next}}. Return only the result needed. Connected agents supply the one plugin namespace the program may use, as shown by plugin_search. If pending without an executionId, wait for approval in Needs you, then repeat the same arguments with the returned taskId and original operationKey. Do not poll. No filesystem, process or direct network APIs. ${pending}`,
+  description: `Run a short JavaScript program over tools.<plugin>.<tool>() when one result feeds another call or large results should be filtered before reaching you. For one or a few independent calls use plugin_call. Discover with plugin_search or tools.search, and full signatures with plugin_describe or tools.search.describe({paths}). First read opensteer:plugins and its code mode reference. A blocked plugin setting returns {kind:'blocked',blocked:{code,message,next}}. Return only the result needed. Connected agents supply the one plugin namespace the program may use, as shown by plugin_search. No filesystem, process or direct network APIs. ${pending}`,
   input: z.strictObject({
     ...directInput,
     namespace: id.optional(),

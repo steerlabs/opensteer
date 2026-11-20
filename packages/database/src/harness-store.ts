@@ -1103,13 +1103,15 @@ export async function rememberExecutionChoice(
 ): Promise<ExecutionPreferences> {
   return commitPersonalMutation(database, async (transaction, mutation) => {
     await requirePersonalOwner(transaction, userId);
+    if (administration)
+      await lockCommandIdempotency(transaction, administration.requestedBy, administration.idempotencyKey);
+    const existing = await transaction
+      .selectFrom("personalSettings")
+      .select("executionPreferences")
+      .where("ownerId", "=", userId)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow();
     return administrationCommand(transaction, administration, async () => {
-      const existing = await transaction
-        .selectFrom("personalSettings")
-        .select("executionPreferences")
-        .where("ownerId", "=", userId)
-        .forNoKeyUpdate()
-        .executeTakeFirstOrThrow();
       const merged = rememberExecutionChoiceInStore(
         ExecutionPreferencesSchema.parse(existing.executionPreferences),
         choice,

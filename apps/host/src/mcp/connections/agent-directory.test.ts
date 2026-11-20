@@ -1,5 +1,6 @@
 import {
   AgentDirectoryOriginSchema,
+  agentDirectoryKeyThumbprint,
   agentDirectoryJwtTyp,
   agentDirectoryPath,
   agentDirectoryTokenUse,
@@ -86,13 +87,18 @@ function jsonResponse(body: unknown, status = 200, contentType = "application/js
   });
 }
 
-function makeCache(options: Omit<ConstructorParameters<typeof AgentDirectoryCache>[0], "storage">,
-  saved: AgentDirectoryDocument | null = null) {
+function makeCache(
+  options: Omit<ConstructorParameters<typeof AgentDirectoryCache>[0], "storage">,
+  saved: AgentDirectoryDocument | null = null,
+) {
   return new AgentDirectoryCache({
     ...options,
     storage: {
       load: async () => saved,
-      accept: async (_issuer, document) => { saved = document; return document; },
+      accept: async (_issuer, document) => {
+        saved = document;
+        return document;
+      },
     },
   });
 }
@@ -109,16 +115,18 @@ function authorize(cache: AgentDirectoryCache) {
   });
   const redirect = "https://agentpay.example/callback";
   const client = oauth.register(origin, { redirect_uris: [redirect] });
-  return oauth.authorize(origin, {
-    ...client,
-    redirect_uri: redirect,
-    response_type: "code",
-    code_challenge: "a".repeat(43),
-    code_challenge_method: "S256",
-  }).then((path) => {
-    const id = new URL(path, origin).searchParams.get("request")!;
-    return oauth.consent(id, createId("user"));
-  });
+  return oauth
+    .authorize(origin, {
+      ...client,
+      redirect_uri: redirect,
+      response_type: "code",
+      code_challenge: "a".repeat(43),
+      code_challenge_method: "S256",
+    })
+    .then((path) => {
+      const id = new URL(path, origin).searchParams.get("request")!;
+      return oauth.consent(id, createId("user"));
+    });
 }
 
 describe("AgentDirectoryCache", () => {
@@ -233,9 +241,11 @@ describe("AgentDirectoryCache", () => {
     try {
       const pending = authorize(cache).then(consent);
       await vi.advanceTimersByTimeAsync(0);
-      expect(consent).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-        identityAtConsent: expect.objectContaining({ kind: "platform", directoryRevision: 1 }),
-      }));
+      expect(consent).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          identityAtConsent: expect.objectContaining({ kind: "platform", directoryRevision: 1 }),
+        }),
+      );
       await pending;
     } finally {
       vi.useRealTimers();
@@ -255,9 +265,11 @@ describe("AgentDirectoryCache", () => {
       expect(consent).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       await pending;
-      expect(consent).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-        identityAtConsent: expect.objectContaining({ kind: "unverified" }),
-      }));
+      expect(consent).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          identityAtConsent: expect.objectContaining({ kind: "unverified" }),
+        }),
+      );
       stalled.resolve(new Response(null, { status: 503 }));
       await cache.refresh();
     } finally {
@@ -363,16 +375,28 @@ it.each(["https://localhost.", "https://app.localhost.", "https://[::ffff:7f00:1
   "excludes loopback alias %s from publication and matching",
   (origin) => {
     expect(AgentDirectoryOriginSchema.safeParse(origin).success).toBe(false);
-    expect(matchPlatform({ ...sampleDocument(1), entries: [
-      { id: "platform", displayName: "Platform", origins: [origin] },
-    ] }, `${origin}/callback`)).toBeNull();
+    expect(
+      matchPlatform(
+        {
+          ...sampleDocument(1),
+          entries: [{ id: "platform", displayName: "Platform", origins: [origin] }],
+        },
+        `${origin}/callback`,
+      ),
+    ).toBeNull();
   },
 );
 
 describe("isIdentityStillVerified", () => {
-  const baseDirectory = sampleDocument(2);
-
-  it("detects when a platform, embedder, or pairing is withdrawn", () => {
+  it("detects when a platform, embedder, or pairing is withdrawn", async () => {
+    const key = { kty: "OKP", crv: "Ed25519", x: "a".repeat(43), kid: "initial" } as const;
+    const document = sampleDocument(2);
+    const baseDirectory = {
+      ...document,
+      entries: document.entries.map((entry) =>
+        entry.id === "errand" ? { ...entry, keys: { keys: [key] } } : entry,
+      ),
+    };
     const evidence: AgentConnectionIdentityAtConsent = {
       kind: "platform-and-embedder",
       platformOrigin: "https://agentpay.example",
@@ -381,13 +405,13 @@ describe("isIdentityStillVerified", () => {
       embedderOrigin: "https://errand.example",
       embedderDirectoryId: "errand",
       embedderName: "Errand",
-      keyThumbprint: "a".repeat(43),
+      keyThumbprint: await agentDirectoryKeyThumbprint(key),
       directoryRevision: 2,
       recordedAt: new Date(baseNow).toISOString(),
     };
 
-    expect(isIdentityStillVerified(evidence, baseDirectory)).toBe(true);
-    expect(isIdentityStillVerified(evidence, null)).toBeNull();
+    expect(await isIdentityStillVerified(evidence, baseDirectory)).toBe(true);
+    expect(await isIdentityStillVerified(evidence, null)).toBeNull();
 
     const unpaired: AgentDirectoryDocument = {
       ...baseDirectory,
@@ -397,6 +421,6 @@ describe("isIdentityStillVerified", () => {
         { id: "errand", displayName: "Errand", origins: ["https://errand.example"] },
       ],
     };
-    expect(isIdentityStillVerified(evidence, unpaired)).toBe(false);
+    expect(await isIdentityStillVerified(evidence, unpaired)).toBe(false);
   });
 });

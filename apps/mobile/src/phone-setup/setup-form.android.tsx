@@ -50,7 +50,7 @@ function SetupForm(props: SetupFormProps): ReactNode {
         onChange={props.onName}
         value={props.name}
       />
-      <Section title="Your agent can use">
+      <Section title="Your own agents can use">
         {props.agent.map((row) => (
           <Switch key={row.key} onToggle={props.onToggle} row={row} />
         ))}
@@ -90,7 +90,7 @@ function ReadyForm(props: ReadyFormProps): ReactNode {
       >
         {props.body}
       </Text>
-      <Section title="Your agent can use">
+      <Section title="Your own agents can use">
         {props.agent.map((row) => (
           <ValueRow key={row.key} title={row.title} value={row.value} />
         ))}

@@ -268,7 +268,7 @@ function BrowserProfilesSettings({
             <ActionLine line={creation.line} numberOfLines={2} onDismiss={creation.dismiss} />
           )}
           <AppText role="caption" tone="muted">
-            Your agent can use every profile.
+            Your own agents can use every profile.
           </AppText>
         </ScrollView>
       </KeyboardAvoidingView>

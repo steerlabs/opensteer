@@ -5,6 +5,7 @@ import {
   OpensteerAgentSkillNameSchema,
   opensteerAgentSkillNames,
 } from "../packages/agent-tools/src/skills.js";
+import { createId } from "../packages/core/src/ids.js";
 import type { RunToolCapabilities } from "../packages/agent-tools/src/registry.js";
 import { renderHarnessSkillCatalog } from "../packages/harness/src/skill-catalog.js";
 import { loadAgentSkillBundle, planAgentSkills } from "../apps/runner/src/skills/agent-skills.js";
@@ -52,7 +53,19 @@ it("matches the caller-visible MCP context byte budget", async () => {
     listed[kind] = JSON.parse(context.toolsJson) as { name: string }[];
     metrics[`opensteer.${kind}.toolsJsonBytes`] = bytes(context.toolsJson);
     metrics[`opensteer.${kind}.instructionsBytes`] = bytes(context.instructions);
+    if (kind === "connection") {
+      metrics["opensteer.connection.toolCount"] = context.tools.length;
+      expect(bytes(context.toolsJson)).toBeLessThan(25_000);
+    }
   }
+  const narrow = await measureMcpContext("connection", {
+    grant: {
+      scope: "selected", tasks: false,
+      resources: [{ kind: "browser-profile", profileId: createId("browserProfile") }],
+    },
+  });
+  metrics["opensteer.connection.oneProfile.toolsJsonBytes"] = bytes(narrow.toolsJson);
+  metrics["opensteer.connection.oneProfile.toolCount"] = narrow.tools.length;
   for (const purpose of ["task", "background-job", "voice"] as const) {
     for (const personalContext of [true, false])
       metrics[`runGuide.${purpose}.personalContext.${personalContext}.bytes`] = bytes(

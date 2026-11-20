@@ -8,7 +8,7 @@
  */
 import { DeploymentCatalogSchema, DeploymentConnectionSchema } from "@opensteer/client/connections";
 import { menuBarWords } from "@opensteer/client/computers";
-import { hostApi, hostApiVersionHeader, mintComputerUseSessionId } from "@opensteer/protocol";
+import { hostApi, hostApiVersionHeader } from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { DesktopAccessOriginSchema } from "@opensteer/protocol/desktop";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
@@ -32,9 +32,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { createServer } from "node:http";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import WebSocket from "ws";
 import { z } from "zod";
-import { AgentAdmission } from "../src/app/agent-admission.js";
 import { installDesktopAppProtocol, registerDesktopAppScheme } from "../src/app/app-protocol.js";
 import { configureDesktopApplicationPaths } from "../src/app/application-paths.js";
 import { createDesktopApplicationMenu } from "../src/app/application-menu.js";
@@ -42,16 +40,12 @@ import { DesktopBackgroundMode } from "../src/app/background-mode.js";
 import { DesktopShutdown } from "../src/app/desktop-shutdown.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
 import { desktopWebPreferences } from "../src/app/electron-window.js";
-import { HostedHomeStop } from "../src/app/hosted-home-stop.js";
-import { DesktopLocalStop, localStopFileStore, type LocalStopPart } from "../src/app/local-stop.js";
+import { DesktopLocalStop, localStopFileStore } from "../src/app/local-stop.js";
 import { DesktopMenuBar, menuBarGlyph, type MenuBarIcon } from "../src/app/menu-bar.js";
 import { DesktopMenuBarService } from "../src/app/menu-bar-service.js";
 import { DesktopQuitRouting, type QuitActions } from "../src/app/quit-routing.js";
 import { parentedQuitQuestion, quitQuestionParentOptions } from "../src/app/quit-question.js";
 import { AgentBrowserGate } from "../src/browser/agent-browser-gate.js";
-import { ComputerUseService } from "../src/computer-use/computer-use-service.js";
-import { bundledComputerUseHelperPath } from "../src/computer-use/helper-paths.js";
-import { desktopComputerUseTeamId } from "../src/computer-use/release-identity.js";
 import { readDesktopConfiguration } from "../src/config.js";
 import { createDesktopHostApi } from "../src/connections/desktop-host-api.js";
 import { NativePersonalDeploymentCredentials } from "../src/secrets/personal-deployment-credentials.js";
@@ -95,6 +89,11 @@ const shutdown = new DesktopShutdown({
 });
 const quitRouting = new DesktopQuitRouting({
   shutdown,
+  confirm: parentedQuitQuestion({
+    focus: () => app.focus({ steal: true }),
+    createParent: () => new BrowserWindow(quitQuestionParentOptions(app.getName())),
+    showMessageBox: (parent, options) => dialog.showMessageBox(parent as BrowserWindow, options),
+  }),
   hideWindows: () => {
     for (const window of BrowserWindow.getAllWindows()) window.hide();
   },
@@ -152,8 +151,6 @@ async function run(): Promise<void> {
       return popoverPhases();
     case "home-stop":
       return homeStop();
-    case "row-stop":
-      return rowStop();
     case "quit-logout":
     case "quit-sigterm":
       return quitQuestion();
@@ -179,6 +176,7 @@ function statusItem(input: {
       resume: input.resume,
       setOpenAtLogin: async () => undefined,
       openApp: async () => undefined,
+      openRow: async () => undefined,
       openNeedsYou: async () => undefined,
       openSettings: async () => undefined,
       quitCompletely: async () => undefined,
@@ -256,23 +254,12 @@ async function popoverPhases(): Promise<void> {
   const release = Promise.withResolvers<void>();
   let holds = true;
   let failures = 1;
-  const heldPart: LocalStopPart = {
-    pause: async () => {
-      if (holds) await release.promise;
-    },
-    resume: () => undefined,
-  };
-  const failingPart: LocalStopPart = {
-    pause: () => {
-      if (failures-- > 0) throw new Error("A Device Runner did not confirm it stopped.");
-    },
-    resume: () => undefined,
-  };
-  const admission = new AgentAdmission();
   const localStop = new DesktopLocalStop({
-    admission,
-    computerUse: heldPart,
-    runners: failingPart,
+    restart: async () => {
+      if (holds) await release.promise;
+      if (failures-- > 0)
+        throw new Error("Couldn't confirm that one device connection on this Mac stopped.");
+    },
     store: localStopFileStore(path.join(root, "local-stop.json")),
     log,
   });
@@ -290,7 +277,6 @@ async function popoverPhases(): Promise<void> {
       stoppedAt: localStop.stoppedAt,
       problem: localStop.problem,
     }),
-    stopRow: () => false,
     openAtLogin: async () => ({ on: false, available: false }),
     log,
   });
@@ -327,17 +313,25 @@ async function popoverPhases(): Promise<void> {
   holds = false;
   await item.menuBar.open();
   await waitFor("the failed Stop", async () =>
-    (await item.text()).includes("didn’t stop (Device connections)"),
+    (await item.text()).includes(
+      "Couldn't confirm that one device connection on this Mac stopped.",
+    ),
   );
   const afterFailure = await item.buttons();
-  assert(afterFailure.includes(menuBarWords("menubar.stopAll")), "No retry after a failed Stop");
   assert(
-    !afterFailure.includes(menuBarWords("menubar.resume")),
-    "Resume offered for a failed Stop",
+    afterFailure.includes(menuBarWords("menubar.resume")),
+    "No Resume after the stopped worker booted",
   );
-  assert(!(await item.text()).includes("Stopped everything"), "Said stopped for a failed Stop");
+  assert(
+    !(await item.text()).includes("Stopped everything"),
+    "Claimed all work stopped without proof",
+  );
   await item.capture("failed");
-  held("failed-stop-offers-retry-not-resume");
+  held("unconfirmed-stop-offers-resume");
+  await item.click(".menu-bar__resume");
+  await waitFor("running again before another Stop", async () =>
+    (await item.text()).includes(menuBarWords("menubar.stopAll")),
+  );
 
   await item.click(".menu-bar__stop-all");
   await waitFor("stopped", async () =>
@@ -359,9 +353,8 @@ async function popoverPhases(): Promise<void> {
 
 /** This Mac's own Home and the Device Runner it lends to it, as the quit smoke starts them. */
 async function startHome(input: {
-  readonly agentStopFile: string;
+  readonly agentsStoppedSince: () => string | null;
   readonly gate: AgentBrowserGate;
-  readonly admission: AgentAdmission;
 }) {
   const resources = path.resolve(z.string().parse(process.env.OPENSTEER_PERSONAL_E2E_RESOURCES));
   const keyPath = path.join(root, "test-key");
@@ -376,8 +369,12 @@ async function startHome(input: {
     supervisorExecutable: readPersonalProcessSupervisorRelease(resources),
   });
   const environment = { HOME: root, PATH: "/usr/bin:/bin", TMPDIR: temporary };
+  const engineFixture = path.join(resources, "codex-fixture", "fake-codex-app-server.mjs");
+  const engineWrapper = path.join(root, "codex-fixture");
+  const engineRelease = path.join(root, "release-fixture-turn");
+  const shellArgument = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   const supervisor = new PersonalDeploymentSupervisor({
-    agentStopFile: input.agentStopFile,
+    agentsStoppedSince: input.agentsStoppedSince,
     log,
     catalog: {
       upsertAndSelect: async (value) => ({
@@ -434,7 +431,21 @@ async function startHome(input: {
     },
     processes: {
       run: (spec, options) => processes.run(spec, options),
-      spawn: (spec) => processes.spawn(spec),
+      spawn: (spec) => {
+        if (spec.component !== "runner") return processes.spawn(spec);
+        const node = z.string().parse(spec.environment.OPENSTEER_NODE_EXECUTABLE);
+        writeFileSync(
+          engineWrapper,
+          `#!/bin/sh
+exec ${shellArgument(node)} ${shellArgument(engineFixture)} --scenario=long-stream-held ${shellArgument(`--release-file=${engineRelease}`)} "$@"
+`,
+          { mode: 0o700 },
+        );
+        return processes.spawn({
+          ...spec,
+          environment: { ...spec.environment, OPENSTEER_CODEX_EXECUTABLE: engineWrapper },
+        });
+      },
     },
     baseEnvironment: environment,
     userEnvironment: { resolve: async () => environment },
@@ -503,7 +514,7 @@ async function startHome(input: {
     mayRunAgents: false,
   };
   const localRunners = new LocalRunnerService(config, {
-    admission: input.admission,
+    agentsStoppedSince: input.agentsStoppedSince,
     log,
     browser: (browserInput) =>
       startLocalBrowserRuntime({
@@ -551,26 +562,20 @@ async function startHome(input: {
  * and can be watched again after Resume; Resume clears the Home's line.
  */
 async function homeStop(): Promise<void> {
-  const admission = new AgentAdmission();
-  const gate = new AgentBrowserGate(admission);
+  const gate = new AgentBrowserGate();
   const stopFile = path.join(root, "local-stop.json");
-  const home = await startHome({ agentStopFile: stopFile, gate, admission });
   const localStop = new DesktopLocalStop({
-    admission,
-    computerUse: { pause: () => undefined, resume: () => undefined },
-    runners: home.localRunners,
-    browser: gate,
-    home: new HostedHomeStop({
-      hostedHome: async () => ({
-        deploymentId: home.manifest.deploymentId,
-        state: home.supervisor.status.state,
-      }),
-      host: () => home.host,
-    }),
+    restart: async () => {
+      await Promise.all([
+        home.supervisor.restartForAgentMode(),
+        home.localRunners.restartForAgentMode(),
+      ]);
+    },
     store: localStopFileStore(stopFile),
     log,
   });
   await localStop.restore();
+  const home = await startHome({ agentsStoppedSince: () => localStop.agentsStoppedSince, gate });
   assert.equal(localStop.phase, "running");
   const enrollment = z.object({ token: z.string() }).parse(
     await home.rpc("commands.dispatch", {
@@ -655,6 +660,53 @@ async function homeStop(): Promise<void> {
   await watched();
   held("person-tab-watched-before-stop");
 
+  const harnesses = z
+    .object({
+      harnesses: z.array(
+        z.object({ id: z.string(), driverKind: z.string(), environmentId: z.string() }),
+      ),
+    })
+    .parse(await home.rpc("resources.detail.get", { kind: "harness" }));
+  const codex = harnesses.harnesses.find(
+    (harness) =>
+      harness.driverKind === "codex" && harness.environmentId === home.manifest.environmentId,
+  );
+  assert(codex, "The Home did not expose the fixture engine");
+  const task = z.object({ thread: z.object({ id: z.string() }) }).parse(
+    await home.rpc("commands.dispatch", {
+      type: "thread.create",
+      idempotencyKey: randomUUID(),
+      environmentId: home.manifest.environmentId,
+      harnessInstanceId: codex.id,
+      modelSelection: { modelId: "gpt-5.6-sol", providerId: "openai", options: { effort: "low" } },
+      title: "Stop journey task",
+    }),
+  ).thread;
+  const send = (text: string) =>
+    home.rpc("commands.dispatch", {
+      type: "thread.sendMessage",
+      idempotencyKey: randomUUID(),
+      delivery: "queue",
+      threadId: task.id,
+      content: [{ type: "text", text }],
+    });
+  const taskState = async () =>
+    z
+      .object({
+        tasks: z.array(
+          z.object({ id: z.string(), status: z.string(), failurePreview: z.string().nullable() }),
+        ),
+      })
+      .parse(await home.rpc("personal.shell.get"))
+      .tasks.find((entry) => entry.id === task.id);
+  await send("Keep working until Stop");
+  await waitFor(
+    "the task running before Stop",
+    async () => (await taskState())?.status === "running",
+  );
+  await send("Continue once this Mac resumes");
+  held("task-and-person-tab-in-use-before-stop");
+
   const service = new DesktopMenuBarService({
     hostedHome: async () => ({
       deploymentId: home.manifest.deploymentId,
@@ -668,14 +720,15 @@ async function homeStop(): Promise<void> {
     local: () => ({
       apps: [],
       tabs: gate.agentTabDetails(),
-      runs: home.localRunners.localActivity(),
+      runs: home.localRunners
+        .localActivity()
+        .map((run) => ({ ...run, threadId: run.threadId ?? null })),
     }),
     stop: () => ({
       phase: localStop.phase,
       stoppedAt: localStop.stoppedAt,
       problem: localStop.problem,
     }),
-    stopRow: () => false,
     openAtLogin: async () => ({ on: false, available: false }),
     log,
   });
@@ -691,13 +744,17 @@ async function homeStop(): Promise<void> {
   await waitFor("Stop everything", async () =>
     (await item.text()).includes(menuBarWords("menubar.stopAll")),
   );
+  const stopStarted = performance.now();
   await item.click(".menu-bar__stop-all");
   await waitFor(
     "stopped",
     async () => (await item.text()).includes("Stopped everything on this Mac at"),
     60_000,
   );
-  held("stop-everything-confirmed", { phase: localStop.phase });
+  held("stop-everything-confirmed", {
+    phase: localStop.phase,
+    elapsedMs: performance.now() - stopStarted,
+  });
 
   const machines = async () =>
     z
@@ -722,10 +779,14 @@ async function homeStop(): Promise<void> {
   );
   held("home-shows-its-own-mac-stopped");
   await waitFor(
-    "the Home showing the Device stopped, though its Runner is gone",
+    "the Home identifying the old Run as stopped",
+    async () => (await taskState())?.failurePreview?.includes("Stopped on") === true,
+  );
+  await waitFor(
+    "the Home showing the Device stopped while its Runner is online",
     async () => {
       const device = await row(deviceRunnerId);
-      return Boolean(device?.agentsStoppedSince) && device?.status === "offline";
+      return Boolean(device?.agentsStoppedSince) && device?.status === "online";
     },
     30_000,
   );
@@ -743,6 +804,8 @@ async function homeStop(): Promise<void> {
   held("popover-says-the-home-confirms");
   assert(!personTab.isDestroyed() && personTab.getURL() === pageUrl, "The person's tab closed");
   held("person-tab-kept-through-stop");
+  await watched();
+  held("person-tab-watched-while-stopped");
 
   await item.click(".menu-bar__resume");
   await waitFor(
@@ -759,97 +822,15 @@ async function homeStop(): Promise<void> {
     60_000,
   );
   held("resume-clears-the-home-line");
+  await waitFor(
+    "the queued task running after Resume",
+    async () => (await taskState())?.status === "running",
+  );
+  held("queued-task-runs-after-resume");
   assert(!personTab.isDestroyed() && personTab.getURL() === pageUrl, "The person's tab closed");
   await watched();
   held("person-tab-watched-after-resume");
   passed({ deviceRunnerId });
-}
-
-/**
- * One agent session on this Mac's apps through the real helper, stopped from
- * its row: the Runner hears the person's stop, the row says stopping until the
- * helper confirms the close, then goes. A guest whose helper cannot open a
- * session leaves this unverified, never passed.
- */
-async function rowStop(): Promise<void> {
-  const admission = new AgentAdmission();
-  admission.reopen();
-  const computerUse = new ComputerUseService({
-    admission,
-    appBundleId: "dev.opensteer.menu-bar-smoke",
-    appVersion: app.getVersion(),
-    bundledHelperPath: () =>
-      bundledComputerUseHelperPath({
-        developmentRoot: path.resolve(import.meta.dirname, "..", "..", ".."),
-        packaged: false,
-        resourcesPath: undefined,
-      }),
-    log: (event, fields) => log(event, fields ?? {}),
-    teamId: desktopComputerUseTeamId(false),
-  });
-  shutdown.add({
-    component: "computer-use",
-    step: "stop",
-    order: 50,
-    timeoutMs: 2_000,
-    stop: () => computerUse.stop(),
-  });
-  const bridge = await computerUse.startForSlot("dep_00000000-0000-4000-8000-0000000000aa");
-  assert(bridge, "Computer use is unavailable on this Mac");
-  const runner = new WebSocket(bridge.url, {
-    headers: { authorization: `Bearer ${bridge.token}` },
-  });
-  await new Promise<void>((resolve, reject) => {
-    runner.once("open", () => resolve());
-    runner.once("error", reject);
-  });
-  const answers = new Map<number, (frame: unknown) => void>();
-  const events: unknown[] = [];
-  runner.on("message", (data: Buffer) => {
-    const frame = JSON.parse(data.toString("utf8")) as { id?: number; kind?: string };
-    if (frame.kind === "event") events.push(frame);
-    else if (typeof frame.id === "number") answers.get(frame.id)?.(frame);
-  });
-  const call = (id: number, method: string, params: unknown) =>
-    new Promise<unknown>((resolve) => {
-      answers.set(id, resolve);
-      runner.send(JSON.stringify({ id, kind: "request", method, params }));
-    });
-  const sessionId = mintComputerUseSessionId();
-  const opened = z
-    .object({ result: z.unknown().optional(), error: z.object({ code: z.string() }).optional() })
-    .parse(await call(1, "session.open", { sessionId, threadTitle: "Menu bar smoke" }));
-  if (opened.error) {
-    // Grants or the helper itself are missing in this guest: not a pass.
-    log("test.unverified", { reason: `session.open refused: ${opened.error.code}` });
-    clearTimeout(watchdog);
-    runner.close();
-    shutdown.request("test-unverified");
-    return;
-  }
-  await waitFor("the session's row", () =>
-    computerUse.agentSessionDetails().some((row) => row.sessionId === sessionId),
-  );
-  held("row-appears-for-the-session");
-  assert.equal(computerUse.stopAgentSession(sessionId), true);
-  const states = computerUse.agentSessionDetails().map((row) => row.state);
-  assert.deepEqual(states, ["stopping"], "The row did not say stopping");
-  held("row-says-stopping-until-confirmed");
-  await waitFor("the person's stop reaching the Runner", () =>
-    events.some(
-      (frame) =>
-        (frame as { event?: string; params?: { reason?: string } }).event === "session.stopped" &&
-        (frame as { params?: { reason?: string } }).params?.reason === "user",
-    ),
-  );
-  held("runner-hears-the-persons-stop");
-  await waitFor(
-    "the helper confirming the close",
-    () => computerUse.agentSessionDetails().length === 0,
-  );
-  held("row-goes-once-the-helper-confirms");
-  runner.close();
-  passed();
 }
 
 /**

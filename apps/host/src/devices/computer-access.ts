@@ -68,7 +68,8 @@ export async function gatherComputerAccess(
       })
     : ownerInventory.machines;
   const grantedMacs = new Set(
-    machines.filter((machine) => machine.apps.some((app) => app.status === "approved"))
+    machines
+      .filter((machine) => machine.apps.some((app) => app.status === "approved"))
       .map((machine) => machine.deviceId),
   );
   const inventory = selected
@@ -76,25 +77,34 @@ export async function gatherComputerAccess(
         ...ownerInventory,
         machines,
         phones: await Promise.all(
-          ownerInventory.phones.filter((phone) => {
-            const approvalId = phone.connectionId ?? phone.connection?.connectionId;
-            return approvalId && isPhoneDisplayDefinitionId(phone.definitionId) && holds({
-              kind: "computer-app",
-              deviceId: phone.deviceId,
-              approvalId,
-              app: { kind: "phone-screen", definitionId: phone.definitionId },
-            });
-          }).map(async ({ setup, ...phone }) => {
-            if (setup?.location !== "driver-mac")
-              return { ...phone, ...(setup ? { setup } : {}) };
-            const deviceId = grantedMacs.size
-              ? await platform.store.requireSelfDeviceId(setup.driverRunnerId).catch((error: unknown) => {
-                  if (error instanceof OpensteerError && error.code === "not_found") return null;
-                  throw error;
+          ownerInventory.phones
+            .filter((phone) => {
+              const approvalId = phone.connectionId ?? phone.connection?.connectionId;
+              return (
+                approvalId &&
+                isPhoneDisplayDefinitionId(phone.definitionId) &&
+                holds({
+                  kind: "computer-app",
+                  deviceId: phone.deviceId,
+                  approvalId,
+                  app: { kind: "phone-screen", definitionId: phone.definitionId },
                 })
-              : null;
-            return { ...phone, ...(deviceId && grantedMacs.has(deviceId) ? { setup } : {}) };
-          }),
+              );
+            })
+            .map(async ({ setup, ...phone }) => {
+              if (setup?.location !== "driver-mac")
+                return { ...phone, ...(setup ? { setup } : {}) };
+              const deviceId = grantedMacs.size
+                ? await platform.store
+                    .requireSelfDeviceId(setup.driverRunnerId)
+                    .catch((error: unknown) => {
+                      if (error instanceof OpensteerError && error.code === "not_found")
+                        return null;
+                      throw error;
+                    })
+                : null;
+              return { ...phone, ...(deviceId && grantedMacs.has(deviceId) ? { setup } : {}) };
+            }),
         ),
       }
     : ownerInventory;
@@ -155,7 +165,7 @@ export async function gatherComputerAccess(
       machine: machineFacts(machine),
       approval: approved ?? null,
       callable: !!refs.observe,
-      canAct: !!refs.act,
+      canAct: input.direct ? approved?.access === "read-write" : !!refs.act,
       pendingOnMac: onMacRequests.some(
         (request) =>
           request.deviceId === machine.deviceId && computerAppIdentityKey(request.app) === key,
@@ -177,7 +187,7 @@ export async function gatherComputerAccess(
       connection: entry.connection,
       blockedByOwner: entry.blockedByOwner,
       callable: !!refs.observe,
-      canAct: !!refs.act,
+      canAct: input.direct ? entry.connection?.access === "read-write" : !!refs.act,
       pendingPhoneAccess: setupRequests.some(
         (request) =>
           request.kind === "app" &&

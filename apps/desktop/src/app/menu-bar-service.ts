@@ -47,12 +47,6 @@ export interface DesktopMenuBarServiceOptions {
   /** What this Mac itself knows is using it; read on every status, never from a Home. */
   readonly local: () => MenuBarInput["local"];
   readonly stop: () => MenuBarInput["stop"];
-  /**
-   * One thing in Right now, stopped the way the Home's Stop stops that kind.
-   * Resolves once the stop was handed on; throws when it could not be, or
-   * false when that thing had already ended.
-   */
-  readonly stopRow: (id: string) => Promise<boolean> | boolean;
   readonly openAtLogin: () => Promise<MenuBarInput["openAtLogin"]>;
   readonly log: ShutdownLog;
 }
@@ -74,13 +68,16 @@ export class DesktopMenuBarService {
   readonly #options: DesktopMenuBarServiceOptions;
   readonly #listeners = new Set<() => void>();
   readonly #needsYou = new Map<string, number | null>();
-  /** Rows the person stopped from here, until their end shows. */
-  readonly #rowStates = new Map<string, "stopping" | "failed">();
+  readonly #liveNeedsYou = new Map<string, number>();
+  #hostedHome: MenuBarHostedHome | null = null;
+  #deviceHomes: readonly MenuBarDeviceHome[] = [];
+  #openAtLogin: MenuBarInput["openAtLogin"] = { on: false, available: false };
   #read: ShownRead | null = null;
   #hostedRead: HomeRead | null = null;
   /** Whether every Home was out of reach when status was last worked out. */
   #unreachable = false;
   #reading: Promise<void> | null = null;
+  #readingLogin: Promise<void> | null = null;
 
   constructor(options: DesktopMenuBarServiceOptions) {
     this.#options = options;
@@ -98,24 +95,19 @@ export class DesktopMenuBarService {
 
   /** The window's own live count for the Home it came from, as it badges the app. */
   noteNeedsYou(deploymentId: string, count: number): void {
+    this.#liveNeedsYou.set(deploymentId, (this.#liveNeedsYou.get(deploymentId) ?? 0) + 1);
     if (this.#needsYou.get(deploymentId) === count) return;
     this.#needsYou.set(deploymentId, count);
     this.changed();
   }
 
   async status(): Promise<MenuBarStatus> {
-    const [hostedHome, deviceHomes, openAtLogin] = await Promise.all([
-      this.#options.hostedHome(),
-      this.#options.deviceHomes(),
-      this.#options.openAtLogin(),
-    ]);
+    const hostedHome = this.#hostedHome;
+    const deviceHomes = this.#deviceHomes;
     const homes = new Set([
       ...(hostedHome ? [hostedHome.deploymentId] : []),
       ...deviceHomes.map((home) => home.deploymentId),
     ]);
-    // A Home this Mac no longer works for keeps nothing here.
-    for (const deploymentId of this.#needsYou.keys())
-      if (!homes.has(deploymentId)) this.#needsYou.delete(deploymentId);
     const read = this.#read && homes.has(this.#read.deploymentId) ? this.#read : null;
     const hostedRead =
       hostedHome && this.#hostedRead?.deploymentId === hostedHome.deploymentId
@@ -125,22 +117,23 @@ export class DesktopMenuBarService {
     const reads = [read, hostedRead].filter((value): value is HomeRead => value !== null);
     const shells = new Map<
       string,
-      { id: string; threadTitle: string; callerMachineName: string }
+      {
+        id: string;
+        threadTitle: string;
+        callerMachineName: string;
+        deploymentId: string;
+        threadId: string;
+      }
     >();
     for (const value of reads)
       for (const session of value.machine?.access?.activeSessions ?? [])
         shells.set(session.id, {
           id: session.id,
+          deploymentId: value.deploymentId,
+          threadId: session.threadId,
           threadTitle: session.threadTitle,
           callerMachineName: session.callerMachineName,
         });
-    // A Run the person stopped is gone once its Runner no longer reports it.
-    const reported = new Set(
-      (local.runs ?? []).map((run) => `runner:${run.deploymentId}:${run.runId}`),
-    );
-    for (const id of this.#rowStates.keys())
-      if (id.startsWith("runner:") && !reported.has(id)) this.#rowStates.delete(id);
-    const state = (id: string) => this.#rowStates.get(id) ?? "active";
     const status = menuBarStatus({
       hostedHome: hostedHome && {
         deploymentId: hostedHome.deploymentId,
@@ -157,23 +150,14 @@ export class DesktopMenuBarService {
           }
         : null,
       needsYou: new Map(this.#needsYou),
-      local: {
-        ...local,
-        runs: (local.runs ?? []).map((run) => ({
-          ...run,
-          state: state(`runner:${run.deploymentId}:${run.runId}`),
-        })),
-      },
+      local,
       homeWork: reads.length
         ? {
-            tasks: (hostedRead?.tasks ?? []).map((task) => ({
-              ...task,
-              state: state(`home:${task.threadId}`),
-            })),
+            tasks: hostedRead?.tasks ?? [],
             shells: [...shells.values()],
           }
         : null,
-      openAtLogin,
+      openAtLogin: this.#openAtLogin,
     });
     this.#unreachable = status.icon.unreachable;
     return status;
@@ -192,40 +176,19 @@ export class DesktopMenuBarService {
     };
   }
 
-  /**
-   * Stops one row. It shows as stopping until its end shows, or as failed with
-   * Stop offered again when the stop could not be handed on.
-   */
-  async stopRow(id: string): Promise<void> {
-    this.#rowStates.set(id, "stopping");
-    this.changed();
-    let stopped: boolean;
-    try {
-      stopped = await this.#options.stopRow(id);
-    } catch (error) {
-      this.#rowStates.set(id, "failed");
-      this.changed();
-      throw error;
-    }
-    if (!stopped) {
-      this.#rowStates.delete(id);
-      this.changed();
-      throw new Error("That already ended.");
-    }
-    // A task's end shows in the Home's next read; a Runner's in its next report.
-    if (id.startsWith("home:"))
-      void this.refresh()
-        .catch(() => undefined)
-        .finally(() => {
-          this.#rowStates.delete(id);
-          this.changed();
-        });
-    else if (!id.startsWith("runner:")) this.#rowStates.delete(id);
-    this.changed();
-  }
-
   /** Reads the Homes again; a caller joins a read already under way. */
   refresh(): Promise<void> {
+    if (!this.#readingLogin)
+      this.#readingLogin = this.#options
+        .openAtLogin()
+        .then((value) => {
+          this.#openAtLogin = value;
+          this.changed();
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          this.#readingLogin = null;
+        });
     this.#reading ??= this.#refresh().finally(() => {
       this.#reading = null;
     });
@@ -287,29 +250,40 @@ export class DesktopMenuBarService {
       this.#options.hostedHome(),
       this.#options.deviceHomes(),
     ]);
-    const homes = [
+    this.#hostedHome = hostedHome;
+    this.#deviceHomes = deviceHomes;
+    this.changed();
+    const homes = new Set([
       ...(hostedHome ? [hostedHome.deploymentId] : []),
       ...deviceHomes.map((home) => home.deploymentId),
-    ];
+    ]);
+    for (const departure of this.#needsYou.keys())
+      if (!homes.has(departure)) {
+        this.#needsYou.delete(departure);
+        this.#liveNeedsYou.delete(departure);
+      }
     const published = <T>(work: Promise<T>) => work.finally(() => this.changed());
     await Promise.allSettled([
       published(this.#readShown(hostedHome, deviceHomes)),
       published(this.#readHosted(hostedHome)),
-      ...[...new Set(homes)].map((deploymentId) => published(this.#readNeedsYou(deploymentId))),
+      ...[...homes].map((deploymentId) => published(this.#readNeedsYou(deploymentId))),
     ]);
   }
 
   async #readNeedsYou(deploymentId: string): Promise<void> {
+    const revision = this.#liveNeedsYou.get(deploymentId);
+    let count: number | null;
     try {
       const attention = hostApiData(
         await this.#options
           .host(deploymentId)
           ["attention.get"]({}, { signal: AbortSignal.timeout(homeReadTimeoutMs) }),
       );
-      this.#needsYou.set(deploymentId, attention.needsYou);
+      count = attention.needsYou;
     } catch {
-      this.#needsYou.set(deploymentId, null);
+      count = null;
     }
+    if (this.#liveNeedsYou.get(deploymentId) === revision) this.#needsYou.set(deploymentId, count);
   }
 
   /** This Mac's own Home: the tasks running here, whichever Home the window shows. */

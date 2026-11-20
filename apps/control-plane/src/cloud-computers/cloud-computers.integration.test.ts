@@ -30,6 +30,9 @@ import {
   WorkPolicyResponseSchema,
   workAuditFlushPath,
   WorkAuditFlushClaimsSchema,
+  WorkAuditFlushRequestSchema,
+  workPolicyChangedPath,
+  WorkPolicyChangedClaimsSchema,
   workAuditGenesisHash,
   workAuditSigningBytes,
   type WorkAuditRecord,
@@ -1089,9 +1092,24 @@ integration("Cloud Computer Account service", () => {
       externalMaxMode: "full-access",
       allowTasks: true,
     };
+    let policyNoticeVerified = false;
+    workHomeFetch.mockImplementationOnce(async (target, init) => {
+      expect(String(target)).toBe(address + workPolicyChangedPath);
+      const { assertion } = WorkAuditFlushRequestSchema.parse(JSON.parse(String(init?.body)));
+      const verified = await jwtVerify(assertion, jwks, {
+        issuer: publicOrigin.origin, audience: address, algorithms: ["EdDSA"],
+      });
+      expect(WorkPolicyChangedClaimsSchema.parse(verified.payload)).toMatchObject({
+        assignmentId: assignment.assignmentId, deploymentId: identity.deploymentId,
+      });
+      policyNoticeVerified = true;
+      return new Response(null, { status: 204 });
+    });
     expect(
       await requestAs(admin, "PUT", `${org.path}/policy`, { expectedRevision: 1, policy }),
     ).toMatchObject({ statusCode: 200 });
+    expect(policyNoticeVerified).toBe(true);
+    workHomeFetch.mockClear();
     expect((await org.read()).assignments[0]?.policyStatus).toBe("Pending on Home");
     const response = await hostCall("GET", "policy");
     expect(response.statusCode, response.body).toBe(200);

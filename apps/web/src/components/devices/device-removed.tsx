@@ -40,7 +40,7 @@ export function DeviceRemovedScreen({
       description={
         unconfirmed
           ? (detail ?? `Signed out here. Removal from ${name} is unconfirmed.`)
-          : "Your agent can no longer use it. Your files stay on this Mac."
+          : "Your own agents can no longer use it. Your files stay on this Mac."
       }
       live
       title={`This Mac was removed from ${name}`}

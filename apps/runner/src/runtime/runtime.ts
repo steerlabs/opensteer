@@ -115,6 +115,7 @@ import {
   ExecutionContainment,
   executionScopeVariable,
   type TerminationProof,
+  type RunnerShutdownProof,
 } from "./execution-containment.js";
 import { warmEngineKey, WarmEnginePool, type WarmEngine } from "./warm-engine-pool.js";
 import { startProgramEndpoints, type ProgramEndpointSet } from "../agent/program-endpoints.js";
@@ -193,7 +194,6 @@ export interface RunnerRuntimeOptions {
    * The person stopped agents on this computer. While true, new Runs and
    * Trigger programs are refused as not ready, so the Home keeps them queued.
    */
-  readonly agentWorkStopped?: () => boolean;
   readonly maxConcurrentTriggerPrograms?: number;
   readonly maxRunEventBytes?: number;
   readonly maxRunEvents?: number;
@@ -391,8 +391,7 @@ const terminalEventTypes = new Set<HarnessDurableEvent["type"]>([
   "run.interrupted",
 ]);
 
-export const agentWorkStoppedSentence =
-  "Agents are stopped on this computer. This starts when the person resumes them.";
+
 
 export class RunnerRuntime {
   readonly appServers: AppServerManager;
@@ -586,11 +585,9 @@ export class RunnerRuntime {
     "activeActivationIds" | "close" | "connectionLost" | "reconcile"
   > & Partial<Pick<WatchSupervisor, "stopAttempt">>;
   #draining = false;
-  readonly #agentWorkStopped: () => boolean;
   readonly #activityListeners = new Set<() => void>();
 
   constructor(options: RunnerRuntimeOptions) {
-    this.#agentWorkStopped = options.agentWorkStopped ?? (() => false);
     this.#executionClock = options.executionClock;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
     this.#credentialRefreshClock = options.credentialRefreshClock ?? systemClock;
@@ -679,6 +676,12 @@ export class RunnerRuntime {
 
   voice(userId: UserId, command: RunnerVoiceCommand): Promise<RunnerVoiceResult> {
     return this.#voice.handle(userId, command);
+  }
+
+  idleForUpdate(): boolean {
+    return !this.#draining && this.#runs.size === 0 && this.#triggerPrograms.size === 0 &&
+      this.#backgroundText.size === 0 && this.#harnessAuthenticationStartups.size === 0 &&
+      this.#installationTasks.size === 0;
   }
 
   activeRunIds(): readonly RunId[] {
@@ -2356,7 +2359,7 @@ export class RunnerRuntime {
     await Promise.allSettled(tasks);
   }
 
-  async close(): Promise<void> {
+  async close(proveTermination = false): Promise<RunnerShutdownProof | undefined> {
     this.#imagePublishLifetime.abort();
     this.#draining = true;
     await this.#cancelBackgroundText(() => true);
@@ -2390,6 +2393,7 @@ export class RunnerRuntime {
     await this.#harnesses.close();
     if (this.#messagingWorkRoot)
       await rm(await this.#messagingWorkRoot, { recursive: true, force: true });
+    return proveTermination ? this.#containment.shutdownProof() : undefined;
   }
 
   activeWatchActivationIds(): readonly TriggerWatchActivationId[] {
@@ -2403,7 +2407,6 @@ export class RunnerRuntime {
     if (this.#endedAttempts.has(`${command.context.runId}:${command.context.bindingGeneration}`))
       return reject("conflict", "Run attempt already ended", false);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
-    if (this.#agentWorkStopped()) return reject("conflict", agentWorkStoppedSentence, true);
     if (this.#harnessMaintenance.has(command.context.harnessInstanceId)) {
       return reject("conflict", "AI engine profile maintenance is in progress", true);
     }
@@ -2556,7 +2559,6 @@ export class RunnerRuntime {
     if (this.#endedAttempts.has(key) || this.#unverifiedTriggerEnds.has(key))
       return reject("conflict", "Trigger attempt already stopped", false);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
-    if (this.#agentWorkStopped()) return reject("conflict", agentWorkStoppedSentence, true);
     if (this.#triggerPrograms.has(command.context.occurrenceId)) {
       return reject("conflict", "Trigger occurrence is already active", false);
     }

@@ -294,7 +294,7 @@ describe("Opensteer Cloud Computer on desktop", () => {
     const account = scene("unreachable");
     const bridge = bridgeFor(account);
     const unreachable = await mount(bridge);
-    expect(unreachable.textContent).toContain("Opensteer account isn’t answering.");
+    expect(unreachable.textContent).toContain("We couldn’t reach Opensteer.");
     await act(async () => button(unreachable, "Try again").click());
     expect(bridge.cloudComputerRead).toHaveBeenCalledTimes(2);
   });

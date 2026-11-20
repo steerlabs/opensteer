@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -41,6 +41,7 @@ let registryId;
 const registryReferences = [];
 const dockerHost = "unix:///Users/timjang/.colima/default/docker.sock";
 const env = { ...process.env, DOCKER_HOST: dockerHost };
+const colimaArgs = ["ssh", "--", "sudo", "-n", "bash", "-s"];
 const vmDirectory = `/tmp/${project}`;
 const recipe = resolve(root, "deploy/home");
 const components = [
@@ -123,11 +124,28 @@ function docker(args, options) {
 }
 
 function vm(command, { managed = false, allowFailure = false, timeout = 600_000 } = {}) {
-  const child = result("colima", ["ssh", "--", "sudo", "-n", "bash", "-s"], {
+  const child = result("colima", colimaArgs, {
     input: vmScript(command, managed),
     timeout,
   });
   return allowFailure ? child : checked(child, "Colima command failed");
+}
+
+// Keep fixtures hosted by the verifier responsive while commands run in Colima.
+function vmAsync(command, { managed = false, timeout = 600_000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      "colima",
+      colimaArgs,
+      { cwd: root, env, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout },
+      (error, stdout, stderr) => {
+        if (error && typeof error.code !== "number") reject(error);
+        else resolve({ status: error?.code ?? 0, stdout, stderr });
+      },
+    );
+    child.stdin.on("error", reject);
+    child.stdin.end(vmScript(command, managed));
+  });
 }
 
 function vmScript(command, managed) {
@@ -626,25 +644,11 @@ async function verifyAuthenticatedUpstream(api, cookie, ca) {
   let process;
   await account.listen({ host: "0.0.0.0", port: 0 });
   const accountOrigin = `https://host.lima.internal:${account.server.address().port}`;
-  const maintain = () =>
-    new Promise((resolve, reject) => {
-      const child = spawn("colima", ["ssh", "--", "sudo", "-n", "bash", "-s"], {
-        env,
-        stdio: ["pipe", "ignore", "pipe"],
-      });
-      let stderr = "";
-      child.stderr.setEncoding("utf8");
-      child.stderr.on("data", (data) => {
-        stderr += data;
-      });
-      child.once("error", reject);
-      child.once("close", (status) =>
-        status === 0 ? resolve() : reject(new Error(redact(stderr))),
-      );
-      child.stdin.end(vmScript(`CURL_CA_BUNDLE=${quote(cert)} operator maintain`, false));
-      const deadline = setTimeout(() => child.kill(), 300_000);
-      child.once("close", () => clearTimeout(deadline));
-    });
+  const maintain = async () =>
+    checked(
+      await vmAsync(`CURL_CA_BUNDLE=${quote(cert)} operator maintain`, { timeout: 300_000 }),
+      "Colima maintenance command failed",
+    );
   try {
     vm(`nsenter -t ${hostPid} -n ip address add ${address}/32 dev lo
         nsenter -t ${hostPid} -n ip address add ${originAddress}/32 dev lo`);
@@ -1194,9 +1198,8 @@ async function managedProof(directory, bootPackage) {
     );
     assert.notEqual(refused.status, 0);
     assert.match(refused.stderr, /only from the Account feed/u);
-    const refusedFeed = vm(`CURL_CA_BUNDLE=${quote(certificate)} operator update`, {
+    const refusedFeed = await vmAsync(`CURL_CA_BUNDLE=${quote(certificate)} operator update`, {
       managed: true,
-      allowFailure: true,
     });
     assert.notEqual(refusedFeed.status, 0);
     assert.match(refusedFeed.stderr, /Managed Home releases require a digest/u);

@@ -1,3 +1,5 @@
+import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
+import { deploymentPolicy } from "@opensteer/core";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { Agent } from "node:https";
 import {
@@ -143,7 +145,7 @@ async function discover(
       { permanent: false },
     );
   const descriptor = HostDescriptorSchema.safeParse(await readJson(response));
-  if (!descriptor.success || descriptor.data.kind !== "personal")
+  if (!descriptor.success || !deploymentPolicy({ kind: descriptor.data.kind }).services.personal)
     throw new ManagedHomeError("The Cloud Computer isn't serving its Home yet", {
       permanent: false,
     });
@@ -306,7 +308,7 @@ export class CloudComputerClaimer {
       const document = envelope.document;
       // Both a new Home and a restored owner use the identity pinned at boot-complete.
       if (
-        document.deploymentShape.kind !== "personal" ||
+        !isPersonalHost(document) ||
         document.canonicalOrigin !== origin ||
         document.deploymentId !== job.deploymentId ||
         hostKeyFingerprint(envelope.publicKey.spki) !== job.hostKeyFingerprint

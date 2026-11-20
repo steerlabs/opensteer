@@ -194,6 +194,8 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
             kind: "connection" as const,
             key: "connection:eval",
             connectionId: "eval",
+            grant: { scope: "everything" },
+            grantRevision: 1,
           };
         return {
           ...common,

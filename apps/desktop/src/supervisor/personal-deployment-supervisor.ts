@@ -1,3 +1,11 @@
+import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
+import {
+  confirmRunnerShutdown,
+  RunnerShutdownProofSchema,
+  DesktopRunnerReadySchema,
+  holdDesktopRunnerIdle,
+} from "@opensteer/runner";
+import { readFile, rm } from "node:fs/promises";
 import type { ResolvedConnection, VerifiedHostEndpoint } from "@opensteer/client/connections";
 import { computerName } from "./computer-name.js";
 import { personFullName } from "./person-name.js";
@@ -34,7 +42,7 @@ import { processStopTimeoutMs } from "@opensteer/shared/processControl";
 import { RestartPolicy } from "@opensteer/shared/restartPolicy";
 import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import path from "node:path";
 import { syncBrowserExtensionDirectory } from "./browser-extension-directory.js";
@@ -110,10 +118,10 @@ const defaultRestartResetAfterMs = 5 * 60_000;
 interface PersonalDeploymentSupervisorOptions {
   /**
    * Where this app saves the person's Stop for this Mac. The hosting Runner
-   * reads it at each admission, so no new agent work starts here while it
+   * receives the saved mode at spawn, so no agent work starts here while it
    * says stopped, and the Home keeps that work queued until Resume.
    */
-  readonly agentStopFile?: string;
+  readonly agentsStoppedSince?: () => string | null;
   readonly userDataDirectory?: string;
   readonly syncExtensionDirectory?: typeof syncBrowserExtensionDirectory;
   readonly dataReset?: PersonalDataReset;
@@ -136,6 +144,7 @@ interface PersonalDeploymentSupervisorOptions {
       owner: { deploymentId: string; hostInstanceId: string; runnerId: string },
     ): Promise<{ readonly token: string; readonly url: URL } | null>;
     stopForSlot(deploymentId: string): Promise<void>;
+    workerDisconnected?(deploymentId: string): Promise<boolean>;
   };
   readonly credentials: PersonalDeploymentCredentialPort;
   readonly files: PersonalDeploymentFilesystemPort;
@@ -168,6 +177,7 @@ interface RunningChild {
   readonly exit: Promise<ChildExit>;
   readonly logs: BoundedPersonalLog;
   readonly stderr: BoundedPersonalLog;
+  readonly runnerReceipt?: { readonly file: string; readonly directory: string };
   expectedExit: boolean;
 }
 
@@ -234,7 +244,9 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #allocatePort: () => Promise<number>;
   readonly #passkeys: boolean;
   readonly #baseEnvironment: Readonly<Record<string, string>>;
-  readonly #agentStopFile: string | undefined;
+  readonly #agentsStoppedSince: (() => string | null) | undefined;
+  #runnerSpec: PersonalProcessSpec | null = null;
+  #runnerShutdownUnconfirmed = false;
   readonly #catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
   readonly #computerName: () => Promise<string>;
   readonly #personFullName: () => Promise<string | null>;
@@ -297,7 +309,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#allocatePort = options.allocatePort ?? allocateLoopbackPort;
     this.#passkeys = options.passkeys === true;
     this.#baseEnvironment = options.baseEnvironment ?? filterUserEnvironment(process.env);
-    this.#agentStopFile = options.agentStopFile;
+    this.#agentsStoppedSince = options.agentsStoppedSince;
     this.#userEnvironment =
       options.userEnvironment ??
       (options.baseEnvironment
@@ -833,24 +845,22 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       const userEnvironment = await environmentStart;
       const computerUse = await computerUseStart;
       throwIfAborted(signal, "Personal setup was cancelled.");
-      const runner = this.#spawn(
-        runnerSpec(
-          release,
-          manifest,
-          paths,
-          bootstrap.runnerEnrollmentToken,
-          userEnvironment,
-          {
-            bridgeToken: browser.bridgeToken,
-            runtimeId: browser.runtimeId,
-            signIn: browser.signIn,
-            personFill: browser.personFill,
-            url: browser.url,
-          },
-          computerUse,
-          this.#agentStopFile,
-        ),
+      this.#runnerSpec = runnerSpec(
+        release,
+        manifest,
+        paths,
+        bootstrap.runnerEnrollmentToken,
+        userEnvironment,
+        {
+          bridgeToken: browser.bridgeToken,
+          runtimeId: browser.runtimeId,
+          signIn: browser.signIn,
+          personFill: browser.personFill,
+          url: browser.url,
+        },
+        computerUse,
       );
+      const runner = this.#spawn(this.#runnerSpec);
       await this.#startupStep("runner", () =>
         this.#raceChild(
           runner,
@@ -1403,12 +1413,76 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     });
   }
 
+  async holdIdleForUpdate(): Promise<(() => Promise<void>) | null> {
+    if (this.#runnerShutdownUnconfirmed) return null;
+    if (!this.#desiredRunning && this.#children.size === 0) return async () => {};
+    const receipt = this.#children.get("runner")?.runnerReceipt;
+    if (!receipt) return null;
+    const control = await readFile(receipt.file, "utf8")
+      .then((raw) => DesktopRunnerReadySchema.parse(JSON.parse(raw)))
+      .catch(() => null);
+    return control ? holdDesktopRunnerIdle(control) : null;
+  }
+
+  restartForAgentMode(): Promise<void> {
+    return this.#mutations.run(async () => {
+      const spec = this.#runnerSpec;
+      if (!spec || this.#shutdownRequested) return;
+      const errors: unknown[] = [];
+      const bridgeDrained = this.#computerUseSlotId
+        ? this.#computerUse?.workerDisconnected?.(this.#computerUseSlotId)
+        : undefined;
+      const receipt = this.#children.get("runner")?.runnerReceipt;
+      if (receipt)
+        await replacePrivateFileAtomically(receipt.file, "restarting").catch((error: unknown) =>
+          errors.push(error),
+        );
+      await this.#stopProcesses(["runner"], errors);
+      if (bridgeDrained && !(await bridgeDrained)) errors.push(new Error(hostedStopProblem));
+      if (this.#children.has("runner")) throw new AggregateError(errors, hostedStopProblem);
+      const child = this.#spawn(spec);
+      if (child.runnerReceipt) {
+        const { file } = child.runnerReceipt;
+        const earlierBootsContained = await this.#raceChild(
+          child,
+          waitForRunnerBoot(file),
+          AbortSignal.timeout(10_000),
+          "Runner",
+        );
+        if (!earlierBootsContained) errors.push(new Error(hostedStopProblem));
+      }
+      this.#setStatus({
+        components: componentState(this.#status.components, "runner", "ready"),
+      });
+      if (errors.length) throw new AggregateError(errors, hostedStopProblem);
+    });
+  }
+
   #spawn(spec: PersonalProcessSpec, onLine?: (line: string) => void): RunningChild {
     if (this.#shutdownRequested) throw new Error("Personal deployment is stopping.");
     if (this.#children.has(spec.component)) {
       throw new Error(`Personal ${spec.component} process is already running.`);
     }
-    const child = this.#processes.spawn(spec);
+    const mode = spec.component === "runner" ? this.#agentsStoppedSince?.() : undefined;
+    const runnerReceipt =
+      mode === undefined
+        ? undefined
+        : {
+            file: path.join(spec.cwd, "private", `desktop-${randomUUID()}.json`),
+            directory: spec.cwd,
+          };
+    const child = this.#processes.spawn(
+      runnerReceipt
+        ? {
+            ...spec,
+            environment: {
+              ...spec.environment,
+              OPENSTEER_RUNNER_AGENTS_STOPPED_SINCE: mode ?? "",
+              OPENSTEER_RUNNER_SHUTDOWN_RECEIPT: runnerReceipt.file,
+            },
+          }
+        : spec,
+    );
     this.#diagnosticLogs.delete(spec.component);
     const logs = new BoundedPersonalLog(undefined, processSensitiveValues(spec), onLine);
     const stderr = new BoundedPersonalLog(16 * 1_024, processSensitiveValues(spec));
@@ -1426,7 +1500,15 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         resolvePromise(value);
       };
     });
-    running = { child, component: spec.component, exit, expectedExit: false, logs, stderr };
+    running = {
+      child,
+      component: spec.component,
+      exit,
+      expectedExit: false,
+      logs,
+      stderr,
+      ...(runnerReceipt ? { runnerReceipt } : {}),
+    };
     this.#children.set(spec.component, running);
     void exit.then((result) => {
       logs.flush();
@@ -1435,6 +1517,8 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       if (this.#children.get(spec.component) === running) {
         this.#children.delete(spec.component);
       }
+      if (!running.expectedExit && runnerReceipt)
+        void rm(runnerReceipt.file, { force: true }).catch(() => undefined);
       if (running.expectedExit || !this.#desiredRunning) return;
       if (spec.component === "messaging") {
         // Restarting the stack for messaging would trade a Deployment that
@@ -1611,6 +1695,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   }
 
   async #stopChildren(signal?: AbortSignal): Promise<void> {
+    this.#runnerSpec = null;
     this.#ownerClaim = null;
     this.#hostLaunch = null;
     this.#messagingIssue = null;
@@ -1621,7 +1706,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     // Keep the backoff across failed starts; only healthy uptime resets it.
     this.#restartPolicy.dispose();
     this.#messagingRestartPolicy.dispose();
-    const errors: unknown[] = [];
+    const errors: unknown[] = this.#runnerShutdownUnconfirmed ? [new Error(hostedStopProblem)] : [];
     // Reverse start order, so messaging leaves before the Host it attaches to.
     await this.#stopProcesses(["messaging"], errors);
     const browser = this.#browser;
@@ -1710,6 +1795,19 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
           errors.push(new AggregateError([error, killError], `${component} could not stop.`));
         }
       } finally {
+        if (stopped && running.runnerReceipt) {
+          const { file, directory } = running.runnerReceipt;
+          const confirmed = await readFile(file, "utf8")
+            .then((raw) =>
+              confirmRunnerShutdown(directory, RunnerShutdownProofSchema.parse(JSON.parse(raw))),
+            )
+            .catch(() => false);
+          await rm(file, { force: true }).catch(() => undefined);
+          if (!confirmed) {
+            this.#runnerShutdownUnconfirmed = true;
+            errors.push(new Error(hostedStopProblem));
+          }
+        }
         if (stopped && this.#children.get(component) === running) this.#children.delete(component);
         this.#setStatus({
           components: componentState(
@@ -2143,7 +2241,6 @@ function runnerSpec(
     readonly url: URL;
   },
   computerUse: { readonly token: string; readonly url: URL } | null,
-  agentStopFile?: string,
 ): PersonalProcessSpec {
   return {
     arguments: [],
@@ -2181,7 +2278,6 @@ function runnerSpec(
       OPENSTEER_RUNNER_ID: manifest.runnerId,
       OPENSTEER_RUNNER_KIND: "main",
       OPENSTEER_RUNNER_NAME: manifest.name,
-      ...(agentStopFile ? { OPENSTEER_RUNNER_AGENT_STOP_FILE: agentStopFile } : {}),
     },
     executable: release.entrypoints.runner,
     // Never in the environment: every Runner credential travels on stdin,
@@ -2546,4 +2642,18 @@ function permanentStartFailure(error: unknown): boolean {
     error instanceof ProtectedStorageUnavailableError ||
     error instanceof ProtectedStateUnreadableError
   );
+}
+
+const hostedStopProblem = "Couldn't confirm that one task on this Mac's Home stopped.";
+
+async function waitForRunnerBoot(file: string): Promise<boolean> {
+  const deadline = AbortSignal.timeout(10_000);
+  while (!deadline.aborted) {
+    const value = await readFile(file, "utf8")
+      .then((raw) => DesktopRunnerReadySchema.parse(JSON.parse(raw)))
+      .catch(() => null);
+    if (value) return value.earlierBootsContained;
+    await delay(50, deadline);
+  }
+  return false;
 }

@@ -172,7 +172,7 @@ it("fixes an existing iPhone's setup under its own name", async () => {
   expect(port.attach).toHaveBeenCalledExactlyOnceWith({ setupId: port.current!.setupId });
   await push(port, "done");
   expect(text()).toContain("Work iPhone is set up again");
-  expect(text()).not.toContain("What can your agent do with it?");
+  expect(text()).not.toContain("What can your own agents do with it?");
 });
 
 it("adds a new iPhone under its name, then sets what the agent may do through the Host", async () => {
@@ -192,7 +192,7 @@ it("adds a new iPhone under its name, then sets what the agent may do through th
   await vi.waitFor(() => expect(port.current?.deviceId).not.toBeNull(), { timeout: 1000 });
   const deviceId = port.current!.deviceId!;
   await push(port, "done");
-  await vi.waitFor(() => expect(text()).toContain("What can your agent do with it?"), {
+  await vi.waitFor(() => expect(text()).toContain("What can your own agents do with it?"), {
     timeout: 1000,
   });
   const radio = (title: string) =>

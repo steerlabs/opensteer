@@ -7,7 +7,6 @@ import {
   type IphoneRunnerConnection,
 } from "@opensteer/protocol/iphone-bridge";
 import { IphoneServiceError } from "../iphone/iphone-store.js";
-import { openAgentAdmission, type AgentAdmission } from "../app/agent-admission.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
 import { once } from "node:events";
@@ -134,7 +133,6 @@ export interface ComputerUseAgentSession {
    * `stopping` from the person's Stop until the helper confirms the close,
    * `failed` when it did not confirm; the session is refused all use meanwhile.
    */
-  readonly state: "active" | "stopping" | "failed";
 }
 
 export class ComputerUseSessionOwnership {
@@ -144,7 +142,6 @@ export class ComputerUseSessionOwnership {
     { threadTitle: string | null; app: string | null }
   >();
   readonly #listeners = new Set<() => void>();
-  readonly #stopping = new Map<ComputerUseSessionId, "stopping" | "failed">();
   readonly #viewOwners = new Map<string, object>();
   readonly #videoOwners = new Map<string, object>();
   readonly #passwordOwners = new Map<string, object>();
@@ -219,19 +216,7 @@ export class ComputerUseSessionOwnership {
       sessionId,
       threadTitle: this.#details.get(sessionId)?.threadTitle ?? null,
       app: this.#details.get(sessionId)?.app ?? null,
-      state: this.#stopping.get(sessionId) ?? "active",
     }));
-  }
-
-  /** The person stopped it; it stays held, and refused, until its close is confirmed. */
-  stopping(sessionId: ComputerUseSessionId): "stopping" | "failed" | null {
-    return this.#stopping.get(sessionId) ?? null;
-  }
-
-  markStopping(sessionId: ComputerUseSessionId, state: "stopping" | "failed"): void {
-    if (!this.#owners.has(sessionId) || this.#stopping.get(sessionId) === state) return;
-    this.#stopping.set(sessionId, state);
-    this.#changed();
   }
 
   subscribe(listener: () => void): () => void {
@@ -242,15 +227,13 @@ export class ComputerUseSessionOwnership {
   #changed(): void {
     for (const sessionId of this.#details.keys())
       if (!this.#owners.has(sessionId)) this.#details.delete(sessionId);
-    for (const sessionId of this.#stopping.keys())
-      if (!this.#owners.has(sessionId)) this.#stopping.delete(sessionId);
     for (const listener of this.#listeners) listener();
   }
 
   /** True when nobody holds it, or this owner does and the person has not stopped it. */
   mayUse(sessionId: ComputerUseSessionId, owner: object): boolean {
     const holder = this.#owners.get(sessionId);
-    return holder === undefined || (holder === owner && !this.#stopping.has(sessionId));
+    return holder === undefined || holder === owner;
   }
 
   /** Gives the session back, but only on behalf of the owner that holds it. */
@@ -263,13 +246,6 @@ export class ComputerUseSessionOwnership {
   /** Gives the session back whoever holds it: the helper said it ended. */
   ended(sessionId: ComputerUseSessionId): void {
     if (this.#owners.delete(sessionId)) this.#changed();
-  }
-
-  /** Every session this owner holds, without giving any back. */
-  heldBy(owner: object): readonly ComputerUseSessionId[] {
-    return [...this.#owners].flatMap(([sessionId, holder]) =>
-      holder === owner ? [sessionId] : [],
-    );
   }
 
   releaseAll(owner: object): readonly ComputerUseSessionId[] {
@@ -298,7 +274,6 @@ export interface PasswordsAuthorityPort {
 
 export interface ComputerUseBridgeServerOptions {
   /** The menu bar's Stop; an agent's work is refused while it is closed. */
-  readonly admission?: AgentAdmission;
   readonly iphone?: IphoneRunnerPort;
   readonly passwords?: PasswordsAuthorityPort;
   /** How long past a deadline to wait; `computerUseBridgeGraceMs` unless a test shortens it. */
@@ -328,6 +303,7 @@ export interface ComputerUseBridgeServerOptions {
 }
 
 interface BridgeConnection {
+  readonly drained: Promise<boolean>;
   readonly detachEvents: () => void;
   readonly owner: BridgeOwner;
   readonly socket: WebSocket;
@@ -336,6 +312,8 @@ interface BridgeConnection {
 /** One connection's ownership identity, liveness fence, and in-flight opens. */
 interface BridgeOwner {
   alive: boolean;
+  cleanupUnconfirmed: boolean;
+  readonly lifetime: AbortController;
   readonly ownerInputVersion: 2 | undefined;
   readonly videoProfile: 1 | undefined;
   readonly opening: Set<ComputerUseSessionId>;
@@ -382,18 +360,11 @@ export class ComputerUseBridgeServer {
   readonly #closeRetries = new Set<ReturnType<typeof setTimeout>>();
   /** Shut down: the closes already sent still go, but none is sent again. */
   #closed = false;
-  /** Each open under way, and whether its frame has been written to the helper. */
-  readonly #openWrites = new Map<ComputerUseSessionId, { written: boolean }>();
-  /** Opens the person stopped before their frame was written; never written now. */
-  readonly #cancelledOpens = new Set<ComputerUseSessionId>();
-  /** The person's Stops waiting on the helper's confirmed close, per session. */
-  readonly #personStops = new Map<ComputerUseSessionId, PromiseWithResolvers<boolean>>();
   #closing: Promise<void> | null = null;
   #listening: Promise<unknown> | null = null;
   readonly #now: () => number;
   readonly #leaseNow: () => number;
   readonly #ownership: ComputerUseSessionOwnership;
-  readonly #admission: AgentAdmission;
 
   readonly #token: string;
   readonly #websocketServer: WebSocketServer;
@@ -595,7 +566,6 @@ export class ComputerUseBridgeServer {
     this.#now = options.now ?? Date.now;
     this.#leaseNow = options.now ?? (() => performance.now());
     this.#ownership = options.ownership;
-    this.#admission = options.admission ?? openAgentAdmission();
     this.#token = options.token ?? mintComputerUseBridgeToken();
     this.#httpServer = createServer((_request, response) => {
       response.writeHead(404, { "content-type": "application/json; charset=utf-8" });
@@ -726,6 +696,8 @@ export class ComputerUseBridgeServer {
     // does not try to close a session the helper has not opened yet.
     const owner: BridgeOwner = {
       alive: true,
+      cleanupUnconfirmed: false,
+      lifetime: new AbortController(),
       ownerInputVersion,
       videoProfile,
       opening: new Set(),
@@ -769,10 +741,6 @@ export class ComputerUseBridgeServer {
     const detachDisconnect = this.#helper.onDisconnect(() => {
       changed();
       this.#releaseViews(owner, false);
-      // The helper is gone and so are its sessions; tell the Runner at once so
-      // its local session cache and the Host's live-session projection do not
-      // outlive native ownership. The connection is shared across slots, so
-      // this reaches every bridge server on this Mac.
       for (const sessionId of this.#ownership.releaseAll(owner)) {
         owner.opening.delete(sessionId);
         if (!owner.alive) continue;
@@ -783,7 +751,10 @@ export class ComputerUseBridgeServer {
         });
       }
     });
+    const drained = Promise.withResolvers<boolean>();
+    const requests = new Set<Promise<void>>();
     const connection: BridgeConnection = {
+      drained: drained.promise,
       detachEvents: () => {
         detachEvents();
         detachDisconnect();
@@ -794,10 +765,15 @@ export class ComputerUseBridgeServer {
     };
     this.#connections.add(connection);
     socket.on("message", (data: RawData) => {
-      void this.#handle(socket, owner, data);
+      const request = this.#handle(socket, owner, data).catch(() => {
+        owner.cleanupUnconfirmed = true;
+      });
+      requests.add(request);
+      void request.then(() => requests.delete(request));
     });
     socket.once("close", () => {
       owner.alive = false;
+      owner.lifetime.abort();
       owner.iphone?.close();
       for (const id of owner.passwords) {
         this.#ownership.releasePassword(id, owner);
@@ -806,19 +782,25 @@ export class ComputerUseBridgeServer {
       owner.passwords.clear();
       this.#releaseViews(owner);
       connection.detachEvents();
-      this.#connections.delete(connection);
       releaseClaim();
-      // A Runner's socket dropping ends its sessions on this Mac: the helper
-      // is told, rather than left holding a session no live Run can reach. A
-      // session whose open has not answered yet is closed by that answer
-      // instead — closing one the helper has not opened would be a no-session
-      // refusal now and a session nobody owns a moment later.
-      for (const sessionId of this.#ownership.releaseAll(owner)) {
-        if (owner.opening.has(sessionId)) continue;
-        this.#endSession(sessionId, "runner-left");
-      }
+      const closes = this.#ownership
+        .releaseAll(owner)
+        .filter((sessionId) => !owner.opening.has(sessionId))
+        .map((sessionId) => this.#endSession(sessionId, "runner-left"));
+      void Promise.all([...closes, ...requests]).then((results) => {
+        this.#connections.delete(connection);
+        drained.resolve(!owner.cleanupUnconfirmed && results.every((result) => result !== false));
+      });
     });
     socket.once("error", () => socket.close());
+  }
+
+  async workerDisconnected(): Promise<boolean> {
+    const outcome = await this.#within(
+      Promise.all([...this.#connections].map((connection) => connection.drained)),
+      this.#now() + sessionCloseTimeoutMs,
+    );
+    return outcome.kind === "answer" && outcome.value.every(Boolean);
   }
 
   async #handle(socket: WebSocket, owner: BridgeOwner, data: RawData): Promise<void> {
@@ -846,14 +828,6 @@ export class ComputerUseBridgeServer {
     const refuse = (code: ComputerUseErrorCode, message: string): void => {
       if (owner.alive) send(socket, { error: { code, message }, id, kind: "response" });
     };
-    // Watching and the person's own views stay available; an agent's work does not.
-    const admission = agentComputerWork(method) ? this.#admit() : undefined;
-    if (admission === null) {
-      refuse("stopped-by-user", computerUseStoppedSentence);
-      return;
-    }
-    // Aborts when the admission this was let in under closes, whatever opens after.
-    const stopped = admission === undefined ? undefined : this.#admission.closing;
     const phoneMethod = iphoneRunnerMethodSchema.safeParse(method);
     if (phoneMethod.success) {
       if (!owner.iphone) {
@@ -864,7 +838,7 @@ export class ComputerUseBridgeServer {
         const call = owner.iphone.request(
           phoneMethod.data,
           iphoneRunnerParams[phoneMethod.data].parse(params),
-          { deadline, ...(stopped ? { signal: stopped } : {}) },
+          { deadline, signal: owner.lifetime.signal },
         );
         const outcome = await this.#within(call, deadline);
         if (outcome.kind === "answer")
@@ -1242,10 +1216,6 @@ export class ComputerUseBridgeServer {
       }
     }
     const sessionId = sessionIdOf(request.data.params);
-    if (sessionId && this.#ownership.stopping(sessionId) && method !== "session.close") {
-      refuse("stopped-by-user", computerUseStoppedSentence);
-      return;
-    }
     if (sessionId && !this.#ownership.mayUse(sessionId, owner)) {
       refuse("no-session", "That computer use session belongs to another Run on this Mac.");
       return;
@@ -1262,43 +1232,14 @@ export class ComputerUseBridgeServer {
       this.#ownership.claim(sessionId, owner);
       owner.opening.add(sessionId);
     }
-    const write = { written: false };
-    if (opening && sessionId) this.#openWrites.set(sessionId, write);
     const outcome = await this.#within(
       this.#helper.request(request.data.method, request.data.params, {
         deadline,
-        ...(admission === undefined ? {} : { admission }),
-        // Checked as the frame is written: a session the person stopped while
-        // this waited is not acted on, though its open may already be out.
-        ...(sessionId && !opening
-          ? { admitted: () => this.#ownership.stopping(sessionId) === null }
-          : {}),
-        ...(sessionId && opening
-          ? {
-              admitted: () => {
-                if (this.#cancelledOpens.has(sessionId)) return false;
-                write.written = true;
-                return true;
-              },
-            }
-          : {}),
+        admitted: () => owner.alive,
       }),
       deadline,
     );
-    if (opening && sessionId) {
-      owner.opening.delete(sessionId);
-      if (this.#openWrites.get(sessionId) === write) this.#openWrites.delete(sessionId);
-      this.#cancelledOpens.delete(sessionId);
-    }
-
-    // The person stopped this session while it opened: whatever the helper
-    // answered, it ends now, and its row stays until the close is confirmed.
-    if (opening && sessionId && this.#ownership.stopping(sessionId)) {
-      if (outcome.kind === "answer") this.#closeForPerson(sessionId);
-      else this.#closedForPerson(sessionId);
-      refuse("stopped-by-user", computerUseStoppedSentence);
-      return;
-    }
+    if (opening && sessionId) owner.opening.delete(sessionId);
 
     if (outcome.kind === "answer") {
       if (method === "session.close" && sessionId) this.#ownership.release(sessionId, owner);
@@ -1308,7 +1249,7 @@ export class ComputerUseBridgeServer {
       // busy for a Run nobody can reach.
       if (!owner.alive && opening && sessionId) {
         this.#ownership.release(sessionId, owner);
-        this.#endSession(sessionId, "runner-left");
+        if (!(await this.#endSession(sessionId, "runner-left"))) owner.cleanupUnconfirmed = true;
         return;
       }
       answer(outcome.value);
@@ -1325,7 +1266,8 @@ export class ComputerUseBridgeServer {
       // for a request nobody is waiting for. That one session ends; every
       // other session on the helper connection carries on.
       this.#ownership.release(sessionId, owner);
-      this.#endSession(sessionId, "late");
+      if (!owner.alive) owner.cleanupUnconfirmed = true;
+      void this.#endSession(sessionId, "late");
     } else if (sessionId && method === "session.close") {
       // A close the helper refused or never confirmed still ends this
       // Runner's claim, so an idle helper connection can go and take the
@@ -1404,114 +1346,27 @@ export class ComputerUseBridgeServer {
     }
   }
 
-  /** Ends one session on the helper; the answer is logged, never waited on by a Runner. */
-  #admit(): number | null {
-    return this.#admission.open ? this.#admission.generation : null;
-  }
-
-  /**
-   * The person's Stop: every agent session this bridge's Runners hold ends.
-   * The Runner hears it as the person's stop; owner views and video stay.
-   * Settles once the helper confirmed every close; throws when one did not.
-   */
-  async endAgentSessions(): Promise<void> {
-    const ending: Promise<boolean>[] = [];
-    for (const connection of this.#connections)
-      for (const sessionId of this.#ownership.heldBy(connection.owner))
-        ending.push(this.#stopForPerson(connection, sessionId));
-    const confirmed = await Promise.all(ending);
-    if (confirmed.some((closed) => !closed))
-      throw new Error("An agent using apps on this Mac didn’t confirm it stopped.");
-  }
-
-  /**
-   * The person's Stop for one session, the way the helper's own Stop ends one:
-   * the Runner hears `session.stopped` for the person and reports it to its
-   * Home, and the helper closes it. The session stays listed, as stopping or
-   * as failed, until the helper confirms the close. False when no Runner here
-   * holds it.
-   */
-  endAgentSession(sessionId: ComputerUseSessionId): boolean {
-    for (const connection of this.#connections) {
-      if (!this.#ownership.owns(sessionId, connection.owner)) continue;
-      void this.#stopForPerson(connection, sessionId);
-      return true;
-    }
-    return false;
-  }
-
-  #stopForPerson(connection: BridgeConnection, sessionId: ComputerUseSessionId): Promise<boolean> {
-    const waiting = this.#personStops.get(sessionId);
-    const state = this.#ownership.stopping(sessionId);
-    if (waiting && state === "stopping") return waiting.promise;
-    const settled = waiting ?? Promise.withResolvers<boolean>();
-    this.#personStops.set(sessionId, settled);
-    if (state === null && connection.owner.alive)
-      send(connection.socket, {
-        event: "session.stopped",
-        kind: "event",
-        params: { reason: "user", sessionId },
-      });
-    this.#ownership.markStopping(sessionId, "stopping");
-    if (!connection.owner.opening.has(sessionId)) this.#closeForPerson(sessionId);
-    else if (this.#openWrites.get(sessionId)?.written === false) {
-      // Its open never reached the helper and now never will: nothing to close.
-      this.#cancelledOpens.add(sessionId);
-      this.#closedForPerson(sessionId);
-    }
-    // Otherwise the open is out: it is closed when it returns.
-    return settled.promise;
-  }
-
-  /** Closes a session the person stopped, and lets it go only once the helper confirms. */
-  #closeForPerson(sessionId: ComputerUseSessionId, attempt = 0): void {
-    void this.#helper
-      .request("session.close", { sessionId }, { deadline: this.#now() + sessionCloseTimeoutMs })
-      .then(
-        () => this.#closedForPerson(sessionId),
-        (error: unknown) => {
-          const failure = asFailure(error);
-          if (failure.code === "no-session") {
-            this.#closedForPerson(sessionId);
-            return;
-          }
-          this.#log("desktop.computer-use.session-close-failed", {
-            code: failure.code,
-            reason: "stopped",
-          });
-          this.#ownership.markStopping(sessionId, "failed");
-          const settled = this.#personStops.get(sessionId);
-          this.#personStops.delete(sessionId);
-          settled?.resolve(false);
-          const delay = closeRetryDelaysMs[attempt];
-          if (delay === undefined || this.#closed) return;
-          const timer = setTimeout(() => {
-            this.#closeRetries.delete(timer);
-            if (!this.#closed && this.#ownership.stopping(sessionId) === "failed")
-              this.#closeForPerson(sessionId, attempt + 1);
-          }, delay);
-          timer.unref();
-          this.#closeRetries.add(timer);
+  async #endSession(
+    sessionId: ComputerUseSessionId,
+    reason: CloseReason,
+    attempt = 0,
+  ): Promise<boolean> {
+    try {
+      await this.#helper.request(
+        "session.close",
+        { sessionId },
+        {
+          deadline: this.#now() + sessionCloseTimeoutMs,
         },
       );
-  }
-
-  #closedForPerson(sessionId: ComputerUseSessionId): void {
-    this.#ownership.ended(sessionId);
-    const settled = this.#personStops.get(sessionId);
-    this.#personStops.delete(sessionId);
-    settled?.resolve(true);
-  }
-
-  #endSession(sessionId: ComputerUseSessionId, reason: CloseReason, attempt = 0): void {
-    void this.#helper
-      .request("session.close", { sessionId }, { deadline: this.#now() + sessionCloseTimeoutMs })
-      .catch((error: unknown) => {
-        const failure = asFailure(error);
-        if (failure.code === "no-session") return;
-        this.#log("desktop.computer-use.session-close-failed", { code: failure.code, reason });
-        this.#retryClose(sessionId, reason, attempt);
-      });
+      return true;
+    } catch (error) {
+      const failure = asFailure(error);
+      if (failure.code === "no-session") return true;
+      this.#log("desktop.computer-use.session-close-failed", { code: failure.code, reason });
+      this.#retryClose(sessionId, reason, attempt);
+      return false;
+    }
   }
 
   #retryClose(sessionId: ComputerUseSessionId, reason: CloseReason, attempt: number): void {
@@ -1519,7 +1374,7 @@ export class ComputerUseBridgeServer {
     if (delay === undefined || this.#closed) return;
     const timer = setTimeout(() => {
       this.#closeRetries.delete(timer);
-      if (!this.#closed) this.#endSession(sessionId, reason, attempt + 1);
+      if (!this.#closed) void this.#endSession(sessionId, reason, attempt + 1);
     }, delay);
     timer.unref();
     this.#closeRetries.add(timer);
@@ -1527,31 +1382,6 @@ export class ComputerUseBridgeServer {
 }
 
 type CloseReason = "late" | "runner-left" | "stopped" | "unconfirmed";
-
-export const computerUseStoppedSentence =
-  "Agents were stopped on this Mac from the Opensteer menu bar. Resume there to use its apps again.";
-
-/** An agent acting on, or reading through, this Mac's apps or iPhone. */
-export function agentComputerWork(method: string): boolean {
-  return (
-    [
-      "session.open",
-      "session.act",
-      "session.observe",
-      "session.bind",
-      "session.windows",
-      "data.invoke",
-      "imessage.send",
-      "imessage.poll",
-      "imessage.account",
-      "iphone.session.open",
-      "iphone.observe",
-      "iphone.perform",
-      "iphone.installedApps",
-      "iphone.targets",
-    ] as const
-  ).some((name) => name === method);
-}
 
 function sessionDetail(request: { readonly method: string; readonly params: unknown }): {
   readonly threadTitle?: string | null;

@@ -1,12 +1,21 @@
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
+import { BrowserSurfaceIdSchema } from "../packages/protocol/src/index.js";
 import { expect, it } from "vitest";
 import { z } from "zod";
-import { BrowserReplService } from "../../../host/src/browser-use/browser-repl-service.js";
-import { browserTestSignal, cleanup, waitForLedgerState } from "./browser-test-lifecycle.js";
-import { rootCdpNavigate } from "./chromium.test-support.js";
-import { startActionJourney } from "./harness-actions.test-support.js";
+import {
+  BrowserReplService,
+  type BrowserUseBudget,
+  type BrowserUseCall,
+  type BrowserUsePort,
+} from "../apps/host/src/browser-use/browser-repl-service.js";
+import {
+  browserTestSignal,
+  cleanup,
+  waitForLedgerState,
+} from "../apps/browser-runtime/src/browser/browser-test-lifecycle.js";
+import { rootCdpNavigate } from "../apps/browser-runtime/src/browser/chromium.test-support.js";
+import { startActionJourney } from "../apps/browser-runtime/src/browser/harness-actions.test-support.js";
 
 async function serveFixture() {
   const server = createServer((request, response) => {
@@ -48,7 +57,7 @@ async function serveFixture() {
   await once(server, "listening");
   cleanup.push(async () => {
     server.closeAllConnections();
-    await new Promise((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Fixture had no listening address.");
@@ -66,13 +75,13 @@ it("runs the native Page API inside the REPL against a managed Chromium session"
     promptText: z.string().optional(),
   });
   // The fixture router already caps incoming CDP frames. Check the narrower REPL budget as well.
-  const encode = (value, budget) => {
+  const encode = (value: unknown, budget: BrowserUseBudget) => {
     const json = JSON.stringify(value ?? null);
     if (Buffer.byteLength(json) > budget.maxBytes)
       throw new Error("Fixture reply exceeded its budget.");
     return json;
   };
-  const openPage = async (tabId, { signal }) => {
+  const openPage = async (tabId: string, { signal }: BrowserUseCall) => {
     signal.throwIfAborted();
     const surface = BrowserSurfaceIdSchema.parse(tabId);
     const binding = ledger.binding(surface);
@@ -87,7 +96,7 @@ it("runs the native Page API inside the REPL against a managed Chromium session"
     );
     return { tabId, targetId, sessionId: attached.sessionId, dialog: ledger.dialogOf(surface) };
   };
-  const port = {
+  const port: BrowserUsePort = {
     listPages: async () =>
       ledger.snapshot().map(({ id, url, title }) => ({
         tabId: id,
@@ -143,7 +152,7 @@ it("runs the native Page API inside the REPL against a managed Chromium session"
   };
   const service = new BrowserReplService({ port });
   cleanup.push(() => service.close());
-  const execute = (code) => service.execute("chromium", code, browserTestSignal());
+  const execute = (code: string) => service.execute("chromium", code, browserTestSignal());
   const program = `
     await page.goto(${JSON.stringify(origin + "/journey?source=repl&tag=first&tag=two+words#ready")});
     let urlView;

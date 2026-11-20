@@ -1,8 +1,11 @@
-import { menuBarActivity, type MenuBarMachine } from "@opensteer/client/computers";
+import {
+  menuBarActivity,
+  type MenuBarMachine,
+  type MenuBarRecordFacts,
+} from "@opensteer/client/computers";
 import type { DesktopRunnerStateSchema, HostApiClient, MachineSummary } from "@opensteer/protocol";
 import type { z } from "zod";
 import { hostApiData } from "../connections/desktop-host-api.js";
-import type { AgentAdmission } from "./agent-admission.js";
 
 export const homeReadTimeoutMs = 5_000;
 
@@ -16,7 +19,10 @@ export interface HomeRead {
   /** This Mac's row there; null when the Home lists none for its Runner. */
   readonly machine: MachineSummary | null;
   /** The tasks this Mac's own Home is running, which run here. */
-  readonly tasks: readonly { readonly threadId: string; readonly title: string }[];
+  readonly tasks: readonly ({ readonly threadId: string; readonly title: string } & Pick<
+    MenuBarRecordFacts,
+    "agent"
+  >)[];
   readonly runningTasks: readonly string[];
 }
 
@@ -41,7 +47,22 @@ export async function readHome(
   const runnerId = input.runnerId;
   const tasks = (shell?.tasks ?? [])
     .filter((task) => task.status === "running" || task.status === "waiting")
-    .map((task) => ({ threadId: task.id, title: task.title }));
+    .map((task) => {
+      const connection = task.externalWork?.connection;
+      return {
+        threadId: task.id,
+        title: task.title,
+        ...(connection
+          ? {
+              agent: {
+                clientName: connection.clientName,
+                redirect: connection.client?.redirectOrigin ?? null,
+                identityAtConsent: connection.identityAtConsent ?? null,
+              },
+            }
+          : {}),
+      };
+    });
   return {
     deploymentId: input.deploymentId,
     machine: runnerId ? (machines.machines.find((row) => isThisMac(row, runnerId)) ?? null) : null,
@@ -115,9 +136,7 @@ export class DesktopActivity {
       this.#options.hostedHome(),
       this.#options.deviceHomes(),
     ]);
-    const working = devices.filter(
-      (home) => home.runner !== "disabled" && home.deploymentId !== hosted?.deploymentId,
-    );
+    const working = devices.filter((home) => home.deploymentId !== hosted?.deploymentId);
     const targets = [
       ...(hosted
         ? [{ deploymentId: hosted.deploymentId, runnerId: hosted.runnerId, hosted: true }]
@@ -167,33 +186,4 @@ export class DesktopActivity {
       lines,
     };
   }
-}
-
-/**
- * The update's last look at whether this Mac is idle, fenced: admission closes
- * first, so nothing new starts between the look and the restart. When the
- * look finds work, or the caller backs off, `release` opens admission again,
- * unless the person stopped agents meanwhile.
- */
-export async function fencedIdle(
-  admission: Pick<AgentAdmission, "close" | "reopen" | "open">,
-  personStopped: () => boolean,
-  idle: () => Promise<boolean>,
-): Promise<{ readonly idle: boolean; release(): void }> {
-  const fenced = admission.open;
-  if (fenced) admission.close();
-  let released = false;
-  const release = () => {
-    if (released) return;
-    released = true;
-    if (fenced && !personStopped()) admission.reopen();
-  };
-  let result: boolean;
-  try {
-    result = await idle();
-  } catch {
-    result = false;
-  }
-  if (!result) release();
-  return { idle: result, release };
 }

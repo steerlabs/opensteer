@@ -199,7 +199,7 @@ describe("Devices on the phone", () => {
     const devices = sections.find(({ key }) => key === "devices");
     expect(devices?.rows.map(({ title, detail }) => `${title} — ${detail}`)).toEqual([
       "Studio Mac — Asleep · seen 20m",
-      "Work iPhone — Alex’s MacBook Pro is asleep",
+      "Work iPhone — Asleep on Alex’s MacBook Pro",
     ]);
     expect(devices?.rows.map(({ tone }) => tone)).toEqual(["attention", undefined]);
   });
@@ -236,7 +236,7 @@ describe("Devices on the phone", () => {
       sections.flatMap(({ rows }) => rows.map(({ title, detail }) => `${title} — ${detail}`)),
     ).toEqual([
       `Studio Mac — Stopped on Studio Mac · since ${time}`,
-      "Work iPhone — Agents are stopped on Alex’s MacBook Pro",
+      "Work iPhone — Stopped on Alex’s MacBook Pro",
     ]);
   });
 

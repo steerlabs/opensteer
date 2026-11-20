@@ -60,6 +60,7 @@ describeStore(
           ...change,
         });
         await expect(create("after")).rejects.toMatchObject({ code: "forbidden" });
+        await expect(create("before")).rejects.toMatchObject({ code: "forbidden" });
         expect(
           await database
             .selectFrom("triggers")

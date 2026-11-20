@@ -1,6 +1,10 @@
 import { SessionPersonTools } from "../mcp/handlers/session-person.js";
 import { attemptStopStateCapability, CorrelationIdSchema, triggerStopGenerationCapability } from "@opensteer/protocol";
-import { closeLegacyCdpForConnection, drainLegacyRunCdp } from "../browser/trigger-cdp-bridge.js";
+import {
+  closeLegacyCdpForConnection,
+  drainLegacyRunCdp,
+  withLegacyRunCdpDrain,
+} from "../browser/trigger-cdp-bridge.js";
 import { ChromeSharedTabs } from "../browser/chrome-shared-tabs.js";
 import { ResourceRevisions } from "./personal-resource-revisions.js";
 import { PersonalLiveText } from "./personal-live-text.js";
@@ -183,6 +187,8 @@ import { resolve } from "node:path";
 import { AccountAdoptionControlClient } from "../access/account-adoption-control-client.js";
 
 import { AccountDirectoryClient } from "../access/account-directory-client.js";
+import { WorkHomeService } from "../organizations/work-home.js";
+import { WorkHomeStore } from "@opensteer/database";
 import { AccountDirectoryPublisher } from "../access/account-directory-publisher.js";
 import { HostAuthorityPublisher } from "../access/host-authority-publisher.js";
 import { HostedOAuthBrokerClient } from "../access/hosted-oauth-broker-client.js";
@@ -591,6 +597,20 @@ export async function createHostRuntime(
         hostKeyFingerprint,
       });
     }
+    const claimedWork = config.managedHome ? new WorkHomeStore(database) : undefined;
+    const storedMarker = await claimedWork?.claimedMarker();
+    const configuredMarker = config.managedHome?.work;
+    if (
+      storedMarker &&
+      configuredMarker &&
+      (storedMarker.assignmentId !== configuredMarker.assignmentId ||
+        storedMarker.organizationId !== configuredMarker.organizationId)
+    )
+      throw new Error("This database belongs to a different work assignment");
+    const workMarker = storedMarker ?? configuredMarker;
+    const workStore = workMarker ? claimedWork : undefined;
+    if (workStore && workMarker) await workStore.initialize(workMarker, deployment.id);
+    let workHome: WorkHomeService | undefined;
     const personalConfig = config.personal!;
     let teamRunEvents: TeamRunEvents | undefined;
     let teamPublications: DeadlineDrain | undefined;
@@ -925,8 +945,10 @@ export async function createHostRuntime(
             managed: {
               cloudComputerId: config.managedHome.cloudComputerId,
               generation: config.managedHome.generation,
+              ...(workMarker ? { work: workMarker } : {}),
             },
             verifier: accountGrantVerifier,
+            onClaimed: () => workHome?.wake(),
           })
         : undefined;
     let reportOwnerProfileError: (error: unknown) => void = () => {};
@@ -1016,8 +1038,9 @@ export async function createHostRuntime(
       onComputerUseEvent: (deviceId, event, route) =>
         computerUse?.handleHelperEvent(deviceId, event, route),
       onRunnerDetached: (runnerId, reason) => {
+        if (reason === "device-restarting") displayStreams?.forgetRunner(runnerId, reason);
         computerViews?.forgetRunner(runnerId);
-        displayStreams?.forgetRunner(runnerId, reason);
+        if (reason !== "device-restarting") displayStreams?.forgetRunner(runnerId, reason);
         computerUse?.forgetRunner(runnerId);
       },
       onDisplayEvent: (runnerId, event) => displayStreams?.handlePhoneEvent(runnerId, event),
@@ -2309,17 +2332,28 @@ export async function createHostRuntime(
         },
         authorize: async (identity) => authorizeRunnerRegistration(store, identity),
         onEvent: async (identity, event) => {
-          if (["run.completed", "run.failed", "run.interrupted"].includes(event.type)) {
-            await drainLegacyRunCdp(browser, event.runId, event.bindingGeneration);
-            await browser.drainRunPlaces(event.runId);
-          }
-          const committed = await store.commitRunnerEvent({
-            environmentId: event.environmentId,
-            event,
-            verifiedContainment: identity.capabilities.includes(attemptStopStateCapability),
-            runnerBootId: identity.bootId,
-            runnerId: identity.runnerId,
-          });
+          const commit = () =>
+            store.commitRunnerEvent({
+              environmentId: event.environmentId,
+              event,
+              verifiedContainment: identity.capabilities.includes(attemptStopStateCapability),
+              runnerBootId: identity.bootId,
+              runnerId: identity.runnerId,
+            });
+          const committed =
+            event.type === "run.completed" ||
+            event.type === "run.failed" ||
+            event.type === "run.interrupted"
+              ? await withLegacyRunCdpDrain(
+                  browser,
+                  event.runId,
+                  event.bindingGeneration,
+                  async () => {
+                    await browser.drainRunPlaces(event.runId);
+                    return commit();
+                  },
+                )
+              : await commit();
           if (committed.duplicateRunUsage) reportDuplicateRunUsage(event.runId);
           if (committed.revokedGrants.length) endGrants(committed.revokedGrants);
           if (event.type === "run.started")
@@ -2534,6 +2568,9 @@ export async function createHostRuntime(
           const attached = await store.attachRunnerExecutions({
             dispatchingRunIds: dispatchingRunIds(),
             executions,
+            ...(identity.agentsStoppedSince
+              ? { stoppedComputerName: identity.name }
+              : {}),
             leaseExpiresAt: new Date(executionNow() + config.executionLeaseMs),
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
@@ -3259,6 +3296,7 @@ export async function createHostRuntime(
     });
     onSessionRequestClosed = (requestId) => agentSessions.requestClosed(requestId);
     const agentTools = new OpensteerMcpService({
+      connectionPasswords: config.managedHome === undefined,
       pluginExecutions,
       teamsAvailable: async () =>
         (await database
@@ -3294,9 +3332,21 @@ export async function createHostRuntime(
         tabs: new TabToolHandlers(
           tabs,
           agentSessions,
-          async (caller, profileId) =>
-            (await browser.listProfiles(caller.userId)).find(({ id }) => id === profileId)?.name ??
-            null,
+          async (caller, profileId) => {
+            const profile = (await browser.listProfiles(caller.userId)).find(
+              ({ id }) => id === profileId,
+            );
+            if (!profile) return null;
+            return {
+              name: profile.name,
+              device: profile.home
+                ? {
+                    id: await store.requireSelfDeviceId(profile.home.runnerId),
+                    name: profile.home.name,
+                  }
+                : null,
+            };
+          },
         ),
         browser: new BrowserToolHandlers({
           sessions: agentSessions,
@@ -3324,6 +3374,7 @@ export async function createHostRuntime(
         }),
         sessionPerson: new SessionPersonTools({
           sessions: agentSessions,
+          tabs,
           browser,
           logins: savedLogins,
           store,
@@ -3563,6 +3614,37 @@ export async function createHostRuntime(
         agentSessions.closeConnection(connectionId, reason === "disconnect"),
     });
     const driveConnectionCleanups = connectionEffects.driveCleanups;
+    if (config.managedHome && workMarker && workStore) {
+      const issuer = config.managedHome.accountOrigin;
+      workHome = new WorkHomeService({
+        issuer,
+        origin: config.canonicalOrigin.origin,
+        deploymentId: deployment.id,
+        assignmentId: workMarker.assignmentId,
+        key: keys.privateKey,
+        store: workStore,
+        ...(options.accountDirectoryFetch ? { jwksFetch: options.accountDirectoryFetch } : {}),
+        onApplied: driveConnectionCleanups,
+        onError: (error) => reportMutationFailure(error),
+        account: async () => {
+          const link = await database
+            .selectFrom("personalRemoteAccountLink")
+            .select("hostCredential")
+            .where("singletonKey", "=", "opensteer-account")
+            .where("state", "=", "active")
+            .where("issuer", "=", issuer.origin)
+            .executeTakeFirst();
+          if (!link) return null;
+          return new AccountDirectoryClient({
+            authorityEnvelope: discoveryEnvelope,
+            controlApiOrigin: issuer,
+            deployment,
+            hostCredential: link.hostCredential,
+            ...(options.accountDirectoryFetch ? { fetch: options.accountDirectoryFetch } : {}),
+          });
+        },
+      });
+    }
     const app = await createHostServer(
       {
         connections,
@@ -3643,6 +3725,9 @@ export async function createHostRuntime(
           : {}),
         ...(personalAccount ? { personalAccountLink: { service: personalAccount } } : {}),
         ...(managedHomeClaim ? { managedHomeClaim } : {}),
+        ...(workHome && workStore
+          ? { workHome: { service: workHome, read: () => workStore.applied() } }
+          : {}),
         ownerProfile,
         realtime,
         runnerAuthenticator,
@@ -3678,7 +3763,15 @@ export async function createHostRuntime(
       app.addHook("onClose", async () => directory.close());
       await directory.start();
     }
+    if (workHome) {
+      workHome.start();
+      app.addHook("onClose", async () => workHome?.close());
+    }
     const connectionCleanupTimer = setInterval(() => {
+      if (workHome) {
+        workHome.wake();
+        void workHome.flush(AbortSignal.timeout(10_000)).catch(reportMutationFailure);
+      }
       void directory?.refresh();
       void connectionStore.pruneEmbedderAssertionClaims().catch((error: unknown) =>
         app.log.warn({ err: error }, "Embedder assertion cleanup failed"),

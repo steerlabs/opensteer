@@ -409,7 +409,7 @@ it("keeps exhausted accounts visible, applies access and routes the chosen accou
       ),
     );
     await act(async () =>
-      node.querySelector<HTMLButtonElement>('[aria-label^="Engine and model:"]')!.click(),
+      node.querySelector<HTMLButtonElement>('[aria-label^="Agent and model:"]')!.click(),
     );
     const dialog = document.querySelector('[role="dialog"]')!;
     const conversation = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find((item) =>

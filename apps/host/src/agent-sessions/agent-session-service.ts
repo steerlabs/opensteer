@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   OpensteerError,
+  ToolBlockedError,
   agentOperationHoldMs,
-  agentSessionIdleMs,
   refused,
   type AgentGrant,
   type AgentOperationDecision,
@@ -26,6 +26,7 @@ import {
   beginAgentSession,
   decideAgentOperation,
   endAgentSessions,
+  expireAgentOperationRequests,
   handOffAgentOperation,
   idleAgentSessions,
   readAgentOperation,
@@ -38,6 +39,7 @@ import {
   type OpensteerStore,
 } from "@opensteer/database";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 
 /**
  * Decides an effect in `auto`: allow it, or ask the person. It sees the grant, the mode, the
@@ -73,13 +75,13 @@ function directOperationAction(tool: string, target: string): string {
     case "tab_list":
       return `list tabs in ${target}`;
     case "browser_use":
-      return `run a browser script in ${target}`;
+      return `run a script in ${target}`;
     case "browser_connect":
       return `take direct control of ${target}`;
     case "computer_use":
-      return `act on ${target}`;
-    case "plugin_call":
       return `use ${target}`;
+    case "plugin_call":
+      return `change ${target}`;
     case "plugin_execute":
       return `run a script using ${target}`;
     case "plugin_resume":
@@ -93,6 +95,22 @@ function directOperationAction(tool: string, target: string): string {
     default:
       return `act on ${target}`;
   }
+}
+
+function directOperationCopy(tool: string, target: AgentOperationTarget, agent: string) {
+  const phone =
+    target.grant.kind === "computer-app" && target.grant.app.kind === "phone-screen";
+  const device = target.device?.name;
+  const action =
+    directOperationAction(tool, target.name) +
+    (tool === "computer_use" && device && !phone ? ` on ${device}` : "");
+  const title =
+    tool === "browser_connect" || tool === "computer_use" || tool === "plugin_call"
+      ? `Let ${agent} ${action}?`
+      : `${action[0]!.toUpperCase()}${action.slice(1)}?`;
+  const context = device ? (phone ? device : `${target.name} · ${device}`) : null;
+  const sentence = `${agent} wants to ${action}.`;
+  return { title, summary: context ? `${context}\n${sentence}` : sentence };
 }
 
 /** What an executor gets: a signal tied to Stop, Disconnect, narrowing and its deadline. */
@@ -180,6 +198,8 @@ const pendingNext =
   "Waiting on the person in Needs you. Do not poll. Call again with the same operationKey and arguments after they answer.";
 const unknownNext =
   "The Home lost track of whether this took effect. Check the current state before doing anything else; never repeat it blindly.";
+const interruptedNext =
+  "Part of it may have happened. Check the current state before doing anything else.";
 
 function digest(tool: string, input: unknown): string {
   return createHash("sha256").update(canonicalJson({ tool, input })).digest("hex");
@@ -196,7 +216,10 @@ export class AgentSessionService {
     { readonly controller: AbortController; readonly connectionId: string; work: number }
   >();
   /** Operations handed off in this process, joined by a concurrent resume of the same call. */
-  readonly #running = new Map<AgentOperationId, Promise<DirectOperationResult<unknown>>>();
+  readonly #running = new Map<AgentOperationId, {
+    readonly controller: AbortController;
+    readonly result: Promise<DirectOperationResult<unknown>>;
+  }>();
   readonly #decisions = new EventEmitter();
   readonly #holdMs: number;
   #sweeper: ReturnType<typeof setInterval> | undefined;
@@ -231,7 +254,7 @@ export class AgentSessionService {
   }
   /** Settles once every operation handed off in this process has recorded its outcome. */
   async drain(): Promise<void> {
-    await Promise.allSettled(this.#running.values());
+    await Promise.allSettled([...this.#running.values()].map(({ result }) => result));
   }
   stop(): void {
     clearInterval(this.#sweeper);
@@ -314,13 +337,10 @@ export class AgentSessionService {
    * The Disconnect worker's stop for one handed-off operation: abort the signal its executor
    * holds. Its row settles, with terminal evidence, when the executor returns.
    */
-  async stopDirectOperation(operationId: string): Promise<void> {
-    const row = await this.#store.database
-      .selectFrom("agentOperations")
-      .select(["sessionId", "state"])
-      .where("id", "=", operationId as AgentOperationId)
-      .executeTakeFirst();
-    if (row?.state === "handed-off") this.#abort(row.sessionId, "revoked");
+  async stopDirectOperation(operationId: AgentOperationId): Promise<void> {
+    this.#running.get(operationId)?.controller.abort(
+      new OpensteerError({ code: "forbidden", message: "The connected agent's access to this work ended." }),
+    );
   }
 
   /** After a connection change committed: abort work of sessions that ended, or all of them. */
@@ -345,14 +365,18 @@ export class AgentSessionService {
   }
 
   async endIdle(now = Date.now()): Promise<void> {
+    const idleAt = new Date(now);
+    for (const operation of await expireAgentOperationRequests(this.#store.database, idleAt))
+      this.#decisions.emit(operation.id);
     for (const session of await idleAgentSessions(
       this.#store.database,
-      new Date(now - agentSessionIdleMs),
+      idleAt,
     )) {
       const ended = await endAgentSessions(this.#store.database, {
         userId: session.userId,
         sessionIds: [session.id],
         reason: "idle",
+        idleAt,
       });
       this.#ended(ended, "idle");
     }
@@ -427,7 +451,7 @@ export class AgentSessionService {
               operation,
               row,
               taskId,
-              running as Promise<DirectOperationResult<Result>>,
+              running.result as Promise<DirectOperationResult<Result>>,
             );
           return { status: "unknown", ...base, next: unknownNext };
         }
@@ -454,33 +478,25 @@ export class AgentSessionService {
     execution: ExecutionAuthority,
   ): Promise<AgentOperationRow> {
     const decide = (decision: AgentOperationDecision) =>
-      decideAgentOperation(this.#store.database, row.id, decision);
+      decideAgentOperation(this.#store.database, row, decision);
     if (!operation.question) {
       if (row.effect === "read") return decide({ by: "structural-read" });
       if (row.mode === "full-access") return decide({ by: "full-access" });
       if (row.mode === "auto" && (await this.#review(row, execution)) === "allow")
         return decide({ by: "reviewer" });
     }
-    const target = row.target.name;
-    const device =
-      row.target.device && (operation.tool !== "computer_use" || row.target.device.name !== target)
-        ? ` on ${row.target.device.name}`
-        : "";
-    const titleDevice = operation.tool === "computer_use" ? device : "";
-    const action = directOperationAction(operation.tool, target);
     return askForAgentOperation(this.#store.database, this.#store.requests, {
       operation: row,
       threadId: taskId,
       ...(operation.question ? { presentation: await operation.question(taskId) } : {}),
-      title: `${action[0]!.toUpperCase()}${action.slice(1)}${titleDevice}?`,
-      summary: `A connected agent wants to ${action}${device}.`,
+      copy: (agent) => directOperationCopy(row.tool, row.target, agent),
     });
   }
 
   async #review(row: AgentOperationRow, execution: ExecutionAuthority): Promise<"allow" | "ask"> {
     const signal = AbortSignal.timeout(reviewerTimeoutMs);
     try {
-      const answer = await this.#reviewer.review(
+      const answer = await withTimeout(this.#reviewer.review(
         {
           ownerUserId: execution.ownerUserId,
           grant: execution.agentConnection!.grant,
@@ -491,7 +507,7 @@ export class AgentSessionService {
           agentReason: row.agentReason ? { untrusted: true, text: row.agentReason } : null,
         },
         signal,
-      );
+      ), reviewerTimeoutMs, { signal, timeoutError: () => new Error("Agent review timed out") });
       return answer === "allow" && !signal.aborted ? "allow" : "ask";
     } catch {
       return "ask";
@@ -539,14 +555,19 @@ export class AgentSessionService {
     const bindingId = `session:${row.sessionId}` as const;
     // A changed revision, mode or target is new authority: it needs a fresh decision.
     const execution = await this.#admit(operation, bindingId);
+    const target = operation.target ?? row.target;
+    const targetGeneration = operation.targetGeneration ?? null;
     if (
       execution.agentConnection!.grantRevision !== row.grantRevision ||
       execution.mode !== row.mode ||
-      (operation.targetGeneration ?? null) !== row.targetGeneration
+      targetGeneration !== row.targetGeneration ||
+      canonicalJson(target.grant) !== canonicalJson(row.target.grant)
     ) {
-      const reopened = await reopenAgentOperation(this.#store.database, row.id, {
+      const reopened = await reopenAgentOperation(this.#store.database, row, {
         grantRevision: execution.agentConnection!.grantRevision,
         mode: execution.mode,
+        target,
+        targetGeneration,
       });
       return this.#advance(
         operation,
@@ -558,7 +579,7 @@ export class AgentSessionService {
     const handed = await handOffAgentOperation(this.#store.database, {
       userId: operation.ownerUserId,
       agentConnectionId: operation.agentConnectionId,
-      id: row.id,
+      reviewed: row,
     });
     if (!handed)
       return this.#advance(
@@ -567,8 +588,9 @@ export class AgentSessionService {
         taskId,
         execution,
       );
-    const running = this.#execute(operation, handed, taskId, bindingId);
-    this.#running.set(handed.id, running as Promise<DirectOperationResult<unknown>>);
+    const controller = new AbortController();
+    const running = this.#execute(operation, handed, taskId, bindingId, controller.signal);
+    this.#running.set(handed.id, { controller, result: running });
     const forget = () => this.#running.delete(handed.id);
     void running.then(forget, forget);
     return this.#awaitExecution(operation, handed, taskId, running);
@@ -612,6 +634,7 @@ export class AgentSessionService {
     row: AgentOperationRow,
     taskId: ThreadId,
     bindingId: `session:${string}`,
+    stop: AbortSignal,
   ): Promise<DirectOperationResult<Result>> {
     const entry = this.#sessions.get(row.sessionId) ?? {
       controller: new AbortController(),
@@ -623,41 +646,53 @@ export class AgentSessionService {
     const deadline = Date.now() + (operation.timeoutMs ?? defaultExecutionMs);
     const signal = AbortSignal.any([
       entry.controller.signal,
+      stop,
       AbortSignal.timeout(deadline - Date.now()),
     ]);
     const base = { taskId, operationId: row.id };
     try {
-      const result = await operation.execute({
-        sessionId: row.sessionId,
-        taskId,
-        operationId: row.id,
-        requestId: row.requestId,
-        grantRevision: row.grantRevision,
-        mode: row.mode,
-        bindingId,
-        ownerUserId: operation.ownerUserId,
-        signal,
-        deadline,
-        recheck: async () => {
-          signal.throwIfAborted();
-          const execution = await this.#admit(operation, bindingId);
-          if (execution.agentConnection!.grantRevision !== row.grantRevision)
-            throw refused("forbidden", "The connected agent's access changed during this work.");
-        },
-      });
+      let result: Result;
+      try {
+        result = await operation.execute({
+          sessionId: row.sessionId,
+          taskId,
+          operationId: row.id,
+          requestId: row.requestId,
+          grantRevision: row.grantRevision,
+          mode: row.mode,
+          bindingId,
+          ownerUserId: operation.ownerUserId,
+          signal,
+          deadline,
+          recheck: async () => {
+            signal.throwIfAborted();
+            const execution = await this.#admit(operation, bindingId);
+            if (execution.agentConnection!.grantRevision !== row.grantRevision)
+              throw refused("forbidden", "The connected agent's access changed during this work.");
+          },
+        });
+      } catch (error) {
+        const ended =
+          signal.aborted && signal.reason instanceof OpensteerError ? signal.reason : null;
+        const outcome =
+          error instanceof OperationOutcomeUnknown || signal.aborted ? "unknown" : "failed";
+        const settled = await settleAgentOperation(this.#store.database, row.id, outcome, null);
+        // Work that the person, a Disconnect or a narrowed grant ended: the agent hears why. What
+        // it had already done is uncertain; the record says so and the next step repeats it.
+        if (ended)
+          throw new ToolBlockedError({
+            code: ended.code,
+            message: ended.message,
+            next: interruptedNext,
+          });
+        if (!settled || outcome === "unknown")
+          return { status: "unknown", ...base, next: unknownNext };
+        throw error;
+      }
       const summary = operation.summarize?.(result) ?? null;
-      await settleAgentOperation(this.#store.database, row.id, "completed", summary);
+      const settled = await settleAgentOperation(this.#store.database, row.id, "completed", summary);
+      if (!settled) return { status: "unknown", ...base, next: unknownNext };
       return { status: "completed", ...base, result, summary };
-    } catch (error) {
-      // A refusal before any effect, or a failure the executor confirmed, is `failed`; an
-      // interruption it could not confirm is `unknown`, never retried.
-      const outcome =
-        error instanceof OperationOutcomeUnknown ||
-        (signal.aborted && !(error instanceof OpensteerError))
-          ? "unknown"
-          : "failed";
-      await settleAgentOperation(this.#store.database, row.id, outcome, null).catch(this.#onError);
-      throw error;
     } finally {
       if (--entry.work === 0 && this.#sessions.get(row.sessionId) === entry)
         this.#sessions.delete(row.sessionId);

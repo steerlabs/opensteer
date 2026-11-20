@@ -216,11 +216,6 @@ export interface ComputerUseHelperRequestOptions {
   readonly deadline?: number;
   readonly signal?: AbortSignal;
   /**
-   * The menu bar Stop generation an agent's request was admitted in. Desktop
-   * main writes the frame only while that admission is still current.
-   */
-  readonly admission?: number;
-  /**
    * Read in the same turn as the frame's write: false means it is never
    * written, and the request fails as stopped by the person.
    */

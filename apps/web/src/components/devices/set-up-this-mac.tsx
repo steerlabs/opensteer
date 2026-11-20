@@ -1,6 +1,9 @@
 import { useId, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
+import { workDeviceLimit, workEnrollNotice } from "@opensteer/client/host";
+import { useWorkPolicy } from "@opensteer/client/react";
+import { useOptionalShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { SetupFooter, SetupFrame } from "../first-run/setup-frame.js";
 import { SetupList, SetupRow } from "../first-run/setup-list.js";
@@ -89,6 +92,10 @@ function ChooseStep({ device }: { readonly device: ThisDevice }) {
   );
   const [notifications, setNotifications] = useState(device.choice?.notifications ?? true);
   const nameId = useId();
+  // A work Home says whose it is before this Mac joins, or that its organization keeps it out.
+  const policy = useWorkPolicy(useOptionalShell()?.hostClient ?? null);
+  const joining = workEnrollNotice(policy);
+  const limit = workDeviceLimit(policy);
   const working = device.stage !== null;
   const trimmed = name.trim();
   const failure =
@@ -104,7 +111,7 @@ function ChooseStep({ device }: { readonly device: ThisDevice }) {
           action={
             <button
               className="btn btn--primary"
-              disabled={working || trimmed.length === 0}
+              disabled={working || trimmed.length === 0 || policy === undefined || limit !== null}
               onClick={() => submit({ name: trimmed, access, notifications })}
               type="button"
             >
@@ -117,6 +124,11 @@ function ChooseStep({ device }: { readonly device: ThisDevice }) {
       stepKey="device-choose"
       title={`Connect this Mac to ${device.opensteerName}`}
     >
+      {(joining ?? limit) ? (
+        <p className="notice" role="note">
+          {joining ?? limit}
+        </p>
+      ) : null}
       <label className="field" htmlFor={nameId}>
         <span className="field__label">Name</span>
         <input
@@ -130,7 +142,7 @@ function ChooseStep({ device }: { readonly device: ThisDevice }) {
         />
       </label>
       {device.devicesAvailable ? (
-        <SetupGroup title="Your agent can use">
+        <SetupGroup title="Your own agents can use">
           {(["browser", "apps", "files"] as const).map((capability) => (
             <SwitchRow
               checked={access[capability]}
@@ -247,7 +259,7 @@ function ReadyStep({
           ? "Checking what your agent can use here."
           : anything
             ? `It’s one of your devices now. Tabs you open here run here, and your own agents can reach it from ${device.homeName}.`
-            : "Your agent can’t use it until you turn something on."
+            : "Your own agents can’t use it until you turn something on."
       }
       footer={
         <SetupFooter

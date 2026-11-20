@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { AgentConnectionIdentityAtConsentSchema } from "@opensteer/control-plane-protocol";
+import { AgentConnectionIdentityAtConsentViewSchema } from "@opensteer/control-plane-protocol";
 import {
-  AgentGrantSchema,
+  AgentGrantViewSchema,
   ThreadAccessModeSchema,
   UserIdSchema,
   DeploymentIdSchema,
@@ -59,7 +59,7 @@ export const AgentConnectionSchema = z.object({
   /** Self-asserted by the client; shown as what it says it is. */
   clientName: z.string().min(1).max(100),
   accessMode: ThreadAccessModeSchema,
-  grant: AgentGrantSchema.optional(),
+  grant: AgentGrantViewSchema.optional(),
   grantRevision: z.number().int().min(1).optional(),
   consentVersion: z.number().int().min(1).optional(),
   /** What the Home can prove about the client: its registration and the consented redirect. */
@@ -86,7 +86,7 @@ export const AgentConnectionSchema = z.object({
     .optional(),
   revokedAt: z.iso.datetime({ offset: true }).nullable().optional(),
   /** What the Home could prove about who asked, recorded at consent; null before it was kept. */
-  identityAtConsent: AgentConnectionIdentityAtConsentSchema.nullable().optional(),
+  identityAtConsent: AgentConnectionIdentityAtConsentViewSchema.nullable().optional(),
   verificationWithdrawnAt: z.iso.datetime({ offset: true }).optional(),
   identity: AgentConnectionIdentityPresentationSchema.optional(),
 
@@ -102,7 +102,11 @@ export const AgentConnectionConsentSchema = ChromeTabGrantCatalogSchema.extend({
   redirectUri: z.url(),
   resource: z.url(),
   expiresAt: z.iso.datetime({ offset: true }),
-  identityAtConsent: AgentConnectionIdentityAtConsentSchema.optional(),
+  identityAtConsent: AgentConnectionIdentityAtConsentViewSchema.optional(),
+  verificationSnapshot: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .optional(),
   identity: AgentConnectionIdentityPresentationSchema.optional(),
 });
 export type AgentConnectionConsent = z.infer<typeof AgentConnectionConsentSchema>;
@@ -110,7 +114,11 @@ export type AgentConnectionConsent = z.infer<typeof AgentConnectionConsentSchema
 export const agentConnectionConsentRefusals = {
   answered: "consent-answered",
   expired: "consent-expired",
+  verificationChanged: "consent-verification-changed",
 } as const;
+
+export const agentConnectionVerificationChangedMessage =
+  "This agent's verification changed. Review it again.";
 
 export const AgentConnectionAuthorizationTargetSchema = z.strictObject({
   deploymentId: DeploymentIdSchema,

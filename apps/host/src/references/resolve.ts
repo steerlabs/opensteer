@@ -93,17 +93,20 @@ export function createThreadRequestHandler(
       });
     const thread = await store.getThreadForOwner(input.threadId, ownerId);
     if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-    const request = input.requestId
+    const reference = input.requestId
       ? await store.requests.referenceForOwner({
           ownerId,
           threadId: input.threadId,
           requestId: input.requestId,
         })
       : null;
-    const requests = request ? [request] : [];
+    const requests = reference ? [reference.request] : [];
     const page = input.requestId
       ? {
           requests,
+          ...(reference
+            ? { reviewedRevisions: { [reference.request.id]: reference.revision } }
+            : {}),
           window: {
             byteCount: Buffer.byteLength(JSON.stringify(requests)),
             hasMore: false,

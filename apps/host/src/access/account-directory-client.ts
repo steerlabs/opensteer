@@ -28,6 +28,12 @@ import {
   UpdateAccountProfileRequestSchema,
   UpdateAccountProfileResponseSchema,
   hostOwnerProfilePath,
+  organizationWorkPath,
+  WorkPolicyResponseSchema,
+  WorkPolicyAppliedResponseSchema,
+  WorkAuditAcknowledgmentSchema,
+  type WorkAssignmentId,
+  type WorkAuditPush,
   type AccountProfile,
   type UpdateAccountProfileRequest,
   type UpdateAccountProfileResponse,
@@ -279,6 +285,49 @@ export class AccountDirectoryClient {
     );
   }
 
+  async workPolicy(assignmentId: WorkAssignmentId, signal: AbortSignal) {
+    const response = await this.#request(
+      `${organizationWorkPath}/${assignmentId}/policy`,
+      "GET",
+      null,
+      "Work policy",
+      undefined,
+      10_000,
+      signal,
+    );
+    return WorkPolicyResponseSchema.parse(await readBoundedJson(response, boundedJsonOptions));
+  }
+
+  async reportWorkPolicy(assignmentId: WorkAssignmentId, revision: number, signal: AbortSignal) {
+    const response = await this.#request(
+      `${organizationWorkPath}/${assignmentId}/applied`,
+      "POST",
+      { revision },
+      "Work policy acknowledgment",
+      undefined,
+      10_000,
+      signal,
+    );
+    return WorkPolicyAppliedResponseSchema.parse(
+      await readBoundedJson(response, boundedJsonOptions),
+    );
+  }
+
+  async pushWorkAudit(batch: WorkAuditPush, signal: AbortSignal) {
+    const response = await this.#request(
+      `${organizationWorkPath}/${batch.assignmentId}/audit`,
+      "POST",
+      batch,
+      "Work audit",
+      undefined,
+      10_000,
+      signal,
+    );
+    return WorkAuditAcknowledgmentSchema.parse(
+      await readBoundedJson(response, boundedJsonOptions),
+    );
+  }
+
   async #request(
     path: string,
     method: "DELETE" | "GET" | "POST" | "PUT",
@@ -286,6 +335,7 @@ export class AccountDirectoryClient {
     label: string,
     handleFailure?: (status: number, reason: ControlPlaneErrorReason | null) => void,
     timeoutMs = 15_000,
+    signal?: AbortSignal,
   ): Promise<Response> {
     let response: Response;
     try {
@@ -298,7 +348,9 @@ export class AccountDirectoryClient {
         },
         method,
         redirect: "manual",
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       throw new OpensteerError({

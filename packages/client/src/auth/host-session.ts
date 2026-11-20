@@ -1,3 +1,4 @@
+import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
 import { presentActionFailure } from "../feedback/client-issue.js";
 import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
@@ -499,7 +500,7 @@ export class HostSession implements HostSessionRecovery {
       }
       try {
         return oauthObservation(
-          connection.kind === "team"
+          !isPersonalHost(connection.authority.document)
             ? await this.#oauth.signInTeam(connection, undefined, interactive)
             : await this.#oauth.signInHome(connection, interactive),
         );

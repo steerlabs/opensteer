@@ -236,7 +236,7 @@ export class CloudComputerStore {
             .where("reservedOrganizationId", "is", null)
             .where("needsRotation", "=", false)
             .orderBy("id")
-            .forUpdate()
+            .forNoKeyUpdate()
             .skipLocked()
             .executeTakeFirst();
           if (!target)
@@ -717,7 +717,7 @@ export class CloudComputerStore {
       .select("id")
       .orderBy("id")
       .limit(1)
-      .forUpdate()
+      .forNoKeyUpdate()
       .skipLocked()
       .executeTakeFirst();
     if (!free)
@@ -1386,7 +1386,7 @@ export class CloudComputerStore {
         .where("purgeComputerId", "=", id)
         .orderBy("id")
         .limit(1)
-        .forUpdate()
+        .forNoKeyUpdate()
         .executeTakeFirst();
       if (target) {
         const { endpoint, bucket, prefix, region } = target;
@@ -1457,7 +1457,7 @@ export class CloudComputerStore {
         .selectFrom("oauthClients")
         .select("id")
         .where("clientId", "=", `occ_${id.slice("cc_".length)}`)
-        .forUpdate()
+        .forNoKeyUpdate()
         .executeTakeFirst();
       const snapshot = await tx
         .selectFrom("cloudComputers")
@@ -1567,7 +1567,7 @@ export class CloudComputerStore {
         .where("computerId", "is", null)
         .where("needsRotation", "=", false)
         .orderBy("id")
-        .forUpdate()
+        .forNoKeyUpdate()
         .skipLocked()
         .limit(1)
         .executeTakeFirst();
@@ -1807,7 +1807,7 @@ export class CloudComputerStore {
         .where((eb) => eb.or([eb("claimNextAt", "is", null), eb("claimNextAt", "<=", now)]))
         .orderBy("readinessStartedAt")
         .limit(1)
-        .forUpdate()
+        .forNoKeyUpdate()
         .skipLocked()
         .executeTakeFirst();
       if (!row) return undefined;
@@ -1928,7 +1928,7 @@ export class CloudComputerStore {
         .selectFrom("deployments")
         .select(["canonicalOrigin", "hostKeyFingerprint", "ownerAccountId"])
         .where("id", "=", deploymentId)
-        .forUpdate()
+        .forNoKeyUpdate()
         .executeTakeFirst();
       if (listed && listed.ownerAccountId !== job.accountId)
         throw new ControlPlaneError("conflict", "This Home is already listed for another Account");
@@ -2383,7 +2383,7 @@ export class CloudComputerStore {
                 ])
                 .where((eb) => eb.or([eb("computerId", "=", id), eb("id", "=", candidate.id)]))
                 .orderBy("id")
-                .forUpdate()
+                .forNoKeyUpdate()
                 .skipLocked()
                 .execute()
             : [];
@@ -2505,7 +2505,7 @@ export class CloudComputerStore {
         .select(["id", "sealedPassword"])
         .where("url", "=", url)
         .where("retired", "=", true)
-        .forUpdate()
+        .forNoKeyUpdate()
         .executeTakeFirst();
       if (!retired)
         throw new ControlPlaneError("conflict", "Browser egress endpoint already exists");
@@ -2878,6 +2878,7 @@ async function lockHomeReferences(tx: TransactionDb, id: CloudComputerId) {
       .selectFrom("deployments")
       .select("id")
       .where("id", "=", DeploymentIdSchema.parse(row.deploymentId))
+      // FOR UPDATE: lock the deployment before forgetHome deletes it.
       .forUpdate()
       .executeTakeFirst();
   }
@@ -2886,6 +2887,7 @@ async function lockHomeReferences(tx: TransactionDb, id: CloudComputerId) {
       .selectFrom("oauthClients")
       .select("id")
       .where("clientId", "=", row.oidcClientId)
+      // FOR UPDATE: lock the OAuth client before forgetHome deletes it.
       .forUpdate()
       .executeTakeFirst();
   }

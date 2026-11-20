@@ -1,4 +1,4 @@
-import { tabGroupOf } from "@opensteer/client/host";
+import { chromeTabDetail, chromeTabTitle, tabGroupOf } from "@opensteer/client/host";
 import type { Tab, TabGroup, TabId, TabKind, TabLayout } from "@opensteer/core";
 import type { TabOrganizeInput } from "@opensteer/protocol";
 import type { SFSymbolName } from "../ui/symbol.js";
@@ -55,9 +55,11 @@ export function tabDetail(
   options: { readonly showProfile: boolean; readonly showComputer: boolean },
 ): readonly string[] {
   return [
-    tabWhat(tab),
-    options.showProfile && tab.kind === "page" ? (tab.profile?.name ?? "Guest") : null,
-    options.showComputer ? tab.computer.name : null,
+    tab.sharedByPerson ? chromeTabDetail(tab.sharedByPerson.computerName) : tabWhat(tab),
+    options.showProfile && tab.kind === "page" && !tab.sharedByPerson
+      ? (tab.profile?.name ?? "Guest")
+      : null,
+    options.showComputer && !tab.sharedByPerson ? tab.computer.name : null,
     tab.state === "unavailable" ? (tab.unavailableReason ?? "Unavailable") : null,
   ].filter((part): part is string => part !== null && part !== "");
 }
@@ -71,11 +73,12 @@ export function tabListSpans(tabs: Iterable<Tab>): {
   const profiles = new Set<string>();
   for (const tab of tabs) {
     computers.add(tab.computer.computerId);
-    if (tab.kind === "page") profiles.add(tab.profile?.profileId ?? "guest");
+    if (tab.kind === "page" && !tab.sharedByPerson) profiles.add(tab.profile?.profileId ?? "guest");
   }
   return { showComputer: computers.size > 1, showProfile: profiles.size > 1 };
 }
 
 export function tabTitle(tab: Tab): string {
-  return tab.title.trim() || tabWhat(tab);
+  const title = tab.title.trim() || tabWhat(tab);
+  return tab.sharedByPerson ? chromeTabTitle(title) : title;
 }

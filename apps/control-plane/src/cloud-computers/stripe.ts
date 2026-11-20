@@ -416,6 +416,10 @@ export class CloudComputerStripe {
   }
 
   async validatePortal(id: string, kind: "personal" | "organization" = "personal"): Promise<void> {
+    const expected = {
+      personal: { canCancel: true, invoiceHistory: false },
+      organization: { canCancel: false, invoiceHistory: true },
+    }[kind];
     const enabled = z.object({ enabled: z.boolean() });
     const config = await this.#request(
       `billing_portal/configurations/${stripeToken("bpc").parse(id)}`,
@@ -437,9 +441,9 @@ export class CloudComputerStripe {
       !config.active ||
       config.is_default ||
       !config.features.payment_method_update.enabled ||
-      config.features.subscription_cancel.enabled !== (kind === "personal") ||
+      config.features.subscription_cancel.enabled !== expected.canCancel ||
       config.features.customer_update.enabled ||
-      config.features.invoice_history.enabled !== (kind === "organization") ||
+      config.features.invoice_history.enabled !== expected.invoiceHistory ||
       config.features.subscription_update.enabled
     ) {
       throw new ControlPlaneError(

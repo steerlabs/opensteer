@@ -670,7 +670,7 @@ export class RequestStore {
     readonly ownerId: UserId;
     readonly threadId: ThreadId;
     readonly requestId: RequestId;
-  }): Promise<Request | null> {
+  }): Promise<{ readonly request: Request; readonly revision: string } | null> {
     return withPersonalReadTransaction(this.#database, async (transaction) => {
       await requirePersonalOwner(transaction, input.ownerId);
       const row = await transaction
@@ -681,7 +681,7 @@ export class RequestStore {
         .where("requests.originatingThreadId", "=", input.threadId)
         .where("threads.createdBy", "=", input.ownerId)
         .executeTakeFirst();
-      return row ? requestFromRow(row) : null;
+      return row ? { request: requestFromRow(row), revision: row.revision } : null;
     });
   }
 

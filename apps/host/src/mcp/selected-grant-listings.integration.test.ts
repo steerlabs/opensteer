@@ -9,6 +9,7 @@ import {
 import {
   createId,
   DeviceIdSchema,
+  OpensteerError,
   TabSchema,
   type AgentGrant,
   type BrowserProfileId,
@@ -416,6 +417,11 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     });
     const tabs = {
       list: async () => ({ tabs: [shownTab], groups: [], nextCursor: null }),
+      connectionTab: async (_actor: unknown, id: string) => {
+        if (id !== shownTab.tabId)
+          throw new OpensteerError({ code: "not_found", message: "Tab not found." });
+        return { kind: "page", generation: 1, profileId: profile, openedBy: "person" };
+      },
     } as unknown as TabServicePort;
     const sessions = new AgentSessionService({ store: storeFixture.store, holdMs: 0 });
     const toolErrors: unknown[] = [];
@@ -445,6 +451,7 @@ describeStore("a selected grant's listings show only what it names", (it) => {
         origin: new URL("https://personal.mcp.test"),
       }),
       sessionPerson: new SessionPersonTools({
+        tabs,
         store: storeFixture.store,
         sessions,
         browser: {
@@ -487,6 +494,8 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     const call = (name: string, args: Record<string, unknown> = {}) =>
       agent.client.callTool({ name, arguments: args });
     const offered = await agent.client.listTools();
+    expect(offered.tools.map(({ name }) => name)).not.toContain("tab_open");
+    expect(offered.tools.map(({ name }) => name)).not.toContain("tab_close");
     expect(
       offered.tools
         .map(({ name }) => name)
@@ -525,10 +534,6 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     });
     const refusals = await Promise.all([
       call("computer_apps", { computerId: hidden }),
-      call("tab_open", {
-        target: { kind: "page", url: "https://example.test/", profileId: hiddenProfile },
-      }),
-      call("tab_close", { tabIds: [hiddenTab] }),
       call("browser_connect", { profileId: hiddenProfile }),
       call("browser_connect", { profileId: profile }),
       call("browser_use", { profileId: hiddenProfile, code: "print(await pages())" }),
@@ -540,7 +545,6 @@ describeStore("a selected grant's listings show only what it names", (it) => {
         title: "Choose",
         questions: [{ question: "Which one?", multiSelect: true }],
       }),
-
       call("opensteer_task_list"),
       call("browser_profile_request", {
         suggestion: { kind: "existing", profileId: hiddenProfile },
@@ -548,8 +552,8 @@ describeStore("a selected grant's listings show only what it names", (it) => {
       }),
     ]);
     for (const refusal of refusals) expect(refusal.isError).toBe(true);
+    expect(refusals[2]?.structuredContent).toMatchObject({ error: { code: "computer_stopped" } });
     expect(refusals[4]?.structuredContent).toMatchObject({ error: { code: "computer_stopped" } });
-    expect(refusals[6]?.structuredContent).toMatchObject({ error: { code: "computer_stopped" } });
     expect(
       names(
         [offered, computersResult, profilesResult, appsResult, tabsResult, ...refusals],

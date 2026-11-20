@@ -1,6 +1,6 @@
 import { OpensteerError } from "@opensteer/core";
 import type { DatabaseSchema } from "./schema.js";
-import type { Thread, ThreadId, UserId } from "@opensteer/core";
+import type { AgentSessionEndReason, AgentSessionId, Thread, ThreadId, UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { personalShellSettledTasks } from "@opensteer/protocol/personal-sync";
 import type { PersonalMutationTransaction } from "./personal-mutation.js";
@@ -43,11 +43,43 @@ const taskFields = [
 /** A Run of this thread waits to start and none is executing (the task row's `runQueued`). */
 export const threadRunQueued = sql<boolean>`(exists (select 1 from runs where runs.thread_id = threads.id and runs.status = 'queued') and not exists (select 1 from runs where runs.thread_id = threads.id and runs.status in ('starting','running','waiting')))`;
 
+export interface TaskExternalWork {
+  readonly sessionId: AgentSessionId;
+  readonly status: "active" | "ended";
+  readonly endReason: AgentSessionEndReason | null;
+  readonly connection: {
+    readonly id: string;
+    readonly label: string;
+    readonly clientName: string;
+    readonly redirectUri: string | null;
+    readonly clientFingerprint: string | null;
+    readonly identityAtConsent: unknown;
+  };
+}
+
+export const taskExternalWorkSelection = sql<TaskExternalWork | null>`(
+  select json_build_object(
+    'sessionId', agent_sessions.id,
+    'status', agent_sessions.status,
+    'endReason', agent_sessions.end_reason,
+    'connection', json_build_object(
+      'id', agent_connections.id,
+      'label', agent_connections.label,
+      'clientName', agent_connections.client_name,
+      'redirectUri', agent_connections.redirect_uri,
+      'clientFingerprint', agent_connections.client_fingerprint,
+      'identityAtConsent', agent_connections.identity_at_consent))
+  from agent_sessions
+  join agent_connections on agent_connections.id = agent_sessions.connection_id
+  where agent_sessions.thread_id = threads.id
+)`.as("externalWork");
+
 export function currentTasks(tx: PersonalMutationTransaction, viewerId: UserId) {
   return tx
     .selectFrom("threads")
     .select(taskFields)
     .select(threadRunQueued.as("runQueued"))
+    .select(taskExternalWorkSelection)
     .where("createdBy", "=", viewerId)
     .where("removedAt", "is", null);
 }

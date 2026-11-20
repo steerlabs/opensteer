@@ -1,3 +1,4 @@
+import { agentSessionSlot } from "@opensteer/client/host";
 import { TabAgentStatus } from "../agent-work.js";
 import { actingOccupants, threadMark } from "@opensteer/client/host";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -299,7 +300,7 @@ function SelectedPlace({
   // A connected agent's own task in this tab: who, for which task, and its Stop.
   const sessionOccupant =
     live?.occupants.find(
-      ({ threadId }) => directory.snapshot.agentWork?.sessions?.[threadId] !== undefined,
+      ({ threadId }) => agentSessionSlot(directory.snapshot, threadId) !== null,
     ) ?? null;
   return (
     <section

@@ -1,5 +1,6 @@
 import { parseRunnerConfig } from "@opensteer/config";
 import {
+  HostToRunnerMessageSchema,
   RunnerBootIdSchema,
   RunnerToHostMessageSchema,
   runnerAgentStopCapability,
@@ -17,8 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
-import { ReconnectingHostConnection } from "./host-connection.js";
-import { manualAgentWork, type AgentWorkSource } from "../runtime/agent-stop-file.js";
+import { ReconnectingHostConnection, stoppedWorkAllowed } from "./host-connection.js";
 
 const tempRoots: string[] = [];
 
@@ -113,7 +113,7 @@ async function createConnection(input: {
   readonly device: RunnerDevice;
   readonly hostUrl: string;
   readonly platform: "darwin" | "linux";
-  readonly agentWork?: AgentWorkSource;
+  readonly agentsStoppedSince?: string | null;
 }) {
   const root = await mkdtemp(join(tmpdir(), "opensteer-runner-agent-stop-"));
   tempRoots.push(root);
@@ -124,7 +124,9 @@ async function createConnection(input: {
   const identity = await identityStore.loadOrCreate();
   const events = new EventEmitter();
   const connection = new ReconnectingHostConnection({
-    ...(input.agentWork ? { agentWork: input.agentWork } : {}),
+    ...(input.agentsStoppedSince === undefined
+      ? {}
+      : { agentsStoppedSince: input.agentsStoppedSince }),
     bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
     config: parseRunnerConfig({
       OPENSTEER_DEPLOYMENT_KIND: "personal",
@@ -174,13 +176,47 @@ const notices = (received: readonly RunnerToHostMessage[]) =>
         : [],
   );
 
+it("makes an explicit stopped-mode decision for every primary work message", () => {
+  const connectionMessages = new Set([
+    "host.challenge",
+    "host.error",
+    "host.welcome",
+    "host.connection.lease-renewed",
+    "host.auxiliary.ticket",
+    "host.grants.credentials",
+    "host.shell.probe-full-disk-access",
+  ]);
+  const work = HostToRunnerMessageSchema.options
+    .map((option) => option.shape.type.value)
+    .filter((kind) => !connectionMessages.has(kind));
+  expect(Object.keys(stoppedWorkAllowed).sort()).toEqual(work.sort());
+  expect(
+    Object.entries(stoppedWorkAllowed)
+      .filter(([, allowed]) => allowed)
+      .map(([kind]) => kind),
+  ).toEqual([
+    "host.discover-model-servers",
+    "host.executions.acked",
+    "host.executions.attached",
+    "host.executions.renewed",
+    "host.harness-authentication",
+    "host.home-files.cancel",
+    "host.home-files.download",
+    "host.home-files.list",
+    "host.home-files.read",
+    "host.home-files.resolve",
+    "host.inspect-harnesses",
+    "host.reconcile-harnesses",
+    "host.runs.revoked",
+  ]);
+});
+
 describe("ReconnectingHostConnection agent-stop notices", () => {
-  it("tells a Home that accepts it about the person's Stop at once and at each change", async () => {
+  it("states the boot mode in the signed descriptor and tells a legacy Home", async () => {
     const host = await startMockHost(true);
-    const agentWork = manualAgentWork();
-    agentWork.set(true, new Date("2026-11-20T10:42:00.000Z"));
+    const agentsStoppedSince = "2026-11-20T10:42:00.000Z";
     const { connection, connected } = await createConnection({
-      agentWork,
+      agentsStoppedSince,
       device,
       hostUrl: host.url,
       platform: "darwin",
@@ -191,21 +227,10 @@ describe("ReconnectingHostConnection agent-stop notices", () => {
     try {
       await ready;
       expect(host.descriptors[0]?.capabilities).toContain(runnerAgentStopCapability);
-      await connection.agentNoticeSent();
       await host.flushSocket(host.sockets[0]);
       expect(notices(host.received)).toEqual(["stopped:2026-11-20T10:42:00.000Z"]);
 
-      agentWork.set(false);
-      await connection.agentNoticeSent();
-      await host.flushSocket(host.sockets[0]);
-      agentWork.set(true, new Date("2026-11-20T11:00:00.000Z"));
-      await connection.agentNoticeSent();
-      await host.flushSocket(host.sockets[0]);
-      expect(notices(host.received)).toEqual([
-        "stopped:2026-11-20T10:42:00.000Z",
-        "resumed",
-        "stopped:2026-11-20T11:00:00.000Z",
-      ]);
+      expect(host.descriptors[0]?.agentsStoppedSince).toBe(agentsStoppedSince);
     } finally {
       stop.abort();
       await running;
@@ -215,10 +240,9 @@ describe("ReconnectingHostConnection agent-stop notices", () => {
 
   it("sends nothing to a Home that did not accept it, and advertises nothing without a Stop to tell", async () => {
     const host = await startMockHost(false);
-    const agentWork = manualAgentWork();
-    agentWork.set(true);
+    const agentsStoppedSince = "2026-11-20T10:42:00.000Z";
     const { connection, connected } = await createConnection({
-      agentWork,
+      agentsStoppedSince,
       device,
       hostUrl: host.url,
       platform: "darwin",
@@ -228,8 +252,6 @@ describe("ReconnectingHostConnection agent-stop notices", () => {
     const running = connection.run(stop.signal);
     try {
       await ready;
-      agentWork.set(false);
-      await connection.agentNoticeSent();
       await host.flushSocket(host.sockets[0]);
       expect(notices(host.received)).toEqual([]);
     } finally {

@@ -150,6 +150,73 @@ describe("BrowserController", () => {
     }
   });
 
+  it("stops an in-flight navigation when its script attachment closes", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const started = Promise.withResolvers<void>();
+    const navigation = Promise.withResolvers<{ errorText: string }>();
+    let navigating: Promise<void> | undefined;
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const attachId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId: attachId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method: "Target.attachToTarget", parameters: { targetId } },
+      });
+      const response = sink.messages.find(
+        (message) => message.type === "cdp.result" && message.requestId === attachId,
+      );
+      if (response?.type !== "cdp.result" || typeof response.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      page.cdpSession.responses.set("Page.navigate", () => {
+        started.resolve();
+        return navigation.promise;
+      });
+      const stopLoading = vi.fn(() => {
+        navigation.resolve({ errorText: "net::ERR_ABORTED" });
+        return {};
+      });
+      page.cdpSession.responses.set("Page.stopLoading", stopLoading);
+      navigating = controller.handle({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        scriptAttachmentId,
+        replyBudget,
+        command: {
+          method: "Page.navigate",
+          sessionId: response.result.sessionId,
+          parameters: { url: "https://example.test/slow" },
+        },
+      });
+      await started.promise;
+      await controller.handle({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        scriptAttachmentId,
+        command: { method: browserHostMethods.closeScriptAttachment },
+      });
+      expect(stopLoading).toHaveBeenCalledOnce();
+      await navigating;
+    } finally {
+      navigation.resolve({ errorText: "net::ERR_ABORTED" });
+      await Promise.allSettled([navigating]);
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("admits input on surface 129 and releases idle lanes", async () => {
     const controller = createController();
     await controller.start();

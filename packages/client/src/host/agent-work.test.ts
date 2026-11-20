@@ -1,11 +1,7 @@
 import type { AgentOperationView } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
-import {
-  mockAgentOperationRequestId,
-  mockAgentWork,
-  mockAgentWorkThreads,
-} from "../mock/mock-agent-work.js";
+import { mockAgentWork, mockAgentWorkThreads } from "../mock/mock-agent-work.js";
 import { agentWho, agentWithdrawnLine } from "./agent-identity.js";
 import {
   sessionSlotFromHome,
@@ -31,8 +27,16 @@ const seed = mockAgentWork({
   } as ThreadSummary,
   connections,
 });
-const slot = (thread: keyof typeof mockAgentWorkThreads) =>
-  seed.agentWork.sessions![mockAgentWorkThreads[thread]]!;
+const slot = (thread: keyof typeof mockAgentWorkThreads) => {
+  const id = mockAgentWorkThreads[thread];
+  return sessionSlotFromHome(
+    seed.threads.find((thread) => thread.id === id)!.externalWork,
+    seed.operations
+      .filter(({ operation }) => operation.taskId === id)
+      .map(({ operation }) => operation)
+      .reverse(),
+  )!;
+};
 
 describe("who a connected agent is", () => {
   it("names a verified pair and a verified platform in the Home's words, with a logo only for a verified platform", () => {
@@ -191,9 +195,21 @@ describe("one operation in a task's activity", () => {
       allowedBy: "Full access",
     });
     expect(rows[2]).toMatchObject({
+      action: "Ran a script on Travel on Studio Mac",
       allowedBy: "Allowed by Auto",
       outcome: { label: "Failed", tone: "bad" },
     });
+  });
+
+  it("never says it ran what may not have: waiting, running, uncertain or not allowed", () => {
+    expect(rows[3]?.action).toBe("Run a script on Travel on Studio Mac");
+    expect(rows[4]?.action).toBe("Run a script on Travel on Studio Mac");
+    expect(operationRow(slot("waiting").operations![1]!).action).toBe(
+      "Run a script on Shopping on Studio Mac",
+    );
+    expect(operationRow(slot("stopped").operations![1]!).action).toBe(
+      "Run a script on Personal on Studio Mac",
+    );
   });
 
   it("states an unknown outcome plainly, and a running one as running", () => {
@@ -221,6 +237,7 @@ describe("one operation in a task's activity", () => {
         outcome: "refused",
       }),
     ).toMatchObject({
+      action: "Act on Travel on Studio Mac",
       allowedBy: "Not allowed: Its grant changed.",
       outcome: { label: "Not allowed", tone: "bad" },
     });
@@ -230,31 +247,30 @@ describe("one operation in a task's activity", () => {
 describe("a tab a connected agent uses", () => {
   const occupant = { threadId: mockAgentWorkThreads.working, title: "Find flights to Lisbon" };
   it("says who is using it and for which task, and both when the person shares it", () => {
-    expect(tabAgentLine({ tabId: "t1", occupant, slot: slot("working") })).toEqual({
+    expect(tabAgentLine({ occupant, slot: slot("working") })).toEqual({
       line: "Claude is using this page for “Find flights to Lisbon”",
       stop: { sessionId: slot("working").sessionId },
     });
+    expect(tabAgentLine({ occupant, slot: slot("working"), sharedFromChrome: true })?.line).toBe(
+      "You and Claude are using this page, for “Find flights to Lisbon”",
+    );
     expect(
-      tabAgentLine({ tabId: "t1", occupant, slot: slot("working"), sharedTabs: ["t1"] })?.line,
-    ).toBe("You and Claude are using this page, for “Find flights to Lisbon”");
-    expect(
-      tabAgentLine({ tabId: "t1", occupant: { ...occupant, title: " " }, slot: slot("working") })
-        ?.line,
+      tabAgentLine({ occupant: { ...occupant, title: " " }, slot: slot("working") })?.line,
     ).toBe("Claude is using this page");
   });
   it("says stopped after Stop, and nothing for a native task or an ended session", () => {
-    expect(tabAgentLine({ tabId: "t1", occupant, slot: slot("stopped") })).toEqual({
+    expect(tabAgentLine({ occupant, slot: slot("stopped") })).toEqual({
       line: "Stopped by you",
       stop: null,
     });
-    expect(tabAgentLine({ tabId: "t1", occupant, slot: slot("ended") })).toBeNull();
-    expect(tabAgentLine({ tabId: "t1", occupant, slot: null })).toBeNull();
+    expect(tabAgentLine({ occupant, slot: slot("ended") })).toBeNull();
+    expect(tabAgentLine({ occupant, slot: null })).toBeNull();
   });
 });
 
 describe("the Request a direct operation opens", () => {
   const request = seed.requests[mockAgentWorkThreads.waiting]![0]!;
-  const parts = seed.agentWork.requests![mockAgentOperationRequestId]!;
+  const session = slot("waiting");
   // The view reads only a settled Request's status and answer.
   const answered = (status: "fulfilled" | "declined" | "withdrawn", value?: string) =>
     ({
@@ -264,19 +280,20 @@ describe("the Request a direct operation opens", () => {
     }) as unknown as typeof request;
 
   it("keeps the Home's question, the agent's words and the exact calls apart", () => {
-    const view = operationRequestView({ request, slot: parts })!;
-    expect(view.question).toBe("Allow browser_use on Shopping?");
-    expect(view.listTitle).toBe("Grok: Allow browser_use on Shopping?");
-    expect(view.summary).toBe("Grok wants to run a script on Shopping on Studio Mac.");
+    const view = operationRequestView({ request, session })!;
+    expect(view.question).toBe("Run a browser script in Shopping?");
+    expect(view.listTitle).toBe("Grok: Run a browser script in Shopping?");
+    // Where it acts, from the Home's parts; the summary only restates the question.
+    expect(view.context).toBe("Shopping · Studio Mac");
     expect(view.agentWords).toEqual({
-      label: "Grok says (its own words, not checked):",
+      label: "Grok says:",
       text: "Buy the $12 phone case you asked for.",
     });
     expect(view.calls?.text).toContain("Place order");
     expect(view.answers).toEqual({
       fieldId: "operation-decision",
       allow: { label: "Allow once", value: "allow" },
-      deny: { label: "Don't allow", value: "deny" },
+      deny: { label: "Don’t allow", value: "deny" },
     });
     expect(view.after).toBe(
       "Grok is told your answer. Allowing this once doesn’t give it any more access.",
@@ -284,8 +301,12 @@ describe("the Request a direct operation opens", () => {
   });
 
   it("shows the Home's own text when the parts aren't sent, and never splits it", () => {
-    const view = operationRequestView({ request, slot: null, session: slot("waiting") })!;
+    const view = operationRequestView({
+      request: { ...request, agentOperation: undefined },
+      session,
+    })!;
     expect(view.summary).toBe(request.presentation.detail);
+    expect(view.context).toBeNull();
     expect(view.agentWords).toBeNull();
     expect(view.calls).toBeNull();
     expect(view.agent.name).toBe("Grok");
@@ -293,23 +314,27 @@ describe("the Request a direct operation opens", () => {
 
   it("says allowed, not allowed, expired and no longer needed", () => {
     expect(
-      operationRequestView({ request: answered("fulfilled", "allow"), slot: parts }),
+      operationRequestView({ request: answered("fulfilled", "allow"), session }),
     ).toMatchObject({ state: "allowed", settled: "You allowed this once.", answers: null });
-    expect(
-      operationRequestView({ request: answered("fulfilled", "deny"), slot: parts })?.state,
-    ).toBe("denied");
-    expect(operationRequestView({ request: answered("declined"), slot: parts })?.settled).toBe(
+    expect(operationRequestView({ request: answered("fulfilled", "deny"), session })?.state).toBe(
+      "denied",
+    );
+    expect(operationRequestView({ request: answered("declined"), session })?.settled).toBe(
       "You didn’t allow this.",
     );
     expect(
-      operationRequestView({ request: answered("withdrawn"), slot: { ...parts, expired: true } })
-        ?.settled,
+      operationRequestView({
+        request: {
+          ...answered("withdrawn"),
+          agentOperation: { ...request.agentOperation!, expired: true },
+        },
+        session,
+      })?.settled,
     ).toBe("This request expired. Grok was told no one answered.");
     expect(
       operationRequestView({
         request: answered("withdrawn"),
-        slot: parts,
-        session: slot("stopped"),
+        session: { ...session, status: "ended", endReason: "stopped" },
       })?.settled,
     ).toBe("No longer needed: you stopped Grok.");
   });
@@ -318,7 +343,7 @@ describe("the Request a direct operation opens", () => {
     expect(
       operationRequestView({
         request: { ...request, originatingAgentSessionId: null },
-        slot: parts,
+        session,
       }),
     ).toBeNull();
   });
@@ -381,7 +406,6 @@ describe("what the Home itself reports for an agent's own work", () => {
     };
     const view = operationRequestView({
       request: request as never,
-      slot: null,
       session: sessionSlotFromHome(work as never),
     });
     expect(view).toMatchObject({

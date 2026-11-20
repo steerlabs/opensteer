@@ -1,3 +1,4 @@
+import { runnerRestartingCloseCode } from "@opensteer/protocol";
 import { registerStandardCdpRoute } from "./browser/standard-cdp-route.js";
 import { standardCdpConnectPrefix } from "./browser/standard-cdp-tickets.js";
 import { standardCdpMessageMaxBytes } from "@opensteer/protocol/standard-cdp";
@@ -38,6 +39,7 @@ import type { DeviceDriverManagementPort } from "./administration/device-driver-
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
 import { installClientAddress, installTrustedProxy } from "./identity/anonymous-client-address.js";
 import { registerManagedHomeClaimRoute } from "./identity/managed-home-claim.js";
+import { registerWorkHomeRoutes, type WorkHomeService } from "./organizations/work-home.js";
 import { deviceAccess } from "@opensteer/protocol";
 import {
   deviceMembershipTurn,
@@ -463,6 +465,10 @@ export interface HostServerDependencies {
     import("./identity/managed-home-claim.js").ManagedHomeClaimService,
     "claim"
   >;
+  readonly workHome?: {
+    readonly service: WorkHomeService;
+    readonly read: () => Promise<import("@opensteer/control-plane-protocol").EffectiveWorkPolicy>;
+  };
   /** The Opensteer Account link, on every Personal Host whether or not it has Remote access. */
   readonly personalAccountLink?: { readonly service: PersonalRemoteAccessService } | undefined;
   /** The personal owner's name; absent on a team Host. */
@@ -673,6 +679,7 @@ export async function createHostServer(
       }
     : undefined;
   if (connectionRoutes) registerConnectionRoutes(app, connectionRoutes);
+  if (dependencies.workHome) registerWorkHomeRoutes(app, dependencies.workHome.service);
   if (dependencies.managedHomeClaim)
     registerManagedHomeClaimRoute(app, dependencies.managedHomeClaim, (address) =>
       consumeAnonymousRateLimit(
@@ -3320,14 +3327,14 @@ function attachRunnerSocket(
       if (socket.readyState === socket.OPEN) socket.close(1009, "runner input queue exceeded");
     }
   });
-  const disconnected = () => {
+  const disconnected = (restarting = false) => {
     releaseChallenge();
     clearTimeout(challengeTimeout);
     inbox.close();
-    runners.disconnect(peer);
+    runners.disconnect(peer, restarting);
   };
-  socket.once("close", disconnected);
-  socket.once("error", disconnected);
+  socket.once("close", (code) => disconnected(code === runnerRestartingCloseCode));
+  socket.once("error", () => disconnected());
   let failed = false;
   const fail = (error: unknown) => {
     if (failed) return;
@@ -3652,17 +3659,18 @@ function attachRunnerAuxiliarySocket(options: {
       if (socket.readyState === socket.OPEN) socket.close(1009, "module input queue exceeded");
     }
   });
-  const disconnected = () => {
+  const disconnected = (restarting = false) => {
     outcome(false, "disconnected-before-authentication");
     release();
     clearTimeout(challengeTimeout);
     inbox.close();
     if (!stream) return;
-    options.runners.detachAuxiliary(peer);
-    dispatch.onDetach("transport-disconnected");
+    const reason = restarting ? "device-restarting" : "transport-disconnected";
+    options.runners.detachAuxiliary(peer, reason);
+    dispatch.onDetach(reason);
   };
-  socket.once("close", disconnected);
-  socket.once("error", disconnected);
+  socket.once("close", (code) => disconnected(code === runnerRestartingCloseCode));
+  socket.once("error", () => disconnected());
   void (async () => {
     await dispatch.send(challenge);
     for await (const item of inbox) {

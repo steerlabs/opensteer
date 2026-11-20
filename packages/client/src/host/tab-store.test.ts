@@ -170,3 +170,15 @@ describe("TabStore", () => {
 function b_id() {
   return tab("b").tabId;
 }
+
+it("shows shared Chrome rows without adding them to the Host's saved layout", () => {
+  const store = new TabStore();
+  const saved = tab("saved");
+  const shared = tab("chrome", "Shared page", {
+    sharedByPerson: { sourceId: createId("browserSource"), computerName: "Studio Mac" },
+  });
+  const layout: TabLayout = { revision: 1, items: [{ kind: "tab", tabId: saved.tabId }] };
+  store.seed({ tabs: [saved, shared], layout, complete: true });
+  expect(store.layout.items).toEqual(layout.items);
+  expect(store.strip.visible).toEqual([saved.tabId, shared.tabId]);
+});

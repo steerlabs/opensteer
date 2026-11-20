@@ -12,7 +12,7 @@ import {
   TabKindSchema,
   TabLayoutViewSchema,
   TabTargetSchema,
-  ToolErrorSchema,
+  ToolErrorViewSchema,
   tabsMaxPerMutation,
 } from "@opensteer/core";
 import { ComputerViewSchema } from "./computer-view.js";
@@ -49,9 +49,7 @@ export const TabOpenResultSchema = z.object({ tab: TabViewSchema });
 export const TabCloseInputSchema = z.strictObject({ tabIds: TabIdsSchema });
 export const TabCloseResultSchema = z.object({
   closed: z.array(TabIdSchema).max(500),
-  failed: z
-    .array(z.object({ tabId: TabIdSchema, error: z.object(ToolErrorSchema.shape) }))
-    .max(500),
+  failed: z.array(z.object({ tabId: TabIdSchema, error: ToolErrorViewSchema })).max(500),
 });
 export type TabCloseResult = z.infer<typeof TabCloseResultSchema>;
 export const TabOrganizeInputSchema = z.strictObject({

@@ -1,3 +1,5 @@
+import { applyConnectionPolicy } from "./work-policy.js";
+import { isWorkHomeDatabase } from "./work-home-context.js";
 import { integrationAccessCeilingForRun } from "@opensteer/integration-core/effective-grants";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import {
@@ -72,6 +74,31 @@ export const lineageEndedMessage =
   "This connected agent's access ended. The person can reconnect it from Connected agents.";
 export const tasksWithdrawnMessage = "This connected agent may no longer ask your agents to work.";
 
+export async function readLiveAgentConnectionRow(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+  lock = false,
+) {
+  const query = database
+    .selectFrom("agentConnections")
+    .select(["id", "label", "grant", "grantRevision", "consentVersion", "accessMode", "cleanupMinimumGrantRevision", "cleanupMaximumMode"])
+    .where("id", "=", agentConnectionId)
+    .where("userId", "=", ownerUserId)
+    .where("revokedAt", "is", null)
+    .where("tokenHash", "is not", null)
+    .where("expiresAt", ">", new Date());
+  const authority = lock ? query.forShare("agentConnections") : query;
+  if (!isWorkHomeDatabase(database)) return authority.executeTakeFirst();
+  const row = await authority
+    .innerJoin("workHomePolicy", (join) => join.on("workHomePolicy.singleton", "=", true))
+    .select(["workHomePolicy.policy", "workHomePolicy.state"])
+    .executeTakeFirst();
+  if (!row) return undefined;
+  const { policy, state, ...connection } = row;
+  return { ...connection, accessMode: applyConnectionPolicy({ policy, state }, row.grant, row.accessMode) };
+}
+
 /** The live connection, or a refusal: a revoked or expired connection has no authority. */
 export async function liveAgentConnection(
   database: Kysely<DatabaseSchema>,
@@ -81,19 +108,12 @@ export async function liveAgentConnection(
   readonly cleanupMinimumGrantRevision: number | null;
   readonly cleanupMaximumMode: ThreadAccessMode | null;
 }> {
-  const row = await database
-    .selectFrom("agentConnections")
-    .select(["id", "grant", "grantRevision", "consentVersion", "accessMode", "cleanupMinimumGrantRevision", "cleanupMaximumMode"])
-    .where("id", "=", agentConnectionId)
-    .where("userId", "=", ownerUserId)
-    .where("revokedAt", "is", null)
-    .where("tokenHash", "is not", null)
-    .where("expiresAt", ">", new Date())
-    .executeTakeFirst();
+  const row = await readLiveAgentConnectionRow(database, ownerUserId, agentConnectionId);
   if (!row) throw forbidden(lineageEndedMessage);
+  const grant = AgentGrantSchema.parse(row.grant);
   return {
     agentConnectionId: row.id,
-    grant: AgentGrantSchema.parse(row.grant),
+    grant,
     grantRevision: row.grantRevision,
     consentVersion: row.consentVersion,
     accessMode: row.accessMode,
@@ -484,12 +504,7 @@ export async function resolveResourceAccess(
       ? { threadId: input.threadId }
       : {}),
   });
-  // A session's effects are each decided by the session pipeline before hand-off (structural
-  // read, full-access, the reviewer or the person), so its mode is not a second ceiling here.
-  const runAccess =
-    execution.subject.kind === "binding" && execution.subject.bindingId.startsWith("session:")
-      ? "read-write"
-      : integrationAccessCeilingForRun(execution.mode);
+  const runAccess = executionAccessCeiling(execution);
   const grantAccess = input.grantTarget
     ? authorizeTarget(execution, input.grantTarget)
     : selectedGrantOf(execution)
@@ -511,10 +526,17 @@ export async function resolveResourceAccess(
 
 /** The execution's structural read/write ceiling, with no resource implied. */
 export function executionAccess(
-  execution: Pick<ExecutionAuthority, "mode">,
+  execution: Pick<ExecutionAuthority, "mode" | "subject">,
   explicitAccess: ResourceAccessLevel | null = "read-write",
 ): ResourceAccessLevel | null {
-  return intersectResourceAccess(explicitAccess, integrationAccessCeilingForRun(execution.mode));
+  return intersectResourceAccess(explicitAccess, executionAccessCeiling(execution));
+}
+
+function executionAccessCeiling(execution: Pick<ExecutionAuthority, "mode" | "subject">) {
+  // The session pipeline already decides each effect before hand-off.
+  if (execution.subject.kind === "binding" && execution.subject.bindingId.startsWith("session:"))
+    return "read-write";
+  return integrationAccessCeilingForRun(execution.mode);
 }
 
 export async function assertLineageCompatibleReuse(

@@ -457,6 +457,16 @@ export class PluginExecutions {
     return this.#drive(id, async () => {
       let row = await this.#owned(caller, id);
       if (terminal.has(row.state)) {
+        if (row.state !== "completed") {
+          // The task can learn that its work ended without replaying plugin data or invoking the engine.
+          await this.options.authority.scoped(caller, () =>
+            this.options.authority.assert(
+              { ...this.options.authority.admit(caller), mode: "ask" },
+              "resume",
+            ),
+          );
+          return this.result(row);
+        }
         // An earlier result is returned only under the authority it was produced under: the
         // plugin it asked about is still reachable, and the effective mode has not dropped.
         const request = row.requestId ? await this.options.store.requests.get(row.requestId) : null;

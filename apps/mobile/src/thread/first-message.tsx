@@ -691,7 +691,7 @@ export function FirstMessageComposer(props: {
                 driverKind={placement?.driverKind}
                 engineName={
                   placement?.engineName ??
-                  (selection === null ? "Choose engine" : "Unavailable engine")
+                  (selection === null ? "Choose an agent" : "Agent unavailable")
                 }
                 model={model}
                 modelLabel={props.selectionLabel}

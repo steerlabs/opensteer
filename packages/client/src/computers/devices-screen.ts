@@ -1,5 +1,6 @@
 import { orgWords, type CloudComputerView } from "@opensteer/control-plane-protocol";
-import type { AuthSessionSummary } from "@opensteer/core";
+import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
+import type { DeploymentShape, AuthSessionSummary } from "@opensteer/core";
 import type { DesktopWorkHome, MachineSummary } from "@opensteer/protocol";
 import { formatRelativeTime } from "../host/thread-list-model.js";
 import { phoneScreenMac, phoneScreenStatus } from "../integrations/phone-screen.js";
@@ -50,7 +51,12 @@ export function homeKind(input: {
   readonly hostedHere: boolean;
   /** Null until the Account was read, or when this app has no Account. */
   readonly account: HomeAccountFacts | null;
+  /** The organization a work Home's own policy names; absent on a personal Home. */
+  readonly workOrganization?: string | null | undefined;
 }): HomeKindFact {
+  // The Home says it is a work Home in its own policy read, wherever this app runs.
+  if (input.workOrganization)
+    return { kind: "work", from: "home", organization: input.workOrganization };
   if (input.deploymentId !== null && input.account !== null) {
     const id = input.deploymentId;
     const assigned = input.account.work.find(({ computer }) => computer?.deploymentId === id);
@@ -420,6 +426,10 @@ export function asleepToolFailure(
 }
 
 /** The Home page's facts for a server Home: its address, its version, who is signed in. */
+export function personalHomeShape(shape: DeploymentShape | null | undefined): boolean {
+  return shape != null && isPersonalHost({ deploymentShape: shape });
+}
+
 export function serverHomeFacts(input: {
   readonly publicOrigin: string | null;
   readonly homeMachine: Pick<MachineSummary, "runtimeVersion"> | null;

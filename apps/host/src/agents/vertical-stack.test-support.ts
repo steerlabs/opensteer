@@ -140,7 +140,7 @@ export interface VerticalStack {
     readonly downForMs?: number;
     readonly whileDown?: () => Promise<void>;
   }): Promise<void>;
-  restartRunner(): Promise<void>;
+  restartRunner(agentsStoppedSince?: string | null): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -205,7 +205,7 @@ export interface VerticalStackOptions {
   /** Captures Runner diagnostics for engine lifecycle journeys. */
   readonly runnerLogger?: RunnerLogger;
   /** The person's Stop on the Runner's computer, as its menu bar would set it. */
-  readonly agentWork?: import("@opensteer/runner").AgentWorkSource;
+  readonly agentsStoppedSince?: string | null;
   /** Original Host diagnostics, before an acceptance journey scrubs exports. */
   readonly hostLog?: (line: string) => void;
   /** Runs the one Runner executes at once; one unless a journey needs more. */
@@ -328,7 +328,7 @@ export interface PersonalVerticalRuntime {
     replacementRunId?: RunId,
   ): Promise<VerticalTurn>;
   restartHost(): Promise<void>;
-  restartRunner(): Promise<void>;
+  restartRunner(agentsStoppedSince?: string | null): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -400,7 +400,7 @@ export function createPersonalVerticalStack(
       );
     },
     restartHost: () => runtime.restartHost(),
-    restartRunner: () => runtime.restartRunner(),
+    restartRunner: (mode) => runtime.restartRunner(mode),
     close: () => runtime.close(),
   };
 }

@@ -131,7 +131,7 @@ describe("Needs you on the phone", () => {
       />,
     );
     await vi.waitFor(() =>
-      expect(page.textContent).toContain("Grok: Allow browser_use on Shopping?"),
+      expect(page.textContent).toContain("Grok: Run a browser script in Shopping?"),
     );
     expect(page.querySelector('[data-mark="G"]')).not.toBeNull();
     // Every other Request keeps its own title.
@@ -219,6 +219,6 @@ describe("a connected agent's task in Tasks, on the phone", () => {
     );
     expect(page.querySelector('[data-mark="anthropic"]')).not.toBeNull();
     expect(page.querySelector('[data-mark="task"]')).toBeNull();
-    expect(page.textContent).toContain("Claude · Travel");
+    expect(page.textContent).toContain("Claude is working");
   });
 });

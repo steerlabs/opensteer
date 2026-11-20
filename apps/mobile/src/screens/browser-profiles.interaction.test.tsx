@@ -247,7 +247,7 @@ describe("mobile browser profiles", () => {
   it("lists names and access, renames, and confirms before deleting", async () => {
     const { dispatch } = host();
     await render();
-    expect(text()).toContain("Your agent can use every profile.");
+    expect(text()).toContain("Your own agents can use every profile.");
     expect(text().indexOf("Personal")).toBeLessThan(text().indexOf("Work"));
     await press("Work");
     await press("Browsing history for Work");

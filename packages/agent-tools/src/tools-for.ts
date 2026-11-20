@@ -12,7 +12,7 @@ import { agentTools, type AgentToolName } from "./tools/index.js";
  * more than the grant holds and `personal` reaches the person's own context; neither is offered to
  * a `selected` grant, which the person changes under Connected agents instead.
  */
-type ToolFamily = readonly AgentGrantToolFamily[] | "widen" | "personal";
+type ToolFamily = readonly AgentGrantToolFamily[] | "widen" | "owner-context";
 const tasks = ["tasks"] as const;
 const browser = ["browser"] as const;
 const computer = ["computer"] as const;
@@ -98,15 +98,15 @@ export const agentToolFamilies: Readonly<Record<AgentToolName, ToolFamily>> = {
   opensteer_automation_control: tasks,
   opensteer_automation_list: tasks,
   opensteer_automation_create: tasks,
-  opensteer_team_file_download: "personal",
-  opensteer_team_read: "personal",
-  opensteer_team_search: "personal",
-  opensteer_team_post: "personal",
-  opensteer_knowledge_topic_list: "personal",
-  opensteer_knowledge_search: "personal",
-  opensteer_knowledge_remove: "personal",
-  opensteer_knowledge_read: "personal",
-  opensteer_knowledge_save: "personal",
+  opensteer_team_file_download: "owner-context",
+  opensteer_team_read: "owner-context",
+  opensteer_team_search: "owner-context",
+  opensteer_team_post: "owner-context",
+  opensteer_knowledge_topic_list: "owner-context",
+  opensteer_knowledge_search: "owner-context",
+  opensteer_knowledge_remove: "owner-context",
+  opensteer_knowledge_read: "owner-context",
+  opensteer_knowledge_save: "owner-context",
 };
 
 /**
@@ -121,10 +121,10 @@ export function grantOffersTool(
   if (!grant) return true;
   const family = agentToolFamilies[name];
   if (grant.scope === "everything")
-    return accessMode === "full-access" || family === "widen" || family === "personal"
+    return accessMode === "full-access" || family === "widen" || family === "owner-context"
       ? true
       : !(family as readonly AgentGrantToolFamily[]).includes("settings");
-  if (family === "widen" || family === "personal") return false;
+  if (family === "widen" || family === "owner-context") return false;
   const granted = agentGrantToolFamilies(grant);
   return family.some((member) => granted.has(member));
 }
@@ -149,6 +149,26 @@ export function toolsFor(caller: {
       (tool.access !== "settings" || caller.accessMode === "full-access") &&
       (!("team" in tool) || (caller.kind === "run" && caller.teamsAvailable === true)) &&
       (!("knowledge" in tool) || (caller.kind === "run" && caller.knowledge === true)) &&
-      grantOffersTool(caller.grant, tool.name, caller.accessMode),
+      (caller.kind === "connection"
+        ? offersConnectionTool(caller.grant, tool.name, caller.accessMode)
+        : grantOffersTool(caller.grant, tool.name, caller.accessMode)),
   );
+}
+
+function offersConnectionTool(
+  grant: AgentGrant | undefined,
+  name: AgentToolName,
+  mode: ThreadAccessMode,
+): boolean {
+  if (name === "tab_open" || name === "tab_close") return false;
+  if (name === "opensteer_ai_account_list")
+    return !grant || grant.scope === "everything" || grant.tasks;
+  if (grant?.scope === "selected") {
+    const profile = grant.resources.some(({ kind }) => kind === "browser-profile");
+    if (name === "saved_login_request" || name === "card_request" || name === "browser_profile_list")
+      return profile;
+    if (name === "tab_list")
+      return profile || grant.resources.some(({ kind }) => kind === "chrome-tabs");
+  }
+  return grantOffersTool(grant, name, mode);
 }

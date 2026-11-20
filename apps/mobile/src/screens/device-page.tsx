@@ -1,3 +1,4 @@
+import { personalHomeShape } from "@opensteer/client/computers";
 import { cancelDeviceSetup, withDeviceSwitch } from "@opensteer/client/computers";
 import {
   computerConnectionsOn,
@@ -573,7 +574,7 @@ function DevicePage(props: {
       const facts = serverHomeFacts({
         publicOrigin: props.hostClient.getSnapshot().identityConfig?.publicOrigin ?? null,
         homeMachine: machine,
-        personal: props.hostClient.getSnapshot().deploymentShape?.kind === "personal",
+        personal: personalHomeShape(props.hostClient.getSnapshot().deploymentShape),
         role: props.hostClient.getSnapshot().role,
       });
       const rows: NativeSettingsRow[] = [
@@ -666,7 +667,7 @@ function DevicePage(props: {
       : ([
           {
             key: "agent",
-            title: "Your agent can use",
+            title: "Your own agents can use",
             ...(footer
               ? { footer }
               : deviceSwitchesFooter(switches) !== null

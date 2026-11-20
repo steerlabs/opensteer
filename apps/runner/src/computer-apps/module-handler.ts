@@ -69,6 +69,7 @@ import {
 export const computerAppStatusIntervalMs = 30_000;
 
 export interface ComputerAppModuleHandlerOptions {
+  readonly stopped?: boolean;
   readonly files?: RunFiles;
   /**
    * This Mac's computer use, present only when the desktop app offers it. The
@@ -159,6 +160,7 @@ const computerUseMessageMaxLength = 1_000;
 export class ComputerAppModuleHandler {
   readonly #files: RunFiles | undefined;
   readonly #computerUse: ComputerUseHandler | undefined;
+  readonly #stopped: boolean;
   readonly #phoneScreens: PhoneScreenDriver | undefined;
   #screenConnection: PhoneScreenDriverConnection | undefined;
   readonly #assignments = new Map<DeviceDriverTarget["deviceId"], DeviceScreenDriverAssignment>();
@@ -196,6 +198,7 @@ export class ComputerAppModuleHandler {
   #stream: RunnerModuleStream | undefined;
 
   constructor(options: ComputerAppModuleHandlerOptions) {
+    this.#stopped = options.stopped === true;
     this.#files = options.files;
     this.#computerUse = options.computerUse;
     this.#phoneScreens = options.phoneScreens;
@@ -207,6 +210,10 @@ export class ComputerAppModuleHandler {
       options.providers.map((provider) => [provider.definitionId, provider]),
     );
     this.#statusIntervalMs = options.statusIntervalMs ?? computerAppStatusIntervalMs;
+  }
+
+  get busy(): boolean {
+    return this.#executing > 0 || this.#inFlight.size > 0 || this.#screenInFlight.size > 0;
   }
 
   get maxPayloadBytes(): number {
@@ -271,6 +278,10 @@ export class ComputerAppModuleHandler {
       throw new Error("Computer app control message exceeds its size limit");
     }
     const message = HostToIntegrationsModuleMessageSchema.parse(JSON.parse(frame.toString("utf8")));
+    if (this.#stopped && !isPersonFrame(message)) {
+      await this.#refuseStopped(message);
+      return;
+    }
     if (message.type === "host.integrations.device-drivers") {
       this.#replaceScreenAssignments(message);
       return;
@@ -338,6 +349,34 @@ export class ComputerAppModuleHandler {
       case "host.auxiliary.rejected":
       case "host.auxiliary.lease-renewed":
         throw new Error("The integrations module received an out-of-sequence handshake message");
+    }
+  }
+
+  async #refuseStopped(message: HostToIntegrationsModuleMessage): Promise<void> {
+    const stream = this.#stream;
+    if (!stream) return;
+    const detail = "Agents are stopped. Resume them to continue.";
+    switch (message.type) {
+      case "host.integrations.computer-use":
+        await this.#sendComputerUseResult(
+          stream,
+          message.requestId,
+          { code: "stopped-by-user", kind: "error", message: detail },
+          message.operation,
+          messageTarget(message),
+        );
+        break;
+      case "host.integrations.invoke":
+        await this.#sendResult(
+          stream,
+          message.requestId,
+          { code: "failed", kind: "error", message: detail },
+          null,
+        );
+        break;
+      case "host.integrations.mcp.open":
+        await this.#refuseMcp(message.sessionId, detail);
+        break;
     }
   }
 
@@ -1183,13 +1222,16 @@ export class ComputerAppModuleHandler {
   }
 
   /** This Runner was not prepared with a local MCP executor. */
-  async #refuseMcp(sessionId: string): Promise<void> {
+  async #refuseMcp(
+    sessionId: string,
+    message = "The selected computer does not offer an MCP executor.",
+  ): Promise<void> {
     const stream = this.#stream;
     if (!stream) return;
     await this.#send(stream, {
       error: {
         code: "failed",
-        message: "The selected computer does not offer an MCP executor.",
+        message,
       },
       sessionId,
       type: "runner.integrations.mcp.closed",
@@ -1309,4 +1351,29 @@ function screenTargetKey(target: DeviceDriverTarget): string {
 }
 function screenRequestKey(target: DeviceDriverTarget, requestId: string): string {
   return JSON.stringify([target.deviceId, target.driverGeneration, requestId]);
+}
+
+function isPersonFrame(message: HostToIntegrationsModuleMessage): boolean {
+  switch (message.type) {
+    case "host.integrations.display.start":
+    case "host.integrations.display.demand":
+      return message.sources.every((source) => source.kind === "owner-view");
+    case "host.integrations.display.input":
+    case "host.integrations.display.input-reset":
+      return message.source?.kind === "owner-view";
+    case "host.integrations.device-drivers":
+    case "host.integrations.computer-view":
+    case "host.integrations.computer-app-windows":
+    case "host.integrations.window-resolve":
+    case "host.integrations.mac-owner.input":
+    case "host.integrations.mac-owner.input-reset":
+    case "host.integrations.display.resolve":
+    case "host.integrations.display.refresh":
+    case "host.integrations.display.stop":
+    case "host.integrations.password-sign-in":
+    case "host.integrations.cancel":
+      return true;
+    default:
+      return false;
+  }
 }

@@ -14,12 +14,6 @@ import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 import type { HostClient } from "./client.js";
 
-/* ------------------------------------------------------------------------- *
- * What the Home does not report yet. Each slot is optional, keyed by what it
- * belongs to, and filled only by the preview today; a real Home leaves it
- * empty and every screen says only what it can prove.
- * ------------------------------------------------------------------------- */
-
 /** The connection a session belongs to, as a task row would carry it. */
 export type SessionConnection = Pick<AgentConnection, "id" | "label" | "clientName"> &
   Partial<Pick<AgentConnection, "client" | "identity" | "identityAtConsent">>;
@@ -49,17 +43,6 @@ export interface AgentOperationRequestSlot {
   readonly expired?: boolean;
 }
 
-export interface AgentWorkSlots {
-  /** By task id. */
-  readonly sessions?: Readonly<Record<string, AgentSessionSlot>>;
-  /** By Request id. */
-  readonly requests?: Readonly<Record<string, AgentOperationRequestSlot>>;
-  /** Tabs the person shares with an agent from their own Chrome. */
-  readonly sharedTabs?: readonly string[];
-  /** By connection id: when the Home withdrew a verified identity. */
-  readonly withdrawn?: Readonly<Record<string, string>>;
-}
-
 /**
  * A task's session as the Home reports it on the task row, with the operations
  * `threads.activity` returned (newest first there; oldest first here).
@@ -78,21 +61,12 @@ export function sessionSlotFromHome(
   };
 }
 
-/**
- * A task's session for any screen: the preview's slot when it fills one, otherwise what the
- * Home reports on the task row, with the operations read so far.
- */
 export function agentSessionSlot(
-  snapshot: Parameters<typeof threadInDirectory>[1] & {
-    readonly agentWork?: AgentWorkSlots | undefined;
-  },
+  snapshot: Parameters<typeof threadInDirectory>[1],
   threadId: string,
   operations?: readonly AgentOperationView[] | undefined,
 ): AgentSessionSlot | null {
-  return (
-    snapshot.agentWork?.sessions?.[threadId] ??
-    sessionSlotFromHome(threadInDirectory(threadId, snapshot)?.externalWork, operations)
-  );
+  return sessionSlotFromHome(threadInDirectory(threadId, snapshot)?.externalWork, operations);
 }
 
 /** A connected agent's task's operations, newest first, as `threads.activity` lists them. */
@@ -157,7 +131,9 @@ export function sessionAgent(
     identityAtConsent: connection.identityAtConsent,
     withdrawnAt,
   });
-  const name = connection.label.trim() || connection.clientName;
+  const name = who.providerId
+    ? who.heading
+    : connection.label.trim() || connection.clientName || unknownAgent.name;
   return {
     name,
     initial: Array.from(name)[0]?.toUpperCase() ?? "A",
@@ -206,9 +182,10 @@ const knownTools = new Set([
 
 export function operationRow(operation: AgentOperationView): OperationRow {
   const target = operation.target.name;
-  const base = knownTools.has(operation.tool)
-    ? workWords(`op.${operation.tool}` as "op.tab_open", { target })
-    : workWords("op.other", { target });
+  const tool = knownTools.has(operation.tool) ? operation.tool : "other";
+  // Past tense only for what ran; a waiting, running, refused or uncertain one may not have.
+  const ran = operation.outcome === "completed" || operation.outcome === "failed";
+  const base = workWords(`op.${ran ? "" : "base."}${tool}` as "op.tab_open", { target });
   const device = operation.target.device;
   const action = device ? workWords("op.onDevice", { action: base, device: device.name }) : base;
   const decision = operation.decision;
@@ -369,20 +346,18 @@ export function sessionTaskRow(input: {
  * the person shares from their own Chrome says both of them.
  */
 export function tabAgentLine(input: {
-  readonly tabId: string;
+  readonly sharedFromChrome?: boolean;
   readonly occupant: { readonly threadId: string; readonly title: string } | null;
   readonly slot: AgentSessionSlot | null | undefined;
-  readonly sharedTabs?: readonly string[] | undefined;
   readonly withdrawnAt?: string | null | undefined;
 }): { readonly line: string; readonly stop: { readonly sessionId: string } | null } | null {
   const { occupant, slot } = input;
   if (!occupant || !slot) return null;
   const agent = sessionAgent(slot.connection, input.withdrawnAt).name;
   const task = occupant.title.trim();
-  const shared = input.sharedTabs?.includes(input.tabId) === true;
   if (slot.status === "ended")
     return slot.endReason === "stopped" ? { line: workWords("tab.stopped"), stop: null } : null;
-  const line = shared
+  const line = input.sharedFromChrome
     ? task
       ? workWords("tab.shared", { agent, task })
       : workWords("tab.sharedNoTask", { agent })
@@ -449,6 +424,8 @@ export interface OperationRequestView {
   readonly listTitle: string;
   /** The Home's summary of what, where and who; its whole text when the parts aren't sent. */
   readonly summary: string;
+  /** Where it would act: "Shopping · Studio Mac"; null when the Home sent no parts. */
+  readonly context: string | null;
   /** The agent's own reason, labelled as its words; separate from everything else. */
   readonly agentWords: { readonly label: string; readonly text: string } | null;
   /** The exact script or calls, behind one tap. */
@@ -466,13 +443,12 @@ export interface OperationRequestView {
 
 export function operationRequestView(input: {
   readonly request: RequestLike;
-  readonly slot: AgentOperationRequestSlot | null | undefined;
-  /** The task's session slot, to name the agent when the Request's own slot doesn't. */
+  /** The task’s session, to name the connected agent. */
   readonly session?: AgentSessionSlot | null | undefined;
   readonly withdrawnAt?: string | null | undefined;
 }): OperationRequestView | null {
   const { request } = input;
-  const slot = input.slot ?? operationRequestSlot(request, input.session?.connection ?? null);
+  const slot = operationRequestSlot(request, input.session?.connection ?? null);
   const fieldId = operationDecisionField(request);
   if (fieldId === null || request.presentation.kind !== "form") return null;
   const agent = sessionAgent(slot?.connection ?? input.session?.connection, input.withdrawnAt);
@@ -496,6 +472,11 @@ export function operationRequestView(input: {
     question,
     listTitle: workWords("ask.title", { agent: agent.name, question }),
     summary: slot?.summary ?? request.presentation.detail ?? "",
+    context: slot
+      ? slot.target.device && slot.target.device.name !== slot.target.name
+        ? workWords("ask.context", { target: slot.target.name, device: slot.target.device.name })
+        : slot.target.name
+      : null,
     agentWords: slot?.agentReason
       ? { label: workWords("ask.says", { agent: agent.name }), text: slot.agentReason }
       : null,

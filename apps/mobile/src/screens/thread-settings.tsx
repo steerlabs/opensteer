@@ -906,7 +906,7 @@ function ModelPickerList(
           {accessModeOptions.map((option) => {
             const reason = accessModeUnavailableReason(
               option.mode,
-              props.accessPlacement ?? { accessModes: null, engineName: "This engine" },
+              props.accessPlacement ?? { accessModes: null, engineName: "This agent" },
             );
             return (
               <Pressable
@@ -977,7 +977,7 @@ function ModelPickerList(
                     key={engine.driverKind}
                     accessibilityRole="button"
                     accessibilityState={{ selected }}
-                    accessibilityLabel={`Engine: ${engine.name}${engine.note ? `, ${engine.note}` : ""}`}
+                    accessibilityLabel={`Agent: ${engine.name}${engine.note ? `, ${engine.note}` : ""}`}
                     onPress={() => props.onEngine(engine.driverKind)}
                     style={({ pressed }) => [
                       styles.chip,
@@ -1364,7 +1364,7 @@ function SubscribedNewThread(props: {
         liveSelection === null ? null : placementForSelection(livePlacements, liveSelection);
       const reason = accessModeUnavailableReason(
         mode,
-        placement ?? { accessModes: null, engineName: "This engine" },
+        placement ?? { accessModes: null, engineName: "This agent" },
       );
       if (reason !== null) {
         setFailure(reason);

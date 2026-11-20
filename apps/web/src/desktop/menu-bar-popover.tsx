@@ -91,10 +91,6 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
       {menuBarWords("menubar.stopAll")}
     </button>
   );
-  // Stopped is said only once everything is confirmed ended. While a Stop is
-  // under way nothing else is offered; one that could not be confirmed says so
-  // and offers Stop everything again, never Resume in its place. It is the
-  // popover's only control over what agents do: a row opens its task instead.
   const stopSection = (
     <section className="menu-bar__section menu-bar__stop" aria-live="polite">
       {phase === "running" ? (
@@ -115,7 +111,9 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
           {status?.stop.stoppedAt ? (
             <p className="menu-bar__stopped">{menuBarStoppedLine(status.stop.stoppedAt)}</p>
           ) : null}
-          <p className="menu-bar__quiet">{menuBarWords("menubar.stopped.detail")}</p>
+          {status?.stop.stoppedAt || !stopProblem ? (
+            <p className="menu-bar__quiet">{menuBarWords("menubar.stopped.detail")}</p>
+          ) : null}
           {status?.stop.confirmed ? (
             <p className="menu-bar__quiet">{status.stop.confirmed}</p>
           ) : null}
@@ -173,7 +171,7 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
                   void act(`row:${row.id}`, () => {
                     // Until desktop main can open one task, the row opens the app.
                     const target = row.opens;
-                    return target && bridge.openRow ? bridge.openRow(target) : bridge.openApp();
+                    return target ? bridge.openRow(target) : bridge.openApp();
                   })
                 }
               />

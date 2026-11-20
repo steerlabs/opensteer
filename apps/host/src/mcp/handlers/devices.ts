@@ -3,7 +3,7 @@ import type { z } from "zod";
 import type { AppAccessRequestInputSchema } from "@opensteer/agent-tools/tools";
 import type { IntegrationRequester } from "@opensteer/database";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
-import { OpensteerError, refused, requestTextMaxLength, type Request, type DeviceId } from "@opensteer/core";
+import { refused, requestTextMaxLength, type Request, type DeviceId } from "@opensteer/core";
 import {
   OperationOutcomeUnknown,
   type AgentSessionService,
@@ -89,12 +89,17 @@ export class DeviceToolHandlers {
         "Name the app or phone screen shared with you: computerId, and app for a Mac app, from computer_apps.",
       );
     if (code.length > requestTextMaxLength)
-      throw refused("bad_request", "Use at most 20,000 characters per connected computer operation.");
+      throw refused(
+        "bad_request",
+        "Use at most 20,000 characters per connected computer operation.",
+      );
     const named = await this.#devices.sessionComputerTarget(
       { ownerUserId: caller.userId, connectionId: caller.connectionId },
       computerId,
       app,
     );
+    if (!readOnly && named.access === "read")
+      throw refused("forbidden", "This target allows observation only. Use readOnly: true.");
     return sessionScriptOutput(
       await requireDirectWork(this.#sessions).run({
         ownerUserId: caller.userId,
@@ -124,15 +129,10 @@ export class DeviceToolHandlers {
             code,
             context.signal,
           );
+          context.signal.throwIfAborted();
           const failure = result.structuredContent?.error;
-          if (context.signal.aborted) {
-            const cause: unknown = context.signal.reason;
-            if (failure?.code !== "outcome-unknown") throw cause;
-            throw new OperationOutcomeUnknown(
-              `${cause instanceof OpensteerError ? cause.message + " " : ""}The script ended while it ran. Check the app or phone before repeating any of it.`,
-            );
-          }
-          if (failure?.code === "outcome-unknown") throw new OperationOutcomeUnknown(failure.message);
+          if (failure?.code === "outcome-unknown")
+            throw new OperationOutcomeUnknown(failure.message);
           return result;
         },
         summarize: (result) => ({

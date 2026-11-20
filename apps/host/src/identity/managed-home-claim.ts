@@ -6,6 +6,7 @@ import {
   managedHomeClaimPath,
   managedHomeClaimReceiptSigningBytes,
   type ManagedHomeClaimReceipt,
+  type WorkHomeMarker,
 } from "@opensteer/control-plane-protocol";
 import { OpensteerError, type HostInstanceId, type HostKeyFingerprint } from "@opensteer/core";
 import type { IdentityService } from "@opensteer/identity";
@@ -21,10 +22,16 @@ import type { HostKeyPair } from "./host-keys.js";
  * and the Account link credential the assertion pins. Every binding is this
  * Home's own: its deployment identity, canonical origin and claim generation.
  */
+interface ManagedClaimTarget {
+  readonly cloudComputerId: string;
+  readonly generation: number;
+  readonly work?: WorkHomeMarker;
+}
+
 export class ManagedHomeClaimService {
   readonly #identity: Pick<IdentityService, "claimManagedOwner">;
   readonly #verifier: Pick<PersonalAccountGrantVerifier, "issuer" | "verifyManagedHomeClaim">;
-  readonly #managed: { readonly cloudComputerId: string; readonly generation: number };
+  readonly #managed: ManagedClaimTarget;
   readonly #authority: {
     readonly canonicalOrigin: string;
     readonly deploymentId: string;
@@ -38,7 +45,7 @@ export class ManagedHomeClaimService {
   constructor(options: {
     readonly identity: Pick<IdentityService, "claimManagedOwner">;
     readonly verifier: Pick<PersonalAccountGrantVerifier, "issuer" | "verifyManagedHomeClaim">;
-    readonly managed: { readonly cloudComputerId: string; readonly generation: number };
+    readonly managed: ManagedClaimTarget;
     readonly authority: {
       readonly canonicalOrigin: string;
       readonly deploymentId: string;
@@ -62,6 +69,14 @@ export class ManagedHomeClaimService {
     const request = ManagedHomeClaimRequestSchema.parse(input);
     const claims = await this.#verifier.verifyManagedHomeClaim(request.assertion);
     const authority = this.#authority;
+    if (
+      claims.work?.assignmentId !== this.#managed.work?.assignmentId ||
+      claims.work?.organizationId !== this.#managed.work?.organizationId
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This claim is for a different work assignment",
+      });
     if (
       claims.authority.deploymentId !== authority.deploymentId ||
       claims.authority.hostInstanceId !== authority.hostInstanceId ||

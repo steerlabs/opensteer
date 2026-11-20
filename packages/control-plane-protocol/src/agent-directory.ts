@@ -279,18 +279,39 @@ export const AgentConnectionIdentityAtConsentSchema = z.discriminatedUnion("kind
     recordedAt: isoDateTime,
   }),
 ]);
+export const AgentConnectionIdentityAtConsentViewSchema = z.discriminatedUnion("kind", [
+  z.object(AgentConnectionIdentityAtConsentSchema.options[0].shape),
+  z.object(AgentConnectionIdentityAtConsentSchema.options[1].shape),
+  z.object(AgentConnectionIdentityAtConsentSchema.options[2].shape),
+]);
 export type AgentConnectionIdentityAtConsent = z.infer<
   typeof AgentConnectionIdentityAtConsentSchema
 >;
+
+// RFC 7638 uses only the required public members in lexicographic order.
+export async function agentDirectoryKeyThumbprint(key: AgentDirectoryPublicJwk): Promise<string> {
+  const members =
+    key.kty === "EC"
+      ? { crv: key.crv, kty: key.kty, x: key.x, y: key.y }
+      : { crv: key.crv, kty: key.kty, x: key.x };
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify(members)),
+  );
+  return btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/u, "");
+}
 
 /**
  * Checks whether a previously recorded consent identity is still backed by the current directory.
  * Returns `null` when the directory is unavailable (cannot claim withdrawal without a live directory).
  */
-export function isIdentityStillVerified(
+export async function isIdentityStillVerified(
   identity: AgentConnectionIdentityAtConsent,
   directory: AgentDirectoryDocument | null,
-): boolean | null {
+): Promise<boolean | null> {
   if (identity.kind === "unverified") return false;
   if (!directory) return null;
   const platform = directory.entries.find(
@@ -303,6 +324,9 @@ export function isIdentityStillVerified(
     (entry) =>
       entry.id === identity.embedderDirectoryId && entry.origins.includes(identity.embedderOrigin),
   );
-  if (!embedder) return false;
-  return Boolean(embedder.embedsVia?.includes(platform.id));
+  if (!embedder?.embedsVia?.includes(platform.id)) return false;
+  for (const key of embedder.keys?.keys ?? []) {
+    if ((await agentDirectoryKeyThumbprint(key)) === identity.keyThumbprint) return true;
+  }
+  return false;
 }

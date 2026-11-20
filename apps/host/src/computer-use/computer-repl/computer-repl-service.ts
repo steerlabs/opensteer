@@ -307,6 +307,7 @@ export class ReplService<Request extends AnyReplRequest> {
         context: call.key,
         callId: call.id,
         code: call.code,
+        ...(!this.#events && call.context.reportUnknownEffects ? { connection: true as const } : {}),
         ...(events === undefined ? {} : { events }),
       });
     }

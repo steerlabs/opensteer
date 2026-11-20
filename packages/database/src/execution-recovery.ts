@@ -556,6 +556,7 @@ export async function attachRunnerExecutions(
     /** Runs this Host is dispatching now; their dispatch settles them. */
     readonly dispatchingRunIds: readonly RunId[];
     readonly executions: readonly AnnouncedExecution[];
+    readonly stoppedComputerName?: string;
     readonly leaseExpiresAt: Date;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
@@ -717,6 +718,7 @@ export async function attachRunnerExecutions(
     [...held, ...input.dispatchingRunIds],
     onRevoked,
     executionNow,
+    input.stoppedComputerName,
   );
   revokedGrants.push(...lost.revokedGrants);
   return {
@@ -733,6 +735,7 @@ async function recoverLostExecutions(
   excludedRunIds: readonly RunId[],
   onRevoked: (grants: readonly RevokedRunGrant[]) => void,
   executionNow: () => number = Date.now,
+  stoppedComputerName?: string,
 ): Promise<{
   readonly revokedGrants: readonly RevokedRunGrant[];
 }> {
@@ -792,6 +795,23 @@ async function recoverLostExecutions(
         };
       }
       const now = new Date(executionNow());
+      if (stoppedComputerName && session.runnerBootId !== runnerBootId) {
+        await finalizeRunTransaction(transaction, {
+          completedAt: now,
+          failure: {
+            code: "computer_stopped",
+            message: `Stopped on ${stoppedComputerName}.`,
+            retryable: false,
+            status: "failed",
+          },
+          links,
+          queuedInputCancellation: "seed-input",
+          runId: run.id,
+          source: "host",
+          status: "failed",
+        });
+        return { revokedGrants: [] };
+      }
       const recovery = lostExecutionRecovery({
         expired: !session.leaseExpiresAt || session.leaseExpiresAt <= now,
         restarted: session.runnerBootId !== runnerBootId,

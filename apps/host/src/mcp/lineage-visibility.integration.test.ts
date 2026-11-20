@@ -9,7 +9,7 @@ import {
   type TabId,
   type ThreadId,
 } from "@opensteer/core";
-import { AgentConnectionStore, TabStore } from "@opensteer/database";
+import { AgentConnectionStore, TabStore, beginAgentSession } from "@opensteer/database";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -94,6 +94,47 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     );
     const call = (name: string, args: Record<string, unknown>) =>
       agent.client.callTool({ name, arguments: args });
+
+    const ownTask = await call("opensteer_task_read", { taskId: own });
+    expect(ownTask.isError, JSON.stringify(ownTask.content)).not.toBe(true);
+    const foreignDirect = await beginAgentSession(storeFixture.database, {
+      userId: f.userId,
+      agentConnectionId: second.id,
+    });
+    const missingTask = await call("opensteer_task_read", { taskId: createId("thread") });
+    for (const taskId of [foreign, foreignDirect.session.threadId]) {
+      const hiddenTask = await call("opensteer_task_read", { taskId });
+      expect(errorText(hiddenTask)).toBe(errorText(missingTask));
+      expect(hiddenTask.structuredContent).toEqual(missingTask.structuredContent);
+    }
+
+    const request = async (threadId: ThreadId, runId: RunId, callId: string) =>
+      storeFixture.store.requests.create({
+        callId,
+        kind: "person.question",
+        mode: "durable",
+        originatingRunId: runId,
+        originatingThreadId: threadId,
+        requestedBy: f.userId,
+        requiredActor: "requester",
+        payload: { kind: "person.question" },
+        presentation: {
+          kind: "form",
+          title: "Question",
+          fields: [
+            { id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false },
+          ],
+        },
+      });
+    const ownedRequest = await request(own, ownRun.runId, "own-question");
+    const hiddenRequest = await request(f.threadId, f.run.id, "owner-question");
+    const readRequest = (requestId: string) => call("opensteer_request_read", { requestId });
+    const ownRequest = await readRequest(ownedRequest.request.id);
+    expect(ownRequest.isError, JSON.stringify(ownRequest.content)).not.toBe(true);
+    const hidden = await readRequest(hiddenRequest.request.id);
+    const missing = await readRequest(createId("request"));
+    expect(errorText(hidden)).toBe(errorText(missing));
+    expect(hidden.structuredContent).toEqual(missing.structuredContent);
 
     // Subagents: the person's Run's subagent reads exactly like one that does not exist.
     const ownNode = await subagent(storeFixture, ownRun.runId);

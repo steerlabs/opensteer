@@ -1,6 +1,5 @@
 // @vitest-environment happy-dom
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
-import type { SessionTaskView } from "@opensteer/client/host";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,7 +9,7 @@ vi.mock("react-native", () => ({
   AppState: { addEventListener: () => ({ remove: () => undefined }), currentState: "active" },
   Platform: { OS: "ios", Version: "26", select: (options: { ios?: unknown }) => options.ios },
   PixelRatio: { get: () => 2, getFontScale: () => 1, roundToNearestPixel: (n: number) => n },
-  useWindowDimensions: () => ({ fontScale: 1, height: 800, width: 390 }),
+  useWindowDimensions: () => ({ fontScale: 1, height: 800, width: window.innerWidth }),
   Pressable: (props: {
     accessibilityLabel?: string;
     children?: ReactNode;
@@ -54,7 +53,7 @@ vi.mock("../ui/composer-action.js", () => ({
   ),
 }));
 
-const { AgentSessionPane } = await import("./agent-session.js");
+const { AgentSessionPane, useSessionTask } = await import("./agent-session.js");
 const { sessionTaskOf } = await import("./agent-session-model.js");
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -63,6 +62,7 @@ let host: MockHostClient | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   host?.dispose();
+  vi.restoreAllMocks();
   document.body.replaceChildren();
 });
 
@@ -78,7 +78,7 @@ const idOf = (client: MockHostClient, title: string) =>
   client.getSnapshot().threads.find((thread) => thread.title === title)!.id;
 
 function Pane(props: { readonly client: MockHostClient; readonly threadId: string }) {
-  const view: SessionTaskView = sessionTaskOf(props.client.getSnapshot(), props.threadId)!;
+  const view = useSessionTask(props.client, props.threadId)!;
   return (
     <AgentSessionPane hostClient={props.client} threadId={props.threadId} title="t" view={view} />
   );
@@ -98,9 +98,14 @@ const button = (container: HTMLElement, label: string) =>
   );
 
 describe("a connected agent's own task on the phone", () => {
-  it("shows each operation, says who allowed it and how it ended, and has no composer", async () => {
+  it.each([390, 1440])("reads the task activity and has no composer at %d px", async (width) => {
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(width);
     const client = seeded();
-    const page = await render(client, idOf(client, "Find flights to Lisbon"));
+    const read = vi.fn(client.rpc["threads.activity"]);
+    Object.defineProperty(client.rpc, "threads.activity", { value: read, configurable: true });
+    const threadId = idOf(client, "Find flights to Lisbon");
+    const page = await render(client, threadId);
+    expect(read).toHaveBeenCalledWith({ threadId }, { signal: expect.any(AbortSignal) });
     const text = page.textContent ?? "";
     expect(text).toContain("Listed tabs in Travel on Studio Mac");
     expect(text).toContain("Reading only · Done");
@@ -141,9 +146,9 @@ describe("a connected agent's own task on the phone", () => {
     const threadId = idOf(client, "Buy the phone case");
     const dispatch = vi.spyOn(client, "dispatch");
     const page = await render(client, threadId);
-    await vi.waitFor(() => expect(page.textContent).toContain("Allow browser_use on Shopping?"));
-    expect(page.textContent).toContain("Grok wants to run a script on Shopping on Studio Mac.");
-    expect(page.textContent).toContain("Grok says (its own words, not checked):");
+    await vi.waitFor(() => expect(page.textContent).toContain("Run a browser script in Shopping?"));
+    expect(page.textContent).toContain("Shopping · Studio Mac");
+    expect(page.textContent).toContain("Grok says:");
     expect(page.textContent).toContain("Buy the $12 phone case you asked for.");
     expect(page.textContent).not.toContain("Place order");
     await act(async () => button(page, "Show exactly what it will run")!.click());

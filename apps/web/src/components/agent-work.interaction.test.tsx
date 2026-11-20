@@ -87,7 +87,7 @@ describe("a task a connected agent works itself", () => {
     );
     const row = document.querySelector(`[data-thread-id="${mockAgentWorkThreads.working}"]`)!;
     expect(row.querySelector(".agent-mark")).not.toBeNull();
-    expect(row.textContent).toContain("Claude · Travel");
+    expect(row.textContent).toContain("Claude is working");
   });
 });
 
@@ -123,11 +123,13 @@ describe("a direct operation that needs the person", () => {
     await mount(task(mockAgentWorkThreads.waiting), options);
     await vi.waitFor(() => expect(document.querySelector(".operation-request")).not.toBeNull());
     const card = document.querySelector(".operation-request")!;
-    expect(card.textContent).toContain("Allow browser_use on Shopping?");
-    expect(card.textContent).toContain("Grok wants to run a script on Shopping on Studio Mac.");
-    expect(card.querySelector(".operation-request__says")?.textContent).toContain(
-      "Grok says (its own words, not checked):",
+    expect(card.querySelector(".action-panel__title")?.textContent).toBe(
+      "Run a browser script in Shopping?",
     );
+    expect(card.querySelector(".operation-request__summary")?.textContent).toBe(
+      "Shopping · Studio Mac",
+    );
+    expect(card.querySelector(".operation-request__says")?.textContent).toContain("Grok says:");
     expect(card.querySelector(".operation-request__code")).toBeNull();
     await act(async () => button("Show exactly what it will run")!.click());
     expect(card.querySelector(".operation-request__code")?.textContent).toContain("Place order");
@@ -152,15 +154,15 @@ describe("a direct operation that needs the person", () => {
     );
     const taskRow = document.querySelector(`[data-thread-id="${mockAgentWorkThreads.waiting}"]`)!;
     expect(taskRow.querySelector(".agent-mark")).not.toBeNull();
-    expect(taskRow.textContent).toContain("Allow browser_use on Shopping?");
+    expect(taskRow.textContent).toContain("Run a browser script in Shopping?");
     await act(async () =>
       (document.querySelector('[title="Open Needs you"]') as HTMLButtonElement).click(),
     );
     await vi.waitFor(() =>
-      expect(document.body.textContent).toContain("Grok: Allow browser_use on Shopping?"),
+      expect(document.body.textContent).toContain("Grok: Run a browser script in Shopping?"),
     );
     const row = [...document.querySelectorAll(".side-task--needs-you")].find((entry) =>
-      entry.textContent?.includes("Grok: Allow browser_use"),
+      entry.textContent?.includes("Grok: Run a browser script"),
     )!;
     expect(row.querySelector(".agent-mark")).not.toBeNull();
   });

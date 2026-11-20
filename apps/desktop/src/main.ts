@@ -202,12 +202,10 @@ import { OpensteerOwnOrigins } from "./passwords/own-origins.js";
 import { PasswordsLoginAuthority } from "./passwords/login-authority.js";
 import { AgentBrowserGate } from "./browser/agent-browser-gate.js";
 import { DesktopLocalStop, localStopFileStore } from "./app/local-stop.js";
-import { HostedHomeStop } from "./app/hosted-home-stop.js";
 import { parentedQuitQuestion, quitQuestionParentOptions } from "./app/quit-question.js";
-import { AgentAdmission } from "./app/agent-admission.js";
-import { activityIdle, DesktopActivity, fencedIdle } from "./app/desktop-activity.js";
+import { activityIdle, DesktopActivity } from "./app/desktop-activity.js";
 import { DesktopQuitRouting } from "./app/quit-routing.js";
-import { appRoutes, appRouteScript } from "./app/app-route.js";
+import { appRoutes, appRouteScript, taskPath } from "./app/app-route.js";
 import {
   backgroundNoticeBody,
   backgroundNoticeFileStore,
@@ -268,8 +266,14 @@ const shutdown = new DesktopShutdown({
   log: reportEvent,
   hideWindow: () => activeMainProcess?.hideWindow(),
 });
+const confirmQuit = parentedQuitQuestion({
+  focus: () => app.focus({ steal: true }),
+  createParent: () => new BrowserWindow(quitQuestionParentOptions(app.getName())),
+  showMessageBox: (parent, options) => dialog.showMessageBox(parent as BrowserWindow, options),
+});
 const quitRouting = new DesktopQuitRouting({
   shutdown,
+  confirm: confirmQuit,
   hideWindows: () => {
     for (const window of BaseWindow.getAllWindows()) window.hide();
   },
@@ -532,10 +536,7 @@ async function runDesktop(
     },
   });
   void iphone.start().catch(() => reportEvent("desktop.iphone.unavailable"));
-  // Closed until the person's saved Stop is read; every agent path checks it.
-  const admission = new AgentAdmission();
   const computerUse = new ComputerUseService({
-    admission,
     appBundleId: loaded.config.release.id,
     appVersion: app.getVersion(),
     bundledHelperPath: () =>
@@ -625,7 +626,7 @@ async function runDesktop(
   const bridgeToken = randomBytes(32).toString("base64url");
   const preloadPath = path.join(import.meta.dirname, "preload.cjs");
   const panelWebPreferences = desktopWebPreferences(loaded.config, bridgeToken, preloadPath);
-  const agentBrowserGate = new AgentBrowserGate(admission);
+  const agentBrowserGate = new AgentBrowserGate();
   const personalLocalRuntimes: PersonalLocalRuntimePort = {
     startBrowser: (input) =>
       startLocalBrowserRuntime({
@@ -645,6 +646,7 @@ async function runDesktop(
       id: string,
       owner: { deploymentId: string; hostInstanceId: string; runnerId: string },
     ) => computerUse.startForSlot(id, passwordsLoginAuthority, iphone.forSlot(owner)),
+    workerDisconnected: (id: string) => computerUse.workerDisconnected(id),
     stopForSlot: async (id: string) => {
       try {
         await iphoneSetup.stopForSlot(id);
@@ -657,10 +659,9 @@ async function runDesktop(
       }
     },
   };
-  // The person's Stop for this Mac, which this Mac's own Home's Runner reads too.
   const localStopPath = path.join(loaded.config.dataDirectory, "local-stop.json");
   const personal = new PersonalDeploymentSupervisor({
-    agentStopFile: localStopPath,
+    agentsStoppedSince: () => localStop.agentsStoppedSince,
     userDataDirectory: app.getPath("userData"),
     accountIssuer: loaded.config.accountUrl,
     catalog: deploymentCatalog,
@@ -881,7 +882,7 @@ async function runDesktop(
       hostTransport.closeDeploymentConnections(DeploymentIdSchema.parse(deploymentId));
   });
   const localRunner = new LocalRunnerService(loaded.config, {
-    admission,
+    agentsStoppedSince: () => localStop.agentsStoppedSince,
     assertAccountSource: (source) => nativeAuth.assertAccountSource(source),
     fenceDeployment: (deploymentId) => {
       for (const sessions of sessionOwners) sessions.blockDeployment(deploymentId);
@@ -931,26 +932,23 @@ async function runDesktop(
     timeoutMs: 8_000,
     stop: (signal) => localRunner.shutdown(signal),
   });
-  // This Mac's own Home's work ends through that Home's Stop, under its own
-  // owner session whichever Home the window shows.
-  const hostedHomeStop = new HostedHomeStop({
-    hostedHome: async () => {
-      const manifest = await personalFiles.load();
-      return manifest
-        ? { deploymentId: manifest.deploymentId, state: personal.status.state }
-        : null;
-    },
-    host: (deploymentId) =>
-      createForwardedHostApi(hostTransport, DeploymentIdSchema.parse(deploymentId), {
-        anyHome: true,
-      }),
-  });
   const localStop = new DesktopLocalStop({
-    admission,
-    computerUse,
-    runners: localRunner,
-    browser: agentBrowserGate,
-    home: hostedHomeStop,
+    restart: async () => {
+      const results = await Promise.allSettled([
+        personal.restartForAgentMode(),
+        localRunner.restartForAgentMode(),
+      ]);
+      const errors = results.flatMap((result) =>
+        result.status === "rejected"
+          ? [
+              result.reason instanceof Error
+                ? result.reason.message
+                : "Couldn't confirm that everything stopped.",
+            ]
+          : [],
+      );
+      if (errors.length) throw new Error(errors.join(" "));
+    },
     store: localStopFileStore(localStopPath),
     log: reportEvent,
   });
@@ -1680,29 +1678,13 @@ async function runDesktop(
     local: () => ({
       apps: computerUse.agentSessionDetails(),
       tabs: agentBrowserGate.agentTabDetails(),
-      runs: localRunner.localActivity(),
+      runs: localRunner.localActivity().map((run) => ({ ...run, threadId: run.threadId ?? null })),
     }),
     stop: () => ({
       phase: localStop.phase,
       stoppedAt: localStop.stoppedAt,
       problem: localStop.problem,
     }),
-    // Each row stops the way its own Stop ends it: an app session as the
-    // helper's Stop does, a Device's Run through its Runner's interrupt, and a
-    // task of this Mac's own Home through that Home's Stop. A tab or a shell
-    // belongs to its Home's Stop alone.
-    stopRow: async (id) => {
-      if (id.startsWith("apps:")) return computerUse.stopAgentSession(id.slice(5));
-      const runner = /^runner:(dep_[^:]+):(.+)$/u.exec(id);
-      if (runner) return localRunner.stopRun(DeploymentIdSchema.parse(runner[1]), runner[2]!);
-      if (id.startsWith("home:")) {
-        const manifest = await personalFiles.load();
-        if (!manifest) return false;
-        await hostedHomeStop.stopTask(manifest.deploymentId, id.slice(5));
-        return true;
-      }
-      return false;
-    },
     openAtLogin: async () => openAtLogin.effective(await openAtLoginEligibility()),
     log: reportEvent,
   });
@@ -1745,11 +1727,7 @@ async function runDesktop(
       },
     },
     work: () => activity.snapshot(),
-    confirm: parentedQuitQuestion({
-      focus: () => app.focus({ steal: true }),
-      createParent: () => new BrowserWindow(quitQuestionParentOptions(app.getName())),
-      showMessageBox: (parent, options) => dialog.showMessageBox(parent as BrowserWindow, options),
-    }),
+    confirm: confirmQuit,
     log: reportEvent,
   });
   quitRouting.attach(background);
@@ -1818,18 +1796,20 @@ async function runDesktop(
   shutdown.signal.throwIfAborted();
   backgroundUpdate = new DesktopBackgroundUpdate({
     updater,
-    // The last look is fenced: nothing new starts between it and the restart,
-    // and admission opens again if the update backs off.
     install: async (stillDue) => {
-      let release = () => {};
+      const held: (() => Promise<void>)[] = [];
       try {
         await requestInstall(async () => {
-          const fenced = await fencedIdle(admission, () => localStop.stopped, stillDue);
-          release = fenced.release;
-          return fenced.idle;
+          const results = await Promise.allSettled([
+            personal.holdIdleForUpdate(),
+            localRunner.holdIdleForUpdate(),
+          ]);
+          for (const result of results)
+            if (result.status === "fulfilled" && result.value) held.push(result.value);
+          return held.length === results.length && (await stillDue());
         });
       } catch (error) {
-        release();
+        await Promise.allSettled(held.map((release) => release()));
         throw error;
       }
     },
@@ -1839,10 +1819,7 @@ async function runDesktop(
     log: reportEvent,
   });
   backgroundUpdate.start(shutdown.signal);
-  const openAppAt = async (
-    route: (typeof appRoutes)[keyof typeof appRoutes],
-    deploymentId?: string,
-  ) => {
+  const openAppAt = async (route: Parameters<typeof appRouteScript>[0], deploymentId?: string) => {
     if (deploymentId && access.snapshot().selectedDeploymentId !== deploymentId)
       await access.select(deploymentId);
     app.focus({ steal: true });
@@ -1858,7 +1835,6 @@ async function runDesktop(
       backgroundUpdate?.evaluate();
     }),
     localStop.subscribe(menuBarChanged),
-    admission.subscribe(menuBarChanged),
     computerUse.onAgentSessionsChanged(menuBarChanged),
     localRunner.subscribe(menuBarChanged),
     personal.subscribe(menuBarChanged),
@@ -1874,6 +1850,7 @@ async function runDesktop(
         app.focus({ steal: true });
         await mainProcess.activate();
       },
+      openRow: ({ deploymentId, threadId }) => openAppAt(taskPath(threadId), deploymentId),
       openNeedsYou: (deploymentId) => openAppAt(appRoutes.needsYou, deploymentId),
       openSettings: () => openAppAt(appRoutes.settings),
       quitCompletely: async () => {

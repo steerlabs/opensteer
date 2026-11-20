@@ -333,15 +333,17 @@ integration.sequential("Host computer-use approval transactions", () => {
       resolveCallableTools: (...args: unknown[]) => Promise<unknown>;
     };
     const resolve = grants.resolveCallableTools.bind(grants);
-    const filled = vi.spyOn(grants, "resolveCallableTools").mockImplementationOnce(async (...args) => {
-      const resolved = await resolve(...args);
-      await connections.update(test.task.userId, {
-        connectionId: narrowed.id,
-        expectedRevision,
-        grant: { ...grant, resources: [] },
+    const filled = vi
+      .spyOn(grants, "resolveCallableTools")
+      .mockImplementationOnce(async (...args) => {
+        const resolved = await resolve(...args);
+        await connections.update(test.task.userId, {
+          connectionId: narrowed.id,
+          expectedRevision,
+          grant: { ...grant, resources: [] },
+        });
+        return resolved;
       });
-      return resolved;
-    });
     const list = (connectionId: string) =>
       listing
         .listCallableTools({ ownerUserId: test.task.userId, connectionId })

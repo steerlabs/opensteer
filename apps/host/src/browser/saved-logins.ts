@@ -119,7 +119,7 @@ export class SavedLoginService {
     if (input.credential === "card" ? !target.cardFill || !target.computer : !target.signIn)
       return unavailable(site, "runtime-outdated");
     if (!this.#passwords.requestForSession) return unavailable(site, "unsupported");
-    if (!(await input.scope.authorized())) return unavailable(site, "stopped");
+    if (!(await input.scope.authorized(input.scope.tabGeneration))) return unavailable(site, "stopped");
     if (input.credential === "card") {
       const available = await this.#passwords.probeCard(input.ownerId);
       if (available !== "has-card")

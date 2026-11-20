@@ -1823,18 +1823,18 @@ export class IdentityService {
     await this.#database.transaction().execute(async (transaction) => {
       await sqlAdvisoryLock(transaction, "initial-owner-setup");
       const now = new Date();
+      const held = await transaction
+        .selectFrom("authAdmissions")
+        .select(["consumedBy", "expiresAt"])
+        .where("id", "=", admission.id)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
       const enrollment = await transaction
         .selectFrom("ownerEnrollments")
         .selectAll()
         .where("id", "=", admission.subjectSelector)
         .where("kind", "=", "initial")
         .forNoKeyUpdate()
-        .executeTakeFirst();
-      const held = await transaction
-        .selectFrom("authAdmissions")
-        .select(["consumedBy", "expiresAt"])
-        .where("id", "=", admission.id)
-        .forUpdate()
         .executeTakeFirst();
       const owner = await transaction
         .selectFrom("users")
@@ -2061,6 +2061,16 @@ export class IdentityService {
           .where("tokenHash", "=", tokenHash)
           .forNoKeyUpdate()
           .executeTakeFirst();
+        const link = await transaction
+          .selectFrom("personalRemoteAccountLink")
+          .select("singletonKey")
+          .where("singletonKey", "=", "opensteer-account")
+          .where("challengeId", "=", input.cloudComputerId)
+          .where("issuer", "=", input.issuer)
+          .where("subject", "=", input.subject)
+          .where("state", "=", "active")
+          .forNoKeyUpdate()
+          .executeTakeFirst();
         const existing = await transaction
           .selectFrom("users")
           .select("id")
@@ -2074,16 +2084,6 @@ export class IdentityService {
             .where("userId", "=", existing.id)
             .where("providerId", "=", oidcIdentityProviderId(provider))
             .where("accountId", "=", input.subject)
-            .executeTakeFirst();
-          const link = await transaction
-            .selectFrom("personalRemoteAccountLink")
-            .select("singletonKey")
-            .where("singletonKey", "=", "opensteer-account")
-            .where("challengeId", "=", input.cloudComputerId)
-            .where("issuer", "=", input.issuer)
-            .where("subject", "=", input.subject)
-            .where("state", "=", "active")
-            .forNoKeyUpdate()
             .executeTakeFirst();
           if (!account || !link)
             throw new OpensteerError({

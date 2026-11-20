@@ -308,7 +308,7 @@ export function AiEngineSettings({
       return;
     }
     onError(
-      `${signInAfterCreate.name} isn’t ready: ${placement?.detail ?? "AI engine is unavailable"}`,
+      `${signInAfterCreate.name} isn’t ready: ${placement?.detail ?? "This agent is unavailable"}`,
     );
   }, [client, environments, onAuthenticate, onError, placements, signInAfterCreate]);
 
@@ -888,7 +888,7 @@ export function AiEngineSettings({
                 <p className="settings-engine__update-detail" role="status">
                   {engine.installation.detail ??
                     (engine.installation.update === "manual"
-                      ? "Update this engine on its computer."
+                      ? "Update this agent on its computer."
                       : "The update did not finish.")}
                   {engine.installation.manualCommand
                     ? ` Run ${engine.installation.manualCommand}.`
@@ -910,8 +910,8 @@ export function AiEngineSettings({
           <div className="card">
             <p className="card__empty">
               {environment.connected
-                ? "This work location has no AI engines installed."
-                : "Reconnect this work location to see its AI engines."}
+                ? "This work location has no agents installed."
+                : "Reconnect this work location to see its agents."}
             </p>
           </div>
         ) : null}
@@ -946,7 +946,7 @@ export function aiEngineAccountFacts({
         // gives; only a source an available engine dropped is worth naming.
         unavailableReason !== null
         ? null
-        : "A source this engine no longer offers here"
+        : "A source this agent no longer offers here"
       : source.kind === "first-party"
         ? null
         : source.kind === "compatible-endpoint" && connection

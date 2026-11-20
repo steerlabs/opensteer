@@ -1,4 +1,5 @@
 import type { ThreadAccessMode } from "@opensteer/core";
+import { agentConnectionVerificationChangedMessage } from "@opensteer/protocol";
 
 /**
  * Every word Connected agents and agent consent show, by stable id. Web, desktop and
@@ -38,13 +39,9 @@ export const connectedAgentsCopy = {
   "remoteAccess.turnOnFirst.action": "Turn on",
   "remoteAccess.unreadable": "Couldn’t check Remote access",
 
-  "consent.title": "{agent} wants to use your Opensteer",
-  "consent.legacyTitle": "Allow {agent} to use Opensteer?",
   "consent.origin.destination": "Access goes to {origin}. Anyone who runs that service gets it.",
   "consent.origin.localDestination":
     "Access goes to an app on the device that started this sign-in.",
-  "consent.unverified":
-    "App names aren’t verified. Allow only an agent you just started connecting.",
   "consent.scope.title": "What it can use",
   "consent.scope.selected.label": "Choose what it can use",
   "consent.scope.selected.detail": "Only what you pick below.",
@@ -58,7 +55,7 @@ export const connectedAgentsCopy = {
   "consent.browser.none": "None",
   "consent.browser.newProfile": "New dedicated profile",
   "consent.browser.newProfile.badge": "Recommended",
-  "consent.browser.newProfile.detail": "Starts signed out. Sign in only to what {agent} needs.",
+  "consent.browser.newProfile.detail": "Starts signed out. Sign in only to what it needs.",
   "consent.browser.newProfile.summary": "On {device} · starts signed out",
   "consent.browser.newProfile.summaryAnywhere": "Starts signed out",
   "consent.browser.existing.summary": "Signed in to the sites you use there",
@@ -66,15 +63,15 @@ export const connectedAgentsCopy = {
   "consent.browser.shareWarning":
     "{agent} can use every site you’re signed in to in {profile}, as you. A new profile starts signed out.",
   "consent.browser.pickerFooter":
-    "{agent} gets full control of each profile you pick, including every site signed in there. It can’t see saved passwords or cards; it asks you each time it needs one.",
+    "{agent} gets full control of each profile you pick, including every site signed in there. It can’t open your saved passwords or cards. When it needs one, it asks you and Opensteer fills it in; once filled, the page and the agent can read it.",
   "consent.browser.device.online": "{device} · Online",
   "consent.browser.device.offline": "{device} · Offline",
   "consent.browser.device.unknown": "Not opened on a device yet",
   "consent.chromeTabs.label": "Tabs you share from Chrome on {device}",
   "consent.chromeTabs.detail":
     "It can act in a tab only while you share it from Chrome’s toolbar. In that tab it can navigate anywhere and use sites that Chrome is signed in to.",
-  "consent.chromeTabs.repair":
-    "To share tabs with a connected agent, pair Chrome again from that device.",
+  "consent.chromeTabs.repair": "To share tabs with a connected agent, pair Chrome again.",
+  "consent.chromeTabs.repairOn": "To share tabs from Chrome on {device}, pair it again.",
   "agents.row.chromeTabs": "Shared Chrome tabs",
   "consent.apps.title": "Apps and phone screens",
   "consent.apps.none": "None",
@@ -89,20 +86,20 @@ export const connectedAgentsCopy = {
   "consent.plugins.summaryRead": "{plugin} (read)",
   "consent.plugins.summaryReadWrite": "{plugin} (read and write)",
   "consent.plugins.footer":
-    "Read lets {agent} look things up. Read and write lets it change them; Supervised still asks first.",
+    "Read lets it look things up. Read and write lets it change them; Supervised still asks first.",
   "consent.plugins.more": "Only your first plugins are listed here.",
   "consent.tasks.title": "Tasks",
   "consent.tasks.detail":
-    "Lets {agent} ask your own agents to work on {home}: read and change files and run commands there.",
+    "Lets it ask your own agents to work on {home}: read and change files and run commands there.",
   "consent.tasks.warning":
-    "This is the most powerful choice. Work it starts can change anything on {home} that your own agents can, inside the safety mode below. Opensteer can stop what happens next, but can't undo what an agent already did.",
+    "This is the most powerful choice. Work it starts can change anything on {home} that your own agents can, inside the safety mode below. Opensteer can stop what happens next, but can’t undo what an agent already did.",
   "consent.safety.title": "Safety mode",
   "consent.name.title": "Name",
   "consent.name.placeholder": "Connection name",
   "consent.finePrint":
-    "{agent} can’t approve its own requests, see your passwords or cards, or change your settings. It lasts 30 days. Disconnect it any time in Settings → Connected agents.",
+    "{agent} can’t approve its own requests, open your saved passwords or cards, or change your settings. It lasts 30 days. Disconnect it any time in Settings → Connected agents.",
   "consent.legacyFinePrint":
-    "It can’t approve requests, see passwords or give anyone access. This lasts 30 days, and you can remove it any time in Settings → Connected agents.",
+    "It can’t approve requests, open your saved passwords or give anyone access. This lasts 30 days, and you can remove it any time in Settings → Connected agents.",
   "consent.allow": "Allow",
   "consent.allowing": "Allowing…",
   "consent.deny": "Deny",
@@ -111,8 +108,9 @@ export const connectedAgentsCopy = {
   "consent.hide": "Hide",
   "consent.loading": "Loading connection request…",
   "consent.missing": "This connection request is missing. Start again from the agent.",
-  "consent.allowed.title": "{agent} is connected",
-  "consent.allowed.detail": "Go back to {agent} to continue.",
+  "consent.allowed.title": "Connected agent added",
+  "consent.allowed.detail": "Go back to the agent to continue.",
+  "consent.error.verificationChanged": agentConnectionVerificationChangedMessage,
   "consent.error.approve": "The connection couldn’t be approved. Try again.",
   "consent.error.deny": "The request couldn’t be denied. Try again.",
   "consent.error.approveUnknown": "Couldn’t confirm the connection was approved.",

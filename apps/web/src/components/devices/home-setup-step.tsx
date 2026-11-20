@@ -155,7 +155,7 @@ export function HomeSetupStep({
         </label>
       ) : null}
       {switchable ? (
-        <SetupGroup title="Your agent can use">
+        <SetupGroup title="Your own agents can use">
           <SwitchRow
             checked={apps}
             detail={capabilityDetailHere.apps}
